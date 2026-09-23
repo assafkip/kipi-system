@@ -47,6 +47,7 @@ EXPECTED_MODULES = (
     "archetype",
     "assemble",
     "assistant_gate",
+    "call_sites",
     "channel_registry",
     "content_key",
     "corpus",

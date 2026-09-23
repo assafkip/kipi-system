@@ -91,9 +91,26 @@ def limit_text(doc: dict) -> str | None:
 def row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None = None) -> dict:
     """One ledger row from a `--output-format json` result document.
 
-    Token totals are summed across `modelUsage` (which includes subagents; the
-    top-level `usage` block does not, per the CLI docs), so a run that spawned
-    subagents is charged in full to the bot that started it.
+    A document the CLI marked failed (is_error, or an error subtype) is a
+    "failure" row, the same kind a timeout or a non-zero exit gets, so a query
+    keyed on kind counts every refusal once (chief PR #34 round 1: the metered
+    lane wrote "run" for the same refusal the own-format lane wrote "failure").
+    Its usage and cost are kept: the tokens were spent.
+    """
+    row = _row_from(doc, bot=bot, job=job, model=model)
+    if _failed(doc):
+        row["kind"] = "failure"
+    return row
+
+
+def _row_from(doc: dict, *, bot: str, job: str | None = None, model: str | None = None) -> dict:
+    """One ledger row from a `--output-format json` result document.
+
+    Token totals are summed across `modelUsage`, every model the run reports,
+    so a run is charged in full to the bot that started it. Whether that block
+    folds subagent tokens in is NOT pinned here (round 9 minor 2): no captured
+    run spawned one. The verbose capture reports `subagent_stats` as its own
+    key, which is the fixture to extend when a subagent run is captured.
     """
     per_model: dict[str, dict] = {}
     usage = doc.get("modelUsage")
@@ -176,6 +193,9 @@ def failure_row(kind: str, *, bot: str, job: str | None = None, model: str | Non
     return row
 
 
+_ARRAY_OPEN = re.compile(r"^\s*\[\s*\{")
+
+
 def _is_json(stdout: str | None) -> bool:
     """True when stdout is json-mode output, whole or truncated.
 
@@ -184,12 +204,37 @@ def _is_json(stdout: str | None) -> bool:
     json-mode call, never prose (round 7: a truncated document with exit 0 was
     being handed back as the post).
     """
-    return bool(stdout) and stdout.lstrip().startswith("{")
+    # `[{` is the --verbose array form (round 9): json mode all the same. A bare
+    # `[` is not: a degraded-path post may open with one ("[Draft] ...", PR #413
+    # round 2), and prose must never be dropped and charged as an error.
+    return bool(stdout) and (stdout.lstrip().startswith("{") or _ARRAY_OPEN.match(stdout) is not None)
+
+
+#: How many `{` the in-place scan tries before giving up. A module constant so a
+#: test can set it to 0 and prove the array branch is the one finding a result
+#: (PR #413 round 4: redaction cut the fixture under the cap and the mutant
+#: went green).
+BRACE_SCAN_CAP = 50
 
 
 def _result_document(stdout: str | None) -> dict | None:
     """The CLI's result document, whole or embedded after stray leading text."""
     if not stdout:
+        return None
+    # Whole-text first: the plain document, or the --verbose ARRAY of events whose
+    # last element is the result. The array form was invisible to the scans below
+    # (round 9 minor 1): its result sits past the 50th brace, behind the init
+    # event, so a --verbose call's post came back as prose.
+    try:
+        whole = json.loads(stdout)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict) and whole.get("type") == "result":
+        return whole
+    if isinstance(whole, list):
+        for item in reversed(whole):
+            if isinstance(item, dict) and item.get("type") == "result":
+                return item
         return None
     # The CLI may print other JSON objects (an init event) or stray lines before the
     # result. Every line is tried on its own, then the whole text from each `{`.
@@ -207,7 +252,7 @@ def _result_document(stdout: str | None) -> dict | None:
     # A pretty-printed document spans lines: decode from each brace IN PLACE
     # (raw_decode takes an index; no suffix copies, round 3 measured 548 MB of them).
     pos, tries = stdout.find("{"), 0
-    while pos >= 0 and tries < 50:
+    while pos >= 0 and tries < BRACE_SCAN_CAP:
         try:
             doc, _ = decoder.raw_decode(stdout, pos)
         except ValueError:
@@ -268,8 +313,25 @@ def finish(stdout: str, *, bot: str, job: str | None = None,
 
 
 def append(row: dict, path: str | None = None) -> bool:
-    """Append one row. True if written. Never raises: the run is not the ledger's to fail."""
-    target = path or ledger_path()
+    """Append one row. True if written. Never raises: the run is not the ledger's to fail.
+
+    UNDER PYTEST THE DEFAULT LEDGER IS REFUSED. On 2026-09-22 a deployment's
+    test suite faked the model call but not the ledger, and every run left
+    rows in the live ~/.config/kipi/usage-ledger.jsonl: 125 parse_error rows
+    by evening, all with 2-byte stdout, indistinguishable from a metered bot
+    that had stopped parsing. The same refusal run_model makes for a live
+    model call applies to a live ledger write: inside a test, a row goes to
+    the path the test named (KIPI_USAGE_LEDGER, or `path=`) or nowhere, and
+    stderr says so once.
+    """
+    explicit = path or os.environ.get(LEDGER_ENV)
+    if os.environ.get("PYTEST_CURRENT_TEST") and not explicit:
+        if "pytest" not in _WARNED:
+            _WARNED.append("pytest")
+            sys.stderr.write("usage_ledger: refusing to write the live ledger from inside a test; "
+                             "set KIPI_USAGE_LEDGER (or pass path=) to a temp file\n")
+        return False
+    target = explicit or ledger_path()
     try:
         parent = os.path.dirname(target)
         if parent:  # a bare filename lives in the cwd; makedirs("") raises

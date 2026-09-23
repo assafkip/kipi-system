@@ -90,6 +90,16 @@ WIRING_SURFACE_GLOBS = (
     # verify_select.py, called from verify.sh and from nowhere else, was reported
     # inert. A commit-blocking script is the strongest wiring there is, which is
     # the same argument that put lefthook.yml on the list above.
+    # Two scars, one line. ASK-1170 first named `q-system/.q-system/verify.sh` in
+    # WIRING_SURFACES above, because .github/workflows/verify.yml runs
+    # `bash q-system/.q-system/verify.sh --full` on every push and PR #279 went RED
+    # on `inert-engine: mcp-denylist-namespace-check.py` while CI was running it.
+    # That by-path entry was removed when this glob landed: the glob subsumes it
+    # (measured 2026-09-22, --check-only output byte-identical with and without),
+    # and two declarations of one fact is the restated-value trap -- they agree
+    # until one moves. Only ONE level deep, so a .sh in a subdirectory under
+    # .q-system still wires nothing; that boundary is the negative control in
+    # test_capability_gate.py.
     "q-system/.q-system/*.sh",
     # The MCP server's source tree is where an agent-facing tool gets wired
     # (wiring-check.md: "any new MCP tool is registered in the server"). Without
