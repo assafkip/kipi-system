@@ -31,7 +31,7 @@ To add a lesson, pick the path that matches where you are standing:
   bash q-system/.q-system/scripts/lesson-note.sh "short title" "the HOW, in your words"
   ```
   Writes to this instance's `q-system/output/learnings/` (instance-protected; survives `kipi update`).
-- **Directly in the skeleton** (founder, fully-formed lesson) — create `q-system/lessons/<id>.md`. Copy `single-writer-chokepoint.md` as a template. Then add its ledger row to `lesson-candidates/.processed.json`, key `hand-<id>`, value `{"instance": "skeleton", "status": "hand-authored", "date": "<date>", "lesson_id": "<id>"}`; the provenance test fails without it.
+- **Directly in the skeleton** (founder, fully-formed lesson) — create `q-system/lessons/<id>.md`. Copy `single-writer-chokepoint.md` as a template. Then add its ledger row to `lesson-candidates/.processed.json`, key `hand-<id>`, value `{"instance": "skeleton", "status": "hand-authored", "date": "<the lesson's own date line>", "lesson_id": "<id>"}`; the provenance test fails without it. Keep `status` as `hand-authored`: the provenance start is the earliest `published` (distiller-written) row, so a hand row dated in the past traces its lesson without dragging the start back over the pre-provenance corpus.
 
 ## Read-only-consumer invariant
 
