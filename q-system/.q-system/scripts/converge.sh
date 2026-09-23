@@ -961,6 +961,13 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
     if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
       say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
+      # NO EXIT-7 PAGE FOR A MACHINE OUTAGE (PR #421 round 1, major). The
+      # worker already paged once for the outage, under its shared claim; the
+      # unconditional exit-7 below filed one "Sana could not open a PR" ticket
+      # per issue per tick for the same dead account, blaming the agent. Exit 9,
+      # the worker's own infra code, with no notify: launchd still sees a
+      # failed run, and nothing is charged or ticketed.
+      exit 9
     elif [ -n "$REFUSED_MARK" ] && [ "$REFUSED_MARK" != "None" ]; then
       say "$ISSUE was REFUSED by the worker and left no PR. A refusal is a correct terminal outcome, so it costs no attempt; the issue is held at its refusal label, not marked stuck."
     elif [ "$ATT_AFTER" = "$ATT_BEFORE" ]; then

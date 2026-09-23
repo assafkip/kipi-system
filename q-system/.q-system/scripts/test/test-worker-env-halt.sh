@@ -934,36 +934,62 @@ else
       "expected 2 total pages for 2 separate outages, got ${N_G4:-0}. 1 means the claim is never released and every future outage is silent -- a worse failure than the duplicate this fixes."
 fi
 
-# --- ASK-2009: the REAL charged outages, replayed ------------------------------
-# Every limit line the worker log holds, paired with the `fail ASK-N` that
-# charged it (fixture captured from ~/.config/kipi/linear-worker.log, provenance
-# in the file): 61 failures over 30 issues, 26 of them pushed to the attempt cap
-# by the machine's outage alone. Two layers:
-#   1. all 61 payloads through the classifier: none may be charged.
-#   2. each DISTINCT real wording through the real worker, exiting 1 as the real
-#      runs did (case A exits 0): ASK-811 must carry no attempt.
-echo "== ASK-2009: the real charged outages, replayed"
+# --- ASK-2009: every REAL charged failure, replayed both ways -----------------
+# The fixture holds EVERY `fail ASK-N` the worker log carries with the agent
+# output of its start..fail window, selected by that window and NOT by any
+# pattern the classifier uses (PR #421 round 1: the first capture selected with
+# the classifier's own regex, which made "all classify" true by construction).
+# Each window is labelled by reading it: 64 outages (the runner refusing: limit,
+# 529 Overloaded, with or without the CLI's SessionEnd teardown lines) and 8
+# ordinary failures (timeout kills, a KeyError in the worker's own code). Two
+# layers:
+#   1. every outage classifies as the machine's AND every ordinary failure does
+#      not: the negative direction is what keeps a widened pattern honest.
+#   2. each DISTINCT real outage payload through the real worker, exiting 1 as
+#      the real runs did (case A exits 0): ASK-811 must carry no attempt.
+echo "== ASK-2009: every real charged failure, replayed both ways"
 REAL_FX="$SCRIPT_DIR/fixtures/worker-env-halt/limit-charges-2026-09-23.json"
-python3 -c "
-import json,sys
-d=json.load(open('$REAL_FX'))
-assert (d.get('_provenance') or {}).get('captured_at'), 'fixture must be a real capture'
-for e in d['payload']['events']: print(e['limit_line'])" > "$WORK/real-limit-lines"
-N_REAL="$(grep -c . "$WORK/real-limit-lines")"
-CHARGED=0
-while IFS= read -r line; do
-  ( . "$REPO_SCRIPTS/env-failure-lib.sh"; is_environmental "$line" ) || CHARGED=$((CHARGED+1))
-done < "$WORK/real-limit-lines"
-if [ "$N_REAL" -ge 61 ] && [ "$CHARGED" -eq 0 ]; then
-  ok "all $N_REAL real charged outages classify as the machine's, so none is charged"
+python3 - "$REAL_FX" "$WORK" <<'PY'
+import base64, json, sys
+fx, work = sys.argv[1], sys.argv[2]
+d = json.load(open(fx))
+assert (d.get("_provenance") or {}).get("captured_at"), "fixture must be a real capture"
+rows = d["payload"]["failures"]
+with open(work + "/real-labelled", "w") as fh:
+    for r in rows:
+        fh.write("%s\t%s\n" % (r["label"], base64.b64encode("\n".join(r["agent_output"]).encode()).decode()))
+seen = []
+for r in rows:
+    body = "\n".join(r["agent_output"])
+    if r["label"] == "outage" and body not in seen:
+        seen.append(body)
+with open(work + "/real-distinct", "w") as fh:
+    for body in seen:
+        fh.write(base64.b64encode(body.encode()).decode() + "\n")
+PY
+N_OUT=0; N_ORD=0; WRONG_OUT=0; WRONG_ORD=0
+while IFS=$'\t' read -r label b64; do
+  payload="$(printf '%s' "$b64" | base64 -d)"
+  if ( . "$REPO_SCRIPTS/env-failure-lib.sh"; is_environmental "$payload" ); then got=machine; else got=issue; fi
+  if [ "$label" = outage ]; then N_OUT=$((N_OUT+1)); [ "$got" = machine ] || WRONG_OUT=$((WRONG_OUT+1))
+  else N_ORD=$((N_ORD+1)); [ "$got" = issue ] || WRONG_ORD=$((WRONG_ORD+1)); fi
+done < "$WORK/real-labelled"
+if [ "$N_OUT" -ge 64 ] && [ "$WRONG_OUT" -eq 0 ]; then
+  ok "all $N_OUT real outages classify as the machine's, so none is charged"
 else
-  bad "every real charged outage is the machine's" "$CHARGED of $N_REAL would still be charged"
+  bad "every real outage is the machine's" "$WRONG_OUT of $N_OUT would still be charged"
+fi
+if [ "$N_ORD" -ge 8 ] && [ "$WRONG_ORD" -eq 0 ]; then
+  ok "all $N_ORD real ordinary failures stay the issue's (the negative direction)"
+else
+  bad "no ordinary failure is excused as an outage" "$WRONG_ORD of $N_ORD would be excused"
 fi
 R=0
-while IFS= read -r line; do
+while IFS= read -r b64; do
   R=$((R+1))
+  printf '%s' "$b64" | base64 -d > "$WORK/real-payload-$R"
   STUB_R="$WORK/stub-real-$R"; mkdir -p "$STUB_R"; cp "$WORK/gh" "$STUB_R/gh"
-  printf '#!/bin/bash\nprintf "%%s\\n" %q\nexit 1\n' "$line" > "$STUB_R/claude"; chmod +x "$STUB_R/claude"
+  printf '#!/bin/bash\ncat %q\necho\nexit 1\n' "$WORK/real-payload-$R" > "$STUB_R/claude"; chmod +x "$STUB_R/claude"
   SKEL_R="$(make_skel "$WORK/run-real-$R")"; STATE_R="$WORK/state-real-$R"
   PATH="$STUB_R:$PATH" KIPI_SKEL="$SKEL_R" KIPI_STATE_DIR="$STATE_R" \
      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
@@ -972,17 +998,18 @@ while IFS= read -r line; do
      KIPI_NOTIFY="$WORK/recording-notify.sh" TEST_NOTIFY_LOG="$WORK/notify-real-$R.log" \
      bash "$WORKER" --apply --limit 1 > "$WORK/run-real-$R.out" 2>&1
   OUT_R="$(cat "$WORK/run-real-$R.out" "$STATE_R/linear-worker.log" 2>/dev/null)"
+  FIRST="$(head -1 "$WORK/real-payload-$R" | cut -c1-60)"
   if ! grep -q "start ASK-811" <<<"$OUT_R"; then
-    bad "real wording $R dispatched ASK-811 (positive self-test)" "no start line: $(tr '\n' '|' <<<"$OUT_R" | cut -c1-300)"
+    bad "real outage payload $R dispatched ASK-811 (positive self-test)" "no start line: $(tr '\n' '|' <<<"$OUT_R" | cut -c1-300)"
   elif python3 -c "
 import json,sys
 d=json.load(open('$STATE_R/linear-worker-attempts.json'))
 sys.exit(0 if d.get('ASK-811',{}).get('count',0)>0 else 1)" 2>/dev/null; then
-    bad "real wording $R charges no attempt" "charged for: ${line:0:90}"
+    bad "real outage payload $R charges no attempt" "charged for: $FIRST"
   else
-    ok "real wording $R, exit 1, charges no attempt: ${line:0:60}"
+    ok "real outage payload $R, exit 1, charges no attempt: $FIRST"
   fi
-done < <(sort -u "$WORK/real-limit-lines")
+done < "$WORK/real-distinct"
 
 echo
 echo "  $PASS passed, $FAIL failed"

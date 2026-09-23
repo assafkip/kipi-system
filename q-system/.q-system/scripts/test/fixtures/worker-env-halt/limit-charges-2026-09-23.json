@@ -1,20 +1,176 @@
 {
  "_provenance": {
   "connector": "linear-worker.log",
-  "call": "every line matching `hit your .*limit` in ~/.config/kipi/linear-worker.log, paired with the `fail ASK-N rc=R (n/max)` line that followed it within five lines",
-  "captured_at": "2026-09-23T05:54:26Z",
-  "redaction": "none: the lines carry issue ids, timestamps and the CLI's own text, no names or paths",
-  "note": "A real capture. 61 failures across 30 issues, each charged as an attempt although the runner itself was refusing; 26 issues reached the attempt cap on that charge alone. ASK-2009's replay: with the classifier in place, none may be charged."
+  "call": "EVERY `fail ASK-N rc=R (n/max)` line in ~/.config/kipi/linear-worker.log, with the non-timestamped lines between it and that issue's preceding `start ASK-N` line: the agent's output as the log carried it. Selected by the start..fail window, not by any text pattern the classifier uses (PR #421 round 1: the first capture selected with the classifier's own regex).",
+  "filter": "lines matching `linear-worker.sh: line N:` are dropped: they are the WORKER'S own stderr interleaved into the shared log, and the live classifier reads the agent's output only ($RUN_OUT_FILE).",
+  "labels": "by reading each window, 2026-09-23: `ordinary` = a real per-issue failure (timeout kill rc 143, a KeyError in the worker's own ledger code, hook noise only); `outage` = the output is the runner refusing (usage/session/weekly limit, 529 Overloaded), with or without the CLI's SessionEnd teardown lines. Labelled per failure (issue + minute), never per issue-day: ASK-1510 failed at 19:09 on 2026-09-12 on a timeout (ordinary) and twice more at 20:11 and 20:12 on a session limit (outages).",
+  "captured_at": "2026-09-23T06:22:33Z",
+  "redaction": "worker-stderr lines dropped; in agent prose a home path became ~, the GitHub owner <owner> and an instance name <instance> (this repo is public). No refusal line was touched."
  },
  "payload": {
-  "events": [
+  "failures": [
+   {
+    "ts": "2026-07-27T17:03:54Z",
+    "issue": "ASK-191",
+    "rc": 143,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [],
+    "label": "ordinary"
+   },
+   {
+    "ts": "2026-07-29T15:44:43Z",
+    "issue": "ASK-218",
+    "rc": 143,
+    "attempt": 0,
+    "max": 3,
+    "agent_output": [
+     "Traceback (most recent call last):",
+     "  File \"<string>\", line 5, in <module>",
+     "    e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]",
+     "                                             ~^^^^^^^^^",
+     "KeyError: 'count'"
+    ],
+    "label": "ordinary"
+   },
+   {
+    "ts": "2026-07-29T19:41:42Z",
+    "issue": "ASK-225",
+    "rc": 143,
+    "attempt": 0,
+    "max": 3,
+    "agent_output": [
+     "**PR #44 is open:** https://github.com/<owner>/kipi-system/pull/44 (not merged, issue not closed)",
+     "## What shipped",
+     "**Mechanism (named before starting, as the DoR required):** `q-system/.q-system/scripts/job-migration.py` + roster `q-system/.q-system/config/job-migration-roster.json`, reachable as `kipi jobs status|migrate|run|gate`.",
+     "**Demonstrated on one job, then the other 31.** `com.personal.story-podcast`: BLOCK on bar 2 \u2192 auto-fix \u2192 OK. Load-path proof that it reached the live watchdog, not just a file: `com.personal.story-podcast watched by the LIVE watchdog: True`.",
+     "**Real defect found and fixed:** `com.personal.` was covered by no watched prefix. That job could fail or go dark with no Linear issue and no ping.",
+     "## Three calls worth your eye",
+     "**Roster is data, not a glob.** The machine holds 38 plists; a glob lets the denominator drift under the gate.",
+     "**`AUTO_RUN` is False.** 26 jobs are paused on purpose; firing one from inside an audit is un-pausing it, which your Not-doing line forbids. The verification *mode* travels on every receipt so the gate cannot launder `paused-ledger` into `verified`, and the not-run-verified count is itemized by mode.",
+     "**The gate refused a silent exit 0.** `com.kipi.audit-rotate` ran clean and printed nothing. Refused on purpose: a wrapper over an rsync-deleted script also exits 0, which is the silent-death class this exists for.",
+     "## Two collisions caught",
+     "`kipi jobs` was already taken at `kipi:88` by the issue filer. My first wiring was a second `jobs)` case in the same `case` statement, which bash never reaches. Dead text that greps like it works. Now dispatched by subcommand; both routes verified.",
+     "## Real state, not a claim",
+     "- Test: 50 checks green, RED observed first. Registered in the capability manifest.",
+     "- `capability-gate.py --check-only`: **GREEN**, 86 declared tests, `job-migration.py` reads as wired.",
+     "- `kipi jobs gate`: **32/32 roster**, one BLOCK left \u2014 `com.kipi.fractional-cxo.opp-scan` needs its run receipt. That run is in flight in the background; I'll post the result to the issue when it lands.",
+     "- `prd_runner.py gates run`: **RED**, from the two spillover items I captured (`sp-b301890a`, `sp-9b17d467`). That is the ledger doing its job, not a break.",
+     "## Captured, not fixed",
+     "- `sp-b301890a` \u2014 3 launchd jobs outside the roster with no tracking issue",
+     "- `sp-9b17d467` \u2014 `audit-rotate` cannot satisfy bar 4 as written; its real effect lives in a path its plist does not declare",
+     "  head sha under review: 80657f8432ea8369f4bba0a62edbf81ab6bbc52f",
+     "  linked issue: ASK-151",
+     "  round: 1",
+     "  verdict: REQUEST CHANGES",
+     "  posted to PR #44",
+     "  commit status posted: kipi/reviewer-approved=failure on 80657f8432ea8369f4bba0a62edbf81ab6bbc52f",
+     "  progress noted on ASK-151",
+     "Traceback (most recent call last):",
+     "  File \"<string>\", line 5, in <module>",
+     "    e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]",
+     "                                             ~^^^^^^^^^",
+     "KeyError: 'count'"
+    ],
+    "label": "ordinary"
+   },
+   {
+    "ts": "2026-07-29T20:27:03Z",
+    "issue": "ASK-225",
+    "rc": 143,
+    "attempt": 0,
+    "max": 3,
+    "agent_output": [
+     "Traceback (most recent call last):",
+     "  File \"<string>\", line 5, in <module>",
+     "    e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]",
+     "                                             ~^^^^^^^^^",
+     "KeyError: 'count'"
+    ],
+    "label": "ordinary"
+   },
+   {
+    "ts": "2026-07-29T21:20:16Z",
+    "issue": "ASK-225",
+    "rc": 143,
+    "attempt": 0,
+    "max": 3,
+    "agent_output": [
+     "Traceback (most recent call last):",
+     "  File \"<string>\", line 5, in <module>",
+     "    e=d.setdefault(sys.argv[1],{'count':0}); e['count']+=1; e['last']=sys.argv[2]; e['why']=sys.argv[3]",
+     "                                             ~^^^^^^^^^",
+     "KeyError: 'count'"
+    ],
+    "label": "ordinary"
+   },
    {
     "ts": "2026-08-04T17:14:20Z",
     "issue": "ASK-291",
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 8 at 7am (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 8 at 7am (America/Los_Angeles)"
+    ],
+    "label": "outage"
+   },
+   {
+    "ts": "2026-08-14T17:47:28Z",
+    "issue": "ASK-700",
+    "rc": 143,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [],
+    "label": "ordinary"
+   },
+   {
+    "ts": "2026-08-15T02:08:04Z",
+    "issue": "ASK-757",
+    "rc": 143,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [
+     "  tree: ~/.config/kipi/review-trees/<owner>_<instance> (detached at 840ad7dc; isolated from any checkout in use)",
+     "  round: 1 (engine: codex)",
+     "  verdict: REQUEST CHANGES",
+     "  posted to PR #2 (55259 bytes rendered from 88876)",
+     "  commit status posted: kipi/reviewer-approved=failure on 840ad7dc9bf773aeb03659fb6beafde57af92b6b",
+     "  review posted to ASK-143 as codex-reviewer (findings included)",
+     "Ignoring 24 permissions.allow entries from .claude/settings.json: this workspace has not been trusted. Run Claude Code interactively here once and accept the trust dialog, or set projects[\"~/projects/<instance>/projects/product\"].hasTrustDialogAccepted: true in ~/.claude.json.",
+     "Done. Final state:",
+     "**ASK-143 is complete. PR #2 is open, branch is green, nothing merged.**",
+     "- `automation/hooks/test/test-verify-before-disagree-guard.py` \u2192 `14 passed`, exit 0",
+     "- `verify_before_disagree_guard.py --self-test` \u2192 `13/13 passed`",
+     "**No new commit this dispatch.** The deliverable landed in earlier dispatches. The only remaining defect is spillover `sp-c18ea0f9`, and I upgraded it from a prose claim to a proven one.",
+     "**What I proved.** Wrote a reproducer that runs the settings.json hook command string verbatim against an empty `CLAUDE_PROJECT_DIR`. Observed RED:",
+     "```",
+     "FAIL: guarded hook command exits 0 when the detector is absent",
+     "14 passed",
+     "EXIT=1",
+     "```",
+     "`test -f X && python3 X` short-circuits to the false exit when the script is missing. A Stop hook exiting 1 is a hook error on every turn, in exactly the case the guard exists to silence. The repo idiom is `if test -f X; then python3 X; fi` (settings.json:122).",
+     "**Why the fix is not in the PR.** `.claude/settings.json` writes are refused by this session's permission layer. A prior dispatch had that permission and used it (f4a67001); this one does not. Routing around it via Bash is forbidden, so the fix stays with its spillover item.",
+     "**Why I reverted the reproducer.** A red assertion whose fix cannot land in the same commit would turn the open PR red. It belongs in the commit that resolves `sp-c18ea0f9`.",
+     "**Why no `.sana-blocked-capability` file.** ASK-143 itself is not blocked. It is finished and awaiting `/issue-verify`. Flagging it would misroute a completed issue to the config owner. The blocked write belongs to the spillover item, not the issue.",
+     "Two things for you:",
+     "- The one-line settings.json fix needs a session with `.claude/` write permission, or your hand. Exact change is in the PR comment.",
+     "- `destructive-op-deny` blocked a `gh pr comment` because my prose quoted the fleet-sync command. Its own error says that is deliberate, so I rephrased instead of bypassing. Not filing it.",
+     "  head sha under review: ff3d15839a5884f993f630d34e68d873f9c8bfbe",
+     "  linked issue: ASK-143",
+     "  tree: ~/.config/kipi/review-trees/<owner>_<instance> (detached at ff3d1583; isolated from any checkout in use)",
+     "  round: 1 (engine: codex)",
+     "  verdict: APPROVE WITH NITS",
+     "  minors captured as spillover: 2 of 2",
+     "  posted to PR #2 (55274 bytes rendered from 83809)",
+     "  commit status posted: kipi/reviewer-approved=success on ff3d15839a5884f993f630d34e68d873f9c8bfbe",
+     "  review posted to ASK-143 as codex-reviewer (findings included)",
+     "fatal: invalid reference: origin/main",
+     "SessionEnd hook [python3 ${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/session-end-llma.py] failed: Hook cancelled",
+     "SessionEnd hook [node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-lifecycle-hook.mjs\" SessionEnd] failed: Hook cancelled",
+     "SessionEnd hook [node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-cleanup.mjs\"] failed: Hook cancelled"
+    ],
+    "label": "ordinary"
    },
    {
     "ts": "2026-08-15T11:05:06Z",
@@ -22,7 +178,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T11:14:17Z",
@@ -30,7 +189,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T11:29:48Z",
@@ -38,7 +200,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T11:45:18Z",
@@ -46,7 +211,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T12:00:52Z",
@@ -54,7 +222,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T12:16:17Z",
@@ -62,7 +233,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T12:31:48Z",
@@ -70,7 +244,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T12:47:14Z",
@@ -78,7 +255,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T14:02:55Z",
@@ -86,7 +266,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T14:18:23Z",
@@ -94,7 +277,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T14:33:53Z",
@@ -102,7 +288,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T14:49:23Z",
@@ -110,7 +299,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T15:04:56Z",
@@ -118,7 +310,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T15:20:26Z",
@@ -126,7 +321,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T15:35:56Z",
@@ -134,7 +332,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T15:51:25Z",
@@ -142,7 +343,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T16:06:56Z",
@@ -150,7 +354,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T16:22:30Z",
@@ -158,7 +365,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T16:38:02Z",
@@ -166,7 +376,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T16:53:30Z",
@@ -174,7 +387,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T17:09:03Z",
@@ -182,7 +398,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T17:24:31Z",
@@ -190,7 +409,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T17:40:01Z",
@@ -198,7 +420,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T17:55:30Z",
@@ -206,7 +431,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T18:11:00Z",
@@ -214,7 +442,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T18:26:29Z",
@@ -222,7 +453,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T18:42:01Z",
@@ -230,7 +464,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-15T18:57:34Z",
@@ -238,7 +475,43 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Aug 18 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
+   },
+   {
+    "ts": "2026-08-18T16:41:09Z",
+    "issue": "ASK-355",
+    "rc": 1,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [
+     "API Error: 529 Overloaded. This is a server-side issue, usually temporary \u2014 try again in a moment. If it persists, check https://status.claude.com."
+    ],
+    "label": "outage"
+   },
+   {
+    "ts": "2026-08-18T17:06:06Z",
+    "issue": "ASK-355",
+    "rc": 1,
+    "attempt": 3,
+    "max": 3,
+    "agent_output": [
+     "API Error: 529 Overloaded. This is a server-side issue, usually temporary \u2014 try again in a moment. If it persists, check https://status.claude.com."
+    ],
+    "label": "outage"
+   },
+   {
+    "ts": "2026-08-18T17:25:11Z",
+    "issue": "ASK-353",
+    "rc": 1,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [
+     "API Error: 529 Overloaded. This is a server-side issue, usually temporary \u2014 try again in a moment. If it persists, check https://status.claude.com."
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-25T15:26:53Z",
@@ -246,7 +519,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 10:10am (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 10:10am (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-08-25T15:42:24Z",
@@ -254,7 +530,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 10:10am (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 10:10am (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T07:21:32Z",
@@ -262,7 +541,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T07:23:04Z",
@@ -270,7 +552,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T07:38:36Z",
@@ -278,7 +563,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T07:54:12Z",
@@ -286,7 +574,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T08:09:43Z",
@@ -294,7 +585,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T08:25:20Z",
@@ -302,7 +596,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T08:40:57Z",
@@ -310,7 +607,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T14:12:17Z",
@@ -318,7 +618,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T14:27:49Z",
@@ -326,7 +629,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T14:43:26Z",
@@ -334,7 +640,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T14:59:00Z",
@@ -342,7 +651,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T15:14:37Z",
@@ -350,7 +662,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T15:30:10Z",
@@ -358,7 +673,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T15:45:44Z",
@@ -366,7 +684,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T16:01:21Z",
@@ -374,7 +695,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T16:16:56Z",
@@ -382,7 +706,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T16:32:27Z",
@@ -390,7 +717,19 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 15 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
+   },
+   {
+    "ts": "2026-09-12T19:09:46Z",
+    "issue": "ASK-1510",
+    "rc": 143,
+    "attempt": 1,
+    "max": 3,
+    "agent_output": [],
+    "label": "ordinary"
    },
    {
     "ts": "2026-09-12T19:26:42Z",
@@ -398,7 +737,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T20:11:56Z",
@@ -406,7 +748,10 @@
     "rc": 1,
     "attempt": 2,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T20:12:22Z",
@@ -414,7 +759,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T20:58:06Z",
@@ -422,7 +770,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-12T21:44:17Z",
@@ -430,7 +781,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 2:50pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-15T17:56:42Z",
@@ -438,7 +792,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your session limit \u00b7 resets 11am (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your session limit \u00b7 resets 11am (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T14:48:51Z",
@@ -446,7 +803,12 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)",
+     "SessionEnd hook [python3 \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/session-end-llma.py\"] failed: Hook cancelled",
+     "SessionEnd hook [node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end-cleanup.mjs\"] failed: Hook cancelled"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T15:04:22Z",
@@ -454,7 +816,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T15:43:38Z",
@@ -462,7 +827,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T15:59:15Z",
@@ -470,7 +838,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T16:14:50Z",
@@ -478,7 +849,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T16:30:28Z",
@@ -486,7 +860,10 @@
     "rc": 1,
     "attempt": 3,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    },
    {
     "ts": "2026-09-19T16:45:59Z",
@@ -494,7 +871,10 @@
     "rc": 1,
     "attempt": 1,
     "max": 3,
-    "limit_line": "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    "agent_output": [
+     "You've hit your weekly limit \u00b7 resets Sep 22 at 2pm (America/Los_Angeles)"
+    ],
+    "label": "outage"
    }
   ]
  }

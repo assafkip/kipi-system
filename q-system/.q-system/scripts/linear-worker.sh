@@ -1520,6 +1520,16 @@ DONE=0
 # makes it safe to run while another worker is mid-loop. The unsuffixed name is
 # swept too: it is what pre-upgrade runs wrote, and nothing reads it any more.
 rm -f "$ENV_HALT_FILE" "$RUN_OUT_FILE" "$STATE_DIR/linear-worker-env-halt" 2>/dev/null || true
+# AND ANY PAIR WHOSE PID IS DEAD (PR #421 round 1, minor). A run killed
+# mid-loop (launchd reap, SIGKILL, reboot) never reaches its own clear, and
+# nothing else ever removed its files. A live worker's pair is left alone:
+# `kill -0` answers for the pid, and a pid cannot be reused while its owner runs.
+for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-runout.*; do
+  [ -e "$_stale" ] || continue
+  _pid="${_stale##*.}"
+  case "$_pid" in ''|*[!0-9]*) continue ;; esac
+  kill -0 "$_pid" 2>/dev/null || rm -f "$_stale" 2>/dev/null || true
+done
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
   [ "$DONE" -ge "$LIMIT" ] && break
@@ -2173,9 +2183,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # worker -- both leave the counter untouched and no PR -- so without the flag
     # the fix holds inside the worker and leaks straight back in from the driver.
     python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
-    python3 "$SYNC" progress "$ISSUE" \
-      "**Not attempted.** The runner itself was unavailable ($ENV_FAIL), which is a condition of the machine and not of this issue. No attempt was charged and the dispatcher halted rather than marching the rest of the queue into the same dead environment. It will be picked up normally once the runner is available." \
-      --agent "$AGENT" >/dev/null 2>&1 || true
+    # NO LINEAR COMMENT HERE (PR #421 round 1, major). It used to be posted on
+    # every halted run while the page was deduped, so one outage wrote one
+    # comment per tick on the same issue: the measured Aug 15-18 outage is ~288
+    # runs. The comment now rides with the page, after the loop, under the same
+    # once-per-outage claim.
     ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
     # ISSUE|DONE: which issue the halt landed on, and how much budget had been
     # spent before it. Both are needed to state the unattempted count honestly --
@@ -2367,8 +2379,22 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         say "$ISSUE the second runner is unavailable ($CODEX_ENV) -- a condition of the machine, not of this issue. NOT parking it."
         # The label is the permanent damage; withholding it is the entire fix.
         REFUSE_LABEL=""
+        # BOUNDED AND ANNOUNCED, NOT A HALT (PR #421 round 1, major). The
+        # queue keeps moving on purpose: Codex is only the second runner, so
+        # issues Claude can do still run (ASK-873's own test pins that). What
+        # was missing: a refusal did not advance DONE, so one run walked the
+        # whole ready queue past --limit, and nothing ever said Codex was down.
+        # Now the issue spends one unit of --limit budget, and ONE page goes
+        # out per Codex outage under its own claim, released below the first
+        # time a Codex run works again.
+        DONE=$((DONE+1))
+        mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
+        if env_alert_claim "$STATE_DIR/codex-outage"; then
+          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
+        fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
+        env_alert_release "$STATE_DIR/codex-outage" 2>/dev/null || true  # Codex answered: the next outage pages again
         say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
         # offers the issue again, so a continuation that still parked would be a
@@ -2805,6 +2831,9 @@ print(max(0, min(behind, budget)))
   # carry this RUN's state and this carries the machine's. See env-failure-lib.sh
   # for why mkdir and not a flag file, and for how the claim is released.
   if env_alert_claim "$STATE_DIR"; then
+    python3 "$SYNC" progress "$HALT_ISSUE" \
+      "**Not attempted.** The runner itself was unavailable ($HALT_REASON), which is a condition of the machine and not of this issue. No attempt was charged and the dispatcher halted rather than marching the rest of the queue into the same dead environment. It will be picked up normally once the runner is available. (One note per outage: later halts during the same outage stay silent.)" \
+      --agent "$AGENT" >/dev/null 2>&1 || true
     bash "$NOTIFY" "kipi worker: dispatch HALTED, the runner itself is unavailable ($HALT_REASON). $HALT_ISSUE was not attempted and neither were $UNATTEMPTED issue(s) behind it -- one machine-wide condition, not one fault per issue. No attempts were charged. Nothing to fix per issue; the loop resumes on its own when the runner is available." 2>/dev/null || true
   else
     say "worker: this condition is already filed by another run; not filing a duplicate ticket for it"

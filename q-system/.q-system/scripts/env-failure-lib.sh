@@ -79,7 +79,23 @@
 #
 # Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
 # an indented quote inside agent prose does not reach that far left.
-ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
+ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary.*)?"
+# The 529 line, added 2026-09-23 (ASK-2009) from the real worker log: on
+# 2026-08-18 three runs printed exactly
+#   API Error: 529 Overloaded. This is a server-side issue, usually temporary --
+#   try again in a moment. If it persists, check https://status.claude.com.
+# and each was charged to its issue. The provider was overloaded; the issue was
+# fine. Only the CLI's own sentence is admitted after the status, never prose.
+
+# THE CLI'S OWN HOOK NOISE IS NOT AN UTTERANCE (ASK-2009). On 2026-09-19 a run
+# printed the limit line and then two lines the CLI writes when it tears a
+# session down mid-refusal:
+#   SessionEnd hook [python3 ".../session-end-llma.py"] failed: Hook cancelled
+# Counted as spoken lines, they made a real outage read as an agent that ran,
+# and ASK-535 was charged. The pattern is that exact shape and nothing looser:
+# the same log also carries an agent sentence that STARTS "SessionStart hook
+# path makes zero network calls", which is prose and must keep counting.
+ENV_NOISE_RE='^SessionEnd hook \[.*\] failed: Hook cancelled[[:space:]]*$'
 
 # AND THE SEPARATOR MUST LEAD SOMEWHERE THE MACHINE GOES. Allowing a separator
 # plus ANYTHING was the third attempt and it was wrong for the same reason as the
@@ -117,6 +133,9 @@ ENV_LINE_RE="^[[:space:]]{0,3}($ENV_MARKERS)$ENV_LINE_TAIL\$"
 
 is_environmental() {  # is_environmental <runner-output> -> 0 when the MACHINE refused
   local payload="${1:-}" spoken machine
+  # The CLI's own session-teardown lines are dropped first: they are neither the
+  # agent speaking nor the machine refusing (see ENV_NOISE_RE).
+  payload="$(printf '%s\n' "$payload" | grep -vE "$ENV_NOISE_RE" 2>/dev/null)" || true
   # Non-blank lines the runner emitted, and how many of them were the machine's.
   # Equality is the test: one ordinary line among them means an agent ran and
   # merely QUOTED a marker, which is not an outage.
