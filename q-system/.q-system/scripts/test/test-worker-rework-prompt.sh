@@ -56,11 +56,22 @@ mkdir -p "$WORK/cwd"
 
 # The Sana builder: from the `if` that opens the REWORK chain through the last
 # line of the PROMPT assignment. The comment block after it is not prompt text.
+#
+# The terminator is STRUCTURAL: the assignment ends where its double-quoted
+# string closes, i.e. the first line inside it whose final `"` is not escaped.
+# It used to be a line of prompt PROSE copied out of the worker, which made this
+# extraction a second copy of a value the worker owns. ASK-1552 rewrote that
+# line (`--source $ISSUE --desc` became `--source $ISSUE --severity <...>
+# --desc`), the copy stopped matching, awk ran to EOF and swallowed 769 lines of
+# worker code that is not prompt text at all; 15 of 20 cases then failed on an
+# unbound variable from that code. Observed 2026-09-22 when origin/main was
+# merged into this branch (ASK-1512 re-review round).
 extract_sana_builder() {
   awk '
     prev ~ /^  if \[ -n "\$CONFLICT_ROUND" \]; then$/ && $0 ~ /^    REWORK="$/ { p = 1; print prev }
     p { print }
-    p && /spillover add --source \$ISSUE --desc/ { exit }
+    p && /^  PROMPT="You are Sana/ { inprompt = 1; next }
+    inprompt && /[^\\]"$/ { exit }
     { prev = $0 }
   ' "$1"
 }
@@ -78,21 +89,35 @@ CODEX_SRC="$(extract_codex_builder "$WORKER")"
 
 # 1. SELF-TEST FOR THE EXTRACTION. An awk that matched nothing evals to nothing,
 # stderr is empty, and every stderr assertion below passes on a test that ran no
-# worker code at all.
-if printf '%s' "$SANA_SRC" | grep -q '^  PROMPT="You are Sana' \
-   && printf '%s' "$SANA_SRC" | grep -q 'spillover add --source \$ISSUE' \
-   && [ "$(printf '%s\n' "$SANA_SRC" | wc -l)" -gt 100 ]; then
+# worker code at all. An awk that OVER-runs is the other half: it evals worker
+# code that is not prompt text, so the last line is asserted to close a
+# double-quoted assignment rather than to be wherever the file happened to end.
+# Read that narrowly -- it catches a run to EOF (the 769-line case below), not
+# every over-run: an assignment whose closing quote is deleted stops at the NEXT
+# line ending in one and still satisfies this check. That case is caught, but by
+# the render assertions going red rather than here.
+#
+# grep reads a here-string, never a pipe: `printf | grep -q` returns grep's
+# early exit as printf's SIGPIPE under `pipefail`, so a large-but-correct
+# extraction reported FAIL with `printf: write error: Broken pipe` instead of
+# its real verdict.
+sana_lines="$(printf '%s\n' "$SANA_SRC" | wc -l | tr -d ' ')"
+codex_lines="$(printf '%s\n' "$CODEX_SRC" | wc -l | tr -d ' ')"
+sana_last="$(printf '%s\n' "$SANA_SRC" | tail -1)"
+if grep -q '^  PROMPT="You are Sana' <<< "$SANA_SRC" \
+   && [ "$sana_lines" -gt 100 ] \
+   && grep -qE '[^\]"$' <<< "$sana_last"; then
   ok "self-test: the Sana builder (REWORK chain + PROMPT) was extracted from the worker"
 else
   bad "self-test: the Sana builder was extracted from the worker" \
-      "got $(printf '%s\n' "$SANA_SRC" | wc -l) line(s) -- every case below is vacuous"
+      "got $sana_lines line(s) ending '$sana_last' -- every case below is vacuous"
 fi
-if printf '%s' "$CODEX_SRC" | grep -q 'CODEX_PROMPT="You are Codex' \
-   && [ "$(printf '%s\n' "$CODEX_SRC" | wc -l)" -gt 20 ]; then
+if grep -q 'CODEX_PROMPT="You are Codex' <<< "$CODEX_SRC" \
+   && [ "$codex_lines" -gt 20 ]; then
   ok "self-test: the Codex prompt builder was extracted from the worker"
 else
   bad "self-test: the Codex prompt builder was extracted from the worker" \
-      "got $(printf '%s\n' "$CODEX_SRC" | wc -l) line(s)"
+      "got $codex_lines line(s)"
 fi
 
 # render <name> <source> <var=value>... : evaluates the builder in a subshell
