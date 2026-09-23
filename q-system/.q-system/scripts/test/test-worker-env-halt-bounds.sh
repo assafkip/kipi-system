@@ -254,6 +254,14 @@ if [ "$(field A-real-transcript parked)" = "0" ] && [ "$(field A-real-transcript
 else
   bad "a real Codex outage is not parked" "$(line A-real-transcript)"
 fi
+# PR #421 round 13, major: without env_halt converge read refused_no_pr alone,
+# logged a label never applied and paged exit 7 per issue. converge's own
+# env_halt branch (exit 9, no page) is pinned by repro-converge-page above.
+if [ "$(printf '%s\n' "$OUT" | sed -n 's/^A-real-transcript env_halt=\(.*\)$/\1/p')" = "True" ]; then
+  ok "a Codex outage leaves env_halt, the mark converge reads to charge and page nothing"
+else
+  bad "a Codex outage marks the issue for converge" "$(printf '%s\n' "$OUT" | grep 'env_halt=' | tr '\n' ' ')"
+fi
 if [ "$(field B-claim-two-days-old pages)" = "1" ]; then
   ok "a Codex claim two days old expires: the next outage pages"
 else
@@ -364,6 +372,26 @@ if [ "${PA:-x}" = "1" ] && [ "${PB:-x}" = "0" ]; then
   ok "a main claim two days old pages the new outage; one two minutes old still dedupes"
 else
   bad "the main claim ages out but still dedupes" "two-days-old=${PA:-?} two-minutes-old=${PB:-?}"
+fi
+
+echo "== the loser of a takeover race stays quiet"
+# PR #421 round 13, minor: two runs read the old claim as expired; the winner
+# made a fresh claim and the loser's mv took it, so both paged. Replayed
+# deterministically: the loser's first age read is the stale "expired".
+RST="$(mktemp -d)"
+mkdir -p "$RST/env-alert.claim"
+printf 'pid=WINNER claimed_at=now epoch=%s\n' "$(date +%s)" > "$RST/env-alert.claim/holder"
+(
+  . "$LIB"
+  eval "$(declare -f _env_claim_older_than | sed '1s/_env_claim_older_than/_real_older_than/')"
+  _env_claim_older_than() { if [ ! -e "$RST/.stale" ]; then : > "$RST/.stale"; return 0; fi; _real_older_than "$@"; }
+  env_alert_claim "$RST" 86400
+) 2>"$RST/.err" && LOSER=paged || LOSER=quiet
+HOLDER="$(cut -d' ' -f1 "$RST/env-alert.claim/holder" 2>/dev/null)"
+if [ "$LOSER" = quiet ] && [ "$HOLDER" = "pid=WINNER" ] && [ ! -s "$RST/.err" ]; then
+  ok "the race loser does not page, leaves the winner's claim in place and prints nothing"
+else
+  bad "a takeover race pages once" "loser=$LOSER holder=${HOLDER:-none} stderr=$(head -c 200 "$RST/.err" 2>/dev/null)"
 fi
 
 echo "== a dead run's per-pid files are swept"

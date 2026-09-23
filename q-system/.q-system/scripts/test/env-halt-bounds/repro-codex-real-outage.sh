@@ -114,6 +114,9 @@ scenario() {  # scenario <name> [plant-epoch]
     KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$name.log" \
     bash "$WORKER" --apply --limit 1 > "$WORK/run-$name.out" 2>&1
   local rc=$?
+  # The mark converge.sh reads first (PR #421 round 13): without env_halt it
+  # read refused_no_pr, logged a label never applied, and paged exit 7.
+  printf '%s env_halt=%s\n' "$name" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ASK-811",{}).get("env_halt",""))' "$st/linear-worker-attempts.json" 2>/dev/null)"
   printf '%s rc=%s parked=%s unavailable=%s pages=%s not-parked-notes=%s\n' "$name" "$rc" \
     "$(grep -c 'labelled blocked:capability\|-- parking' "$WORK/run-$name.out")" \
     "$(grep -c 'second runner is unavailable' "$WORK/run-$name.out")" \

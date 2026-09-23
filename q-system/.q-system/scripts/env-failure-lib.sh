@@ -305,6 +305,20 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
     # litter stays. mktemp -u picks a free name on BSD and GNU alike.
     dead="$(mktemp -u "$claim.expired.XXXXXX")" || return 1
     mv "$claim" "$dead" 2>/dev/null || return 1
+    # WHAT DID THE RENAME TAKE? (PR #421 round 13, minor) Two runs can both
+    # read the old claim as expired. The first renames it and makes a fresh
+    # one at the same path, and the second's mv then takes THAT fresh claim:
+    # both paged. Only an expired claim may be taken over, so the moved
+    # directory is checked again; anything younger goes back where it was and
+    # this run stays quiet. If a third run has made a claim meanwhile, theirs
+    # stands and the moved one is discarded.
+    if ! _env_claim_older_than "$dead" "$max_age"; then
+      if ! mv "$dead" "$claim" 2>/dev/null; then
+        rm -f "$dead/holder" 2>/dev/null || true
+        rmdir "$dead" 2>/dev/null || true
+      fi
+      return 1
+    fi
     rm -f "$dead/holder" 2>/dev/null || true
     rmdir "$dead" 2>/dev/null || true
     mkdir "$claim" 2>/dev/null || return 1
@@ -312,8 +326,11 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
   # For the human reading $STATE_DIR later. The directory's existence is still
   # the protocol; only a caller that passed a max age reads the epoch back
   # (env_alert_claim above, env_alert_held below).
-  printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
-    > "$claim/holder" 2>/dev/null || true
+  # Braced so a failed redirect stays quiet too: if a racing takeover moved the
+  # directory in this instant, the shell reports the open failure before a
+  # trailing 2>/dev/null would apply. The mtime fallback covers the lost epoch.
+  { printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
+    > "$claim/holder"; } 2>/dev/null || true
   return 0
 }
 

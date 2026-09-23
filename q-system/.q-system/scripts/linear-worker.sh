@@ -2467,6 +2467,13 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # healthy run cleared the mark every tick and each tick of one Codex
         # outage posted another "Attempt 1 of 3".
         python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
+        # THE MARK CONVERGE READS FIRST (PR #421 round 13, major). This branch
+        # also records refused_no_pr, and converge.sh read that alone: it logged
+        # the issue as held at a label that was never applied and paged exit 7
+        # once per issue for a machine condition the worker had already paged.
+        # env_halt is what makes converge exit 9 with no charge and no page, the
+        # same mark the Sana halt and the hold leave.
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
         mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
         # The note is PER ISSUE and the page is per machine (PR #421 round 8):
         # tying the note to the machine-wide claim left an issue that a later
