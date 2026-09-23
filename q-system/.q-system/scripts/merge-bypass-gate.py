@@ -887,6 +887,18 @@ def _crash_verdict(command: str) -> tuple[str, str]:
     return "allow", ""
 
 
+def _crash_jurisdiction(payload: dict) -> bool:
+    """_in_jurisdiction over a raw hook payload, for a crash OUTSIDE classify().
+
+    classify() already has its own crash path above. This covers everything else
+    main() does -- payload handling, the verdict print -- so no line of this hook
+    can raise its way to an allow on a merge or a push (ASK-1180).
+    """
+    if payload.get("tool_name") != "Bash":
+        return False
+    return _in_jurisdiction(str((payload.get("tool_input") or {}).get("command") or ""))
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -913,4 +925,29 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        from hook_fail_closed import run as _fail_closed
+    except Exception:  # noqa: BLE001
+        def _fail_closed(call, gate, in_jurisdiction):
+            # ASK-1180: hook_fail_closed.py is missing. The gate still RUNS, and
+            # the same crash rule applies inline, so deleting one shared file
+            # neither reopens this gate nor changes a single normal verdict.
+            import io
+            import traceback
+            raw = sys.stdin.read()
+            sys.stdin = io.StringIO(raw)
+            try:
+                rc = call()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    p = json.loads(raw or "{}")
+                    inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
+                except Exception:  # noqa: BLE001
+                    inside = True
+                sys.stderr.write(gate + ": crashed, fail-closed helper missing; "
+                                 + ("refusing (ASK-1180)\n" if inside else "allowed\n"))
+                return 2 if inside else 0
+            return 0 if rc is None else rc
+    sys.exit(_fail_closed(main, gate="merge-bypass-gate",
+                          in_jurisdiction=_crash_jurisdiction))
