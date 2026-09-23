@@ -1615,7 +1615,9 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" codex_outage_noted "" 2>/dev/null)" = "True" ]; then
     if env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
       say "skip $ISSUE: held while the second runner (Codex) is unavailable. No Sana run is spent on it until Codex answers or the outage claim is older than a day."
-      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      # Only a real run writes the ledger (PR #421 round 14, minor): this sits
+      # above the dry-run gate below, and --dry must change nothing.
+      [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true; }
       continue
     fi
     # THE OUTAGE THAT NOTED IT IS OVER (PR #421 round 11, minor). The mark was
@@ -1623,7 +1625,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # ran normally kept it, and any unrelated Codex outage afterwards held it
     # for up to a day. No live claim means the note is stale: drop it here, and
     # a later outage that reaches this issue notes it afresh.
-    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true
+    [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true; }
   fi
 
   if [ "$APPLY" = "0" ]; then

@@ -333,6 +333,13 @@ if [ "${N:-x}" = "2" ]; then
 else
   bad "a stale Codex note is dropped" "sana-runs=${N:-?} (1 = held by an old outage's note)"
 fi
+# PR #421 round 14, minor: the hold wrote the ledger above the dry-run gate.
+if printf '%s\n' "$OUT" | grep -q '^=== dry run under a live claim wrote env_halt: no' \
+   && printf '%s\n' "$OUT" | grep -q '^=== dry run with no claim cleared the note: no'; then
+  ok "a dry run neither records env_halt for a held issue nor clears a stale note"
+else
+  bad "a dry run writes nothing to the ledger" "$(printf '%s\n' "$OUT" | grep '^=== dry run' | tr '\n' '|')"
+fi
 # Minor: the 529 marker ended in `.*`. The real line is from the captured
 # fixture (limit-charges-2026-09-23.json, ASK-353/355); the prose variant keeps
 # its first sentence and replaces the CLI's tail with an agent's.

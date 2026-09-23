@@ -82,6 +82,27 @@ mkrepo() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --qu
 STATE="$WORK/state"; NOTIFY_LOG="$WORK/notify.log"; : > "$NOTIFY_LOG"
 mkdir -p "$STATE"
 printf '{"ASK-811": {"codex_outage_noted": true}}\n' > "$STATE/linear-worker-attempts.json"
+# PR #421 round 14, minor: a DRY run (no --apply) must not write the ledger.
+# D1: a live claim, so the hold fires; it must not record env_halt.
+# D2: no claim, so the note is stale; a dry run must not clear it.
+dry() {
+  mkrepo "$WORK/t$1"
+  PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t$1/kipi-system" KIPI_STATE_DIR="$STATE" \
+    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+    KIPI_CODEX_RUNNER="bash $WORK/quota-codex.sh" \
+    KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$NOTIFY_LOG" TEST_SANA_LOG="$WORK/sana.log" \
+    bash "$WORKER" --limit 1 > "$WORK/tick$1.out" 2>&1
+}
+flag() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ASK-811",{}).get(sys.argv[2],""))' "$STATE/linear-worker-attempts.json" "$1" 2>/dev/null; }
+mkdir -p "$STATE/codex-outage/env-alert.claim"
+printf 'pid=1 claimed_at=now epoch=%s\n' "$(date +%s)" > "$STATE/codex-outage/env-alert.claim/holder"
+dry D1
+echo "=== dry run under a live claim wrote env_halt: $( [ -n "$(flag env_halt)" ] && echo yes || echo no)   (expected no)"
+mv "$STATE/codex-outage/env-alert.claim" "$WORK/claim-aside"
+dry D2
+echo "=== dry run with no claim cleared the note: $( [ "$(flag codex_outage_noted)" = "True" ] && echo no || echo yes)   (expected no)"
 for TICK in 1 2; do
   if [ "$TICK" = 2 ]; then
     mkdir -p "$STATE/codex-outage/env-alert.claim"
