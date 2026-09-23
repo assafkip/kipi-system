@@ -313,8 +313,25 @@ def finish(stdout: str, *, bot: str, job: str | None = None,
 
 
 def append(row: dict, path: str | None = None) -> bool:
-    """Append one row. True if written. Never raises: the run is not the ledger's to fail."""
-    target = path or ledger_path()
+    """Append one row. True if written. Never raises: the run is not the ledger's to fail.
+
+    UNDER PYTEST THE DEFAULT LEDGER IS REFUSED. On 2026-09-22 a deployment's
+    test suite faked the model call but not the ledger, and every run left
+    rows in the live ~/.config/kipi/usage-ledger.jsonl: 125 parse_error rows
+    by evening, all with 2-byte stdout, indistinguishable from a metered bot
+    that had stopped parsing. The same refusal run_model makes for a live
+    model call applies to a live ledger write: inside a test, a row goes to
+    the path the test named (KIPI_USAGE_LEDGER, or `path=`) or nowhere, and
+    stderr says so once.
+    """
+    explicit = path or os.environ.get(LEDGER_ENV)
+    if os.environ.get("PYTEST_CURRENT_TEST") and not explicit:
+        if "pytest" not in _WARNED:
+            _WARNED.append("pytest")
+            sys.stderr.write("usage_ledger: refusing to write the live ledger from inside a test; "
+                             "set KIPI_USAGE_LEDGER (or pass path=) to a temp file\n")
+        return False
+    target = explicit or ledger_path()
     try:
         parent = os.path.dirname(target)
         if parent:  # a bare filename lives in the cwd; makedirs("") raises
