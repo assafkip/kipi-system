@@ -484,20 +484,29 @@ echo "== Opus stands in when Codex is down"
 # real worker, with the Opus stand-in stubbed in three modes.
 OUT="$(run repro-opus-fallback)"
 row() { printf '%s\n' "$OUT" | grep "^$1 "; }
-if [ "$(row commit)" = "commit opus-calls=1 continued=1 parked=0 held=0" ]; then
-  ok "Codex down, Opus does the work: the issue is continued, not held or parked"
+if [ "$(row commit)" = "commit opus-calls=1 continued=1 parked=0 held=0 note-names-opus=1" ]; then
+  ok "Codex down, Opus does the work: continued, and the Linear note names Opus, not Codex"
 else
   bad "Opus continues the work when Codex is down" "$(row commit)"
 fi
-if [ "$(row refuse)" = "refuse opus-calls=1 continued=0 parked=1 held=0" ]; then
-  ok "Codex down, Opus refuses on capability: parked with both refusals"
+# PR #425 review, major: Opus runs in the same harness as Sana, so its refusal
+# says nothing about Codex. Only Codex's own refusal parks.
+if [ "$(row refuse)" = "refuse opus-calls=1 continued=0 parked=0 held=1 note-names-opus=0" ]; then
+  ok "Codex down, the Opus stand-in refuses too: held for Codex, never parked"
 else
-  bad "an Opus capability refusal parks" "$(row refuse)"
+  bad "a stand-in refusal holds, it does not park" "$(row refuse)"
 fi
-if [ "$(row limit)" = "limit opus-calls=1 continued=0 parked=0 held=1" ]; then
+if [ "$(row limit)" = "limit opus-calls=1 continued=0 parked=0 held=1 note-names-opus=0" ]; then
   ok "Codex down and Opus out of quota too: only then is the issue held"
 else
   bad "both runners down is the only hold" "$(row limit)"
+fi
+# PR #425 review, minor: the shipped default command had no coverage.
+if [ "$(row default)" = "default opus-calls=1 continued=1 parked=0 held=0 note-names-opus=1" ] \
+   && printf '%s\n' "$OUT" | grep -q '^default-argv: -p --model claude-opus-5 '; then
+  ok "the default stand-in command is claude -p --model claude-opus-5, and it runs"
+else
+  bad "the default stand-in command runs" "$(row default) | $(printf '%s\n' "$OUT" | grep '^default-argv')"
 fi
 
 echo "== a dead run's per-pid files are swept"

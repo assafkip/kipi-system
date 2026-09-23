@@ -31,7 +31,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         b = self.rfile.read(int(self.headers["Content-Length"])).decode()
         if "commentCreate" in b:
-            open(LOG, "a").write(b[:400].replace("\\\\n", " ") + "\n")
+            open(LOG, "a").write(b[:6000].replace("\\\\n", " ") + "\n")
             d = {"commentCreate": {"success": True, "comment": {"id": "c1"}}}
         elif "teams(" in b:
             d = {"teams": {"nodes": [{"id": "t"}]}}
@@ -62,6 +62,14 @@ STUB="$WORK/stub"; mkdir -p "$STUB"; cp "$WORK/gh" "$STUB/gh"
 # Sana refuses on capability (healthy runner, honest refusal) -> Codex is reached.
 cat > "$STUB/claude" <<'SH'
 #!/usr/bin/env bash
+# Called as the worker's DEFAULT stand-in (no KIPI_SECOND_RUNNER_FALLBACK):
+# record the exact argv, then do the work (PR #425 review: the default command
+# had no coverage).
+case " $* " in *" --model "*)
+  echo "DEFAULT-ARGV $*" >> "$TEST_OPUS_LOG"
+  echo "fallback work" > opus-did-this.txt; git add opus-did-this.txt
+  git -c user.email=t@t -c user.name=t commit -qm "opus stand-in"; echo "Done."; exit 0 ;;
+esac
 printf '%s' "the harness refused the sensitive path .claude/settings.json" > .sana-blocked-capability
 printf 'Not equipped for this one; wrote the capability sentinel.\n'
 exit 0
@@ -99,23 +107,29 @@ mkrepo() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --qu
 
 scenario() {  # scenario <mode>
   local mode="$1" st="$WORK/state-$1"; mkdir -p "$st"
+  # The default scenario leaves KIPI_SECOND_RUNNER_FALLBACK UNSET, so the
+  # worker's own default command runs (through the PATH `claude` stub).
+  FB=("KIPI_SECOND_RUNNER_FALLBACK=bash $WORK/opus.sh"); [ "$mode" = default ] && FB=()
   : > "$WORK/comments.log"; : > "$WORK/opus-$mode.log"
   mkrepo "$WORK/t-$mode"
-  PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t-$mode/kipi-system" KIPI_STATE_DIR="$st" \
+  env ${FB[@]+"${FB[@]}"} PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t-$mode/kipi-system" KIPI_STATE_DIR="$st" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
     KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" \
-    KIPI_SECOND_RUNNER_FALLBACK="bash $WORK/opus.sh" TEST_OPUS_MODE="$mode" TEST_OPUS_LOG="$WORK/opus-$mode.log" \
+    TEST_OPUS_MODE="$mode" TEST_OPUS_LOG="$WORK/opus-$mode.log" \
     KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$mode.log" \
     bash "$WORKER" --apply --limit 1 > "$WORK/run-$mode.out" 2>&1
   cnt() { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"; }
-  printf '%s opus-calls=%s continued=%s parked=%s held=%s\n' "$mode" \
-    "$(cnt OPUS-INVOKED "$WORK/opus-$mode.log")" \
+  printf '%s opus-calls=%s continued=%s parked=%s held=%s note-names-opus=%s\n' "$mode" \
+    "$(( $(cnt OPUS-INVOKED "$WORK/opus-$mode.log") + $(cnt DEFAULT-ARGV "$WORK/opus-$mode.log") ))" \
     "$(cnt 'CONTINUED the work' "$WORK/run-$mode.out")" \
     "$(cnt 'labelled blocked:capability\|-- parking' "$WORK/run-$mode.out")" \
-    "$(cnt 'second runner is unavailable' "$WORK/run-$mode.out")"
+    "$(cnt 'second runner is unavailable' "$WORK/run-$mode.out")" \
+    "$(cnt 'second runner (Opus, standing in for Codex' "$WORK/comments.log")"
+  [ "$mode" = default ] && echo "default-argv: $(sed -n 's/^DEFAULT-ARGV //p' "$WORK/opus-$mode.log" | head -1 | cut -c1-40)"
 }
 scenario commit
 scenario refuse
 scenario limit
+scenario default
