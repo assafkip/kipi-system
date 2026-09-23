@@ -1300,7 +1300,27 @@ post_reviewer_status() {
   # Link only a real URL. The PR comment just above is what --post creates; when
   # that failed there is nothing to link, and a local file path is not a URL.
   case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
-  if gh "${args[@]}" >/dev/null 2>&1; then
+  # WHO WRITES THE GATE (ASK-362 stage 2, sp-c442613c). The ambient gh login is
+  # the admin token that authors every PR and arms every merge, so the identity
+  # the gate holds could also write the gate. KIPI_REVIEWER_TOKEN_ENV names the
+  # variable holding a SECOND identity's token (GitHub App or machine user); that
+  # token rides on this one call only. Configured but empty REFUSES rather than
+  # falling back: a fallback puts the gate back on the admin token while the
+  # operator believes it moved, and an absent status holds the PR (safe side).
+  local token_env="${KIPI_REVIEWER_TOKEN_ENV:-}" token=""
+  if [ -n "$token_env" ]; then
+    case "$token_env" in
+      *[!A-Za-z0-9_]*|[0-9]*)
+        echo "  REFUSED: KIPI_REVIEWER_TOKEN_ENV='$token_env' is not a variable name; NO commit status posted on $sha" >&2
+        return 0 ;;
+    esac
+    token="${!token_env:-}"
+    if [ -z "$token" ]; then
+      echo "  REFUSED: KIPI_REVIEWER_TOKEN_ENV names $token_env, which is empty or unset; NO commit status posted on $sha (never falling back to the ambient gh login)" >&2
+      return 0
+    fi
+  fi
+  if { if [ -n "$token" ]; then GH_TOKEN="$token" gh "${args[@]}"; else gh "${args[@]}"; fi; } >/dev/null 2>&1; then
     echo "  commit status posted: $context=$state on $sha"
   else
     echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
