@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_hook_liveness.py",
+ "runner": "pytest"
+}
