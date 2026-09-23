@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/separation/test_public_history_contract.py",
+  "runner": "pytest"
+}

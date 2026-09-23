@@ -1,0 +1,4 @@
+{
+  "path": "q-system/.q-system/tests/test_md_prune_budgets.py",
+  "runner": "pytest"
+}
