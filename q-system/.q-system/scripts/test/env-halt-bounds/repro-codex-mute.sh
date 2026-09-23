@@ -106,7 +106,7 @@ run() {  # run <tag> <issue> <codex-runner>
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $codex" \
+    KIPI_CODEX_RUNNER="bash $codex" KIPI_SECOND_RUNNER_FALLBACK="" \
     KIPI_NOTIFY="$WORK/notify.sh" \
     TEST_NOTIFY_LOG="$WORK/notify-$tag.log" \
     bash "$WORKER" --apply --limit 1 --issue "$iss" > "$WORK/$tag.out" 2>&1

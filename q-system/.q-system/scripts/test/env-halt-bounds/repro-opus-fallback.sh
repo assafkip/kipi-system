@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
-# PR #421 round 8, two majors, both on the Codex branch.
-#
-# A. A REAL Codex outage was never read as one. `codex exec` prints a banner, the
-#    echoed prompt and hook lines before its "ERROR: ..." line, so the every-line
-#    rule could not match, and the issue was parked blocked:capability for a
-#    condition of the machine. 17 real runs in the worker log went this way.
-#    The Codex stub here prints a real transcript from the fixture and exits 1,
-#    the rc the worker logged for every one of them.
-# B. The Codex page claim is released only when Codex answers, and Codex is
-#    reached only on a rare capability refusal. A claim from an outage long over
-#    stayed held and the next outage paged nobody. The claim now expires.
-# C. The dedupe that remains: a FRESH claim still suppresses a second page, and
-#    the "Not parked" note is per issue, so an issue the earlier outage never
-#    touched still gets its note.
+# OPUS STANDS IN WHEN CODEX IS DOWN (founder, 2026-09-23: "you dont need codex
+# credits, you can use opus as a fallback - that has been recorded"). The
+# reviewer already did this; the worker's second runner held the issue instead.
+# Codex prints a REAL outage transcript (fixture run ASK-1126) and exits 1; the
+# Opus stand-in is a stub run in three modes:
+#   commit  -> it does the work: the issue is continued, not held, not parked
+#   refuse  -> it writes the capability sentinel: parked with both refusals
+#   limit   -> Claude is out too: only then is the issue held as an outage
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
@@ -37,7 +31,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         b = self.rfile.read(int(self.headers["Content-Length"])).decode()
         if "commentCreate" in b:
-            open(LOG, "a").write(b[:400].replace("\\\\n", " ") + "\n")
+            open(LOG, "a").write(b[:6000].replace("\\\\n", " ") + "\n")
             d = {"commentCreate": {"success": True, "comment": {"id": "c1"}}}
         elif "teams(" in b:
             d = {"teams": {"nodes": [{"id": "t"}]}}
@@ -68,12 +62,19 @@ STUB="$WORK/stub"; mkdir -p "$STUB"; cp "$WORK/gh" "$STUB/gh"
 # Sana refuses on capability (healthy runner, honest refusal) -> Codex is reached.
 cat > "$STUB/claude" <<'SH'
 #!/usr/bin/env bash
+# Called as the worker's DEFAULT stand-in (no KIPI_SECOND_RUNNER_FALLBACK):
+# record the exact argv, then do the work (PR #425 review: the default command
+# had no coverage).
+case " $* " in *" --model "*)
+  echo "DEFAULT-ARGV $*" >> "$TEST_OPUS_LOG"
+  echo "fallback work" > opus-did-this.txt; git add opus-did-this.txt
+  git -c user.email=t@t -c user.name=t commit -qm "opus stand-in"; echo "Done."; exit 0 ;;
+esac
 printf '%s' "the harness refused the sensitive path .claude/settings.json" > .sana-blocked-capability
 printf 'Not equipped for this one; wrote the capability sentinel.\n'
 exit 0
 SH
 chmod +x "$STUB/claude"
-# Codex prints a REAL outage transcript (fixture run ASK-1126) and exits 1.
 FIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/fixtures/worker-env-halt/codex-outages-2026-09-23.json"
 python3 - "$FIX" > "$WORK/codex-transcript.txt" <<'PYX'
 import json, sys
@@ -86,6 +87,16 @@ cat > "$WORK/real-codex.sh" <<SH
 cat "$WORK/codex-transcript.txt"
 exit 1
 SH
+cat > "$WORK/opus.sh" <<'SH'
+#!/usr/bin/env bash
+echo "OPUS-INVOKED" >> "$TEST_OPUS_LOG"
+case "$TEST_OPUS_MODE" in
+  commit) echo "fallback work" > opus-did-this.txt; git add opus-did-this.txt; git -c user.email=t@t -c user.name=t commit -qm "opus stand-in"; echo "Done." ;;
+  refuse) printf '%s' "the harness refused the sensitive path .claude/settings.json" > .codex-blocked-capability; echo "Not equipped either." ;;
+  limit)  echo "You've hit your weekly limit · resets Sep 29 at 2pm (America/Los_Angeles)" ;;
+esac
+exit 0
+SH
 
 mkrepo() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --quiet "$1/kipi-system"
   git -C "$1/kipi-system" config user.email t@t; git -C "$1/kipi-system" config user.name t
@@ -94,37 +105,31 @@ mkrepo() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --qu
   git -C "$1/kipi-system" remote add origin "$1/origin.git"
   git -C "$1/kipi-system" push --quiet -u origin HEAD:main 2>/dev/null; }
 
-# plant_claim <state> <epoch>: an earlier run of the fleet already paged a
-# Codex outage and holds the claim, claimed at <epoch>.
-plant_claim() {
-  mkdir -p "$1/codex-outage/env-alert.claim"
-  printf 'pid=1 claimed_at=earlier epoch=%s\n' "$2" > "$1/codex-outage/env-alert.claim/holder"
-}
-
-scenario() {  # scenario <name> [plant-epoch]
-  local name="$1" st="$WORK/state-$1"; mkdir -p "$st"
-  [ -n "${2:-}" ] && plant_claim "$st" "$2"
-  : > "$WORK/comments.log"; : > "$WORK/notify-$name.log"
-  mkrepo "$WORK/t-$name"
-  PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t-$name/kipi-system" KIPI_STATE_DIR="$st" \
+scenario() {  # scenario <mode>
+  local mode="$1" st="$WORK/state-$1"; mkdir -p "$st"
+  # The default scenario leaves KIPI_SECOND_RUNNER_FALLBACK UNSET, so the
+  # worker's own default command runs (through the PATH `claude` stub).
+  FB=("KIPI_SECOND_RUNNER_FALLBACK=bash $WORK/opus.sh"); [ "$mode" = default ] && FB=()
+  : > "$WORK/comments.log"; : > "$WORK/opus-$mode.log"
+  mkrepo "$WORK/t-$mode"
+  env ${FB[@]+"${FB[@]}"} PATH="$STUB:$PATH" KIPI_SKEL="$WORK/t-$mode/kipi-system" KIPI_STATE_DIR="$st" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
-    KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$name.log" \
-    bash "$WORKER" --apply --limit 1 > "$WORK/run-$name.out" 2>&1
-  local rc=$?
-  # The mark converge.sh reads first (PR #421 round 13): without env_halt it
-  # read refused_no_pr, logged a label never applied, and paged exit 7.
-  printf '%s env_halt=%s\n' "$name" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ASK-811",{}).get("env_halt",""))' "$st/linear-worker-attempts.json" 2>/dev/null)"
-  printf '%s rc=%s parked=%s unavailable=%s pages=%s not-parked-notes=%s\n' "$name" "$rc" \
-    "$(grep -c 'labelled blocked:capability\|-- parking' "$WORK/run-$name.out")" \
-    "$(grep -c 'second runner is unavailable' "$WORK/run-$name.out")" \
-    "$(grep -c '^NOTIFY ' "$WORK/notify-$name.log")" \
-    "$(grep -c 'Not parked: the second runner was unavailable' "$WORK/comments.log")"
+    KIPI_CODEX_RUNNER="bash $WORK/real-codex.sh" \
+    TEST_OPUS_MODE="$mode" TEST_OPUS_LOG="$WORK/opus-$mode.log" \
+    KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$WORK/notify-$mode.log" \
+    bash "$WORKER" --apply --limit 1 > "$WORK/run-$mode.out" 2>&1
+  cnt() { local n; n="$(grep -c "$1" "$2" 2>/dev/null)"; printf '%s' "${n:-0}"; }
+  printf '%s opus-calls=%s continued=%s parked=%s held=%s note-names-opus=%s\n' "$mode" \
+    "$(( $(cnt OPUS-INVOKED "$WORK/opus-$mode.log") + $(cnt DEFAULT-ARGV "$WORK/opus-$mode.log") ))" \
+    "$(cnt 'CONTINUED the work' "$WORK/run-$mode.out")" \
+    "$(cnt 'labelled blocked:capability\|-- parking' "$WORK/run-$mode.out")" \
+    "$(cnt 'second runner is unavailable' "$WORK/run-$mode.out")" \
+    "$(cnt 'second runner (Opus, standing in for Codex' "$WORK/comments.log")"
+  [ "$mode" = default ] && echo "default-argv: $(sed -n 's/^DEFAULT-ARGV //p' "$WORK/opus-$mode.log" | head -1 | cut -c1-40)"
 }
-
-NOW="$(date +%s)"
-scenario A-real-transcript
-scenario B-claim-two-days-old "$((NOW - 172800))"
-scenario C-claim-fresh "$NOW"
+scenario commit
+scenario refuse
+scenario limit
+scenario default

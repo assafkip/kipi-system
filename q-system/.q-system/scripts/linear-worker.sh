@@ -112,6 +112,15 @@ CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-wr
 # this the claim may be taken over (one page a day at most) and an issue held
 # for the outage runs once more to find out whether Codex is back.
 CODEX_OUTAGE_MAX_AGE=86400
+# OPUS STANDS IN WHEN CODEX IS DOWN (founder, 2026-09-23: "you dont need codex
+# credits, you can use opus as a fallback - that has been recorded"). The
+# reviewer has done this since July (pr-review-agent.sh, marked DEGRADED); the
+# worker's second runner never did, so a Codex outage parked the issue (17 real
+# cases, 2026-08-30 to 2026-09-18) and, after PR #421, held it. The fallback
+# runs the SAME second-runner prompt, so the outcome logic below judges it
+# exactly as it judges Codex. Set KIPI_SECOND_RUNNER_FALLBACK to an empty string
+# to disable it (tests that pin the both-down hold do).
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-claude -p --model claude-opus-5}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -2376,7 +2385,9 @@ to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
 its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # run_bounded, not a bare call: an unbounded second runner at 3am is the
       # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
-      # a dead Codex must cost one timeout, not a spend loop.
+      # a dead Codex must cost one timeout, not a spend loop. With the Opus
+      # stand-in below, the worst case is TWO bounded runs (Codex, then Opus),
+      # each capped by TIMEOUT_SECONDS; never more, and never a loop.
       # Captured privately and classified, exactly like Sana's run above. Until
       # Codex round 3 this output went straight into the shared log and was never
       # read: an exhausted Codex account printed its limit line, left no commit
@@ -2392,6 +2403,21 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         crc=$?
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""
+      # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
+      # is refused too (a Claude limit) does the outage path below apply.
+      if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        CODEX_STOOD_IN=1
+        SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
+        say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
+        : > "$RUN_OUT_FILE" 2>/dev/null || true
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+          crc=0
+        else
+          crc=$?
+        fi
+        CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+      fi
       CODEX_ENV=""
       # codex_env_reason, not is_environmental: Codex prints a transcript, and
       # the every-line rule never matched a real Codex outage (PR #421 round 8).
@@ -2399,6 +2425,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
       else
         CODEX_ENV=""
+        # Only CODEX answering ends a Codex outage. When Opus stood in, Codex
+        # is still down: the claim and this issue's note stay (PR #425 review).
+        if [ -z "$CODEX_STOOD_IN" ]; then
         # This issue's outage note, if it had one, is spent: the next outage
         # that reaches it says so again.
         python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true
@@ -2407,6 +2436,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # run (the round-1 version) left the claim held after an honest refusal
         # and muted every later Codex outage (PR #421 round 2, major).
         env_alert_release "$STATE_DIR/codex-outage" 2>/dev/null || true
+        fi
       fi
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
@@ -2435,6 +2465,17 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       if [ -n "$CODEX_HEAD_BEFORE" ] && [ -n "$CODEX_HEAD_AFTER" ] \
          && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
         CODEX_CHANGED_FILES="$(git -C "$TREE" diff --name-only "$CODEX_HEAD_BEFORE" "$CODEX_HEAD_AFTER" 2>/dev/null || true)"
+      fi
+      # A STAND-IN'S REFUSAL IS NOT CODEX'S (PR #425 review, major). Opus runs in
+      # the same Claude Code harness as Sana, so a refusal that came from that
+      # harness (a .claude/** path, a guard) repeats verbatim, and parking on it
+      # would pull the issue out of the picker for good when the one runner that
+      # could do it, Codex, only needs to be back. Only Codex's own refusal
+      # parks; a stand-in that did not finish the work is the outage hold.
+      if [ -n "$CODEX_STOOD_IN" ] && [ -z "$CODEX_ENV" ] \
+         && ! { [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; }; then
+        CODEX_ENV="Codex unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the Opus stand-in did not finish it either${CODEX_WHY:+: $(printf '%s' "$CODEX_WHY" | head -c 200)}"
+        CODEX_WHY=""
       fi
       # CHECKED FIRST, before any of the outcomes below. A runner that could not
       # answer produced none of them: no commit, no sentinel, no refusal. Reading
@@ -2490,7 +2531,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
-        say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
+        say "$ISSUE $SECOND_RUNNER CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
         # offers the issue again, so a continuation that still parked would be a
         # continuation nobody could act on.
@@ -2525,13 +2566,13 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
     # Different next action per class. A capability block that says "re-scope this"
     # sends the drafter to rewrite a spec that was already right.
     if [ -n "$CODEX_CONTINUED" ]; then
-      REFUSE_NOTE="**Sana was not equipped; Codex was.** Not labelled \`blocked:capability\` -- the issue stays in the pool.
+      REFUSE_NOTE="**Sana was not equipped; the second runner was.** Not labelled \`blocked:capability\` -- the issue stays in the pool.
 
 Sana stopped here:
 
 $SCOPE_WHY
 
-The Codex runner was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
+The second runner ($SECOND_RUNNER) was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
 
 **Next:** review the branch/PR as normal. No capability grant is needed and no founder decision is pending."
     elif [ -n "$CODEX_ENV" ]; then

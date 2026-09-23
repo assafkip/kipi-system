@@ -51,7 +51,7 @@ git -C "$WORK/p/kipi-system" push --quiet -u origin HEAD:main 2>/dev/null
 
 PATH="$STUB:$PATH" KIPI_SKEL="$WORK/p/kipi-system" KIPI_STATE_DIR="$STATE" \
   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" KIPI_LINEAR_API_KEY="k" \
-  KIPI_PR_REVIEWER="bash $WORK/x.sh" KIPI_CODEX_RUNNER="bash $WORK/x.sh" \
+  KIPI_PR_REVIEWER="bash $WORK/x.sh" KIPI_CODEX_RUNNER="bash $WORK/x.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
   KIPI_NOTIFY="/usr/bin/true" \
   bash "$WORKER" --apply --limit 1 > "$WORK/out" 2>&1
 echo "worker rc=$? (a full healthy run)"

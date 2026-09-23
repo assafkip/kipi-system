@@ -80,7 +80,7 @@ for TICK in 1 2 3 4 5; do
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+    KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
     KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$NOTIFY_LOG" \
     bash "$WORKER" --apply --limit 2 > "$WORK/tick$TICK.out" 2>&1
   echo "tick $TICK: worker rc=$?"
@@ -94,7 +94,7 @@ for TICK in 6 7; do
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-    KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+    KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
     KIPI_NOTIFY="$WORK/notify.sh" TEST_NOTIFY_LOG="$NOTIFY_LOG" TEST_CLAUDE_MODE=healthy \
     bash "$WORKER" --apply --limit 1 --issue ASK-811 > "$WORK/tick$TICK.out" 2>&1
   echo "tick $TICK (runner answers): worker rc=$?"

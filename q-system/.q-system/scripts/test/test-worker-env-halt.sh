@@ -145,7 +145,7 @@ PATH="$STUB_A:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_A" \
    bash "$WORKER" --apply --limit 2 > "$WORK/run-a.out" 2>&1
@@ -260,7 +260,7 @@ PATH="$STUB_B:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_B" \
    bash "$WORKER" --apply --limit 2 > "$WORK/run-b.out" 2>&1
@@ -505,7 +505,7 @@ PATH="$STUB_C:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_C" \
    bash "$WORKER" --apply --limit 2 > "$WORK/run-c.out" 2>&1
@@ -594,7 +594,7 @@ PATH="$STUB_D_HEALTHY:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_D_HEALTHY" \
    bash "$WORKER" --apply --limit 1 > "$WORK/run-d-healthy.out" 2>&1 &
@@ -605,7 +605,7 @@ PATH="$STUB_D_OUTAGE:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_D_OUTAGE" \
    bash "$WORKER" --apply --limit 1 > "$WORK/run-d-outage.out" 2>&1
@@ -685,7 +685,7 @@ PATH="$STUB_E:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/quota-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/quota-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_E" \
    bash "$WORKER" --apply --limit 2 > "$WORK/run-e.out" 2>&1
@@ -759,7 +759,7 @@ PATH="$STUB_F:$PATH" \
    KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
    KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
    KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-   KIPI_CODEX_RUNNER="bash $WORK/refusing-codex.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/refusing-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
    KIPI_NOTIFY="$WORK/recording-notify.sh" \
    TEST_NOTIFY_LOG="$NOTIFY_F" \
    bash "$WORKER" --apply --limit 2 > "$WORK/run-f.out" 2>&1
@@ -867,7 +867,7 @@ run_g() {  # run_g <stub-dir> <out-file>
      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
      KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
-     KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+     KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
      KIPI_NOTIFY="$WORK/recording-notify.sh" \
      TEST_NOTIFY_LOG="$NOTIFY_G" \
      bash "$WORKER" --apply --limit 2 > "$2" 2>&1
@@ -994,7 +994,7 @@ while IFS= read -r b64; do
   PATH="$STUB_R:$PATH" KIPI_SKEL="$SKEL_R" KIPI_STATE_DIR="$STATE_R" \
      KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
      KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
-     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" \
+     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
      KIPI_NOTIFY="$WORK/recording-notify.sh" TEST_NOTIFY_LOG="$WORK/notify-real-$R.log" \
      bash "$WORKER" --apply --limit 1 > "$WORK/run-real-$R.out" 2>&1
   OUT_R="$(cat "$WORK/run-real-$R.out" "$STATE_R/linear-worker.log" 2>/dev/null)"

@@ -478,6 +478,37 @@ else
   bad "the trust warning is noise, not speech" "limit+warning=$( ( . "$LIB"; is_environmental "$(printf '%s\n%s' "$TW" "$LIMIT")" ) && echo outage || echo charged) warning-alone=$( ( . "$LIB"; is_environmental "$TW" ) && echo outage || echo issue)"
 fi
 
+echo "== Opus stands in when Codex is down"
+# Founder, 2026-09-23: "you dont need codex credits, you can use opus as a
+# fallback". A real Codex outage transcript (fixture run ASK-1126) through the
+# real worker, with the Opus stand-in stubbed in three modes.
+OUT="$(run repro-opus-fallback)"
+row() { printf '%s\n' "$OUT" | grep "^$1 "; }
+if [ "$(row commit)" = "commit opus-calls=1 continued=1 parked=0 held=0 note-names-opus=1" ]; then
+  ok "Codex down, Opus does the work: continued, and the Linear note names Opus, not Codex"
+else
+  bad "Opus continues the work when Codex is down" "$(row commit)"
+fi
+# PR #425 review, major: Opus runs in the same harness as Sana, so its refusal
+# says nothing about Codex. Only Codex's own refusal parks.
+if [ "$(row refuse)" = "refuse opus-calls=1 continued=0 parked=0 held=1 note-names-opus=0" ]; then
+  ok "Codex down, the Opus stand-in refuses too: held for Codex, never parked"
+else
+  bad "a stand-in refusal holds, it does not park" "$(row refuse)"
+fi
+if [ "$(row limit)" = "limit opus-calls=1 continued=0 parked=0 held=1 note-names-opus=0" ]; then
+  ok "Codex down and Opus out of quota too: only then is the issue held"
+else
+  bad "both runners down is the only hold" "$(row limit)"
+fi
+# PR #425 review, minor: the shipped default command had no coverage.
+if [ "$(row default)" = "default opus-calls=1 continued=1 parked=0 held=0 note-names-opus=1" ] \
+   && printf '%s\n' "$OUT" | grep -q '^default-argv: -p --model claude-opus-5 '; then
+  ok "the default stand-in command is claude -p --model claude-opus-5, and it runs"
+else
+  bad "the default stand-in command runs" "$(row default) | $(printf '%s\n' "$OUT" | grep '^default-argv')"
+fi
+
 echo "== a dead run's per-pid files are swept"
 OUT="$(run repro-leak)"
 A="$(printf '%s\n' "$OUT" | sed -n 's/^after: *\([0-9]*\) orphan.*/\1/p')"
