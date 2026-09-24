@@ -136,9 +136,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # 8 to 10 capped words, then stages; round 11 padded one 5MB WORD, and the
   # hook's cost is linear in bytes (measured ~2ms/KB worst case: 5MB took
   # 11.4s and the deny was discarded). Words and stages are both functions of
-  # size, so a byte cap closes the class rather than the next axis. 256KB is
-  # ~0.6s worst case, and past what any real command line carries (macOS
-  # ARG_MAX is 1MB for a whole exec).
+  # size, so a byte cap was meant to close the class. It did not: cost is
+  # SUPERLINEAR in the shape that matters (review measured ~42ms/KB for a fat
+  # first-position token, so ~50KB, not 256KB, crosses 3s). The 3s watchdog
+  # below is the real bound now. This cap stays as an O(1) early refusal for
+  # absurd sizes. Consequence, stated: a benign single-token command over
+  # roughly 50KB is refused by the watchdog, and the message says to use a file.
   _MAX_COMMAND_BYTES=262144
   if [ "${#COMMAND}" -gt "$_MAX_COMMAND_BYTES" ]; then
     emit_deny "this command is ${#COMMAND} characters, past the $_MAX_COMMAND_BYTES this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Put long content in a file with the Write tool."
@@ -955,7 +958,10 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
       # Destructive verbs. Anchored at the start of the operation or after a
       # non-letter, so `untrash` (letter before the verb) does not match and
       # `trash_thread` / `_delete_x` / `-delete-x` do.
-      if printf '%s' "$MCP_OP_LOWER" | grep -Eq '(^|[^a-z])(delete|destroy|purge|truncate|wipe|erase|remove|trash|revoke|reset)'; then
+      # `retire` (PR #338 review nit): Linear spells label deletion
+      # retire_issue_label / retire_project_label / retire_initiative_label, so
+      # the server that motivated operation-keying still had three deletes open.
+      if printf '%s' "$MCP_OP_LOWER" | grep -Eq '(^|[^a-z])(delete|destroy|purge|truncate|wipe|erase|remove|trash|revoke|reset|retire)'; then
         emit_deny "MCP tool $TOOL_NAME performs a destructive operation ($MCP_OP)"
       fi
 
