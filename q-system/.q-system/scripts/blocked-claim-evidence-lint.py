@@ -268,9 +268,9 @@ TRIGGER_IDS = {
 # at or above PRECISION_BAR on at least MIN_LABELLED distinct findings. Fewer than
 # MIN_LABELLED is not a measurement (n>=3 is the claim floor; ten is the floor for a
 # fleet-wide Stop hook), so a rare trigger stays advisory however clean it looks.
-# Measured 2026-09-23 on scripts/test/fixtures/blocked-claim-lint-replay-2026-09-23.json:
+# Measured 2026-09-23; tally in scripts/test/fixtures/blocked-claim-lint-tally-2026-09-23.json:
 #   does-not-exist       87/100 genuine  0.87  -> blocks
-#   nothing-was-written  13/13  genuine  1.00  -> blocks
+#   nothing-was-written  14/14  genuine  1.00  -> blocks
 #   never-ran 0.72, is-missing 0.50, out-of-credits 0.50, is-live 0.37,
 #   is-unreachable 0.24, blocked-word 0.20, blocks-object 0.20, denied 0.20
 #   -> advisory. Every other trigger has fewer than MIN_LABELLED rows -> advisory.
@@ -393,12 +393,24 @@ def evaluate(final_text: str) -> list[Finding]:
 
 
 def _first_match(sentence: str):
-    """(pattern, trigger id) of the first trigger that fires, or None."""
+    """(pattern, trigger id) of the trigger that owns this sentence, or None.
+
+    A BLOCKING trigger wins over pattern order (PR #428 review). Order put bare
+    `blocked` (0.20 precision, the noisiest trigger) first, so "the commit is
+    blocked because X does not exist" was labelled blocked-word and passed as
+    advisory: the precise claim was shadowed by the imprecise one beside it.
+    """
+    first = None
     for pattern in PATTERNS:
         for index, trigger in enumerate(pattern.triggers):
-            if trigger.search(sentence):
-                return pattern, _trigger_id(pattern, index)
-    return None
+            if not trigger.search(sentence):
+                continue
+            tid = _trigger_id(pattern, index)
+            if tid in BLOCKING_TRIGGERS:
+                return pattern, tid
+            if first is None:
+                first = (pattern, tid)
+    return first
 
 
 # --- Stop-hook plumbing ------------------------------------------------------

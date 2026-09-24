@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -311,74 +312,84 @@ def main() -> int:
     return 1 if failures else 0
 
 
-FIXTURE = HERE / "test" / "fixtures" / "blocked-claim-lint-replay-2026-09-23.json"
+TALLY = HERE / "test" / "fixtures" / "blocked-claim-lint-tally-2026-09-23.json"
+# The labelled sentences stay OFF this public repo (PR #428 review blocker: a
+# denylist scrub let a person's name and a prospect through). Point this at the
+# calibrating machine's copy to run the drift and replay checks.
+PRIVATE_REPLAY = os.environ.get(
+    "KIPI_BLOCKED_CLAIM_REPLAY",
+    str(Path.home() / ".local/state/kipi/calibration/"
+        "blocked-claim-lint-replay-2026-09-23.json"))
+
+# Real sentences from the fleet's advisory log, chosen because they name nobody.
+REAL_DOES_NOT_EXIST = "That command doesn't exist."
+REAL_NOTHING_WRITTEN = "Nothing was written to the tree."
+REAL_BARE_BLOCKED = "PR #306 is BLOCKED."
+
+
+def _strings(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from _strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _strings(v)
+    elif isinstance(node, str):
+        yield node
 
 
 def measured_mode_cases(mod) -> list[tuple[str, bool]]:
-    """ASK-459: which triggers block is a MEASUREMENT, recomputed here from real rows.
+    """ASK-459: which triggers block is a MEASUREMENT, recomputed here from counts.
 
-    The fixture is a labelled replay of the fleet's advisory logs (provenance block
-    inside it). This test does not trust BLOCKING_TRIGGERS: it recomputes the set
-    from the labels and fails when the table in the lint and the measurement
-    disagree, so the blocking set can only move by re-labelling evidence.
+    This test does not trust BLOCKING_TRIGGERS: it recomputes the set from the
+    labelled tally and fails when the table and the measurement disagree, so the
+    blocking set only moves by re-labelling evidence.
     """
     cases: list[tuple[str, bool]] = []
-    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    rows = data.get("rows", [])
-    # An empty or provenance-free fixture would make every assertion below vacuous.
-    cases.append(("replay fixture carries provenance and at least 200 rows",
-                  bool(data.get("provenance", {}).get("source")) and len(rows) >= 200))
+    data = json.loads(TALLY.read_text(encoding="utf-8"))
+    tally = data.get("tally", {})
+    total = sum(v.get("labelled", 0) for v in tally.values())
+    cases.append(("tally carries provenance and at least 200 labelled rows",
+                  bool(data.get("provenance", {}).get("source")) and total >= 200))
+    # The public file holds counts, never prose. A "text" key or a long string
+    # outside the provenance block means sentences are leaking back in.
+    leaked = [s for s in _strings(tally) if len(s) > 40] + \
+             [k for k in _strings(data) if k in ("text", "rows_text", "sentence")]
+    cases.append((f"the public tally carries no sentence text ({len(leaked)} found)",
+                  not leaked))
 
     for p in mod.PATTERNS:
         cases.append((f"every trigger of {p.pattern_id} has an id",
                       len(mod.TRIGGER_IDS.get(p.pattern_id, ())) == len(p.triggers)))
-
-    # Drift: the lint must still route each labelled sentence to the trigger it was
-    # labelled under, or the precision below is about a different regex.
-    drifted = [r["text"][:60] for r in rows
-               if [f.trigger for f in mod.evaluate(r["text"])][:1] != [r["trigger"]]]
-    cases.append((f"every fixture row still fires its labelled trigger "
-                  f"({len(drifted)} drifted: {drifted[:2]})", not drifted))
-
-    tally: dict[str, list[int]] = {}
-    for r in rows:
-        g_n = tally.setdefault(r["trigger"], [0, 0])
-        g_n[0] += bool(r["genuine"])
-        g_n[1] += 1
-    measured = {t for t, (g, n) in tally.items()
-                if n >= mod.MIN_LABELLED and g / n >= mod.PRECISION_BAR}
+    measured = {t for t, v in tally.items()
+                if v["labelled"] >= mod.MIN_LABELLED
+                and v["genuine"] / v["labelled"] >= mod.PRECISION_BAR}
     cases.append((f"BLOCKING_TRIGGERS equals the measured set (measured "
                   f"{sorted(measured)}, table {sorted(mod.BLOCKING_TRIGGERS)})",
                   measured == set(mod.BLOCKING_TRIGGERS) and bool(measured)))
 
-    # Replay under the mode both settings files set.
-    wrong_pass = [r["text"][:60] for r in rows
-                  if r["genuine"] and r["trigger"] in mod.BLOCKING_TRIGGERS
-                  and not mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
-    cases.append((f"measured: every genuine row on a blocking trigger blocks "
-                  f"({len(wrong_pass)} passed)", not wrong_pass))
-    wrong_block = [r["text"][:60] for r in rows
-                   if r["trigger"] not in mod.BLOCKING_TRIGGERS
-                   and mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
-    cases.append((f"measured: no row on an advisory trigger blocks "
-                  f"({len(wrong_block)} blocked)", not wrong_block))
-    cases.append(("advisory mode blocks nothing on the whole replay",
-                  not any(mod.blocking_findings(mod.evaluate(r["text"]), "advisory")
-                          for r in rows)))
+    # Shadowing (PR #428 review): a precise claim next to a bare "blocked" blocks.
+    both = mod.evaluate(
+        "The commit is blocked because the config it reads does not exist.")
+    cases.append(("a 'does not exist' claim is not shadowed by 'blocked' beside it",
+                  [f.trigger for f in both] == ["does-not-exist"]
+                  and bool(mod.blocking_findings(both, "measured"))))
 
-    # The real hook path, with the env the settings files set.
-    real = next(r["text"] for r in rows
-                if r["genuine"] and r["trigger"] == "does-not-exist")
-    rc, err, root = run_hook_in_root(real, mode="measured")
+    cases.extend(_private_replay_cases(mod))
+
+    # The real hook path.
+    rc, err, root = run_hook_in_root(REAL_DOES_NOT_EXIST, mode="measured")
     fired = [f for row in log_rows(root) for f in row.get("findings", [])]
     cases.append(("measured hook exits 2 on a real unsettled 'does not exist' claim",
                   rc == 2 and "lookup-as-runtime-fact" in err))
     cases.append(("the firing row records the trigger and that it blocked",
                   any(f.get("trigger") == "does-not-exist" and f.get("blocking")
                       for f in fired)))
-    noisy = next(r["text"] for r in rows
-                 if r["genuine"] and r["trigger"] == "blocked-word")
-    rc, _, root = run_hook_in_root(noisy, mode="measured")
+    rc, _, _ = run_hook_in_root(REAL_NOTHING_WRITTEN, mode="measured")
+    cases.append(("measured hook exits 2 on a real 'nothing was written' claim",
+                  rc == 2))
+    rc, _, root = run_hook_in_root(REAL_BARE_BLOCKED, mode="measured")
     rows_adv = log_rows(root)
     cases.append(("measured hook exits 0 on a bare-'blocked' claim and logs it advisory",
                   rc == 0 and [r.get("event") for r in rows_adv] == ["advisory"]))
@@ -386,15 +397,47 @@ def measured_mode_cases(mod) -> list[tuple[str, bool]]:
     # The switch ships WITH THE SCRIPT: with no mode in the environment the hook runs
     # measured. The RCA's promotion lived in one settings file and never reached the
     # fleet; a default in code cannot be stranded that way.
-    rc, _, _ = run_hook_in_root(real, mode=None)
+    rc, _, _ = run_hook_in_root(REAL_DOES_NOT_EXIST, mode=None)
     cases.append(("with no mode in the environment the hook runs measured (exit 2)",
                   rc == 2))
     # A caller's exported mode wins, which is how the one-shot reviewer opts out.
-    rc, _, _ = run_hook_in_root(real, mode="advisory")
+    rc, _, _ = run_hook_in_root(REAL_DOES_NOT_EXIST, mode="advisory")
     cases.append(("an exported advisory mode still wins (exit 0)", rc == 0))
     agent = (HERE / "pr-review-agent.sh").read_text()
     cases.append(("pr-review-agent.sh runs its claude reviewer with the lint advisory",
                   "claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded" in agent))
+    return cases
+
+
+def _private_replay_cases(mod) -> list[tuple[str, bool]]:
+    """Drift + replay against the labelled rows, where they exist (never in CI)."""
+    path = Path(PRIVATE_REPLAY)
+    if not path.exists():
+        print(f"NOTE: labelled replay rows absent ({path}); drift and replay "
+              "checks not run on this machine. The tally checks above still ran.")
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+    cases = [("private replay has at least 200 rows", len(rows) >= 200)]
+    drifted = [r["text"][:60] for r in rows
+               if [f.trigger for f in mod.evaluate(r["text"])][:1] != [r["trigger"]]]
+    cases.append((f"every labelled row still fires its labelled trigger "
+                  f"({len(drifted)} drifted)", not drifted))
+    counts: dict[str, list[int]] = {}
+    for r in rows:
+        g_n = counts.setdefault(r["trigger"], [0, 0])
+        g_n[0] += bool(r["genuine"])
+        g_n[1] += 1
+    tally = json.loads(TALLY.read_text(encoding="utf-8"))["tally"]
+    cases.append(("the public tally matches the labelled rows",
+                  {t: [v["genuine"], v["labelled"]] for t, v in tally.items()} == counts))
+    wrong_pass = [r for r in rows if r["genuine"] and r["trigger"] in mod.BLOCKING_TRIGGERS
+                  and not mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"replay: every genuine row on a blocking trigger blocks "
+                  f"({len(wrong_pass)} passed)", not wrong_pass))
+    wrong_block = [r for r in rows if r["trigger"] not in mod.BLOCKING_TRIGGERS
+                   and mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"replay: no row on an advisory trigger blocks "
+                  f"({len(wrong_block)} blocked)", not wrong_block))
     return cases
 
 
