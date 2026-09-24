@@ -16,7 +16,7 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
 ```
 
 Capture (medium and up) = a ledger row in `.prd-os/spillover.jsonl` AND one Linear issue for Sana
-(via `alert-to-linear.py`, id on the row). A NEW minor is never queued: fix it now or reject it with a reason.
+(via `alert-to-linear.py`, id on the row). A NEW minor is never queued: fix it now or reject it with a reason. A promise about the future is an orphan too: `named-emitter.md`.
 
 ## How items leave the ledger (only two ways)
 
