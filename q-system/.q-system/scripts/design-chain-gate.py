@@ -2101,7 +2101,9 @@ def retired_reason(page: Path) -> str | None:
     Returns "" for a RETIRED file with no reason."""
     rd = round_dir_for(page)
     marker = rd / RETIRED
-    if not marker.is_file():
+    # only a real ROUND retires: round_dir_for falls back to the page's own folder, and a one-word
+    # file there opened the publish door on a page that was never in a round (PR #445 round 3)
+    if not marker.is_file() or not _is_round(rd):
         return None
     try:
         return marker.read_text().strip()
@@ -2599,13 +2601,14 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs: list[str] = []
     if not page.is_file():
         return [f"page not found: {page}"]
+    # after .not-a-round, so RETIRED cannot override that marker's own refusal (PR #445 round 3)
+    declared = tool_directory_problems(page)
+    if declared is not None:
+        return declared
     retired = retired_reason(page)
     if retired is not None:
         return [] if retired else [
             f"{round_dir_for(page) / RETIRED} carries no reason. One line: date, reason, who decided."]
-    declared = tool_directory_problems(page)
-    if declared is not None:
-        return declared
     if corrected_page(page):
         return []
     if sourced_page(page):
@@ -3505,11 +3508,14 @@ def _hook(payload: dict) -> int:
         return 0
 
     if ev == "PostToolUse" and tool == "Bash":
-        since = float(led.get("bash_marker") or (time.time() - 60))
         # a missing snapshot (a ledger from before this field, or a Pre that never ran) counts every
         # page as changed: without evidence the gate stays strict, never lenient
         snap = (led.get("bash_before") or {}).get(_snapshot_key(payload))
         before = snap.get("pages") if isinstance(snap, dict) else None
+        # THIS call's own start, not the shared bash_marker: a sibling Pre that ran later moved the
+        # marker past this call's write, so the write fell outside the mtime window (PR #445 round 3)
+        since = (float(snap["at"]) - 1 if isinstance(snap, dict) and snap.get("at")
+                 else float(led.get("bash_marker") or (time.time() - 60)))
         for fp in newer_pages(scan_roots(payload), since):
             # only a file inside a ROUND. mtime was the whole filter, so `git checkout` or an
             # install touching src/components/*.tsx enrolled ordinary application source and Stop
@@ -3581,7 +3587,9 @@ def main(argv: list[str]) -> int:
         return correct(Path(argv[1]).resolve(), reason)
     if argv and argv[0] == "status-page":
         probs = chain_problems(Path(argv[1]).resolve())
-        print("COMPLETE" if not probs else "OPEN")
+        why = retired_reason(Path(argv[1]).resolve())
+        # a retired round never ran the chain; COMPLETE would claim it did (PR #445 round 3)
+        print(f"RETIRED: {why}" if why else ("COMPLETE" if not probs else "OPEN"))
         for x in probs:
             print("   - " + x)
         return 2 if probs else 0
@@ -3595,7 +3603,8 @@ def main(argv: list[str]) -> int:
         rc = 0
         for p in pages:
             probs = chain_problems(p)
-            print(f"{p.name}: {'COMPLETE' if not probs else 'OPEN'}")
+            why = retired_reason(p)
+            print(f"{p.name}: " + (f"RETIRED: {why}" if why else ('COMPLETE' if not probs else 'OPEN')))
             for x in probs:
                 print("   - " + x)
             rc = rc or (2 if probs else 0)

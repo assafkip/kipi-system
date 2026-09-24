@@ -190,5 +190,50 @@ class TestRetiredRound(TestBashEnrollAttribution):
         self.assertIn("RETIRED carries no reason", out)
 
 
+class TestRound3FollowUps(TestBashEnrollAttribution):
+    """PR #445 review round 3 findings."""
+
+    def status_page(self, page):
+        r = subprocess.run([sys.executable, str(GATE), "status-page", str(page)], capture_output=True,
+                           text=True, env={**os.environ, **self.env})
+        return r.returncode, r.stdout
+
+    def test_a_sibling_pre_after_a_slow_write_does_not_hide_it(self):
+        # the shared bash_marker moved past A's write when B's Pre ran more than 1s later
+        a, b = self.payload("python3 build.py", "toolu_a"), self.payload("git status", "toolu_b")
+        self.hook(a, "PreToolUse")
+        time.sleep(0.05)
+        self.page.write_text("<html><body>rebuilt by A</body></html>")
+        time.sleep(1.3)
+        self.hook(b, "PreToolUse")
+        self.hook(b, "PostToolUse")
+        self.hook(a, "PostToolUse")
+        self.assertIn(str(self.page.resolve()), self.ledger_pages())
+
+    def test_status_says_retired_not_complete(self):
+        (self.round / "RETIRED").write_text("2026-09-24 published; founder ruling (<owner>)\n")
+        rc, out = self.status_page(self.page)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(out.startswith("RETIRED: 2026-09-24"), out)
+
+    def test_retired_outside_a_round_retires_nothing(self):
+        d = self.inst / "site" / "loose"
+        d.mkdir(parents=True)
+        page = d / "Loose-laptop.html"
+        page.write_text("<html><body>never in a round</body></html>")
+        (d / "RETIRED").write_text("2026-09-24 opening the door\n")
+        rc, out = self.status_page(page)
+        self.assertEqual(rc, 2, out)
+        self.assertTrue(out.startswith("OPEN"), out)
+
+    def test_retired_does_not_override_an_empty_not_a_round_marker(self):
+        (self.round / ".not-a-round").write_text("\n")
+        (self.round / "RETIRED").write_text("2026-09-24 published (<owner>)\n")
+        (self.round / "brief.md").unlink()
+        rc, out = self.status_page(self.page)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("carries no reason", out)
+
+
 if __name__ == "__main__":
     unittest.main()
