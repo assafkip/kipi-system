@@ -48,6 +48,12 @@ HONEST BOUNDARY (what this does NOT catch, stated so it is not read as coverage)
     memory", not "I misread it". Opening the row and ignoring its content passes.
   - `evidence_ledger.py list` prints every row, so after one `list` every id counts as
     opened. `show <id>` is the precise verb and the one the refusal names.
+  - A large ledger read is PERSISTED out of the transcript: the harness replaces a
+    result over roughly 30 KB with a `<persisted-output>` pointer to a
+    `tool-results/` file plus a 2 KB preview (a 255-row `list` is 210 KB). The
+    pointer path is remembered as ledger output, and a later tool call that names
+    THAT path counts as a ledger read (PR #433 review). A read of any other
+    `tool-results/` file does not.
   - A Bash call that names the ledger and ALSO echoes an arbitrary id (`echo ev-x;
     cat evidence.jsonl`) counts as a read. This is a gate on honest recall, not on an
     adversary forging provenance.
@@ -86,6 +92,10 @@ WRITER_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 # What makes a tool call a read of the ledger. Matched against the json of the call's
 # INPUT, so a Read's file_path, a Grep's path and a Bash command all qualify.
 LEDGER_MARKERS = ("evidence.jsonl", "evidence_ledger", "evidence-citation-lint")
+
+# The path a persisted-output pointer names. Only a pointer found in a LEDGER read's
+# result is remembered, so this never widens to "any tool-results file".
+PERSISTED_RE = re.compile(r"[^\s<>\"'`]*tool-results/[^\s<>\"'`]+")
 
 
 def ids_in(text) -> set[str]:
@@ -209,6 +219,7 @@ def opened_ids(records, ledger_only: bool = True) -> set[str]:
     """
     calls: dict[str, tuple[str, str]] = {}
     seen: set[str] = set()
+    persisted: set[str] = set()  # ledger output moved out of the transcript
     for rec in records:
         for b in _blocks(rec):
             if not isinstance(b, dict):
@@ -223,9 +234,14 @@ def opened_ids(records, ledger_only: bool = True) -> set[str]:
                 name, inp = calls.get(b.get("tool_use_id") or "", ("", ""))
                 if name in WRITER_TOOLS:
                     continue  # an Edit result echoes what was just written
-                if ledger_only and not any(m in inp for m in LEDGER_MARKERS):
+                text = _result_text(b)
+                is_ledger = (any(m in inp for m in LEDGER_MARKERS)
+                             or any(p in inp for p in persisted))
+                if ledger_only and not is_ledger:
                     continue
-                seen |= ids_in(_result_text(b))
+                if is_ledger:
+                    persisted |= set(PERSISTED_RE.findall(text))
+                seen |= ids_in(text)
     return seen
 
 

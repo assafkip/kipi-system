@@ -230,5 +230,45 @@ class TheShowVerb(Base):
         self.assertIn("ev-0000000000", bad.stderr)
 
 
+
+def _load_lint():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("erll_persist", LINT)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class PersistedLedgerOutput(unittest.TestCase):
+    """PR #433 review: `list` on a 255-row ledger (210 KB) is persisted out of the
+    transcript; the id is reachable only by reading the pointer file."""
+
+    PTR = "/s/proj/sess/tool-results/beglog6ri.txt"
+
+    def _recs(self, read_path):
+        def use(i, name, inp):
+            return {"message": {"content": [
+                {"type": "tool_use", "id": i, "name": name, "input": inp}]}}
+
+        def res(i, text):
+            return {"message": {"content": [
+                {"type": "tool_result", "tool_use_id": i, "content": text}]}}
+        return [
+            use("a", "Bash", {"command": "python3 evidence_ledger.py list"}),
+            res("a", "<persisted-output>Output too large (209.8KB). Full output saved "
+                     f"to: {self.PTR}\nPreview: ev-0000000001 ...</persisted-output>"),
+            use("b", "Read", {"file_path": read_path}),
+            res("b", "claim_id ev-a9fff8f571 ..."),
+        ]
+
+    def test_reading_the_ledger_pointer_counts_as_opening(self):
+        mod = _load_lint()
+        self.assertIn("ev-a9fff8f571", mod.opened_ids(self._recs(self.PTR)))
+
+    def test_reading_another_tool_results_file_does_not(self):
+        mod = _load_lint()
+        other = "/s/proj/sess/tool-results/zzzz.txt"
+        self.assertNotIn("ev-a9fff8f571", mod.opened_ids(self._recs(other)))
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
