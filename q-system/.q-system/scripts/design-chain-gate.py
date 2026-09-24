@@ -3526,7 +3526,7 @@ def _hook(payload: dict) -> int:
             # command is NOT a second door: `ls`/`grep` of another session's round would re-enroll
             # it on a pure mtime move (PR #445 review round 1, minor), and a command that really
             # writes a page changes its content, which this arm already sees. A rebuild that
-            # yields byte-identical output does not enroll: nothing new exists to put through the
+            # yields the same bytes does not enroll: nothing new exists to put through the
             # chain, and the page's earlier state was already judged or never this session's.
             if before is not None and before.get(str(here)) == _file_sha(here):
                 continue
