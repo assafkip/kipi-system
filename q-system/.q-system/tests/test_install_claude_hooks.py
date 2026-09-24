@@ -243,6 +243,23 @@ class InstallerCase(unittest.TestCase):
         self.assertIsNotNone(inst.refuse_if_weaker("h.sh", slow, real),
                              "a hook production would kill was accepted")
 
+    def test_this_prs_hook_is_accepted_over_mains_installed_copy(self):
+        """Review r5 major: the env diff read `${var//x/}` in a COMMENT as a new
+        variable and refused this PR's own hook, so the fleet updater could
+        never install it. The real pair: this source over main's reference."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        ref = subprocess.run(
+            ["git", "show", "origin/main:q-system/.q-system/tests/fixtures/"
+             "destructive-op-deny.reference.sh"],
+            capture_output=True, text=True, cwd=REPO)
+        if ref.returncode != 0:
+            self.skipTest("origin/main reference not reachable from this clone")
+        self.assertIsNone(inst.refuse_if_weaker("destructive-op-deny.sh",
+                                                open(SOURCE).read(), ref.stdout))
+
     def test_a_lowercase_env_var_backdoor_is_refused(self):
         """Round 3: a lowercase single-word key slipped the case filter."""
         import importlib.util

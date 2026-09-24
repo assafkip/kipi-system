@@ -310,7 +310,12 @@ def _env_vars_read(text):
     # through, against this docstring's own claim. A local the hook assigns is
     # subtracted above; one the patterns miss cancels out because both sides of
     # the differential read it. A genuinely NEW one is refused, which fails safe.
-    reads = set(_ENV_READ.findall(text))
+    # COMMENTS ARE NOT READS (PR #338 review round 5). Reading every name made a
+    # prose `${var//x/}` in a comment look like a new variable, and the installer
+    # refused this PR's own hook. Whole-line comments are dropped before the
+    # read scan; code lines keep full coverage, lowercase names included.
+    code = "\n".join(l for l in text.split("\n") if not l.lstrip().startswith("#"))
+    reads = set(_ENV_READ.findall(code))
     return reads - assigned
 
 

@@ -174,6 +174,19 @@ class ArgvPrefilterCase(unittest.TestCase):
             self.assertEqual(decision, "deny", tail)
             self.assertLess(elapsed, HOOK_TIMEOUT_S, "%s: %.2fs" % (tail, elapsed))
 
+    def test_a_fat_first_token_under_the_byte_cap_still_denies_in_time(self):
+        """Round 12 (review r5): a fat token at a stage's FIRST position crossed
+        5s at 104KB, under the byte cap. Size caps are proxies; the watchdog
+        bounds time itself, so every size in range must answer deny in budget."""
+        for kb in (104, 200, 250):
+            fat = "x" * (kb * 1024)
+            for tail in ("git push --" + "force", "git clean -" + "fd",
+                         "git push origin +main"):
+                decision, elapsed = decision_for(fat + " ; " + tail)
+                self.assertEqual(decision, "deny", "%dKB %s" % (kb, tail))
+                self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                                "%dKB %s: %.2fs" % (kb, tail, elapsed))
+
     def test_a_long_command_without_rm_or_git_is_not_refused(self):
         """The ceiling is scoped: it is not a length cap on ordinary work."""
         decision, _ = decision_for("echo " + " ".join(["word"] * 3000))

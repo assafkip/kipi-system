@@ -148,6 +148,17 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   if [ "$_stage_seps" -gt "$_MAX_STAGE_SEPS" ]; then
     emit_deny "this command has $_stage_seps stage separators (; | &), past the $_MAX_STAGE_SEPS this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Split it into several commands, or put it in a script file."
   fi
+
+  # A HARD TIME LIMIT ON EVERYTHING BELOW (PR #338, after twelve review rounds).
+  #
+  # Rounds 1 to 12 each capped one proxy for cost -- words, then `;` stages,
+  # then bytes -- and each round found a padding shape the cap did not bound.
+  # The hook is killed at its wired 5s timeout and its deny DISCARDED, so any
+  # payload that runs long is an allow. Bounding a proxy cannot close that;
+  # bounding TIME does. The checks below run in a background subshell; if they
+  # have not answered in 3s the hook refuses. "I could not finish checking" is
+  # not permission. macOS has no GNU `timeout`, so the watchdog is a poll loop.
+  _bash_checks() {
   # Pattern list — extend conservatively.
   declare -a BASH_DENY=(
     'rm[[:space:]]+(-[a-zA-Z]*[rRf][a-zA-Z]*[[:space:]])'
@@ -838,6 +849,25 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       done
       ;;
   esac
+  }
+  # mktemp -t, not a TMPDIR expansion: the installer refuses any NEW env read.
+  _chk_out="$(mktemp -t dod.XXXXXX)"
+  ( _bash_checks ) >"$_chk_out" 2>/dev/null &
+  _chk_pid=$!
+  _chk_i=0
+  while kill -0 "$_chk_pid" 2>/dev/null && [ "$_chk_i" -lt 30 ]; do
+    sleep 0.1; _chk_i=$((_chk_i + 1))
+  done
+  if kill -0 "$_chk_pid" 2>/dev/null; then
+    kill -9 "$_chk_pid" 2>/dev/null
+    rm -f "$_chk_out"
+    emit_deny "this command took longer than this guard's 3s checking budget. It refuses rather than answering allow by running out of time. Shorten or split the command, or put long content in a file with the Write tool."
+  fi
+  wait "$_chk_pid" 2>/dev/null
+  if [ -s "$_chk_out" ]; then
+    cat "$_chk_out"; rm -f "$_chk_out"; exit 0
+  fi
+  rm -f "$_chk_out"
 fi
 
 # ---- MCP destructive tool denials ----
