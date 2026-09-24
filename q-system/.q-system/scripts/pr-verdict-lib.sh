@@ -401,7 +401,9 @@ pr_head_sha() {
 }
 
 # --- the arm-state record (ASK-222, PR #33 review round 3, finding 1) --------
-# record_automerge <path> <armed|unarmed|unknown>   -- written by the ONE reader
+# record_automerge <path> <armed|unarmed|unknown>   -- written by each ARMER
+#   (linear-worker.sh's arm_automerge, and converge.sh after its own automerge_arm
+#   since ASK-310), always with automerge_arm's answer, so one semantics
 # automerge_from_record <path>                      -- read by everyone else
 #
 # WHY A RECORD AND NOT A SECOND PROBE. linear-worker.sh asks GitHub whether a PR
@@ -419,8 +421,8 @@ pr_head_sha() {
 # PR. A run that never got there (another session's claim, a worktree that could
 # not be made) leaves the previous run's word standing. That is safe in the
 # direction that matters: "armed" only goes false if a human turns auto-merge
-# off, and "unarmed"/"unknown" both point the operator at the fallback command,
-# which is a no-op on a PR that is in fact armed. Absent means absent -- the
+# off, and converge re-arms anything recorded "unarmed"/"unknown" or absent
+# (ASK-310), which is a no-op on a PR that is in fact armed. Absent means absent -- the
 # reader gets an empty string and must claim nothing.
 record_automerge() {
   printf '%s\n' "$2" > "$1" 2>/dev/null || true
@@ -452,6 +454,13 @@ automerge_arm() {
   AUTOMERGE_ARM_STATE="unknown"; AUTOMERGE_ARM_NEW=0; AUTOMERGE_ARM_ERR=""
   # `gh pr merge --auto --squash ''` acts on whatever branch the cwd is on.
   [ -n "$pr" ] || { AUTOMERGE_ARM_STATE=""; return 0; }
+  # Every gh call below runs after `cd "$dir"`. A missing dir failed them all on
+  # the cd, and the page then said "gh printed no reason" when gh never ran
+  # (PR #429 review nit). Name the dir and do not call gh at all.
+  if [ ! -d "$dir" ]; then
+    AUTOMERGE_ARM_ERR="arm dir '$dir' does not exist, so gh never ran"
+    return 0
+  fi
   if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
                    -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
     probe="unknown"
@@ -469,10 +478,12 @@ automerge_arm() {
                    -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
     probe="unknown"
   fi
+  # EMPTY IS "could not tell", as the header promises (PR #429 review nit): gh
+  # can exit 0 with no answer, and that is not a reading of "false".
   case "$probe" in
-    true)    AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_ERR="" ;;
-    unknown) AUTOMERGE_ARM_STATE="unknown" ;;
-    *)       AUTOMERGE_ARM_STATE="unarmed" ;;
+    true)       AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_ERR="" ;;
+    unknown|"") AUTOMERGE_ARM_STATE="unknown" ;;
+    *)          AUTOMERGE_ARM_STATE="unarmed" ;;
   esac
   return 0
 }
