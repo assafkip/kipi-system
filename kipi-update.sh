@@ -1846,7 +1846,10 @@ while IFS='|' read -r name path prefix itype declared; do
       echo "    Add \"skeleton_managed\": false to its instance-registry.json entry"
       echo "    with a note, or give it a subtree_prefix so it actually syncs."
       UNDECLARED="$UNDECLARED $name"
-      FAIL=$((FAIL + 1))
+      # Through the helper, not a bare FAIL+1: the sweep-history row read this
+      # as failed=1 with no name, so the one class where the name is the whole
+      # value could never raise a regression (PR #439 review, major 2).
+      count_instance_failure
     fi
     echo ""
     continue

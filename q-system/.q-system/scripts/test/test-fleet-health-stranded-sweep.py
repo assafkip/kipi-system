@@ -72,8 +72,9 @@ other = tmp / "other"
 subprocess.run(["git", "clone", "-q", "-b", "feat", str(bare), str(other)], check=True, env=ENV)
 commit(other, "upstream-moved", when=OLD)
 git(other, "push", "-q", "origin", "feat")
-git(repo, "fetch", "-q", "origin")
-stranded = commit(repo, "b", when=OLD)           # ahead 1, behind 1, old: the case
+# NO fetch here, on purpose: a checkout nobody reopens is a checkout nobody
+# fetches, so its origin/feat is frozen where it was (PR #439 review, major 3).
+stranded = commit(repo, "b", when=OLD)           # ahead 1, behind 1 on the SERVER
 
 # Ahead-only: an ordinary pending push (and every instance's local exhaust).
 git(repo, "checkout", "-q", "-b", "ahead-only", "main")
@@ -94,6 +95,11 @@ check("a branch with no remote counterpart is not reported", orphan[:10] in body
 check("the branch name is not carried (ASK-204)", "feat" in body, False)
 check("one finding per repo, keyed by the repo", found[0]["subject"] if found else None,
       f"stranded-{repo}")
+# The body must not embed a clock: a new hash every morning re-files and re-pages
+# an untouched repo forever (PR #439 review, major 1).
+later = fh.stranded_findings([repo], NOW + 86400)
+check("an untouched repo renders the same body a day later",
+      (later[0]["body"] if later else None) == body, True)
 
 # Fresh unpushed work on a diverged branch is in flight, not stranded.
 git(repo, "checkout", "-q", "feat")
@@ -114,6 +120,7 @@ finally:
     del os.environ["GIT_DIR"]
 check("an inherited GIT_DIR does not rebind the repo", len(rebound), 1)
 
+git(repo, "fetch", "-q", "origin")
 git(repo, "merge", "-q", "--no-edit", "origin/feat")
 git(repo, "push", "-q", "origin", "feat")
 check("once merged and pushed, silence", fh.stranded_findings([repo], NOW), [])
@@ -140,7 +147,7 @@ def row(mode="real", updated=20, failed=0, names=(), only="", ts="t"):
 subjects = lambda rows: sorted(f["subject"] for f in fh.sweep_findings(rows))
 check("all green is silent", subjects([row(), row()]), [])
 check("no history is silent", subjects([]), [])
-check("a degraded ratio fires", subjects([row(updated=6, failed=3, names="xyz")]),
+check("a degraded ratio fires", subjects([row(updated=6, failed=3, names=["x", "y", "z"])]),
       ["sweep-ratio"])
 check("a newly failing instance fires, a standing one does not",
       subjects([row(updated=21, failed=1, names=["a"]),

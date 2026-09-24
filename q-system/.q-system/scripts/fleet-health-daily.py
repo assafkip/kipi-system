@@ -1651,7 +1651,10 @@ def _git_env() -> dict:
     inherited GIT_DIR beats `-C` -- every repo would silently answer as the first
     one (scar recorded on kipi-system tests that wrote the REAL repo).
     """
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # ls-remote under launchd must fail, never wait on a credential prompt.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
 
 
 def _git(repo, *args) -> subprocess.CompletedProcess:
@@ -1659,8 +1662,30 @@ def _git(repo, *args) -> subprocess.CompletedProcess:
                           text=True, timeout=60, env=_git_env())
 
 
+def _remote_heads(repo, remote: str) -> dict:
+    """{refs/heads/X: sha} as the SERVER has them, via ls-remote.
+
+    Never the local refs/remotes copy. A checkout nobody reopens is a checkout
+    nobody fetches, so its remote-tracking refs are frozen, "behind" reads 0, and
+    stranded work there looked like a pending push: silent on the exact
+    population this exists for. Measured 2026-09-24: 9 of 24 live instances had
+    refs over a week old (PR #439 review, major 3). ls-remote over all 26 fleet
+    repos took 15s with 0 failures, so asking the server costs nothing that matters.
+    A failure raises: an unreachable remote is "error", never a clean zero.
+    """
+    res = _git(repo, "ls-remote", "--heads", remote)
+    if res.returncode != 0:
+        raise RuntimeError(f"ls-remote {remote} failed in {repo}: {res.stderr.strip()[:200]}")
+    heads = {}
+    for line in res.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if sha and ref:
+            heads[ref] = sha
+    return heads
+
+
 def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
-    """[(branch, sha, age_hours)]: unpushed commits on a branch BEHIND its remote.
+    """[(branch, sha, committer_ts)]: unpushed commits on a branch BEHIND its remote.
 
     The class is sp-85446513, measured 2026-08-14: auto-commit wrote a 90-line
     fix onto a local branch 15 commits behind origin, so the work existed only on
@@ -1674,31 +1699,44 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
                      exhaust (session memory, skeleton syncs)
       no counterpart the remote branch is gone, which after a squash merge with
                      auto-delete is the normal end of a merged PR
-    Both are skipped. A repo with no remote is skipped too. Raises on a git
-    failure, so the detector reads "error", never a clean zero.
+    Both are skipped. A repo with no remote is skipped too. "Behind" is measured
+    against the server (see _remote_heads). Raises on a git failure, so the
+    detector reads "error", never a clean zero.
     """
     remotes = _git(repo, "remote")
     if remotes.returncode != 0:
         raise RuntimeError(f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
-    if not remotes.stdout.strip():
+    known = remotes.stdout.split()
+    if not known:
         return []
-    refs = _git(repo, "for-each-ref", "--format=%(refname:short)\t%(upstream:short)",
+    refs = _git(repo, "for-each-ref",
+                "--format=%(refname:short)\t%(upstream:remotename)\t%(upstream:remoteref)",
                 "refs/heads")
     if refs.returncode != 0:
         raise RuntimeError(f"for-each-ref failed in {repo}: {refs.stderr.strip()[:200]}")
-    seen, out = set(), []
+    heads_by_remote, seen, out = {}, set(), []
     for line in refs.stdout.splitlines():
-        branch, _, upstream = line.partition("\t")
-        counterpart = upstream or f"origin/{branch}"
-        if _git(repo, "rev-parse", "--verify", "-q",
-                f"refs/remotes/{counterpart}").returncode != 0:
+        branch, remote, remote_ref = (line.split("\t") + ["", ""])[:3]
+        if not remote:
+            remote, remote_ref = "origin", f"refs/heads/{branch}"
+        if remote not in known:
+            continue
+        if remote not in heads_by_remote:
+            heads_by_remote[remote] = _remote_heads(repo, remote)
+        server = heads_by_remote[remote].get(remote_ref)
+        if not server:
             continue                                   # no counterpart: not this class
-        behind = _git(repo, "rev-list", "--count", f"{branch}..{counterpart}")
-        if behind.returncode != 0:
-            raise RuntimeError(f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
-        if int(behind.stdout.strip() or 0) == 0:
-            continue                                   # ahead-only: a pending push
-        log = _git(repo, "log", "--format=%H %ct", branch, "--not", "--remotes")
+        exclude = ["--not", "--remotes"]
+        if _git(repo, "cat-file", "-e", f"{server}^{{commit}}").returncode == 0:
+            behind = _git(repo, "rev-list", "--count", f"{branch}..{server}")
+            if behind.returncode != 0:
+                raise RuntimeError(f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
+            if int(behind.stdout.strip() or 0) == 0:
+                continue                               # ahead-only: a pending push
+            exclude.append(server)
+        # else: the server tip is an object this checkout has never seen, so the
+        # branch cannot contain it -- behind by definition.
+        log = _git(repo, "log", "--format=%H %ct", branch, *exclude)
         if log.returncode != 0:
             raise RuntimeError(f"git log {branch} failed in {repo}: {log.stderr.strip()[:200]}")
         for entry in log.stdout.splitlines():
@@ -1706,9 +1744,8 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
             if not sha or sha in seen or not ct.isdigit():
                 continue
             seen.add(sha)
-            age = now - int(ct)
-            if age >= grace_s:
-                out.append((branch, sha, round(age / 3600)))
+            if now - int(ct) >= grace_s:
+                out.append((branch, sha, int(ct)))
     return out
 
 
@@ -1735,9 +1772,13 @@ def stranded_findings(repos, now: float) -> list:
         rows = stranded_commits(repo, now)
         if not rows:
             continue
-        rows.sort(key=lambda r: -r[2])
-        shown = "\n".join(f"- `{sha[:10]}`, {age}h old"
-                           for _branch, sha, age in rows[:STRANDED_SHOWN])
+        # A committed DATE, never an age: an age is recomputed from the clock, so
+        # an untouched repo rendered a new body and a new hash every morning, and
+        # file_findings re-filed and re-paged it forever (PR #439 review, major 1).
+        rows.sort(key=lambda r: r[2])
+        shown = "\n".join(
+            f"- `{sha[:10]}`, committed {datetime.fromtimestamp(ct, timezone.utc):%Y-%m-%d}"
+            for _branch, sha, ct in rows[:STRANDED_SHOWN])
         more = len(rows) - STRANDED_SHOWN
         findings.append({
             "subject": f"stranded-{repo}",

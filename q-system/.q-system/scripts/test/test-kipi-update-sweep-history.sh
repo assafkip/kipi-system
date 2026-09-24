@@ -83,4 +83,21 @@ case "$out" in *"--- testinst"*) ;; *) fail "the default run never reached the i
 [ ! -e "$work/home/.config/kipi/fleet-sweep-history.jsonl" ] \
   || fail "a fixture skeleton wrote the default history path"
 echo "PASS: a skeleton in a temp dir never writes the default history"
+# ------------------------------------------------------------------ property 4
+# An UNDECLARED NON-PROPAGATING instance fails the run and must be NAMED in the
+# row, or the regression signal can never fire for the one class where the name
+# is the whole value (PR #439 review, major 2).
+mkdir -p "$work/orphan"
+python3 - "$work/skel/instance-registry.json" "$work/orphan" <<'PY'
+import json, sys
+path, orphan = sys.argv[1:3]
+reg = json.load(open(path))
+reg["instances"].append({"name": "orphan", "path": orphan})
+json.dump(reg, open(path, "w"))
+PY
+out="$(HOME="$work/home" KIPI_FLEET_SWEEP_HISTORY="$hist" bash "$work/skel/kipi-update.sh" 2>&1)" || true
+case "$out" in *"UNDECLARED NON-PROPAGATING"*) ;; *) fail "the undeclared instance was not reported: $out" ;; esac
+python3 -c "import json,sys; r=json.loads(open(sys.argv[1]).read().splitlines()[-1]); assert 'orphan' in r['failed_names'], r" "$hist" \
+  || fail "the undeclared failure is counted but not named: $(tail -1 "$hist")"
+echo "PASS: an undeclared instance is named in the row"
 echo "PASS: every sweep leaves a history row (ASK-776)"
