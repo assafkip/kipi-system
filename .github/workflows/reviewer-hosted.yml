@@ -1,0 +1,66 @@
+name: Reviewer Hosted
+
+# A verdict producer that runs when the dispatcher Mac is off (ASK-318,
+# failure mode 2). pr-review-agent.sh, the only producer of a real
+# kipi/reviewer-approved verdict, ran only from com.kipi.dispatch on one Mac.
+# With that Mac asleep, every PR sat on reviewer-floor's red with no verdict.
+#
+# This job runs the SAME reviewer, through hosted-review-gate.sh, on every PR
+# push. With no model secret on the repo the gate says so and runs nothing,
+# and the floor's red keeps holding the PR. Setting ANTHROPIC_API_KEY (or
+# CLAUDE_CODE_OAUTH_TOKEN) as a repo secret turns it on. No code change needed.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+# One review per PR at a time: a new push supersedes a running review of the
+# old head, which the reviewer would only post onto a stale sha anyway.
+concurrency:
+  group: reviewer-hosted-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+
+jobs:
+  reviewer-hosted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Job level, not step level: a step's own env is not visible to its `if`,
+    # and the secrets context cannot be read in an `if` directly.
+    env:
+      HAS_MODEL_SECRET: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      # CHECK OUT THE BASE, NOT THE PR, for the reason reviewer-floor.yml gives
+      # (Codex major, PR #96): this job holds a model secret and statuses: write
+      # and then runs a script from the checkout. On the PR's own code the author
+      # could edit the reviewer to post success. The PR head is DATA here: the
+      # reviewer reads its diff through gh and posts onto its head sha.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the claude CLI, only when a model secret exists
+        if: ${{ env.HAS_MODEL_SECRET == 'true' }}
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Review the PR head, or say the hosted reviewer is off
+        run: |
+          set -euo pipefail
+          # BOOTSTRAP, same safe direction as the floor: on the PR that adds
+          # this workflow the gate is not on base yet. Posting nothing leaves
+          # the floor's red in place and the PR blocked.
+          if [ ! -f q-system/.q-system/scripts/hosted-review-gate.sh ]; then
+            echo "hosted-review-gate.sh is not on the base ref yet; posting nothing."
+            exit 0
+          fi
+          bash q-system/.q-system/scripts/hosted-review-gate.sh "${{ github.event.pull_request.number }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
