@@ -320,6 +320,16 @@ def scan_payload(payload: dict) -> list[str]:
     return _scan_text(path, text, only_lines)
 
 
+def _crash_jurisdiction(payload: dict) -> bool:
+    """A change to a file type this guard scans (ASK-1180). Dict lookups only."""
+    tool_input = payload.get("tool_input") or {}
+    for key in ("file_path", "path", "notebook_path"):
+        val = tool_input.get(key)
+        if val:
+            return str(val).lower().endswith(tuple(TARGET_EXTENSIONS))
+    return False
+
+
 def main(argv: list[str]) -> int:
     findings: list[str] = []
     if argv:                                   # CLI mode: whole-file scan of each path
@@ -345,4 +355,31 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    if sys.argv[1:]:  # CLI mode: a crash already exits non-zero, which fails the caller
+        raise SystemExit(main(sys.argv[1:]))
+    try:
+        from hook_fail_closed import run as _fail_closed
+    except Exception:  # noqa: BLE001
+        def _fail_closed(call, gate, in_jurisdiction):
+            # ASK-1180: hook_fail_closed.py is missing. The gate still RUNS, and
+            # the same crash rule applies inline, so deleting one shared file
+            # neither reopens this gate nor changes a single normal verdict.
+            import io
+            import traceback
+            raw = sys.stdin.read()
+            sys.stdin = io.StringIO(raw)
+            try:
+                rc = call()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    p = json.loads(raw or "{}")
+                    inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
+                except Exception:  # noqa: BLE001
+                    inside = True
+                sys.stderr.write(gate + ": crashed, fail-closed helper missing; "
+                                 + ("refusing (ASK-1180)\n" if inside else "allowed\n"))
+                return 2 if inside else 0
+            return 0 if rc is None else rc
+    sys.exit(_fail_closed(lambda: main([]), gate="prompt-only-enforcement-guard",
+                          in_jurisdiction=_crash_jurisdiction))
