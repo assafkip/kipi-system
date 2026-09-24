@@ -583,18 +583,30 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # per-loop ceilings did not close the class; this one is in front of all of
   # them and costs one `wc -w`.
   #
-  # Scoped so ordinary long commands pass: it fires only when the line is over
-  # the word ceiling AND carries a word the argv scans act on (rm or git).
-  # Without that word the scans have nothing to deny, so their cost is not a
-  # hole. 1000 words keeps the O(n^2) strip loop near 0.6s, far under 5s. A
-  # long heredoc that mentions git is refused too; the message says what to do.
+  # Over the ceiling, the argv scans are SKIPPED, not run slowly (round 9,
+  # PR #338 review). Round 8 only denied when the line named rm or git and
+  # otherwise let the O(n^2) scans run, so 3000 `a=1` words ahead of `; kipi
+  # update` pushed the FLEET_DENY check, which sits after the scans, past 5s.
+  # Skipping removes the slow part whatever the payload, so every check below
+  # runs inside the budget. What the scans would have caught is covered here
+  # instead: a line over the ceiling that names rm or git is refused outright.
+  #
+  # The left boundary ALLOWS `/` (round 9, same review): `/bin/rm` and
+  # `/usr/bin/git` are the basenames `_argv_could_deny_here` admits, and the
+  # round-8 class excluded `/`, so an absolute path hid the word. 1000 words
+  # keeps the scans near 0.6s. A long heredoc that mentions git is refused too;
+  # the message says what to do.
   _ARGV_MAX_WORDS=1000
+  _argv_skip=0
   _argv_words=$(printf '%s' "$COMMAND" | wc -w | tr -d ' ')
-  if [ "$_argv_words" -gt "$_ARGV_MAX_WORDS" ] && \
-     printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_./-])(rm|git)([^[:alnum:]_-]|$)'; then
-    emit_deny "this command is $_argv_words words and names rm or git, past the $_ARGV_MAX_WORDS words this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Split the command, or write long text with the Write tool."
+  if [ "$_argv_words" -gt "$_ARGV_MAX_WORDS" ]; then
+    if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|git)([^[:alnum:]_-]|$)'; then
+      emit_deny "this command is $_argv_words words and names rm or git, past the $_ARGV_MAX_WORDS words this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Split the command, or write long text with the Write tool."
+    fi
+    _argv_skip=1
   fi
 
+  if [ "${_argv_skip:-0}" != 1 ]; then
   while IFS= read -r _stage; do
     [ -n "$_stage" ] || continue
     _ARGV_REASON=""; argv_deny_reason "$_stage" && _argv_reason="$_ARGV_REASON" && \
@@ -711,6 +723,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       _i=$((_i+1))
     done
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
+  fi  # _argv_skip
 
   # ASK-1118: the fleet exemption is decided per STAGE, not over the whole string.
   #

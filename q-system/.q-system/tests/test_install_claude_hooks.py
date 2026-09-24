@@ -223,9 +223,25 @@ class InstallerCase(unittest.TestCase):
         spec.loader.exec_module(inst)
         real = open(SOURCE).read()
         for label, broken in (("stub", "#!/usr/bin/env bash\nexit 2\n"),
-                              ("crash", "#!/usr/bin/env bash\nif then fi (\n")):
+                              ("crash", "#!/usr/bin/env bash\nif then fi (\n"),
+                              # round 2, r4a: a PERMISSIVE stub allows `true`
+                              # and read as a valid baseline
+                              ("permissive", "#!/usr/bin/env bash\nexit 0\n")):
             self.assertIsNone(inst.refuse_if_weaker("h.sh", real, broken),
                               "the %s installed hook blocked the repair" % label)
+
+    def test_a_hook_slower_than_its_wired_timeout_is_refused(self):
+        """Round 2, r5: probed at 30s, a hook that denies at 10s read as a clean
+        deny, while production kills it at 5s and discards the verdict."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        slow = real.replace("\n", "\nsleep %d\n" % (inst.WIRED_HOOK_TIMEOUT_S + 1), 1)
+        self.assertNotEqual(slow, real)
+        self.assertIsNotNone(inst.refuse_if_weaker("h.sh", slow, real),
+                             "a hook production would kill was accepted")
 
     def test_an_env_var_backdoor_is_refused(self):
         """PR #279 minor, codex's shape exactly: every canary passes because the

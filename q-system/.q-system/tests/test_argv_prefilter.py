@@ -139,6 +139,23 @@ class ArgvPrefilterCase(unittest.TestCase):
                             "sudo x%d: %.2fs against a %.0fs timeout"
                             % (n, elapsed, HOOK_TIMEOUT_S))
 
+    def test_padding_cannot_push_later_checks_past_the_timeout(self):
+        """Round 9, the reviewer's r1b and r6 reproducers. `a=1` padding names
+        neither rm nor git, so round 8's ceiling let the O(n^2) scans run and
+        the fleet check behind them came back after 5s. An absolute program
+        path hid `rm` from the ceiling's boundary class."""
+        rm = "r" + "m"
+        cases = (
+            " ".join(["a=1"] * 3000) + " ; kipi " + "update",
+            " ".join(["sudo"] * 3000) + " /bin/%s -v -%s /tmp/irreplaceable" % (rm, "rf"),
+            " ".join(["sudo"] * 3000) + " /usr/bin/git reset --" + "hard",
+        )
+        for command in cases:
+            decision, elapsed = decision_for(command)
+            self.assertEqual(decision, "deny", command[-40:])
+            self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                            "%s: %.2fs" % (command[-40:], elapsed))
+
     def test_a_long_command_without_rm_or_git_is_not_refused(self):
         """The ceiling is scoped: it is not a length cap on ordinary work."""
         decision, _ = decision_for("echo " + " ".join(["word"] * 3000))

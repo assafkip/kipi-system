@@ -309,6 +309,11 @@ def _env_vars_read(text):
     return reads - assigned
 
 
+# The timeout settings.json wires for destructive-op-deny.sh. The probe must use
+# the SAME budget production does, or it certifies answers production discards.
+WIRED_HOOK_TIMEOUT_S = 5
+
+
 def decision_of(hook_path, tool_name, tool_input, home):
     """Run the hook on one payload and return "deny", "allow" or "error".
 
@@ -322,7 +327,16 @@ def decision_of(hook_path, tool_name, tool_input, home):
     env["HOME"] = home
     try:
         proc = subprocess.run(["bash", hook_path], input=json.dumps(payload),
-                              capture_output=True, text=True, timeout=30, env=env)
+                              capture_output=True, text=True,
+                              timeout=WIRED_HOOK_TIMEOUT_S, env=env)
+    except subprocess.TimeoutExpired:
+        # PRODUCTION KILLS THE HOOK AT ITS WIRED TIMEOUT AND DISCARDS THE DENY
+        # (PR #338 review, round 2). Probed at 30s, a hook that answered "deny"
+        # at 10s read as a clean deny to every gate here, and the whole
+        # refuse_if_weaker() accepted it (323s of probing, verdict None). An
+        # overrun is not a deny, so it is reported as its own outcome and
+        # every "must deny" comparison refuses it.
+        return "timeout"
     except (OSError, subprocess.SubprocessError):
         return "error"
     # EXIT 2 IS ALSO A BLOCK. PreToolUse accepts two protocols: JSON at exit 0,
@@ -401,13 +415,19 @@ def installed_is_an_oracle(name, installed_text):
         reference = os.path.join(probe_home, "installed-" + name)
         with open(reference, "w") as fh:
             fh.write(installed_text)
-        ok = decision_of(reference, "Bash", {"command": "true"}, probe_home) == "allow"
+        # Both directions (round 2, reproducer r4a): a PERMISSIVE stub allows
+        # `true` too, reads no variables, and so made every variable the real
+        # hook reads look "new". A baseline must allow the harmless command
+        # AND deny at least one canary.
+        ok = (decision_of(reference, "Bash", {"command": "true"}, probe_home) == "allow"
+              and any(decision_of(reference, t, pl, probe_home) == "deny"
+                      for t, pl in MUST_DENY))
     finally:
         shutil.rmtree(probe_home, ignore_errors=True)
     if not ok:
         sys.stderr.write(
-            "%s: the INSTALLED hook does not allow `true`, so it is broken, not a "
-            "baseline; the never-weaker comparisons against it are skipped\n" % name)
+            "%s: the INSTALLED hook does not allow `true` and deny a canary, so it is "
+            "broken, not a baseline; the never-weaker comparisons against it are skipped\n" % name)
     return ok
 
 
