@@ -211,6 +211,22 @@ class InstallerCase(unittest.TestCase):
         self.assertIsNotNone(refusal, "the differential missed an unprobed disable")
         self.assertIn(verb, refusal, "the refusal does not name what was lost")
 
+    def test_a_broken_installed_hook_does_not_block_its_own_repair(self):
+        """PR #338 review major. A crashing or deny-everything installed hook
+        read "deny" on every corpus row, so the differential demanded the repair
+        deny all of them and refused the correct source as a "disarm". Both
+        broken shapes the reviewer named: a stub that exits 2, and a syntax
+        error (bash exits 2 on those too)."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        for label, broken in (("stub", "#!/usr/bin/env bash\nexit 2\n"),
+                              ("crash", "#!/usr/bin/env bash\nif then fi (\n")):
+            self.assertIsNone(inst.refuse_if_weaker("h.sh", real, broken),
+                              "the %s installed hook blocked the repair" % label)
+
     def test_an_env_var_backdoor_is_refused(self):
         """PR #279 minor, codex's shape exactly: every canary passes because the
         probe runs with a clean environment and never sets the key.

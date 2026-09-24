@@ -574,6 +574,27 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     return 1
   }
 
+  # ONE LINEAR CEILING IN FRONT OF EVERY ARGV SCAN (round eight, PR #338 review).
+  #
+  # Rounds one to seven each bounded ONE loop, and each time the padding moved
+  # to a loop that was not bounded. Round eight: 3000 `sudo` tokens ahead of a
+  # reordered-flag delete cost the first-position strip loop 5.41s, past the
+  # wired 5s timeout, so the deny was discarded and the delete ran. Seven
+  # per-loop ceilings did not close the class; this one is in front of all of
+  # them and costs one `wc -w`.
+  #
+  # Scoped so ordinary long commands pass: it fires only when the line is over
+  # the word ceiling AND carries a word the argv scans act on (rm or git).
+  # Without that word the scans have nothing to deny, so their cost is not a
+  # hole. 1000 words keeps the O(n^2) strip loop near 0.6s, far under 5s. A
+  # long heredoc that mentions git is refused too; the message says what to do.
+  _ARGV_MAX_WORDS=1000
+  _argv_words=$(printf '%s' "$COMMAND" | wc -w | tr -d ' ')
+  if [ "$_argv_words" -gt "$_ARGV_MAX_WORDS" ] && \
+     printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_./-])(rm|git)([^[:alnum:]_-]|$)'; then
+    emit_deny "this command is $_argv_words words and names rm or git, past the $_ARGV_MAX_WORDS words this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Split the command, or write long text with the Write tool."
+  fi
+
   while IFS= read -r _stage; do
     [ -n "$_stage" ] || continue
     _ARGV_REASON=""; argv_deny_reason "$_stage" && _argv_reason="$_ARGV_REASON" && \
@@ -845,8 +866,11 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
 
   # Read-only auth handshakes, exempt on every server. Checked FIRST so no verb
   # rule below can ever deny the call that makes a server usable.
+  # EXACT names, not substrings (PR #338 review minor): `*authenticate*` was
+  # checked before every verb rule, so any op merely CONTAINING the word, e.g.
+  # a delete_authenticated_user, was allowed unconditionally.
   case "$MCP_OP_LOWER" in
-    *authenticate*|*complete_authentication*) : ;;
+    authenticate|complete_authentication) : ;;
     # A SESSION RESET CLEARS A CONVERSATION, NOT DATA (PR #279 minor).
     # `..._notebooklm__reset_session` matched the `reset` verb and came back with
     # a destructive-operation message and an approval-token instruction.

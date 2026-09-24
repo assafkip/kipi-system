@@ -123,6 +123,27 @@ class ArgvPrefilterCase(unittest.TestCase):
         self.assertLess(elapsed, HOOK_TIMEOUT_S,
                         "%.2fs against a %.0fs timeout" % (elapsed, HOOK_TIMEOUT_S))
 
+    def test_prefix_padding_at_program_position_still_denies_in_time(self):
+        """Round eight, the PR #338 reviewer's own reproducer.
+
+        The case above pads `sudo` as OPERANDS of `echo`, so the prefix-strip
+        loop never runs and it cannot go red for its stated reason (review
+        minor). Here the pad sits at program position, ahead of a
+        reordered-flag delete. Before the invocation word ceiling: 3000 pads
+        took 5.41s, past the 5s timeout, so the deny was DISCARDED."""
+        tail = "r" + "m -v -" + "rf /tmp/irreplaceable"
+        for n in (3000, 5000):
+            decision, elapsed = decision_for(" ".join(["sudo"] * n) + " " + tail)
+            self.assertEqual(decision, "deny", "sudo x%d" % n)
+            self.assertLess(elapsed, HOOK_TIMEOUT_S,
+                            "sudo x%d: %.2fs against a %.0fs timeout"
+                            % (n, elapsed, HOOK_TIMEOUT_S))
+
+    def test_a_long_command_without_rm_or_git_is_not_refused(self):
+        """The ceiling is scoped: it is not a length cap on ordinary work."""
+        decision, _ = decision_for("echo " + " ".join(["word"] * 3000))
+        self.assertEqual(decision, "allow")
+
     def test_the_admitted_token_shape_is_bounded(self):
         """THE worst case, because it cannot be filtered away.
 

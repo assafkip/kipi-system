@@ -383,12 +383,42 @@ def _differential_only(name, source_text, installed_text):
     return None
 
 
+def installed_is_an_oracle(name, installed_text):
+    """Can the INSTALLED hook serve as the never-weaker baseline at all?
+
+    A BROKEN INSTALLED HOOK IS NOT AN ORACLE (PR #338 review, major). A crashing
+    hook exits 2 (bash's own syntax-error code) and a stub that denies
+    everything reads "deny" on every corpus row, so the differential demanded
+    the repair deny all of them and REFUSED the fix, naming "disarm" as the
+    cause. The env-var differential had the same hole: a stub reads no
+    variables, so every variable the real hook reads looked "new". One check,
+    used by both, so a third differential cannot miss it. A hook that cannot
+    allow `true` is broken; the canaries still gate the source on their own.
+    """
+    probe_home = tempfile.mkdtemp(prefix="hookoracle-")
+    try:
+        os.makedirs(os.path.join(probe_home, ".claude", "audit"), exist_ok=True)
+        reference = os.path.join(probe_home, "installed-" + name)
+        with open(reference, "w") as fh:
+            fh.write(installed_text)
+        ok = decision_of(reference, "Bash", {"command": "true"}, probe_home) == "allow"
+    finally:
+        shutil.rmtree(probe_home, ignore_errors=True)
+    if not ok:
+        sys.stderr.write(
+            "%s: the INSTALLED hook does not allow `true`, so it is broken, not a "
+            "baseline; the never-weaker comparisons against it are skipped\n" % name)
+    return ok
+
+
 def refuse_if_weaker(name, source_text, installed_text):
     """Behavioural gate: does the CANDIDATE still deny what it must?
 
     Returns a refusal string, or None. Driven against a throwaway HOME so the
     probe writes its audit log there and never touches the real one.
     """
+    if installed_text is not None and not installed_is_an_oracle(name, installed_text):
+        installed_text = None
     # UNCONDITIONAL, not conditional on what is already installed (PR #279
     # minor). This was gated on the INSTALLED copy having a shebang, so on a
     # first install -- the case where there is no installed copy at all -- it
