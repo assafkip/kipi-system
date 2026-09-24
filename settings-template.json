@@ -363,6 +363,16 @@
           },
           {
             "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/capability-claim-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/capability-claim-lint.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/evidence-read-log-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/evidence-read-log-lint.py\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/handoff-provenance-lint.py\"",
             "timeout": 5
           },

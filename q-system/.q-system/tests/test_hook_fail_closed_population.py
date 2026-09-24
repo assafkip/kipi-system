@@ -90,7 +90,7 @@ NOT_SECURITY = {
     "handoff-provenance-lint.py", "hook_envelope_audit.py", "hook-path-resolve-check.py",
     "portability-lint-hook.py", "blocked-claim-evidence-lint.py", "voice-stop-gate.py",
     "kb-graph-guard.py", "auto-commit.py", "knowledge-inject.py", "lessons-inject.py",
-    "voice-dna-loader.py",
+    "voice-dna-loader.py", "capability-claim-lint.py", "evidence-read-log-lint.py",
 }
 
 

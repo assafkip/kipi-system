@@ -69,6 +69,7 @@ case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "PR 42 (ASK-AAA)" ;;
   *"pr diff"*)              echo "diff --git a/x b/x" ;;
   *"pr comment"*)           echo "https://github.com/owner/homerepo/pull/42#issuecomment-1" ;;
+  *"statuses/"*) if [ -n "\${STUB_STATUS_FAIL:-}" ]; then echo "\$STUB_STATUS_FAIL" >&2; exit 1; fi; echo '{}' ;;
   *"api"*)                  echo '{}' ;;
 esac
 exit 0
@@ -134,4 +135,28 @@ grep -q 'KIPI_TEST_REVIEWER_TOKEN' "$WORK/run3.out" \
 $(tail -15 "$WORK/run3.out" | sed 's/^/        /')"
 ok "configured but empty: no status is posted, and the refusal names the missing variable"
 
-echo "PASS: $PASS/3 reviewer-status identity checks"
+# --- 4. ASK-318: a caller-pinned head that is not the PR's head -------------
+run_agent "$WORK/run4.out" KIPI_REVIEW_EXPECT_HEAD=0123456789abcdef0123456789abcdef01234567
+S4="$(status_posts)"
+[ -z "$S4" ] \
+  || fail "ASK-318 PR #437 major: the caller verified a different head and the agent posted a status anyway ('$S4').
+$(tail -8 "$WORK/run4.out" | sed 's/^/        /')"
+grep -c 'KIPI_REVIEW_EXPECT_HEAD' "$WORK/run4.out" >/dev/null \
+  || fail "the head-mismatch refusal does not name KIPI_REVIEW_EXPECT_HEAD:
+$(tail -8 "$WORK/run4.out" | sed 's/^/        /')"
+ok "a head other than the one the caller verified: refused, no status posted"
+run_agent "$WORK/run5.out" KIPI_REVIEW_EXPECT_HEAD="$SHA"
+[ -n "$(status_posts)" ] || fail "the matching pinned head was refused; the pin must only refuse a DIFFERENT head"
+ok "the head the caller verified: reviewed and posted as usual"
+
+# --- 6. PR #431 nit: a failed status POST says WHY ---------------------------
+# gh's refusal for an expired token, in its own shape. Before, the WARN line
+# said only "NO gate moved", though the reason was already captured in $err.
+run_agent "$WORK/run6.out" KIPI_REVIEWER_TOKEN_ENV=KIPI_TEST_REVIEWER_TOKEN KIPI_TEST_REVIEWER_TOKEN=tok-expired \
+  STUB_STATUS_FAIL="HTTP 401: Bad credentials (https://api.github.com/repos/owner/homerepo/statuses/x)"
+grep 'WARN: could not post commit status' "$WORK/run6.out" | grep -c 'Bad credentials' >/dev/null \
+  || fail "PR #431 nit: the status POST failed with gh's 'Bad credentials' and the WARN line does not say so:
+$(grep 'WARN' "$WORK/run6.out" | sed 's/^/        /')"
+ok "a failed status POST names gh's reason on the WARN line"
+
+echo "PASS: $PASS/6 reviewer-status identity checks"

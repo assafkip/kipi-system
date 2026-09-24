@@ -1,0 +1,89 @@
+name: Reviewer Hosted
+
+# A verdict producer that runs when the dispatcher Mac is off (ASK-318,
+# failure mode 2). pr-review-agent.sh, the only producer of a real
+# kipi/reviewer-approved verdict, ran only from com.kipi.dispatch on one Mac.
+# With that Mac asleep, every PR sat on reviewer-floor's red with no verdict.
+#
+# This job runs the SAME reviewer, through hosted-review-gate.sh, on every PR
+# push. With no model secret on the repo the gate says so and runs nothing,
+# and the floor's red keeps holding the PR. Setting ANTHROPIC_API_KEY (or
+# CLAUDE_CODE_OAUTH_TOKEN) as a repo secret turns it on. No code change needed.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+# One review per PR at a time: a new push supersedes a running review of the
+# old head, which the reviewer would only post onto a stale sha anyway.
+concurrency:
+  group: reviewer-hosted-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+
+jobs:
+  reviewer-hosted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Job level, not step level: a step's own env is not visible to its `if`,
+    # and the secrets context cannot be read in an `if` directly.
+    env:
+      HAS_MODEL_SECRET: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    steps:
+      # CHECK OUT THE BASE, NOT THE PR, for the reason reviewer-floor.yml gives
+      # (Codex major, PR #96): this job holds a model secret and statuses: write
+      # and then runs a script from the checkout. On the PR's own code the author
+      # could edit the reviewer to post success. The PR head is DATA here: the
+      # reviewer reads its diff through gh and posts onto its head sha.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the claude CLI, only when a model secret exists
+        if: ${{ env.HAS_MODEL_SECRET == 'true' }}
+        # Pinned: this job holds the model secret, so what runs is a reviewed choice.
+        run: npm install -g @anthropic-ai/claude-code@2.1.281
+
+      # THE HEAD OBJECT (PR #437 major). The checkout above is BASE, so the head
+      # commit does not exist here and the reviewer would read the base tree while
+      # posting on the head sha. Fetch it as data, never check it out. The repo is
+      # public, so this needs no stored credential.
+      - name: Fetch the PR head commit (data, not code)
+        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.head.sha }}"
+
+      # THE REVIEWER'S MEMORY (PR #437 round 2). pr-review-agent.sh counts rounds
+      # and reads prior findings from ~/.config/kipi/pr-reviews. A runner's HOME
+      # is fresh, so every push was round 1 and ROUND_RULE (do not re-litigate
+      # settled findings) never armed. Carry that dir between runs of the SAME
+      # PR. A new key per run, because a cache key is immutable; restore-keys
+      # picks the newest earlier run. Its contents are only ever written by the
+      # base-checkout reviewer, never by PR code.
+      - name: Restore this PR's earlier review rounds
+        if: ${{ env.HAS_MODEL_SECRET == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.config/kipi/pr-reviews
+          key: reviewer-hosted-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          restore-keys: reviewer-hosted-pr-${{ github.event.pull_request.number }}-
+
+      - name: Review the PR head, or say the hosted reviewer is off
+        run: |
+          set -euo pipefail
+          # BOOTSTRAP, same safe direction as the floor: on the PR that adds
+          # this workflow the gate is not on base yet. Posting nothing leaves
+          # the floor's red in place and the PR blocked.
+          if [ ! -f q-system/.q-system/scripts/hosted-review-gate.sh ]; then
+            echo "hosted-review-gate.sh is not on the base ref yet; posting nothing."
+            exit 0
+          fi
+          bash q-system/.q-system/scripts/hosted-review-gate.sh "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

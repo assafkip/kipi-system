@@ -30,6 +30,15 @@ import subprocess
 
 from . import usage_ledger
 
+#: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
+#: hands text in and reads text back; none uses a tool. Without these flags each
+#: `claude -p` loads the full MCP config of its cwd and starts `npm exec
+#: @apify/actors-mcp-server`, and when the call exits that npm/node pair is not
+#: always killed. Captured 2026-09-23 13:10 PT: one hourly job fire made 27
+#: calls and left 7 apify servers reparented to launchd, and an earlier day's
+#: orphans grew swap from 8 GB to 18 GB and took free disk to 0.55 GB. An empty
+#: strict config means nothing is spawned, so there is nothing to orphan.
+NO_MCP_ARGS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}')
 #: Where the instruction ends and the INPUTS begin. Everything after it is the voice
 #: corpus and the source material, neither of which is a constraint.
 VOICE_MARKER = "VOICE REFERENCE:"
@@ -198,7 +207,7 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        argv = [binary, "-p", prompt, *usage_ledger.JSON_FLAGS]
+        argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS]
         if model:
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
