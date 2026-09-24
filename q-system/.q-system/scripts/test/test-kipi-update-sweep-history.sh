@@ -51,7 +51,9 @@ JSON
   printf 'def local():\n    return 2\n' > "$inst/q-system/tools/local_tool.py"
 }
 
-rows() { [ -f "$1" ] && grep -c . "$1" || echo 0; }
+# grep -c prints 0 AND exits 1 on no match, so `|| echo 0` would print two
+# lines (test-zero-safe-count-idiom.sh). Absent file and empty file both read 0.
+rows() { if [ -f "$1" ]; then grep -c . "$1" || true; else echo 0; fi; }
 
 # ------------------------------------------------------------------ property 1
 work="$(mktemp -d)"; build "$work"; hist="$work/history.jsonl"
