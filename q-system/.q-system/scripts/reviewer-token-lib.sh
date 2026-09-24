@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # reviewer-token-lib.sh -- the ONE rule for which identity writes the reviewer
-# gate (ASK-362 stage 2, sp-c442613c). Sourced by every script that POSTs
-# kipi/reviewer-approved: pr-review-agent.sh (the verdict) and
-# receipt-carry-approval.sh (the carry onto a receipt-only head).
+# gate (ASK-362 stage 2, sp-c442613c). Sourced by both scripts that can POST
+# kipi/reviewer-approved=success: pr-review-agent.sh (the verdict) and
+# receipt-carry-approval.sh (the carry onto a receipt-only head). The third POST
+# site, reviewer-floor.sh in CI, can only ever write failure and posts with the
+# workflow's own GITHUB_TOKEN, so it cannot approve anything and does not use this.
 #
 # WHY ONE HELPER: the first cut of ASK-362 moved only pr-review-agent.sh's POST.
 # Review of PR #431 found carry_post still writing state=success with the ambient

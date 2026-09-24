@@ -78,6 +78,7 @@ cp "$LIB" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-verdict-lib.sh"
 # temp dir, so deriving the sibling from it looks right and resolves to nothing.
 cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/repo-slug-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/repo-slug-lib.sh"
 cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env-failure-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/env-failure-lib.sh"
+cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/reviewer-token-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/reviewer-token-lib.sh"
 AGENT="$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # --- stubs: the engine and gh are the seams, and both are stubbed ------------

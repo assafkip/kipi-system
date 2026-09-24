@@ -1312,7 +1312,9 @@ post_reviewer_status() {
   # PR, which is the safe side.
   local rc=0 err
   err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
-  if [ "$rc" = "$REVIEWER_TOKEN_REFUSED" ]; then
+  # :-3, not bare: a missing lib must not kill the agent under set -u at the
+  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
+  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
     printf '  %s\n' "$err" >&2
     echo "  NO commit status posted on $sha" >&2
     return 0
