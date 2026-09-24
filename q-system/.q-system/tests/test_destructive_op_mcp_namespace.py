@@ -160,6 +160,17 @@ class MCPNamespaceCase(unittest.TestCase):
         _, decision = drive(self.hook, "mcp__supabase__list_tables")
         self.assertEqual(decision, "allow")
 
+    def test_linear_retire_label_ops_are_denied(self):
+        """PR #338 review nit: Linear spells label deletion `retire`. All three
+        are in the live tool roster, and so are their `restore_*` inverses."""
+        for tool in ("mcp__linear__retire_issue_label",
+                     "mcp__linear__retire_project_label",
+                     "mcp__linear__retire_initiative_label"):
+            _, decision = drive(self.hook, tool)
+            self.assertEqual(decision, "deny", "%s was allowed" % tool)
+        _, decision = drive(self.hook, "mcp__linear__restore_issue_label")
+        self.assertEqual(decision, "allow", "the restore path was blocked")
+
     def test_untrash_is_allowed(self):
         """`untrash_message` contains `trash` and RESTORES. Live tool, live risk."""
         _, decision = drive(self.hook, "mcp__claude_ai_Gmail__untrash_message")
