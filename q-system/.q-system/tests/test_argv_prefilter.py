@@ -156,6 +156,15 @@ class ArgvPrefilterCase(unittest.TestCase):
             self.assertLess(elapsed, HOOK_TIMEOUT_S,
                             "%s: %.2fs" % (command[-40:], elapsed))
 
+    def test_stage_padding_cannot_push_the_fleet_deny_past_the_timeout(self):
+        """Round 10: every other timing fixture pads with SPACE-separated words,
+        the axis the word ceiling bounds, so none could go red on stages (review
+        minor). 600 `;` stages in 2 words took the hook past 5s."""
+        for command in (";" * 600 + " kipi " + "update", "a;" * 600 + "kipi " + "update"):
+            decision, elapsed = decision_for(command)
+            self.assertEqual(decision, "deny", command[-20:])
+            self.assertLess(elapsed, HOOK_TIMEOUT_S, "%.2fs" % elapsed)
+
     def test_a_long_command_without_rm_or_git_is_not_refused(self):
         """The ceiling is scoped: it is not a length cap on ordinary work."""
         decision, _ = decision_for("echo " + " ".join(["word"] * 3000))

@@ -243,6 +243,18 @@ class InstallerCase(unittest.TestCase):
         self.assertIsNotNone(inst.refuse_if_weaker("h.sh", slow, real),
                              "a hook production would kill was accepted")
 
+    def test_a_lowercase_env_var_backdoor_is_refused(self):
+        """Round 3: a lowercase single-word key slipped the case filter."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("inst", INSTALLER)
+        inst = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inst)
+        real = open(SOURCE).read()
+        door = real.replace("\n", '\n[ "${letmein:-}" = 1 ] && exit 0\n', 1)
+        refusal = inst.refuse_if_weaker("h.sh", door, real)
+        self.assertIsNotNone(refusal)
+        self.assertIn("letmein", refusal)
+
     def test_an_env_var_backdoor_is_refused(self):
         """PR #279 minor, codex's shape exactly: every canary passes because the
         probe runs with a clean environment and never sets the key.

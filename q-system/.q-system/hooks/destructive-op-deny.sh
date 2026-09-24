@@ -125,6 +125,18 @@ fi
 
 # ---- Bash destructive patterns ----
 if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
+  # STAGES ARE A COST AXIS NO LATER CHECK CAN SKIP (round 10, PR #338 review).
+  # Every per-stage loop in this hook forks per `;|&` stage, about 9ms each, so
+  # 600 stages in 2 words and 2.4KB took the hook past its 5s timeout and the
+  # fleet-update deny was DISCARDED. Skipping one loop only moves the cost to
+  # the next (measured: the fleet loop alone took 5.2s at 600 stages). So this
+  # is the one O(1) answer, checked first: over the cap, refuse. 200 separators
+  # is about 1.8s of hook time and far past any real command; `&&` counts 2.
+  _MAX_STAGE_SEPS=200
+  _stage_seps=$(printf '%s' "$COMMAND" | tr -cd ';|&' | wc -c | tr -d ' ')
+  if [ "$_stage_seps" -gt "$_MAX_STAGE_SEPS" ]; then
+    emit_deny "this command has $_stage_seps stage separators (; | &), past the $_MAX_STAGE_SEPS this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Split it into several commands, or put it in a script file."
+  fi
   # Pattern list — extend conservatively.
   declare -a BASH_DENY=(
     'rm[[:space:]]+(-[a-zA-Z]*[rRf][a-zA-Z]*[[:space:]])'

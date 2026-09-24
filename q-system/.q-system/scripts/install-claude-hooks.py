@@ -305,7 +305,12 @@ def _env_vars_read(text):
     assigned |= set(_ENV_READVAR.findall(text))
     for group in _ENV_LOCALDECL.findall(text):
         assigned |= set(group.split())
-    reads = {m for m in _ENV_READ.findall(text) if m.isupper() or "_" in m}
+    # EVERY read, any case (PR #338 review round 3). The `isupper() or "_"`
+    # filter let a lowercase single-word key (`[ "${letmein:-}" = 1 ] && exit 0`)
+    # through, against this docstring's own claim. A local the hook assigns is
+    # subtracted above; one the patterns miss cancels out because both sides of
+    # the differential read it. A genuinely NEW one is refused, which fails safe.
+    reads = set(_ENV_READ.findall(text))
     return reads - assigned
 
 
