@@ -2963,6 +2963,43 @@ def newer_pages(roots: list[Path], since: float) -> list[str]:
     return found
 
 
+def round_pages(roots: list[Path]) -> list[Path]:
+    """Every page inside a ROUND under these roots, resolved. `_is_round` reads a config per call
+    and cost 0.68s over one real tree's 412 pages; memoized per folder it is one read per round."""
+    memo: dict[Path, bool] = {}
+
+    def in_round(here: Path) -> bool:
+        for d in here.parents[:3]:
+            if d not in memo:
+                memo[d] = _is_round(d)
+            if memo[d]:
+                return True
+        return False
+    out = []
+    for fp in newer_pages(roots, 0):
+        here = Path(fp).resolve()
+        if in_round(here):
+            out.append(here)
+    return out
+
+
+def _file_sha(p: Path) -> str:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _named_by(cmd: str, page: Path) -> bool:
+    """The command names the page or its round folder, as a whole token (`r1` in `-r12` is not)."""
+    names = {page.name}
+    for d in page.parents[:3]:
+        if _is_round(d):
+            names.add(d.name)
+            break
+    return any(n and re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-])", cmd) for n in names)
+
+
 def open_pages(led: dict) -> list[tuple[str, list[str]]]:
     out = []
     for p in list(led.get("pages", {})):
@@ -3410,6 +3447,9 @@ def _hook(payload: dict) -> int:
 
     if ev == "PreToolUse" and tool == "Bash":
         led["bash_marker"] = time.time() - 1
+        # content before the command, so PostToolUse can tell a page this command rewrote from one
+        # whose mtime moved under it (see the PostToolUse Bash branch for the scar)
+        led["bash_before"] = {str(p): _file_sha(p) for p in round_pages(scan_roots(payload))}
         save_ledger(sid, led)
         cmd = ti.get("command", "") or ""
         opens = open_pages(led)
@@ -3421,6 +3461,10 @@ def _hook(payload: dict) -> int:
 
     if ev == "PostToolUse" and tool == "Bash":
         since = float(led.get("bash_marker") or (time.time() - 60))
+        # a missing snapshot (a ledger from before this field, or a Pre that never ran) counts every
+        # page as changed: without evidence the gate stays strict, never lenient
+        before = led.pop("bash_before", None)
+        cmd = ti.get("command", "") or ""
         for fp in newer_pages(scan_roots(payload), since):
             # only a file inside a ROUND. mtime was the whole filter, so `git checkout` or an
             # install touching src/components/*.tsx enrolled ordinary application source and Stop
@@ -3428,6 +3472,15 @@ def _hook(payload: dict) -> int:
             # round 7, major). Same 3-parent walk the round key two branches down already uses.
             here = Path(fp).resolve()
             if not any(_is_round(d) for d in here.parents[:3]):
+                continue
+            # a newer mtime is not authorship. In a checkout shared with launchd jobs, git and
+            # auto-commit, 26 round pages another session made had their mtimes moved during an
+            # unrelated `git log`, enrolled, and Stop blocked a session that never wrote a page
+            # 6+ times, plus its read-only subagents (2026-09-24). Enroll only when the content
+            # changed across this command (or the page is new), or the command names the page or
+            # its round.
+            changed = before is None or before.get(str(here)) != _file_sha(here)
+            if not changed and not _named_by(cmd, here):
                 continue
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
