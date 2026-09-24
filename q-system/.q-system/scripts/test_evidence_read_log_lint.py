@@ -68,7 +68,7 @@ class Base(unittest.TestCase):
         p.write_text("".join(json.dumps(r) + "\n" for r in records))
         return p
 
-    def run_hook(self, payload, mode=None):
+    def run_hook(self, payload, mode="blocking"):
         env = {k: v for k, v in os.environ.items() if k != "KIPI_EVIDENCE_READ_LOG_MODE"}
         env["CLAUDE_PROJECT_DIR"] = str(self.tmp)
         if mode:
@@ -193,10 +193,11 @@ class ScopeModeAndBoundary(Base):
         self.assertEqual(r.returncode, 0)
         self.assertIn(SCARS[0], r.stderr)
 
-    def test_a_mistyped_mode_still_blocks(self):
+    def test_only_the_literal_blocking_mode_blocks(self):
+        # Calibration phase: a misspelt "blocking" must not start stopping writes.
         t = self.transcript([])
         self.assertEqual(self.run_hook(self.write(f"[{SCARS[0]}]\n", t),
-                                       mode="advisroy").returncode, 2)
+                                       mode="blockng").returncode, 0)
 
     def test_no_transcript_passes_with_a_note(self):
         r = self.run_hook(self.write(f"[{SCARS[0]}]\n", self.tmp / "absent.jsonl"))
@@ -304,6 +305,49 @@ class RoundThree(unittest.TestCase):
                    "tool_response": {"type": "update", "originalFile": None}}
         before, after = mod.before_and_after(payload, None)
         self.assertEqual(mod.introduced(before, after), [])
+
+
+class RealProducers(unittest.TestCase):
+    """PR #433 round 4: drive the real producer, not a hand-built row."""
+
+    def test_the_real_add_output_opens_its_id(self):
+        import subprocess
+        import tempfile
+        mod = _load_lint()
+        root = Path(tempfile.mkdtemp())
+        (root / "q-system" / "canonical").mkdir(parents=True)
+        reg = root / "registry.json"
+        reg.write_text(json.dumps({"instances": [
+            {"path": str(root), "instance_q_dir": "q-system"}]}))
+        env = dict(os.environ, KIPI_EVIDENCE_REGISTRY=str(reg))
+        r = subprocess.run(
+            [sys.executable, str(LEDGER), "--repo", str(root), "add",
+             "--claim", "c", "--source", "s", "--command", "true", "--result", "r"],
+            capture_output=True, text=True, check=False, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        new_id = r.stdout.strip().splitlines()[-1]
+        recs = RoundThree._pair(None, "Bash",
+                                {"command": "python3 evidence_ledger.py add ..."}, r.stdout)
+        self.assertIn(new_id, mod.opened_ids(recs))
+
+    def test_citation_lint_show_opens_a_hit_but_not_a_miss(self):
+        mod = _load_lint()
+        out = ("\n=== ev-0123456789 ===\nCLAIM : c\nRESULT: r\n"
+               "ev-00000000ff: NOT IN LEDGER\n")
+        recs = RoundThree._pair(None, "Bash",
+                                {"command": "python3 evidence-citation-lint.py --show x"}, out)
+        opened = mod.opened_ids(recs)
+        self.assertIn("ev-0123456789", opened)
+        self.assertNotIn("ev-00000000ff", opened)
+
+
+
+class ShippedDefault(Base):
+    def test_default_mode_warns_and_passes(self):
+        t = self.transcript([])
+        r = self.run_hook(self.write(f"cites [{SCARS[0]}]\n", t), mode="")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn(SCARS[0], r.stderr)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

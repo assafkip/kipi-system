@@ -26,9 +26,14 @@ Results of Write/Edit/MultiEdit/NotebookEdit never count: an Edit's result echoe
 text just written, which would let every citation launder itself.
 
 MODE. `KIPI_EVIDENCE_READ_LOG_MODE`:
-  blocking (default)  exit 2, stderr names each id and the command that opens it
-  advisory            exit 0, the same message, for an instance that must not block
-Blocking by default is a MEASURED choice. The last citation lint shipped blocking
+  advisory (default)  exit 0, stderr names each id and the command that opens it,
+                      and a row is logged
+  blocking            exit 2, the same message
+ADVISORY BY DEFAULT, deliberately (PR #433 round 4). Four review rounds each found
+one more real producer whose output the id extraction rejected, and the replay
+below was taken before the row-shape rule existed, so it no longer measures the
+code that ships. Flip to blocking only after the calibration log below shows the
+false-block rate on real sessions. The ORIGINAL reasoning, kept for that decision: The last citation lint shipped blocking
 and had to be demoted because ~30 findings were nearly all false. Before this one was
 wired, it was replayed over every session transcript on the build machine
 (2026-09-23, read-only; the replay script and its output are in the ASK-438 PR body):
@@ -89,15 +94,24 @@ ID_RE = re.compile(r"\bev-[0-9a-f]{10}\b")
 # the id. A bare id anywhere else is not a row. PR #433 round 3: a failed
 # `show ev-x` prints "no such row: ev-x", so the refusal's own remedy for a
 # nonexistent id counted as opening it and laundered the citation.
+# Every shape a real producer prints for a row that EXISTS (PR #433 round 4 found
+# two this list missed; the test drives the real `add`):
+#   "claim_id": "ev-x"   Read/grep of evidence.jsonl, `show`, `list --json`
+#   ev-x  <claim>        `list`
+#   ev-x                 `add`, which prints only the new id
+#   === ev-x ===         an instance's evidence-citation-lint.py --show
+# Its miss line, "ev-x: NOT IN LEDGER", matches none of them on purpose.
 ROW_ID_RE = re.compile(
-    r'"claim_id"\s*:\s*"(ev-[0-9a-f]{10})"|^[ \t]*(?:\d+[\t\u2192 ]+)?(ev-[0-9a-f]{10})  ',
+    r'"claim_id"\s*:\s*"(ev-[0-9a-f]{10})"'
+    r'|^[ \t]*(?:\d+[\t\u2192 ]+)?(ev-[0-9a-f]{10})(?:  |[ \t]*$)'
+    r'|^=== (ev-[0-9a-f]{10}) ===[ \t]*$',
     re.MULTILINE)
 
 
 def row_ids_in(text) -> set[str]:
     if not isinstance(text, str):
         return set()
-    return {a or b for a, b in ROW_ID_RE.findall(text)}
+    return {next(g for g in m if g) for m in ROW_ID_RE.findall(text)}
 
 # The three trees where a citation becomes a record someone else acts on. Matched as
 # path SEGMENTS so `my-output-notes/` or `canonicalize.py` never fall in scope.
@@ -340,7 +354,7 @@ def main() -> int:
     if not bad:
         return 0
 
-    mode = os.environ.get(MODE_ENV, "blocking").strip().lower()
+    mode = os.environ.get(MODE_ENV, "advisory").strip().lower()
     root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     _log(root, fp, bad, mode, payload.get("transcript_path") or "")
     ids = " ".join(bad)
@@ -353,9 +367,8 @@ def main() -> int:
         f"  Open it first:  python3 q-system/.q-system/scripts/evidence_ledger.py show {ids}\n"
         "  Then re-check that the row says what your sentence says, and re-write.\n"
         f"  Deliberate exception: add `{SKIP_MARKER}` to the file.\n")
-    # Any value but the explicit "advisory" blocks: a typo in the env var must not
-    # quietly switch the gate off.
-    return 0 if mode == "advisory" else 2
+    # Only the explicit "blocking" blocks while the gate is being calibrated.
+    return 2 if mode == "blocking" else 0
 
 
 if __name__ == "__main__":
