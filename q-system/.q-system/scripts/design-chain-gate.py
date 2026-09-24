@@ -2878,7 +2878,17 @@ def load_ledger(session_id: str) -> dict:
 
 
 def save_ledger(session_id: str, led: dict) -> None:
-    ledger_path(session_id).write_text(json.dumps(led, indent=2))
+    # write-then-rename: a truncate-then-write of a ledger now carrying per-call page snapshots
+    # (hundreds of KB) left a torn file on a crash or full disk, and load_ledger reads a torn file
+    # as empty, silently dropping every enrolled page (PR #445 review round 2)
+    p = ledger_path(session_id)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(led, indent=2))
+        os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 @contextlib.contextmanager
@@ -3515,7 +3525,9 @@ def _hook(payload: dict) -> int:
             # changed across this command, or the page is new. Naming the page or round in the
             # command is NOT a second door: `ls`/`grep` of another session's round would re-enroll
             # it on a pure mtime move (PR #445 review round 1, minor), and a command that really
-            # writes a page changes its content, which this arm already sees.
+            # writes a page changes its content, which this arm already sees. A rebuild that
+            # yields byte-identical output does not enroll: nothing new exists to put through the
+            # chain, and the page's earlier state was already judged or never this session's.
             if before is not None and before.get(str(here)) == _file_sha(here):
                 continue
             if retired_reason(here):

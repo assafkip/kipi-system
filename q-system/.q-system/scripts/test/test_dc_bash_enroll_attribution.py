@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The PostToolUse Bash branch of design-chain-gate.py enrolls a round page only when THIS
-session plausibly made it: the page's content changed across the command (or the page is new),
-or the command names the page or its round.
+session plausibly made it: the page's content changed across the command, or the page is new.
+Naming the page or its round in the command is not authorship (a read-only `ls` of another
+session's round must not enroll it), and a RETIRED round enrolls nothing.
 
 Captured case (2026-09-24, provenance: a builder session's result file, adjacent_findings):
 a session working in a shared checkout never wrote a page. Its writes all went to worktrees and
