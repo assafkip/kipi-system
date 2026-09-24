@@ -1334,7 +1334,10 @@ post_reviewer_status() {
   if [ "$rc" = 0 ]; then
     echo "  commit status posted: $context=$state on $sha"
   else
-    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
+    # gh's own reason, already captured in $err: an expired reviewer token and a
+    # network blip need different fixes, and "NO gate moved" alone names neither
+    # (PR #431 review nit).
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved. gh: $(printf '%s' "${err:-printed no reason}" | tr '\n' ' ' | cut -c1-300)" >&2
   fi
 }
 
