@@ -1626,6 +1626,253 @@ def detect_promoted_audit(_ctx) -> list:
     }]
 
 
+# ---------------------------------------------------------------------------
+# ASK-773: commits that exist only on this machine
+# ---------------------------------------------------------------------------
+#
+# The only prior signal was git-health-check.sh at SessionStart: it prints
+# "N unpushed commit(s)" into a transcript, exits 0, and fires only when a
+# session happens to open in that checkout. Work stranded in a worktree nobody
+# reopens is seen by nobody, and a disk loss takes it with no warning.
+#
+# One finding per REPO, keyed by its path, never one per commit: a checkout with
+# thirty stale branches is one problem to look at, and a per-commit key would
+# file thirty permanent Linear issues. The finding carries sha
+# and age only. Not the subject and not the BRANCH NAME: both are operator free
+# text, and ASK-204 is why a finding carries a reference, never the input.
+STRANDED_GRACE_S = 12 * 3600
+STRANDED_SHOWN = 15
+
+
+def _git_env() -> dict:
+    """The environment minus every GIT_* variable.
+
+    A launchd job does not export GIT_DIR, but a hook-driven caller does, and an
+    inherited GIT_DIR beats `-C` -- every repo would silently answer as the first
+    one (scar recorded on kipi-system tests that wrote the REAL repo).
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # ls-remote under launchd must fail, never wait on a credential prompt.
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+def _git(repo, *args) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                          text=True, timeout=60, env=_git_env())
+
+
+def _remote_heads(repo, remote: str) -> dict:
+    """{refs/heads/X: sha} as the SERVER has them, via ls-remote.
+
+    Never the local refs/remotes copy. A checkout nobody reopens is a checkout
+    nobody fetches, so its remote-tracking refs are frozen, "behind" reads 0, and
+    stranded work there looked like a pending push: silent on the exact
+    population this exists for. Measured 2026-09-24: 9 of 24 live instances had
+    refs over a week old (PR #439 review, major 3). ls-remote over all 26 fleet
+    repos took 15s with 0 failures, so asking the server costs nothing that matters.
+    A failure raises: an unreachable remote is "error", never a clean zero.
+    """
+    res = _git(repo, "ls-remote", "--heads", remote)
+    if res.returncode != 0:
+        raise RuntimeError(f"ls-remote {remote} failed in {repo}: {res.stderr.strip()[:200]}")
+    heads = {}
+    for line in res.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        if sha and ref:
+            heads[ref] = sha
+    return heads
+
+
+def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
+    """[(branch, sha, committer_ts)]: unpushed commits on a branch BEHIND its remote.
+
+    The class is sp-85446513, measured 2026-08-14: auto-commit wrote a 90-line
+    fix onto a local branch 15 commits behind origin, so the work existed only on
+    this machine; it was rescued by hand as PR #150. Diverged -- ahead AND behind
+    -- is the signature, and it is also the narrowing that makes this usable.
+
+    The first version flagged every local commit on no remote, and a read-only
+    probe of the live fleet on 2026-09-24 put 24 of 26 repos in it (663 commits
+    in one checkout). Two shapes made up the flood and neither is stranded work:
+      ahead-only     an ordinary pending push, and every instance's own local
+                     exhaust (session memory, skeleton syncs)
+      no counterpart the remote branch is gone, which after a squash merge with
+                     auto-delete is the normal end of a merged PR
+    Both are skipped. A repo with no remote is skipped too. "Behind" is measured
+    against the server (see _remote_heads). Raises on a git failure, so the
+    detector reads "error", never a clean zero.
+    """
+    remotes = _git(repo, "remote")
+    if remotes.returncode != 0:
+        raise RuntimeError(f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
+    known = remotes.stdout.split()
+    if not known:
+        return []
+    refs = _git(repo, "for-each-ref",
+                "--format=%(refname:short)\t%(upstream:remotename)\t%(upstream:remoteref)",
+                "refs/heads")
+    if refs.returncode != 0:
+        raise RuntimeError(f"for-each-ref failed in {repo}: {refs.stderr.strip()[:200]}")
+    heads_by_remote, seen, out = {}, set(), []
+    for line in refs.stdout.splitlines():
+        branch, remote, remote_ref = (line.split("\t") + ["", ""])[:3]
+        if not remote:
+            remote, remote_ref = "origin", f"refs/heads/{branch}"
+        if remote not in known:
+            continue
+        if remote not in heads_by_remote:
+            heads_by_remote[remote] = _remote_heads(repo, remote)
+        server = heads_by_remote[remote].get(remote_ref)
+        if not server:
+            continue                                   # no counterpart: not this class
+        exclude = ["--not", "--remotes"]
+        if _git(repo, "cat-file", "-e", f"{server}^{{commit}}").returncode == 0:
+            behind = _git(repo, "rev-list", "--count", f"{branch}..{server}")
+            if behind.returncode != 0:
+                raise RuntimeError(f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
+            if int(behind.stdout.strip() or 0) == 0:
+                continue                               # ahead-only: a pending push
+            exclude.append(server)
+        # else: the server tip is an object this checkout has never seen, so the
+        # branch cannot contain it -- behind by definition.
+        log = _git(repo, "log", "--format=%H %ct", branch, *exclude)
+        if log.returncode != 0:
+            raise RuntimeError(f"git log {branch} failed in {repo}: {log.stderr.strip()[:200]}")
+        for entry in log.stdout.splitlines():
+            sha, _, ct = entry.partition(" ")
+            if not sha or sha in seen or not ct.isdigit():
+                continue
+            seen.add(sha)
+            if now - int(ct) >= grace_s:
+                out.append((branch, sha, int(ct)))
+    return out
+
+
+def fleet_repos(registry=None) -> list:
+    """The skeleton checkout plus every live, skeleton-managed registry instance."""
+    registry = Path(registry) if registry else REPO_ROOT / "instance-registry.json"
+    repos = [REPO_ROOT]
+    try:
+        entries = json.loads(registry.read_text()).get("instances", [])
+    except (OSError, ValueError):
+        entries = []
+    for e in entries:
+        if str(e.get("status", "")).startswith("merged") or e.get("skeleton_managed") is False:
+            continue
+        p = Path(e.get("path", ""))
+        if p.is_dir() and (p / ".git").exists() and p not in repos:
+            repos.append(p)
+    return repos
+
+
+def stranded_findings(repos, now: float) -> list:
+    findings = []
+    for repo in repos:
+        rows = stranded_commits(repo, now)
+        if not rows:
+            continue
+        # A committed DATE, never an age: an age is recomputed from the clock, so
+        # an untouched repo rendered a new body and a new hash every morning, and
+        # file_findings re-filed and re-paged it forever (PR #439 review, major 1).
+        rows.sort(key=lambda r: r[2])
+        shown = "\n".join(
+            f"- `{sha[:10]}`, committed {datetime.fromtimestamp(ct, timezone.utc):%Y-%m-%d}"
+            for _branch, sha, ct in rows[:STRANDED_SHOWN])
+        more = len(rows) - STRANDED_SHOWN
+        findings.append({
+            "subject": f"stranded-{repo}",
+            "title": f"{len(rows)} unpushed commit(s) on a branch behind its remote in {Path(repo).name}",
+            "body": (
+                f"Commits on no remote, on a local branch that is BEHIND its remote, older than "
+                f"{STRANDED_GRACE_S // 3600}h, in `{repo}`:\n\n{shown}"
+                + (f"\n- ...and {more} more" if more > 0 else "")
+                + "\n\n## Action\n`git -C <repo> branch --contains <sha>` names the branch. "
+                "Merge its remote in and push, or open a PR from it; or delete the "
+                "branch deliberately. This detector only reports; it never pushes or moves a ref."
+            ),
+        })
+    return findings
+
+
+def detect_stranded_commits(_ctx) -> list:
+    return stranded_findings(fleet_repos(), datetime.now(timezone.utc).timestamp())
+
+
+# ---------------------------------------------------------------------------
+# ASK-776: a fleet sweep that degrades tells nobody
+# ---------------------------------------------------------------------------
+#
+# kipi-update.sh printed "Updated/Failed/Skipped" to stdout and exited 1, and
+# nothing read it: no history, no alert. On 2026-09-23 the read-only reach audit
+# showed 21 of 24 would sync and no alert had ever said so. kipi-update.sh now
+# appends one row per run to this file (its only writer); this is the reader.
+#
+# Two signals, both keyed so an unchanged history refiles nothing:
+#   ratio     -- failed / (updated + failed) at or past SWEEP_FAIL_RATIO
+#   regressed -- an instance failing now that did not fail on the previous row
+#                of the SAME mode (a dry row is never compared with a real one)
+# A standing refusal is not re-paged: on the next sweep it is no longer "new".
+SWEEP_HISTORY = Path(os.environ.get("KIPI_FLEET_SWEEP_HISTORY")
+                     or STATE.parent / "fleet-sweep-history.jsonl")
+SWEEP_FAIL_RATIO = 0.25
+
+
+def read_sweep_history(path=None) -> list:
+    """Rows in order. A torn or non-object line is skipped: the file is append-only
+    and a crash mid-write leaves exactly one such line."""
+    path = Path(path) if path else SWEEP_HISTORY
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def sweep_findings(rows) -> list:
+    # An --only run measures one instance; it says nothing about the fleet.
+    rows = [r for r in rows if not r.get("only")]
+    if not rows:
+        return []
+    latest = rows[-1]
+    updated, failed = int(latest.get("updated", 0)), int(latest.get("failed", 0))
+    names = sorted(set(latest.get("failed_names") or []))
+    stamp = f"run {latest.get('ts', '?')}, mode {latest.get('mode', '?')}, skeleton {str(latest.get('skeleton_sha', '?'))[:10]}"
+    findings = []
+    if updated + failed and failed / (updated + failed) >= SWEEP_FAIL_RATIO:
+        findings.append({
+            "subject": "sweep-ratio",
+            "title": f"Fleet sweep failed {failed} of {updated + failed} instances",
+            "body": (f"{stamp}.\n\nFailed: {', '.join(names) or '(unnamed)'}\n\n## Action\n"
+                     "Run `python3 fleet-reach-audit.py` in the skeleton for the per-instance "
+                     "reason, then clear what is fleet-written."),
+        })
+    prev = next((r for r in reversed(rows[:-1]) if r.get("mode") == latest.get("mode")), None)
+    if prev is not None:
+        before = set(prev.get("failed_names") or [])
+        for name in names:
+            if name in before:
+                continue
+            findings.append({
+                "subject": f"sweep-regressed-{name}",
+                "title": f"{name} stopped receiving fleet updates",
+                "body": (f"{stamp}.\n\n`{name}` failed this sweep and did not fail the "
+                         f"previous {latest.get('mode', '?')} sweep ({prev.get('ts', '?')}).\n\n"
+                         "## Action\nRun `python3 fleet-reach-audit.py` for the reason."),
+            })
+    return findings
+
+
+def detect_sweep_degraded(_ctx) -> list:
+    return sweep_findings(read_sweep_history())
+
+
 DETECTORS = [
     {
         "id": "promoted-audit",
@@ -1708,6 +1955,20 @@ DETECTORS = [
             "Spillover is BY DESIGN a standing ledger of deferred work; its being "
             "non-empty is not a defect to prevent, only to keep visible."
         ),
+    },
+    {
+        "id": "stranded-commits",
+        "description": "unpushed commits on a branch behind its remote, past the grace window (ASK-773)",
+        "detect": detect_stranded_commits,
+        "action": "file_issue",
+        "lesson": "an-auto-commit-to-the-current-branch-strands-unmerged-work",
+    },
+    {
+        "id": "sweep-degraded",
+        "description": "the last fleet sweep failed too many instances, or newly failed one (ASK-776)",
+        "detect": detect_sweep_degraded,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
     },
 ]
 

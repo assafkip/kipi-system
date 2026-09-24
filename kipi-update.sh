@@ -535,6 +535,7 @@ system_owned_paths_for_run() {
   done < <(managed_plugin_names)
 }
 FAILED_NAMES=""
+FAILED_IDS=""
 
 MODEL_SKIPPED_ROOT=""
 MODEL_SKIPPED_PATHS=()
@@ -1132,6 +1133,10 @@ count_instance_failure() {
   # (measured 2026-08-04). A count is not a report.
   FAILED_NAMES="$FAILED_NAMES
     - ${name:-<unnamed>} (${path:-unknown path})"
+  # Names only, one per line, for the sweep-history row (ASK-776). Paths stay
+  # out: the row is a fleet record, and a name is all a reader needs.
+  FAILED_IDS="${FAILED_IDS}${name:-<unnamed>}
+"
 }
 
 abandon_instance() {
@@ -1904,7 +1909,10 @@ while IFS='|' read -r name path prefix itype declared; do
       echo "    Add \"skeleton_managed\": false to its instance-registry.json entry"
       echo "    with a note, or give it a subtree_prefix so it actually syncs."
       UNDECLARED="$UNDECLARED $name"
-      FAIL=$((FAIL + 1))
+      # Through the helper, not a bare FAIL+1: the sweep-history row read this
+      # as failed=1 with no name, so the one class where the name is the whole
+      # value could never raise a regression (PR #439 review, major 2).
+      count_instance_failure
     fi
     echo ""
     continue
@@ -3225,6 +3233,42 @@ if [ -n "$ONLY" ] && [ "$((PASS+FAIL+SKIP))" -eq 0 ]; then
   echo "ERROR: no registered instance named '$ONLY'" >&2
   exit 1
 fi
+
+# ASK-776. The summary below went to stdout and nothing else: no history, no
+# alert. On 2026-09-23 a read-only audit found 21 of 24 instances syncing and
+# nothing had ever said so. One row per run, appended; this function is the only
+# writer and fleet-health-daily.py's detect_sweep_degraded is the reader.
+#
+# A skeleton running from a temp dir is a TEST FIXTURE (every kipi-update test
+# copies this script into mktemp), and it must never append to the live file.
+# Such a run records only when KIPI_FLEET_SWEEP_HISTORY names a path on purpose.
+# A write failure warns and never changes the run's exit code.
+record_sweep_history() {
+  local hist="${KIPI_FLEET_SWEEP_HISTORY:-}" mode="real" sha
+  if [ -z "$hist" ]; then
+    case "$SCRIPT_DIR" in
+      /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+    esac
+    case "$SCRIPT_DIR/" in "${TMPDIR:-/nonexistent-tmpdir}"*) return 0 ;; esac
+    hist="$HOME/.config/kipi/fleet-sweep-history.jsonl"
+  fi
+  [ "$DRY_RUN" = "--dry-run" ] && mode="dry"
+  sha="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  python3 - "$hist" "$mode" "$sha" "$PASS" "$FAIL" "$SKIP" "${ONLY:-}" "$FAILED_IDS" <<'PYEOF' ||
+import json, os, sys
+from datetime import datetime, timezone
+hist, mode, sha, updated, failed, skipped, only, ids = sys.argv[1:9]
+row = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": mode,
+       "skeleton_sha": sha, "updated": int(updated), "failed": int(failed),
+       "skipped": int(skipped), "only": only,
+       "failed_names": [n for n in ids.splitlines() if n]}
+os.makedirs(os.path.dirname(hist) or ".", exist_ok=True)
+with open(hist, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(row) + "\n")
+PYEOF
+    echo "  WARN: could not append the sweep-history row to $hist"
+}
+record_sweep_history
 
 echo "=== Summary ==="
 echo "  Updated: $PASS"
