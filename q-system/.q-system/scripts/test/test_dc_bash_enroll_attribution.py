@@ -147,5 +147,47 @@ class TestBashEnrollAttribution(unittest.TestCase):
                   lambda: self.page.write_text("<html><body>copied in</body></html>"), tid="toolu_cp")
         self.assertIn(str(self.page.resolve()), self.ledger_pages())
 
+class TestRetiredRound(TestBashEnrollAttribution):
+    """A round with a RETIRED file (date, reason, who decided) is skipped completely.
+    Captured case: 2026-09-21b was published by hand; founder ruling 2026-09-24."""
+
+    def retire(self, text="2026-09-24 published; founder ruling 2026-09-24 (<owner>)"):
+        (self.round / "RETIRED").write_text(text + "\n")
+
+    def write(self):
+        return run({"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
+                    "tool_input": {"file_path": str(self.page)}}, self.env)
+
+    def test_an_active_round_still_blocks(self):
+        self.write()
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    def test_a_retired_round_does_not_enroll_or_block(self):
+        self.retire()
+        self.write()
+        self.bash("python3 build.py", lambda: self.page.write_text("<html><body>rebuilt</body></html>"),
+                  tid="toolu_r")
+        self.assertEqual(self.ledger_pages(), set())
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(self.page.name, out)
+
+    def test_retiring_silences_a_page_already_enrolled(self):
+        self.write()
+        self.retire()
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(self.page.name, out)
+
+    def test_an_empty_retired_file_retires_nothing(self):
+        self.write()
+        self.retire(text="")
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn("RETIRED carries no reason", out)
+
+
 if __name__ == "__main__":
     unittest.main()

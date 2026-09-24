@@ -2085,6 +2085,30 @@ def tool_directory_problems(page: Path) -> list[str] | None:
     return []
 
 
+RETIRED = "RETIRED"
+
+
+def retired_reason(page: Path) -> str | None:
+    """The round's RETIRED file (one line: date, reason, who decided), or None.
+
+    A round whose pages already shipped some other way is not work anyone will finish. The
+    2026-09-21b round was published by hand, and its 26 pages kept every session in that
+    checkout blocked at Stop over a chain nobody would ever complete (founder ruling
+    2026-09-24: "published", close it). A retired round is skipped completely: it does not
+    enroll, does not block, and does not appear in Stop output. The reason is mandatory, so
+    an empty file retires nothing and says so. Unlike `withdrawn` (craft-manifest.json status,
+    "will never be shown"), this is the plain after-the-fact record for a round that WAS shown.
+    Returns "" for a RETIRED file with no reason."""
+    rd = round_dir_for(page)
+    marker = rd / RETIRED
+    if not marker.is_file():
+        return None
+    try:
+        return marker.read_text().strip()
+    except OSError:
+        return ""
+
+
 def withdrawn_reason(rd: Path) -> str | None:
     """The round's own one-way declaration that it will never be shown, or None.
 
@@ -2575,6 +2599,10 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs: list[str] = []
     if not page.is_file():
         return [f"page not found: {page}"]
+    retired = retired_reason(page)
+    if retired is not None:
+        return [] if retired else [
+            f"{round_dir_for(page) / RETIRED} carries no reason. One line: date, reason, who decided."]
     declared = tool_directory_problems(page)
     if declared is not None:
         return declared
@@ -3426,7 +3454,7 @@ def _hook(payload: dict) -> int:
 
     if ev == "PostToolUse" and tool in ("Write", "Edit", "MultiEdit"):
         fp = ti.get("file_path", "")
-        if is_page(fp):
+        if is_page(fp) and not retired_reason(Path(fp)):
             if governed(Path(fp).parent):
                 led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
             save_ledger(sid, led)
@@ -3490,6 +3518,8 @@ def _hook(payload: dict) -> int:
             # writes a page changes its content, which this arm already sees.
             if before is not None and before.get(str(here)) == _file_sha(here):
                 continue
+            if retired_reason(here):
+                continue            # a retired round enrolls nothing (see retired_reason)
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
         return 0
