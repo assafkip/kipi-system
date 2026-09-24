@@ -887,7 +887,12 @@ END FINDINGS"
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
 run_engine() {   # run_engine <claude|codex> <destination-file>
   case "$1" in
-    claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
+    # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
+    # its verdict and the FINDINGS block this script parses. A Stop hook that exits 2
+    # forces one more turn, and that turn's text replaces the verdict. Measured on a
+    # week of real transcripts: reviewer verdicts say "does not exist" routinely
+    # ("cites a backstop that does not exist"). The lint still logs them advisory.
+    claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;

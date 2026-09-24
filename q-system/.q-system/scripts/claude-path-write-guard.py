@@ -1659,6 +1659,20 @@ def _stage(seg, assigns, cwd_box, session_cwd=None, layer2_blind=False):
     return "%r would write inside .claude/: %s" % (prog, touches[0])
 
 
+def _crash_jurisdiction(payload):
+    """Does this payload reach for .claude/ at all? Raw substrings only (ASK-1180).
+
+    Runs only after analyse() or main() has raised, so it must not parse the
+    command the way the crashed code did. Deliberately broad: a crash on a
+    command naming .claude/ costs one refused call, and an allow here is the
+    silent disarm of the layer that protects every other hook's wiring.
+    """
+    if payload.get("tool_name") != "Bash":
+        return False
+    command = str((payload.get("tool_input") or {}).get("command") or "")
+    return ".claude" in command or "/.claude" in str(payload.get("cwd") or "")
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -1692,4 +1706,29 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        from hook_fail_closed import run as _fail_closed
+    except Exception:  # noqa: BLE001
+        def _fail_closed(call, gate, in_jurisdiction):
+            # ASK-1180: hook_fail_closed.py is missing. The gate still RUNS, and
+            # the same crash rule applies inline, so deleting one shared file
+            # neither reopens this gate nor changes a single normal verdict.
+            import io
+            import traceback
+            raw = sys.stdin.read()
+            sys.stdin = io.StringIO(raw)
+            try:
+                rc = call()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    p = json.loads(raw or "{}")
+                    inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
+                except Exception:  # noqa: BLE001
+                    inside = True
+                sys.stderr.write(gate + ": crashed, fail-closed helper missing; "
+                                 + ("refusing (ASK-1180)\n" if inside else "allowed\n"))
+                return 2 if inside else 0
+            return 0 if rc is None else rc
+    sys.exit(_fail_closed(main, gate="claude-path-write-guard",
+                          in_jurisdiction=_crash_jurisdiction))

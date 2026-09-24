@@ -120,6 +120,18 @@ def repo_root_from(path):
     return None
 
 
+def _crash_jurisdiction(payload):
+    """An edit to either settings file, or no hook payload at all (ASK-1180).
+
+    No payload means the preflight comparison itself, which is this check's
+    whole job, so a crash there refuses too.
+    """
+    if not payload:
+        return True
+    fp = str((payload.get("tool_input") or {}).get("file_path") or "").replace("\\", "/")
+    return fp.endswith("/.claude/settings.json") or fp.endswith("/settings-template.json")
+
+
 def main():
     hook_data = None
     if "--check" not in sys.argv:
@@ -174,4 +186,34 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # --check is the kipi update preflight. It never reads stdin (an inherited
+    # pipe that never closes would hang the update), and `if !` already treats
+    # its exit 1 on a crash as an abort. Only hook mode needs the wrap.
+    if "--check" in sys.argv:
+        main()
+    try:
+        from hook_fail_closed import run as _fail_closed
+    except Exception:  # noqa: BLE001
+        def _fail_closed(call, gate, in_jurisdiction):
+            # ASK-1180: hook_fail_closed.py is missing. The gate still RUNS, and
+            # the same crash rule applies inline, so deleting one shared file
+            # neither reopens this gate nor changes a single normal verdict.
+            import io
+            import traceback
+            raw = sys.stdin.read()
+            sys.stdin = io.StringIO(raw)
+            try:
+                rc = call()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    p = json.loads(raw or "{}")
+                    inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
+                except Exception:  # noqa: BLE001
+                    inside = True
+                sys.stderr.write(gate + ": crashed, fail-closed helper missing; "
+                                 + ("refusing (ASK-1180)\n" if inside else "allowed\n"))
+                return 2 if inside else 0
+            return 0 if rc is None else rc
+    sys.exit(_fail_closed(main, gate="settings-template-sync-check",
+                          in_jurisdiction=_crash_jurisdiction))

@@ -42,6 +42,13 @@ these paths on its own keeps that line; the block is additive.
 
 Usage:
   kipi-update-gitignore-block.py --skeleton DIR --instance DIR [--check]
+  kipi-update-gitignore-block.py --skeleton DIR --print-stanza
+
+  --print-stanza  print the stanza's path patterns (no comments), one per
+           line, and write nothing. kipi-update.sh feeds this to
+           `git ls-files -c -i --exclude-from` to find TRACKED files the stanza
+           says must never be committed (ASK-605), so the untrack and the
+           ignore block cannot disagree about which paths are exhaust.
 
   --check  report whether the block is current, write nothing. Exit 0 when
            the instance block already matches the skeleton stanza, 1 when it
@@ -154,9 +161,23 @@ def apply_block(instance_dir, stanza, check_only=False):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--skeleton", required=True)
-    ap.add_argument("--instance", required=True)
+    ap.add_argument("--instance")
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--print-stanza", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.print_stanza:
+        try:
+            stanza = skeleton_stanza(args.skeleton)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        for line in stanza:
+            if not line.startswith("#"):
+                print(line)
+        return 0
+    if not args.instance:
+        ap.error("--instance is required unless --print-stanza")
 
     if os.path.abspath(args.skeleton) == os.path.abspath(args.instance):
         print("refusing to write a managed block into the skeleton itself",
