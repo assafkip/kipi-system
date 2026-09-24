@@ -46,7 +46,15 @@ jobs:
 
       - name: Install the claude CLI, only when a model secret exists
         if: ${{ env.HAS_MODEL_SECRET == 'true' }}
-        run: npm install -g @anthropic-ai/claude-code
+        # Pinned: this job holds the model secret, so what runs is a reviewed choice.
+        run: npm install -g @anthropic-ai/claude-code@2.1.281
+
+      # THE HEAD OBJECT (PR #437 major). The checkout above is BASE, so the head
+      # commit does not exist here and the reviewer would read the base tree while
+      # posting on the head sha. Fetch it as data, never check it out. The repo is
+      # public, so this needs no stored credential.
+      - name: Fetch the PR head commit (data, not code)
+        run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.head.sha }}"
 
       - name: Review the PR head, or say the hosted reviewer is off
         run: |
@@ -58,7 +66,7 @@ jobs:
             echo "hosted-review-gate.sh is not on the base ref yet; posting nothing."
             exit 0
           fi
-          bash q-system/.q-system/scripts/hosted-review-gate.sh "${{ github.event.pull_request.number }}"
+          bash q-system/.q-system/scripts/hosted-review-gate.sh "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}"
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
