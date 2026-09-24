@@ -52,7 +52,8 @@ mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 git init -q "$WORK/skel"
 git -C "$WORK/skel" config "url.$WORK/origin-.insteadOf" "https://github.com/owner/"
 cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slug-lib.sh" \
-   "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+   "$SRC_DIR/env-failure-lib.sh" "$SRC_DIR/reviewer-token-lib.sh" \
+   "$WORK/skel/q-system/.q-system/scripts/"
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "c1"
 git -C "$WORK/skel" branch -M main
 git -C "$WORK/skel" remote add origin "https://github.com/owner/homerepo.git"
