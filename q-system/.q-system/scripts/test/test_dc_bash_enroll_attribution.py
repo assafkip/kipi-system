@@ -58,15 +58,25 @@ class TestBashEnrollAttribution(unittest.TestCase):
     def tearDown(self):
         subprocess.run(["/bin/rm", "-r", str(self.tmp)], check=False)
 
-    def bash(self, cmd, during):
+    def payload(self, cmd, tid=None):
         base = {"tool_name": "Bash", "session_id": self.sid, "tool_input": {"command": cmd},
                 "cwd": str(self.inst)}
-        rc, out = run({**base, "hook_event_name": "PreToolUse"}, self.env)
+        if tid:
+            base["tool_use_id"] = tid
+        return base
+
+    def hook(self, base, ev):
+        rc, out = run({**base, "hook_event_name": ev}, self.env)
         self.assertEqual(rc, 0, out)
+
+    def bash(self, cmd, during, tid=None, posts=1):
+        base = self.payload(cmd, tid)
+        self.hook(base, "PreToolUse")
         time.sleep(0.05)
         during()
-        rc, out = run({**base, "hook_event_name": "PostToolUse"}, self.env)
-        self.assertEqual(rc, 0, out)
+        # settings.json wires this gate twice per event, so the real Post fires twice
+        for _ in range(posts):
+            self.hook(base, "PostToolUse")
 
     def ledger_pages(self):
         led = json.loads((self.tmp / "state" / f"{self.sid}.json").read_text())
@@ -103,14 +113,39 @@ class TestBashEnrollAttribution(unittest.TestCase):
         self.bash("python3 build.py", lambda: gen.write_text("<html><body>new</body></html>"))
         self.assertIn(str(gen.resolve()), self.ledger_pages())
 
-    def test_a_command_naming_the_page_enrolls_even_on_a_touch(self):
-        self.bash(f"touch {self.page.name}", self.touch)
+    def test_duplicate_post_invocation_does_not_enroll_a_touch(self):
+        # PR #445 review round 1, major: the first version popped the snapshot, so the second of
+        # the two wired Post hooks found none and enrolled the touched page
+        self.bash("git -C ~/projects/kipi-system log --oneline -3", self.touch, tid="toolu_a", posts=2)
+        self.assertNotIn(str(self.page.resolve()), self.ledger_pages())
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+
+    def test_parallel_calls_keep_their_own_snapshot(self):
+        # Pre A, Pre B, A rewrites the page, Post B, Post A: B's snapshot was taken before A wrote,
+        # A's own must still show the change
+        a, b = self.payload("python3 build.py", "toolu_a"), self.payload("git status", "toolu_b")
+        self.hook(a, "PreToolUse")
+        time.sleep(0.05)
+        self.page.write_text("<html><body>rebuilt by A</body></html>")
+        self.hook(b, "PreToolUse")
+        self.hook(b, "PostToolUse")
+        self.assertNotIn(str(self.page.resolve()), self.ledger_pages(),
+                         "B snapshotted after A wrote; B did not make the page")
+        self.hook(a, "PostToolUse")
         self.assertIn(str(self.page.resolve()), self.ledger_pages())
 
-    def test_a_command_naming_the_round_enrolls_even_on_a_touch(self):
-        self.bash("cp -p stash/*.html site/design/2026-09-21b/", self.touch)
-        self.assertIn(str(self.page.resolve()), self.ledger_pages())
+    def test_a_read_only_command_naming_the_round_does_not_enroll_a_touch(self):
+        # PR #445 review round 1, minor: naming is not authorship, content change is
+        for cmd in (f"ls -la site/design/{self.round.name}", f"grep -rn hero site/design/{self.round.name}",
+                    f"cat site/design/{self.round.name}/{self.page.name}"):
+            self.bash(cmd, self.touch, tid="toolu_ro")
+            self.assertNotIn(str(self.page.resolve()), self.ledger_pages(), cmd)
 
+    def test_a_command_naming_the_round_that_rewrites_a_page_enrolls(self):
+        self.bash(f"cp stash/new.html site/design/{self.round.name}/{self.page.name}",
+                  lambda: self.page.write_text("<html><body>copied in</body></html>"), tid="toolu_cp")
+        self.assertIn(str(self.page.resolve()), self.ledger_pages())
 
 if __name__ == "__main__":
     unittest.main()

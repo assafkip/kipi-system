@@ -2990,14 +2990,12 @@ def _file_sha(p: Path) -> str:
         return ""
 
 
-def _named_by(cmd: str, page: Path) -> bool:
-    """The command names the page or its round folder, as a whole token (`r1` in `-r12` is not)."""
-    names = {page.name}
-    for d in page.parents[:3]:
-        if _is_round(d):
-            names.add(d.name)
-            break
-    return any(n and re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-])", cmd) for n in names)
+SNAPSHOT_KEEP = 8          # Bash snapshots kept per session: parallel calls, never unbounded
+SNAPSHOT_MAX_AGE = 3600    # seconds; a Pre whose Post never came is dropped after this
+
+
+def _snapshot_key(payload: dict) -> str:
+    return str(payload.get("tool_use_id") or "_last")
 
 
 def open_pages(led: dict) -> list[tuple[str, list[str]]]:
@@ -3449,7 +3447,16 @@ def _hook(payload: dict) -> int:
         led["bash_marker"] = time.time() - 1
         # content before the command, so PostToolUse can tell a page this command rewrote from one
         # whose mtime moved under it (see the PostToolUse Bash branch for the scar)
-        led["bash_before"] = {str(p): _file_sha(p) for p in round_pages(scan_roots(payload))}
+        # Keyed by tool_use_id and read with get, never pop: settings.json wires this hook TWICE per
+        # event (see ledger_lock), so a popped snapshot left the second Post with none, and the
+        # fail-strict branch re-enrolled every touched page (PR #445 review round 1, major).
+        # Parallel Bash calls (Pre A, Pre B, Post A, Post B) each keep their own snapshot too.
+        now = time.time()
+        snaps = {k: v for k, v in (led.get("bash_before") or {}).items()
+                 if isinstance(v, dict) and now - float(v.get("at") or 0) < SNAPSHOT_MAX_AGE}
+        snaps[_snapshot_key(payload)] = {
+            "at": now, "pages": {str(p): _file_sha(p) for p in round_pages(scan_roots(payload))}}
+        led["bash_before"] = dict(sorted(snaps.items(), key=lambda kv: kv[1]["at"])[-SNAPSHOT_KEEP:])
         save_ledger(sid, led)
         cmd = ti.get("command", "") or ""
         opens = open_pages(led)
@@ -3463,8 +3470,8 @@ def _hook(payload: dict) -> int:
         since = float(led.get("bash_marker") or (time.time() - 60))
         # a missing snapshot (a ledger from before this field, or a Pre that never ran) counts every
         # page as changed: without evidence the gate stays strict, never lenient
-        before = led.pop("bash_before", None)
-        cmd = ti.get("command", "") or ""
+        snap = (led.get("bash_before") or {}).get(_snapshot_key(payload))
+        before = snap.get("pages") if isinstance(snap, dict) else None
         for fp in newer_pages(scan_roots(payload), since):
             # only a file inside a ROUND. mtime was the whole filter, so `git checkout` or an
             # install touching src/components/*.tsx enrolled ordinary application source and Stop
@@ -3477,10 +3484,11 @@ def _hook(payload: dict) -> int:
             # auto-commit, 26 round pages another session made had their mtimes moved during an
             # unrelated `git log`, enrolled, and Stop blocked a session that never wrote a page
             # 6+ times, plus its read-only subagents (2026-09-24). Enroll only when the content
-            # changed across this command (or the page is new), or the command names the page or
-            # its round.
-            changed = before is None or before.get(str(here)) != _file_sha(here)
-            if not changed and not _named_by(cmd, here):
+            # changed across this command, or the page is new. Naming the page or round in the
+            # command is NOT a second door: `ls`/`grep` of another session's round would re-enroll
+            # it on a pure mtime move (PR #445 review round 1, minor), and a command that really
+            # writes a page changes its content, which this arm already sees.
+            if before is not None and before.get(str(here)) == _file_sha(here):
                 continue
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
