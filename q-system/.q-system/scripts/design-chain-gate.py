@@ -2085,6 +2085,32 @@ def tool_directory_problems(page: Path) -> list[str] | None:
     return []
 
 
+RETIRED = "RETIRED"
+
+
+def retired_reason(page: Path) -> str | None:
+    """The round's RETIRED file (one line: date, reason, who decided), or None.
+
+    A round whose pages already shipped some other way is not work anyone will finish. The
+    2026-09-21b round was published by hand, and its 26 pages kept every session in that
+    checkout blocked at Stop over a chain nobody would ever complete (founder ruling
+    2026-09-24: "published", close it). A retired round is skipped completely: it does not
+    enroll, does not block, and does not appear in Stop output. The reason is mandatory, so
+    an empty file retires nothing and says so. Unlike `withdrawn` (craft-manifest.json status,
+    "will never be shown"), this is the plain after-the-fact record for a round that WAS shown.
+    Returns "" for a RETIRED file with no reason."""
+    rd = round_dir_for(page)
+    marker = rd / RETIRED
+    # only a real ROUND retires: round_dir_for falls back to the page's own folder, and a one-word
+    # file there opened the publish door on a page that was never in a round (PR #445 round 3)
+    if not marker.is_file() or not _is_round(rd):
+        return None
+    try:
+        return marker.read_text().strip()
+    except OSError:
+        return ""
+
+
 def withdrawn_reason(rd: Path) -> str | None:
     """The round's own one-way declaration that it will never be shown, or None.
 
@@ -2575,9 +2601,15 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     probs: list[str] = []
     if not page.is_file():
         return [f"page not found: {page}"]
+    # after .not-a-round, so RETIRED cannot override that marker's own refusal (PR #445 round 3)
     declared = tool_directory_problems(page)
     if declared is not None:
         return declared
+    # the passive gate only: an explicit seal is a claim about the round NOW (see honor_seal)
+    retired = retired_reason(page) if honor_seal else None
+    if retired is not None:
+        return [] if retired else [
+            f"{round_dir_for(page) / RETIRED} carries no reason. One line: date, reason, who decided."]
     if corrected_page(page):
         return []
     if sourced_page(page):
@@ -2696,6 +2728,13 @@ def seal(rd: Path) -> int:
     if why_withdrawn is not None:
         print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
         return 0
+    # A retired round never ran the chain. Sealing it wrote receipts.json from the RETIRED
+    # short-circuit, and a live round could then cite that receipt as measured (PR #445 round 4,
+    # major). Same shape as withdrawn: no receipt, ever.
+    if (rd / RETIRED).is_file() and _is_round(rd):
+        print(f"seal REFUSED:\n  {rd.name} is RETIRED. A retired round is not sealed; no receipt "
+              f"written.", file=sys.stderr)
+        return 2
     code = 2
     with _die_cleanly():
         try:
@@ -2850,7 +2889,17 @@ def load_ledger(session_id: str) -> dict:
 
 
 def save_ledger(session_id: str, led: dict) -> None:
-    ledger_path(session_id).write_text(json.dumps(led, indent=2))
+    # write-then-rename: a truncate-then-write of a ledger now carrying per-call page snapshots
+    # (hundreds of KB) left a torn file on a crash or full disk, and load_ledger reads a torn file
+    # as empty, silently dropping every enrolled page (PR #445 review round 2)
+    p = ledger_path(session_id)
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(led, indent=2))
+        os.replace(tmp, p)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 @contextlib.contextmanager
@@ -2961,6 +3010,41 @@ def newer_pages(roots: list[Path], since: float) -> list[str]:
                     except OSError:
                         pass
     return found
+
+
+def round_pages(roots: list[Path]) -> list[Path]:
+    """Every page inside a ROUND under these roots, resolved. `_is_round` reads a config per call
+    and cost 0.68s over one real tree's 412 pages; memoized per folder it is one read per round."""
+    memo: dict[Path, bool] = {}
+
+    def in_round(here: Path) -> bool:
+        for d in here.parents[:3]:
+            if d not in memo:
+                memo[d] = _is_round(d)
+            if memo[d]:
+                return True
+        return False
+    out = []
+    for fp in newer_pages(roots, 0):
+        here = Path(fp).resolve()
+        if in_round(here):
+            out.append(here)
+    return out
+
+
+def _file_sha(p: Path) -> str:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+SNAPSHOT_KEEP = 8          # Bash snapshots kept per session: parallel calls, never unbounded
+SNAPSHOT_MAX_AGE = 3600    # seconds; a Pre whose Post never came is dropped after this
+
+
+def _snapshot_key(payload: dict) -> str:
+    return str(payload.get("tool_use_id") or "_last")
 
 
 def open_pages(led: dict) -> list[tuple[str, list[str]]]:
@@ -3391,7 +3475,7 @@ def _hook(payload: dict) -> int:
 
     if ev == "PostToolUse" and tool in ("Write", "Edit", "MultiEdit"):
         fp = ti.get("file_path", "")
-        if is_page(fp):
+        if is_page(fp) and not retired_reason(Path(fp)):
             if governed(Path(fp).parent):
                 led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
             save_ledger(sid, led)
@@ -3410,6 +3494,18 @@ def _hook(payload: dict) -> int:
 
     if ev == "PreToolUse" and tool == "Bash":
         led["bash_marker"] = time.time() - 1
+        # content before the command, so PostToolUse can tell a page this command rewrote from one
+        # whose mtime moved under it (see the PostToolUse Bash branch for the scar)
+        # Keyed by tool_use_id and read with get, never pop: settings.json wires this hook TWICE per
+        # event (see ledger_lock), so a popped snapshot left the second Post with none, and the
+        # fail-strict branch re-enrolled every touched page (PR #445 review round 1, major).
+        # Parallel Bash calls (Pre A, Pre B, Post A, Post B) each keep their own snapshot too.
+        now = time.time()
+        snaps = {k: v for k, v in (led.get("bash_before") or {}).items()
+                 if isinstance(v, dict) and now - float(v.get("at") or 0) < SNAPSHOT_MAX_AGE}
+        snaps[_snapshot_key(payload)] = {
+            "at": now, "pages": {str(p): _file_sha(p) for p in round_pages(scan_roots(payload))}}
+        led["bash_before"] = dict(sorted(snaps.items(), key=lambda kv: kv[1]["at"])[-SNAPSHOT_KEEP:])
         save_ledger(sid, led)
         cmd = ti.get("command", "") or ""
         opens = open_pages(led)
@@ -3420,7 +3516,14 @@ def _hook(payload: dict) -> int:
         return 0
 
     if ev == "PostToolUse" and tool == "Bash":
-        since = float(led.get("bash_marker") or (time.time() - 60))
+        # a missing snapshot (a ledger from before this field, or a Pre that never ran) counts every
+        # page as changed: without evidence the gate stays strict, never lenient
+        snap = (led.get("bash_before") or {}).get(_snapshot_key(payload))
+        before = snap.get("pages") if isinstance(snap, dict) else None
+        # THIS call's own start, not the shared bash_marker: a sibling Pre that ran later moved the
+        # marker past this call's write, so the write fell outside the mtime window (PR #445 round 3)
+        since = (float(snap["at"]) - 1 if isinstance(snap, dict) and snap.get("at")
+                 else float(led.get("bash_marker") or (time.time() - 60)))
         for fp in newer_pages(scan_roots(payload), since):
             # only a file inside a ROUND. mtime was the whole filter, so `git checkout` or an
             # install touching src/components/*.tsx enrolled ordinary application source and Stop
@@ -3429,6 +3532,20 @@ def _hook(payload: dict) -> int:
             here = Path(fp).resolve()
             if not any(_is_round(d) for d in here.parents[:3]):
                 continue
+            # a newer mtime is not authorship. In a checkout shared with launchd jobs, git and
+            # auto-commit, 26 round pages another session made had their mtimes moved during an
+            # unrelated `git log`, enrolled, and Stop blocked a session that never wrote a page
+            # 6+ times, plus its read-only subagents (2026-09-24). Enroll only when the content
+            # changed across this command, or the page is new. Naming the page or round in the
+            # command is NOT a second door: `ls`/`grep` of another session's round would re-enroll
+            # it on a pure mtime move (PR #445 review round 1, minor), and a command that really
+            # writes a page changes its content, which this arm already sees. A rebuild that
+            # yields the same bytes does not enroll: nothing new exists to put through the
+            # chain, and the page's earlier state was already judged or never this session's.
+            if before is not None and before.get(str(here)) == _file_sha(here):
+                continue
+            if retired_reason(here):
+                continue            # a retired round enrolls nothing (see retired_reason)
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
         return 0
@@ -3478,7 +3595,9 @@ def main(argv: list[str]) -> int:
         return correct(Path(argv[1]).resolve(), reason)
     if argv and argv[0] == "status-page":
         probs = chain_problems(Path(argv[1]).resolve())
-        print("COMPLETE" if not probs else "OPEN")
+        why = retired_reason(Path(argv[1]).resolve())
+        # a retired round never ran the chain; COMPLETE would claim it did (PR #445 round 3)
+        print(f"RETIRED: {why}" if why else ("COMPLETE" if not probs else "OPEN"))
         for x in probs:
             print("   - " + x)
         return 2 if probs else 0
@@ -3492,7 +3611,8 @@ def main(argv: list[str]) -> int:
         rc = 0
         for p in pages:
             probs = chain_problems(p)
-            print(f"{p.name}: {'COMPLETE' if not probs else 'OPEN'}")
+            why = retired_reason(p)
+            print(f"{p.name}: " + (f"RETIRED: {why}" if why else ('COMPLETE' if not probs else 'OPEN')))
             for x in probs:
                 print("   - " + x)
             rc = rc or (2 if probs else 0)
