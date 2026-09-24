@@ -1662,6 +1662,15 @@ def _git(repo, *args) -> subprocess.CompletedProcess:
                           text=True, timeout=60, env=_git_env())
 
 
+class StrandedCheckError(RuntimeError):
+    """A git step failed while checking one repo. `step` is a fixed name, safe to
+    publish; the message carries git's stderr and is for the local log only."""
+
+    def __init__(self, step: str, message: str):
+        super().__init__(message)
+        self.step = step
+
+
 def _remote_heads(repo, remote: str) -> dict:
     """{refs/heads/X: sha} as the SERVER has them, via ls-remote.
 
@@ -1675,7 +1684,7 @@ def _remote_heads(repo, remote: str) -> dict:
     """
     res = _git(repo, "ls-remote", "--heads", remote)
     if res.returncode != 0:
-        raise RuntimeError(f"ls-remote {remote} failed in {repo}: {res.stderr.strip()[:200]}")
+        raise StrandedCheckError(f"ls-remote --heads {remote}", f"ls-remote {remote} failed in {repo}: {res.stderr.strip()[:200]}")
     heads = {}
     for line in res.stdout.splitlines():
         sha, _, ref = line.partition("\t")
@@ -1705,7 +1714,7 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
     """
     remotes = _git(repo, "remote")
     if remotes.returncode != 0:
-        raise RuntimeError(f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
+        raise StrandedCheckError("remote", f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
     known = remotes.stdout.split()
     if not known:
         return []
@@ -1713,7 +1722,7 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
                 "--format=%(refname:short)\t%(upstream:remotename)\t%(upstream:remoteref)",
                 "refs/heads")
     if refs.returncode != 0:
-        raise RuntimeError(f"for-each-ref failed in {repo}: {refs.stderr.strip()[:200]}")
+        raise StrandedCheckError("for-each-ref refs/heads", f"for-each-ref failed in {repo}: {refs.stderr.strip()[:200]}")
     heads_by_remote, seen, out = {}, set(), []
     for line in refs.stdout.splitlines():
         branch, remote, remote_ref = (line.split("\t") + ["", ""])[:3]
@@ -1730,7 +1739,7 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
         if _git(repo, "cat-file", "-e", f"{server}^{{commit}}").returncode == 0:
             behind = _git(repo, "rev-list", "--count", f"{branch}..{server}")
             if behind.returncode != 0:
-                raise RuntimeError(f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
+                raise StrandedCheckError("rev-list", f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
             if int(behind.stdout.strip() or 0) == 0:
                 continue                               # ahead-only: a pending push
             exclude.append(server)
@@ -1738,7 +1747,7 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
         # branch cannot contain it -- behind by definition.
         log = _git(repo, "log", "--format=%H %ct", branch, *exclude)
         if log.returncode != 0:
-            raise RuntimeError(f"git log {branch} failed in {repo}: {log.stderr.strip()[:200]}")
+            raise StrandedCheckError("log", f"git log {branch} failed in {repo}: {log.stderr.strip()[:200]}")
         for entry in log.stdout.splitlines():
             sha, _, ct = entry.partition(" ")
             if not sha or sha in seen or not ct.isdigit():
@@ -1767,9 +1776,18 @@ def fleet_repos(registry=None) -> list:
 
 
 def stranded_findings(repos, now: float) -> list:
-    findings = []
+    findings, failed, checked = [], [], 0
     for repo in repos:
-        rows = stranded_commits(repo, now)
+        checked += 1
+        try:
+            rows = stranded_commits(repo, now)
+        except StrandedCheckError as exc:
+            # One dead remote is that repo's problem, filed as its own finding. It
+            # used to raise out, and run_detectors then marked the WHOLE detector
+            # "error": every other repo went unchecked (PR #439 round-2 review).
+            print(f"  stranded-commits: {exc}", file=sys.stderr)
+            failed.append((repo, exc.step))
+            continue
         if not rows:
             continue
         # A committed DATE, never an age: an age is recomputed from the clock, so
@@ -1791,6 +1809,20 @@ def stranded_findings(repos, now: float) -> list:
                 "Merge its remote in and push, or open a PR from it; or delete the "
                 "branch deliberately. This detector only reports; it never pushes or moves a ref."
             ),
+        })
+    # Every repo failing is not N repo problems, it is one blind detector (the
+    # network is down, or git is): raise, so it reads "error" once rather than
+    # filing a permanent issue per repo.
+    if failed and len(failed) == checked:
+        raise RuntimeError(f"stranded-commits could check none of {checked} repo(s)")
+    for repo, step in failed:
+        findings.append({
+            "subject": f"stranded-unreadable-{repo}",
+            "title": f"Could not check {Path(repo).name} for stranded commits",
+            "body": (f"`git {step}` failed in `{repo}`, so its branches went unchecked "
+                     "today. The error text is in the fleet-health job log, not here.\n\n"
+                     f"## Action\nRun `git -C {repo} {step}` by hand and fix the remote "
+                     "or its credentials."),
         })
     return findings
 

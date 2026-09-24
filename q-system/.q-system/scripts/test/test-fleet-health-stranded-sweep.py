@@ -125,6 +125,25 @@ git(repo, "merge", "-q", "--no-edit", "origin/feat")
 git(repo, "push", "-q", "origin", "feat")
 check("once merged and pushed, silence", fh.stranded_findings([repo], NOW), [])
 
+# One unreachable remote is ITS OWN finding, not a blind detector: before this a
+# single dead origin raised, run_detectors marked the whole detector "error", and
+# every other repo went unchecked (PR #439 round-2 review, minor 1).
+broken = tmp / "broken"
+subprocess.run(["git", "init", "-q", "-b", "main", str(broken)], check=True, env=ENV)
+git(broken, "remote", "add", "origin", str(tmp / "no-such-remote.git"))
+commit(broken, "z", when=OLD)
+mixed = fh.stranded_findings([broken, repo], NOW)
+check("an unreachable repo is its own finding",
+      [f["subject"] for f in mixed], [f"stranded-unreadable-{broken}"])
+check("git's stderr is not carried (ASK-204)",
+      "no-such-remote" in (mixed[0]["body"] if mixed else ""), False)
+try:
+    fh.stranded_findings([broken], NOW)
+    everything_failed_raised = False
+except Exception:  # noqa: BLE001
+    everything_failed_raised = True
+check("when EVERY repo fails, the detector still reads error", everything_failed_raised, True)
+
 reg = tmp / "registry.json"
 reg.write_text(json.dumps({"instances": [
     {"name": "i1", "path": str(repo)},
