@@ -365,3 +365,21 @@ def test_an_entry_matching_no_file_is_named(tmp_path, pager):
     _apply(root, one)
     out = _fire(root).stdout
     assert "renamed-away.md" in out and "NOT guarded" in out, out
+
+
+# --- PR #426 review round 3 nit ----------------------------------------------------
+
+def test_a_deleted_append_only_log_is_not_called_unguarded(tmp_path, pager):
+    """A deleted log is refused this run. The warning must not say it is NOT
+    guarded, or advise fixing the entry, which would disarm the guard."""
+    one = [r for r in REAL_ROLLBACK if r[0].endswith("decisions.md")]
+    root, run = _repo(tmp_path, files=one)
+    head = _head(run)
+    (root / one[0][0]).unlink()
+    out = _fire(root).stdout
+    assert _head(run) == head, "a deleted append-only log was committed"
+    # Only decisions.md is seeded, so the other two listed logs are honestly
+    # unmatched and keep their warning. The deleted one must not share it.
+    own = [ln for ln in out.splitlines() if "decisions.md" in ln and "auto-commit:" in ln]
+    assert own and all("NOT guarded" not in ln for ln in own), out
+    assert any("was deleted" in ln for ln in own), out
