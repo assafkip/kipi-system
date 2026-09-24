@@ -258,7 +258,7 @@ class PersistedLedgerOutput(unittest.TestCase):
             res("a", "<persisted-output>Output too large (209.8KB). Full output saved "
                      f"to: {self.PTR}\nPreview: ev-0000000001 ...</persisted-output>"),
             use("b", "Read", {"file_path": read_path}),
-            res("b", "claim_id ev-a9fff8f571 ..."),
+            res("b", '{"claim_id": "ev-a9fff8f571", "claim": "x"}'),
         ]
 
     def test_reading_the_ledger_pointer_counts_as_opening(self):
@@ -269,6 +269,41 @@ class PersistedLedgerOutput(unittest.TestCase):
         mod = _load_lint()
         other = "/s/proj/sess/tool-results/zzzz.txt"
         self.assertNotIn("ev-a9fff8f571", mod.opened_ids(self._recs(other)))
+
+
+class RoundThree(unittest.TestCase):
+    """PR #433 review round 3."""
+
+    def _pair(self, name, inp, text):
+        return [{"message": {"content": [
+                    {"type": "tool_use", "id": "a", "name": name, "input": inp}]}},
+                {"message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": text}]}}]
+
+    def test_a_failed_show_does_not_open_the_id(self):
+        mod = _load_lint()
+        recs = self._pair("Bash", {"command": "python3 evidence_ledger.py show ev-00000000ff"},
+                          "evidence_ledger show: no such row: ev-00000000ff")
+        self.assertNotIn("ev-00000000ff", mod.opened_ids(recs))
+
+    def test_a_list_line_opens_its_id(self):
+        mod = _load_lint()
+        recs = self._pair("Bash", {"command": "python3 evidence_ledger.py list"},
+                          "ev-0123456789  a claim\n    source : s")
+        self.assertIn("ev-0123456789", mod.opened_ids(recs))
+
+    def test_a_task_summary_is_not_a_ledger_read(self):
+        mod = _load_lint()
+        recs = self._pair("Task", {"prompt": "read evidence.jsonl"},
+                          '{"claim_id": "ev-0123456789"}')
+        self.assertNotIn("ev-0123456789", mod.opened_ids(recs))
+
+    def test_a_write_update_without_original_claims_nothing_new(self):
+        mod = _load_lint()
+        payload = {"tool_name": "Write", "tool_input": {"content": "cites ev-0123456789"},
+                   "tool_response": {"type": "update", "originalFile": None}}
+        before, after = mod.before_and_after(payload, None)
+        self.assertEqual(mod.introduced(before, after), [])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

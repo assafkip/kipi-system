@@ -46,8 +46,9 @@ HONEST BOUNDARY (what this does NOT catch, stated so it is not read as coverage)
     as "not admin"). The id was opened; the reading was wrong.
   - Opening a row does not prove reading it carefully. This removes "I cited from
     memory", not "I misread it". Opening the row and ignoring its content passes.
-  - `evidence_ledger.py list` prints every row, so after one `list` every id counts as
-    opened. `show <id>` is the precise verb and the one the refusal names.
+  - A `list` small enough to stay in the transcript opens every row it printed; a
+    large one is persisted (next bullet). `show <id>` is the precise verb and the
+    one the refusal names.
   - A large ledger read is PERSISTED out of the transcript: the harness replaces a
     result over roughly 30 KB with a `<persisted-output>` pointer to a
     `tool-results/` file plus a 2 KB preview (a 255-row `list` is 210 KB). The
@@ -83,11 +84,29 @@ CALIBRATION_LOG = "q-system/output/evidence-read-log-lint.jsonl"
 
 ID_RE = re.compile(r"\bev-[0-9a-f]{10}\b")
 
+# What a ROW looks like in ledger output: a JSON `"claim_id": "ev-..."` (a Read or
+# grep of evidence.jsonl, `show`, `list --json`), or a `list` line that STARTS with
+# the id. A bare id anywhere else is not a row. PR #433 round 3: a failed
+# `show ev-x` prints "no such row: ev-x", so the refusal's own remedy for a
+# nonexistent id counted as opening it and laundered the citation.
+ROW_ID_RE = re.compile(
+    r'"claim_id"\s*:\s*"(ev-[0-9a-f]{10})"|^[ \t]*(?:\d+[\t\u2192 ]+)?(ev-[0-9a-f]{10})  ',
+    re.MULTILINE)
+
+
+def row_ids_in(text) -> set[str]:
+    if not isinstance(text, str):
+        return set()
+    return {a or b for a, b in ROW_ID_RE.findall(text)}
+
 # The three trees where a citation becomes a record someone else acts on. Matched as
 # path SEGMENTS so `my-output-notes/` or `canonicalize.py` never fall in scope.
 SCOPE_SEGMENTS = ("/canonical/", "/.prd-os/prds/", "/output/")
 
 WRITER_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+# A delegated agent's RESULT is its summary, not the ledger, even when the prompt
+# named the ledger: that is exactly the recall-from-a-summary this gate exists for.
+SUMMARY_TOOLS = frozenset({"Task", "Agent"})
 
 # What makes a tool call a read of the ledger. Matched against the json of the call's
 # INPUT, so a Read's file_path, a Grep's path and a Bash command all qualify.
@@ -138,6 +157,12 @@ def before_and_after(payload: dict, disk_body: str | None) -> tuple[str, str]:
     if isinstance(orig, str):
         return orig, after
     if tool == "Write":
+        if tr.get("type") == "update":
+            # An overwrite whose prior body the payload did not carry: the ids that
+            # were already there are unknowable, so claim nothing new rather than
+            # false-block every pre-existing citation (round 3 minor). Fails open,
+            # which is the NOT_SECURITY class this lint is filed under.
+            return after, after
         # create (originalFile null) or a payload without it: everything is new.
         return "", after
     if tool == "Edit":
@@ -232,8 +257,8 @@ def opened_ids(records, ledger_only: bool = True) -> set[str]:
                 calls[b.get("id") or ""] = (b.get("name") or "", inp)
             elif b.get("type") == "tool_result":
                 name, inp = calls.get(b.get("tool_use_id") or "", ("", ""))
-                if name in WRITER_TOOLS:
-                    continue  # an Edit result echoes what was just written
+                if name in WRITER_TOOLS or name in SUMMARY_TOOLS:
+                    continue  # an Edit echoes what it wrote; a Task returns a summary
                 text = _result_text(b)
                 is_ledger = (any(m in inp for m in LEDGER_MARKERS)
                              or any(p in inp for p in persisted))
@@ -241,7 +266,7 @@ def opened_ids(records, ledger_only: bool = True) -> set[str]:
                     continue
                 if is_ledger:
                     persisted |= set(PERSISTED_RE.findall(text))
-                seen |= ids_in(text)
+                seen |= row_ids_in(text) if ledger_only else ids_in(text)
     return seen
 
 
