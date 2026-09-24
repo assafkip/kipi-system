@@ -1055,17 +1055,41 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # receipt.
     receipt_ensure "$SHA" "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")" "$REVIEWED_SHA" "$PR"
 
-    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge")"
+    AMREC="$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge"
+    AUTOMERGE="$(automerge_from_record "$AMREC")"
+    # APPROVED AND NOT RECORDED ARMED: ARM IT, DO NOT PAGE THE COMMAND (ASK-310).
+    # This branch used to page "Needs a human: gh pr merge --auto --squash N" --
+    # live on ASK-143 PR #2, 2026-08-15 -- while holding every fact that command
+    # needs. The loop is the actor on a merge, never the founder. Arming is safe
+    # because GitHub, not this script, merges: branch protection holds the PR
+    # until `validate` and `kipi/reviewer-approved` are both green, and
+    # enforce_admins=true means the arming token cannot skip them.
+    #
+    # Same call as the worker (automerge_arm in pr-verdict-lib.sh), so there is
+    # one arm with one semantics. An ARMED record is still trusted without a
+    # probe: re-reading a state the one reader published is the second-reader
+    # defect the record exists to close. Only a record that is NOT armed, or
+    # absent, reaches gh, and the result is written back through the same
+    # record_automerge so the next reader sees what this run did.
+    ARM_ERR=""
+    if [ "$AUTOMERGE" != "armed" ]; then
+      automerge_arm "$PR" "$TARGET_REPO" "$LOG"
+      AUTOMERGE="$AUTOMERGE_ARM_STATE"; ARM_ERR="$AUTOMERGE_ARM_ERR"
+      record_automerge "$AMREC" "$AUTOMERGE"
+      [ "$AUTOMERGE_ARM_NEW" = "1" ] && say "auto-merge armed on PR #$PR by converge (the worker's record did not say armed)"
+    fi
     case "$AUTOMERGE" in
       armed)
-        MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+        MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green."
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;
       unarmed)
-        MERGE_LOG="Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" ;;
+        # A REFUSAL is the page, in gh's own words. Never a human and a command:
+        # the command is what was just refused.
+        MERGE_LOG="converge tried to arm auto-merge and gh refused: ${ARM_ERR:-gh printed no reason}. It sits green until that refusal is cleared."
+        MERGE_PAGE="PR #$PR approved but arming auto-merge was refused by gh: ${ARM_ERR:-gh printed no reason}" ;;
       *)
-        MERGE_LOG="Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" ;;
+        MERGE_LOG="converge tried to arm auto-merge and gh answered neither the arm nor the state: ${ARM_ERR:-gh printed no reason}"
+        MERGE_PAGE="PR #$PR approved but gh could neither arm auto-merge nor read its state: ${ARM_ERR:-gh printed no reason}" ;;
     esac
     # ARMED OR NOT, A HEAD NO RECEIPT COVERS DOES NOT LAND. pr-receipt-gate.py is
     # a blocking step in `validate`, the single required context on main, so it
