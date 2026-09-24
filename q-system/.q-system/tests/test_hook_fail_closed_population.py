@@ -90,7 +90,7 @@ NOT_SECURITY = {
     "handoff-provenance-lint.py", "hook_envelope_audit.py", "hook-path-resolve-check.py",
     "portability-lint-hook.py", "blocked-claim-evidence-lint.py", "voice-stop-gate.py",
     "kb-graph-guard.py", "auto-commit.py", "knowledge-inject.py", "lessons-inject.py",
-    "voice-dna-loader.py", "capability-claim-lint.py",
+    "voice-dna-loader.py", "capability-claim-lint.py", "evidence-read-log-lint.py",
 }
 
 
@@ -349,3 +349,36 @@ def test_layer2_watches_the_helper(tmp_path):
 def test_census_sees_a_hook_outside_q_system():
     assert SCRIPT_RE.findall('python3 "$CLAUDE_PROJECT_DIR/plugins/kipi-core/hooks/new-gate.py"') \
         == ["new-gate.py"]
+
+
+@pytest.mark.parametrize("helper", [True, False], ids=["helper", "inline-fallback"])
+def test_unparseable_payload_verdict_is_the_same_with_or_without_the_helper(tmp_path, helper):
+    """A crash on whitespace stdin must not refuse every Bash call when the helper is gone."""
+    gate = _stage(tmp_path, "merge-bypass-gate.py", with_helper=helper)
+    _inject(gate, "main")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    proc = subprocess.run([sys.executable, str(gate)], input="   \n", env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert SENTINEL in proc.stderr, proc.stderr[-400:]
+    assert proc.returncode == 0, f"helper={helper}: rc={proc.returncode} err={proc.stderr[-300:]!r}"
+
+
+def test_sync_check_preflight_exits_even_if_main_returns(tmp_path):
+    """--check must never fall through into the stdin-reading hook path."""
+    gate = _stage(tmp_path, "settings-template-sync-check.py")
+    src = gate.read_text()
+    anchor = "def main():\n"
+    assert src.count(anchor) == 1
+    gate.write_text(src.replace(anchor, anchor + "    return 0\n", 1))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["CLAUDE_PROJECT_DIR"] = str(tmp_path)
+    p = subprocess.Popen([sys.executable, str(gate), "--check"], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        rc = p.wait(timeout=15)  # stdin stays open: the kipi update shape
+    except subprocess.TimeoutExpired:
+        p.kill()
+        pytest.fail("--check fell through and blocked reading stdin")
+    finally:
+        p.stdin.close()
+    assert rc == 0

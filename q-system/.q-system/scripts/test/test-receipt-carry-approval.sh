@@ -32,6 +32,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FX="$HERE/fixtures/receipt-carry"
 # REF HATCH: the mutation harness at the bottom re-invokes this file at a mutant.
 SCRIPT="${RECEIPT_CARRY_SCRIPT:-$HERE/../receipt-carry-approval.sh}"
+# A mutant copy of SCRIPT lives in $TMP, away from its lib; point it home.
+export REVIEWER_TOKEN_LIB="${REVIEWER_TOKEN_LIB:-$HERE/../reviewer-token-lib.sh}"
+unset KIPI_REVIEWER_TOKEN_ENV GH_TOKEN 2>/dev/null || true
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  ok   $1"; }
@@ -99,6 +102,7 @@ cat > "$STUB" <<EOF
 echo "\$*" >> "$CALLS"
 case "\$*" in
   *"-X POST"*)
+    echo "POST-TOKEN=\${GH_TOKEN:-<ambient>}" >> "$CALLS"
     # WHERE WAS THE BRANCH WHEN THE GREEN WAS WRITTEN? The whole safety of the
     # carry is its order, so the stub records what origin's branch pointed at, and
     # whether the staging ref existed, at the instant of the POST.
@@ -311,6 +315,19 @@ PY
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
 fi
+
+# ASK-362, PR #431 review major: carry_post is the SECOND writer of
+# kipi/reviewer-approved=success. Moving only the reviewer's POST to a second
+# identity left this one on the ambient admin login.
+echo "who writes the carried green (ASK-362)"
+check_eq "configured: the carry POST happens" \
+  "1" "$(KIPI_REVIEWER_TOKEN_ENV=T_REVIEWER T_REVIEWER=tok-reviewer run "$FX/reviewed-approved.json" "$FX/head-floor-only.json" "$RECEIPT")"
+check_eq "THE DEFECT: the carry POST carries the reviewer identity's token, not the ambient login" \
+  "POST-TOKEN=tok-reviewer" "$(grep '^POST-TOKEN=' "$CALLS")"
+check_eq "configured but empty: the carry REFUSES and posts nothing" \
+  "0" "$(KIPI_REVIEWER_TOKEN_ENV=T_REVIEWER run "$FX/reviewed-approved.json" "$FX/head-floor-only.json" "$RECEIPT")"
+check_eq "default: the carry POST stays on the ambient login" \
+  "POST-TOKEN=<ambient>" "$(run "$FX/reviewed-approved.json" "$FX/head-floor-only.json" "$RECEIPT" >/dev/null; grep '^POST-TOKEN=' "$CALLS")"
 
 echo
 echo "passed $PASS, failed $FAIL"

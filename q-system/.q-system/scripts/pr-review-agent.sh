@@ -152,6 +152,7 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # The outage classifier the worker uses (PR #421 round 16): a limit refusal here
 # is the machine's, not an unusable review. See the claude dispatch below.
 . "$SCRIPT_DIR/env-failure-lib.sh"
+. "$SCRIPT_DIR/reviewer-token-lib.sh"
 
 
 
@@ -361,6 +362,18 @@ if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
   echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
   echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
+# THE CALLER'S HEAD, WHEN IT HAS ONE (ASK-318, PR #437 round 2). The hosted
+# reviewer verifies that ITS event's head sha is in the checkout, but the head
+# this script reviews and posts on is resolved above through gh. A push landing
+# between the event and this read gives a head the checkout does not hold: the
+# agent would read the base tree and post on a sha it never opened. So a caller
+# that knows which head it verified pins it, and any other head is refused. The
+# newer push triggers its own run.
+if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPECT_HEAD" ]; then
+  echo "REFUSING: PR #$PR's head is ${HEAD_SHA:0:12}, but the caller verified ${KIPI_REVIEW_EXPECT_HEAD:0:12} (KIPI_REVIEW_EXPECT_HEAD)." >&2
+  echo "  The checkout holds the caller's head, not this one. No review was dispatched and NO status was posted." >&2
   exit 1
 fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
@@ -1305,7 +1318,20 @@ post_reviewer_status() {
   # Link only a real URL. The PR comment just above is what --post creates; when
   # that failed there is nothing to link, and a local file path is not a URL.
   case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
-  if gh "${args[@]}" >/dev/null 2>&1; then
+  # WHO WRITES THE GATE (ASK-362 stage 2): reviewer_status_run is the one rule,
+  # shared with receipt-carry-approval.sh's carry_post. Configured-but-empty
+  # returns REVIEWER_TOKEN_REFUSED and posts nothing; an absent status holds the
+  # PR, which is the safe side.
+  local rc=0 err
+  err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  # :-3, not bare: a missing lib must not kill the agent under set -u at the
+  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
+  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
+    printf '  %s\n' "$err" >&2
+    echo "  NO commit status posted on $sha" >&2
+    return 0
+  fi
+  if [ "$rc" = 0 ]; then
     echo "  commit status posted: $context=$state on $sha"
   else
     echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2

@@ -1095,9 +1095,10 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # a blocking step in `validate`, the single required context on main, so it
     # fails the very check auto-merge waits on. The armed sentence is REPLACED
     # rather than extended: "no human merge needed" followed by "needs a human"
-    # is a page an operator learns to skim. The other two already say a human is
-    # needed and already carry the merge command, so those are extended -- both
-    # facts are true at once there and dropping either loses an action.
+    # is a page an operator learns to skim. The other two carry gh's own refusal
+    # (ASK-310: never a merge command, since that is what was refused), so those
+    # are extended -- both facts are true at once there and dropping either
+    # loses an action.
     #
     # AND IT REPORTS THE STATE, NOT A VERDICT IT NEVER READ (PR #42 review round
     # 2, finding 1, second half). This said "validate refuses it, so GitHub will
