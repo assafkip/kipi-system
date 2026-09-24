@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_lessons_recall_corpus.py",
+  "runner": "python3",
+  "timeout_s": 120
+}

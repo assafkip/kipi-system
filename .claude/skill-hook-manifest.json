@@ -21,7 +21,8 @@
     "council": {"status": "interpretive", "note": "debate logic is judgment; the decisions.md origin-tag rule is gated separately by decision-origin-tag-lint"},
     "brand": {"status": "interpretive", "note": "no deterministic rules; voice lives in founder-voice"},
     "design": {"status": "interpretive", "note": "token validators are optional CLI tools; per the skill-hook-pairing decision rule"},
-    "ui-ux-pro-max": {"status": "interpretive", "note": "code-skill carve-out, checked by its own build"}
+    "ui-ux-pro-max": {"status": "interpretive", "note": "code-skill carve-out, checked by its own build"},
+    "improve": {"status": "in-script", "note": "the deterministic half is improve_ground.py, which the skill must run (exit 2 = skip); the critique half is judgment. No content-on-a-path rule, so no PostToolUse hook applies (prd-morning-brief-learns issue 13, kipi-core 1.9.3)"}
   },
   "debt_baseline": []
 }

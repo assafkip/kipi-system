@@ -1,5 +1,9 @@
 {
  "path": "plugins/kipi-dsse/scripts/test_computed_receipts.py",
- "runner": "python3",
- "timeout_s": 180
+ "runner": "pytest",
+ "timeout_s": 180,
+ "covers": [
+  "plugins/kipi-dsse/scripts/issue_runner.py",
+  "plugins/kipi-dsse/commands/*.md"
+ ]
 }

@@ -1,4 +1,4 @@
 {
- "path": "q-system/.q-system/scripts/test_memory_autocapture.py",
- "runner": "python3"
+  "path": "q-system/.q-system/scripts/test_memory_autocapture.py",
+  "runner": "pytest"
 }

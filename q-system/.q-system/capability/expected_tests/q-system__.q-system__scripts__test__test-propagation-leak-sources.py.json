@@ -1,4 +1,4 @@
 {
- "path": "q-system/.q-system/scripts/test/test-propagation-leak-sources.py",
- "runner": "python3"
+  "path": "q-system/.q-system/scripts/test/test-propagation-leak-sources.py",
+  "runner": "pytest"
 }

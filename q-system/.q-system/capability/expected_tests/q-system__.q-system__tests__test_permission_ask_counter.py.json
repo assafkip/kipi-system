@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_permission_ask_counter.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

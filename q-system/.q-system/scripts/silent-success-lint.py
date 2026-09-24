@@ -38,8 +38,14 @@ as proof (evidence-ledger.md):
   * a failure path that is loud but wrong. Notification is checked by token, so
     `>&2 echo "all good"` clears SS001.
 
-THE RATCHET (--baseline) is how the repo-wide result is actually ENFORCED. The
-detector on its own measures 173 findings and nothing can fail on that number:
+THE RATCHET (--baseline) is how the repo-wide result CAN be enforced, and it
+ships UNARMED. No required check runs it against this repo today: the baseline
+is not clean, and ASK-213 scopes CI arming to "only if the baseline is clean".
+A live-repo ratchet inside the required test suite went red on 2026-08-30 from
+unrelated merges (validate run 33296036172), which is that same arming by
+another door. Arming it, with the allowance pinned at the PR's base sha, is
+ASK-1872 (sp-b1be7b6d). The detector on its own measures many findings and
+nothing can fail on that number:
 a brand-new SS001 committed today moved the sweep 173 -> 174 and left the
 required suite fully green (PR #230 review round 3, major). Demanding zero is
 not available -- 173 is the real floor and a gate that is red on every PR the

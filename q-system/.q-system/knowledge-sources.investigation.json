@@ -1,0 +1,59 @@
+{
+  "_version": 2,
+  "_description": "The investigation-shaped manifest for knowledge_supply.py. An instance whose work is cases (4_points, kipi-investigations) copies this to <qdir>/.q-system/data/knowledge-sources.json (an instance-owned subtree, untouched by kipi update). Every 'investigations/case-*' directory is its own knowledge base: its canonical, memory, findings, targets, timelines and outputs. Nothing consulting-shaped (commitments.jsonl, granola-cache.json, relationships.md) is required, because an investigation instance does not carry those and a permanent PARTIAL is noise, not information.",
+  "_why": "Founder-directed 2026-09-05 (plan knowledge-supply-project-folders-2026-09-05): 4_points had 45 cases and 1,475 markdown files no source class covered, and every receipt there read PARTIAL for absent consulting stores.",
+  "ceiling_chars": 8000,
+  "doc_max_bytes": 524288,
+  "_skip_dirs_why": "Directories under a docs folder that are never read by the docs class, DECLARED here so the receipt can count them and the header can say so (PR #308 review round 11: a hardcoded skip of raw-collections and exports had no record anywhere under FULL). exports and screenshots are renders of other files; raw-collections is collected evidence, not the founder's writing.",
+  "skip_dirs": ["exports", "screenshots", "raw-collections"],
+  "entity_kinds_that_fire_alone": ["store", "target", "noun", "slug", "client"],
+  "state_predicates": ["status", "state", "stage", "phase", "works_at", "role", "role_is", "is", "is-a", "located_in", "title", "reports_to", "assigned_to", "controls", "operates", "hosted_at", "registered_to"],
+  "stores": [{"name": "case", "glob": "investigations/case-*"}],
+  "folders": ["investigation", "output", "memory", "research", "inputs", "notes", "docs"],
+  "entity_dirs": ["targets", "entities", "people", "subjects"],
+  "classes": {
+    "entity_lookup": {
+      "sources": {
+        "graph": {"required": true, "cap": 12},
+        "canonical": {"required": true, "cap": 6},
+        "docs": {"required": true, "cap": 8},
+        "decisions": {"required": false, "cap": 4},
+        "loops": {"required": false, "fresh_days": 30, "cap": 4},
+        "handoff": {"required": false, "fresh_days": 30, "cap": 3}
+      }
+    },
+    "temporal_event": {
+      "sources": {
+        "docs": {"required": true, "cap": 8},
+        "handoff": {"required": false, "fresh_days": 30, "cap": 4},
+        "loops": {"required": false, "fresh_days": 30, "cap": 6},
+        "graph": {"required": false, "cap": 6}
+      }
+    },
+    "commitment": {
+      "sources": {
+        "docs": {"required": true, "cap": 8},
+        "graph": {"required": false, "cap": 8},
+        "canonical": {"required": false, "cap": 4},
+        "loops": {"required": false, "fresh_days": 60, "cap": 6},
+        "handoff": {"required": false, "fresh_days": 30, "cap": 3}
+      }
+    },
+    "writing": {
+      "sources": {
+        "graph": {"required": true, "cap": 10},
+        "canonical": {"required": true, "cap": 6},
+        "docs": {"required": true, "cap": 6},
+        "decisions": {"required": false, "cap": 4},
+        "loops": {"required": false, "fresh_days": 30, "cap": 3}
+      }
+    },
+    "capability": {
+      "sources": {
+        "capability": {"required": true, "cap": 8},
+        "decisions": {"required": false, "cap": 4},
+        "canonical": {"required": false, "cap": 4}
+      }
+    }
+  }
+}

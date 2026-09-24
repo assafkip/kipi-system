@@ -43,55 +43,60 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest
 
+      # dc-25: without a browser every design-chain test calls skipTest, the file exits 0 and the
+      # capability gate reports green. test_9 sat red that way since dc-05. A browser here plus
+      # DC_REQUIRE_REAL_PRODUCERS below turns a skip into a failure.
+      - name: Install a browser for the design-chain producers
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
       # BOTH directions, and runs the full declared suite. The hardcoded loop
       # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
-      - name: Capability gate (declared-vs-actual + full test suite)
-        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
-        env:
-          CI: true
-
-      # ASK-213 scoped this line "only if the baseline is clean", against an
-      # Outcome line that requires the check to be "wired as a required check".
-      # The baseline is NOT clean (286 findings), so those two pull against each
-      # other and the collision is named here rather than resolved quietly.
       #
-      # Wired, because the RATCHET is what the clean-baseline precondition was
-      # standing in for. That precondition serves the issue's blast-radius
-      # paragraph -- a check red on day one gets bypassed within a day and then
-      # protects nothing. Keyed per (code, path) against a committed baseline,
-      # this step is GREEN at the current 286 and goes red only when a file
-      # GAINS a finding, which is the day-one-green property the precondition
-      # was asking for. Declaring the engine inert instead would have been the
-      # false statement: its repo-wide result is already enforced, and the only
-      # reason the capability gate could not see it is that the sole call site
-      # was a test case, which is exactly the F2 trap that gate exists to refuse.
-      - name: Silent-success ratchet (no NEW failure path that exits 0 silently)
+      # A PULL REQUEST RUNS THE TESTS ITS DIFF EARNS; A PUSH TO MAIN RUNS THEM ALL
+      # (ASK-1749). Measured on run 35478270323: this step was 17m41s of a 19m36s
+      # job because it ran every declared artifact on every push of every PR, so a
+      # three-line review round waited that long before it could merge.
+      # change-size.py picks the declared tests that name the changed files. It
+      # falls back to the FULL suite on anything it cannot vouch for: a change to
+      # the gate, the classifier, a workflow, lefthook or verify.sh, a dependency
+      # manifest, a capability declaration, a new third-party import, a selection
+      # wider than 60, or any error reading the diff. Structure, declared-vs-actual
+      # and wiring checks are not tests and run in full either way. The checkout
+      # above uses fetch-depth 0, so origin/<base> resolves.
+      # ASK-1918, and it runs BEFORE the gate on purpose: a wrong `covers`
+      # declaration would make the gate below select fewer tests, so the check on
+      # the declarations cannot be downstream of the thing they steer.
+      - name: Coverage declarations are real
+        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+
+      - name: Capability gate (declared-vs-actual + the tests this change earns)
         run: |
-          # The allowance is read from the PR's BASE commit, never from the
-          # branch. Read from the working tree, the baseline and the code it
-          # constrains travel in the same commit, so a PR that adds a defect and
-          # re-pins in one push clears this check (codex major, PR #230 r4).
-          # base.sha comes from the event payload for the same reason the
-          # version-bump guard below uses it: no network, always resolves, cannot
-          # go stale. `fetch-depth: 0` on the checkout is what puts that commit
-          # on disk. On a push to main there is no base and none is needed --
-          # main's committed baseline IS the pinned one at that point.
-          REF=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            REF="--baseline-ref ${{ github.event.pull_request.base.sha }}"
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "origin/${{ github.base_ref }}"
+          else
+            python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
           fi
-          python3 q-system/.q-system/scripts/silent-success-lint.py \
-            --baseline q-system/.q-system/scripts/silent-success-baseline.json $REF
         env:
           CI: true
+          # dc-25: a design-chain test with no browser SKIPS and the file exits 0, so the gate read
+          # green over tests that never ran. With this set they fail instead.
+          DC_REQUIRE_REAL_PRODUCERS: "1"
 
-      # CAPABILITY_GATE_SKIP: the gate just ran as its own step above; running
-      # it again inside validate-separation would execute the suite twice per
-      # CI run (finding-15). The skip is honored only with caller proof
-      # (GITHUB_ACTIONS here).
+      # CAPABILITY_GATE_SKIP: the gate ran as its own step above; running it again
+      # inside validate-separation would execute that same step's tests twice per CI
+      # run (finding-15). The skip is honored only with caller proof (GITHUB_ACTIONS
+      # here).
+      #
+      # WHAT THE STEP ABOVE ACTUALLY RAN DEPENDS ON THE EVENT (claude review of
+      # PR #377, minor 2). On a push to main it is the full declared suite; on a
+      # pull_request it is the SUBSET that diff earns (ASK-1749), so on a PR the full
+      # suite runs nowhere inside this job -- it runs on the push to main after merge.
+      # The skip is still right either way, because the double execution it avoids is
+      # of whatever that step ran. Writing "just ran the full suite" here was the part
+      # that stopped being true, and a wrong why-comment is worse than none.
       - name: Run skeleton validation (Phase 1)
         run: python3 validate-separation.py 1 --verbose
         env:

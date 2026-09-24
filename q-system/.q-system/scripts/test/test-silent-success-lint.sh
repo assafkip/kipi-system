@@ -393,31 +393,19 @@ python3 "$LINT" --root "$ROOT" "$TMP/adir.sh" >/dev/null 2>&1 && RC=0 || RC=$?
 python3 "$LINT" --root "$ROOT" --report >/dev/null 2>&1 && RC=0 || RC=$?
 [ "$RC" -eq 0 ] && ok "the repo-wide sweep is unaffected" || bad "the repo-wide sweep is unaffected" "rc=$RC"
 
-# --- case 13: the ratchet -- this is what makes the repo-wide result ENFORCED -
+# --- case 13: the ratchet MECHANISM, on a throwaway repo --------------------
 #
-# Everything above this line tests the DETECTOR against fixtures. None of it can
-# fail because of the repository. Measured, not assumed: a brand-new SS001 added
-# to a tracked file moved the sweep 173 -> 174 and this suite still reported
-# "33 passed, 0 failed", exit 0 -- 173 findings that nothing could fail on
-# (PR #230 review round 3, major).
+# The ratchet (--baseline) is shipped UNARMED. This block proves it can go red
+# on a genuinely new defect, and it never reads this repository.
 #
-# Demanding zero is not on the table (the DoR arms CI "only if the baseline is
-# clean", and it is 173). So the enforcement is directional: BASELINE pins what
-# each file already carries, and the check goes red when a file GAINS a finding.
-# Because this test is a required capability, a new silent-success defect now
-# fails a required check.
-echo "[10] ratchet: a NEW finding fails the required check"
-BASE="$ROOT/q-system/.q-system/scripts/silent-success-baseline.json"
-
-# (a) the live repository against its committed baseline. THIS is the enforcing
-# assertion; every other case in this block exists to prove it can fail.
-python3 "$LINT" --root "$ROOT" --baseline "$BASE" >"$TMP/rat.out" 2>"$TMP/rat.err" \
-  && RC=0 || RC=$?
-if [ "$RC" -eq 0 ]; then
-  ok "the repo holds its baseline"
-else
-  bad "the repo holds its baseline" "rc=$RC $(grep GAINED "$TMP/rat.out" | head -3 | tr '\n' ' ')"
-fi
+# WHY NOT THE LIVE REPO (validate run 33296036172, 2026-08-30): part (a) used to
+# run the ratchet over the whole tree against a committed baseline. Ten days of
+# unrelated merges to main added findings, and this required suite went red on
+# a PR that touched none of them. A repo-wide count inside a required test IS a
+# required CI gate, just not one named in validate.yml, and ASK-213 scopes CI
+# arming to "only if the baseline is clean". It is not clean. Arming it, with a
+# baseline pinned at the base sha, is ASK-1872 (sp-b1be7b6d).
+echo "[10] ratchet: a NEW finding fails the ratchet"
 
 # (b) MUTATION. A throwaway git repo, because the ratchet reads `git ls-files`
 # and the assertion has to be that a genuinely new defect turns it red -- not

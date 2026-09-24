@@ -241,6 +241,88 @@ def sec_replay():
         check("replay: a REMOVED declaration is refused, never silently dropped",
               rc == 1 and "REMOVED" in out)
 
+    # EDIT, the case that was refused as a removal until sp-6b25c567. Byte-keyed
+    # diffing put the old serialization in `base - head` and the new one in
+    # `head - base`, so changing one field of a declaration looked like deleting
+    # someone else's and adding your own. PR #207 is exactly this shape.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        new = dict(old, runner="bash")
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[new])
+        # main still holds the base version, so the edit is a safe fast-forward.
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / capability_manifest.fragment_name("expected_tests", old)).write_text(
+            json.dumps(old, indent=1, sort_keys=True) + "\n")
+        rc, out = add_from(root, base, head)
+        check("replay: an EDITED declaration replays, not refused as a removal",
+              rc == 0 and "REMOVED" not in out)
+        landed = json.loads(
+            (sdir / capability_manifest.fragment_name("expected_tests", new)).read_text())
+        check("replay: the edit actually landed on disk",
+              landed.get("runner") == "bash")
+
+    # The same edit, but main changed that declaration too. Taking the branch's
+    # version would drop main's, which is the deletion class this tool refuses.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        theirs = dict(old, runner="sh")
+        ours = dict(old, runner="bash")
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[ours])
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        sdir.mkdir(parents=True, exist_ok=True)
+        frag = sdir / capability_manifest.fragment_name("expected_tests", old)
+        frag.write_text(json.dumps(theirs, indent=1, sort_keys=True) + "\n")
+        rc, out = add_from(root, base, head)
+        check("replay: an edit that collides with main is refused",
+              rc == 1 and "EDITED" in out)
+        check("replay: main's version survives the refusal",
+              json.loads(frag.read_text()).get("runner") == "sh")
+
+    # The edit whose fragment is GONE. Main removed that declaration on purpose;
+    # replaying the branch's edit would write it back and resurrect a gate main
+    # retired. Codex major, PR #285 round 1: _read_fragment returns None for both
+    # "missing" and "unreadable", and the old check only refused a non-None value
+    # that differed, so a deletion read as a safe edit and the tool reported
+    # success. Same loss class as a silent removal, pointing the other way.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[dict(old, runner="bash")])
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        rc, out = add_from(root, base, head)
+        check("replay: an edit whose fragment main REMOVED is refused",
+              rc == 1 and "EDITED" in out and "removed" in out)
+        check("replay: the removed declaration is not resurrected",
+              not (sdir / capability_manifest.fragment_name(
+                  "expected_tests", old)).exists())
+
+    # The edit whose fragment is unreadable. This cannot tell a concurrent edit
+    # from a removal, so it must refuse rather than pick one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        rel = add_test(root, "q-system/.q-system/scripts/test_new.py")
+        old = entry(rel)
+        base = base_manifest(expected_tests=[old])
+        head = base_manifest(expected_tests=[dict(old, runner="bash")])
+        sdir = root / capability_manifest.FRAGMENT_DIR / "expected_tests"
+        sdir.mkdir(parents=True, exist_ok=True)
+        frag = sdir / capability_manifest.fragment_name("expected_tests", old)
+        frag.write_text("{ this is not json")
+        rc, out = add_from(root, base, head)
+        check("replay: an unreadable fragment is refused, never overwritten",
+              rc == 1 and "unreadable" in out)
+        check("replay: the unreadable fragment is left alone",
+              frag.read_text() == "{ this is not json")
+
 
 def sec_overlay():
     with tempfile.TemporaryDirectory() as tmp:
@@ -442,6 +524,37 @@ def sec_wiring():
         (root / ".claude/settings.json").write_text('{"hooks": "hooked-engine.py"}')
         rc, out = run_gate(root, "--check-only")
         check("wiring: settings.json reference is wired", rc == 0)
+    # ASK-1170: verify.sh is what .github/workflows/verify.yml runs on every
+    # push, so a script called only from there executes in CI. PR #279 was RED on
+    # `inert-engine: mcp-denylist-namespace-check.py` while CI ran it. The line
+    # below is the shape that PR wrote into verify.sh, not an invented one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/ci-only-engine.py")
+        (root / "q-system/.q-system/verify.sh").write_text(
+            '#!/bin/bash\n'
+            '_ci_check="$TARGET/q-system/.q-system/scripts/ci-only-engine.py"\n'
+            'run_check "ci-only" python3 "$_ci_check"\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-1170: engine wired ONLY in verify.sh is NOT inert",
+              rc == 0 and "ci-only-engine.py" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        # PRECISION half. ASK-1170 originally asserted the opposite of this: it
+        # named verify.sh by path, so a SIBLING .sh beside it wired nothing. That
+        # control went RED when ASK-1795 widened the surface to the whole glob
+        # `q-system/.q-system/*.sh` on purpose (verify.sh IS the repo floor, and
+        # so is every script it sits next to). The boundary that still holds is
+        # the glob's depth: Path.glob's `*` never crosses a separator, so a .sh
+        # one directory deeper than .q-system is not a wiring surface.
+        root = make_repo(tmp)
+        engine(root, "q-system/.q-system/scripts/deep-only.py")
+        deep = root / "q-system/.q-system/onboarding/scratch.sh"
+        deep.parent.mkdir(parents=True, exist_ok=True)
+        deep.write_text(
+            '#!/bin/bash\npython3 "$TARGET/q-system/.q-system/scripts/deep-only.py"\n')
+        rc, out = run_gate(root, "--check-only")
+        check("ASK-1170/1795: a .sh one level below .q-system is NOT wiring, still RED",
+              rc == 1 and "deep-only.py" in out)
     with tempfile.TemporaryDirectory() as tmp:
         root = make_repo(tmp)
         main_guard = 'if __name__ == "__main__":\n    pass\n'

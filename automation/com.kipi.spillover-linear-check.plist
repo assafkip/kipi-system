@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Spillover -> Linear daily check (ASK-1552).
+
+     Founder, 2026-09-12: "Backlog where? In linear or is it going to disappear".
+     Every new spillover row files one Linear issue at capture. This job is the
+     retry and the alarm: it re-files new rows whose link failed (20 per run) and
+     files ONE fingerprint-deduped summary for Sana when rows stay unlinked. Rows
+     from before the script's CREATED_AT_CUTOFF are the pre-existing backlog: it
+     prints their count and never bulk-files them.
+
+     WHY IT CANNOT GO QUIET. It exits non-zero when it cannot read a ledger or
+     cannot send its summary alert, and com.kipi.launchd-health reads every
+     com.kipi.* job's LastExitStatus, so a broken check becomes a ticket too.
+
+     Ledgers: this checkout plus its sibling consulting and chief checkouts. A
+     missing sibling prints "no repo" and is skipped, so the template stays
+     usable on a machine that has only kipi-system.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
+     by install-plist.sh like every sibling.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.spillover-linear-check -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.spillover-linear-check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- Login shell so the Linear API key and a modern python3 resolve the same
+         way they do for a human (ASK-718: a job running blind for 19 days). -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/spillover-linear-check.py __KIPI_REPO__ __KIPI_REPO__/../consulting __KIPI_REPO__/../chief</string>
+  </array>
+  <!-- Local 08:10: after the overnight review runs have captured their rows,
+       before the 09:30 launchd-health sweep reads this job's exit status. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>10</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/spillover-linear-check.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/spillover-linear-check.err.log</string>
+</dict>
+</plist>

@@ -179,7 +179,7 @@ else
     # THE REMEDY NAMED HERE USED TO BE THE FLEET UPDATER, AND THAT WAS WRONG
     # (ASK-755). The updater is a fleet-wide rsync WITH a delete flag: to fix one
     # file in one repo it walks every registered instance and can remove anything
-    # on the way (2026-08-07: voicekit deleted from 19 instances). A refusal that
+    # on the way (2026-08-07: voiceloop deleted from 19 instances). A refusal that
     # names a tool with a blast radius three orders of magnitude wider than the
     # defect is an invitation to overcorrect at 2am. control-file-propagate.py
     # does the same hash classification for ONE file in ONE repo, copy only, and

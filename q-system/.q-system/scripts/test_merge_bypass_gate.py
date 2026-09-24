@@ -60,7 +60,36 @@ FAILURES: list[str] = []
 CHECKS = 0
 
 
-def check(name: str, command: str, cwd: Path, want: str) -> None:
+
+class unprotected:
+    """Pin `_protection_exists` to False for the receipt cases.
+
+    The receipt deferral is only reachable on a repo with NO branch protection,
+    so a case about receipt LOOKUP has to put itself in that world explicitly.
+    The fixture repos point at a github.com URL that is never contacted, so the
+    real probe answers "unknown", which the gate treats as protected -- correct
+    behaviour, and it would make every receipt case below assert the same
+    refusal and test nothing.
+    """
+
+    def __enter__(self):
+        self.saved = _mod._protection_exists
+        _mod._protection_exists = lambda cwd: False
+
+    def __exit__(self, *a):
+        _mod._protection_exists = self.saved
+        return False
+
+
+def check(name: str, command: str, cwd: Path, want: str,
+          contains: str | None = None) -> None:
+    """Assert the decision, and optionally a substring of the REASON.
+
+    `contains` exists because two denials are not the same denial. The
+    cd-into-another-repo case below denies either way; what separates the defect
+    from the fix is WHICH directory the gate consulted, and the reason text is
+    the only place that shows.
+    """
     global CHECKS
     CHECKS += 1
     got, reason = classify(command, str(cwd))
@@ -68,6 +97,12 @@ def check(name: str, command: str, cwd: Path, want: str) -> None:
         FAILURES.append(
             f"{name}\n    command : {command}\n    want    : {want}\n"
             f"    got     : {got}\n    reason  : {reason}")
+        return
+    if contains is not None and contains not in (reason or ""):
+        FAILURES.append(
+            f"{name}\n    command : {command}\n"
+            f"    want reason containing : {contains}\n"
+            f"    got reason             : {reason}")
 
 
 def main() -> int:
@@ -179,6 +214,103 @@ def main() -> int:
         # rather than guess. This is the `cd "$WORK/seed" && git push` shape.
         check("unresolvable cd target",
               'cd "$WORK/seed" && git push origin HEAD:main', root, "allow")
+
+        # --- THE GATE MUST NOT CRASH ON THE SHAPE IT EXISTS TO REFUSE ---
+        #
+        # Codex major, PR #269 round 2, CONFIRMED by running it. The receipt
+        # deferral was added reading a `cwd` that `_merge_verdict` did not take,
+        # so a plain `gh pr merge <n> --squash` raised NameError. The hook exited
+        # 1, and exit 1 is not a block -- PreToolUse reads a crashed hook as no
+        # opinion, so the merge proceeded unchecked.
+        #
+        # `check` asserts the SPECIFIC decision, so a crash cannot be mistaken
+        # for a refusal: an exception inside classify propagates out of this
+        # call and the run goes red rather than counting a pass.
+        check("plain squash merge, no --auto",
+              "gh pr merge 9 --squash", gh_feature, "deny")
+        check("plain merge, no flags at all",
+              "gh pr merge 9", gh_feature, "deny")
+        check("merge with --delete-branch but no --auto",
+              "gh pr merge 9 --squash --delete-branch", gh_feature, "deny")
+        # And the permitted shape still passes, so the three above cannot be
+        # green by way of a gate that refuses everything.
+        check("--auto --squash is still allowed",
+              "gh pr merge --auto --squash 9", gh_feature, "allow")
+
+        # --- A CHAINED cd MOVES THE REPO, AND THE RECEIPT MUST MOVE WITH IT ---
+        #
+        # Codex major, PR #269 round 3, CONFIRMED. `cd` is tracked in classify
+        # so `_push_verdict` can ask in the right directory; `_merge_verdict`
+        # was handed the ORIGINAL cwd instead. A green receipt for PR 9 in THIS
+        # repo therefore authorized `cd other && gh pr merge 9 --squash` over
+        # there -- a different PR 9, in a different repo, on this repo's word.
+        #
+        # Both the defect and the fix DENY here, so the decision alone cannot
+        # tell them apart. The reason can: consulting gh_feature finds the
+        # receipt and stalls at the head re-read ("could not read PR #9's
+        # current head"); consulting gh_other finds no receipt at all. Pinning
+        # "no green receipt" is therefore an assertion about WHICH DIRECTORY was
+        # read, which is the whole defect.
+        (gh_feature / ".prd-os" / "pr-receipts").mkdir(parents=True)
+        (gh_feature / ".prd-os" / "pr-receipts" / "pr-9.json").write_text(
+            '{"result": "green", "sha": "deadbeef"}\n')
+        with unprotected():
+            check("cd to another repo does not borrow this repo's receipt",
+                  "cd " + str(gh_other) + " && gh pr merge 9 --squash",
+                  gh_feature, "deny", contains="no green receipt")
+            # The control: with no cd, the same command DOES consult this repo,
+            # so the case above cannot be green by way of a gate that ignores
+            # receipts.
+            check("without a cd, the receipt in this repo is the one consulted",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="could not read PR #9's current head")
+
+        # --- AND THE RECEIPT PATH IS CLOSED WHERE PROTECTION EXISTS ---
+        #
+        # Codex major, PR #269 round 6. The receipt is a local file written by
+        # the same actor this gate constrains, so it cannot be made unforgeable;
+        # it defends against FORGETTING to verify, never against a deliberate
+        # bypass. It is therefore only offered where there is nothing better --
+        # a repo with no protection, where GitHub refuses --auto outright and
+        # posts no contexts.
+        #
+        # Same command, same green receipt on disk, three worlds:
+        _saved = _mod._protection_exists
+        try:
+            _mod._protection_exists = lambda cwd: True
+            check("protected: a local receipt does not outrank a required check",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="GitHub is already holding the required checks")
+            _mod._protection_exists = lambda cwd: None
+            check("unknown protection is treated as protected",
+                  "gh pr merge 9 --squash", gh_feature, "deny",
+                  contains="could not be read")
+        finally:
+            _mod._protection_exists = _saved
+
+        # --- THE RECEIPT LIVES AT THE REPO ROOT, THE SHELL DOES NOT ---
+        #
+        # Codex major, PR #269 round 4. `_receipt_missing` joined `.prd-os` onto
+        # `cwd`, so running the same merge from any subdirectory found no receipt
+        # and refused. It fails closed, so this was a false BLOCK rather than a
+        # hole -- and a gate that blocks correct work is how a gate gets switched
+        # off, which is the slower version of the same failure.
+        #
+        # The reason is what discriminates again: from a subdirectory the
+        # unpatched gate says "no green receipt"; the patched one finds it and
+        # moves on to the head re-read. Same decision, different cause.
+        (gh_feature / "sub" / "dir").mkdir(parents=True)
+        with unprotected():
+            check("a receipt at the repo root is found from a subdirectory",
+                  "gh pr merge 9 --squash", gh_feature / "sub" / "dir", "deny",
+                  contains="could not read PR #9's current head")
+            # Control: a directory that is NOT in any repo has no root to
+            # resolve, so it still reports the receipt missing. Without this, a
+            # gate that simply stopped checking receipts would pass the case
+            # above.
+            check("outside any repo there is no root, so the receipt is missing",
+                  "gh pr merge 9 --squash", root, "deny",
+                  contains="no green receipt")
 
         # --- degenerate input ---
         check("empty command", "", gh_feature, "allow")

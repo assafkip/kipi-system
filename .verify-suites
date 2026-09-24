@@ -68,12 +68,30 @@
 # the two below.
 plugins/prd-os
 plugins/kipi-dsse
-plugins/kipi-core/voicekit
+plugins/kipi-core/voiceloop
+# The Arctic Shift transport, added 2026-09-05. It shipped with 26 tests and
+# was in NO manifest, so a revert of the one rule the module exists for -- raise
+# on a total mirror failure instead of returning [] -- would have merged green
+# (PR 307 review, MAJOR). A suite nothing runs is a suite that documents an
+# intention. Collects clean from the repo root.
+plugins/kipi-core/reddit_arctic
 automation
 rescued/memory-lifecycle
 q-system/.q-system/tests
 test_destructive_op_deny_anchor.py
 test_fleet_unblock.py
+# ROUND 5, and the same finding for the fifth time: a tracked, green, wholly
+# ungated suite. q-system/hooks/test/test_auto_commit_run_marker.py is the ONLY
+# pin on the auto-commit hook's fleet-updater handshake, and it appeared in no
+# entry above and in no written exclusion below, so this manifest's own claim
+# that "EVERY suite that can be named IS named" was false.
+#
+# It cost a red CI on PR #321: verify.sh ran 12/12 green locally while that file
+# sat unrun, and the capability gate then failed on it in Actions. Measured
+# 2026-09-07 before naming it: 6 tests, `Ran 6 tests ... OK`, collects clean from
+# the repo root. A file entry, because q-system/hooks/test/ holds one python test
+# file and one shell script.
+q-system/hooks/test/test_auto_commit_run_marker.py
 #
 # THE REMAINING FIVE, each measured, none silently dropped.
 #
