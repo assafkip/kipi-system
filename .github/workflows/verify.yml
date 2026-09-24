@@ -13,6 +13,26 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
+      # THE SAME MISSING IDENTITY validate.yml carries a scar for, in the other
+      # door. verify.sh runs q-system/hooks/test/test_auto_commit_run_marker.py,
+      # whose subject is a SUBPROCESS: run_hook spawns auto-commit.py, which runs
+      # its own `git commit`, and that child inherits the runner's identity, not
+      # the `git -c user.email=...` the test passes to its own commands. The
+      # ubuntu runner user has an empty gecos field so git cannot guess one and
+      # refuses with "Author identity unknown"; the failure then reads "the hook
+      # did not commit", as if the hook were broken. Measured 2026-09-07 from run
+      # 34123764623, the first run after that suite was named in .verify-suites.
+      # macOS cannot reproduce it -- its git guesses from the passwd gecos field,
+      # which is the same reason validate.yml's copy of this note exists.
+      #
+      # The test was ALSO made hermetic in the same change (it writes the
+      # identity into its own temp repo), so this step is the second of two
+      # independent fixes, not the only one holding it up.
+      - name: Configure git identity for tests that spawn git
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+
       - uses: actions/checkout@v4
         with:
           # FULL HISTORY, not the default depth-1 shallow clone.

@@ -5,7 +5,7 @@ Fires when the founder shares someone else's content and asks to react to it. Wh
 ## Before Drafting Any Reaction
 
 1. **Extract the poster's claims.** List specific claims/positions. No interpretation.
-2. **Show extracted claims to the founder.** Do not draft until confirmed.
+2. **Show the claims WITH the draft, never as a separate turn.** Where a routed reply lane exists it extracts the claims itself and prints them above `=== DRAFT ===`; he judges both together. A "show, then wait for his yes" turn is refused by `voice-stop-gate.py` (routed request, no receipt) and the yes-turn classifies not-routed, so the draft would land ungated (measured in consulting, 2026-09-14).
 3. **Draft the reaction** using engagement playbook style rules + founder voice skill.
 4. **Self-check for drift.** Verify the reaction doesn't pitch or name-drop your product unless explicitly asked. Reactions are about the poster's ideas.
 

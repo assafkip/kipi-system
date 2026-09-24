@@ -77,6 +77,7 @@ cp "$LIB" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-verdict-lib.sh"
 # From the SCRIPTS DIR, not from $(dirname "$LIB"): $LIB is already a copy in a
 # temp dir, so deriving the sibling from it looks right and resolves to nothing.
 cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/repo-slug-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/repo-slug-lib.sh"
+cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env-failure-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/env-failure-lib.sh"
 AGENT="$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # --- stubs: the engine and gh are the seams, and both are stubbed ------------
@@ -169,6 +170,22 @@ field() {   # field <record> <key>
   python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(json.dumps(d.get(sys.argv[2],'<<MISSING>>')))" \
     "$1" "$2" 2>/dev/null || echo '<<NORECORD>>'
 }
+
+# --- case 0: a runner outage is the machine's, not an unusable review --------
+# PR #421 round 16, minor. The reviewer's model output was never classified, so
+# a limit refusal between the Sana call and the review call read as "the review
+# produced no verdict": converge paged exit 7 and blamed the review. The
+# reviewer now exits 9, the machine's code, and the worker marks env_halt.
+printf '%s\n' "You've hit your weekly limit · resets Sep 22 at 2pm (America/Los_Angeles)" > "$WORK/outage.md"
+mkdir -p "$WORK/home-outage"
+env HOME="$WORK/home-outage" PATH="$BIN:$PATH" REVIEW_FIXTURE="$WORK/outage.md" KIPI_NOTIFY="/usr/bin/true" \
+  bash "$AGENT" 90 --issue "ASK-TEST" >"$WORK/out-90.log" 2>&1
+OUTAGE_RC=$?
+if [ "$OUTAGE_RC" = "9" ]; then
+  ok "a reviewer whose runner refused exits 9, the machine's code"
+else
+  bad "a reviewer whose runner refused exits 9, the machine's code (got rc=$OUTAGE_RC)"
+fi
 
 # --- case 1: a phantom review is recorded as NOT usable ----------------------
 # This is the case that fails against the pre-fix agent, and it is the whole

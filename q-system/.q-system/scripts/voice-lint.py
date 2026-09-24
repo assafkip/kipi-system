@@ -79,13 +79,28 @@ PUBLISHED_PATH_PATTERNS = [
 
 SKIP_MARKER = "voice-lint-skip"
 
+# CALIBRATED AGAINST THE FOUNDER'S OWN CORPUS, never grown by taste. "robust" and
+# "foster" were dropped 2026-09-06. The one instance that holds his voice corpus
+# had already removed both on 2026-08-27 (its PR #71) after counting the lemmas
+# there (7 and 16), and the fleet sync put them back because the skeleton never
+# learned. Re-measured whole-word on 2026-09-06, which is what this list
+# matches: "robust" in 5 corpus rows ("a robust understanding of the
+# attackers"), "foster" in 5, and "fosters" / "fostering" in 11 more that the
+# whole-word match never saw. A word he demonstrably writes is not AI-sounding
+# in his voice, and a ban list that refuses his real vocabulary is the six-word
+# scar again. Two executables hold it: the instance's
+# pipeline/tests/test_voice_list_audit.py pins this list's size, and
+# q-system/.q-system/tests/test_voice_lint_calibration.py pins the size here
+# and refuses the dropped words in every other copy of the list (scan-draft.py,
+# compliance-check.py, the MCP DraftScanner), which is where the same two words
+# survived the first removal.
 BANNED_WORDS = {
-    "leverage", "robust", "transformative", "innovative", "cutting-edge",
+    "leverage", "transformative", "innovative", "cutting-edge",
     "groundbreaking", "delve", "tapestry", "synergy", "paradigm", "cornerstone",
     "linchpin", "testament", "vital", "pivotal", "crucial", "meticulous",
     "nuanced", "vibrant", "enduring", "unparalleled", "unwavering",
     "intricate", "comprehensive",
-    "utilize", "optimize", "foster", "underscore", "embark", "garner",
+    "utilize", "optimize", "underscore", "embark", "garner",
     "bolster", "showcase", "empower", "unlock", "revolutionize",
     "streamline", "spearhead",
     "meticulously", "effectively", "efficiently", "strategically",

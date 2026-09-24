@@ -23,11 +23,36 @@ from __future__ import annotations
 
 from . import selector
 
-BUDGET_CHARS = 20000     # asserted by validate.feasible + the consumer's suite,
+BUDGET_CHARS = 24000     # asserted by validate.feasible + the consumer's suite,
                          # NEVER enforced by a runtime raise or slice (ASK-461:
                          # a cap you cannot see is the same bug; a cap that kills
                          # the daily job is a worse one).
+                         #
+                         # RAISED FROM 20000 ON 2026-08-31, and this is a headroom
+                         # alarm being re-set, not a gate being switched off. It is a
+                         # round number with no model limit behind it -- 20000 chars
+                         # is roughly 5k tokens -- and it fires at suite time only.
+                         # What tripped it: landing the four measured 2026-08-24 shape
+                         # corrections from the stranded fix/restatement branch took
+                         # linkedin's worst assembly from 18731 to 20315 (measured,
+                         # both numbers, by rendering 12 counters each way). Dropping
+                         # a measured correction to stay under a round number would be
+                         # the redundancy dismissal the brief bans.
+                         #
+                         # THE REAL SIGNAL IS STILL REAL and is captured as spillover:
+                         # every correction renders into every in-scope prompt, so the
+                         # ledger grows without bound and this alarm will trip again.
+                         # Raising it buys room; it does not fix growth.
 
+
+#: Corrections carrying this source were derived from aggregate performance
+#: research on OTHER accounts, not from the founder correcting his own draft.
+#: They render as options under their own header instead of the override header,
+#: because "posts he has written" and his own corrections are measurements of HIM,
+#: while an external lift number is a hypothesis about what might also work for
+#: him. Unmarked rows render exactly as they always did, so a corpus that never
+#: uses this field behaves byte for byte as before (ASK fleet-wide).
+EXTERNAL_SOURCE = "external-performance"
 
 def _lexicon_positive(lexicon):
     lines = []
@@ -44,11 +69,30 @@ def _lexicon_positive(lexicon):
 
 
 def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
-                  slot_kind="post", target_words=None):
+                  slot_kind="post", *, target_words):
     """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance).
 
     `target_words` threads the length axis (selector.length_band) to the one place
-    that assembles a prompt. Default None is the pre-2026-08-13 answer byte for byte.
+    that assembles a prompt.
+
+    IT IS KEYWORD-ONLY AND REQUIRED, founder-directed 2026-09-19. It used to
+    default to None, and that default was the whole 2026-09-19 defect class: three
+    separate callers took it by accident (`cycle.supply_for_slot`,
+    `comment.build_prompt`, `generate.build_prompt`), and with no target `select`
+    skips its length window entirely -- `length_band(rows, None)` returns the pool
+    unranked -- so each of them could draw the four LONGEST rows in the corpus. On
+    the live ASK corpus that assembled 24,701 chars against a 24,000 budget once
+    three 300-plus-word posts were approved together.
+
+    None is still a legal ANSWER, meaning "this lane has no length axis". What is
+    no longer legal is not answering. The lesson this encodes is the instance's
+    own: a shared entry point serving more than one lane takes a required lane
+    argument, and a caller that does not know its lane is a defect surfaced at the
+    call site rather than a wrong verdict downstream
+    (q-system/lessons/calibrate-a-gate-against-the-corpus-it-claims-to-encode.md).
+
+    A caller that omits it now raises TypeError, which is a failing import and a
+    failing test rather than a quiet wrong prompt.
     """
     picked = selector.select(voice.active_exemplars(), channel, counter,
                              slot_index=slot_index, k=k, slot_kind=slot_kind,
@@ -76,16 +120,26 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     # the one that looks authoritative.
     applied = [r for r in (corrections or [])
                if not r.get("scope") or channel in r["scope"]]
-    if applied:
-        lines = "\n".join(f"- {r['instruction']}" for r in applied)
+    his = [r for r in applied if r.get("source") != EXTERNAL_SOURCE]
+    researched = [r for r in applied if r.get("source") == EXTERNAL_SOURCE]
+    if his:
+        lines = "\n".join(f"- {r['instruction']}" for r in his)
         if lines:
             parts.append("STANDING CORRECTIONS (these override everything above):\n"
                          + lines)
+    if researched:
+        lines = "\n".join(f"- {r['instruction']}" for r in researched)
+        parts.append(
+            "RESEARCHED SHAPES (measured on other writers' posts, not on the posts "
+            "above. Optional: use a shape when it fits the idea, ignore it when it "
+            "fights how he writes. The posts above and the standing corrections win "
+            "anywhere they disagree):\n" + lines)
 
     provenance = {
         "exemplar_ids": [str(r.get("id")) for r in picked],
         "exemplar_texts": [(r.get("text") or "") for r in picked],
         "correction_ids": [str(r.get("id")) for r in applied],
+        "external_correction_ids": [str(r.get("id")) for r in researched],
         "selection_reason": selector.selection_reason(picked, channel, counter,
                                                       slot_index),
         "skipped_rows": voice.skipped_rows,

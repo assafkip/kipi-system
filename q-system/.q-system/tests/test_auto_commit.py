@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -555,3 +556,243 @@ def test_a_binary_file_degrades_instead_of_crashing(tmp_path):
     msg = _last_msg(run)
     assert rel in msg, f"the binary file was dropped from the message\n{msg}"
     assert "binary" in msg, f"the binary file was not marked as such\n{msg}"
+
+
+# --- the third writer (2026-09-06) -------------------------------------------------
+# fleet_update_in_progress coordinates with the one writer that leaves a marker. This
+# hook was the writer nobody could negotiate with: it fires at every turn end in every
+# session on a shared checkout and took no lock at all. Measured in one session that
+# night, three of five git operations died on "Unable to create .git/index.lock" and
+# every one of them EXITED 0.
+
+def test_it_refuses_while_another_commit_holds_index_lock(tmp_path):
+    """sp-4bff1b91. A commit in flight owns index.lock for its whole pre-commit,
+    measured at 447-497s on the consulting checkout. Firing into that either dies at
+    exit 0 or lands a commit nobody asked for."""
+    root, run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    lock = os.path.join(root, ".git", "index.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("")
+    try:
+        out = _fire(root)
+    finally:
+        os.remove(lock)
+    assert "another commit is in flight" in (out.stdout + out.stderr), \
+        "the hook fired into a held index.lock instead of refusing"
+    log = run("git", "log", "--oneline").stdout
+    assert "chore" not in log, "it committed while another writer held the lock"
+
+
+def test_it_refuses_on_head_lock_too(tmp_path):
+    """HEAD.lock is a SEPARATE door, and this docstring named the wrong reason
+    for it. It said the ref lock killed the prd-os ledger sweep mid pre-commit
+    (sp-d0ce1966). Review round 2 measured that a commit on an attached branch
+    produces index.lock and `refs/heads/<branch>.lock` and NEVER HEAD.lock, and
+    an independent watch agrees: only index.lock appears through a slow
+    pre-commit. The check still earns its place -- HEAD.lock has real producers
+    (checkout, reset, merge, alongside the AUTO_MERGE / ORIG_HEAD / packed-refs
+    family) and dropping it reddens this test. What it does NOT cover is
+    `refs/heads/<branch>.lock`, which a commit really does take; that window is
+    sub-second and index.lock spans it, so it is deliberately not checked."""
+    root, run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    lock = os.path.join(root, ".git", "HEAD.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("")
+    try:
+        out = _fire(root)
+    finally:
+        os.remove(lock)
+    assert "another commit is in flight" in (out.stdout + out.stderr)
+
+
+def test_it_does_not_delete_the_lock_it_refuses_on(tmp_path):
+    """THE CONTROL THAT MATTERS MOST. kipi-update.sh:1714 force-deletes these locks
+    with no pid, mtime or age test (sp-50119dec). Removing a lock that a live
+    8-minute pre-commit still owns corrupts that commit's index. Refusing is the
+    whole fix; deleting would be a worse bug wearing the same commit message."""
+    root, _ = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    lock = os.path.join(root, ".git", "index.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("sentinel")
+    try:
+        _fire(root)
+        assert os.path.exists(lock), "the hook DELETED a lock it does not own"
+        with open(lock, encoding="utf-8") as fh:
+            assert fh.read() == "sentinel", "the hook rewrote a lock it does not own"
+    finally:
+        if os.path.exists(lock):
+            os.remove(lock)
+
+
+def test_it_still_commits_when_no_lock_is_held(tmp_path):
+    """The negative control. A guard that refuses always is not a guard, it is an
+    outage: the safety net exists so work survives a context loss."""
+    root, run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    _fire(root)
+    log = run("git", "log", "--oneline").stdout
+    assert "chore" in log, "the hook refused with no lock held, so it never commits"
+
+
+def _worktree(tmp_path):
+    """A linked worktree of a fresh repo, plus its main checkout.
+
+    Returns (main_root, wt_root, main_git_dir, wt_git_dir).
+    """
+    main, run = _repo(tmp_path)
+    wt = tmp_path / "wt"
+    run("git", "branch", "-q", "side")
+    run("git", "worktree", "add", "-q", str(wt), "side")
+    main_git = main / ".git"
+    wt_git = main_git / "worktrees" / "wt"
+    assert wt_git.is_dir(), f"the worktree fixture never linked: {wt_git}"
+    return main, wt, main_git, wt_git
+
+
+def test_a_worktree_does_not_refuse_on_the_main_checkouts_lock(tmp_path):
+    """THE MUTANT THIS EXISTS FOR: --git-common-dir in place of --git-dir.
+
+    It survives every other test in this file, because a plain repo's git dir IS
+    its common dir, so the two spellings are indistinguishable there. They are not
+    indistinguishable on this checkout, which carries a dozen linked worktrees.
+
+    MEASURED 2026-09-07, not reasoned: index.lock and HEAD.lock are PER-WORKTREE.
+    Holding `<main>/.git/index.lock` does not block a `git add` run from a linked
+    worktree (rc=0), and holding `<main>/.git/worktrees/<n>/index.lock` does not
+    block one run from the main checkout (rc=0). Only the worktree's own lock
+    stops it (rc=128, "Unable to create ... index.lock"). So `--git-dir`, which
+    answers the per-worktree dir, names exactly the lock that can stop THIS
+    checkout, and `--git-common-dir` names one that cannot.
+
+    The cost of getting it wrong is quiet and fleet-wide: a commit in the main
+    checkout holds index.lock for its whole pre-commit (445-497s measured), so a
+    common-dir read would silence the safety net in every linked worktree for
+    eight minutes at a time, for a lock none of them was ever going to contend.
+    Note that fleet_update_in_progress deliberately reads the OPPOSITE dir, and
+    is right to: a run marker is a claim on the whole checkout, a lock is not.
+    """
+    _main, wt, main_git, _wt_git = _worktree(tmp_path)
+    _write(wt, "memory/MEMORY.md", "- note\n")
+    lock = main_git / "index.lock"
+    lock.write_text("held by the main checkout")
+    try:
+        _fire(wt)
+    finally:
+        lock.unlink()
+    log = subprocess.run(["git", "log", "--oneline"], cwd=wt,
+                         capture_output=True, text=True).stdout
+    assert "chore" in log, (
+        "the worktree refused on a lock in the MAIN checkout's git dir, which "
+        "cannot block it. The guard is reading --git-common-dir, not --git-dir.")
+
+
+def test_a_worktree_still_refuses_on_its_own_lock(tmp_path):
+    """The other direction, so the test above cannot be satisfied by never
+    refusing at all. The per-worktree lock is the one that stops this checkout."""
+    _main, wt, _main_git, wt_git = _worktree(tmp_path)
+    _write(wt, "memory/MEMORY.md", "- note\n")
+    lock = wt_git / "index.lock"
+    lock.write_text("held by this worktree")
+    try:
+        out = _fire(wt)
+    finally:
+        lock.unlink()
+    assert "another commit is in flight" in (out.stdout + out.stderr), \
+        "a worktree fired into its OWN held index.lock instead of refusing"
+    log = subprocess.run(["git", "log", "--oneline"], cwd=wt,
+                         capture_output=True, text=True).stdout
+    assert "chore" not in log, "it committed while holding its own lock"
+
+
+def test_the_lock_dir_resolves_against_PROJ_DIR_not_the_process_cwd(tmp_path):
+    """PR #321 review, minor. The SAME defect PR #314 round 2 fixed one guard up.
+
+    `git rev-parse --git-dir` answers RELATIVE to the cwd it ran in, and run()
+    executes in PROJ_DIR (CLAUDE_PROJECT_DIR), which is not this process's cwd.
+    Resolving the answer against os.getcwd() points at a path that does not exist
+    whenever the two differ, no lock is ever found, and the guard FAILS OPEN into
+    the exact pre-guard behaviour it was built to remove.
+
+    fleet_update_in_progress carries that scar in its own comment and IS pinned,
+    but in a DIFFERENT FILE this suite does not run:
+    q-system/hooks/test/test_auto_commit_run_marker.py::
+    test_live_marker_is_seen_when_cwd_is_not_the_project_dir. An earlier draft of
+    this docstring said it had no test either; that was wrong, and missing that
+    second file is also how a channel change here shipped past a green run of
+    this suite and reddened CI. Every other test in THIS file fires with
+    cwd == PROJ_DIR, so
+    `os.path.abspath(git_dir)` in place of `os.path.abspath(join(PROJ_DIR, ...))`
+    passed all 43 of them. This is the one that can tell them apart.
+    """
+    root, run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    assert not (elsewhere / ".git").exists(), "the fixture must not be a repo"
+    lock = root / ".git" / "index.lock"
+    lock.write_text("held")
+    try:
+        out = subprocess.run(
+            [sys.executable, HOOK], capture_output=True, text=True,
+            cwd=str(elsewhere),
+            env=dict(os.environ, CLAUDE_PROJECT_DIR=str(root)))
+    finally:
+        lock.unlink()
+    assert "another commit is in flight" in (out.stdout + out.stderr), (
+        "with cwd outside PROJ_DIR the guard did not see PROJ_DIR's held lock. "
+        "The git-dir answer is being resolved against the process cwd.")
+    assert "chore" not in run("git", "log", "--oneline").stdout, \
+        "it committed while a lock was held in PROJ_DIR's git dir"
+
+
+
+def test_a_refusal_reaches_the_channel_the_fleet_wiring_keeps(tmp_path):
+    """REVIEW ROUND 2, MAJOR. The refusal was on stderr, which is thrown away.
+
+    settings-template.json wires this hook as `... auto-commit.py 2>/dev/null ||
+    true` (line 395), and that is the copy the fleet updater installs on
+    every instance. The behaviour the lock guard replaced reported a collision on
+    STDOUT via commit_group's `skipped:` line, which survived that redirect. A
+    stderr-only refusal does not: an orphaned index.lock, which has no age bound
+    by design, would switch the safety net off on that checkout forever and print
+    nothing anywhere a human looks.
+
+    So this asserts the CHANNEL, not the wording. It fires the hook exactly the
+    way the fleet does, with stderr discarded, and fails if the reason vanishes.
+    """
+    root, _run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    lock = root / ".git" / "index.lock"
+    lock.write_text("held")
+    try:
+        out = subprocess.run(
+            [sys.executable, HOOK], capture_output=True, text=True, cwd=str(root),
+            env=dict(os.environ, CLAUDE_PROJECT_DIR=str(root)))
+    finally:
+        lock.unlink()
+    assert "another commit is in flight" in out.stdout, (
+        "the refusal did not reach STDOUT, so `2>/dev/null` in the shipped hook "
+        "wiring discards it and the safety net goes off in total silence.\n"
+        f"stdout={out.stdout!r}\nstderr={out.stderr!r}")
+
+
+def test_the_fleet_update_refusal_reaches_stdout_too(tmp_path):
+    """The sibling guard, hardened in the same breath. It had the identical
+    stderr-only shape and the identical consequence, and fixing one of two
+    guards that fail the same way is how this class comes back."""
+    root, _run = _repo(tmp_path)
+    _write(root, "memory/MEMORY.md", "- note\n")
+    marker = root / ".git" / "kipi-update.run"
+    marker.write_text(f"{os.getpid()} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+    try:
+        out = subprocess.run(
+            [sys.executable, HOOK], capture_output=True, text=True, cwd=str(root),
+            env=dict(os.environ, CLAUDE_PROJECT_DIR=str(root)))
+    finally:
+        marker.unlink()
+    assert "fleet updater run in progress" in out.stdout, (
+        "the fleet-updater refusal did not reach STDOUT.\n"
+        f"stdout={out.stdout!r}\nstderr={out.stderr!r}")

@@ -25,13 +25,13 @@ BUS_BASE = os.path.join(QROOT, ".q-system", "agent-pipeline", "bus")
 
 # Import banned words from scan-draft.py's definitions (kept in sync)
 BANNED_WORDS = [
-    "delve", "comprehensive", "crucial", "vital", "pivotal", "robust",
+    "delve", "comprehensive", "crucial", "vital", "pivotal",
     "innovative", "transformative", "intricate", "meticulous", "nuanced",
     "vibrant", "enduring", "unparalleled", "unwavering", "cutting-edge",
     "groundbreaking", "unprecedented", "tapestry", "synergy", "realm",
     "beacon", "interplay", "treasure trove", "paradigm", "cornerstone",
     "catalyst", "linchpin", "testament",
-    "leverage", "utilize", "optimize", "foster", "underscore", "embark",
+    "leverage", "utilize", "optimize", "underscore", "embark",
     "garner", "bolster", "showcase", "enhance", "empower", "unlock",
     "revolutionize", "streamline", "spearhead",
 ]

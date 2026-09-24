@@ -59,6 +59,8 @@ class RegistryManager:
         for inst in data["instances"]:
             if inst["name"] == name:
                 raise ValueError(f"Instance '{name}' already exists")
+            if inst["path"] == path:
+                raise ValueError(f"Instance path '{path}' already used by '{inst['name']}'")
         entry = {
             "name": name,
             "path": path,

@@ -35,7 +35,6 @@ OK: LinkedIn, Google, Meta (specific companies, not abstract qualities)
 Scrub every instance. If the sentence still makes sense without it, delete. If not, rewrite.
 
 - leverage
-- robust
 - seamless
 - seamlessly
 - ecosystem

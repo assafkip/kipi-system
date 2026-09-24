@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.kipi.launchd-health -- the launchd silent-death watchdog.
+
+  WHY THIS FILE EXISTS (ASK-1345, sp-173ead80). The label was loaded on the
+  founder's machine on 2026-06-30 from a hand-written plist and NOTHING in the
+  repo carried a template for it: `git log --all --diff-filter=A` over 3140
+  commits returns nothing for this basename, and no copy sat in any worktree.
+  A machine rebuild lost the fleet's own watchdog silently, and the repaired
+  enumerator could not install it because there was nothing to enumerate.
+
+  Transcribed from the live ~/Library/LaunchAgents copy, not invented: same
+  interpreter, same script, same two fire times, same log paths. The hardcoded
+  home in that copy is the reason this is a template rather than a checked-in
+  plist -- install-plist.sh substitutes __KIPI_REPO__, __HOME__ and __USER__, so
+  the same file works on a machine that is not this one.
+
+  kipi-scope: skeleton-only
+  (install-plist.sh --all reads that marker and skips this template anywhere but
+  the skeleton.) SKELETON ONLY because this label is a per-machine singleton: it
+  enumerates ~/Library/LaunchAgents for every watched prefix and reports on all
+  of them at once. launchd-health-check.py propagates to instances via
+  kipi update, so without this marker `--all` from any of 23 instance checkouts
+  would rebind the one watchdog label to that instance -- the same label
+  collision the marker was added for on com.kipi.lessons-daily.
+
+  THE TWO FIRE TIMES ARE TRANSCRIBED, NOT ENDORSED. sp-41409ffe is open against
+  them: launchd-health-check.py's FAIL_PING_TTL_SECONDS is 6h while these are 12h
+  apart, so the TTL leg of problems_to_ping can never suppress and a chronically
+  failing job alerts on every run. Committing the live schedule is deliberate --
+  this template's job is to make the loaded job reproducible, and changing its
+  cadence in the same breath would ship an untested behaviour change to a
+  machine-wide watchdog. Whoever fixes sp-41409ffe changes it here.
+
+  No registration step is needed for any job this watches, and there never was
+  one. discover_problems() globs LAUNCH_AGENTS per watched prefix (line 185), so
+  a newly installed job is covered the moment its plist lands. The installer that
+  used to test for a launchd-health-register.sh and announce the watchdog absent
+  is deleted; that script never existed.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.launchd-health</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/launchd-health-check.py</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/launchd-health.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/launchd-health.err</string>
+</dict>
+</plist>

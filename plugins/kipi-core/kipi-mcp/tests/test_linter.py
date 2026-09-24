@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kipi_mcp.draft_scanner import DraftScanner
 from kipi_mcp.linter import Linter
 
 
@@ -51,10 +52,12 @@ class TestVoiceLintClean:
 
 
 class TestVoiceLintBannedWords:
-    @pytest.mark.parametrize("word", [
-        "delve", "comprehensive", "robust", "synergy", "leverage",
-        "utilize", "meticulously", "seamlessly",
-    ])
+    # Drawn from the scanner's own lists, never restated here. A restated copy
+    # went red the day "robust" left the list on corpus evidence (2026-09-06,
+    # PR #315 review) while the capability gate could not see this directory.
+    @pytest.mark.parametrize("word", (
+        DraftScanner.TIER1_WORDS[:3] + DraftScanner.TIER1_VERBS[:3]
+        + DraftScanner.TIER1_ADVERBS[:2]))
     def test_banned_word_detected(self, linter, word):
         result = linter.voice_lint(f"We {word} the platform to get results.")
         assert result["pass"] is False

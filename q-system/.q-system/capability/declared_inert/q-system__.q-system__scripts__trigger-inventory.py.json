@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/trigger-inventory.py",
+ "reason": "the trigger inventory has no trigger of its own: its own live run lists it DEAD (lr-trigger-inventory). Arming it (a kipi check step or a weekly plist) changes every governed instance and is a decision, not a side effect of a CI-green fix. Declared inert until the cited item is decided.",
+ "spillover_id": "sp-24aa7ebe"
+}

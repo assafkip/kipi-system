@@ -395,6 +395,14 @@ def main():
     # including that file's omission of the same key. Copying a shape is not
     # checking it. voice-dna-loader.py has the identical defect and is captured
     # separately rather than widened into this PR.
+    #
+    # CONFIRMED BY MEASUREMENT 2026-08-30, not by reading the docs: three
+    # headless `claude -p` runs via probe_hook_envelope.py, a unique marker per
+    # arm and a positive control that had to pass first. Nested-with-name
+    # delivered; nested-without-name and top-level both came back ABSENT. The
+    # published docs call the key optional and they are wrong. The
+    # voice-dna-loader.py defect this comment defers is now fixed too, together
+    # with 27 instance copies of it and nine stale token-guard forks.
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
         "additionalContext": "".join(parts),

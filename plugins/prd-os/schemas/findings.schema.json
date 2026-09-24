@@ -53,6 +53,19 @@
       ],
       "description": "`pending` is the initial state. A PRD cannot advance to `approved` while any finding is still `pending`."
     },
+    "finding_class": {
+      "type": "string",
+      "enum": [
+        "correctness",
+        "security",
+        "wiring",
+        "test-gap",
+        "data-integrity",
+        "docs",
+        "other"
+      ],
+      "description": "Optional. What kind of problem this is. Copied onto the receipt at close, so it is a closed list: the receipts ledger is public."
+    },
     "rationale": {
       "type": "string",
       "description": "Required when disposition is `rejected` or `deferred`. Explains why the finding is not being fixed now."

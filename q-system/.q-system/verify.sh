@@ -25,6 +25,7 @@ set -euo pipefail
 
 MODE="${1:---full}"
 REPO="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
 # see the long note at the `-o cache_dir` call below. --path-format=absolute so a
 # `cd` inside the pytest subshell cannot re-root a relative `.git`; the fallback
@@ -78,7 +79,13 @@ if [ "$MODE" = "--staged" ]; then
   # of a module, or deleting a test file, is exactly the change a floor should
   # look at -- the remaining tree still has to parse and its suites still have to
   # pass without it.
-  ANY_STAGED="$(git -C "$REPO" diff --cached --name-only)"
+  # --no-renames, because ANY_STAGED also feeds the test selector (ASK-1795).
+  # Rename detection is on by default and prints ONLY the new path, so a
+  # `git mv helper.py helper2.py` hid the old module name, and the tests that
+  # still import `helper` were not selected. Reviewer finding on PR #371, with a
+  # reproducer: with renames on, the selection was the declared fallback alone;
+  # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
+  ANY_STAGED="$(git -C "$REPO" diff --cached --no-renames --name-only)"
   STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
@@ -242,17 +249,31 @@ if [ -n "$PYFILES" ]; then
   # the file. Plain utf-8 leaves the BOM in the string and compile() then
   # reports a SyntaxError on a file Python itself runs happily. No such file is
   # in the repo today, which is precisely why it would have been found late.
+  #
+  # ONE interpreter for every file, not one per file (ASK-1795). The per-file
+  # loop spawned ~1500 python3 processes in consulting: 35s measured on
+  # 2026-09-18, paid on every commit before a single test ran. Same compile(),
+  # same tokenize.open, same verdict per file. dont_inherit=True so the checker's
+  # own __future__ flags can never leak into the file being compiled, which is
+  # exactly what the old fresh-process-per-file gave for free.
   run_check "python syntax" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -c "import sys,tokenize
-with tokenize.open(sys.argv[1]) as fh:
-    src = fh.read()
-compile(src, sys.argv[1], \"exec\")" "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import sys, tokenize
+fail = 0
+for f in sys.stdin.read().splitlines():
+    try:
+        fh = tokenize.open(f)
+    except FileNotFoundError:
+        continue
+    try:
+        with fh:
+            compile(fh.read(), f, \"exec\", dont_inherit=True)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$PYFILES"
 fi
 
@@ -275,14 +296,23 @@ fi
 # A malformed one fails at 07:30 in a launchd job nobody is watching.
 JSONFILES="$(git -C "$REPO" ls-files '*.json' | grep -v -E '(^|/)(dist|node_modules)/' | head -3000)"
 if [ -n "$JSONFILES" ]; then
+  # One interpreter for all of them, same reason as python syntax (ASK-1795).
   run_check "json parse" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import json, os, sys
+fail = 0
+for f in sys.stdin.read().splitlines():
+    if not os.path.isfile(f):
+        continue
+    try:
+        with open(f) as fh:
+            json.load(fh)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$JSONFILES"
 fi
 
@@ -368,9 +398,27 @@ if [ -f "$_mcp_ns_check" ] && [ -f "$_mcp_ns_hook" ]; then
     python3 "$_mcp_ns_check" --hook "$_mcp_ns_hook"
 fi
 
-if [ -d "$HOME/.claude/hooks" ] && [ -f "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" ]; then
+# AT PRE-COMMIT (--staged) DRIFT IS A WARN, NOT A FAILURE (ASK-1248).
+#
+# The install happens AFTER merge (kipi update, behind its provenance preflight).
+# So a branch that changes the hook can never commit while this check fails the
+# commit: the machine only gets the new copy once the branch lands, and the
+# branch only lands once it can commit. Measured 2026-09-23: the merge of main
+# into sana/ask-1144 was refused here, installed copy 480 lines vs 898. Merged,
+# it would also have refused every OTHER kipi-system commit on the machine until
+# someone installed by hand. --full (CI and a deliberate run) still FAILS on
+# drift, and `kipi update --dry` still prints it, so drift stays visible.
+_hooks_installer="$TARGET/q-system/.q-system/scripts/install-claude-hooks.py"
+if [ "$MODE" = "--staged" ] && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
+  if _drift="$(python3 "$_hooks_installer" --check 2>&1)"; then
+    say "installed-hooks-match-repo" "ok"
+  else
+    say "installed-hooks-match-repo" "WARN (drift; not fatal at pre-commit, --full fails)"
+    printf '%s\n' "$_drift" | sed 's/^/    /'
+  fi
+elif [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
   run_check "installed-hooks-match-repo" \
-    python3 "$TARGET/q-system/.q-system/scripts/install-claude-hooks.py" --check
+    python3 "$_hooks_installer" --check
 else
   say "installed-hooks-match-repo" "SKIP (no ~/.claude/hooks on this machine)"
 fi
@@ -461,10 +509,63 @@ if [ -f "$MANIFEST" ]; then
       # picture, not the fastest no. The file-entry branch above also keeps neither:
       # a single test file is already the fast case, so --ff would buy nothing and
       # -x would hide sibling failures in the same file.
+      #
+      # --staged ALSO NARROWS THE SUITE TO THE TESTS THAT OWN THE CHANGE (ASK-1795).
+      # A suite used to run IN FULL on any staged path under it: every commit
+      # touching q-consult/ in the consulting instance ran ~6300 tests, 620s and
+      # 788s measured 2026-09-18, and the founder asked twice that day for the
+      # pre-commit door to stop doing that. verify_select.py picks the owning test
+      # files and prints WHY per staged path; a path no test names takes the
+      # suite's declared fallback (<suite>/.verify-fallback, else the full suite),
+      # never nothing. --full is untouched, so pre-push and CI still run all of it.
+      #
+      # The selector comes from the TREE BEING GRADED, same rule as the manifest.
+      # If it is missing or errors, the suite runs in full: a broken selector may
+      # cost time, it may never cost coverage.
       if [ "$MODE" = "--staged" ]; then
-        run_check "pytest:$suite" bash -c \
-          'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
-          _ "$TARGET" "$suite" "$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+        _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+        _sel_src="$TARGET/q-system/.q-system/verify_select.py"
+        [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
+        _sel_mode="full"; _sel_out=""
+        if [ -f "$_sel_src" ] && \
+           _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
+                       python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
+          _sel_mode="$(printf '%s\n' "$_sel_out" | head -1)"
+        else
+          echo "      selector unavailable or failed -> full suite"
+        fi
+        if [ "$_sel_mode" = "select" ]; then
+          _plug="$TMP/verify-select-plugin"
+          mkdir -p "$_plug"
+          cp "$_sel_src" "$_plug/_kipi_verify_select.py"
+          _list="$TMP/verify-select-$(printf '%s' "$suite" | tr / _).txt"
+          # sed -n, never `| head`: under pipefail head's early exit SIGPIPEs the
+          # writer and kills the script (the 141 scar in the discovery note above).
+          printf '%s\n' "$_sel_out" | sed -n '2,$p' | sed '/^$/d' > "$_list.rel"
+          sed "s|^|$TARGET/$suite/|" "$_list.rel" > "$_list"
+          _n=$(sed -n '$=' "$_list"); _n="${_n:-0}"
+          sed -n '1,40p' "$_list.rel" | sed 's/^/        /'
+          if [ "$_n" -gt 40 ]; then echo "        ... and $((_n - 40)) more"; fi
+          # Exit 5 is "collected nothing": every selected file was collect_ignored
+          # or held no test. That is an empty selection, so it takes the full
+          # suite rather than passing on zero tests run.
+          run_check "pytest:$suite ($_n selected)" bash -c '
+            cd "$1/$2" || exit 1
+            PYTHONPATH="$4${PYTHONPATH:+:$PYTHONPATH}" KIPI_VERIFY_SELECT="$5" \
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3" \
+              -p _kipi_verify_select
+            rc=$?
+            if [ "$rc" -eq 5 ]; then
+              echo "selection collected no tests -> full suite"
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"
+              rc=$?
+            fi
+            exit $rc' _ "$TARGET" "$suite" "$_cache" "$_plug" "$_list"
+        else
+          run_check "pytest:$suite" bash -c \
+            'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
+            _ "$TARGET" "$suite" "$_cache"
+        fi
       else
         run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
                   _ "$TARGET" "$suite"

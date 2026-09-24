@@ -15,7 +15,8 @@ Per new learning:
      real entity. Anything the gate can't clear is HELD (written to the held dir), never published.
   3. PUBLISH clean lessons to q-system/lessons/<id>.md (frontmatter {id,kind,title,date}); the rail
      fans them read-only to every instance on the next `kipi update`.
-  4. LEDGER every source so each learning is processed once (idempotent daily runs).
+  4. LEDGER every source so each learning is processed once (idempotent daily runs); a published
+     row also names the lesson_id it became, so each lesson traces to its source.
 
 Emits a JSON summary (published / held / scanned) for the daily heartbeat to Slack.
 
@@ -25,6 +26,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -182,6 +184,25 @@ def write_lesson(lessons_dir, distilled, published_text, stamp, used_ids):
     return lid, title
 
 
+def flush_ledger(ledger_path, ledger):
+    """Write the ledger durably, and atomically, after every processed source.
+
+    Was written once after the loop. Each lesson file is written to disk inside the
+    loop, so a run killed mid-loop left published lessons with NO row: they traced to
+    nothing forever, and the next night re-distilled the same un-ledgered sources and
+    shipped `-2` duplicates of them (ASK-539, codex PR #370 round 3). Flushing per
+    source bounds the window to one source instead of a whole run.
+
+    tmp + os.replace, not write_text: a truncating write killed halfway leaves a
+    corrupt ledger, which is worse than the gap it was closing -- the next run reads
+    nothing and re-distills EVERY source.
+    """
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ledger_path.with_suffix(ledger_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(ledger, indent=2))
+    os.replace(tmp, ledger_path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", default=str(REPO_ROOT / "instance-registry.json"))
@@ -229,11 +250,19 @@ def main():
                 f"source: {held_source_link(path)}\n\n"
                 f"proposed title: {distilled['title']}\n\n{distilled['body']}\n")
             held.append(distilled["title"])
-        ledger[h] = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
+        row = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
+        if published_text:
+            # Provenance: which lesson this source became. Without it the ledger said a source
+            # was published but no published lesson traced back to anything (ASK-539).
+            row["lesson_id"] = lid
+        ledger[h] = row
+        # Durable NOW, not after the loop: the lesson file above is already on disk.
+        flush_ledger(ledger_path, ledger)
 
-    if not args.dry:
-        ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        ledger_path.write_text(json.dumps(ledger, indent=2))
+    if not args.dry and not ledger_path.exists():
+        # Nothing was processed (no new sources): still materialize the ledger so a
+        # first run on a fresh checkout leaves the file the daily job commits.
+        flush_ledger(ledger_path, ledger)
 
     print(json.dumps({"scanned": scanned, "published": published, "held": held}, indent=2))
     return 0
