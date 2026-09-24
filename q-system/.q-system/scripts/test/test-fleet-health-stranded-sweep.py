@@ -64,20 +64,42 @@ git(repo, "remote", "add", "origin", str(bare))
 pushed = commit(repo, "a", when=OLD)
 git(repo, "push", "-q", "origin", "main")
 git(repo, "checkout", "-q", "-b", "feat")
-stranded = commit(repo, "b", when=OLD)          # old, never pushed: the case
-git(repo, "checkout", "-q", "-b", "fresh")
-fresh = commit(repo, "c", when=NOW - 60)         # inside the grace window
+git(repo, "push", "-q", "-u", "origin", "feat")
+
+# Someone else advances origin/feat, so this checkout's feat falls BEHIND. That
+# is the sp-85446513 scar: a branch 15 behind origin took an unpushed commit.
+other = tmp / "other"
+subprocess.run(["git", "clone", "-q", "-b", "feat", str(bare), str(other)], check=True, env=ENV)
+commit(other, "upstream-moved", when=OLD)
+git(other, "push", "-q", "origin", "feat")
+git(repo, "fetch", "-q", "origin")
+stranded = commit(repo, "b", when=OLD)           # ahead 1, behind 1, old: the case
+
+# Ahead-only: an ordinary pending push (and every instance's local exhaust).
+git(repo, "checkout", "-q", "-b", "ahead-only", "main")
+git(repo, "push", "-q", "-u", "origin", "ahead-only")
+ahead_only = commit(repo, "d", when=OLD)
+# Never pushed, or its remote branch deleted after a squash merge: no counterpart.
+git(repo, "checkout", "-q", "-b", "no-counterpart", "main")
+orphan = commit(repo, "e", when=OLD)
 
 # --- ASK-773 ---------------------------------------------------------------
 found = fh.stranded_findings([repo], NOW)
 body = found[0]["body"] if found else ""
-check("an old unpushed commit is reported", len(found), 1)
+check("a diverged branch's old unpushed commit is reported", len(found), 1)
 check("it names the stranded sha", stranded[:10] in body, True)
 check("a pushed commit is not reported", pushed[:10] in body, False)
-check("a commit inside the grace window is not reported", fresh[:10] in body, False)
+check("an ahead-only branch is a pending push, not stranded", ahead_only[:10] in body, False)
+check("a branch with no remote counterpart is not reported", orphan[:10] in body, False)
 check("the branch name is not carried (ASK-204)", "feat" in body, False)
 check("one finding per repo, keyed by the repo", found[0]["subject"] if found else None,
       f"stranded-{repo}")
+
+# Fresh unpushed work on a diverged branch is in flight, not stranded.
+git(repo, "checkout", "-q", "feat")
+fresh = commit(repo, "c", when=NOW - 60)
+body = (fh.stranded_findings([repo], NOW) or [{"body": ""}])[0]["body"]
+check("a commit inside the grace window is not reported", fresh[:10] in body, False)
 
 lonely = tmp / "lonely"
 subprocess.run(["git", "init", "-q", "-b", "main", str(lonely)], check=True, env=ENV)
@@ -92,8 +114,9 @@ finally:
     del os.environ["GIT_DIR"]
 check("an inherited GIT_DIR does not rebind the repo", len(rebound), 1)
 
+git(repo, "merge", "-q", "--no-edit", "origin/feat")
 git(repo, "push", "-q", "origin", "feat")
-check("once pushed, silence", fh.stranded_findings([repo], NOW), [])
+check("once merged and pushed, silence", fh.stranded_findings([repo], NOW), [])
 
 reg = tmp / "registry.json"
 reg.write_text(json.dumps({"instances": [

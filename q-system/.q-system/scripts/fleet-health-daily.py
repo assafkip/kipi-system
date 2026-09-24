@@ -1660,28 +1660,49 @@ def _git(repo, *args) -> subprocess.CompletedProcess:
 
 
 def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
-    """[(branch, sha, age_hours)] for local-branch commits on no remote, past grace.
+    """[(branch, sha, age_hours)]: unpushed commits on a branch BEHIND its remote.
 
-    A repo with NO remote is skipped, not flagged: `--not --remotes` would then
-    call its whole history stranded, and a local-only repo is a deliberate shape
-    (several nested client repos). Raises on a git failure, so the detector reads
-    "error", never a clean zero.
+    The class is sp-85446513, measured 2026-08-14: auto-commit wrote a 90-line
+    fix onto a local branch 15 commits behind origin, so the work existed only on
+    this machine; it was rescued by hand as PR #150. Diverged -- ahead AND behind
+    -- is the signature, and it is also the narrowing that makes this usable.
+
+    The first version flagged every local commit on no remote, and a read-only
+    probe of the live fleet on 2026-09-24 put 24 of 26 repos in it (663 commits
+    in one checkout). Two shapes made up the flood and neither is stranded work:
+      ahead-only     an ordinary pending push, and every instance's own local
+                     exhaust (session memory, skeleton syncs)
+      no counterpart the remote branch is gone, which after a squash merge with
+                     auto-delete is the normal end of a merged PR
+    Both are skipped. A repo with no remote is skipped too. Raises on a git
+    failure, so the detector reads "error", never a clean zero.
     """
     remotes = _git(repo, "remote")
     if remotes.returncode != 0:
         raise RuntimeError(f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
     if not remotes.stdout.strip():
         return []
-    refs = _git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    refs = _git(repo, "for-each-ref", "--format=%(refname:short)\t%(upstream:short)",
+                "refs/heads")
     if refs.returncode != 0:
         raise RuntimeError(f"for-each-ref failed in {repo}: {refs.stderr.strip()[:200]}")
     seen, out = set(), []
-    for branch in refs.stdout.split():
+    for line in refs.stdout.splitlines():
+        branch, _, upstream = line.partition("\t")
+        counterpart = upstream or f"origin/{branch}"
+        if _git(repo, "rev-parse", "--verify", "-q",
+                f"refs/remotes/{counterpart}").returncode != 0:
+            continue                                   # no counterpart: not this class
+        behind = _git(repo, "rev-list", "--count", f"{branch}..{counterpart}")
+        if behind.returncode != 0:
+            raise RuntimeError(f"rev-list {branch} failed in {repo}: {behind.stderr.strip()[:200]}")
+        if int(behind.stdout.strip() or 0) == 0:
+            continue                                   # ahead-only: a pending push
         log = _git(repo, "log", "--format=%H %ct", branch, "--not", "--remotes")
         if log.returncode != 0:
             raise RuntimeError(f"git log {branch} failed in {repo}: {log.stderr.strip()[:200]}")
-        for line in log.stdout.splitlines():
-            sha, _, ct = line.partition(" ")
+        for entry in log.stdout.splitlines():
+            sha, _, ct = entry.partition(" ")
             if not sha or sha in seen or not ct.isdigit():
                 continue
             seen.add(sha)
@@ -1720,13 +1741,13 @@ def stranded_findings(repos, now: float) -> list:
         more = len(rows) - STRANDED_SHOWN
         findings.append({
             "subject": f"stranded-{repo}",
-            "title": f"{len(rows)} commit(s) exist only on this machine in {Path(repo).name}",
+            "title": f"{len(rows)} unpushed commit(s) on a branch behind its remote in {Path(repo).name}",
             "body": (
-                f"Local-branch commits reachable from no remote, older than "
+                f"Commits on no remote, on a local branch that is BEHIND its remote, older than "
                 f"{STRANDED_GRACE_S // 3600}h, in `{repo}`:\n\n{shown}"
                 + (f"\n- ...and {more} more" if more > 0 else "")
                 + "\n\n## Action\n`git -C <repo> branch --contains <sha>` names the branch. "
-                "Push each branch that holds real work, or delete the "
+                "Merge its remote in and push, or open a PR from it; or delete the "
                 "branch deliberately. This detector only reports; it never pushes or moves a ref."
             ),
         })
@@ -1896,7 +1917,7 @@ DETECTORS = [
     },
     {
         "id": "stranded-commits",
-        "description": "local-branch commits on no remote, older than the grace window (ASK-773)",
+        "description": "unpushed commits on a branch behind its remote, past the grace window (ASK-773)",
         "detect": detect_stranded_commits,
         "action": "file_issue",
         "lesson": "an-auto-commit-to-the-current-branch-strands-unmerged-work",
