@@ -134,4 +134,18 @@ grep -q 'KIPI_TEST_REVIEWER_TOKEN' "$WORK/run3.out" \
 $(tail -15 "$WORK/run3.out" | sed 's/^/        /')"
 ok "configured but empty: no status is posted, and the refusal names the missing variable"
 
-echo "PASS: $PASS/3 reviewer-status identity checks"
+# --- 4. ASK-318: a caller-pinned head that is not the PR's head -------------
+run_agent "$WORK/run4.out" KIPI_REVIEW_EXPECT_HEAD=0123456789abcdef0123456789abcdef01234567
+S4="$(status_posts)"
+[ -z "$S4" ] \
+  || fail "ASK-318 PR #437 major: the caller verified a different head and the agent posted a status anyway ('$S4').
+$(tail -8 "$WORK/run4.out" | sed 's/^/        /')"
+grep -c 'KIPI_REVIEW_EXPECT_HEAD' "$WORK/run4.out" >/dev/null \
+  || fail "the head-mismatch refusal does not name KIPI_REVIEW_EXPECT_HEAD:
+$(tail -8 "$WORK/run4.out" | sed 's/^/        /')"
+ok "a head other than the one the caller verified: refused, no status posted"
+run_agent "$WORK/run5.out" KIPI_REVIEW_EXPECT_HEAD="$SHA"
+[ -n "$(status_posts)" ] || fail "the matching pinned head was refused; the pin must only refuse a DIFFERENT head"
+ok "the head the caller verified: reviewed and posted as usual"
+
+echo "PASS: $PASS/5 reviewer-status identity checks"

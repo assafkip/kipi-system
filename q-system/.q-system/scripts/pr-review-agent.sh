@@ -364,6 +364,18 @@ if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
   exit 1
 fi
+# THE CALLER'S HEAD, WHEN IT HAS ONE (ASK-318, PR #437 round 2). The hosted
+# reviewer verifies that ITS event's head sha is in the checkout, but the head
+# this script reviews and posts on is resolved above through gh. A push landing
+# between the event and this read gives a head the checkout does not hold: the
+# agent would read the base tree and post on a sha it never opened. So a caller
+# that knows which head it verified pins it, and any other head is refused. The
+# newer push triggers its own run.
+if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPECT_HEAD" ]; then
+  echo "REFUSING: PR #$PR's head is ${HEAD_SHA:0:12}, but the caller verified ${KIPI_REVIEW_EXPECT_HEAD:0:12} (KIPI_REVIEW_EXPECT_HEAD)." >&2
+  echo "  The checkout holds the caller's head, not this one. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
