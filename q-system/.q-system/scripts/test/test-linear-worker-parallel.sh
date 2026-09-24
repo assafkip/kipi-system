@@ -44,7 +44,7 @@ trap 'rm -rf "$WORK"' EXIT
 unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID 2>/dev/null || true
 
 # --- a throwaway skeleton with a real origin/main ---------------------------
-git init -q --bare "$WORK/origin"
+git init -q --bare --initial-branch=main "$WORK/origin"
 git init -q "$WORK/skel"
 git -C "$WORK/skel" -c user.email=t@t.t -c user.name=t commit -q --allow-empty -m init
 git -C "$WORK/skel" branch -M main
