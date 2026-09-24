@@ -125,6 +125,61 @@ git(repo, "merge", "-q", "--no-edit", "origin/feat")
 git(repo, "push", "-q", "origin", "feat")
 check("once merged and pushed, silence", fh.stranded_findings([repo], NOW), [])
 
+# One unreachable remote is ITS OWN finding, not a blind detector: before this a
+# single dead origin raised, run_detectors marked the whole detector "error", and
+# every other repo went unchecked (PR #439 round-2 review, minor 1).
+broken = tmp / "broken"
+subprocess.run(["git", "init", "-q", "-b", "main", str(broken)], check=True, env=ENV)
+git(broken, "remote", "add", "origin", str(tmp / "no-such-remote.git"))
+commit(broken, "z", when=OLD)
+mixed = fh.stranded_findings([broken, repo], NOW)
+check("an unreachable repo is its own finding",
+      [f["subject"] for f in mixed], [f"stranded-unreadable-{broken}"])
+# Not vacuous: an empty list must fail this, not pass it (PR #444 review, nit).
+check("git's stderr is not carried (ASK-204)",
+      bool(mixed) and "no-such-remote" not in mixed[0]["body"], True)
+check("a failed remote read blames the remote",
+      bool(mixed) and "ls-remote --heads origin" in mixed[0]["body"], True)
+try:
+    fh.stranded_findings([broken], NOW)
+    everything_failed_raised = False
+except Exception:  # noqa: BLE001
+    everything_failed_raised = True
+check("when EVERY repo fails, the detector still reads error", everything_failed_raised, True)
+
+# A remote-less repo is not a repo that was checked: two live instances have no
+# remote, and counting them made the all-failed guard unreachable, so an outage
+# filed one permanent issue per repo (PR #444 review, major).
+try:
+    fh.stranded_findings([broken, lonely], NOW)
+    outage_with_remoteless_raised = False
+except Exception:  # noqa: BLE001
+    outage_with_remoteless_raised = True
+check("an outage still reads error when a remote-less repo is in the fleet",
+      outage_with_remoteless_raised, True)
+
+# A HUNG remote is a failed read of that repo, not an uncaught exception that
+# blinds every repo (PR #444 review, minor).
+_real_run = fh.subprocess.run
+
+
+def _hang_on_ls_remote(cmd, *a, **k):
+    if "ls-remote" in cmd and str(broken) in cmd:
+        raise fh.subprocess.TimeoutExpired(cmd, 60)
+    return _real_run(cmd, *a, **k)
+
+
+fh.subprocess.run = _hang_on_ls_remote
+git(broken, "remote", "set-url", "origin", str(bare))
+try:
+    hung = fh.stranded_findings([broken, repo], NOW)
+except Exception as exc:  # noqa: BLE001
+    hung = [{"subject": f"RAISED {exc.__class__.__name__}"}]
+finally:
+    fh.subprocess.run = _real_run
+check("a hung remote is that repo's finding, not a blind detector",
+      [f["subject"] for f in hung], [f"stranded-unreadable-{broken}"])
+
 reg = tmp / "registry.json"
 reg.write_text(json.dumps({"instances": [
     {"name": "i1", "path": str(repo)},
