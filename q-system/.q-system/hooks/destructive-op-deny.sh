@@ -132,6 +132,17 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # the next (measured: the fleet loop alone took 5.2s at 600 stages). So this
   # is the one O(1) answer, checked first: over the cap, refuse. 200 separators
   # is about 1.8s of hook time and far past any real command; `&&` counts 2.
+  # BYTES BOUND EVERY PADDING AXIS AT ONCE (round 11, PR #338 review). Rounds
+  # 8 to 10 capped words, then stages; round 11 padded one 5MB WORD, and the
+  # hook's cost is linear in bytes (measured ~2ms/KB worst case: 5MB took
+  # 11.4s and the deny was discarded). Words and stages are both functions of
+  # size, so a byte cap closes the class rather than the next axis. 256KB is
+  # ~0.6s worst case, and past what any real command line carries (macOS
+  # ARG_MAX is 1MB for a whole exec).
+  _MAX_COMMAND_BYTES=262144
+  if [ "${#COMMAND}" -gt "$_MAX_COMMAND_BYTES" ]; then
+    emit_deny "this command is ${#COMMAND} characters, past the $_MAX_COMMAND_BYTES this guard can check inside its time budget. It refuses rather than answering allow by running out of time. Put long content in a file with the Write tool."
+  fi
   _MAX_STAGE_SEPS=200
   _stage_seps=$(printf '%s' "$COMMAND" | tr -cd ';|&' | wc -c | tr -d ' ')
   if [ "$_stage_seps" -gt "$_MAX_STAGE_SEPS" ]; then

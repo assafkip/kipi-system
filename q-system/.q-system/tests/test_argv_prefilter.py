@@ -165,6 +165,15 @@ class ArgvPrefilterCase(unittest.TestCase):
             self.assertEqual(decision, "deny", command[-20:])
             self.assertLess(elapsed, HOOK_TIMEOUT_S, "%.2fs" % elapsed)
 
+    def test_one_long_word_cannot_push_the_deny_past_the_timeout(self):
+        """Round 11: word and stage ceilings leave BYTE length open. One 5MB
+        word ahead of a reordered-flag delete took 6-11s and was discarded."""
+        word = "x" * (5 * 1024 * 1024)
+        for tail in ("r" + "m -v -" + "rf /tmp/d", "git push origin +main"):
+            decision, elapsed = decision_for("echo " + word + " ; " + tail)
+            self.assertEqual(decision, "deny", tail)
+            self.assertLess(elapsed, HOOK_TIMEOUT_S, "%s: %.2fs" % (tail, elapsed))
+
     def test_a_long_command_without_rm_or_git_is_not_refused(self):
         """The ceiling is scoped: it is not a length cap on ordinary work."""
         decision, _ = decision_for("echo " + " ".join(["word"] * 3000))
