@@ -67,7 +67,10 @@ HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
 # rows nobody can attribute, and attribution is the whole point of a firing record.
 HOOK_NAME = Path(__file__).name
 
-REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+# `or`, not a get() default: the default is evaluated eagerly, so a session whose
+# cwd was removed crashed this gate at import, before the ASK-1180 wrapper exists
+# (PR #427 round 2). With CLAUDE_PROJECT_DIR set, getcwd() is now never called.
+REPO = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 SKIP_MARKER = "grounding-guard-skip"
 
 # A repo file reference in prose: a path under a known top dir, OR a bare path
@@ -237,6 +240,16 @@ def _record(event, reason, detail, **extra):
             fh.write(json.dumps(row) + "\n")
     except Exception:
         pass
+
+
+def _crash_jurisdiction(payload):
+    """A Stop with a transcript to judge, outside the loop guard (ASK-1180).
+
+    stop_hook_active bounds the crash refusal to once per stop cycle, the same
+    bound the live gate uses, so a gate that crashes on every turn costs one
+    retry per turn and never wedges the session.
+    """
+    return not payload.get("stop_hook_active") and bool(payload.get("transcript_path"))
 
 
 def main():
@@ -414,4 +427,29 @@ def _self_test():
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
         sys.exit(_self_test())
-    main()
+    try:
+        from hook_fail_closed import run as _fail_closed
+    except Exception:  # noqa: BLE001
+        def _fail_closed(call, gate, in_jurisdiction):
+            # ASK-1180: hook_fail_closed.py is missing. The gate still RUNS, and
+            # the same crash rule applies inline, so deleting one shared file
+            # neither reopens this gate nor changes a single normal verdict.
+            import io
+            import traceback
+            raw = sys.stdin.read()
+            sys.stdin = io.StringIO(raw)
+            try:
+                rc = call()
+            except Exception:  # noqa: BLE001
+                traceback.print_exc()
+                try:
+                    p = json.loads(raw or "{}")
+                    inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
+                except Exception:  # noqa: BLE001
+                    inside = True
+                sys.stderr.write(gate + ": crashed, fail-closed helper missing; "
+                                 + ("refusing (ASK-1180)\n" if inside else "allowed\n"))
+                return 2 if inside else 0
+            return 0 if rc is None else rc
+    sys.exit(_fail_closed(main, gate="code_claim_grounding_guard",
+                          in_jurisdiction=_crash_jurisdiction))

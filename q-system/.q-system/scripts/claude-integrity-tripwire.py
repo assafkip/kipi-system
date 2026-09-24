@@ -87,6 +87,11 @@ EXCLUDED_FILES = {"settings.local.json", ".DS_Store"}
 EXTRA_WATCHED = (
     os.path.join("q-system", ".q-system", "scripts", "claude-path-write-guard.py"),
     os.path.join("q-system", ".q-system", "scripts", "claude-integrity-tripwire.py"),
+    # ASK-1180 review, PR #427 round 2 (major): six security gates route through
+    # this helper's run(). Replacing run() with `return 0` never calls the gate,
+    # so every NORMAL refusal went too, with empty stderr. Watched here, an edit
+    # lands as `modified` on the next tool call and --enforce restores it.
+    os.path.join("q-system", ".q-system", "scripts", "hook_fail_closed.py"),
 )
 
 BASELINE_REL = os.path.join("q-system", ".q-system", "claude-integrity-baseline.json")
@@ -932,4 +937,14 @@ if __name__ == "__main__":
         raise
     except BaseException as exc:
         sys.stderr.write("TRIPWIRE-ERROR: %s: %s\n" % (type(exc).__name__, exc))
-        sys.exit(3)
+        # --enforce is the PostToolUse hook, and its jurisdiction is the whole
+        # tree on every call: it never looks at the payload. Exit 3 there is a
+        # non-blocking error nobody is shown, so a crashed Layer 2 read exactly
+        # like a clean one (ASK-1180). Exit 2 puts TRIPWIRE-ERROR in front of the
+        # agent. --check keeps 3: session-start pages on its exit 1, and a crash
+        # must not look like drift there (round 3, above). This path does not use
+        # hook_fail_closed.run() on purpose: that reads stdin, and --enforce is
+        # also run by scripts whose stdin may be a pipe that never closes.
+        import traceback
+        traceback.print_exc()
+        sys.exit(2 if "--enforce" in sys.argv[1:] else 3)

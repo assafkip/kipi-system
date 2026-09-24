@@ -1,0 +1,61 @@
+{
+ "provenance": {
+  "source": "q-system/output/blocked-claim-lint.jsonl, the advisory log this hook writes, read from 14 fleet instances",
+  "window": [
+   "2026-08-03",
+   "2026-09-23"
+  ],
+  "population": {
+   "stop_events": 2173,
+   "findings": 2692
+  },
+  "captured": "2026-09-23",
+  "sampling": "per trigger, random.seed(459), a fixed sample of distinct finding texts; does-not-exist has a second 50-row sample; nothing-was-written is its whole population",
+  "label_rule": "genuine = the sentence asserts, as present fact, a settleable state of something outside the author's current action (blocked, denied, unavailable, missing, nonexistent, live, never ran, nothing written). noise = past-event narration ('the hook blocked me'), dependency or tracker prose ('blocked on your call'), conditional or generic prose, an adjective ('the blocked PRs'), a description of code behaviour, a heading, table cell or quotation, or narration of a process the author just started ('the suite is running').",
+  "labelled_by": "Sana (ASK-459)",
+  "rows": "the labelled sentences are NOT in this repo: they are fleet session prose and this repo is public. They live on the calibrating machine; set KIPI_BLOCKED_CLAIM_REPLAY to that file to run the drift and replay checks. This file carries counts only.",
+  "trigger_attribution": "re-derived after the blocking-trigger-first fix; 1 row(s) moved trigger"
+ },
+ "tally": {
+  "blocked-word": {
+   "genuine": 8,
+   "labelled": 40
+  },
+  "is-live": {
+   "genuine": 11,
+   "labelled": 30
+  },
+  "is-missing": {
+   "genuine": 10,
+   "labelled": 20
+  },
+  "does-not-exist": {
+   "genuine": 87,
+   "labelled": 100
+  },
+  "never-ran": {
+   "genuine": 18,
+   "labelled": 25
+  },
+  "is-unreachable": {
+   "genuine": 6,
+   "labelled": 25
+  },
+  "blocks-object": {
+   "genuine": 4,
+   "labelled": 20
+  },
+  "denied": {
+   "genuine": 4,
+   "labelled": 20
+  },
+  "out-of-credits": {
+   "genuine": 10,
+   "labelled": 20
+  },
+  "nothing-was-written": {
+   "genuine": 14,
+   "labelled": 14
+  }
+ }
+}

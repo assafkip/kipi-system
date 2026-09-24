@@ -131,6 +131,105 @@ run_case review-died 107 "NONE;sha1" 4
 [ "$ROUNDS" = "1" ] || fail "must stop immediately on a dead review, ran $ROUNDS"
 ok "review died (no verdict record) -> exit 7, no blind rework"
 
+# --- ASK-310: an approved PR the record calls unarmed gets ARMED, not a page --
+# THE CAPTURED CASE, from the live converge log for ASK-143 (2026-08-15T01:56:44Z):
+#   DONE exit-1: PR #2 verdict 'APPROVE WITH NITS' after 2 round(s). Auto-merge
+#   is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash 2
+# and the page that went with it: "approved but NOT armed -- it will sit green.
+# Needs a human: gh pr merge --auto --squash 2". Every fact needed to act was in
+# hand, and the loop handed the founder a shell command instead. Branch
+# protection (enforce_admins=true, required validate + kipi/reviewer-approved)
+# is what makes arming safe: GitHub holds the merge until both are green.
+#
+# This fake gh LOGS every call, so the assertions read what converge asked
+# GitHub to do rather than grepping its source. The refusal text is a STUB
+# (marked as such); the live refusal it models is PR #401, a draft, which the
+# worker could not arm on 2026-09-21 (worker log, alert ASK-1996).
+# The suite's own gh and page sink are put back at the end of this section, so
+# no later case inherits a different fake.
+cp "$WORK/bin/gh" "$WORK/bin/gh.orig"
+cat > "$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_GHLOG"
+case "$*" in
+  "pr list"*) cat "$FAKE_PR_FILE" 2>/dev/null ;;
+  "pr view "*"--json autoMergeRequest"*) cat "$FAKE_ARMED_FILE" 2>/dev/null ;;
+  "pr view"*) cat "$FAKE_SHA_FILE" 2>/dev/null ;;
+  "pr merge"*)
+    RC="$(cat "$FAKE_MERGE_RC_FILE" 2>/dev/null || echo 0)"
+    if [ "$RC" = "0" ]; then echo true > "$FAKE_ARMED_FILE"; exit 0; fi
+    echo "STUB-REFUSAL: pull request #$4 is still a draft" >&2
+    exit "$RC" ;;
+esac
+exit 0
+EOF
+chmod +x "$WORK/bin/gh"
+cat > "$WORK/bin/pagesink" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_PAGES"
+EOF
+chmod +x "$WORK/bin/pagesink"
+export FAKE_GHLOG="$WORK/gh.log" FAKE_ARMED_FILE="$WORK/armed" \
+       FAKE_MERGE_RC_FILE="$WORK/merge-rc" FAKE_PAGES="$WORK/pages"
+
+# The record key is the one converge derives, computed the same way: through
+# repo-slug-lib.sh against this checkout, never a hand-typed guess.
+AM_SLUG="$(bash -c '. "$1/q-system/.q-system/scripts/repo-slug-lib.sh"; slug_for_repo "$1" "$1/instance-registry.json"' _ "$ROOT" 2>/dev/null)"
+am_record() { bash -c '. "$1/q-system/.q-system/scripts/repo-slug-lib.sh"; printf "%s/pr-reviews/%s.automerge" "$2" "$(artifact_key "$3" "$4")"' _ "$ROOT" "$FAKE_STATE" "$AM_SLUG" "$1"; }
+
+# arm_case <pr> <record: armed|unarmed|none> <merge-rc>
+arm_case() {
+  : > "$FAKE_GHLOG"; : > "$FAKE_PAGES"; echo false > "$FAKE_ARMED_FILE"
+  echo "$3" > "$FAKE_MERGE_RC_FILE"
+  AMREC="$(am_record "$1")"
+  rm -f "$AMREC"
+  [ "$2" = "none" ] || printf '%s\n' "$2" > "$AMREC"
+  export KIPI_NOTIFY="$WORK/bin/pagesink"
+  run_case "arm-$1" "$1" "APPROVE WITH NITS;sha-$1" 1
+  export KIPI_NOTIFY="/usr/bin/true"
+}
+arm_calls() { grep -c "^pr merge --auto --squash $1\$" "$FAKE_GHLOG" 2>/dev/null || true; }
+
+arm_case 2 unarmed 0
+[ "$RC" = "1" ] || fail "ASK-310 captured case: converge must still exit 1 (goal met), got rc=$RC: $(cat "$WORK/out")"
+[ -s "$FAKE_PAGES" ] || fail "ASK-310: the converge run paged nothing at all, so this case cannot judge the page"
+[ "$(arm_calls 2)" = "1" ] \
+  || fail "ASK-310 THE DEFECT: the worker recorded PR #2 as NOT armed and converge asked GitHub to arm it
+      $(arm_calls 2) time(s). It holds every fact needed to act and must arm it itself, exactly once.
+      gh calls:
+$(sed 's/^/        /' "$FAKE_GHLOG")"
+grep -q 'gh pr merge' "$FAKE_PAGES" \
+  && fail "ASK-310 THE DEFECT ON THE PHONE: converge armed nothing and paged a merge command to a human.
+      Page: $(cat "$FAKE_PAGES")"
+grep -q 'NOT armed' "$FAKE_PAGES" \
+  && fail "ASK-310: the arm succeeded and the page still says NOT armed: $(cat "$FAKE_PAGES")"
+[ "$(tr -d '[:space:]' < "$AMREC")" = "armed" ] \
+  || fail "ASK-310: converge armed PR #2 and left the record saying '$(cat "$AMREC" 2>/dev/null)', so the next reader is told a stale state"
+ok "ASK-310: approved + recorded unarmed -> converge arms it once, pages no merge command, record says armed"
+
+arm_case 3 unarmed 1
+[ "$RC" = "1" ] || fail "ASK-310 refusal: a refused arm must not change converge's exit code, got rc=$RC"
+[ "$(arm_calls 3)" = "1" ] || fail "ASK-310 refusal: expected exactly one arm attempt on PR #3, got $(arm_calls 3)"
+REFUSALS="$(grep -c 'STUB-REFUSAL' "$FAKE_PAGES" 2>/dev/null || true)"
+[ "$REFUSALS" = "1" ] \
+  || fail "ASK-310 refusal: gh refused to arm PR #3 and $REFUSALS page(s) carried gh's own words (expected exactly 1).
+      Pages: $(cat "$FAKE_PAGES")"
+grep -q 'Needs a human: gh pr merge' "$FAKE_PAGES" \
+  && fail "ASK-310 refusal: the page names a human and a command instead of the refusal: $(cat "$FAKE_PAGES")"
+ok "ASK-310: a refused arm pages ONCE with gh's own refusal, never a command for a human"
+
+arm_case 4 none 0
+[ "$(arm_calls 4)" = "1" ] || fail "ASK-310: nothing recorded the arm state for PR #4 and converge armed it $(arm_calls 4) time(s), expected 1"
+grep -q 'gh pr merge' "$FAKE_PAGES" && fail "ASK-310: unrecorded arm state still paged a merge command: $(cat "$FAKE_PAGES")"
+ok "ASK-310: approved + nothing recorded -> converge arms it instead of handing over the command"
+
+arm_case 5 armed 0
+[ "$(arm_calls 5)" = "0" ] || fail "ASK-310: the worker recorded PR #5 armed and converge armed it again ($(arm_calls 5) call(s))"
+grep -c 'autoMergeRequest' "$FAKE_GHLOG" >/dev/null 2>&1 \
+  && fail "ASK-310: converge re-probed the arm state of a PR the record already calls armed -- a second reader of one input"
+ok "ASK-310: approved + recorded armed -> no gh arm call and no re-probe"
+cp "$WORK/bin/gh.orig" "$WORK/bin/gh"
+
 # --- dry mode + arg handling -------------------------------------------------
 echo "108" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
 set +e; bash "$CONV" --issue ASK-999 --dry >"$WORK/out" 2>&1; RC=$?; set -e
