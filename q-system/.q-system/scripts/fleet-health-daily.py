@@ -1658,8 +1658,14 @@ def _git_env() -> dict:
 
 
 def _git(repo, *args) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
-                          text=True, timeout=60, env=_git_env())
+    # A hung remote is a FAILED READ of that repo, reported like any other git
+    # failure. Uncaught, TimeoutExpired escaped stranded_findings' per-repo catch
+    # and blinded every repo again (PR #444 review, minor).
+    try:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True,
+                              text=True, timeout=60, env=_git_env())
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "timed out after 60s")
 
 
 class StrandedCheckError(RuntimeError):
@@ -1717,7 +1723,7 @@ def stranded_commits(repo, now: float, grace_s: int = STRANDED_GRACE_S) -> list:
         raise StrandedCheckError("remote", f"git remote failed in {repo}: {remotes.stderr.strip()[:200]}")
     known = remotes.stdout.split()
     if not known:
-        return []
+        return None                                    # remote-less: nothing to check
     refs = _git(repo, "for-each-ref",
                 "--format=%(refname:short)\t%(upstream:remotename)\t%(upstream:remoteref)",
                 "refs/heads")
@@ -1778,7 +1784,6 @@ def fleet_repos(registry=None) -> list:
 def stranded_findings(repos, now: float) -> list:
     findings, failed, checked = [], [], 0
     for repo in repos:
-        checked += 1
         try:
             rows = stranded_commits(repo, now)
         except StrandedCheckError as exc:
@@ -1787,7 +1792,14 @@ def stranded_findings(repos, now: float) -> list:
             # "error": every other repo went unchecked (PR #439 round-2 review).
             print(f"  stranded-commits: {exc}", file=sys.stderr)
             failed.append((repo, exc.step))
+            checked += 1
             continue
+        if rows is None:
+            # Remote-less is not CHECKED. Counting it made "every repo failed"
+            # unreachable whenever one such repo was in the fleet, and two live
+            # instances are (PR #444 review, major).
+            continue
+        checked += 1
         if not rows:
             continue
         # A committed DATE, never an age: an age is recomputed from the clock, so
@@ -1821,8 +1833,14 @@ def stranded_findings(repos, now: float) -> list:
             "title": f"Could not check {Path(repo).name} for stranded commits",
             "body": (f"`git {step}` failed in `{repo}`, so its branches went unchecked "
                      "today. The error text is in the fleet-health job log, not here.\n\n"
-                     f"## Action\nRun `git -C {repo} {step}` by hand and fix the remote "
-                     "or its credentials."),
+                     + (f"## Action\nRun `git -C {repo} {step}` by hand and fix the remote "
+                        "or its credentials."
+                        if step.startswith("ls-remote") else
+                        # Only ls-remote touches the network. The other steps are local
+                        # reads, and some print unrunnable without their branch argument
+                        # (PR #444 review, minor): point at the repo, not the remote.
+                        f"## Action\nA LOCAL git read failed. Run `git -C {repo} fsck` "
+                        "and read the job log for the failing branch.")),
         })
     return findings
 
