@@ -56,6 +56,21 @@ jobs:
       - name: Fetch the PR head commit (data, not code)
         run: git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.head.sha }}"
 
+      # THE REVIEWER'S MEMORY (PR #437 round 2). pr-review-agent.sh counts rounds
+      # and reads prior findings from ~/.config/kipi/pr-reviews. A runner's HOME
+      # is fresh, so every push was round 1 and ROUND_RULE (do not re-litigate
+      # settled findings) never armed. Carry that dir between runs of the SAME
+      # PR. A new key per run, because a cache key is immutable; restore-keys
+      # picks the newest earlier run. Its contents are only ever written by the
+      # base-checkout reviewer, never by PR code.
+      - name: Restore this PR's earlier review rounds
+        if: ${{ env.HAS_MODEL_SECRET == 'true' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.config/kipi/pr-reviews
+          key: reviewer-hosted-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          restore-keys: reviewer-hosted-pr-${{ github.event.pull_request.number }}-
+
       - name: Review the PR head, or say the hosted reviewer is off
         run: |
           set -euo pipefail

@@ -50,4 +50,6 @@ if ! git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
 fi
 
 echo "hosted reviewer: running pr-review-agent.sh on PR #$PR at $HEAD_SHA"
-exec bash "$AGENT" "$PR" --post
+# Pin the agent to the head verified above: it resolves the head through gh on
+# its own, and a push mid-run would otherwise hand it a head this tree lacks.
+KIPI_REVIEW_EXPECT_HEAD="$HEAD_SHA" exec bash "$AGENT" "$PR" --post

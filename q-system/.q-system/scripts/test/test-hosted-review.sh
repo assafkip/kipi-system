@@ -38,12 +38,15 @@ else
     || bad "THE PR #437 MAJOR: the head object is never fetched; the reviewer reads the BASE tree and posts on the head sha"
   has 'hosted-review-gate.sh "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}"' "$W" \
     && ok "hands the gate the head sha to verify" || bad "does not pass the head sha to the gate"
+  has "path: ~/.config/kipi/pr-reviews" "$W" && has 'restore-keys: reviewer-hosted-pr-${{ github.event.pull_request.number }}-' "$W" \
+    && ok "carries this PR's earlier review rounds between runs, so ROUND_RULE can arm" \
+    || bad "PR #437 round 2 major: pr-reviews is not carried between runs; every push is round 1"
   has "state=success" "$W" && bad "the workflow itself writes state=success" || ok "the workflow never writes state=success itself"
 fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 STUB="$WORK/agent.sh"; LOG="$WORK/agent.log"
-printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n' "$LOG" > "$STUB"; chmod +x "$STUB"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\necho "EXPECT=${KIPI_REVIEW_EXPECT_HEAD:-<unset>}" >> "%s.env"\n' "$LOG" "$LOG" > "$STUB"; chmod +x "$STUB"
 
 # A real repo with one commit: the gate must find the head object in the tree
 # it stands in before it lets the reviewer post on that sha.
@@ -68,6 +71,9 @@ echo "C. a credential"
 run_gate "$WORK/c.out" 431 "$HEAD_SHA" ANTHROPIC_API_KEY=k-test; RC=$?
 [ "$RC" = 0 ] && ok "exits with the reviewer's status" || bad "exited $RC with a credential"
 [ "$(cat "$LOG")" = "431 --post" ] && ok "execs the same reviewer: 431 --post" || bad "reviewer argv was '$(cat "$LOG")', want '431 --post'"
+[ "$(tail -1 "$LOG.env")" = "EXPECT=$HEAD_SHA" ] \
+  && ok "pins the agent to the head it verified (KIPI_REVIEW_EXPECT_HEAD)" \
+  || bad "PR #437 round 2 major: the agent is not pinned to the verified head: $(tail -1 "$LOG.env" 2>/dev/null)"
 run_gate "$WORK/c2.out" 431 "$HEAD_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test
 [ "$(cat "$LOG")" = "431 --post" ] && ok "an OAuth token counts as a credential too" || bad "OAuth token did not run the reviewer"
 
