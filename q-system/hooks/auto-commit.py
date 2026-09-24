@@ -486,7 +486,16 @@ def load_append_only():
             entry = entry[2:]
         entries.add(entry.lstrip("/"))
     for entry in sorted(entries):
-        if not os.path.exists(os.path.join(PROJ_DIR, entry)):
+        if os.path.exists(os.path.join(PROJ_DIR, entry)):
+            continue
+        # A log that exists at HEAD but not on disk was DELETED, and the numstat
+        # check refuses that loss in this same run. Calling it "NOT guarded" and
+        # telling the reader to fix the entry would advise disarming the one
+        # guard that is holding (PR #426 review round 3).
+        if run(["git", "cat-file", "-e", f"HEAD:{entry}"]).returncode == 0:
+            print(f"auto-commit: {entry} (append-only) was deleted from the working "
+                  "tree; restore it, the refusal below stands")
+        else:
             print(f"auto-commit: {APPEND_ONLY_CONFIG} names {entry}, which matches "
                   "no file here; that log is NOT guarded until the entry is fixed")
     return entries
