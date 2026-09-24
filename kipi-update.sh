@@ -2247,8 +2247,11 @@ The file itself is untouched on disk." 2>/dev/null; then
     #
     # The list is the SHIPPED STANZA, printed by the same script that writes the
     # managed ignore block, never a third hand list: whatever the block ignores
-    # is exactly what gets untracked, so the two cannot drift. Scoped to the
-    # guard's own pathspec, so nothing outside what the sync may touch moves.
+    # is what gets untracked, so the two cannot drift -- WITHIN the guard's own
+    # pathspec. That pathspec excludes INSTANCE_OWNED_SUBTREES, so stanza paths
+    # under $prefix/output/ (.update-check-*, claude-integrity/) are ignored by the
+    # block but never untracked here. Harmless for the guard, which skips those
+    # subtrees too; not a promise that they leave the index (PR #430 review nit).
     # Same three rules as the loop above, for the same reasons: only once the
     # block is in place (untracked AND unignored is worse than tracked), never
     # with founder work staged (the commit takes no pathspec -- see THE
