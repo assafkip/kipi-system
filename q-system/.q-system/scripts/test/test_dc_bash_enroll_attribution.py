@@ -235,5 +235,31 @@ class TestRound3FollowUps(TestBashEnrollAttribution):
         self.assertIn("carries no reason", out)
 
 
+class TestRetiredSurfaces(TestRound3FollowUps):
+    """PR #445 review round 4: the RETIRED short-circuit reaches seal and the publish door too."""
+
+    def retire(self):
+        (self.round / "RETIRED").write_text("2026-09-24 published; founder ruling (<owner>)\n")
+
+    def test_seal_refuses_a_retired_round_and_writes_no_receipt(self):
+        self.retire()
+        r = subprocess.run([sys.executable, str(GATE), "seal", str(self.round)], capture_output=True,
+                           text=True, env={**os.environ, **self.env})
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("RETIRED", r.stderr)
+        self.assertFalse((self.round / "receipts.json").exists())
+
+    def test_publish_of_a_retired_page_is_not_blocked(self):
+        self.retire()
+        rc, out = run({"hook_event_name": "PreToolUse", "tool_name": "SendUserFile", "session_id": self.sid,
+                       "tool_input": {"files": [str(self.page)]}}, self.env)
+        self.assertEqual(rc, 0, out)
+
+    def test_publish_of_an_active_page_still_blocks(self):
+        rc, out = run({"hook_event_name": "PreToolUse", "tool_name": "SendUserFile", "session_id": self.sid,
+                       "tool_input": {"files": [str(self.page)]}}, self.env)
+        self.assertEqual(rc, 2, out)
+
+
 if __name__ == "__main__":
     unittest.main()

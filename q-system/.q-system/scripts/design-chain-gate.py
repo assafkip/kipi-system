@@ -2605,7 +2605,8 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     declared = tool_directory_problems(page)
     if declared is not None:
         return declared
-    retired = retired_reason(page)
+    # the passive gate only: an explicit seal is a claim about the round NOW (see honor_seal)
+    retired = retired_reason(page) if honor_seal else None
     if retired is not None:
         return [] if retired else [
             f"{round_dir_for(page) / RETIRED} carries no reason. One line: date, reason, who decided."]
@@ -2727,6 +2728,13 @@ def seal(rd: Path) -> int:
     if why_withdrawn is not None:
         print(f"seal: {rd.name} is withdrawn. Nothing to seal, no receipt written.")
         return 0
+    # A retired round never ran the chain. Sealing it wrote receipts.json from the RETIRED
+    # short-circuit, and a live round could then cite that receipt as measured (PR #445 round 4,
+    # major). Same shape as withdrawn: no receipt, ever.
+    if (rd / RETIRED).is_file() and _is_round(rd):
+        print(f"seal REFUSED:\n  {rd.name} is RETIRED. A retired round is not sealed; no receipt "
+              f"written.", file=sys.stderr)
+        return 2
     code = 2
     with _die_cleanly():
         try:
