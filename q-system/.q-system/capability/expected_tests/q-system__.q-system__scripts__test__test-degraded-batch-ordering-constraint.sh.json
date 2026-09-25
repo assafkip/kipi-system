@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-degraded-batch-ordering-constraint.sh",
+ "runner": "bash"
+}
