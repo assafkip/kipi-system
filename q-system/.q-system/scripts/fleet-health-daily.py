@@ -1620,8 +1620,9 @@ def detect_promoted_audit(_ctx) -> list:
             "`prd_runner.py spillover promoted-audit` exited nonzero: every tracker "
             "lookup failed, so promoted rows went another day unchecked.\n\n```\n"
             + (res.stderr or res.stdout).strip()[-600:] + "\n```\n\n## Action\n"
-            "Check Linear auth (`KIPI_LINEAR_API_KEY` / ~/.config/kipi/linear-api-key) "
-            "and re-run the audit by hand."
+            "Check Linear auth: `KIPI_LINEAR_API_KEY` must hold the Sana token from "
+            "~/.config/kipi/linear-sana-token (run `check-linear-identity.py`), "
+            "then re-run the audit by hand."
         ),
     }]
 
