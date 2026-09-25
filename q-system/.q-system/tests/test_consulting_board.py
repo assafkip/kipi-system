@@ -278,6 +278,208 @@ class TestOnlyOnePainterAtATime:
             pass                                   # no raise means it was released
 
 
+class TestTheBriefReadsTheCardBeforeTheCardIsWritten:
+    """THE CLOCK ERROR, and it cost him a P0 row every single morning.
+
+`com.kipi.morning-brief` COMMITS 07:40 PT, after the 07:30 card, and the loaded copy
+    on the founder's machine had drifted to 07:00. The freshness rule was date equality,
+    so on that drifted run the card was ALWAYS stamped yesterday, always refused, and the
+    painter always added "Your book: COULD NOT READ" at P0. Nothing cleared it, because the hourly repaint
+    has no scheduler. Measured in morning-brief.out.log on the 09-05 and 09-07 runs.
+
+    Refusing the newest card that exists is not a refusal, it is a clock error. What
+    the old rule protected is kept: yesterday's book is never presented as today's.
+    """
+
+    #: 07:00 PT. AN EARLY RUN, and deliberately not called "the brief's slot" any more
+    #: (PR #335 reviewer round 2, minor). The committed slot is 07:40, after the card;
+    #: 07:00 is the schedule the LOADED job had drifted to, and it is also what a
+    #: hand-run hits. Naming it the brief's slot made the suite green at a schedule this
+    #: repo does not ship.
+    EARLY = dt.datetime(2026, 9, 3, 14, 0, tzinfo=dt.timezone.utc)
+
+    def test_before_0730_yesterdays_card_is_the_newest_one_and_is_used(self, tmp_path):
+        rows, err = cb.collect(self.EARLY, {}, _tree(tmp_path, date="2026-09-02"))
+        assert err is None, err
+        assert rows, "the book was withheld on a run before the card is written"
+
+    def test_and_it_says_out_loud_that_it_is_yesterdays(self, tmp_path):
+        """Accepting it is only safe because nothing reads it as today's."""
+        rows, _ = cb.collect(self.EARLY, {}, _tree(tmp_path, date="2026-09-02"))
+        assert any("yesterday's card" in r for r in rows), rows
+
+    def test_and_the_board_grows_no_P0_row_he_cannot_act_on(self, tmp_path):
+        """The founder-visible half. He asked for rows that lead to an action; this one
+        led to waiting for a job that had already been scheduled to run later."""
+        b = cb.buckets(self.EARLY, {}, _tree(tmp_path, date="2026-09-02"))
+        assert not any(r["scope"] == cb.CARD_ALARM for r in b["top_of_mind"])
+
+    def test_after_0730_the_same_card_is_a_REAL_failure_and_still_refused(self, tmp_path):
+        """Why this keys on the schedule and not on a count of hours. A 26-hour window
+        would swallow a card the 07:30 job genuinely failed to write."""
+        after = dt.datetime(2026, 9, 3, 14, 45, tzinfo=dt.timezone.utc)   # 07:45 PT
+        rows, err = cb.collect(after, {}, _tree(tmp_path, date="2026-09-02"))
+        assert rows == []
+        assert "2026-09-02" in err and "2026-09-03" in err
+
+    def test_the_boundary_is_the_card_job_itself(self, tmp_path):
+        """One minute either side of CARD_WRITTEN_AT, so the constant is what decides
+        and not an accident of the two chosen timestamps."""
+        before = dt.datetime(2026, 9, 3, 14, 29, tzinfo=dt.timezone.utc)  # 07:29 PT
+        at = dt.datetime(2026, 9, 3, 14, 30, tzinfo=dt.timezone.utc)      # 07:30 PT
+        assert cb.collect(before, {}, _tree(tmp_path, date="2026-09-02"))[1] is None
+        assert cb.collect(at, {}, _tree(tmp_path, date="2026-09-02"))[1] is not None
+
+    @pytest.mark.parametrize("hour_utc,label", [(14, "07:00 PT, before the card"),
+                                                (14 + 1, "08:00 PT, after it")])
+    def test_a_card_older_than_yesterday_is_refused_at_any_hour(self, tmp_path,
+                                                                hour_utc, label):
+        """The window is one day wide on purpose. Two days means a job has been dead
+        through a run that should have fixed it.
+
+        BOTH HOURS, because the name said "at any hour" and the body drove one (PR #335
+        reviewer round 6, nit). A test whose name claims a range and whose body checks a
+        point is the kind of coverage that reads as proof and is not."""
+        when = dt.datetime(2026, 9, 3, hour_utc, 0, tzinfo=dt.timezone.utc)
+        _, err = cb.collect(when, {}, _tree(tmp_path, date="2026-09-01"))
+        assert err is not None and "2026-09-01" in err, label
+
+    def test_a_heartbeat_whose_card_is_not_an_object_is_refused(self, tmp_path):
+        """PR #335 reviewer round 6, nit. The new isinstance guard proved `beat` was an
+        object and the next line called .get on whatever `card` was."""
+        paths = _tree(tmp_path)
+        paths["heartbeat"].write_text(json.dumps({"at": "x", "card": "yesterday"}))
+        _, err = cb.read_heartbeat(self.EARLY, paths)
+        assert err and "not an object" in err
+
+    def test_a_heartbeat_that_is_not_an_object_at_all_is_refused(self, tmp_path):
+        paths = _tree(tmp_path)
+        paths["heartbeat"].write_text(json.dumps(["not", "a", "dict"]))
+        _, err = cb.read_heartbeat(self.EARLY, paths)
+        assert err and "not an object" in err
+
+    @staticmethod
+    def _agents(tmp_path, hour, minute):
+        """A LaunchAgents dir holding one brief plist at the given slot."""
+        import plistlib
+        d = tmp_path / "LaunchAgents"
+        d.mkdir(exist_ok=True)
+        (d / f"{cb.BRIEF_LABEL}.plist").write_bytes(plistlib.dumps(
+            {"Label": cb.BRIEF_LABEL,
+             "StartCalendarInterval": {"Hour": hour, "Minute": minute}}))
+        return d
+
+    def test_a_job_loaded_before_the_card_tells_SANA(self, tmp_path):
+        """THE SIGNAL CHANGED AUDIENCE, it did not disappear (round 6, minor). Deleting
+        the P0 alarm row without this would have made a real misconfiguration silent,
+        which is worse than the noisy version it replaced."""
+        rows, err = cb.clock_warning(NOW, self._agents(tmp_path, 7, 0))
+        assert rows == []
+        assert err and "07:00" in err and "drifted" in err
+
+    def test_the_committed_slot_says_nothing(self, tmp_path):
+        """An engineering channel that fires every morning is one that gets muted. 07:40
+        is the committed slot and is after the card."""
+        assert cb.clock_warning(NOW, self._agents(tmp_path, 7, 40)) == ([], None)
+
+    def test_the_boundary_is_the_card_again(self, tmp_path):
+        """One minute either side, so CARD_WRITTEN_AT decides and not a chosen slot."""
+        assert cb.clock_warning(NOW, self._agents(tmp_path, 7, 29))[1] is not None
+        assert cb.clock_warning(NOW, self._agents(tmp_path, 7, 30)) == ([], None)
+
+    def test_it_does_not_fire_on_a_hand_run(self, tmp_path):
+        """The earlier time-based version reported every hand run before 07:30. This
+        asks about the JOB, so the hour the question is asked cannot change the answer."""
+        early = dt.datetime(2026, 9, 3, 14, 0, tzinfo=dt.timezone.utc)   # 07:00 PT
+        assert cb.clock_warning(early, self._agents(tmp_path, 7, 40)) == ([], None)
+
+    def test_no_loaded_job_is_not_news(self, tmp_path):
+        """Nobody scheduled this run, so there is no schedule to be wrong."""
+        empty = tmp_path / "LaunchAgents"; empty.mkdir()
+        assert cb.clock_warning(NOW, empty) == ([], None)
+
+    def test_an_unparseable_plist_files_no_ticket(self, tmp_path):
+        """A machine problem, but not THIS one, and guessing files a wrong ticket."""
+        d = tmp_path / "LaunchAgents"; d.mkdir()
+        (d / f"{cb.BRIEF_LABEL}.plist").write_bytes(b"not a plist")
+        assert cb.clock_warning(NOW, d) == ([], None)
+
+    def test_the_BOARD_says_it_too_not_just_the_slack_line(self, tmp_path):
+        """PR #335 reviewer, minor, and they were right. Accepting yesterday's card is
+        only safe because nothing reads it as today's, and I had written that safety
+        into the brief while the Notion board, which is the surface he opens, painted a
+        day-old book with no marker at all."""
+        b = cb.buckets(self.EARLY, {}, _tree(tmp_path, date="2026-09-02"))
+        card_rows = [r for r in b["top_of_mind"] if r["scope"] == "card"]
+        assert card_rows, "no client rows reached the board to check"
+        assert all("yesterday's card" in r["detail"] for r in card_rows), card_rows
+
+    def test_and_says_it_even_when_the_heartbeat_carries_no_counts(self, tmp_path):
+        """PR #335 reviewer, nit. The label rode on the counts line, which is optional,
+        so a heartbeat without counts rendered yesterday's rows unlabelled."""
+        paths = _tree(tmp_path, date="2026-09-02")
+        beat = json.loads(paths["heartbeat"].read_text())
+        beat["card"].pop("counts", None)
+        paths["heartbeat"].write_text(json.dumps(beat))
+        rows, err = cb.collect(self.EARLY, {}, paths)
+        assert err is None, err
+        assert any("yesterday's card" in r for r in rows), rows
+
+    def test_a_heartbeat_cannot_declare_itself_yesterdays(self, tmp_path):
+        """PR #335 reviewer round 3, nit. The flag this function SETS was also readable
+        from the file it judges, so a heartbeat carrying the key would have labelled a
+        fresh card as yesterday's on every client row."""
+        paths = _tree(tmp_path)
+        beat = json.loads(paths["heartbeat"].read_text())
+        beat["card_is_yesterdays"] = True
+        paths["heartbeat"].write_text(json.dumps(beat))
+        b = cb.buckets(self.EARLY, {}, paths)
+        card_rows = [r for r in b["top_of_mind"] if r["scope"] == "card"]
+        assert card_rows
+        assert not any("yesterday's card" in r["detail"] for r in card_rows), card_rows
+
+    def test_a_fresh_card_is_labelled_with_nothing(self, tmp_path):
+        """The marker is not decoration. On a normal day it must be absent, or it stops
+        carrying information."""
+        b = cb.buckets(self.EARLY, {}, _tree(tmp_path))
+        card_rows = [r for r in b["top_of_mind"] if r["scope"] == "card"]
+        assert card_rows
+        assert not any("yesterday's card" in r["detail"] for r in card_rows)
+
+    def test_the_card_is_written_before_this_repo_runs_the_brief(self):
+        """THE DESIGN INVARIANT, and it runs everywhere (PR #335 reviewer round 2,
+        minor). The previous version pinned the constant against a LOADED LaunchAgent
+        and skipped on any host without it, so on CI it asserted nothing and the
+        constant was pinned on exactly one Mac.
+
+        This reads the plist THIS repo commits, so it runs on every host: the brief
+        must be scheduled at or after the card it mirrors. That is the relationship
+        f9f74ac1 established, and the whole defect was a loaded job that had drifted
+        off it."""
+        import plistlib
+        brief = plistlib.loads(
+            (pathlib.Path(__file__).resolve().parents[1] / "scripts"
+             / "com.kipi.morning-brief.plist").read_bytes())
+        cal = brief["StartCalendarInterval"]
+        assert (cal["Hour"] * 60 + cal["Minute"]) >= (cb.CARD_WRITTEN_AT.hour * 60
+                                                      + cb.CARD_WRITTEN_AT.minute), (
+            "the brief is committed to run BEFORE the card it mirrors; that is the "
+            "inversion this class exists for")
+
+    def test_and_the_constant_still_matches_the_installed_card_job(self):
+        """Kept as a second, weaker check: on the founder's own machine the constant
+        must equal the job it names. It skips elsewhere, which is why it is not the
+        only pin any more."""
+        import plistlib
+        pl = (pathlib.Path.home() / "Library/LaunchAgents"
+              / "io.askconsulting.ask-crm-state-card.plist")
+        if not pl.exists():
+            pytest.skip("the consulting state-card job is not installed on this machine")
+        cal = plistlib.loads(pl.read_bytes())["StartCalendarInterval"]
+        assert (cal["Hour"], cal["Minute"]) == (cb.CARD_WRITTEN_AT.hour,
+                                                cb.CARD_WRITTEN_AT.minute)
+
+
 class TestAStaleCardIsAnError:
     """Never a quiet mirror. He would act on it."""
 
@@ -509,6 +711,47 @@ class TestEngineeringLeavesHisBrief:
             notify=broken)
         assert filed == []
         assert len(failed) == 2 and all("notifier down" in why for _l, why in failed)
+
+    def test_the_clock_signal_is_NOT_in_the_collected_tuple(self):
+        """The contract I broke and three tests caught. ENGINEERING_SECTIONS means
+        "collected by collect_all", and `route` treats a missing key there as degraded,
+        correctly. The clock signal is injected, so listing it there made every caller
+        with a partial sources dict page Sana about a section nobody collected."""
+        mb = self._brief()
+        assert {k for k, _ in mb.ENGINEERING_SECTIONS} == {"owed", "overnight"}
+        assert {k for k, _ in mb.CLOCK_SECTION} == {"board_clock"}
+
+    def test_the_clock_route_reports_an_early_run_and_only_an_early_run(self, tmp_path,
+                                                                        monkeypatch):
+        """PR #335 reviewer round 7, nit, and it was the worst finding of the round. The
+        first version called `route_clock` with no argument, so it read the FOUNDER'S
+        LIVE LaunchAgents, and it stayed green under a mutation deleting the condition.
+        A test that touches live state and cannot fail is two defects.
+
+        BOTH directions are asserted against a tmp agents dir, so deleting the check
+        turns this red."""
+        import plistlib
+        mb = self._brief()
+
+        def agents(hour, minute):
+            d = tmp_path / f"la-{hour}{minute}"
+            d.mkdir()
+            (d / f"{cb.BRIEF_LABEL}.plist").write_bytes(plistlib.dumps(
+                {"Label": cb.BRIEF_LABEL,
+                 "StartCalendarInterval": {"Hour": hour, "Minute": minute}}))
+            return d
+
+        monkeypatch.setattr(cb, "LAUNCH_AGENTS", agents(7, 0))
+        monkeypatch.setattr(mb, "_optional_module", lambda _stem: cb)
+        sent = []
+        filed, _failed = mb.route_clock(NOW, notify=sent.append)
+        assert len(sent) == 1 and "drifted" in sent[0], sent
+        assert filed and "Board clock" in filed[0], filed
+
+        monkeypatch.setattr(cb, "LAUNCH_AGENTS", agents(7, 40))
+        quiet = []
+        assert mb.route_clock(NOW, notify=quiet.append) == ([], [])
+        assert quiet == [], quiet
 
     def test_a_healthy_section_pages_nobody(self):
         """A ticket every morning is how an alert channel gets muted."""

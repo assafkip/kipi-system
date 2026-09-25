@@ -26,10 +26,18 @@ reasons it is struck, and the second is the expensive one:
 
 ## STALENESS IS AN ERROR, never a quiet mirror
 
-The card is written at 07:30 and this runs after it. If the heartbeat's date is not
-today, this returns an ERROR naming the age rather than rendering yesterday's clients as
-though they were this morning's. A mirror whose source is stale and which still looks
-fresh is worse than a blank section: he would act on it.
+The card is written at 07:30 and this repo COMMITS the brief at 07:40, after it. The
+old text here said "runs after it" and was right about the intent; what it could not say
+is that the LOADED job on the founder's machine had drifted to 07:00 and ran forty
+minutes early for four days. See CARD_WRITTEN_AT.
+
+So a card stamped yesterday is two different facts depending on the hour. Before 07:30
+it is simply the newest card that exists, and it is used and LABELLED as yesterday's, on
+the brief and on the board. After 07:30 the 07:30 job has run or failed, so the same
+card is a real failure and returns an ERROR naming the age. What never happens either
+way is yesterday's clients rendered as though they were this morning's: a mirror whose
+source is stale and which still looks fresh is worse than a blank section, because he
+would act on it.
 
 That is the same law the rest of this brief already lives under -- an empty section and a
 broken section are different facts -- applied to a third case the fixed four never had,
@@ -51,6 +59,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import plistlib
 import os
 import re
 from pathlib import Path
@@ -63,6 +72,34 @@ PT = ZoneInfo("America/Los_Angeles")
 #: that fits the founder's screen without scrolling, measured against the 2026-09-03 card
 #: (7 red). A withheld count is always printed rather than the rest being dropped silently.
 MAX_CLIENT_ROWS = 6
+#: WHEN THE STATE CARD IS WRITTEN, from `io.askconsulting.ask-crm-state-card.plist`
+#: (StartCalendarInterval 07:30 PT). This repo's `com.kipi.morning-brief.plist` commits
+#: 07:40, DELIBERATELY after it: f9f74ac1 set that minute on 2026-09-04 in the change
+#: that made this board mirror the card. So on the shipped schedule a card stamped
+#: yesterday never happens, and this window never opens.
+#:
+#: IT OPENED FOR FOUR DAYS BECAUSE THE LOADED JOB HAD DRIFTED. The copy in
+#: ~/Library/LaunchAgents said 07:00, forty minutes early, and never picked up the
+#: committed 07:40. Measured in ~/.config/kipi/logs/morning-brief.out.log: the refusal
+#: fired on the 09-05 and 09-07 runs, and today-card.md was last written 09-07 07:30.
+#: The cost was a P0 "Your book: COULD NOT READ" row painted on his board every morning.
+#:
+#: I SAID IT WAS "CLEARED BY NOTHING" AND THAT WAS WRONG (PR #335 reviewer round 3,
+#: minor). `com.kipi.morning-inbox` commits twelve repaints a day, 08:05 to 19:05, and
+#: the 08:05 one archives that row. What was true is narrower and worse: that job was
+#: not installed on his machine AT ALL, no plist in ~/Library/LaunchAgents and no
+#: launchctl entry, so on his machine nothing repainted and the row stood all day. I
+#: read the machine, the reviewer read the repo, and the gap between them is the
+#: defect twice over. Both are installed now.
+#:
+#: TWO JOBS, ONE FAILURE MODE: the brief drifted to a stale schedule and the repaint was
+#: missing outright. Nothing detects either, which is sp-de7afcff.
+#:
+#: THIS WINDOW IS NOT THAT FIX and does not pretend to be. It is what an early run
+#: should DO: use the newest card there is and label it, rather than paint a P0 he
+#: cannot act on about a job that has not run yet. A hand-run before 07:30 takes the
+#: same path, which is how the drift was found.
+CARD_WRITTEN_AT = dt.time(7, 30)
 
 
 def consulting_root() -> Path:
@@ -135,7 +172,8 @@ def read_card(paths=None) -> tuple[list[dict], str | None]:
     paths = paths or _paths()
     path = paths["card"]
     if not path.exists():
-        return [], f"no state card at {path.name}; the 07:30 job has not written one"
+        return [], (f"no state card at {path.name}; the "
+                    f"{CARD_WRITTEN_AT.strftime('%H:%M')} job has not written one")
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -315,16 +353,105 @@ def read_heartbeat(now: dt.datetime, paths=None) -> tuple[dict, str | None]:
         beat = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return {}, f"could not read {path.name}: {exc}"
+    if not isinstance(beat, dict):
+        return {}, f"{path.name} is not an object"
+    # A CONTROL FLAG MUST NOT BE READABLE FROM THE THING IT JUDGES (PR #335 reviewer
+    # round 3, nit). This function SETS `card_is_yesterdays` below and callers trust it
+    # to label the board. It is also a key in a file this function parses, so a
+    # heartbeat carrying it would have labelled a perfectly fresh card as yesterday's,
+    # on the Slack line and on every client row. Stripped on the way in, so the only
+    # writer is the verdict twenty lines down.
+    beat.pop("card_is_yesterdays", None)
 
     if beat.get("crash"):
-        return beat, f"the 07:30 state card crashed: {beat['crash']}"
+        return beat, (f"the {CARD_WRITTEN_AT.strftime('%H:%M')} state card crashed: "
+                      f"{beat['crash']}")
 
-    stamped = (beat.get("card") or {}).get("date")
-    today = now.astimezone(PT).date().isoformat()
-    if stamped != today:
-        return beat, (f"the state card is from {stamped}, not {today}. "
-                      "Showing it as today's book would be wrong, so it is withheld")
-    return beat, None
+    # A MALFORMED `card` VALUE IS A REFUSAL, NOT A CRASH (PR #335 reviewer round 6,
+    # nit). The isinstance check above proved `beat` is an object and then this line
+    # called .get on whatever `card` happened to be, so a heartbeat carrying a string
+    # there raised AttributeError two frames from anything that reads like a cause.
+    card = beat.get("card")
+    if card is not None and not isinstance(card, dict):
+        return beat, f"{path.name} carries a 'card' that is not an object"
+    stamped = (card or {}).get("date")
+    local = now.astimezone(PT)
+    today = local.date().isoformat()
+    if stamped == today:
+        return beat, None
+
+    # YESTERDAY'S CARD IS THE NEWEST ONE THAT EXISTS BEFORE 07:30, and calling the
+    # newest card a failure is not a refusal, it is a clock error. The old rule was
+    # date equality, so on the drifted 07:00 run it refused a card that was working
+    # perfectly and had simply not been rewritten yet. What it protected against is real and is kept:
+    # yesterday's book must never be presented AS today's, so the caller labels it.
+    #
+    # AFTER 07:30 THE SAME CARD IS A GENUINE FAILURE, and still refused. That is the
+    # whole reason this keys on the schedule rather than on a fixed number of hours:
+    # a 26-hour window would have swallowed a card the 07:30 job failed to write.
+    yesterday = (local.date() - dt.timedelta(days=1)).isoformat()
+    if stamped == yesterday and local.time() < CARD_WRITTEN_AT:
+        beat["card_is_yesterdays"] = True
+        return beat, None
+
+    return beat, (f"the state card is from {stamped}, not {today}. "
+                  "Showing it as today's book would be wrong, so it is withheld")
+
+
+#: The job whose schedule this checks, and where launchd actually reads it from.
+BRIEF_LABEL = "com.kipi.morning-brief"
+LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+
+def clock_warning(now: dt.datetime, agents_dir=None) -> tuple[list, str | None]:
+    """(rows, error) shaped for the brief's ENGINEERING route, never for his message.
+
+    THE SIGNAL THAT FOUND THE DRIFT MUST NOT DIE WITH THE ROW THAT CARRIED IT (PR #335
+    reviewer round 6). Before this PR the only thing that reacted to a brief running
+    early was a P0 alarm row on the founder's board: unactionable, wrong about the
+    cause, and painted every morning, so it had to go. Removing it with nothing in its
+    place would have made a real misconfiguration silent, which is the worse defect.
+    The drift found on 2026-09-08 had run four days and that row is what exposed it.
+    So the signal changes AUDIENCE. `founder-notifications.md`, founder-directed
+    2026-08-10: engineering signal goes to Sana's Linear triage and never to him.
+
+    IT READS THE LOADED JOB, not the heartbeat, and that is the third design (round 7).
+    Reading the heartbeat a second time raced the 07:30 card job: a run straddling
+    07:30 would see yesterday's card in `collect`, today's here, and report nothing,
+    losing exactly the run the signal exists for. Caching the first verdict on the
+    module looked like the fix and was DEAD ON ARRIVAL: morning-brief's `_load_sibling`
+    execs a fresh module per call, so the cache is always empty and the fallback read
+    always runs. My own test caught that, not review.
+
+    So it asks the question directly. The condition is not "was the card stale on this
+    run", it is "is this job scheduled before the card it mirrors", which is a fact
+    about the machine, has no clock in it, and cannot race. It also does not fire on a
+    hand run before 07:30, which the time-based version would have, and an engineering
+    channel that speaks every time someone runs the brief by hand is one that gets
+    muted.
+    """
+    path = Path(agents_dir or LAUNCH_AGENTS) / f"{BRIEF_LABEL}.plist"
+    if not path.is_file():
+        # No loaded job means nobody scheduled this run. Not news.
+        return [], None
+    try:
+        cal = plistlib.loads(path.read_bytes()).get("StartCalendarInterval")
+    except Exception:                                   # noqa: BLE001
+        # A plist this cannot parse is a machine problem, but it is not THIS signal,
+        # and guessing would file a wrong ticket. Silent by design.
+        return [], None
+    slots = cal if isinstance(cal, list) else [cal] if isinstance(cal, dict) else []
+    card = CARD_WRITTEN_AT.hour * 60 + CARD_WRITTEN_AT.minute
+    early = sorted(
+        "%02d:%02d" % (e.get("Hour", 0), e.get("Minute", 0)) for e in slots
+        if isinstance(e, dict)
+        and (e.get("Hour", 0) * 60 + e.get("Minute", 0)) < card)
+    if not early:
+        return [], None
+    return [], (f"{BRIEF_LABEL} is loaded at {', '.join(early)}, before the "
+                f"{CARD_WRITTEN_AT.strftime('%H:%M')} state card it mirrors. The "
+                "committed template runs after the card; the loaded copy has drifted. "
+                f"Reinstall it: install-plist.sh {BRIEF_LABEL}")
 
 
 def read_gtm(paths=None) -> tuple[dict | None, str | None]:
@@ -518,9 +645,18 @@ def collect(now: dt.datetime, sources: dict, paths=None):
         return [], card_err
 
     rows = []
+    # NAMED, never silently substituted. The reader accepts yesterday's card before
+    # 07:30 because it is the newest one there is; the promise it must keep is that
+    # nobody reads it as today's. ITS OWN LINE, because the counts line is optional
+    # (PR #335 reviewer, nit) and a heartbeat with no counts rendered yesterday's client
+    # rows with nothing saying so.
+    if beat.get("card_is_yesterdays"):
+        rows.append("book: yesterday's card, today's is written at "
+                    f"{CARD_WRITTEN_AT.strftime('%H:%M')}")
     counts = (beat.get("card") or {}).get("counts") or {}
     if counts:
-        rows.append(f"book: {counts.get('red', 0)} owed, {counts.get('reach', 0)} to reach out")
+        rows.append(f"book: {counts.get('red', 0)} owed, "
+                    f"{counts.get('reach', 0)} to reach out")
 
     shown = card_rows[:MAX_CLIENT_ROWS]
     for row in shown:
@@ -686,7 +822,7 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         top.append({"title": "Your book: COULD NOT READ", "key": "card:error",
                     "detail": card_problem, "source": "State card", "scope": CARD_ALARM,
                     "priority": "P0", "domain": "Fleet",
-                    "done": "the 07:30 state card writes a fresh one",
+                    "done": f"the {CARD_WRITTEN_AT.strftime('%H:%M')} state card writes a fresh one",
                     "bucket_reason": "error"})
 
     my_side, my_side_err = ({}, None) if card_problem else read_my_side(now, paths)
@@ -713,9 +849,18 @@ def buckets(now: dt.datetime, sources: dict, paths=None) -> dict:
         # reach-out action was silently dropped and read-back still said ok, because
         # `wanted` had already collapsed them before the count was taken. Two different
         # things about one person are two rows.
+        # THE LABEL HAS TO REACH THE BOARD, not just the brief (PR #335 reviewer,
+        # minor). Using yesterday's card is only safe because nothing reads it as
+        # today's, and that safety was written into the Slack line while the Notion
+        # board, which is the surface he actually opens, painted a day-old book with no
+        # marker at all. A safety condition the code states and does not carry on every
+        # surface is the documented-guard-that-does-not-exist shape.
+        detail = row["detail"]
+        if beat.get("card_is_yesterdays"):
+            detail = f"{detail} (from yesterday's card)" if detail else "From yesterday's card."
         item = {"title": f"{row['health']} {row['name']}",
                 "key": f"{row['kind']}:{row['name']}",
-                "detail": row["detail"], "source": "State card", "scope": "card",
+                "detail": detail, "source": "State card", "scope": "card",
                 "priority": PRIORITY_BY_HEALTH.get(row["health"], "P2"),
                 "domain": "Consulting",
                 "done": DONE_BY_KIND.get(row["kind"], DONE_DEFAULT),
