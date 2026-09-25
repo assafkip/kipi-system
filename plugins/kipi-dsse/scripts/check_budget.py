@@ -9,8 +9,9 @@ tests that take over ten minutes for every single thing."
 Lives beside its only caller since ASK-1810. It was q-system/.q-system/scripts/
 issue-check-budget.py, which imported issue_runner from this directory while issue_runner
 was about to call it back, and the plugin runs in repos that have no q-system tree.
-`issue_runner.py verify` calls `judge()` on the spec snapshot before any check runs and
-refuses on rule 1. The CLI below runs both rules over spec files, for /prd-split.
+`issue_runner.py verify` calls `full_suite_checks()` on the spec snapshot before any
+check runs and refuses on rule 1. `judge()`, which additionally carries rule 2, is
+CLI-only. The CLI below runs both rules over spec files, for /prd-split.
 
 Two rules:
   1. No spec carries a full-suite check. CI runs `verify.sh --full` on every PR
