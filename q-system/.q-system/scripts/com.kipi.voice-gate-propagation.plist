@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.kipi.voice-gate-propagation -- the registered trigger for the
+  voice-stop-gate fanout-LOSS check (ASK-1304, promoted from sp-0b8bec0d).
+
+  Why a scheduled LOCAL job and not a CI check: the hazard is a property of the
+  25 instance clones, which exist on this machine and nowhere in CI. The suite
+  in q-system/.q-system/tests/test_voice_gate_propagation.py holds the scanner
+  against synthetic trees and skips the live-fleet assertion wherever the clones
+  are absent. This plist is what makes that assertion actually run.
+
+  kipi-scope: skeleton-only
+  (the check compares instances against the skeleton it runs in; the registry's
+  skeleton entry must be this checkout or it exits 2 saying COULD NOT READ.)
+
+  TEMPLATE. Install with:  bash q-system/.q-system/scripts/install-plist.sh com.kipi.voice-gate-propagation
+  install-plist.sh renders __KIPI_REPO__, __HOME__ and __USER__ and bootstraps
+  the job; a literal path here would fan out to 25 instances with one machine's
+  home in it.
+
+  Daily 06:30 local, ahead of the 06:45 lessons-drift report and the 07:40
+  brief. KIPI_TRIGGER=launchd is the marker the alert files under; run by hand it
+  prints and files nothing, so removing this plist provably stops delivery. Red
+  files ONE ticket into Sana's Linear triage via slack-notify.sh, on state
+  change only -- never the founder (founder-notifications.md).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.voice-gate-propagation</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>KIPI_TRIGGER</key><string>launchd</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/voice-gate-propagation-check.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/voice-gate-propagation.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/voice-gate-propagation.err.log</string>
+</dict>
+</plist>
