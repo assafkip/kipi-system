@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/mutate-mutation-sweep.py",
+ "reason": "measures whether --self-test can see its own load-bearing parts; all five currently SURVIVE, so it exits 1 by design. Declaring it as a test would put a gate red on arrival for work nobody has done yet, and softening it to always pass would make it the exact defect it detects. Wire it after --self-test covers those five.",
+ "spillover_id": "sp-66a98810"
+}
