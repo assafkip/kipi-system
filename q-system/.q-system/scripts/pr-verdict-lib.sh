@@ -496,7 +496,7 @@ automerge_arm() {
 # commit" would be a guess in the never-merge direction's favour.
 _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
 
-# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha]
+# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha] [degraded]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
@@ -510,6 +510,11 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 #                     separately; see the caller-owned cap note below.)
 #   40 = stale       (approving, but at a sha that is no longer the PR's head --
 #                     re-review at the new sha. NEVER merge, never auto-approve.)
+#   50 = degraded    (approving, at the right sha, but the ONLY review on record
+#                     was written by the Opus fallback during a codex outage. Not
+#                     an independent second opinion, so it does not satisfy the
+#                     review precondition on its own. NEVER merge; re-review once
+#                     codex answers. See the degraded section below.)
 #
 # WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
 # ----------------------------------------------------------
@@ -569,8 +574,46 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # linear-worker.sh -- neither touched by this issue) can never see it, and a
 # caller that does not know 40 falls out of its if-chain into the rework path,
 # which is the safe direction: not terminal, never a merge.
+#
+# WHY DEGRADED IS PART OF THE GATE (ASK-2036, sp-e9284708)
+# --------------------------------------------------------
+# During a codex outage pr-review-agent.sh runs the Opus fallback so
+# `kipi/reviewer-approved` -- a REQUIRED context -- does not wedge every PR in
+# the repo. That status posts SUCCESS. The record it writes says
+# `degraded: true` and `reviewed_by: claude-opus-5`, and the human-facing
+# surfaces (the status description, the Linear comment) say DEGRADED out loud.
+# THIS function said nothing, because nothing read the flag: for three weeks the
+# only consumer of `degraded` was a python heredoc inside
+# test-review-degraded-provenance.sh. So a fallback APPROVE reached exit 10
+# exactly like an independent one, the worker ARMED auto-merge on it, and a PR
+# reviewed only by the same model family that wrote the code could land. The
+# whole reason this loop pays for a second engine is that the checker is not
+# Claude; a degraded approval is that property quietly switched off.
+#
+# 50 IS NOT 20, and the distinction is what a caller says to the operator.
+# 20 means nobody reviewed it and there is no spec. 50 means a review happened,
+# found nothing, and was written by the wrong reader -- the code may well be
+# fine, it has simply never been independently read. Both hold the PR; only one
+# of them is fixed by re-running the review once codex answers.
+#
+# DRIFT OUTRANKS DEGRADED, for the same reason drift outranks the merge state: a
+# moved head means nobody read the code at ALL, so the re-review has to happen
+# first and the record it writes then decides independence. DEGRADED OUTRANKS
+# THE CONFLICT, because rebasing code nobody independently read does not make it
+# read, and a rebase round would spend the conflict budget on the wrong problem.
+#
+# ABSENT IS NOT INDEPENDENT AND IT IS NOT DEGRADED. The 5th argument is empty for
+# every record written before ASK-445, for a corrupt record, and for every caller
+# that has not been taught to pass it -- all three keep today's behaviour exactly.
+# That is deliberate and it is the expensive half to get wrong: reading absent as
+# degraded would stop every open PR on the board at once the day this shipped.
+#
+# 50 IS NOT 10, 30 OR 40. A caller that does not know 50 falls out of its
+# if-chain into the rework path, which is the same safe direction 40 relies on:
+# not terminal, never a merge.
 rework_gate() {
   local verdict="${1:-}" merge_state="${2:-}" reviewed_sha="${3:-}" current_sha="${4:-}"
+  local degraded="${5:-}"
   case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
     "APPROVE"|"APPROVE WITH NITS")
@@ -585,6 +628,11 @@ rework_gate() {
           return 40
         fi
       fi
+      # THE ONE NEW READ (ASK-2036). One line on purpose: the mutation in
+      # test-degraded-approval-gate.sh deletes exactly this line and requires the
+      # degraded case to fall back to 10, which is only a real kill if removing
+      # it leaves the rest of the function intact.
+      case "$degraded" in 1) return 50 ;; esac
       case "$merge_state" in
         "DIRTY"|"BEHIND")                 return 30 ;;
         *)                                return 10 ;;
@@ -754,5 +802,38 @@ head_sha_from_record() {
   [ -s "$f" ] || return 0
   python3 -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("head_sha","") or "")
+except Exception: pass' "$f" 2>/dev/null || true
+}
+
+# degraded_from_record <verdict-json>
+# THREE-VALUED, and the third value is the whole point:
+#   1   the record says degraded -- codex was down and the Opus fallback wrote
+#       this review, so it is not a second lab's opinion
+#   0   the record says NOT degraded -- a real independent review
+#   ""  the record has no `degraded` key, is corrupt, or does not exist
+#
+# WHY IT EXISTS (ASK-2036, sp-e9284708). `degraded` shipped in ASK-445 and for
+# three weeks NOTHING in production read it. The only consumer was a python
+# heredoc defined inside test-review-degraded-provenance.sh, so the fail-safe
+# that suite proves lived entirely inside that suite. Meanwhile the fallback's
+# APPROVE reached the same waiting-on-merge branch a real codex APPROVE reaches,
+# and the worker armed auto-merge on it -- the independence the codex engine
+# exists to buy was gone and no gate could tell. A field with a schema, a writer
+# and no reader is documentation, not a control.
+#
+# EMPTY IS NOT FALSE, and forcing it to be would be the expensive mistake. Every
+# record written before ASK-445 lacks the key. Reading absent as `true` would
+# re-review every historical record on every open PR at once; reading it as
+# `false` would let a legacy record claim an independence nobody verified. Both
+# are guesses, and "I cannot tell" is the honest answer -- rework_gate treats it
+# exactly as it treats an absent head_sha: fall back to today's behaviour and
+# change nothing.
+degraded_from_record() {
+  local f="$1"
+  [ -s "$f" ] || return 0
+  python3 -c 'import json,sys
+try:
+    r = json.load(open(sys.argv[1]))
+    if "degraded" in r: print("1" if r["degraded"] else "0")
 except Exception: pass' "$f" 2>/dev/null || true
 }

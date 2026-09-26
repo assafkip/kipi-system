@@ -20,7 +20,13 @@
 #   2 turn cap        -> MAX_ROUNDS (default 4), the ceiling on rounds
 #   5 no progress     -> same verdict AND no new commit on the branch two rounds
 #                        running: the rework is not moving, stop burning rounds
-#   7 error threshold -> no PR, or a review that produced no verdict
+#   7 error threshold -> no PR, a review that produced no verdict, or a verdict
+#                        only the DEGRADED Opus fallback produced (ASK-2036).
+#                        The third meaning is NAMED here rather than left to the
+#                        branch: sp-bb12f937 is the same file reusing exit 8 for
+#                        a new meaning and leaving this contract describing the
+#                        old one, and a contract that lags its code is how the
+#                        next reader picks the wrong code.
 #   4 wall clock      -> inherited: each round is bounded inside the worker
 #                        (1800s work) and the reviewer (2400s review)
 #
@@ -1018,8 +1024,37 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   #
   # The gate's NOTE goes through `say` so it lands in the run log with everything
   # else. Swallowing it would silently grandfather the blind spot it announces.
-  GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA")"; GATE=$?
+  #
+  # ARGUMENT 5 ARMS ASK-2036, and it is read from the SAME record the verdict and
+  # the reviewed sha come from -- one record, one read per field, no second
+  # reader. Empty for every pre-ASK-445 record, which the gate treats exactly as
+  # it treats an absent head_sha: today's behaviour, unchanged.
+  REVIEW_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
+  GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA" "$REVIEW_DEGRADED")"; GATE=$?
   [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
+  # 50 = THE ONLY REVIEW ON RECORD IS THE DEGRADED FALLBACK (ASK-2036). Codex was
+  # down, Opus filled the required status so the repo would not wedge, and the
+  # record says so. The code may well be fine; nothing independent has read it.
+  #
+  # TERMINAL FOR THIS RUN, NOT ANOTHER ROUND. Falling through to the rework loop
+  # would dispatch Sana against an approved diff with no findings to act on, and
+  # the review at the end of that round hits the SAME outage and writes the same
+  # degraded record -- rounds spent to the cap with nothing learned. The one
+  # thing that clears this is codex answering, which is a condition of the
+  # machine and not something a round can change (`self-healing-retry.md` rule 5:
+  # environmental-trigger stops on attempt 1).
+  #
+  # NO RECEIPT AND NO ARM, both deliberate: the receipt writer below is reached
+  # only from gate 10, and arming here would hand the PR to GitHub to land on a
+  # green status that a degraded review posted. Exit 7 rather than a new code --
+  # it is the existing "the review did not produce something we can act on" stop,
+  # and the redrives already re-enter a PR parked there, which is exactly the
+  # behaviour wanted once codex is back.
+  if [ "$GATE" = "50" ]; then
+    say "STOP exit-7: PR #$PR reads '$VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Not merged, not armed. Re-review once codex answers: kipi review $PR --issue $ISSUE --post"
+    bash "$NOTIFY" "converge $ISSUE: PR #$PR is '$VERDICT' but only the degraded Opus fallback reviewed it (codex was down) - held, not merged, until a real review runs: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
+    exit 7
+  fi
   if [ "$GATE" = "10" ]; then
     # NOBODY IS WAITING (ASK-222; PR #33 review, finding 2, one layer out from
     # where it was filed). This line and the page under it are the SECOND reporter
