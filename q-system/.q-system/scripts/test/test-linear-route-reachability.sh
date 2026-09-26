@@ -158,17 +158,19 @@ JSON
 
 printf 'not json at all' > "$WORK/reg-broken.json"
 
-# KIPI_NOTIFY is isolation, not a nicety. No case below passes --notify, so the
-# notifier is unreachable today -- and that is exactly the guarantee that rots the
-# first time someone adds a --notify case. Stubbed at the ONE call site every case
-# goes through, so the guarantee does not depend on remembering. Scar 2026-08-01:
-# a suite reporting 14/14 green reached the real notifier and paged the founder
-# twice.
+# KIPI_NOTIFY is isolation, not a nicety. Case 9 DOES pass --notify, so the stub
+# is what stands between this suite and a real ticket in Sana's queue. It is set
+# at the ONE call site every case goes through, defaulted rather than passed per
+# case, so forgetting it is not an available mistake. Scar 2026-08-01: a suite
+# reporting 14/14 green reached the real notifier and paged the founder twice.
+# Second layer, independent of this one: slack-notify.sh refuses any run whose
+# KIPI_LINEAR_API_URL host is loopback, which every case here sets.
+NOTIFY_STUB="/usr/bin/true"
 run_check_rc() {  # prints into OUT, sets RC
   local reg="$1"; shift
   OUT="$(env KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
              KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
-             KIPI_NOTIFY="/usr/bin/true" \
+             KIPI_NOTIFY="$NOTIFY_STUB" \
              python3 "$CHECK" --registry "$reg" "$@" 2>&1)"
   RC=$?
 }
@@ -344,6 +346,90 @@ else
   bad "divergence guard: worker and check disagree on the shape predicate" \
       "worker ready=$W_READY check shaped-with-project=$C_ROUTED"
 fi
+
+# --- case 8: the CALLER must not turn UNKNOWN into a healthy zero -------------
+# PR #449 review, major. `route_unreachable()` in linear-triage-health.py returned
+# (count, True) whenever the subprocess produced parseable JSON. The check's
+# UNKNOWN path (case 5 above) exits 0 with `unreachable: []` and
+# `registry_ok: false`, so "measured, board is clean" and "classified nothing at
+# all" arrived at the 09:00 meter as the same two bytes.
+#
+# Not a constructed input: `kipi update` rsyncs the meter into all 25 instance
+# checkouts and none of them carries instance-registry.json, so the meter was
+# permanently, silently green on this axis everywhere but the skeleton.
+#
+# Both halves run against ONE board, differing only in which registry file the
+# check reads, so the pair is a control and not two scenarios. The real caller
+# runs the real check as a subprocess here; nothing is stubbed but the notifier.
+start_server FIXTURE_TARGET=lane-h-digest-repeats
+CALLER_OUT="$(env KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+                  KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+                  KIPI_NOTIFY="$NOTIFY_STUB" \
+                  REPO_SCRIPTS="$REPO_SCRIPTS" \
+                  BROKEN_REG="$WORK/reg-broken.json" \
+                  GOOD_REG="$WORK/reg-normal.json" \
+                  python3 - <<'PY' 2>&1
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "health", os.path.join(os.environ["REPO_SCRIPTS"], "linear-triage-health.py"))
+health = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(health)
+for tag, reg in (("BROKEN", os.environ["BROKEN_REG"]),
+                 ("GOOD", os.environ["GOOD_REG"])):
+    count, ran = health.route_unreachable(["--registry", reg])
+    print(f"{tag} count={count} ran={ran}")
+PY
+)"
+case "$CALLER_OUT" in
+  *"BROKEN count=0 ran=False"*)
+    ok "caller: unreadable registry reports ran=False, not a clean 0" ;;
+  *) bad "caller: unreadable registry reports ran=False" \
+         "$(printf '%s' "$CALLER_OUT" | tr '\n' '|')" ;;
+esac
+# The control. Without it, `return count, False` unconditionally would satisfy the
+# assertion above while making every real measurement read as "did not run" --
+# the same bug wearing the other sign.
+case "$CALLER_OUT" in
+  *"GOOD count=1 ran=True"*)
+    ok "caller CONTROL: same board, readable registry reports 1 and ran=True" ;;
+  *) bad "caller CONTROL: readable registry reports 1 and ran=True" \
+         "$(printf '%s' "$CALLER_OUT" | tr '\n' '|')" ;;
+esac
+
+# --- case 9: --notify must not report a failed send as a delivered one --------
+# PR #449 review, minor. main() called notify() and dropped its return value, then
+# returned 2 either way, so a delivery failure and a delivery were byte-identical.
+# That is the shape linear-triage-health.py records as a Codex major from PR #204,
+# one file over: "A NONZERO HERE IS A DELIVERY FAILURE AND MUST REACH THE EXIT
+# CODE." No caller in this repo passes --notify today; this is the loaded gun for
+# whoever wires it next.
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/notify-fail.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/notify-ok.sh"
+chmod +x "$WORK/notify-fail.sh" "$WORK/notify-ok.sh"
+
+start_server FIXTURE_TARGET=lane-h-digest-repeats
+NOTIFY_STUB="$WORK/notify-fail.sh"
+run_check_rc "$WORK/reg-normal.json" --notify
+if [ "$RC" -eq 5 ]; then
+  ok "--notify: a failed send exits 5, not 2"
+else
+  bad "--notify: a failed send exits 5, not 2" "rc=$RC out=$(printf '%s' "$OUT" | tr '\n' '|')"
+fi
+case "$OUT" in
+  *"alert FAILED"*) ok "--notify: the failed send says so on stderr/stdout" ;;
+  *) bad "--notify: the failed send says so" "$(printf '%s' "$OUT" | tr '\n' '|')" ;;
+esac
+# The control: same board, same breach, a notifier that works. Exit stays 2 --
+# the finding is still real, only the delivery succeeded.
+NOTIFY_STUB="$WORK/notify-ok.sh"
+run_check_rc "$WORK/reg-normal.json" --notify
+if [ "$RC" -eq 2 ]; then
+  ok "--notify CONTROL: a delivered send keeps the finding's own exit 2"
+else
+  bad "--notify CONTROL: a delivered send keeps exit 2" \
+      "rc=$RC out=$(printf '%s' "$OUT" | tr '\n' '|')"
+fi
+NOTIFY_STUB="/usr/bin/true"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

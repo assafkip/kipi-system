@@ -24,6 +24,10 @@ EXIT CODES
     0  nothing unreachable, or every unreachable issue is acknowledged, or the
        registry could not be read (UNKNOWN, see below)
     2  at least one unacknowledged unreachable issue
+    5  as 2, AND --notify was asked for and the send failed. Worst-first: the
+       finding is still true, but nobody was told, and that is the state a
+       launchd job must not record as a measured red. Same code and same reason
+       as EXIT_ALERT_FAILED in linear-triage-health.py, the caller beside it.
 
 WHAT ACKNOWLEDGED MEANS, AND WHY IT IS NOT A BYPASS
 ---------------------------------------------------
@@ -86,6 +90,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import linear_registry  # noqa: E402  (after sys.path, by design)
+
+EXIT_OK = 0
+EXIT_UNREACHABLE = 2
+# 5, matching EXIT_ALERT_FAILED in linear-triage-health.py. The two scripts feed
+# one launchd surface, so one number must not mean two things across them.
+EXIT_ALERT_FAILED = 5
 
 ACK_LABEL = "route:unreachable"
 # Stamped into a comment by whoever records the routing reason. Matched as a WHOLE
@@ -318,11 +328,21 @@ def main(argv: list) -> int:
     print(json.dumps(m, indent=2) if args.json else render(m))
     if m["unreachable"]:
         if args.notify:
-            notify(f"route-reachability: {len(m['unreachable'])} owner:sana DoR issue(s) "
-                   f"on a Linear project no checkout backs "
-                   f"({', '.join(sorted({r['project'] for r in m['unreachable']}))})")
-        return 2
-    return 0
+            rc = notify(f"route-reachability: {len(m['unreachable'])} owner:sana DoR "
+                        f"issue(s) on a Linear project no checkout backs "
+                        f"({', '.join(sorted({r['project'] for r in m['unreachable']}))})")
+            # A NONZERO HERE IS A DELIVERY FAILURE AND MUST REACH THE EXIT CODE.
+            # Dropping it made a failed send and a delivered one byte-identical,
+            # which is the Codex major from PR #204 in the sibling file this one
+            # is wired into, reproduced one directory over (PR #449 review).
+            # `notify()` never raises by design, so its return value is the only
+            # signal there is.
+            if rc != 0:
+                print(f"alert FAILED (exit {rc}): the finding was measured and "
+                      "nobody was told.", file=sys.stderr)
+                return EXIT_ALERT_FAILED
+        return EXIT_UNREACHABLE
+    return EXIT_OK
 
 
 def _declared_rows(registry_path: str) -> list:

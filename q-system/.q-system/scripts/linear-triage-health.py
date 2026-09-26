@@ -734,6 +734,17 @@ def route_unreachable(argv_extra: list = ()) -> tuple:
     ANY THRESHOLD IS ONE. Unlike the counts beside it, the right number here is
     zero: a single unacknowledged unreachable issue is one piece of work nobody
     will ever pick up. There is no noise floor to set.
+
+    `ok` IS THE CHECK'S OWN registry_ok, NEVER "the subprocess parsed". The check
+    exits 0 with an EMPTY unreachable list when it could not read the registry,
+    because calling every project unreachable there is a false alarm on the whole
+    board at once. Reading only the list therefore made "board is clean" and
+    "classified nothing at all" the same two bytes -- and `kipi update` rsyncs
+    this file into 25 instance checkouts, none of which carries
+    instance-registry.json, so the meter was permanently green on this axis
+    everywhere but the skeleton (PR #449 review, major). A missing registry_ok
+    key raises KeyError into the handler below and lands on (0, False), which is
+    the safe side.
     """
     script = os.path.join(HERE, "linear-route-reachability-check.py")
     if not os.path.isfile(script):
@@ -741,7 +752,8 @@ def route_unreachable(argv_extra: list = ()) -> tuple:
     try:
         res = subprocess.run([sys.executable, script, "--json", *argv_extra],
                              capture_output=True, text=True, timeout=300)
-        return len(json.loads(res.stdout)["unreachable"]), True
+        out = json.loads(res.stdout)
+        return len(out["unreachable"]), bool(out["registry_ok"])
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         # Never raises: a meter that crashes on a sibling meter reports nothing
         # at all, which is strictly worse than reporting one number short.
@@ -875,6 +887,19 @@ def _run(args, holding_lock: bool) -> int:
     m["dormant_threshold_days"] = args.dormant_days
     m["complete"] = complete
 
+    # ASK-1951, measured HERE -- before BOTH outputs and before breaches() reads
+    # it. `ran` is carried separately from the count for the same reason
+    # registry_ok is carried in the resolver: a check that could not run reports
+    # 0, and 0 is also what a healthy board reports. Saying which one it was is
+    # the difference between a pass and silence.
+    #
+    # The assignment used to sit after the serialization below, so --json omitted
+    # both keys while breaches() fired on one of them: the human report carried
+    # the number and the machine report did not (PR #449 review, minor). Every
+    # other key is assigned before the print; this one is now too, which is the
+    # ordering that makes the omission unavailable rather than remembered.
+    m["route_unreachable"], m["route_check_ran"] = route_unreachable()
+
     if args.json:
         print(json.dumps(m, indent=2))
     else:
@@ -931,12 +956,8 @@ def _run(args, holding_lock: bool) -> int:
                   f"failed={sum(1 for v in outcomes.values() if v.startswith('FAILED'))} "
                   f"not-attempted={len(dormant) - len(to_flag)}")
 
-    # ASK-1951, measured BEFORE breaches() reads it. `ran` is carried separately
-    # from the count for the same reason registry_ok is carried in the resolver: a
-    # check that could not run reports 0, and 0 is also what a healthy board
-    # reports. Saying which one it was is the difference between a pass and
-    # silence.
-    m["route_unreachable"], m["route_check_ran"] = route_unreachable()
+    # Printed here, measured above with every other key. NOT MEASURED is said out
+    # loud rather than shown as 0, because those are different claims.
     if not args.json:
         print(f"  on a dead project        : "
               + (str(m["route_unreachable"]) if m["route_check_ran"]
