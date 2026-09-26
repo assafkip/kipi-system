@@ -20,7 +20,14 @@ import sys
 import tempfile
 from pathlib import Path
 
-LINT = Path(__file__).resolve().parent / "handoff-provenance-lint.py"
+import os
+
+# Overridable so the new-branch cases can be run against a COPY of the pre-change
+# lint and observed going RED before they are trusted green (ASK-1953). Defaults to
+# the real script, so an ordinary run is unaffected.
+LINT = Path(os.environ.get(
+    "HANDOFF_LINT_PATH",
+    str(Path(__file__).resolve().parent / "handoff-provenance-lint.py")))
 
 
 def run(rel_path: str, body: str) -> int:
