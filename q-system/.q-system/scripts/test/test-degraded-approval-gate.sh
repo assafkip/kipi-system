@@ -438,6 +438,73 @@ for f in linear-worker.sh converge.sh; do
 done
 
 echo
+echo "== 9. WHAT degraded:false DOES NOT SAY (PR #446 round 3, finding 1) =="
+# THE OVERCLAIM, and why it only became a defect in this PR. The reader's
+# contract called `0` "a real independent review". That is wider than anything
+# the writer records. `DEGRADED=1` is assigned at ONE place in
+# pr-review-agent.sh, inside the codex-outage branch, and both engine defaults
+# (`KIPI_REVIEW_ENGINE`, `KIPI_REVIEW_PRIMARY_ENGINE`) have read `claude` since
+# the founder directive of 2026-09-06 -- which pr-review-agent.sh:38-70 records
+# in full, including the accepted cost: "Sana (the PR author) is Claude, so a
+# Claude reviewer shares her lab and model family". So on the path the worker
+# actually runs, every record says `degraded: false`, and under the old contract
+# that sentence certified the review as independent.
+#
+# Before this PR nothing read the flag and a wrong comment cost nothing. This PR
+# made the flag a MERGE AUTHORITY, so the contract had to stop claiming more
+# than the writer puts in.
+#
+# THE ENGINE POSTURE IS NOT THIS ISSUE'S TO CHANGE. Arming gate 50 on the
+# scheduled path needs either the two engine defaults flipped (the founder's
+# 2026-09-06 call) or the writer marking a claude-primary review non-independent
+# -- and ASK-2036's DoR says in its own words: "Not changing what the writer
+# records." Captured instead; see the spillover ref in the PR.
+
+# 9a. The contract line for `0` must not claim independence. Anchored to the
+# contract line itself, so restoring the old wording is the mutation that turns
+# this red -- and a `0` line that says nothing about independence cannot match.
+if grep -Eq '^#[[:space:]]+0[[:space:]]+the record says NOT degraded.*independent' "$LIB"; then
+  bad "THE DEFECT: degraded_from_record's contract still reads 0 as 'a real independent review' -- the writer only clears the flag for a codex outage, so under a claude-primary fleet that sentence certifies Claude reviewing Claude"
+else
+  ok "the contract for 0 does not claim independence"
+fi
+# 9b. ...and it names the narrow thing the writer actually records, rather than
+# leaving the caller to infer it. A deleted caveat is a silent return to 9a.
+if grep -q 'pr-review-agent.sh:38-70' "$LIB"; then
+  ok "the contract points at the engine posture that decides whether 1 is ever written"
+else
+  bad "THE DEFECT: the reader's contract does not say WHEN the writer sets the flag, so a caller cannot tell a dormant gate from a passing one"
+fi
+
+# 9c. THE BOARD FLOOR, green by construction today and that is the point -- it
+# pins the blast radius the DoR names. A record shaped like a SCHEDULED review
+# (engine claude, a claude reviewer, degraded false) must stay terminal. A change
+# that marks every claude review degraded goes red HERE, naming the wedge,
+# instead of holding every open PR on the board at once.
+cat > "$RECS/scheduled-claude.json" <<JSON
+{"pr":900,"issue":"ASK-900","verdict":"APPROVE","engine":"claude",
+ "reviewed_by":"claude-opus-5","degraded":false,
+ "invoker":"worker","round":1,"head_sha":"$SHA","ts":"2026-09-26T00:00:00Z"}
+JSON
+G_SCHED="$(gate_code "$LIB" "APPROVE" "" "$SHA" "$SHA" "$(reader_says "$LIB" "$RECS/scheduled-claude.json")")"
+[ "$G_SCHED" = "10" ] \
+  && ok "a scheduled claude-primary APPROVE stays terminal (exit 10) -- gate 50 does not hold the whole board" \
+  || bad "THE DEFECT: the scheduled-path record returned $G_SCHED, want 10 -- every APPROVE the fleet produces today is this shape, so this holds every open PR"
+
+# 9d. The one shape gate 50 DOES own, written the way the fallback writes it:
+# the run was asked for codex, an Opus model produced the prose, and the
+# disagreement between those two fields is the record of the outage.
+cat > "$RECS/codex-outage-fallback.json" <<JSON
+{"pr":900,"issue":"ASK-900","verdict":"APPROVE","engine":"codex",
+ "reviewed_by":"claude-opus-5","degraded":true,
+ "invoker":"worker","round":1,"head_sha":"$SHA","ts":"2026-09-26T00:00:00Z"}
+JSON
+G_FB="$(gate_code "$LIB" "APPROVE" "" "$SHA" "$SHA" "$(reader_says "$LIB" "$RECS/codex-outage-fallback.json")")"
+[ "$G_FB" = "50" ] \
+  && ok "the codex-outage fallback shape is the one gate 50 owns (exit 50)" \
+  || bad "the fallback-shaped record returned $G_FB, want 50"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: a degraded approval is a production decision, not a field nobody reads"

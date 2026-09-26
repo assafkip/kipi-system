@@ -582,7 +582,13 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 #                     was written by the Opus fallback during a codex outage. Not
 #                     an independent second opinion, so it does not satisfy the
 #                     review precondition on its own. NEVER merge; re-review once
-#                     codex answers. See the degraded section below.)
+#                     codex answers. See the degraded section below.
+#                     DORMANT WHILE THE FLEET IS CLAUDE-PRIMARY: the writer sets
+#                     the flag only on the codex-outage branch, so nothing on the
+#                     scheduled path produces a 50 today. Correct and waiting,
+#                     not passing -- the scope note on degraded_from_record says
+#                     what it takes to arm it and why that is not this gate's
+#                     call.)
 #
 # WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
 # ----------------------------------------------------------
@@ -877,8 +883,31 @@ except Exception: pass' "$f" 2>/dev/null || true
 # THREE-VALUED, and the third value is the whole point:
 #   1   the record says degraded -- codex was down and the Opus fallback wrote
 #       this review, so it is not a second lab's opinion
-#   0   the record says NOT degraded -- a real independent review
+#   0   the record says NOT degraded -- the primary slot was NOT filled by the
+#       codex-outage Opus fallback. THAT IS ALL IT SAYS. See the scope note.
 #   ""  the record has no `degraded` key, is corrupt, or does not exist
+#
+# WHAT `0` DOES NOT MEAN (PR #446 round 3, finding 1). This line used to read
+# "a real independent review", which is wider than anything the writer records.
+# `DEGRADED=1` is assigned at exactly ONE place in pr-review-agent.sh, inside
+# the codex-outage branch, and both engine defaults there have read `claude`
+# since the founder directive of 2026-09-06. pr-review-agent.sh:38-70 records
+# that posture in full, including the cost it accepts out loud: "Sana (the PR
+# author) is Claude, so a Claude reviewer shares her lab and model family and
+# re-derives her blind spots". So on the path the worker actually runs, every
+# record carries `degraded: false` -- and under the old wording that sentence
+# certified Claude reviewing Claude as the independent second opinion.
+#
+# The consequence for gate 50, stated rather than left to be discovered: it is
+# CORRECT AND DORMANT while the fleet is claude-primary. It fires on the codex
+# outage path, which is reachable today only via an `--engine codex` run.
+# Arming it on the scheduled path is `KIPI_REVIEW_ENGINE=codex
+# KIPI_REVIEW_PRIMARY_ENGINE=codex` (both together, or the two defaults flipped
+# back) -- the founder's 2026-09-06 call, not this reader's to make. The other
+# route, marking a claude-primary review non-independent in the writer, is what
+# ASK-2036's DoR excludes in its own words: "Not changing what the writer
+# records." Tracked separately; case 9 of test-degraded-approval-gate.sh pins
+# this contract so the overclaim cannot come back quietly.
 #
 # WHY IT EXISTS (ASK-2036, sp-e9284708). `degraded` shipped in ASK-445 and for
 # three weeks NOTHING in production read it. The only consumer was a python
