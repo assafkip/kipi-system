@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-degraded-approval-gate.sh",
+ "runner": "bash"
+}

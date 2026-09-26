@@ -132,6 +132,16 @@
       }
     },
     {
+      "id": "worker-degraded-approval-held",
+      "source": "linear-worker",
+      "class": "infra-failure",
+      "marker": "the only review on record is the DEGRADED Opus fallback",
+      "sites": 1,
+      "what": "rework_gate returned 50: the PR is approved and pinned to its own head, but the only verdict on record carries degraded:true -- codex was down and the Opus fallback filled the required status. The worker takes auto-merge back off and skips the issue.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry.md rule 5), and terminal on purpose rather than by omission. Gate 50 is computed from the STORED verdict record, and both drivers leave before their review step while it holds -- so a re-dispatch recomputes 50 from the same record and skips again. Nothing in this tree re-runs the review on a degraded record: no launchd job, no redrive, no converge branch. The state clears only when a fresh review overwrites the record, which today means the named command `kipi review <pr> --issue <issue> --post` once codex answers. Declaring a dispatch consumer here would be the validator-satisfying fiction ASK-352 is the scar for: re-entry that happens and changes nothing is not a consumer. The cost is stated in the code comment at this exit -- during a long codex outage approved PRs accumulate unmerged -- and that is the chosen direction to fail in, because an auto-merged unreviewed PR costs whatever it breaks fleet-wide."
+    },
+    {
       "id": "no-review-verdict",
       "source": "linear-worker",
       "class": "transient",
@@ -442,6 +452,16 @@
         "marker": "DISPATCH_ARGV=(./kipi converge --issue",
         "why": "The dispatcher's launch line. Re-entry is bounded, not endless: the attempt was persisted before this exit, so the cap can trip, and when it does the issue lands in attempts-cap-stuck, which is registered terminal."
       }
+    },
+    {
+      "id": "converge-degraded-approval-held",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "but that verdict came from the DEGRADED Opus fallback",
+      "sites": 1,
+      "what": "exit 7. rework_gate returned 50: the PR reads APPROVE but the verdict record carries degraded:true, so codex never read this code. converge takes auto-merge off through the one shared disarm, rewrites the automerge record, and stops the round.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry.md rule 5). Same state as worker-degraded-approval-held, reached one layer out: the worker runs first inside every round of this loop and skips on its own gate 50, so converge reads the same stored record and computes the same 50. A re-dispatch therefore re-derives 50 from an unchanged record and stops here again -- re-entry that changes nothing, which the registry refuses to certify as a consumer. Only a fresh review overwrites the record, and nothing in this tree triggers one for a degraded verdict; the exit line names the command that does. Held deliberately: an unmerged approved PR costs a day, a PR auto-merged over a `kipi/reviewer-approved` the fallback posted itself costs whatever it broke."
     },
     {
       "id": "converge-verdict-terminal",
