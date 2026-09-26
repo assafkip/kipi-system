@@ -715,11 +715,60 @@ def select_to_flag(dormant: list, limit: int) -> list:
     return dormant[:limit] if limit else list(dormant)
 
 
+def route_unreachable(argv_extra: list = ()) -> tuple:
+    """Run the reachability check and return (count, ok). (0, False) means it could not run.
+
+    WHY THIS JOB IS THE CALLER (ASK-1951). The check meters issues sitting on a
+    Linear project no checkout backs -- routed-looking, unreachable in fact. A
+    check nobody executes stops nothing, and this 09:00 job is already the board
+    meter with a wired plist, so it is the one caller that needs no new launchd
+    label and no re-install: the installed plist runs this file by path, so the
+    call goes live on the next tick.
+
+    A SUBPROCESS, NOT AN IMPORT. The check owns its own paginated walk because it
+    needs labels, description and state type; fetch_open_issues() here selects a
+    different field set for a different question. Reaching into its result would
+    couple two queries whose shapes are allowed to diverge, and one extra walk a
+    day is cheaper than that coupling.
+
+    ANY THRESHOLD IS ONE. Unlike the counts beside it, the right number here is
+    zero: a single unacknowledged unreachable issue is one piece of work nobody
+    will ever pick up. There is no noise floor to set.
+
+    `ok` IS THE CHECK'S OWN registry_ok, NEVER "the subprocess parsed". The check
+    exits 0 with an EMPTY unreachable list when it could not read the registry,
+    because calling every project unreachable there is a false alarm on the whole
+    board at once. Reading only the list therefore made "board is clean" and
+    "classified nothing at all" the same two bytes -- and `kipi update` rsyncs
+    this file into 25 instance checkouts, none of which carries
+    instance-registry.json, so the meter was permanently green on this axis
+    everywhere but the skeleton (PR #449 review, major). A missing registry_ok
+    key raises KeyError into the handler below and lands on (0, False), which is
+    the safe side.
+    """
+    script = os.path.join(HERE, "linear-route-reachability-check.py")
+    if not os.path.isfile(script):
+        return 0, False
+    try:
+        res = subprocess.run([sys.executable, script, "--json", *argv_extra],
+                             capture_output=True, text=True, timeout=300)
+        out = json.loads(res.stdout)
+        return len(out["unreachable"]), bool(out["registry_ok"])
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        # Never raises: a meter that crashes on a sibling meter reports nothing
+        # at all, which is strictly worse than reporting one number short.
+        print(f"WARN: route-reachability check did not run ({exc})", file=sys.stderr)
+        return 0, False
+
+
 def breaches(m: dict) -> list:
     """Which thresholds this measurement crosses. Empty means stay quiet."""
     out = []
     if m["unrouted"] >= UNROUTED_ALERT_AT:
         out.append(f"{m['unrouted']} unrouted (no project)")
+    # .get, not [], because this key arrived after the callers did (ASK-1951).
+    if m.get("route_unreachable", 0) > 0:
+        out.append(f"{m['route_unreachable']} on a project no checkout backs")
     if m["needs_triage"] >= TRIAGE_ALERT_AT:
         out.append(f"{m['needs_triage']} awaiting triage")
     if m["oldest_triage_days"] >= OLDEST_ALERT_DAYS:
@@ -838,6 +887,19 @@ def _run(args, holding_lock: bool) -> int:
     m["dormant_threshold_days"] = args.dormant_days
     m["complete"] = complete
 
+    # ASK-1951, measured HERE -- before BOTH outputs and before breaches() reads
+    # it. `ran` is carried separately from the count for the same reason
+    # registry_ok is carried in the resolver: a check that could not run reports
+    # 0, and 0 is also what a healthy board reports. Saying which one it was is
+    # the difference between a pass and silence.
+    #
+    # The assignment used to sit after the serialization below, so --json omitted
+    # both keys while breaches() fired on one of them: the human report carried
+    # the number and the machine report did not (PR #449 review, minor). Every
+    # other key is assigned before the print; this one is now too, which is the
+    # ordering that makes the omission unavailable rather than remembered.
+    m["route_unreachable"], m["route_check_ran"] = route_unreachable()
+
     if args.json:
         print(json.dumps(m, indent=2))
     else:
@@ -893,6 +955,13 @@ def _run(args, holding_lock: bool) -> int:
                   f"{sum(1 for v in outcomes.values() if v == 'already-flagged')} "
                   f"failed={sum(1 for v in outcomes.values() if v.startswith('FAILED'))} "
                   f"not-attempted={len(dormant) - len(to_flag)}")
+
+    # Printed here, measured above with every other key. NOT MEASURED is said out
+    # loud rather than shown as 0, because those are different claims.
+    if not args.json:
+        print(f"  on a dead project        : "
+              + (str(m["route_unreachable"]) if m["route_check_ran"]
+                 else "NOT MEASURED (check did not run)"))
 
     hits = breaches(m)
     alert_failed = False

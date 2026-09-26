@@ -11,6 +11,7 @@ my assumption; this one at least tests the query's own shape.
 """
 import argparse
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -1381,3 +1382,48 @@ def test_the_module_promises_only_the_mutation_it_makes():
     assert "gets ONE COMMENT" in src
     # the label is still READ, and that asymmetry is deliberate, not a leftover
     assert health.DORMANT_LABEL in src
+
+
+# --- PR #449 review: the route-reachability key the alert fires on ------------
+
+def test_json_output_carries_the_route_keys_it_alerts_on(tmp_path):
+    """PR #449 review, minor. `m` was serialized BEFORE the two route keys were
+    assigned, so --json omitted both while breaches() fired on one of them: the
+    human report carried the number, the machine report did not.
+
+    No in-repo consumer parses this JSON today, which is why the finding was a
+    minor. It is still a report that disagrees with the alert it feeds, and the
+    fix is an ordering, so this test pins the ordering rather than the values.
+
+    The staged copy has no `linear-route-reachability-check.py` beside it, so the
+    check genuinely cannot run here: route_check_ran is False, and that is the
+    stricter half of the pair -- a serialization that happened to include a
+    truthy count could pass an existence check while still dropping `ran`.
+
+    raw_decode, not json.loads, and the reason is recorded rather than worked
+    around silently: under --json this script prints the JSON object and THEN the
+    dormancy display block and the alert line, so stdout has never been a single
+    JSON document. Both of those prints predate ASK-1951 and no in-repo consumer
+    parses this stream (only the plist and this suite read the script at all), so
+    narrowing them is a separate change to what a launchd-wired meter prints. This
+    test reads the object it is about and leaves that alone.
+    """
+    res = _run_health_copy(tmp_path, notify_exit=0, args=("--json",))
+    m, _end = json.JSONDecoder().raw_decode(res.stdout.lstrip())
+    assert "route_unreachable" in m, f"key missing from --json: {sorted(m)}"
+    assert "route_check_ran" in m, f"key missing from --json: {sorted(m)}"
+    assert m["route_check_ran"] is False, "no check script was staged beside the copy"
+    assert m["route_unreachable"] == 0
+
+
+def test_human_output_says_not_measured_rather_than_zero(tmp_path):
+    """The control for the assertion above, on the other output.
+
+    0 and "could not run" are different claims, and the same staged copy produces
+    the second one. If the caller ever collapses them again, this goes red while
+    the JSON test above stays green -- which is the pair that made the original
+    defect visible in one report and invisible in the other.
+    """
+    res = _run_health_copy(tmp_path, notify_exit=0)
+    assert "on a dead project" in res.stdout
+    assert "NOT MEASURED (check did not run)" in res.stdout, res.stdout
