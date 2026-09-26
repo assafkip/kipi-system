@@ -473,7 +473,21 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       # argv_deny_reason by test_every_argv_arm_has_a_deny_list_entry, which
       # derives both sets from this file rather than restating either.
       find|dd|mkfs|shred|truncate|chmod|chown) return 0 ;;
-      rsync|kipi)                              return 0 ;;
+      rsync)                                   return 0 ;;
+      # NO `kipi` ARM HERE, AND THAT IS NOT AN OVERSIGHT. The rescans offer every
+      # starting position, so admitting the bare word would deny `git commit -m
+      # "... kipi update ..."` from the position of the quoted word -- which is
+      # exactly the false positive sp-9166e58a is open about and which the
+      # anchored-pattern class in test_destructive_op_deny_anchor.py measures a
+      # fix for. Adding it here made that proposed fix ineffective while the test
+      # still called it green on the pattern alone.
+      #
+      # The arm in argv_deny_reason stays. The FIRST-position scan calls that
+      # function on the whole stage without this pre-filter, so `nohup kipi
+      # update` still denies from the head of its stage, which is the same
+      # command-position discipline FLEET_DENY's own anchors draw. What is given
+      # up is a `kipi` token hidden mid-line, and unlike `./kipi-update.sh` there
+      # is no spelling that separates that from prose.
       # NO TRANSPARENT-PREFIX ARM. Same argument as the flag and assignment arms
       # before it, and it is the one that finally ends this bypass: a position
       # starting at `sudo` can only deny if a recognised program FOLLOWS, and
@@ -548,6 +562,139 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
            || _argv_has_long recursive "${rest[@]}" \
            || _argv_has_long force "${rest[@]}"; then
           _ARGV_REASON="rm carries a recursive or force flag (argv-inspected: a leading flag cannot hide it)"
+          return 0
+        fi
+        ;;
+      # ===================================================================
+      # ASK-1954: ONE ARM PER PROGRAM THE DENY LISTS ALREADY NAME.
+      #
+      # ASK-1131 built this parser because the substring patterns are POSITIONAL
+      # -- each needs its dangerous token immediately after the command name, so
+      # `rm -v -rf DIR` ran and `sudo -u root rm -v -rf DIR` ran. It then wired
+      # exactly two programs into it, rm and git, while BASH_DENY and FLEET_DENY
+      # between them name twelve. The other ten kept the hole the parser exists
+      # to close, each in its own program, and the fleet updater's was live: a
+      # transparent prefix in front of `./kipi-update.sh` was ALLOWED, because
+      # the prefix sits between FLEET_DENY's command anchor and the script name
+      # while this parser, which DOES strip that prefix, had no arm to dispatch
+      # to afterwards. Both layers missed one command (sp-812d921d: 18 times in
+      # one night, unnoticed).
+      #
+      # Every arm below mirrors the SEMANTICS of its list entry rather than
+      # denying the bare program. Denying `find` outright would refuse an
+      # ordinary traversal, and a guard that blocks ordinary work gets switched
+      # off -- the reason three dry-run carve-outs already exist in this file.
+      # The pairing is not trusted to a reader: test_destructive_op_deny_anchor.py
+      # derives both program sets FROM THIS FILE and fails on any member of one
+      # absent from the other, so the next pattern that lands without an arm is
+      # RED rather than silently positional again.
+      find)
+        # Mirrors 'find … -delete' and 'find … -exec rm'. An exact token, never
+        # a short-flag cluster scan: `-delete` would match on the `d` in the
+        # read-only `-depth`, and refusing a traversal is how this gate dies.
+        if _argv_has_token -delete "${rest[@]}"; then
+          _ARGV_REASON="find carries -delete, which removes every matched path (argv-inspected: the primary can sit anywhere in the expression)"
+          return 0
+        fi
+        if _argv_has_token -exec "${rest[@]}" || _argv_has_token -execdir "${rest[@]}" \
+           || _argv_has_token -ok "${rest[@]}" || _argv_has_token -okdir "${rest[@]}"; then
+          local _f
+          for _f in "${rest[@]:1}"; do
+            case "${_f##*/}" in
+              rm|rmdir|shred|unlink)
+                _ARGV_REASON="find runs $_f on every matched path"
+                return 0 ;;
+            esac
+          done
+        fi
+        ;;
+      dd)
+        # Mirrors 'dd .*of=/dev/'. Operand order is free in dd, which is what
+        # the pattern's `.*` was standing in for; the argv walk reads it.
+        local _d
+        for _d in "${rest[@]:1}"; do
+          case "$_d" in
+            of=/dev/*)
+              _ARGV_REASON="dd writes to the raw device $_d, destroying whatever is on it"
+              return 0 ;;
+          esac
+        done
+        ;;
+      mkfs)
+        _ARGV_REASON="mkfs formats a device, destroying every filesystem on it"
+        return 0 ;;
+      shred)
+        _ARGV_REASON="shred overwrites its target so it cannot be recovered"
+        return 0 ;;
+      truncate)
+        # Mirrors 'truncate -s 0'. All three spellings, because `-s0` and
+        # `--size=0` empty the file exactly as `-s 0` does and the positional
+        # pattern saw only the spaced one.
+        if _argv_has_token -s "${rest[@]}" && _argv_has_token 0 "${rest[@]}"; then
+          _ARGV_REASON="truncate -s 0 empties the file"
+          return 0
+        fi
+        if _argv_has_token -s0 "${rest[@]}" || _argv_has_token --size=0 "${rest[@]}"; then
+          _ARGV_REASON="truncate to size 0 empties the file"
+          return 0
+        fi
+        ;;
+      chmod)
+        # Mirrors 'chmod -R 777 /'. All three parts required, same as the
+        # pattern: a recursive chmod that is not world-writable-on-an-absolute-
+        # path is ordinary work and stays allowed.
+        if { _argv_has_short R "${rest[@]}" || _argv_has_long recursive "${rest[@]}"; } \
+           && _argv_has_token 777 "${rest[@]}"; then
+          local _c
+          for _c in "${rest[@]:1}"; do
+            case "$_c" in
+              /*) _ARGV_REASON="chmod -R 777 on $_c makes an absolute path world-writable"
+                  return 0 ;;
+            esac
+          done
+        fi
+        ;;
+      chown)
+        # Mirrors 'chown -R.*[[:space:]]+/'.
+        if _argv_has_short R "${rest[@]}" || _argv_has_long recursive "${rest[@]}"; then
+          local _o
+          for _o in "${rest[@]:1}"; do
+            case "$_o" in
+              /*) _ARGV_REASON="chown -R on $_o rewrites ownership across an absolute path"
+                  return 0 ;;
+            esac
+          done
+        fi
+        ;;
+      rsync)
+        # Mirrors the FLEET_DENY rsync entry, carve-out included. Short `-n`
+        # counts here: `rsync -ain --delete` is the fleet deletion guard's own
+        # documented usage line (sp-9b01d746), and this arm runs BEFORE the
+        # stage loop, so refusing what that loop exempts would resurrect the
+        # bug of blocking the documented preview.
+        if _argv_has_long delete "${rest[@]}" && ! _argv_is_preview 1 "${rest[@]}"; then
+          _ARGV_REASON="rsync --delete removes files at the destination that are absent from the source"
+          return 0
+        fi
+        ;;
+      kipi)
+        # Mirrors the two-word fleet pattern. Subcommand-aware rather than
+        # two-words-adjacent, so a global flag between them cannot hide it.
+        if _argv_has_token update "${rest[@]}" && ! _argv_is_preview 0 "${rest[@]}"; then
+          _ARGV_REASON="the fleet sync rsyncs the skeleton into EVERY registered instance with a delete flag"
+          return 0
+        fi
+        ;;
+      kipi-update.sh)
+        # Mirrors the two FLEET_DENY script entries. Gated on the RAW token, not
+        # the basename: reading the file is not running it, which is the reason
+        # those entries are command-anchored at all. See _argv_could_deny_here.
+        case "$raw" in
+          [./~]*|*/kipi-update.sh) ;;
+          *) return 1 ;;
+        esac
+        if ! _argv_is_preview 0 "${rest[@]}"; then
+          _ARGV_REASON="this runs the fleet sync, which rsyncs the skeleton into EVERY registered instance with a delete flag. A transparent prefix (nohup, env, time, nice, sudo) does not change that, and an equals-value spelling of the preview flag is not a preview: the updater parses it as an exact token and exits 1 on anything else"
           return 0
         fi
         ;;
