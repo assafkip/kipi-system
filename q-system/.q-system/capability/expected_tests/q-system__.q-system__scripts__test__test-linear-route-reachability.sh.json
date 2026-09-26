@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-linear-route-reachability.sh",
+ "runner": "bash"
+}
