@@ -27,13 +27,31 @@ EXIT CODES
 
 WHAT ACKNOWLEDGED MEANS, AND WHY IT IS NOT A BYPASS
 ---------------------------------------------------
-`route:unreachable` is the label half of ASK-1887's rule that an unknown target
-gets a label and never a guess. Labelling does NOT clear the finding: the
-acknowledged population is printed on its own line on every run, with its
-projects, so a queue silenced by labelling still reads as a queue. What the label
-removes is the ALARM, exactly the way `needs-scope` removes an issue from the
-dispatch queue without deleting it. An unlabelled unreachable issue is the new
-occurrence this script exists to catch.
+An acknowledgement is ASK-1887's rule that an unknown target gets a MARK and
+never a guess. It does NOT clear the finding: the acknowledged population is
+printed on its own line on every run, with its projects, so a queue silenced by
+acknowledging still reads as a queue. What it removes is the ALARM, the way
+`needs-scope` removes an issue from the dispatch queue without deleting it. An
+unacknowledged unreachable issue is the new occurrence this script exists to
+catch.
+
+TWO ACCEPTED MARKS, AND WHY THE COMMENT IS THE PRIMARY ONE.
+
+    <!-- route-unreachable-ack -->   in any comment on the issue
+    route:unreachable                as a label
+
+The comment marker is primary because the label could not be created: measured
+2026-09-26, `issueLabelCreate` on team ASK returns 403 FORBIDDEN, "You are not
+allowed to create labels in this team", for the API key every script here uses.
+A mechanism the runner cannot execute is not a mechanism, so the acknowledgement
+moved to the channel it CAN write -- the same per-issue marker-comment pattern
+linear-triage-health.py already uses for dormancy (DORMANT_MARKER). The label is
+still honored, at no cost, because labels arrive in the board fetch already and
+the founder may create it by hand later.
+
+The comment read is per-issue, so it costs one API call per UNREACHABLE issue and
+nothing for a clean board. That is self-limiting in the right direction: the cost
+rises only with the population the check exists to drive to zero.
 
 AN UNREADABLE REGISTRY IS UNKNOWN, NOT UNREACHABLE
 --------------------------------------------------
@@ -70,6 +88,14 @@ sys.path.insert(0, str(HERE))
 import linear_registry  # noqa: E402  (after sys.path, by design)
 
 ACK_LABEL = "route:unreachable"
+# Stamped into a comment by whoever records the routing reason. Matched as a WHOLE
+# HTML comment key, never as a bare substring: a bare-name match would count an
+# issue whose body merely DISCUSSES this mechanism as acknowledged, which is the
+# exact defect ASK-839 fixed in the alert-fingerprint matcher one file over.
+ACK_MARKER = "route-unreachable-ack"
+
+ISSUE_COMMENTS_QUERY = """query($id:String!){issue(id:$id){
+ identifier comments(first:100){nodes{body}}}}"""
 HELD_LABELS = ("needs-scope", "blocked:capability")
 ALERT_MARKER = "kipi-alert-fingerprint"
 OPEN_STATE_TYPES = ("backlog", "unstarted")
@@ -155,8 +181,38 @@ def fetch_board(sync, team_key: str) -> list:
     return issues
 
 
-def measure(issues: list, facts: dict) -> dict:
-    """Split the dispatchable population by whether its project resolves."""
+def has_marker_comment(sync, identifier: str, marker: str = ACK_MARKER) -> bool:
+    """True when any comment on the issue carries the whole marker key.
+
+    Parsed the same way is_fleet_alert parses its own: split on the comment open,
+    take the key before the colon, compare the WHOLE key. `<!-- x -->` with no
+    colon is accepted too, since a bare marker needs no payload.
+
+    A failed lookup returns False, which classifies the issue as UNACKNOWLEDGED.
+    Failing toward the alarm is deliberate: the alternative is an API hiccup
+    silently marking work as seen.
+    """
+    try:
+        node = sync.graphql(ISSUE_COMMENTS_QUERY, {"id": identifier})["issue"]
+    except Exception:
+        return False
+    for body in [(n.get("body") or "") for n in (node.get("comments") or {}).get("nodes") or []]:
+        for chunk in body.split("<!--")[1:]:
+            head = chunk.split("-->", 1)[0]
+            key = head.partition(":")[0].strip()
+            if key == marker:
+                return True
+    return False
+
+
+def measure(issues: list, facts: dict, sync=None) -> dict:
+    """Split the dispatchable population by whether its project resolves.
+
+    `sync` is the transport used for the per-issue acknowledgement read. Passing
+    None skips that read entirely, so the label remains the only accepted mark --
+    which is what the unit-shaped cases want and what keeps a measure() call from
+    making network requests it was not asked to make.
+    """
     local = linear_registry.local_by_project(facts)
     shaped = [i for i in issues if is_dispatchable_shape(i)]
     result = {
@@ -178,10 +234,13 @@ def measure(issues: list, facts: dict) -> dict:
                "reason": ("project has a registry row with no directory here"
                           if proj in _registry_projects(facts)
                           else "no instance-registry.json row names this project")}
-        if ACK_LABEL in labels_of(i):
-            result["acknowledged"].append(row)
-        else:
-            result["unreachable"].append(row)
+        # Label first because it is already in hand; the comment read only runs
+        # for an issue the label did not answer, so an acknowledged board costs
+        # no extra calls at all.
+        acked = ACK_LABEL in labels_of(i)
+        if not acked and sync is not None:
+            acked = has_marker_comment(sync, i["identifier"])
+        result["acknowledged" if acked else "unreachable"].append(row)
     result["unreachable"].sort(key=lambda r: (r["project"], r["id"]))
     result["acknowledged"].sort(key=lambda r: (r["project"], r["id"]))
     return result
@@ -207,9 +266,9 @@ def render(m: dict) -> str:
         return "\n".join(lines)
     lines.append(f"route-reachability: {m['shaped']} dispatchable-shaped issue(s); "
                  f"{len(m['unreachable'])} unacknowledged unreachable, "
-                 f"{len(m['acknowledged'])} acknowledged ({ACK_LABEL}).")
+                 f"{len(m['acknowledged'])} acknowledged.")
     for bucket, title in (("unreachable", "UNREACHABLE (no checkout backs the project)"),
-                          ("acknowledged", f"ACKNOWLEDGED ({ACK_LABEL})")):
+                          ("acknowledged", f"ACKNOWLEDGED ({ACK_MARKER} / {ACK_LABEL})")):
         rows = m[bucket]
         if not rows:
             continue
@@ -253,7 +312,8 @@ def main(argv: list) -> int:
     registry = args.registry or linear_registry.default_registry_path()
     facts = linear_registry.registry_facts(registry)
     facts["all_projects"] = _declared_rows(registry)
-    m = measure(fetch_board(_load_sync(), args.team), facts)
+    sync = _load_sync()
+    m = measure(fetch_board(sync, args.team), facts, sync)
 
     print(json.dumps(m, indent=2) if args.json else render(m))
     if m["unreachable"]:

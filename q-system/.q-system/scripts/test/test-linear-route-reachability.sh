@@ -90,6 +90,17 @@ class H(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers["Content-Length"])).decode()
         if "teams(" in body:
             data = {"teams": {"nodes": [{"id": "team-fixture"}]}}
+        elif "comments(" in body:
+            # The per-issue acknowledgement read. FIXTURE_ACK_COMMENT decides
+            # whether the marker is present; the decoy is always there so a
+            # bare-substring matcher would wrongly read this issue as acked.
+            marker = "<!-- route-unreachable-ack --> routing reason here" \
+                if os.environ.get("FIXTURE_ACK_COMMENT") == "1" else ""
+            nodes = [{"body": "a comment that merely mentions route-unreachable-ack "
+                              "without being one"}]
+            if marker:
+                nodes.append({"body": marker})
+            data = {"issue": {"identifier": "ASK-900", "comments": {"nodes": nodes}}}
         else:
             data = {"issues": {"nodes": board(),
                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}
@@ -219,9 +230,33 @@ fi
 # printed on every run precisely so a queue silenced by labelling still reads as
 # a queue.
 case "$OUT" in
-  *"ACKNOWLEDGED (route:unreachable)"*"ASK-900"*) ok "acknowledged rows stay printed" ;;
+  *"ACKNOWLEDGED"*"ASK-900"*) ok "acknowledged rows stay printed" ;;
   *) bad "acknowledged rows stay printed" "$(printf '%s' "$OUT" | tr '\n' '|')" ;;
 esac
+
+# --- case 3b: the COMMENT MARKER is the primary acknowledgement ---------------
+# The label could not be created at all: issueLabelCreate returns 403 for this
+# API key, measured on all 13 live issues. So the marker comment is the mark that
+# actually exists, and it gets its own case rather than riding on the label's.
+start_server FIXTURE_TARGET=lane-h-digest-repeats FIXTURE_ACK_COMMENT=1
+run_check_rc "$WORK/reg-normal.json"
+if [ "$RC" -eq 0 ]; then
+  ok "marker comment clears the alarm"
+else
+  bad "marker comment clears the alarm" "rc=$RC out=$(printf '%s' "$OUT" | tr '\n' '|')"
+fi
+# NEGATIVE SELF-TEST for the matcher. The fixture always serves a decoy comment
+# that MENTIONS the marker name in prose. Without the marker present, that decoy
+# must not acknowledge anything -- which is the ASK-839 bare-name defect, one file
+# over, reproduced here on purpose.
+start_server FIXTURE_TARGET=lane-h-digest-repeats
+run_check_rc "$WORK/reg-normal.json"
+if [ "$RC" -eq 2 ]; then
+  ok "negative self-test: prose mentioning the marker does NOT acknowledge"
+else
+  bad "negative self-test: prose mentioning the marker does NOT acknowledge" \
+      "rc=$RC out=$(printf '%s' "$OUT" | tr '\n' '|')"
+fi
 
 # --- case 4: the SKELETON row backs a checkout (ASK-1951 second-order) -------
 # The pre-fix derivation iterated reg["instances"] only, so the skeleton's own
