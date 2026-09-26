@@ -30,7 +30,9 @@ LINT = Path(os.environ.get(
     str(Path(__file__).resolve().parent / "handoff-provenance-lint.py")))
 
 
-def run(rel_path: str, body: str) -> int:
+def run_full(rel_path: str, body: str) -> tuple[int, str]:
+    """(exit code, stderr). The advisory posture is only observable in stderr: an
+    exit 0 alone cannot be told apart from out-of-scope."""
     tmp = Path(tempfile.mkdtemp())
     target = tmp / rel_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +41,21 @@ def run(rel_path: str, body: str) -> int:
     proc = subprocess.run(
         [sys.executable, str(LINT)], input=payload, capture_output=True, text=True,
         env={"CLAUDE_PROJECT_DIR": str(tmp), "PATH": "/usr/bin:/bin"}, check=False)
-    return proc.returncode
+    return proc.returncode, proc.stderr
+
+
+def run(rel_path: str, body: str) -> int:
+    return run_full(rel_path, body)[0]
+
+
+def load(script_name: str):
+    """Import a hyphenated sibling script as a module, for predicate-level cases."""
+    import importlib.util
+    path = Path(__file__).resolve().parent / script_name
+    spec = importlib.util.spec_from_file_location(script_name.replace("-", "_"), path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 HANDOFF = "q-thing/memory/last-handoff.md"
@@ -59,6 +75,96 @@ def case_verified_marker_passes() -> bool:
 def case_unverified_marker_passes() -> bool:
     """Labelling an inference is the whole point. It must stay cheap to be honest."""
     return run(HANDOFF, "- Roughly 400 rows look affected {{UNVERIFIED}}\n") == 0
+
+
+# --- ASK-1953: the widened scan root ------------------------------------------------
+# RCA rca-fleet-sync-two-day-spin-2026-09-20 row T1. Every case below goes RED against
+# a copy of the pre-change lint (HANDOFF_LINT_PATH), which is what makes their green
+# mean something; the run is recorded on the issue.
+
+SESSION_HANDOFF = "q-consult/output/HANDOFF-fleet-sync-2026-09-20.md"
+AUTO_MEMORY = (".claude/projects/-Users-x-projects-kipi-system/memory/"
+               "project_thing.md")
+AUTO_MEMORY_INDEX = ".claude/projects/-Users-x-projects-kipi-system/memory/MEMORY.md"
+
+
+def case_session_handoff_blocks() -> bool:
+    """THE reproducer for T1. The identical claim shape the lint already blocks in
+    last-handoff.md, in the file `/q-handoff` writes under output/ instead."""
+    return run(SESSION_HANDOFF,
+               "- 22 of 26 instances synced by 11:40.\n") == 2
+
+
+def case_session_handoff_labelled_passes() -> bool:
+    """Widening must not make the artifact unwritable: the escape hatch still works."""
+    return run(SESSION_HANDOFF,
+               "- 22 of 26 instances synced [verified: kipi-update.sh --dry tail]\n") == 0
+
+
+def case_session_handoff_prose_passes() -> bool:
+    return run(SESSION_HANDOFF, "- Picked the sync back up; nothing decided yet.\n") == 0
+
+
+def case_auto_memory_reports_and_does_not_block() -> bool:
+    """Auto-memory is IN SCOPE and ADVISORY. exit 0, and a finding on stderr.
+
+    Both halves in one case on purpose: an exit 0 alone is indistinguishable from
+    out-of-scope, which is the failure this case exists to rule out."""
+    code, err = run_full(AUTO_MEMORY,
+                         "---\nname: thing\n---\n\n- The board held 229 issues.\n")
+    return code == 0 and "229" in err and "NOT blocked" in err
+
+
+def case_auto_memory_index_out_of_scope() -> bool:
+    """MEMORY.md is the index, not a memory. Same exclusion memory-confidence-
+    validator.py makes, and it must print nothing at all."""
+    code, err = run_full(AUTO_MEMORY_INDEX, "- [A thing](project_thing.md) - 40 repos\n")
+    return code == 0 and err.strip() == ""
+
+
+FRONTMATTER_BODY = (
+    "---\nname: thing\ndescription: \"shipped 2026-09-17, 3 spokes\"\n"
+    "metadata:\n  modified: 2026-09-26T17:40:17.812Z\n---\n\nprose, no claims.\n")
+
+
+def case_frontmatter_is_not_a_claim() -> bool:
+    """A `description:` carrying a date labels the file; it does not assert inside it.
+    Without the frontmatter skip, every auto-memory file reports on its own header.
+
+    Asserted on BOTH postures, and the handoff half is what makes this case able to
+    fail: the first draft checked only the auto-memory path, where the pre-change lint
+    returns exit 0 because the path is out of scope entirely -- indistinguishable from
+    the skip working. `--negative` flagged it DECORATION rather than the suite going
+    green on a case that proved nothing (`feedback_check_must_be_able_to_fail`)."""
+    handoff_code, handoff_err = run_full(HANDOFF, FRONTMATTER_BODY)
+    mem_code, mem_err = run_full(AUTO_MEMORY, FRONTMATTER_BODY)
+    return (handoff_code == 0 and handoff_err.strip() == ""
+            and mem_code == 0 and mem_err.strip() == "")
+
+
+def case_horizontal_rule_does_not_exempt_the_body() -> bool:
+    """The frontmatter skip is LEADING-only. A `---` mid-file is a horizontal rule, and
+    treating it as a fence opener would launder everything after it."""
+    return run(HANDOFF, "# Session Handoff\n\nprose.\n\n---\n\n- 1,366 rows flagged.\n") == 2
+
+
+def case_auto_memory_scope_matches_the_owner() -> bool:
+    """memory-confidence-validator.py OWNS the auto-memory scope. Its filename is
+    hyphenated so it cannot be imported by name; this is the divergence check that
+    stands in for deriving the predicate from it. If the two ever disagree, this
+    fails rather than the drift staying invisible (the 2026-07-28 two-vocabularies
+    scar, in scope form)."""
+    lint = load("handoff-provenance-lint.py")
+    owner = load("memory-confidence-validator.py")
+    paths = [
+        "/a/.claude/projects/p/memory/project_thing.md",
+        "/a/.claude/projects/p/memory/MEMORY.md",
+        "/a/.claude/projects/p/memory/notes.txt",
+        "/a/q-system/memory/last-handoff.md",
+        "/a/.claude/projects/p/canonical/thing.md",
+        "/a/memory/project_thing.md",
+    ]
+    return all(lint.is_auto_memory(p) == owner.in_scope(p) for p in paths)
 
 
 def case_claim_id_reference_passes() -> bool:
@@ -175,10 +281,56 @@ CASES = [
     ("prose without numbers passes", case_prose_without_numbers_passes),
     ("multiple unlabelled lines block", case_multiple_bad_lines_still_blocks),
     ("one labelled line does not launder another", case_mixed_file_blocks_on_the_bad_line),
+    # ASK-1953, the widened scan root. These are the cases that go RED against a copy
+    # of the pre-change lint.
+    ("a session handoff blocks on an unlabelled claim", case_session_handoff_blocks),
+    ("a labelled session-handoff claim passes", case_session_handoff_labelled_passes),
+    ("session-handoff prose without numbers passes", case_session_handoff_prose_passes),
+    ("auto-memory reports and does NOT block", case_auto_memory_reports_and_does_not_block),
+    ("the MEMORY.md index is out of scope", case_auto_memory_index_out_of_scope),
+    ("frontmatter is not a claim, both postures", case_frontmatter_is_not_a_claim),
+    ("a mid-file --- does not exempt the body", case_horizontal_rule_does_not_exempt_the_body),
+    ("auto-memory scope matches its owner", case_auto_memory_scope_matches_the_owner),
 ]
 
 
+# Names of the cases ASK-1953 added. `--negative` runs exactly these against a copy of
+# the pre-change lint and requires every one to FAIL there. A new case that passes
+# against the baseline cannot detect the change it claims to cover; it is decoration,
+# and this is the run that says so.
+WIDENED_CASE_NAMES = (
+    "a session handoff blocks on an unlabelled claim",
+    "auto-memory reports and does NOT block",
+    "frontmatter is not a claim, both postures",
+)
+
+
+def negative(baseline: str) -> int:
+    """Every widened case must go RED against `baseline`, or it proves nothing."""
+    global LINT
+    LINT = Path(baseline)
+    if not LINT.is_file():
+        print(f"no baseline at {baseline}")
+        return 1
+    wrong = 0
+    for name, fn in CASES:
+        if name not in WIDENED_CASE_NAMES:
+            continue
+        try:
+            passed_on_baseline = bool(fn())
+        except Exception:
+            passed_on_baseline = False
+        verdict = "DECORATION" if passed_on_baseline else "RED as required"
+        print(f"{'FAIL' if passed_on_baseline else 'OK'}: {name} -- {verdict}")
+        wrong += 1 if passed_on_baseline else 0
+    print(f"\nnegative self-test against {baseline}: "
+          f"{len(WIDENED_CASE_NAMES) - wrong}/{len(WIDENED_CASE_NAMES)} went red")
+    return 1 if wrong else 0
+
+
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--negative":
+        return negative(sys.argv[2])
     failures = 0
     for name, fn in CASES:
         try:
