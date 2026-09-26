@@ -24,17 +24,26 @@ digits, ISO dates excluded) must also carry its provenance. Three accepted forms
 The third is not a lesser option. Labelling an inference is the correct move; the
 defect is prose that hides which kind of statement it is making.
 
-Scope: PostToolUse(Write|Edit|MultiEdit) on three surfaces, two postures. Everything
+Scope: PostToolUse(Write|Edit|MultiEdit) on four surfaces, two postures. Everything
 else exits 0 immediately.
 
-  exit 2   `memory/last-handoff.md`, and any session handoff `HANDOFF-*.md`
+  exit 2   `memory/last-handoff.md`
+  exit 2   a session handoff `handoff-*.md` (case-insensitive), unless it predates
+           SESSION_HANDOFF_CUTOFF
   exit 0   an auto-memory content file under `~/.claude/projects/<slug>/memory/`
+  exit 0   that directory's `MEMORY.md` index
 
 Both postures are branches of `scope_mode()` in this file, which is the executable;
 `test_handoff_provenance_lint.py` pins each branch. A session handoff is the same
 artifact class as `last-handoff.md` written by a different command, so it gets the
 same exit code. Auto-memory does not, and the split is measured rather than
 reasoned -- see AUTO-MEMORY IS ADVISORY below.
+
+DELIVERY: the advisory branch exits 0, and an exit-0 hook's stderr is DISCARDED by
+the harness. So the finding only reaches the model in the one envelope
+`hook_envelope_audit.py` measured as delivering -- `hookSpecificOutput` carrying both
+`hookEventName` and `additionalContext`. The blocking branch emits no envelope: exit 2
+already hands stderr to the model, and a second copy would deliver it twice.
 
 HONEST BOUNDARY: this checks that a line DECLARES its provenance, not that the
 declaration is true. `[verified: I checked]` passes and proves nothing. It removes the
@@ -59,10 +68,39 @@ MODE_ADVISORY = "advisory"
 
 # The original scope, unchanged. `/q-handoff` writes it in every instance.
 HANDOFF_PATHS = ("memory/last-handoff.md",)
-# A session handoff. `q-consult/output/HANDOFF-<slug>-<date>.md` is the live shape;
-# `instrument-lint.py` already carries the same basename in its own scope tests, so
-# this is the fleet's existing name for the artifact, not a new convention.
-HANDOFF_PREFIX = "HANDOFF-"
+# A session handoff: a basename starting `handoff-`, matched CASE-INSENSITIVELY.
+#
+# Round 1 of this widening matched `HANDOFF-` case-sensitively and cited
+# `instrument-lint.py` as the fleet's name for the artifact. That citation was wrong
+# and Codex caught it: the only two `HANDOFF-` strings in this repo are
+# test_instrument_lint.py:236 and :266, where the basename is FILLER inside a case
+# whose actual subject is "a bare output/ file is IN scope" -- instrument-lint scopes
+# by DIRECTORY and never reads a basename prefix. No producer writes the uppercase
+# form. Every handoff this repo actually carries is lowercase, so the new blocking
+# scope matched none of them, which is a scope that ships green by missing everything.
+HANDOFF_PREFIX = "handoff-"
+
+# ...and having made it match, it now has an inherited population, so it needs the
+# grandfathering plan-lint.py and instrument-lint.py both already carry: a gate red on
+# its own population on day one gets switched off, and a gate that is off protects
+# nothing. Round 1 shipped without one and a real archived handoff in this repo flagged
+# 44 of its 181 lines, whose cheapest resolution is the permanent skip marker.
+#
+# MEASURED 2026-09-26, current logic, every tracked .md in this repo with `handoff` in
+# the basename (`git ls-files`):
+#   memory/last-handoff.md                             181->  0 red   original scope
+#   memory/handoff-2026-08-09.md                       181-> 44 red   NEW, exempt
+#   output/handoff-judgment-compiler-2026-08-04.md     169-> 20 red   NEW, exempt
+#   output/claude-judgment-compiler-handoff-2026-08-04.md  399-> 28   out of scope
+#   output/plans/linear-loop-handoff-2026-07-29.md     140-> 33 red   out of scope
+# 2 of 2 newly-in-scope files are red and 2 of 2 carry a pre-cutoff basename date, so
+# the widening lands green on the population it inherited and blocks from here on.
+#
+# The last two are `-handoff-` INFIX, and they stay out. The finding was the case of
+# the prefix, not its position, and both are project deliverables about a judgment
+# compiler rather than session handoffs. Named here so the boundary is inspectable
+# rather than silent: if the infix form should be in scope, that is its own issue.
+SESSION_HANDOFF_CUTOFF = "2026-09-26"
 
 # AUTO-MEMORY IS ADVISORY, and the reason is a measurement, not a preference.
 #
@@ -112,16 +150,81 @@ def is_auto_memory(norm: str) -> bool:
     return norm.rsplit("/", 1)[-1] != AUTO_MEMORY_INDEX
 
 
+def is_memory_index(norm: str) -> bool:
+    """The `MEMORY.md` index beside the auto-memory content files.
+
+    A SEPARATE branch from `is_auto_memory` on purpose. memory-confidence-validator.py
+    owns the content scope and correctly excludes the index (an index carries no
+    confidence frontmatter), and `is_auto_memory` keeps agreeing with it exactly. But
+    the index is the one memory file injected into EVERY session, and its pointer
+    lines carry unlabelled measurement numbers -- so for provenance it belongs in the
+    scan (Codex minor, PR #448). Measured 2026-09-26 over every
+    `~/.claude/projects/*/memory/MEMORY.md` on this machine: 25 of 34 carry at least
+    one unlabelled measurement line, which is exactly why it joins the ADVISORY branch
+    and not the blocking one.
+    """
+    return (norm.endswith("/" + AUTO_MEMORY_INDEX)
+            and all(m in norm for m in AUTO_MEMORY_MARKERS))
+
+
 def scope_mode(file_path: str) -> str | None:
     """MODE_BLOCK, MODE_ADVISORY, or None when the path is out of scope."""
     norm = file_path.replace("\\", "/")
     if any(frag in norm for frag in HANDOFF_PATHS):
         return MODE_BLOCK
-    if norm.endswith(".md") and norm.rsplit("/", 1)[-1].startswith(HANDOFF_PREFIX):
+    name = norm.rsplit("/", 1)[-1]
+    if norm.endswith(".md") and name.lower().startswith(HANDOFF_PREFIX):
         return MODE_BLOCK
-    if is_auto_memory(norm):
+    if is_auto_memory(norm) or is_memory_index(norm):
         return MODE_ADVISORY
     return None
+
+
+DATE_IN_NAME_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def git_added_date(path: Path) -> str | None:
+    """YYYY-MM-DD of the MOST RECENT commit that added this path, or None (untracked,
+    no repo, no git). Lifted deliberately from instrument-lint.py rather than
+    re-derived: same question, same two rounds of review already spent on it.
+
+    mtime is useless here -- this hook runs AFTER the write, so every file it inspects
+    was modified seconds ago. Most recent add, not first: a file deleted and re-created
+    after the cutoff is a new file. No --follow: rename pairing let an unrelated old
+    file lend its date.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "log", "--diff-filter=A", "--format=%as", "--", path.name],
+            cwd=path.parent, capture_output=True, text=True, timeout=3).stdout.split()
+    except Exception:
+        return None
+    return out[0] if out else None
+
+
+def is_grandfathered(file_path: str, path: Path | None = None) -> bool:
+    """True for a session handoff that predates SESSION_HANDOFF_CUTOFF: by a date in
+    its BASENAME, else by the most recent date git added it. Undated AND untracked is
+    NOT exempt.
+
+    Applies to the session-handoff branch ONLY. `memory/last-handoff.md` has been
+    blocking since 2026-07-28 and reads 0 red today; letting a cutoff reach it would
+    relax the original scope as a side effect of widening -- the exact trap
+    test_instrument_lint.py's "strictest cutoff wins" case exists to catch.
+
+    HONEST BOUNDARY: the basename date wins over git, so a handoff written today under
+    a backdated name is exempt. That is the cost of exempting untracked archives, and
+    it is the same hole instrument-lint accepted knowingly.
+    """
+    name = Path(file_path.replace("\\", "/")).name
+    dates = DATE_IN_NAME_RE.findall(name)
+    if dates:
+        return dates[-1] < SESSION_HANDOFF_CUTOFF
+    if path is not None:
+        added = git_added_date(path)
+        return bool(added) and added < SESSION_HANDOFF_CUTOFF
+    return False
 
 # A date in a HEADER is metadata; a date asserted in a finding is a measurement.
 # Reversal #5 was exactly that -- "a row is dated 2026-12-21, five months in the
@@ -255,6 +358,13 @@ def main() -> int:
     bad = unlabelled_lines(body)
     if not bad:
         return 0
+    # Pure-string checks first; git runs only on a file that would otherwise block.
+    # `HANDOFF_PATHS` is excluded by name, not by an is_grandfathered branch, so the
+    # original scope cannot be relaxed by a later change to the cutoff.
+    if (mode == MODE_BLOCK
+            and not any(frag in fp.replace("\\", "/") for frag in HANDOFF_PATHS)
+            and is_grandfathered(fp, Path(fp))):
+        return 0
 
     listed = "\n".join(f"    line {n}: {text[:110]}" for n, text in bad[:15])
     forms = ["    [verified: <the command you ran>]   you ran it; this is the output"]
@@ -272,7 +382,7 @@ def main() -> int:
             "HANDOFF PROVENANCE (advisory, this write was NOT blocked): these "
             "auto-memory lines carry a number with no source, so a later session "
             "reading this memory cannot tell a measurement from a guess:\n")
-    sys.stderr.write(
+    report = (
         head + listed + "\n\n"
         "  Add one of:\n" + "\n".join(forms) + "\n\n"
         "  Scar 2026-07-28: a handoff claimed a client row was dated five months in "
@@ -280,7 +390,18 @@ def main() -> int:
         "turns, and only checked when the founder asked. No such row existed. The "
         "handoff had no field to say which claims had been recomputed.\n"
         f"  Deliberate exception: add `{SKIP_MARKER}` to the file.\n")
-    return 2 if mode == MODE_BLOCK else 0
+    sys.stderr.write(report)
+    if mode == MODE_BLOCK:
+        return 2
+    # Advisory. Exit 0 means the harness DISCARDS the stderr above, so it is written
+    # for a human tailing the hook log and nothing else; the model only ever sees the
+    # envelope below. Both keys are literal here on purpose -- hook_envelope_audit.py
+    # classifies the emission site statically and reports UNKNOWN for a computed dict.
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": report,
+    }}))
+    return 0
 
 
 if __name__ == "__main__":
