@@ -462,53 +462,35 @@ fi
 # row called on the board" for the repo-identity lookup AND for the reachability
 # set. Deriving the same logical value two ways is how the two sides drifted in
 # the first place, so there is exactly one function and both callers use it.
-REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
-import json, os
-skel = os.path.realpath(os.environ["SKEL_PATH"])
-ok = True
-try:
-    reg = json.load(open(os.environ["REG"]))
-except Exception:
-    reg, ok = [], False
-entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
-name = ""
-local = []
-
-
-def linear_project(entry):
-    """The name this row carries ON THE BOARD. Explicit field first, name second."""
-    return (entry.get("linear_project") or entry.get("name") or "").strip()
-
-
-for e in entries if isinstance(entries, list) else []:
-    if not isinstance(e, dict):
-        continue
-    p = e.get("path")
-    if not p:
-        continue
-    proj = linear_project(e)
-    if not name and os.path.realpath(p) == skel:
-        name = proj
-    if proj and os.path.isdir(p):
-        # The pinned remote travels WITH the row, because repo-preflight needs it
-        # and re-reading the registry to find it is the second reader ASK-729
-        # already refused to add.
-        d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
-        local.append({"project": proj, "path": p,
-                      "remote": d.get("expected_remote") or ""})
-local.sort(key=lambda r: r["project"])
+# ONE MODULE, THREE CONSUMERS (ASK-1951). This block used to carry the derivation
+# inline. ASK-1951 needed a THIRD reader -- linear-route-reachability-check.py,
+# the meter for issues sitting on a project no checkout backs -- and a retyped
+# copy of a derivation agrees on the day it is written and then diverges in
+# silence, which is the defect ASK-729 and ASK-840 each already paid for. So the
+# derivation moved to linear_registry.py and both sides import it.
+#
+# THE SKELETON ROW IS A CHECKOUT (ASK-1951). The inline version iterated
+# reg["instances"] only. `skeleton` is a SIBLING key, so this repo's own board
+# project -- kipi-system, the busiest on the board -- resolved to no checkout at
+# all, and every instance worker reported its 124 dispatchable issues UNREACHABLE
+# while the checkout sat on disk. Measured 2026-09-26: 124 of the 137 issues this
+# derivation called unreachable were that one project. linear_registry._rows()
+# yields the skeleton row, which is the whole fix.
+#
 # WHO OWNS THE UNSET POPULATION (codex PR #215 round 6, major). A founder-routed
 # issue with no project is claimed by no repo, so an earlier round widened
 # founder_scope to include unset -- in EVERY instance at once. All 23 workers
 # then paged about the same issue into one Linear queue, each with its own
 # ledger, so the dedup could not collapse them and the operator got N tickets to
 # close by hand. Exactly one worker has to own it, and the registry already
-# DECLARES which one: `skeleton.linear_project`. Read, not guessed -- the same
-# reason linear_project() exists twelve lines up.
-skel_row = reg.get("skeleton") if isinstance(reg, dict) else None
-skeleton_project = linear_project(skel_row) if isinstance(skel_row, dict) else ""
-print(json.dumps({"name": name, "local_repos": local, "ok": ok,
-                  "skeleton_project": skeleton_project}))
+# DECLARES which one: `skeleton.linear_project`, returned as skeleton_project.
+REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" \
+  MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
+import json, os, sys
+sys.path.insert(0, os.environ["MOD_DIR"])
+import linear_registry
+print(json.dumps(linear_registry.registry_facts(
+    os.environ["REG"], os.environ["SKEL_PATH"])))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }

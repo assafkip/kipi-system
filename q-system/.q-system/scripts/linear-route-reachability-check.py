@@ -228,11 +228,16 @@ def render(m: dict) -> str:
 
 
 def notify(line: str) -> int:
-    """Sana's Linear triage, never a founder page (founder-notifications.md)."""
-    script = HERE / "slack-notify.sh"
-    if not script.exists():
+    """Sana's Linear triage, never a founder page (founder-notifications.md).
+
+    KIPI_NOTIFY is the stub seam every sibling here exposes, and it is part of
+    test isolation rather than a nicety: on 2026-08-01 a suite reporting 14/14
+    green reached the real notifier and paged the founder twice.
+    """
+    script = os.environ.get("KIPI_NOTIFY") or str(HERE / "slack-notify.sh")
+    if not os.path.exists(script):
         return 0
-    return subprocess.run(["bash", str(script), line], check=False).returncode
+    return subprocess.run(["bash", script, line], check=False).returncode
 
 
 def main(argv: list) -> int:
