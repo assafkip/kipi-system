@@ -302,6 +302,27 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     return 1
   }
 
+  # ASK-1954 round 2 (PR #447 finding 3). A long flag by PREFIX, for mirroring a
+  # deny-list entry that tests its flag as a SUBSTRING. FLEET_DENY's rsync entry
+  # reads `--delete`, so it already catches `--delete-after`, `--delete-before`,
+  # `--delete-excluded`, `--delete-delay` and `--delete-missing-args` at command
+  # position. An arm matching only the exact long flag was therefore STRICTLY
+  # NARROWER than the entry it claims to mirror, and a transparent prefix -- the
+  # one thing this whole change exists to close -- let every variant through
+  # while the unprefixed spelling denied.
+  #
+  # The prefix IS the rule rather than a list of flags to keep in step with
+  # rsync's releases: every `--delete*` flag rsync has removes at the
+  # destination, so a future one is covered on the day it ships.
+  _argv_has_long_prefix() {  # _argv_has_long_prefix <name> <token>...
+    local pre="$1"; shift
+    local tok
+    for tok in "$@"; do
+      case "$tok" in "--$pre"*) return 0 ;; esac
+    done
+    return 1
+  }
+
   # ASK-1954. An EXACT token, with no `--name=value` form admitted, unlike
   # _argv_has_long above. Two of the arms below need exactly this and the
   # difference is load-bearing in both directions:
@@ -457,15 +478,42 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     #
     # So the RAW token has to carry a path prefix, which is the same distinction
     # FLEET_DENY's own `[./~][^[:space:]]*` and `(bash|sh|zsh|source)` entries
-    # draw. ACCEPTED COST, stated rather than discovered later: `sed -n '1,20p'
-    # ./kipi-update.sh` is refused, with a message about a fleet-wide delete.
-    # It is the same fail-closed misnomer this file already accepts for
+    # draw. ACCEPTED COST, AND IT IS A CLASS, NOT ONE COMMAND (PR #447 minor).
+    # An earlier version of this comment disclosed only `sed -n '1,20p'
+    # ./kipi-update.sh`. What is actually refused is EVERY command carrying the
+    # path-prefixed spelling, whatever the program: `git add ./kipi-update.sh`,
+    # `git diff ./kipi-update.sh`, `bash -n ./kipi-update.sh`, `wc -l
+    # ./kipi-update.sh`. That includes commands you need in order to ship a fix
+    # TO the updater, which is the cost worth naming out loud rather than meeting.
+    #
+    # The bare-name spelling stays allowed and is pinned (`cat kipi-update.sh`,
+    # `git log -- kipi-update.sh`), so the recovery is one keystroke: drop the
+    # `./`. It is the same fail-closed misnomer this file already accepts for
     # `docker rm -f`, and it costs one tool call against a fleet-wide delete.
     case "$1" in
       */kipi-update.sh)                        return 0 ;;
     esac
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
+      # AN INTERPRETER WRAPPER, ADMITTED ONLY WHEN THE UPDATER IS IN THE LINE.
+      #
+      # The head-of-stage scan already reaches `nohup bash kipi-update.sh`, but
+      # not `nice -n 10 bash kipi-update.sh`: `nice` takes its OWN option, so the
+      # prefix stripper stops on `-n` and the program reads as `-n`. That is the
+      # ASK-1131 round-2 shape, and the every-position rescan is its answer -- but
+      # only for tokens this filter admits.
+      #
+      # Admitting the four wrappers UNCONDITIONALLY would fork once per `bash`,
+      # `sh` or `source` word in ordinary prose, and fork cost is the bypass this
+      # file has been burned by seven rounds running: 300 admitted tokens took
+      # 5.91s against a wired 5s timeout, and an overrunning hook has its deny
+      # DISCARDED. So the admission is gated on the only operand the wrapper arm
+      # can ever deny on. A glob against $COMMAND is one string test with no
+      # subshell, so a command that does not name the updater pays nothing and
+      # the fork count stays bounded by lines that actually mention it.
+      bash|sh|zsh|source)
+        case "$COMMAND" in *kipi-update.sh*)   return 0 ;; esac
+        return 1 ;;
       # The programs BASH_DENY and FLEET_DENY already name. Each one carried the
       # ASK-1131 hole in its own right: the substring patterns are POSITIONAL, so
       # a leading flag or a prefix taking its own options hid the dangerous token
@@ -672,8 +720,11 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         # documented usage line (sp-9b01d746), and this arm runs BEFORE the
         # stage loop, so refusing what that loop exempts would resurrect the
         # bug of blocking the documented preview.
-        if _argv_has_long delete "${rest[@]}" && ! _argv_is_preview 1 "${rest[@]}"; then
-          _ARGV_REASON="rsync --delete removes files at the destination that are absent from the source"
+        # BY PREFIX, because the entry it mirrors is a SUBSTRING (PR #447 finding
+        # 3): the exact-flag match let `nohup rsync -a --delete-after ...` run
+        # while the unprefixed form denied. See _argv_has_long_prefix.
+        if _argv_has_long_prefix delete "${rest[@]}" && ! _argv_is_preview 1 "${rest[@]}"; then
+          _ARGV_REASON="rsync carries a --delete flag, which removes files at the destination that are absent from the source"
           return 0
         fi
         ;;
@@ -697,6 +748,46 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           _ARGV_REASON="this runs the fleet sync, which rsyncs the skeleton into EVERY registered instance with a delete flag. A transparent prefix (nohup, env, time, nice, sudo) does not change that, and an equals-value spelling of the preview flag is not a preview: the updater parses it as an exact token and exits 1 on anything else"
           return 0
         fi
+        ;;
+      bash|sh|zsh|source)
+        # ASK-1954 round 2 (PR #447 finding 1). THE SAME HOLE, ONE SPELLING OVER.
+        #
+        # FLEET_DENY entry 2 is `(bash|sh|zsh|source)[[:space:]]+[^[:space:]]*
+        # kipi-update\.sh`, and that `[^[:space:]]*` matches EMPTY, so the deny
+        # list covers `bash kipi-update.sh` at command position. Put a
+        # transparent prefix in front and the anchor no longer matches, while
+        # this parser -- which strips exactly those prefixes -- had no arm to
+        # dispatch to afterwards. Measured on the branch that closed this hole
+        # for `./kipi-update.sh`:
+        #
+        #   bash kipi-update.sh          DENIED   (FLEET_DENY entry 2)
+        #   nohup bash kipi-update.sh    ALLOWED  <- fleet-wide delete, no arm
+        #
+        # Worse, the symmetry test could not see it: the derivation resolved the
+        # wrapper entry to the SCRIPT, which does have an arm, so it reported the
+        # two layers in agreement. Both halves are fixed together.
+        #
+        # THE BARE BASENAME IS ADMITTED HERE, unlike the kipi-update.sh arm above,
+        # and the difference is not an inconsistency. That arm needs a path prefix
+        # because `sed -n '1,20p' kipi-update.sh` is a READ and reading a file is
+        # not running it. There is no read spelling of `bash kipi-update.sh`:
+        # naming a script to an interpreter is an invocation and nothing else. So
+        # this mirrors entry 2 exactly rather than widening past it.
+        #
+        # Keyed on the OPERAND, never on the wrapper alone: `bash ./build.sh` and
+        # `source ~/.zshrc` are ordinary work, and a guard that refuses those is a
+        # guard someone switches off.
+        local _s
+        for _s in "${rest[@]:1}"; do
+          case "${_s##*/}" in
+            kipi-update.sh)
+              if ! _argv_is_preview 0 "${rest[@]}"; then
+                _ARGV_REASON="this runs the fleet sync through $prog, which rsyncs the skeleton into EVERY registered instance with a delete flag. A transparent prefix in front of the interpreter does not change that"
+                return 0
+              fi
+              ;;
+          esac
+        done
         ;;
       git)
         # Walk git's GLOBAL flags to find the subcommand: `git -C DIR reset

@@ -88,6 +88,36 @@ elif HOOK.is_file():
 else:
     _UNDER_TEST = REPO_COPY
 
+# ASK-1954: THE COPY THIS CHANGE EDITS, WHICH IS NONE OF THE THREE ABOVE.
+#
+# The cascade above prefers the LIVE hook, then the reference fixture. Neither is
+# the reviewed source: `install-claude-hooks.py` installs ~/.claude/hooks/ FROM
+# this path, so this is the file a diff and a reviewer actually see. Measured
+# 2026-09-26 (PR #447 review, finding 2): all three copies differ -- live 994
+# lines, repo source 1206, fixture 501 -- so the ASK-1954 cases below were
+# asserting a symmetry invariant about a file that has none of the change, and
+# the registered verify suite went from 94 passed to 8 failed for that reason
+# alone. A test that does not execute the copy under review is decoration
+# (wiring-check.md, load-path proof).
+#
+# SCOPED TO THE ASK-1954 CLASSES ON PURPOSE, not flipped for the whole module.
+# The 94 pre-existing cases keep the cascade: two of them
+# (test_the_vendored_copy_has_not_drifted, the git-clean false positive) are RED
+# against the repo source today because the fixture mirrors the drifted INSTALLED
+# copy. Repointing the module would trade one false green for a red suite, and a
+# red suite gets switched off. That drift is ASK-2131 / sp-28b070b4, which owns
+# deciding which copy is authoritative and re-syncing the fixture.
+REPO_SOURCE = (pathlib.Path(__file__).parent
+               / "q-system/.q-system/hooks/destructive-op-deny.sh")
+
+# The override still wins, so `.repro-1954.sh` and any candidate copy can drive
+# these cases; absent it, the repo source is the default rather than the live one.
+_ASK1954_SOURCE = pathlib.Path(_OVERRIDE) if _OVERRIDE else REPO_SOURCE
+
+ask1954 = pytest.mark.skipif(
+    not _ASK1954_SOURCE.is_file(),
+    reason="the reviewed hook source is absent: %s" % _ASK1954_SOURCE)
+
 CURRENT = "'kipi[[:space:]]+update'"
 # Command position, allowing an env-var assignment prefix and command
 # substitution, because those really do invoke it.
@@ -261,6 +291,18 @@ def hook_copy(tmp_path):
     src = _UNDER_TEST
     assert src.is_file(), "%s does not exist: %s" % (_HOOK_ENV, src)
     dst = tmp_path / "under-test.sh"
+    shutil.copy(src, dst)
+    dst.chmod(0o755)
+    return dst
+
+
+def source_copy(tmp_path):
+    """ASK-1954: a copy of the REVIEWED hook source, never the installed one.
+
+    See REPO_SOURCE for why these cases do not ride the _UNDER_TEST cascade."""
+    src = _ASK1954_SOURCE
+    assert src.is_file(), "the reviewed hook source is absent: %s" % src
+    dst = tmp_path / "reviewed-source.sh"
     shutil.copy(src, dst)
     dst.chmod(0o755)
     return dst
@@ -531,7 +573,7 @@ class TestFlagPositionDoesNotMoveTheTarget:
 
 
 def _hook_text():
-    return _UNDER_TEST.read_text(encoding="utf-8")
+    return _ASK1954_SOURCE.read_text(encoding="utf-8")
 
 
 _WRAPPERS = ("bash", "sh", "zsh", "source")
@@ -562,12 +604,30 @@ def _deny_list_programs(text):
             line = line.strip()
             if not line.startswith("'"):
                 continue                       # comment line inside the array
-            body = line.split("'")[1]
+            entry = line.split("'")[1]
+            body = entry
             # An entry that opens on a redirect or on `:` names no program: it
             # matches a redirection target or the fork bomb. Read from the shape
             # rather than from a list of words those entries happen to contain.
             if re.match(r"^[>:]", body):
                 continue
+            # AN INTERPRETER WRAPPER IS A PROGRAM TOO (PR #447 finding 1).
+            #
+            # This used to resolve the wrapper entry to the SCRIPT alone, on the
+            # reasoning that the wrapper is not the destructive program. But
+            # `$prog` in argv_deny_reason is whatever the invocation NAMES, and
+            # `bash kipi-update.sh` names `bash`. The script had an arm, so the
+            # symmetry check was green while `nohup bash kipi-update.sh` ran the
+            # fleet-wide delete: the derived set agreed and the hook did not. A
+            # derivation that cannot express the divergence it exists to catch is
+            # worse than no derivation, because it retires the question.
+            #
+            # Read off the RAW entry, before the stripping below. The old
+            # `tok in _WRAPPERS` branch was already dead code for this reason:
+            # the leading-group loop consumes `(bash|sh|zsh|source)` on its way
+            # to the script, so the wrapper token never reached that check.
+            for group in re.findall(r"\(([^()]*)\)", entry):
+                progs |= set(group.split("|")) & set(_WRAPPERS)
             body = re.sub(r"\[\[:[a-z]+:\]\]", "", body)   # POSIX classes
             body = re.sub(r"\[[^]]*\]", "", body)          # ordinary brackets
             while True:                                    # leading groups
@@ -581,15 +641,7 @@ def _deny_list_programs(text):
             m = re.search(r"([A-Za-z][A-Za-z0-9_-]*(?:\\?\.sh)?)", body)
             if not m:
                 continue
-            tok = m.group(1)
-            if tok in _WRAPPERS:
-                # A wrapper, not the destructive program. The program is the
-                # script it runs, later in the same entry.
-                m2 = re.search(r"([A-Za-z][A-Za-z0-9_-]*\\?\.sh)", body)
-                if not m2:
-                    continue
-                tok = m2.group(1)
-            progs.add(tok.replace("\\", ""))
+            progs.add(m.group(1).replace("\\", ""))
     return progs
 
 
@@ -609,6 +661,29 @@ def _argv_arm_programs(text):
     return arms
 
 
+@ask1954
+class TestTheCasesReadTheCopyUnderReview:
+    """Load-path proof (wiring-check.md), and the reason it is a case not a note.
+
+    PR #447 finding 2: the ASK-1954 cases rode the _UNDER_TEST cascade, which
+    prefers the INSTALLED hook and falls back to the reference fixture, so they
+    asserted a symmetry invariant about a file carrying none of the change while
+    the registered verify suite went red. Grepping that the source contains the
+    fix proves nothing about which copy a test executes; this asserts the copy."""
+
+    def test_the_source_under_test_is_the_reviewed_repo_copy(self):
+        assert _ASK1954_SOURCE.is_file(), _ASK1954_SOURCE
+        if not os.environ.get(_HOOK_ENV):
+            assert _ASK1954_SOURCE == REPO_SOURCE, (
+                "with no override these cases must read the repo source, which "
+                "is the copy install-claude-hooks.py installs FROM and the only "
+                "one a reviewer sees: %s" % _ASK1954_SOURCE)
+        assert "ASK-1954" in _hook_text(), (
+            "the copy under test carries none of this change, so every case "
+            "below is measuring a different program: %s" % _ASK1954_SOURCE)
+
+
+@ask1954
 class TestTheTwoLayersCoverTheSamePrograms:
     """The DoR check: any program in one set and not the other is a finding."""
 
@@ -624,6 +699,13 @@ class TestTheTwoLayersCoverTheSamePrograms:
         assert len(listed) >= 8, listed
         assert {"rm", "git"} <= listed, listed
         assert {"rm", "git"} <= armed, armed
+        # The interpreter wrappers, pinned so the collapse that hid PR #447
+        # finding 1 cannot come back and read as green again. `bash
+        # kipi-update.sh` dispatches on `bash`, so `bash` is a program here.
+        assert set(_WRAPPERS) <= listed, (
+            "the wrapper entry collapsed to the script again, which is the "
+            "parse that reported symmetry while `nohup bash kipi-update.sh` "
+            "ran the fleet-wide delete: %s" % sorted(listed))
 
     def test_every_deny_list_program_has_an_argv_arm(self):
         text = _hook_text()
@@ -647,6 +729,96 @@ class TestTheTwoLayersCoverTheSamePrograms:
             "blind to their plain spelling: %s" % extra)
 
 
+@ask1954
+class TestAnInterpreterWrapperCannotHideTheFleetDelete:
+    """PR #447 finding 1. FLEET_DENY entry 2 is
+    `(bash|sh|zsh|source)[[:space:]]+[^[:space:]]*kipi-update\\.sh`, whose
+    `[^[:space:]]*` matches EMPTY, so the bare-basename spelling is denied at
+    command position. Put a transparent prefix in front and the anchor no longer
+    matches, and argv_deny_reason -- which strips exactly those prefixes -- had no
+    arm to dispatch to afterwards. Measured ALLOW on the branch that closed this
+    hole for `./kipi-update.sh`: the same hole, one spelling over."""
+
+    WRAPPED = [
+        "nohup bash kipi-update.sh",
+        "time zsh kipi-update.sh",
+        "env X=1 source kipi-update.sh",
+        "nohup sh kipi-update.sh",
+        "sudo bash kipi-update.sh",
+        "nice -n 10 bash kipi-update.sh",
+        "bash kipi-update.sh",                       # control: denied before too
+        "nohup bash ./kipi-update.sh",
+        "nohup bash kipi-update.sh --dry-run=0",
+    ]
+
+    @pytest.mark.parametrize("command", WRAPPED)
+    def test_a_wrapped_fleet_sync_is_denied(self, tmp_path, command):
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "an interpreter wrapper behind a prefix ran the fleet-wide delete "
+            "unchallenged: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        "bash kipi-update.sh --dry-run",
+        "nohup bash kipi-update.sh --dry-run",
+        "sh kipi-update.sh --dry",
+    ])
+    def test_a_wrapped_dry_run_is_still_allowed(self, tmp_path, command):
+        """The half that decides whether the gate survives contact. Previewing is
+        how you earn the run, and the wrapper arm must not change that."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the preview carve-out broke for the wrapper spelling: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        "bash -c 'echo hi'",
+        "bash ./build.sh",
+        "source ~/.zshrc",
+        "sh -c 'ls'",
+    ])
+    def test_an_ordinary_wrapper_invocation_is_untouched(self, tmp_path, command):
+        """The arm is keyed on the OPERAND, never on the wrapper alone. Denying
+        `bash` outright would refuse every script this fleet runs, and a guard
+        that blocks ordinary work gets switched off."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the wrapper arm denies ordinary work: %r" % command)
+
+
+@ask1954
+class TestEveryDeleteFlagRsyncHasIsCovered:
+    """PR #447 finding 3. FLEET_DENY's `--delete` is a SUBSTRING, so it catches
+    `--delete-after`, `--delete-before` and `--delete-excluded` at command
+    position. The argv arm matched the exact long flag only, so it was strictly
+    narrower than the entry it claims to mirror and a transparent prefix let the
+    variants through. Every `--delete*` flag rsync has removes at the
+    destination, so the arm mirrors the substring rather than enumerating."""
+
+    VARIANTS = ["--delete", "--delete-after", "--delete-before",
+                "--delete-excluded", "--delete-delay", "--delete-missing-args"]
+
+    @pytest.mark.parametrize("flag", VARIANTS)
+    def test_a_prefixed_delete_variant_is_denied(self, tmp_path, flag):
+        command = "nohup rsync -a %s /tmp/a/ /tmp/b/" % flag
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "a prefix hid a delete flag the unprefixed form denies: %r" % command)
+
+    @pytest.mark.parametrize("flag", VARIANTS)
+    def test_the_preview_carve_out_holds_for_every_variant(self, tmp_path, flag):
+        """`rsync -ain --delete ...` is the fleet deletion guard's own documented
+        usage line (sp-9b01d746). Widening the flag match must not narrow that."""
+        command = "nohup rsync -ain %s /tmp/a/ /tmp/b/" % flag
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "widening the delete match broke the documented preview: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        "rsync -a /tmp/a/ /tmp/b/",
+        "nohup rsync -av /tmp/a/ /tmp/b/",
+        "rsync -a --exclude=.git /tmp/a/ /tmp/b/",
+    ])
+    def test_a_copy_without_a_delete_flag_is_untouched(self, tmp_path, command):
+        """Widening to `--delete*` must not reach a copy that deletes nothing."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", command
+
+
+@ask1954
 class TestATransparentPrefixCannotHideTheFleetDelete:
     """The prefixes `argv_deny_reason` already strips, in front of the updater.
 
@@ -668,7 +840,7 @@ class TestATransparentPrefixCannotHideTheFleetDelete:
 
     @pytest.mark.parametrize("command", PREFIXED)
     def test_a_prefixed_fleet_sync_is_denied(self, tmp_path, command):
-        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", (
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
             "a transparent prefix ran the fleet-wide delete unchallenged: %r"
             % command)
 
@@ -679,7 +851,7 @@ class TestATransparentPrefixCannotHideTheFleetDelete:
         `--dry-run)` arm) and exits 1 on anything else, so `--dry-run=0` is not
         a preview in the updater either. The exemption tested `*--dry*` as a
         SUBSTRING, so the string bought a pass the flag does not."""
-        assert decide(hook_copy(tmp_path), "./kipi-update.sh --dry-run=0",
+        assert decide(source_copy(tmp_path), "./kipi-update.sh --dry-run=0",
                       tmp_path) == "deny"
 
     @pytest.mark.parametrize("command", [
@@ -694,7 +866,7 @@ class TestATransparentPrefixCannotHideTheFleetDelete:
 
         Previewing is how you EARN the run. A guard that refuses the preview is
         a guard someone switches off, and the hook says so in three places."""
-        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
             "the preview carve-out broke: %r" % command)
 
     @pytest.mark.parametrize("command", [
@@ -705,7 +877,7 @@ class TestATransparentPrefixCannotHideTheFleetDelete:
     def test_reading_the_updater_is_still_not_running_it(self, tmp_path, command):
         """The reason FLEET_DENY is anchored at all. Adding an argv arm must not
         undo it: a gate that blocks reads is a gate someone switches off."""
-        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
             "the new arm blocks reading the file: %r" % command)
 
 
