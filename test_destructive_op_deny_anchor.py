@@ -504,5 +504,210 @@ class TestFlagPositionDoesNotMoveTheTarget:
         assert decide(hook, 'echo "never run rm -rf on a volume"', tmp_path) == "deny"
 
 
+# ===================================================================== ASK-1954
+# THE DENY LIST AND THE ARGV PARSER NAME DIFFERENT PROGRAMS.
+#
+# ASK-1131 established the shape: a POSITIONAL substring pattern requires its
+# dangerous token immediately after the command name, so a leading flag or a
+# transparent prefix hides it, and `argv_deny_reason` exists to read the
+# invocation instead. That fix was applied to exactly two programs -- `rm` and
+# `git` -- and BASH_DENY + FLEET_DENY between them name eleven. The other nine
+# kept the hole ASK-1131 was filed about, each in its own program:
+#
+#   find . -delete                  DENIED   (pattern matches)
+#   sudo find . -delete             DENIED   (substring is position-free here)
+#   ./kipi-update.sh                DENIED   (FLEET_DENY, command-anchored)
+#   nohup ./kipi-update.sh          ALLOWED  <- the prefix sits between the
+#                                               anchor and the script name, and
+#                                               argv_deny_reason -- which DOES
+#                                               strip nohup -- has no arm for it
+#
+# The two layers are not redundant, they are complementary, and a program in one
+# and not the other has whichever hole the other layer was built to close. So the
+# invariant is SYMMETRY, derived from the hook rather than restated here: every
+# program the deny lists name has an argv arm, and every argv arm has a list
+# entry. Deriving it is the point -- a hand-typed copy of either set agrees on the
+# day it is written and goes green-but-wrong the next time a pattern lands.
+
+
+def _hook_text():
+    return _UNDER_TEST.read_text(encoding="utf-8")
+
+
+_WRAPPERS = ("bash", "sh", "zsh", "source")
+
+
+def _deny_list_programs(text):
+    """Programs named by BASH_DENY + FLEET_DENY, read from the hook.
+
+    Each entry is an ERE. Bracket expressions are stripped first, then any
+    leading alternation groups (the command-position anchors and the
+    interpreter-wrapper group), and the program is the first identifier left.
+
+    STRIPPING ORDER IS THE WHOLE PARSE, and the first version of it was wrong in
+    a way that read as a finding. It tried to remove the anchor group with one
+    non-greedy pattern whose character class omitted `:`, so `[[:space:]]` inside
+    the group ended the match early, the group survived, and the first
+    identifier in `(^|[;&|][[:space:]]*)rsync...` came back as `space`. Three
+    entries reported a program that does not exist and `rsync` and
+    `kipi-update.sh` were invisible -- a derivation that is not reading what you
+    think, going RED for the wrong reason. Brackets come out first now, which
+    removes the `:` problem at the source rather than spelling around it.
+    """
+    progs = set()
+    for name in ("BASH_DENY", "FLEET_DENY"):
+        block = re.search(r"declare -a %s=\(\n(.*?)\n  \)" % name, text, re.S)
+        assert block, "%s block not found; the hook was restructured" % name
+        for line in block.group(1).splitlines():
+            line = line.strip()
+            if not line.startswith("'"):
+                continue                       # comment line inside the array
+            body = line.split("'")[1]
+            # An entry that opens on a redirect or on `:` names no program: it
+            # matches a redirection target or the fork bomb. Read from the shape
+            # rather than from a list of words those entries happen to contain.
+            if re.match(r"^[>:]", body):
+                continue
+            body = re.sub(r"\[\[:[a-z]+:\]\]", "", body)   # POSIX classes
+            body = re.sub(r"\[[^]]*\]", "", body)          # ordinary brackets
+            while True:                                    # leading groups
+                stripped = re.sub(r"^\([^()]*\)[*+?]?", "", body)
+                if stripped == body:
+                    break
+                body = stripped
+                if re.search(r"^[*+?.\\/~-]*[A-Za-z]", body) \
+                        and not body.startswith("("):
+                    break
+            m = re.search(r"([A-Za-z][A-Za-z0-9_-]*(?:\\?\.sh)?)", body)
+            if not m:
+                continue
+            tok = m.group(1)
+            if tok in _WRAPPERS:
+                # A wrapper, not the destructive program. The program is the
+                # script it runs, later in the same entry.
+                m2 = re.search(r"([A-Za-z][A-Za-z0-9_-]*\\?\.sh)", body)
+                if not m2:
+                    continue
+                tok = m2.group(1)
+            progs.add(tok.replace("\\", ""))
+    return progs
+
+
+def _argv_arm_programs(text):
+    """The program basenames `argv_deny_reason` dispatches on, read from it."""
+    fn = re.search(r"argv_deny_reason\(\) \{.*?\n    case \"\$prog\" in\n(.*?)"
+                   r"\n    esac", text, re.S)
+    assert fn, "argv_deny_reason's prog dispatch not found; the hook was restructured"
+    arms = set()
+    for line in fn.group(1).splitlines():
+        m = re.match(r"\s{6}([A-Za-z0-9_.|*-]+)\)\s*$", line)
+        if not m or m.group(1) == "*":
+            continue
+        for alt in m.group(1).split("|"):
+            arms.add(alt)
+    assert arms, "derived an EMPTY arm set; the parse is broken, not the hook"
+    return arms
+
+
+class TestTheTwoLayersCoverTheSamePrograms:
+    """The DoR check: any program in one set and not the other is a finding."""
+
+    def test_the_derivations_are_bound_to_the_hook_not_restated(self, tmp_path):
+        """Floor under both parses (derive-a-value-from-its-owner, step 3).
+
+        An empty or near-empty parse turns the symmetry assertion below into a
+        no-op that reads as green, so each derivation has to return something
+        and has to see the two programs everyone already knows are there."""
+        text = _hook_text()
+        listed = _deny_list_programs(text)
+        armed = _argv_arm_programs(text)
+        assert len(listed) >= 8, listed
+        assert {"rm", "git"} <= listed, listed
+        assert {"rm", "git"} <= armed, armed
+
+    def test_every_deny_list_program_has_an_argv_arm(self):
+        text = _hook_text()
+        listed = _deny_list_programs(text)
+        armed = _argv_arm_programs(text)
+        missing = sorted(listed - armed)
+        assert not missing, (
+            "these programs are named by BASH_DENY/FLEET_DENY but "
+            "argv_deny_reason does not dispatch on them, so each one keeps the "
+            "ASK-1131 hole the argv layer exists to close (a leading flag or a "
+            "transparent prefix hides the dangerous token): %s" % missing)
+
+    def test_every_argv_arm_has_a_deny_list_entry(self):
+        text = _hook_text()
+        listed = _deny_list_programs(text)
+        armed = _argv_arm_programs(text)
+        extra = sorted(armed - listed)
+        assert not extra, (
+            "argv_deny_reason dispatches on these but no BASH_DENY/FLEET_DENY "
+            "entry names them, so the cheap substring layer that runs first is "
+            "blind to their plain spelling: %s" % extra)
+
+
+class TestATransparentPrefixCannotHideTheFleetDelete:
+    """The prefixes `argv_deny_reason` already strips, in front of the updater.
+
+    FLEET_DENY anchors the script at COMMAND POSITION, correctly -- reading the
+    file is not running it. A transparent prefix sits between that anchor and the
+    script name, so the anchor does not match; and the argv layer, which strips
+    exactly these prefixes, had no arm for the updater. Both layers missed the
+    same command, which is the ASK-1131 shape in a second program."""
+
+    PREFIXED = [
+        "nohup ./kipi-update.sh --dry-run=0",
+        "env X=1 ./kipi-update.sh",
+        "time ./kipi-update.sh",
+        "nohup ./kipi-update.sh",
+        "sudo ./kipi-update.sh",
+        "nice -n 10 ./kipi-update.sh",
+        "nohup kipi update",
+    ]
+
+    @pytest.mark.parametrize("command", PREFIXED)
+    def test_a_prefixed_fleet_sync_is_denied(self, tmp_path, command):
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "deny", (
+            "a transparent prefix ran the fleet-wide delete unchallenged: %r"
+            % command)
+
+    def test_dry_run_zero_is_not_a_preview(self, tmp_path):
+        """`--dry-run=0` is not a dry run and never was.
+
+        kipi-update.sh parses `--dry-run` as an exact token (its argv loop, the
+        `--dry-run)` arm) and exits 1 on anything else, so `--dry-run=0` is not
+        a preview in the updater either. The exemption tested `*--dry*` as a
+        SUBSTRING, so the string bought a pass the flag does not."""
+        assert decide(hook_copy(tmp_path), "./kipi-update.sh --dry-run=0",
+                      tmp_path) == "deny"
+
+    @pytest.mark.parametrize("command", [
+        "kipi update --dry-run",
+        "./kipi-update.sh --dry-run",
+        "nohup ./kipi-update.sh --dry-run",
+        "env X=1 ./kipi-update.sh --dry-run",
+        "time ./kipi-update.sh --dry-run",
+    ])
+    def test_a_real_dry_run_is_still_allowed(self, tmp_path, command):
+        """The other half, and the one that decides whether this gate survives.
+
+        Previewing is how you EARN the run. A guard that refuses the preview is
+        a guard someone switches off, and the hook says so in three places."""
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+            "the preview carve-out broke: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        "sed -n '1,20p' kipi-update.sh",
+        "cat kipi-update.sh",
+        "git log --oneline -- kipi-update.sh",
+    ])
+    def test_reading_the_updater_is_still_not_running_it(self, tmp_path, command):
+        """The reason FLEET_DENY is anchored at all. Adding an argv arm must not
+        undo it: a gate that blocks reads is a gate someone switches off."""
+        assert decide(hook_copy(tmp_path), command, tmp_path) == "allow", (
+            "the new arm blocks reading the file: %r" % command)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

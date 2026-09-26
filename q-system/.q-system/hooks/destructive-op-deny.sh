@@ -302,6 +302,39 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     return 1
   }
 
+  # ASK-1954. An EXACT token, with no `--name=value` form admitted, unlike
+  # _argv_has_long above. Two of the arms below need exactly this and the
+  # difference is load-bearing in both directions:
+  #
+  #   find . -delete    `-delete` is a single-dash PRIMARY, so _argv_has_long
+  #                     never sees it and _argv_has_short would match the `d`
+  #                     in `-depth`, denying an ordinary read-only traversal.
+  #   --dry-run=0       kipi-update.sh parses `--dry-run` as an exact token and
+  #                     exits 1 on anything else, so `--dry-run=0` is not a
+  #                     preview to the updater. _argv_has_long would call it one
+  #                     and hand the apply the exemption the preview earns.
+  _argv_has_token() {  # _argv_has_token <token> <token>...
+    local want="$1"; shift
+    local tok
+    for tok in "$@"; do
+      [ "$tok" = "$want" ] && return 0
+    done
+    return 1
+  }
+
+  # A REAL PREVIEW, not a string containing the letters. Shared by the fleet arms
+  # so the two of them cannot drift apart. rsync's short `-n` counts, in any
+  # cluster, because that is the spelling the fleet DELETION GUARD's own
+  # documented usage line uses (`rsync -ain --delete ...`), and blocking the
+  # documented preview is how this gate gets switched off.
+  _argv_is_preview() {  # _argv_is_preview <accept-short-n:0|1> <token>...
+    local short_n="$1"; shift
+    _argv_has_token --dry-run "$@" && return 0
+    _argv_has_token --dry "$@" && return 0
+    [ "$short_n" = 1 ] && _argv_has_short n "$@" && return 0
+    return 1
+  }
+
   # Every array below is seeded with one empty token on purpose: bash 3.2 (the
   # /bin/bash this runs under) treats "${arr[@]}" on an EMPTY array as an unbound
   # variable under `set -u`, which would abort the hook and, since a hook that
@@ -411,8 +444,36 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   _ARGV_MAX_TOKENS=600
 
   _argv_could_deny_here() {  # _argv_could_deny_here <token>
+    # ASK-1954. THE UPDATER IS ADMITTED ONLY WHEN IT IS SPELLED AS AN INVOCATION.
+    #
+    # Every other arm is keyed on a basename, and a bare basename is all that is
+    # needed because `rm` and `find` as words are already denied by the substring
+    # list -- this hook decided in 2026-08-07 that it does not tell prose from
+    # invocation. The updater is the one program where that decision runs the
+    # other way: FLEET_DENY is command-ANCHORED precisely so `sed -n '1,20p'
+    # kipi-update.sh` stays allowed, because a gate that blocks reads is a gate
+    # someone switches off. Admitting the bare basename here would undo that
+    # anchor from the argv side and block every read of the file.
+    #
+    # So the RAW token has to carry a path prefix, which is the same distinction
+    # FLEET_DENY's own `[./~][^[:space:]]*` and `(bash|sh|zsh|source)` entries
+    # draw. ACCEPTED COST, stated rather than discovered later: `sed -n '1,20p'
+    # ./kipi-update.sh` is refused, with a message about a fleet-wide delete.
+    # It is the same fail-closed misnomer this file already accepts for
+    # `docker rm -f`, and it costs one tool call against a fleet-wide delete.
+    case "$1" in
+      */kipi-update.sh)                        return 0 ;;
+    esac
     case "${1##*/}" in
       rm|git)                                  return 0 ;;
+      # The programs BASH_DENY and FLEET_DENY already name. Each one carried the
+      # ASK-1131 hole in its own right: the substring patterns are POSITIONAL, so
+      # a leading flag or a prefix taking its own options hid the dangerous token
+      # and nothing inspected the argv. Kept in step with the case arms in
+      # argv_deny_reason by test_every_argv_arm_has_a_deny_list_entry, which
+      # derives both sets from this file rather than restating either.
+      find|dd|mkfs|shred|truncate|chmod|chown) return 0 ;;
+      rsync|kipi)                              return 0 ;;
       # NO TRANSPARENT-PREFIX ARM. Same argument as the flag and assignment arms
       # before it, and it is the one that finally ends this bypass: a position
       # starting at `sudo` can only deny if a recognised program FOLLOWS, and
@@ -474,6 +535,10 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     done
     [ "${#w[@]}" -gt 0 ] || return 1
     local prog="${w[0]##*/}"
+    # The token as WRITTEN, before the basename strip. The kipi-update.sh arm
+    # turns on it: see _argv_could_deny_here for why a bare basename must not
+    # deny there.
+    local raw="${w[0]}"
     local -a rest=( "" "${w[@]:1}" )
 
     case "$prog" in
