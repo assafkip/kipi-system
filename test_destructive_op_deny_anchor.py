@@ -242,7 +242,12 @@ class TestTheProposedPatchIsWhatTheFileAlreadyDoes:
         text = live.read_text(encoding="utf-8")
         block = re.search(r"declare -a FLEET_DENY=\(\n(.*?)\n  \)", text, re.S)
         assert block, "FLEET_DENY block not found; the hook was restructured"
-        entries = [l.strip() for l in block.group(1).splitlines() if l.strip()]
+        # A COMMENT INSIDE THE ARRAY IS NOT AN ENTRY (ASK-1954 round 3). This
+        # counted every non-blank line, so the first comment added between two
+        # patterns reported 10 entries and failed on the count rather than on
+        # anchoring. _deny_list_programs already filtered the same way.
+        entries = [l.strip() for l in block.group(1).splitlines()
+                   if l.strip().startswith("'")]
         anchored = [e for e in entries if e.startswith("'(^|[;&|")]
         assert len(entries) == 4, entries
         assert len(anchored) == 3, (
@@ -576,7 +581,36 @@ def _hook_text():
     return _ASK1954_SOURCE.read_text(encoding="utf-8")
 
 
-_WRAPPERS = ("bash", "sh", "zsh", "source")
+def _wrapper_programs(text):
+    """The interpreter/source spellings FLEET_DENY's wrapper entry names, read FROM it.
+
+    ASK-1954 round 3 (PR #447 round 2 major). This was a restated tuple
+    `("bash", "sh", "zsh", "source")`, typed here and typed again in the hook's
+    arm and in its pre-filter. Three copies agreed with each other and all three
+    omitted `.`, the POSIX spelling of `source`, so `. kipi-update.sh` ran the
+    fleet-wide delete while the symmetry check reported the two layers in
+    agreement. A copy agrees on the day it is written; that is what makes it look
+    safe. The entry is now the single source of truth and this reads it, so a new
+    spelling is one edit in the hook and every case below follows it.
+    """
+    block = re.search(r"declare -a FLEET_DENY=\(\n(.*?)\n  \)", text, re.S)
+    assert block, "FLEET_DENY block not found; the hook was restructured"
+    for line in block.group(1).splitlines():
+        line = line.strip()
+        if not line.startswith("'") or "kipi-update" not in line:
+            continue
+        for group in re.findall(r"\(([^()]*)\)", line.split("'")[1]):
+            alts = [a.replace("\\", "") for a in group.split("|")]
+            # The command-position anchor group `(^|[;&|][[:space:]]*)` is in
+            # this entry too and names no program: read the wrapper group from
+            # the SHAPE of its alternatives, never by position in the entry.
+            if alts and all(re.match(r"^[.A-Za-z][A-Za-z0-9_.-]*$", a) for a in alts):
+                return tuple(sorted(alts))
+    assert False, ("no interpreter-wrapper alternation found in FLEET_DENY's "
+                   "kipi-update entry; the parse is broken, not the hook")
+
+
+_WRAPPERS = _wrapper_programs(_hook_text())
 
 
 def _deny_list_programs(text):
@@ -627,7 +661,11 @@ def _deny_list_programs(text):
             # the leading-group loop consumes `(bash|sh|zsh|source)` on its way
             # to the script, so the wrapper token never reached that check.
             for group in re.findall(r"\(([^()]*)\)", entry):
-                progs |= set(group.split("|")) & set(_WRAPPERS)
+                # Backslashes come off first: the POSIX dot spelling is written
+                # `\.` in the ERE and `.` everywhere else, and an unstripped
+                # compare silently misses it (ASK-1954 round 3).
+                alts = set(a.replace("\\", "") for a in group.split("|"))
+                progs |= alts & set(_WRAPPERS)
             body = re.sub(r"\[\[:[a-z]+:\]\]", "", body)   # POSIX classes
             body = re.sub(r"\[[^]]*\]", "", body)          # ordinary brackets
             while True:                                    # leading groups
@@ -879,6 +917,174 @@ class TestATransparentPrefixCannotHideTheFleetDelete:
         undo it: a gate that blocks reads is a gate someone switches off."""
         assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
             "the new arm blocks reading the file: %r" % command)
+
+
+@ask1954
+class TestEveryWrapperSpellingTheEntryNamesIsCovered:
+    """PR #447 round 2 major, and the structural half of it.
+
+    Round 1 found the wrapper spelling missing from the argv layer entirely.
+    Round 2 found ONE WORD missing from the list that closed it: `.`, the POSIX
+    spelling of `source`. Same finding class twice means the fix shape was wrong,
+    so the list is now derived rather than restated (`_wrapper_programs`) and
+    these cases are parametrized over the DERIVATION. A spelling added to the
+    hook's entry arrives here without anyone editing this file; a spelling added
+    to the entry with no arm and no pre-filter admission goes RED here."""
+
+    def test_the_derivation_is_bound_to_the_entry_not_restated(self):
+        """The floor. An empty or stale parse turns every case below into a
+        no-op that reads as green, which is the exact failure this replaces."""
+        assert _WRAPPERS, "derived an EMPTY wrapper set; the parse is broken"
+        assert "." in _WRAPPERS, (
+            "the POSIX dot spelling is not in FLEET_DENY's wrapper entry, so "
+            "`. kipi-update.sh` runs the fleet-wide delete: %s" % (_WRAPPERS,))
+
+    @pytest.mark.parametrize("wrapper", _WRAPPERS)
+    def test_the_bare_spelling_is_denied(self, tmp_path, wrapper):
+        command = "%s kipi-update.sh" % wrapper
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "FLEET_DENY's wrapper entry names %r but the command ran: %r"
+            % (wrapper, command))
+
+    @pytest.mark.parametrize("wrapper", [w for w in _WRAPPERS if w != "."])
+    def test_an_option_bearing_prefix_still_denies_the_interpreters(
+            self, tmp_path, wrapper):
+        """`nice` takes its OWN option, so the transparent-prefix stripper stops
+        on `-n` and only the every-position rescan reaches the wrapper."""
+        command = "nice -n 10 %s kipi-update.sh" % wrapper
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", command
+
+    def test_the_dot_spelling_behind_an_option_bearing_prefix_is_the_stated_cost(
+            self, tmp_path):
+        """A RECORDED COST, not a hole nobody mentioned. `.` is deliberately not
+        admitted to the every-position rescan (`_argv_could_deny_here`): it is the
+        commonest token in this repo's shell lines, and admitting it there refuses
+        `ls -la . kipi-update.sh`, an ordinary listing of the file under repair.
+        So `nice -n 10 . kipi-update.sh` -- where the prefix's own option stops the
+        stripper and only the rescan would reach the dot -- is ALLOWED.
+
+        If this case ever needs to deny, the change is in `_argv_could_deny_here`
+        and it buys back the false positive above. Delete this test and say so."""
+        assert decide(source_copy(tmp_path), "nice -n 10 . kipi-update.sh",
+                      tmp_path) == "allow", (
+            "this now denies -- which may be right, but the false positive it "
+            "was traded against is pinned above; re-measure both together")
+
+    @pytest.mark.parametrize("wrapper", _WRAPPERS)
+    @pytest.mark.parametrize("prefix", ["nohup", "env X=1"])
+    def test_a_prefixed_spelling_is_denied(self, tmp_path, wrapper, prefix):
+        """The prefix is what the argv layer exists for: it sits between
+        FLEET_DENY's command anchor and the wrapper, so the entry stops matching
+        and only an arm plus a pre-filter admission can still refuse it."""
+        command = "%s %s kipi-update.sh" % (prefix, wrapper)
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "a prefix hid the fleet-wide delete behind %r: %r" % (wrapper, command))
+
+    @pytest.mark.parametrize("command", [
+        "find . -name kipi-update.sh",
+        "grep -rn kipi-update.sh .",
+        "cp kipi-update.sh .",
+        "ls -la . kipi-update.sh",
+    ])
+    def test_a_cwd_dot_beside_the_updater_is_untouched(self, tmp_path, command):
+        """The reason the `.` arm cannot scan the whole argv the way the
+        interpreter arms do. `.` is the commonest token in this repo's shell
+        history, so an arm that denies on `kipi-update.sh` ANYWHERE after a `.`
+        refuses ordinary auditing of the updater -- and a guard that blocks
+        ordinary work gets switched off. `. file` is a POSIX builtin whose
+        filename is its FIRST operand, so the arm mirrors that grammar."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the dot spelling's arm refuses an ordinary cwd argument: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        ". kipi-update.sh --dry-run",
+        "nohup . kipi-update.sh --dry-run",
+    ])
+    def test_a_dotted_dry_run_is_still_allowed(self, tmp_path, command):
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the preview carve-out broke for the dot spelling: %r" % command)
+
+
+@ask1954
+class TestFindExecReadsThePositionItsEntryRequires:
+    """PR #447 round 2 minor. The arm scanned every token after `-exec`, so any
+    invocation MENTIONING `rm`, `rmdir`, `shred` or `unlink` anywhere tripped it.
+    The entry it claims to mirror is `find[[:space:]]+.+-exec[[:space:]]+rm`,
+    which requires the remover IMMEDIATELY after the primary. Wider than the
+    entry, and the widening landed on how you would audit this repo for `rm` call
+    sites -- ALLOW on origin/main, DENY on the branch that added the arm."""
+
+    @pytest.mark.parametrize("command", [
+        "find . -type f -exec grep -n rm {} ;",
+        "find . -name '*.sh' -exec grep -l rm {} +",
+        "find . -type f -exec grep -l unlink {} ;",
+        "find . -type f -execdir grep -n rm {} ;",
+    ])
+    def test_a_remover_named_as_an_argument_is_not_an_exec_of_it(
+            self, tmp_path, command):
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the find arm read a grep pattern as the program -exec runs: %r"
+            % command)
+
+    @pytest.mark.parametrize("command", [
+        "find . -type f -exec rm {} ;",
+        "find . -type f -exec rm -f {} +",
+        "find . -type d -execdir rmdir {} ;",
+        "find . -type f -ok shred {} ;",
+        "find . -type f -exec /bin/rm {} ;",
+        "nohup find . -type f -exec unlink {} ;",
+    ])
+    def test_a_real_exec_of_a_remover_still_denies(self, tmp_path, command):
+        """Narrowing to the position must not narrow past the entry: the
+        remover immediately after the primary is exactly what it matches."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "find runs a remover on every match and the arm let it go: %r"
+            % command)
+
+    def test_find_delete_is_unaffected(self, tmp_path):
+        assert decide(source_copy(tmp_path), "nohup find . -delete",
+                      tmp_path) == "deny"
+
+
+@ask1954
+class TestAPreviewFlagInsideAnotherOptionsValueIsNotAPreview:
+    """PR #447 round 2 minor. `_argv_is_preview 1` accepted the letter `n` in any
+    single-dash cluster anywhere in the argv, and rsync's remote-shell option
+    carries a COMMAND LINE as its value. Quote stripping flattens `-e 'ssh -n'`
+    into a bare `-n` token, so ssh's dry-run-shaped flag bought rsync's delete
+    the preview exemption and the destination-side delete was allowed."""
+
+    @pytest.mark.parametrize("command", [
+        "nohup rsync -a --delete -e 'ssh -n' /tmp/a/ /tmp/b/",
+        "env X=1 rsync -a --delete --rsh 'ssh -n -o BatchMode=yes' /tmp/a/ /tmp/b/",
+        "nohup rsync -a --delete-after -e 'ssh -n' /tmp/a/ /tmp/b/",
+    ])
+    def test_a_dry_run_flag_belonging_to_the_remote_shell_is_not_rsyncs(
+            self, tmp_path, command):
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", (
+            "a flag inside another option's value bought the delete a preview "
+            "exemption: %r" % command)
+
+    @pytest.mark.parametrize("command", [
+        "nohup rsync -ain --delete -e ssh /tmp/a/ /tmp/b/",
+        "nohup rsync -n --delete -e ssh /tmp/a/ /tmp/b/",
+        "nohup rsync --delete -e ssh -n /tmp/a/ /tmp/b/",
+        "nohup rsync -a --delete --dry-run -e 'ssh -o BatchMode=yes' /tmp/a/ /tmp/b/",
+    ])
+    def test_rsyncs_own_preview_still_earns_the_exemption(self, tmp_path, command):
+        """`rsync -ain --delete` is the fleet deletion guard's own documented
+        usage line (sp-9b01d746). Narrowing the value case must not reach it.
+        The third case is the honest bound stated out loud: a bare `-n` after the
+        remote-shell option's own value still reads as rsync's, because argv
+        tokenised on whitespace cannot tell one from the other -- so it errs
+        toward the PREVIEW there, and toward the DENY when the `n` sits in the
+        first token after the option."""
+        assert decide(source_copy(tmp_path), command, tmp_path) == "allow", (
+            "the documented rsync preview was refused: %r" % command)
+
+    def test_a_delete_with_a_plain_remote_shell_still_denies(self, tmp_path):
+        command = "nohup rsync -a --delete -e ssh /tmp/a/ /tmp/b/"
+        assert decide(source_copy(tmp_path), command, tmp_path) == "deny", command
 
 
 if __name__ == "__main__":

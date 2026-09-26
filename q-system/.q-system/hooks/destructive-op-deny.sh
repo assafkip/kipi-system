@@ -203,9 +203,19 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   # name anywhere in the line and blocked `sed -n '1,20p' kipi-update.sh`, but
   # reading a file is not running it. A gate that blocks reads is a gate someone
   # switches off.
+  #
+  # ENTRY 2's WRAPPER GROUP IS THE ONLY PLACE THAT SET IS TYPED. `\.` is the POSIX
+  # spelling of `source` and it was missing from all three copies of the word list
+  # at once (ASK-1954 round 3, PR #447 round 2 major), so `. kipi-update.sh` ran
+  # the fleet-wide delete while the symmetry test reported the two layers in
+  # agreement. test_destructive_op_deny_anchor.py's _wrapper_programs() now reads
+  # that group and drives every case from it, so a new spelling is one edit here.
+  #
+  # The comment lives OUTSIDE the array on purpose: two tests parse the block and
+  # one of them counted every non-blank line as an entry.
   declare -a FLEET_DENY=(
     'kipi[[:space:]]+update'
-    '(^|[;&|][[:space:]]*)(bash|sh|zsh|source)[[:space:]]+[^[:space:]]*kipi-update\.sh'
+    '(^|[;&|][[:space:]]*)(bash|sh|zsh|source|\.)[[:space:]]+[^[:space:]]*kipi-update\.sh'
     '(^|[;&|][[:space:]]*)[./~][^[:space:]]*kipi-update\.sh'
     '(^|[;&|][[:space:]]*)rsync[[:space:]]+[^|;]*--delete'
   )
@@ -352,7 +362,58 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
     local short_n="$1"; shift
     _argv_has_token --dry-run "$@" && return 0
     _argv_has_token --dry "$@" && return 0
-    [ "$short_n" = 1 ] && _argv_has_short n "$@" && return 0
+    [ "$short_n" = 1 ] || return 1
+    # ASK-1954 round 3 (PR #447 round 2 minor). A `-n` INSIDE ANOTHER OPTION'S
+    # VALUE IS NOT RSYNC'S. This was `_argv_has_short n "$@"`, which matches any
+    # single-dash cluster anywhere -- and rsync's remote-shell option carries a
+    # COMMAND LINE as its value. The quote-stripping rescan flattens
+    # `-e 'ssh -n'` into a bare `-n` token, so ssh's flag bought rsync's
+    # destination-side delete the exemption that previewing is supposed to earn:
+    #
+    #   rsync -a --delete -e ssh /src/ /dst/          DENY
+    #   rsync -a --delete -e 'ssh -n' /src/ /dst/     ALLOW  <- deletes
+    #
+    # So the value of `-e` / `--rsh` is skipped, which is a mirror of rsync's own
+    # grammar for the one option whose value is a command, not a list of flags to
+    # keep in step with rsync's releases. A cluster CONTAINING `e` consumes the
+    # next token too: `-ae ssh` is the same option, and `e` takes a value so it
+    # can only sit last in a cluster.
+    #
+    # THE VALUE SPANS TOKENS, so skipping one is not enough. Measured: skipping a
+    # single token left all three reproducers ALLOW, because the argv is tokenised
+    # on whitespace and `-e 'ssh -n'` arrives as `-e` `'ssh` `-n'`. The quotes are
+    # still THERE in the first pass, so the skip follows them to the closing one.
+    # The quote-stripped rescan sees a clean `-n`, but that pass is deny-only and
+    # runs second: the first pass already denied, so it never gets a vote.
+    #
+    # HONEST BOUND, stated rather than met later: an UNQUOTED value
+    # (`--rsh ssh -n`) still reads as rsync's `-n` and still buys the exemption,
+    # because nothing in a whitespace-tokenised argv distinguishes it. That errs
+    # OPEN. It is not chased further because enumerating every rsync option that
+    # takes a value is the losing game this file names in two other places, and
+    # `rsync -ain --delete` -- the fleet deletion guard's own documented usage
+    # line -- must keep working or the gate gets switched off.
+    local tok skip=0 quote=""
+    for tok in "$@"; do
+      if [ -n "$quote" ]; then                 # inside a quoted option value
+        case "$tok" in *"$quote") quote="" ;; esac
+        continue
+      fi
+      if [ "$skip" = 1 ]; then                 # the value's first word
+        skip=0
+        case "$tok" in
+          "'"*) case "$tok" in *"'") ;; *) quote="'" ;; esac ;;
+          '"'*) case "$tok" in *'"') ;; *) quote='"' ;; esac ;;
+        esac
+        continue
+      fi
+      case "$tok" in
+        --rsh|--rsh=*)              skip=1; continue ;;
+        --*)                        continue ;;
+        -*n*)                       return 0 ;;
+        -*e*)                       skip=1; continue ;;
+      esac
+    done
     return 1
   }
 
@@ -514,6 +575,26 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
       bash|sh|zsh|source)
         case "$COMMAND" in *kipi-update.sh*)   return 0 ;; esac
         return 1 ;;
+      # NO `.` ARM HERE, AND IT IS THE SAME CALL AS THE `kipi` ONE BELOW.
+      #
+      # `.` is the POSIX spelling of `source` and it DOES have an arm in
+      # argv_deny_reason (ASK-1954 round 3). What it does not get is admission to
+      # the every-POSITION rescan, because `.` is the commonest token in this
+      # repo's shell lines and the rescan offers every starting position. Measured
+      # with it admitted: `ls -la . kipi-update.sh` DENIED, and `find . -name
+      # kipi-update.sh` only survived because the arm reads operand one. Refusing
+      # an ordinary listing of the file under repair is how this gate gets
+      # switched off.
+      #
+      # What is covered without it: `. kipi-update.sh` (FLEET_DENY entry 2, and
+      # the first-position scan, which calls argv_deny_reason on the whole stage
+      # with no pre-filter), `nohup . kipi-update.sh` and `env X=1 .
+      # kipi-update.sh` (same scan, after the transparent-prefix stripper).
+      # WHAT IS GIVEN UP: a prefix carrying its OWN option, `nice -n 10 .
+      # kipi-update.sh`, where the stripper stops on `-n` and only the rescan
+      # would reach it. Pinned as a known ALLOW by
+      # test_the_dot_spelling_behind_an_option_bearing_prefix_is_the_stated_cost,
+      # so it is a recorded cost rather than a silent hole.
       # The programs BASH_DENY and FLEET_DENY already name. Each one carried the
       # ASK-1131 hole in its own right: the substring patterns are POSITIONAL, so
       # a leading flag or a prefix taking its own options hid the dangerous token
@@ -644,17 +725,29 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           _ARGV_REASON="find carries -delete, which removes every matched path (argv-inspected: the primary can sit anywhere in the expression)"
           return 0
         fi
-        if _argv_has_token -exec "${rest[@]}" || _argv_has_token -execdir "${rest[@]}" \
-           || _argv_has_token -ok "${rest[@]}" || _argv_has_token -okdir "${rest[@]}"; then
-          local _f
-          for _f in "${rest[@]:1}"; do
-            case "${_f##*/}" in
-              rm|rmdir|shred|unlink)
-                _ARGV_REASON="find runs $_f on every matched path"
-                return 0 ;;
-            esac
-          done
-        fi
+        # THE TOKEN AFTER THE PRIMARY, not every token after it (ASK-1954 round 3,
+        # PR #447 round 2 minor). The first version scanned `"${rest[@]:1}"`, so
+        # any invocation MENTIONING one of these four words tripped it and
+        #
+        #   find . -type f -exec grep -n rm {} \;
+        #
+        # -- how you would audit this repo for `rm` call sites -- was refused,
+        # while the entry it mirrors (`find[[:space:]]+.+-exec[[:space:]]+rm`)
+        # requires the remover IMMEDIATELY after the primary. Wider than the entry
+        # it claims to mirror, and the widening landed on ordinary work.
+        local _f _j=1
+        while [ "$_j" -lt "${#rest[@]}" ]; do
+          case "${rest[$_j]}" in
+            -exec|-execdir|-ok|-okdir)
+              _f="${rest[$((_j+1))]:-}"
+              case "${_f##*/}" in
+                rm|rmdir|shred|unlink)
+                  _ARGV_REASON="find runs $_f on every matched path"
+                  return 0 ;;
+              esac ;;
+          esac
+          _j=$((_j+1))
+        done
         ;;
       dd)
         # Mirrors 'dd .*of=/dev/'. Operand order is free in dd, which is what
@@ -749,7 +842,7 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
           return 0
         fi
         ;;
-      bash|sh|zsh|source)
+      bash|sh|zsh)
         # ASK-1954 round 2 (PR #447 finding 1). THE SAME HOLE, ONE SPELLING OVER.
         #
         # FLEET_DENY entry 2 is `(bash|sh|zsh|source)[[:space:]]+[^[:space:]]*
@@ -777,6 +870,12 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
         # Keyed on the OPERAND, never on the wrapper alone: `bash ./build.sh` and
         # `source ~/.zshrc` are ordinary work, and a guard that refuses those is a
         # guard someone switches off.
+        #
+        # THE OPERAND IS SOUGHT ANYWHERE AFTER THE INTERPRETER, deliberately wider
+        # than entry 2's immediately-after: an interpreter takes its own options,
+        # so `bash -x kipi-update.sh` is a real invocation the anchored entry
+        # cannot see. The `source|.` arm below is NOT allowed that width, and the
+        # split is the whole point -- see its own comment.
         local _s
         for _s in "${rest[@]:1}"; do
           case "${_s##*/}" in
@@ -788,6 +887,38 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
               ;;
           esac
         done
+        ;;
+      source|.)
+        # ASK-1954 round 3 (PR #447 round 2 major). `.` IS `source`, AND THE WORD
+        # WAS MISSING FROM THREE LISTS AT ONCE.
+        #
+        #   source kipi-update.sh          DENIED
+        #   . kipi-update.sh               ALLOWED  <- fleet-wide delete
+        #
+        # `.` was absent from FLEET_DENY entry 2, from this arm and from
+        # _argv_could_deny_here, and the symmetry test derived its wrapper set
+        # from that same entry, so all four agreed and the hook ran the delete.
+        # A sourced script sees `$0` as `bash`, measured, so
+        # `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"` resolves to the CWD and
+        # the sync runs against every instance in instance-registry.json.
+        #
+        # THE OPERAND MUST BE THE FIRST ONE, unlike the interpreter arm above.
+        # `. file [args]` is a POSIX builtin that takes no options: its filename
+        # is operand one, so mirroring that grammar is exact rather than a
+        # narrowing. It is also what keeps the arm alive. `.` is the commonest
+        # token in this repo's shell history, and scanning the whole argv would
+        # refuse `find . -name kipi-update.sh`, `grep -rn kipi-update.sh .` and
+        # `cp kipi-update.sh .` -- ordinary auditing of the very file being
+        # fixed. A guard that blocks that gets switched off, which is the failure
+        # mode this file has recorded four times.
+        case "${rest[1]:-}" in
+          kipi-update.sh|*/kipi-update.sh)
+            if ! _argv_is_preview 0 "${rest[@]}"; then
+              _ARGV_REASON="this sources the fleet sync through \`$prog\`, which rsyncs the skeleton into EVERY registered instance with a delete flag. A sourced script reads \$0 as the shell, so its SCRIPT_DIR resolves to the current directory and the sync still runs"
+              return 0
+            fi
+            ;;
+        esac
         ;;
       git)
         # Walk git's GLOBAL flags to find the subcommand: `git -C DIR reset
