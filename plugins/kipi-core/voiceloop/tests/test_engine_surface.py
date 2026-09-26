@@ -23,6 +23,24 @@ imports cleanly, so a deletion, a syntax error, a circular import or a missing
 dependency is RED here rather than at some instance's next sync. It is NOT a
 behaviour suite and does not pretend to be. Behaviour lives instance-side.
 
+THE MANIFEST PINS PRESENCE ONLY, AND PRESENCE IS A LOW BAR. An EMPTY file imports
+cleanly, so every check in THIS file stays green against one. Measured 2026-09-26
+on this branch (ASK-1941): `critic.py` truncated to zero bytes left every check
+here passing, and the only RED anywhere in the package came from the behaviour
+file named below. Do not read this file's green as evidence that any module named
+in the manifest works.
+
+WHERE BEHAVIOUR COVERAGE LIVES. In-repo, per module, in its own file:
+
+  critic   `test_critic_behaviour.py`  drives `critic.run` against a stubbed model
+
+That is one module of the manifest below. No count is written here on purpose: a
+restated count goes stale the day a module is added and the stale copy still
+reads as true. Every OTHER module in the manifest is presence-only today, which
+is the declared scope of ASK-1941 rather than an oversight: one module proves the
+shape and a full sweep is its own issue. A module with no row here has no
+behaviour coverage in this repo, whatever the suite total says.
+
 THE ONE THING IT MUST NOT BECOME. An earlier draft walked the directory and
 imported whatever it found. That version passes happily after a deletion,
 because a deleted file is simply not enumerated, so the very mutation this gate
@@ -42,7 +60,9 @@ import pytest
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The 33 shipped modules, excluding __init__. Keep sorted; one line per module.
+# The shipped modules, excluding __init__. Keep sorted; one line per module.
+# No count in this comment: the previous one said 33 against a tuple of 35, which
+# is the exact stale-restatement the docstring above warns a reader about.
 EXPECTED_MODULES = (
     "archetype",
     "assemble",
