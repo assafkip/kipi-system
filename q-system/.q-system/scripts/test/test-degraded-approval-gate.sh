@@ -405,20 +405,35 @@ fi
 
 # WIRED, not merely defined. A disarm function nobody calls at gate 50 is the
 # same defect this whole issue is about, one layer down.
+#
+# MATCHES A CALL, NOT THE WORD, and this paragraph is the reason the pattern
+# looks over-specified. The first version of both checks below was
+# `grep -q 'disarm'` plus an awk proximity test on the same bare word. The
+# mutation that DELETES both call lines from linear-worker.sh's gate-50 branches
+# left the suite at 38 passed, 0 failed: the wrapper function is still DEFINED in
+# that file, and the gate-50 comment blocks explain the disarm in prose, so a word
+# match found plenty and the check proved nothing. A grep cannot tell a comment
+# from a statement. Both patterns are now anchored to a STATEMENT -- start of
+# line, optional indent, the function name, whitespace, its first quoted argument
+# -- which a `#` line can never satisfy. A check that cannot go red is decoration.
+CALL_RE='^[[:space:]]*(disarm_automerge|automerge_disarm)[[:space:]]+"'
 for f in linear-worker.sh converge.sh; do
-  if grep -q 'automerge_disarm\|disarm_automerge' "$SCRIPTS/$f"; then
-    ok "$f disarms auto-merge on the degraded path"
+  if grep -Eq "$CALL_RE" "$SCRIPTS/$f"; then
+    ok "$f CALLS a disarm (a statement, not the word in a comment)"
   else
     bad "THE DEFECT: $f branches on gate 50 but never disarms an auto-merge armed before the review"
   fi
 done
 # And the call has to sit INSIDE the gate-50 branch, not merely somewhere in the
-# file. Checked by proximity: the disarm appears within 20 lines after the branch.
+# file. Checked by proximity: a disarm STATEMENT within 20 lines after the branch.
 for f in linear-worker.sh converge.sh; do
-  if awk '/(GATE|FINAL_GATE)" = "50"/{n=NR} n && NR>n && NR<=n+20 && /disarm/{found=1} END{exit !found}' "$SCRIPTS/$f"; then
-    ok "$f's disarm sits inside the gate-50 branch"
+  if awk '
+      /(GATE|FINAL_GATE)" = "50"/ { n = NR }
+      n && NR > n && NR <= n + 20 && /^[[:space:]]*(disarm_automerge|automerge_disarm)[[:space:]]+"/ { found = 1 }
+      END { exit !found }' "$SCRIPTS/$f"; then
+    ok "$f's disarm call sits inside the gate-50 branch"
   else
-    bad "$f calls a disarm but not within the gate-50 branch -- the arm would survive the gate"
+    bad "THE DEFECT: $f has no disarm STATEMENT within its gate-50 branch -- an arm from step 5 would survive the gate"
   fi
 done
 
