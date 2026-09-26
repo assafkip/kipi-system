@@ -70,8 +70,50 @@ def _accepts(fn, name):
     return name in sig.parameters
 
 
-def _gated(fn, **maybe):
-    """Keep only the kwargs this INJECTED callable actually takes.
+class FatalKwargDropped(RuntimeError):
+    """An injected callee predates a kwarg whose LOSS is not survivable.
+
+    Raised by `_gated`, never by a callee. It names the callee and the kwarg,
+    because the operator's next move is upgrading that one injected copy.
+    """
+
+
+# WHAT LOSING EACH KWARG COSTS (ASK-1938). Degrading quietly is right for
+# `recent_openers`: the lane loses a do-not-repeat check and keeps writing. It
+# is wrong for `path`, because the instance's provenance writer FALLS BACK to
+# the production corpus -- so a caller that explicitly asked for isolation
+# appends fixture rows to the file the operator's style-drift analysis is
+# measured from. That is the r5 defect (8 rows per run of one test file, with
+# fabricated `draft_sha` values) arriving through the degradation path instead
+# of the call path.
+#
+# THE ASYMMETRY IS THE POINT. Before r5 an older writer raised TypeError: loud,
+# and the lane stopped. After it, the same instance writes production in
+# silence. Trading a crash for silent corruption of the measurement corpus is a
+# bad trade in this one case, and a good one for `recent_openers`, so the
+# disposition is per pair rather than a property of `_gated`.
+#
+# UNDECLARED IS NOT FATAL AT RUNTIME, deliberately. Raising on a pair nobody
+# added a row for would take a live lane down for a forgotten table entry. The
+# pairs are read out of this module's AST by
+# `test_every_gated_kwarg_has_a_declared_disposition`, so an undeclared kwarg is
+# red at build time -- the layer that can afford to fail closed -- and merely
+# recorded here.
+_DROP_DISPOSITION = {
+    ("decide.decide_candidate", "recent_openers"): "tolerable",
+    ("revise.reviser", "claude_bin"): "tolerable",
+    ("revise.reviser", "model"): "tolerable",
+    ("revise.reviser", "author"): "tolerable",
+    ("revise.revise", "claude_bin"): "tolerable",
+    ("revise.revise", "model"): "tolerable",
+    ("revise.revise", "author"): "tolerable",
+    ("voicefp_gate.drift_report", "authorship"): "tolerable",
+    ("_append_voice_provenance", "path"): "fatal",
+}
+
+
+def _gated(fn, label, trail, **maybe):
+    """Keep only the kwargs this INJECTED callable actually takes, and SAY SO.
 
     THE CHOKEPOINT (RCA 2026-09-20, after PR #386 rounds 3 through 6 patched the
     same class four times). Rounds 3, 4 and 5 each guarded one kwarg at one site
@@ -84,8 +126,55 @@ def _gated(fn, **maybe):
     One door instead of five blocks. Everything optional that crosses the
     injection boundary goes through here, so the suite has one thing to watch and
     a new kwarg cannot arrive by a route the guard does not cover.
+
+    A DROP WAS INVISIBLE UNTIL ASK-1938. The door kept the lane alive and told
+    nobody which half of it stopped working, so every drop now leaves a row in
+    `trail["dropped_kwargs"]` naming the callee and the kwarg, and a drop the
+    table calls fatal refuses instead.
+
+    `label` is the callee's name AS WRITTEN AT THE CALL SITE, not read off the
+    object: an instance may inject a lambda, a partial or a bound method, and
+    `__name__` on any of those would put a useless string in the trail and miss
+    the disposition row.
     """
-    return {k: v for k, v in maybe.items() if _accepts(fn, k)}
+    keep, dropped = {}, []
+    for k, v in maybe.items():
+        if _accepts(fn, k):
+            keep[k] = v
+            continue
+        disposition = _DROP_DISPOSITION.get((label, k), "undeclared")
+        # A FATAL KWARG WHOSE VALUE IS None STILL DEGRADES. None means the
+        # caller never asked for the non-default behaviour, so the callee's
+        # fallback is what it wanted anyway. Refusing there would take the lane
+        # down on every non-isolating caller with an older callee and buy no
+        # safety at all -- a worse trade than the one this table exists to fix.
+        fatal = disposition == "fatal" and v is not None
+        dropped.append({"callee": label, "kwarg": k,
+                        "disposition": disposition,
+                        "value_was_none": v is None,
+                        "refused": fatal})
+        if fatal:
+            _record_drops(trail, dropped)
+            raise FatalKwargDropped(
+                f"{label}() does not take `{k}`, and losing it is not "
+                f"survivable: the callee falls back to a default the caller "
+                f"explicitly asked it not to use. Upgrade that injected copy, "
+                f"or pass {k}=None to accept the default on purpose.")
+    _record_drops(trail, dropped)
+    return keep
+
+
+def _record_drops(trail, dropped):
+    """One writer for the degradation record, so a refusal and a tolerated drop
+    cannot land in the trail two different shapes.
+
+    Tolerant of a `trail` that is not a dict: this is observability, and an
+    engine that crashes writing its own diagnostic is worse than one that is
+    quiet. The refusal above is raised whether or not this succeeds.
+    """
+    if not dropped or not isinstance(trail, dict):
+        return
+    trail.setdefault("dropped_kwargs", []).extend(dropped)
 
 
 def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
@@ -152,10 +241,12 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # instead of dying, and `_accepts` is used for every optional kwarg crossing
     # this boundary rather than this one, so the next one added cannot
     # reintroduce the same defect by being written the old way.
-    optional = _gated(decide.decide_candidate, recent_openers=recent_openers)
+    optional = _gated(decide.decide_candidate, "decide.decide_candidate", trail,
+                      recent_openers=recent_openers)
     verdict = decide.decide_candidate(
         post, regenerate=revise.reviser(runner=runner,
                                         **_gated(revise.reviser,
+                                                 "revise.reviser", trail,
                                                  claude_bin=claude_bin,
                                                  model=model, author=author)),
         channel=channel,
@@ -208,7 +299,8 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         if not feedback:
             break
         revised = revise.revise(verdict.text, feedback, runner=runner,
-                                **_gated(revise.revise, claude_bin=claude_bin,
+                                **_gated(revise.revise, "revise.revise", trail,
+                                         claude_bin=claude_bin,
                                          model=model, author=author))
         if not revised:
             break
@@ -277,7 +369,9 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # raised, by an agent; `decisions.md` has no entry and he was never asked. Read
     # off the FINAL body, so a repaired draft reports the score of what he will see.
     style_stage["fingerprint"] = voicefp_gate.drift_report(
-        verdict.text, **_gated(voicefp_gate.drift_report, authorship=True))
+        verdict.text, **_gated(voicefp_gate.drift_report,
+                               "voicefp_gate.drift_report", trail,
+                               authorship=True))
     trail["style"] = style_stage
 
     # The drift sidecar finally accumulates real rows on this lane (RC2): the
@@ -291,7 +385,8 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # third time is what the founder's five-rounds-is-a-loop scar is about, so the
     # test below now derives the injected names from THIS function's own signature
     # instead of naming `decide_candidate`.
-    prov_optional = _gated(_append_voice_provenance, path=provenance_path)
+    prov_optional = _gated(_append_voice_provenance, "_append_voice_provenance",
+                           trail, path=provenance_path)
     _append_voice_provenance(channel, at, dict(
         voice_prov or {},
         # THE JOIN KEY (2026-09-08). Without it this lane's rows carry a style
