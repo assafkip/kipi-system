@@ -48,16 +48,37 @@ lib_copy() {   # lib_copy <dir> <source-lib>  -> prints the copied lib path
 }
 
 # THE PRE-FIX READER, taken from git rather than reconstructed. Case 3's whole
-# claim is "the absent-key case returns what it returns TODAY", and a hand-typed
-# expectation would assert my model of today instead of today itself -- the
-# restated-value defect the lessons corpus names. If the file is not in git yet
-# (a fresh worktree, a detached state) the case says so and fails rather than
-# quietly skipping: an unrun check that reads as green is the worse outcome.
-PREFIX_LIB=""
-if git -C "$REPO" show "HEAD:q-system/.q-system/scripts/pr-verdict-lib.sh" \
-     > "$WORK/prefix-raw.sh" 2>/dev/null && [ -s "$WORK/prefix-raw.sh" ]; then
+# claim is "the absent-key case returns what it returns BEFORE this fix", and a
+# hand-typed expectation would assert my model of that instead of the thing
+# itself -- the restated-value defect the lessons corpus names. If no such
+# version can be found (a shallow clone carrying only post-fix commits) the case
+# says so and FAILS rather than quietly skipping: an unrun check that reads as
+# green is the worse outcome.
+#
+# NOT `HEAD` (PR #446 review, finding 2 -- minor). `HEAD:` resolved to the pre-fix
+# lib only while the fix was uncommitted. The moment it lands, HEAD carries the
+# FIXED lib, this case compares the lib against ITSELF, and every shape trivially
+# agrees -- so a committed regression in the 1-to-4-argument forms, exactly what
+# this migration floor exists to catch, would pass green forever. The baseline is
+# a historical artifact, so it is DERIVED from history by the one property that
+# defines it: the newest commit of this file whose blob does not yet define
+# degraded_from_record. That is better than a pinned sha (nothing to update, and
+# it survives a squash merge rewriting the sha) and it is self-verifying: a
+# baseline that DOES define the reader is rejected by the same condition that
+# selected it, so a self-comparison is structurally impossible here.
+LIB_REL="q-system/.q-system/scripts/pr-verdict-lib.sh"
+PREFIX_LIB=""; PREFIX_SHA=""
+while read -r sha; do
+  [ -n "$sha" ] || continue
+  git -C "$REPO" show "$sha:$LIB_REL" > "$WORK/prefix-raw.sh" 2>/dev/null || continue
+  [ -s "$WORK/prefix-raw.sh" ] || continue
+  grep -q 'degraded_from_record()' "$WORK/prefix-raw.sh" && continue
+  PREFIX_SHA="$sha"
   PREFIX_LIB="$(lib_copy "$WORK/prefix" "$WORK/prefix-raw.sh")"
-fi
+  break
+done <<EOF
+$(git -C "$REPO" rev-list HEAD -- "$LIB_REL" 2>/dev/null | head -40)
+EOF
 
 # ---------------------------------------------------------------------------
 # Drive rework_gate in a subshell against a chosen lib. Prints "<exit>|<stdout>"
@@ -153,8 +174,16 @@ E2E="$(gate_code "$LIB" "APPROVE" "" "$SHA" "$SHA" "$(reader_says "$LIB" "$RECS/
 echo
 echo "== 3. THE MIGRATION FLOOR: an absent key returns exactly what it returns today =="
 if [ -z "$PREFIX_LIB" ]; then
-  bad "could not read pr-verdict-lib.sh from HEAD, so 'unchanged from today' is UNPROVEN (not skipped: an unrun check reading green is the failure this case guards)"
+  bad "no pre-fix pr-verdict-lib.sh found in the last 40 commits touching it, so 'unchanged from before the fix' is UNPROVEN (not skipped: an unrun check reading green is the failure this case guards)"
 else
+  ok "baseline is $PREFIX_SHA, a version of the lib that predates degraded_from_record (not HEAD, which now carries the fix)"
+  # NEGATIVE SELF-TEST on the baseline itself. If the two libs were the same file
+  # every compat() below would agree for free and case 3 would prove nothing.
+  if diff -q "$LIB" "$PREFIX_LIB" >/dev/null 2>&1; then
+    bad "the baseline is BYTE-IDENTICAL to the shipped lib -- case 3 is comparing the lib against itself and proves nothing"
+  else
+    ok "the baseline differs from the shipped lib, so the comparison below has something to compare"
+  fi
   # Every shape a pre-ASK-445 caller can produce, compared against the pre-fix
   # lib itself. 1-4 args are what converge.sh and linear-worker.sh pass today;
   # the 5th being EMPTY is what a caller reading an absent key passes tomorrow.
@@ -280,6 +309,116 @@ for f in converge.sh linear-worker.sh; do
     ok "$f handles gate exit 50"
   else
     bad "$f gets exit 50 from the gate and has no branch for it"
+  fi
+done
+
+echo
+echo "== 8. gate 50 DISARMS an arm that already happened (PR #446 finding 1) =="
+# WHY THIS CASE EXISTS. Not arming at gate 50 is only half the fix: step 5 arms
+# UNCONDITIONALLY 42 lines before it runs the review, so at the moment gate 50
+# fires GitHub may already be queued to land the PR -- on a required status the
+# degraded fallback posted itself. A branch that prints "not merged" over that is
+# a sentence, not a gate.
+#
+# A FAKE gh, because the real one needs a real PR and a network. The stub also
+# LOGS every call, which is how the no-op case proves it never wrote.
+GHBIN="$WORK/bin"; mkdir -p "$GHBIN"
+GHPROBES="$WORK/gh-probes"   # one answer per line, popped in order
+GHMERGERC="$WORK/gh-merge-rc"
+GHLOG="$WORK/gh-calls"
+cat > "$GHBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$*" in
+  *"pr view"*)
+    ans="$(sed -n 1p "$GH_PROBES")"
+    sed '1d' "$GH_PROBES" > "$GH_PROBES.rest" && mv "$GH_PROBES.rest" "$GH_PROBES"
+    case "$ans" in
+      true|false) printf '%s\n' "$ans"; exit 0 ;;
+      empty)      printf '\n'; exit 0 ;;
+      *)          exit 1 ;;   # gh could not answer at all
+    esac ;;
+  *"pr merge"*) exit "$(cat "$GH_MERGE_RC")" ;;
+esac
+exit 0
+STUB
+chmod +x "$GHBIN/gh"
+
+disarm_says() {   # disarm_says <probe-answers...> -- <merge-rc>
+                  # -> "<state>|<was>|<count of gh pr merge calls>"
+  : > "$GHPROBES"
+  while [ "$1" != "--" ]; do printf '%s\n' "$1" >> "$GHPROBES"; shift; done
+  shift
+  printf '%s\n' "$1" > "$GHMERGERC"
+  : > "$GHLOG"
+  (
+    export PATH="$GHBIN:$PATH" GH_PROBES="$GHPROBES" GH_MERGE_RC="$GHMERGERC" GH_CALL_LOG="$GHLOG"
+    . "$LIB" >/dev/null 2>&1
+    automerge_disarm 900 "$WORK" /dev/null
+    printf '%s|%s|%s' "$AUTOMERGE_DISARM_STATE" "$AUTOMERGE_DISARM_WAS" \
+      "$(grep -c 'pr merge' "$GH_CALL_LOG" 2>/dev/null | tr -d '[:space:]')"
+  )
+}
+
+if ! ( . "$LIB" >/dev/null 2>&1; declare -F automerge_disarm >/dev/null ); then
+  bad "THE DEFECT: pr-verdict-lib.sh defines no automerge_disarm -- gate 50 can only decline to arm, never undo an arm"
+else
+  ok "automerge_disarm is defined in pr-verdict-lib.sh"
+  D="$(disarm_says true false -- 0)"
+  [ "$D" = "disarmed|1|1" ] \
+    && ok "an ARMED PR is disarmed and reported as having been armed (state|was|merge-calls = $D)" \
+    || bad "an armed PR gave '$D', want 'disarmed|1|1'"
+  # THE NO-OP. An explicit false is the ONLY answer that skips the write, so a PR
+  # sitting at 50 across many scheduled runs does not call gh every time.
+  D="$(disarm_says false -- 0)"
+  [ "$D" = "disarmed|0|0" ] \
+    && ok "an explicitly unarmed PR is a real no-op: gh pr merge never ran (state|was|merge-calls = $D)" \
+    || bad "an unarmed PR gave '$D', want 'disarmed|0|0' -- either it wrote anyway or it mis-reported"
+  # AN UNREADABLE PROBE STILL WRITES. The bias is the opposite of the arm's: a
+  # skipped disarm leaves unreviewed code queued to land.
+  D="$(disarm_says cannot-answer false -- 0)"
+  [ "$D" = "disarmed|0|1" ] \
+    && ok "an unreadable probe still attempts the disarm rather than assuming nothing to do ($D)" \
+    || bad "an unreadable probe gave '$D', want 'disarmed|0|1' -- an unknown state must not short-circuit"
+  D="$(disarm_says empty false -- 0)"
+  [ "$D" = "disarmed|0|1" ] \
+    && ok "an EMPTY probe answer (gh exit 0, no output) also attempts the disarm ($D)" \
+    || bad "an empty probe gave '$D', want 'disarmed|0|1'"
+  # THE DANGEROUS STATE, named: gh refused and the PR is still armed.
+  D="$(disarm_says true true -- 1)"
+  [ "$D" = "armed|1|1" ] \
+    && ok "a refused disarm on a still-armed PR reports armed, which is what a caller pages on ($D)" \
+    || bad "a refused disarm gave '$D', want 'armed|1|1'"
+  # A refusal whose REASON was "auto-merge is not enabled" is the job already done.
+  D="$(disarm_says true false -- 1)"
+  [ "$D" = "disarmed|1|1" ] \
+    && ok "a refusal re-probed as unarmed reads disarmed, not armed ($D)" \
+    || bad "a refusal on an already-unarmed PR gave '$D', want 'disarmed|1|1'"
+  D="$(disarm_says true cannot-answer -- 1)"
+  [ "$D" = "unknown|1|1" ] \
+    && ok "a refusal with an unreadable re-probe is UNKNOWN, never a claim ($D)" \
+    || bad "an unreadable re-probe gave '$D', want 'unknown|1|1'"
+  [ -z "$( . "$LIB" >/dev/null 2>&1; automerge_disarm "" "$WORK" /dev/null; printf '%s' "$AUTOMERGE_DISARM_STATE" )" ] \
+    && ok "an empty PR number disarms NOTHING and returns an empty state" \
+    || bad "an empty PR number did not return an empty state -- gh would act on the cwd's branch"
+fi
+
+# WIRED, not merely defined. A disarm function nobody calls at gate 50 is the
+# same defect this whole issue is about, one layer down.
+for f in linear-worker.sh converge.sh; do
+  if grep -q 'automerge_disarm\|disarm_automerge' "$SCRIPTS/$f"; then
+    ok "$f disarms auto-merge on the degraded path"
+  else
+    bad "THE DEFECT: $f branches on gate 50 but never disarms an auto-merge armed before the review"
+  fi
+done
+# And the call has to sit INSIDE the gate-50 branch, not merely somewhere in the
+# file. Checked by proximity: the disarm appears within 20 lines after the branch.
+for f in linear-worker.sh converge.sh; do
+  if awk '/(GATE|FINAL_GATE)" = "50"/{n=NR} n && NR>n && NR<=n+20 && /disarm/{found=1} END{exit !found}' "$SCRIPTS/$f"; then
+    ok "$f's disarm sits inside the gate-50 branch"
+  else
+    bad "$f calls a disarm but not within the gate-50 branch -- the arm would survive the gate"
   fi
 done
 

@@ -1050,9 +1050,32 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # it is the existing "the review did not produce something we can act on" stop,
   # and the redrives already re-enter a PR parked there, which is exactly the
   # behaviour wanted once codex is back.
+  #
+  # "NOT ARMED" WAS A CLAIM THIS BRANCH COULD NOT MAKE (PR #446 review, finding
+  # 1 -- major, filed against the worker's copy of the same hole). The worker runs
+  # FIRST inside every round of this loop and its step 5 arms unconditionally 42
+  # lines before its own review, so by the time this branch reads the record the
+  # PR can already be queued to land -- on a `kipi/reviewer-approved` the degraded
+  # fallback posted itself. Declining to arm does not unqueue it. So the arm comes
+  # off here, through the one shared disarm, and the record is rewritten so the
+  # next reader is not told GitHub still owns this merge.
   if [ "$GATE" = "50" ]; then
-    say "STOP exit-7: PR #$PR reads '$VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Not merged, not armed. Re-review once codex answers: kipi review $PR --issue $ISSUE --post"
-    bash "$NOTIFY" "converge $ISSUE: PR #$PR is '$VERDICT' but only the degraded Opus fallback reviewed it (codex was down) - held, not merged, until a real review runs: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
+    DEG_AMREC="$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge"
+    automerge_disarm "$PR" "$TARGET_REPO" "$LOG"
+    case "$AUTOMERGE_DISARM_STATE" in
+      disarmed)
+        record_automerge "$DEG_AMREC" "unarmed"
+        [ "$AUTOMERGE_DISARM_WAS" = "1" ] && say "auto-merge DISARMED on PR #$PR by converge -- it was queued to land on a review only the degraded fallback ran"
+        DEG_ARM="not armed" ;;
+      armed)
+        record_automerge "$DEG_AMREC" "armed"
+        DEG_ARM="STILL ARMED and gh refused to turn it off (${AUTOMERGE_DISARM_ERR:-gh printed no reason}) -- it can land unreviewed, run: gh pr merge --disable-auto $PR" ;;
+      *)
+        record_automerge "$DEG_AMREC" "unknown"
+        DEG_ARM="of UNKNOWN arm state -- gh answered neither the disarm nor the state (${AUTOMERGE_DISARM_ERR:-gh printed no reason}), run: gh pr merge --disable-auto $PR" ;;
+    esac
+    say "STOP exit-7: PR #$PR reads '$VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Not merged, $DEG_ARM. Re-review once codex answers: kipi review $PR --issue $ISSUE --post"
+    bash "$NOTIFY" "converge $ISSUE: PR #$PR is '$VERDICT' but only the degraded Opus fallback reviewed it (codex was down) - held, $DEG_ARM. Needs a real review: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
     exit 7
   fi
   if [ "$GATE" = "10" ]; then

@@ -1470,6 +1470,55 @@ arm_automerge() {
   return 0
 }
 
+# disarm_automerge <pr-number> <dir>: take the merge back off the platform, and
+# publish what that reached. Sets $AUTOMERGE to unarmed | armed | unknown.
+#
+# WHY THIS EXISTS (PR #446 review, finding 1 -- major). Step 5 calls
+# arm_automerge UNCONDITIONALLY, forty-two lines before it runs the review. Gate
+# 50 -- "the only review on record is the degraded Opus fallback" -- is decided
+# AFTER that review, so at the moment gate 50 fires, GitHub has already been told
+# to land this PR. The fallback posts `kipi/reviewer-approved` itself, which is
+# the required context holding the PR, so "not arming" was never the whole fix:
+# the arm that already happened has to come off. Without this call the gate-50
+# branches printed an honest sentence over a PR that merged anyway.
+#
+# NOT SYMMETRIC WITH THE ARM, DELIBERATELY. The arm pages once per ISSUE through
+# claim_page_once, because an unarmed approved PR is a stall that does not change
+# between runs. A REFUSED disarm is the opposite class: unreviewed code queued to
+# land, which resolves itself the wrong way within minutes. It pages on every run
+# that sees it, and the flag it clears on success is the arm's own, so a PR that
+# went armed -> disarmed -> armed can page again.
+disarm_automerge() {
+  local pr="$1" dir="$2"
+  AUTOMERGE="unknown"
+  [ -n "$pr" ] || { AUTOMERGE=""; return 0; }
+  automerge_disarm "$pr" "$dir" "$LOG"
+  case "$AUTOMERGE_DISARM_STATE" in
+    disarmed)
+      AUTOMERGE="unarmed"
+      # Only audible when there was something to take off. A PR that was never
+      # armed reaches this every scheduled run for as long as it sits at 50.
+      [ "$AUTOMERGE_DISARM_WAS" = "1" ] && \
+        say "$ISSUE: auto-merge DISARMED on PR #$pr -- it was queued to land on a review only the degraded fallback ran"
+      ;;
+    armed)
+      AUTOMERGE="armed"
+      say "WARN: auto-merge is STILL ARMED on PR #$pr for $ISSUE and gh refused to turn it off: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. GitHub will land code no independent reviewer read. Do: gh pr merge --disable-auto $pr"
+      bash "$NOTIFY" "worker: $ISSUE PR #$pr is armed for auto-merge but only the DEGRADED Opus fallback reviewed it, and gh refused to disarm it: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. It can land unreviewed. Needs a human: gh pr merge --disable-auto $pr" 2>/dev/null || true
+      ;;
+    *)
+      AUTOMERGE="unknown"
+      say "WARN: could not disarm auto-merge on PR #$pr for $ISSUE and could not read its state either: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Whether it can still land unreviewed is UNKNOWN. Do: gh pr merge --disable-auto $pr"
+      bash "$NOTIFY" "worker: $ISSUE PR #$pr had only the DEGRADED fallback review it, and gh could neither disarm auto-merge nor read its state: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Needs a human to confirm it cannot land: gh pr merge --disable-auto $pr" 2>/dev/null || true
+      ;;
+  esac
+  # PUBLISHED for the same reason the arm publishes: converge.sh reads this record
+  # instead of re-probing, and a stale "armed" here would have it report that
+  # GitHub owns the merge on a PR this run just unqueued.
+  record_automerge "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr").automerge" "$AUTOMERGE"
+  return 0
+}
+
 # --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
 # tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
 # already reachable from the tree's HEAD -- i.e. a push from this tree destroys
@@ -1724,7 +1773,11 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # arm_automerge ran, and GitHub then landed the PR the moment `validate`
       # went green -- over a `kipi/reviewer-approved` that the fallback itself
       # had posted. Nothing independent had read the diff and nothing could say
-      # so. Not arming is the fix; the say line is only how a human finds out.
+      # so. Not arming here is HALF the fix, and the half that is not enough: a
+      # PREVIOUS run reached step 5, armed unconditionally 42 lines before its
+      # review, and that arm outlives this run (PR #446 review, finding 1 --
+      # major). So this branch takes the arm off rather than merely declining to
+      # add one. On a PR that was never armed the disarm is a silent no-op.
       #
       # A SKIP, NOT A ROUND. Dispatching Sana would rework an approved diff with
       # no findings to act on, and the review closing that round meets the same
@@ -1735,7 +1788,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # during a long codex outage approved PRs accumulate unmerged. That is the
       # direction the loop should fail in -- an unmerged PR costs a day, an
       # auto-merged unreviewed one costs whatever it broke fleet-wide.
-      say "skip $ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but the only review on record is the DEGRADED Opus fallback (codex was down), so nothing independent has read this code. NOT arming auto-merge. Re-review once codex answers: kipi review $EXISTING_PR --issue $ISSUE --post"
+      disarm_automerge "$EXISTING_PR" "$TARGET_REPO"
+      say "skip $ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but the only review on record is the DEGRADED Opus fallback (codex was down), so nothing independent has read this code. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $EXISTING_PR --issue $ISSUE --post"
       continue
     fi
     if [ "$GATE" = "10" ]; then
@@ -2874,7 +2928,15 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       # said "converged ... auto-merge armed, no human merge needed" over a
       # review codex never ran (ASK-2036). Same posture as the 40 arm above: no
       # page here, because the NEXT run gates this PR at 50 too and says so.
-      say "$ISSUE NOT converged: PR #$PR_NUM reads '$FINAL_VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Not merged. Re-review once codex answers: kipi review $PR_NUM --issue $ISSUE --post"
+      #
+      # THE SENTENCE WAS NOT THE FIX (PR #446 review, finding 1 -- major). This
+      # branch is reached AFTER arm_automerge ran unconditionally 42 lines up, so
+      # "Not merged" was a claim about a PR GitHub had already been told to land
+      # the moment `validate` went green -- over a `kipi/reviewer-approved` the
+      # degraded fallback posted itself. The disarm is what makes the sentence
+      # true; disarm_automerge owns the paging when gh refuses.
+      disarm_automerge "$PR_NUM" "$TREE"
+      say "$ISSUE NOT converged: PR #$PR_NUM reads '$FINAL_VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $PR_NUM --issue $ISSUE --post"
     else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")

@@ -420,8 +420,11 @@ pr_head_sha() {
 # STALENESS, STATED. The record is rewritten every time the worker reaches the
 # PR. A run that never got there (another session's claim, a worktree that could
 # not be made) leaves the previous run's word standing. That is safe in the
-# direction that matters: "armed" only goes false if a human turns auto-merge
-# off, and converge re-arms anything recorded "unarmed"/"unknown" or absent
+# direction that matters: "armed" goes false only when a human turns auto-merge
+# off or when automerge_disarm does it at gate 50 (ASK-2036) -- the disarmer is
+# the SECOND writer of this record and writes it at the same call site, so the
+# next reader never sees a stale "armed" over a PR it just
+# unqueued. converge re-arms anything recorded "unarmed"/"unknown" or absent
 # (ASK-310), which is a no-op on a PR that is in fact armed. Absent means absent -- the
 # reader gets an empty string and must claim nothing.
 record_automerge() {
@@ -484,6 +487,71 @@ automerge_arm() {
     true)       AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_ERR="" ;;
     unknown|"") AUTOMERGE_ARM_STATE="unknown" ;;
     *)          AUTOMERGE_ARM_STATE="unarmed" ;;
+  esac
+  return 0
+}
+
+# automerge_disarm <pr> <dir> [errlog]
+# THE INVERSE OF automerge_arm, and it exists because arming is UNCONDITIONAL
+# (PR #446 review, finding 1 -- major). linear-worker.sh arms at step 5 forty-two
+# lines BEFORE it runs the review, on purpose: `--auto` is not "merge now", so
+# arming first and letting GitHub hold the PR until every required context is
+# green is the whole design. That design has one hole. The required context
+# `kipi/reviewer-approved` is posted by the reviewer ITSELF, including by the
+# degraded Opus fallback during a codex outage -- so a gate that decides after
+# the review "this approval is not independent" (rework_gate exit 50, ASK-2036)
+# was deciding about a PR GitHub had already been told to land. Not arming at the
+# gate is not enough when something armed it before the gate could see the
+# verdict. The arm has to come back off.
+#
+# THE SAFE DIRECTION IS TO WRITE, NOT TO SKIP. gh is only skipped when the probe
+# says EXPLICITLY false: disabling auto-merge on a PR that does not have it is a
+# harmless no-op, while trusting an unreadable probe as "nothing to do" leaves an
+# unreviewed PR queued to land. Same three-state discipline as the arm, opposite
+# bias, and for the same reason the arm's header gives: an empty probe answer is
+# "could not tell", never a reading.
+#
+# Runs in the CALLER's shell, never inside $( ):
+#   AUTOMERGE_DISARM_STATE  disarmed | armed | unknown   ("" when <pr> is empty)
+#   AUTOMERGE_DISARM_WAS    1 when the probe found it ARMED before this call
+#   AUTOMERGE_DISARM_ERR    gh's own refusal, one line, "" when it disarmed
+# STATE="armed" after this call is the state a caller must PAGE on: gh refused and
+# GitHub still owns the merge on code no independent reviewer read.
+automerge_disarm() {
+  local pr="${1:-}" dir="${2:-.}" errlog="${3:-/dev/null}" probe err
+  AUTOMERGE_DISARM_STATE="unknown"; AUTOMERGE_DISARM_WAS=0; AUTOMERGE_DISARM_ERR=""
+  # `gh pr merge --disable-auto ''` acts on whatever branch the cwd is on, so an
+  # empty number is not "disarm nothing", it is "disarm something else".
+  [ -n "$pr" ] || { AUTOMERGE_DISARM_STATE=""; return 0; }
+  if [ ! -d "$dir" ]; then
+    AUTOMERGE_DISARM_ERR="disarm dir '$dir' does not exist, so gh never ran"
+    return 0
+  fi
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  # ONLY an explicit false short-circuits. "unknown" and "" fall through to the
+  # write, per the bias stated in the header.
+  if [ "$probe" = "false" ]; then
+    AUTOMERGE_DISARM_STATE="disarmed"; return 0
+  fi
+  [ "$probe" = "true" ] && AUTOMERGE_DISARM_WAS=1
+  if err="$( cd "$dir" && gh pr merge --disable-auto "$pr" 2>&1 >/dev/null )"; then
+    AUTOMERGE_DISARM_STATE="disarmed"; return 0
+  fi
+  AUTOMERGE_DISARM_ERR="$(printf '%s' "$err" | tr '\n' ' ' | sed 's/  */ /g; s/ $//' | cut -c1-300)"
+  # ASK AGAIN before reporting it still armed: "auto-merge is not enabled" is one
+  # of the reasons `gh pr merge --disable-auto` refuses, and that refusal means
+  # the job is already done.
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  case "$probe" in
+    false)      AUTOMERGE_DISARM_STATE="disarmed"; AUTOMERGE_DISARM_ERR="" ;;
+    true)       AUTOMERGE_DISARM_STATE="armed" ;;
+    *)          AUTOMERGE_DISARM_STATE="unknown" ;;
   esac
   return 0
 }
