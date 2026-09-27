@@ -786,6 +786,64 @@ def test_no_engine_added_kwarg_reaches_an_INJECTED_callable_unguarded():
           "_BASE_CONTRACT if every instance provably already takes it.")
 
 
+def test_the_boundary_guard_is_a_PUBLIC_symbol_a_binder_can_import():
+    """ASK-1937. The OTHER half of the injection boundary is the binder's.
+
+    PR #386 put one chokepoint in this module and mutation-verified the ENGINE
+    half at 6 of 6 call sites. The half it did not reach is the deployment's
+    `cycle._gate_and_judge`, which binds the five injected dependencies and calls
+    through from a repo this package cannot see or commit to. An underscored name
+    is what makes that binder write its own copy of the guard, and a second copy
+    is where the two halves drift -- the same class the chokepoint replaced five
+    per-kwarg blocks to close.
+
+    So the guard carries a public name, and THIS IMPORT is the assertion that
+    fails when the name is renamed or removed. Nothing here reads the instance or
+    tests the binder; that is ASK-1937's 'Not doing' and belongs to an issue
+    filed against the instance, which can then import what this exports.
+    """
+    from voiceloop import gate_and_judge as gj
+    from voiceloop.gate_and_judge import gated_kwargs
+
+    assert gj._gated is gated_kwargs, (
+        "the back-compat alias no longer points at the public guard, so the six "
+        "call sites in this module and an instance binder on the public name are "
+        "running two different functions.")
+
+    # The older contract, truthfully: takes `channel`, has never heard of
+    # `recent_openers`. A permissive `**kwargs` signature would make `_accepts`
+    # answer True for everything and this would prove nothing.
+    def older_callee(text, channel=None):
+        return "reached"
+
+    assert not gj._accepts(older_callee, "recent_openers"), (
+        "the fixture advertises the kwarg it is pinned NOT to take, so the drive "
+        "below is vacuous.")
+
+    # Both read out of the module that owns them. A literal here would be a
+    # second source of truth that agrees on the day it is written.
+    label, kwarg = "decide.decide_candidate", "recent_openers"
+    assert gj._DROP_DISPOSITION[(label, kwarg)] != "fatal", (
+        "this pair became fatal, so the guard now REFUSES instead of degrading "
+        "and this drive is asserting the wrong half of the contract.")
+
+    trail = {}
+    kept = gated_kwargs(older_callee, label, trail,
+                        channel="linkedin", **{kwarg: ["an opener"]})
+
+    assert kept == {"channel": "linkedin"}, (
+        f"the public guard returned {kept}, so a kwarg the injected callee does "
+        f"not take reached it. On an instance still on that contract this is a "
+        f"TypeError and the whole lane down.")
+    assert trail.get("dropped_kwargs") == [
+        {"callee": label, "kwarg": kwarg,
+         "disposition": gj._DROP_DISPOSITION[(label, kwarg)],
+         "value_was_none": False, "refused": False}], (
+        f"the public guard dropped the kwarg without NAMING the callee and the "
+        f"kwarg: {trail.get('dropped_kwargs')}. That is the ASK-1938 defect "
+        f"arriving through the exported name.")
+
+
 def test_each_gated_kwarg_really_degrades_on_an_older_callee():
     """LEAVE ONE OUT, then RUN. The proof that `_gated` does its job.
 

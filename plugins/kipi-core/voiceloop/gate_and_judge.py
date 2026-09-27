@@ -35,7 +35,11 @@ every line moved is a diff nobody can review. The parameters are named `decide` 
 that is worth more than a naming convention.
 
 The deployment's `cycle._gate_and_judge` binds the five and calls through, so
-`run_slot` and its three invariants were not touched.
+`run_slot` and its three invariants were not touched. That binder is the OTHER
+half of the injection boundary and it lives in a repo this package cannot see, so
+the guard below is exported as `gated_kwargs` (ASK-1937): a binder threading a
+kwarg of its own imports that name rather than writing a second copy of the
+check, which is where the two halves would drift.
 """
 from __future__ import annotations
 
@@ -112,8 +116,15 @@ _DROP_DISPOSITION = {
 }
 
 
-def _gated(fn, label, trail, **maybe):
+def gated_kwargs(fn, label, trail, **maybe):
     """Keep only the kwargs this INJECTED callable actually takes, and SAY SO.
+
+    PUBLIC, and that is the point of the name (ASK-1937). Both sides of the
+    injection boundary need this check: the engine half is below, and the
+    instance's binder threads its own kwargs through the same door by importing
+    `from voiceloop.gate_and_judge import gated_kwargs`. Under the old private
+    name a binder's only options were reaching past an underscore or writing its
+    own copy, and a second copy is where a cross-repo contract drifts.
 
     THE CHOKEPOINT (RCA 2026-09-20, after PR #386 rounds 3 through 6 patched the
     same class four times). Rounds 3, 4 and 5 each guarded one kwarg at one site
@@ -162,6 +173,15 @@ def _gated(fn, label, trail, **maybe):
                 f"or pass {k}=None to accept the default on purpose.")
     _record_drops(trail, dropped)
     return keep
+
+
+# THE BACK-COMPAT ALIAS, and it is what the six call sites below still say. The
+# rename is a one-line export, not a six-line sweep through a body whose
+# reviewability is the reason nothing in this module was ever renamed (see the
+# `why they keep their original NAMES` paragraph in the module docstring).
+# `test_the_boundary_guard_is_a_PUBLIC_symbol_a_binder_can_import` pins the two
+# names to ONE function object, so a caller on either is running the same check.
+_gated = gated_kwargs
 
 
 def _record_drops(trail, dropped):
