@@ -1004,5 +1004,208 @@ class TestCorrectionsReachSearchText(TestCorrections):
         self.assertEqual(self.correct()[0], 2)
 
 
+class TestCheckedOutPageIsNotAuthored(Base):
+    """sp-a4087ae8 / ASK-2147. `git worktree add` WRITES every tracked file it checks
+    out, so every page in the new tree carries a fresh mtime and is absent from the Pre
+    snapshot. The snapshot arm reads a first sighting as new, so Stop refused the turn
+    over q-system/marketing/brand-kit.html, tracked since 2026-04-06 and never touched
+    by the branch (2026-09-23).
+
+    Reproduced here as the mechanism rather than the command: the page is absent when
+    the Pre snapshot is taken and present with its committed bytes when Post runs, which
+    is exactly what a checkout does to the scanner."""
+
+    def git(self, *args, when=None):
+        e = dict(os.environ)
+        if when:
+            e["GIT_AUTHOR_DATE"] = e["GIT_COMMITTER_DATE"] = when
+        return subprocess.run(["git", "-C", str(self.inst), "-c", "user.email=t@t", "-c", "user.name=t",
+                               "-c", "commit.gpgsign=false", *args], capture_output=True, text=True, env=e)
+
+    def setUp(self):
+        super().setUp()
+        self.committed = "<html><body><h1>You work more hours than you bill.</h1></body></html>"
+        self.git("init", "-q")
+        self.git("add", "-A")
+        # dated, not committed "now": the scar's page was committed 2026-04-06 and checked out
+        # months later, and the exemption asks whether the blob predates THIS command. A base
+        # commit made in the same second as the Pre snapshot is the one input that cannot answer
+        # that question, so the fixture states the age instead of racing the clock.
+        r = self.git("commit", "-q", "-m", "base", when="2026-04-06T12:00:00")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def checkout_cycle(self, content):
+        """Pre snapshot with the page absent, then the page appears with `content`."""
+        self.page.unlink()
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-1"}, self.env)
+        time.sleep(0.05)
+        self.page.write_text(content)
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-1"}, self.env)
+        self.assertEqual(rc, 0)
+        return self.stop()
+
+    def test_page_matching_head_is_not_enrolled(self):
+        rc, out = self.checkout_cycle(self.committed)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(self.page.name, out)
+
+    def test_page_the_session_really_wrote_is_still_enrolled(self):
+        """The mutation guard: without it the fix passes by disabling detection."""
+        rc, out = self.checkout_cycle(self.committed + "<!-- this session wrote this -->")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads a 000-mode file")
+    def test_unreadable_page_fails_open_and_stays_in_scope(self):
+        """HEAD resolves the blob without touching the working file, so the second arm is
+        reachable on its own: a page deleted or made unreadable between the two git calls.
+        Unreadable means no evidence, and no evidence keeps the page in scope."""
+        self.page.unlink()
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-3"}, self.env)
+        time.sleep(0.05)
+        self.page.write_text(self.committed)
+        self.page.chmod(0o000)
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-3"}, self.env)
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.page.chmod(0o644)   # before tearDown's rmtree, and never in an addCleanup: those run AFTER it
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    def test_untracked_page_has_no_committed_blob_and_stays_in_scope(self):
+        new = self.round / "Seam-laptop.html"
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "python3 build.py"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-2"}, self.env)
+        time.sleep(0.05)
+        new.write_text("<html><body>generated, never committed</body></html>")
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "python3 build.py"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-2"}, self.env)
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(new.name, out)
+
+    def bash(self, ev, tuid, cmd="python3 build.py && git add -A && git commit -m built", env=None):
+        return run([], {"hook_event_name": ev, "tool_name": "Bash", "session_id": self.sid,
+                        "tool_input": {"command": cmd}, "cwd": str(self.inst),
+                        "tool_use_id": tuid}, {**self.env, **(env or {})})
+
+    def test_page_written_and_committed_in_one_command_is_still_enrolled(self):
+        """PR #456 review round 1, MAJOR. `python3 build.py && git add -A && git commit` is ONE
+        Bash call, so by the time PostToolUse reads the page its bytes ARE the blob at HEAD.
+        Bytes-against-HEAD alone therefore read a page the session genuinely authored as a
+        checkout, the ledger never got the entry, and Stop passed. Both reviewers found it
+        independently; `git commit:*` is allowlisted and agents commit per increment, so an
+        &&-chained build-then-commit is an ordinary agent shell line, not a contrived one."""
+        new = self.round / "Seam-laptop.html"
+        self.bash("PreToolUse", "tu-4")
+        time.sleep(0.05)
+        new.write_text("<html><body>built and committed inside one Bash call</body></html>")
+        self.git("add", "-A")
+        r = self.git("commit", "-q", "-m", "built")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rc, _ = self.bash("PostToolUse", "tu-4")
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(new.name, out)
+
+    def test_unrelated_commit_in_the_same_command_leaves_a_checkout_exempt(self):
+        """The guard on the fix's shape. "Did HEAD move during this call" is the cheap version of
+        the question and it is the wrong one: `git commit -m x && git worktree add ../wt` moves
+        HEAD and checks out pages in the same call, which would re-block the scar. The question
+        is per PATH -- this page's own blob still predates the call."""
+        self.page.unlink()
+        self.bash("PreToolUse", "tu-5", cmd="git commit -m notes && git worktree add ../wt")
+        time.sleep(0.05)
+        (self.inst / "notes.md").write_text("unrelated to any page\n")
+        self.git("add", "notes.md")
+        r = self.git("commit", "-q", "-m", "notes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.page.write_text(self.committed)
+        rc, _ = self.bash("PostToolUse", "tu-5", cmd="git commit -m notes && git worktree add ../wt")
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(self.page.name, out)
+
+    def no_git_path(self):
+        """A PATH with no git binary in it, so `git` resolves to nothing."""
+        empty = self.tmp / "no-bin"
+        empty.mkdir(exist_ok=True)
+        return {"PATH": str(empty)}
+
+    def test_missing_git_binary_does_not_abort_the_post_event(self):
+        """PR #456 review round 1, minor: the docstring claimed it fails OPEN with no git, and
+        `subprocess.run(["git", ...])` RAISES FileNotFoundError instead. Nothing wraps `hook()`,
+        so the Post event died before `save_ledger` and every page of that call was lost from the
+        ledger -- the strict-by-default arm silently became no enrollment at all."""
+        new = self.round / "Seam-laptop.html"
+        self.bash("PreToolUse", "tu-6")
+        time.sleep(0.05)
+        new.write_text("<html><body>written with no git on PATH</body></html>")
+        rc, out = self.bash("PostToolUse", "tu-6", env=self.no_git_path())
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("FileNotFoundError", out)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(new.name, out)
+
+    def test_an_unreadable_commit_date_fails_open_and_stays_in_scope(self):
+        """The age question's own fail-open arm, reachable only when the blob lookups SUCCEED and
+        the date does not: a git whose `log` prints something unparseable. That is no evidence
+        about when the blob landed, and no evidence keeps the page in scope. The stand-in
+        delegates everything else to the real git rather than faking two shas that would then
+        agree for a reason the test wrote itself."""
+        bin_dir = self.tmp / "odd-bin"
+        bin_dir.mkdir()
+        shim = bin_dir / "git"
+        shim.write_text('#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = "log" ]; then'
+                        ' echo "not-a-timestamp"; exit 0; fi\ndone\nexec '
+                        + shutil.which("git") + ' "$@"\n')
+        shim.chmod(0o755)
+        self.page.unlink()
+        self.bash("PreToolUse", "tu-8", cmd="git worktree add ../wt")
+        time.sleep(0.05)
+        self.page.write_text(self.committed)
+        rc, out = self.bash("PostToolUse", "tu-8", cmd="git worktree add ../wt",
+                            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+        self.assertEqual(rc, 0, out)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    def test_a_retired_round_is_discarded_before_any_git_call(self):
+        """PR #456 review round 1, minor: the arm sat ABOVE the free `retired_reason` check, so a
+        retired round paid two git spawns per page to be thrown away -- and a checkout, the
+        motivating case, hands it every page at once. A `git` stand-in on PATH records the calls;
+        a retired round must make none."""
+        (self.round / "RETIRED").write_text("2026-09-24 published by hand, founder ruling\n")
+        log = self.tmp / "git-calls.txt"
+        bin_dir = self.tmp / "fake-bin"
+        bin_dir.mkdir()
+        shim = bin_dir / "git"
+        shim.write_text(f'#!/bin/sh\necho "$@" >> {log}\nexit 1\n')
+        shim.chmod(0o755)
+        self.page.unlink()
+        self.bash("PreToolUse", "tu-7", cmd="git worktree add ../wt")
+        time.sleep(0.05)
+        self.page.write_text(self.committed)
+        rc, out = self.bash("PostToolUse", "tu-7", cmd="git worktree add ../wt",
+                            env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(log.exists(), f"git was called for a retired round: {log.read_text() if log.exists() else ''}")
+
+
 if __name__ == "__main__":
     unittest.main()
