@@ -18,7 +18,49 @@ memory write.
 from __future__ import annotations
 
 import datetime
+import os
 import re
+from pathlib import Path
+
+# --- where the auto-memory corpus lives -------------------------------------
+
+# Claude Code names a project's state directory after the project path with
+# every character that is not a letter or a digit turned into '-'. NOT just '/'.
+#
+# SCAR (ASK-1903 round 2, PR #458): four scripts each held their own
+# `project_dir.replace("/", "-")`. That agrees with the producer for a path made
+# only of letters, digits and slashes, and disagrees the moment the path carries
+# a dot or an underscore -- which is most of this fleet. Seven of 28 registered
+# instances have an underscore, and every git worktree here lives under
+# `~/.config/`. The four copies agreed with EACH OTHER, so nothing went red:
+# memory-lint swept a directory that does not exist, reported "nothing to
+# sweep", and validate-separation's Gate 1.2b turned that into
+# `PASS no auto-memory directory at <path>` -- a false statement about the
+# filesystem that hid three live structural findings.
+#
+# Measured, not assumed. The anchoring pair is producer-observed and pinned in
+# test_memory_lint.py OBSERVED_SLUGS:
+#   /Users/assafkipnis/.config/kipi/worktrees/ask-1903
+#     -> -Users-assafkipnis--config-kipi-worktrees-ask-1903
+# The underscore half was observed the same way on a client instance; this repo
+# is public, so that pair is pinned in a generic path instead of being named.
+#
+# ONE OWNER. A reader that wants this path imports it; it is never restated.
+_NON_ALNUM = re.compile(r"[^a-zA-Z0-9]")
+
+
+def claude_project_slug(project_dir: str) -> str:
+    """The directory name Claude Code gives `project_dir` under ~/.claude/projects."""
+    return _NON_ALNUM.sub("-", project_dir)
+
+
+def claude_project_memory_dir(project_dir: str = None) -> Path:
+    """The auto-memory corpus for a project path (default: this session's)."""
+    if project_dir is None:
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    return (Path.home() / ".claude" / "projects"
+            / claude_project_slug(project_dir) / "memory")
+
 
 # --- the supersession vocabulary -------------------------------------------
 

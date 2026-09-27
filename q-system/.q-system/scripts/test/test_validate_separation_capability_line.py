@@ -93,19 +93,30 @@ class MemoryLintClassification(unittest.TestCase):
 
 class MemoryCorpusDerivation(unittest.TestCase):
     def test_corpus_path_comes_from_memory_lint_itself(self):
-        """One derivation of one path, owned by memory-lint.
+        """One derivation of one path, and the validator is not one of its owners.
 
-        memory-lint's own docstring says two derivations of this path is how a
-        sweep and a hook read different corpora and both report clean. So the
-        validator asks the owner instead of restating ~/.claude/projects/<slug>.
+        Round 1 of this test restated the slug as `SCRIPT_DIR.replace("/", "-")`
+        directly below a docstring saying it refuses to restate it -- which is
+        why it stayed green while naming a directory Claude Code never creates
+        (PR #458 review, minor). The expectation now comes from
+        `memory_conventions`, the single owner, and what is asserted here is the
+        BINDING: the validator reports whatever that owner says, and the answer
+        carries the project path rather than some default.
         """
         derived = VS.memory_corpus_dir()
         self.assertIsNotNone(derived, "validator could not load memory-lint's derivation")
-        slug = str(VS.SCRIPT_DIR).replace("/", "-")
+
+        sys.path.insert(0, str(REPO_ROOT / "q-system" / ".q-system" / "scripts"))
+        import memory_conventions
+
         self.assertEqual(
             os.path.normpath(derived),
-            os.path.normpath(os.path.join(str(Path.home()), ".claude", "projects", slug, "memory")),
+            os.path.normpath(str(memory_conventions.claude_project_memory_dir(str(VS.SCRIPT_DIR)))),
         )
+        # A derivation that returned an empty slug, or ignored the project path
+        # and answered for the cwd, would satisfy the equality above only
+        # because both sides would be wrong together.
+        self.assertIn(memory_conventions.claude_project_slug(str(VS.SCRIPT_DIR)), derived)
 
     def test_derivation_does_not_leak_the_pinned_env(self):
         prior = os.environ.get("CLAUDE_PROJECT_DIR")

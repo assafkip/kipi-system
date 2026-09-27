@@ -23,16 +23,22 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from memory_conventions import claude_project_memory_dir  # noqa: E402
+
 
 def get_project_dir():
     return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
 
 def get_memory_dir():
-    """Compute the auto-memory directory path from project dir."""
-    project_dir = get_project_dir()
-    project_slug = project_dir.replace("/", "-")
-    return Path.home() / ".claude" / "projects" / project_slug / "memory"
+    """The auto-memory directory, asked of the one owner of that derivation.
+
+    This function used to carry its own `replace("/", "-")`, as did the sweep
+    and the confidence surfacer. All three agreed and all three were wrong for
+    any path holding a dot or an underscore (ASK-1903).
+    """
+    return claude_project_memory_dir(get_project_dir())
 
 
 def parse_memory_file(file_path):

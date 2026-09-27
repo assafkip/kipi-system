@@ -22,6 +22,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from memory_conventions import claude_project_memory_dir  # noqa: E402
+
 LOW_CONFIDENCE_THRESHOLD = 0.5
 LOW_TRUST_PROVENANCE = {"inferred", "observed"}
 
@@ -31,10 +34,14 @@ def get_project_dir():
 
 
 def get_memory_dir():
-    """Compute the auto-memory directory path from project dir."""
-    project_dir = get_project_dir()
-    project_slug = project_dir.replace("/", "-")
-    return Path.home() / ".claude" / "projects" / project_slug / "memory"
+    """The auto-memory directory, asked of the one owner of that derivation.
+
+    Shared with memory-freshness-check.py and memory-lint.py, which is what the
+    docstring above already claimed while each held its own copy. All three
+    copies agreed and all three were wrong for a path with a dot or an
+    underscore (ASK-1903).
+    """
+    return claude_project_memory_dir(get_project_dir())
 
 
 def parse_memory_file(file_path):

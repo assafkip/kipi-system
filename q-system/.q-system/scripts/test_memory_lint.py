@@ -150,6 +150,62 @@ def inject_grandfathered(root):
     path.write_text(path.read_text() + "- [Bare](bare.md) - hook\n")
 
 
+# --- where the corpus lives -------------------------------------------------
+
+# AN OBSERVED PAIR, not a restatement of the derivation under test: a project
+# path this machine ran a session in, beside the transcript directory Claude
+# Code itself reported for that session. Deriving the expectation from
+# `claude_project_slug` would assert the function equals itself, and the point
+# of ASK-1903 is that the old derivation was internally consistent and still
+# named a directory the producer never creates.
+#
+# Read live from this worktree's own SessionStart hook output, which wrote to
+# .../projects/-Users-assafkipnis--config-kipi-worktrees-ask-1903/ while
+# CLAUDE_PROJECT_DIR was /Users/assafkipnis/.config/kipi/worktrees/ask-1903.
+# The double hyphen is the whole finding: the dot in `.config` is a separator.
+#
+# The second pair is the underscore half of the same character class, in a
+# GENERIC path. The producer observation behind it is a client instance whose
+# corpus the PR #458 reviewer swept at the hyphenated slug; this repo is public,
+# so the engagement is not named here. The real pair above is what anchors the
+# class to the producer; this one pins that `_` is in it.
+OBSERVED_SLUGS = (
+    ("/Users/assafkipnis/.config/kipi/worktrees/ask-1903",
+     "-Users-assafkipnis--config-kipi-worktrees-ask-1903"),
+    ("/Users/assafkipnis/projects/consulting/projects/An_Example_Co",
+     "-Users-assafkipnis-projects-consulting-projects-An-Example-Co"),
+)
+
+
+def check_slug_derivation():
+    """ASK-1903: the corpus path memory-lint picks must be the one that exists.
+
+    Gate 1.2b reports "no auto-memory directory at <path>" as a PASS. A
+    derivation that disagrees with the producer makes that PASS a false
+    statement about the filesystem, and hides every finding in the corpus that
+    does exist -- three live structural findings when this was measured.
+    """
+    sys.path.insert(0, str(HERE))
+    import memory_conventions
+
+    for project_dir, expected in OBSERVED_SLUGS:
+        got = memory_conventions.claude_project_slug(project_dir)
+        check("slug for %s" % project_dir, got == expected,
+              "expected %s\n     got %s" % (expected, got))
+
+    # The mutant killer for the decision point above. A derivation that mapped
+    # every character to '-' (or that lower-cased, or collapsed runs) would pass
+    # the two pairs above and still miss the corpus for an ordinary path.
+    plain = "/Users/x/projects/demo"
+    check("an alphanumeric path is untouched apart from the separators",
+          memory_conventions.claude_project_slug(plain) == "-Users-x-projects-demo",
+          memory_conventions.claude_project_slug(plain))
+
+    mem = memory_conventions.claude_project_memory_dir(OBSERVED_SLUGS[0][0])
+    check("the memory dir is the slug plus /memory",
+          mem.name == "memory" and mem.parent.name == OBSERVED_SLUGS[0][1], str(mem))
+
+
 def main():
     # --- GREEN: the clean fixture ------------------------------------------
     with tempfile.TemporaryDirectory() as tmp:
@@ -227,6 +283,8 @@ def main():
         rc, out = run_lint(root)
         check("file with no frontmatter is advisory, never a crash",
               rc == 0 and "no-frontmatter.md: no status and no as_of" in out, out)
+
+    check_slug_derivation()
 
     if FAILURES:
         print(f"\nFAILED {len(FAILURES)}/{CHECKS}\n")
