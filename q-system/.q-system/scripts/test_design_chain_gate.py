@@ -1004,5 +1004,90 @@ class TestCorrectionsReachSearchText(TestCorrections):
         self.assertEqual(self.correct()[0], 2)
 
 
+class TestCheckedOutPageIsNotAuthored(Base):
+    """sp-a4087ae8 / ASK-2147. `git worktree add` WRITES every tracked file it checks
+    out, so every page in the new tree carries a fresh mtime and is absent from the Pre
+    snapshot. The snapshot arm reads a first sighting as new, so Stop refused the turn
+    over q-system/marketing/brand-kit.html, tracked since 2026-04-06 and never touched
+    by the branch (2026-09-23).
+
+    Reproduced here as the mechanism rather than the command: the page is absent when
+    the Pre snapshot is taken and present with its committed bytes when Post runs, which
+    is exactly what a checkout does to the scanner."""
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.inst), "-c", "user.email=t@t", "-c", "user.name=t",
+                               "-c", "commit.gpgsign=false", *args], capture_output=True, text=True)
+
+    def setUp(self):
+        super().setUp()
+        self.committed = "<html><body><h1>You work more hours than you bill.</h1></body></html>"
+        self.git("init", "-q")
+        self.git("add", "-A")
+        r = self.git("commit", "-q", "-m", "base")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def checkout_cycle(self, content):
+        """Pre snapshot with the page absent, then the page appears with `content`."""
+        self.page.unlink()
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-1"}, self.env)
+        time.sleep(0.05)
+        self.page.write_text(content)
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-1"}, self.env)
+        self.assertEqual(rc, 0)
+        return self.stop()
+
+    def test_page_matching_head_is_not_enrolled(self):
+        rc, out = self.checkout_cycle(self.committed)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn(self.page.name, out)
+
+    def test_page_the_session_really_wrote_is_still_enrolled(self):
+        """The mutation guard: without it the fix passes by disabling detection."""
+        rc, out = self.checkout_cycle(self.committed + "<!-- this session wrote this -->")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads a 000-mode file")
+    def test_unreadable_page_fails_open_and_stays_in_scope(self):
+        """HEAD resolves the blob without touching the working file, so the second arm is
+        reachable on its own: a page deleted or made unreadable between the two git calls.
+        Unreadable means no evidence, and no evidence keeps the page in scope."""
+        self.page.unlink()
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-3"}, self.env)
+        time.sleep(0.05)
+        self.page.write_text(self.committed)
+        self.page.chmod(0o000)
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "git worktree add ../wt"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-3"}, self.env)
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.page.chmod(0o644)   # before tearDown's rmtree, and never in an addCleanup: those run AFTER it
+        self.assertEqual(rc, 2, out)
+        self.assertIn(self.page.name, out)
+
+    def test_untracked_page_has_no_committed_blob_and_stays_in_scope(self):
+        new = self.round / "Seam-laptop.html"
+        run([], {"hook_event_name": "PreToolUse", "tool_name": "Bash", "session_id": self.sid,
+                 "tool_input": {"command": "python3 build.py"}, "cwd": str(self.inst),
+                 "tool_use_id": "tu-2"}, self.env)
+        time.sleep(0.05)
+        new.write_text("<html><body>generated, never committed</body></html>")
+        rc, _ = run([], {"hook_event_name": "PostToolUse", "tool_name": "Bash", "session_id": self.sid,
+                         "tool_input": {"command": "python3 build.py"}, "cwd": str(self.inst),
+                         "tool_use_id": "tu-2"}, self.env)
+        self.assertEqual(rc, 0)
+        rc, out = self.stop()
+        self.assertEqual(rc, 2, out)
+        self.assertIn(new.name, out)
+
+
 if __name__ == "__main__":
     unittest.main()

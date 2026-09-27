@@ -1974,6 +1974,29 @@ def _git(page: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
 
 
+def _matches_committed(page: Path) -> bool:
+    """True only when the page's bytes are identical to its committed version at HEAD.
+
+    A first sighting is not authorship. `git worktree add` WRITES every tracked file it
+    checks out, so a new worktree gives every page in it a fresh mtime AND leaves it
+    absent from the Pre snapshot, which the content arm below reads as new. Stop then
+    refused the turn over q-system/marketing/brand-kit.html, tracked since 2026-04-06
+    and never touched by the branch (2026-09-23, sp-a4087ae8). Bytes equal to the
+    committed blob mean the session did not author the page, whatever its mtime says.
+
+    Fails OPEN (False, so the page is treated as authored) on anything it cannot read:
+    no git, no HEAD, or an untracked file with no committed blob. A gate that goes quiet
+    on a repo it cannot read protects nothing (design-auto-invoke.md).
+    """
+    blob = _git(page, "rev-parse", f"HEAD:./{page.name}")
+    if blob.returncode or not blob.stdout.strip():
+        return False
+    cur = _git(page, "hash-object", "--", page.name)
+    if cur.returncode or not cur.stdout.strip():
+        return False
+    return blob.stdout.strip() == cur.stdout.strip()
+
+
 def _committed_text(page: Path, commit: str) -> str | None:
     top = _git(page, "rev-parse", "--show-toplevel")
     if top.returncode:
@@ -3543,6 +3566,11 @@ def _hook(payload: dict) -> int:
             # yields the same bytes does not enroll: nothing new exists to put through the
             # chain, and the page's earlier state was already judged or never this session's.
             if before is not None and before.get(str(here)) == _file_sha(here):
+                continue
+            # the snapshot arm above only answers for a page that already existed when Pre ran.
+            # A checkout makes a page APPEAR, so it has no snapshot entry and reads as new; its
+            # bytes against HEAD are the only evidence left (see _matches_committed, ASK-2147).
+            if _matches_committed(here):
                 continue
             if retired_reason(here):
                 continue            # a retired round enrolls nothing (see retired_reason)
