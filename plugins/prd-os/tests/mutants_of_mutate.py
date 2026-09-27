@@ -38,6 +38,21 @@ MUTANTS = [
     ("D6  verdict hardcoded to KILLED",
      '    verdict = "KILLED" if run_exit != 0 else "SURVIVED"',
      '    verdict = "KILLED"'),
+    ("D7  baseline green-check off",
+     "    if baseline_exit != 0:",
+     "    if baseline_exit is None:"),
+    ("D8  baseline restore not checked",
+     "    if not _restore(path, original, original_mode):",
+     "    if _restore(path, original, original_mode) is None:"),
+    ("D9  concurrent-run refusal off",
+     "        if not acquire(lock_fh):",
+     "        if acquire(lock_fh) is None:"),
+    ("D10 mode not restored with the bytes",
+     "            _chmod_writable(path, mode)",
+     "            pass"),
+    ("D11 --json ignored on the refusal path",
+     '    if getattr(args, "as_json", False):',
+     '    if getattr(args, "as_json", False) is None:'),
 ]
 
 # Two guards are deliberately NOT in the table above, and the reason is written
@@ -62,6 +77,10 @@ def main() -> int:
     # 2026-09-27: one broken test turned a 7-row table all-KILLED, including the
     # two rows that had SURVIVED minutes earlier. Same family as the scar the
     # harness exists for -- the instrument failing in the reassuring direction.
+    #
+    # mutate.py now measures its own baseline per experiment (PR #455 review,
+    # major), so this check is no longer the only guard. It stays because it
+    # fails ONCE with a readable message instead of N times with a per-row one.
     baseline = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", SUITE], capture_output=True, text=True
     )

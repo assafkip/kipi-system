@@ -84,10 +84,11 @@ How to move through complex work without shipping a confident wrong answer.
    (a regenerable fixture or sandbox environment). Then corrupt a valid input and
    prove the check FAILS on the violation, so a green result is not a rubber stamp.
 
-   **A mutation result is TWO claims, and only one usually gets checked.** "The
-   mutant was KILLED" is meaningless until "the mutant was APPLIED" is proven,
-   because an unapplied mutant and a well-defended one are identical bytes on the
-   terminal. Every mutation run therefore:
+   **A mutation result is THREE claims, and usually only one gets checked.** "The
+   mutant was KILLED" is meaningless until "the mutant was APPLIED" and "the check
+   was GREEN first" are both proven. An unapplied mutant and a well-defended one
+   are identical bytes on the terminal, and so are a killed mutant and a command
+   that was already red. Every mutation run therefore:
    - matches its anchor **exactly once** before writing, and proves the bytes on
      disk moved (digest, not length: a length-preserving mutant is legitimate);
    - exits non-zero as a **FAILED EXPERIMENT** on an anchor miss or an ambiguous
@@ -97,8 +98,13 @@ How to move through complex work without shipping a confident wrong answer.
    - pins `PYTHONDONTWRITEBYTECODE=1` AND a bytecode-cache path outside the source
      tree. The first stops the run LEAVING a cache; only the second stops it
      READING a stale one, and the stale read is what measures the unmutated module;
-   - starts from a **green baseline**. A mutation table run against an already-red
-     suite kills every mutant trivially and prints a perfect score.
+   - starts from a **green baseline**, measured per experiment against the
+     unmutated file rather than trusted once at the top of a table. A mutation run
+     against an already-red check kills every mutant trivially and prints a
+     perfect score;
+   - holds the subject **one run at a time**. Two concurrent runs each read the
+     other's mutant as "the original" and each restore it, so the mutant stays on
+     disk while both report a clean tree.
 
    Scar 2026-09-20 (rca-injection-boundary, PR #386): five bad instruments across
    six review rounds by two independent sessions, every one failing in the

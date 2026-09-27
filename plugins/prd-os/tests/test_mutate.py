@@ -16,7 +16,9 @@ A mutation result is TWO claims. "The mutant was killed" is meaningless until
 Every case runs against tmp_path. Nothing here touches a live data path.
 """
 
+import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import py_compile
@@ -27,6 +29,19 @@ from pathlib import Path
 import pytest
 
 HARNESS = Path(__file__).resolve().parents[1] / "scripts" / "mutate.py"
+
+
+def load_harness():
+    """Import the harness as a module so a test can DERIVE a value it owns.
+
+    Used for the lock path. Restating the lock-path formula here would create a
+    second source of truth that agrees on the day it is written and stops
+    agreeing silently (lessons: derive-a-value-from-its-owner).
+    """
+    spec = importlib.util.spec_from_file_location("mutate_harness", HARNESS)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 # Exit-code contract, restated here only so a reader of this file sees it; the
 # harness is the owner and cmd_main() is the single place that decides.
@@ -116,7 +131,10 @@ def test_anchor_matching_twice_is_failed_experiment(tmp_path):
     )
     assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
     assert "FAILED-TO-APPLY" in (r.stdout + r.stderr)
-    assert "2" in (r.stdout + r.stderr), "the match count is not reported"
+    # Not `"2" in output`: the tmp path printed alongside carries digits, so that
+    # assertion passes whatever the harness reports and the match count could
+    # vanish entirely while the test stayed green (PR #455 review, nit).
+    assert "matched 2 times" in (r.stdout + r.stderr), "the match count is not reported"
     assert not sentinel.exists()
     assert digest(src) == before
 
@@ -134,6 +152,143 @@ def test_noop_replacement_is_failed_experiment(tmp_path, subject):
     assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
     assert "FAILED-TO-APPLY" in (r.stdout + r.stderr)
     assert not sentinel.exists()
+
+
+# --------------------------------------------------------------------------
+# Claim 0: the check was GREEN before the mutant. Without it, "the command went
+# red" is not evidence the mutant did anything -- an already-red command reports
+# KILLED for every mutant and blesses a guard that is pure decoration.
+# --------------------------------------------------------------------------
+
+
+def test_already_red_command_is_failed_experiment(tmp_path, subject):
+    """A command that fails on the unmutated file cannot produce a verdict.
+
+    This is the reassuring-direction failure again: KILLED is exactly what a
+    well-defended site looks like, and an already-red suite hands back KILLED for
+    every row in a mutation table (PR #455 review, major).
+    """
+    src, _check = subject
+    before = digest(src)
+    broken = tmp_path / "broken.py"
+    broken.write_text("import sys\nsys.exit(3)\n")
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, str(broken),
+    )
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "BASELINE-NOT-GREEN" in (r.stdout + r.stderr)
+    assert digest(src) == before
+
+
+def test_baseline_runs_against_the_unmutated_file(tmp_path, subject):
+    """The baseline pass must see the ORIGINAL bytes, not the mutant.
+
+    The command logs the subject's content on every invocation, so the log is the
+    receipt: two entries, the first unmutated and the second mutated.
+    """
+    src, _check = subject
+    log = tmp_path / "seen.log"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, "-c",
+        f"open({str(log)!r}, 'a').write(open({str(src)!r}).read() + '===\\n')",
+    )
+    assert r.returncode == SURVIVED, r.stdout + r.stderr
+    seen = [chunk for chunk in log.read_text().split("===\n") if chunk.strip()]
+    assert len(seen) == 2, f"expected a baseline pass and a mutant pass, got {len(seen)}"
+    assert "VALUE = 1" in seen[0], "the baseline ran against the mutant"
+    assert "VALUE = 2" in seen[1], "the mutant pass ran against the original"
+
+
+def test_baseline_side_effects_are_undone_before_the_mutant(tmp_path, subject):
+    """A baseline run that disturbs the subject must not poison the mutant write.
+
+    The command strips write permission. Undone after the baseline, the mutant
+    write succeeds; left in place, the harness would refuse with a write error
+    and report a fault it caused itself.
+    """
+    src, _check = subject
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, "-c",
+        f"import os; os.chmod({str(src)!r}, 0o400)",
+    )
+    os.chmod(src, 0o600)  # so tmp_path teardown can clean up
+    assert "cannot write mutant" not in (r.stdout + r.stderr), r.stdout + r.stderr
+    assert "applied: yes" in r.stdout, r.stdout + r.stderr
+
+
+# --------------------------------------------------------------------------
+# One writer at a time: two concurrent runs on one subject each read the
+# other's mutant as "the original" and each restore it, so the mutant stays on
+# disk while both print "restored: yes" (PR #455 review, minor).
+# --------------------------------------------------------------------------
+
+
+def test_a_second_run_on_the_same_subject_is_refused(tmp_path, subject):
+    src, _check = subject
+    before = digest(src)
+    harness = load_harness()
+    held = open(harness.lock_path(str(src)), "a+")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    sentinel = tmp_path / "ran"
+    try:
+        r = run_harness(
+            "--file", str(src),
+            "--anchor", "VALUE = 1",
+            "--replacement", "VALUE = 2",
+            "--", sys.executable, "-c", f"open({str(sentinel)!r}, 'w').write('x')",
+        )
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        held.close()
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "already running" in (r.stdout + r.stderr).lower()
+    assert not sentinel.exists(), "the second run measured a tree it did not own"
+    assert digest(src) == before
+
+
+def test_the_lock_is_released_so_a_later_run_is_not_blocked(tmp_path, subject):
+    """A refusal that never released would turn one run into a permanent block."""
+    src, check = subject
+    for _ in range(2):
+        r = run_harness(
+            "--file", str(src),
+            "--anchor", "VALUE = 1",
+            "--replacement", "VALUE = 2",
+            "--", sys.executable, str(check),
+        )
+        assert r.returncode == KILLED, r.stdout + r.stderr
+
+
+def test_json_flag_emits_json_on_the_failure_path(tmp_path, subject):
+    """--json promises one JSON object on stdout; a refusal is still an answer.
+
+    Plain text here breaks any consumer that parses the stream, and the failure
+    path is exactly the one a consumer must be able to read (PR #455 review).
+    """
+    src, _check = subject
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 41",  # never present
+        "--replacement", "VALUE = 2",
+        "--label", "dead anchor",
+        "--json",
+        "--", sys.executable, "-c", "pass",
+    )
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    receipt = json.loads(r.stdout)
+    assert receipt["applied"] is False
+    assert receipt["verdict"] == "FAILED-TO-APPLY"
+    assert receipt["label"] == "dead anchor"
+    assert receipt["reason"]
 
 
 def test_receipt_proves_the_bytes_moved(tmp_path, subject):
@@ -265,18 +420,50 @@ def test_poisoned_cache_cannot_fake_a_result(tmp_path, subject):
     )
 
 
+def test_unrestorable_tree_after_the_mutant_run_is_failed_experiment(tmp_path, subject):
+    """The same refusal, but reached from the MUTANT restore rather than the baseline.
+
+    Two restores exist now and each needs its own case: the baseline one below,
+    and this one. A command that destroys the subject on EVERY invocation only
+    ever reaches the first, which left the second guard with no test and its
+    mutant surviving (D3 in mutants_of_mutate.py, caught 2026-09-27). This
+    command counts its invocations and destroys the subject only on the second,
+    so the baseline passes cleanly and the mutant restore is the one that fails.
+    """
+    src, _check = subject
+    counter = tmp_path / "invocations"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, "-c",
+        "import os, pathlib; "
+        f"p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n + 1)); "
+        f"n and (os.remove({str(src)!r}), os.mkdir({str(src)!r}))",
+    )
+    assert counter.read_text() == "2", "the command did not run twice"
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "FAILED-TO-APPLY" in (r.stdout + r.stderr)
+    assert "could not be verified" in (r.stdout + r.stderr)
+
+
 def test_unrestorable_tree_is_failed_experiment(tmp_path, subject):
     """A mutant left on disk poisons every run after it, so it is not a result.
 
     Reachable branch, unlike the two digest compares noted in
-    mutants_of_mutate.py: the run's own command strips write permission from the
-    subject FILE, so the restore write genuinely raises. The harness must report
+    mutants_of_mutate.py: the run's own command replaces the subject with a
+    DIRECTORY, so the restore write genuinely raises. The harness must report
     FAILED-TO-APPLY and name the file rather than hand back a KILLED/SURVIVED
     verdict computed on a dirty tree.
 
-    Not the directory: on this platform a read-only directory still permits
-    rewriting an existing file (dir write governs create/delete/rename), so the
-    first version of this test passed the restore and failed for the wrong reason.
+    Two levers ruled out, so the next reader does not retry them. A read-only
+    parent directory still permits rewriting an existing file on this platform
+    (dir write governs create/delete/rename). Stripping write permission from the
+    file no longer works either, because the restore now puts the original MODE
+    back as well -- an owner may always chmod, so that path is recoverable by
+    design and is covered by test_baseline_side_effects_are_undone_before_the_mutant.
     """
     src, check = subject
     r = run_harness(
@@ -284,12 +471,11 @@ def test_unrestorable_tree_is_failed_experiment(tmp_path, subject):
         "--anchor", "VALUE = 1",
         "--replacement", "VALUE = 2",
         "--", sys.executable, "-c",
-        f"import os; os.chmod({str(src)!r}, 0o400)",
+        f"import os; os.remove({str(src)!r}); os.mkdir({str(src)!r})",
     )
-    os.chmod(src, 0o600)  # so tmp_path teardown can clean up
     assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
     assert "FAILED-TO-APPLY" in (r.stdout + r.stderr)
-    assert "still on disk" in (r.stdout + r.stderr)
+    assert "could not be verified" in (r.stdout + r.stderr)
 
 
 def test_missing_file_is_failed_experiment(tmp_path):
