@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 CAP = 25
@@ -46,6 +47,34 @@ def project_root():
     return Path(__file__).resolve().parents[3]
 
 
+def cadence_hold(loop, today=None):
+    """The `recheck_after` date if this loop is not due yet, else None.
+
+    Why this exists (ASK-2141, found 2026-09-26): a loop can declare its own
+    polling cadence, and `recheck_after` / `last_checked` were being WRITTEN into
+    the registry and read by nothing here -- there was no date logic in this file
+    at all. So every heartbeat run re-tagged a weekly loop `[needs you]`, which is
+    the tag an agent acts on, and re-polled two upstream repos it had polled that
+    morning. It produced eight byte-identical check blocks on one loop and eleven
+    on another before the pattern was noticed.
+
+    FAILS OPEN on purpose: no date, a blank, or anything `date.fromisoformat`
+    cannot parse returns None, so the loop keeps its tag. A typo in a cadence
+    field must never be the thing that parks real work silently -- over-surfacing
+    costs a re-read, under-surfacing costs the loop.
+    """
+    raw = str(loop.get("recheck_after") or "").strip()
+    if not raw:
+        return None
+    try:
+        due = date.fromisoformat(raw)
+    except Exception:
+        return None  # unparsable -> no provable hold -> surface it
+    if due <= (today or date.today()):
+        return None
+    return raw
+
+
 def registry_loops(qroot):
     path = qroot / "memory" / "open-loops.json"
     try:
@@ -60,7 +89,15 @@ def registry_loops(qroot):
         action = (loop.get("next_action") or "").strip()
         if not title:
             continue
-        out.append((title, action, bool(loop.get("needs_founder"))))
+        needs_founder = bool(loop.get("needs_founder"))
+        held_until = cadence_hold(loop)
+        if held_until:
+            # Still listed (nothing parked falls on the ground), but not flagged for
+            # action and told plainly why, so a heartbeat run does not re-poll it.
+            needs_founder = False
+            action = (f"[cadence: not due until {held_until}; do not re-poll "
+                      f"before then] {action}")
+        out.append((title, action, needs_founder))
     return out
 
 

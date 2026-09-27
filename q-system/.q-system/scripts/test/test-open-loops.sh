@@ -89,4 +89,42 @@ OUT7B="$(CLAUDE_PROJECT_DIR="$T4" python3 "$S" --report 2>&1)"
 echo "$OUT7B" | grep -q "2 deferred prd-os finding(s) not auto-classified" \
   || fail "ledger-absent case must count both findings (check is decorative otherwise): $OUT7B"
 
-echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
+# 8. cadence: a loop whose own `recheck_after` is still in the future is STILL
+#    surfaced (nothing parked falls on the ground) but must NOT be tagged
+#    [needs you] -- that tag is the signal an agent acts on, and an always-on
+#    tag is an always-on instruction to re-poll. Scar (ASK-2141, found 2026-09-26):
+#    recheck_after / last_checked were written into the registry and read by
+#    nothing, so every heartbeat run re-polled two upstream repos on cadence
+#    fields it was ignoring. That produced eight byte-identical check blocks on
+#    one loop and eleven on another before anyone noticed.
+T5="$(mktemp -d)"; mkdir -p "$T5/q-system/memory"
+FUTURE="$(python3 -c 'import datetime;print(datetime.date.today()+datetime.timedelta(days=6))')"
+PAST="$(python3 -c 'import datetime;print(datetime.date.today()-datetime.timedelta(days=1))')"
+write_cadence_fixture() {  # $1 = recheck_after value
+  cat > "$T5/q-system/memory/open-loops.json" <<JSON
+{"loops":[
+ {"id":"c","title":"CADENCE LOOP C","next_action":"poll upstream","needs_founder":true,
+  "status":"open","last_checked":"2026-09-26","recheck_after":"$1"}
+]}
+JSON
+}
+write_cadence_fixture "$FUTURE"
+OUT8="$(CLAUDE_PROJECT_DIR="$T5" python3 "$S" --report 2>&1)"
+echo "$OUT8" | grep -q "CADENCE LOOP C" || fail "not-due loop vanished from the report (anti-drop violated): $OUT8"
+echo "$OUT8" | grep -q "\[needs you\]" && fail "not-due loop still tagged [needs you] (cadence unread): $OUT8" || true
+echo "$OUT8" | grep -q "not due until $FUTURE" || fail "not-due loop must say when it is next due: $OUT8"
+
+# 8b. mutation guard for 8: the SAME fixture with a PAST recheck_after must carry
+#     [needs you], so section 8 can fail for the reason it claims. A date-blind
+#     reader tags both identically and 8b is how you see that.
+write_cadence_fixture "$PAST"
+OUT8B="$(CLAUDE_PROJECT_DIR="$T5" python3 "$S" --report 2>&1)"
+echo "$OUT8B" | grep -q "\[needs you\]" || fail "due loop (recheck_after in the past) lost its [needs you] tag: $OUT8B"
+
+# 8c. fail OPEN on an unparsable date. A cadence field the script cannot read must
+#     never be the thing that silences a loop -- a typo would park real work forever.
+write_cadence_fixture "next tuesday"
+OUT8C="$(CLAUDE_PROJECT_DIR="$T5" python3 "$S" --report 2>&1)"
+echo "$OUT8C" | grep -q "\[needs you\]" || fail "unparsable recheck_after must fail open and keep [needs you]: $OUT8C"
+
+echo "PASS: surfaces registry loops (incl seeded OSS PRs) + genuine deferred findings, excludes closed + folded bookkeeping + spillover-captured, honors recheck_after cadence without dropping the loop (fails open on a bad date), catch-all guarantees zero silent-fall, valid SessionStart JSON, never blocks on empty"
