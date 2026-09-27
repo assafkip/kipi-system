@@ -37,15 +37,16 @@ def _init(tmp_path):
     return tmp_path
 
 
-def test_a_minor_note_needs_no_dor_and_files_no_issue(tmp_path):
-    """Notes stay cheap. Demanding a DoR for every passing observation is how a
-    ledger stops being written to at all."""
+def test_a_minor_is_refused_and_files_no_issue(tmp_path):
+    """Superseded 2026-09-12. This used to pin "minor notes stay cheap". Founder,
+    that day: "New minor findings: fix or reject, never queue." A minor is now
+    refused at the door, so it can neither sit in the ledger nor file an issue."""
     repo = _init(tmp_path)
     res = _add(repo, severity="minor")
-    assert res.returncode == 0, res.stderr
-    out = json.loads(res.stdout.strip().splitlines()[-1])
-    assert out["status"] == "open"
-    assert "promotion" not in out
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "it is never queued (founder 2026-09-12)" in res.stderr
+    assert not (repo / ".prd-os" / "spillover.jsonl").exists() or \
+        (repo / ".prd-os" / "spillover.jsonl").read_text().strip() == ""
 
 
 def test_a_blocking_item_without_a_dor_is_handed_to_sana_not_refused(tmp_path):

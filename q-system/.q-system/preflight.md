@@ -12,18 +12,25 @@ Every tool the morning routine depends on, its exact test, known limitations, an
 
 | Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
 |------|-------------|---------------|-------------------|----------|
-| **Google Calendar** | `mcp__claude_ai_Google_Calendar__gcal_list_events` with `timeMin=today 00:00`, `timeMax=today+7 23:59` | Returns `events` array (even if empty) | None known | None. Halt. |
-| **Gmail** | `mcp__claude_ai_Gmail__gmail_search_messages` with `q: "after:YYYY/M/D"` (yesterday) | Returns `messages` array | None known | None. Halt. |
+| **Google Calendar** | `mcp__claude_ai_Google_Calendar__list_events` with `timeMin=today 00:00`, `timeMax=today+7 23:59` | Returns `events` array (even if empty) | Tool was RENAMED from `gcal_list_events`. The old name sat here from the rename until 2026-08-30 and every probe silently failed. | None. Halt. |
+| **Gmail** | `mcp__claude_ai_Gmail__search_threads` with `query: "newer_than:2d in:inbox"` | Returns a thread list | Tool was RENAMED from `gmail_search_messages` AND it returns THREADS, not messages. Same silent-failure history as the calendar row. | None. Halt. |
 | **Notion API** | `mcp__claude_ai_Notion__notion-search` with query "Contacts" | Returns matching databases/pages | Cloud Notion integration -- full read/write support via `notion-fetch`, `notion-create-pages`, `notion-update-page` | None. Halt. |
-| **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. Avoid triggering them. | None. Halt. |
 | **Apify (X/Twitter ONLY)** | Check if any `mcp__apify__*` tool is available via ToolSearch. If not, test REST: `curl -s "https://api.apify.com/v2/acts?token=$APIFY_TOKEN&limit=1"` | MCP: tool schema returned. REST: JSON with `data` array. | MCP tools sometimes don't load in a session. Apify is used ONLY for X/Twitter scraping. | **REST API fallback** (X/Twitter only). If Apify is down, fall back to Chrome for X. |
 | **Reddit** | Canonical tooling (a script/ingestion path, NOT an MCP); no preflight ping | N/A (not an MCP check) | Fetch/read via reddit-build-radar (arctic-shift mirror + pullpush fallback). The dead `reddit-no-auth-mcp-server` was REMOVED (failed "HTTP error (0)" by design). | Skip Reddit scraping. Do NOT use Chrome for Reddit. |
 | **RSS Feeds (Medium/Substack)** | `WebFetch(url="https://medium.com/feed/tag/cybersecurity", prompt="How many articles?")` | Returns a count or description | WebFetch processes via model, not raw XML. Medium/Substack only (Reddit uses the canonical Reddit tooling, not RSS). | Chrome browser navigation. |
 
 ### Non-Critical (ask founder before proceeding without)
 
+**Chrome moved OUT of Critical on 2026-08-30.** It sat in the Critical table with
+fallback "None. Halt.", which made an unattended run impossible by construction: a
+7am launchd job has no browser, so the very first preflight row halted it. That is
+not a tool problem, it is a manifest that only described an interactive session.
+Nothing that halts a headless run belongs in Critical.
+
+
 | Tool | Test Command | Pass Criteria | Known Limitations | Fallback |
 |------|-------------|---------------|-------------------|----------|
+| **Chrome** | `mcp__claude-in-chrome__tabs_context_mcp` | Returns tab list | Alerts/dialogs block all further commands. A HEADLESS run has no browser at all, so this is never available to a scheduled job. | Skip every browser-sourced step and say which ones were skipped. |
 | **VC Pipeline API** | `curl -s http://localhost:5050/api/pipeline` via Bash | Returns JSON with pipeline data | Must be running locally. Founder needs to start the local pipeline server. | Skip Steps 1.5 (warm intro matching). Note in briefing. |
 
 ### Confirmed Working Apify Actors (X/Twitter only)

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "slug": "destructive-guard-state-interpreter-bound",
+  "reason": "ASK-1247: the guard's header states that it covers direct invocation only, so nobody reads it as coverage it does not have. Additive: one comment paragraph, no pattern, matcher or wiring changes. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/destructive-guard-state-interpreter-bound.json --root $HOME",
+  "edits": [
+    {
+      "file": ".claude/hooks/destructive-op-deny.sh",
+      "op": "insert_after",
+      "anchor": "# write. If you ever see this file at 0644, the guard is OFF, not merely edited.\n",
+      "insert": "#\n# WHAT THIS GUARD COVERS: DIRECT INVOCATION ONLY (ASK-1247, 2026-09-13).\n# It reads the command STRING and denies the programs it knows by name. It\n# does not see effects, so the same delete performed by an interpreter walks\n# through at exit 0. Measured by q-system/.q-system/tests/probe_hook.py:\n#\n#   ALLOW  python3 -c \"import shutil; shutil.rmtree(...)\"\n#   ALLOW  python3 -c \"import os; os.unlink(...)\"\n#   ALLOW  node -e \"require('fs').rmSync(..., {recursive: true})\"\n#   ALLOW  perl -e 'unlink(...)'\n#   ALLOW  bash /path/to/script.sh   (the script body is never read)\n#\n# Read this hook as \"an agent cannot TYPE the named command\", never as \"an\n# agent cannot delete a directory\". Adding interpreter patterns here is\n# decided against: the payload can be built at runtime, read from a file or\n# base64'd, and a parser that decides a string is harmless is a new bypass\n# surface. Closing the gap means moving the boundary to the filesystem or\n# syscall layer, which is a PRD, not a pattern. Decision: RULE-2026-09-13-A\n# in q-system/canonical/decisions.md. test_destructive_guard_interpreter_bound.py\n# pins this paragraph to the probe: if a row above starts being denied, the\n# test goes red and this paragraph gets rewritten, not left standing.\n",
+      "reason": "state the guard's real bound in its header (DoR item 4)"
+    }
+  ]
+}

@@ -98,6 +98,15 @@ pre-commit:
       run: CLAUDE_PROJECT_DIR="$(git rev-parse --show-toplevel)" python3 q-system/.q-system/scripts/settings-template-sync-check.py --check
       fail_text: "settings.json and settings-template.json are out of sync — a hook would ship dead to the fleet or run dead in the skeleton."
 
+    # Arctic Shift is the only way this fleet reads Reddit (founder-directed
+    # 2026-09-04). Scoped to THIS repo: a hook that walked every checkout under
+    # ~/projects would fail your commit because of somebody else's branch, and a
+    # gate that fails for reasons you did not cause is a gate that gets switched
+    # off. The fleet-wide sweep lives in the test suite instead.
+    reddit-arctic-only:
+      run: python3 q-system/.q-system/scripts/reddit-transport-audit.py "$(git rev-parse --show-toplevel)"
+      fail_text: "A non-Arctic Reddit read. The transport is plugins/kipi-core/reddit_arctic -- import it rather than building a URL."
+
     # Resurrected from a dead .git/hooks/pre-commit.old backup (sp-b417481b).
     # Ratchet, not absolute: the 300-line target was 214 under water when revived,
     # so this gates REGRESSION of the always-on total (baseline auto-tightens).
@@ -114,6 +123,17 @@ pre-commit:
     instruction-budget:
       run: python3 q-system/.q-system/scripts/instruction-budget-audit.py --ratchet
       fail_text: "Always-on instruction lines grew past the ratchet baseline. Trim what you added or scope a rule with paths: frontmatter."
+
+    # ASK-1918. A `covers` declaration takes a scanner OFF change-size.py's
+    # always-run floor, so a glob that matches nothing would silently narrow that
+    # test to NEVER running, and nothing else would notice: a test that is never
+    # selected looks exactly like a test that is never needed. The floor was what
+    # made an untyped guess safe; once a fragment can opt out, the opt-out needs a
+    # check that can fail. Proved red on a typo'd glob, a non-list, and a
+    # declaration on a non-scanner (2026-09-19).
+    covers-declaration:
+      run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root "$(git rev-parse --show-toplevel)"
+      fail_text: "A `covers` declaration in an expected_tests fragment is wrong. A glob that matches nothing takes its test off the always-run floor and selects it for nothing."
 
 commit-msg:
   commands:

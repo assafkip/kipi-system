@@ -39,55 +39,15 @@ SWEEP_FAILURES=0
 # skipped without waking an agent. Empty means the sweep is healthy.
 ENV_HALT=""
 
-# DERIVED FROM WHAT THE LOG ACTUALLY CARRIED, not from what an exhausted CLI
-# might plausibly print. The observed line, once per failing instance, was:
-#   You've hit your weekly limit - resets Aug 18 at 2pm (America/Los_Angeles)
-# The auth siblings are included because they are the same CLASS -- the runner
-# cannot run at all, and no instance can fix that for another -- but the match
-# stays narrow on purpose. A loose pattern here silently converts ordinary
-# per-instance failures into a fleet-wide halt, which is worse than the noise
-# this replaces: the sweep would stop on one instance's ordinary bad day.
-# ANCHORED AT THE START OF A LINE, NOT MATCHED ANYWHERE (PR #198 review, minor).
-# The runner emits this as a line of its own; an AGENT that merely writes about
-# limits emits it inside a sentence or a bullet. Matched as a bare substring, an
-# agent discussing this very issue and then exiting non-zero would halt the whole
-# fleet and report the runner as dead -- a false halt is worse than the noise this
-# replaces, because it stops work that could have run.
-#
-# This is the same shape as ASK-747, fixed the same way: content that MENTIONS a
-# marker is not the marker being raised. There the fix was a column-0 trailer;
-# here it is a line anchor. Leading whitespace is tolerated (up to 3) because the
-# CLI pads some of these, but an indented quote inside agent prose does not reach
-# that far left.
-ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login"
-
-# FENCED CONTENT IS QUOTATION, NOT SPEECH (PR #198 review round 2, minor).
-# The line anchor alone was not enough: an agent pasting the runner's line inside
-# a ``` block puts it at column 0, which anchors just as well as the real thing.
-# Measured against a fenced fixture, the anchor-only pattern matched. Everything
-# between fences is something the agent is SHOWING, never something the runner
-# said, so it is removed before the pattern is applied.
-#
-# Residual, stated rather than papered over: an agent that quotes the line bare at
-# column 0, outside any fence, still reads as the runner. Narrowing further would
-# need to know who wrote each line, which this stream does not carry. The cost is
-# bounded -- a halted sweep resumes next run and files one honest-looking alert --
-# and the guard cases below pin the shapes that actually occur.
-strip_fenced() {  # strip_fenced <text> -> text with ``` blocks removed
-  printf '%s\n' "${1:-}" | awk '
-    /^[[:space:]]*```/ { inblock = !inblock; next }
-    !inblock { print }'
-}
-
-is_environmental() {  # is_environmental <agent-output>
-  strip_fenced "${1:-}" | grep -qiE "^[[:space:]]{0,3}($ENV_MARKERS)"
-}
-
-environmental_reason() {  # environmental_reason <agent-output> -> one line
-  strip_fenced "${1:-}" \
-    | grep -iE "^[[:space:]]{0,3}($ENV_MARKERS)" \
-    | head -1 | tr -d '\n' | cut -c1-120
-}
+# ONE CLASSIFIER, THE WORKER'S (PR #421 round 16, minor). This file kept its own
+# copy: line-anchored, fence-stripped, and missing the 529 marker the worker's lib
+# learned from the 2026-08-18 log, so a real overload filed one ticket per
+# instance here while the worker halted cleanly. env-failure-lib.sh's rule is
+# stricter than the copy's anchor and fence strip together (EVERY non-blank line
+# must be the machine's), so agent prose quoting a marker, fenced or not, still
+# cannot halt the sweep. Sourced from beside this script, never from $SKEL: a
+# KIPI_REPO override points $SKEL at another tree.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-failure-lib.sh"
 
 log_step() {  # log_step <instance-name> <completed|skipped|failed> [note]
   python3 -c '

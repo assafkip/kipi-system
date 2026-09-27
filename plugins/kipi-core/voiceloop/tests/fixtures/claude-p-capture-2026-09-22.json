@@ -1,0 +1,134 @@
+{
+ "_provenance": {
+  "connector": "claude-code-cli",
+  "call": "claude -p, same prompt run twice: once --output-format json, once plain",
+  "args": {
+   "prompt": "Reply with exactly the word: pong",
+   "model": "claude-haiku-4-5-20251001"
+  },
+  "captured_at": "2026-09-22T17:41:19Z",
+  "redaction": "none",
+  "note": "Written by capture_payload.py from a real connector response. Do not hand-edit: a typed field name here is the defect this fixture exists to catch.",
+  "regenerate": "Run each argv in payload (argv_json, argv_plain) with the same prompt against the installed claude CLI and store the raw stdouts as json_stdout (parsed) and plain_stdout. The envelope writer is the deployment's capture_payload.py, outside this plugin; the tests accept any file whose _provenance block carries connector, call and captured_at."
+ },
+ "payload": {
+  "json_stdout": {
+   "duration_api_ms": 1886,
+   "stop_reason": "end_turn",
+   "session_id": "39ab3adf-7b6d-40b0-9b57-81b9f4e9cc12",
+   "total_cost_usd": 0.0540501,
+   "usage": {
+    "input_tokens": 10,
+    "cache_creation_input_tokens": 26205,
+    "cache_read_input_tokens": 13701,
+    "output_tokens": 52,
+    "output_tokens_details": {
+     "thinking_tokens": 44
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 26205,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+     {
+      "input_tokens": 10,
+      "output_tokens": 52,
+      "cache_read_input_tokens": 13701,
+      "cache_creation_input_tokens": 26205,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 26205
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "standard"
+   },
+   "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+     "inputTokens": 10,
+     "outputTokens": 52,
+     "cacheReadInputTokens": 13701,
+     "cacheCreationInputTokens": 26205,
+     "webSearchRequests": 0,
+     "costUSD": 0.0540501,
+     "contextWindow": 200000,
+     "maxOutputTokens": 32000,
+     "thinkingTokens": 44,
+     "canonicalModel": "claude-haiku-4-5",
+     "provider": "firstParty",
+     "costBasis": "list"
+    }
+   },
+   "permission_denials": [],
+   "terminal_reason": "completed",
+   "fast_mode_state": "off",
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+     "background": 0,
+     "foreground": 0,
+     "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+     "parent": 0,
+     "user": 0,
+     "system": 0
+    },
+    "refused": {
+     "depth_limit": 0,
+     "concurrency_limit": 0,
+     "budget": 0
+    },
+    "by_type": {}
+   },
+   "is_error": false,
+   "num_turns": 1,
+   "subtype": "success",
+   "api_error_status": null,
+   "result": "pong",
+   "ttft_ms": 1825,
+   "type": "result",
+   "duration_ms": 2011,
+   "uuid": "ffb21265-1afc-495d-946f-8bc9e9212b27",
+   "ttft_stream_ms": 1592,
+   "time_to_request_ms": 34,
+   "first_content_frame_ms": 1593,
+   "queued_turn_count": 0,
+   "result_index": 0
+  },
+  "plain_stdout": "pong\n",
+  "argv_json": [
+   "claude",
+   "-p",
+   "<prompt>",
+   "--model",
+   "claude-haiku-4-5-20251001",
+   "--output-format",
+   "json",
+   "--max-turns",
+   "1"
+  ],
+  "argv_plain": [
+   "claude",
+   "-p",
+   "<prompt>",
+   "--model",
+   "claude-haiku-4-5-20251001",
+   "--max-turns",
+   "1"
+  ]
+ }
+}

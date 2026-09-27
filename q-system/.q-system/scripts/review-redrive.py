@@ -27,6 +27,12 @@ THE THREE STATES A REQUIRED CONTEXT CAN BE IN, AND WHO OWNS EACH
     ABSENT  (never posted)            -> HERE, as a first re-review (sp-d87c5416).
                                          ASK-318/ASK-313 still own the PRODUCER
                                          question of why it never posted.
+    ABSENT, painted red by the floor  -> HERE too (ASK-2029): the reviewer floor
+                                         turns an absent verdict into a FAILING
+                                         slot with no record. Read as absent when
+                                         the floor ran on that head; a failing
+                                         slot with no record and NO floor run is
+                                         still the absent-producer case below.
     SUCCESS (but nothing merges)      -> ASK-310, pr-land-if-green.sh
     FAILURE (the reviewer refused)    -> here
 
@@ -150,6 +156,47 @@ REWORK_VERDICTS = {"REQUEST CHANGES", "BLOCK"}
 
 REWORK = "rework"
 REREVIEW = "re-review"
+#: The reviewer floor's check-run name (.github/workflows/reviewer-floor.yml). The
+#: floor turns an ABSENT verdict into a red `kipi/reviewer-approved`, so on a head
+#: nobody reviewed the slot reads FAILURE with no record behind it. That is the
+#: absent state wearing the failure state's colour, and it is the NORMAL state of
+#: every head that moved after an approval (ASK-2029: 63 armed PRs sat there).
+FLOOR_CHECK = "reviewer-floor"
+FLOOR_SH = os.path.join(HERE, "reviewer-floor.sh")
+
+
+def _floor_desc():
+    """The floor's own status text, read from reviewer-floor.sh, never retyped."""
+    try:
+        m = re.search(r'^FLOOR_DESC="([^"]+)"', open(FLOOR_SH).read(), re.M)
+    except OSError as exc:
+        sys.stderr.write("review-redrive: cannot read %s (%s); an ambiguous floor run "
+                         "will be refused rather than confirmed\n" % (FLOOR_SH, exc))
+        return ""
+    if not m:
+        sys.stderr.write("review-redrive: no FLOOR_DESC line in %s; an ambiguous floor run "
+                         "will be refused rather than confirmed\n" % FLOOR_SH)
+        return ""
+    return m.group(1)
+
+
+def _statuses(slug, sha):
+    """The commit statuses GitHub holds for `sha`; [] when it cannot be asked."""
+    if not slug or not sha:
+        return []
+    try:
+        proc = subprocess.run(["gh", "api", "repos/%s/commits/%s/statuses" % (slug, sha)],
+                              capture_output=True, text=True)
+    except OSError:
+        # no `gh` on PATH is "cannot be asked", the same refusal as a failed
+        # call, not a traceback out of the redrive (PR #418 round 1)
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return []
 
 # Where a PR's head lives, as the board answered it. ALIASED, NOT REDEFINED
 # (PR #211 round 3, MAJOR 1). Round 2 put this predicate here, and the finding
@@ -162,7 +209,47 @@ FORK = CI.FORK
 UNSTATED = CI.UNSTATED
 
 
-def record_path(records_dir, pr):
+SLUG_LIB = os.path.join(HERE, "repo-slug-lib.sh")
+
+
+def slug_for_repo(repo_dir):
+    """owner/repo for this checkout from repo-slug-lib.sh, the ONE derivation; '' if none."""
+    if not os.path.exists(SLUG_LIB):
+        sys.stderr.write("review-redrive: %s is missing; records are read by their LEGACY "
+                         "name only, so a repo-keyed refusal can be misread as absent\n" % SLUG_LIB)
+        return ""
+    proc = subprocess.run(
+        ["bash", "-c", '. "$1" >/dev/null 2>&1 || exit 2; slug_for_repo "$2"', "_", SLUG_LIB, repo_dir],
+        capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        # Loud, not silent (PR #415 round 2): with no slug every read falls back
+        # to the legacy name and a real REQUEST CHANGES at head reads as absent.
+        why = ("rc %s: %s" % (proc.returncode, (proc.stderr or "").strip()[:120])
+               if proc.returncode != 0 else "no slug: the checkout has no github.com remote")
+        sys.stderr.write("review-redrive: slug_for_repo gave nothing for %s (%s); records are "
+                         "read by their LEGACY name only\n" % (repo_dir, why))
+        return ""
+    return proc.stdout.strip()
+
+
+def record_path(records_dir, pr, slug=""):
+    """The record to READ: the repo-keyed name, legacy fallback, as the lib defines it.
+
+    WHY THE LIB AND NOT A FORMAT STRING (PR #415 round 1, major). Writes have
+    been repo-keyed (`<owner>_<repo>__pr-N.verdict.json`) since ASK-738; this
+    function knew only the legacy `pr-N.verdict.json`, so 250 of the 371
+    records on disk were invisible to it and every PR with a real refusal at
+    head read as "no record". `verdict_record_path` in repo-slug-lib.sh is the
+    one read rule, with its own legacy fallback; asking it is what keeps the
+    two from drifting apart again.
+    """
+    if slug and os.path.exists(SLUG_LIB):
+        proc = subprocess.run(
+            ["bash", "-c", '. "$1" >/dev/null 2>&1 || exit 2; verdict_record_path "$2" "$3" "$4"',
+             "_", SLUG_LIB, records_dir, slug, str(pr)],
+            capture_output=True, text=True)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
     return os.path.join(records_dir, "pr-%s.verdict.json" % pr)
 
 
@@ -176,10 +263,10 @@ def record_path(records_dir, pr):
 CORRUPT_RECORD = object()
 
 
-def read_record(records_dir, pr):
+def read_record(records_dir, pr, slug=""):
     """The verdict record, None if absent, CORRUPT_RECORD if unreadable."""
     try:
-        with open(record_path(records_dir, pr)) as fh:
+        with open(record_path(records_dir, pr, slug)) as fh:
             return json.load(fh)
     except FileNotFoundError:
         return None
@@ -273,9 +360,22 @@ def reviewer_slot_failing(pr_obj):
 # and requires "the live status must win over the record". Those two cannot both
 # hold, and picking between them is a scope call about which question this
 # predicate answers ("did SOME review land" vs "has the GATE spoken"), not a
-# detail of making absence visible. Unreachable today regardless:
-# KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so `kipi/codex-approved` needs a
-# hand-run with a non-default primary. Captured rather than decided here.
+# detail of making absence visible. Captured rather than decided here.
+#
+# THE REACHABILITY SENTENCE THAT USED TO SIT HERE IS NOW WRONG, and it was the
+# only thing making this note feel safe to leave open. It read: "Unreachable
+# today regardless: KIPI_REVIEW_PRIMARY_ENGINE defaults to codex, so
+# `kipi/codex-approved` needs a hand-run with a non-default primary." The
+# 2026-09-06 flip made claude PRIMARY, so `kipi/codex-approved` is exactly what
+# an ordinary `--engine codex` run posts now.
+#
+# THE EXPOSURE DID NOT CHANGE, only the engine name in it: before the flip the
+# reachable advisory slot was `kipi/claude-approved` and this predicate matched
+# that one just as broadly. Nothing scheduled dispatches the advisory engine in
+# either direction (linear-worker.sh names the primary explicitly), so an
+# advisory slot still only exists after a hand-run. The decision above stays
+# open on the same terms; what is corrected is a claim about WHY, because a
+# stale safety argument is how an open note stops being re-examined.
 GATING_SLOT = "kipi/reviewer-approved"  # named for the pending decision above
 
 
@@ -307,6 +407,41 @@ def reviewer_slot_posted(pr_obj):
             name = check.get("name") or ""
         # BROAD on purpose, and this is contested -- see GATING_SLOT above.
         if CI.is_reviewer_slot(name):
+            return True
+    return False
+
+
+def floor_ran(pr_obj, slug=""):
+    """Did the reviewer floor mark this head, so an absent verdict reads red?
+
+    From the rollup when it can be: a floor run that COMPLETED with SUCCESS
+    posted its red. A run that completed any other way is ambiguous
+    (reviewer-floor.sh posts the red and can still exit 3 or 4 afterwards,
+    PR #415 round 2), so that one case asks GitHub for the head's statuses
+    and looks for the floor's own text on the verdict slot; one API call,
+    only on that path. A run that never completed marked nothing. The rule
+    still errs one stated way: a REAL refusal recorded on another machine is
+    read as absent and re-reviewed, which re-refuses it, one bounded round.
+    """
+    ambiguous = False
+    for check in pr_obj.get("statusCheckRollup") or []:
+        if not isinstance(check, dict) or check.get("__typename") == "StatusContext":
+            continue
+        if (check.get("name") or "") != FLOOR_CHECK or \
+                (check.get("status") or "").upper() != "COMPLETED":
+            continue
+        if (check.get("conclusion") or "").upper() == "SUCCESS":
+            return True
+        ambiguous = True
+    if not ambiguous:
+        return False
+    desc = _floor_desc()
+    if not desc:
+        return False
+    for st in _statuses(slug, pr_obj.get("headRefOid") or ""):
+        if isinstance(st, dict) and CI.is_reviewer_slot(st.get("context") or "") \
+                and (st.get("state") or "").lower() == "failure" \
+                and (st.get("description") or "") == desc:
             return True
     return False
 
@@ -350,6 +485,7 @@ head_provenance = CI.head_provenance
 
 
 def candidates(repo_dir, records_dir):
+    slug = slug_for_repo(repo_dir)
     out = []
     for pr_obj in CI.list_prs(repo_dir):
         # A FORK IS NEVER A CANDIDATE (PR #211 round 2, MAJOR 1; captured first
@@ -398,7 +534,7 @@ def candidates(repo_dir, records_dir):
         issue, agent, source = attributed
         slots = reviewer_slot_failing(pr_obj)
         pr = pr_obj.get("number")
-        record = read_record(records_dir, pr)
+        record = read_record(records_dir, pr, slug)
         if not slots:
             if reviewer_slot_posted(pr_obj):
                 # A gating verdict exists and is not failing. Nothing to redrive.
@@ -476,8 +612,27 @@ def candidates(repo_dir, records_dir):
                 "review-redrive: PR #%s has %s failing and an unreadable verdict "
                 "record -- refusing to guess. Left alone.\n" % (pr, ",".join(slots)))
             continue
+        elif record is None and floor_ran(pr_obj, slug):
+            # THE FLOOR'S RED, not a reviewer's (ASK-2029). The floor ran on this
+            # head and no verdict was there to protect, so it posted FAILURE; the
+            # producer that "recorded nothing" is the floor, which records
+            # nothing by design. This is the ABSENT state and takes the absent
+            # state's action: a first re-review at head, through the dispatcher's
+            # own cap. Absence still refuses -- nothing here posts green.
+            out.append({
+                "action": REREVIEW,
+                "reason": "the reviewer floor marked this head unreviewed "
+                          "(no verdict at head and no record for this PR)",
+                "issue": issue, "agent": agent, "issue_source": source,
+                "pr": pr, "url": pr_obj.get("url"),
+                "branch": head_branch,
+                "head_sha": pr_obj.get("headRefOid") or "",
+                "slots": slots,
+            })
+            continue
         elif record is None:
-            # ABSENT, not FAILURE-with-no-record. Owned by ASK-318/ASK-313.
+            # FAILURE with no record and NO floor run: a producer spoke and
+            # recorded nothing. Owned by ASK-318/ASK-313.
             sys.stderr.write(
                 "review-redrive: PR #%s has %s failing but NO verdict record -- "
                 "that is the absent-producer case (ASK-318), not this one. "

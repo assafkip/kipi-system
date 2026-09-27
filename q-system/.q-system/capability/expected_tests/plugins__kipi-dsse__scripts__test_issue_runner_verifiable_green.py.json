@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_issue_runner_verifiable_green.py",
+ "runner": "pytest",
+ "timeout_s": 300
+}

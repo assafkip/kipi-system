@@ -1,0 +1,38 @@
+# Dependencies for the LUAR authorship metric, and for nothing else.
+#
+# WHY A SEPARATE FILE RATHER THAN A REPO-WIDE ONE (sp-d912cc82):
+# The rest of this pipeline runs on the repo interpreter with the standard
+# library alone. These four packages are ~2GB and are needed by exactly one
+# advisory metric, which is off in the daily lane. Putting them in a repo-wide
+# requirements file would make every checkout of this repo pay for a metric most
+# runs never compute, and would read as "the pipeline needs torch", which is
+# false. The scope of the file is the scope of the dependency.
+#
+# WHY EACH LINE IS HERE. Measured 2026-08-17, not assumed:
+#   torch, transformers  LUAR-MUD is a transformers model with torch tensors.
+#   einops               LUAR-MUD's REMOTE code (trust_remote_code=True) imports
+#                        it. It is not a dependency of transformers, so it is
+#                        invisible until the model actually loads: the first live
+#                        run raised ImportError for einops with torch and
+#                        transformers both already present.
+#   numpy                pulled in transitively today, named explicitly because a
+#                        transitive pin is not a declaration.
+#
+# THE INTERPRETER IS PART OF THIS DECLARATION AND CANNOT LIVE IN THIS FILE.
+# A requirements.txt cannot express "python 3.12", and the repo interpreter is
+# homebrew python 3.14, for which torch publishes no wheels. So a plain
+# `pip install -r` into the repo interpreter FAILS, and a reader who assumes this
+# file is self-sufficient gets a resolution error rather than the metric.
+# The pin lives in ONE executable place, `PYTHON_PIN` in luar_env_backend.py,
+# which is the only thing that reads this file. Changing one without the other is
+# a defect; test_luar_env_backend.py::test_requirements_file_and_pin_agree holds
+# them together.
+
+# Pinned to the versions that were RESOLVED AND RUN on 2026-08-17, read back out
+# of the built environment rather than typed from memory. An earlier draft of
+# this file carried four plausible-looking versions that were all wrong; a pin
+# nobody resolved is a guess wearing a pin's clothes.
+torch==2.13.0
+transformers==5.15.0
+einops==0.8.2
+numpy==2.5.2

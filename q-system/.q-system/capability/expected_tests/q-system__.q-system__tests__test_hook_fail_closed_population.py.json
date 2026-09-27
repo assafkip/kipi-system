@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_hook_fail_closed_population.py",
+ "runner": "pytest"
+}

@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_morning_brief.py",
+ "runner": "pytest",
+ "timeout_s": 120
+}

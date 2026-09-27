@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.kipi.lessons-drift -- the registered trigger for the drift reporter
+  (prd-lessons-rail-and-up-rail, issues lr-drift-reporter and
+  lr-drift-trigger-proof): what a declared hub instance has that the skeleton
+  lacks, Monday 06:45 local, after the 06:00 lessons job and before the 07:00
+  brief, via slack_founder.deliver.
+
+  kipi-scope: skeleton-only
+  (the reporter compares hubs against the skeleton it runs in; the registry's
+  skeleton entry must be this checkout or it reports COULD NOT READ.)
+
+  TEMPLATE. Install with:  bash q-system/.q-system/scripts/install-plist.sh com.kipi.lessons-drift
+  install-plist.sh renders __KIPI_REPO__, __HOME__ and __USER__ and bootstraps
+  the job; a literal path here would fan out to 25 instances with one
+  machine's home in it.
+
+  KIPI_TRIGGER=launchd is the marker the reporter delivers under; run by hand
+  it prints and sends nothing, so removing this plist provably stops delivery
+  (issue lr-drift-trigger-proof).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.lessons-drift</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>KIPI_TRIGGER</key><string>launchd</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/lessons-drift-report.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>45</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/lessons-drift.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/lessons-drift.err.log</string>
+</dict>
+</plist>

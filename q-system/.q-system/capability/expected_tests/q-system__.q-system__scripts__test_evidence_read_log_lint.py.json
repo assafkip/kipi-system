@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test_evidence_read_log_lint.py",
+ "runner": "python3"
+}

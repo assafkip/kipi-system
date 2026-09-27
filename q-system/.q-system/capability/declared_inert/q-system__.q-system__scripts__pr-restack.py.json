@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/pr-restack.py",
+ "reason": "manually-invoked backlog sweeper, DELIBERATELY unwired. Wiring it on a schedule means an unattended job pushing to every DIRTY PR branch at once, which is a blast radius that earns a founder decision rather than arriving as a side effect of landing the tool. It is idempotent and skips branches already current, so a low-frequency job is the obvious destination if that decision goes that way. Declared inert rather than given fake wiring to clear the gate; wire it or retire it",
+ "spillover_id": "sp-80307e44"
+}

@@ -19,6 +19,7 @@ Exit codes: 0 green, 1 red, 3 refused (worktree copy).
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -68,12 +69,43 @@ WIRING_SURFACE_GLOBS = (
     "kipi*",
     "*.sh",
     "q-system/.q-system/scripts/*.sh",
+    # A launchd plist template IS wiring, and for a SCHEDULED job it is the only
+    # wiring there is. Measured 2026-08-30 (ASK-1178): morning-brief.py and
+    # morning-brief-deadman.py were reported inert while both had a committed
+    # plist naming them and both were loaded and firing on this Mac. The gate was
+    # telling a scheduled job to justify itself as dead code. install-plist.sh
+    # renders these into ~/Library/LaunchAgents, so a name appearing here is a
+    # job that actually runs.
+    "q-system/.q-system/scripts/*.plist",
     "q-system/hooks/*",
     ".claude/**/*.md",
     "plugins/**/*.md",
     "q-system/.q-system/**/*.md",
     "q-system/.q-system/**/*.py",
     "q-system/.q-system/*.py",
+    # verify.sh and its siblings live HERE, not under scripts/, and `*.sh` above
+    # is a Path.glob pattern that never crosses a directory separator. So the
+    # repo's floor -- the script lefthook runs at pre-commit and CI runs at
+    # --full -- was not a wiring surface at all. Measured 2026-09-18 (ASK-1795):
+    # verify_select.py, called from verify.sh and from nowhere else, was reported
+    # inert. A commit-blocking script is the strongest wiring there is, which is
+    # the same argument that put lefthook.yml on the list above.
+    # Two scars, one line. ASK-1170 first named `q-system/.q-system/verify.sh` in
+    # WIRING_SURFACES above, because .github/workflows/verify.yml runs
+    # `bash q-system/.q-system/verify.sh --full` on every push and PR #279 went RED
+    # on `inert-engine: mcp-denylist-namespace-check.py` while CI was running it.
+    # That by-path entry was removed when this glob landed: the glob subsumes it
+    # (measured 2026-09-22, --check-only output byte-identical with and without),
+    # and two declarations of one fact is the restated-value trap -- they agree
+    # until one moves. Only ONE level deep, so a .sh in a subdirectory under
+    # .q-system still wires nothing; that boundary is the negative control in
+    # test_capability_gate.py.
+    "q-system/.q-system/*.sh",
+    # The MCP server's source tree is where an agent-facing tool gets wired
+    # (wiring-check.md: "any new MCP tool is registered in the server"). Without
+    # it reddit_read.py, called only from kipi-mcp's web_read.py, was reported
+    # inert on CI (PR #294, 2026-09-02).
+    "plugins/*/kipi-mcp/src/**/*.py",
 )
 
 
@@ -192,8 +224,9 @@ def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
         msg = declaration_scope_error(p, exempt_prefixes)
         if msg:
             errors.append(msg)
-    if entry.get("runner") not in ("python3", "bash"):
-        errors.append(f"expected_tests entry needs runner python3|bash: {p}")
+    if entry.get("runner") not in RUNNERS:
+        errors.append(
+            f"expected_tests entry needs runner {'|'.join(RUNNERS)}: {p}")
     if p in seen:
         errors.append(f"duplicate expected_tests path: {p}")
     seen.add(p)
@@ -201,6 +234,52 @@ def validate_test_entry(entry, seen, errors, exempt_prefixes=()):
     if not (isinstance(t, int) and TIMEOUT_MIN_S <= t <= TIMEOUT_MAX_S):
         errors.append(f"timeout_s out of bounds [{TIMEOUT_MIN_S},{TIMEOUT_MAX_S}]: {p}")
     validate_quarantine(entry, errors)
+
+
+# A declared test's runner has to be the one that actually EXECUTES it.
+#
+# ASK-1145, measured 2026-08-29. 13 manifest entries declared `runner: python3`
+# on pytest-shaped modules -- bare `def test_` at module level, no `__main__`
+# block. `python3 <file>` imports such a module, binds the function names, and
+# exits 0 having run nothing. The gate counted 13 tests, reported them green,
+# and was structurally blind to the 248 real cases inside them. Three of those
+# were FAILING, invisibly, in the fact-propagation leak gate on a public repo.
+#
+# `pytest` is added as a third runner rather than patching a `__main__` block
+# into 13 files, because the 14th file would arrive without one and nothing
+# would say so. The detector below is what makes that true: a python3-declared
+# module that is pytest-shaped is REFUSED at declaration time, so the mistake
+# cannot be made silently again.
+RUNNERS = ("python3", "bash", "pytest")
+
+# Module-level `def test_...`. Indented defs are methods on a unittest class,
+# which `python3 <file>` still cannot run without a `__main__` block, so they
+# count the same way.
+_BARE_TEST_DEF = re.compile(r"^\s*def test_\w*\s*\(", re.M)
+_HAS_MAIN = re.compile(r"^if __name__\s*==\s*[\"']__main__[\"']\s*:", re.M)
+
+
+def executes_nothing(entry, full):
+    """Refuse a python3-declared test that `python3 <file>` cannot execute.
+
+    The check is deliberately narrow: it fires only on a `.py` file declared
+    `python3` that DEFINES test functions and has NO `__main__` entry point.
+    A script that does its work at import time (most of the bash-adjacent
+    python helpers here) defines no `def test_` and is untouched.
+
+    An unreadable file is not a pass and not a failure here -- the missing-file
+    direction is already reported by the manifest diff, so this returns quietly
+    rather than adding a second, differently-worded error for one cause.
+    """
+    if entry.get("runner") != "python3":
+        return False
+    if not str(full).endswith(".py"):
+        return False
+    try:
+        text = full.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(_BARE_TEST_DEF.search(text)) and not _HAS_MAIN.search(text)
 
 
 def validate_data_entry(entry, errors):
@@ -616,12 +695,67 @@ def reap_group(proc, pgid):
         pass
 
 
-def run_tests(root, manifest, mode, errors, notes):
+def select_for_diff(root, base, notes):
+    """The set of declared test paths a diff against <base> earns, or None for
+    "run everything" (ASK-1749).
+
+    NONE IS THE ONLY SAFE FAILURE. Measured 2026-09-19 on CI run 35478270323: this
+    gate's test step took 17m41s of a 19m36s job, on every push of every PR,
+    because it always ran every declared artifact. change-size.py decides what a
+    diff earns; this function only ever turns its answer into FEWER tests when the
+    verdict says, by name, that it is safe. A missing classifier, a base ref git
+    cannot resolve, a crash, a verdict with no `selected_tests` list: every one of
+    them returns None and the full suite runs. The note says which, so a full run
+    is never mistaken for a decision.
+
+    The full suite still runs on every push to main (validate.yml passes no
+    --diff-base there), so a selection that was too narrow is caught at merge.
+    """
+    try:
+        path = Path(__file__).resolve().parent / "change-size.py"
+        spec = importlib.util.spec_from_file_location("kipi_change_size", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        verdict = mod.plan_for_repo(root, base)
+        selected = verdict["selected_tests"]
+        if verdict["full_suite"] or not isinstance(selected, list):
+            notes.append(f"change-size vs {base}: tier {verdict['tier']}, FULL suite -- "
+                         + "; ".join(verdict["reasons"][:3]))
+            return None
+        # AN EMPTY SELECTION IS NOT A DECISION (claude review of PR #377, nit 3).
+        # `select_for_diff` used to hand `set()` back, `run_tests` then skipped every
+        # artifact and the gate exited 0 having executed nothing -- green, with zero
+        # evidence behind it. No producer emits an empty list today, because the
+        # scanner floor guarantees at least 72, which is exactly why this would be
+        # invisible if it ever happened. ASK-1918 shrinks that floor on purpose as
+        # declarations accumulate, so "cannot happen" has an expiry date on it.
+        # None means the full suite, the same answer every other unvouchable case
+        # gets here.
+        if not selected:
+            notes.append(f"change-size vs {base}: tier {verdict['tier']}, selected ZERO of "
+                         f"{verdict['declared_tests']} declared tests -- a selection that "
+                         "runs nothing is not a verdict this gate will report green on, "
+                         "so the FULL suite runs")
+            return None
+    except Exception as exc:  # noqa: BLE001 -- any failure here must mean "run everything"
+        notes.append(f"change-size vs {base}: could not classify ({type(exc).__name__}: "
+                     f"{str(exc)[:160]}), so the FULL suite runs")
+        return None
+    notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
+                 f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
+                 "the full suite runs on the push to main")
+    return set(selected)
+
+
+def run_tests(root, manifest, mode, errors, notes, only=None):
     skeleton_only = set(manifest.get("skeleton_only", []))
     env = dict(os.environ, QROOT=str(root / "q-system"))
-    ran = quarantined = skipped = 0
+    ran = quarantined = skipped = not_selected = 0
     for entry in manifest.get("expected_tests", []):
         path = entry.get("path", "")
+        if only is not None and path not in only:
+            not_selected += 1
+            continue
         if mode == "instance" and path in skeleton_only:
             skipped += 1
             continue
@@ -634,7 +768,23 @@ def run_tests(root, manifest, mode, errors, notes):
         full = root / path
         if not full.is_file():
             continue  # already reported by the diff
-        cmd = ["python3", str(full)] if entry["runner"] == "python3" else ["bash", str(full)]
+        if executes_nothing(entry, full):
+            errors.append(
+                f"zero-execution test: {path} defines test functions but has "
+                f"no __main__ block, so `python3 {path}` binds them and exits "
+                f"0 without running one. Declare runner pytest, or add a "
+                f"__main__ entry point (ASK-1145).")
+            continue
+        runner = entry["runner"]
+        if runner == "pytest":
+            # `-p no:cacheprovider` so a gate run leaves no .pytest_cache in the
+            # tree it just measured; `-q` keeps the failure tail readable inside
+            # the 20-line cap below.
+            cmd = ["python3", "-m", "pytest", str(full), "-q", "-p", "no:cacheprovider"]
+        elif runner == "python3":
+            cmd = ["python3", str(full)]
+        else:
+            cmd = ["bash", str(full)]
         timeout = entry.get("timeout_s", DEFAULT_TIMEOUT_S)
         r = run_contained(cmd, root, env, timeout)
         if r.timed_out:
@@ -649,7 +799,22 @@ def run_tests(root, manifest, mode, errors, notes):
             tail = "\n".join((r.stdout + r.stderr).splitlines()[-20:])
             errors.append(f"test-failed rc={r.returncode}: {path}\n{tail}")
     notes.append(f"tests: ran={ran} quarantined={quarantined} "
-                 f"skipped-skeleton-only={skipped}")
+                 f"skipped-skeleton-only={skipped}"
+                 + (f" not-selected-for-this-diff={not_selected}" if only is not None else ""))
+    # ZERO EXECUTED IS NEVER GREEN (claude review of PR #377, nit 3). The selection
+    # guard in select_for_diff stops the empty-list case one layer up; this is the
+    # backstop for every other road to nothing -- a manifest whose entries all vanished
+    # from disk, a selection naming only paths this mode skips, a future caller passing
+    # a set the manifest does not contain. Quarantined and skeleton-only files are
+    # ACCOUNTED FOR, so they are not silence: a run that skipped everything on purpose
+    # says so in the note above and is allowed. A run that ran nothing and cannot say
+    # why is a gate reporting on evidence it never collected.
+    if ran == 0 and quarantined == 0 and skipped == 0:
+        errors.append(
+            "zero tests executed: this gate ran no test artifact at all and would "
+            "otherwise have exited 0. Nothing was quarantined and nothing was skipped, "
+            "so there is no account of where the suite went. Check the manifest and the "
+            "selection (ASK-1921).")
 
 
 def gather_wiring_text(root, exclude_names):
@@ -793,7 +958,24 @@ def check_inert_engines(root, manifest, errors, notes):
         # One authority for that question -- see is_runnable_engine.
         if is_runnable_engine(p, p.read_text(errors="ignore")):
             candidates.add(p)
+    # Plugin closure FIRST: a plugin engine that proves wired (a skill script its
+    # SKILL.md names, a hook its hooks.json names) is real wiring for the skeleton
+    # engines it calls, so its text joins the skeleton surface. An UNWIRED plugin
+    # engine still wires nothing (the closure principle is unchanged). Before this
+    # ordering lessons_recall.py, imported only by the improve skill's
+    # improve_ground.py, was reported inert on CI (PR #294, 2026-09-02).
+    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
+    p_wired, changed = set(), True
+    while changed:
+        changed = False
+        for p in sorted(plugin_candidates - p_wired):
+            if references_engine(p.name, plugin_surface):
+                p_wired.add(p)
+                plugin_surface += "\n" + p.read_text(errors="ignore")
+                changed = True
     surface = gather_wiring_text(root, {p.name for p in candidates})
+    for p in sorted(p_wired):
+        surface += "\n" + p.read_text(errors="ignore")
     wired = set()
     changed = True
     while changed:
@@ -813,15 +995,6 @@ def check_inert_engines(root, manifest, errors, notes):
                       "and no declared_inert entry")
 
     # Same walk over plugins/, reported not enforced (see the note above).
-    plugin_surface = gather_wiring_text(root, {p.name for p in plugin_candidates})
-    p_wired, changed = set(), True
-    while changed:
-        changed = False
-        for p in sorted(plugin_candidates - p_wired):
-            if references_engine(p.name, plugin_surface):
-                p_wired.add(p)
-                plugin_surface += "\n" + p.read_text(errors="ignore")
-                changed = True
     for p in sorted(plugin_candidates - p_wired):
         rel = str(p.relative_to(root))
         if rel in declared:
@@ -835,6 +1008,9 @@ def main():
     ap.add_argument("--repo-root", default=".", help="repo root (default: cwd)")
     ap.add_argument("--check-only", action="store_true",
                     help="structure/diff/wiring/data checks only; skip test execution")
+    ap.add_argument("--diff-base", default="",
+                    help="run only the declared tests a diff against this ref earns "
+                         "(change-size.py decides; anything it cannot decide runs the full suite)")
     args = ap.parse_args()
     root = Path(args.repo_root).resolve()
     refuse_if_worktree(root)
@@ -892,7 +1068,8 @@ def main():
         notes.append("inert-engine check: skeleton-only (instance wiring is "
                      "declared and gated in the skeleton)")
     if not args.check_only:
-        run_tests(root, manifest, mode, errors, notes)
+        only = select_for_diff(root, args.diff_base, notes) if args.diff_base else None
+        run_tests(root, manifest, mode, errors, notes, only)
     report(mode, errors, notes)
     sys.exit(1 if errors else 0)
 
