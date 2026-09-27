@@ -26,23 +26,30 @@ MUTANTS = [
     ("D2  exactly-once loosened to at-least-once",
      "    if matches != 1:",
      "    if matches < 1:"),
-    ("D3  dirty tree accepted as a result",
-     "    if not restored:",
-     "    if restored is None:"),
+    # Three restores exist now, one per pass, and each needs its own row: the
+    # anchors carry the preceding _run line because the restore call itself is
+    # byte-identical in all three places.
+    ("D3  dirty tree after the MUTANT pass accepted as a result",
+     '    run = _run(args.cmd, "mutate-mutant-", args.timeout)\n'
+     "    if not _restore(path, original, original_mode):",
+     '    run = _run(args.cmd, "mutate-mutant-", args.timeout)\n'
+     "    if _restore(path, original, original_mode) is None:"),
     ("D4  bytecode writing re-enabled",
      'env["PYTHONDONTWRITEBYTECODE"] = "1"',
      'env["PYTHONDONTWRITEBYTECODE"] = "0"'),
     ("D5  read-side cache prefix dropped",
      '    env["PYTHONPYCACHEPREFIX"] = cache_prefix',
      '    env.pop("PYTHONPYCACHEPREFIX", None)'),
-    ("D6  verdict hardcoded to KILLED",
-     '    verdict = "KILLED" if run_exit != 0 else "SURVIVED"',
-     '    verdict = "KILLED"'),
+    ("D6  every verdict routed through the KILLED branch",
+     "    if run.exit == 0:",
+     "    if run.exit is None:"),
     ("D7  baseline green-check off",
-     "    if baseline_exit != 0:",
-     "    if baseline_exit is None:"),
+     "    if baseline.exit != 0:",
+     "    if baseline.exit is None:"),
     ("D8  baseline restore not checked",
+     '    baseline = _run(args.cmd, "mutate-baseline-", args.timeout)\n'
      "    if not _restore(path, original, original_mode):",
+     '    baseline = _run(args.cmd, "mutate-baseline-", args.timeout)\n'
      "    if _restore(path, original, original_mode) is None:"),
     ("D9  concurrent-run refusal off",
      "        if not acquire(lock_fh):",
@@ -53,6 +60,20 @@ MUTANTS = [
     ("D11 --json ignored on the refusal path",
      '    if getattr(args, "as_json", False):',
      '    if getattr(args, "as_json", False) is None:'),
+    ("D12 attribution pass verdict ignored (claim 3 off)",
+     "        if confirm.exit != 0:",
+     "        if confirm.exit is None:"),
+    ("D13 dirty tree after the ATTRIBUTION pass accepted",
+     '        confirm = _run(args.cmd, "mutate-confirm-", args.timeout)\n'
+     "        if not _restore(path, original, original_mode):",
+     '        confirm = _run(args.cmd, "mutate-confirm-", args.timeout)\n'
+     "        if _restore(path, original, original_mode) is None:"),
+    ("D14 a hung pass treated as a number",
+     "    if result.timed_out:",
+     "    if result.timed_out is None:"),
+    ("D15 signal handlers not installed for the mutant window",
+     "    previous = _guard_window()",
+     "    previous = {}"),
 ]
 
 # Two guards are deliberately NOT in the table above, and the reason is written

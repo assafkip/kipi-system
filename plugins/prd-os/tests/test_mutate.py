@@ -10,20 +10,27 @@ mutation run:
     edit never applied, the run printed a clean 248 green, and that is byte-for-byte
     what a well-defended site looks like on the terminal.
 
-A mutation result is TWO claims. "The mutant was killed" is meaningless until
-"the mutant was applied" is proven. These tests pin the second claim.
+A mutation result is FOUR claims. "The mutant was killed" is meaningless until
+the mutant was APPLIED, the check was GREEN first, and the redness is
+ATTRIBUTABLE to the mutant rather than to the harness having run the check
+twice. These tests pin the three that are not the verdict.
 
 Every case runs against tmp_path. Nothing here touches a live data path.
 """
 
+import ast
 import fcntl
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import py_compile
+import signal
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -34,9 +41,9 @@ HARNESS = Path(__file__).resolve().parents[1] / "scripts" / "mutate.py"
 def load_harness():
     """Import the harness as a module so a test can DERIVE a value it owns.
 
-    Used for the lock path. Restating the lock-path formula here would create a
-    second source of truth that agrees on the day it is written and stops
-    agreeing silently (lessons: derive-a-value-from-its-owner).
+    Used for the lock handle and the refusal-tag list. Restating either here
+    would create a second source of truth that agrees on the day it is written
+    and stops agreeing silently (lessons: derive-a-value-from-its-owner).
     """
     spec = importlib.util.spec_from_file_location("mutate_harness", HARNESS)
     mod = importlib.util.module_from_spec(spec)
@@ -226,17 +233,213 @@ def test_baseline_side_effects_are_undone_before_the_mutant(tmp_path, subject):
 
 
 # --------------------------------------------------------------------------
+# Claim 3: the redness is ATTRIBUTABLE to the mutant. Measuring a baseline made
+# the harness run the check TWICE, so a check that is green once and red after
+# (a leftover file, a port, a row in a table) hands back KILLED for a mutant it
+# never saw -- the baseline guard's own side effect (PR #455 review round 2).
+# --------------------------------------------------------------------------
+
+
+def nonhermetic_command(counter: Path) -> list:
+    """A check that passes on its first invocation and fails on every one after.
+
+    The commonest real shape: the check leaves state behind (a created row, a
+    written file, a bound port) and the second run trips over it. Nothing here
+    reads the subject, so any red it produces is the harness's own doing.
+    """
+    return [
+        sys.executable, "-c",
+        "import pathlib, sys; "
+        f"p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n + 1)); "
+        "sys.exit(0 if n == 0 else 1)",
+    ]
+
+
+def test_nonhermetic_check_is_failed_experiment_not_killed(tmp_path, subject):
+    """Green-then-red from run count alone must never read as KILLED.
+
+    The mutant is on SPARE, which the command does not read, so the only thing
+    that could turn the second pass red is the command itself. Before the
+    attribution pass existed this printed exit 0 / KILLED and credited a guard
+    that does not exist.
+    """
+    src, _check = subject
+    before = digest(src)
+    counter = tmp_path / "invocations"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "SPARE = 9",
+        "--replacement", "SPARE = 8",
+        "--", *nonhermetic_command(counter),
+    )
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "NON-HERMETIC-CHECK" in (r.stdout + r.stderr)
+    assert digest(src) == before
+
+
+def test_attribution_pass_runs_against_the_restored_original(tmp_path, subject):
+    """The confirming pass must see the ORIGINAL bytes, or it proves nothing.
+
+    The command logs what it read on every invocation. A KILLED verdict must
+    therefore leave three entries: unmutated, mutated, unmutated again.
+    """
+    src, _check = subject
+    log = tmp_path / "seen.log"
+    reader = (
+        f"open({str(log)!r}, 'a').write(open({str(src)!r}).read() + '===\\n'); "
+        f"__import__('sys').exit(0 if 'VALUE = 1' in open({str(src)!r}).read() else 1)"
+    )
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, "-c", reader,
+    )
+    assert r.returncode == KILLED, r.stdout + r.stderr
+    seen = [chunk for chunk in log.read_text().split("===\n") if chunk.strip()]
+    assert len(seen) == 3, f"expected baseline, mutant and attribution passes, got {len(seen)}"
+    assert "VALUE = 1" in seen[0]
+    assert "VALUE = 2" in seen[1]
+    assert "VALUE = 1" in seen[2], "the attribution pass ran against the mutant"
+
+
+def test_survived_costs_no_attribution_pass(tmp_path, subject):
+    """A SURVIVED verdict claims the mutant caused nothing, so it needs no proof.
+
+    Only a KILLED verdict asserts causation, and only that assertion can be
+    manufactured by the extra baseline run. Spending a third pass on every
+    SURVIVED row would add 50% to a mutation table's cost for no claim.
+    """
+    src, check = subject
+    counter = tmp_path / "invocations"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "SPARE = 9",
+        "--replacement", "SPARE = 8",
+        "--", sys.executable, "-c",
+        "import pathlib; "
+        f"p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n + 1))",
+    )
+    assert r.returncode == SURVIVED, r.stdout + r.stderr
+    assert counter.read_text() == "2", "a SURVIVED verdict paid for an attribution pass"
+
+
+# --------------------------------------------------------------------------
+# The mutant window is closed on every exit path, not just the happy one.
+# --------------------------------------------------------------------------
+
+
+def hangs_on_the_mutant_pass(counter: Path) -> str:
+    """Command source that returns green on the baseline pass and then hangs.
+
+    The baseline pass has to complete, or the interrupt lands while the subject
+    is still original and proves nothing about the mutant window.
+    """
+    return (
+        "import pathlib, time; "
+        f"p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n + 1)); "
+        "n and time.sleep(30)"
+    )
+
+
+def test_sigint_during_the_run_still_restores_the_subject(tmp_path, subject):
+    """Ctrl-C inside the mutant window must not leave the mutant on disk.
+
+    The docstring promises the subject is ALWAYS restored. Without a handler and
+    a finally, an interrupt during the run left the mutated file in the working
+    tree, which then poisons every later run and every later diff.
+    """
+    src, _check = subject
+    before = src.read_bytes()
+    counter = tmp_path / "invocations"
+    proc = subprocess.Popen(
+        [sys.executable, str(HARNESS),
+         "--file", str(src),
+         "--anchor", "VALUE = 1",
+         "--replacement", "VALUE = 2",
+         "--", sys.executable, "-c", hangs_on_the_mutant_pass(counter)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    # Wait for the SECOND invocation: the first is the baseline pass, when the
+    # subject is still original and an interrupt would prove nothing.
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if counter.exists() and counter.read_text() == "2":
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    assert counter.exists() and counter.read_text() == "2", "never reached the mutant window"
+    assert src.read_bytes() != before, "the subject was not mutated yet"
+    proc.send_signal(signal.SIGINT)
+    out, err = proc.communicate(timeout=30)
+    assert src.read_bytes() == before, "the interrupt left the mutant on disk: " + out + err
+    assert proc.returncode == FAILED_EXPERIMENT, out + err
+
+
+def test_timeout_is_a_failed_experiment_not_a_verdict(tmp_path, subject):
+    """A command that never returns produced no measurement, so it has no verdict.
+
+    Unattended (a CI job, a mutation table left running), a hang holds the
+    subject's lock forever and the mutant stays on disk. --timeout turns that
+    into a refusal that restores.
+    """
+    src, _check = subject
+    before = src.read_bytes()
+    counter = tmp_path / "invocations"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--timeout", "2",
+        "--", sys.executable, "-c", hangs_on_the_mutant_pass(counter),
+    )
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "TIMEOUT" in (r.stdout + r.stderr)
+    assert counter.read_text() == "2", "the hang was not in the mutant window"
+    assert src.read_bytes() == before
+
+
+# --------------------------------------------------------------------------
 # One writer at a time: two concurrent runs on one subject each read the
 # other's mutant as "the original" and each restore it, so the mutant stays on
 # disk while both print "restored: yes" (PR #455 review, minor).
 # --------------------------------------------------------------------------
 
 
+def test_the_lock_leaves_no_file_behind(tmp_path, subject):
+    """A per-run lock FILE in the temp dir accumulates without bound.
+
+    18 per suite run, unbounded in run count, on a fleet that already has an open
+    disk item (PR #455 review round 2). Unlinking one is racy -- the next process
+    opens the path, gets a fresh inode and locks nothing -- so the subject's own
+    inode is the lock and no file is created at all.
+    """
+    src, check = subject
+    tmpdir = Path(tempfile.gettempdir())
+    before = set(os.listdir(tmpdir))
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, str(check),
+    )
+    assert r.returncode == KILLED, r.stdout + r.stderr
+    added = [n for n in set(os.listdir(tmpdir)) - before if "mutate" in n]
+    assert not added, f"the run left lock litter in the temp dir: {added}"
+
+
 def test_a_second_run_on_the_same_subject_is_refused(tmp_path, subject):
     src, _check = subject
     before = digest(src)
     harness = load_harness()
-    held = open(harness.lock_path(str(src)), "a+")
+    held = harness.open_lock(str(src))
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
     sentinel = tmp_path / "ran"
     try:
@@ -476,6 +679,66 @@ def test_unrestorable_tree_is_failed_experiment(tmp_path, subject):
     assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
     assert "FAILED-TO-APPLY" in (r.stdout + r.stderr)
     assert "could not be verified" in (r.stdout + r.stderr)
+
+
+def test_unrestorable_tree_after_the_attribution_run_is_failed_experiment(tmp_path, subject):
+    """Three passes now means THREE restores, and the third needs its own case.
+
+    The first two are covered above. A command that destroys the subject on
+    every invocation only ever reaches the first restore, which is exactly how
+    the mutant restore went untested and its guard survived (D3, 2026-09-27).
+    This command counts: green, then red so the attribution pass is reached,
+    then destructive.
+    """
+    src, _check = subject
+    counter = tmp_path / "invocations"
+    r = run_harness(
+        "--file", str(src),
+        "--anchor", "VALUE = 1",
+        "--replacement", "VALUE = 2",
+        "--", sys.executable, "-c",
+        "import os, pathlib, sys; "
+        f"p = pathlib.Path({str(counter)!r}); "
+        "n = int(p.read_text()) if p.exists() else 0; "
+        "p.write_text(str(n + 1)); "
+        f"n == 2 and (os.remove({str(src)!r}), os.mkdir({str(src)!r})); "
+        "sys.exit(1 if n == 1 else 0)",
+    )
+    assert counter.read_text() == "3", "the attribution pass did not run"
+    assert r.returncode == FAILED_EXPERIMENT, r.stdout + r.stderr
+    assert "could not be verified" in (r.stdout + r.stderr)
+
+
+def test_every_refusal_tag_is_declared_and_documented():
+    """--json emits the TAG, so the tag list is part of the caller's contract.
+
+    The contract named only "FAILED EXPERIMENT" while the receipts carried
+    FAILED-TO-APPLY and BASELINE-NOT-GREEN, so a consumer switching on verdict
+    met strings no document mentions (PR #455 review round 2). Both sets are
+    DERIVED -- the used set by parsing the source, the declared set by importing
+    it -- so adding a tag without declaring or documenting it goes red.
+    """
+    harness = load_harness()
+    tree = ast.parse(HARNESS.read_text())
+    default_tag = inspect.signature(harness.refuse).parameters["tag"].default
+    used = {default_tag}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "refuse":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "tag" and isinstance(kw.value, ast.Constant):
+                used.add(kw.value.value)
+    assert len(used) > 1, "the tag parse found nothing; the derivation is broken"
+    assert used == set(harness.REFUSAL_TAGS), (
+        f"REFUSAL_TAGS does not match the tags the code emits: "
+        f"declared-not-used={set(harness.REFUSAL_TAGS) - used}, "
+        f"used-not-declared={used - set(harness.REFUSAL_TAGS)}"
+    )
+    doc = harness.__doc__ or ""
+    undocumented = [tag for tag in harness.REFUSAL_TAGS if tag not in doc]
+    assert not undocumented, f"exit-2 tags missing from the module contract: {undocumented}"
 
 
 def test_missing_file_is_failed_experiment(tmp_path):
