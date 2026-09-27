@@ -35,12 +35,64 @@ LITERAL manifest, and the check runs in BOTH directions:
 Adding a module to the package means adding one line here. That cost is the
 point: it is the same declared-vs-actual shape the capability gate uses.
 """
+import functools
 import importlib
 import os
 
 import pytest
 
-PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+@functools.lru_cache(maxsize=1)
+def _package_dir():
+    """Where the package this manifest grades actually lives (ASK-2145).
+
+    Derived from the IMPORT, never from this file's depth on disk. The previous
+    expression was `dirname(dirname(__file__))`, which is the package only
+    while `tests/` sits inside it; where `tests/` is a SIBLING of the package
+    that lands on the parent directory, and the two-way manifest check then
+    grades a directory that is not the package. Measured 2026-09-06 in the
+    public mirror, where that layout holds: 1 failed / 234 passed against an
+    empty right-hand side.
+
+    REFUSES rather than falling back. A manifest gate quietly measuring the
+    wrong directory reads exactly like one that works, which is the whole
+    defect; a gate that cannot find its subject has to say so.
+    """
+    try:
+        pkg = importlib.import_module("voiceloop")
+    except Exception as exc:               # ImportError, or anything __init__ raises
+        raise RuntimeError(
+            "the `voiceloop` package could not be imported, so this file "
+            "cannot tell which directory it is supposed to grade. Refusing "
+            "rather than grading the directory this test file happens to sit "
+            f"under: {exc!r}") from exc
+    path = getattr(pkg, "__file__", None)
+    if not path:
+        # A namespace package has no __file__ and may span several directories,
+        # so there is no single directory to grade.
+        raise RuntimeError(
+            "the imported `voiceloop` has no __file__ (a namespace package, or "
+            "a loader that provides none), so it names no single directory for "
+            "the manifest to grade. Refusing rather than guessing one.")
+    return os.path.dirname(os.path.abspath(path))
+
+
+def _engine_module():
+    """The engine file the AST checks below read.
+
+    Same derived value and same owner as `_package_dir`: these used to walk
+    `__file__.parent.parent`, so they carried the identical layout dependency
+    and raised FileNotFoundError on the repo root in a sibling layout.
+    """
+    return os.path.join(_package_dir(), "gate_and_judge.py")
+
+
+# RESOLVED LAZILY, not at module scope. `voiceloop` is not importable while
+# this file is being COLLECTED -- the path that makes it importable is in place
+# by the time a test body runs, which is why every other test here imports
+# inside the function. A module-level `PKG_DIR = _package_dir()` therefore
+# turned the whole file into a collection error. Measured on this branch:
+# `1 error in 0.07s`, zero tests run.
 
 # The 33 shipped modules, excluding __init__. Keep sorted; one line per module.
 EXPECTED_MODULES = (
@@ -85,7 +137,7 @@ EXPECTED_MODULES = (
 def _modules_on_disk():
     return {
         f[:-3]
-        for f in os.listdir(PKG_DIR)
+        for f in os.listdir(_package_dir())
         if f.endswith(".py") and f != "__init__.py"
     }
 
@@ -353,9 +405,9 @@ def test_every_decide_call_site_is_guarded():
     here without anyone remembering to update a list.
     """
     import ast
-    import pathlib
 
-    src = (pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py").read_text()
+    with open(_engine_module(), encoding="utf-8") as h:
+        src = h.read()
     sites = [
         n for n in ast.walk(ast.parse(src))
         if isinstance(n, ast.Call)
@@ -396,10 +448,9 @@ def test_no_optional_kwarg_reaches_an_INJECTED_callable_unguarded():
     directly, and this fails without anyone remembering to update a list.
     """
     import ast
-    import pathlib
 
-    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
-    tree = ast.parse(mod.read_text())
+    with open(_engine_module(), encoding="utf-8") as h:
+        tree = ast.parse(h.read())
     # Find the entry point by what it TAKES, not by its name. Guessing the name
     # was this test's own first bug, which is the mistake it exists to prevent.
     run = next(n for n in ast.walk(tree)
@@ -570,10 +621,10 @@ def _engine_boundary():
     which kwargs reach it DIRECTLY, and which ride through `_gated`.
     """
     import ast
-    import pathlib
 
-    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
-    run = next(n for n in ast.walk(ast.parse(mod.read_text()))
+    with open(_engine_module(), encoding="utf-8") as h:
+        engine_src = h.read()
+    run = next(n for n in ast.walk(ast.parse(engine_src))
                if isinstance(n, ast.FunctionDef)
                and "_append_voice_provenance" in
                {a.arg for a in n.args.args + n.args.kwonlyargs})
@@ -1044,4 +1095,100 @@ def test_the_disposition_table_does_not_name_a_kwarg_the_engine_stopped_sending(
     stale = sorted(set(gj._DROP_DISPOSITION) - live)
     assert not stale, (
         f"the disposition table names pairs the engine no longer gates: {stale}")
+
+
+# ---------------------------------------------------------------------------
+# THE MANIFEST GATE MUST GRADE THE PACKAGE, NOT WHATEVER DIRECTORY IT LANDED IN
+# (ASK-2145, promoted from sp-4c490607)
+#
+# `PKG_DIR` used to be `dirname(dirname(__file__))`, a value derived from this
+# FILE'S DEPTH rather than from the package it grades. In this repo `tests/`
+# sits inside the package, so two levels up is `voiceloop/` and the two-way
+# manifest check grades the right directory. In a layout where `tests/` is a
+# SIBLING of the package, the same expression lands on the repo root: direction
+# 2 then compares the manifest against root-level `.py` files instead of the
+# package's, and the deletion/drift gate reports on a directory that is not the
+# package. Measured 2026-09-06 in the public mirror: 1 failed / 234 passed, on
+# an empty right-hand side.
+#
+# Same class as `test_every_decide_call_site_is_guarded` (read the value out of
+# its owner, never restate it): the owner of "where is the package" is the
+# IMPORT, so `_package_dir()` asks the imported module and refuses when it
+# cannot. The three AST reads of `gate_and_judge.py` were the same derivation
+# and are routed through it too.
+#
+# The check below is end to end on purpose. Asserting `_package_dir()` from
+# inside this layout only re-states the fix; the honest version builds the
+# sibling layout and RUNS this file there.
+# ---------------------------------------------------------------------------
+
+# Set in the child run below, so the sibling-layout copy does not recurse.
+_SIBLING_CHILD_ENV = "VOICELOOP_SIBLING_LAYOUT_CHILD"
+
+
+@pytest.mark.skipif(os.environ.get(_SIBLING_CHILD_ENV) == "1",
+                    reason="this IS the sibling-layout child run")
+def test_this_file_gives_the_same_verdict_in_a_sibling_tests_layout(tmp_path):
+    """THE REPRODUCER (ASK-2145). RED while PKG_DIR came from file depth.
+
+    Builds `<root>/voiceloop/` next to `<root>/tests/`, drops a decoy `.py` at
+    the root so a gate grading the wrong directory has something wrong to see,
+    and runs this very file there in a subprocess. The verdict must match the
+    in-package run.
+
+    The decoy is what makes this able to fail. Without it the wrong directory
+    happens to hold no modules, direction 2 subtracts an empty set and passes,
+    and the reproducer would agree with the defect.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    root = tmp_path / "siblingroot"
+    (root).mkdir()
+    shutil.copytree(_package_dir(), root / "voiceloop",
+                    ignore=shutil.ignore_patterns("__pycache__", "tests"))
+    (root / "tests").mkdir()
+    shutil.copy2(__file__, root / "tests" / os.path.basename(__file__))
+    # The wrong directory, made visible. `dirname(dirname(testfile))` is `root`.
+    (root / "decoy_module.py").write_text("# not part of the package\n")
+
+    env = dict(os.environ)
+    env[_SIBLING_CHILD_ENV] = "1"
+    env["PYTHONPATH"] = str(root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest",
+         str(root / "tests" / os.path.basename(__file__)),
+         "-q", "--capture=sys", "-p", "no:cacheprovider"],
+        cwd=str(root), env=env, capture_output=True, text=True)
+
+    assert proc.returncode == 0, (
+        "this file does not hold up when `tests/` is a SIBLING of the package, "
+        "so its manifest gate is grading whatever directory the test file's "
+        "depth lands on rather than the package:\n"
+        + proc.stdout[-4000:] + proc.stderr[-2000:])
+
+
+def test_the_sibling_layout_reproducer_can_actually_fail(tmp_path):
+    """THE NEGATIVE SELF-TEST. The reproducer above must be able to go red.
+
+    It pins the OLD expression against the sibling layout and asserts it lands
+    on the parent rather than on the package. If this ever stops holding, the
+    layout being built is not the one the defect needs and the green above
+    means nothing.
+    """
+    root = tmp_path / "siblingroot"
+    (root / "voiceloop").mkdir(parents=True)
+    (root / "tests").mkdir()
+    testfile = root / "tests" / "test_copy.py"
+    testfile.write_text("# a copy of this file\n")
+
+    from_depth = os.path.dirname(os.path.dirname(os.path.abspath(str(testfile))))
+    assert from_depth == str(root), (
+        "the sibling layout does not reproduce the wrong derivation, so the "
+        f"reproducer cannot fail: {from_depth}")
+    assert from_depth != str(root / "voiceloop"), (
+        "depth-derived PKG_DIR would coincide with the package here, which is "
+        "the in-package layout, not the sibling one")
 
