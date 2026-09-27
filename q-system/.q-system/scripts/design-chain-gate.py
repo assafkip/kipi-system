@@ -1971,22 +1971,39 @@ def page_shape(text: str) -> list:
 
 
 def _git(page: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
+    """A missing or unrunnable git is a FAILED run, never a raised exception. Nothing wraps
+    `hook()`, so FileNotFoundError from an absent binary aborted the whole PostToolUse event
+    before its `save_ledger` -- the strict-by-default arm became no enrollment at all, which
+    is the one direction a gate must not fail (PR #456 review round 1, minor)."""
+    try:
+        return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
+    except OSError as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
 
 
-def _matches_committed(page: Path) -> bool:
-    """True only when the page's bytes are identical to its committed version at HEAD.
+def _matches_committed(page: Path, since: float) -> bool:
+    """True only when the page's bytes are identical to a commit that PREDATES this command.
 
     A first sighting is not authorship. `git worktree add` WRITES every tracked file it
     checks out, so a new worktree gives every page in it a fresh mtime AND leaves it
     absent from the Pre snapshot, which the content arm below reads as new. Stop then
     refused the turn over q-system/marketing/brand-kit.html, tracked since 2026-04-06
-    and never touched by the branch (2026-09-23, sp-a4087ae8). Bytes equal to the
-    committed blob mean the session did not author the page, whatever its mtime says.
+    and never touched by the branch (2026-09-23, sp-a4087ae8).
 
-    Fails OPEN (False, so the page is treated as authored) on anything it cannot read:
-    no git, no HEAD, or an untracked file with no committed blob. A gate that goes quiet
-    on a repo it cannot read protects nothing (design-auto-invoke.md).
+    Equal bytes are only half the evidence, and the missing half is the commit's AGE.
+    `python3 build.py && git add -A && git commit` is one Bash call: by the time
+    PostToolUse reads a page the session genuinely wrote, its bytes ARE the blob at HEAD,
+    so bytes alone exempted an authored page and Stop passed (PR #456 review round 1,
+    major, found independently by both reviewers). A checkout's blob was committed before
+    the session; an author-then-commit blob was not. The age is asked per PATH, not of
+    HEAD: `git commit -m x && git worktree add ../wt` advances HEAD inside one call while
+    every checked-out page's own blob still predates it, so a "did HEAD move" test would
+    re-block the very scar above.
+
+    Fails OPEN (False, so the page is treated as authored) on anything it cannot read: no
+    git, no HEAD, an untracked file with no committed blob, or a commit date it cannot
+    parse. A gate that goes quiet on a repo it cannot read protects nothing
+    (design-auto-invoke.md).
     """
     blob = _git(page, "rev-parse", f"HEAD:./{page.name}")
     if blob.returncode or not blob.stdout.strip():
@@ -1994,7 +2011,15 @@ def _matches_committed(page: Path) -> bool:
     cur = _git(page, "hash-object", "--", page.name)
     if cur.returncode or not cur.stdout.strip():
         return False
-    return blob.stdout.strip() == cur.stdout.strip()
+    if blob.stdout.strip() != cur.stdout.strip():
+        return False
+    # the third spawn is paid only by a page whose bytes already matched, so a page the
+    # session rewrote costs two calls and stops here
+    when = _git(page, "log", "-1", "--format=%ct", "HEAD", "--", page.name)
+    try:
+        return float(when.stdout.strip()) < since
+    except ValueError:
+        return False
 
 
 def _committed_text(page: Path, commit: str) -> str | None:
@@ -3567,13 +3592,17 @@ def _hook(payload: dict) -> int:
             # chain, and the page's earlier state was already judged or never this session's.
             if before is not None and before.get(str(here)) == _file_sha(here):
                 continue
-            # the snapshot arm above only answers for a page that already existed when Pre ran.
-            # A checkout makes a page APPEAR, so it has no snapshot entry and reads as new; its
-            # bytes against HEAD are the only evidence left (see _matches_committed, ASK-2147).
-            if _matches_committed(here):
-                continue
             if retired_reason(here):
                 continue            # a retired round enrolls nothing (see retired_reason)
+            # the snapshot arm above only answers for a page that already existed when Pre ran.
+            # A checkout makes a page APPEAR, so it has no snapshot entry and reads as new; its
+            # bytes against a commit older than this call are the only evidence left (see
+            # _matches_committed, ASK-2147). Ordered BELOW the free retired check on purpose: a
+            # retired round paid git spawns per page only to be discarded, and a checkout is
+            # exactly the case that hands this arm every page of the tree at once (PR #456
+            # review round 1, minor).
+            if _matches_committed(here, since):
+                continue
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
         return 0
