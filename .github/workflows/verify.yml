@@ -65,3 +65,10 @@ jobs:
       # invokes is an aspiration, whichever layer it sits on.
       - name: adversarial suite (the floor's own tests)
         run: bash q-system/.q-system/test_verify_adversarial.sh q-system/.q-system/verify.sh
+      # ASK-1900. The concurrency half, wired in the SAME commit that adds it --
+      # its sibling above shipped unwired and a Codex review had to find that.
+      # Neither suite is visible to the capability gate: TEST_PATTERNS carries
+      # test-*.sh and not test_*.sh, so a file named like these two is discovered
+      # by nothing. This caller is the only thing that runs it.
+      - name: concurrent suite (collision is not a failed check)
+        run: bash q-system/.q-system/test_verify_concurrent.sh q-system/.q-system/verify.sh
