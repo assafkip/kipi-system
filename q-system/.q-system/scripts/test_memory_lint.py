@@ -16,6 +16,7 @@ Run: python3 q-system/.q-system/scripts/test_memory_lint.py
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -201,9 +202,79 @@ def check_slug_derivation():
           memory_conventions.claude_project_slug(plain) == "-Users-x-projects-demo",
           memory_conventions.claude_project_slug(plain))
 
-    mem = memory_conventions.claude_project_memory_dir(OBSERVED_SLUGS[0][0])
+    plain_dir = memory_conventions.claude_project_memory_dir(plain)
     check("the memory dir is the slug plus /memory",
-          mem.name == "memory" and mem.parent.name == OBSERVED_SLUGS[0][1], str(mem))
+          plain_dir.name == "memory" and plain_dir.parent.name == "-Users-x-projects-demo",
+          str(plain_dir))
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-C", str(cwd), *args],
+                          capture_output=True, text=True)
+
+
+def check_worktree_corpus():
+    """ASK-1903 round 3: a linked worktree reads the MAIN worktree's corpus.
+
+    Claude Code keys the TRANSCRIPT directory on the session's cwd and the
+    auto-memory corpus on the repository's MAIN worktree. OBSERVED_SLUGS[0]
+    above is a transcript observation, and round 2 used it as the oracle for the
+    corpus -- so every git worktree in the fleet derived a directory the producer
+    never creates, and Gate 1.2b turned that into a green
+    `PASS no auto-memory directory`.
+
+    The producer observation behind this check, read live in the session that
+    wrote it: cwd was /Users/assafkipnis/.config/kipi/worktrees/ask-1903, the
+    transcript directory was .../-Users-assafkipnis--config-kipi-worktrees-ask-1903
+    and held no memory/, and the corpus the session actually used was
+    .../-Users-assafkipnis-projects-kipi-system/memory -- the slug of
+    /Users/assafkipnis/projects/kipi-system, which is that worktree's MAIN
+    worktree, not its cwd.
+
+    Built as a real git worktree in a TemporaryDirectory so the check can go RED
+    on any machine rather than asserting against this one.
+    """
+    sys.path.insert(0, str(HERE))
+    import memory_conventions
+
+    if shutil.which("git") is None:
+        check("worktree corpus: git on PATH", False, "git not found; case unverified")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        main = Path(tmp) / "main_repo"
+        main.mkdir()
+        git(main, "init", "-q")
+        git(main, "config", "user.email", "t@example.com")
+        git(main, "config", "user.name", "t")
+        git(main, "commit", "-q", "--allow-empty", "-m", "base")
+        linked = Path(tmp) / "wt-side-branch"
+        made = git(main, "worktree", "add", "-q", str(linked), "-b", "side")
+        if made.returncode != 0 or not linked.is_dir():
+            check("worktree corpus: fixture worktree was created", False,
+                  made.stdout + made.stderr)
+            return
+
+        # `main.resolve()`: on macOS a TemporaryDirectory lives under a symlinked
+        # /var, and git answers with the resolved path. Real fleet paths carry no
+        # symlink, so this is fixture hygiene, not a claim about the derivation.
+        want = memory_conventions.claude_project_memory_dir(str(main.resolve()))
+        got = memory_conventions.claude_project_memory_dir(str(linked))
+        check("a linked worktree resolves to the main worktree's corpus",
+              got == want, "expected %s\n     got %s" % (want, got))
+        # The literal half: an implementation that returned the same WRONG answer
+        # for both sides would satisfy the equality above.
+        check("the corpus slug names the main worktree, not the linked one",
+              "main-repo" in got.parent.name and "wt-side-branch" not in got.parent.name,
+              str(got))
+
+        # A path outside any repository keeps answering for itself, so the
+        # resolution is additive rather than a rewrite of every derivation.
+        outside = Path(tmp) / "not-a-repo"
+        outside.mkdir()
+        got_outside = memory_conventions.claude_project_memory_dir(str(outside))
+        check("a non-repo path still derives from itself",
+              got_outside.parent.name.endswith("not-a-repo"), str(got_outside))
 
 
 def main():
@@ -285,6 +356,7 @@ def main():
               rc == 0 and "no-frontmatter.md: no status and no as_of" in out, out)
 
     check_slug_derivation()
+    check_worktree_corpus()
 
     if FAILURES:
         print(f"\nFAILED {len(FAILURES)}/{CHECKS}\n")

@@ -73,6 +73,39 @@ class MemoryLintClassification(unittest.TestCase):
         self.assertEqual(kind, "broken")
         self.assertIn("exit 2", message)
 
+    def test_silent_producer_on_an_absent_corpus_warns(self):
+        """ASK-1903 round 3: absence is only a PASS when the producer said so.
+
+        Round 2 read absence off `os.path.isdir` alone, so a memory-lint that
+        crashed before printing anything and still exited 0 reported PASS. That
+        branch is the one every checkout without a corpus takes, so the gate's
+        crash detection was off in exactly the population it targets.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "memory")
+            kind, message = VS.classify_memory_lint(missing, 0, "")
+        self.assertEqual(kind, "broken")
+        self.assertIn("absence line", message)
+
+    def test_unrelated_stdout_on_an_absent_corpus_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "memory")
+            kind, _ = VS.classify_memory_lint(missing, 0, "ImportError swallowed\n")
+        self.assertEqual(kind, "broken")
+
+    def test_absence_line_about_a_different_corpus_warns(self):
+        """The producer must report absence of the path the gate handed it.
+
+        An absence line naming some other directory means the subprocess swept a
+        corpus the gate is not reporting on, which is the two-derivations defect
+        this issue exists for.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "memory")
+            other = os.path.join(tmp, "somewhere-else", "memory")
+            kind, _ = VS.classify_memory_lint(missing, 0, ABSENT_STDOUT % other)
+        self.assertEqual(kind, "broken")
+
     def test_unknown_corpus_path_with_no_summary_warns(self):
         """corpus=None means the derivation failed; do not call that healthy."""
         kind, _ = VS.classify_memory_lint(None, 0, ABSENT_STDOUT % "somewhere")
@@ -115,8 +148,32 @@ class MemoryCorpusDerivation(unittest.TestCase):
         )
         # A derivation that returned an empty slug, or ignored the project path
         # and answered for the cwd, would satisfy the equality above only
-        # because both sides would be wrong together.
-        self.assertIn(memory_conventions.claude_project_slug(str(VS.SCRIPT_DIR)), derived)
+        # because both sides would be wrong together. `project_state_root` and
+        # not SCRIPT_DIR: in a linked worktree the corpus is keyed on the main
+        # worktree, which is round 3's whole finding.
+        state_root = memory_conventions.project_state_root(str(VS.SCRIPT_DIR))
+        self.assertIn(memory_conventions.claude_project_slug(state_root), derived)
+
+    def test_the_slug_is_a_literal_contract_not_a_recomputation(self):
+        """Round 2's version of the test above compared the owner with itself.
+
+        Every assertion in it called `claude_project_slug`, so a mutant that
+        lower-cased the answer -- naming a directory the producer never writes,
+        since real corpora include `-Users-x-projects-Some-Mixed-Case` -- passed
+        it 2 of 2. These expectations are literals, so they can disagree with the
+        owner.
+        """
+        sys.path.insert(0, str(REPO_ROOT / "q-system" / ".q-system" / "scripts"))
+        import memory_conventions
+
+        self.assertEqual(
+            memory_conventions.claude_project_slug("/Users/x/Projects/Demo_App"),
+            "-Users-x-Projects-Demo-App",
+        )
+        self.assertEqual(
+            memory_conventions.claude_project_slug("/Users/x/.config/wt/a-1"),
+            "-Users-x--config-wt-a-1",
+        )
 
     def test_derivation_does_not_leak_the_pinned_env(self):
         prior = os.environ.get("CLAUDE_PROJECT_DIR")

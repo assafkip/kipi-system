@@ -13,13 +13,16 @@ rather than absent. `provenance_vocabulary.py` was the fix for that enum; this
 module is the same fix applied to the supersession fields.
 
 stdlib only, no side effects on import: a PostToolUse hook imports it on every
-memory write.
+memory write. `project_state_root` shells out to git, but only when CALLED, and
+the write-side validator never calls it -- importing this module still costs
+nothing but the parse.
 """
 from __future__ import annotations
 
 import datetime
 import os
 import re
+import subprocess
 from pathlib import Path
 
 # --- where the auto-memory corpus lives -------------------------------------
@@ -54,12 +57,51 @@ def claude_project_slug(project_dir: str) -> str:
     return _NON_ALNUM.sub("-", project_dir)
 
 
+def project_state_root(project_dir: str) -> str:
+    """The path the auto-memory corpus is keyed on. NOT always the cwd.
+
+    SCAR (ASK-1903 round 3, PR #458): round 2 fixed the character class and kept
+    keying the corpus on the session's cwd. Claude Code keys the TRANSCRIPT
+    directory on cwd and the auto-memory corpus on the repository's MAIN
+    worktree, so in every linked git worktree the derivation named a directory
+    the producer never creates -- and Gate 1.2b reported that absence as a green
+    `PASS no auto-memory directory` while the corpus actually in use held 110
+    files and 35 structural findings.
+
+    Observed live in the session that wrote this, two independent readings:
+      cwd          /Users/assafkipnis/.config/kipi/worktrees/ask-1903
+      transcripts  .../-Users-assafkipnis--config-kipi-worktrees-ask-1903/ (no memory/)
+      corpus       .../-Users-assafkipnis-projects-kipi-system/memory
+    and /Users/assafkipnis/projects/kipi-system is that worktree's main worktree.
+
+    A path outside any repository answers for itself, so this is additive: the
+    non-repo derivation is byte-identical to what it was before.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", project_dir, "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return project_dir
+    if proc.returncode != 0:
+        return project_dir
+    common = proc.stdout.strip()
+    # A bare repo answers with the repository directory itself, whose parent is
+    # some unrelated folder. Only the `<main worktree>/.git` shape is resolvable;
+    # anything else keeps the caller's own path rather than guessing.
+    if not common or os.path.basename(common.rstrip(os.sep)) != ".git":
+        return project_dir
+    parent = os.path.dirname(common.rstrip(os.sep))
+    return parent or project_dir
+
+
 def claude_project_memory_dir(project_dir: str = None) -> Path:
     """The auto-memory corpus for a project path (default: this session's)."""
     if project_dir is None:
         project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
     return (Path.home() / ".claude" / "projects"
-            / claude_project_slug(project_dir) / "memory")
+            / claude_project_slug(project_state_root(project_dir)) / "memory")
 
 
 # --- the supersession vocabulary -------------------------------------------

@@ -561,6 +561,12 @@ def memory_corpus_dir():
         return None
 
 
+# memory-lint's own words for "the corpus is not there". Matched rather than
+# restated in full: the line also carries the path and a trailing parenthetical,
+# and pinning those would make this a second owner of the producer's wording.
+MEMORY_LINT_ABSENCE = "no memory directory at"
+
+
 def classify_memory_lint(corpus_dir, returncode, stdout):
     """What Gate 1.2b should report from one memory-lint run.
 
@@ -577,7 +583,19 @@ def classify_memory_lint(corpus_dir, returncode, stdout):
     summary = next((l for l in stdout.splitlines() if l.startswith("structural:")), None)
     if summary is None:
         if returncode == 0 and corpus_dir and not os.path.isdir(corpus_dir):
-            return ("skip", f"memory hygiene sweep skipped: no auto-memory directory at {corpus_dir}")
+            # ROUND 3 (PR #458 review, minor): absence used to be read off
+            # `isdir` alone, so a memory-lint that crashed before printing
+            # anything and still exited 0 reported PASS. This is the branch
+            # every corpus-less checkout takes, so the gate's crash detection
+            # was off in exactly the population the skip branch targets. The
+            # producer now has to SAY it found nothing, about the same path the
+            # gate handed it -- an absence line naming some other directory
+            # means the subprocess swept a corpus this gate is not reporting on.
+            if any(MEMORY_LINT_ABSENCE in line and corpus_dir in line
+                   for line in stdout.splitlines()):
+                return ("skip", f"memory hygiene sweep skipped: no auto-memory directory at {corpus_dir}")
+            return ("broken", f"memory-lint produced neither a summary nor its "
+                              f"absence line for {corpus_dir} (exit {returncode})")
         return ("broken", f"memory-lint produced no summary (exit {returncode})")
     if summary.split()[1] != "0":
         return ("findings", f"memory hygiene -- {summary}. Run: "
