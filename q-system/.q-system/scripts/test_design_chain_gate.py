@@ -546,8 +546,12 @@ class TestPasses(Base):
         self.assertEqual(r.returncode, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
+# A stray `if __name__ == "__main__": unittest.main()` sat HERE until 2026-09-27.
+# The capability manifest runs this file with runner "python3", so execution hit
+# unittest.main() at this line and exited: the seven test classes below it had
+# never run once, while the file reported green. Found by adding an eighth class
+# at the end of the file and watching the loader say the class did not exist.
+# Keep exactly one main block, at the bottom.
 
 
 class TestSealedRoundsAreHistory(Base):
@@ -931,6 +935,44 @@ class TestCorrectionsReachSearchText(TestCorrections):
     def test_image_src_is_still_design(self):
         self.edit('src="a.png"', 'src="b.png"')
         self.assertEqual(self.correct()[0], 2)
+
+
+class InternalPageScope(unittest.TestCase):
+    """is_page() must call founder-only generated HTML internal.
+
+    Scar 2026-09-27: the open-loops heartbeat regenerated
+    q-system/output/fleet-loop-board.html -- a founder-only comprehension board,
+    written by fleet-loop-board.py, gitignored, shown to nobody else -- and the
+    Stop gate blocked the session demanding a full three-direction design chain
+    for it. INTERNAL_MARKERS already covers this exact class by filename stem
+    ("daily-schedule", "morning-log"); the board was simply never added, because
+    it is named "board" and the list happens to spell "dashboard".
+
+    A false block on a founder-only page is the failure mode design-auto-invoke.md
+    names outright: it gets the gate switched off, and a gate that is off protects
+    nothing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("dcg", GATE)
+        cls.dcg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.dcg)
+
+    def test_fleet_loop_board_is_internal(self):
+        self.assertFalse(self.dcg.is_page("/repo/q-system/output/fleet-loop-board.html"))
+
+    def test_existing_internal_stems_still_internal(self):
+        for p in ("/repo/q-system/output/daily-schedule-2026-09-27.html",
+                  "/repo/q-system/output/morning-log-2026-09-27.html"):
+            self.assertFalse(self.dcg.is_page(p), p)
+
+    def test_a_real_public_page_is_still_in_scope(self):
+        # Mutation guard. Without this, the two checks above pass just as well
+        # under an is_page() that calls EVERY path internal, which would silently
+        # retire the gate instead of scoping it.
+        self.assertTrue(self.dcg.is_page("/repo/site/index.html"))
 
 
 if __name__ == "__main__":

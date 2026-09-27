@@ -64,6 +64,13 @@ INTERNAL_MARKERS = (
     "daily-schedule", "morning-log", "/logs/", "/log/", "/test", "/tests/", "/fixtures/",
     "/schedule", "/dashboard", "/report", "/vendor/", "/site-packages/", "/.playwright-mcp/",
     "/exemplars/",
+    # fleet-loop-board.html is the founder-only comprehension board written by
+    # fleet-loop-board.py. Added 2026-09-27: the open-loops heartbeat regenerated it
+    # (a SessionStart hook asks for it when it goes stale) and the Stop gate blocked
+    # the session demanding a three-direction design chain for a gitignored internal
+    # dashboard. Same class as daily-schedule and morning-log above; it only escaped
+    # because this list spells "dashboard" and the file is named "board".
+    "fleet-loop-board",
 )
 CHAIN_FILES = ("brief.md", "directions.md", "standard.json", "critique.md", "proof.md")
 CHAIN_DIRS = ("checks", "gate")
