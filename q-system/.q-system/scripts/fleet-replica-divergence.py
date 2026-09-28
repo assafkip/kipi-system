@@ -553,10 +553,30 @@ def main() -> int:
     # one that passed. The real fleet cannot reach this state unnoticed:
     # test_default_replicated_paths_all_resolve_in_the_real_fleet is the second
     # account, and it asserts against the actual registry.
-    if unresolvable and len(unresolvable) == len(rel_paths):
+    #
+    # MEASURED OVER THE DESTINATIONS, NOT THE SOURCE. The disarm test used to be
+    # "no declared path resolves in ANY root", and the skeleton is a root. Once
+    # the caller began declaring the source (--skeleton, round 2 above), a
+    # `--only <instance>` run against a synthetic population armed the gate on
+    # ONE copy: the skeleton's own kipi-update.sh, which is a declared replicated
+    # path and is necessarily present in the tree running the update. The other
+    # two then resolved nowhere, that read as partial coverage, and the gate
+    # refused -- caught by test-kipi-update-safety.sh's `--only aaa` case, which
+    # stopped updating aaa at all.
+    #
+    # A single copy cannot disagree with anything. Divergence needs at least one
+    # NON-skeleton copy, because a replica-only line is the thing rsync --delete
+    # destroys, so that is what decides whether there is anything here to
+    # protect. The partial-coverage refusal below still fires the moment one real
+    # replica copy exists, which is the state the live defect was found in.
+    comparable = [
+        e for e in report
+        if any(r != skeleton_root for g in e["groups"] for r in g["roots"])
+    ]
+    if not comparable:
         print(
-            f"no declared replicated path exists in any of {len(roots)} root(s); "
-            "this population carries no replicated content to compare"
+            f"no declared replicated path exists in any non-skeleton root of "
+            f"{len(roots)}; this population carries no replicated content to compare"
         )
         verdict(f"DISARMED (nothing replicated across {len(roots)} roots)")
         return EXIT_OK

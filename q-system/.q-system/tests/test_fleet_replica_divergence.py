@@ -208,6 +208,40 @@ def test_an_explicit_skeleton_decides_direction_over_the_registry_key(tmp_path):
     assert "[ahead]" in res.stdout, res.stdout
 
 
+def test_a_path_present_only_in_the_skeleton_disarms(tmp_path):
+    """A single copy cannot disagree with anything.
+
+    The regression this pins was caused by the --skeleton fix above. Once the
+    caller declares the source, a `--only <instance>` run against a synthetic
+    population armed the gate on exactly one copy -- the skeleton's own
+    kipi-update.sh, a declared replicated path that is necessarily present in the
+    tree running the update. The other two declared paths resolved nowhere, that
+    read as partial coverage, and the gate refused, so
+    test-kipi-update-safety.sh's `--only aaa` case stopped updating aaa at all.
+
+    Divergence needs at least one NON-skeleton copy, because a replica-only line
+    is what rsync --delete destroys.
+    """
+    reg, _ = build_skeleton_fleet(tmp_path, shipped=["v1\n"], replicas={"a": "v1\n"})
+    # Remove the only replica copy, leaving the path in the skeleton alone.
+    (tmp_path / "a" / REL).unlink()
+    res = run(reg, "--path", REL)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"{VERDICT}DISARMED" in res.stdout, res.stdout
+
+
+def test_one_real_replica_copy_still_arms_the_partial_coverage_refusal(tmp_path):
+    """The disarm above must not swallow the live defect it sits next to.
+
+    One declared path with a real replica copy, one that resolves nowhere: that
+    is partial coverage reported as full, and it stays exit 3.
+    """
+    reg, _ = build_skeleton_fleet(tmp_path, shipped=["v1\n"], replicas={"a": "v1\n"})
+    res = run(reg, "--path", REL, "--path", "plugins/nope/does-not-exist.py")
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert "DISARMED" not in res.stdout
+
+
 def test_no_skeleton_in_the_registry_reds_through_unknown(tmp_path):
     """Fail closed, and say which question went unanswered.
 
