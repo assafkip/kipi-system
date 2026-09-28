@@ -89,6 +89,25 @@ sys.path.insert(0, str(HERE))
 
 import linear_registry  # noqa: E402  (after sys.path, by design)
 
+# Every way a write can fail, as a CLOSED vocabulary. The alert one job up is
+# built from these strings, so an unnamed failure class would reach Sana as the
+# wrong cause -- which is exactly what "refused by Linear" said about the first
+# two, neither of which ever reached the network (PR #461 review, minor).
+WRITE_FAILURE_KINDS = ("no-such-project", "no-such-label", "linear-refused-project",
+                       "linear-refused-label", "linear-refused-comment")
+LOCAL_FAILURE_KINDS = ("no-such-project", "no-such-label")
+
+
+class WriteRefused(RuntimeError):
+    """A write that did not land, carrying WHY in a form a report can read."""
+
+    def __init__(self, kind: str, message: str):
+        if kind not in WRITE_FAILURE_KINDS:
+            raise ValueError(f"unknown write-failure kind {kind!r}")
+        super().__init__(message)
+        self.kind = kind
+
+
 EXIT_OK = 0
 EXIT_NO_KEY = 3
 EXIT_REFUSED_FIXTURE = 4
@@ -106,9 +125,16 @@ UNROUTABLE_MARKER = "route-unknown"
 # kipi-key prefixes whose issues are machine-filed job inflow (ASK-1887 Not-doing).
 JOB_INFLOW_PREFIXES = ("fleet-health/", "job-migration/")
 
+# The comments come back WITH the board walk, because the mark this script writes
+# is a comment and a reader that does not fetch comments cannot see it (PR #461
+# review, major). 50 is a page, not a guarantee: `pageInfo.hasNextPage` rides
+# along so a truncated read can be named rather than mistaken for "unmarked".
+COMMENT_PAGE = 50
 BOARD_QUERY = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
  nodes{id identifier title description state{name type} project{name}
-       labels{nodes{id name}}} pageInfo{hasNextPage endCursor}}}"""
+       labels{nodes{id name}}
+       comments(first:%d){nodes{body} pageInfo{hasNextPage}}}
+ pageInfo{hasNextPage endCursor}}}""" % COMMENT_PAGE
 TEAM_QUERY = 'query($k:String!){teams(filter:{key:{eq:$k}}){nodes{id}}}'
 PROJECTS_QUERY = """query($t:String!){team(id:$t){projects(first:250){nodes{id name}}}}"""
 TEAM_LABELS_QUERY = """query($t:String!){team(id:$t){labels(first:250){nodes{id name}}}}"""
@@ -222,8 +248,42 @@ def is_job_inflow(issue: dict) -> bool:
     return False
 
 
+def _comment_bodies(issue: dict) -> tuple:
+    node = issue.get("comments") or {}
+    return (tuple((n.get("body") or "") for n in (node.get("nodes") or [])),
+            bool((node.get("pageInfo") or {}).get("hasNextPage")))
+
+
 def is_marked_unroutable(issue: dict) -> bool:
-    return any(key == UNROUTABLE_MARKER for key, _ in comment_keys(issue.get("description")))
+    """Read the mark where the mark is WRITTEN, plus where a person may paste it.
+
+    `apply_row` writes `UNROUTABLE_MARKER` as a COMMENT. Until PR #461's review
+    this function read only the description, so it never found its own mark: the
+    daily --apply tick re-commented every unroutable ticket and each re-mark ate
+    one of the run's 10 write slots. The description is still read because a
+    human who pastes the marker into the body has marked it too.
+
+    A TRUNCATED comment page with no marker on it counts as MARKED. The asymmetry
+    is deliberate and inverts `already_flagged()` in linear-triage-health.py:
+    there the expensive outcome is a missed flag, here it is a duplicate comment
+    every morning. `measure()` counts these under `mark_unknown` so the skip is
+    named rather than silent.
+    """
+    bodies, truncated = _comment_bodies(issue)
+    for text in (issue.get("description"), *bodies):
+        if any(key == UNROUTABLE_MARKER for key, _ in comment_keys(text)):
+            return True
+    return truncated
+
+
+def mark_read_incomplete(issue: dict) -> bool:
+    """True when the comment page ran out before the marker was found."""
+    bodies, truncated = _comment_bodies(issue)
+    if not truncated:
+        return False
+    return not any(key == UNROUTABLE_MARKER
+                   for text in (issue.get("description"), *bodies)
+                   for key, _ in comment_keys(text))
 
 
 def is_pending(issue: dict) -> bool:
@@ -429,6 +489,8 @@ def plan_actions(issues: list, facts: RoutingFacts) -> list:
             "add_label": add_label,
             "mark_unroutable": bool(not will_have_project
                                     and not is_marked_unroutable(issue)),
+            "mark_unknown": bool(not will_have_project
+                                 and mark_read_incomplete(issue)),
             "rule": decision.rule,
             "reason": decision.reason,
             "label_ids": sorted({n["id"] for n in
@@ -451,6 +513,9 @@ def measure(issues: list, facts: RoutingFacts) -> dict:
         "pending": len(rows),
         "routable": len(routable),
         "unroutable": len(rows) - len(routable),
+        # Named on purpose: these tickets were skipped because their comment page
+        # ran out, not because they are fine. An unnamed skip is a silent one.
+        "mark_unknown": sum(1 for r in rows if r["mark_unknown"]),
         "with_work": len(rows_with_work(rows)),
         "by_rule": {rule: sum(1 for r in rows if r["rule"] == rule)
                     for rule in sorted({r["rule"] for r in rows if r["rule"]})},
@@ -500,6 +565,23 @@ def _name_id_map(sync, query: str, team_id: str, field: str) -> dict:
     return {(n.get("name") or "").strip().lower(): n.get("id") for n in nodes}
 
 
+def unroutable_comment(reason: str) -> str:
+    """THE body of the mark. One producer, so a reader can be fed by it.
+
+    Extracted from `apply_row` for the reason PR #461's review found: the test
+    that claimed a marked ticket is never re-marked pasted its own hand-written
+    body, agreed with itself, and agreed with nothing the script writes.
+    """
+    return (f"<!-- {UNROUTABLE_MARKER}: {reason} -->\n\n"
+            f"**Not routable from this ticket's own Definition of Ready.** "
+            f"{reason}.\n\n"
+            f"Routing is deterministic on purpose (ASK-1887): a wrong project "
+            f"sends an autonomous worker into the wrong repo, so an unknown "
+            f"target is marked rather than guessed. To route it, name a file "
+            f"path in the DoR's **Files:** field that lives in exactly one "
+            f"checkout, or set the project by hand.")
+
+
 def apply_row(sync, row: dict, projects: dict, labels: dict) -> list:
     """Write one row. Returns the list of writes that LANDED.
 
@@ -507,42 +589,45 @@ def apply_row(sync, row: dict, projects: dict, labels: dict) -> list:
     write into a reported one, and here that means a ticket the report calls
     routed which the picker still refuses -- the silent-redispatch shape
     linear-sync.py's cmd_label already records.
+
+    Every failure raises `WriteRefused` carrying a KIND, because the operator's
+    only visible line is built from it: before PR #461's review a local lookup
+    miss, which never reached the network, was reported to Sana as a write
+    "refused by Linear".
     """
     done = []
     if row["set_project"]:
         pid = projects.get(row["set_project"].lower())
         if not pid:
-            raise RuntimeError(f"no board project named {row['set_project']!r}")
+            raise WriteRefused("no-such-project",
+                               f"no board project named {row['set_project']!r}")
         res = (sync.graphql(ISSUE_UPDATE, {"id": row["id"],
                                            "input": {"projectId": pid}}) or {})
         if not (res.get("issueUpdate") or {}).get("success"):
-            raise RuntimeError(f"issueUpdate(project) refused for {row['identifier']}")
+            raise WriteRefused("linear-refused-project",
+                               f"issueUpdate(project) refused for {row['identifier']}")
         done.append(f"project={row['set_project']}")
     if row["add_label"]:
         lid = labels.get(row["add_label"].lower())
         if not lid:
-            raise RuntimeError(f"no team label named {row['add_label']!r}")
+            raise WriteRefused("no-such-label",
+                               f"no team label named {row['add_label']!r}")
         # READ-MODIFY-WRITE: issueUpdate takes labelIds as the COMPLETE set, so
         # sending only the new id strips every label already on the issue.
         res = (sync.graphql(ISSUE_UPDATE, {
             "id": row["id"],
             "input": {"labelIds": sorted(set(row["label_ids"]) | {lid})}}) or {})
         if not (res.get("issueUpdate") or {}).get("success"):
-            raise RuntimeError(f"issueUpdate(labels) refused for {row['identifier']}")
+            raise WriteRefused("linear-refused-label",
+                               f"issueUpdate(labels) refused for {row['identifier']}")
         done.append(f"label={row['add_label']}")
     if row["mark_unroutable"]:
-        body = (f"<!-- {UNROUTABLE_MARKER}: {row['reason']} -->\n\n"
-                f"**Not routable from this ticket's own Definition of Ready.** "
-                f"{row['reason']}.\n\n"
-                f"Routing is deterministic on purpose (ASK-1887): a wrong project "
-                f"sends an autonomous worker into the wrong repo, so an unknown "
-                f"target is marked rather than guessed. To route it, name a file "
-                f"path in the DoR's **Files:** field that lives in exactly one "
-                f"checkout, or set the project by hand.")
         res = (sync.graphql(COMMENT_CREATE,
-                            {"input": {"issueId": row["id"], "body": body}}) or {})
+                            {"input": {"issueId": row["id"],
+                                       "body": unroutable_comment(row["reason"])}}) or {})
         if not (res.get("commentCreate") or {}).get("success"):
-            raise RuntimeError(f"commentCreate refused for {row['identifier']}")
+            raise WriteRefused("linear-refused-comment",
+                               f"commentCreate refused for {row['identifier']}")
         done.append("marked-unroutable")
     return done
 
@@ -617,9 +702,13 @@ def main(argv: list) -> int:
                 # One refused write must not abandon the rest: the population is
                 # the point, and a run that stops on issue 3 of 90 reports a
                 # drain that did not happen.
-                failed.append({"id": row["identifier"], "error": str(exc)[:200]})
+                failed.append({"id": row["identifier"], "error": str(exc)[:200],
+                               "kind": getattr(exc, "kind", "unknown")})
     m["written"] = len(written)
     m["write_failures"] = len(failed)
+    # The KINDS travel with the count. The caller's alert line is built from
+    # them, and a count on its own can only be described by guessing a cause.
+    m["write_failure_kinds"] = sorted({f["kind"] for f in failed})
 
     if args.json:
         print(json.dumps({**m, "writes": written, "failures": failed}, indent=2))

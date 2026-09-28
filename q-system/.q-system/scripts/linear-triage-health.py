@@ -803,7 +803,13 @@ def route_pending(apply_writes: bool = False) -> dict:
         # the defect PR #449 found in route_unreachable one function up.
         return {"ran": bool(out["registry_ok"]), "pending": out["pending"],
                 "unroutable": out["unroutable"], "written": out["written"],
-                "write_failures": out["write_failures"]}
+                "write_failures": out["write_failures"],
+                # The CAUSE rides with the count. Reading only the number left
+                # breaches() with nothing to describe it but a guess, and the
+                # guess it shipped was "refused by Linear" for failures that
+                # never reached Linear (PR #461 review, minor).
+                "failure_kinds": out.get("write_failure_kinds", []),
+                "mark_unknown": out.get("mark_unknown", 0)}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         # Never raises: a meter that crashes on a sibling meter reports nothing at
         # all, which is strictly worse than reporting one number short.
@@ -824,8 +830,13 @@ def breaches(m: dict) -> list:
     # shape this file already refuses elsewhere. What earns a ticket is a write
     # the router tried and Linear refused -- work the loop believes it routed and
     # the picker will keep refusing.
+    # The cause is NAMED from the router's closed kind vocabulary, never asserted:
+    # `no-such-project` / `no-such-label` are lookup misses on this machine that
+    # never reached the network, and telling Sana that Linear refused them sends
+    # her to check an API that is fine (PR #461 review, minor).
     if m.get("route_write_failures", 0) > 0:
-        out.append(f"{m['route_write_failures']} routing write(s) refused by Linear")
+        kinds = ", ".join(m.get("route_failure_kinds") or ["cause not recorded"])
+        out.append(f"{m['route_write_failures']} routing write(s) failed ({kinds})")
     if m["needs_triage"] >= TRIAGE_ALERT_AT:
         out.append(f"{m['needs_triage']} awaiting triage")
     if m["oldest_triage_days"] >= OLDEST_ALERT_DAYS:
@@ -965,6 +976,8 @@ def _run(args, holding_lock: bool) -> int:
     m["route_unroutable"] = sweep.get("unroutable", 0)
     m["route_written"] = sweep.get("written", 0)
     m["route_write_failures"] = sweep.get("write_failures", 0)
+    m["route_failure_kinds"] = sweep.get("failure_kinds", [])
+    m["route_mark_unknown"] = sweep.get("mark_unknown", 0)
 
     if args.json:
         print(json.dumps(m, indent=2))

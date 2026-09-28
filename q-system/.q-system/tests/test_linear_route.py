@@ -55,7 +55,7 @@ DOR = """## Definition of Ready
 
 
 def issue(ident="ASK-1", *, files="q-system/.q-system/scripts/x.py", labels=(),
-          project=None, state="backlog", body=None):
+          project=None, state="backlog", body=None, comments=(), truncated=False):
     desc = body if body is not None else DOR.format(files=files)
     return {
         "id": f"uuid-{ident}",
@@ -65,7 +65,21 @@ def issue(ident="ASK-1", *, files="q-system/.q-system/scripts/x.py", labels=(),
         "state": {"name": "Backlog", "type": state},
         "project": {"name": project} if project else None,
         "labels": {"nodes": [{"name": n} for n in labels]},
+        "comments": {"nodes": [{"body": b} for b in comments],
+                     "pageInfo": {"hasNextPage": truncated}},
     }
+
+
+class FakeSync:
+    """One graphql() that returns whatever the test queued, and records the calls."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def graphql(self, query, variables):
+        self.calls.append((query, variables))
+        return self.results.pop(0)
 
 
 @pytest.fixture()
@@ -297,17 +311,56 @@ def test_unroutable_ticket_is_marked_not_guessed(board):
 
 
 def test_an_already_marked_ticket_is_not_re_marked(board):
-    body = ("<!-- route-unknown: no rule fired -->\n\n"
-            + DOR.format(files="somewhere/unknown.py"))
-    rows = route.plan_actions([issue("ASK-14", body=body, labels=["owner:sana"])], board)
+    """THE FIXTURE COMES FROM THE PRODUCER (PR #461 review, major).
+
+    This case used to paste the marker into the DESCRIPTION, which is not where
+    `apply_row` puts it -- it writes a COMMENT. The test agreed with itself and
+    with nothing else, so `is_marked_unroutable` read a field the mark never
+    reaches and every unroutable ticket was re-commented on every daily tick,
+    each re-mark spending one of the run's 10 write slots. Calling the producer
+    for the body is what makes that class unavailable rather than remembered.
+    """
+    marked = issue("ASK-14", files="somewhere/unknown.py", labels=["owner:sana"],
+                   comments=[route.unroutable_comment("no rule fired")])
+    rows = route.plan_actions([marked], board)
     assert rows[0]["mark_unroutable"] is False
+
+
+def test_a_hand_written_mark_in_the_description_also_counts(board):
+    """A person who pastes the marker into the body has marked it too."""
+    body = ("<!-- route-unknown: routed by hand -->\n\n"
+            + DOR.format(files="somewhere/unknown.py"))
+    rows = route.plan_actions([issue("ASK-14b", body=body, labels=["owner:sana"])], board)
+    assert rows[0]["mark_unroutable"] is False
+
+
+def test_a_truncated_comment_read_never_re_marks(board):
+    """An incomplete read is UNKNOWN, and UNKNOWN must not spend a write slot.
+
+    The asymmetry is deliberate and is the opposite of `already_flagged()` in
+    linear-triage-health.py: there, a missed flag is the expensive outcome; here,
+    a daily duplicate comment is. So a truncated page with no marker on it is
+    treated as marked, and counted under `mark_unknown` so the silence is named.
+    """
+    deep = issue("ASK-14c", files="somewhere/unknown.py", labels=["owner:sana"],
+                 comments=["something else"], truncated=True)
+    rows = route.plan_actions([deep], board)
+    assert rows[0]["mark_unroutable"] is False
+    assert route.measure([deep], board)["mark_unknown"] == 1
+
+
+def test_board_query_asks_for_the_comments_the_reader_parses():
+    """Bind the query to the reader: drop the field and the mark is unreadable."""
+    assert "comments(" in route.BOARD_QUERY
+    assert "body" in route.BOARD_QUERY
+    assert "hasNextPage" in route.BOARD_QUERY
 
 
 def test_a_row_with_nothing_to_do_is_dropped(board):
     """An unroutable ticket already marked AND already owned needs no write."""
-    body = ("<!-- route-unknown: no rule fired -->\n\n"
-            + DOR.format(files="somewhere/unknown.py"))
-    rows = route.plan_actions([issue("ASK-15", body=body, labels=["owner:sana"])], board)
+    marked = issue("ASK-15", files="somewhere/unknown.py", labels=["owner:sana"],
+                   comments=[route.unroutable_comment("no rule fired")])
+    rows = route.plan_actions([marked], board)
     assert route.rows_with_work(rows) == []
 
 
@@ -337,6 +390,50 @@ def test_limit_bounds_the_writes():
 def test_negative_limit_is_a_usage_error():
     with pytest.raises(ValueError):
         route.select_to_write([], -1)
+
+
+# --------------------------------------------------------------------------
+# why a write failed: a local lookup miss is not Linear refusing
+# --------------------------------------------------------------------------
+
+ROW = {"id": "uuid-1", "identifier": "ASK-20", "set_project": "kipi-system",
+       "add_label": None, "mark_unroutable": False, "reason": "r", "label_ids": []}
+
+
+def test_a_missing_board_project_is_a_local_failure(board):
+    """PR #461 review, minor: this never reached Linear, so nothing refused it."""
+    with pytest.raises(route.WriteRefused) as exc:
+        route.apply_row(FakeSync([]), dict(ROW), {}, {})
+    assert exc.value.kind == "no-such-project"
+
+
+def test_a_missing_team_label_is_a_local_failure(board):
+    row = dict(ROW, set_project=None, add_label="owner:sana")
+    with pytest.raises(route.WriteRefused) as exc:
+        route.apply_row(FakeSync([]), row, {}, {})
+    assert exc.value.kind == "no-such-label"
+
+
+def test_a_rejected_mutation_is_named_as_linear_refusing(board):
+    sync = FakeSync([{"issueUpdate": {"success": False}}])
+    with pytest.raises(route.WriteRefused) as exc:
+        route.apply_row(sync, dict(ROW), {"kipi-system": "pid"}, {})
+    assert exc.value.kind == "linear-refused-project"
+
+
+def test_a_rejected_comment_is_named_as_linear_refusing(board):
+    row = dict(ROW, set_project=None, mark_unroutable=True)
+    sync = FakeSync([{"commentCreate": {"success": False}}])
+    with pytest.raises(route.WriteRefused) as exc:
+        route.apply_row(sync, row, {}, {})
+    assert exc.value.kind == "linear-refused-comment"
+
+
+def test_every_write_failure_carries_a_kind(board):
+    """No unnamed failure class: an alert that cannot say why says the wrong why."""
+    assert route.WRITE_FAILURE_KINDS == (
+        "no-such-project", "no-such-label", "linear-refused-project",
+        "linear-refused-label", "linear-refused-comment")
 
 
 def test_refuses_under_pytest():

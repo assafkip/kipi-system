@@ -205,6 +205,37 @@ def test_each_threshold_can_fire_on_its_own():
     assert health.breaches(dict(base, needs_triage=health.TRIAGE_ALERT_AT - 1)) == []
 
 
+def test_a_local_write_failure_is_not_reported_as_linear_refusing(monkeypatch):
+    """PR #461 review, minor: the only operator-visible line named the wrong cause.
+
+    `no-such-project` is a lookup miss inside this machine's own registry-to-board
+    mapping. It never reached the network, so "refused by Linear" sends whoever
+    reads the ticket to check Linear's API for a fault that is not there.
+    """
+    base = {"unrouted": 0, "needs_triage": 0, "oldest_triage_days": 0.0,
+            "oldest_triage_id": ""}
+    m = dict(base, route_write_failures=2,
+             route_failure_kinds=["no-such-project"])
+    line = health.breaches(m)[0]
+    assert "refused by Linear" not in line
+    assert "no-such-project" in line
+
+
+def test_the_failure_kinds_survive_the_subprocess(monkeypatch):
+    """A count with its cause discarded can only be described by guessing."""
+    payload = json.dumps({"registry_ok": True, "pending": 4, "unroutable": 1,
+                          "written": 0, "write_failures": 1,
+                          "write_failure_kinds": ["no-such-label"]})
+
+    class Res:
+        stdout = payload
+
+    monkeypatch.setattr(health.subprocess, "run", lambda *a, **k: Res())
+    out = health.route_pending()
+    assert out["write_failures"] == 1
+    assert out["failure_kinds"] == ["no-such-label"]
+
+
 def test_dormancy_default_can_actually_fire_on_this_board():
     """A threshold the population can never reach reads as protection and is not.
 
