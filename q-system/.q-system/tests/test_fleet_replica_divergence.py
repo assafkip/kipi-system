@@ -512,9 +512,22 @@ def test_default_replicated_paths_all_resolve_in_the_real_fleet():
     roots = mod.registry_roots(registry)
     if not roots:
         pytest.skip("registry resolved no roots")
+    # A REGISTERED ROOT IS A PATH ON THE FOUNDER'S MACHINE, NOT A PATH IN THE
+    # CHECKOUT. The registry names absolute paths like ~/projects/<instance>, so
+    # in CI it parses fine and resolves 28 roots of which zero exist on disk --
+    # every declared path then reads as present in 0/28 and this case failed the
+    # `verify` job the moment PR #460 round 1 declared the file in the capability
+    # manifest. The two skips above were written for an ABSENT registry and an
+    # EMPTY one; this is the third shape, a registry that describes a fleet this
+    # machine does not have. Skipping it there is not weakening the check: the
+    # claim under test is about the real fleet, and a runner is not one.
+    live = [r for r in roots if Path(r).is_dir()]
+    if not live:
+        pytest.skip(f"none of the {len(roots)} registered roots exist here "
+                    "(a checkout, not a fleet)")
     dead = [rel for rel in mod.DEFAULT_REPLICATED
-            if not any((Path(r) / rel).is_file() for r in roots)]
-    assert not dead, f"declared but present in 0/{len(roots)} roots: {dead}"
+            if not any((Path(r) / rel).is_file() for r in live)]
+    assert not dead, f"declared but present in 0/{len(live)} existing roots: {dead}"
 
 
 if __name__ == "__main__":
