@@ -129,11 +129,36 @@ LISTED = "listed"
 
 
 def state_dir(override: str | None = None) -> str:
+    """Where the buckets live. Explicit argument, then env, then the cache.
+
+    THE PYTEST RUNG IS A FIXTURE GUARD, NOT A CONVENIENCE (fable-discipline: a
+    test must not touch a live data path). Found by running the change, not by
+    reading it: wiring the cap into alert-to-linear.py turned four tests in the
+    EXISTING suites red, because they reached the real
+    `~/.cache/kipi/filer-cap` -- so a test spent the founder's production budget
+    and then inherited whatever the previous test had already spent. Two defects
+    in one: a suite that mutates live state, and cross-test bleed that makes a
+    green run depend on test order.
+
+    Keyed on the pytest NODE ID rather than one temp dir per process, because a
+    per-process dir fixes the live-state half and leaves the bleed. Subprocesses
+    inherit the variable, so the race suite's forked writers still share their
+    own test's bucket, which is the thing those tests are actually about.
+
+    It ISOLATES rather than disables. A guard that turned the cap off under test
+    would mean no test ever exercises it, which is how the cap ships inert.
+    """
     if override:
         return override
     env = os.environ.get("KIPI_FILER_CAP_DIR")
     if env:
         return env
+    node = os.environ.get("PYTEST_CURRENT_TEST")
+    if node:
+        import hashlib
+        import tempfile
+        key = hashlib.sha256(node.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(tempfile.gettempdir(), f"kipi-filer-cap-test-{key}")
     return os.path.join(os.path.expanduser("~"), ".cache", "kipi", "filer-cap")
 
 

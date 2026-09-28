@@ -48,6 +48,13 @@ import shutil
 import sys
 import time
 
+# filer_cap lives beside this file. A plain import needs that directory on the
+# path, because this script is run BOTH as `python3 .../alert-to-linear.py`
+# (which puts it there) and loaded by importlib from other scripts (which does
+# not) -- _load_linear() exists for exactly that second case.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import filer_cap as _cap                                        # noqa: E402
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_NO_KEY = 3

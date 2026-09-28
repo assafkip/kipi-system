@@ -149,6 +149,14 @@ def _spawn(tmp_path, messages, nolock, creates_name):
             "RACE_BARRIER": f"{barrier:.6f}",
             "RACE_MSG": msg,
             "RACE_NOLOCK": "1" if nolock else "0",
+            # ISOLATE THE FILER BUDGET TOO (ASK-2012). file_alert now consults
+            # filer_cap before it creates, and filer_cap's pytest rung reads
+            # PYTEST_CURRENT_TEST -- which the line above deliberately removes.
+            # Without this the children reached the founder's real
+            # ~/.cache/kipi/filer-cap, spent production budget, and then failed
+            # for being capped by a PREVIOUS run rather than by the lock. Caught
+            # by running the suite, not by reading it: 2 of these tests went red.
+            "KIPI_FILER_CAP_DIR": str(state / "filer-cap"),
         })
         procs.append(subprocess.Popen(
             [sys.executable, str(child_py)], env=env,
@@ -311,6 +319,8 @@ def test_a_slow_holder_that_outlives_the_wait_costs_no_duplicate(tmp_path):
             "RACE_MSG": MSG_A,
             "RACE_NOLOCK": "0",
             "KIPI_ALERT_LOCK_WAIT_SECONDS": env_wait,
+            # Same isolation as _spawn's, and for the same reason (ASK-2012).
+            "KIPI_FILER_CAP_DIR": str(state / "filer-cap"),
         })
         procs.append(subprocess.Popen(
             [sys.executable, str(child_py)], env=env,
