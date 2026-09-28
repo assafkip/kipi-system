@@ -920,6 +920,16 @@ if [ "$REPLICA_RC" -ne 0 ]; then
     echo "ABORT: the divergence gate could not evaluate what it was asked to check"
     echo "(named above). Fix the declared path; a check that resolves nowhere"
     echo "reports green over coverage it never had."
+  elif [ "$REPLICA_RC" -eq 2 ]; then
+    # 2 is an EMPTY POPULATION: the registry named no roots, so nothing was
+    # compared. The drifted-ahead text below describes a comparison that ran and
+    # found something, which is the opposite fact, and it sends an operator
+    # hunting for an instance to reconcile when the file to fix is the registry
+    # (PR #460 review, minor).
+    echo "ABORT: the divergence gate resolved NO instance roots (named above)."
+    echo "Nothing was compared, so this is not a drift report. Fix"
+    echo "$SCRIPT_DIR/instance-registry.json; a gate with an empty population"
+    echo "cannot report on a fleet it never read."
   else
     echo "ABORT: a replica has drifted ahead of the skeleton (named above)."
     echo "plugins/ rsyncs with --delete, so every line that exists only in the"

@@ -38,7 +38,14 @@ BASELINE_REL="q-system/.q-system/state/propagation-leak-baseline.json"
 REPLICA_REL="plugins/prd-os/scripts/prd_runner.py"
 
 build_skeleton() {
-  local work="$1" sk="$work/skel" a="$work/inst-a" b="$work/inst-b"
+  # SEPARATE STATEMENTS, not one `local work="$1" sk="$work/skel" ...` (review
+  # nit, PR #460). Bash expands every word of a command BEFORE running the
+  # builtin, so `$work` on that line resolved to the CALLER's `work`, never to
+  # `$1`. The argument was dead and the fixture only worked because every caller
+  # happened to pass the same value it already held. Measured: with the caller's
+  # `work` unset, `sk` became `/skel` -- an absolute path outside the temp dir.
+  local work="$1"
+  local sk="$work/skel" a="$work/inst-a" b="$work/inst-b"
   mkdir -p "$sk/q-system/.q-system/scripts" "$sk/q-system/.q-system/state" \
            "$sk/q-system/marketing" "$sk/plugins"
   cp "$ROOT/kipi-update.sh" "$sk/kipi-update.sh"
@@ -68,9 +75,31 @@ build_skeleton() {
 }
 BASELINE_JSON
   printf 'generic skeleton content\n' > "$sk/q-system/marketing/outreach.md"
+  # The skeleton carries a copy of every declared path too, and is COMMITTED
+  # before the instances are seeded from it -- so its git history holds the
+  # baseline revision. The gate answers direction out of that history, and a
+  # skeleton with no history for a path can only return "undeterminable".
+  python3 - "$sk/$GATE_REL" "$sk" <<'SEED_SK'
+import importlib.util, sys
+from pathlib import Path
+src, sk = Path(sys.argv[1]), Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("gate", src)
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+for rel in mod.DEFAULT_REPLICATED:
+    target = sk / rel
+    if target.exists():        # kipi-update.sh: the real one, already copied in
+        continue
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("shared replica content\n")
+SEED_SK
   ( cd "$sk" && G init -q && G add -A -f && G commit -qm skel )
-  printf '{"instances":[{"name":"insta","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"instb","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
-    "$a" "$b" > "$sk/instance-registry.json"
+  # THE SKELETON IS IN THE POPULATION, as it is in the real instance-registry.json
+  # (review finding, PR #460, minor). Without it the suite compared replicas to
+  # each other and never to the source, so the direction-blind false positive --
+  # a skeleton one commit AHEAD aborting the update that would resolve it -- was
+  # invisible to every case below.
+  printf '{"skeleton":{"path":"%s"},"instances":[{"name":"insta","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"instb","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+    "$sk" "$a" "$b" > "$sk/instance-registry.json"
 
   local inst
   for inst in "$a" "$b"; do
@@ -81,16 +110,19 @@ BASELINE_JSON
     # then resolved in 0 of 2 roots and the gate REFUSED (exit 3) on a fixture
     # meant to be green. A hardcoded list would go stale the same way the moment
     # DEFAULT_REPLICATED changes, and that failure would read as a gate bug.
-    python3 - "$sk/$GATE_REL" "$inst" <<'SEED_PY'
-import importlib.util, sys
+    #
+    # Copied FROM the skeleton, not written independently: the baseline has to be
+    # a genuine three-way agreement now that the skeleton is compared too.
+    python3 - "$sk/$GATE_REL" "$sk" "$inst" <<'SEED_PY'
+import importlib.util, shutil, sys
 from pathlib import Path
-src, inst = Path(sys.argv[1]), Path(sys.argv[2])
+src, sk, inst = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 spec = importlib.util.spec_from_file_location("gate", src)
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 for rel in mod.DEFAULT_REPLICATED:
     target = inst / rel
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("shared replica content\n")
+    shutil.copyfile(sk / rel, target)
 SEED_PY
     ( cd "$inst" && G init -q && G add -A -f && G commit -qm inst )
   done
@@ -195,11 +227,81 @@ $out"
   echo "PASS: agreeing replicas produce an armed OK verdict and the run continues"
 }
 
+# --------------------------------------------------------------- property 5
+# The direction-blind false positive (PR #460 review, major). A skeleton one
+# commit AHEAD of its replicas is the NORMAL state immediately before an update.
+# The first armed version red on it, so the gate aborted the run that would have
+# resolved it, with no way through -- a gate red on the state it exists to end.
+assert_skeleton_ahead_is_not_divergence() {
+  local work sk a b out
+  work="$(mktemp -d)"; sk="$work/skel"; a="$work/inst-a"; b="$work/inst-b"
+  build_skeleton "$work"
+  printf 'shared replica content\n# new in the skeleton, not yet in any replica\n' \
+    > "$sk/$REPLICA_REL"
+  ( cd "$sk" && G add -A -f && G commit -qm ahead )
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  echo "$out" | grep -q "ABORT: a replica has drifted ahead" \
+    && fail "a skeleton AHEAD of its replicas was reported as replica drift:
+$out"
+  echo "$out" | grep -q "^fleet replica divergence: OK" \
+    || fail "skeleton-ahead did not produce an OK verdict:
+$out"
+  echo "$out" | grep -q "behind the skeleton" \
+    || fail "the OK verdict did not NAME the behind copies; a silent pass here is
+indistinguishable from nothing having differed:
+$out"
+  echo "PASS: a skeleton ahead of its replicas is behind-ness, not divergence"
+}
+
+# --------------------------------------------------------------- property 6
+# `--only` scopes the population (PR #460 review, major). A single-instance
+# staged rollout was aborting on drift in a root the run never writes.
+assert_only_scopes_the_population() {
+  local work sk a b out
+  work="$(mktemp -d)"; sk="$work/skel"; a="$work/inst-a"; b="$work/inst-b"
+  build_skeleton "$work"
+  printf 'shared replica content\n# drift only in b\n' > "$b/$REPLICA_REL"
+  ( cd "$b" && G add -A -f && G commit -qm drift )
+  # Unscoped: b's drift must still abort, or the case below proves nothing.
+  assert_aborts_untouched "$sk" "$a" "$b" "unscoped run with instb diverged"
+  out="$(bash "$sk/kipi-update.sh" --only insta 2>&1)" || true
+  echo "$out" | grep -q "ABORT: a replica has drifted ahead" \
+    && fail "--only insta aborted on drift in instb, a root it never writes:
+$out"
+  echo "$out" | grep -q "^fleet replica divergence: OK" \
+    || fail "--only insta did not produce an OK verdict:
+$out"
+  echo "PASS: --only scopes the gate to the root the run will actually write"
+}
+
+# --------------------------------------------------------------- property 7
+# Exit 2 is an EMPTY POPULATION -- nothing was compared. It used to print the
+# drifted-ahead abort, which describes a comparison that ran and found something:
+# the opposite fact, sending an operator hunting for an instance to reconcile
+# when the file to fix is the registry (PR #460 review, minor).
+assert_empty_population_says_so() {
+  local work sk a b out
+  work="$(mktemp -d)"; sk="$work/skel"; a="$work/inst-a"; b="$work/inst-b"
+  build_skeleton "$work"
+  printf '{"instances":[]}\n' > "$sk/instance-registry.json"
+  out="$(bash "$sk/kipi-update.sh" 2>&1)" || true
+  echo "$out" | grep -q "ABORT: a replica has drifted ahead" \
+    && fail "an empty population was reported as replica drift:
+$out"
+  echo "$out" | grep -q "ABORT: the divergence gate resolved NO instance roots" \
+    || fail "an empty population did not name itself:
+$out"
+  echo "PASS: an empty population aborts as an empty population, not as drift"
+}
+
 case "${1:-}" in
   --assert-no-silent-skip) assert_no_silent_skip ;;
   *)
     assert_no_silent_skip
     assert_divergence_aborts_before_any_instance_is_written
     assert_agreeing_replicas_pass_the_preflight
+    assert_skeleton_ahead_is_not_divergence
+    assert_only_scopes_the_population
+    assert_empty_population_says_so
     ;;
 esac
