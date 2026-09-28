@@ -3,14 +3,23 @@
 # must turn test_jev_backlog_rank.py RED. A guard that survives its mutant is
 # decoration, so the sweep also asserts the mutation actually landed on disk --
 # a mutation target that silently misses reads as "SURVIVED" and lies.
+#
+# The sweep rewrites a TRACKED file, so the restore is a trap and the stash is a
+# mktemp: a fixed /tmp path is shared between concurrent runs (two sweeps restore
+# each other's mutant), and without a trap a Ctrl-C or a crash leaves a mutant in
+# the working tree that reads as ordinary source.
 set -u
 S=q-system/.q-system/scripts/jev_backlog_rank.py
 T=q-system/.q-system/scripts/test_jev_backlog_rank.py
-cp "$S" /tmp/jbr.orig
+ORIG=$(mktemp "${TMPDIR:-/tmp}/jbr.orig.XXXXXX")
+cp "$S" "$ORIG"
+# Idempotent: the explicit call at the end and the EXIT trap both run it.
+restore () { [ -f "$ORIG" ] && cp "$ORIG" "$S"; return 0; }
+trap restore EXIT INT TERM
 
 mutate () {
   local name="$1"; shift
-  cp /tmp/jbr.orig "$S"
+  cp "$ORIG" "$S"
   if ! python3 q-system/.q-system/scripts/test/apply-mutant.py "$S" "$@"; then
     echo "BROKEN TARGET: $name"; return
   fi
@@ -30,8 +39,22 @@ mutate "roots restated in the module instead of read from the file" \
 mutate "guard tokens replace the required list instead of widening it" \
   '_ROOTS = tuple(sorted({r for r in required + _guard_tokens() if r}))' \
   '_ROOTS = tuple(sorted({r for r in _guard_tokens() if r})) or tuple(required)'
-mutate "a short root line is kept instead of dropped" \
-  'if len(line) > 2:' 'if line:'
+mutate "a short root line is dropped in silence instead of refusing" \
+  'if len(line) < MIN_ROOT_CHARS:' 'if False:'
+mutate "a canceled-type Duplicate enters the answer key" \
+  'return st.get("type") == "duplicate" or _norm(st.get("name", "")) == "duplicate"' \
+  'return st.get("type") == "duplicate"'
+mutate "a vendor error is cached as an answer and never retried" \
+  'if _score_of(r["response"]) is not None:' 'if True:'
+mutate "the gate skips the minimum-cases floor" \
+  'if n_scored < min_cases:' 'if False:'
+mutate "the gate skips the vendor-error-rate ceiling" \
+  'if rate > max_error_rate:' 'if False:'
+mutate "precision reports a short population under the larger k" \
+  'if k <= 0 or len(ranked) < k:' 'if k <= 0:'
+mutate "close writes Linear before the receipt lands" \
+  'flush()
+    if apply:' 'if apply:'
 mutate "auc ties scored zero" \
   '1.0 if p > n else 0.5 if p == n else 0.0' '1.0 if p > n else 0.0'
 mutate "gate margin dropped to zero" \
@@ -46,7 +69,7 @@ mutate "minority recall never computed" \
 mutate "recall dropped from the printed header" \
   'precision | minority recall ' 'precision | confidence '
 mutate "duplicates enter the answer key" \
-  'if stype not in ("canceled", "completed"):' \
+  'if _is_duplicate(i) or stype not in ("canceled", "completed"):' \
   'if stype not in ("canceled", "completed", "duplicate"):'
 mutate "45-day window ignored" \
   'if not tat or tat < cut:' 'if False:'
@@ -59,6 +82,6 @@ mutate "client check removed from close" \
 mutate "undo forgets the prior state" \
   '"prior_state_id": it["state_id"],' '"prior_state_id": "backlog",'
 
-cp /tmp/jbr.orig "$S"
+restore
 echo "--- restored; confirming green ---"
 python3 "$T" 2>&1 | tail -3

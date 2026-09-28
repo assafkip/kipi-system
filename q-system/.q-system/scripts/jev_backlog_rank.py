@@ -73,6 +73,10 @@ TEAM_KEY = "ASK"
 
 CUT_FLOORS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
 
+MIN_ROOT_CHARS = 3            # a shorter root refuses; it never drops in silence
+MIN_SCORED_CASES = 50         # below this the AUC is a rumour, not a verdict
+MAX_ERROR_RATE = 0.05         # above this the scored set is a survivor sample
+
 # Both outside this public repo. ROOTS_FILE is authoritative and required; the
 # commit guard's token list is unioned in and is optional.
 ROOTS_FILE = Path.home() / ".config" / "kipi" / "jev-client-roots"
@@ -117,13 +121,28 @@ _ROOTS = None
 
 
 def _read_roots_file(path: Path):
+    """The REQUIRED roots, one per line. Comments and blanks out, nothing else.
+
+    A line too short to be a usable root REFUSES rather than being dropped. An
+    earlier version skipped it silently, which is the 2026-09-28 failure class
+    exactly: the list still has entries so the empty-list refusal never fires,
+    and the project behind the dropped line reaches the vendor. The message
+    names the LINE NUMBER and never the content -- this repo is public.
+    """
     if not path.exists():
         return []
     out = []
-    for line in path.read_text().splitlines():
-        line = _norm(line.split("#", 1)[0])
-        if len(line) > 2:
-            out.append(line)
+    for n, raw in enumerate(path.read_text().splitlines(), 1):
+        line = _norm(raw.split("#", 1)[0])
+        if not line:
+            continue
+        if len(line) < MIN_ROOT_CHARS:
+            raise SystemExit(
+                f"{path}:{n}: client root is shorter than {MIN_ROOT_CHARS} "
+                "characters. Refusing to run rather than dropping it: a dropped "
+                "root is a client project whose tickets reach the vendor. "
+                "Lengthen the root, or delete the line if it is not a client.")
+        out.append(line)
     return out
 
 
@@ -194,6 +213,21 @@ def _terminal_at(issue: dict):
     return _dt(issue.get("canceledAt")) or _dt(issue.get("completedAt"))
 
 
+def _is_duplicate(issue: dict) -> bool:
+    """A duplicate state, read from BOTH the type and the name.
+
+    Team ASK emits type `duplicate`: 29 of 2164 issues, counted in the cached
+    payload on 2026-09-28, every one of them named "Duplicate". So the type
+    check alone is correct HERE and is not portable -- `duplicate` is not in
+    Linear's documented type set, and a workspace whose Duplicate state is
+    canceled-type would put all of them into the answer key labelled
+    should-close. That is not a wrong label on a few rows, it is the headline
+    AUC computed on a polluted key, with nothing failing.
+    """
+    st = issue.get("state") or {}
+    return st.get("type") == "duplicate" or _norm(st.get("name", "")) == "duplicate"
+
+
 def build_gold(issues, decisions, now=None, window_days=WINDOW_DAYS):
     """The answer key: Sana's rulings, then canceled-vs-worked inside the window.
 
@@ -201,8 +235,9 @@ def build_gold(issues, decisions, now=None, window_days=WINDOW_DAYS):
     the key, and where a ruling and the state disagree the ruling is the judgment
     that was actually made about the ticket's value.
 
-    `duplicate` is dropped on purpose: it says two tickets describe one thing, not
-    that the work was or was not worth doing.
+    `duplicate` is dropped on purpose (`_is_duplicate`, by type AND by name): it
+    says two tickets describe one thing, not that the work was or was not worth
+    doing. A Sana ruling on one still counts -- that is an explicit judgment.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     cut = now - dt.timedelta(days=window_days)
@@ -229,7 +264,7 @@ def build_gold(issues, decisions, now=None, window_days=WINDOW_DAYS):
             out.append(Case(label=ruling[ident], source="sana", **common))
             continue
         stype = (i.get("state") or {}).get("type")
-        if stype not in ("canceled", "completed"):
+        if _is_duplicate(i) or stype not in ("canceled", "completed"):
             continue
         tat = _terminal_at(i)
         if not tat or tat < cut:
@@ -257,10 +292,16 @@ def auc(scores, labels):
 
 
 def precision_at_k(ranked, labels, k):
-    """Share of the top k that really should be closed. This is the batch metric."""
-    top = ranked[:k]
-    if not top:
+    """Share of the top k that really should be closed. This is the batch metric.
+
+    Undefined when the population is shorter than k, rather than a number under
+    a label it does not have. "top 100" computed over 3 cases is a different
+    statistic wearing the same name, and it is what a human reads when deciding
+    how large a batch to verify.
+    """
+    if k <= 0 or len(ranked) < k:
         return None
+    top = ranked[:k]
     return sum(labels[i] for i in top) / len(top)
 
 
@@ -330,6 +371,29 @@ def beats_control(jev_auc, control_auc, margin=MIN_MARGIN):
         return True, f"jev {jev_auc:.3f} > bar {bar:.3f} (control {control_auc}, margin {margin})"
     return False, (f"jev {jev_auc:.3f} does not clear bar {bar:.3f} "
                    f"(control {control_auc}, margin {margin})")
+
+
+def gate_verdict(jev_auc, control_auc, n_scored, n_cases, n_errors,
+                 margin=MIN_MARGIN, min_cases=MIN_SCORED_CASES,
+                 max_error_rate=MAX_ERROR_RATE):
+    """beats_control, behind two floors on the SUBSET that produced the numbers.
+
+    Both floors can only force a FAIL; neither can grant a pass. They exist
+    because a comparison is only as good as the set it ran on, and the set
+    shrinks silently: a vendor error drops a ticket out of the scored pile, and
+    an AUC over the survivors reads like an AUC over the pile. Two cases of 530
+    can read 1.000, and a pass here opens `rank`, which sends the whole open
+    backlog to a vendor holding a perpetual licence over outputs.
+    """
+    if n_scored < min_cases:
+        return False, (f"only {n_scored} of {n_cases} cases scored; floor is "
+                       f"{min_cases}. A verdict on this few is not a verdict")
+    rate = (n_errors / n_cases) if n_cases else 1.0
+    if rate > max_error_rate:
+        return False, (f"vendor error rate {rate:.3f} is over the "
+                       f"{max_error_rate:.3f} ceiling ({n_errors} of {n_cases}); "
+                       "the scored set is a survivor sample, not the answer key")
+    return beats_control(jev_auc, control_auc, margin)
 
 
 # --------------------------------------------------------------------------- #
@@ -406,68 +470,114 @@ def _fingerprint(case: Case) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def jev_scores(cases, cache_path: Path, workers=6, verbose=True):
-    """P(close) per ticket. Cached by (model, question, state); a receipt per call."""
+def _score_of(resp):
+    """The p(close) inside a response, or None when there is not one."""
+    a = ((resp or {}).get("answers") or {}).get("close") or {}
+    v = a.get("noul")
+    return None if v is None else float(v)
+
+
+def _tokens_of(resp):
+    return ((resp or {}).get("usage") or {}).get("input_tokens", 0)
+
+
+def load_score_cache(cache_path: Path):
+    """(usable, seen). ONLY a response carrying a score counts as a cache hit.
+
+    Every row stays on disk as a receipt, including the errors. But an error is
+    not an answer: treating one as a hit means a transient 503 removes that
+    ticket from every future run, permanently and silently, and the gate then
+    reports an AUC over the survivors as though the pile had been scored.
+    """
+    usable, seen = {}, {}
+    if not cache_path.exists():
+        return usable, seen
+    for line in cache_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        k = (r["id"], r["fp"])
+        seen[k] = r["response"]
+        if _score_of(r["response"]) is not None:
+            usable[k] = r["response"]
+    return usable, seen
+
+
+def _post(case: Case, key: str) -> dict:
+    """One classify call, with its own retries. Returns the response or {"error"}."""
+    body = json.dumps({"state": _state_of(case), "model": MODEL,
+                       "questions": {"close": QUESTION}}).encode()
+    last = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                API, data=body,
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            last = f"HTTP {e.code} {e.read()[:300]!r}"
+            if e.code in (401, 422):
+                # Fail loud, do not retry a rejected request into a quota hole.
+                return {"error": last}
+        except Exception as e:                           # noqa: BLE001
+            last = str(e)
+        time.sleep(2 ** attempt * 2)
+    return {"error": last}
+
+
+def jev_scores(cases, cache_path: Path, workers=6, verbose=True, send=None):
+    """P(close) per ticket. Cached by (model, question, state); a receipt per call.
+
+    `send` is the seam the tests use. The default is the real HTTP call, so a
+    suite can exercise the cache and the accounting without a key and without
+    reaching the vendor.
+    """
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache = {}
-    if cache_path.exists():
-        for line in cache_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            r = json.loads(line)
-            cache[(r["id"], r["fp"])] = r["response"]
-    key = _key()
+    usable, seen = load_score_cache(cache_path)
+    if send is None:
+        key = _key()
+
+        def send(case):                                  # noqa: F811
+            return _post(case, key)
 
     def ask(case):
         fp = _fingerprint(case)
-        if (case.ident, fp) in cache:
+        if (case.ident, fp) in usable:
             return None
-        body = json.dumps({"state": _state_of(case), "model": MODEL,
-                           "questions": {"close": QUESTION}}).encode()
-        last = None
-        for attempt in range(3):
-            try:
-                req = urllib.request.Request(
-                    API, data=body,
-                    headers={"Authorization": f"Bearer {key}",
-                             "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    return case.ident, fp, json.loads(resp.read())
-            except urllib.error.HTTPError as e:
-                last = f"HTTP {e.code} {e.read()[:300]!r}"
-                if e.code in (401, 422):
-                    # Fail loud, do not retry a rejected request into a quota hole.
-                    return case.ident, fp, {"error": last}
-            except Exception as e:                       # noqa: BLE001
-                last = str(e)
-            time.sleep(2 ** attempt * 2)
-        return case.ident, fp, {"error": last}
+        return case.ident, fp, send(case)
 
-    sent = 0
+    sent, tok_run = 0, 0
     with ThreadPoolExecutor(workers) as ex, cache_path.open("a") as fh:
         for res in ex.map(ask, cases):
             if res is None:
                 continue
             ident, fp, resp = res
-            cache[(ident, fp)] = resp
+            seen[(ident, fp)] = resp
+            if _score_of(resp) is not None:
+                usable[(ident, fp)] = resp
             fh.write(json.dumps({"id": ident, "fp": fp, "model": MODEL,
                                  "at": dt.datetime.now(dt.timezone.utc).isoformat(),
                                  "response": resp}) + "\n")
             sent += 1
+            tok_run += _tokens_of(resp)
     if verbose:
         print(f"calls sent this run: {sent}")
 
-    scores, errs = {}, []
+    # Cost is reported two ways and never as the file's whole history: what this
+    # run spent, and what scoring THESE cases cost including the cache hits.
+    scores, errs, tok_cases = {}, [], 0
     for c in cases:
-        r = cache.get((c.ident, _fingerprint(c))) or {}
-        a = (r.get("answers") or {}).get("close") or {}
-        v = a.get("noul")
-        if v is None:
-            errs.append((c.ident, r.get("error") or "empty response"))
+        k = (c.ident, _fingerprint(c))
+        r = usable.get(k)
+        if r is None:
+            errs.append((c.ident, (seen.get(k) or {}).get("error") or "empty response"))
         else:
-            scores[c.ident] = float(v)
-    tok = sum((v.get("usage") or {}).get("input_tokens", 0) for v in cache.values())
-    return scores, errs, tok
+            scores[c.ident] = _score_of(r)
+            tok_cases += _tokens_of(r)
+    return scores, errs, {"sent": sent, "tokens_this_run": tok_run,
+                          "tokens_for_cases": tok_cases}
 
 
 # --------------------------------------------------------------------------- #
@@ -535,23 +645,38 @@ def close_batch(batch: dict, receipts_dir: Path, apply=False, client=None):
         if is_client({"project": {"name": it.get("project", "")},
                       "title": it.get("title", ""), "description": it.get("desc", "")}):
             raise ClientTicket(f"{it.get('identifier')} is a client ticket")
+    if apply and client is None:
+        raise SystemExit("apply=True needs a Linear client")
     receipt = {
         "batch": batch["batch"],
         "label": CLOSE_LABEL,
-        "applied": bool(apply),
+        "applied": False,
         "at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "items": [{"identifier": it["identifier"],
                    "prior_state_id": it["state_id"],
                    "prior_state_name": it.get("state_name", ""),
-                   "project": it.get("project", "")} for it in items],
+                   "project": it.get("project", ""),
+                   "applied": False} for it in items],
     }
-    if apply:
-        if client is None:
-            raise SystemExit("apply=True needs a Linear client")
-        for it in items:
-            client(it)
     receipts_dir.mkdir(parents=True, exist_ok=True)
-    (receipts_dir / f"{batch['batch']}.json").write_text(json.dumps(receipt, indent=1))
+    path = receipts_dir / f"{batch['batch']}.json"
+
+    def flush():
+        path.write_text(json.dumps(receipt, indent=1))
+
+    # The receipt lands BEFORE the first Linear write, and again after each one.
+    # Order is the whole property: a close with no receipt is a ticket nobody can
+    # put back, while a receipt with no close is a harmless no-op. A partial
+    # failure therefore leaves an exact undo plan and a per-item record of which
+    # tickets actually moved.
+    flush()
+    if apply:
+        for it, row in zip(items, receipt["items"]):
+            client(it)
+            row["applied"] = True
+            flush()
+        receipt["applied"] = True
+        flush()
     return receipt
 
 
@@ -605,7 +730,7 @@ def cmd_score(args):
         tag = "age only" if w == 0.0 else "alert only, age as tiebreak"
         print(f"    {tag:30s}: {a:.3f}")
 
-    jev, errs, tok = jev_scores(cases, RUN_DIR / "jev_raw.jsonl", verbose=True)
+    jev, errs, usage = jev_scores(cases, RUN_DIR / "jev_raw.jsonl", verbose=True)
     print(f"jev scored: {len(jev)} | errors/unparsed: {len(errs)}")
     for i, e in errs[:5]:
         print(f"    ERROR {i}: {e}")
@@ -625,25 +750,34 @@ def cmd_score(args):
     print("  precision at the batch sizes a human verifies:")
     for k in (20, 50, 100):
         pj, pc = precision_at_k(ranked_j, jl, k), precision_at_k(ranked_c, jl, k)
-        if pj is not None:
+        if pj is None:
+            print(f"    top {k:3d}: n/a, only {len(ranked_j)} cases scored")
+        else:
             print(f"    top {k:3d}: jev {pj:.3f} | control {pc:.3f}")
     print()
     print("JEV CONFIDENCE FLOORS")
     print(render_cutpoints(cutpoint_table(jev, jl)))
     print()
-    print(f"input tokens: {tok} | cost usd: {round(tok / 1e6 * USD_PER_MTOK, 4)}")
+    tok_run, tok_cases = usage["tokens_this_run"], usage["tokens_for_cases"]
+    print(f"input tokens this run: {tok_run} | for these {len(scored)} cases: "
+          f"{tok_cases} | cost usd: {round(tok_cases / 1e6 * USD_PER_MTOK, 4)}")
 
-    passed, why = beats_control(jauc, cauc_same)
+    passed, why = gate_verdict(jauc, cauc_same, len(scored), len(cases), len(errs))
     print()
     print(f"GATE: {'PASS' if passed else 'FAIL'} -- {why}")
     GATE_FILE.write_text(json.dumps({
         "at": dt.datetime.now(dt.timezone.utc).isoformat(), "model": MODEL,
-        "cases": len(scored), "jev_auc": jauc, "control_auc": cauc_same,
+        "cases": len(scored), "answer_key_cases": len(cases),
+        "vendor_errors": len(errs),
+        "error_rate": round(len(errs) / len(cases), 4) if cases else None,
+        "min_cases": MIN_SCORED_CASES, "max_error_rate": MAX_ERROR_RATE,
+        "jev_auc": jauc, "control_auc": cauc_same,
         "control_best_weight": bw, "keyword_auc": kauc, "majority_accuracy": maj,
         "margin": MIN_MARGIN, "passed": passed, "why": why,
         "precision_at": {str(k): precision_at_k(ranked_j, jl, k) for k in (20, 50, 100)},
         "cutpoints": cutpoint_table(jev, jl),
-        "tokens": tok, "usd": round(tok / 1e6 * USD_PER_MTOK, 4),
+        "tokens_this_run": tok_run, "tokens_for_cases": tok_cases,
+        "usd": round(tok_cases / 1e6 * USD_PER_MTOK, 4),
     }, indent=1))
     print(f"gate receipt: {GATE_FILE}")
     if not passed:
@@ -673,8 +807,9 @@ def cmd_rank(args):
                           is_alert=_is_alert(i),
                           project=(i.get("project") or {}).get("name") or ""))
     print(f"open non-client tickets: {len(cases)}")
-    jev, errs, tok = jev_scores(cases, RUN_DIR / "jev_open_raw.jsonl")
-    print(f"scored {len(jev)} | errors {len(errs)} | usd {round(tok / 1e6 * USD_PER_MTOK, 4)}")
+    jev, errs, usage = jev_scores(cases, RUN_DIR / "jev_open_raw.jsonl")
+    print(f"scored {len(jev)} | errors {len(errs)} | usd "
+          f"{round(usage['tokens_for_cases'] / 1e6 * USD_PER_MTOK, 4)}")
     ranked = sorted((c for c in cases if c.ident in jev), key=lambda c: -jev[c.ident])
     out = RUN_DIR / "open_ranked.jsonl"
     with out.open("w") as fh:
