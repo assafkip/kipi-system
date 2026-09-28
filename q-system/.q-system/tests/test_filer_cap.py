@@ -211,6 +211,21 @@ def test_alert_to_linear_calls_the_cap_on_the_create_path_only():
     assert alert._cap is cap.__class__ or hasattr(alert._cap, "decide")
 
 
+def test_spillover_does_not_spend_the_alert_budget():
+    """Caught live, not in review: the FIRST capture after the cap shipped came
+    back "recorded, not ticketed (alert is at its daily cap)" and the row got no
+    Linear issue. A spillover message carries no `[label]`, so the ladder's last
+    rung handed it the alert budget. Both call sites now declare themselves."""
+    src = open(os.path.join(SCRIPTS, "spillover-linear-check.py"),
+               encoding="utf-8").read()
+    assert src.count('"KIPI_ALERT_FILER", "spillover"') == 2, (
+        "a spillover filing path that does not declare its filer shares the "
+        "alert budget and gets swallowed")
+    assert cap.filer_for("spillover sp-abc123 (high) from ASK-1: ...") == "alert", (
+        "the ladder's fallback is what makes the declaration load-bearing; if "
+        "this ever stops being 'alert', re-check the two call sites")
+
+
 def test_a_capped_alert_returns_ok_and_files_nothing(monkeypatch, sdir):
     """Exit 0: it was recorded, not lost. EXIT_FAILED here would make the
     heartbeat's halt branch fire on a budget that is working."""

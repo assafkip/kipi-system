@@ -166,6 +166,15 @@ def file_record(rec: dict, repo_root) -> dict:
     env = dict(os.environ)
     # Route the ticket to the ledger's own repo's Linear project.
     env.setdefault("KIPI_ALERT_REPO_PATH", str(repo_root))
+    # DECLARE THE FILER, or spillover spends the fleet's alert budget (ASK-2012).
+    # filer_cap's ladder falls back to `alert` for any message with no `[label]`
+    # prefix, and a spillover message has none -- so the first capture after the
+    # cap shipped came back "recorded, not ticketed (alert is at its daily cap)"
+    # and the row got no ticket. That is the exact failure the ledger exists to
+    # prevent: a capture nobody can see is the pile, re-read. A spillover row is
+    # a deliberate record with an owner, not a detector firing, so it gets its
+    # own budget rather than sharing the one sized for alert floods.
+    env.setdefault("KIPI_ALERT_FILER", "spillover")
     try:
         res = subprocess.run([sys.executable, str(FILER), message_for(rec)],
                              capture_output=True, text=True, env=env,
@@ -358,8 +367,13 @@ def main(argv: list | None = None) -> int:
     if totals["still"] and not args.dry_run:
         msg = _summary_message(per_ledger, args.limit)
         try:
+            # Same filer declaration as file_record's, and for the same reason
+            # (ASK-2012): the daily summary is the one alert that must never be
+            # the thing the cap swallows.
+            env = dict(os.environ)
+            env.setdefault("KIPI_ALERT_FILER", "spillover")
             res = subprocess.run([sys.executable, str(FILER), msg], capture_output=True,
-                                 text=True, timeout=FILER_TIMEOUT_SECONDS)
+                                 text=True, env=env, timeout=FILER_TIMEOUT_SECONDS)
             code, out = res.returncode, (res.stdout + res.stderr).strip()
         except Exception as exc:  # noqa: BLE001
             code, out = 1, repr(exc)
