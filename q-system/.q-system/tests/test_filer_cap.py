@@ -8,12 +8,15 @@ completed. It is the RED that every other test here is the green for, and it
 cannot be satisfied by an invented fixture: the rows come from
 capture_board_28d.py reading the live board (provenance is inside the payload).
 """
+import datetime
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import time
+
+import re
 
 import pytest
 
@@ -190,15 +193,200 @@ def test_a_filer_name_cannot_escape_the_state_dir(sdir):
             os.path.realpath(sdir)) for f in os.listdir(sdir))
 
 
+# --- the promotion ceiling (PR #465 round 2, major 1) ------------------------
+
+def test_a_repeating_flood_cannot_walk_past_the_cap_through_rule_2(sdir):
+    """THE REPRODUCER for the round-2 major, in the shape the docstring names:
+    105 distinct conditions from a job that runs hourly. Rule 2 spent a token
+    without checking one, so every listed fingerprint promoted on its next
+    firing and the steady state was 105 permanent Linear objects every other
+    hour, against a documented 6/hour."""
+    now = time.time()
+    fps = [f"fp{i:03d}" for i in range(105)]
+    per_hour = []
+    for hour in range(4):
+        t = now + hour * cap.HOUR
+        per_hour.append(sum(1 for fp in fps
+                            if cap.decide("alert", fp, t, sdir=sdir).ticket))
+
+    ceiling = cap.DEFAULT_CAP_HOUR * cap.PROMOTE_HEADROOM
+    assert per_hour[0] == cap.DEFAULT_CAP_HOUR, per_hour
+    assert all(n <= ceiling for n in per_hour), per_hour
+    # The pre-fix number, kept as the thing this must never return to.
+    assert max(per_hour) < 105, per_hour
+    # And the whole day stays under the day ceiling.
+    assert sum(per_hour) <= cap.DEFAULT_CAP_DAY * cap.PROMOTE_HEADROOM, per_hour
+
+
+def test_a_promotion_over_the_ceiling_is_relisted_and_not_dropped(sdir):
+    """The ceiling delays a promotion; it must never lose one. The row keeps
+    its count, so it promotes as soon as the hour frees.
+
+    Explicit caps, not the defaults: cap_hour=1 makes the ceiling exactly
+    PROMOTE_HEADROOM, so each step below is one decision rather than a race
+    against the default budget.
+    """
+    now = time.time()
+    caps = {"cap_hour": 1, "cap_day": 1000, "sdir": sdir}
+    assert cap.decide("alert", "A", now, **caps).ticket          # spends 1 of 1
+    assert not cap.decide("alert", "B", now, **caps).ticket      # hourly cap
+    assert not cap.decide("alert", "C", now, **caps).ticket      # hourly cap
+
+    promoted = cap.decide("alert", "B", now, **caps)             # 1 < ceiling 2
+    assert promoted.ticket and "promoted" in promoted.reason, promoted.reason
+
+    blocked = cap.decide("alert", "C", now, **caps)              # 2 >= ceiling 2
+    assert not blocked.ticket and "ceiling" in blocked.reason, blocked.reason
+    assert "C" in cap.listed_rows("alert", now, sdir=sdir), "the row was dropped"
+
+    later = cap.decide("alert", "C", now + cap.HOUR + 1, **caps)
+    assert later.ticket and "promoted" in later.reason, later.reason
+
+
+# --- the refund (PR #465 round 2, major 2) -----------------------------------
+
+def test_a_failed_create_gives_its_token_back(sdir):
+    """A Linear outage burned the hourly budget on sends that minted nothing,
+    and every alert after the 6th came back EXIT_OK "recorded, not ticketed" --
+    so the heartbeat's halt branch read a hard-down Linear as a working
+    budget."""
+    now = time.time()
+    for i in range(cap.DEFAULT_CAP_HOUR):
+        d = cap.decide("alert", f"down{i}", now, sdir=sdir)
+        assert d.ticket and d.refundable
+        assert cap.refund(d, sdir=sdir), "the token did not come back"
+
+    after = cap.decide("alert", "down-next", now, sdir=sdir)
+    assert after.ticket, f"{cap.DEFAULT_CAP_HOUR} failed sends still spent the budget"
+
+    # A refund is idempotent: a second call must not credit a token twice.
+    d = cap.decide("alert", "once", now, sdir=sdir)
+    assert cap.refund(d, sdir=sdir) is True
+    assert cap.refund(d, sdir=sdir) is False
+
+
+def test_a_refunded_promotion_keeps_the_recurrence_that_earned_it(sdir):
+    now = time.time()
+    cap.decide("alert", "rec", now, sdir=sdir)                    # ticket
+    for i in range(cap.DEFAULT_CAP_HOUR * cap.PROMOTE_HEADROOM):   # fill the hour
+        cap.decide("alert", f"pad{i}", now, sdir=sdir)
+    cap.decide("alert", "rec2", now, sdir=sdir)                   # listed
+    promoted = cap.decide("alert", "rec2", now + cap.HOUR + 1, sdir=sdir)
+    assert promoted.ticket and promoted.promoted_row is not None
+
+    assert cap.refund(promoted, sdir=sdir)
+    rows = cap.listed_rows("alert", now + cap.HOUR + 1, sdir=sdir)
+    assert "rec2" in rows, "a failed create lost the recurrence count"
+
+
+def test_alert_to_linear_refunds_on_every_create_failure_path():
+    """Wiring, not behaviour: every EXIT_FAILED below the decide goes through
+    the refund helper. A path that returns EXIT_FAILED directly would silently
+    keep spending."""
+    src = open(os.path.join(SCRIPTS, "alert-to-linear.py"), encoding="utf-8").read()
+    # THIS function only. An unbounded split runs on into main(), whose own
+    # bare `return EXIT_FAILED` lines are nothing to do with the cap.
+    rest = src.split("def _file_alert_serialized", 1)[1]
+    end = re.search(r"^def ", rest, re.M)
+    body = rest[:end.start()] if end else rest
+    tail = body[body.index("_cap.decide("):]
+    assert "_cap.refund(decision)" in tail
+    # Everything after the _failed() helper's own body: those returns must all
+    # go through it.
+    after_helper = tail[tail.index("return EXIT_FAILED, line") + 24:]
+    direct = [ln.strip() for ln in after_helper.splitlines()
+              if "return EXIT_FAILED" in ln]
+    assert not direct, f"an unrefunded failure path below the cap: {direct}"
+
+
+# --- the undo for the tripwire (PR #465 round 2, major 3) --------------------
+
+def test_unpause_lifts_a_chokepoint_that_reconcile_armed(sdir):
+    now = time.time()
+    cap.pause_chokepoint("alert", "created 128 and closed 6", now, sdir=sdir)
+    assert cap.chokepoint_paused("alert", now, sdir=sdir)
+    assert not cap.decide("alert", "fp", now, sdir=sdir).ticket
+
+    cap.unpause_chokepoint("alert", sdir=sdir)
+    assert cap.chokepoint_paused("alert", now, sdir=sdir) is None
+    assert cap.decide("alert", "fp2", now, sdir=sdir).ticket
+
+
+def test_the_unpause_verb_is_reachable_from_the_cli(tmp_path):
+    """unpause_chokepoint() existed and no CLI verb reached it, so recovery was
+    hand-deleting a cache file nothing documented."""
+    sd = str(tmp_path / "state")
+    env = dict(os.environ, KIPI_FILER_CAP_DIR=sd)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    cap.pause_chokepoint("alert", "armed", time.time(), sdir=sd)
+
+    res = subprocess.run([sys.executable, FILER_CAP, "unpause", "--chokepoint", "alert"],
+                         capture_output=True, text=True, env=env, timeout=60)
+    assert res.returncode == 0, res.stderr
+    assert "unpaused chokepoint alert" in res.stdout
+    assert cap.chokepoint_paused("alert", time.time(), sdir=sd) is None
+
+
+def test_reset_says_so_when_the_chokepoint_is_still_paused(tmp_path):
+    """`reset --filer alert` printed success and exited 0 while the chokepoint
+    stayed paused, so the filer still could not file."""
+    sd = str(tmp_path / "state")
+    env = dict(os.environ, KIPI_FILER_CAP_DIR=sd)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    cap.pause_chokepoint("alert", "created 128 and closed 6", time.time(), sdir=sd)
+
+    res = subprocess.run([sys.executable, FILER_CAP, "reset", "--filer", "alert"],
+                         capture_output=True, text=True, env=env, timeout=60)
+    assert res.returncode == 0, res.stderr
+    assert "STILL PAUSED" in res.stdout, res.stdout
+    assert "unpause --chokepoint alert" in res.stdout, res.stdout
+
+
 # --- the tripwire ------------------------------------------------------------
 
+def _fixture_now(rows) -> float:
+    """The clock the fixture was captured against, read from the fixture.
+
+    Scar (PR #465 round 2, major): this used time.time() against a STATIC
+    payload, so the 7-day window walked off the end of the data and the suite
+    was scheduled to go red around 2026-10-06 with no code change. A suite that
+    fails for calendar reasons is how a suite stops being read. The window is
+    relative to the newest row, which is what "the last 7 days of this capture"
+    always meant.
+    """
+    stamps = [cap._epoch(r.get("created_at")) for r in rows]
+    stamps = [s for s in stamps if s is not None]
+    assert stamps, "no parseable created_at in the payload; the fixture is broken"
+    return max(stamps)
+
+
 def test_the_tripwire_pauses_a_filer_that_creates_more_than_it_closes(rows):
-    now = time.time()
+    now = _fixture_now(rows)
     verdict = cap.tripwire(rows, now)
     assert verdict, "no rows inside the 7-day window; the fixture is stale"
     assert all(set(v) == {"created", "closed", "pause"} for v in verdict.values())
     for v in verdict.values():
-        assert v["pause"] == (v["created"] > v["closed"])
+        assert v["pause"] == (v["created"] > v["closed"]
+                              and v["created"] >= cap.TRIPWIRE_MIN_CREATED)
+
+
+def test_the_tripwire_does_not_arm_on_a_filer_with_no_volume():
+    """A pause silences a whole chokepoint for 7 days. `created > closed` alone
+    tripped on ONE create and zero closes in a week, which is every quiet filer
+    (PR #465 round 2, major)."""
+    now = time.time()
+    stamp = (datetime.datetime.fromtimestamp(now - cap.DAY, datetime.timezone.utc)
+             .isoformat().replace("+00:00", "Z"))
+    quiet = [{"filer": "lgtm", "created_at": stamp, "state_type": "started"}]
+    assert cap.tripwire(quiet, now)["lgtm"]["pause"] is False
+
+    loud = [dict(quiet[0]) for _ in range(cap.TRIPWIRE_MIN_CREATED)]
+    assert cap.tripwire(loud, now)["lgtm"]["pause"] is True
+
+    # The floor is a floor, not a replacement: the same volume, all of it
+    # closed, is a healthy filer and must not arm.
+    closed = [dict(r, state_type="completed") for r in loud]
+    assert cap.tripwire(closed, now)["lgtm"]["pause"] is False
 
 
 # --- the wiring into alert-to-linear ----------------------------------------
@@ -212,7 +400,11 @@ def test_alert_to_linear_calls_the_cap_on_the_create_path_only():
     call = body.index("_cap.decide(")
     door = body.index("THE ONE DOOR TO A PERMANENT LINEAR OBJECT")
     assert call > door, "the cap is being spent above the create gate"
-    assert alert._cap is cap.__class__ or hasattr(alert._cap, "decide")
+    # `alert._cap is cap.__class__` was always False, so this resolved on a
+    # hasattr true for any module importing filer_cap (PR #465 round 2, nit).
+    # What it meant to check is that alert-to-linear loads THIS filer_cap.
+    assert os.path.realpath(alert._cap.__file__) == \
+        os.path.realpath(os.path.join(SCRIPTS, "filer_cap.py"))
 
 
 def test_spillover_does_not_spend_the_alert_budget():

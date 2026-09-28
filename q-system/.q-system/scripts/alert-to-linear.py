@@ -1038,11 +1038,22 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
     # NameError wearing the wrong failure's name.
     unresolved_labels: list = []
 
+    # THE TOKEN IS RESERVED, NOT SPENT, UNTIL THE CREATE LANDS. Every failure
+    # path below puts it back (PR #465 round 2, major). Before this, a Linear
+    # outage burned the hourly budget on sends that minted nothing: alerts 1-6
+    # failed loudly, alert 7 onward returned EXIT_OK "recorded, not ticketed",
+    # and the heartbeat's halt branch reads exit codes -- so a hard-down Linear
+    # read as a working budget. A refunded failure must stay EXIT_FAILED.
+    def _failed(line: str) -> tuple:
+        if _cap.refund(decision):
+            line += " (cap token refunded; this failure did not spend budget)"
+        return EXIT_FAILED, line
+
     try:
         teams = (ln.graphql(TEAM_QUERY, {"key": TEAM_KEY}) or {}).get("teams") or {}
         nodes = teams.get("nodes") or []
         if not nodes:
-            return EXIT_FAILED, f"no Linear team {TEAM_KEY!r}; NOT filed: {message}"
+            return _failed(f"no Linear team {TEAM_KEY!r}; NOT filed: {message}")
         team_id = nodes[0]["id"]
 
         payload = {
@@ -1084,9 +1095,9 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
         data = ln.graphql(ISSUE_CREATE, {"input": payload})
         issue = ((data or {}).get("issueCreate") or {}).get("issue") or {}
         if not issue.get("id"):
-            return EXIT_FAILED, f"issueCreate returned no issue; NOT filed: {message}"
+            return _failed(f"issueCreate returned no issue; NOT filed: {message}")
     except Exception as exc:
-        return EXIT_FAILED, f"Linear create failed ({exc}); NOT filed: {message}"
+        return _failed(f"Linear create failed ({exc}); NOT filed: {message}")
 
     _write_state(fp, {"issue_id": issue["id"],
                       "identifier": issue.get("identifier"),

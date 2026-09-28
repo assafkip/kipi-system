@@ -20,16 +20,26 @@ FOUR RULES, in the order decide() applies them:
 
   1. PAUSED beats everything. A filer that creates more than it closes over 7
      days is paused by `reconcile`; while paused it creates nothing at all.
-  2. RECURRENCE beats the cap. A fingerprint already on the list, seen again,
-     is promoted to a ticket even with an empty bucket. A cap that could
-     swallow a repeating failure would be a worse defect than the flood.
+  2. RECURRENCE beats the ORDINARY cap. A fingerprint already on the list, seen
+     again, is promoted to a ticket even with an empty bucket -- a cap that
+     could swallow a repeating failure would be a worse defect than the flood.
+     It stops at its own, higher ceiling (PROMOTE_HEADROOM) and is re-listed,
+     not dropped, above it.
   3. A free token -> ticket, and the token is spent.
   4. No token -> recorded, not ticketed. Exit 0, the caller says so out loud.
 
-A promotion SPENDS a token without CHECKING one. The bucket measures creates and
-a promotion is a create, so not recording it would make the tripwire and the
-hourly count lie; checking it would let a flood of first-sights starve the one
-path that must always work.
+A promotion is checked against a DIFFERENT ceiling, not against no ceiling.
+Checking it against the ordinary cap would let a flood of first-sights starve
+the one path that must always work; checking it against nothing made rule 2 an
+unbounded hole, which is what it was until PR #465 round 2. The bucket measures
+creates and a promotion is a create, so it always SPENDS, or the tripwire and
+the hourly count would lie. Worst case per filer is arithmetic:
+DEFAULT_CAP_HOUR * PROMOTE_HEADROOM per hour, DEFAULT_CAP_DAY * PROMOTE_HEADROOM
+per day -- 12 and 40 at today's values.
+
+A TOKEN IS RESERVED, NOT SPENT, UNTIL THE CREATE LANDS. alert-to-linear.py calls
+refund() on every path where the Linear create failed, so a Linear outage cannot
+burn the budget on sends that minted nothing and then report exit 0.
 
 HOW A "FILER" IS IDENTIFIED. No producer identity exists on the alert path today
 -- ~30 call sites across six repos reach it and none of them name themselves. So
@@ -62,7 +72,11 @@ CLI:
                                            --apply pauses the CHOKEPOINT, not the
                                            bucket: see CLASS_TO_CHOKEPOINT.
   filer_cap.py replay <payload.json>       ASK-2012's check: ticket vs listed
-  filer_cap.py reset --filer F             clear one filer's bucket and list
+  filer_cap.py reset --filer F             clear one filer's bucket and list.
+                                           Names any chokepoint still paused --
+                                           a reset does NOT lift that.
+  filer_cap.py unpause --chokepoint C      THE UNDO for `reconcile --apply`.
+                     [--filer F]           Also lifts one bucket's own pause.
 """
 from __future__ import annotations
 
@@ -88,8 +102,24 @@ import sys
 #   lgtm                 3          2          2           2              1,  1
 #
 # 6/hour sits above every filer's p90 hour except radar's, so an ORDINARY hour is
-# unchanged for all of them and the 105-in-an-hour burst is the only thing cut.
-# 20/day sits an order of magnitude above the completed-only peak of 2/day.
+# unchanged for all of them. 20/day sits an order of magnitude above the
+# completed-only peak of 2/day.
+#
+# WHICH CAP ACTUALLY BINDS, corrected in PR #465 review round 2 (minor). This
+# note used to claim "the 105-in-an-hour burst is the only thing cut". Replaying
+# the corpus and counting the decision REASON says otherwise:
+#
+#   338  within budget
+#   154  daily cap
+#     8  promoted
+#     7  hourly cap
+#
+# and the 161 listings land on 10 distinct days, only ONE of which is the burst
+# (2026-09-13, 104 of them). The daily cap is what binds; the hourly one cuts 7
+# rows. That does not change either number -- the replay gate still holds 5/5
+# completed rows ticketed -- but it changes which one to reach for when the cap
+# needs tuning, and a comment that names the wrong lever is how the wrong lever
+# gets pulled.
 #
 # The floor that matters is not these numbers, it is the replay gate: every
 # ticket that was actually worked has to survive the cap. `replay` is that test
@@ -124,11 +154,49 @@ DEFAULT_CAP_DAY = int(os.environ.get("KIPI_FILER_CAP_DAY", "20"))
 # and EXPIRY_WARN_DAYS is what makes them visible before they are gone.
 PROMOTE_AT = 2
 
+# THE CEILING ON RULE 2, and the reason this module's headline number is a range.
+#
+# Round-2 review of PR #465, major: a promotion SPENT a token without checking
+# ANY ceiling, so rule 2 was not a cap at all. Measured on the exact flood shape
+# the docstring names -- 105 distinct conditions from a job that runs hourly --
+# the old code settled at 105 permanent Linear objects every other hour, against
+# a documented 6/hour. The replay gate could not see it: rule 2 fires 8 times in
+# the 507-row corpus, because before this change nothing was ever listed.
+#
+# The fix keeps rule 2's guarantee and bounds it. A promotion is still checked
+# LAST and still gets headroom the ordinary path cannot reach (rule 3 stops at
+# cap_hour, so a flood of first-sights can never fill the promotion band), but it
+# now stops at cap * PROMOTE_HEADROOM counted over the SAME spend list. One
+# counter, no second bucket, and the absolute worst case a filer can create is
+# arithmetic rather than unbounded:
+#
+#     per hour  <= DEFAULT_CAP_HOUR * PROMOTE_HEADROOM  = 12
+#     per day   <= DEFAULT_CAP_DAY  * PROMOTE_HEADROOM  = 40
+#
+# A promotion over the ceiling is RE-LISTED, not dropped: the row keeps its
+# count, so it promotes on its next firing once the ceiling frees. The 105-flood
+# above becomes 40 tickets on day one and drains over ~3 days, which for 105
+# genuinely recurring conditions is the correct answer rather than a silence.
+# 2 and not more: 40/day is already an order of magnitude above the measured
+# completed peak of 2/day, so a larger headroom would be budget nobody can read.
+PROMOTE_HEADROOM = int(os.environ.get("KIPI_FILER_PROMOTE_HEADROOM", "2"))
+
 # An entry nobody saw again for two weeks was a one-off. Dropped, not ticketed.
 LIST_TTL_DAYS = 14
 
 # The tripwire window from the DoR.
 TRIPWIRE_DAYS = 7
+
+# THE VOLUME FLOOR ON THE TRIPWIRE (PR #465 round 2, major, same repro as the
+# missing unpause verb). `created > closed` alone trips on ONE create and zero
+# closes in a week, which is every quiet filer -- and the thing it arms silences
+# a whole chokepoint for 7 days. A ratio needs a denominator before it means
+# anything. One day's worth of budget over a whole week is the floor: below that
+# a filer is not flooding a board, it is barely using it. Measured on the 28-day
+# capture, this is what separates `alert` (507) and `radar` (34) from
+# `fleet-health` (13) and `lgtm` (3) -- the two the reviewer showed tripping on
+# volume they never had.
+TRIPWIRE_MIN_CREATED = DEFAULT_CAP_DAY
 
 # WHICH FILER CLASSES THE CAP ACTUALLY SEES, and the first replay is what taught
 # this. Run with no scope at all, the gate failed 92/152: 59 COMPLETED rows in
@@ -465,20 +533,81 @@ def unpause_chokepoint(name: str, sdir: str | None = None) -> None:
 
 
 class Decision:
-    """(action, reason). `action` is TICKET or LISTED; `reason` is for the log."""
+    """(action, reason) plus what the decision CONSUMED, so it can be undone.
 
-    __slots__ = ("action", "reason")
+    `action` is TICKET or LISTED; `reason` is for the log. The rest is the
+    receipt `refund()` needs: which filer's bucket was touched, the timestamp
+    written into `spent`, and -- on a promotion -- the listed row that was
+    popped, so a create that never happened does not also lose the recurrence
+    count that earned it.
+    """
 
-    def __init__(self, action: str, reason: str):
+    __slots__ = ("action", "reason", "filer", "spent_at",
+                 "promoted_row", "promoted_fp")
+
+    def __init__(self, action: str, reason: str, filer: str = "",
+                 spent_at: float | None = None,
+                 promoted_row: dict | None = None, promoted_fp: str = ""):
         self.action = action
         self.reason = reason
+        self.filer = filer
+        self.spent_at = spent_at
+        self.promoted_row = promoted_row
+        self.promoted_fp = promoted_fp
 
     @property
     def ticket(self) -> bool:
         return self.action == TICKET
 
+    @property
+    def refundable(self) -> bool:
+        return bool(self.filer) and self.spent_at is not None
+
     def __repr__(self) -> str:                               # pragma: no cover
         return f"Decision({self.action!r}, {self.reason!r})"
+
+
+def refund(decision: Decision, sdir: str | None = None) -> bool:
+    """Put back a token whose create never landed. Never raises.
+
+    ROUND-2 REVIEW OF PR #465, major. The budget was spent ABOVE the try that
+    calls Linear, so a Linear outage burned the hourly budget on sends that
+    minted nothing: alerts 1-6 failed loudly, and alert 7 onward came back
+    EXIT_OK "recorded, not ticketed". The heartbeat's halt branch reads exit
+    codes, so a hard-down Linear read as a working budget at 3am.
+
+    Reserve-then-refund and not check-then-commit: the reservation has to be
+    written under the same lock that decided it, or two concurrent alerts both
+    pass a check nobody has committed to yet.
+
+    Returns True if a token came back, so the caller can say so in its message.
+    """
+    if not decision.refundable:
+        return False
+    try:
+        sdir = state_dir(sdir)
+        with _lock(decision.filer, sdir) as held:
+            if not held:
+                return False
+            data = _read(decision.filer, sdir)
+            spent = list(data.get("spent") or [])
+            if decision.spent_at not in spent:
+                return False            # pruned or already refunded; leave it
+            spent.remove(decision.spent_at)
+            data["spent"] = spent
+            if decision.promoted_fp and decision.promoted_row is not None:
+                listed = dict(data.get("listed") or {})
+                listed.setdefault(decision.promoted_fp, decision.promoted_row)
+                data["listed"] = listed
+            _write(decision.filer, sdir, data)
+            # Spends are a multiset of timestamps, so two creates in the same
+            # instant are indistinguishable inside the file and a second call
+            # would happily credit a token this decision never spent. The
+            # receipt is what gets consumed, not the timestamp.
+            decision.spent_at = None
+            return True
+    except Exception:
+        return False
 
 
 def decide(filer: str, fp: str, now: float, sdir: str | None = None,
@@ -505,6 +634,7 @@ def exempt(filer: str, now: float, sdir: str | None = None,
     bucket measures creates, and a create the tripwire cannot see makes the
     creates-vs-closes ratio understate the flood by exactly the exempt count.
     """
+    spent_at = None
     try:
         sdir = state_dir(sdir)
         with _lock(filer, sdir) as held:
@@ -512,9 +642,10 @@ def exempt(filer: str, now: float, sdir: str | None = None,
                 data = _prune(_read(filer, sdir), now)
                 data["spent"] = list(data.get("spent") or []) + [now]
                 _write(filer, sdir, data)
+                spent_at = now
     except Exception:
         pass
-    return Decision(TICKET, reason)
+    return Decision(TICKET, reason, filer=filer, spent_at=spent_at)
 
 
 def _decide(filer: str, fp: str, now: float, sdir: str | None,
@@ -546,25 +677,46 @@ def _decide(filer: str, fp: str, now: float, sdir: str | None,
         if reason:
             data = _list_row(data, fp, now, title)
             _write(filer, sdir, data)
-            return Decision(LISTED, f"paused: {reason}")
+            return Decision(LISTED, f"paused: {reason}", filer=filer)
 
-        # 2. Recurrence beats the cap.
+        # 2. Recurrence beats the ORDINARY cap, and stops at its own ceiling.
         row = (data.get("listed") or {}).get(fp)
         if row is not None:
             seen = int(row.get("count", 1)) + 1
             if seen >= PROMOTE_AT:
+                spent = list(data.get("spent") or [])
+                in_hour = sum(1 for t in spent if now - t < HOUR)
+                in_day = len(spent)
+                ceil_hour = cap_hour * PROMOTE_HEADROOM
+                ceil_day = cap_day * PROMOTE_HEADROOM
+                over = ""
+                if in_hour >= ceil_hour:
+                    over = f"hourly ceiling ({in_hour}/{ceil_hour})"
+                elif in_day >= ceil_day:
+                    over = f"daily ceiling ({in_day}/{ceil_day})"
+                if over:
+                    # RE-LISTED, never dropped. The row keeps its count, so this
+                    # promotes on its next firing as soon as the ceiling frees.
+                    data = _list_row(data, fp, now, title)
+                    _write(filer, sdir, data)
+                    return Decision(LISTED,
+                                    f"{filer} promotion is at its {over}; "
+                                    f"recorded, not ticketed",
+                                    filer=filer)
                 listed = dict(data.get("listed") or {})
-                listed.pop(fp, None)
+                popped = listed.pop(fp, None)
                 data["listed"] = listed
-                # Spent, not checked. See the module docstring.
-                data["spent"] = list(data.get("spent") or []) + [now]
+                # Spent, not checked against the ORDINARY cap. See PROMOTE_HEADROOM.
+                data["spent"] = spent + [now]
                 _write(filer, sdir, data)
                 return Decision(TICKET,
                                 f"promoted: fingerprint recorded {seen - 1}x "
-                                f"before, seen again")
+                                f"before, seen again",
+                                filer=filer, spent_at=now, promoted_row=popped,
+                                promoted_fp=fp)
             data = _list_row(data, fp, now, title)
             _write(filer, sdir, data)
-            return Decision(LISTED, f"recorded ({seen} sighting(s))")
+            return Decision(LISTED, f"recorded ({seen} sighting(s))", filer=filer)
 
         # 3./4. A free token, or the list.
         spent = list(data.get("spent") or [])
@@ -575,18 +727,21 @@ def _decide(filer: str, fp: str, now: float, sdir: str | None,
             _write(filer, sdir, data)
             return Decision(LISTED,
                             f"{filer} is at its hourly cap "
-                            f"({in_hour}/{cap_hour}); recorded, not ticketed")
+                            f"({in_hour}/{cap_hour}); recorded, not ticketed",
+                            filer=filer)
         if in_day >= cap_day:
             data = _list_row(data, fp, now, title)
             _write(filer, sdir, data)
             return Decision(LISTED,
                             f"{filer} is at its daily cap "
-                            f"({in_day}/{cap_day}); recorded, not ticketed")
+                            f"({in_day}/{cap_day}); recorded, not ticketed",
+                            filer=filer)
 
         data["spent"] = spent + [now]
         _write(filer, sdir, data)
         return Decision(TICKET, f"within budget ({in_hour + 1}/{cap_hour} this "
-                                f"hour, {in_day + 1}/{cap_day} today)")
+                                f"hour, {in_day + 1}/{cap_day} today)",
+                        filer=filer, spent_at=now)
 
 
 def _list_row(data: dict, fp: str, now: float, title: str) -> dict:
@@ -828,7 +983,7 @@ def tripwire(rows: list, now: float, days: int = TRIPWIRE_DAYS) -> dict:
         if (row.get("state_type") or "") in ("completed", "canceled"):
             closed[filer] += 1
     return {f: {"created": created[f], "closed": closed[f],
-                "pause": created[f] > closed[f]}
+                "pause": created[f] > closed[f] and created[f] >= TRIPWIRE_MIN_CREATED}
             for f in sorted(created)}
 
 
@@ -869,6 +1024,16 @@ def main(argv: list[str]) -> int:
     p_res = sub.add_parser("reset", help="clear one filer's bucket and list")
     p_res.add_argument("--filer", required=True)
 
+    # THE UNDO FOR `reconcile --apply` (PR #465 round 2, major). Arming the
+    # tripwire silences a whole chokepoint for 7 days, and the only recovery verb
+    # was `reset --filer`, which clears a BUCKET, prints success and exits 0 while
+    # the chokepoint stays paused. unpause_chokepoint() existed and no CLI verb
+    # reached it, so recovery was hand-deleting a cache file nothing documented.
+    p_un = sub.add_parser("unpause", help="lift a pause: the tripwire's "
+                                          "chokepoint, or one filer's bucket")
+    p_un.add_argument("--chokepoint", help=f"e.g. {DEFAULT_CHOKEPOINT}")
+    p_un.add_argument("--filer", help="lift one bucket's own pause")
+
     args = ap.parse_args(argv[1:])
     now = time.time()
 
@@ -889,11 +1054,30 @@ def main(argv: list[str]) -> int:
                       f"last {age:.1f}d ago  {row.get('title', '')}")
         return 0
 
+    if args.cmd == "unpause":
+        if not (args.chokepoint or args.filer):
+            print("unpause: name --chokepoint or --filer", file=sys.stderr)
+            return 2
+        if args.chokepoint:
+            unpause_chokepoint(args.chokepoint)
+            print(f"unpaused chokepoint {args.chokepoint}")
+        if args.filer:
+            unpause(args.filer, now)
+            print(f"unpaused bucket {args.filer}")
+        return 0
+
     if args.cmd == "reset":
         unpause(args.filer, now)
         with _lock(args.filer, state_dir()):
             _write(args.filer, state_dir(), {"spent": [], "listed": {}})
         print(f"reset {args.filer}")
+        # A reset clears a BUCKET. It does not lift a chokepoint pause, and
+        # saying so beats exiting 0 on a filer that still cannot file.
+        for name in sorted({DEFAULT_CHOKEPOINT} | set(CLASS_TO_CHOKEPOINT.values())):
+            held = chokepoint_paused(name, now)
+            if held:
+                print(f"  STILL PAUSED: chokepoint {name} ({held}). "
+                      f"Lift it with: filer_cap.py unpause --chokepoint {name}")
         return 0
 
     if args.cmd == "digest":
