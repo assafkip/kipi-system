@@ -22,11 +22,16 @@ import sys
 
 import pytest
 
+# LIVES IN tests/, NOT BESIDE THE SCRIPT IT PINS. verify.sh's pytest runner walks
+# q-system/.q-system/tests and never q-system/.q-system/scripts, so a suite placed
+# next to its subject is green because nothing runs it -- the shape this repo calls
+# an inert engine. `SCRIPTS` is the one path indirection that buys.
 HERE = pathlib.Path(__file__).resolve().parent
+SCRIPTS = HERE.parent / "scripts"
 
 
 def _load(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, HERE / filename)
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
     mod = importlib.util.module_from_spec(spec)
     # REGISTERED BEFORE EXEC, not after. `@dataclasses.dataclass` resolves
     # annotations through `sys.modules[cls.__module__]`, so a module loaded by

@@ -761,6 +761,56 @@ def route_unreachable(argv_extra: list = ()) -> tuple:
         return 0, False
 
 
+# The dispatcher's daily budget is 10 issues on this machine, so one routing run
+# can never make more than that newly eligible. ASK-1887's blast-radius line is
+# what sets this number: routing a ticket to a project makes it eligible for an
+# autonomous run in that repo, and a 90-issue backfill in one night would hand
+# the dispatcher nine days of work it never agreed to take.
+ROUTE_WRITE_LIMIT = 10
+
+
+def route_pending(apply_writes: bool = False) -> dict:
+    """Run the router and return its measurement. `{"ran": False}` means it could not.
+
+    WHY THIS JOB IS THE CALLER, same argument as route_unreachable() above: the
+    09:00 plist already runs this file by path, so the action goes live on the
+    next tick with no new launchd label and no re-install. ASK-1887 asked for a
+    detector to be paired with an action; adding a second scheduled job to carry
+    the action would leave two things to install and one of them silently absent.
+
+    THE WRITE ONLY HAPPENS WHEN THIS RUN IS ALREADY WRITING. A report-only health
+    run must stay report-only end to end, or `--no-apply` stops meaning what it
+    says one subprocess deep.
+
+    A SUBPROCESS, NOT AN IMPORT, for the reason the sibling gives: the router
+    needs description, labels and state type on the whole team, and
+    fetch_open_issues() here selects a different field set for a different
+    question. One extra walk a day is cheaper than coupling two queries that are
+    allowed to diverge.
+    """
+    script = os.path.join(HERE, "linear-route.py")
+    if not os.path.isfile(script):
+        return {"ran": False}
+    argv = [sys.executable, script, "--json"]
+    if apply_writes:
+        argv += ["--apply", "--limit", str(ROUTE_WRITE_LIMIT)]
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+        out = json.loads(res.stdout)
+        # registry_ok is the router's own UNKNOWN flag. An unreadable registry
+        # classifies nothing and still exits 0, so reading only the counts would
+        # make "board is clean" and "nothing was classified" the same two bytes --
+        # the defect PR #449 found in route_unreachable one function up.
+        return {"ran": bool(out["registry_ok"]), "pending": out["pending"],
+                "unroutable": out["unroutable"], "written": out["written"],
+                "write_failures": out["write_failures"]}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
+        # Never raises: a meter that crashes on a sibling meter reports nothing at
+        # all, which is strictly worse than reporting one number short.
+        print(f"WARN: route sweep did not run ({exc})", file=sys.stderr)
+        return {"ran": False}
+
+
 def breaches(m: dict) -> list:
     """Which thresholds this measurement crosses. Empty means stay quiet."""
     out = []
@@ -769,6 +819,13 @@ def breaches(m: dict) -> list:
     # .get, not [], because this key arrived after the callers did (ASK-1951).
     if m.get("route_unreachable", 0) > 0:
         out.append(f"{m['route_unreachable']} on a project no checkout backs")
+    # ASK-1887. NOT a threshold on the pending count: the sweep beside it DRAINS
+    # that count, so alerting on a number the same run is fixing is the cry-wolf
+    # shape this file already refuses elsewhere. What earns a ticket is a write
+    # the router tried and Linear refused -- work the loop believes it routed and
+    # the picker will keep refusing.
+    if m.get("route_write_failures", 0) > 0:
+        out.append(f"{m['route_write_failures']} routing write(s) refused by Linear")
     if m["needs_triage"] >= TRIAGE_ALERT_AT:
         out.append(f"{m['needs_triage']} awaiting triage")
     if m["oldest_triage_days"] >= OLDEST_ALERT_DAYS:
@@ -900,6 +957,15 @@ def _run(args, holding_lock: bool) -> int:
     # ordering that makes the omission unavailable rather than remembered.
     m["route_unreachable"], m["route_check_ran"] = route_unreachable()
 
+    # ASK-1887, assigned in the same place and for the same reason: before BOTH
+    # outputs, so the machine report can never carry fewer keys than the human one.
+    sweep = route_pending(apply_writes=args.apply)
+    m["route_sweep_ran"] = sweep["ran"]
+    m["route_pending"] = sweep.get("pending", 0)
+    m["route_unroutable"] = sweep.get("unroutable", 0)
+    m["route_written"] = sweep.get("written", 0)
+    m["route_write_failures"] = sweep.get("write_failures", 0)
+
     if args.json:
         print(json.dumps(m, indent=2))
     else:
@@ -910,6 +976,13 @@ def _run(args, holding_lock: bool) -> int:
         print(f"  oldest untriaged      : {m['oldest_triage_days']:.0f}d "
               f"{m['oldest_triage_id']}")
         print(f"  dormant (>={args.dormant_days}d)      : {m['dormant']}")
+        if m["route_sweep_ran"]:
+            print(f"  DoR tickets nothing can pick up: {m['route_pending']} "
+                  f"({m['route_unroutable']} unroutable), {m['route_written']} "
+                  f"routed this run")
+        else:
+            print("  DoR tickets nothing can pick up: NOT MEASURED "
+                  "(router did not run or the registry was unreadable)")
 
     # Declared out here, not inside `if dormant:`, because the exit code below
     # reads it. A per-issue result that only the display loop can see is exactly
