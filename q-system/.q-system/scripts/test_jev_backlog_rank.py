@@ -104,6 +104,28 @@ class TestClientExclusion(RootsFixture):
         leaky = issue("X-5", "canceled", project=None, title="bluewave labs survey ids")
         self.assertTrue(jbr.is_client(leaky))
 
+    def test_a_root_anywhere_in_the_project_name_is_client_not_only_at_the_start(self):
+        # Scar (round 2 review, PR #463): the project half matched with
+        # startswith while the text half matched with substring, so a project
+        # named for a client in any position other than the first sent the
+        # ticket to the vendor. The docstring on is_client says the check errs
+        # toward client; a prefix matcher is the narrow direction. Every name
+        # below carries a declared root and must be excluded.
+        for p in ("Q4 Acme Foundry migration",     # root in the middle
+                  "Migration for Acme Foundry",    # root at the end
+                  "PI - Cinder",                   # root after a separator
+                  "[bluewave labs] intake"):       # root after a bracket
+            self.assertTrue(
+                jbr.is_client(issue("X-6", "canceled", project=p)),
+                f"{p!r} carries a client root and must never reach the vendor")
+
+    def test_mutant_narrowing_the_project_guard_to_a_prefix_would_be_caught(self):
+        # Pairs with the test above: 23 mutants pinned that a project check
+        # EXISTS and none pinned its WIDTH, so the correct matcher applied as a
+        # mutation survived the whole suite. This case is what kills it.
+        self.assertTrue(
+            jbr.is_client(issue("X-7", "canceled", project="Q4 Acme Foundry migration")))
+
 
 class TestClientRootsSource(unittest.TestCase):
     """Where the roots come from, and what happens when they are not there.
@@ -371,6 +393,22 @@ class TestVendorCacheAndFloors(unittest.TestCase):
                          "a 503 is not an answer")
         self.assertEqual(len(seen), 2, "both rows stay on disk as receipts")
 
+    def test_a_truncated_line_is_skipped_instead_of_killing_every_later_run(self):
+        # Scar (round 2 review, PR #463): load_score_cache parsed the receipt
+        # file with an unguarded json.loads while load_decisions in the same
+        # module already skipped bad rows. A Ctrl-C during the threaded append,
+        # or a second concurrent `score` block-buffering into the same handle,
+        # leaves a partial line -- and the file holding 341,222 paid tokens then
+        # needs a human with an editor before any run can read it again.
+        good = self._case("A-1")
+        self.cache.write_text(
+            self._row(good, {"answers": {"close": {"noul": 0.9}}}) + "\n"
+            + '{"id": "A-9", "fp": "abc", "response": {"answers"' + "\n")
+        usable, seen = jbr.load_score_cache(self.cache)
+        self.assertIn((good.ident, jbr._fingerprint(good)), usable,
+                      "the intact row before the tear is still readable")
+        self.assertEqual(len(seen), 1, "the torn row is not a receipt of anything")
+
     def test_a_cached_error_is_retried_on_the_next_run(self):
         bad = self._case("A-2")
         self.cache.write_text(self._row(bad, {"error": "HTTP 503"}) + "\n")
@@ -497,6 +535,29 @@ class TestCloseAndUndo(RootsFixture):
     def test_undo_without_a_receipt_raises(self):
         with self.assertRaises(jbr.NoReceipt):
             jbr.undo_plan("nope", receipts_dir=self.receipts)
+
+    def test_apply_refuses_without_a_linear_client_and_the_docstring_says_so(self):
+        # A divergence check, and it is the second-best kind on purpose: the
+        # command table at the top of the module is prose, so nothing can derive
+        # it. What it CAN do is go red the day someone re-inflates that table
+        # while the code still refuses. cmd_close hardcodes client=None, so
+        # `close --apply` raises today; `undo` prints a plan and restores
+        # nothing (round 2 review, PR #463).
+        batch = {"batch": "b1", "verified": True,
+                 "items": [{"identifier": "A-1", "state_id": "s-open",
+                            "state_name": "Backlog", "project": "kipi-system"}]}
+        with self.assertRaises(SystemExit):
+            jbr.close_batch(batch, receipts_dir=self.receipts, apply=True, client=None)
+
+        table = {ln.strip().split()[0]: ln.lower()
+                 for ln in (jbr.__doc__ or "").splitlines()
+                 if ln.startswith("  ") and ln.strip().split()[:1]
+                 in (["close"], ["undo"])}
+        self.assertEqual(set(table), {"close", "undo"}, "command table moved")
+        self.assertIn("dry run only", table["close"],
+                      "close cannot apply, so its line must not promise a close")
+        self.assertIn("prints", table["undo"],
+                      "undo restores nothing, so its line must not promise a restore")
 
     def test_the_receipt_lands_before_the_first_linear_write(self):
         # Order is the whole property. A close with no receipt is a ticket nobody

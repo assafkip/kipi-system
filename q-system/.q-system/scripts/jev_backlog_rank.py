@@ -7,8 +7,14 @@ every advantage before the comparison is made.
 
   score   build the answer key, score the free controls, score Jev, print metrics
   rank    order the open non-client pile -- REFUSES unless `score` passed the gate
-  close   close one batch that Sana already verified, labelled and undoable
-  undo    put a closed batch back exactly where it was
+  close   DRY RUN ONLY today. Writes the undo receipt for one verified batch;
+          `--apply` refuses, because this module constructs no Linear client
+  undo    PRINTS the restore plan for a closed batch. It restores nothing
+
+The last two lines are deliberately narrow. Jev lost its gate, so no batch was
+ever closed and the write half was never needed; a four-line contract at the top
+of an 860-line module is what a reader trusts, so it says what the code does
+rather than what the command is named after (round 2 review, PR #463).
 
 Why a ranker and not a classifier: six prior runs of this vendor landed on one
 pattern, "ordering works, cut points fail" (jev-evaluation-2026-09-21.md section 2).
@@ -189,10 +195,17 @@ def is_client(issue: dict) -> bool:
     so a project-only guard would leak client content to the vendor. A false
     positive here only costs one ticket of coverage; a false negative sends client
     text under a perpetual output licence, so the check errs toward client.
+
+    Both halves match by SUBSTRING for that reason. A prefix matcher on the
+    project field reads as tighter and is the wrong direction: "Q4 Acme Foundry
+    migration" and "Migration for Acme Foundry" both name the client and neither
+    starts with the root. That asymmetry shipped in this file once (round 2
+    review, PR #463) and no test or mutant could see it, because the sweep pinned
+    that a project check exists and never pinned its width.
     """
     roots = client_roots()
     proj = _norm((issue.get("project") or {}).get("name", ""))
-    if proj and any(proj.startswith(r) for r in roots):
+    if proj and any(r in proj for r in roots):
         return True
     text = _norm(f"{issue.get('title', '')} {issue.get('description', '') or ''}")
     return any(r in text for r in roots)
@@ -488,18 +501,31 @@ def load_score_cache(cache_path: Path):
     not an answer: treating one as a hit means a transient 503 removes that
     ticket from every future run, permanently and silently, and the gate then
     reports an AUC over the survivors as though the pile had been scored.
+
+    A torn row is skipped and counted on stderr, the way load_decisions already
+    does. This file is append-only from a thread pool, so a Ctrl-C or a second
+    concurrent `score` block-buffering into the same handle leaves one partial
+    line -- and an unguarded json.loads made that one byte cost every later run
+    until a human opened the file in an editor.
     """
-    usable, seen = {}, {}
+    usable, seen, torn = {}, {}, 0
     if not cache_path.exists():
         return usable, seen
     for line in cache_path.read_text().splitlines():
         if not line.strip():
             continue
-        r = json.loads(line)
-        k = (r["id"], r["fp"])
+        try:
+            r = json.loads(line)
+            k = (r["id"], r["fp"])
+        except (ValueError, KeyError, TypeError):
+            torn += 1
+            continue
         seen[k] = r["response"]
         if _score_of(r["response"]) is not None:
             usable[k] = r["response"]
+    if torn:
+        print(f"warning: skipped {torn} unparseable row(s) in {cache_path}; "
+              "they will be re-sent", file=sys.stderr)
     return usable, seen
 
 
@@ -845,9 +871,10 @@ def main(argv=None):
     r = sub.add_parser("rank", help="rank the open pile (needs a passing gate)")
     r.add_argument("--refresh", action="store_true")
     r.set_defaults(fn=cmd_rank)
-    c = sub.add_parser("close", help="close one verified batch")
+    c = sub.add_parser("close", help="write the undo receipt for one verified batch")
     c.add_argument("batch")
-    c.add_argument("--apply", action="store_true")
+    c.add_argument("--apply", action="store_true",
+                   help="refuses: no Linear client is constructed here")
     c.set_defaults(fn=cmd_close)
     u = sub.add_parser("undo", help="print the restore plan for a closed batch")
     u.add_argument("batch_id")

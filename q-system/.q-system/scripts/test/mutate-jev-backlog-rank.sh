@@ -32,6 +32,20 @@ mutate () {
 
 mutate "client text guard removed" \
   'return any(r in text for r in roots)' 'return False'
+# The WIDTH of the project guard, not only its existence. The correct substring
+# matcher was applied as a mutation on 2026-09-28 and the whole suite stayed
+# green, which is how a prefix matcher shipped in a guard whose own docstring
+# says it errs toward client.
+mutate "project guard narrowed from substring to a prefix" \
+  'if proj and any(r in proj for r in roots):' \
+  'if proj and any(proj.startswith(r) for r in roots):'
+mutate "a torn cache row kills every later run instead of being skipped" \
+  'torn += 1
+            continue' 'torn += 1
+            raise'
+mutate "the command table promises a restore undo does not perform" \
+  '  undo    PRINTS the restore plan for a closed batch. It restores nothing' \
+  '  undo    put a closed batch back exactly where it was'
 mutate "empty roots file runs unguarded instead of refusing" \
   'if not required:' 'if False:'
 mutate "roots restated in the module instead of read from the file" \
