@@ -885,7 +885,16 @@ fi
 # `if` form, not a bare assignment: under `set -e` a failing command substitution
 # kills the script AT the assignment, so this gate's own abort message would
 # never print and the run would die silent.
-if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" 2>&1)"; then
+#
+# SCOPED TO --only, like the reach preflight below it (PR #460 review, major).
+# A staged single-instance rollout was aborting on drift in a root the run never
+# writes. The gate keeps the skeleton in its population either way: that is the
+# source being compared against, not a destination being protected.
+REPLICA_SCOPE=()
+if [ -n "$ONLY" ]; then
+  REPLICA_SCOPE=(--only "$ONLY")
+fi
+if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" "${REPLICA_SCOPE[@]+"${REPLICA_SCOPE[@]}"}" 2>&1)"; then
   REPLICA_RC=0
 else
   REPLICA_RC=$?

@@ -114,6 +114,157 @@ def registry_roots(registry: Path) -> list[str]:
     return sorted({os.path.expanduser(p) for p in found})
 
 
+def registry_named_roots(registry: Path) -> dict[str, str]:
+    """name -> path, for every registry node carrying BOTH a name and a path.
+
+    Exists so `--only <instance>` resolves here rather than in the caller.
+    `kipi-update.sh` already knows the name; teaching bash to parse the registry
+    a second time would put two readers on one file, which is how the two
+    reshapes cited above silently desynced the last pair of readers.
+    """
+    try:
+        data = json.loads(registry.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    named: dict[str, str] = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            name = node.get("name")
+            path = next((node[k] for k in ("path", "root", "dir")
+                         if isinstance(node.get(k), str)), None)
+            if isinstance(name, str) and path:
+                named[name] = os.path.expanduser(path)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return named
+
+
+def registry_skeleton(registry: Path) -> str | None:
+    """The SOURCE root: the one copy `kipi update` rsyncs FROM.
+
+    Direction is the whole question (see `classify_direction`), and a hash can
+    never answer it: two files that differ tell you nothing about which one is
+    the origin. The registry names the skeleton explicitly, so that is what is
+    read. Returns None when the registry does not, and every caller treats that
+    as "direction undeterminable" rather than guessing.
+    """
+    try:
+        data = json.loads(registry.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    node = data.get("skeleton") if isinstance(data, dict) else None
+    if isinstance(node, str):
+        return os.path.expanduser(node)
+    if isinstance(node, dict):
+        for key in ("path", "root", "dir"):
+            if isinstance(node.get(key), str):
+                return os.path.expanduser(node[key])
+    return None
+
+
+def _git_blob_sha(path: Path) -> str | None:
+    """git's own object id for a file's bytes, computed without invoking git.
+
+    The comparison below is against blob ids out of the skeleton's history, so
+    the local side has to speak the same identifier. Shelling out per copy would
+    be one process per file across 29 roots for the same 20 lines of hashing.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def skeleton_revisions(skeleton_root: str, rel: str) -> set[str] | None:
+    """Every blob the skeleton has EVER held at `rel`. None when git cannot say.
+
+    None is not an empty set and the difference decides the verdict: an empty
+    set means "the skeleton has no history for this path, so nothing a replica
+    holds can be a past version of it", while None means "this question was not
+    answerable here" and the caller must fall back to direction-blind.
+    """
+    import subprocess
+
+    def run(args: list[str], stdin: str | None = None):
+        try:
+            return subprocess.run(
+                ["git", "-C", skeleton_root, *args], input=stdin,
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    probe = run(["rev-parse", "--is-inside-work-tree"])
+    if probe is None or probe.returncode != 0:
+        return None
+    commits = run(["rev-list", "--all", "--", rel])
+    if commits is None or commits.returncode != 0:
+        return None
+    wanted = [f"{sha}:{rel}" for sha in commits.stdout.split()]
+    if not wanted:
+        return set()
+    batch = run(["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+                stdin="\n".join(wanted) + "\n")
+    if batch is None or batch.returncode != 0:
+        return None
+    return {
+        line.split()[0] for line in batch.stdout.splitlines()
+        if line.split()[1:2] == ["blob"]
+    }
+
+
+def classify_direction(entry: dict, skeleton_root: str | None) -> str:
+    """"behind" | "ahead" | "unknown" for one path that hashed as diverged.
+
+    WHY THIS EXISTS (review finding, PR #460 round 1, major). The first armed
+    version red on ANY hash difference. The normal state immediately before an
+    update is precisely a hash difference -- the skeleton carries the new bytes
+    and the replicas still carry the old ones -- so the gate aborted the very
+    run that would have resolved it, with no way through. A gate that is red on
+    the state it exists to end is not strict, it is an outage, and an outage
+    gets switched off (the plan-lint grandfathering lesson, again).
+
+    The dangerous direction is unchanged and is the only one still red: bytes
+    that live ONLY in a replica are what `rsync --delete` destroys. A replica
+    holding a blob the skeleton has held before is simply BEHIND; the update
+    moves it forward and nothing unique is lost.
+
+    "unknown" is returned, and treated as red, whenever the question could not
+    be answered -- no skeleton in the registry, no git, or the skeleton has no
+    copy of this path. Fail closed: an unanswered direction question must not
+    read as the safe answer.
+    """
+    if not skeleton_root:
+        return "unknown"
+    sk_file = Path(skeleton_root) / rel_of(entry)
+    if not sk_file.is_file():
+        return "unknown"
+    revisions = skeleton_revisions(skeleton_root, rel_of(entry))
+    if revisions is None:
+        return "unknown"
+    for group in entry["groups"]:
+        for root in group["roots"]:
+            if root == skeleton_root:
+                continue
+            blob = _git_blob_sha(Path(root) / rel_of(entry))
+            if blob is None or blob not in revisions:
+                return "ahead"
+    return "behind"
+
+
+def rel_of(entry: dict) -> str:
+    return entry["path"]
+
+
 def scan(roots: list[str], rel_paths: tuple[str, ...]) -> tuple[list[dict], list[str]]:
     """Returns (report, unresolvable) -- a path present in NO root is the second.
 
@@ -235,6 +386,9 @@ def main() -> int:
     ap.add_argument("--claim", action="append", dest="claims", default=None,
                     help="'claim_rel::enforcer_rel::needle' -- red when the claim "
                          "reaches more roots than the enforcer (repeatable)")
+    ap.add_argument("--only", default=None,
+                    help="restrict the population to this registered instance "
+                         "plus the skeleton, mirroring `kipi-update.sh --only`")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -247,6 +401,27 @@ def main() -> int:
     rel_paths = tuple(args.paths) if args.paths else DEFAULT_REPLICATED
 
     roots = registry_roots(registry)
+    skeleton_root = registry_skeleton(registry)
+
+    # SCOPE THE POPULATION TO WHAT THE RUN WILL ACTUALLY WRITE (review finding,
+    # PR #460 round 1, major). `kipi-update.sh --only <name>` touches one
+    # instance; the gate measured all 29 and aborted the staged rollout over
+    # drift in a root the run was never going to write. The reach preflight
+    # directly above it already scopes by --only, so this was the odd one out.
+    # The skeleton stays in the population unconditionally -- it is the source
+    # being compared against, not a destination being protected.
+    if args.only:
+        named = registry_named_roots(registry)
+        target = named.get(args.only)
+        if not target:
+            sys.stderr.write(
+                f"--only names {args.only!r}, which is not a registered "
+                f"instance in {registry}\n"
+            )
+            verdict(f"REFUSED (--only {args.only} is not a registered instance)")
+            return EXIT_MISCONFIGURED
+        roots = sorted({target} | ({skeleton_root} if skeleton_root else set()))
+
     if not roots:
         sys.stderr.write(
             f"no instance roots resolved from {registry}; refusing to report green "
@@ -335,17 +510,33 @@ def main() -> int:
         verdict(f"REFUSED ({len(unresolvable)} declared path(s) resolve nowhere)")
         return EXIT_MISCONFIGURED
 
-    diverged = [r for r in report if r["distinct"] > 1]
+    # A hash difference is a QUESTION, not yet a finding. Only the answer to
+    # "which side has bytes the other has never had" decides.
+    for entry in report:
+        entry["direction"] = (
+            classify_direction(entry, skeleton_root) if entry["distinct"] > 1
+            else "same"
+        )
+    diverged = [r for r in report if r["direction"] in ("ahead", "unknown")]
+    behind = [r for r in report if r["direction"] == "behind"]
 
     if args.json:
         print(json.dumps({"roots": len(roots), "checked": report,
+                          "behind": [r["path"] for r in behind],
                           "diverged": [r["path"] for r in diverged]}, indent=2))
     else:
         print(f"roots: {len(roots)}   replicated paths checked: {len(rel_paths)}")
         for entry in report:
-            mark = "DIVERGED" if entry["distinct"] > 1 else "ok"
+            mark = {"same": "ok", "behind": "behind",
+                    "ahead": "DIVERGED", "unknown": "DIVERGED"}[entry["direction"]]
             print(f"[{mark}] {entry['path']}  copies={entry['copies']} distinct={entry['distinct']}")
             if entry["distinct"] > 1:
+                if entry["direction"] == "behind":
+                    print("    every differing copy is a past skeleton revision "
+                          "of this path; the update moves them forward")
+                elif entry["direction"] == "unknown":
+                    print("    direction undeterminable (no skeleton root, no git, "
+                          "or no skeleton copy of this path); refusing to assume safe")
                 for group in entry["groups"]:
                     label = ", ".join(group["roots"]) if group["n"] <= 3 else f"{group['n']} roots"
                     print(f"    {group['sha']}  n={group['n']:3d}  {label}")
@@ -357,10 +548,16 @@ def main() -> int:
                 "updating; do not resolve this by running an update."
             )
 
-    verdict(
-        f"DIVERGED {len(diverged)}/{len(report)} path(s)"
-        if diverged else f"OK ({len(report)} path(s), {len(roots)} roots)"
-    )
+    if diverged:
+        verdict(f"DIVERGED {len(diverged)}/{len(report)} path(s)")
+    elif behind:
+        # Named, never folded into OK. A silent pass here would be
+        # indistinguishable from "nothing differed", and the operator would have
+        # no way to tell the gate ran on a fleet that is genuinely out of date.
+        verdict(f"OK ({len(report)} path(s), {len(roots)} roots; "
+                f"{len(behind)} behind the skeleton, which is what an update fixes)")
+    else:
+        verdict(f"OK ({len(report)} path(s), {len(roots)} roots)")
     return EXIT_DIVERGED if diverged else EXIT_OK
 
 
