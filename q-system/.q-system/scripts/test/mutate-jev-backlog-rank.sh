@@ -22,7 +22,16 @@ mutate () {
 }
 
 mutate "client text guard removed" \
-  'return any(r in text for r in CLIENT_ROOTS)' 'return False'
+  'return any(r in text for r in roots)' 'return False'
+mutate "empty roots file runs unguarded instead of refusing" \
+  'if not required:' 'if False:'
+mutate "roots restated in the module instead of read from the file" \
+  'required = _read_roots_file(ROOTS_FILE)' 'required = ["acme foundry"]'
+mutate "guard tokens replace the required list instead of widening it" \
+  '_ROOTS = tuple(sorted({r for r in required + _guard_tokens() if r}))' \
+  '_ROOTS = tuple(sorted({r for r in _guard_tokens() if r})) or tuple(required)'
+mutate "a short root line is kept instead of dropped" \
+  'if len(line) > 2:' 'if line:'
 mutate "auc ties scored zero" \
   '1.0 if p > n else 0.5 if p == n else 0.0' '1.0 if p > n else 0.0'
 mutate "gate margin dropped to zero" \

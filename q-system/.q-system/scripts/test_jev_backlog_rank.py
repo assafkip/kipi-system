@@ -102,43 +102,80 @@ class TestClientExclusion(RootsFixture):
 
 
 class TestClientRootsSource(unittest.TestCase):
-    """The list has ONE owner and this module is not it.
+    """Where the roots come from, and what happens when they are not there.
 
-    Derive, never restate: a copy of the client list inside this public repo would
-    agree on the day it was typed and stop agreeing the day a client is added,
-    while every test here stayed green.
+    The names are outside this public repo. ROOTS_FILE is authoritative and
+    required; the commit guard's tokens are unioned in and may only WIDEN the
+    refusal. That split is a scar: on 2026-09-28 this module read the commit
+    guard's list alone, three of the forbidden projects were missing from it, and
+    18 tickets went to the vendor.
     """
 
     def setUp(self):
         self._saved = jbr._ROOTS
+        self._saved_guard = jbr.CLIENT_GUARD
+        self._saved_roots_file = jbr.ROOTS_FILE
         jbr._ROOTS = None
 
     def tearDown(self):
         jbr._ROOTS = self._saved
+        jbr.CLIENT_GUARD = self._saved_guard
+        jbr.ROOTS_FILE = self._saved_roots_file
 
-    def test_roots_are_read_from_the_guard_not_from_this_module(self):
-        import importlib.util as iu
-        sp = iu.spec_from_file_location("cng_probe", jbr.CLIENT_GUARD)
-        m = iu.module_from_spec(sp)
-        sp.loader.exec_module(m)
-        if not m.load_tokens():
-            self.skipTest(f"no client token list at {m.TOKENS_FILE} on this machine")
-        expected = tuple(sorted({jbr._norm(t) for t in m.load_tokens() if jbr._norm(t)}))
-        self.assertEqual(jbr.client_roots(), expected)
-        self.assertTrue(expected, "an empty derivation would disable every check above")
+    def test_roots_come_from_the_file_and_not_from_this_module(self):
+        jbr.ROOTS_FILE = self._file("jev-client-roots",
+                                    "# a comment\nacme foundry\nab\n\ncinder\n")
+        jbr.CLIENT_GUARD = self._stub_guard("return []")
+        self.assertEqual(jbr.client_roots(), ("acme foundry", "cinder"),
+                         "comments and sub-3-char lines are dropped")
 
-    def test_no_list_refuses_instead_of_running_unguarded(self):
-        # Fail CLOSED. The guard script only warns when its list is missing,
-        # because there a missing list weakens a commit check. Here it would BE
-        # the protection, so this path refuses.
-        real = jbr.CLIENT_GUARD
-        try:
-            jbr.CLIENT_GUARD = Path(self._tmpdir()) / "no-such-guard.py"
-            with self.assertRaises(BaseException) as cm:
-                jbr.client_roots()
-            self.assertNotIsInstance(cm.exception, AssertionError)
-        finally:
-            jbr.CLIENT_GUARD = real
+    def test_guard_tokens_are_unioned_in_and_can_only_widen(self):
+        jbr.ROOTS_FILE = self._file("jev-client-roots", "acme foundry\n")
+        jbr.CLIENT_GUARD = self._stub_guard("return ['Bluewave_Labs']")
+        self.assertEqual(jbr.client_roots(), ("acme foundry", "bluewave labs"))
+
+    def test_an_unreadable_guard_never_narrows_the_required_list(self):
+        # The union is a bonus. Losing it must not cost the roots the DoR binds.
+        jbr.ROOTS_FILE = self._file("jev-client-roots", "acme foundry\n")
+        jbr.CLIENT_GUARD = Path(self._tmpdir()) / "no-such-guard.py"
+        self.assertEqual(jbr.client_roots(), ("acme foundry",))
+
+    def test_a_missing_roots_file_refuses_instead_of_running_unguarded(self):
+        jbr.ROOTS_FILE = Path(self._tmpdir()) / "absent"
+        with self.assertRaises(SystemExit) as cm:
+            jbr.client_roots()
+        self.assertIn("refusing to run", str(cm.exception))
+
+    def test_an_empty_roots_file_refuses_too(self):
+        # Reach the branch, do not merely reach the function. An earlier version
+        # of this test pointed at a path that does not exist, died in the module
+        # loader, and never touched the empty check -- that mutant SURVIVED.
+        jbr.ROOTS_FILE = self._file("jev-client-roots", "# only comments\n\nab\n")
+        with self.assertRaises(SystemExit) as cm:
+            jbr.client_roots()
+        self.assertIn("refusing to run", str(cm.exception))
+
+    def test_the_real_list_on_this_machine_covers_every_forbidden_project(self):
+        # Coverage against the live file, without naming a client here: the check
+        # is that the file declares at least the DoR's seven roots. A list that
+        # shrinks below seven is the 2026-09-28 failure returning.
+        if not jbr.ROOTS_FILE.exists():
+            self.skipTest(f"no roots file at {jbr.ROOTS_FILE} on this machine")
+        self.assertGreaterEqual(len(jbr.client_roots()), 7,
+                                "the DoR forbids seven projects; the list must "
+                                "declare at least that many roots")
+
+    def _file(self, name, body):
+        p = Path(self._tmpdir()) / name
+        p.write_text(body)
+        return p
+
+    def _stub_guard(self, body):
+        p = Path(self._tmpdir()) / "stub_guard.py"
+        p.write_text("from pathlib import Path\n"
+                     "TOKENS_FILE = Path('/nowhere/client-tokens')\n"
+                     f"def load_tokens():\n    {body}\n")
+        return p
 
     def _tmpdir(self):
         d = tempfile.TemporaryDirectory()
@@ -157,7 +194,7 @@ class TestGold(RootsFixture):
             issue("A-3", "canceled", terminal=60),          # outside the window
             issue("A-4", "duplicate", terminal=10),          # not a value judgment
             issue("A-5", "backlog"),                          # still open
-            issue("A-6", "canceled", terminal=10, project="Alice"),  # client
+            issue("A-6", "canceled", terminal=10, project="Cinder"),  # client
         ]
 
     def test_labels_and_window(self):
@@ -267,10 +304,11 @@ class TestCutPointHonesty(unittest.TestCase):
         self.assertEqual(rows[0]["minority_recall"], 0.0)
 
 
-class TestCloseAndUndo(unittest.TestCase):
+class TestCloseAndUndo(RootsFixture):
     """Decision point 6. 'Every close is labelled and can be undone.'"""
 
     def setUp(self):
+        super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.receipts = Path(self.tmp.name) / "batches"
 
@@ -285,7 +323,7 @@ class TestCloseAndUndo(unittest.TestCase):
 
     def test_close_refuses_a_client_ticket_even_when_verified(self):
         batch = {"batch": "b1", "verified": True,
-                 "items": [{"identifier": "A-1", "state_id": "s", "project": "Alice"}]}
+                 "items": [{"identifier": "A-1", "state_id": "s", "project": "Cinder"}]}
         with self.assertRaises(jbr.ClientTicket):
             jbr.close_batch(batch, receipts_dir=self.receipts, apply=False)
 

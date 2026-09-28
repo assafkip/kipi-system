@@ -26,12 +26,20 @@ Client tickets never reach the vendor. The vendor's terms take a perpetual licen
 over outputs, so the guard checks the project field AND the ticket text, because a
 project-less ticket is not covered by a project list.
 
-The client names themselves are NOT in this file. This repo is public, and
-`client-name-guard.py` already owns the one list, outside the tree at
-`~/.config/kipi/client-tokens`. Restating it here would put the names in a public
-repo AND create a second copy that agrees on the day it is written and silently
-stops agreeing the day a client is added. This module reads that file and refuses
-to run without it.
+The client names themselves are NOT in this file. This repo is public, so the roots
+live outside the tree in `~/.config/kipi/jev-client-roots`, and this module refuses
+to run when that file is absent or empty.
+
+That file is NOT the same list as `client-name-guard.py`'s `~/.config/kipi/
+client-tokens`, and the difference is a measured scar rather than a preference.
+On 2026-09-28 this module derived its roots from the commit guard's token list on
+the reasoning that one list beats two. The guard's list answers "which names must
+not go public"; three of the seven projects the DoR forbids sending were absent
+from it, and the next scoring run put 18 tickets in front of the vendor, 6 of them
+in a client project. Two questions with different consequences need two lists. The
+guard's tokens are still read and UNIONED in, because a name that must not go
+public is also a name that must not reach a vendor -- but the union can only widen
+the refusal, never narrow it.
 """
 from __future__ import annotations
 
@@ -65,7 +73,9 @@ TEAM_KEY = "ASK"
 
 CUT_FLOORS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
 
-# The one list, owned by client-name-guard.py and living outside this public repo.
+# Both outside this public repo. ROOTS_FILE is authoritative and required; the
+# commit guard's token list is unioned in and is optional.
+ROOTS_FILE = Path.home() / ".config" / "kipi" / "jev-client-roots"
 CLIENT_GUARD = HERE / "client-name-guard.py"
 
 
@@ -106,26 +116,50 @@ def _norm(s: str) -> str:
 _ROOTS = None
 
 
-def client_roots():
-    """The client name roots, read from client-name-guard.py's list and cached.
+def _read_roots_file(path: Path):
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        line = _norm(line.split("#", 1)[0])
+        if len(line) > 2:
+            out.append(line)
+    return out
 
-    FAILS CLOSED on purpose. No list means no guard, and no guard means client
-    text reaching a vendor whose terms take a perpetual licence over outputs. The
-    guard script itself degrades to a warning when the file is absent, because a
-    missing list there only weakens a commit check; here it would be the whole
-    protection, so this one refuses instead.
+
+def _guard_tokens():
+    """The commit guard's tokens, unioned in. OPTIONAL, and never narrowing.
+
+    Absent or unreadable is a no-op here: this list widens the refusal, and the
+    required list is ROOTS_FILE. Swallowing the error is deliberate and narrow --
+    it cannot reduce coverage, only fail to add to it.
     """
-    global _ROOTS
-    if _ROOTS is None:
+    try:
         sp = importlib.util.spec_from_file_location("cng", CLIENT_GUARD)
         m = importlib.util.module_from_spec(sp)
         sp.loader.exec_module(m)
-        toks = m.load_tokens()
-        if not toks:
+        return [_norm(t) for t in (m.load_tokens() or [])]
+    except Exception:                                    # noqa: BLE001
+        print(f"WARN: could not read {CLIENT_GUARD.name} tokens; "
+              f"running on {ROOTS_FILE} alone", file=sys.stderr)
+        return []
+
+
+def client_roots():
+    """Every client name root, cached. Union of ROOTS_FILE and the guard's tokens.
+
+    FAILS CLOSED on ROOTS_FILE. No list means no guard, and no guard means client
+    text reaching a vendor whose terms take a perpetual licence over outputs.
+    """
+    global _ROOTS
+    if _ROOTS is None:
+        required = _read_roots_file(ROOTS_FILE)
+        if not required:
             raise SystemExit(
-                f"no client token list at {m.TOKENS_FILE}; refusing to run. "
-                "Without it nothing stops client text reaching the vendor.")
-        _ROOTS = tuple(sorted({_norm(t) for t in toks if _norm(t)}))
+                f"no client roots at {ROOTS_FILE}; refusing to run. One normalised "
+                "root per line, the client projects that must never reach the "
+                "vendor. Without it nothing stops client text being sent.")
+        _ROOTS = tuple(sorted({r for r in required + _guard_tokens() if r}))
     return _ROOTS
 
 
