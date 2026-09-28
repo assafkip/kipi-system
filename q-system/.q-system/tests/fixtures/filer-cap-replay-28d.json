@@ -1,0 +1,7997 @@
+{
+ "provenance": {
+  "by_filer": {
+   "alert": 507,
+   "fleet-health": 13,
+   "lgtm": 3,
+   "other": 439,
+   "radar": 34
+  },
+  "by_state": {
+   "backlog": 588,
+   "canceled": 131,
+   "completed": 152,
+   "duplicate": 49,
+   "started": 58,
+   "unstarted": 18
+  },
+  "captured_at": "2026-09-28T20:35:31.563319+00:00",
+  "query": "query($t: String!, $after: String, $since: DateTimeOrDuration!) { issues(filter: { team: { key: { eq: $t } }, createdAt: { gte: $since } }, first: 250, after: $after) { pageInfo { hasNextPage endCursor } nodes { identifier title createdAt state { type } labels { nodes { name } } botActor { name } description } } }",
+  "redaction": "Titles and descriptions are NOT stored. `fp` is alert-to-linear.fingerprint(title), a truncated sha256. This repo is public; see validate-separation Gate 1.2.",
+  "row_count": 996,
+  "since": "2026-08-31T20:35:31.563319+00:00",
+  "source": "Linear GraphQL api.linear.app, issues(filter: team+createdAt)",
+  "team": "ASK",
+  "window_days": 28
+ },
+ "rows": [
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-08-31T20:51:21.007Z",
+   "filer": "other",
+   "fp": "0c3fe8910d23d961",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-08-31T21:03:22.543Z",
+   "filer": "fleet-health",
+   "fp": "417564b2279bf666",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-08-31T21:03:24.235Z",
+   "filer": "fleet-health",
+   "fp": "9661c811c0c90738",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-08-31T23:22:03.962Z",
+   "filer": "other",
+   "fp": "c12740330e8b45fe",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-08-31T23:22:05.464Z",
+   "filer": "other",
+   "fp": "e4201cd2cad20d91",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-01T03:46:50.456Z",
+   "filer": "alert",
+   "fp": "9bcecafdaabebe6f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-01T13:45:04.683Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-01T20:05:20.052Z",
+   "filer": "other",
+   "fp": "9c5fe3644c32122e",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-01T21:41:41.841Z",
+   "filer": "other",
+   "fp": "8e5dbf2dcd032193",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-01T23:17:31.379Z",
+   "filer": "alert",
+   "fp": "da8430cfa04394f5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:20:46.474Z",
+   "filer": "other",
+   "fp": "30fed7d3816dac39",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-02T04:20:46.792Z",
+   "filer": "other",
+   "fp": "8027f38e0bedcc61",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:20:47.098Z",
+   "filer": "other",
+   "fp": "10ab605bab9cc43f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:30:19.160Z",
+   "filer": "fleet-health",
+   "fp": "ec7f9507a97b9b84",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:30:19.500Z",
+   "filer": "other",
+   "fp": "cf3e0bb6e4d95f3b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:30:19.821Z",
+   "filer": "other",
+   "fp": "9271d5a26b2db420",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:30:20.316Z",
+   "filer": "other",
+   "fp": "710f4c133085ee0d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T04:37:21.503Z",
+   "filer": "other",
+   "fp": "65675827c6486f99",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T13:37:25.958Z",
+   "filer": "other",
+   "fp": "fee03b61124ed3fb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T13:38:44.083Z",
+   "filer": "alert",
+   "fp": "73e3291107296add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T13:45:01.717Z",
+   "filer": "alert",
+   "fp": "cf9f192629d17d70",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T14:30:51.076Z",
+   "filer": "alert",
+   "fp": "c7a2f5822138ad34",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T15:15:20.806Z",
+   "filer": "fleet-health",
+   "fp": "6fda53ddd836432b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T16:50:06.573Z",
+   "filer": "other",
+   "fp": "55cc640d65c5ff01",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T20:12:59.194Z",
+   "filer": "alert",
+   "fp": "e59275de1cf7e63c",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T22:41:07.512Z",
+   "filer": "alert",
+   "fp": "907488c4a14944f7",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-02T23:40:46.647Z",
+   "filer": "alert",
+   "fp": "8770d6731f86792e",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-02T23:51:55.638Z",
+   "filer": "alert",
+   "fp": "4619f91e26c5a4b1",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T00:08:42.919Z",
+   "filer": "alert",
+   "fp": "b0b12469b5fc8606",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T00:25:51.399Z",
+   "filer": "alert",
+   "fp": "b285ef8ae53d9400",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T03:52:09.477Z",
+   "filer": "alert",
+   "fp": "03141fa25eb40330",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T13:45:01.810Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T15:10:08.380Z",
+   "filer": "alert",
+   "fp": "3ae0edc2da032947",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T15:15:18.119Z",
+   "filer": "other",
+   "fp": "ff33efc9b9f0d09a",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T15:45:04.999Z",
+   "filer": "alert",
+   "fp": "9a458055c0fa2a41",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T16:30:14.542Z",
+   "filer": "other",
+   "fp": "a21ad938c0f139db",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-03T16:54:06.484Z",
+   "filer": "other",
+   "fp": "dd5cacc07b7e6fa0",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T17:58:39.854Z",
+   "filer": "other",
+   "fp": "67559df16958f657",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-03T18:42:19.968Z",
+   "filer": "alert",
+   "fp": "db1def5d90cb7f8c",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T18:54:45.928Z",
+   "filer": "alert",
+   "fp": "a93aeafafe979885",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T21:22:00.168Z",
+   "filer": "alert",
+   "fp": "f6ad29539bd7bd63",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-03T22:27:38.941Z",
+   "filer": "other",
+   "fp": "415ee868c068319e",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T01:34:13.345Z",
+   "filer": "alert",
+   "fp": "e3c411867d61e6d7",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T02:46:00.331Z",
+   "filer": "alert",
+   "fp": "14337530a9c55c17",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T03:51:59.694Z",
+   "filer": "alert",
+   "fp": "827c8a9eb4aaaed6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T04:30:22.197Z",
+   "filer": "other",
+   "fp": "0080ca35110406d3",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T04:30:22.503Z",
+   "filer": "other",
+   "fp": "93ca78b16700b2c3",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T04:30:22.856Z",
+   "filer": "other",
+   "fp": "8abe1567a2d60e3c",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T13:45:05.761Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T14:34:46.369Z",
+   "filer": "other",
+   "fp": "f2bf44a9bae6b76c",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T15:43:42.008Z",
+   "filer": "alert",
+   "fp": "7fa9373a6f959993",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T15:55:41.636Z",
+   "filer": "alert",
+   "fp": "2a5801dacef29ffd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T15:57:58.099Z",
+   "filer": "other",
+   "fp": "d5a1a717a8047fa5",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T15:57:59.218Z",
+   "filer": "other",
+   "fp": "89fd3f9f545cf55a",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T16:10:56.293Z",
+   "filer": "other",
+   "fp": "14c3b9af07ec741c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T16:10:57.747Z",
+   "filer": "other",
+   "fp": "602753666298981e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T16:10:58.990Z",
+   "filer": "other",
+   "fp": "72924510da5b89d5",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T16:11:00.591Z",
+   "filer": "other",
+   "fp": "6a57482c1c602b3e",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T18:30:23.109Z",
+   "filer": "other",
+   "fp": "d609f82c95955402",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T18:30:23.580Z",
+   "filer": "other",
+   "fp": "11a635c8297a3716",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T18:30:23.962Z",
+   "filer": "other",
+   "fp": "ff6b85f10c669c42",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T21:42:18.407Z",
+   "filer": "other",
+   "fp": "c7a13102120bac76",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T21:42:18.782Z",
+   "filer": "other",
+   "fp": "567c72859daf3ad6",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-04T21:42:19.155Z",
+   "filer": "other",
+   "fp": "e7250ce09a519529",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T21:42:19.711Z",
+   "filer": "other",
+   "fp": "d23b5dd71b199cd4",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T21:42:20.361Z",
+   "filer": "other",
+   "fp": "4122d3db44418076",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-04T21:42:20.716Z",
+   "filer": "other",
+   "fp": "c9f3c1f98727a53d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T01:46:33.801Z",
+   "filer": "other",
+   "fp": "d6078dee61623a75",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T01:47:22.703Z",
+   "filer": "fleet-health",
+   "fp": "33c97d2394c7ec3f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T01:54:01.598Z",
+   "filer": "other",
+   "fp": "8226b8da0333fd0f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T03:54:19.182Z",
+   "filer": "alert",
+   "fp": "369ecf039b454c86",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T03:55:59.371Z",
+   "filer": "alert",
+   "fp": "314704064b3d81ce",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T03:56:00.730Z",
+   "filer": "alert",
+   "fp": "96c1cbdd934857b2",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T04:13:56.733Z",
+   "filer": "other",
+   "fp": "53232b85b7712145",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T05:13:32.852Z",
+   "filer": "alert",
+   "fp": "587e39e7fe4afddf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T05:14:52.882Z",
+   "filer": "other",
+   "fp": "210a4f6b93eb4463",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T07:22:01.871Z",
+   "filer": "alert",
+   "fp": "b7f0097736fa4648",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T07:22:12.177Z",
+   "filer": "alert",
+   "fp": "58392c15322ad31d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T07:22:30.667Z",
+   "filer": "alert",
+   "fp": "cd7e277f219cdc79",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T07:51:55.979Z",
+   "filer": "alert",
+   "fp": "1817ab354338ec49",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T07:54:14.704Z",
+   "filer": "alert",
+   "fp": "01306d6c098e5895",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T08:05:15.136Z",
+   "filer": "alert",
+   "fp": "5379706403cde3d3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T08:05:16.089Z",
+   "filer": "alert",
+   "fp": "52b1e3005b51386f",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T08:14:02.919Z",
+   "filer": "alert",
+   "fp": "796a081eb39ba8f0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T13:45:04.140Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T14:40:56.933Z",
+   "filer": "alert",
+   "fp": "6e99ded692324ec3",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T16:00:05.887Z",
+   "filer": "alert",
+   "fp": "d1dd677012421cea",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T20:08:26.756Z",
+   "filer": "fleet-health",
+   "fp": "136b1ecb9642db14",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T20:20:32.190Z",
+   "filer": "alert",
+   "fp": "78034bd9c56ee598",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T20:23:01.441Z",
+   "filer": "other",
+   "fp": "9cf937d3e14a09aa",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T20:44:35.681Z",
+   "filer": "alert",
+   "fp": "38917b98b82f2ff6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T20:53:09.917Z",
+   "filer": "alert",
+   "fp": "6e99ded692324ec3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T20:54:19.899Z",
+   "filer": "other",
+   "fp": "0cc6c8409dcc4516",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T21:58:10.088Z",
+   "filer": "alert",
+   "fp": "0562a66c8d038a6b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T22:04:07.707Z",
+   "filer": "other",
+   "fp": "af07b810babd9343",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T23:20:05.892Z",
+   "filer": "alert",
+   "fp": "128d962ddfbf80da",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T23:20:06.857Z",
+   "filer": "alert",
+   "fp": "88bca1e90739275e",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T23:20:09.736Z",
+   "filer": "other",
+   "fp": "64ce6a93347d6d3c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-05T23:23:00.098Z",
+   "filer": "other",
+   "fp": "abc33a351ac4a1de",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-05T23:37:39.709Z",
+   "filer": "other",
+   "fp": "97c870327afa4d50",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T00:15:41.019Z",
+   "filer": "other",
+   "fp": "6acd545b8f2dde0f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-06T03:01:05.677Z",
+   "filer": "other",
+   "fp": "bbdcfda8394f6989",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T03:20:10.731Z",
+   "filer": "alert",
+   "fp": "11bb8e29f302abe5",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T03:20:11.725Z",
+   "filer": "alert",
+   "fp": "6e479c3659a9999a",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T03:20:15.566Z",
+   "filer": "alert",
+   "fp": "dee0a03fa147e163",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T03:59:46.149Z",
+   "filer": "alert",
+   "fp": "d526d095f40086fb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T06:05:41.501Z",
+   "filer": "alert",
+   "fp": "7271eea39073a393",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T13:45:05.314Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T15:15:22.429Z",
+   "filer": "other",
+   "fp": "aaedc585f29ecc6b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T15:20:08.051Z",
+   "filer": "alert",
+   "fp": "dee0a03fa147e163",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-06T17:56:51.377Z",
+   "filer": "other",
+   "fp": "4b00ea97a31a433b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-06T18:48:55.834Z",
+   "filer": "other",
+   "fp": "0576396300b354ef",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T19:20:07.050Z",
+   "filer": "alert",
+   "fp": "dee0a03fa147e163",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-06T20:27:36.579Z",
+   "filer": "other",
+   "fp": "667ce65b2f9dd1a3",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T21:33:17.018Z",
+   "filer": "alert",
+   "fp": "73e3291107296add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-06T21:58:51.166Z",
+   "filer": "other",
+   "fp": "75eccc67ee76333a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T23:20:08.868Z",
+   "filer": "alert",
+   "fp": "0562a66c8d038a6b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T23:39:54.596Z",
+   "filer": "other",
+   "fp": "9d01d40eddd82fca",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-06T23:39:59.796Z",
+   "filer": "other",
+   "fp": "a08fb24fe8887a7b",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-07T00:16:47.285Z",
+   "filer": "other",
+   "fp": "3195433a308bc49b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:12.956Z",
+   "filer": "other",
+   "fp": "9b25bcb10ad44621",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:13.263Z",
+   "filer": "other",
+   "fp": "589fca7fab7c8773",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:13.564Z",
+   "filer": "other",
+   "fp": "fabdf5fc9ea2174c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:13.849Z",
+   "filer": "other",
+   "fp": "817db810eda83fe0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:14.305Z",
+   "filer": "other",
+   "fp": "15a6ef6ef990379a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:14.551Z",
+   "filer": "other",
+   "fp": "335fb259534f2ed8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:14.856Z",
+   "filer": "other",
+   "fp": "f7a6521115bd7aea",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:15.165Z",
+   "filer": "other",
+   "fp": "d1c512989aafb45a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:06:15.476Z",
+   "filer": "other",
+   "fp": "6be6d715e4546b24",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:09.480Z",
+   "filer": "other",
+   "fp": "9d765aed3196694c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:11.766Z",
+   "filer": "other",
+   "fp": "942cf82f245a4620",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:13.788Z",
+   "filer": "other",
+   "fp": "0f8e5561e808d587",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:15.712Z",
+   "filer": "other",
+   "fp": "954f006c841695b8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:17.120Z",
+   "filer": "other",
+   "fp": "13a3b81d7dfbc864",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:18.257Z",
+   "filer": "other",
+   "fp": "9cb9b87c610544b3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:12:22.051Z",
+   "filer": "other",
+   "fp": "91c0ee99f0954fcf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T01:19:32.673Z",
+   "filer": "other",
+   "fp": "ebf6fdaba7c1d1b2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-07T01:39:17.704Z",
+   "filer": "other",
+   "fp": "ca43d761129ebd94",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T02:31:38.124Z",
+   "filer": "alert",
+   "fp": "9a3d468312256800",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T03:20:07.455Z",
+   "filer": "alert",
+   "fp": "f5040b3743a9880d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T03:20:09.000Z",
+   "filer": "alert",
+   "fp": "7649bde2da33c228",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T03:20:10.363Z",
+   "filer": "alert",
+   "fp": "46f81aa878dcce59",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T03:41:23.736Z",
+   "filer": "alert",
+   "fp": "5bb2fc11f0b48784",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T03:43:36.720Z",
+   "filer": "alert",
+   "fp": "1323bc496ec158a9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T04:30:15.097Z",
+   "filer": "other",
+   "fp": "7897c7ddc883c1d5",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T13:06:39.119Z",
+   "filer": "alert",
+   "fp": "8078df25d88505f2",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T13:19:00.795Z",
+   "filer": "alert",
+   "fp": "e253e7d701215c31",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T13:19:01.829Z",
+   "filer": "alert",
+   "fp": "c91188142ef6fcae",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T13:45:01.495Z",
+   "filer": "alert",
+   "fp": "08f1fe2c286ffa7d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T15:20:07.300Z",
+   "filer": "alert",
+   "fp": "30a8b59f7c2cefaa",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T15:20:08.498Z",
+   "filer": "alert",
+   "fp": "0562a66c8d038a6b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T19:20:08.915Z",
+   "filer": "alert",
+   "fp": "b22a62b6735a8498",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T19:20:11.788Z",
+   "filer": "alert",
+   "fp": "79ba6d003dc8f7db",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T19:20:14.172Z",
+   "filer": "alert",
+   "fp": "b01e4e408b255ad5",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-07T19:39:06.021Z",
+   "filer": "other",
+   "fp": "34c36399d5e4264a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T21:07:27.443Z",
+   "filer": "alert",
+   "fp": "f71347d2bd501146",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T21:46:36.388Z",
+   "filer": "alert",
+   "fp": "3006b1a3866f5aac",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T23:20:09.322Z",
+   "filer": "alert",
+   "fp": "cb7f3cdf281bdf1e",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-07T23:51:55.195Z",
+   "filer": "alert",
+   "fp": "195e3056129720bb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-08T01:25:01.974Z",
+   "filer": "other",
+   "fp": "15172399da010b2f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-08T02:33:01.210Z",
+   "filer": "other",
+   "fp": "d76b28ee12f50e3e",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T03:20:08.264Z",
+   "filer": "alert",
+   "fp": "0b6c6ee72d274ff7",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T03:20:11.033Z",
+   "filer": "alert",
+   "fp": "78c5623edf3f43c6",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T03:20:12.561Z",
+   "filer": "alert",
+   "fp": "16f0b6162493c8d8",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T03:20:14.068Z",
+   "filer": "alert",
+   "fp": "7d335d7f44b44541",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T03:55:02.608Z",
+   "filer": "other",
+   "fp": "4071f7a222436ea2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T04:30:16.882Z",
+   "filer": "fleet-health",
+   "fp": "27b9bc9e85731b5a",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T05:12:56.456Z",
+   "filer": "other",
+   "fp": "01db8cf049b8a3af",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T05:30:00.680Z",
+   "filer": "other",
+   "fp": "1827cfd52306f3c5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T07:56:12.198Z",
+   "filer": "alert",
+   "fp": "75812924b559e67c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T13:45:01.083Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:03.620Z",
+   "filer": "fleet-health",
+   "fp": "06d98a9f6bd3eca4",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:04.025Z",
+   "filer": "other",
+   "fp": "c51d319dfc5b2d32",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:04.453Z",
+   "filer": "other",
+   "fp": "c5b0ee739142f919",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:04.868Z",
+   "filer": "fleet-health",
+   "fp": "b346681247eb5fe8",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:05.319Z",
+   "filer": "other",
+   "fp": "3a3e67bc2e5e3b1b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:05.975Z",
+   "filer": "other",
+   "fp": "a212e21adcc4b854",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:06.419Z",
+   "filer": "other",
+   "fp": "2ecec8461693e181",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:07.104Z",
+   "filer": "fleet-health",
+   "fp": "89cda1d0ba63592c",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:07.806Z",
+   "filer": "fleet-health",
+   "fp": "9824760a77819321",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:15:11.266Z",
+   "filer": "alert",
+   "fp": "cd38e216d4621fc3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:20:10.304Z",
+   "filer": "alert",
+   "fp": "b1ff3d21aafbc2b5",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T15:37:14.223Z",
+   "filer": "alert",
+   "fp": "9bbb719459357348",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T16:53:17.700Z",
+   "filer": "other",
+   "fp": "8ab2a3147f081d0f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T17:09:15.198Z",
+   "filer": "other",
+   "fp": "b866880b61b3dd30",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T18:00:05.204Z",
+   "filer": "other",
+   "fp": "971a13411be22840",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T18:12:41.822Z",
+   "filer": "other",
+   "fp": "3d904874dfffba82",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T18:26:31.739Z",
+   "filer": "other",
+   "fp": "f10d2c0e3f16380c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T18:41:14.631Z",
+   "filer": "other",
+   "fp": "9d6120555e8cf41a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T19:20:09.402Z",
+   "filer": "alert",
+   "fp": "daf2e35cc889aa12",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-08T19:49:50.928Z",
+   "filer": "other",
+   "fp": "ad9ab24422f77a8f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T23:20:14.590Z",
+   "filer": "alert",
+   "fp": "0c6db56527d3a3dc",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-08T23:20:15.772Z",
+   "filer": "alert",
+   "fp": "dee0a03fa147e163",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T03:20:07.484Z",
+   "filer": "alert",
+   "fp": "76251ddd6c9fa801",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T15:20:09.653Z",
+   "filer": "alert",
+   "fp": "bdaba9afa6089f68",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T15:20:12.073Z",
+   "filer": "alert",
+   "fp": "47530da001db047d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T15:20:13.414Z",
+   "filer": "alert",
+   "fp": "46f81aa878dcce59",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T18:17:38.692Z",
+   "filer": "other",
+   "fp": "0222ab0dd3cdac96",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T18:18:45.908Z",
+   "filer": "other",
+   "fp": "39c3853ea4b7e862",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T18:18:51.342Z",
+   "filer": "other",
+   "fp": "5f1d5636e66cfcd5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T19:20:11.009Z",
+   "filer": "alert",
+   "fp": "cb2ee9bc36f52217",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T19:20:13.977Z",
+   "filer": "alert",
+   "fp": "dee0a03fa147e163",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T23:20:07.852Z",
+   "filer": "alert",
+   "fp": "48b310000fa165d6",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-09T23:20:09.746Z",
+   "filer": "alert",
+   "fp": "4cc4f8a0027c7b80",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T02:22:46.184Z",
+   "filer": "alert",
+   "fp": "d580d6931ffb92aa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T03:07:03.251Z",
+   "filer": "alert",
+   "fp": "54faec6321fc954e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T03:20:11.437Z",
+   "filer": "alert",
+   "fp": "cb2ee9bc36f52217",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T03:20:16.783Z",
+   "filer": "alert",
+   "fp": "506d3b6eb82e5267",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T14:58:47.219Z",
+   "filer": "alert",
+   "fp": "4a8c83e643418fe9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T15:20:06.887Z",
+   "filer": "alert",
+   "fp": "1c39428eabe4fe62",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T15:20:08.565Z",
+   "filer": "alert",
+   "fp": "daf2e35cc889aa12",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T16:30:17.302Z",
+   "filer": "other",
+   "fp": "185384b1b1c3e51a",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:32:09.362Z",
+   "filer": "other",
+   "fp": "50dd918389aba07b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:32:22.095Z",
+   "filer": "other",
+   "fp": "b20f40d4ccaedec7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:32:31.253Z",
+   "filer": "other",
+   "fp": "2cd02d260a5a9d04",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:32:40.167Z",
+   "filer": "other",
+   "fp": "b9df67659b5079ec",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:32:50.298Z",
+   "filer": "other",
+   "fp": "8e12b3ce7a029b49",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:33:49.700Z",
+   "filer": "other",
+   "fp": "400e8c72c3881692",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:34:18.287Z",
+   "filer": "other",
+   "fp": "3a6161c8a5902425",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:34:27.852Z",
+   "filer": "other",
+   "fp": "ee32ac7c23ba0391",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T17:45:45.317Z",
+   "filer": "alert",
+   "fp": "51afdad7f51ea94c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T18:58:35.573Z",
+   "filer": "alert",
+   "fp": "e0764e565fb0597d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T19:10:33.042Z",
+   "filer": "alert",
+   "fp": "90b580f8de34b4be",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T19:15:53.920Z",
+   "filer": "other",
+   "fp": "f7bded95a5a739b6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T20:30:59.324Z",
+   "filer": "alert",
+   "fp": "5ecba44929f5357b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T21:52:44.809Z",
+   "filer": "other",
+   "fp": "007420e515524f22",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T21:55:33.543Z",
+   "filer": "other",
+   "fp": "71699d168bbc126d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T21:59:35.738Z",
+   "filer": "other",
+   "fp": "157925008659665b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:01:44.885Z",
+   "filer": "other",
+   "fp": "9306c04ab4f552d0",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:05:15.225Z",
+   "filer": "other",
+   "fp": "f64c8f54942ea4de",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:08:03.882Z",
+   "filer": "other",
+   "fp": "4309c0524d90b520",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:43:22.924Z",
+   "filer": "other",
+   "fp": "f038550564c5ed99",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:47:39.985Z",
+   "filer": "other",
+   "fp": "0aa0aba7df992267",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:47:56.163Z",
+   "filer": "other",
+   "fp": "16f90fd0cef36b2c",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:53:42.259Z",
+   "filer": "other",
+   "fp": "c8841eb779bb87ea",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T22:58:08.626Z",
+   "filer": "fleet-health",
+   "fp": "f6a84a515857b62d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T23:04:59.919Z",
+   "filer": "other",
+   "fp": "e009a3b1bf543eeb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T23:20:06.859Z",
+   "filer": "alert",
+   "fp": "8d0d071ae0effdbe",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T23:20:08.649Z",
+   "filer": "alert",
+   "fp": "4cc4f8a0027c7b80",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T23:38:06.316Z",
+   "filer": "other",
+   "fp": "6e04e24801ef2749",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-10T23:38:23.334Z",
+   "filer": "other",
+   "fp": "7de1f5d089512a2f",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-10T23:45:13.359Z",
+   "filer": "other",
+   "fp": "122ea4fa7c4a628e",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T00:40:53.096Z",
+   "filer": "other",
+   "fp": "17bae49c6e3e6211",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T01:28:43.886Z",
+   "filer": "other",
+   "fp": "26dbd474f24500ad",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T01:40:35.642Z",
+   "filer": "other",
+   "fp": "d1b3022c2cf962eb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T03:05:15.775Z",
+   "filer": "other",
+   "fp": "91afe04c4f68d710",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T03:16:29.999Z",
+   "filer": "other",
+   "fp": "1591b36f85657371",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T03:20:08.070Z",
+   "filer": "alert",
+   "fp": "4cc4f8a0027c7b80",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T03:41:35.995Z",
+   "filer": "other",
+   "fp": "7d5519d2f0ac92e6",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T03:41:50.466Z",
+   "filer": "lgtm",
+   "fp": "0573b38d5a905d3f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T04:30:13.122Z",
+   "filer": "other",
+   "fp": "3fc41fc7f629e3fd",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T04:30:15.303Z",
+   "filer": "other",
+   "fp": "fbe771fef0966da2",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T04:33:16.534Z",
+   "filer": "other",
+   "fp": "99f0bea402b24bc4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T04:39:40.711Z",
+   "filer": "other",
+   "fp": "e1df6298cfbd9f6f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:39:47.025Z",
+   "filer": "other",
+   "fp": "d71895d62e32dc46",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:51:43.891Z",
+   "filer": "other",
+   "fp": "42c7614ab660bcc0",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:51:52.627Z",
+   "filer": "other",
+   "fp": "bce11f2967784fd0",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:54:42.358Z",
+   "filer": "alert",
+   "fp": "4424d3ecb36b3dd8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:54:50.448Z",
+   "filer": "alert",
+   "fp": "ed78a68dc2597359",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:55:57.548Z",
+   "filer": "alert",
+   "fp": "e909489e5a31da76",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:55:58.818Z",
+   "filer": "alert",
+   "fp": "ba186505a87edc1a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:55:59.953Z",
+   "filer": "alert",
+   "fp": "30a6b285555a36af",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:56:01.077Z",
+   "filer": "alert",
+   "fp": "6ba99bffc8cd7ac1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T05:56:06.430Z",
+   "filer": "alert",
+   "fp": "4bdab5425aae8cff",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T13:45:01.807Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T14:20:58.884Z",
+   "filer": "alert",
+   "fp": "9bfd31f8917faba5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T14:32:43.674Z",
+   "filer": "alert",
+   "fp": "d5e80a7097646f69",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T14:46:24.561Z",
+   "filer": "alert",
+   "fp": "7873fc4c9e357bec",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:20:07.897Z",
+   "filer": "alert",
+   "fp": "0c7a46ddc1617cbc",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:20:09.200Z",
+   "filer": "alert",
+   "fp": "0562a66c8d038a6b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:35:46.318Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:36:42.035Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:37:47.306Z",
+   "filer": "other",
+   "fp": "1244adf824322e6d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:38:20.003Z",
+   "filer": "other",
+   "fp": "4b309e850880ec76",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:38:50.416Z",
+   "filer": "other",
+   "fp": "768812be9b1406c7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T15:43:40.718Z",
+   "filer": "other",
+   "fp": "2e4b9d23e3402897",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T16:30:17.492Z",
+   "filer": "other",
+   "fp": "a04d2a63d01c834b",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:14:40.599Z",
+   "filer": "other",
+   "fp": "12bab5d41a14b5c0",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:15:39.840Z",
+   "filer": "other",
+   "fp": "3df3fba215496e8f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:15:49.877Z",
+   "filer": "other",
+   "fp": "51aed3bdb601567d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:15:57.539Z",
+   "filer": "other",
+   "fp": "982e55fa626b399b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:16:06.106Z",
+   "filer": "other",
+   "fp": "f1fd4e688ee6033a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:16:13.381Z",
+   "filer": "other",
+   "fp": "f62f1ca39f863053",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:16:19.687Z",
+   "filer": "other",
+   "fp": "9eefa10b0effad1d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:16:25.416Z",
+   "filer": "other",
+   "fp": "9ea53fb2017fe180",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:16:31.682Z",
+   "filer": "other",
+   "fp": "68547a229880c985",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:32:38.976Z",
+   "filer": "other",
+   "fp": "5104aba4491795e6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:33:48.505Z",
+   "filer": "other",
+   "fp": "cd7d132e7077fcc2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:34:51.699Z",
+   "filer": "other",
+   "fp": "ad18abc7f8ea5d6a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:34:53.035Z",
+   "filer": "other",
+   "fp": "6cee70726993fab4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:34:59.001Z",
+   "filer": "other",
+   "fp": "e4b423d30de33b3e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:35:01.546Z",
+   "filer": "other",
+   "fp": "bce2fd6b0bf480c1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:35:03.049Z",
+   "filer": "other",
+   "fp": "f958fc4c4cd53112",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:35:05.291Z",
+   "filer": "other",
+   "fp": "adca828ea8d2dc66",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T17:43:26.718Z",
+   "filer": "other",
+   "fp": "29d85c0e01ce231a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:45:27.997Z",
+   "filer": "other",
+   "fp": "0de5d02ca99952a6",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T17:58:42.786Z",
+   "filer": "alert",
+   "fp": "0d581a2c3649417f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T18:05:08.047Z",
+   "filer": "other",
+   "fp": "a5aaccc223b6e1e9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T18:16:26.984Z",
+   "filer": "alert",
+   "fp": "9aa62cbab09676ea",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T18:16:28.484Z",
+   "filer": "alert",
+   "fp": "71878567a45c6b32",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T18:46:30.195Z",
+   "filer": "alert",
+   "fp": "5bbbbbda6c62cecd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T21:36:59.334Z",
+   "filer": "other",
+   "fp": "3b56f5a5197f3417",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T21:40:21.068Z",
+   "filer": "other",
+   "fp": "a85eaea007104a96",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-11T22:13:02.435Z",
+   "filer": "other",
+   "fp": "ed288cbe734396cb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T22:36:02.449Z",
+   "filer": "alert",
+   "fp": "180bf1b814c7b382",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-11T23:47:44.082Z",
+   "filer": "other",
+   "fp": "382f7b064dc5f5ab",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-12T00:00:22.087Z",
+   "filer": "other",
+   "fp": "953f4542e9536873",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T00:12:12.991Z",
+   "filer": "alert",
+   "fp": "25f343d2da5d6616",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T03:45:34.653Z",
+   "filer": "other",
+   "fp": "d29248e79a658dfe",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T04:50:05.891Z",
+   "filer": "alert",
+   "fp": "c2c53cf336a4a91f",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T06:28:06.106Z",
+   "filer": "radar",
+   "fp": "c5d6d85b5da6bdee",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T06:56:52.458Z",
+   "filer": "alert",
+   "fp": "0fb43fbbfe22b4cf",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T07:38:37.827Z",
+   "filer": "alert",
+   "fp": "f0f0f9de25aca170",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T07:53:51.328Z",
+   "filer": "alert",
+   "fp": "bb32129442273250",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T09:16:30.697Z",
+   "filer": "alert",
+   "fp": "cca9876891f23de6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T09:17:31.718Z",
+   "filer": "alert",
+   "fp": "a6fe85cab8065aa2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T09:17:32.736Z",
+   "filer": "alert",
+   "fp": "21b68b2ec8f336f5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T09:17:34.042Z",
+   "filer": "alert",
+   "fp": "bb77b84a7e138ba6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T11:30:31.903Z",
+   "filer": "alert",
+   "fp": "d0078028e2e09f1d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T13:00:49.565Z",
+   "filer": "alert",
+   "fp": "5e10a1b9f5d4ce8b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T13:45:02.596Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T14:05:05.387Z",
+   "filer": "alert",
+   "fp": "869f0ddd99ad6b03",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T16:30:13.427Z",
+   "filer": "other",
+   "fp": "77581b5eaa9fd0dc",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:03:24.219Z",
+   "filer": "alert",
+   "fp": "5a63642e7e874949",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:06:26.154Z",
+   "filer": "other",
+   "fp": "b30f9dfc8eb4b152",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:06:56.519Z",
+   "filer": "alert",
+   "fp": "c86111943ae31257",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:07:48.256Z",
+   "filer": "other",
+   "fp": "6d68a14ce86bfd9d",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:08:46.814Z",
+   "filer": "alert",
+   "fp": "7f3d8aae36fafe1d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T17:24:47.758Z",
+   "filer": "alert",
+   "fp": "c2321f08eba7676c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-12T17:58:58.618Z",
+   "filer": "other",
+   "fp": "9724bf60e732c981",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-12T18:44:28.212Z",
+   "filer": "other",
+   "fp": "3af173238b1e51ea",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T19:10:15.046Z",
+   "filer": "alert",
+   "fp": "bb32129442273250",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T20:00:09.732Z",
+   "filer": "alert",
+   "fp": "2525d43b37ab46d7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T20:12:36.364Z",
+   "filer": "alert",
+   "fp": "3359a13a038547fa",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-12T22:06:43.334Z",
+   "filer": "radar",
+   "fp": "6bec2bbcd184e6cf",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:01:59.295Z",
+   "filer": "radar",
+   "fp": "68044a8cc994c7c1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:02:00.751Z",
+   "filer": "radar",
+   "fp": "0f7bbccecb06118a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:02:02.027Z",
+   "filer": "radar",
+   "fp": "0765e6a4a15da2d6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:02:03.230Z",
+   "filer": "radar",
+   "fp": "b44c54c8677af358",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:04:36.927Z",
+   "filer": "radar",
+   "fp": "1b23d027cabbece0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:05:26.998Z",
+   "filer": "alert",
+   "fp": "52bffa738993ea50",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:12:20.420Z",
+   "filer": "alert",
+   "fp": "7d00fea9f35a914d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:05.510Z",
+   "filer": "radar",
+   "fp": "e2acac0a00f2a9ba",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:07.493Z",
+   "filer": "radar",
+   "fp": "af67d811d715fe99",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:09.094Z",
+   "filer": "radar",
+   "fp": "da4a1b24f61c601d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:10.552Z",
+   "filer": "radar",
+   "fp": "7bef939a04a64424",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:12.438Z",
+   "filer": "radar",
+   "fp": "a8c86a81b8e07ed6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:13.849Z",
+   "filer": "radar",
+   "fp": "beb66e1e24f7495e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-12T23:18:15.199Z",
+   "filer": "radar",
+   "fp": "507e5053d8164cff",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:17.108Z",
+   "filer": "radar",
+   "fp": "ac5209fb15628568",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:18.610Z",
+   "filer": "radar",
+   "fp": "2190af98f0294624",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:20.836Z",
+   "filer": "radar",
+   "fp": "b1deaf0c518cc24b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:25.145Z",
+   "filer": "radar",
+   "fp": "e7dad6964f7feee7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:27.993Z",
+   "filer": "radar",
+   "fp": "00a64d5d5a8ade15",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:30.122Z",
+   "filer": "radar",
+   "fp": "50ea04708f80a15d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:37.075Z",
+   "filer": "radar",
+   "fp": "a10d6954c0e4e5e3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:18:41.987Z",
+   "filer": "radar",
+   "fp": "ca72fd4eb397f51e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-12T23:22:14.111Z",
+   "filer": "alert",
+   "fp": "28139f083b1e5a92",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T00:27:49.147Z",
+   "filer": "radar",
+   "fp": "492f3d2be2a062a8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T00:57:03.872Z",
+   "filer": "alert",
+   "fp": "c88eaa58a35be325",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:21:36.185Z",
+   "filer": "other",
+   "fp": "e9eed8bd8ebeddbf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:21:41.487Z",
+   "filer": "other",
+   "fp": "5ed2988764e700db",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:21:45.327Z",
+   "filer": "other",
+   "fp": "fba13c7cc032d27d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:21:48.925Z",
+   "filer": "other",
+   "fp": "b3d8e3b3aef69eb0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:21:53.662Z",
+   "filer": "other",
+   "fp": "bf5235df6bcbc118",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-13T01:21:56.766Z",
+   "filer": "radar",
+   "fp": "6ffcfe1a5798c461",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-13T01:22:12.166Z",
+   "filer": "other",
+   "fp": "6523cc05aec00262",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T01:25:58.420Z",
+   "filer": "radar",
+   "fp": "d9178dd8c0266201",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:10:30.169Z",
+   "filer": "alert",
+   "fp": "84357941e4ef392d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:52.034Z",
+   "filer": "alert",
+   "fp": "e7b4feeb5b5ab231",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:52.980Z",
+   "filer": "alert",
+   "fp": "dc13d8917f21cc08",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:54.142Z",
+   "filer": "alert",
+   "fp": "6f15ea23295810c0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:55.089Z",
+   "filer": "alert",
+   "fp": "549b1752943ea179",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:56.018Z",
+   "filer": "alert",
+   "fp": "3495735770fcf9e9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:57.046Z",
+   "filer": "alert",
+   "fp": "f78db716d5aeef2e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:58.032Z",
+   "filer": "alert",
+   "fp": "bc05be9f69432caf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:58.954Z",
+   "filer": "alert",
+   "fp": "be1611a7123ac321",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:50:59.954Z",
+   "filer": "alert",
+   "fp": "6d12149858606986",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:01.180Z",
+   "filer": "alert",
+   "fp": "dc829b00d0ea6770",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:02.089Z",
+   "filer": "alert",
+   "fp": "2078a9e8c1f91409",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:03.213Z",
+   "filer": "alert",
+   "fp": "89b585786934e483",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:04.341Z",
+   "filer": "alert",
+   "fp": "c6741759966865b5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:05.329Z",
+   "filer": "alert",
+   "fp": "0f9f416d178a7f04",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:06.378Z",
+   "filer": "alert",
+   "fp": "e26a7e679b489f6e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:07.477Z",
+   "filer": "alert",
+   "fp": "6b8f86e3f7e6b5f9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:08.621Z",
+   "filer": "alert",
+   "fp": "00e25fc4e9a25ee7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:10.909Z",
+   "filer": "alert",
+   "fp": "84c7c988de199e7c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:12.113Z",
+   "filer": "alert",
+   "fp": "11934b3fdf070f6c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:13.071Z",
+   "filer": "alert",
+   "fp": "839f75df61d85291",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:14.051Z",
+   "filer": "alert",
+   "fp": "53b7ad3f5a2f523d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:14.989Z",
+   "filer": "alert",
+   "fp": "584c67cc9fcee61f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:15.726Z",
+   "filer": "other",
+   "fp": "176f8b0784532877",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:16.117Z",
+   "filer": "alert",
+   "fp": "0b51296de9c29503",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:17.276Z",
+   "filer": "alert",
+   "fp": "64a51d641f1f63ea",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:19.681Z",
+   "filer": "alert",
+   "fp": "b6a1854ddec8899f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:20.276Z",
+   "filer": "other",
+   "fp": "cc0997640441683d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:20.620Z",
+   "filer": "alert",
+   "fp": "ec2fd1c6c9e028e2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:21.735Z",
+   "filer": "alert",
+   "fp": "94c302827e5deeb3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:22.820Z",
+   "filer": "alert",
+   "fp": "45c4bde58b0989ed",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:23.855Z",
+   "filer": "alert",
+   "fp": "c51d93a68f53e31a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:24.748Z",
+   "filer": "alert",
+   "fp": "226bb8bb17d8203f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:26.182Z",
+   "filer": "alert",
+   "fp": "b02e999bb75c3983",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:27.423Z",
+   "filer": "alert",
+   "fp": "e6486181a088b2f9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:28.394Z",
+   "filer": "alert",
+   "fp": "2ff28f494692fc53",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:29.309Z",
+   "filer": "alert",
+   "fp": "d5498ee0d19c2198",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:31.362Z",
+   "filer": "alert",
+   "fp": "64ce9742ad64b80e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:33.902Z",
+   "filer": "alert",
+   "fp": "9e612386474a8009",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:34.859Z",
+   "filer": "alert",
+   "fp": "7d93f89807fa47e6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:35.793Z",
+   "filer": "alert",
+   "fp": "7d93f89807fa47e6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:36.809Z",
+   "filer": "alert",
+   "fp": "43c3339148bbebf0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:38.711Z",
+   "filer": "alert",
+   "fp": "c5ee5073eab953d7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:39.644Z",
+   "filer": "alert",
+   "fp": "d3684e206a1fb504",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:40.847Z",
+   "filer": "alert",
+   "fp": "268dd5e37b3af1ff",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:41.398Z",
+   "filer": "other",
+   "fp": "f10244be109985e7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:43.231Z",
+   "filer": "alert",
+   "fp": "f21ff7ca32bad20f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:45.257Z",
+   "filer": "alert",
+   "fp": "411fb9e8a714a328",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:46.179Z",
+   "filer": "alert",
+   "fp": "63e45948a2cb60a7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:47.134Z",
+   "filer": "alert",
+   "fp": "dcbc7d94c46d599d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:47.969Z",
+   "filer": "alert",
+   "fp": "a0008d502344d4af",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:48.849Z",
+   "filer": "alert",
+   "fp": "508fb568df5b10cd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:49.839Z",
+   "filer": "alert",
+   "fp": "1e8d4c01b71ee2aa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:50.807Z",
+   "filer": "alert",
+   "fp": "f6b9499ebbca4a4a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:51.912Z",
+   "filer": "alert",
+   "fp": "5bfc31bb2fdca3b8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:52.802Z",
+   "filer": "alert",
+   "fp": "a13738d3861b1f1a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:53.799Z",
+   "filer": "alert",
+   "fp": "ca8d7956dde50e41",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:54.634Z",
+   "filer": "alert",
+   "fp": "d76beec8acb932ec",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:55.555Z",
+   "filer": "alert",
+   "fp": "833b954153213a90",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:56.432Z",
+   "filer": "alert",
+   "fp": "0b8079a3c61364e5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:57.298Z",
+   "filer": "alert",
+   "fp": "a01f7114bfa68c3a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:51:59.055Z",
+   "filer": "alert",
+   "fp": "09fcc022cc673760",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:01.324Z",
+   "filer": "alert",
+   "fp": "693c774671eed60c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:03.011Z",
+   "filer": "alert",
+   "fp": "315d9dec7484504e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:05.854Z",
+   "filer": "alert",
+   "fp": "8bcafc71c6b82438",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:06.773Z",
+   "filer": "alert",
+   "fp": "f16f4eca548e9706",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:07.785Z",
+   "filer": "alert",
+   "fp": "88425dc01f5070a3",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:08.967Z",
+   "filer": "alert",
+   "fp": "438af24c53be44d8",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:10.671Z",
+   "filer": "alert",
+   "fp": "235a4a3906cf5222",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:11.549Z",
+   "filer": "alert",
+   "fp": "23c0badca2abb308",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:12.517Z",
+   "filer": "alert",
+   "fp": "4e28850da93520de",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:14.012Z",
+   "filer": "alert",
+   "fp": "e097cf480f79ab63",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:15.088Z",
+   "filer": "alert",
+   "fp": "ced0552305b3fd70",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:15.956Z",
+   "filer": "alert",
+   "fp": "af835c7b58e07037",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:17.191Z",
+   "filer": "alert",
+   "fp": "ff2fe1e67598b9d8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:18.092Z",
+   "filer": "alert",
+   "fp": "e5097b75f8f0dbb5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:19.336Z",
+   "filer": "alert",
+   "fp": "abfa00b22a30cab8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:20.208Z",
+   "filer": "alert",
+   "fp": "96706a4b3f35af18",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:21.198Z",
+   "filer": "alert",
+   "fp": "a178aec644c701e4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:22.051Z",
+   "filer": "alert",
+   "fp": "17b6abeb124b06bd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:22.991Z",
+   "filer": "alert",
+   "fp": "8bcc7470984eb6f6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:23.858Z",
+   "filer": "alert",
+   "fp": "a0cc11c347007a76",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:25.130Z",
+   "filer": "alert",
+   "fp": "c4c2fbf4942a7f19",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:26.003Z",
+   "filer": "alert",
+   "fp": "9fdf86ffe32400af",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:26.953Z",
+   "filer": "alert",
+   "fp": "a936578cb45de082",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:27.830Z",
+   "filer": "alert",
+   "fp": "59c8ef252dd04424",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:28.840Z",
+   "filer": "alert",
+   "fp": "7313aac353f7e20a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:29.734Z",
+   "filer": "alert",
+   "fp": "92b87fc3f508ebc3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:32.259Z",
+   "filer": "alert",
+   "fp": "d0fa0c29b7c4d399",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:35.118Z",
+   "filer": "alert",
+   "fp": "6e11804c9f4bec60",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:39.618Z",
+   "filer": "alert",
+   "fp": "fdc1abb2e69e5fbc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:40.567Z",
+   "filer": "alert",
+   "fp": "26974c142976c95d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:43.091Z",
+   "filer": "alert",
+   "fp": "8d34ca5188cb8780",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:44.081Z",
+   "filer": "alert",
+   "fp": "f6e7e8cac0972d68",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:45.002Z",
+   "filer": "alert",
+   "fp": "5343276462e7656e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:46.091Z",
+   "filer": "alert",
+   "fp": "9e84d6bcae311ffd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:47.152Z",
+   "filer": "alert",
+   "fp": "de9f051b5b1639cf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:48.057Z",
+   "filer": "alert",
+   "fp": "7a6545ed55bd7fa6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:49.167Z",
+   "filer": "alert",
+   "fp": "35de9e501157d7dc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:50.234Z",
+   "filer": "alert",
+   "fp": "487b4a6d13940e0b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:51.134Z",
+   "filer": "alert",
+   "fp": "cfc6de78e87a3fef",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:53.048Z",
+   "filer": "alert",
+   "fp": "5f0136babde7bc30",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:54.502Z",
+   "filer": "alert",
+   "fp": "f5bfb82764ba502f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:55.571Z",
+   "filer": "alert",
+   "fp": "6ed7a684869111e0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:57.528Z",
+   "filer": "alert",
+   "fp": "dc12795850e080eb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:58.847Z",
+   "filer": "alert",
+   "fp": "b061ce8ac6777bc5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:52:59.806Z",
+   "filer": "alert",
+   "fp": "94dedd9b49c37a68",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T02:53:00.740Z",
+   "filer": "alert",
+   "fp": "74c4db7d70652799",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T13:45:06.191Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T14:26:52.131Z",
+   "filer": "alert",
+   "fp": "3bb03c692b578035",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T14:26:54.767Z",
+   "filer": "alert",
+   "fp": "197b9246c33a6381",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T15:15:26.609Z",
+   "filer": "alert",
+   "fp": "16a5870c0d30ef1a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T15:15:38.136Z",
+   "filer": "alert",
+   "fp": "78d44ae3ecc7e9bb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T15:49:38.759Z",
+   "filer": "alert",
+   "fp": "a24c9d85edd9f772",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T16:11:02.735Z",
+   "filer": "alert",
+   "fp": "9cb444b4be73d6f9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-13T17:03:59.352Z",
+   "filer": "alert",
+   "fp": "901be5bb58ee5e2a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-13T17:34:04.003Z",
+   "filer": "radar",
+   "fp": "c027590d0c9c9e4c",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-13T17:34:11.092Z",
+   "filer": "radar",
+   "fp": "0c7ebfddca47081f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-13T17:44:40.476Z",
+   "filer": "radar",
+   "fp": "c3744d9d20624f55",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T13:04:27.235Z",
+   "filer": "alert",
+   "fp": "fc37543516cc9ca9",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T13:45:05.729Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:01:08.257Z",
+   "filer": "alert",
+   "fp": "04442f15b261c4df",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:20:48.852Z",
+   "filer": "alert",
+   "fp": "d47735b322214e0b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:30:12.618Z",
+   "filer": "alert",
+   "fp": "5bad813fcbdf1fcf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:35:06.950Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:35:07.655Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:38:39.412Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:39:31.863Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:43:03.317Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:49:40.699Z",
+   "filer": "alert",
+   "fp": "144f8b6da077eb40",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T15:51:06.789Z",
+   "filer": "alert",
+   "fp": "d4354156dc095186",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T16:21:53.190Z",
+   "filer": "alert",
+   "fp": "6b9b0d81a311861f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T16:22:02.071Z",
+   "filer": "alert",
+   "fp": "5f83682c5dfcfbb3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T16:30:14.153Z",
+   "filer": "other",
+   "fp": "38ede6e30a34e20c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T17:05:40.159Z",
+   "filer": "other",
+   "fp": "e77106328d3bb704",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T17:28:30.816Z",
+   "filer": "alert",
+   "fp": "48e8a6bf949f36d5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T18:35:47.612Z",
+   "filer": "alert",
+   "fp": "a4ae2f8c106c1d8e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T19:31:19.007Z",
+   "filer": "alert",
+   "fp": "73e3291107296add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T19:40:04.756Z",
+   "filer": "other",
+   "fp": "33881e3cef2abf75",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T19:40:23.723Z",
+   "filer": "other",
+   "fp": "412b9e9024ef9e0f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T20:06:20.885Z",
+   "filer": "alert",
+   "fp": "40b27656ea78a761",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T20:10:13.268Z",
+   "filer": "radar",
+   "fp": "db1b55a353c33417",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T21:38:51.323Z",
+   "filer": "other",
+   "fp": "d5e1f3c6d3bb48d3",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T22:16:43.205Z",
+   "filer": "other",
+   "fp": "6d9d7e050a10f335",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T22:27:36.325Z",
+   "filer": "alert",
+   "fp": "2fbf07d8d97e51d8",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T23:02:00.934Z",
+   "filer": "radar",
+   "fp": "ce95f8d27f554340",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T23:10:30.447Z",
+   "filer": "other",
+   "fp": "2f2fc776ef9c6cdd",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-14T23:12:00.360Z",
+   "filer": "other",
+   "fp": "36dee21429b9ef0c",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-14T23:27:36.076Z",
+   "filer": "other",
+   "fp": "1b100a2c9ee9170e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T13:45:01.113Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T14:32:43.663Z",
+   "filer": "alert",
+   "fp": "e4f8d0b0ae71b8be",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T14:32:44.842Z",
+   "filer": "alert",
+   "fp": "1a14338d6d77f874",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-15T15:06:58.618Z",
+   "filer": "other",
+   "fp": "4d6190bda97d6501",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:13:01.937Z",
+   "filer": "alert",
+   "fp": "128ccb4dbd700695",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:13:43.985Z",
+   "filer": "other",
+   "fp": "a6b3e48bb6941983",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:26:41.970Z",
+   "filer": "alert",
+   "fp": "cbba43df8558f424",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:35:08.694Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:35:09.472Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:35:13.026Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:35:13.937Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:35:23.908Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T15:44:11.901Z",
+   "filer": "other",
+   "fp": "2e4b9d23e3402897",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-15T15:59:35.068Z",
+   "filer": "other",
+   "fp": "9ebef296fdbe7631",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T16:02:39.785Z",
+   "filer": "other",
+   "fp": "7c98b1ff026adbe6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T16:17:54.065Z",
+   "filer": "alert",
+   "fp": "379750c24781beac",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T16:39:35.068Z",
+   "filer": "other",
+   "fp": "c36719c1a1fd56c6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T16:46:59.013Z",
+   "filer": "other",
+   "fp": "da56e94ccd04c4e8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T16:47:41.160Z",
+   "filer": "alert",
+   "fp": "ed9d74c007a249d4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T17:11:46.694Z",
+   "filer": "alert",
+   "fp": "3b1919dfc87c39f3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T17:45:22.658Z",
+   "filer": "alert",
+   "fp": "740dbb8b6c8befdb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:01:55.963Z",
+   "filer": "other",
+   "fp": "8ea9b9dd3a46ef21",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-15T18:02:04.864Z",
+   "filer": "other",
+   "fp": "930571d21d2669ff",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:06.828Z",
+   "filer": "other",
+   "fp": "99da6ef707f9793a",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:09.226Z",
+   "filer": "other",
+   "fp": "9fe7984905e4d2f5",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:11.792Z",
+   "filer": "other",
+   "fp": "2bee20ad43f88c8f",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:13.815Z",
+   "filer": "other",
+   "fp": "8d843e120a00eb12",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:16.742Z",
+   "filer": "other",
+   "fp": "437b7a2ce3a339e5",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:18.807Z",
+   "filer": "other",
+   "fp": "0523a6c532684f4f",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:20.310Z",
+   "filer": "other",
+   "fp": "d7a5246663b757ef",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:22.311Z",
+   "filer": "other",
+   "fp": "ead42d7fc3dac1e6",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:02:24.226Z",
+   "filer": "other",
+   "fp": "d8add6c1ee8de7e5",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T18:58:31.331Z",
+   "filer": "other",
+   "fp": "d7c21c4c90823d21",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T20:26:41.281Z",
+   "filer": "alert",
+   "fp": "30d0cd7f3804c738",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T21:38:41.535Z",
+   "filer": "other",
+   "fp": "923ca721c57abca3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T21:41:28.803Z",
+   "filer": "other",
+   "fp": "7882fbdb2e35dffd",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T21:53:55.205Z",
+   "filer": "other",
+   "fp": "73c0670db6567bfa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T22:27:13.334Z",
+   "filer": "other",
+   "fp": "fc785bcee4028b99",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T22:32:11.642Z",
+   "filer": "other",
+   "fp": "fbb85d917c45a893",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T23:05:06.984Z",
+   "filer": "other",
+   "fp": "417a804b98d9facf",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-15T23:09:00.056Z",
+   "filer": "other",
+   "fp": "477b4f8a9dd974ab",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-15T23:41:47.652Z",
+   "filer": "other",
+   "fp": "5d31f560f10c3abf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:00:07.242Z",
+   "filer": "other",
+   "fp": "5047b8d245e75d09",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:00:24.856Z",
+   "filer": "other",
+   "fp": "7ceaf3e6d895e7ce",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:06:58.019Z",
+   "filer": "other",
+   "fp": "c3c6e60540d5b438",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:07:47.920Z",
+   "filer": "other",
+   "fp": "f0b716ebb8c9eed7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-16T00:24:15.504Z",
+   "filer": "other",
+   "fp": "02e65b26cddd1588",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:27:38.199Z",
+   "filer": "other",
+   "fp": "e1bff13b380ab1b1",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T00:31:17.280Z",
+   "filer": "alert",
+   "fp": "4fc29e0d5f0ccebb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T14:18:36.180Z",
+   "filer": "other",
+   "fp": "5bfd1c2547d77246",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:27:35.624Z",
+   "filer": "other",
+   "fp": "fffcf87f0b0e99fe",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:35:10.459Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:35:11.459Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:35:13.596Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:35:14.566Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:35:15.506Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:39:28.764Z",
+   "filer": "other",
+   "fp": "ced1668ce6ee587e",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:52:41.514Z",
+   "filer": "alert",
+   "fp": "cfd30f11aedeb65e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T15:52:43.904Z",
+   "filer": "alert",
+   "fp": "bb170d5c3cdbc7d1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T16:43:00.270Z",
+   "filer": "other",
+   "fp": "85a8243d4cf9de6b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T17:18:25.864Z",
+   "filer": "radar",
+   "fp": "49ec34feb79316ef",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T17:18:27.548Z",
+   "filer": "radar",
+   "fp": "df77f64e445bd747",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T17:18:28.758Z",
+   "filer": "radar",
+   "fp": "aa5046e670ac8af9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T19:20:58.957Z",
+   "filer": "other",
+   "fp": "cc1218584a7b38a0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-16T20:35:12.457Z",
+   "filer": "alert",
+   "fp": "12141ed3ffca89cc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-17T04:31:51.814Z",
+   "filer": "other",
+   "fp": "129ad898e1c52691",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T13:45:01.793Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T14:28:30.046Z",
+   "filer": "alert",
+   "fp": "4fef642837dc1833",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T14:44:51.102Z",
+   "filer": "alert",
+   "fp": "e45828cdeac4665e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:24:15.077Z",
+   "filer": "other",
+   "fp": "f878e5f7a6fb8f64",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:35:10.905Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:35:11.980Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:35:12.825Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:35:13.813Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T15:35:14.594Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-17T15:41:02.151Z",
+   "filer": "radar",
+   "fp": "82db277a16168c5b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T16:50:43.050Z",
+   "filer": "other",
+   "fp": "04796768c9c05692",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-17T20:01:01.104Z",
+   "filer": "other",
+   "fp": "7faf34ca9cac3ca3",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T14:40:48.593Z",
+   "filer": "alert",
+   "fp": "18ddbc2ea162247a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T14:55:33.256Z",
+   "filer": "alert",
+   "fp": "9c62a185d4524c15",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:11:18.369Z",
+   "filer": "alert",
+   "fp": "ddf365f04c9ac9d6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:27:43.266Z",
+   "filer": "alert",
+   "fp": "19d9a7db12bfbf0f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:36:08.023Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:37:44.307Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-18T15:50:15.194Z",
+   "filer": "other",
+   "fp": "87982413ea52c369",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:53:46.233Z",
+   "filer": "alert",
+   "fp": "f60463a387a589e7",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T15:57:12.958Z",
+   "filer": "alert",
+   "fp": "f60463a387a589e7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T16:01:48.750Z",
+   "filer": "alert",
+   "fp": "f8674ba2a44298a2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T16:09:27.086Z",
+   "filer": "alert",
+   "fp": "414a61c9256a95da",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T17:13:11.055Z",
+   "filer": "alert",
+   "fp": "4b62e0cba6761118",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T17:57:11.201Z",
+   "filer": "alert",
+   "fp": "246ade8bfa08f369",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T17:57:12.409Z",
+   "filer": "alert",
+   "fp": "1d766b88922d4614",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-18T19:11:26.346Z",
+   "filer": "other",
+   "fp": "67ddd629bb0467c8",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T19:53:15.050Z",
+   "filer": "other",
+   "fp": "e47c3393177b2747",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T20:02:52.981Z",
+   "filer": "other",
+   "fp": "3f6909f097de011b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T20:25:50.970Z",
+   "filer": "other",
+   "fp": "4d70fad828360805",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T20:35:44.150Z",
+   "filer": "alert",
+   "fp": "745d21d947ec97b5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T20:39:32.572Z",
+   "filer": "other",
+   "fp": "7463afeb0040d9cf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T21:28:42.355Z",
+   "filer": "alert",
+   "fp": "968e3aa5b7004647",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T21:28:43.436Z",
+   "filer": "alert",
+   "fp": "968e3aa5b7004647",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T21:30:35.005Z",
+   "filer": "alert",
+   "fp": "ad6a5d024ea3f3f9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T21:30:39.448Z",
+   "filer": "alert",
+   "fp": "ad6a5d024ea3f3f9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T21:31:41.585Z",
+   "filer": "other",
+   "fp": "465ef82be6d82079",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T22:26:12.777Z",
+   "filer": "other",
+   "fp": "f42f83a2aac8e0f4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T22:28:20.162Z",
+   "filer": "other",
+   "fp": "65874d8ed7ffd1db",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-18T22:29:37.259Z",
+   "filer": "other",
+   "fp": "d02d468191ff3c5d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T22:31:02.913Z",
+   "filer": "alert",
+   "fp": "019122c5055ef0c1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T23:03:10.149Z",
+   "filer": "other",
+   "fp": "242cfa709680d217",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T23:24:31.294Z",
+   "filer": "other",
+   "fp": "48da6b39408ce365",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-18T23:38:29.670Z",
+   "filer": "other",
+   "fp": "5c12e9155d6a74e5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T00:00:28.065Z",
+   "filer": "other",
+   "fp": "8921b3d9ab879ad1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T00:03:09.203Z",
+   "filer": "other",
+   "fp": "4f9021b6f1f3ca5f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T00:08:27.629Z",
+   "filer": "other",
+   "fp": "98edb23916326f15",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T00:12:59.249Z",
+   "filer": "other",
+   "fp": "abed90b8b0ff5b56",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T00:41:31.089Z",
+   "filer": "alert",
+   "fp": "61ef629f245e83b6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T00:47:44.872Z",
+   "filer": "other",
+   "fp": "31bc2c4af2ca0da9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T01:10:38.100Z",
+   "filer": "other",
+   "fp": "0dffe6aaceee02b9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T01:10:41.023Z",
+   "filer": "other",
+   "fp": "7dc69ae069955db8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T01:39:53.384Z",
+   "filer": "other",
+   "fp": "b876bb21d9302fd0",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T01:54:19.855Z",
+   "filer": "other",
+   "fp": "a91b53440f6115ab",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T02:09:46.017Z",
+   "filer": "other",
+   "fp": "922cc46d10acb204",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T02:11:31.317Z",
+   "filer": "other",
+   "fp": "7e7ee2c33586d28e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T02:58:28.178Z",
+   "filer": "other",
+   "fp": "3e046c9d4e7db65f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T03:15:43.962Z",
+   "filer": "other",
+   "fp": "cc0e8e8fb8ebd48a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T03:15:50.251Z",
+   "filer": "other",
+   "fp": "7a7c2af269b50bf6",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T03:17:34.065Z",
+   "filer": "alert",
+   "fp": "4098a2a8122c4a45",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T03:34:53.266Z",
+   "filer": "other",
+   "fp": "6e98b091db694c93",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T03:49:59.295Z",
+   "filer": "fleet-health",
+   "fp": "d7d7d50198ef8048",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T04:30:20.421Z",
+   "filer": "other",
+   "fp": "7c4ed56ec253da7b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T04:30:24.971Z",
+   "filer": "other",
+   "fp": "d9167e814d38f844",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T05:34:18.028Z",
+   "filer": "other",
+   "fp": "0ad9413c964361b4",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T06:09:42.410Z",
+   "filer": "other",
+   "fp": "6c460fe5388509cd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T07:14:43.199Z",
+   "filer": "other",
+   "fp": "bd4220f559e71f50",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T07:54:16.495Z",
+   "filer": "other",
+   "fp": "f6a5e0ae81d6ee6d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T09:02:19.089Z",
+   "filer": "other",
+   "fp": "2e3b796a31c16cdb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T09:25:13.224Z",
+   "filer": "other",
+   "fp": "05dcc8cddd2bac5b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T09:42:48.366Z",
+   "filer": "other",
+   "fp": "1244670a15938811",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T11:27:28.811Z",
+   "filer": "other",
+   "fp": "5b3b2f647f5350dd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T13:15:54.583Z",
+   "filer": "other",
+   "fp": "456fd0cb0533a1ed",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T13:43:07.778Z",
+   "filer": "other",
+   "fp": "e8cf20d620e0e925",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T13:43:12.930Z",
+   "filer": "other",
+   "fp": "3568595c0d9576d0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T14:03:54.344Z",
+   "filer": "other",
+   "fp": "7f402248ce8f0530",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T14:07:26.194Z",
+   "filer": "other",
+   "fp": "6ae602935aeb3028",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T14:20:21.912Z",
+   "filer": "alert",
+   "fp": "83ad27e44efab089",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T14:36:17.918Z",
+   "filer": "alert",
+   "fp": "c2c53cf336a4a91f",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:08.213Z",
+   "filer": "alert",
+   "fp": "09a445350a5ece37",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:14.540Z",
+   "filer": "alert",
+   "fp": "77813126c4434652",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:21.222Z",
+   "filer": "alert",
+   "fp": "7033d12012ef7d6d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:28.412Z",
+   "filer": "alert",
+   "fp": "9f751e3b54d36240",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:33.415Z",
+   "filer": "alert",
+   "fp": "40fb5d06cb7aaca7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:39.894Z",
+   "filer": "alert",
+   "fp": "7776755515db6736",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:45.861Z",
+   "filer": "alert",
+   "fp": "a9d8556a00f57eab",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:52.362Z",
+   "filer": "alert",
+   "fp": "1e3265c852535248",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:40:57.877Z",
+   "filer": "alert",
+   "fp": "2121222bb6265bda",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T15:41:04.193Z",
+   "filer": "alert",
+   "fp": "0d358deda9c201ba",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T16:00:20.348Z",
+   "filer": "alert",
+   "fp": "36aabb45ab7b8380",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T16:00:22.270Z",
+   "filer": "alert",
+   "fp": "b2e15e4e5b6a866b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T16:00:24.845Z",
+   "filer": "alert",
+   "fp": "fc2d01898f480053",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T18:03:39.071Z",
+   "filer": "other",
+   "fp": "858161d0d8f1a913",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T18:10:52.025Z",
+   "filer": "other",
+   "fp": "0980fe57b1c2beb7",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T18:21:29.347Z",
+   "filer": "other",
+   "fp": "6c9004214885511a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T18:27:26.706Z",
+   "filer": "alert",
+   "fp": "dffba1d43896c778",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T18:31:17.622Z",
+   "filer": "other",
+   "fp": "76951dff72a0a66a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T18:34:45.070Z",
+   "filer": "alert",
+   "fp": "837552d553f0a1bd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T18:49:07.150Z",
+   "filer": "other",
+   "fp": "d142218068060e5b",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T20:26:41.541Z",
+   "filer": "other",
+   "fp": "303ecaa6b15b87f1",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T20:48:00.754Z",
+   "filer": "alert",
+   "fp": "535344a4f9b71ee2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T21:10:01.907Z",
+   "filer": "other",
+   "fp": "eff42baf6298af3e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:24:42.417Z",
+   "filer": "other",
+   "fp": "1ea383a66f48c3cc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:35:12.032Z",
+   "filer": "other",
+   "fp": "d2acc9a7530b2a9d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:35:13.940Z",
+   "filer": "other",
+   "fp": "06db13d6922ae049",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:40:06.345Z",
+   "filer": "other",
+   "fp": "7b212f516de20526",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:44:48.604Z",
+   "filer": "other",
+   "fp": "bf7fda2f4f7c46fe",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:45:01.299Z",
+   "filer": "other",
+   "fp": "8d76c6262d9d9628",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:45:14.442Z",
+   "filer": "other",
+   "fp": "6e053f05adb4d75a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T22:48:09.598Z",
+   "filer": "other",
+   "fp": "981a6b5ad770c2b4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T23:00:38.034Z",
+   "filer": "alert",
+   "fp": "6705cde6f58e5b9e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:32:32.785Z",
+   "filer": "other",
+   "fp": "0f9ecaa2db392e41",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T23:35:42.008Z",
+   "filer": "other",
+   "fp": "1e0f27c63e70bba3",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:39:27.988Z",
+   "filer": "other",
+   "fp": "4d648015617fb3e3",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:39:42.953Z",
+   "filer": "other",
+   "fp": "22ada1dd52ac6e8f",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:39:59.289Z",
+   "filer": "other",
+   "fp": "bcc7617135b17108",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:43:58.884Z",
+   "filer": "other",
+   "fp": "da3d3ebc2b9311bb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-19T23:49:34.563Z",
+   "filer": "other",
+   "fp": "87bde6db269d3a11",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-19T23:55:04.749Z",
+   "filer": "other",
+   "fp": "47d885ad5150ed8a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T00:05:17.299Z",
+   "filer": "other",
+   "fp": "5bef78e697eb2692",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:13:49.507Z",
+   "filer": "alert",
+   "fp": "594d51c0ec4f1610",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:24:14.220Z",
+   "filer": "alert",
+   "fp": "c0050c86f9e32677",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T00:25:18.046Z",
+   "filer": "other",
+   "fp": "7da45e25923196cf",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:25:53.174Z",
+   "filer": "other",
+   "fp": "98425aaf9e29635d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:31:14.505Z",
+   "filer": "alert",
+   "fp": "7be766d83b329d38",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:31:16.790Z",
+   "filer": "alert",
+   "fp": "af4f0933a96f91a1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:31:18.268Z",
+   "filer": "alert",
+   "fp": "05090bf1bf674da4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T00:32:30.745Z",
+   "filer": "other",
+   "fp": "fa5d1bb1f8344640",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:43:50.381Z",
+   "filer": "alert",
+   "fp": "c26656ea7df54b43",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T00:44:38.070Z",
+   "filer": "alert",
+   "fp": "041583bf09f39d54",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T01:23:38.296Z",
+   "filer": "alert",
+   "fp": "73e3291107296add",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T01:36:29.792Z",
+   "filer": "other",
+   "fp": "469f3d53ceffd8dc",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T01:37:46.316Z",
+   "filer": "alert",
+   "fp": "cbd3fc97f4be6af0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T01:51:50.028Z",
+   "filer": "other",
+   "fp": "72dfe36a2440a369",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T01:51:51.631Z",
+   "filer": "other",
+   "fp": "ef8be820bcd711c5",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T01:51:52.902Z",
+   "filer": "other",
+   "fp": "92f171a8cf25b2ad",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T01:56:01.712Z",
+   "filer": "other",
+   "fp": "6e81527e787f17c3",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T02:34:16.976Z",
+   "filer": "other",
+   "fp": "8fdf59021bb1a5a6",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T02:37:25.090Z",
+   "filer": "other",
+   "fp": "0a93b80f0222a114",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T02:53:26.983Z",
+   "filer": "other",
+   "fp": "501c2d50762d4e25",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T03:08:40.424Z",
+   "filer": "other",
+   "fp": "7a9aff940b5b36b9",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T03:28:01.976Z",
+   "filer": "alert",
+   "fp": "8bde3ba3ce810e51",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T03:42:38.618Z",
+   "filer": "alert",
+   "fp": "d8831007541121b4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T03:45:46.256Z",
+   "filer": "alert",
+   "fp": "9e67a2f709e1e165",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T03:56:49.991Z",
+   "filer": "alert",
+   "fp": "8a3917a4ff3c1bd1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T03:58:09.038Z",
+   "filer": "other",
+   "fp": "ee26a830356c5a64",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T04:03:41.798Z",
+   "filer": "other",
+   "fp": "f765dd857096cbc3",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T04:07:16.568Z",
+   "filer": "alert",
+   "fp": "0f9a9d21eb3b49d3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T04:28:11.581Z",
+   "filer": "other",
+   "fp": "4c1953a855b9254c",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T04:32:02.455Z",
+   "filer": "other",
+   "fp": "3b56ad76248b9aec",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T05:08:28.348Z",
+   "filer": "alert",
+   "fp": "8e8a3244bfe22e39",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T05:13:55.000Z",
+   "filer": "alert",
+   "fp": "680b5b915fc8aa1f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T05:47:50.095Z",
+   "filer": "other",
+   "fp": "38de0e42820adfbf",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T06:10:13.614Z",
+   "filer": "other",
+   "fp": "773fc960742917bb",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T06:29:55.572Z",
+   "filer": "other",
+   "fp": "ccb564f1476a86e8",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T06:29:57.187Z",
+   "filer": "other",
+   "fp": "7525e1200d8d0d22",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T06:29:58.458Z",
+   "filer": "other",
+   "fp": "2def6034317d521f",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T13:45:01.905Z",
+   "filer": "alert",
+   "fp": "aa1a1e6a16252860",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T14:08:08.314Z",
+   "filer": "other",
+   "fp": "0c28a6fc78560439",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T14:47:28.076Z",
+   "filer": "alert",
+   "fp": "c8c4f3d364f3208c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:13:09.431Z",
+   "filer": "alert",
+   "fp": "0d80dcf2617486dc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:13:21.720Z",
+   "filer": "alert",
+   "fp": "ba05718510fe6055",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:13:30.208Z",
+   "filer": "alert",
+   "fp": "95f8ad9379a6bfc7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:21:47.441Z",
+   "filer": "alert",
+   "fp": "3359a13a038547fa",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:51:02.880Z",
+   "filer": "alert",
+   "fp": "8ed24aa4d14587ba",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T15:58:36.976Z",
+   "filer": "other",
+   "fp": "be57c3fe07828fe8",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T16:26:39.423Z",
+   "filer": "alert",
+   "fp": "a294af8a4ef17175",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T16:52:42.751Z",
+   "filer": "other",
+   "fp": "3d9df44039432133",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T16:52:56.281Z",
+   "filer": "other",
+   "fp": "f9be0a12fcf9d182",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T17:00:17.097Z",
+   "filer": "other",
+   "fp": "f8852c18364c0d05",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T17:00:31.637Z",
+   "filer": "other",
+   "fp": "1ed603a7c03285de",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T17:18:44.522Z",
+   "filer": "alert",
+   "fp": "eb61624c12e8f604",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:15:36.109Z",
+   "filer": "other",
+   "fp": "6c7e720ab9307027",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:15:48.402Z",
+   "filer": "alert",
+   "fp": "ecdec169186c351a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:16:48.386Z",
+   "filer": "other",
+   "fp": "fdd56cfa3b513c98",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:22:23.187Z",
+   "filer": "alert",
+   "fp": "111f66459d44f738",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:35:57.302Z",
+   "filer": "alert",
+   "fp": "f1ca6574204de047",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T18:54:39.544Z",
+   "filer": "alert",
+   "fp": "efdc73372ba70fdd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T20:14:30.812Z",
+   "filer": "other",
+   "fp": "de17bf7dd84fa5f4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T21:38:54.802Z",
+   "filer": "alert",
+   "fp": "186c8184ec6a1337",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:25:01.029Z",
+   "filer": "other",
+   "fp": "c88691cc86bbab3d",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:29:46.546Z",
+   "filer": "alert",
+   "fp": "58d8456414de8cc5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:31.191Z",
+   "filer": "other",
+   "fp": "1571013e950370e2",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:31.596Z",
+   "filer": "other",
+   "fp": "b06e39157cdb2e30",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:31.981Z",
+   "filer": "other",
+   "fp": "ac4ed98a48fab4a4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:32.345Z",
+   "filer": "other",
+   "fp": "5e602ad8b7005bdd",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:32.665Z",
+   "filer": "other",
+   "fp": "634e5f8f6c416a08",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:33.060Z",
+   "filer": "other",
+   "fp": "ed5eeb8e91f05565",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:34.329Z",
+   "filer": "other",
+   "fp": "cb8398b593b91034",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:35.724Z",
+   "filer": "other",
+   "fp": "66169eb0a118e737",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:36.037Z",
+   "filer": "other",
+   "fp": "0c1e77c157204b90",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:36.356Z",
+   "filer": "other",
+   "fp": "cd6fc2718c038df1",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:36.895Z",
+   "filer": "other",
+   "fp": "94fba14fdbbfd05a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:37.258Z",
+   "filer": "other",
+   "fp": "b27f2e41ddb93a7e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:38:37.589Z",
+   "filer": "other",
+   "fp": "34df9f135309a493",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:38:37.959Z",
+   "filer": "other",
+   "fp": "3799b5d40610e79a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-20T23:49:23.657Z",
+   "filer": "other",
+   "fp": "815d757949fa2513",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:58:44.357Z",
+   "filer": "other",
+   "fp": "020ef6cb0ec821b3",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-20T23:59:09.677Z",
+   "filer": "other",
+   "fp": "50295a29be8e7d24",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T00:27:14.769Z",
+   "filer": "other",
+   "fp": "e44a9210098053eb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T00:28:56.941Z",
+   "filer": "other",
+   "fp": "c4241c68fb1354f4",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T01:10:40.048Z",
+   "filer": "alert",
+   "fp": "9b21acad7cff045c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T01:27:35.093Z",
+   "filer": "other",
+   "fp": "2a93672665cf4b4d",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T01:27:36.400Z",
+   "filer": "other",
+   "fp": "d8b15ed06c93534e",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T01:28:42.621Z",
+   "filer": "alert",
+   "fp": "c44fbfa7c7e329fa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T02:35:34.886Z",
+   "filer": "other",
+   "fp": "e594cca3a886c983",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T02:42:20.793Z",
+   "filer": "alert",
+   "fp": "7daf72871205f73e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T02:50:48.654Z",
+   "filer": "alert",
+   "fp": "8e861b074a9c23c8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T02:56:37.730Z",
+   "filer": "alert",
+   "fp": "d6d48db843b12f6e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T04:00:16.321Z",
+   "filer": "alert",
+   "fp": "73e3291107296add",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T04:04:11.171Z",
+   "filer": "other",
+   "fp": "fa8b06c8512887c5",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T05:48:51.182Z",
+   "filer": "alert",
+   "fp": "e98f5e8ef4b3cca9",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T06:49:33.373Z",
+   "filer": "alert",
+   "fp": "4877d9d305e3fe97",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T06:53:14.218Z",
+   "filer": "alert",
+   "fp": "124577f83bdca480",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T06:56:37.591Z",
+   "filer": "alert",
+   "fp": "66ae0835d8d305b6",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T13:01:18.697Z",
+   "filer": "alert",
+   "fp": "dcb41f39e69257e3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T13:45:02.126Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T14:59:20.162Z",
+   "filer": "alert",
+   "fp": "d5d857cc651eaa86",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:30:13.577Z",
+   "filer": "alert",
+   "fp": "ad279ffbaa34a8d7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:35:15.526Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:35:16.597Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:35:20.928Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:35:32.204Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T15:35:33.960Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T17:04:12.284Z",
+   "filer": "lgtm",
+   "fp": "f0d207384302c501",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T17:09:07.608Z",
+   "filer": "alert",
+   "fp": "efe5eb5240b1e7ac",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T17:22:48.977Z",
+   "filer": "lgtm",
+   "fp": "68504b508c3f2fb3",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T21:36:55.649Z",
+   "filer": "alert",
+   "fp": "e4bea093b6795a30",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:36:25.753Z",
+   "filer": "alert",
+   "fp": "14c36819c3d0b3cc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:41:07.275Z",
+   "filer": "alert",
+   "fp": "01d816c3fdbac177",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:41:08.398Z",
+   "filer": "alert",
+   "fp": "dd184cf99b9cbf0d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:41:09.506Z",
+   "filer": "alert",
+   "fp": "a4456ffb4f8523af",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:56:34.358Z",
+   "filer": "alert",
+   "fp": "7c473da197d8c549",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T22:56:35.524Z",
+   "filer": "alert",
+   "fp": "304abdb9a5301e12",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:19:29.779Z",
+   "filer": "other",
+   "fp": "279ce5c8af8e35db",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:19:36.437Z",
+   "filer": "other",
+   "fp": "2c61f9418632b1ad",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T23:19:43.279Z",
+   "filer": "other",
+   "fp": "09ef4246b4d1c3bc",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T23:19:50.836Z",
+   "filer": "other",
+   "fp": "298e85a7205bfaaf",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T23:19:57.878Z",
+   "filer": "other",
+   "fp": "0ed5406cad8d66ff",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:20:05.839Z",
+   "filer": "other",
+   "fp": "5c6f1199f50e16d8",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:20:12.574Z",
+   "filer": "other",
+   "fp": "636dd51409c574e6",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:20:19.835Z",
+   "filer": "other",
+   "fp": "e5a31d6c16c63905",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:20:26.776Z",
+   "filer": "other",
+   "fp": "4724a7f47dceb314",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:20:33.269Z",
+   "filer": "other",
+   "fp": "6da78045c3d827c5",
+   "state_type": "unstarted"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-21T23:20:40.509Z",
+   "filer": "other",
+   "fp": "631cc19bc7349f7e",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:26:16.321Z",
+   "filer": "alert",
+   "fp": "31555e86e11d48e0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-21T23:29:17.211Z",
+   "filer": "alert",
+   "fp": "d64a21963ddab231",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T00:21:30.785Z",
+   "filer": "alert",
+   "fp": "0a763378a919419e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T13:45:06.730Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:11:19.616Z",
+   "filer": "alert",
+   "fp": "ec38813f014b8d16",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:35:17.562Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:35:18.927Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:35:22.600Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:35:37.600Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T15:35:40.370Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T16:25:29.255Z",
+   "filer": "alert",
+   "fp": "c027e44515d82df3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T16:55:30.699Z",
+   "filer": "alert",
+   "fp": "34a6155bfd018fff",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T17:02:32.593Z",
+   "filer": "alert",
+   "fp": "bcbb589b81731d87",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-22T17:39:33.407Z",
+   "filer": "other",
+   "fp": "1585c4d31d6adcbd",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T17:48:53.919Z",
+   "filer": "alert",
+   "fp": "df2f8b3328cc32cb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T18:11:09.301Z",
+   "filer": "alert",
+   "fp": "8be95ce4623d2a57",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T18:21:53.059Z",
+   "filer": "alert",
+   "fp": "e2b30f04a4a56b64",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T19:17:37.330Z",
+   "filer": "alert",
+   "fp": "ae469683e55c6576",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T19:41:28.973Z",
+   "filer": "alert",
+   "fp": "d22915e6fc320a2e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-22T19:59:48.095Z",
+   "filer": "alert",
+   "fp": "2b165ecc88633aa8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-22T20:20:32.377Z",
+   "filer": "other",
+   "fp": "32be1074bacd1f1a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T00:20:04.702Z",
+   "filer": "alert",
+   "fp": "7f3d8aae36fafe1d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T00:49:52.660Z",
+   "filer": "alert",
+   "fp": "3359a13a038547fa",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T01:43:12.216Z",
+   "filer": "alert",
+   "fp": "58907c8dd2476b01",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T02:05:21.853Z",
+   "filer": "alert",
+   "fp": "b9e91e84bf2bdfd6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T02:55:34.723Z",
+   "filer": "alert",
+   "fp": "3d6e2b50dfcbd504",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T02:55:36.247Z",
+   "filer": "alert",
+   "fp": "e6cdd2097ad9a395",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T03:28:20.128Z",
+   "filer": "alert",
+   "fp": "b9e91e84bf2bdfd6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T03:44:56.937Z",
+   "filer": "alert",
+   "fp": "d4720cb795685a77",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T04:30:23.076Z",
+   "filer": "other",
+   "fp": "83033bae8689ac15",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T10:25:39.538Z",
+   "filer": "alert",
+   "fp": "b05a70c3e3372c33",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T13:09:23.351Z",
+   "filer": "alert",
+   "fp": "546cde84af0297b6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T13:09:29.902Z",
+   "filer": "alert",
+   "fp": "d0fc5bd7a8ab1fb3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T13:45:06.099Z",
+   "filer": "alert",
+   "fp": "cf9f192629d17d70",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T13:52:02.783Z",
+   "filer": "alert",
+   "fp": "7f3d8aae36fafe1d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:15:37.374Z",
+   "filer": "other",
+   "fp": "f4146f8e31af43ad",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:25:46.572Z",
+   "filer": "alert",
+   "fp": "2ba20ea21e5abd02",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:35:11.845Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:35:12.779Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:35:14.698Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:35:16.770Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:35:17.739Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T15:57:28.450Z",
+   "filer": "alert",
+   "fp": "a9ced533a4504ff6",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:25:48.854Z",
+   "filer": "alert",
+   "fp": "21f32eef5be10067",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:30:38.018Z",
+   "filer": "other",
+   "fp": "d3e9b9565c07214e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:30:38.479Z",
+   "filer": "other",
+   "fp": "e2641ea020f1d455",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:37:40.138Z",
+   "filer": "alert",
+   "fp": "e10b6190a686b036",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:56:04.298Z",
+   "filer": "alert",
+   "fp": "ff617dff8f2c3c2f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T16:56:05.784Z",
+   "filer": "alert",
+   "fp": "af89cff63f96b201",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:26:09.346Z",
+   "filer": "alert",
+   "fp": "b48f9993d51edb10",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:26:11.221Z",
+   "filer": "alert",
+   "fp": "4c1e795b6082bdf2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:30:29.908Z",
+   "filer": "alert",
+   "fp": "6b79ca459e248a7e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:34:23.556Z",
+   "filer": "other",
+   "fp": "b55a8e27af8ab42c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:56:12.301Z",
+   "filer": "alert",
+   "fp": "7a338aed7c6725b6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:56:13.431Z",
+   "filer": "alert",
+   "fp": "11ce50af75338213",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T17:58:48.223Z",
+   "filer": "alert",
+   "fp": "b9e91e84bf2bdfd6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-23T18:24:46.555Z",
+   "filer": "other",
+   "fp": "4c5909a9ca20789a",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T18:24:52.859Z",
+   "filer": "other",
+   "fp": "01ff5530b73a6826",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T18:48:38.925Z",
+   "filer": "alert",
+   "fp": "d4e640e5ecfc9146",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T18:49:00.486Z",
+   "filer": "alert",
+   "fp": "fe97ae9ad518b6d3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T20:34:24.824Z",
+   "filer": "alert",
+   "fp": "77969fa3b600e148",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T20:42:58.571Z",
+   "filer": "alert",
+   "fp": "e9dff0423ca48c68",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T21:04:21.955Z",
+   "filer": "alert",
+   "fp": "07d63f7164ab2dfb",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T21:22:46.141Z",
+   "filer": "alert",
+   "fp": "63940742dbd284c6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T22:23:29.850Z",
+   "filer": "alert",
+   "fp": "63940742dbd284c6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T22:51:39.132Z",
+   "filer": "alert",
+   "fp": "764d605aa0e7da4f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T23:01:30.318Z",
+   "filer": "alert",
+   "fp": "445ac9786d675b5d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T23:35:09.576Z",
+   "filer": "alert",
+   "fp": "d27910f22dae75a9",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-23T23:48:03.803Z",
+   "filer": "alert",
+   "fp": "4e7266f6a4c5cbf8",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T02:08:17.614Z",
+   "filer": "alert",
+   "fp": "8dd53f3721be9989",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T03:01:08.971Z",
+   "filer": "alert",
+   "fp": "7e0d8ef4e8558d56",
+   "state_type": "canceled"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T03:50:33.313Z",
+   "filer": "alert",
+   "fp": "8e038e722c4594c0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T04:16:21.269Z",
+   "filer": "alert",
+   "fp": "07d63f7164ab2dfb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T04:37:29.324Z",
+   "filer": "alert",
+   "fp": "78e4b2b510e86b1e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T06:52:00.402Z",
+   "filer": "alert",
+   "fp": "7ac3bb2010c0154b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T06:56:33.106Z",
+   "filer": "alert",
+   "fp": "e9dff0423ca48c68",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T07:33:18.606Z",
+   "filer": "alert",
+   "fp": "c94a49134ca20f31",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T10:36:01.866Z",
+   "filer": "alert",
+   "fp": "a81f61350f9b3165",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T10:52:42.551Z",
+   "filer": "alert",
+   "fp": "a77d5d6e8c3ed459",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T12:22:23.692Z",
+   "filer": "alert",
+   "fp": "383601ee8c0053e6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T13:45:01.855Z",
+   "filer": "alert",
+   "fp": "cf9f192629d17d70",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T14:09:32.720Z",
+   "filer": "alert",
+   "fp": "b5d320af317ac9b5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T14:29:57.898Z",
+   "filer": "alert",
+   "fp": "6b7700e2131f7500",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:35:17.600Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:35:18.339Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:35:19.099Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:35:19.790Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:35:22.038Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:47:43.022Z",
+   "filer": "alert",
+   "fp": "74c0717d2b679b2f",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:47:44.683Z",
+   "filer": "alert",
+   "fp": "cba73d5b477b8d9b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T15:56:47.210Z",
+   "filer": "alert",
+   "fp": "597a0e1bcbfacbdf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-24T17:39:08.933Z",
+   "filer": "alert",
+   "fp": "21c56692e69b7c9d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T03:50:29.206Z",
+   "filer": "alert",
+   "fp": "1e3265c852535248",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T03:50:41.112Z",
+   "filer": "alert",
+   "fp": "8c19deda67c4b6d0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T04:30:20.894Z",
+   "filer": "other",
+   "fp": "b1a6b5fcd86846c1",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T09:17:58.201Z",
+   "filer": "alert",
+   "fp": "78d291c3e7337b24",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T13:45:02.085Z",
+   "filer": "alert",
+   "fp": "cf9f192629d17d70",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T14:52:14.023Z",
+   "filer": "alert",
+   "fp": "b5d320af317ac9b5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:08:16.538Z",
+   "filer": "alert",
+   "fp": "2e878f5dab511a2b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:11.123Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:12.832Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:13.684Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:14.541Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:16.730Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T15:35:18.951Z",
+   "filer": "other",
+   "fp": "2e4b9d23e3402897",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T16:16:26.109Z",
+   "filer": "alert",
+   "fp": "75f475963d4b970e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T22:22:06.466Z",
+   "filer": "alert",
+   "fp": "b5dac59c9b5f2852",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T23:22:08.015Z",
+   "filer": "alert",
+   "fp": "a72c9609ddc0c5d3",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-25T23:52:09.802Z",
+   "filer": "alert",
+   "fp": "e51c38d731787e16",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T00:22:10.992Z",
+   "filer": "alert",
+   "fp": "66f71197f5c5372d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T00:22:14.713Z",
+   "filer": "alert",
+   "fp": "b58fbb3dd1d22f02",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T04:30:31.172Z",
+   "filer": "other",
+   "fp": "5c4236a4c0bcd185",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T13:45:05.907Z",
+   "filer": "alert",
+   "fp": "cf9f192629d17d70",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T15:09:27.649Z",
+   "filer": "alert",
+   "fp": "fa46a85f798e92cb",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T15:48:18.938Z",
+   "filer": "alert",
+   "fp": "818c5c7b0c51a91d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T15:56:16.120Z",
+   "filer": "alert",
+   "fp": "fd754d4cc1be9dfd",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T16:02:24.173Z",
+   "filer": "alert",
+   "fp": "c43ee203616c30be",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-26T18:30:20.877Z",
+   "filer": "other",
+   "fp": "9d3ea99091b5b708",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T18:48:45.949Z",
+   "filer": "alert",
+   "fp": "5269e4b1ed7e9dea",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T18:48:57.142Z",
+   "filer": "alert",
+   "fp": "0058e602e2c88c06",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T19:07:38.277Z",
+   "filer": "alert",
+   "fp": "35d957943a5ab72d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T19:07:52.376Z",
+   "filer": "alert",
+   "fp": "0fb43fbbfe22b4cf",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T19:42:12.040Z",
+   "filer": "alert",
+   "fp": "7cdd6848ab6d8e5a",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T20:20:57.977Z",
+   "filer": "alert",
+   "fp": "6ee44b488aa7c431",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-26T21:14:36.997Z",
+   "filer": "alert",
+   "fp": "d74199d0480d84f0",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T03:41:33.506Z",
+   "filer": "alert",
+   "fp": "39a8463927e1e862",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T03:43:51.243Z",
+   "filer": "alert",
+   "fp": "7fb79c6c12685720",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T13:45:06.847Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T14:18:12.618Z",
+   "filer": "alert",
+   "fp": "ae80f9899d572aa2",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T14:56:42.955Z",
+   "filer": "other",
+   "fp": "6f0a345e3ca1c6f2",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T15:52:28.437Z",
+   "filer": "alert",
+   "fp": "efa3de4dc28feedc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T15:58:45.309Z",
+   "filer": "other",
+   "fp": "9dfcc0d29d8f8639",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T16:00:07.026Z",
+   "filer": "alert",
+   "fp": "9ed9a6b8bfde44c5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T16:10:16.685Z",
+   "filer": "alert",
+   "fp": "a34c98ee19a5ed51",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T16:54:18.271Z",
+   "filer": "alert",
+   "fp": "cfa5b506a6b2ed06",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T18:51:13.014Z",
+   "filer": "alert",
+   "fp": "f99428c274c57d91",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T19:41:26.694Z",
+   "filer": "alert",
+   "fp": "c349f448bfb2f1da",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T19:41:34.810Z",
+   "filer": "alert",
+   "fp": "7a3f29020a7d28bc",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T19:58:53.813Z",
+   "filer": "alert",
+   "fp": "da0a684330afe676",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T19:59:08.196Z",
+   "filer": "alert",
+   "fp": "ad45fa4faeeeaa14",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T20:15:53.073Z",
+   "filer": "alert",
+   "fp": "555e0035438eeab8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T21:12:18.527Z",
+   "filer": "other",
+   "fp": "471b04317680e614",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T21:12:54.920Z",
+   "filer": "alert",
+   "fp": "725c5995e7d3bb5c",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-27T21:13:04.287Z",
+   "filer": "alert",
+   "fp": "10e57a57096e48e8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T02:22:32.709Z",
+   "filer": "alert",
+   "fp": "23165dc1394d3116",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T13:45:02.342Z",
+   "filer": "alert",
+   "fp": "8ee2255a19d01d55",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T14:28:01.021Z",
+   "filer": "alert",
+   "fp": "302ac023307e1da6",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T14:50:23.287Z",
+   "filer": "alert",
+   "fp": "ac1dcaf9d3b9698e",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:15:31.350Z",
+   "filer": "other",
+   "fp": "d81111c7b2ce42e5",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:16.067Z",
+   "filer": "other",
+   "fp": "77dbf85ff9085d1a",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:16.899Z",
+   "filer": "other",
+   "fp": "4609dc344eb26246",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:17.843Z",
+   "filer": "other",
+   "fp": "52150845221a0fd0",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:18.576Z",
+   "filer": "other",
+   "fp": "7d83e3f32a595ffa",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:19.345Z",
+   "filer": "other",
+   "fp": "b49824446ed80add",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:35:31.191Z",
+   "filer": "other",
+   "fp": "2e4b9d23e3402897",
+   "state_type": "duplicate"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T15:46:06.848Z",
+   "filer": "alert",
+   "fp": "48cb9fe7b41daae7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": true,
+   "created_at": "2026-09-28T16:09:38.138Z",
+   "filer": "other",
+   "fp": "5f9818d72bd9f720",
+   "state_type": "completed"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T16:22:39.632Z",
+   "filer": "alert",
+   "fp": "0ff13de8c5991133",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T16:25:39.026Z",
+   "filer": "alert",
+   "fp": "e3c411867d61e6d7",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T17:22:41.903Z",
+   "filer": "alert",
+   "fp": "d56b7cb2f38aa9a8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T17:50:08.188Z",
+   "filer": "other",
+   "fp": "1df3207cb7488bfe",
+   "state_type": "started"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T18:42:29.543Z",
+   "filer": "alert",
+   "fp": "209eca90e7df7142",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T18:42:37.551Z",
+   "filer": "alert",
+   "fp": "a017fe1a544014e8",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T18:42:44.885Z",
+   "filer": "alert",
+   "fp": "06109e5fb73df80b",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T19:13:15.924Z",
+   "filer": "alert",
+   "fp": "42b2e1d5e72e8b69",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T20:03:31.042Z",
+   "filer": "other",
+   "fp": "74a4a31b1c4aab21",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T20:07:47.209Z",
+   "filer": "other",
+   "fp": "d8cae62d36f1b35d",
+   "state_type": "backlog"
+  },
+  {
+   "bot": false,
+   "completed": false,
+   "created_at": "2026-09-28T20:22:24.547Z",
+   "filer": "alert",
+   "fp": "0e3345975c2b92a3",
+   "state_type": "backlog"
+  }
+ ]
+}

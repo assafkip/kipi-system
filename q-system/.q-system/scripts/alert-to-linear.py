@@ -972,6 +972,28 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
             f"ticket within {LOCK_WAIT_SECONDS:g}s; refusing to create a "
             f"duplicate. NOT filed: {message}")
 
+    # THE BUDGET, and it sits HERE for the same reason the may_create gate does:
+    # everything above this line counts an existing ticket, everything below
+    # creates one. Spending a token on the repeat path would drain the budget on
+    # writes that mint nothing (ASK-2012).
+    #
+    # Dedup and the cap answer two different questions and the board needs both.
+    # The fingerprint above collapses ONE condition said 51 times. It says
+    # nothing about 105 DIFFERENT conditions in an hour, which is what the
+    # `alert` filer actually did on this board: 507 created in 28 days, 5 ever
+    # completed. Nothing is dropped -- an over-budget alert is written to the
+    # recorded list and becomes a ticket the moment its fingerprint recurs.
+    #
+    # EXIT_OK, not EXIT_FAILED. The alert was recorded, which is this file's job;
+    # reporting it as a failed send would make the heartbeat's halt branch fire
+    # on a working budget.
+    decision = _cap.decide(_cap.filer_for(message), fp, now,
+                           title=title_for(message))
+    if not decision.ticket:
+        return EXIT_OK, (
+            f"recorded, not ticketed ({decision.reason}). Read it with "
+            f"`filer_cap.py list`. NOT a ticket: {title_for(message)}")
+
     # Bound BEFORE the try, never inside it. A name first assigned inside a
     # try/except is only bound on the paths that got that far, and the read of
     # it below sits outside the block -- the shape that turns one failure into a
