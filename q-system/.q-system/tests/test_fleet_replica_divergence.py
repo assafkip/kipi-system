@@ -58,6 +58,169 @@ def run(registry, *args):
     )
 
 
+# --- a skeleton with REAL git history ----------------------------------------
+#
+# WHY THIS EXISTS (review finding, PR #460 round 2, minor). `build_fleet` above
+# writes a registry with no `skeleton` key, so `registry_skeleton` returned None
+# and EVERY red case in this file red through "unknown". The `ahead` branch was
+# never executed: a mutant making `classify_direction` unable to return "ahead"
+# left 25 passed. Direction is answered out of skeleton git history, so a fixture
+# that wants to exercise direction has to build that history rather than a tree.
+SKELETON_BRANCH = "main"
+
+
+def git(root: Path, *args: str):
+    return subprocess.run(
+        ["git", "-C", str(root),
+         "-c", "user.email=t@t.t", "-c", "user.name=test",
+         "-c", "commit.gpgsign=false", *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def seed_skeleton(sk: Path, shipped: list[str], branch_only: tuple[str, ...] = ()):
+    """A skeleton whose fan-out branch holds `shipped` in order, oldest first.
+
+    `branch_only` texts are committed on an UNMERGED branch and then abandoned,
+    which is the population finding 1 is about: a blob reachable from some ref in
+    the clone that was never fanned out to any instance.
+
+    `symbolic-ref` rather than `init -b`: the branch name has to be the one
+    kipi-update.sh fans out from, and `-b` needs git 2.28 while symbolic-ref on a
+    fresh repo with no commits works everywhere.
+    """
+    target = sk / REL
+    target.parent.mkdir(parents=True, exist_ok=True)
+    git(sk, "init", "-q")
+    git(sk, "symbolic-ref", "HEAD", f"refs/heads/{SKELETON_BRANCH}")
+    for i, text in enumerate(shipped):
+        target.write_text(text)
+        git(sk, "add", "-A")
+        git(sk, "commit", "-qm", f"shipped-{i}")
+    for i, text in enumerate(branch_only):
+        git(sk, "checkout", "-q", "-b", f"wip-{i}")
+        target.write_text(text)
+        git(sk, "add", "-A")
+        git(sk, "commit", "-qm", f"wip-{i}")
+        git(sk, "checkout", "-q", SKELETON_BRANCH)
+    return sk
+
+
+def build_skeleton_fleet(tmp_path, *, shipped: list[str], replicas: dict[str, str],
+                         branch_only: tuple[str, ...] = ()):
+    """Registry naming a real skeleton plus replica roots. Returns (registry, sk)."""
+    sk = seed_skeleton(tmp_path / "skel", shipped, branch_only)
+    roots = []
+    for name, text in replicas.items():
+        target = tmp_path / name / REL
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        roots.append({"name": name, "path": str(tmp_path / name)})
+    registry = tmp_path / "instance-registry.json"
+    registry.write_text(json.dumps({
+        "skeleton": {"path": str(sk)}, "instances": roots,
+    }))
+    return registry, sk
+
+
+def test_skeleton_ahead_of_every_replica_is_behindness_not_divergence(tmp_path):
+    """The normal state immediately before an update. Must be green, and named."""
+    reg, _ = build_skeleton_fleet(
+        tmp_path, shipped=["v1\n", "v2\n"], replicas={"a": "v1\n", "b": "v1\n"})
+    res = run(reg, "--path", REL)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "behind the skeleton" in res.stdout, res.stdout
+
+
+def test_a_replica_holding_bytes_the_skeleton_never_had_goes_red_via_ahead(tmp_path):
+    """Reds through `ahead`, not through `unknown`.
+
+    The distinction is the whole point of this fixture: a suite whose reds all
+    arrive via `unknown` passes against a gate whose `ahead` branch is dead.
+    """
+    reg, _ = build_skeleton_fleet(
+        tmp_path, shipped=["v1\n"], replicas={"a": "v1\n", "b": "v1\nonly here\n"})
+    res = run(reg, "--path", REL)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "direction undeterminable" not in res.stdout, res.stdout
+    assert "[ahead]" in res.stdout, res.stdout
+    assert str(tmp_path / "b") in res.stdout
+
+
+def test_a_blob_only_on_an_unmerged_branch_is_not_a_shipped_revision(tmp_path):
+    """Finding 1, PR #460 round 2 (major). The reproducer.
+
+    `skeleton_revisions` walked `rev-list --all`, so any blob on any local branch
+    counted as proof a replica was merely BEHIND. This repo already retired that
+    predicate once: `kipi-update.sh:274-279` says verbatim that a blob which only
+    ever existed on a branch "was never shipped to any instance", and
+    `fleet_authored_blob` walks the fan-out ref instead. The fleet fans out from
+    `main` and only from there, so that is the boundary here too.
+
+    `b` holds bytes that exist on an abandoned `wip-0` branch and nowhere on
+    `main`. That is founder work rsync --delete destroys, so it must be red.
+    """
+    reg, _ = build_skeleton_fleet(
+        tmp_path, shipped=["v1\n"], replicas={"a": "v1\n", "b": "wip\n"},
+        branch_only=("wip\n",))
+    res = run(reg, "--path", REL)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "[ahead]" in res.stdout, res.stdout
+    assert str(tmp_path / "b") in res.stdout
+
+
+def test_a_mixed_ahead_and_behind_path_labels_every_group(tmp_path):
+    """Finding 4, PR #460 round 2 (minor).
+
+    One root ahead and one behind for the same path printed two identical
+    single-root lines while the abort said "named above". The operator had no way
+    to tell which copy to reconcile from the output that told them to reconcile.
+    """
+    reg, _ = build_skeleton_fleet(
+        tmp_path, shipped=["v1\n", "v2\n"],
+        replicas={"behind_root": "v1\n", "ahead_root": "never shipped\n"})
+    res = run(reg, "--path", REL)
+    assert res.returncode == 1, res.stdout + res.stderr
+    lines = res.stdout.splitlines()
+    assert any("[ahead]" in l and str(tmp_path / "ahead_root") in l for l in lines), res.stdout
+    assert any("[behind]" in l and str(tmp_path / "behind_root") in l for l in lines), res.stdout
+
+
+def test_an_explicit_skeleton_decides_direction_over_the_registry_key(tmp_path):
+    """Finding 3, PR #460 round 2 (minor): two readers of "which tree is source".
+
+    The gate read the registry's `skeleton` key; `kipi-update.sh:15` defines the
+    skeleton as `$SCRIPT_DIR` and never reads that key. Run from any other
+    checkout, the gate answered direction against a tree the run does not rsync
+    from -- measured live against a 137-commit unmerged branch's working tree.
+    The CALLER declares the source now; the registry key is only the default for
+    a standalone run.
+
+    Same replica, same registry, two different sources: green against the one
+    whose history holds `v1`, red against the one whose history does not.
+    """
+    reg, _ = build_skeleton_fleet(
+        tmp_path, shipped=["v1\n", "v2\n"], replicas={"a": "v1\n"})
+    other = seed_skeleton(tmp_path / "other-skel", ["v2\n"])
+    assert run(reg, "--path", REL).returncode == 0
+    res = run(reg, "--path", REL, "--skeleton", str(other))
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "[ahead]" in res.stdout, res.stdout
+
+
+def test_no_skeleton_in_the_registry_reds_through_unknown(tmp_path):
+    """Fail closed, and say which question went unanswered.
+
+    Kept explicit alongside the cases above so the two red REASONS stay
+    distinguishable. A suite that only asserts exit 1 cannot tell a direction
+    finding from a gate that could not look.
+    """
+    reg = build_fleet(tmp_path, {"a": "same\n", "b": "different\n"})
+    res = run(reg, "--path", REL)
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "direction undeterminable" in res.stdout, res.stdout
+
+
 def test_identical_copies_are_green(tmp_path):
     reg = build_fleet(tmp_path, {"a": "same\n", "b": "same\n", "c": "same\n"})
     res = run(reg, "--path", REL)

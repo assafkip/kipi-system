@@ -894,7 +894,14 @@ REPLICA_SCOPE=()
 if [ -n "$ONLY" ]; then
   REPLICA_SCOPE=(--only "$ONLY")
 fi
-if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" "${REPLICA_SCOPE[@]+"${REPLICA_SCOPE[@]}"}" 2>&1)"; then
+# --skeleton "$SCRIPT_DIR", not the registry's skeleton key (PR #460 review round
+# 2, minor). THIS tree is the one about to be rsynced out, so it is the one
+# direction has to be answered against. The gate defaulted to the registry key,
+# which this script never reads, so a run from any other checkout compared the
+# fleet against a tree it was not going to copy from -- reproduced against a
+# 137-commit unmerged branch. One reader of "which tree is the source", and it is
+# the script doing the copying.
+if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" --skeleton "$SCRIPT_DIR" "${REPLICA_SCOPE[@]+"${REPLICA_SCOPE[@]}"}" 2>&1)"; then
   REPLICA_RC=0
 else
   REPLICA_RC=$?

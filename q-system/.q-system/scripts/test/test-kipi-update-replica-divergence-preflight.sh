@@ -92,7 +92,13 @@ for rel in mod.DEFAULT_REPLICATED:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("shared replica content\n")
 SEED_SK
-  ( cd "$sk" && G init -q && G add -A -f && G commit -qm skel )
+  # ON THE FAN-OUT BRANCH, named. The gate answers direction out of
+  # `rev-list refs/heads/main` and not `--all` (PR #460 review round 2, major),
+  # so a fixture skeleton left on git's default `master` would only ever take the
+  # HEAD fallback and the real fleet's ref would be uncovered here. `init -q`
+  # then `symbolic-ref` rather than `init -b main`: -b needs git 2.28.
+  ( cd "$sk" && G init -q && G symbolic-ref HEAD refs/heads/main \
+      && G add -A -f && G commit -qm skel )
   # THE SKELETON IS IN THE POPULATION, as it is in the real instance-registry.json
   # (review finding, PR #460, minor). Without it the suite compared replicas to
   # each other and never to the source, so the direction-blind false positive --

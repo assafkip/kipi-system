@@ -184,8 +184,40 @@ def _git_blob_sha(path: Path) -> str | None:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
+# The branch the fleet fans out FROM. Must stay equal to `SKELETON_BRANCH` in
+# kipi-update.sh, which is the script that does the rsyncing.
+SKELETON_BRANCH = "main"
+
+
+def skeleton_ship_ref(skeleton_root: str, run) -> str | None:
+    """The ref whose history counts as "shipped to the fleet".
+
+    SHIPPED IS THE FAN-OUT BRANCH, NOT EVERY REF IN THE CLONE (review finding,
+    PR #460 round 2, major). The first armed version walked `rev-list --all`, so
+    any blob on any local branch -- unmerged feature work, another session's WIP,
+    a stale bisect ref -- counted as proof that a replica holding those bytes was
+    merely BEHIND, and the gate greenlit rsync --delete over content that was
+    never fanned out to anything. Measured on the live skeleton for
+    prd_runner.py: 75 blobs via `--all`, 33 via `origin/main`. 56% of what the
+    gate would have called safe had never shipped.
+
+    This repo had already retired that exact predicate 600 lines into
+    kipi-update.sh (`fleet_authored_blob`, and the comment above it), for the
+    same reason, after the same finding on PR #151. Same resolution order is used
+    here deliberately: origin's ref is the one with a proven meaning, and the
+    local fallbacks exist for fixtures and clones with no origin, where there is
+    no remote to disagree with.
+    """
+    for ref in (f"refs/remotes/origin/{SKELETON_BRANCH}",
+                f"refs/heads/{SKELETON_BRANCH}", "HEAD"):
+        probe = run(["rev-parse", "--verify", "--quiet", ref])
+        if probe is not None and probe.returncode == 0:
+            return ref
+    return None
+
+
 def skeleton_revisions(skeleton_root: str, rel: str) -> set[str] | None:
-    """Every blob the skeleton has EVER held at `rel`. None when git cannot say.
+    """Every blob the skeleton has SHIPPED at `rel`. None when git cannot say.
 
     None is not an empty set and the difference decides the verdict: an empty
     set means "the skeleton has no history for this path, so nothing a replica
@@ -206,7 +238,10 @@ def skeleton_revisions(skeleton_root: str, rel: str) -> set[str] | None:
     probe = run(["rev-parse", "--is-inside-work-tree"])
     if probe is None or probe.returncode != 0:
         return None
-    commits = run(["rev-list", "--all", "--", rel])
+    ship_ref = skeleton_ship_ref(skeleton_root, run)
+    if ship_ref is None:
+        return None
+    commits = run(["rev-list", ship_ref, "--", rel])
     if commits is None or commits.returncode != 0:
         return None
     wanted = [f"{sha}:{rel}" for sha in commits.stdout.split()]
@@ -242,23 +277,34 @@ def classify_direction(entry: dict, skeleton_root: str | None) -> str:
     be answered -- no skeleton in the registry, no git, or the skeleton has no
     copy of this path. Fail closed: an unanswered direction question must not
     read as the safe answer.
+
+    ANSWERED PER GROUP, NOT ONCE PER PATH (review finding, PR #460 round 2,
+    minor). The first version short-circuited on the first `ahead` root and
+    returned one verdict for the whole path, so a path with one root ahead and
+    another behind printed two identical single-root lines while the abort said
+    "named above". Each group carries its own `direction` now and the printer
+    labels it, so "reconcile the direction" names which copy. A group containing
+    the skeleton itself is `source`: those copies ARE the bytes being rsynced out.
     """
+    groups = entry["groups"]
     if not skeleton_root:
         return "unknown"
-    sk_file = Path(skeleton_root) / rel_of(entry)
+    rel = rel_of(entry)
+    sk_file = Path(skeleton_root) / rel
     if not sk_file.is_file():
         return "unknown"
-    revisions = skeleton_revisions(skeleton_root, rel_of(entry))
+    revisions = skeleton_revisions(skeleton_root, rel)
     if revisions is None:
         return "unknown"
-    for group in entry["groups"]:
-        for root in group["roots"]:
-            if root == skeleton_root:
-                continue
-            blob = _git_blob_sha(Path(root) / rel_of(entry))
-            if blob is None or blob not in revisions:
-                return "ahead"
-    return "behind"
+    for group in groups:
+        if skeleton_root in group["roots"]:
+            group["direction"] = "source"
+            continue
+        # Every root in a group holds the same bytes by construction (the group
+        # key IS the content hash), so one blob id answers for all of them.
+        blob = _git_blob_sha(Path(group["roots"][0]) / rel)
+        group["direction"] = "behind" if blob is not None and blob in revisions else "ahead"
+    return "ahead" if any(g["direction"] == "ahead" for g in groups) else "behind"
 
 
 def rel_of(entry: dict) -> str:
@@ -389,6 +435,10 @@ def main() -> int:
     ap.add_argument("--only", default=None,
                     help="restrict the population to this registered instance "
                          "plus the skeleton, mirroring `kipi-update.sh --only`")
+    ap.add_argument("--skeleton", default=None,
+                    help="the SOURCE tree direction is answered against; defaults "
+                         "to the registry's skeleton key. kipi-update.sh passes "
+                         "its own $SCRIPT_DIR, because that is what it rsyncs from")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -401,7 +451,16 @@ def main() -> int:
     rel_paths = tuple(args.paths) if args.paths else DEFAULT_REPLICATED
 
     roots = registry_roots(registry)
-    skeleton_root = registry_skeleton(registry)
+    # THE CALLER DECLARES THE SOURCE (review finding, PR #460 round 2, minor).
+    # The gate read the registry's `skeleton` key while `kipi-update.sh` defines
+    # the skeleton as its own `$SCRIPT_DIR` and never reads that key, so run from
+    # any other checkout the two measured different trees -- reproduced against a
+    # 137-commit unmerged branch's working tree, which answered "behind" for a
+    # fleet the updater would have rsynced from somewhere else entirely. The
+    # rsyncing script is the one that knows, so it says. The registry key stays
+    # as the default for a standalone run, where there is no caller to ask.
+    skeleton_root = (os.path.expanduser(args.skeleton) if args.skeleton
+                     else registry_skeleton(registry))
 
     # SCOPE THE POPULATION TO WHAT THE RUN WILL ACTUALLY WRITE (review finding,
     # PR #460 round 1, major). `kipi-update.sh --only <name>` touches one
@@ -537,9 +596,17 @@ def main() -> int:
                 elif entry["direction"] == "unknown":
                     print("    direction undeterminable (no skeleton root, no git, "
                           "or no skeleton copy of this path); refusing to assume safe")
+                elif entry["direction"] == "ahead":
+                    print("    the [ahead] copies below hold bytes the skeleton "
+                          "never shipped; those are the ones rsync --delete destroys")
                 for group in entry["groups"]:
                     label = ", ".join(group["roots"]) if group["n"] <= 3 else f"{group['n']} roots"
-                    print(f"    {group['sha']}  n={group['n']:3d}  {label}")
+                    # The per-group direction, not one verdict for the path: a
+                    # mixed path used to print ahead and behind roots identically
+                    # (PR #460 round 2, minor). Blank-padded to a fixed width so
+                    # the root column still lines up.
+                    mark = f"[{group.get('direction', 'unknown')}]"
+                    print(f"    {group['sha']}  n={group['n']:3d}  {mark:<9} {label}")
         if diverged:
             print(
                 "\nkipi update rsyncs plugins/ from the skeleton WITH --delete. "
