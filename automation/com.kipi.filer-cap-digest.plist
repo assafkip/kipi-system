@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The reader for filer_cap's "recorded, not ticketed" list (ASK-2012).
+
+     WHY IT EXISTS. The list had two writers and no reader, so the only thing
+     that ever touched a row again was the 14-day prune: a finding was recorded
+     and then deleted, which is the drop the list was built to refuse (PR #465
+     review round 1, major). This job is the reader.
+
+     ONE LINE PER RUN, never one per finding. It files through alert-to-linear.py
+     with KIPI_ALERT_FILER=filer-cap-digest, so it lands in Sana's triage
+     (founder-notifications.md: engineering signal never pages the founder) and
+     spends its OWN budget rather than the alert budget it reports on. Repeats
+     dedup on alert-to-linear's fingerprint, which strips digits, so a digest
+     whose counts changed comments on the one open ticket instead of opening a
+     second.
+
+     Silent when there is nothing to say: digest_line() returns empty at zero
+     recorded rows and --notify files nothing.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized
+     by install-plist.sh like every sibling.
+
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.filer-cap-digest -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.filer-cap-digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- Login shell so the Linear API key and a modern python3 resolve the same
+         way they do for a human (ASK-718: a job running blind for 19 days). -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/filer_cap.py digest --notify</string>
+  </array>
+  <!-- Local 08:20: after com.kipi.spillover-linear-check at 08:10 and before the
+       09:30 launchd-health sweep reads this job's exit status. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>20</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/filer-cap-digest.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/filer-cap-digest.err.log</string>
+</dict>
+</plist>

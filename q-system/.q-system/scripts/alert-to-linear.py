@@ -222,6 +222,31 @@ _NOISE_PATTERNS = [
 ]
 
 
+_NEVER_SUPPRESS = re.compile(r"unsanctioned|reverted|SECURITY", re.IGNORECASE)
+
+
+def never_capped(message: str) -> bool:
+    """True for the class no layer of this file may suppress.
+
+    ONE CONSTANT, TWO CONSUMERS, and that is the whole point. is_noise() has
+    refused to suppress this class since ASK-870; the budget added in ASK-2012 is
+    a second suppressor on the same path, and a second copy of this regex would
+    be a second source of truth that agrees on the day it is written. So both
+    read `_NEVER_SUPPRESS`: change it and both move.
+
+    WHY THE CAP NEEDS THE CARVE-OUT AT ALL (PR #465 review round 1, major). The
+    cap does not drop; it records and promotes on recurrence. A security
+    detection is precisely the shape that does NOT recur -- the change was
+    reverted, so it fires once -- and a list row unseen for 14 days is pruned. So
+    for this one class, "recorded, not ticketed" is a delayed drop, and it would
+    have landed on exactly the ticket ASK-870 already had to be rescued once.
+
+    An exempt create still SPENDS a token (filer_cap.exempt): the bucket measures
+    creates, and a create the tripwire cannot see makes its ratio lie.
+    """
+    return bool(_NEVER_SUPPRESS.search(message or ""))
+
+
 def is_noise(message: str) -> bool:
     """True for a pure all-clear/no-op alert that should never become a ticket.
 
@@ -235,7 +260,7 @@ def is_noise(message: str) -> bool:
     accident -- the override applies to every pattern above, not just the
     tripwire one.
     """
-    if re.search(r"unsanctioned|reverted|SECURITY", message, re.IGNORECASE):
+    if never_capped(message):
         return False
     return any(p.search(message) for p in _NOISE_PATTERNS)
 
@@ -994,8 +1019,14 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
     # EXIT_OK, not EXIT_FAILED. The alert was recorded, which is this file's job;
     # reporting it as a failed send would make the heartbeat's halt branch fire
     # on a working budget.
-    decision = _cap.decide(_cap.filer_for(message), fp, now,
-                           title=title_for(message))
+    # THE CARVE-OUT IS PART OF THE BUDGET, not an exception to it: see
+    # never_capped for why a class that fires once and is then reverted cannot be
+    # handled by "recorded, promoted on recurrence".
+    filer = _cap.filer_for(message)
+    decision = (_cap.exempt(filer, now,
+                            reason="exempt from the cap (security detection)")
+                if never_capped(message)
+                else _cap.decide(filer, fp, now, title=title_for(message)))
     if not decision.ticket:
         return EXIT_OK, (
             f"recorded, not ticketed ({decision.reason}). Read it with "

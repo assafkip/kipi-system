@@ -121,11 +121,103 @@ TRIPWIRE_DAYS = 7
 # `radar` and `lgtm` file through their own paths, uncapped, today.
 CAPPED_FILERS = ("alert",)
 
+# THE CHOKEPOINT, and it is a different thing from a bucket. A bucket is keyed by
+# filer_for() -- at runtime that is the `[label]` repo prefix, so one chokepoint
+# has many buckets (`consulting`, `cole-gtm`, `alert`). The capture's taxonomy
+# knows only the CLASS: every row it labels `alert` was created by
+# alert-to-linear.py, whatever repo wrote the message.
+#
+# WHY THAT DISTINCTION IS A DEFECT FIX AND NOT A CONCEPT (PR #465 review round 1,
+# major). `reconcile --apply` read the tripwire's verdict, which is keyed by
+# class, and called pause() with it -- writing `alert.json` and pausing exactly
+# the one bucket whose messages carry no prefix. Every prefixed caller, which is
+# most of them, kept filing. So arming the tripwire printed PAUSE and paused
+# nothing that files. A pause that reads as protection and stops nothing is worse
+# than no pause: it retires the question.
+#
+# The pause therefore lives at the chokepoint, which is what the tripwire
+# measured, and decide() checks it before the bucket's own pause.
+DEFAULT_CHOKEPOINT = "alert"
+
+# Which capture classes this repo can actually pause, and it is deliberately
+# short. `other` is the board's human work, `radar` and `lgtm` file through their
+# own paths, and chief's create is in another repo (ASK-2012 spillover). Pausing
+# a class with no chokepoint here would write a pause file nothing consults.
+CLASS_TO_CHOKEPOINT = {"alert": DEFAULT_CHOKEPOINT}
+
 HOUR = 3600.0
 DAY = 86400.0
 
 TICKET = "ticket"
 LISTED = "listed"
+
+
+# The run id every test bucket hangs under. Exported into the environment by the
+# first process that needs it, so a subprocess joins the SAME run rather than
+# starting its own -- see _test_run_root.
+TEST_RUN_ENV = "KIPI_FILER_CAP_TEST_RUN"
+
+# How long an abandoned test run's dirs are left alone before the sweep takes
+# them. Generous: a long suite must never have its own dirs swept mid-run.
+_TEST_RUN_SWEEP_AFTER = DAY
+
+
+def _test_run_root() -> str:
+    """The parent dir for THIS pytest run's buckets. Fresh per run, then swept.
+
+    THE PER-RUN NONCE IS THE FIX FOR A REAL DEFECT, not tidiness (PR #465 review
+    round 1, major). Keying the dir on the pytest node id alone made it outlive
+    the run that created it, so run 2 opened run 1's bucket with its tokens
+    already spent: the suite stayed green until the inherited spend reached the
+    cap and then went red until it aged out, with nothing in the diff to explain
+    it. Reproduced directly in test_the_pytest_state_dir_is_fresh_every_run --
+    two processes with one node id, and the second saw the first's marker.
+
+    The nonce is EXPORTED rather than recomputed, because the race suite forks
+    writers that must land in their own test's bucket; a child recomputing a
+    nonce would get a private dir and the race would stop being a race.
+
+    CLEANED BY AGE, NOT BY atexit. An atexit handler runs in whichever process
+    registered it, and a forked child exiting early would delete the parent's
+    dirs mid-suite. A sweep of dirs older than a day cannot do that, and it also
+    collects what a killed run left behind.
+    """
+    import tempfile
+    run = os.environ.get(TEST_RUN_ENV)
+    if not run:
+        import uuid
+        run = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        os.environ[TEST_RUN_ENV] = run
+        _sweep_old_test_runs(tempfile.gettempdir(), run)
+    return os.path.join(tempfile.gettempdir(), f"kipi-filer-cap-test-{run}")
+
+
+def _sweep_old_test_runs(tmp: str, keep: str) -> None:
+    """Delete this module's own abandoned test dirs. Never raises, never the
+    current run's. Scoped by an exact prefix and by age, so there is no path
+    here that can reach anything but a dir this module created."""
+    import shutil
+    prefix = "kipi-filer-cap-test-"
+    now_ = _now()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith(prefix) or name == f"{prefix}{keep}":
+            continue
+        path = os.path.join(tmp, name)
+        try:
+            if now_ - os.path.getmtime(path) < _TEST_RUN_SWEEP_AFTER:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _now() -> float:
+    import time
+    return time.time()
 
 
 def state_dir(override: str | None = None) -> str:
@@ -140,10 +232,9 @@ def state_dir(override: str | None = None) -> str:
     in one: a suite that mutates live state, and cross-test bleed that makes a
     green run depend on test order.
 
-    Keyed on the pytest NODE ID rather than one temp dir per process, because a
-    per-process dir fixes the live-state half and leaves the bleed. Subprocesses
-    inherit the variable, so the race suite's forked writers still share their
-    own test's bucket, which is the thing those tests are actually about.
+    Keyed on the pytest NODE ID under a per-RUN root. The node id alone fixes the
+    bleed between two tests and leaves the bleed between two RUNS, which is the
+    same defect one level up; _test_run_root carries that half.
 
     It ISOLATES rather than disables. A guard that turned the cap off under test
     would mean no test ever exercises it, which is how the cap ships inert.
@@ -156,9 +247,8 @@ def state_dir(override: str | None = None) -> str:
     node = os.environ.get("PYTEST_CURRENT_TEST")
     if node:
         import hashlib
-        import tempfile
         key = hashlib.sha256(node.encode("utf-8")).hexdigest()[:16]
-        return os.path.join(tempfile.gettempdir(), f"kipi-filer-cap-test-{key}")
+        return os.path.join(_test_run_root(), key)
     return os.path.join(os.path.expanduser("~"), ".cache", "kipi", "filer-cap")
 
 
@@ -278,8 +368,8 @@ def _prune(data: dict, now: float) -> dict:
     return out
 
 
-def paused_reason(filer: str, now: float, sdir: str) -> str | None:
-    data = _prune(_read(filer, sdir), now)
+def _pause_until(data: dict, now: float) -> str | None:
+    """The one reader of a pause record, used for buckets AND chokepoints."""
     until = data.get("paused_until")
     if until is None:
         return None
@@ -289,6 +379,60 @@ def paused_reason(filer: str, now: float, sdir: str) -> str | None:
     except (TypeError, ValueError):
         return None
     return str(data.get("paused_reason") or "paused")
+
+
+def paused_reason(filer: str, now: float, sdir: str) -> str | None:
+    return _pause_until(_prune(_read(filer, sdir), now), now)
+
+
+# --- the chokepoint pause ----------------------------------------------------
+#
+# A subdirectory rather than a reserved filename in the bucket dir: `filers()`
+# lists `*.json` in the state dir and would otherwise report a chokepoint as a
+# filer, and _safe_name collapses any prefix a reserved name could use, so
+# "chokepoint-alert.json" could collide with a real filer called that.
+
+def _chokepoint_path(name: str, sdir: str) -> str:
+    return os.path.join(sdir, "chokepoint", f"{_safe_name(name)}.json")
+
+
+def _read_chokepoint(name: str, sdir: str) -> dict:
+    try:
+        with open(_chokepoint_path(name, sdir), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_chokepoint(name: str, sdir: str, data: dict) -> None:
+    try:
+        final = _chokepoint_path(name, sdir)
+        os.makedirs(os.path.dirname(final), exist_ok=True)
+        tmp = f"{final}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, final)
+    except OSError:
+        pass
+
+
+def chokepoint_paused(name: str, now: float, sdir: str | None = None) -> str | None:
+    return _pause_until(_read_chokepoint(name, state_dir(sdir)), now)
+
+
+def pause_chokepoint(name: str, reason: str, now: float,
+                     days: float = TRIPWIRE_DAYS,
+                     sdir: str | None = None) -> None:
+    """Stop EVERY bucket filing through one chokepoint. What the tripwire means."""
+    sdir = state_dir(sdir)
+    _write_chokepoint(name, sdir, {"paused_until": now + days * DAY,
+                                   "paused_reason": reason, "paused_at": now})
+
+
+def unpause_chokepoint(name: str, sdir: str | None = None) -> None:
+    sdir = state_dir(sdir)
+    _write_chokepoint(name, sdir, {})
 
 
 class Decision:
@@ -310,7 +454,7 @@ class Decision:
 
 def decide(filer: str, fp: str, now: float, sdir: str | None = None,
            cap_hour: int | None = None, cap_day: int | None = None,
-           title: str = "") -> Decision:
+           title: str = "", chokepoint: str = DEFAULT_CHOKEPOINT) -> Decision:
     """Ticket or list, and record whichever it was. Never raises.
 
     Called ONLY where a create is about to happen -- a caller that is counting
@@ -318,13 +462,35 @@ def decide(filer: str, fp: str, now: float, sdir: str | None = None,
     writes that create nothing.
     """
     try:
-        return _decide(filer, fp, now, sdir, cap_hour, cap_day, title)
+        return _decide(filer, fp, now, sdir, cap_hour, cap_day, title, chokepoint)
     except Exception as exc:                     # never cost the caller's alert
         return Decision(TICKET, f"cap unavailable ({exc}); failing open")
 
 
+def exempt(filer: str, now: float, sdir: str | None = None,
+           reason: str = "exempt") -> Decision:
+    """A create that skips the budget but still SPENDS a token. Never raises.
+
+    The caller decides what is exempt (alert-to-linear's security class); this
+    only records it. Spent-not-checked for the same reason a promotion is: the
+    bucket measures creates, and a create the tripwire cannot see makes the
+    creates-vs-closes ratio understate the flood by exactly the exempt count.
+    """
+    try:
+        sdir = state_dir(sdir)
+        with _lock(filer, sdir) as held:
+            if held:
+                data = _prune(_read(filer, sdir), now)
+                data["spent"] = list(data.get("spent") or []) + [now]
+                _write(filer, sdir, data)
+    except Exception:
+        pass
+    return Decision(TICKET, reason)
+
+
 def _decide(filer: str, fp: str, now: float, sdir: str | None,
-            cap_hour: int | None, cap_day: int | None, title: str) -> Decision:
+            cap_hour: int | None, cap_day: int | None, title: str,
+            chokepoint: str = DEFAULT_CHOKEPOINT) -> Decision:
     sdir = state_dir(sdir)
     cap_hour = DEFAULT_CAP_HOUR if cap_hour is None else cap_hour
     cap_day = DEFAULT_CAP_DAY if cap_day is None else cap_day
@@ -338,18 +504,20 @@ def _decide(filer: str, fp: str, now: float, sdir: str | None,
         # 1. Paused beats everything, including recurrence. A filer the tripwire
         #    stopped is one whose output nobody is closing; promoting inside that
         #    window would be the tripwire pausing nothing.
-        reason = None
-        until = data.get("paused_until")
-        if until is not None:
-            try:
-                if float(until) > now:
-                    reason = str(data.get("paused_reason") or "paused")
-            except (TypeError, ValueError):
-                reason = None
+        #
+        #    THE CHOKEPOINT IS CHECKED FIRST and the bucket second, because the
+        #    tripwire measures the chokepoint. Reading only the bucket is what
+        #    made `reconcile --apply` a no-op for every prefixed caller; see
+        #    CLASS_TO_CHOKEPOINT.
+        reason = _pause_until(_read_chokepoint(chokepoint, sdir), now)
+        if reason:
+            reason = f"chokepoint {chokepoint} paused: {reason}"
+        else:
+            reason = _pause_until(data, now)
         if reason:
             data = _list_row(data, fp, now, title)
             _write(filer, sdir, data)
-            return Decision(LISTED, f"filer paused: {reason}")
+            return Decision(LISTED, f"paused: {reason}")
 
         # 2. Recurrence beats the cap.
         row = (data.get("listed") or {}).get(fp)
@@ -435,6 +603,104 @@ def unpause(filer: str, now: float, sdir: str | None = None) -> None:
         data.pop("paused_until", None)
         data.pop("paused_reason", None)
         _write(filer, sdir, data)
+
+
+def reconcile_apply(verdict: dict, now: float, sdir: str | None = None) -> list:
+    """Arm the tripwire. Returns one (class, action, note) row per class.
+
+    ONLY a class this repo has a chokepoint for is paused, and the rest say so
+    out loud. Pausing `other` would write a file nothing reads while printing the
+    word PAUSE, which is the shape this function was rewritten to stop.
+    """
+    out = []
+    for name, v in sorted(verdict.items()):
+        if not v.get("pause"):
+            out.append((name, "ok", ""))
+            continue
+        chokepoint = CLASS_TO_CHOKEPOINT.get(name)
+        if not chokepoint:
+            out.append((name, "NOT PAUSED",
+                        "no chokepoint in this repo files as this class"))
+            continue
+        pause_chokepoint(chokepoint,
+                         f"created {v.get('created')} and closed {v.get('closed')} "
+                         f"over {TRIPWIRE_DAYS} days", now, sdir=sdir)
+        out.append((name, "PAUSED", f"chokepoint {chokepoint}, "
+                                    f"{TRIPWIRE_DAYS}d"))
+    return out
+
+
+# --- the reader ---------------------------------------------------------------
+#
+# WITHOUT THIS THE LIST IS A DROP WITH EXTRA STEPS (PR #465 review round 1,
+# major). The recorded list had two writers -- decide() and the paused branch --
+# and zero readers: no launchd job, no digest, nothing in any brief. The only
+# thing that ever touched a row again was the 14-day prune, so a one-off finding
+# was recorded and then deleted, which is the drop the list exists to refuse.
+#
+# The digest is the reader, and it is wired to Sana's queue, not the founder's
+# (founder-notifications.md: engineering signal goes to Linear triage). ONE line
+# per run, never one per row -- the whole issue is that one ping per finding is
+# how a queue stops being read.
+
+# A row this close to its TTL is about to be dropped. The digest exists so that
+# does not happen in silence, so the warning window has to be wider than the gap
+# between two digest runs (daily).
+EXPIRY_WARN_DAYS = 3
+
+
+def digest(now: float, sdir: str | None = None) -> dict:
+    """Per filer: what is recorded, and what is about to be pruned unpromoted."""
+    sdir = state_dir(sdir)
+    out = {"filers": {}, "recorded": 0, "expiring": 0}
+    for name in filers(sdir):
+        rows = listed_rows(name, now, sdir=sdir)
+        expiring = {fp: row for fp, row in rows.items()
+                    if (now - float(row.get("last_at", now)))
+                    >= (LIST_TTL_DAYS - EXPIRY_WARN_DAYS) * DAY}
+        out["filers"][name] = {"rows": rows, "expiring": expiring,
+                               "paused": paused_reason(name, now, sdir)}
+        out["recorded"] += len(rows)
+        out["expiring"] += len(expiring)
+    return out
+
+
+def digest_line(report: dict) -> str:
+    """The one line that reaches Sana. Empty when there is nothing to say."""
+    if not report["recorded"]:
+        return ""
+    per = ", ".join(f"{name} {len(v['rows'])}"
+                    for name, v in sorted(report["filers"].items()) if v["rows"])
+    line = (f"[kipi-system] filer-cap: {report['recorded']} finding(s) recorded "
+            f"and not ticketed ({per})")
+    if report["expiring"]:
+        line += (f"; {report['expiring']} expire within {EXPIRY_WARN_DAYS}d "
+                 f"unpromoted")
+    return line + ". Read them with `filer_cap.py digest`."
+
+
+def notify(line: str) -> int:
+    """File the digest for Sana through the one alert sink. Its own filer id.
+
+    KIPI_ALERT_FILER IS LOAD-BEARING, learned the hard way one commit ago: a
+    message with no `[label]` prefix inherits the `alert` budget, and the first
+    spillover capture after the cap shipped was swallowed that way. A monitor
+    that spends the budget of the thing it monitors reports nothing on the day it
+    matters.
+    """
+    import subprocess
+    filer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "alert-to-linear.py")
+    env = dict(os.environ)
+    env["KIPI_ALERT_FILER"] = "filer-cap-digest"
+    try:
+        res = subprocess.run([sys.executable, filer, line], env=env,
+                             capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"could not file the digest: {exc}", file=sys.stderr)
+        return 1
+    print((res.stdout or res.stderr or "").strip())
+    return res.returncode
 
 
 # --- the DoR's check ---------------------------------------------------------
@@ -553,6 +819,11 @@ def main(argv: list[str]) -> int:
     p_list = sub.add_parser("list", help="what is recorded and not ticketed")
     p_list.add_argument("--filer")
 
+    p_dig = sub.add_parser("digest", help="the reader: what is recorded, what "
+                                         "is about to expire unpromoted")
+    p_dig.add_argument("--notify", action="store_true",
+                       help="file ONE line for Sana through alert-to-linear.py")
+
     p_rec = sub.add_parser("reconcile", help="the 7-day creates-vs-closes tripwire")
     p_rec.add_argument("--payload", required=True,
                        help="a capture_board_28d.py payload")
@@ -596,17 +867,41 @@ def main(argv: list[str]) -> int:
         print(f"reset {args.filer}")
         return 0
 
+    if args.cmd == "digest":
+        report = digest(now)
+        line = digest_line(report)
+        for name, v in sorted(report["filers"].items()):
+            if not v["rows"]:
+                continue
+            head = f"{name}: {len(v['rows'])} recorded, not ticketed"
+            if v["paused"]:
+                head += f"  [PAUSED: {v['paused']}]"
+            print(head)
+            for fp, row in sorted(v["rows"].items(),
+                                  key=lambda kv: kv[1].get("last_at", 0)):
+                age = (now - float(row.get("last_at", now))) / DAY
+                mark = "  EXPIRING" if fp in v["expiring"] else ""
+                print(f"  {fp}  seen {row.get('count', 1)}x  last {age:.1f}d ago"
+                      f"  {row.get('title', '')}{mark}")
+        print(f"\n{line or 'nothing recorded; nothing to report'}")
+        if args.notify and line:
+            return notify(line)
+        return 0
+
     if args.cmd == "reconcile":
         rows = _load_payload(args.payload)["rows"]
         verdict = tripwire(rows, now)
-        for filer, v in verdict.items():
+        for filer, v in sorted(verdict.items()):
             mark = "PAUSE" if v["pause"] else "ok"
-            print(f"{filer:16s} created={v['created']:4d} closed={v['closed']:4d}  {mark}")
-            if v["pause"] and args.apply:
-                pause(filer, f"created {v['created']} and closed {v['closed']} "
-                             f"over {TRIPWIRE_DAYS} days", now)
+            print(f"{filer:16s} created={v['created']:4d} "
+                  f"closed={v['closed']:4d}  {mark}")
         if not args.apply:
             print("\n(dry: nothing paused. --apply to write the pause.)")
+            return 0
+        print()
+        for name, action, note in reconcile_apply(verdict, now):
+            if action != "ok":
+                print(f"{name:16s} {action}  {note}")
         return 0
 
     if args.cmd == "replay":
