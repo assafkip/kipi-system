@@ -14,6 +14,50 @@ git_test() {
     -c commit.gpgsign=false "$@"
 }
 
+# The declared set is READ FROM THE GATE, never retyped here. A restated list
+# agrees on the day it is written, which is what makes it look safe, and it keeps
+# agreeing until the real one moves -- then this fixture provisions the old
+# contract and passes while the gate refuses.
+declared_replicated_paths() {
+  python3 - "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("replica_gate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+declared = tuple(module.DEFAULT_REPLICATED)
+if not declared:
+    sys.exit("the divergence gate declares no replicated paths")
+print("\n".join(declared))
+PY
+}
+
+# Why this fixture provisions the declared paths and the subtree fixtures do not:
+# the direct-clone case at the bottom of this file CLONES the skeleton, so that
+# root inherits the skeleton's own kipi-update.sh, which IS a declared replicated
+# path. One resolving copy ARMS the gate; the remaining declared paths then
+# resolve in 0 of 1 roots, and partial declared coverage is exit 3 by design --
+# the decoration the gate exists to refuse. With every declared path present it
+# compares identical copies and returns OK.
+provision_replicated_paths() {
+  local skeleton="$1"
+  local rel
+  local provisioned=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    mkdir -p "$skeleton/$(dirname "$rel")"
+    # Never clobber a copy the fixture already placed for real (kipi-update.sh).
+    [ -e "$skeleton/$rel" ] ||
+      printf 'fixture stub: %s\n' "$rel" > "$skeleton/$rel"
+    provisioned=$((provisioned + 1))
+  done < <(declared_replicated_paths)
+  # A derivation that reads nothing turns this into a silent no-op and the gate
+  # back into a refusal, so the floor is asserted rather than assumed.
+  [ "$provisioned" -gt 0 ] ||
+    fail "derived zero declared replicated paths from the divergence gate"
+}
+
 make_fixture() {
   local root="$1"
   local skeleton="$root/skeleton"
@@ -36,12 +80,11 @@ cp "$ROOT/kipi-update-deletion-guard.py" \
   mkdir -p "$skeleton/q-system/.q-system/scripts" "$skeleton/q-system/.q-system/state"
   cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
      "$skeleton/q-system/.q-system/scripts/propagation-leak-gate.py"
-# The updater is fail-closed on the replica-divergence gate too, exactly as
-# it is on the leak gate above: a skeleton without it aborts before any sync.
-# It DISARMS on this population (no instance here carries a replicated
-# plugins/ path) and says so, so provisioning it changes nothing asserted here.
-cp "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" \
+  # The updater is fail-closed on the replica-divergence gate too, exactly as
+  # it is on the leak gate above: a skeleton without it aborts before any sync.
+  cp "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" \
      "$skeleton/q-system/.q-system/scripts/fleet-replica-divergence.py"
+  provision_replicated_paths "$skeleton"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$skeleton/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$skeleton/validate-separation.py"
