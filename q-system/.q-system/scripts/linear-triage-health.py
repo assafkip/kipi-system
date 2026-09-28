@@ -917,6 +917,29 @@ def main(argv: list) -> int:
             lock.close()  # the kernel drops the flock with the last fd
 
 
+def human_writer(as_json: bool):
+    """Return the ONE writer for human-report lines.
+
+    Under --json, stdout belongs to the JSON document and to nothing else, so a
+    caller can `json.loads(stdout)`. It could not: the dormancy display block and
+    the alert status line printed past the closing brace, and stdout came back
+    `Extra data: line 21 column 1` (ASK-2172, promoted from the PR #204 review).
+
+    The lines go to STDERR rather than being dropped, because they are not in the
+    JSON -- the dormant identifiers and each write's outcome exist nowhere else,
+    so suppressing them would make the machine report carry strictly less than
+    the human one.
+
+    One chokepoint rather than an `if not args.json` beside each print: the
+    scattered form is correct only until the next print is added, which is
+    exactly how these two arrived. The measurement summary above is the one block
+    that stays suppressed under --json, because it is a re-render of the JSON's
+    own keys and has no content of its own.
+    """
+    stream = sys.stderr if as_json else sys.stdout
+    return lambda line: print(line, file=stream)
+
+
 def _run(args, holding_lock: bool) -> int:
     """The measurement and the writes, inside the lock when --apply is set."""
     # Fail closed. The lock is acquired by the caller, so this function could be
@@ -979,6 +1002,8 @@ def _run(args, holding_lock: bool) -> int:
     m["route_failure_kinds"] = sweep.get("failure_kinds", [])
     m["route_mark_unknown"] = sweep.get("mark_unknown", 0)
 
+    say = human_writer(args.json)
+
     if args.json:
         print(json.dumps(m, indent=2))
     else:
@@ -1022,7 +1047,7 @@ def _run(args, holding_lock: bool) -> int:
             header = f"APPLY: wrote to {len(to_flag)} of {len(dormant)}{capped}"
         else:
             header = "report only, writes nothing"
-        print(f"\nDORMANT ({header}):")
+        say(f"\nDORMANT ({header}):")
 
         for issue, days in dormant[:20]:
             line = f"  {issue['identifier']:<10} {days:6.0f}d  {issue['title'][:58]}"
@@ -1031,13 +1056,13 @@ def _run(args, holding_lock: bool) -> int:
                 # "not-attempted" is said out loud rather than left blank: a blank
                 # next to a listed issue is what made the old cap invisible.
                 line += "  [" + (outcome or "not-attempted (over --limit)") + "]"
-            print(line)
+            say(line)
         if len(dormant) > 20:
-            print(f"  ... and {len(dormant) - 20} more (display cap, not a write cap)")
+            say(f"  ... and {len(dormant) - 20} more (display cap, not a write cap)")
 
         if args.apply:
             wrote = sum(1 for v in outcomes.values() if v == "flagged")
-            print(f"  flagged={wrote} already-flagged="
+            say(f"  flagged={wrote} already-flagged="
                   f"{sum(1 for v in outcomes.values() if v == 'already-flagged')} "
                   f"failed={sum(1 for v in outcomes.values() if v.startswith('FAILED'))} "
                   f"not-attempted={len(dormant) - len(to_flag)}")
@@ -1064,11 +1089,11 @@ def _run(args, holding_lock: bool) -> int:
         # value is the only signal there is.
         alert_failed = rc != 0
         verb = "alert FAILED" if alert_failed else "alerted"
-        print(f"\n{verb} (exit {rc}): {line}")
+        say(f"\n{verb} (exit {rc}): {line}")
     elif hits:
-        print(f"\nwould alert (suppressed by --no-notify): {'; '.join(hits)}")
+        say(f"\nwould alert (suppressed by --no-notify): {'; '.join(hits)}")
     else:
-        print("\nno threshold breached; staying quiet")
+        say("\nno threshold breached; staying quiet")
 
     # A REFUSED WRITE IS A FAILED RUN, and the per-issue result is the only
     # place that fact exists. `flag_dormant()` was fixed to stop reporting a
