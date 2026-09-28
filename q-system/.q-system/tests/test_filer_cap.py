@@ -350,6 +350,28 @@ def test_reconcile_only_pauses_a_class_this_repo_has_a_chokepoint_for(sdir):
     assert not cap.chokepoint_paused("other", now, sdir=sdir)
 
 
+def test_a_repeat_on_an_open_ticket_never_reaches_the_cap(monkeypatch, sdir):
+    """PROMOTE_AT's grounding, made executable (review round 1, minor).
+
+    The old calibration note justified PROMOTE_AT with the repeat rate among
+    CREATED rows. Those are fingerprints that got a ticket, and a re-fire of one
+    returns from the repeat branch above the cap -- so that rate describes a
+    population rule 2 never sees. This is the code path that makes it true, and
+    it also pins the budget rule: a repeat mints nothing, so it spends nothing."""
+    alert = _load("alert-to-linear.py", "alert_to_linear_repeat")
+    monkeypatch.setattr(alert, "_state_dir", lambda: sdir)
+    monkeypatch.setattr(alert, "_read_state",
+                        lambda fp: {"issue_id": "iss-1", "identifier": "ASK-1",
+                                    "count": 4, "first_at": time.time()})
+    monkeypatch.setattr(alert._cap, "decide", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("a repeat spent budget it could not mint")))
+    open_issue = {"issue": {"id": "iss-1", "state": {"type": "started"}}}
+    stub = type("ln", (), {"graphql": staticmethod(lambda *a, **k: open_issue)})()
+    code, line = alert._file_alert_serialized("a condition still firing", "fp-r",
+                                             stub, time.time())
+    assert code == alert.EXIT_OK and "repeat #5" in line
+
+
 def test_a_capped_alert_returns_ok_and_files_nothing(monkeypatch, sdir):
     """Exit 0: it was recorded, not lost. EXIT_FAILED here would make the
     heartbeat's halt branch fire on a budget that is working."""

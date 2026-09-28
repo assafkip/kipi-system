@@ -51,7 +51,16 @@ own cache is unreadable is strictly worse than no cap.
 
 CLI:
   filer_cap.py list [--filer F]            what is recorded and not ticketed
-  filer_cap.py reconcile [--apply]         the 7-day creates-vs-closes tripwire
+  filer_cap.py digest [--notify]           THE READER. Every recorded row, the
+                                           ones within EXPIRY_WARN_DAYS of being
+                                           pruned unpromoted, and with --notify
+                                           one line into Sana's Linear triage.
+                                           Wired daily at 08:20 by
+                                           automation/com.kipi.filer-cap-digest.plist
+                                           -- a list with no reader is a drop.
+  filer_cap.py reconcile [--apply]         the 7-day creates-vs-closes tripwire.
+                                           --apply pauses the CHOKEPOINT, not the
+                                           bucket: see CLASS_TO_CHOKEPOINT.
   filer_cap.py replay <payload.json>       ASK-2012's check: ticket vs listed
   filer_cap.py reset --filer F             clear one filer's bucket and list
 """
@@ -89,10 +98,30 @@ import sys
 DEFAULT_CAP_HOUR = int(os.environ.get("KIPI_FILER_CAP_HOUR", "6"))
 DEFAULT_CAP_DAY = int(os.environ.get("KIPI_FILER_CAP_DAY", "20"))
 
-# A second sighting is the whole promotion rule. Not third: the corpus shows 55
-# of 507 alert rows are repeats of a fingerprint, so a threshold of 3 would
-# promote almost nothing and the list would become the drop this file refuses
-# to be.
+# A second sighting is the whole promotion rule. Not third.
+#
+# WHAT THIS NUMBER IS AND IS NOT CALIBRATED ON, corrected in PR #465 review round
+# 1 (minor). The earlier note here justified it with "55 of 507 alert rows are
+# repeats of a fingerprint". That number is real and it is measured on the wrong
+# population: created-ISSUE rows are, by definition, fingerprints that got a
+# ticket, and a re-fire of those does not reach this module at all --
+# alert-to-linear._file_alert_serialized returns from its repeat branch, ABOVE
+# the cap, whenever the fingerprint still has an open ticket
+# (test_a_repeat_on_an_open_ticket_never_reaches_the_cap pins that, so this claim
+# is executable rather than asserted).
+#
+# The population rule 2 actually consumes is the re-fire of a fingerprint with NO
+# open ticket -- which, before this change, did not exist: nothing was ever
+# listed, so every re-fire either counted an open ticket or opened a new one. No
+# historical corpus can contain it, and a replay that claimed to measure it would
+# be measuring an invention.
+#
+# So the threshold rests on the rule and not on a fit: 2 is the FIRST value at
+# which "it happened again" is true. 3 would hold a twice-seen failure off the
+# board for a third firing that may never come, which turns the list into the
+# drop this file refuses to be. The number to watch after this ships is the
+# digest's own: recorded rows that expire unpromoted are the cost of this choice,
+# and EXPIRY_WARN_DAYS is what makes them visible before they are gone.
 PROMOTE_AT = 2
 
 # An entry nobody saw again for two weeks was a one-off. Dropped, not ticketed.
