@@ -10,6 +10,7 @@ KIPI_ALERT_CAPTURE set, so nothing reaches Linear.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -23,9 +24,55 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 PRD_RUNNER = PLUGIN_ROOT / "scripts" / "prd_runner.py"
 FINDINGS_WRITER = PLUGIN_ROOT / "scripts" / "findings_writer.py"
 SKEL_SCRIPTS = PLUGIN_ROOT.parents[1] / "q-system" / ".q-system" / "scripts"
+
+# The scripts this suite deliberately exercises. Their sibling dependencies are
+# DERIVED below, never listed here.
+ENTRY_SCRIPTS = ("alert-to-linear.py", "spillover-linear-check.py")
 PRD_ID = "prd-demo-2026-09-12"
 REFUSAL = ("a minor is fixed in this change or rejected with a reason; "
            "it is never queued (founder 2026-09-12)")
+
+
+def sibling_modules(entry: Path, scripts: Path) -> set[str]:
+    """Every sibling script `entry` imports, transitively, derived from its source.
+
+    Scar (ASK-2012): alert-to-linear.py grew `import filer_cap` and the
+    hand-maintained copy list here did not. The tmp repo got an incomplete
+    production layout, the script died on ImportError, and six tests failed on a
+    broken fixture rather than on anything they assert. A list of a script's
+    dependencies belongs to the script; read it from there.
+    """
+    found: set[str] = set()
+    queue = [entry]
+    while queue:
+        tree = ast.parse(queue.pop().read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module.split(".")[0]]
+            else:
+                continue
+            for name in names:
+                if name in found or not (scripts / f"{name}.py").exists():
+                    continue
+                found.add(name)
+                queue.append(scripts / f"{name}.py")
+    return found
+
+
+def install_skeleton_scripts(dest: Path) -> None:
+    """Copy the entry scripts plus their derived siblings into a tmp repo."""
+    names = set(ENTRY_SCRIPTS)
+    for entry in ENTRY_SCRIPTS:
+        names |= {f"{m}.py" for m in sibling_modules(SKEL_SCRIPTS / entry, SKEL_SCRIPTS)}
+    # Floor: an empty derivation would silently reinstate the stale-list bug,
+    # copying only the entry scripts and reading as a correct fixture. If the
+    # entry scripts ever legitimately import no sibling, delete this line and
+    # say why in the commit.
+    assert names - set(ENTRY_SCRIPTS), "derived no sibling module; the import parse is broken"
+    for name in sorted(names):
+        shutil.copy2(SKEL_SCRIPTS / name, dest / name)
 
 
 @pytest.fixture
@@ -42,8 +89,7 @@ def repo(tmp_path: Path) -> Path:
     }))
     dest = r / "q-system" / ".q-system" / "scripts"
     dest.mkdir(parents=True)
-    for name in ("alert-to-linear.py", "spillover-linear-check.py"):
-        shutil.copy2(SKEL_SCRIPTS / name, dest / name)
+    install_skeleton_scripts(dest)
     return r
 
 
