@@ -207,7 +207,28 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS]
+        # ASK-2011: a per-run cap on turns and dollars, sized per bot at 3x its own
+        # median. On 2026-09-12 the weekly limit hit and the whole fleet went dark
+        # for a day; the meter from Step 2 says what each bot spends and this is
+        # what bounds one run of it. A cap hit is not a crash: the CLI prints a
+        # whole result document with subtype error_max_*, so the row names the cap
+        # and the caller gets None like any other failed call.
+        #
+        # THE TWO FLAGS ARE NOT THE SAME KIND OF CAP, measured on the capture in
+        # tests/fixtures (PR #469 review). `--max-turns` is PRE-EMPTIVE: the run
+        # stops before the turn it would not have paid for. `--max-budget-usd` is
+        # checked AFTER a turn completes (`stop_reason: end_turn`, 41 output
+        # tokens, full `total_cost_usd` on the row), so on the single-turn calls
+        # this wrapper makes it cannot prevent the spend -- it converts a paid
+        # success into a failure and a counted cap hit. It is here because that
+        # hit is the Step 4 brake's signal that a bot's cost has moved, not
+        # because it saves the dollar of the run that trips it.
+        #
+        # `cap_args` is EMPTY for a bot no sizing pass has measured, so a fleet
+        # before its first `size-caps` run makes exactly the call it made before
+        # ASK-2011 rather than one capped at a number nobody chose.
+        argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS,
+                *usage_ledger.cap_args(who["bot"])]
         if model:
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
@@ -219,11 +240,14 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
         return None
     if result.returncode != 0 and usage_ledger.rejected_flag(result.stderr):
-        # An older CLI that does not know --output-format json: fall back to the
-        # plain call so the fleet keeps working, and record an unmetered row.
+        # An older CLI that does not know --output-format json, or (ASK-2011) one of
+        # the cap flags: fall back to the plain call so the fleet keeps working, and
+        # record an unmetered row. The cap flags are dropped WITH THEIR VALUES --
+        # `["--max-turns", "24"]` filtered by name alone leaves a bare "24" in argv,
+        # which the CLI reads as a second prompt.
+        plain = usage_ledger.without_added_flags(argv)
         try:
-            result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
-                                    capture_output=True, text=True, timeout=timeout)
+            result = subprocess.run(plain, capture_output=True, text=True, timeout=timeout)
         except (subprocess.SubprocessError, OSError) as exc:
             _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
             return None
