@@ -207,13 +207,26 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        # ASK-2011: a HARD per-run cap on turns and dollars, sized per bot at 3x
-        # its own median (usage_ledger.caps_for). On 2026-09-12 the weekly limit
-        # hit and the whole fleet went dark for a day; the meter from Step 2 says
-        # what each bot spends, and this is the first thing that stops one run
-        # from spending it. A cap hit is not a crash: the CLI prints a whole
-        # result document with subtype error_max_*, so the row names the cap and
-        # the caller gets None like any other failed call.
+        # ASK-2011: a per-run cap on turns and dollars, sized per bot at 3x its own
+        # median. On 2026-09-12 the weekly limit hit and the whole fleet went dark
+        # for a day; the meter from Step 2 says what each bot spends and this is
+        # what bounds one run of it. A cap hit is not a crash: the CLI prints a
+        # whole result document with subtype error_max_*, so the row names the cap
+        # and the caller gets None like any other failed call.
+        #
+        # THE TWO FLAGS ARE NOT THE SAME KIND OF CAP, measured on the capture in
+        # tests/fixtures (PR #469 review). `--max-turns` is PRE-EMPTIVE: the run
+        # stops before the turn it would not have paid for. `--max-budget-usd` is
+        # checked AFTER a turn completes (`stop_reason: end_turn`, 41 output
+        # tokens, full `total_cost_usd` on the row), so on the single-turn calls
+        # this wrapper makes it cannot prevent the spend -- it converts a paid
+        # success into a failure and a counted cap hit. It is here because that
+        # hit is the Step 4 brake's signal that a bot's cost has moved, not
+        # because it saves the dollar of the run that trips it.
+        #
+        # `cap_args` is EMPTY for a bot no sizing pass has measured, so a fleet
+        # before its first `size-caps` run makes exactly the call it made before
+        # ASK-2011 rather than one capped at a number nobody chose.
         argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS,
                 *usage_ledger.cap_args(who["bot"])]
         if model:

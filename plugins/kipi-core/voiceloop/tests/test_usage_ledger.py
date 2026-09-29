@@ -155,14 +155,18 @@ def test_run_model_adds_the_json_flags_and_hands_back_plain_bytes(captured, tmp_
     monkeypatch.setenv(usage_ledger.LEDGER_ENV, str(tmp_path / "l.jsonl"))
     monkeypatch.setenv("CHIEF_BOT", "cole")
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(tmp_path / "no-caps.json"))
     fake_bin = tmp_path / "claude"
     fake_bin.write_text("")
     out = prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="test_caller")
     assert out == captured["plain_stdout"]
-    # Pinned literally, not read from the module. ASK-2011 appended the two cap
-    # flags AFTER these, so the tail moved by four -- the json flags did not go away.
-    assert seen["argv"][-6:-4] == ["--output-format", "json"]
-    assert seen["argv"][-4] == "--max-turns" and seen["argv"][-2] == "--max-budget-usd"
+    # Pinned literally, not read from the module. ASK-2011 appends two cap flags
+    # after these, but ONLY for a bot some sizing pass has measured. CAPS_ENV points
+    # at an absent file above, so `cole` is unsized, carries neither cap flag, and
+    # the json flags are the argv tail exactly as they were before ASK-2011.
+    assert seen["argv"][-2:] == ["--output-format", "json"]
+    assert usage_ledger.TURNS_FLAG not in seen["argv"]
+    assert usage_ledger.BUDGET_FLAG not in seen["argv"]
     rows = usage_ledger.read()
     assert len(rows) == 1 and rows[0]["bot"] == "cole" and rows[0]["job"] == "test_caller"
     assert rows[0]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]

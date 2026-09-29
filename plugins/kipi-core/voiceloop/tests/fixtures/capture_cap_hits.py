@@ -30,9 +30,25 @@ MODEL = "claude-haiku-4-5-20251001"
 NO_MCP = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
 
 
+#: What the recorded argv calls the binary. The RESOLVED path is whatever
+#: `shutil.which` found on the capturing machine, which on this fleet is under
+#: the founder's home -- and `test_no_founder_data` blocks a founder path inside
+#: the plugin tree, correctly: this tree fans out to every instance. The capture
+#: is evidence about the CLI's OUTPUT, and which directory the binary sat in is
+#: no part of that, so the recorded argv keeps the name and drops the path.
+BINARY_IN_FIXTURE = "claude"
+
+
+def _scrub(arg: str, binary: str) -> str:
+    """One argv element as it is RECORDED: no founder path, no long prompt."""
+    if arg == binary:
+        return BINARY_IN_FIXTURE
+    return arg if len(arg) < 120 else "<prompt>"
+
+
 def run(argv: list[str]) -> dict:
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=180)
-    return {"argv": [a if len(a) < 120 else "<prompt>" for a in argv],
+    return {"argv": [_scrub(a, argv[0]) for a in argv],
             "returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
 
 

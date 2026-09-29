@@ -92,8 +92,9 @@ def test_a_successful_run_is_not_a_cap_hit(captured):
 # --------------------------------------------------------------- the argv carries it
 
 def test_the_argv_carries_both_flags(monkeypatch, tmp_path):
-    """The DoR's first check: `the argv carries the flags`."""
+    """The DoR's first check: `the argv carries the flags`, for a SIZED bot."""
     seen = {}
+    _size(tmp_path, monkeypatch, "voiceloop", turns=24, budget=1.5)
 
     def fake_run(argv, **kw):
         seen["argv"] = argv
@@ -152,6 +153,7 @@ def test_an_unknown_cap_flag_is_a_rejected_flag():
 def test_an_old_binary_still_answers(monkeypatch, tmp_path):
     """The blast radius: a binary that refuses a cap flag must not darken the fleet."""
     calls = []
+    _size(tmp_path, monkeypatch, "voiceloop", turns=24, budget=1.5)
 
     def fake_run(argv, **kw):
         calls.append(argv)
@@ -177,7 +179,7 @@ def _run_row(bot, turns, cost):
 
 def test_size_caps_is_three_times_the_median():
     rows = [_run_row("chief", 4, 1.0), _run_row("chief", 10, 3.0), _run_row("chief", 30, 9.0)]
-    sized = usage_ledger.size_caps(rows)
+    sized = usage_ledger.size_caps(rows, min_runs=1)
     assert sized["chief"]["turns"] == 30      # 3 x median 10
     assert sized["chief"]["budget_usd"] == 9.0  # 3 x median 3.0
     assert sized["chief"]["runs"] == 3
@@ -185,7 +187,7 @@ def test_size_caps_is_three_times_the_median():
 
 def test_size_caps_never_sizes_below_the_floor():
     """3x a one-turn median is 3 turns, which would cap every real run."""
-    sized = usage_ledger.size_caps([_run_row("tiny", 1, 0.001)])
+    sized = usage_ledger.size_caps([_run_row("tiny", 1, 0.001)], min_runs=1)
     assert sized["tiny"]["turns"] == usage_ledger.MIN_TURNS
     assert sized["tiny"]["budget_usd"] == usage_ledger.MIN_BUDGET_USD
 
@@ -194,8 +196,17 @@ def test_size_caps_ignores_failure_rows():
     """A failure row carries no num_turns; counting it drags the median to the floor."""
     rows = [_run_row("chief", 20, 6.0), _run_row("chief", 20, 6.0),
             {"kind": "failure", "bot": "chief", "num_turns": None, "total_cost_usd": None}]
-    assert usage_ledger.size_caps(rows)["chief"]["runs"] == 2
-    assert usage_ledger.size_caps(rows)["chief"]["turns"] == 60
+    assert usage_ledger.size_caps(rows, min_runs=1)["chief"]["runs"] == 2
+    assert usage_ledger.size_caps(rows, min_runs=1)["chief"]["turns"] == 60
+
+
+def _size(tmp_path, monkeypatch, bot, *, turns, budget):
+    """Write a sized caps file. A bot with no entry is UNCAPPED, so a test about
+    the flags has to say who measured this bot."""
+    caps = tmp_path / "caps.json"
+    caps.write_text(json.dumps({bot: {"turns": turns, "budget_usd": budget, "runs": 40}}))
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(caps))
+    return caps
 
 
 def test_caps_for_reads_the_sized_file(tmp_path, monkeypatch):
@@ -277,7 +288,7 @@ def test_the_sizing_pass_writes_the_file_caps_for_reads(tmp_path, monkeypatch):
     caps = tmp_path / "nested" / "caps.json"      # the parent does not exist yet
     monkeypatch.setenv(usage_ledger.CAPS_ENV, str(caps))
 
-    sized = usage_ledger.write_caps()
+    sized = usage_ledger.write_caps(min_runs=1)
     assert sized["chief"]["turns"] == 60          # 3 x median 20
     assert json.loads(caps.read_text())["chief"]["budget_usd"] == 18.0
     # The point of writing it: the per-call path now reads a SIZED cap, not a floor.
@@ -293,7 +304,84 @@ def test_the_sizing_pass_is_reachable_as_a_command(tmp_path, monkeypatch):
     env = dict(os.environ, **{usage_ledger.LEDGER_ENV: str(ledger),
                               usage_ledger.CAPS_ENV: str(caps)})
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    proc = subprocess.run([sys.executable, "-m", "voiceloop.usage_ledger", "size-caps"],
+    proc = subprocess.run([sys.executable, "-m", "voiceloop.usage_ledger", "size-caps", "--min-runs", "1"],
                           cwd=root, env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(caps.read_text())["chief"] == {"turns": 60, "budget_usd": 18.0, "runs": 1}
+
+
+# -------------------------------------------- an UNSIZED bot runs uncapped (PR #469)
+
+def test_an_unsized_bot_carries_no_cap_flags(tmp_path, monkeypatch):
+    """The major from PR #469's review: the floors were shipping as the cap.
+
+    `caps_for` answers the floors for any bot, which is right as a lower bound on
+    a measured number and wrong as a default. Measured against this fleet's own
+    ledger, the floors kill 49 of 64 charged runs and the sized caps kill 1, so a
+    fleet shipping before its first sizing pass would fail 3 runs in 4.
+    """
+    monkeypatch.delenv(usage_ledger.TURNS_ENV, raising=False)
+    monkeypatch.delenv(usage_ledger.BUDGET_ENV, raising=False)
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(tmp_path / "absent.json"))
+    assert usage_ledger.cap_args("never-measured") == []
+    # A caps file that exists but does not name this bot is the same answer.
+    caps = tmp_path / "caps.json"
+    caps.write_text(json.dumps({"someone-else": {"turns": 30, "budget_usd": 9.0}}))
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(caps))
+    assert usage_ledger.cap_args("never-measured") == []
+    # The sized bot in that same file IS capped, or this test proves nothing.
+    assert usage_ledger.cap_args("someone-else") == [
+        usage_ledger.TURNS_FLAG, "30", usage_ledger.BUDGET_FLAG, "9.0"]
+
+
+def test_an_explicit_override_caps_a_bot_nobody_sized(tmp_path, monkeypatch):
+    """A caller naming a cap gets one; only the SILENT default is withheld."""
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(tmp_path / "absent.json"))
+    monkeypatch.setenv(usage_ledger.TURNS_ENV, "2")
+    monkeypatch.delenv(usage_ledger.BUDGET_ENV, raising=False)
+    assert usage_ledger.cap_args("never-measured") == [
+        usage_ledger.TURNS_FLAG, "2",
+        usage_ledger.BUDGET_FLAG, str(usage_ledger.MIN_BUDGET_USD)]
+
+
+def test_size_caps_omits_a_bot_with_too_few_runs():
+    """`runs` was written and read by nothing, so a median from 3 rows shipped at
+    full force. On the real ledger, sizing `radar` off 5 rows kills 25 of its 45
+    runs; off all 45 rows it kills 1."""
+    thin = [_run_row("new-bot", 20, 6.0) for _ in range(usage_ledger.MIN_SIZING_RUNS - 1)]
+    assert "new-bot" not in usage_ledger.size_caps(thin)
+    # One more row and it is measured: a threshold, not a wall.
+    assert "new-bot" in usage_ledger.size_caps(thin + [_run_row("new-bot", 20, 6.0)])
+
+
+def test_two_writers_do_not_drop_a_sizing_pass(tmp_path, monkeypatch):
+    """A fixed `target + '.tmp'` is a path BOTH racers open, so the second
+    os.replace raises FileNotFoundError and loses that writer's whole pass."""
+    import threading
+    monkeypatch.setenv(usage_ledger.CAPS_ENV, str(tmp_path / "caps.json"))
+    rows = [_run_row("chief", 20, 6.0) for _ in range(usage_ledger.MIN_SIZING_RUNS)]
+    errors = []
+
+    def writer():
+        try:
+            usage_ledger.write_caps(rows=rows)
+        except BaseException as exc:      # noqa: BLE001 - the defect is ANY raise
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=writer) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert json.loads((tmp_path / "caps.json").read_text())["chief"]["turns"] == 60
+    # No temp file survives beside the caps file.
+    assert [p.name for p in tmp_path.iterdir()] == ["caps.json"]
+
+
+def test_the_fallback_keeps_a_prompt_that_is_the_word_json():
+    """`--output-format json` is a flag and its VALUE, not two flags. Registering
+    both names dropped any argv element equal to `json`, the prompt included."""
+    argv = ["claude", "-p", "json", "--output-format", "json",
+            usage_ledger.TURNS_FLAG, "24", usage_ledger.BUDGET_FLAG, "1.5"]
+    assert usage_ledger.without_added_flags(argv) == ["claude", "-p", "json"]

@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 LEDGER_ENV = "KIPI_USAGE_LEDGER"
 #: Every row carries these two, whatever its shape, so a consumer can tell a
@@ -402,6 +403,14 @@ MIN_BUDGET_USD = 0.50
 #: The multiplier the DoR names. A run at 3x its own bot's median is not a long
 #: run, it is a run that stopped converging.
 CAP_FACTOR = 3
+#: How many charged rows a bot needs before its median is allowed to become a cap.
+#: MEASURED against this fleet's own ledger (PR #469 review, 64 charged runs over
+#: 2026-09-23..28): sizing `radar` off its first 5 rows produces a cap that kills
+#: 25 of its 45 real runs, and off all 45 rows a cap that kills 1. A median from a
+#: handful of samples is not a measurement, and a bot sized from one is worse off
+#: than a bot left alone -- so a bot under this many rows is OMITTED from the caps
+#: file and runs uncapped until the ledger can actually answer for it.
+MIN_SIZING_RUNS = 20
 #: How far back `cap_hits` looks. The Step 4 brake pauses a bot on 3 hits inside
 #: this window; the count lives here because the ledger is the only witness.
 CAP_WINDOW_HOURS = 24
@@ -431,14 +440,19 @@ def _median(values: list) -> float | None:
     return float(nums[mid]) if len(nums) % 2 else (nums[mid - 1] + nums[mid]) / 2.0
 
 
-def size_caps(rows: list[dict], *, factor: int = CAP_FACTOR) -> dict:
+def size_caps(rows: list[dict], *, factor: int = CAP_FACTOR,
+              min_runs: int = MIN_SIZING_RUNS) -> dict:
     """`{bot: {"turns": int, "budget_usd": float, "runs": int}}` at `factor`x each median.
 
     Sized from CHARGED rows only (kind "run"): a failure row carries no num_turns
     and a parse_error carries no cost, so counting them drags every median toward
     None and the bot inherits the floor it did not earn. A bot under the floors
-    gets the floors, and `runs` says how many rows the number came from so a cap
-    sized off two runs is not mistaken for a measured one.
+    gets the floors, and `runs` says how many rows the number came from.
+
+    A bot with fewer than `min_runs` charged rows is OMITTED, not floored. `runs`
+    used to be written and read by nothing (PR #469 review), which let a median
+    from three rows ship at full force as though it were measured; an omitted bot
+    gets no flags at all from `cap_args` and keeps running the way it does today.
     """
     by_bot: dict[str, list[dict]] = {}
     for row in rows:
@@ -447,6 +461,8 @@ def size_caps(rows: list[dict], *, factor: int = CAP_FACTOR) -> dict:
         by_bot.setdefault(str(row.get("bot") or "unknown"), []).append(row)
     out = {}
     for bot, bot_rows in by_bot.items():
+        if len(bot_rows) < min_runs:
+            continue
         turns = _median([r.get("num_turns") for r in bot_rows])
         cost = _median([r.get("total_cost_usd") for r in bot_rows])
         out[bot] = {
@@ -458,7 +474,7 @@ def size_caps(rows: list[dict], *, factor: int = CAP_FACTOR) -> dict:
 
 
 def write_caps(path: str | None = None, *, rows: list[dict] | None = None,
-               factor: int = CAP_FACTOR) -> dict:
+               factor: int = CAP_FACTOR, min_runs: int = MIN_SIZING_RUNS) -> dict:
     """Size every bot's caps from the ledger and write them where `caps_for` reads.
 
     THE OTHER HALF OF THE CAP. `caps_for` deliberately never scans the ledger, so
@@ -468,41 +484,66 @@ def write_caps(path: str | None = None, *, rows: list[dict] | None = None,
     when nobody measured it. `size_caps` computed the median and reached no run
     until this pass persisted it.
 
-    SINGLE WRITER, and the write is atomic. Two of these racing (a cron pass and a
-    hand run) could otherwise leave a truncated document, which `caps_for` reads
-    as broken and answers with the floors -- the cap silently reverting to the
-    thing this function exists to replace.
+    SINGLE WRITER, and the write is atomic. Two of these racing (the daily job and
+    a hand run) could otherwise leave a truncated document, which `caps_for` reads
+    as broken and answers with no cap at all.
+
+    The temp file gets a UNIQUE name in the target's own directory. A fixed
+    `target + ".tmp"` is a path BOTH racers open, so the second `os.replace` finds
+    it already renamed away and raises FileNotFoundError out of this function,
+    dropping that writer's whole sizing pass (PR #469 review, reproduced with two
+    threads). Same directory so the rename stays on one filesystem and stays atomic.
     """
-    sized = size_caps(read() if rows is None else rows, factor=factor)
+    sized = size_caps(read() if rows is None else rows, factor=factor, min_runs=min_runs)
     target = path or caps_path()
     parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    tmp = target + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(sized, fh, indent=1, sort_keys=True)
-    os.replace(tmp, target)
+    fd, tmp = tempfile.mkstemp(dir=parent or ".", prefix=os.path.basename(target) + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(sized, fh, indent=1, sort_keys=True)
+        os.replace(tmp, target)
+    except BaseException:
+        # A failed write must not leave its temp file behind to accumulate next to
+        # the caps file forever.
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return sized
+
+
+def sized_caps_for(bot: str) -> dict | None:
+    """This bot's entry in the sized caps file, or None when it has none.
+
+    THE PER-CALL PATH NEVER SCANS THE LEDGER. That file grows without bound and
+    `run_model` is on the hot path of every bot in the fleet, so sizing is a
+    separate pass (`size_caps` over `read()`, written to `caps_path()`) and the
+    wrapper reads one small document. A missing or malformed file is None, never
+    an exception: a cap that cannot be read must not stop the run.
+    """
+    try:
+        with open(caps_path(), encoding="utf-8") as fh:
+            entry = json.load(fh).get(bot)
+        return entry if isinstance(entry, dict) else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
 
 
 def caps_for(bot: str) -> tuple[int, float]:
     """`(turns, budget_usd)` for this bot: env override, else the sized file, else floors.
 
-    THE PER-CALL PATH NEVER SCANS THE LEDGER. That file grows without bound and
-    `run_model` is on the hot path of every bot in the fleet, so sizing is a
-    separate pass (`size_caps` over `read()`, written to `caps_path()`) and the
-    wrapper reads one small document. A missing or malformed file is the floors,
-    never an exception: a cap that cannot be read must not stop the run.
+    The floors are what a SIZED bot cannot go below, never a cap handed to a bot
+    nobody measured -- `cap_args` is what decides whether this bot is capped at all.
     """
     env_turns, env_budget = os.environ.get(TURNS_ENV), os.environ.get(BUDGET_ENV)
+    sized = sized_caps_for(bot) or {}
     turns, budget = MIN_TURNS, MIN_BUDGET_USD
     try:
-        with open(caps_path(), encoding="utf-8") as fh:
-            sized = json.load(fh).get(bot) or {}
         turns = max(MIN_TURNS, int(sized.get("turns", MIN_TURNS)))
         budget = max(MIN_BUDGET_USD, float(sized.get("budget_usd", MIN_BUDGET_USD)))
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
+    except (ValueError, TypeError):
+        turns, budget = MIN_TURNS, MIN_BUDGET_USD
     # The override is read LAST and is not floored: a caller naming a cap has a
     # reason (a test, a deliberately tiny probe run), and silently raising it to
     # the floor would make that caller's number a lie.
@@ -517,7 +558,23 @@ def caps_for(bot: str) -> tuple[int, float]:
 
 
 def cap_args(bot: str) -> list[str]:
-    """The two flags for this bot's caps, ready to splice into an argv."""
+    """The two flags for this bot's caps, or NO FLAGS when nobody has sized it.
+
+    AN UNSIZED BOT RUNS UNCAPPED. This used to hand every bot the floors the
+    moment the caps file was absent, and the caps file is absent until the sizing
+    pass runs. Measured against this fleet's own ledger (PR #469 review, 64
+    charged runs): the floors kill 49 of those 64 runs, the sized caps kill 1. A
+    fleet that ships before its first sizing pass would have failed 3 runs in 4,
+    burned full cost on each, and then been paused by the Step 4 brake for hitting
+    a cap nobody chose.
+
+    So the floors are a LOWER BOUND ON A MEASURED NUMBER, not a default. No sized
+    entry and no explicit override means the argv carries neither flag and the
+    call is exactly the call this wrapper made before ASK-2011.
+    """
+    if sized_caps_for(bot) is None and not (
+            os.environ.get(TURNS_ENV) or os.environ.get(BUDGET_ENV)):
+        return []
     turns, budget = caps_for(bot)
     return [TURNS_FLAG, str(turns), BUDGET_FLAG, str(budget)]
 
@@ -525,17 +582,28 @@ def cap_args(bot: str) -> list[str]:
 #: Flags the wrapper ADDS and must be able to take back out, each with whether it
 #: carries a value. Derived by the fallback rather than restated there, so a flag
 #: added above cannot be forgotten in the strip.
-_ADDED_FLAGS = {TURNS_FLAG: True, BUDGET_FLAG: True, **{f: False for f in JSON_FLAGS}}
+#:
+#: `JSON_FLAGS` is a flag and ITS VALUE (`--output-format json`), not two flags.
+#: Registering both names as valueless flags is what let the strip drop any argv
+#: element equal to the bare word `json` (PR #469 review); registering the flag as
+#: value-carrying removes the pair positionally, so only its own value goes.
+_ADDED_FLAGS = {TURNS_FLAG: True, BUDGET_FLAG: True, JSON_FLAGS[0]: True}
 
 
 def without_added_flags(argv: list[str]) -> list[str]:
-    """`argv` with every flag this module adds removed, VALUES INCLUDED."""
+    """`argv` with every flag this module adds removed, VALUES INCLUDED.
+
+    Only a token starting with `--` can BE a flag here. `JSON_FLAGS` contributes
+    the bare word `json` as its own entry, so a name-only match strips any argv
+    element equal to `json` -- including a prompt whose entire text is that word,
+    leaving `-p` bare on the fallback call (PR #469 review).
+    """
     out, skip = [], False
     for arg in argv:
         if skip:
             skip = False
             continue
-        if arg in _ADDED_FLAGS:
+        if arg.startswith("--") and arg in _ADDED_FLAGS:
             skip = _ADDED_FLAGS[arg]
             continue
         out.append(arg)
@@ -598,19 +666,23 @@ def _cli(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sc = sub.add_parser("size-caps", help="write per-bot caps at CAP_FACTOR x each median")
     sc.add_argument("--factor", type=int, default=CAP_FACTOR)
+    sc.add_argument("--min-runs", type=int, default=MIN_SIZING_RUNS,
+                    help="charged rows a bot needs before its median becomes a cap")
     sc.add_argument("--out", default=None, help="defaults to caps_path()")
     args = ap.parse_args(argv)
-    sized = write_caps(args.out, factor=args.factor)
+    sized = write_caps(args.out, factor=args.factor, min_runs=args.min_runs)
     target = args.out or caps_path()
     for bot in sorted(sized):
         row = sized[bot]
         print(f"{bot}: turns={row['turns']} budget_usd={row['budget_usd']} "
               f"from {row['runs']} run(s)")
     if not sized:
-        # A ledger with no charged rows is not an error: the fleet has not run yet.
-        # It IS worth saying out loud, because the file it just wrote is empty and
-        # every bot will read the floors from it.
-        print(f"no charged rows in the ledger; {target} written empty (all bots on floors)")
+        # Not an error: either the fleet has not run yet, or no bot has reached
+        # min_runs. Worth printing, because the file just written is empty and an
+        # empty file means every bot runs UNCAPPED -- which is the safe state, not
+        # a broken one, and is the opposite of what the floors used to do here.
+        print(f"no bot has {args.min_runs}+ charged rows; {target} written empty "
+              f"(every bot runs uncapped until one does)")
     return 0
 
 

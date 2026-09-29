@@ -1,7 +1,7 @@
 {
  "budget_cap": {
   "argv": [
-   "/Users/assafkipnis/.local/bin/claude",
+   "claude",
    "-p",
    "Say pong and nothing else.",
    "--model",
@@ -20,7 +20,7 @@
  },
  "turn_cap": {
   "argv": [
-   "/Users/assafkipnis/.local/bin/claude",
+   "claude",
    "-p",
    "Use the Bash tool to run: echo hi. Then report what it printed.",
    "--model",
