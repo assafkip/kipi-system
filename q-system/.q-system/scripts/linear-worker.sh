@@ -31,6 +31,13 @@
 # EXIT CODES
 #   0  ran (or had nothing to run). A caller may treat this as healthy.
 #   1  usage error
+#   3  PAUSED by the usage breaker (ASK-2010). The run did NO work and that is
+#      deliberate, not a failure: this bot is over its share of the rolling
+#      7-day usage ledger, or the fleet floor is down on it. Same code
+#      `usage_breaker.py check` returns, and the same one control.py uses for
+#      paused, so a caller never has to parse a message to tell a brake from a
+#      break. One Linear ticket is filed on the way into the pause and never
+#      again while it holds; one trial run is granted 24h in.
 #   9  INFRA: the environment is down (git fetch failed) and the run did NO
 #      work. Paged on the way out. Distinct from 1 so a caller can tell a dead
 #      environment from a bad invocation.
@@ -238,6 +245,42 @@ while [ $# -gt 0 ]; do
   esac
   shift || true
 done
+
+# --- THE BRAKE (ASK-2010, Step 4) -------------------------------------------
+# FIRST thing after the arguments parse, and deliberately BEFORE the git fetch,
+# the claim and the worktree. A brake that fires after the expensive setup has
+# already paid for the run it was meant to stop.
+#
+# usage_breaker.py reads the Step 2 usage ledger (ASK-2008) and answers in exit
+# codes, the contract the DoR pinned: 0 run, 3 paused. It files ONE Linear ticket
+# for Sana on the way into a pause and stays quiet while the pause holds -- this
+# worker ticks every 15 minutes, so a page per check would be 96 tickets a day.
+# It grants one trial run 24h in, so a bot that stopped spending is not held for
+# a week by a share it no longer exceeds.
+#
+# It fails OPEN by design: an unreadable ledger exits 0 with a line on stderr.
+# The failure this brake exists to prevent is an unnoticed spend; the failure a
+# fail-CLOSED brake would cause is every bot dark at once on a bug in one file.
+# Bypass for one run: KIPI_USAGE_BREAKER=0.
+# Injectable as a COMMAND, the same seam and the same reason as REVIEWER_CMD and
+# CODEX_CMD above: "what does the worker do when the brake says stop" is a real
+# state, and asserting it against the live ledger would make the test read a
+# machine-local data path. Default is always the real breaker.
+BREAKER_DEFAULT="$SKEL/plugins/kipi-core/voiceloop/usage_breaker.py"
+BREAKER_CMD="${KIPI_USAGE_BREAKER_CMD:-python3 $BREAKER_DEFAULT}"
+BREAKER_BOT="${KIPI_USAGE_BREAKER_BOT:-worker}"
+if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
+  $BREAKER_CMD check --bot "$BREAKER_BOT" >>"$LOG" 2>&1
+  breaker_rc=$?
+  if [ "$breaker_rc" -eq 3 ]; then
+    echo "PAUSED: usage breaker holds '$BREAKER_BOT' (see $LOG). No work this run." | tee -a "$LOG" >&2
+    exit 3
+  fi
+else
+  # Never silent: a brake whose engine is missing is a brake that is not there,
+  # and the whole point of ASK-2010 is that nobody notices the spend until the bill.
+  echo "usage breaker missing at $BREAKER_DEFAULT; running unbraked" | tee -a "$LOG" >&2
+fi
 
 # --- WHICH REPO THIS RUN WORKS IN ----------------------------------------
 # $SKEL used to mean two things at once, and separating them is the whole point
