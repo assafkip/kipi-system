@@ -283,6 +283,95 @@ def test_a_silent_nonzero_exit_still_says_something(tmp_path):
     assert "NOT CHECKED" in _ctx(r), r.stdout
 
 
+def _argv_stub(bin_dir, rc, stdout):
+    """A stub that also records the argv it was called with, one line."""
+    stub = bin_dir / "voiceloop"
+    log = bin_dir / "argv.log"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'echo "$*" > "{log}"\n'
+        f"cat <<'OUT'\n{stdout}\nOUT\n"
+        f"exit {rc}\n"
+    )
+    stub.chmod(0o755)
+    return log
+
+
+def _run_recording(tmp_path, rel_path, *, rc=0, stdout="0 finding(s) against 5 exemplar(s)"):
+    draft = tmp_path / rel_path
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("a draft\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log = _argv_stub(bin_dir, rc, stdout)
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir(exist_ok=True)
+    env = dict(os.environ)
+    env["PATH"] = _sealed_path(bin_dir)
+    env["VOICE_LOOP_CORPUS"] = str(corpus_dir)
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(draft)}}
+    r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, timeout=60)
+    argv = log.read_text().split() if log.exists() else []
+    return r, argv
+
+
+@pytest.mark.parametrize("rel_path, channel", [
+    ("outreach/linkedin-post-launch.md", "linkedin"),
+    ("drafts/x-thread-hooks.md", "x"),
+    ("posts/twitter/launch.md", "x"),
+    ("q-system/output/substack-issue-4.md", "substack"),
+    ("articles/medium-why-gates.md", "medium"),
+    ("outreach/email-followup-dana.md", "email"),
+    ("outreach/dm-chris.md", "dm"),
+    ("social/reply-to-thread.md", "comment"),
+])
+def test_a_draft_with_a_known_channel_gets_the_full_review(tmp_path, rel_path, channel):
+    """Founder 2026-09-29: the voice loop runs IN FULL on its own.
+
+    `review` is the full path (score plus the gate roster and channel rules), but
+    it defaults to channel x, so the channel has to come from the draft's path.
+    """
+    r, argv = _run_recording(tmp_path, rel_path)
+    assert r.returncode == 0
+    assert argv[:3] == ["review", "--channel", channel], argv
+
+
+def test_a_draft_with_no_known_channel_keeps_score(tmp_path):
+    """Control: an unmapped path must not be reviewed as X.
+
+    Measured 2026-09-29 on a doc run through `review` at the x default: markdown
+    and length were reported as X-timeline problems. No channel means no channel
+    rules, so the unmapped path keeps the score it had.
+    """
+    r, argv = _run_recording(tmp_path, IN_SCOPE)
+    assert r.returncode == 0
+    assert argv[:1] == ["score"], argv
+
+
+def test_a_linkedin_word_inside_another_name_is_not_a_channel(tmp_path):
+    """Control: `x` must match as a name segment, never as a letter in a word."""
+    r, argv = _run_recording(tmp_path, "outreach/fix-list-draft-plan.md")
+    assert argv[:1] == ["score"], argv
+
+
+def test_a_review_tally_counts_as_a_completed_run(tmp_path):
+    """`review` prints `N finding(s) on channel c against M exemplar(s)`.
+
+    The score-shaped tally regex does not match that line, so without this every
+    review finding would be reported as an ENGINE fault and lose its skip hint.
+    """
+    r, _ = _run_recording(
+        tmp_path, "outreach/linkedin-post-a.md", rc=1,
+        stdout=("substance-fragment: 12 words, under the 20-word floor for linkedin\n"
+                "1 finding(s) on channel linkedin against 161 exemplar(s)"))
+    ctx = _ctx(r)
+    assert "substance-fragment" in ctx, ctx
+    assert "ENGINE fault" not in ctx, ctx
+    assert SKIP_HINT in ctx, ctx
+    assert "linkedin" in ctx and "review" in ctx, ctx
+
+
 def test_a_real_finding_still_carries_the_skip_marker(tmp_path):
     """Control: the engine-fault branch must not swallow genuine findings."""
     r = _run(tmp_path, IN_SCOPE, "a draft\n", rc=1,
