@@ -48,6 +48,13 @@ import shutil
 import sys
 import time
 
+# filer_cap lives beside this file. A plain import needs that directory on the
+# path, because this script is run BOTH as `python3 .../alert-to-linear.py`
+# (which puts it there) and loaded by importlib from other scripts (which does
+# not) -- _load_linear() exists for exactly that second case.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import filer_cap as _cap                                        # noqa: E402
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_NO_KEY = 3
@@ -215,6 +222,31 @@ _NOISE_PATTERNS = [
 ]
 
 
+_NEVER_SUPPRESS = re.compile(r"unsanctioned|reverted|SECURITY", re.IGNORECASE)
+
+
+def never_capped(message: str) -> bool:
+    """True for the class no layer of this file may suppress.
+
+    ONE CONSTANT, TWO CONSUMERS, and that is the whole point. is_noise() has
+    refused to suppress this class since ASK-870; the budget added in ASK-2012 is
+    a second suppressor on the same path, and a second copy of this regex would
+    be a second source of truth that agrees on the day it is written. So both
+    read `_NEVER_SUPPRESS`: change it and both move.
+
+    WHY THE CAP NEEDS THE CARVE-OUT AT ALL (PR #465 review round 1, major). The
+    cap does not drop; it records and promotes on recurrence. A security
+    detection is precisely the shape that does NOT recur -- the change was
+    reverted, so it fires once -- and a list row unseen for 14 days is pruned. So
+    for this one class, "recorded, not ticketed" is a delayed drop, and it would
+    have landed on exactly the ticket ASK-870 already had to be rescued once.
+
+    An exempt create still SPENDS a token (filer_cap.exempt): the bucket measures
+    creates, and a create the tripwire cannot see makes its ratio lie.
+    """
+    return bool(_NEVER_SUPPRESS.search(message or ""))
+
+
 def is_noise(message: str) -> bool:
     """True for a pure all-clear/no-op alert that should never become a ticket.
 
@@ -228,7 +260,7 @@ def is_noise(message: str) -> bool:
     accident -- the override applies to every pattern above, not just the
     tripwire one.
     """
-    if re.search(r"unsanctioned|reverted|SECURITY", message, re.IGNORECASE):
+    if never_capped(message):
         return False
     return any(p.search(message) for p in _NOISE_PATTERNS)
 
@@ -972,17 +1004,56 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
             f"ticket within {LOCK_WAIT_SECONDS:g}s; refusing to create a "
             f"duplicate. NOT filed: {message}")
 
+    # THE BUDGET, and it sits HERE for the same reason the may_create gate does:
+    # everything above this line counts an existing ticket, everything below
+    # creates one. Spending a token on the repeat path would drain the budget on
+    # writes that mint nothing (ASK-2012).
+    #
+    # Dedup and the cap answer two different questions and the board needs both.
+    # The fingerprint above collapses ONE condition said 51 times. It says
+    # nothing about 105 DIFFERENT conditions in an hour, which is what the
+    # `alert` filer actually did on this board: 507 created in 28 days, 5 ever
+    # completed. Nothing is dropped -- an over-budget alert is written to the
+    # recorded list and becomes a ticket the moment its fingerprint recurs.
+    #
+    # EXIT_OK, not EXIT_FAILED. The alert was recorded, which is this file's job;
+    # reporting it as a failed send would make the heartbeat's halt branch fire
+    # on a working budget.
+    # THE CARVE-OUT IS PART OF THE BUDGET, not an exception to it: see
+    # never_capped for why a class that fires once and is then reverted cannot be
+    # handled by "recorded, promoted on recurrence".
+    filer = _cap.filer_for(message)
+    decision = (_cap.exempt(filer, now,
+                            reason="exempt from the cap (security detection)")
+                if never_capped(message)
+                else _cap.decide(filer, fp, now, title=title_for(message)))
+    if not decision.ticket:
+        return EXIT_OK, (
+            f"recorded, not ticketed ({decision.reason}). Read it with "
+            f"`filer_cap.py list`. NOT a ticket: {title_for(message)}")
+
     # Bound BEFORE the try, never inside it. A name first assigned inside a
     # try/except is only bound on the paths that got that far, and the read of
     # it below sits outside the block -- the shape that turns one failure into a
     # NameError wearing the wrong failure's name.
     unresolved_labels: list = []
 
+    # THE TOKEN IS RESERVED, NOT SPENT, UNTIL THE CREATE LANDS. Every failure
+    # path below puts it back (PR #465 round 2, major). Before this, a Linear
+    # outage burned the hourly budget on sends that minted nothing: alerts 1-6
+    # failed loudly, alert 7 onward returned EXIT_OK "recorded, not ticketed",
+    # and the heartbeat's halt branch reads exit codes -- so a hard-down Linear
+    # read as a working budget. A refunded failure must stay EXIT_FAILED.
+    def _failed(line: str) -> tuple:
+        if _cap.refund(decision):
+            line += " (cap token refunded; this failure did not spend budget)"
+        return EXIT_FAILED, line
+
     try:
         teams = (ln.graphql(TEAM_QUERY, {"key": TEAM_KEY}) or {}).get("teams") or {}
         nodes = teams.get("nodes") or []
         if not nodes:
-            return EXIT_FAILED, f"no Linear team {TEAM_KEY!r}; NOT filed: {message}"
+            return _failed(f"no Linear team {TEAM_KEY!r}; NOT filed: {message}")
         team_id = nodes[0]["id"]
 
         payload = {
@@ -1024,9 +1095,9 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
         data = ln.graphql(ISSUE_CREATE, {"input": payload})
         issue = ((data or {}).get("issueCreate") or {}).get("issue") or {}
         if not issue.get("id"):
-            return EXIT_FAILED, f"issueCreate returned no issue; NOT filed: {message}"
+            return _failed(f"issueCreate returned no issue; NOT filed: {message}")
     except Exception as exc:
-        return EXIT_FAILED, f"Linear create failed ({exc}); NOT filed: {message}"
+        return _failed(f"Linear create failed ({exc}); NOT filed: {message}")
 
     _write_state(fp, {"issue_id": issue["id"],
                       "identifier": issue.get("identifier"),
