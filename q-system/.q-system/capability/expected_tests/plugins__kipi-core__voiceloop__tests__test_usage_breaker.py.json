@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-core/voiceloop/tests/test_usage_breaker.py",
+ "runner": "pytest",
+ "timeout_s": 300
+}

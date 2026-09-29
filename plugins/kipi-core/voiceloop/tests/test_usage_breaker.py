@@ -216,3 +216,113 @@ def test_the_off_switch_is_honoured(tmp_path, notify, ledger):
                 env_extra={"KIPI_USAGE_BREAKER": "0"})
     assert r.returncode == 0, r.stderr
     assert paged(notify) == []
+
+
+# --- the four findings from the claude review of PR #472 --------------------
+# Each of these was run RED against the pre-fix module before the fix landed.
+# Do not relax one without re-reading why it is here.
+
+
+def test_a_bot_the_ledger_never_records_is_unmetered_not_under_share(tmp_path, notify, ledger):
+    """major 1. `linear-worker.sh` checks bot `worker` and NOTHING writes that name.
+
+    `prompt_render.py` is the ledger's only writer and no call site passes
+    `bot="worker"`, so the pre-fix brake computed 0.000 of its share on every
+    window of the real week and exited 0 forever while looking like a brake.
+    It still exits 0 -- pausing a bot for not being instrumented yet is the wrong
+    trade -- but it says so on stderr and pages Sana exactly once.
+    """
+    r = run_cli(tmp_path, "worker", "2026-09-28T12:00:00Z", notify=notify, ledger=ledger)
+    assert r.returncode == 0, r.stderr
+    assert "UNMETERED" in r.stderr
+    assert len(paged(notify)) == 1, paged(notify)
+    assert "worker" in paged(notify)[0] and "UNMETERED" in paged(notify)[0]
+    # The one-alert contract holds across ticks, the same way a pause's does.
+    assert run_cli(tmp_path, "worker", "2026-09-28T13:00:00Z",
+                   notify=notify, ledger=ledger).returncode == 0
+    assert len(paged(notify)) == 1, paged(notify)
+
+
+def test_a_metered_bot_is_never_called_unmetered(tmp_path, notify, ledger):
+    """The negative half. Without it, `unmetered` could swallow every verdict."""
+    r = run_cli(tmp_path, "radar", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger)
+    assert r.returncode == 0, r.stderr
+    assert "UNMETERED" not in r.stderr
+    assert paged(notify) == []
+
+
+def test_an_empty_window_is_a_quiet_fleet_not_an_unmetered_bot(tmp_path, notify, ledger):
+    """No rows for ANYONE is not the same fact as no rows for THIS bot.
+
+    Conflating them pages about every bot during any quiet week, and clobbers the
+    resume of a bot whose pause has aged out of the window.
+    """
+    r = run_cli(tmp_path, "lgtm", "2026-10-20T12:00:00Z", notify=notify, ledger=ledger)
+    assert r.returncode == 0, r.stderr
+    assert "UNMETERED" not in r.stderr
+    assert paged(notify) == []
+
+
+def test_no_share_line_pauses_anything_until_the_window_clears_the_floor(tmp_path, notify):
+    """major 2. A share is a RANK, so somebody is always over it.
+
+    Three cents across two bots, one holding 60% of it. Pre-fix that paused the
+    top spender and filed a Linear ticket about $0.018.
+    """
+    ledger = tmp_path / "pennies.jsonl"
+    pennies = [
+        {"ts": "2026-09-24T01:00:00Z", "bot": "lgtm", "total_cost_usd": 0.018},
+        {"ts": "2026-09-24T02:00:00Z", "bot": "radar", "total_cost_usd": 0.012},
+    ]
+    ledger.write_text("".join(json.dumps(r) + "\n" for r in pennies))
+    r = run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=str(ledger))
+    assert r.returncode == 0, r.stderr
+    assert paged(notify) == []
+    # The ranking itself is unchanged: lgtm IS the top spender, it is just not
+    # worth pausing. The floor suppresses the ACTION, never the arithmetic.
+    assert usage_breaker.decide(pennies, "lgtm", "2026-09-24").reason == "under-floor"
+    assert usage_breaker.over_share(pennies, "2026-09-24") == []
+
+
+def test_the_dollar_floor_does_not_excuse_the_real_week(rows):
+    """The floor must not be red on the fleet's own population.
+
+    $26.97 and $49.23 are what the two real windows in the fixture hold, so the
+    $5.00 default leaves the DoR's own check intact: lgtm still pauses.
+    """
+    d = usage_breaker.decide(rows, "lgtm", "2026-09-24")
+    assert (d.action, d.reason) == ("pause", "over-share")
+    assert usage_breaker.over_share(rows, "2026-09-24") == ["lgtm"]
+
+
+def test_the_fleet_floor_is_not_subject_to_the_dollar_floor(tmp_path, notify):
+    """A `limit_text` row is the subscription refusing a call -- a fact, not a rank.
+
+    Two cents of spend, so the dollar floor is nowhere near cleared, and the
+    low-priority bot pauses anyway.
+    """
+    ledger = tmp_path / "limited.jsonl"
+    ledger.write_text(json.dumps(
+        {"ts": "2026-09-24T01:00:00Z", "bot": "lgtm", "total_cost_usd": 0.02,
+         "limit_text": "weekly limit reached"}) + "\n")
+    shares_cfg = tmp_path / "shares.json"
+    shares_cfg.write_text(json.dumps({"low_priority": ["lgtm"]}))
+    r = run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=str(ledger),
+                env_extra={"KIPI_USAGE_SHARES": str(shares_cfg)})
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert len(paged(notify)) == 1
+
+
+def test_an_unwritable_state_file_pauses_but_never_pages(tmp_path, notify, ledger):
+    """minor. `write_state` returned a bool the caller threw away.
+
+    Nothing remembered the pause, so every one of the worker's 15-minute ticks
+    re-entered the first-pause branch: 96 Linear tickets a day out of a contract
+    that promises one. The alert is now gated on the write that backs it.
+    """
+    (tmp_path / "nodir").write_text("i am a file, not a directory")
+    r = run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger,
+                env_extra={"KIPI_USAGE_BREAKER_STATE": str(tmp_path / "nodir" / "breaker.json")})
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "NOT paging" in r.stderr
+    assert paged(notify) == []
