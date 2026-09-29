@@ -270,7 +270,15 @@ BREAKER_DEFAULT="$SKEL/plugins/kipi-core/voiceloop/usage_breaker.py"
 BREAKER_CMD="${KIPI_USAGE_BREAKER_CMD:-python3 $BREAKER_DEFAULT}"
 BREAKER_BOT="${KIPI_USAGE_BREAKER_BOT:-worker}"
 if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
-  $BREAKER_CMD check --bot "$BREAKER_BOT" >>"$LOG" 2>&1
+  # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
+  # kipi-dispatch.sh runs this script with no --apply to pick the next issue and
+  # launches the real --apply round minutes later. Both pass through here, so the
+  # pick was consuming the breaker's one 24h trial run and the round that was
+  # actually going to spend arrived to find it already gone. --dry answers the
+  # same question and records nothing.
+  BREAKER_DRY=""
+  [ "$APPLY" = "1" ] || BREAKER_DRY="--dry"
+  $BREAKER_CMD check --bot "$BREAKER_BOT" $BREAKER_DRY >>"$LOG" 2>&1
   breaker_rc=$?
   if [ "$breaker_rc" -eq 3 ]; then
     echo "PAUSED: usage breaker holds '$BREAKER_BOT' (see $LOG). No work this run." | tee -a "$LOG" >&2

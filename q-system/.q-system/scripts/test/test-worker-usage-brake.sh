@@ -130,5 +130,41 @@ grep -q "running unbraked" "$TMP/last-out.txt" \
   && ok "a missing breaker is announced, not silent" \
   || bad "a missing breaker was silent"
 
+# 5. ASK-2010: a DRY run asks the brake without spending its one trial run.
+#    kipi-dispatch.sh runs `kipi work` with no --apply to pick the next issue,
+#    and the converge it launches does the real --apply round minutes later.
+#    Both pass through here, so the pick consumed the 24h trial and the round
+#    that was going to spend was held for another day (claude review of PR #472,
+#    minor). Both cases use a PAUSING stub so the worker stops at the brake and
+#    does no real work -- an --apply run past an open brake would fetch, claim
+#    and dispatch a model.
+argstub() {  # $1 = exit code, $2 = file to record argv into
+  local p="$TMP/argstub-$1.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nexit %s\n' "$2" "$1" > "$p"
+  chmod +x "$p"
+  echo "bash $p"
+}
+mkdir -p "$TMP/state5"
+: > "$TMP/argv-dry.txt"
+run_worker "$(argstub 3 "$TMP/argv-dry.txt")" "$TMP/state5" >/dev/null
+grep -q -- '--dry' "$TMP/argv-dry.txt" \
+  && ok "a dry worker run asks the brake with --dry, so the trial is not spent on a pick" \
+  || bad "THE DEFECT: a dry run asked the brake as if it were about to spend: $(cat "$TMP/argv-dry.txt")"
+
+mkdir -p "$TMP/state5b"
+: > "$TMP/argv-apply.txt"
+run_worker_apply() {
+  KIPI_STATE_DIR="$2" KIPI_USAGE_BREAKER_CMD="$1" KIPI_USAGE_BREAKER_BOT="worker-test" \
+  KIPI_NOTIFY=/usr/bin/true run_bounded 60 bash "$WORKER" --apply --limit 1 --issue ASK-BRAKE-TEST
+}
+arc="$(run_worker_apply "$(argstub 3 "$TMP/argv-apply.txt")" "$TMP/state5b")"
+[ "$arc" = "3" ] || bad "the --apply probe must stop at the brake (rc=3), got $arc -- it may have done real work"
+grep -q -- '--dry' "$TMP/argv-apply.txt" \
+  && bad "THE DEFECT: the round that actually spends asked with --dry, so its trial is never granted" \
+  || ok "an --apply run asks the brake for real, so the trial is spent by the round that uses it"
+grep -q -- '--bot worker-test' "$TMP/argv-apply.txt" \
+  && ok "the brake is asked about the bot the worker names" \
+  || bad "the brake was not asked about --bot worker-test: $(cat "$TMP/argv-apply.txt")"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
