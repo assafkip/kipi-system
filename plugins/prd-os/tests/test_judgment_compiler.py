@@ -3224,8 +3224,11 @@ class TestTheJudgeViewCarriesReadableContext:
         view, _ = jc.judge_view(packet, cfg=cfg)
         rendered = json.dumps(view, sort_keys=True)
         assert "REWRITTEN-GOALS" not in rendered, "stale text reached the judge"
-        assert any("scope" in m for m in view["derived_text"]["unavailable"]), \
-            view["derived_text"]
+        assert view["derived_text"]["scope_text"] is None
+        # The exact reason, not merely "something about scope". A mismatch and
+        # an unreadable file are different facts and the judge is told which.
+        assert "scope: text does not match the frozen scope.sha256" in \
+            view["derived_text"]["unavailable"], view["derived_text"]
 
     def test_cfg_is_optional_so_the_view_is_unchanged_without_it(
             self, template_shaped_repo):
@@ -3275,3 +3278,43 @@ class TestTheJudgeViewCarriesReadableContext:
         text = view["derived_text"]["scope_text"]
         assert len(text) <= _derived_cap(), len(text)
         assert text.endswith("[truncated]")
+
+
+# A judge that records the prompt it was actually handed, then answers validly.
+# `_judge_prompt_text` returning the text proves the FUNCTION; only the real
+# `judge` subcommand proves the RUNNING path, which is the load-path rule in
+# wiring-check.md (a view nothing shows the judge is dead text).
+_RECORDING_JUDGE_STUB = '''
+import json, os, sys
+open(os.environ["KIPI_PROMPT_SINK"], "w").write(sys.stdin.read())
+print(json.dumps({
+    "technical_validity": "valid",
+    "technical_reason": "the fixture gate can be bypassed",
+    "workflow_disposition": "fix-now",
+    "workflow_reason_code": "valid-fix-now",
+    "evidence_refs": [],
+    "missing_context": [],
+    "confidence": 0.9,
+}))
+'''
+
+
+class TestTheRunningJudgePathShowsTheText:
+    """Load-path proof for ASK-1886, not a second unit test of the same call."""
+
+    def test_the_real_judge_subcommand_hands_over_scope_and_issue_text(
+            self, template_shaped_repo, tmp_path):
+        stub = tmp_path / "recording_judge.py"
+        stub.write_text(_RECORDING_JUDGE_STUB)
+        sink = tmp_path / "prompt.txt"
+        proc = run_judgment(
+            template_shaped_repo, "judge", "--prd", PRD_ID,
+            "--finding", "finding-1", "--output", str(tmp_path / "run.json"),
+            env_extra={"KIPI_JUDGE_CMD": f"{sys.executable} {stub}",
+                       "KIPI_PROMPT_SINK": str(sink)})
+        assert proc.returncode == 0, proc.stderr
+        prompt = sink.read_text()
+        assert GOALS_TEXT in prompt, "the running judge still sees no scope"
+        assert NONGOALS_TEXT in prompt, "the running judge still sees no scope"
+        assert ACCEPTANCE_TEXT in prompt, "no acceptance criteria in the prompt"
+        assert "WRONG-ISSUE-ACCEPTANCE" not in prompt, "whole manifest leaked"

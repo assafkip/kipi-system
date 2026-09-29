@@ -64,7 +64,13 @@ if str(SCRIPT_DIR) not in sys.path:
 from config import Config, ConfigError, load as load_config  # noqa: E402
 
 RECEIPT_SCHEMA_VERSION = 1
-PACKET_SCHEMA_VERSION = 1
+# 1 -> 2 (ASK-1886). The packet's FIELD SET is unchanged -- the readable text is
+# derived into the judge view, never stored -- but `scope.source`/`scope.sha256`
+# now resolve where they used to read `unknown` on 128 of 128 receipts, and the
+# judge prompt therefore carries different input. Receipts assembled at version
+# 1 and version 2 must not be pooled in one calibration measurement: the whole
+# defect being fixed is that the judge was shown a different world.
+PACKET_SCHEMA_VERSION = 2
 LEDGER_NAME = "judgments.jsonl"
 CANDIDATES_NAME = "judgment-policy-candidates.jsonl"
 
@@ -2651,13 +2657,17 @@ def _subscription_env():
     return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
 
-def run_judge(packet: dict, *, model: str) -> dict:
+def run_judge(packet: dict, *, model: str, cfg: Config | None = None) -> dict:
     """Run the judge; the `validate_judge_output` validator and its pytest
     cases are the executable blockers on everything this docstring claims.
 
-    Takes no Config: since citations are checked by MEMBERSHIP in the set
-    `judge_view` derives from the packet, nothing here needs to open the repo.
-    That is the point of the refactor -- the packet is the whole world.
+    CITATIONS still need no Config: they are checked by MEMBERSHIP in the set
+    `judge_view` derives from the packet, so the packet remains the whole
+    citable world. `cfg` is passed only so the view can carry the READABLE half
+    -- the scope text and this finding's issue entry, re-read at the revision
+    the packet froze and refused on a hash mismatch (ASK-1886). Optional, and
+    the judge simply sees the hashes-only view without it, which is the
+    behaviour that measured 31 needs-human out of 40.
 
     Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
     contract). There is deliberately no fallback disposition: returning a
@@ -2666,7 +2676,7 @@ def run_judge(packet: dict, *, model: str) -> dict:
     below; the paired tests are test_malformed_output_retries_then_fails_loudly
     and test_a_transient_malformed_reply_recovers_within_the_cap.
     """
-    view, citable = judge_view(packet)
+    view, citable = judge_view(packet, cfg=cfg)
     prompt = (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
               + json.dumps(view, indent=2, sort_keys=True))
     override = os.environ.get("KIPI_JUDGE_CMD")
@@ -2727,7 +2737,7 @@ def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
     packet = assemble_packet(cfg, args.prd, args.finding)
     model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
         or JUDGE_MODEL_DEFAULT
-    run = run_judge(packet, model=model)
+    run = run_judge(packet, model=model, cfg=cfg)
     # Written only on success, and only after validation, so a failed judge
     # leaves no partial file for a later `--judge-run` to pick up.
     destination = Path(args.output)
