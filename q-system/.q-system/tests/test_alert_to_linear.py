@@ -932,3 +932,38 @@ def test_every_other_shape_still_files_on_the_first_failure(isolated_state, monk
     code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
     assert code == mod.EXIT_OK and fake.created == 1, line
     assert "filed ASK-101" in line, line
+
+
+# --- the captured payload ships to a PUBLIC repo -----------------------------
+#
+# The reduction that produced alert-tickets-45d.json dropped every scored field
+# that could carry an instance name, and left `state_dir` behind as provenance:
+# one absolute path naming the founder's home directory, committed to a public
+# repo and synced fleet-wide by kipi update. validate-separation.py's full
+# skeleton sweep is exactly the gate for that, and it went RED on this file --
+# after the branch's review had already stored an APPROVE.
+#
+# This is the same trade the sweep's own comment records for
+# impeccable-receipt.json (PR #374 round 6): excluding the file was the wrong
+# answer, redacting the value is the right one. The reduction now collapses the
+# home prefix at the PRODUCER, so a re-capture cannot reintroduce it.
+#
+# Asserted on the SHIPPED file, not on a round-trip through the producer. A
+# producer test passes while the committed payload keeps the old string, which
+# is the only copy the sweep and the public actually see.
+
+def test_the_captured_payload_carries_no_absolute_home_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "alert-tickets-45d.json"), encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    # Derived from the sweep's own pattern rather than restated: the literal
+    # prefix cannot be typed here, because this file is under q-system/ too and
+    # a comment naming the banned data is the ban tripping itself (see CARVEOUT).
+    home = os.path.expanduser("~")
+    assert home.startswith("/"), home
+    raw = json.dumps(payload)
+    assert home not in raw, (
+        "the captured payload ships an absolute home path to a public repo; "
+        "validate-separation.py's full skeleton sweep fails on it")
+    assert payload["state_dir"].startswith("~/"), payload["state_dir"]

@@ -10045,5 +10045,5 @@
  ],
  "reduced": true,
  "since": "2026-08-14T20:19:25.384666+00:00",
- "state_dir": "/Users/assafkipnis/.cache/kipi/alert-to-linear"
+ "state_dir": "~/.cache/kipi/alert-to-linear"
 }

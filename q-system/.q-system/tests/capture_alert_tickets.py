@@ -106,14 +106,40 @@ def reduce_node(node: dict) -> dict:
         "repeat_state": node.get("repeat_state") or {},
         # Pre-computed here because the regex needs the comment BODY, which is
         # exactly what must not be stored.
-        "repeat_comment": bool(REPEAT_COMMENT_RE.search(" ".join(
-            (c.get("body") or "")
-            for c in ((node.get("comments") or {}).get("nodes") or [])))),
+        #
+        # AND THEREFORE NOT RECOMPUTABLE. An already-reduced node has no
+        # `comments` left, so re-deriving would read an empty string and answer
+        # False for every ticket. Running `--reduce` twice did exactly that:
+        # 127 of 704 rows flipped true -> false, silently, with the replay's
+        # numbers changing underneath a fixture that still looked captured.
+        # A second pass has to be a no-op, so the already-computed value wins.
+        "repeat_comment": (node["repeat_comment"] if "repeat_comment" in node
+                           else bool(REPEAT_COMMENT_RE.search(" ".join(
+                               (c.get("body") or "")
+                               for c in ((node.get("comments") or {}).get("nodes") or []))))),
     }
+
+
+def portable(path: str) -> str:
+    """Collapse the home prefix, because the capture is COMMITTED.
+
+    The payload lands in a public repo and rides kipi update to every instance.
+    validate-separation.py's full skeleton sweep fails on an absolute home path
+    anywhere under q-system/, and it did on the first capture -- state_dir was
+    the one field the reduction left whole, since it names no ticket and no
+    instance. It still names the machine.
+
+    Redacted at the producer and not only in the committed file: the whole point
+    of a capture script is that a re-run reproduces the payload, so a fix that
+    lives only in the artifact is one `--days 45` away from being undone.
+    """
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path.startswith(home) else path
 
 
 def reduce_payload(payload: dict) -> dict:
     return {**payload, "reduced": True,
+            "state_dir": portable(payload.get("state_dir") or ""),
             "nodes": [reduce_node(n) for n in payload.get("nodes") or []]}
 
 
@@ -135,7 +161,7 @@ def capture(days: int) -> dict:
         node["repeat_state"] = (_repeat_state(node["alert_fingerprint"])
                                 if node["alert_fingerprint"] else {})
     return {"captured_at": now.isoformat(), "since": since,
-            "days": days, "state_dir": ALERT_STATE_DIR, "nodes": nodes}
+            "days": days, "state_dir": portable(ALERT_STATE_DIR), "nodes": nodes}
 
 
 def main() -> int:
