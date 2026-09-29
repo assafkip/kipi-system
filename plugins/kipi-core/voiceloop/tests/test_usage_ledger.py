@@ -159,7 +159,10 @@ def test_run_model_adds_the_json_flags_and_hands_back_plain_bytes(captured, tmp_
     fake_bin.write_text("")
     out = prompt_render.run_model("hi", claude_bin=str(fake_bin), caller="test_caller")
     assert out == captured["plain_stdout"]
-    assert seen["argv"][-2:] == ["--output-format", "json"]  # pinned, not read from the module
+    # Pinned literally, not read from the module. ASK-2011 appended the two cap
+    # flags AFTER these, so the tail moved by four -- the json flags did not go away.
+    assert seen["argv"][-6:-4] == ["--output-format", "json"]
+    assert seen["argv"][-4] == "--max-turns" and seen["argv"][-2] == "--max-budget-usd"
     rows = usage_ledger.read()
     assert len(rows) == 1 and rows[0]["bot"] == "cole" and rows[0]["job"] == "test_caller"
     assert rows[0]["total_cost_usd"] == captured["json_stdout"]["total_cost_usd"]

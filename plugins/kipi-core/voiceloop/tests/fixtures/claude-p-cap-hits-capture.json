@@ -1,0 +1,42 @@
+{
+ "budget_cap": {
+  "argv": [
+   "/Users/assafkipnis/.local/bin/claude",
+   "-p",
+   "Say pong and nothing else.",
+   "--model",
+   "claude-haiku-4-5-20251001",
+   "--strict-mcp-config",
+   "--mcp-config",
+   "{\"mcpServers\":{}}",
+   "--output-format",
+   "json",
+   "--max-budget-usd",
+   "0.000001"
+  ],
+  "returncode": 1,
+  "stderr": "",
+  "stdout": "{\"duration_api_ms\":0,\"stop_reason\":\"end_turn\",\"session_id\":\"dd6e3181-e649-4217-abb2-fff5751584d0\",\"total_cost_usd\":0.0737791,\"usage\":{\"output_tokens_details\":{\"thinking_tokens\":0},\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0,\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"\",\"iterations\":[],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":10,\"outputTokens\":41,\"cacheReadInputTokens\":17681,\"cacheCreationInputTokens\":35898,\"webSearchRequests\":0,\"costUSD\":0.0737791,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"thinkingTokens\":33,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"budget_exhausted\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":true,\"num_turns\":1,\"subtype\":\"error_max_budget_usd\",\"errors\":[\"Reached maximum budget ($0.000001)\"],\"type\":\"result\",\"duration_ms\":1561,\"uuid\":\"02c6a080-c057-470a-b068-471cf8bfeee1\",\"queued_turn_count\":0,\"result_index\":0}\n"
+ },
+ "turn_cap": {
+  "argv": [
+   "/Users/assafkipnis/.local/bin/claude",
+   "-p",
+   "Use the Bash tool to run: echo hi. Then report what it printed.",
+   "--model",
+   "claude-haiku-4-5-20251001",
+   "--strict-mcp-config",
+   "--mcp-config",
+   "{\"mcpServers\":{}}",
+   "--allowedTools",
+   "Bash",
+   "--output-format",
+   "json",
+   "--max-turns",
+   "1"
+  ],
+  "returncode": 1,
+  "stderr": "",
+  "stdout": "{\"duration_api_ms\":1863,\"stop_reason\":\"tool_use\",\"session_id\":\"43449bc8-023d-4a89-9365-ba59e392d016\",\"total_cost_usd\":0.0831441,\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":40582,\"cache_read_input_tokens\":13701,\"output_tokens\":120,\"output_tokens_details\":{\"thinking_tokens\":42},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":40582,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"not_available\",\"iterations\":[{\"input_tokens\":10,\"output_tokens\":120,\"cache_read_input_tokens\":13701,\"cache_creation_input_tokens\":40582,\"cache_creation\":{\"ephemeral_5m_input_tokens\":0,\"ephemeral_1h_input_tokens\":40582},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":10,\"outputTokens\":120,\"cacheReadInputTokens\":13701,\"cacheCreationInputTokens\":40582,\"webSearchRequests\":0,\"costUSD\":0.0831441,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"thinkingTokens\":42,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"max_turns\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":true,\"num_turns\":2,\"subtype\":\"error_max_turns\",\"errors\":[\"Reached maximum number of turns (1)\"],\"type\":\"result\",\"duration_ms\":2356,\"uuid\":\"148ae5cf-1e2d-459d-8b40-b3fd06f21a3d\",\"queued_turn_count\":0,\"result_index\":0}\n"
+ }
+}
