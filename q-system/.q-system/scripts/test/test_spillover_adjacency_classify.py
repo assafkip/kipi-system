@@ -42,7 +42,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = ROOT / "q-system/.q-system/scripts/spillover-adjacency-classify.py"
-FIXTURES = Path(__file__).resolve().parent / "fixtures/spillover-adjacency/rows.jsonl"
+# .ndjson, not .jsonl, and the extension is the whole reason. `.gitignore:43`
+# excludes `*.jsonl` and un-ignores only `receipts.jsonl`, so a fixture named
+# rows.jsonl cannot be committed and this suite would have gone green locally and
+# red in CI on a missing file. The classifier reads lines, so the extension is
+# free; editing .gitignore to carve out one fixture is not in this issue's scope.
+FIXTURES = Path(__file__).resolve().parent / "fixtures/spillover-adjacency/rows.ndjson"
 
 PASS = 0
 
