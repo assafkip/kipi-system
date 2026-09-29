@@ -29,6 +29,12 @@
 #                        next reader picks the wrong code.
 #   4 wall clock      -> inherited: each round is bounded inside the worker
 #                        (1800s work) and the reviewer (2400s review)
+#   3 budget cap      -> the worker exited 3: the usage breaker is holding this
+#                        bot, so the round did NO work by design. Charges no
+#                        attempt and pages nobody. NAMED here rather than left
+#                        to the branch, for the reason the exit-7 line above
+#                        already gives: a contract that lags its code is how the
+#                        next reader picks the wrong code (ASK-2010).
 #
 # Usage: converge.sh --issue ASK-150 [--max-rounds 4] [--dry]
 #
@@ -939,6 +945,28 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     || say "note: could not clear the stale env-halt marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
+
+  # A BRAKED ROUND IS NOT A FAILED ONE (ASK-2010; claude review of PR #472,
+  # major 1). rc=3 is the usage breaker holding this bot: the worker exited
+  # before the fetch, the claim and the worktree, so the round did NO work and
+  # that is deliberate. WRC was read here and spent on two message strings, so a
+  # braked round fell through to the no-PR branch below -- it charged the issue
+  # an attempt and paged "Sana could not open a PR", blaming the agent for work
+  # the fleet's own budget refused. Three of those mark a healthy issue STUCK.
+  #
+  # Same reasoning as the env_halt branch just below, and deliberately a
+  # different code: an exhausted account is the machine being unavailable (9),
+  # an over-share is a budget the fleet chose to enforce (3). The worker,
+  # control.py and this driver all answer 3 for a pause, so no caller has to
+  # parse a message to tell a brake from a break.
+  #
+  # NO PAGE: the breaker files its own single Linear ticket on the way into the
+  # pause and stays quiet while it holds. A second page from here would be one
+  # ticket per round for a condition that is already on the board.
+  if [ "$WRC" -eq 3 ]; then
+    say "$ISSUE was NOT ATTEMPTED: the usage breaker is holding this bot, so the round did no work by design. No attempt is charged and nobody is paged (the breaker files its own ticket); the issue stays retryable and the brake grants a trial run 24h in."
+    exit 3
+  fi
 
   # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
   # charges nothing when the RUNNER is unavailable -- an exhausted account is
