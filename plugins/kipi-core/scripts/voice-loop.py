@@ -79,8 +79,32 @@ def main():
     # lands AFTER its findings when stdout is a pipe (measured on the first smoke run).
     print(f"voiceloop ({label}): {' '.join(command[1:-1])} {draft}", flush=True)
     env = dict(os.environ, VOICE_LOOP_CORPUS=str(corpus))
-    result = subprocess.run(command, env=env)
-    sys.exit(result.returncode)
+    result = subprocess.run(command, env=env, capture_output=True, text=True)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    sys.exit(_exit_code(hook, result))
+
+
+def _exit_code(hook, result):
+    """1 only for real findings about the draft. PR #473 review (major): the engine
+    exits 1 for a corpus with no fingerprint and for a crash too, and passing that
+    straight through told the author 'your draft has findings' when nothing was
+    checked. Same split as the hook: no tally line is an engine fault, and a
+    `fingerprint:` line is about the corpus, not the draft."""
+    if result.returncode == 0:
+        return 0
+    lines = [l.strip() for l in (result.stdout or "").splitlines() if l.strip()]
+    if not any(hook.TALLY_RE.search(l) for l in lines):
+        print("voice-loop NOT CHECKED: the ENGINE did not finish (no tally line), so "
+              "nothing about the draft was judged. Look at voiceloop itself.", file=sys.stderr)
+        return 2
+    fingerprint = [l for l in lines if l.startswith("fingerprint:")]
+    real = [l for l in lines if l not in fingerprint and not l.startswith("NOT CHECKED:")
+            and not hook.TALLY_RE.match(l)]
+    if fingerprint:
+        print("voice-loop NOT CHECKED: the corpus has no fingerprint, so style bands were "
+              "not computed. Run `voiceloop fingerprint` in the corpus directory.", file=sys.stderr)
+    return 1 if real else 2
 
 
 if __name__ == "__main__":

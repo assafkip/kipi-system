@@ -84,6 +84,36 @@ def test_engine_output_and_exit_code_come_through_verbatim(tmp_path):
         "the header must come BEFORE the findings, not after them"
 
 
+def test_a_missing_fingerprint_is_not_checked_not_a_finding(tmp_path):
+    """PR #473 review (major): the engine prints `fingerprint:` and exits 1 when the
+    corpus was never fingerprinted. That is the corpus not being ready, not a finding
+    about the draft, and exit 1 would read as 'the draft has findings'."""
+    r, _ = _run(tmp_path, "outreach/linkedin-post-a.md", rc=1,
+                stdout=("fingerprint: no fingerprint.json; run `voiceloop fingerprint`\n"
+                        "1 finding(s) on channel linkedin against 0 exemplar(s)"))
+    assert r.returncode == 2, r.stdout
+    assert "NOT CHECKED" in r.stderr and "fingerprint" in r.stderr, r.stderr
+
+
+def test_a_real_finding_next_to_a_missing_fingerprint_is_still_a_finding(tmp_path):
+    """Control: the fingerprint branch must not swallow a real finding."""
+    r, _ = _run(tmp_path, "outreach/linkedin-post-a.md", rc=1,
+                stdout=("fingerprint: no fingerprint.json\n"
+                        "shape: templated opener detected\n"
+                        "2 finding(s) on channel linkedin against 0 exemplar(s)"))
+    assert r.returncode == 1, r.stdout
+    assert "templated opener" in r.stdout
+    assert "fingerprint" in r.stderr, "the partial check must still be said out loud"
+
+
+def test_a_crashed_engine_is_not_a_finding(tmp_path):
+    """No tally line means the engine never finished: an engine fault, exit 2."""
+    r, _ = _run(tmp_path, "outreach/linkedin-post-a.md", rc=1,
+                stdout="Traceback (most recent call last):\n  ValueError: boom")
+    assert r.returncode == 2, r.stdout
+    assert "ENGINE" in r.stderr, r.stderr
+
+
 def test_a_missing_file_is_refused(tmp_path):
     r = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path / "nope.md")],
                        capture_output=True, text=True, timeout=60,
