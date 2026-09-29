@@ -318,8 +318,39 @@ def _unmetered(bot: str, d: Decision, state: dict, entry: dict, now: str) -> Non
                f"usage ledger (ASK-2008) or stop checking it.")
 
 
-def check(bot: str, now: str, cfg=None) -> int:
-    """The CLI's whole decision. Returns the exit code: 0 run, 3 paused."""
+def _state_verdict(d: Decision, entry: dict, now: str) -> tuple:
+    """Pure: what the state machine ANSWERS, given the decision and this bot's entry.
+
+    ONE owner for these four branch conditions, because two callers read them:
+    the live path below, which acts on them, and `--dry`, which only reports
+    them. A dry check that re-derived the conditions could disagree with the run
+    it is predicting, and the disagreement would be invisible -- both sides green,
+    both sides internally consistent (derive-a-value-from-its-owner).
+
+    Returns (exit_code, effect) where effect is resume | none | pause | trial | held.
+    """
+    if d.action == "run":
+        return 0, ("resume" if entry.get("paused_at") else "none")
+    if not entry.get("paused_at"):
+        return 3, "pause"
+    # One trial run, once, 24h in.
+    if not entry.get("trial_at") and _seconds_between(entry["paused_at"], now) >= TRIAL_AFTER_SECONDS:
+        return 0, "trial"
+    return 3, "held"
+
+
+def check(bot: str, now: str, cfg=None, dry: bool = False) -> int:
+    """The CLI's whole decision. Returns the exit code: 0 run, 3 paused.
+
+    `dry=True` answers the same question and writes nothing: no pause recorded,
+    no trial spent, no ticket filed. It exists because two callers ask the brake
+    about the SAME round. `kipi-dispatch.sh` runs `kipi work` without --apply to
+    pick the next issue, and the converge it launches runs the real `--apply`
+    round minutes later. Both passed through here, so the pick consumed the 24h
+    trial and the round that was going to do the work was held for another day
+    (claude review of PR #472, minor). A caller that cannot spend anything must
+    not be able to spend the permission to spend.
+    """
     if os.environ.get(OFF_ENV) == "0":
         sys.stderr.write(f"usage_breaker: OFF ({OFF_ENV}=0); {bot} runs unbraked\n")
         return 0
@@ -333,9 +364,16 @@ def check(bot: str, now: str, cfg=None) -> int:
     d = decide(rows, bot, now, cfg)
     state = read_state()
     entry = dict(state["bots"].get(bot) or {})
+    rc, effect = _state_verdict(d, entry, now)
 
-    if d.action == "run":
-        if entry.get("paused_at"):
+    if dry:
+        sys.stderr.write(f"usage_breaker: DRY check -- {bot} would {effect} "
+                         f"({d.reason}, {d.share_used:.3f} of {d.share_allowed:.3f} share, "
+                         f"window ending {d.end}). Nothing recorded, nothing paged.\n")
+        return rc
+
+    if effect in ("resume", "none"):
+        if effect == "resume":
             state["bots"][bot] = {"paused_at": None, "trial_at": None, "cleared_at": now,
                                   "reason": None}
             write_state(state)
@@ -343,9 +381,9 @@ def check(bot: str, now: str, cfg=None) -> int:
                   f"{d.share_allowed:.3f} share, window ending {d.end})")
         if d.reason == "unmetered":
             _unmetered(bot, d, state, entry, now)
-        return 0
+        return rc
 
-    if not entry.get("paused_at"):
+    if effect == "pause":
         entry = {"paused_at": now, "trial_at": None, "cleared_at": None,
                  "reason": d.reason, "unmetered_at": entry.get("unmetered_at")}
         state["bots"][bot] = entry
@@ -363,18 +401,18 @@ def check(bot: str, now: str, cfg=None) -> int:
             sys.stderr.write(f"usage_breaker: {bot} PAUSED ({d.reason}) but state is unwritable; "
                              f"NOT paging, because one alert cannot be promised without it\n")
         print(f"usage_breaker: {bot} PAUSED ({d.reason})")
-        return 3
+        return rc
 
-    # Already paused. One trial run, once, 24h in -- and never a second alert: the
-    # worker ticks every 15 minutes, so a page per check is 96 tickets a day.
-    if not entry.get("trial_at") and _seconds_between(entry["paused_at"], now) >= TRIAL_AFTER_SECONDS:
+    # Already paused. The trial is spent HERE and only here -- never on a --dry
+    # check, which is a different caller asking about the same round.
+    if effect == "trial":
         entry["trial_at"] = now
         state["bots"][bot] = entry
         write_state(state)
         print(f"usage_breaker: {bot} trial run granted (paused {entry['paused_at']})")
-        return 0
+        return rc
     print(f"usage_breaker: {bot} held ({d.reason}, paused {entry['paused_at']})")
-    return 3
+    return rc
 
 
 def report(now: str) -> int:
@@ -405,12 +443,15 @@ def main(argv=None) -> int:
     c = sub.add_parser("check", help="run or pause one bot (exit 0 run, 3 paused)")
     c.add_argument("--bot", required=True)
     c.add_argument("--now", default=None, help="ISO timestamp; defaults to now (UTC)")
+    c.add_argument("--dry", action="store_true",
+                   help="answer without recording: no pause, no trial spent, no ticket. "
+                        "For a caller that is only picking work, not doing it.")
     r = sub.add_parser("report", help="the window, per bot, with shares")
     r.add_argument("--now", default=None)
     args = ap.parse_args(argv)
     now = args.now or _now_iso()
     if args.cmd == "check":
-        return check(args.bot, now)
+        return check(args.bot, now, dry=args.dry)
     return report(now)
 
 

@@ -135,7 +135,7 @@ def test_no_limit_warning_means_the_floor_does_not_fire(rows):
 
 # --- the CLI: exit codes, one alert, one trial run --------------------------
 
-def run_cli(tmp_path, bot, now, *, notify, ledger, env_extra=None):
+def run_cli(tmp_path, bot, now, *, notify, ledger, env_extra=None, args=()):
     script, _ = notify
     env = dict(os.environ)
     env.update({
@@ -145,7 +145,7 @@ def run_cli(tmp_path, bot, now, *, notify, ledger, env_extra=None):
     })
     env.pop("KIPI_USAGE_SHARES", None)
     env.update(env_extra or {})
-    return subprocess.run([sys.executable, MODULE, "check", "--bot", bot, "--now", now],
+    return subprocess.run([sys.executable, MODULE, "check", "--bot", bot, "--now", now, *args],
                           capture_output=True, text=True, env=env)
 
 
@@ -190,6 +190,57 @@ def test_one_trial_run_after_24_hours_then_the_pause_closes_again(tmp_path, noti
     assert run_cli(tmp_path, "lgtm", "2026-09-25T12:00:00Z", notify=notify, ledger=ledger).returncode == 0
     # and only one -- the next check is held again, without a second page.
     assert run_cli(tmp_path, "lgtm", "2026-09-25T12:01:00Z", notify=notify, ledger=ledger).returncode == 3
+    assert len(paged(notify)) == 1
+
+
+def test_a_dry_check_reads_the_verdict_without_spending_the_trial(tmp_path, notify, ledger):
+    """The one trial run belongs to the round that would actually spend.
+
+    kipi-dispatch.sh runs `kipi work` WITHOUT --apply to pick the next issue, and
+    converge launches the real `--apply` round minutes later. Both pass through
+    the same brake, so the dry pick consumed the 24h trial and the round that was
+    going to do the work was held for another day (claude review of PR #472,
+    minor). A check that cannot spend anything must not be able to spend the
+    permission to spend.
+    """
+    assert run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger).returncode == 3
+    # 24h in, the dry caller is told "you may run" and the trial is still unspent.
+    dry = run_cli(tmp_path, "lgtm", "2026-09-25T12:00:00Z", notify=notify, ledger=ledger, args=("--dry",))
+    assert dry.returncode == 0
+    assert json.loads((tmp_path / "breaker.json").read_text())["bots"]["lgtm"]["trial_at"] is None
+    # The round that spends still gets its trial.
+    assert run_cli(tmp_path, "lgtm", "2026-09-25T12:05:00Z", notify=notify, ledger=ledger).returncode == 0
+    assert json.loads((tmp_path / "breaker.json").read_text())["bots"]["lgtm"]["trial_at"]
+    # and only one, as before: the trial is spent now.
+    assert run_cli(tmp_path, "lgtm", "2026-09-25T12:06:00Z", notify=notify, ledger=ledger).returncode == 3
+    assert len(paged(notify)) == 1
+
+
+def test_a_dry_check_still_reports_a_held_bot_as_paused(tmp_path, notify, ledger):
+    """--dry changes what is WRITTEN, never what is ANSWERED.
+
+    A dry caller that read 0 while the bot is held would send the dispatcher on
+    to claim an issue for a worker that pauses on the next breath.
+    """
+    assert run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger).returncode == 3
+    held = run_cli(tmp_path, "lgtm", "2026-09-24T13:00:00Z", notify=notify, ledger=ledger, args=("--dry",))
+    assert held.returncode == 3
+    assert len(paged(notify)) == 1
+
+
+def test_a_dry_first_pause_neither_writes_state_nor_pages(tmp_path, notify, ledger):
+    """The ticket belongs to the run that was about to spend, not to the pick.
+
+    If the dry pick recorded the pause, the `--apply` round behind it would read
+    "already paused" and the one alert would describe a run that never existed.
+    """
+    dry = run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger, args=("--dry",))
+    assert dry.returncode == 3
+    assert paged(notify) == []
+    assert not (tmp_path / "breaker.json").exists() or \
+        json.loads((tmp_path / "breaker.json").read_text())["bots"].get("lgtm") in (None, {})
+    # The apply round is the one that records it and pages, exactly once.
+    assert run_cli(tmp_path, "lgtm", "2026-09-24T12:01:00Z", notify=notify, ledger=ledger).returncode == 3
     assert len(paged(notify)) == 1
 
 
