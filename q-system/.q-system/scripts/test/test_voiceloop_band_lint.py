@@ -325,6 +325,13 @@ def _run_recording(tmp_path, rel_path, *, rc=0, stdout="0 finding(s) against 5 e
     ("outreach/email-followup-dana.md", "email"),
     ("outreach/dm-chris.md", "dm"),
     ("social/reply-to-thread.md", "comment"),
+    # PR #470 review nits, each reproduced by the reviewer as returning the wrong channel:
+    ("outreach/linkedin-comment-to-dana.md", "comment"),  # nit 1: was linkedin (20-word floor)
+    ("outreach/email.md", "email"),                       # nit 2: bare name was None
+    ("drafts/x.md", "x"),
+    ("outreach/dm.md", "dm"),
+    ("outreach/LinkedIn-post.md", "linkedin"),            # nit 3: capitalised was None
+    ("outreach/Email-to-dana.md", "email"),
 ])
 def test_a_draft_with_a_known_channel_gets_the_full_review(tmp_path, rel_path, channel):
     """Founder 2026-09-29: the voice loop runs IN FULL on its own.

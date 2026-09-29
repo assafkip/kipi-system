@@ -66,14 +66,23 @@ TIMEOUT_SECONDS = 30
 # table does not name keeps `score` rather than being judged as a tweet.
 # Order matters: the first match wins. Each name must be a whole path segment or
 # a basename prefix, so a letter inside a word never reads as a channel.
-CHANNEL_BY_PATH = (
-    (re.compile(r"(^|/)linkedin([-_./]|$)"), "linkedin"),
-    (re.compile(r"(^|/)(x|twitter)([-_/]|$)"), "x"),
-    (re.compile(r"(^|/)substack([-_./]|$)"), "substack"),
-    (re.compile(r"(^|/)medium([-_./]|$)"), "medium"),
-    (re.compile(r"(^|/)email([-_/]|$)"), "email"),
-    (re.compile(r"(^|/)dm([-_/]|$)"), "dm"),
-    (re.compile(r"(^|/)(reply|comment)([-_/]|$)"), "comment"),
+# PR #470 review: a `linkedin-comment-*` draft matched linkedin first and was held
+# to the 20-word post floor instead of the 5-word comment floor, a bare `email.md`
+# matched nothing because four patterns left the dot out of the trailing class, and
+# `LinkedIn-post.md` matched nothing because the table was case-sensitive.
+_CHANNEL_END = r"([-_./]|$)"
+CHANNEL_BY_PATH = tuple(
+    (re.compile(pattern + _CHANNEL_END, re.IGNORECASE), channel)
+    for pattern, channel in (
+        (r"(^|/)(linkedin|x|twitter)[-_](reply|comment)", "comment"),
+        (r"(^|/)linkedin", "linkedin"),
+        (r"(^|/)(x|twitter)", "x"),
+        (r"(^|/)substack", "substack"),
+        (r"(^|/)medium", "medium"),
+        (r"(^|/)email", "email"),
+        (r"(^|/)dm", "dm"),
+        (r"(^|/)(reply|comment)", "comment"),
+    )
 )
 
 # `score` prints "N finding(s) against M exemplar(s)"; `review` inserts
