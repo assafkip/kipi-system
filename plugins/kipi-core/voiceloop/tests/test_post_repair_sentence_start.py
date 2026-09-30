@@ -10,6 +10,8 @@ in the middle of earlier sentences while the real sentence start stayed lowercas
 import os
 import sys
 
+import pytest
+
 PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(PKG))
 
@@ -17,6 +19,13 @@ from voiceloop import post_repair  # noqa: E402
 
 LINTER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(PKG))),
                            "q-system", ".q-system", "scripts", "voice-lint.py")
+# The public voice-loop mirror ships this package WITHOUT the kipi linter, and its
+# exporter runs the mirror's tests before it publishes. A module-level load of a
+# missing file errored at collection there and refused the whole export (ASK-2239).
+# Every test here needs the real linter, so the module skips, loudly, where it is absent.
+if not os.path.isfile(LINTER_PATH):
+    pytest.skip(f"voice-lint.py not present at {LINTER_PATH} (public mirror layout)",
+                allow_module_level=True)
 LINTER = post_repair._load_linter(LINTER_PATH)
 
 
