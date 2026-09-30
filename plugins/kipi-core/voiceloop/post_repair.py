@@ -281,30 +281,46 @@ def repair(text, allowlist, linter, mapping):
     #    Offsets come from the linter's prose view, so they are indices into the STRIPPED
     #    text, not the raw text. Repair by locating the token in the raw text instead,
     #    which is why this walks matches rather than splicing by offset.
+    #    THE SENTENCE START, NOT THE FIRST OCCURRENCE (2026-09-29). This used to run
+    #    `pattern.subn(..., count=1)` over the whole draft, which rewrites the word's
+    #    FIRST appearance anywhere: live Reddit drafts shipped "from The abuse side" and
+    #    "the rest Of your list" while the real sentence start stayed lowercase. The prose
+    #    view keeps every line (fences blank to newlines, blockquotes empty in place), so
+    #    the start is pinned by its LINE and by how many times the word appears before it
+    #    on that line, counting only matches outside code in both views.
     for _ in range(10):  # bounded: each pass fixes at least one or breaks
         prose = linter.strip_code_preserving_lines(repaired)
-        target = None
-        for offset in linter._sentence_start_offsets(prose):
-            token = re.match(r"[A-Za-z][\w'-]*", prose[offset:])
+        target = offset = None
+        for start in linter._sentence_start_offsets(prose):
+            token = re.match(r"[A-Za-z][\w'-]*", prose[start:])
             if not token or token.group() == "__CODE__" or token.group()[0].isupper():
                 continue
-            target = token.group()
+            target, offset = token.group(), start
             break
         if target is None:
             break
 
+        word = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
+        line_no = prose.count("\n", 0, offset)
+        nth = len(word.findall(prose[prose.rfind("\n", 0, offset) + 1:offset]))
+        raw_lines = repaired.split("\n")
+        raw_line = raw_lines[line_no]
+        code = [m.span() for regex in (linter.INLINE_CODE_RE, linter.CODE_FENCE_RE)
+                for m in regex.finditer(raw_line)]
+        hits = [m for m in word.finditer(raw_line)
+                if not any(a <= m.start() < b for a, b in code)]
+        if nth >= len(hits):
+            break
+        hit = hits[nth]
+
         if is_verbatim(target, allowlist):
-            pattern = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
-            repaired, n = pattern.subn(f"`{target}`", repaired, count=1)
-            if not n:
-                break
+            replacement = f"`{target}`"
             changes.append(f"protected verbatim token '{target}' with backticks")
         else:
-            pattern = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
-            repaired, n = pattern.subn(target[0].upper() + target[1:], repaired, count=1)
-            if not n:
-                break
+            replacement = target[0].upper() + target[1:]
             changes.append(f"capitalized sentence start '{target}'")
+        raw_lines[line_no] = raw_line[:hit.start()] + replacement + raw_line[hit.end():]
+        repaired = "\n".join(raw_lines)
 
     # 3. Proper nouns miscased against the linter's own list, in its canonical spelling.
     for noun in linter.load_proper_nouns(""):
