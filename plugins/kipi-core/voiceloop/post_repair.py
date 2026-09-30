@@ -452,13 +452,21 @@ if __name__ == "__main__":
     # The engine cannot know where a deployment keeps its linter (the public mirror has
     # no q-system/), so the linter path is an argument. It used to call repair(text)
     # with 1 of 4 arguments and raised TypeError on every run (PR #475 review).
-    if len(sys.argv) != 3:
-        print("usage: post_repair.py <file> <path/to/voice-lint.py>", file=sys.stderr)
+    # The verbatim-lowercase allowlist is deployment config too. Without it, tool names
+    # that are correct in lowercase get capitalized, so a run without it says so on
+    # stderr rather than printing a clean verdict over a mangled name (review round 3).
+    if len(sys.argv) not in (3, 4):
+        print("usage: post_repair.py <file> <path/to/voice-lint.py> "
+              "[path/to/verbatim-lowercase.txt]", file=sys.stderr)
         raise SystemExit(2)
     with open(sys.argv[1], encoding="utf-8") as fh:
         original = fh.read()
     cli_linter = _load_linter(sys.argv[2])
-    fixed, what = repair(original, set(), cli_linter, {})
+    cli_allowlist = load_verbatim_lowercase(sys.argv[3]) if len(sys.argv) == 4 else set()
+    if not cli_allowlist:
+        print("  WARNING: no verbatim-lowercase allowlist; lowercase tool names will be "
+              "capitalized", file=sys.stderr)
+    fixed, what = repair(original, cli_allowlist, cli_linter, {})
     left = violations(fixed, cli_linter, "")
     for line in what:
         print(f"  repaired: {line}")

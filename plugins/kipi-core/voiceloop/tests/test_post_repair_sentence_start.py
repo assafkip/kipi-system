@@ -106,3 +106,26 @@ def test_the_command_line_entry_point_runs_instead_of_raising(tmp_path):
     assert "Traceback" not in run.stderr, run.stderr
     assert run.returncode in (0, 1), (run.returncode, run.stderr)
     assert "capitalized sentence start 'the'" in run.stdout, run.stdout
+    assert "no verbatim-lowercase allowlist" in run.stderr, run.stderr
+
+
+# PR #475 review round 3.
+
+def test_voice_lint_a_code_start_is_not_counted_against_the_code_sentinel():
+    out, _fixed, _left = LINTER.repair_capitalization(
+        "Run `x` first. code review is next. code comes after.")
+    assert out == "Run `x` first. Code review is next. Code comes after.", out
+    assert LINTER.check_capitalization(out) == [], LINTER.check_capitalization(out)
+
+
+def test_the_command_line_honors_the_verbatim_allowlist(tmp_path):
+    import subprocess
+    draft = tmp_path / "draft.md"
+    draft.write_text("I ran it once. ratchet is the tool.\n", encoding="utf-8")
+    allow = tmp_path / "verbatim-lowercase.txt"
+    allow.write_text("ratchet\n", encoding="utf-8")
+    run = subprocess.run([sys.executable, os.path.join(PKG, "post_repair.py"),
+                          str(draft), LINTER_PATH, str(allow)], capture_output=True, text=True)
+    assert "Traceback" not in run.stderr, run.stderr
+    assert "protected verbatim token 'ratchet'" in run.stdout, run.stdout
+    assert "no verbatim-lowercase allowlist" not in run.stderr, run.stderr

@@ -840,7 +840,9 @@ def repair_capitalization(text):
         column = violation.get("column")
         if column is None or index >= len(prose_lines):
             continue
-        nth = len(pattern.findall(prose_lines[index][:column]))
+        # mask the inline-code sentinel first: case-blind, `__CODE__` contains "code"
+        # (PR #475 review round 3), and the raw side masks the same span out
+        nth = len(pattern.findall(prose_lines[index][:column].replace("__CODE__", " " * 8)))
         code = [m.span() for regex in (INLINE_CODE_RE, CODE_FENCE_RE)
                 for m in regex.finditer(lines[index])]
         hits = [m for m in pattern.finditer(lines[index])
