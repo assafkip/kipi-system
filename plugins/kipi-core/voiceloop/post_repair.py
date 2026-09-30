@@ -288,19 +288,26 @@ def repair(text, allowlist, linter, mapping):
     #    view keeps every line (fences blank to newlines, blockquotes empty in place), so
     #    the start is pinned by its LINE and by how many times the word appears before it
     #    on that line, counting only matches outside code in both views.
-    for _ in range(10):  # bounded: each pass fixes at least one or breaks
+    #    A letter/digit boundary, not \w: `_` is a word character, so a start behind
+    #    underscore italics (`_the rest_`) never matched at its own position (PR #475
+    #    review). A start that still cannot be placed is SKIPPED, not a reason to stop
+    #    fixing the starts after it.
+    unplaceable = set()
+    for _ in range(10):  # bounded: each pass fixes one start or marks it unplaceable
         prose = linter.strip_code_preserving_lines(repaired)
         target = offset = None
         for start in linter._sentence_start_offsets(prose):
             token = re.match(r"[A-Za-z][\w'-]*", prose[start:])
             if not token or token.group() == "__CODE__" or token.group()[0].isupper():
                 continue
+            if (prose.count("\n", 0, start), start, token.group()) in unplaceable:
+                continue
             target, offset = token.group(), start
             break
         if target is None:
             break
 
-        word = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
+        word = re.compile(r"(?<![`A-Za-z0-9])" + re.escape(target) + r"(?![`A-Za-z0-9])")
         line_no = prose.count("\n", 0, offset)
         nth = len(word.findall(prose[prose.rfind("\n", 0, offset) + 1:offset]))
         raw_lines = repaired.split("\n")
@@ -310,7 +317,8 @@ def repair(text, allowlist, linter, mapping):
         hits = [m for m in word.finditer(raw_line)
                 if not any(a <= m.start() < b for a, b in code)]
         if nth >= len(hits):
-            break
+            unplaceable.add((line_no, offset, target))
+            continue
         hit = hits[nth]
 
         if is_verbatim(target, allowlist):

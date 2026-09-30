@@ -49,3 +49,34 @@ def test_a_word_inside_inline_code_is_never_the_one_rewritten():
     out = _repair("Run `the tool` first. the output is clean.")
     assert "`the tool`" in out, out
     assert "The output is clean." in out, out
+
+
+# PR #475 review, round 1: the three tests above are all one line and never put the
+# word loose inside a code span, so the line pin and the code-span mask survived
+# mutation. These three are the inputs that kill those mutants.
+
+def test_the_line_is_pinned_when_the_start_is_on_a_later_line():
+    out = _repair("I saw the abuse side.\nthe rest is fine.")
+    assert out == "I saw the abuse side.\nThe rest is fine.", out
+
+
+def test_a_loose_word_inside_a_code_span_is_not_rewritten():
+    out = _repair("Run `use the thing` first. the output is clean.")
+    assert out == "Run `use the thing` first. The output is clean.", out
+
+
+def test_a_start_behind_underscore_italics_is_fixed_and_later_starts_still_are():
+    out = _repair("_the rest of it._\nthe rest is fine.\nof course it breaks.")
+    assert out == "_The rest of it._\nThe rest is fine.\nOf course it breaks.", out
+
+
+# The copy that WRITES FILES (`voice-lint.py --fix` -> fix_file) had the same defect:
+# it capitalized the first match on the line. It must pin the start the same way.
+
+def test_voice_lint_repair_capitalization_pins_the_start_not_the_first_match():
+    out, fixed, _left = LINTER.repair_capitalization(
+        "I read it from the abuse side and it held. the rest of your list is fine.")
+    assert "from the abuse side" in out, out
+    assert "The rest of your list" in out, out
+    assert LINTER.check_capitalization(out) == [], LINTER.check_capitalization(out)
+    assert fixed == ["the"], fixed
