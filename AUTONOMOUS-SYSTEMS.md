@@ -28,9 +28,13 @@ Every job whose plist is INSTALLED in `~/Library/LaunchAgents` under a watched p
 auto-monitored by the watchdog (2.3), except the watchdog's own label (`com.kipi.launchd-health`,
 `SELF_LABEL` in `launchd-health-check.py`), which it skips. That label is covered instead by
 `detect_dark_jobs` in `fleet-health-daily.py` (run by `com.kipi.fleet-health`), which reports it if its
-plist is on disk and not loaded. A committed plist that was never installed is not monitored:
-the watchdog discovers installed plists, not committed ones. The ones we own are rebuildable from a
-committed installer, so the layer survives a lost `~/Library/LaunchAgents`.
+plist is on disk and not loaded. A committed plist that was never installed is invisible to the
+watchdog, which discovers installed plists, but it IS reported: `never_installed_findings` in
+`fleet-health-daily.py` (detector `launchd-never-installed`) walks every `com.kipi.*.plist` that
+`git ls-files` tracks, in any directory, and files one issue per template with no installed copy
+(ASK-2277; before that it globbed `q-system/.q-system/scripts/` only and missed `automation/`). The
+ones we own are rebuildable from a committed installer, so the layer survives a lost
+`~/Library/LaunchAgents`.
 
 Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
 - `com.kipi.lessons-daily` is WEEKLY: its plist sets `StartCalendarInterval` Weekday 1, Hour 6

@@ -561,6 +561,27 @@ with _tempfile.TemporaryDirectory() as _tmp:
     check("installing it clears the finding",
           fh.never_installed_findings(template_dir=_templates, launch_agents=_agents), [])
 
+# ASK-2277: the DEFAULT enumeration must be the committed set, which only git
+# knows. It globbed q-system/.q-system/scripts/ alone, so the two templates under
+# automation/ could never be reported: 15 seen of 17 committed. Asserted against
+# `git ls-files` (the same set install-plist.sh --all walks), with an empty
+# LaunchAgents and no paused labels, so every committed label must come back.
+import subprocess as _sp
+
+_repo = Path(__file__).resolve().parents[4]
+_tracked = sorted(
+    Path(p).stem for p in _sp.run(
+        ["git", "-C", str(_repo), "ls-files", "--", "*/com.kipi.*.plist", "com.kipi.*.plist"],
+        capture_output=True, text=True, check=True).stdout.split())
+check("git tracks templates outside scripts/ (the fixture can show the gap)",
+      any(not (fh.PLIST_TEMPLATE_DIR / f"{l}.plist").is_file() for l in _tracked), True)
+with _tempfile.TemporaryDirectory() as _tmp:
+    _empty_agents = Path(_tmp)
+    check("the default enumeration reports every git-tracked template",
+          sorted(f["subject"] for f in fh.never_installed_findings(
+              launch_agents=_empty_agents, paused_labels=["com.kipi.none-paused"])),
+          _tracked)
+
 check("launchd-never-installed is registered", "launchd-never-installed" in _by_id, True)
 check("it declares an action",
       _by_id.get("launchd-never-installed", {}).get("action"), "file_issue")
