@@ -101,15 +101,26 @@ else
   elif ! ( cd "$SKEL" || exit 1
            CPATHS=()
            for p in "${LPATHS[@]}"; do
-             if [ -n "$(git ls-files -- "$p")" ]; then CPATHS+=("$p"); fi
+             if [ -n "$(git diff --cached --name-only -- "$p")" ]; then CPATHS+=("$p"); fi
            done
            git commit --no-gpg-sign -m "$COMMIT_MSG" -- "${CPATHS[@]}" ) >> "$LOG" 2>&1; then
     # The pathspec keeps foreign staged files out of the lesson commit. A
     # path git knows nothing about (an empty lesson-candidates/) is a fatal
-    # pathspec error, so only paths with index entries are named.
+    # pathspec error, so only paths with STAGED changes are named; the
+    # diff --cached test above guarantees at least one (and, unlike ls-files,
+    # it sees a staged deletion), so CPATHS is never empty under set -u.
     PERSIST="FAILED"
   fi
-  [ "${PERSIST:-}" = "FAILED" ] && echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons stay on disk." >> "$LOG"
+  if [ "${PERSIST:-}" = "FAILED" ]; then
+    # Unstage what this job staged. Left in the index, q-system/lessons is the
+    # exact state kipi-update.sh aborts on ("q-system/ is staged but not
+    # committed"), which would jam every fleet update until someone resets it,
+    # and the next commit would silently absorb it (PR 487 review round 3).
+    # Path-limited reset: the working tree, and so the lessons, are untouched.
+    ( cd "$SKEL" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
+      || echo "$(TS) WARNING: could not unstage ${LPATHS[*]}; kipi-update.sh will abort until reset" >> "$LOG"
+    echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons unstaged, still on disk." >> "$LOG"
+  fi
 fi
 
 # A refused commit may be a content gate (gitleaks, client-name guard) saying

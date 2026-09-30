@@ -159,6 +159,11 @@ for mode in refuse refuse-precommit; do
     || bad "$mode: alert is silent about the refused commit"
   [ "$JOB_RC" -ne 0 ] && ok "$mode: job exits non-zero" \
                       || bad "$mode: job exits 0 after a refused commit"
+  # A staged q-system/ is what kipi-update.sh aborts on fleet-wide.
+  STAGED="$(git -C "$T/skel" diff --cached --name-only 2>&1)"
+  [ -z "$STAGED" ] && [ -e "$T/skel/q-system/lessons/fixture-lesson.md" ] \
+    && ok "$mode: nothing left staged, lesson still on disk" \
+    || bad "$mode: index left dirty after refusal: $STAGED"
   [ ! -e "$T/propagated" ] && [ ! -e "$T/notion-synced" ] \
     && ok "$mode: refused lessons are not propagated or mirrored" \
     || bad "$mode: refused lessons still shipped (propagated or mirrored)"
