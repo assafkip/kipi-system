@@ -22,10 +22,13 @@ launchd jobs are:
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 | wake per-instance agents to advance open loops |
 | `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — alert on any silent job death (families in 2.3) |
 | `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
-| `com.kipi.spillover-linear-check` | 08:10 (not loaded on the Mac as of 2026-09-30, see 1.1) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
+| `com.kipi.spillover-linear-check` | 08:10 (installed and loaded on the Mac 2026-09-30) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
 Every job whose plist is INSTALLED in `~/Library/LaunchAgents` under a watched prefix is
-auto-monitored by the watchdog (2.3). A committed plist that was never installed is not monitored:
+auto-monitored by the watchdog (2.3), except the watchdog's own label (`com.kipi.launchd-health`,
+`SELF_LABEL` in `launchd-health-check.py`), which it skips. That label is covered instead by
+`detect_dark_jobs` in `fleet-health-daily.py` (run by `com.kipi.fleet-health`), which reports it if its
+plist is on disk and not loaded. A committed plist that was never installed is not monitored:
 the watchdog discovers installed plists, not committed ones. The ones we own are rebuildable from a
 committed installer, so the layer survives a lost `~/Library/LaunchAgents`.
 
@@ -55,6 +58,7 @@ list itself was not re-read from the routines API for this change.
 | client status | weekdays 07:25 | chief `cloud/client-status.md`; publishes to chief `kipi/status` | new (ASK-2192) |
 | Linear worker | Mon-Fri 09:40, 12:40, 15:40 | chief `cloud/linear-worker.md` | `com.kipi.dispatch`, retired 2026-09-30 |
 | Triage | weekdays 09:05 | chief `cloud/triage.md` | `com.triage.brief` / `.act` / `.respond`, retired 2026-09-30 |
+| LGTM | weekdays 08:35 | chief `cloud/lgtm.md`; reads GitHub through MCP (chief #47) | `com.lgtm.brief` / `.act` / `.respond` / `.week`, retired 2026-09-30 |
 | meeting loop | daily 20:00 | instance-side prompt | an instance's meeting-loop launchd job, retired 2026-09-30 |
 
 **GitHub Actions**
@@ -67,7 +71,6 @@ list itself was not re-read from the routines API for this change.
 
 | Job | When | Cloud prompt | Waiting on |
 |-----|------|--------------|------------|
-| `com.lgtm.brief` / `.act` / `.respond` / `.week` | weekdays 08:30 / 08:35; respond every 10 min; Fri 16:00 | chief `cloud/lgtm.md` | a cloud environment secret |
 | `com.kipi.lessons-daily` | Mon 06:00 (weekly) | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
 
 **Staying on the Mac** (they read the Mac)
@@ -92,8 +95,9 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
 | `com.kipi.pr86-review` | hourly at :17 |
 
-Not loaded on 2026-09-30, although the table above (section 1) or a committed plist names them:
-`com.kipi.spillover-linear-check` (plist committed, not installed in LaunchAgents),
+`com.kipi.spillover-linear-check` was installed and loaded on 2026-09-30 and is listed in section 1.
+
+Not loaded on 2026-09-30, although a committed plist names them:
 `com.kipi.ticket-watch` and `com.cole.fleet-env-health` (plist present, not loaded).
 Retired plists (`*.retired-<date>`) are not listed.
 
@@ -285,7 +289,9 @@ python3 q-system/.q-system/scripts/lessons-distill.py --dry
 # and its installer refuses (exit 2) unless run from the skeleton checkout itself.
 bash q-system/.q-system/scripts/install-lessons-daily.sh
 bash <instance>/automation/install-launchd.sh
-# every committed kipi plist (or one: pass its label instead of --all)
+# every committed kipi plist (or one: pass its label instead of --all).
+# --all refuses (exit 2) from a git worktree, so it cannot repoint live jobs at one.
+# Outside the skeleton it skips templates marked `kipi-scope: skeleton-only`.
 bash q-system/.q-system/scripts/install-plist.sh --all
 
 # run the test suite for these systems
