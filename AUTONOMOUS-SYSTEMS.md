@@ -22,7 +22,7 @@ launchd jobs are:
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 | wake per-instance agents to advance open loops |
 | `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — alert on any silent job death (families in 2.3) |
 | `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
-| `com.kipi.spillover-linear-check` | 08:10 | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
+| `com.kipi.spillover-linear-check` | 08:10 (not loaded on the Mac as of 2026-09-30, see 1.1) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
 Every job is auto-monitored by the watchdog and (for the ones we own) rebuildable from a committed
 installer, so the layer survives a lost `~/Library/LaunchAgents`.
@@ -36,6 +36,64 @@ Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-3
   beyond "by the 2026-08-01 audit": UNKNOWN.
 - Chief-bot jobs (`com.<bot>.*`) are not covered by `launchd-health`; that coverage moves to the
   daily cloud health check (ASK-2191).
+
+### 1.1 Where each scheduled job runs (2026-09-30, ASK-2176 Phase 8)
+
+The automation cleanup (ASK-2176) moved scheduled work off the Mac where a fresh clone can do it.
+Mac rows below are read from `launchctl list` and each plist's `StartCalendarInterval` /
+`StartInterval` on 2026-09-30; Mac times are the machine's local time (PT). Cloud rows come from
+the routine prompts in the chief repo's `cloud/` directory and the ASK-2176 record; the routine
+list itself was not re-read from the routines API for this change.
+
+**Cloud routines (claude.ai)**
+
+| Routine | When (PT) | Prompt | Replaced |
+|---------|-----------|--------|----------|
+| fleet health check | daily 09:25 | chief `cloud/health-check.md` | adds cloud coverage of the chief-bot jobs (ASK-2191) |
+| client status | weekdays 07:25 | chief `cloud/client-status.md`; publishes to chief `kipi/status` | new (ASK-2192) |
+| Linear worker | Mon-Fri 09:40, 12:40, 15:40 | chief `cloud/linear-worker.md` | `com.kipi.dispatch`, retired 2026-09-30 |
+| meeting loop | daily 20:00 | instance-side prompt | an instance's meeting-loop launchd job, retired 2026-09-30 |
+
+**GitHub Actions**
+
+| Workflow | When | What |
+|----------|------|------|
+| `.github/workflows/gates.yml` (Nightly gates) | 02:15 PDT (cron `15 9 * * *` UTC, so 01:15 PST) | every gate a fresh clone can run; no model call, no secret |
+
+**Still on the Mac, planned to move**
+
+| Job | When | Cloud prompt | Waiting on |
+|-----|------|--------------|------------|
+| `com.triage.brief` / `.act` / `.respond` | weekdays 09:00 / 09:05; respond every 10 min | chief `cloud/triage.md` | a cloud environment secret |
+| `com.lgtm.brief` / `.act` / `.respond` / `.week` | weekdays 08:30 / 08:35; respond every 10 min; Fri 16:00 | chief `cloud/lgtm.md` | a cloud environment secret |
+| `com.kipi.lessons-daily` | Mon 06:00 (weekly) | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
+
+**Staying on the Mac** (they read the Mac)
+
+| Job | When | Why it stays |
+|-----|------|--------------|
+| `com.gates.brief` | daily 02:15 | the Mac-only suites `gates.yml` cannot run: `kipi check` remote coverage, validate-separation phases 2-4, the untracked spillover census |
+| `com.gates.respond` | every 10 min | answers the gates channel on the Mac |
+| `com.kipi.launchd-health` | 09:30, 21:30 | reads the Mac's launchd state (2.3) |
+
+**Other jobs loaded on the Mac, not part of the move**
+
+| Job | When |
+|-----|------|
+| `com.kipi.audit-rotate` | 23:55 |
+| `com.kipi.openloops-heartbeat` | 08:40, 20:40 |
+| `com.kipi.fleet-health` | 08:15 |
+| `com.kipi.linear-triage-health` | 09:00 |
+| `com.kipi.linear-dor` | 03:00 |
+| `com.kipi.disk-janitor` | 04:30 |
+| `com.kipi.voice-refresh` | day 1 of the month, 09:00 |
+| `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
+| `com.kipi.pr86-review` | hourly at :17 |
+
+Not loaded on 2026-09-30, although the table above (section 1) or a committed plist names them:
+`com.kipi.spillover-linear-check` (plist committed, not installed in LaunchAgents),
+`com.kipi.ticket-watch` and `com.cole.fleet-env-health` (plist present, not loaded).
+Retired plists (`*.retired-<date>`) are not listed.
 
 ---
 
@@ -222,7 +280,8 @@ kipi lessons-run
 # preview without writing
 python3 q-system/.q-system/scripts/lessons-distill.py --dry
 
-# (re)install the daily jobs from committed installers
+# (re)install the jobs from committed installers. The lessons job is weekly (Mon 06:00),
+# and its installer refuses (exit 2) unless run from the skeleton checkout itself.
 bash q-system/.q-system/scripts/install-lessons-daily.sh
 bash <instance>/automation/install-launchd.sh
 
