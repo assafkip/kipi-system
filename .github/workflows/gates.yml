@@ -136,7 +136,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for num in $(gh issue list --label gates-red --state open --limit 100 \
-                         --json number --jq '.[].number'); do
+          # An assignment, not `for n in $(gh ...)`: set -e never sees a failing
+          # command substitution in a for list, so a gh error closed nothing and
+          # exited 0 (#484 round 2).
+          nums="$(gh issue list --label gates-red --state open --limit 100 \
+            --json number --jq '.[].number')"
+          for num in $nums; do
             gh issue close "$num" --comment "Green again: $RUN_URL"
           done

@@ -661,7 +661,12 @@ with _tf2.TemporaryDirectory() as _tmp:
     (_bin / "gh").chmod(0o755)
     _saved_path = os.environ.get("PATH", "")
     try:
-        os.environ["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        # An EMPTY dir, not launchd's literal PATH: on an Ubuntu CI runner gh
+        # lives in /usr/bin, so that PATH still found it and this check read the
+        # host instead of the code (validate run 36780697979).
+        _nogh = _root / "empty-path"
+        _nogh.mkdir()
+        os.environ["PATH"] = str(_nogh)
         fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_bin)])
         check("gh is found outside launchd's PATH", _seen, [str(_bin / "gh")])
         _absent = fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_root / "none")])

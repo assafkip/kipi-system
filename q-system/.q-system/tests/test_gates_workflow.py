@@ -117,10 +117,33 @@ def test_the_gates_job_cannot_be_silenced_at_job_level():
     assert "continue-on-error" not in gates, "no step in the gates job may swallow a failure"
     assert not re.search(r"(?m)^\s+if:", gates), "a step-level if: can skip a gate"
     # #484 review: the cheapest silencers live INSIDE a run: line, not in a key.
-    for pat, why in ((r"\|\|\s*(true|:)\b", "`|| true` swallows a gate's exit"),
-                     (r"\bexit\s+0\b", "`exit 0` overrides a gate's exit"),
-                     (r"\bset\s+\+e\b", "`set +e` stops a failing line failing the step")):
+    for pat, why in RUN_LINE_SILENCERS:
         assert not re.search(pat, gates), why
+
+
+# Kept as data so the table below can prove each pattern fires on its spelling.
+RUN_LINE_SILENCERS = (
+    (r"\|\|\s*(true\b|:(?=\s|;|\)|$))", "`|| true` / `|| :` swallows a gate's exit"),
+    (r"\bexit\s+0\b", "`exit 0` overrides a gate's exit"),
+    (r"\bset\s+\+e\b", "`set +e` stops a failing line failing the step"),
+)
+
+
+@pytest.mark.parametrize("line,silenced", [
+    ("        run: pytest plugins/prd-os/tests/ -q || true", True),
+    # #484 round 2: `\b` after `:` cannot match at end of line, so this passed.
+    ("        run: pytest plugins/prd-os/tests/ -q || :", True),
+    ("        run: pytest plugins/prd-os/tests/ -q || : ; echo done", True),
+    ("        run: pytest plugins/prd-os/tests/ -q; exit 0", True),
+    ("        run: set +e; pytest plugins/prd-os/tests/ -q", True),
+    ("        run: pytest plugins/prd-os/tests/ -q", False),
+    ("        run: pytest plugins/prd-os/tests/ -q || exit 1", False),
+    ("        run: echo 'a: b' || exit 2", False),
+])
+def test_silencer_patterns_fire_on_every_spelling(line, silenced):
+    """A pattern table with no fixture of its own is a check nobody has seen fail."""
+    hit = any(re.search(pat, line, re.M) for pat, _ in RUN_LINE_SILENCERS)
+    assert hit is silenced, line
 
 
 def test_a_red_run_opens_or_updates_one_issue():
@@ -152,6 +175,10 @@ def test_a_green_run_closes_the_issue():
     assert keys.get("if") == "success()", "the closer runs only on a green gates job"
     assert re.search(r"(?m)^\s+issues:\s*write\s*$", grn)
     assert "github.token" in grn and "gh issue close" in grn and "--label gates-red" in grn
+    # #484 round 2: `for n in $(gh ...)` hides gh's exit from set -e, so a failed
+    # list closed nothing, exited 0, and the detector reopened Linear next morning.
+    assert not re.search(r"\bfor\s+\w+\s+in\s+\$\(", grn), \
+        "list the issues in an assignment, where set -e sees gh fail"
 
 
 def test_two_runs_cannot_race_to_two_issues():
