@@ -121,11 +121,18 @@ def test_the_gates_job_cannot_be_silenced_at_job_level():
         assert not re.search(pat, gates), why
 
 
-# Kept as data so the table below can prove each pattern fires on its spelling.
+# OPERATORS, not spellings (#484 round 3). A list of silencer spellings is an
+# allowlist of what we thought of: `; true`, `|| echo skipped` and `set +o errexit`
+# each passed the first one. GitHub runs `run:` under `bash -e`, so a gate line can
+# only be silenced by an operator that suspends -e or replaces the exit code. The
+# gates job needs none of them, so it may carry none. This bounds the class to
+# operators; a new operator still needs a row here, which is the honest limit.
 RUN_LINE_SILENCERS = (
-    (r"\|\|\s*(true\b|:(?=\s|;|\)|$))", "`|| true` / `|| :` swallows a gate's exit"),
-    (r"\bexit\s+0\b", "`exit 0` overrides a gate's exit"),
-    (r"\bset\s+\+e\b", "`set +e` stops a failing line failing the step"),
+    (r"\|\|", "`||` replaces a failing gate's exit code"),
+    (r";", "`;` chains a command whose exit replaces the gate's"),
+    (r"\bset\s+\+|\bset\s+-o\b|\+o\s+errexit", "`set +e` / `set +o errexit` suspends bash -e"),
+    (r"(?m)^\s+shell:", "a `shell:` override can drop -e"),
+    (r"(?m)(run:\s*|^\s+)!\s", "a leading `!` inverts, and -e ignores negated commands"),
 )
 
 
@@ -136,14 +143,26 @@ RUN_LINE_SILENCERS = (
     ("        run: pytest plugins/prd-os/tests/ -q || : ; echo done", True),
     ("        run: pytest plugins/prd-os/tests/ -q; exit 0", True),
     ("        run: set +e; pytest plugins/prd-os/tests/ -q", True),
+    # #484 round 3: the three spellings the old table let through.
+    ("        run: pytest plugins/prd-os/tests/ -q; true", True),
+    ("        run: pytest plugins/prd-os/tests/ -q || echo skipped", True),
+    ("        run: set +o errexit\n          pytest plugins/prd-os/tests/ -q", True),
+    ("        shell: bash {0}", True),
+    ("        run: ! pytest plugins/prd-os/tests/ -q", True),
     ("        run: pytest plugins/prd-os/tests/ -q", False),
-    ("        run: pytest plugins/prd-os/tests/ -q || exit 1", False),
-    ("        run: echo 'a: b' || exit 2", False),
+    ("        run: python3 validate-separation.py 1 --verbose", False),
+    ("        run: pip install playwright pillow && python -m playwright install --with-deps chromium", False),
 ])
 def test_silencer_patterns_fire_on_every_spelling(line, silenced):
     """A pattern table with no fixture of its own is a check nobody has seen fail."""
     hit = any(re.search(pat, line, re.M) for pat, _ in RUN_LINE_SILENCERS)
     assert hit is silenced, line
+
+
+# #484 round 3: workflow_dispatch runs on any ref. A red BRANCH would file a
+# false "nightly is red", and a green branch would close a real one. The issue
+# speaks for main only, so both reporters say so.
+MAIN_ONLY = "{} && github.ref == 'refs/heads/main'"
 
 
 def test_a_red_run_opens_or_updates_one_issue():
@@ -155,7 +174,8 @@ def test_a_red_run_opens_or_updates_one_issue():
     rep = jobs["report-red"]
     keys = _job_keys(rep)
     assert keys.get("needs") == "gates", "the reporter must follow the gates job"
-    assert keys.get("if") == "failure()", "the reporter runs only when gates failed"
+    assert keys.get("if") == MAIN_ONLY.format("failure()"), \
+        "the reporter runs only when gates failed, and only for main"
     assert re.search(r"(?m)^\s+issues:\s*write\s*$", rep), "needs issues: write"
     assert "github.token" in rep, "the built-in token, never a stored secret"
     assert "gates-red" in rep and "--label gates-red" in rep
@@ -172,7 +192,8 @@ def test_a_green_run_closes_the_issue():
     grn = _jobs(_code_lines(_text()))["report-green"]
     keys = _job_keys(grn)
     assert keys.get("needs") == "gates"
-    assert keys.get("if") == "success()", "the closer runs only on a green gates job"
+    assert keys.get("if") == MAIN_ONLY.format("success()"), \
+        "the closer runs only on a green gates job, and only for main"
     assert re.search(r"(?m)^\s+issues:\s*write\s*$", grn)
     assert "github.token" in grn and "gh issue close" in grn and "--label gates-red" in grn
     # #484 round 2: `for n in $(gh ...)` hides gh's exit from set -e, so a failed

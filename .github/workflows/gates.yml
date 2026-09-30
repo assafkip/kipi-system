@@ -84,11 +84,12 @@ jobs:
   # open ONE issue labelled gates-red, or comment on the one already open (the
   # title is the dedup key, so a week of red is one issue, not seven). The
   # consumer is the `gates-red` detector in fleet-health-daily.py, which files
-  # each open gates-red issue into Sana's Linear triage. Close the issue when the
-  # nightly is green again.
+  # each open gates-red issue into Sana's Linear triage; report-green closes it.
+  # Both reporters are main-only: workflow_dispatch runs on any ref, and a red
+  # branch must not file "nightly is red", nor a green branch close a real one.
   report-red:
     needs: gates
-    if: failure()
+    if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -123,7 +124,7 @@ jobs:
   # nightly: the cry-wolf shape that costs the real alert later.
   report-green:
     needs: gates
-    if: success()
+    if: success() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
