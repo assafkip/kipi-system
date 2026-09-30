@@ -1,0 +1,89 @@
+name: Nightly gates
+
+# The Mac's 02:15 Gates run, moved off the Mac for everything a fresh clone can
+# run (automation cleanup, Phase 7). No model call, no secret: zero usage.
+#
+# What stays on the Mac, because it reads the Mac: the launchd health check,
+# `kipi check`'s remote-coverage scan, and validate-separation phases 2-4 (they
+# read every instance directory on disk).
+#
+# Why the spillover census does not fail this job: measured 2026-09-30, the
+# gates ledger holds zero `regression` rows, so `gates run` here IS the census,
+# and the census is red on its whole population (95 inherited items, no active
+# scope in CI). Failing on it would fail every night and say nothing new. It is
+# written to the run summary instead. The suites that are green on main are the
+# ones whose failure fails the job.
+# Pinned by q-system/.q-system/tests/test_gates_workflow.py.
+
+on:
+  schedule:
+    # 02:15 PT during PDT (09:15 UTC). GitHub cron is UTC only, so this is
+    # 01:15 PT in winter; the hour is not load-bearing.
+    - cron: '15 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Same reason as validate.yml: the updater-sequence test probes real
+          # commit ancestry, and a shallow clone reads every commit unreachable.
+          fetch-depth: 0
+
+      - name: Configure git identity for the updater tests
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      # Without a browser every design-chain test skips and the gate reads green
+      # over tests that never ran (dc-25). DC_REQUIRE_REAL_PRODUCERS below makes
+      # a skip a failure.
+      - name: Install a browser for the design-chain producers
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+
+      - name: Coverage declarations are real
+        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+
+      # The FULL declared suite, never the diff-scoped subset a PR earns.
+      - name: Capability gate, full suite
+        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+        env:
+          CI: true
+          DC_REQUIRE_REAL_PRODUCERS: "1"
+
+      - name: Skeleton separation, phase 1
+        run: python3 validate-separation.py 1 --verbose
+        env:
+          CI: true
+          CAPABILITY_GATE_SKIP: "1"
+
+      - name: prd-os tests
+        run: pytest plugins/prd-os/tests/ -q
+
+      - name: Spillover census (reported only)
+        if: always()
+        run: |
+          rc=0
+          python3 plugins/prd-os/scripts/prd_runner.py gates run > gates-run.out 2>&1 || rc=$?
+          {
+            echo "## prd_runner gates run: exit $rc"
+            echo
+            echo '```'
+            grep -v '^  ' gates-run.out | cut -c1-300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "gates run exit $rc (reported, not failing the job)"
