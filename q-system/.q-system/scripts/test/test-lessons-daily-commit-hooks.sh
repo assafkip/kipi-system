@@ -8,14 +8,20 @@
 # refused it every night; --no-verify hid that, and `>/dev/null 2>&1 || true`
 # hid everything else. A bypass on an unattended job is invisible by design.
 #
-# What it proves, against a hermetic temp repo whose hooks are real scripts:
+# What it proves, against a hermetic temp repo. The commit-msg hook is the
+# REAL linear-issue-ref-check.py; the pre-commit hook is a stub that records it
+# ran (the production lefthook chain needs the whole repo, so it cannot run
+# hermetically; what is pinned here is that the chain is no longer skipped):
 #   1. the script names no --no-verify anywhere outside comments;
 #   2. the pre-commit and commit-msg hooks actually RUN on the daily commit;
 #   3. the commit lands with the REAL linear-issue-ref-check.py as its
 #      commit-msg hook, so the message passes that gate on its own merits;
-#   4. negative control: a commit-msg hook that refuses leaves NO commit and
-#      the job log says the commit did not land. On the pre-fix script this
-#      case fails too, because --no-verify committed straight past the refusal.
+#   4. negative control: a refusing commit-msg or pre-commit hook leaves NO
+#      commit, the alert says so, and the job exits non-zero (the exit code is
+#      this job's wire to Linear, ASK-182). On the pre-fix script this fails
+#      too, because --no-verify committed straight past the refusal;
+#   5. a run with nothing new to stage is NOT a failure (held lessons are
+#      gitignored), so the exit-1 path cannot page on a quiet held-only night.
 #
 # Never touches the live repo, log, Slack, Linear ledger or fleet.
 set -uo pipefail
@@ -43,7 +49,7 @@ else
   ok "lessons-daily.sh carries no --no-verify"
 fi
 
-# build_fixture <commit-msg mode: real|refuse> -> echoes the temp root
+# build_fixture <mode: real|refuse|refuse-precommit> -> echoes the temp root
 build_fixture() {
   local mode="$1" tmp skel hooks
   tmp="$(mktemp -d)"
@@ -64,8 +70,10 @@ build_fixture() {
   git -C "$skel" config core.hooksPath "$hooks"
   mkdir -p "$hooks"
 
-  printf '#!/bin/bash\ntouch "%s/pre-commit.ran"\nexit 0\n' "$tmp" > "$hooks/pre-commit"
-  if [ "$mode" = "real" ]; then
+  local pre_rc=0
+  [ "$mode" = "refuse-precommit" ] && pre_rc=75   # verify.sh's collision code
+  printf '#!/bin/bash\ntouch "%s/pre-commit.ran"\nexit %s\n' "$tmp" "$pre_rc" > "$hooks/pre-commit"
+  if [ "$mode" != "refuse" ]; then
     printf '#!/bin/bash\ntouch "%s/commit-msg.ran"\nLINEAR_BYPASS_LEDGER="%s/bypass.jsonl" exec python3 "%s/q-system/.q-system/scripts/linear-issue-ref-check.py" "$1"\n' \
       "$tmp" "$tmp" "$skel" > "$hooks/commit-msg"
   else
@@ -75,14 +83,19 @@ build_fixture() {
   printf '%s' "$tmp"
 }
 
+# run_job <tmp> [distill-json]; sets JOB_RC. Alerts land in <tmp>/notify.txt.
+PUBLISHED='{"scanned": 1, "published": ["a lesson"], "held": []}'
 run_job() {
-  local tmp="$1"
+  local tmp="$1" summary="${2:-$PUBLISHED}"
+  printf '%s' "$summary" > "$tmp/summary.json"
   PATH="$tmp/bin:$PATH" \
-  KIPI_DISTILL_CMD='echo "{\"scanned\": 1, \"published\": [\"a lesson\"], \"held\": []}"' \
-  KIPI_PROPAGATE_CMD='true' KIPI_NOTIFY_CMD='true' KIPI_NOTION_SYNC_CMD='true' \
+  KIPI_DISTILL_CMD="cat '$tmp/summary.json'" \
+  KIPI_PROPAGATE_CMD='true' KIPI_NOTION_SYNC_CMD='true' \
+  KIPI_NOTIFY_CMD="printf '%s\\n' \"\$1\" >> '$tmp/notify.txt'" \
   KIPI_LESSONS_LOG="$tmp/lessons-daily.log" \
   KIPI_STREAK_FILE="$tmp/streak.json" KIPI_ESCALATIONS_FILE="$tmp/esc.jsonl" \
     bash "$tmp/skel/q-system/.q-system/scripts/lessons-daily.sh" >/dev/null 2>&1
+  JOB_RC=$?
 }
 
 commits() { git -C "$1/skel" rev-list --count HEAD 2>/dev/null || echo 0; }
@@ -110,20 +123,38 @@ if [ "$(commits "$T")" = "1" ]; then
     *"—"*) bad "commit message carries an emdash" ;;
     *)     ok "commit message carries no emdash" ;;
   esac
+  [ "$JOB_RC" -eq 0 ] && ok "clean run exits 0" || bad "clean run exits $JOB_RC"
 else
   bad "daily commit did not land; log: $(tail -3 "$T/lessons-daily.log" 2>/dev/null | tr '\n' ' ')"
 fi
 rm -rf "$T"
 
-# --- 4. negative control: a refusing hook must stop the commit, visibly ----
-T="$(build_fixture refuse)"
-run_job "$T"
-echo "      fixture: $T/skel (commits=$(commits "$T"))"
-[ "$(commits "$T")" = "0" ] && ok "refusing commit-msg hook leaves no commit" \
-                            || bad "commit landed past a refusing commit-msg hook"
-grep -q 'lessons commit did not land' "$T/lessons-daily.log" 2>/dev/null \
-  && ok "job log records the refused commit" \
-  || bad "job log is silent about the refused commit"
+# --- 4. negative control: a refusing hook must stop the commit, loudly ----
+for mode in refuse refuse-precommit; do
+  T="$(build_fixture "$mode")"
+  run_job "$T"
+  echo "      fixture ($mode): $T/skel (commits=$(commits "$T"), exit=$JOB_RC)"
+  [ "$(commits "$T")" = "0" ] && ok "$mode: no commit lands" \
+                              || bad "$mode: commit landed past a refusing hook"
+  grep -q 'lessons commit did not land' "$T/lessons-daily.log" 2>/dev/null \
+    && ok "$mode: job log records the refused commit" \
+    || bad "$mode: job log is silent about the refused commit"
+  grep -q 'lessons commit REFUSED' "$T/notify.txt" 2>/dev/null \
+    && ok "$mode: alert names the refused commit" \
+    || bad "$mode: alert is silent about the refused commit"
+  [ "$JOB_RC" -ne 0 ] && ok "$mode: job exits non-zero" \
+                      || bad "$mode: job exits 0 after a refused commit"
+  rm -rf "$T"
+done
+
+# --- 5. nothing to stage is a quiet night, not a failure -------------------
+T="$(build_fixture real)"
+git -C "$T/skel" add -A && git -C "$T/skel" commit -qm "seed [no-issue: fixture]" >/dev/null 2>&1
+run_job "$T" '{"scanned": 1, "published": [], "held": ["h"]}'
+echo "      fixture (held-only): $T/skel (commits=$(commits "$T"), exit=$JOB_RC)"
+[ "$(commits "$T")" = "1" ] && [ "$JOB_RC" -eq 0 ] \
+  && ok "held-only run with nothing staged exits 0, no new commit" \
+  || bad "held-only run: commits=$(commits "$T") exit=$JOB_RC (want 1 and 0)"
 rm -rf "$T"
 
 echo "---"

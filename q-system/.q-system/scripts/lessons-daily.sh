@@ -82,14 +82,26 @@ else
   # linear-issue-ref gate would have refused its message every night. It now
   # goes through the hooks. The message carries its own [no-issue: reason], so
   # the Linear gate passes it legitimately and counts it in the bypass ledger.
-  # A refusal is logged, never hidden, and does not fail the job: the lessons
-  # stay on disk and the next run tries again. Pinned by
-  # test/test-lessons-daily-commit-hooks.sh.
+  # A refused commit is a failed run, same wire as a failed propagation
+  # (ASK-182, lines above): the alert says so and the job exits 1, so Linear
+  # sees it. The job is WEEKLY (plist Weekday 1), so a silent refusal would
+  # leave a week of lessons uncommitted with nobody told (PR review, ASK-2290).
+  # "Nothing staged" is not a failure: held lessons are gitignored (ASK-2278),
+  # so a held-only run legitimately has nothing to commit.
+  # Pinned by test/test-lessons-daily-commit-hooks.sh.
   COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
-  if ( cd "$SKEL" && git add q-system/lessons lesson-candidates 2>/dev/null \
-       && git commit --no-gpg-sign -m "$COMMIT_MSG" >> "$LOG" 2>&1 ); then :; else
-    echo "$(TS) lessons commit did not land (hook refusal, nothing staged, or git error; output above). Lessons stay on disk." >> "$LOG"
+  LPATHS=()
+  for p in q-system/lessons lesson-candidates; do [ -e "$SKEL/$p" ] && LPATHS+=("$p"); done
+  if [ "${#LPATHS[@]}" -eq 0 ]; then
+    echo "$(TS) lessons commit: no lesson paths exist, nothing to persist" >> "$LOG"
+  elif ! ( cd "$SKEL" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
+    PERSIST="FAILED"
+  elif ( cd "$SKEL" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
+    echo "$(TS) lessons commit: nothing staged" >> "$LOG"
+  elif ! ( cd "$SKEL" && git commit --no-gpg-sign -m "$COMMIT_MSG" ) >> "$LOG" 2>&1; then
+    PERSIST="FAILED"
   fi
+  [ "${PERSIST:-}" = "FAILED" ] && echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons stay on disk." >> "$LOG"
 fi
 
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
@@ -154,6 +166,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
+[ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit REFUSED by the repo hooks, not persisted, see log"
 notify "$MSG"
 echo "$(TS) slacked: $MSG" >> "$LOG"
 
@@ -164,4 +177,5 @@ echo "$(TS) slacked: $MSG" >> "$LOG"
 case "$PROP" in
   "propagate FAILED"*) echo "$(TS) propagation failed -> exit 1" >> "$LOG"; exit 1 ;;
 esac
+if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
 exit 0
