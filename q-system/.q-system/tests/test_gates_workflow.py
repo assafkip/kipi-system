@@ -3,17 +3,15 @@
 02:15 Gates run into GitHub Actions (automation cleanup, Phase 7).
 
 What a fresh clone can run: the capability gate's full suite,
-validate-separation phase 1, the prd-os tests, and `prd_runner.py gates run`.
-What needs the Mac stays there: the launchd health check, and `kipi check`'s
+validate-separation phase 1, and the prd-os tests.
+What needs the Mac stays there: the launchd health check, `kipi check`'s
 remote-coverage scan plus separation phases 2-4, which read instance dirs.
 
-Measured 2026-09-30 for this test: the gates ledger holds 112 rows and ZERO carry
-the `regression` lifecycle, so `gates run` executes no registered command here.
-Its whole verdict is the spillover census, red on its entire population (95
-inherited items, no active scope in CI). A job that fails on it fails every
-night and says nothing new, so this test requires the census exit code to be
-captured and written to the run summary, and requires the suites that are green
-on main to be the ones whose failure fails the job.
+The spillover census (`prd_runner.py gates run`) is NOT here. Its ledgers are
+untracked, so a fresh clone runs it over an empty population and prints an
+all-clear (PR #478 review, reproduced with a depth-1 clone: "0 open total",
+exit 0). This test requires that no step reads it, and requires the suites
+green on main to be the ones whose failure fails the job.
 """
 from __future__ import annotations
 
@@ -81,12 +79,18 @@ def test_failing_suites_are_the_full_push_suites():
     assert "continue-on-error" not in prd
 
 
-def test_spillover_census_is_reported_only():
-    step = _step(_text(), "gates run")
-    assert "GITHUB_STEP_SUMMARY" in step, "census output never reaches the run summary"
-    # Non-blocking by construction: the exit code is captured, not propagated.
-    assert re.search(r"\|\|\s*rc=\$\?", step), "gates run exit code is not captured"
-    assert not re.search(r"(?m)^\s*exit \"?\$rc", step), "the census must not fail the job"
+def test_no_step_reads_an_untracked_ledger():
+    code = _code_lines(_text())
+    assert "gates run" not in code, "the census ledgers are untracked: it would report an empty population"
+    assert "spillover" not in code
+
+
+def test_design_chain_tests_cannot_skip_to_green():
+    # dc-25: without a browser every design-chain test skips and the gate reads green.
+    text = _text()
+    assert "playwright install" in text, "no browser for the design-chain producers"
+    cap = _step(text, "capability-gate.py")
+    assert re.search(r'DC_REQUIRE_REAL_PRODUCERS:\s*"1"', cap), "a skip would read as green"
 
 
 def test_names_no_machine_path():
