@@ -1,5 +1,6 @@
 ---
 name: ui-ux-pro-max
+user-invocable: false
 description: "UI/UX design intelligence with 50+ styles, 161 palettes, 57 font pairings, 99 UX guidelines, and 25 chart types. Searchable database with priority-based recommendations for web and mobile."
 ---
 

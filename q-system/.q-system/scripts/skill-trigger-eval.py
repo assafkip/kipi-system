@@ -35,10 +35,20 @@ def load_fixture(skill):
     return fx
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def run_case(prompt):
     # Run claude -p from the REPO ROOT so the .claude/rules auto-invoke path loads.
     try:
-        r = subprocess.run([CLAUDE, "-p", prompt], cwd=REPO_ROOT,
+        r = subprocess.run([CLAUDE, "-p", prompt], cwd=REPO_ROOT, env=_subscription_env(),
                            capture_output=True, text=True, timeout=180)
         return r.stdout or ""
     except Exception:

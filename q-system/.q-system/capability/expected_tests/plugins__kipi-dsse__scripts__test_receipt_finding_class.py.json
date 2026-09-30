@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_receipt_finding_class.py",
+ "runner": "pytest",
+ "timeout_s": 180
+}

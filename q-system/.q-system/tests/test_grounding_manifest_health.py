@@ -340,6 +340,93 @@ def test_no_stdout_payload_when_the_manifest_is_healthy(tmp_path):
     assert r.stdout.strip() == "", f"emitted a payload on a healthy manifest: {r.stdout!r}"
 
 
+# --- ASK-1958: a blocking stop leaves a firing record ------------------------
+# THE DEFECT (RCA rca-fleet-sync-two-day-spin-2026-09-20, row T6). This guard has
+# three exit-2 paths. Only ONE of them wrote anything anywhere, and that one is the
+# warn branch that does not block. So a turn that was actually blocked left no
+# artifact at all: nobody can answer "did this gate ever fire, and on what" without
+# a human having watched the session. A gate whose firings are unobservable cannot
+# be calibrated, cannot be promoted, and cannot be shown to be dead.
+
+HEALTH_LOG = "q-system/output/grounding-manifest-health.jsonl"
+
+
+def _firing_rows(repo: Path) -> list[dict]:
+    """Every row the guard appended to its own log, parsed. [] when the file is absent."""
+    log = repo / HEALTH_LOG
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+
+def _blocked_rows(repo: Path) -> list[dict]:
+    return [row for row in _firing_rows(repo) if row.get("event") == "blocked"]
+
+
+def _assert_firing_row(repo: Path, reason: str, rc: int, stderr: str) -> None:
+    """One row naming the hook, the reason and the timestamp. The three fields are
+    asserted together because any one of them alone is unusable: a row with no hook
+    cannot be attributed once a second hook writes here, a row with no reason cannot
+    be grouped, and a row with no timestamp cannot be rated."""
+    assert rc == 2, f"expected a block, got exit {rc}\n{stderr}"
+    rows = _blocked_rows(repo)
+    assert rows, (
+        f"the guard blocked (exit 2, reason {reason!r}) and appended NOTHING to "
+        f"{HEALTH_LOG}. A blocking Stop hook that leaves no artifact cannot be "
+        f"measured, so nobody can tell a live gate from a dead one.\nstderr={stderr!r}")
+    row = rows[-1]
+    assert row.get("hook") == "code_claim_grounding_guard.py", (
+        f"the row does not name the hook that wrote it: {row!r}")
+    assert row.get("reason") == reason, (
+        f"the row does not name which of the three block paths fired; "
+        f"want {reason!r}, got {row.get('reason')!r} in {row!r}")
+    assert row.get("ts"), f"the row carries no timestamp: {row!r}"
+
+
+def test_a_blocked_ungrounded_reference_appends_a_firing_row(tmp_path):
+    """Block path one: check one, a repo file claimed but never opened."""
+    repo = _repo(tmp_path)
+    (repo / "q-system" / "thing.py").write_text("print('x')\n")
+    r = _run_guard(repo, _transcript(tmp_path, "q-system/thing.py clearly does X."))
+    _assert_firing_row(repo, "ungrounded-file-refs", r.returncode, r.stderr)
+
+
+def test_a_blocked_subsystem_coverage_stop_appends_a_firing_row(tmp_path):
+    """Block path two: check two, a named subsystem whose members were not all read."""
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text(json.dumps({
+        "version": 1,
+        "subsystems": [{"id": "groupme-to-sheet", "name": "GroupMe order intake",
+                        "aliases": ["the ingest chain"],
+                        "members": [{"ref": "Postgres Ingest"},
+                                    {"ref": "Parse LLM"},
+                                    {"ref": "QA Validator"}]}]}))
+    r = _run_guard(repo, _transcript(tmp_path, "The ingest chain loses rows."))
+    _assert_firing_row(repo, "subsystem-coverage", r.returncode, r.stderr)
+
+
+def test_an_enforced_manifest_block_appends_a_firing_row(tmp_path):
+    """Block path three: the enforce flip. This path already wrote a row, but the row
+    said `status`/`enforced` and never said WHICH hook or that a turn was blocked, so
+    it did not answer the firing question either."""
+    repo = _repo(tmp_path)
+    _manifest_file(repo).write_text("{oops")
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"),
+                   env_extra={"KIPI_GROUNDING_MANIFEST_ENFORCE": "1"})
+    _assert_firing_row(repo, "manifest-unreadable", r.returncode, r.stderr)
+
+
+def test_a_clean_pass_appends_no_firing_row(tmp_path):
+    """NEGATIVE CONTROL. This hook runs on EVERY turn fleet-wide. A record written on
+    the pass path would grow an unbounded log in every instance and drown the firings
+    it exists to surface. Only a block writes a `blocked` row."""
+    repo = _repo(tmp_path)
+    r = _run_guard(repo, _transcript(tmp_path, "a harmless sentence"))
+    assert r.returncode == 0, f"a harmless answer blocked: {r.stderr}"
+    assert _blocked_rows(repo) == [], (
+        f"a passing turn wrote a firing row: {_blocked_rows(repo)!r}")
+
+
 if __name__ == "__main__":
     # The capability gate runs `python3 <file>`, NOT pytest (capability-gate.py:423).
     # Without this block the module would merely DEFINE its tests and exit 0 -- a

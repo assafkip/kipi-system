@@ -1,0 +1,34 @@
+{
+  "_about": "Paraphrase suite for roadmap_scope.py (issue mbl-roadmap-scope-paraphrase-suite, Codex finding-12). Roadmap cases deliberately avoid the literal words 'product' and 'roadmap'. A case may be ADDED to this file; a case may never be deleted to make the suite green. Extend the pattern lists in roadmap_scope.py instead.",
+  "roadmap": [
+    {"text": "we could charge founders $49 a month for the board", "target": "rule", "kind": "pricing"},
+    {"text": "turn the brief into something we sell to other small firms", "target": "skill", "kind": "product"},
+    {"text": "publish the friction log as a weekly newsletter", "target": "docs", "kind": "publish"},
+    {"text": "tell the client to move their CRM to Notion", "target": "context", "kind": "client-advice"},
+    {"text": "bundle the deadman with the digest and offer it as a paid tier", "target": "job", "kind": "product"},
+    {"text": "write a LinkedIn post about the three-item rule", "target": "rule", "kind": "publish"},
+    {"text": "raise our retainer for Q4", "target": "context", "kind": "pricing"},
+    {"text": "the client should stop paying for the old vendor", "target": "rule", "kind": "client-advice"},
+    {"text": "monetize the lessons corpus", "target": "script", "kind": "product"},
+    {"text": "package the brief as a SaaS for solo consultants", "target": "brief", "kind": "product"},
+    {"text": "post this on Reddit as a case study", "target": "docs", "kind": "publish"},
+    {"text": "recommend to the client that they hire a second engineer", "target": "context", "kind": "client-advice"},
+    {"text": "give a discount to early users", "target": "rule", "kind": "pricing"},
+    {"text": "what should we build next for customers", "target": "skill", "kind": "product"},
+    {"text": "put the weekly pass behind a paywall", "target": "job", "kind": "pricing"},
+    {"text": "pitch the board to the founders in the mastermind", "target": "brief", "kind": "product"}
+  ],
+  "system": [
+    {"text": "the brief lists Sana's tickets as mine, change the owner rule", "target": "rule"},
+    {"text": "voice-lint should catch the rule-of-three inside comments", "target": "lint"},
+    {"text": "give route-overrides-to-learn.py a weekly plist", "target": "trigger"},
+    {"text": "add Widgetcorp to the canonical glossary", "target": "context"},
+    {"text": "the improve skill should print which corpora it read", "target": "skill"},
+    {"text": "build a test plan for the collector guard", "target": "test"},
+    {"text": "the deadman should log every attempt, not only the last", "target": "job"},
+    {"text": "wrap the mail collector in the same guard as the board", "target": "script"},
+    {"text": "ship the friction lint feature this week", "target": "lint"},
+    {"text": "add SaaS to the canonical glossary", "target": "context"},
+    {"text": "the SaaS vendor's API changed, update the collector", "target": "script"}
+  ]
+}

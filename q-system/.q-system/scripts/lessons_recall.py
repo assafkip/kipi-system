@@ -53,6 +53,47 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QROOT = os.path.join(HERE, "..", "..")
 LESSONS = os.path.join(QROOT, "lessons")
 
+
+def default_corpus():
+    """The file-relative corpus: whichever checkout this file sits in."""
+    return os.path.realpath(LESSONS)
+
+
+def resolve_corpora(corpus, both=False, env=None):
+    """The ONE place precedence lives (issue lr-recall-names-its-corpus, plan CAP-3).
+
+    Primary: --corpus, then KIPI_LESSONS_DIR, then the file-relative default.
+    --both adds every KIPI_LESSONS_CORPORA entry (colon-separated) that exists.
+    Everything is realpath-resolved and deduplicated in order, so a corpus
+    reached through a symlink is searched once and counts stay honest (Codex
+    finding-14 on the PRD). Returns (found, missing); missing keeps the raw
+    entry text so the report names what was asked for.
+    """
+    env = os.environ if env is None else env
+    primary = corpus or env.get("KIPI_LESSONS_DIR") or LESSONS
+    wanted = [primary]
+    if both:
+        wanted += [e for e in env.get("KIPI_LESSONS_CORPORA", "").split(":") if e]
+    found, missing, seen = [], [], set()
+    for entry in wanted:
+        if not os.path.isdir(entry):
+            missing.append(entry)
+            continue
+        real = os.path.realpath(entry)
+        if real in seen:
+            continue
+        seen.add(real)
+        found.append(real)
+    return found, missing
+
+
+def corpus_tag(corpus_dir):
+    """A short name for a corpus in output: the repo that owns `q-system/lessons`."""
+    parts = corpus_dir.rstrip(os.sep).split(os.sep)
+    if len(parts) >= 3 and parts[-2:] == ["q-system", "lessons"]:
+        return parts[-3]
+    return parts[-1]
+
 #: Above this, two lessons are the same idea and the second should merge into the first.
 #: Calibrated on the live corpus: the 0.96 pair is a literal duplicate, 0.50 and 0.44 are
 #: one idea in two files, and the next band down (0.27-0.34) is genuinely related but
@@ -140,6 +181,47 @@ def search(query, k=5, lessons_dir=None):
     return index.rank(index.vector_for_text(query))[:k]
 
 
+def _union(corpora):
+    """Every lesson across the corpora, with the corpus that owns each path.
+
+    Whatever the corpus line says was read, the subcommand reads (Codex
+    adversarial review, issue lr-recall-names-its-corpus: similar, duplicates
+    and stats read only the first corpus while the header claimed all of them).
+    """
+    owner = {}
+    for c in corpora:
+        for p in corpus(c):
+            owner.setdefault(p, c)
+    return owner
+
+
+def search_many(query, corpora, k=5):
+    """One index over several corpora; each hit is (score, path, corpus_dir)."""
+    owner = _union(corpora)
+    index = Index(list(owner))
+    return [(s, p, owner[p]) for s, p in index.rank(index.vector_for_text(query))[:k]]
+
+
+def similar_many(path, corpora, k=5):
+    path = os.path.realpath(path)
+    owner = _union(corpora)
+    index = Index(list(owner) + ([path] if path not in owner else []))
+    return [(s, p, owner[p]) for s, p in index.rank(index.vectors[path], exclude=path)[:k]]
+
+
+def duplicates_many(corpora, threshold=MERGE_THRESHOLD):
+    index = Index(list(_union(corpora)))
+    out = []
+    paths = index.paths
+    for i in range(len(paths)):
+        for j in range(i + 1, len(paths)):
+            score = index.cosine(index.vectors[paths[i]], index.vectors[paths[j]])
+            if score >= threshold:
+                out.append((score, paths[i], paths[j]))
+    out.sort(reverse=True)
+    return out
+
+
 def similar_to(path, k=5, lessons_dir=None):
     """Nearest existing lessons to a draft. The de-duplication half."""
     path = os.path.realpath(path)
@@ -161,14 +243,32 @@ def duplicates(threshold=MERGE_THRESHOLD, lessons_dir=None):
     return out
 
 
-def _print(rows):
+def _print(rows, corpus_dir=None):
     for score, path in rows:
         print(f"  {score:.2f}  {title_of(path)}")
-        print(f"        {os.path.relpath(path, QROOT)}")
+        base = corpus_dir or QROOT
+        print(f"        {os.path.relpath(path, base)}")
+
+
+def _print_tagged(rows):
+    for score, path, c in rows:
+        print(f"  {score:.2f}  [{corpus_tag(c)}] {title_of(path)}")
+        print(f"        {os.path.relpath(path, c)}")
+
+
+def _print_corpus_line(found, missing):
+    """Every search names what it read, so an answer can never be silently
+    from the wrong checkout again (the three wrong claims of 2026-09-01)."""
+    print("corpus: " + " + ".join(f"{c} ({len(corpus(c))}{'' if len(found) > 1 else ' lessons'})" for c in found))
+    for m in missing:
+        print(f"corpus missing: {m}")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--corpus", help="lessons directory to read (else KIPI_LESSONS_DIR, else this checkout's)")
+    parser.add_argument("--both", action="store_true",
+                        help="also search every KIPI_LESSONS_CORPORA entry that exists (kipi + consulting)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     find = sub.add_parser("search", help="lessons relevant to a description of the work")
@@ -185,17 +285,38 @@ def main(argv=None):
     sub.add_parser("stats", help="corpus size and coverage")
 
     args = parser.parse_args(argv)
+    found, missing = resolve_corpora(args.corpus, both=args.both)
+    if not found:
+        print("corpus: none readable")
+        for m in missing:
+            print(f"corpus missing: {m}")
+        return 3
+    primary = found[0]
+    _print_corpus_line(found, missing)
 
+    # --both tags every hit, even when dedup or missing entries leave one corpus:
+    # the reader asked for provenance, and a tag is what says the answer came
+    # from THIS corpus rather than some other checkout (Codex, issue 4).
     if args.cmd == "search":
-        rows = search(args.query, args.k)
+        if args.both:
+            rows = search_many(args.query, found, args.k)
+            if not rows:
+                print("  no lesson matches that. It may genuinely be new.")
+            _print_tagged(rows)
+            return 0
+        rows = search(args.query, args.k, lessons_dir=primary)
         if not rows:
             print("  no lesson matches that. It may genuinely be new.")
-        _print(rows)
+        _print(rows, primary)
         return 0
 
     if args.cmd == "similar":
-        rows = similar_to(os.path.abspath(args.path), args.k)
-        _print(rows)
+        if args.both:
+            rows = similar_many(os.path.abspath(args.path), found, args.k)
+            _print_tagged(rows)
+        else:
+            rows = similar_to(os.path.abspath(args.path), args.k, lessons_dir=primary)
+            _print(rows, primary)
         if rows and rows[0][0] >= MERGE_THRESHOLD:
             print()
             print(f"  MERGE: {rows[0][0]:.2f} against an existing lesson. The corpus "
@@ -206,20 +327,24 @@ def main(argv=None):
         return 0
 
     if args.cmd == "duplicates":
-        rows = duplicates(args.threshold)
+        rows = duplicates_many(found, args.threshold) if args.both else duplicates(args.threshold, lessons_dir=primary)
         print(f"{len(rows)} pair(s) at or above {args.threshold}")
+        owner = _union(found)
         for score, a, b in rows:
-            print(f"  {score:.2f}  {os.path.basename(a)}")
-            print(f"        {os.path.basename(b)}")
+            tag_a = f"[{corpus_tag(owner[a])}] " if args.both else ""
+            tag_b = f"[{corpus_tag(owner[b])}] " if args.both else ""
+            print(f"  {score:.2f}  {tag_a}{os.path.basename(a)}")
+            print(f"        {tag_b}{os.path.basename(b)}")
         return 0
 
-    paths = corpus()
+    paths = sorted(_union(found)) if args.both else corpus(primary)
     dates = sorted(re.search(r"^date:\s*(\S+)", open(p, encoding="utf-8").read(), re.M)
                    .group(1) for p in paths
                    if re.search(r"^date:\s*(\S+)", open(p, encoding="utf-8").read(), re.M))
     print(f"  lessons          {len(paths)}")
     print(f"  oldest / newest  {dates[0] if dates else '?'} / {dates[-1] if dates else '?'}")
-    print(f"  duplicate pairs  {len(duplicates())} at or above {MERGE_THRESHOLD}")
+    pairs = duplicates_many(found) if args.both else duplicates(lessons_dir=primary)
+    print(f"  duplicate pairs  {len(pairs)} at or above {MERGE_THRESHOLD}")
     print("  reachable        all of them, via search; retrieval is not capped")
     return 0
 

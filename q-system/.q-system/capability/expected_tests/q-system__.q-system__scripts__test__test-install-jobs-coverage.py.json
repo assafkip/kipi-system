@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-install-jobs-coverage.py",
+ "runner": "python3"
+}

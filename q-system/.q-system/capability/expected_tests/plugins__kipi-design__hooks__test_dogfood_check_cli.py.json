@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-design/hooks/test_dogfood_check_cli.py",
+ "runner": "python3"
+}

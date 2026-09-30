@@ -64,7 +64,13 @@ if str(SCRIPT_DIR) not in sys.path:
 from config import Config, ConfigError, load as load_config  # noqa: E402
 
 RECEIPT_SCHEMA_VERSION = 1
-PACKET_SCHEMA_VERSION = 1
+# 1 -> 2 (ASK-1886). The packet's FIELD SET is unchanged -- the readable text is
+# derived into the judge view, never stored -- but `scope.source`/`scope.sha256`
+# now resolve where they used to read `unknown` on 128 of 128 receipts, and the
+# judge prompt therefore carries different input. Receipts assembled at version
+# 1 and version 2 must not be pooled in one calibration measurement: the whole
+# defect being fixed is that the judge was shown a different world.
+PACKET_SCHEMA_VERSION = 2
 LEDGER_NAME = "judgments.jsonl"
 CANDIDATES_NAME = "judgment-policy-candidates.jsonl"
 
@@ -647,38 +653,96 @@ def _assemble_issue_state(cfg: Config, prd_id: str, missing: list[str]) -> dict:
         missing.append("issue_state.manifest")
         return {"issue_id": issue_id, "manifest_sha256": "unknown",
                 "issue_order": []}
-    try:
-        import prd_split  # sibling: the one parser of the Issues manifest
-
-        text = path.read_text(encoding="utf-8")
-        body_start = text.find("---", 3)
-        raw = prd_split._extract_issues_block(text[body_start:])
-        entries = json.loads(raw)
-        order = [entry.get("id") for entry in entries
-                 if isinstance(entry, dict) and entry.get("id")]
-        return {"issue_id": issue_id, "manifest_sha256": _sha256_text(raw),
-                "issue_order": order}
-    except (ValueError, OSError, ImportError):
+    raw = _issues_manifest_raw(path.read_text(encoding="utf-8"))
+    if raw is None:
         missing.append("issue_state.manifest")
         return {"issue_id": issue_id, "manifest_sha256": "unknown",
                 "issue_order": []}
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        missing.append("issue_state.manifest")
+        return {"issue_id": issue_id, "manifest_sha256": "unknown",
+                "issue_order": []}
+    order = [entry.get("id") for entry in entries
+             if isinstance(entry, dict) and entry.get("id")]
+    return {"issue_id": issue_id, "manifest_sha256": _sha256_text(raw),
+            "issue_order": order}
+
+
+def _issues_manifest_raw(text: str) -> str | None:
+    """The raw `## Issues` JSON block, or None.
+
+    Extracted so `_assemble_issue_state` (which hashes it) and
+    `_resolve_judge_text` (which re-reads it to show the judge ONE entry) parse
+    it the same way. Two parsers would be two sources of truth for the value
+    the hash check binds.
+    """
+    try:
+        import prd_split  # sibling: the one parser of the Issues manifest
+
+        body_start = text.find("---", 3)
+        return prd_split._extract_issues_block(text[body_start:])
+    except (ValueError, OSError, ImportError):
+        return None
+
+
+def _prd_section(text: str, heading: str) -> str | None:
+    """One section's body, by EXACT heading.
+
+    Anchored: `.*?Scope.*?` also matched "## Out of Scope" and "## Scope
+    Notes", and re.search takes the FIRST hit — so a PRD with either heading
+    above its real one recorded a confident hash of the wrong section,
+    inverting the unknown-never-becomes-a-fact rule (review 2026-08-04). No
+    match falls through to None, never to an empty string that reads as
+    "the section is empty".
+    """
+    match = re.search(
+        r"(?ms)^##\s+(?:\d+\.\s*)?" + re.escape(heading) + r"\s*$(.*?)"
+        r"(?=^##\s|\Z)", text)
+    return match.group(1).strip() if match else None
+
+
+# WHICH SECTIONS ARE THE SCOPE (ASK-1886). `_assemble_scope` looked for a
+# `## Scope` heading that `plugins/prd-os/templates/prd.md` never emits, so
+# `scope.sha256` was `unknown` on 128 of 128 stored receipts and every judge saw
+# "scope" in its own missing_context. Counted in this repo 2026-09-29: 1 of 45
+# PRD specs carries `## Scope`; 45 carry `## Goals` and 45 `## Non-goals`.
+# `## Scope` still wins when present (the old PRDs and the marketing template
+# use it); otherwise a prd-os PRD's scope IS its goals plus its non-goals.
+SCOPE_HEADINGS: tuple[tuple[str, ...], ...] = (
+    ("Scope",),
+    ("Goals", "Non-goals"),
+)
+
+
+def _scope_sections(text: str) -> tuple[str, str] | None:
+    """(anchor, text) for the scope of this PRD, or None when it has none.
+
+    THE single derivation. `_assemble_scope` hashes what this returns and
+    `_resolve_judge_text` re-reads it to show the judge, so the hash check
+    binding those two cannot drift: both call this rather than restating the
+    heading list (`derive-a-value-from-its-owner` lesson).
+    """
+    for group in SCOPE_HEADINGS:
+        bodies = [(name, _prd_section(text, name)) for name in group]
+        if all(body is not None for _, body in bodies):
+            anchor = "+".join(name for name, _ in bodies)
+            joined = "\n\n".join(f"## {name}\n\n{body}"
+                                 for name, body in bodies)
+            return anchor, joined
+    return None
 
 
 def _assemble_scope(cfg: Config, prd_id: str, missing: list[str]) -> dict:
     path = _prd_spec_path(cfg, prd_id)
     rel = os.path.relpath(path, cfg.repo_root)
     if path.is_file():
-        text = path.read_text(encoding="utf-8")
-        # Anchored: `.*?Scope.*?` also matched "## Out of Scope" and
-        # "## Scope Notes", and re.search takes the FIRST hit — so a PRD with
-        # either heading above its real one recorded a confident hash of the
-        # wrong section, inverting the unknown-never-becomes-a-fact rule
-        # (review 2026-08-04). No match now falls through to unknown.
-        match = re.search(
-            r"(?ms)^##\s+(?:\d+\.\s*)?Scope\s*$(.*?)(?=^##\s|\Z)", text)
-        if match:
-            return {"source": f"{rel}#Scope",
-                    "sha256": _sha256_text(match.group(1).strip())}
+        found = _scope_sections(path.read_text(encoding="utf-8"))
+        if found:
+            anchor, scope_text = found
+            return {"source": f"{rel}#{anchor}",
+                    "sha256": _sha256_text(scope_text)}
     missing.append("scope")
     return {"source": "unknown", "sha256": "unknown"}
 
@@ -2384,7 +2448,155 @@ def _citable_refs(view: dict) -> frozenset[str]:
     return frozenset(refs)
 
 
-def judge_view(packet: dict) -> tuple[dict, frozenset[str]]:
+# --- The READABLE half of the view: derived, never stored (ASK-1886) --------
+#
+# THE MEASUREMENT. All 128 receipts in `.prd-os/judgments.jsonl`, scored
+# 2026-09-19: the recorded claude-opus-5 judge answered `needs-human` on 31 of
+# its 40 cases, Jev on 126 of 128, and an always-accept baseline beat both arms
+# on kappa (0.0 vs 0.119 against a gate wanting 0.80). Both judges named the
+# same gap in their own `missing_context` -- "issue body and acceptance
+# criteria", "PRD text at revision", "scope". Two unrelated models abstaining on
+# one input is evidence about the input, not about the models: the view carried
+# `prd_state.sha256`, `scope.sha256` and `issue_state.manifest_sha256` and no
+# readable text at all. A hash is not context; it is a promise that context
+# existed.
+#
+# WHY DERIVED AND NOT A PACKET FIELD. `_require_keys` is exact-set in BOTH
+# directions and `_validate_state_groups` is shared by packets and receipts, so
+# adding `scope.text` to the packet makes every one of the 128 stored receipts
+# fail `validate_receipt` with `missing fields ['text']`. That is the hash chain
+# and `verify`. `judge_view` is hashed into nothing (see its docstring), so the
+# text is re-read HERE from the pointers the packet already froze, and refused
+# when it does not match the frozen hash. Packet shape, receipt shape and the
+# chain are untouched.
+#
+# Its OWN allowlist, for the same reason JUDGE_VIEW_SPEC has one: this text
+# never passed through that allowlist, so a blacklist-pop here would make
+# anything a future PRD author writes into a manifest entry visible by default
+# -- and a findings-derived manifest entry can carry `disposition`/`rationale`.
+JUDGE_DERIVED_SPEC: dict[str, tuple[str, ...] | None] = {
+    "scope_text": None,
+    # The manifest entry for THIS finding. Finding-dependent: entries carry
+    # `finding_id`, so the relevant issue is derivable rather than ambient.
+    # `bypass_exempt` is deliberately NOT here -- it is a human's rationale for
+    # waiving a gate, which is the class of field this view exists to withhold.
+    "relevant_issue": ("id", "finding_id", "title", "allowed_files",
+                       "required_checks", "acceptance"),
+    "text_revision": None,
+    # Never a silent omission. A judge that cannot see the scope must be able to
+    # say so in missing_context, which is the disposition it is asked to take.
+    "unavailable": None,
+}
+
+# Jev's docs say accuracy falls as state grows with unrelated detail, and the
+# same is true of the recorded judge's abstention rate, so the readable half is
+# capped rather than unbounded. Truncation is announced in the text itself.
+DERIVED_TEXT_MAX_CHARS = 4000
+_TRUNCATION_SUFFIX = "\n[truncated]"
+
+
+def _bounded(text: str) -> str:
+    if len(text) <= DERIVED_TEXT_MAX_CHARS:
+        return text
+    return text[:DERIVED_TEXT_MAX_CHARS - len(_TRUNCATION_SUFFIX)] \
+        + _TRUNCATION_SUFFIX
+
+
+def _prd_text_at_revision(cfg: Config, packet: dict) -> str | None:
+    """The PRD as the packet froze it.
+
+    Reads `git show <revision>:<path>` so the judge sees the revision the
+    receipt will name, not whatever the working tree holds now. Falls back to
+    the working tree when the revision is `unknown` (52 of 128 receipts), which
+    is why every caller below still hash-checks what it gets back.
+    """
+    prd_state = packet.get("prd_state") or {}
+    rel = prd_state.get("path")
+    if not rel:
+        return None
+    revision = prd_state.get("revision")
+    if revision and revision != "unknown":
+        shown = _git(cfg.repo_root, "show", f"{revision}:{rel}")
+        if shown is not None:
+            return shown
+    path = cfg.repo_root / rel
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _resolve_judge_text(cfg: Config, packet: dict) -> dict:
+    """The readable half, re-read and hash-checked against the frozen packet."""
+    derived = {"scope_text": None, "relevant_issue": None,
+               "text_revision": (packet.get("prd_state") or {}).get("revision"),
+               "unavailable": []}
+    text = _prd_text_at_revision(cfg, packet)
+    if text is None:
+        derived["unavailable"] = ["scope: PRD spec not readable",
+                                  "relevant_issue: PRD spec not readable"]
+        return derived
+
+    frozen_scope = (packet.get("scope") or {}).get("sha256")
+    found = _scope_sections(text)
+    if not found:
+        derived["unavailable"].append("scope: no scope section in the PRD")
+    elif frozen_scope in (None, "unknown"):
+        derived["unavailable"].append("scope: the packet froze no scope hash")
+    elif _sha256_text(found[1]) != frozen_scope:
+        # A receipt freezes decision-time state, so text from a MOVED file is
+        # not that state. Showing it would make the judge reason about one
+        # revision while the receipt names another -- the same lie
+        # `_check_packet_freshness` refuses on the capture path.
+        derived["unavailable"].append(
+            "scope: text does not match the frozen scope.sha256")
+    else:
+        derived["scope_text"] = _bounded(found[1])
+
+    raw = _issues_manifest_raw(text)
+    frozen_manifest = (packet.get("issue_state") or {}).get("manifest_sha256")
+    finding_id = (packet.get("finding") or {}).get("finding_id")
+    if raw is None:
+        derived["unavailable"].append("relevant_issue: no Issues manifest")
+    elif frozen_manifest in (None, "unknown"):
+        derived["unavailable"].append(
+            "relevant_issue: the packet froze no manifest hash")
+    elif _sha256_text(raw) != frozen_manifest:
+        derived["unavailable"].append(
+            "relevant_issue: manifest does not match the frozen "
+            "issue_state.manifest_sha256")
+    else:
+        try:
+            entries = json.loads(raw)
+        except ValueError:
+            entries = []
+        entry = next((e for e in entries if isinstance(e, dict)
+                      and e.get("finding_id") == finding_id), None)
+        if entry is None:
+            derived["unavailable"].append(
+                "relevant_issue: no manifest entry names this finding")
+        else:
+            derived["relevant_issue"] = entry
+    return derived
+
+
+def _apply_spec(spec: dict, source: dict) -> dict:
+    """Allowlist one block-per-key mapping. Shared by both specs so the view
+    has ONE filter, not two that can drift."""
+    out: dict = {}
+    for key, allowed in spec.items():
+        value = source.get(key)
+        if allowed is None:
+            out[key] = copy.deepcopy(value)
+        elif isinstance(value, list):
+            out[key] = [{k: row[k] for k in allowed if k in row}
+                        for row in value if isinstance(row, dict)]
+        elif isinstance(value, dict):
+            out[key] = {k: value[k] for k in allowed if k in value}
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def judge_view(packet: dict,
+               cfg: Config | None = None) -> tuple[dict, frozenset[str]]:
     """Construct the judge's ENTIRE view of the world, and the closed set of
     refs derivable from it. The single writer of both properties.
 
@@ -2392,25 +2604,23 @@ def judge_view(packet: dict) -> tuple[dict, frozenset[str]]:
     `citable` is the only set of refs a decision built on that view may cite.
     Neither is hashed into anything, so this does not touch `packet_sha256` and
     the `input_sha256` binding is unaffected.
+
+    `cfg` is what makes the READABLE half possible: without it the derived
+    block is present and empty rather than silently read from the working tree,
+    so a caller that has no repo handle cannot accidentally show the judge a
+    different revision than the packet froze.
     """
-    view: dict = {}
-    for key, allowed in JUDGE_VIEW_SPEC.items():
-        value = packet.get(key)
-        if allowed is None:
-            view[key] = copy.deepcopy(value)
-        elif isinstance(value, list):
-            view[key] = [{k: row[k] for k in allowed if k in row}
-                         for row in value if isinstance(row, dict)]
-        elif isinstance(value, dict):
-            view[key] = {k: value[k] for k in allowed if k in value}
-        else:
-            view[key] = copy.deepcopy(value)
+    view = _apply_spec(JUDGE_VIEW_SPEC, packet)
+    derived = _resolve_judge_text(cfg, packet) if cfg is not None else {
+        "scope_text": None, "relevant_issue": None, "text_revision": None,
+        "unavailable": ["derived text not resolved: no repo handle"]}
+    view["derived_text"] = _apply_spec(JUDGE_DERIVED_SPEC, derived)
     return view, _citable_refs(view)
 
 
-def _judge_prompt_text(packet: dict) -> str:
+def _judge_prompt_text(packet: dict, cfg: Config | None = None) -> str:
     """Prompt = instructions + the JUDGE VIEW as text (never the raw packet)."""
-    view, _ = judge_view(packet)
+    view, _ = judge_view(packet, cfg=cfg)
     return (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
             + json.dumps(view, indent=2, sort_keys=True))
 
@@ -2437,13 +2647,27 @@ def _extract_json_object(raw: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
-def run_judge(packet: dict, *, model: str) -> dict:
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
+def run_judge(packet: dict, *, model: str, cfg: Config | None = None) -> dict:
     """Run the judge; the `validate_judge_output` validator and its pytest
     cases are the executable blockers on everything this docstring claims.
 
-    Takes no Config: since citations are checked by MEMBERSHIP in the set
-    `judge_view` derives from the packet, nothing here needs to open the repo.
-    That is the point of the refactor -- the packet is the whole world.
+    CITATIONS still need no Config: they are checked by MEMBERSHIP in the set
+    `judge_view` derives from the packet, so the packet remains the whole
+    citable world. `cfg` is passed only so the view can carry the READABLE half
+    -- the scope text and this finding's issue entry, re-read at the revision
+    the packet froze and refused on a hash mismatch (ASK-1886). Optional, and
+    the judge simply sees the hashes-only view without it, which is the
+    behaviour that measured 31 needs-human out of 40.
 
     Bounded at JUDGE_MAX_ATTEMPTS then fails LOUDLY (self-healing-retry
     contract). There is deliberately no fallback disposition: returning a
@@ -2452,7 +2676,7 @@ def run_judge(packet: dict, *, model: str) -> dict:
     below; the paired tests are test_malformed_output_retries_then_fails_loudly
     and test_a_transient_malformed_reply_recovers_within_the_cap.
     """
-    view, citable = judge_view(packet)
+    view, citable = judge_view(packet, cfg=cfg)
     prompt = (JUDGE_PROMPT + "\nCONTEXT PACKET:\n"
               + json.dumps(view, indent=2, sort_keys=True))
     override = os.environ.get("KIPI_JUDGE_CMD")
@@ -2461,7 +2685,7 @@ def run_judge(packet: dict, *, model: str) -> dict:
     for attempt in range(1, JUDGE_MAX_ATTEMPTS + 1):
         try:
             proc = subprocess.run(argv, input=prompt, capture_output=True,
-                                  text=True, timeout=300)
+                                  text=True, timeout=300, env=_subscription_env())
         except (OSError, subprocess.TimeoutExpired) as exc:
             failures.append(f"attempt {attempt}: invocation failed: {exc}")
             continue
@@ -2513,7 +2737,7 @@ def cmd_judge(cfg: Config, args: argparse.Namespace) -> int:
     packet = assemble_packet(cfg, args.prd, args.finding)
     model = args.model or os.environ.get("KIPI_JUDGE_MODEL") \
         or JUDGE_MODEL_DEFAULT
-    run = run_judge(packet, model=model)
+    run = run_judge(packet, model=model, cfg=cfg)
     # Written only on success, and only after validation, so a failed judge
     # leaves no partial file for a later `--judge-run` to pick up.
     destination = Path(args.output)

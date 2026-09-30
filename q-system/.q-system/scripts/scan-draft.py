@@ -20,7 +20,7 @@ import os
 # --- Banned words (from founder-voice SKILL.md) ---
 
 TIER1_WORDS = [
-    "delve", "comprehensive", "crucial", "vital", "pivotal", "robust",
+    "delve", "comprehensive", "crucial", "vital", "pivotal",
     "innovative", "transformative", "intricate", "meticulous", "nuanced",
     "vibrant", "enduring", "unparalleled", "unwavering", "cutting-edge",
     "groundbreaking", "unprecedented", "tapestry", "synergy", "realm",
@@ -29,7 +29,7 @@ TIER1_WORDS = [
 ]
 
 TIER1_VERBS = [
-    "leverage", "utilize", "optimize", "foster", "underscore", "embark",
+    "leverage", "utilize", "optimize", "underscore", "embark",
     "garner", "bolster", "showcase", "enhance", "empower", "unlock",
     "revolutionize", "streamline", "spearhead",
 ]

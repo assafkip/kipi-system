@@ -223,57 +223,38 @@ def build(now: dt.datetime):
 
 
 def send(message: str):
-    """POST to the Slack webhook and read SLACK'S answer, not an exit code.
+    """Delegate to slack_founder.deliver(). Verified by Slack's answer, as before.
 
-    ## Why this does not use slack-notify.sh
+    ## Why this changed (2026-08-30, ASK-1178)
 
-    That script does not send to Slack. It was repointed 2026-08-10 to file Linear
-    tickets ("I dont want to see any of these. Any of the ones that need attention
-    should go to Sana - not me") and its own header says so: "THE NAME IS NOW WRONG
-    ON PURPOSE... Nothing in this file sends to Slack."
+    This function used to read `~/.config/kipi/slack-webhook` itself and POST to
+    it. That file was RETIRED on 2026-08-19 (`slack-webhook.retired-2026-08-19`
+    is still on disk beside an older `.old-workspace`) and nothing repointed
+    this job. Measured in its own log, `~/.config/kipi/logs/linear-daily-digest.out.log`:
+    11 `delivered: False` against 5 `delivered: True`, every recent one reading
+    `no webhook`. Eleven days of a correct 4pm digest going nowhere.
 
-    The first version of this digest called it, got exit 0, and recorded
-    `delivered_claim: True`. It had filed ASK-724 -- a status digest as a Linear
-    ticket. Exit 0 meant "ticket opened", which is a true statement about a
-    different action than the one intended.
+    The job was never broken. Its only transport was decommissioned underneath
+    it, and a single-transport sender has no way to survive that. So delivery
+    moves to the shared chokepoint, which tries the webhook FIRST (unchanged
+    behaviour the day a webhook exists again) and falls back to the bot token.
 
-    ## Why routing a DIGEST to Slack does not reopen the 2026-08-10 decision
+    ## What did NOT change
 
-    That decision was about an alert FLOOD: #general carried 100 messages in four
-    and a half hours, 86 of them from two emitters, burying four security reverts
-    and a dead job. This is one curated message a day, founder-requested
-    2026-08-13, and it is not on the alert path -- alerts still go to Linear.
-    Do not "fix" this back by pointing it at slack-notify.sh.
+    Still not `slack-notify.sh`. That is the fleet ALERT path; it files a Linear
+    ticket for Sana and sends nothing to Slack. The first version of this digest
+    called it, got exit 0, and recorded `delivered_claim: True` having filed
+    ASK-724 -- a status digest as a Linear ticket. Do not "fix" this back.
 
-    Slack answers HTTP 200 with the literal body `ok` on success and 200 with an
-    error string on some failures, so the BODY is checked, not the status alone.
+    Still verified rather than assumed: `deliver()` returns Slack's own verdict,
+    read out of the response body, because Slack answers HTTP 200 both for a
+    delivered webhook (body `ok`) and for a refused chat.postMessage
+    (`{"ok": false, ...}`).
     """
-    hook_path = Path(os.environ.get("KIPI_SLACK_WEBHOOK_FILE",
-                                    os.path.expanduser("~/.config/kipi/slack-webhook")))
-    hook = os.environ.get("KIPI_SLACK_WEBHOOK") or (
-        hook_path.read_text(encoding="utf-8").strip() if hook_path.is_file() else "")
-    if not hook:
-        return {"delivered": False, "reason": f"no webhook (env or {hook_path})"}
-    if not hook.startswith("https://hooks.slack.com/"):
-        return {"delivered": False, "reason": "webhook is not a Slack incoming-webhook URL"}
-
-    import urllib.error
-    import urllib.request
-    req = urllib.request.Request(
-        hook, data=json.dumps({"text": message}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode(errors="replace").strip()
-            code = resp.status
-    except urllib.error.HTTPError as exc:
-        return {"delivered": False, "http": exc.code,
-                "body": exc.read().decode(errors="replace")[:120]}
-    except Exception as exc:  # noqa: BLE001
-        return {"delivered": False, "reason": f"{type(exc).__name__}: {str(exc)[:120]}"}
-    # Slack's own word for success. Anything else is a failure however green the
-    # status line looks.
-    return {"delivered": body == "ok", "http": code, "body": body[:120]}
+    spec = importlib.util.spec_from_file_location("slack_founder", HERE / "slack_founder.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.deliver(message)
 
 
 def main() -> int:

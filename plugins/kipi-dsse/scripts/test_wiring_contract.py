@@ -66,7 +66,7 @@ def _write_spec(repo, issue_id, allowed_files):
         # receipt meaning "the checks ran and passed" must not be issuable
         # when there were none (prd_split.py already refused empty lists at
         # split time for the same reason; this fixture bypasses split).
-        "required_checks:\n  - python3 -c \"print('ok')\"\n"
+        "required_checks:\n  - python3 src/tracked.py\n"   # runs the allowed script: verify contract 2 (ASK-1810)
         "required_reviews: []\n"
         "---\n\n"
         f"{_MARKER}\n\nFixture.\n"

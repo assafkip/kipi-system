@@ -22,10 +22,12 @@ Writes nothing anywhere. Every git call is a read.
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 SKELETON = pathlib.Path(__file__).resolve().parent
 
@@ -176,7 +178,45 @@ def blob_sha(repo, path, source):
     return git(repo, "hash-object", "--", str(full)).strip()
 
 
-def classify(repo, path, staged, skel_blobs):
+def stanza_tracked(repo, skeleton, spec):
+    """Tracked paths the skeleton's never-commit stanza ignores (ASK-605).
+
+    kipi-update.sh untracks exactly these before its dirty-tree guard runs, and
+    it reads the list from `kipi-update-gitignore-block.py --print-stanza`. The
+    audit asks the SAME script, so the two cannot disagree about what is
+    exhaust. Before this, tracked hook state under .claude/state/ read as
+    "founder" here while the updater cleared it, and the reach report named
+    three instances as needing a person (measured 2026-09-23).
+
+    A stanza that cannot be read returns an empty set: the rows then classify
+    as before, which is the conservative answer (founder), never a silent pass.
+    """
+    # The updater skips the untrack whenever the index holds ANY staged work (its
+    # commit takes no pathspec). Promise only what it will do: with staged work
+    # these paths classify as before (PR #430 review, finding 3).
+    if git(repo, "diff", "--cached", "--name-only").strip():
+        return set()
+    writer = pathlib.Path(skeleton) / "kipi-update-gitignore-block.py"
+    if not writer.is_file():
+        return set()
+    proc = subprocess.run(
+        [sys.executable, str(writer), "--skeleton", str(skeleton), "--print-stanza"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return set()
+    with tempfile.NamedTemporaryFile("w", suffix=".stanza", delete=False) as handle:
+        handle.write(proc.stdout)
+        stanza_file = handle.name
+    try:
+        out = git(repo, "ls-files", "-c", "-i", f"--exclude-from={stanza_file}",
+                  "--", *spec)
+    finally:
+        os.remove(stanza_file)
+    return {line for line in out.splitlines() if line}
+
+
+def classify(repo, path, staged, skel_blobs, never_commit=frozenset()):
     """Why this path is blocking, and whether a fix may touch it.
 
     Three answers, and the distinction is the point of the audit:
@@ -186,9 +226,13 @@ def classify(repo, path, staged, skel_blobs):
     staged-only     staged, and the worktree agrees with the index. Unstaging
                     restores the HEAD index entry and leaves the file on disk
                     byte-for-byte, so it cannot lose work.
+    never-commit    tracked, but the shipped never-commit stanza ignores it.
+                    kipi-update.sh untracks it before the guard (ASK-605).
     founder         everything else. Not ours to clear, and named in the report
                     so a refusal over it is legible rather than mysterious.
     """
+    if path in never_commit:
+        return "never-commit"
     index_sha = blob_sha(repo, path, "index")
     work_sha = blob_sha(repo, path, "worktree")
     if skel_blobs.wrote(path, index_sha) or skel_blobs.wrote(path, work_sha):
@@ -198,7 +242,7 @@ def classify(repo, path, staged, skel_blobs):
     return "founder"
 
 
-def audit_instance(entry, owned, skel_blobs, cleared=()):
+def audit_instance(entry, owned, skel_blobs, cleared=(), skeleton=SKELETON):
     path = pathlib.Path(entry["path"])
     prefix = entry.get("subtree_prefix") or ""
     result = {
@@ -222,9 +266,10 @@ def audit_instance(entry, owned, skel_blobs, cleared=()):
         result["verdict"] = "WOULD-SYNC"
         return result
 
+    never_commit = stanza_tracked(path, skeleton, spec)
     seen = {}
     for status, rel, staged in rows:
-        kind = classify(path, rel, staged, skel_blobs)
+        kind = classify(path, rel, staged, skel_blobs, never_commit)
         # A path dirty in BOTH index and worktree keeps the stricter answer:
         # a founder edit riding on top of fleet-written bytes is founder work.
         if seen.get(rel) != "founder":
@@ -264,7 +309,7 @@ def main():
         for path in cleared:
             print(f"  {path}")
         print()
-    results = [audit_instance(e, owned, skel_blobs, cleared) for e in entries]
+    results = [audit_instance(e, owned, skel_blobs, cleared, skeleton) for e in entries]
 
     if args.json:
         print(json.dumps(results, indent=2))

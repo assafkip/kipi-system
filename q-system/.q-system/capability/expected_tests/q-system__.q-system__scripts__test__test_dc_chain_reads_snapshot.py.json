@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test_dc_chain_reads_snapshot.py",
+ "runner": "python3"
+}

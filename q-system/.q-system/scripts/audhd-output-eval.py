@@ -181,8 +181,18 @@ def gate(results):
     return not reasons, reasons
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def _claude(prompt, extra_args, cwd):
-    env = dict(os.environ)
+    env = _subscription_env()
     env.setdefault("ANTHROPIC_MODEL", "claude-opus-5")
     r = subprocess.run([CLAUDE, "-p", prompt] + extra_args,
                        capture_output=True, text=True, timeout=300, cwd=cwd, env=env)

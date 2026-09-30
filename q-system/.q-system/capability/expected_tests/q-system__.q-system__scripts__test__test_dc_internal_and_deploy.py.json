@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test_dc_internal_and_deploy.py",
+ "runner": "python3"
+}

@@ -20,13 +20,22 @@ launchd jobs are:
 |-----|------|------|
 | `com.kipi.audit-rotate` | 23:55 | rotate audit logs |
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 | wake per-instance agents to advance open loops |
-| `com.kipi.fractional-cxo.opp-scan` | 08:00 | daily income/opportunity scan |
-| `com.kipi.fractional-cxo.bolt-on-discovery` | 07:00 | daily consulting-lead discovery |
-| `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — Slack-ping on any silent job death |
-| `com.kipi.lessons-daily` | 06:00 | **auto-learn** — distill → publish → propagate → Slack |
+| `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — alert on any silent job death (families in 2.3) |
+| `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
+| `com.kipi.spillover-linear-check` | 08:10 | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
 Every job is auto-monitored by the watchdog and (for the ones we own) rebuildable from a committed
 installer, so the layer survives a lost `~/Library/LaunchAgents`.
+
+Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
+- `com.kipi.lessons-daily` is WEEKLY: its plist sets `StartCalendarInterval` Weekday 1, Hour 6
+  (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:39`); the old row said "06:00" daily.
+- `com.kipi.fractional-cxo.opp-scan` and `com.kipi.fractional-cxo.bolt-on-discovery` are RETIRED,
+  not running: `launchd-intent-verify.py` (comment at :277-285) records that the 2026-08-01 jobs
+  audit retired both by renaming their plists. Their rows are removed above. Exact retirement date
+  beyond "by the 2026-08-01 audit": UNKNOWN.
+- Chief-bot jobs (`com.<bot>.*`) are not covered by `launchd-health`; that coverage moves to the
+  daily cloud health check (ASK-2191).
 
 ---
 
@@ -49,8 +58,15 @@ founder is warned. Policy: **warn + preserve** (founder-chosen). Fail-open: a mi
 Tests: `test-kipi-update-preserve-scan.sh`, `test-kipi-update-preserve-integration.sh` (RED→GREEN).
 
 ### 2.3 Detection — silent job death becomes a phone ping
-`launchd-health-check.py` auto-discovers every `com.kipi.*` job, reads its `LastExitStatus`, and
-Slack-pings (deduped, 6h TTL) on any non-zero. It always exits 0 so it never becomes the failing job it
+`launchd-health-check.py` auto-discovers every `~/Library/LaunchAgents/<prefix>*.plist` for the
+prefixes in `WATCHED_PREFIXES` (`launchd-health-check.py:59-65`): `com.kipi.`, `com.cole.`,
+`com.claudedaddy.`, `com.ask.`, `com.assaf.`, plus any line in
+`~/.config/kipi/launchd-watch-prefixes.txt` (what that file holds on the Mac today: UNKNOWN from
+the repo). It does NOT watch `io.askconsulting.*` or chief's bot jobs (`com.chief.*`,
+`com.mailroom.*` and the other `com.<bot>.*`), except that a chief bot named `cole` installs as
+`com.cole.<job>` and so matches the `com.cole.` prefix. Labels in `~/.config/kipi/launchd-paused.txt`
+or `cole-pause.state` are printed, not alerted. It reads each job's `LastExitStatus` and
+alerts (deduped, 6h TTL) on any non-zero. It always exits 0 so it never becomes the failing job it
 reports. `LastExitStatus` arrives as a raw `wait(2)` status (exit 3 → 768); `normalize_exit` decodes it
 so the ping reads "exit 3". Runs 09:30 + 21:30. This is the deterministic backstop the philosophy
 demands — a prompt can't watch launchd; a job can. Test: `test_launchd_health_check.py` (11 cases).
@@ -79,7 +95,7 @@ write-back into the same store**; that loop is what compounds. kipi had the rail
 - **Fully autonomous** — no candidate queue, no human promotion on the happy path.
 - **Daily heartbeat + Slack on change.**
 
-### 3.3 The pipeline (`lessons-daily.sh`, launchd 06:00)
+### 3.3 The pipeline (`lessons-daily.sh`, launchd Mon 06:00, weekly)
 ```
 read every instance's new RCAs (source-hash ledger => each processed once)
   → DISTILL each into a HOW-only lesson via `claude -p` (drop all WHAT/specifics)

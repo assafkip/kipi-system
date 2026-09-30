@@ -9,8 +9,6 @@
 - `q-system/` - Core OS (canonical/, marketing/, methodology/, output/, my-project/, memory/)
 
 ## Conventions
-- All written output goes through the founder voice skill
-- All actionable output follows AUDHD executive function rules (if enabled)
 - No filler phrases ("leverage," "innovative," "cutting-edge," "game-changing")
 - When something fails because an LLM misinterpreted instructions, the fix must be a deterministic script or code change
 - For any task involving more than a single file edit, state the planned approach and wait for OK. When fixing identified issues, fix exactly what was flagged. No scope expansion.
@@ -18,14 +16,14 @@
 - All product/system changes use the PRD template at `q-system/marketing/templates/prd.md`
 
 ## Commands
-- `/q-morning` - Full morning briefing (9-phase agent pipeline)
+- `/q-morning` - The day brief: one Slack message whose sections are today's calendar and the mail needing an answer (`SECTIONS` in `morning-brief.py`), then the optional ones REGISTERED in `OPTIONAL_SECTIONS`: his consulting book, GroupMe waiting on him, terms he does not know, and the Notion board. Registration is what adds a section, not installation: `notion_board.py` sits in the same directory, unregistered, and renders none; a registered module whose file is absent or that reports itself off also renders no section at all. What is owed today and which overnight jobs failed are still COLLECTED and never render to him: they are engineering signal, and `engineering_route.py` files ONE line per DEGRADED section into Sana's Linear triage, nothing for a healthy one (`founder-notifications.md`, 2026-08-10). It no longer runs itself: `com.kipi.morning-brief` (07:40) and `com.kipi.morning-brief-deadman` (polls every 30 min, alarms once nothing has landed by its 09:00 `DEADLINE_HOUR`) were retired 2026-09-11, so this command is the only way a brief is produced and nothing reports a missing one (both plists renamed `.retired-2026-09-11` in `~/Library/LaunchAgents`, neither label loaded, last receipt `~/.config/kipi/morning-brief-last.json` dated 2026-09-11T07:40). A section that could not be read says COULD NOT READ, never "nothing". The 9-phase agent pipeline it replaced is RETIRED (decisions.md RULE-2026-08-30-A)
 - `/q-debrief` - Post-conversation extraction (highest priority)
 - `/q-calibrate` - Update canonical files
 - `/q-create` - Generate specific output (talk tracks, emails, slides, decks)
 - `/q-plan` - Review and prioritize actions
 - `/q-engage` - Social engagement mode
 - `/q-market-*` - Marketing system commands
-- `/q-draft` - Ad-hoc output generation
+- `/q-draft` - Ad-hoc output generation. `/improve` - the inverse: critique an outside idea against what this system already has; runs `plugins/kipi-core/skills/improve/scripts/improve_ground.py` first (`already-built` names the file or lesson, `adopt`, or `skip` when the roadmap classifier says what-to-build), corpora via `KIPI_LESSONS_CORPORA` each reported read / missing / unreadable; on demand only
 - `/q-wrap` - Evening health check
 - `/q-handoff` - Session continuity
 - `/q-research` - Anti-hallucination research mode

@@ -58,7 +58,7 @@ Do not write any of these. They are AI-style and underperform on every platform:
 ## Banned within the title
 
 - Em dashes (—)
-- Words from the [[assaf-voice]] banned list: leverage, robust, transformative, etc.
+- Words from the [[assaf-voice]] banned list: leverage, transformative, etc.
 - Hedging language: "might," "could," "perhaps," "some thoughts on"
 - "Excited," "thrilled," "humbled" (the gratitude tells)
 - Hashtags (in the title itself; OK below the body)

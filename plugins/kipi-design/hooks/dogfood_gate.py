@@ -439,5 +439,102 @@ def main():
     sys.exit(0)
 
 
+SKIPPED = 3
+# check_cli only (the PostToolUse main() is untouched and still exits 0 on every skip). SKIPPED
+# meant three different things, and design-chain-gate's seal reads a declared check's skip as
+# "the check did not run", which refuses the seal. Two of the three are not failures: a path this
+# checker considers out of its scope, and a page the operator deliberately exempted with
+# eyeball-gate-skip. Both used to make a round unsealable forever, the documented bypass included
+# (PR #374 review round 6, major). They report NOT_APPLICABLE and the seal records them as such,
+# with the reason. A page with no <html>/<body> keeps SKIPPED: is_page() already called it a page,
+# so that is a real problem, not a scope question.
+NOT_APPLICABLE = 4
+_LINK_RE = re.compile(r"<link\b[^>]*>", re.I)
+
+
+def linked_local_css(html, file):
+    """Every stylesheet the page links by a relative path, read from beside FILE and never from
+    outside its directory, as one <style> block to scan with the page. Remote sheets are the served
+    round's business (seal refuses them)."""
+    base = os.path.realpath(os.path.dirname(os.path.abspath(file)))
+    out = []
+    for tag in _LINK_RE.findall(html):
+        if not re.search(r"rel\s*=\s*[\"']?[^\"'>]*stylesheet", tag, re.I):
+            continue
+        m = re.search(r"href\s*=\s*[\"']?([^\"'\s>]+)", tag, re.I)
+        if not m or re.match(r"^([a-z][a-z0-9+.-]*:|//)", m.group(1), re.I):
+            continue
+        p = os.path.realpath(os.path.join(base, m.group(1).split("?")[0].split("#")[0]))
+        if (p == base or p.startswith(base + os.sep)) and os.path.isfile(p):
+            with open(p, "r", encoding="utf-8", errors="ignore") as fh:
+                out.append(fh.read())
+    return "<style>" + "\n".join(out) + "</style>" if out else ""
+
+
+def brand_colors_in(folder):
+    """The brand kit in FOLDER itself, no walk: the colours of the first BRAND_FILES entry there."""
+    for rel in BRAND_FILES:
+        bf = os.path.join(folder, rel)
+        if os.path.isfile(bf):
+            with open(bf, "r", errors="ignore") as fh:
+                return {c.lower() for c in re.findall(r"#[0-9a-fA-F]{6}\b", fh.read())}
+    return set()
+
+
+def check_cli(argv):
+    """`dogfood_gate.py --check FILE [--as PATH]`: 0 clean, 2 tells or an error (fail closed),
+    3 SKIPPED with the reason on stderr. PATH is where the page lives; it decides scope, and FILE
+    is the bytes scanned (seal passes its held copy). With --brand-from DIR the brand kit is read
+    from DIR ONLY, never by walking up from the page: a brand kit the builder dropped in the round
+    exempted every palette tell (dc-11 adv-1), and one read live could change mid-seal (std-1).
+    The page's LOCAL linked stylesheets are scanned with it: Inter and gradient text in a linked
+    shared.css passed (dc-11 adv-3).
+
+    A TRIPWIRE, not the verdict: it matches text literally, so a conic gradient, a CSS escape or an
+    entity in a style attribute gets past it (dc-11 adv-4). The gap and impeccable producers are
+    the design read; this is the fast net under them.
+
+    why (ASK-1746, dc-11): the hook exits 0 for a clean page AND for one it did not look at
+    (an internal path, not HTML, the eyeball-gate-skip marker), so a caller reading the exit code
+    could not tell a pass from a skip. Here a skip is its own code, and design-chain seal reads it
+    as not run. The hook's own main() keeps its contract."""
+    try:
+        file = argv[argv.index("--check") + 1]
+    except (ValueError, IndexError):
+        sys.stderr.write("usage: dogfood_gate.py --check FILE [--as PATH]\n")
+        return 2
+    path = argv[argv.index("--as") + 1] if "--as" in argv[:-1] else file
+    brand_from = argv[argv.index("--brand-from") + 1] if "--brand-from" in argv[:-1] else None
+    if not is_public_facing_page(path):
+        sys.stderr.write("not applicable: %s is not a public page (internal path, or not .html)\n" % path)
+        return NOT_APPLICABLE
+    try:
+        with open(file, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+    except Exception as e:
+        sys.stderr.write("dogfood gate could not read %s (%s)\n" % (file, e))
+        return 2
+    cl = content.lower()
+    if "<html" not in cl and "<body" not in cl:
+        sys.stderr.write("skipped: %s is not an HTML document\n" % path)
+        return SKIPPED
+    if "eyeball-gate-skip" in cl:
+        sys.stderr.write("not applicable: %s carries the eyeball-gate-skip marker\n" % path)
+        return NOT_APPLICABLE
+    try:
+        content += linked_local_css(content, file)
+        brand = brand_colors_in(brand_from) if brand_from else brand_colors_for(path)
+        findings = scan_html(content, load_fingerprint(), brand=brand)
+    except Exception as e:
+        sys.stderr.write("dogfood gate errored on %s (%s)\n" % (path, e))
+        return 2
+    if findings:
+        sys.stderr.write("tells: " + "; ".join(f["label"] for f in findings) + "\n")
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
+    if "--check" in sys.argv[1:]:
+        sys.exit(check_cli(sys.argv[1:]))
     main()

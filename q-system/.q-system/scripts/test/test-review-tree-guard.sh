@@ -66,6 +66,9 @@ for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh; do
   fi
 done
 REVIEWER="$S/pr-review-agent.sh"
+PRIMARY_MARKER="$(sed -n 's/.*KIPI_REVIEW_ENGINE:-\([a-z][a-z]*\)}.*/\1/p' "$REVIEWER" | head -1)"
+[ -n "$PRIMARY_MARKER" ] || { echo "cannot read KIPI_REVIEW_ENGINE's default out of $REVIEWER; refusing to guess which engine this suite should expect" >&2; exit 1; }
+PRIMARY_MARKER="$PRIMARY_MARKER-ran"
 echo "reviewer under test: ${REF:-working tree} ($(wc -l < "$REVIEWER" | tr -d ' ') lines)"
 
 # A sandbox git repo, so the guard has a real history to reason about and the
@@ -110,6 +113,15 @@ Nothing survived reproduction.
 FINDINGS:
 END FINDINGS
 EOF
+
+# WHICH MARKER MEANS "THE REVIEWER ACTUALLY RAN" IS DERIVED, NOT HARD-CODED.
+# This suite asks an engine-AGNOSTIC question -- does the reviewer materialise the
+# right tree and review THAT -- so pinning the engine by name made it go red on the
+# 2026-09-06 codex->claude flip for a reason that has nothing to do with what it
+# tests. It is read from pr-review-agent.sh's OWN KIPI_REVIEW_ENGINE default so the
+# two cannot drift. Empty (the line moved or was reshaped) is a hard stop rather
+# than a default, because a marker nothing ever touches makes every `[ -f ]` below
+# fail with a message about the reviewer -- a wrong diagnosis is worse than a stop.
 
 # $1 = the sha `gh pr view` reports. The codex stub TOUCHES A MARKER: "did the
 # reviewer dispatch?" has to be answered by a side effect, not by stdout prose --
@@ -174,9 +186,9 @@ grep -q 'review-trees' "$CASE_DIR/out.txt" \
   || fail "the tree is not under review-trees/, so it may be a checkout someone else is using"
 ok "the tree is a dedicated review tree, not a live checkout"
 
-[ -f "$CASE_DIR/codex-ran" ] \
-  || fail "codex never ran on a PR whose head is materialisable, so the PR goes unreviewed"
-ok "codex IS dispatched once the tree is isolated"
+[ -f "$CASE_DIR/$PRIMARY_MARKER" ] \
+  || fail "the PRIMARY engine never ran on a PR whose head is materialisable, so the PR goes unreviewed"
+ok "the PRIMARY engine IS dispatched once the tree is isolated"
 
 # case 1b removed: it asserted a refusal on a MISSING object that this suite's own
 # case 3 correctly forbids (a stale clone cannot prove ancestry either way, and
@@ -185,8 +197,8 @@ ok "codex IS dispatched once the tree is isolated"
 
 # --- case 2: the negative self-test. The guard must let a real head through. ---
 run_case allow "$REAL_HEAD"
-[ -f "$CASE_DIR/codex-ran" ] \
-  || fail "THE GUARD REFUSES EVERYTHING. Its own tree's HEAD ($REAL_HEAD) did not reach codex, so
+[ -f "$CASE_DIR/$PRIMARY_MARKER" ] \
+  || fail "THE GUARD REFUSES EVERYTHING. Its own tree's HEAD ($REAL_HEAD) did not reach the reviewer, so
       case 1 proves nothing -- a check that cannot pass is not a check. stderr was:
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
 ok "the tree's own HEAD reaches codex (the guard can pass, so case 1 is meaningful)"
@@ -214,7 +226,7 @@ grep -q 'REFUSING' "$CASE_DIR/err.txt" \
 grep -q 'WARN' "$CASE_DIR/err.txt" \
   || fail "an unprovable tree/PR match proceeded SILENTLY. stderr was:
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
-[ -f "$CASE_DIR/codex-ran" ] || fail "the unknown-object case did not reach codex"
+[ -f "$CASE_DIR/$PRIMARY_MARKER" ] || fail "the unknown-object case did not reach the reviewer"
 ok "an absent object warns out loud and proceeds (tier 1, not a refusal)"
 
 
@@ -257,7 +269,7 @@ grep -q 'REFUSING' "$CASE_DIR/err.txt" \
 $(sed 's/^/        /' "$CASE_DIR/err.txt")"
 ok "a PR head held by a linked worktree is not refused"
 
-[ -f "$CASE_DIR/codex-ran" ] \
+[ -f "$CASE_DIR/$PRIMARY_MARKER" ] \
   || fail "the reviewer did not refuse, but codex was never dispatched either, so the autonomous
       path still produces no review. stdout was:
 $(sed 's/^/        /' "$CASE_DIR/out.txt")"
@@ -353,8 +365,10 @@ CALLS="$({ grep -c . "$SYNC_LOG" 2>/dev/null || echo 0; } | head -1)"
 $(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG" 2>/dev/null)"
 ok "the success path posts to the issue exactly once"
 
-grep -q 'codex-reviewer' "$SYNC_LOG" \
-  || fail "the single call did not carry --agent codex-reviewer, so the issue thread cannot tell
+# The AGENT LABEL follows the engine for the same reason the marker above does:
+# the property is "the thread can tell WHICH engine spoke", not "codex spoke".
+grep -q "${PRIMARY_MARKER%-ran}-reviewer" "$SYNC_LOG" \
+  || fail "the single call did not carry --agent ${PRIMARY_MARKER%-ran}-reviewer, so the issue thread cannot tell
       WHICH engine spoke -- the one fact the engine flip exists to convey. Call was:
 $(sed 's/\x1f/ /g; s/^/        /' "$SYNC_LOG")"
 ok "the call is attributed to the engine, not the default agent"

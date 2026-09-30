@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_capability_gate_inert_closure.py",
+ "runner": "pytest",
+ "timeout_s": 120
+}

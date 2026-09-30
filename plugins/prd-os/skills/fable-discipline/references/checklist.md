@@ -54,6 +54,9 @@ the checklist header already requires.
 ## Verification (ran, not assumed)
 - [ ] Reproducer actually RAN against the copy (the hook blocks a test that names a live path; whether you ran it at all is on you)
 - [ ] Negative self-test: a corrupted input makes the gate FAIL (no rubber stamp)
+- [ ] Mutation run proved the mutant APPLIED, not only that it was killed: anchor matched exactly once, the on-disk digest moved, an anchor miss exited as a FAILED EXPERIMENT instead of running
+- [ ] Mutation run had bytecode writing off AND its cache read from outside the source tree (a stale cache measures the unmutated module)
+- [ ] Each mutation run started from a GREEN baseline measured against the unmutated file (an already-red check kills every mutant trivially)
 - [ ] Re-ran after the fix and saw green; pasted the command and the result
 - [ ] Grepped every call-site the change had to reach; all covered
 - [ ] Guard test proves no caller bypasses the single-writer (if applicable)

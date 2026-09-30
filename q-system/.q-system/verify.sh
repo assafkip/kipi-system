@@ -25,6 +25,14 @@ set -euo pipefail
 
 MODE="${1:---full}"
 REPO="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
+# see the long note at the `-o cache_dir` call below. --path-format=absolute so a
+# `cd` inside the pytest subshell cannot re-root a relative `.git`; the fallback
+# keeps this working on a git too old for that flag.
+VERIFY_CACHE_ROOT="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+[ -n "$VERIFY_CACHE_ROOT" ] || VERIFY_CACHE_ROOT="$REPO/.git"
+VERIFY_CACHE_ROOT="$VERIFY_CACHE_ROOT/kipi-verify-cache"
 RAN=()
 FAILED=()
 TMP=""
@@ -52,6 +60,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A COLLISION IS NOT A FAILED CHECK, and the two must never share an exit status
+# (ASK-1900). Building the staged snapshot touches metadata every worktree of the
+# repo shares -- the index and .git/worktrees -- so a concurrent session, the
+# dispatcher, or a sibling lefthook command in the same `parallel: true` stage can
+# lose this script a lock. Nothing about the staged code is wrong when that
+# happens, and a caller that reads "your change will not pass later" from it goes
+# off editing code that was fine.
+#
+# 75 is EX_TEMPFAIL: retry is the correct response, not a source edit. It is still
+# non-zero, so the commit is still refused -- a gate that cannot run must not pass,
+# which is this script's one non-negotiable rule and it is not weakened here.
+EXIT_COLLISION=75
+snapshot_collision() {
+  echo "verify.sh: COLLISION, not a failed check. Could not $1." >&2
+  echo "  Another git process holds shared repository state. NOTHING WAS CHECKED:" >&2
+  echo "  no verdict on your staged content was reached, in either direction." >&2
+  echo "  Retry the commit. If it repeats with nothing else running, then it is real." >&2
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" | sed 's/^/  git: /' >&2; fi
+  exit "$EXIT_COLLISION"
+}
+
+# Does this git error name a lock or a name clash on shared state? Used to
+# classify, never to decide whether to refuse -- a refusal happens either way.
+is_collision_error() {
+  printf '%s' "$1" | grep -qiE \
+    'index\.lock|\.lock.: File exists|already (exists|registered|checked out)|Another git process|unable to create.*lock'
+}
+
 case "$MODE" in
   --staged|--full) ;;
   *) echo "usage: verify.sh [--staged|--full]" >&2; exit 2 ;;
@@ -71,7 +107,13 @@ if [ "$MODE" = "--staged" ]; then
   # of a module, or deleting a test file, is exactly the change a floor should
   # look at -- the remaining tree still has to parse and its suites still have to
   # pass without it.
-  ANY_STAGED="$(git -C "$REPO" diff --cached --name-only)"
+  # --no-renames, because ANY_STAGED also feeds the test selector (ASK-1795).
+  # Rename detection is on by default and prints ONLY the new path, so a
+  # `git mv helper.py helper2.py` hid the old module name, and the tests that
+  # still import `helper` were not selected. Reviewer finding on PR #371, with a
+  # reproducer: with renames on, the selection was the declared fallback alone;
+  # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
+  ANY_STAGED="$(git -C "$REPO" diff --cached --no-renames --name-only)"
   STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
@@ -97,7 +139,72 @@ if [ "$MODE" = "--staged" ]; then
   # would contain, so a repo-aware test is answered about the STAGED state
   # rather than about a directory that is not a repo.
   TMP="$(mktemp -d)"
-  TREE="$(git -C "$REPO" write-tree)"
+  # THE INDEX IS READ FROM A COPY TOO (ASK-1900), and that is a collision fix,
+  # not tidiness. `git write-tree` does not merely read the index: it writes the
+  # updated cache-tree extension back, so it takes `index.lock` -- and it takes it
+  # with LOCK_DIE_ON_ERROR, which means it does not degrade, it dies. Every other
+  # index-touching call here returns 0 while the lock is held; measured on a repo
+  # with a held lock: diff --cached 0, diff --cached ACMR 0, ls-files 0,
+  # rev-parse HEAD 0, write-tree 128.
+  #
+  # So one sibling holding the lock for a few milliseconds killed this script at
+  # the second command, under `set -e`, before it echoed a single line. lefthook
+  # then printed its own fail_text, which said the change "will not pass later".
+  # That is false: nothing was ever checked. Observed four times in one evening
+  # across two worktrees of this repo, each refusal back in 0.10-0.17s against a
+  # ~2.8s real run, each identical retry green. lefthook's pre-commit stage is
+  # `parallel: true` and several siblings shell out to git, so the contender is
+  # usually this same commit's own hook stage.
+  #
+  # A copy cannot be contended. Measured: write-tree against a copied index
+  # returns the IDENTICAL tree sha while the real index.lock is held.
+  # Which index -- git EXPORTS GIT_INDEX_FILE to its hooks, and for a pathspec
+  # commit (`git commit -- foo`) that is a temporary index, not .git/index. Read
+  # the exported one or the commit being graded is the wrong one.
+  _index_src="${GIT_INDEX_FILE:-}"
+  if [ -z "$_index_src" ]; then
+    _index_src="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index 2>/dev/null || true)"
+    [ -n "$_index_src" ] || _index_src="$REPO/.git/index"
+  fi
+  # git runs hooks from the top of the worktree, so a relative export resolves
+  # against $REPO. --path-format=absolute covers the fallback; older git has no
+  # such flag and returns a relative path, which this also catches.
+  case "$_index_src" in /*) ;; *) _index_src="$REPO/$_index_src" ;; esac
+  if [ ! -f "$_index_src" ]; then
+    echo "verify.sh: cannot read the index at $_index_src. Refusing." >&2
+    exit 1
+  fi
+  # git replaces the index by rename, so a cp sees one complete version of it,
+  # never a torn one.
+  if ! CP_ERR="$(cp "$_index_src" "$TMP/index" 2>&1)"; then
+    echo "verify.sh: could not copy the index for the staged snapshot. Refusing." >&2
+    printf '%s\n' "$CP_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  # Kept as a branch rather than deleted: the copy removes the contention on the
+  # REAL index, and a failure here is then about the snapshot machinery rather
+  # than about the staged code. Either way it is not a failed check, and saying so
+  # is the whole point of ASK-1900.
+  TREE=""
+  for _try in 1 2 3; do
+    if TREE="$(GIT_INDEX_FILE="$TMP/index" git -C "$REPO" write-tree 2>"$TMP/write-tree.err")"; then
+      break
+    fi
+    TREE=""
+    _err="$(cat "$TMP/write-tree.err")"
+    # A NON-collision failure must not be retried. Retrying a deterministic error
+    # three times only makes the refusal slower and buries the real message.
+    is_collision_error "$_err" || break
+    sleep 0.2
+  done
+  if [ -z "$TREE" ]; then
+    if is_collision_error "${_err:-}"; then
+      snapshot_collision "write the staged tree after 3 tries" "${_err:-}"
+    fi
+    echo "verify.sh: could not build the staged tree. Refusing." >&2
+    printf '%s\n' "${_err:-}" | sed 's/^/  /' >&2
+    exit 1
+  fi
   # An empty repo has no HEAD to parent from; the adversarial suite covers it.
   if git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     SNAP="$(git -C "$REPO" commit-tree "$TREE" -p HEAD -m 'verify.sh staged snapshot')"
@@ -117,9 +224,28 @@ if [ "$MODE" = "--staged" ]; then
   # because the by-hand run is the one you use to convince yourself it works.
   # write-tree above deliberately KEEPS the inherited environment: it has to
   # read the index the commit is actually being built from.
-  if ! WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+  #
+  # `.git/worktrees` is shared by every worktree of the repo, so this is the
+  # second collision surface (ASK-1900) and it gets the same treatment as
+  # write-tree: retry a lock or a name clash, refuse anything else immediately,
+  # and never report either as a failed check.
+  WT_OK=""
+  for _try in 1 2 3; do
+    if WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
                      -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
                      git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
+      WT_OK=1
+      break
+    fi
+    is_collision_error "$WT_ERR" || break
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+        -u GIT_COMMON_DIR git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+    sleep 0.2
+  done
+  if [ -z "$WT_OK" ]; then
+    if is_collision_error "$WT_ERR"; then
+      snapshot_collision "create the staged worktree after 3 tries" "$WT_ERR"
+    fi
     # Print what git said. The first version threw stderr away and the refusal
     # was untraceable: a gate that cannot say why it refused gets bypassed.
     echo "verify.sh: could not create the staged worktree. Refusing." >&2
@@ -195,19 +321,71 @@ run_check() {
 echo "verify.sh ${MODE} in ${TARGET}"
 
 # --- python: syntax, every tracked .py -----------------------------------
-# py_compile is not a linter and is not pretending to be one. It is the floor
-# under the floor: a file that does not parse cannot be reasoned about by
-# anything downstream, and this repo has no ruff installed to catch it.
+# This is not a linter and is not pretending to be one. It is the floor under
+# the floor: a file that does not compile cannot be reasoned about by anything
+# downstream, and this repo has no ruff installed to catch it.
 PYFILES="$(git -C "$REPO" ls-files '*.py' | head -4000)"
 if [ -n "$PYFILES" ]; then
+  # compile(), NOT py_compile, and NOT ast.parse either. Two fixes, one line.
+  #
+  # WHY NOT py_compile (2026-08-29). It WRITES a .pyc, so any write failure
+  # surfaces through a check labelled "python syntax", and the label is a lie
+  # about the cause. Measured during a full-disk stop: this printed
+  # `python syntax FAILED` and "a tree that does not parse cannot be tested"
+  # while every file parsed fine and the real errors were hundreds of
+  # `[Errno 28] No space left on device` from compileall. It sent the reader to
+  # debug their own code, which is the most expensive place a wrong error
+  # message can send someone. Reproducer without a full disk: put a valid .py in
+  # a directory, chmod 500 it, run the old line, and read
+  # `[Errno 13] Permission denied` reported as a syntax failure.
+  #
+  # WHY NOT ast.parse, which was the first fix and was too weak (Codex major,
+  # PR #277). ast.parse only PARSES. The compiler runs a second layer of checks
+  # that the parser does not, and every one of them is a real SyntaxError that
+  # py_compile used to catch and ast.parse waves through. Measured, all six:
+  #
+  #     case                      ast.parse   compile()
+  #     return outside function   pass        CAUGHT
+  #     break outside loop        pass        CAUGHT
+  #     continue outside loop     pass        CAUGHT
+  #     yield outside function    pass        CAUGHT
+  #     duplicate parameter       pass        CAUGHT
+  #     await outside async       pass        CAUGHT
+  #
+  # compile() keeps the property the change was FOR -- it writes nothing -- while
+  # restoring everything py_compile caught. Removing the write was the right
+  # idea; removing the compiler with it was the accident.
+  #
+  # tokenize.open, not open(encoding="utf-8"): it honours the PEP 263 coding
+  # cookie and strips a UTF-8 BOM, exactly as the interpreter does when it loads
+  # the file. Plain utf-8 leaves the BOM in the string and compile() then
+  # reports a SyntaxError on a file Python itself runs happily. No such file is
+  # in the repo today, which is precisely why it would have been found late.
+  #
+  # ONE interpreter for every file, not one per file (ASK-1795). The per-file
+  # loop spawned ~1500 python3 processes in consulting: 35s measured on
+  # 2026-09-18, paid on every commit before a single test ran. Same compile(),
+  # same tokenize.open, same verdict per file. dont_inherit=True so the checker's
+  # own __future__ flags can never leak into the file being compiled, which is
+  # exactly what the old fresh-process-per-file gave for free.
   run_check "python syntax" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -m py_compile "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import sys, tokenize
+fail = 0
+for f in sys.stdin.read().splitlines():
+    try:
+        fh = tokenize.open(f)
+    except FileNotFoundError:
+        continue
+    try:
+        with fh:
+            compile(fh.read(), f, \"exec\", dont_inherit=True)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$PYFILES"
 fi
 
@@ -228,16 +406,38 @@ fi
 # --- json: every tracked .json parses ------------------------------------
 # Config in this fleet IS behaviour: room lists, model tiers, source weights.
 # A malformed one fails at 07:30 in a launchd job nobody is watching.
-JSONFILES="$(git -C "$REPO" ls-files '*.json' | grep -v -E '(^|/)(dist|node_modules)/' | head -3000)"
+# EXCLUDED BY PATHSPEC, NOT BY `grep -v`, and that is a silent-death fix
+# (ASK-1900). grep exits 1 when nothing survives the filter, and under
+# `set -euo pipefail` a command substitution whose pipeline returns 1 kills this
+# script THERE: exit 1, in about a tenth of a second, with no message of its own
+# and no summary line -- the exact shape of refusal this issue is about, reached
+# by a second route. It fires on any repo whose tracked .json files are all under
+# dist/ or node_modules/, and on any repo with no tracked .json at all. Found by
+# the ASK-1900 reproducer, whose first fixture had no .json and which therefore
+# measured this instead of the race it was written for.
+# git ls-files exits 0 on an empty result, so the hazard is gone rather than
+# suppressed with `|| true` -- which would also have hidden a real grep error.
+# Verified identical on this repo: both forms select the same 563 files.
+JSONFILES="$(git -C "$REPO" ls-files '*.json' \
+  ':!:dist/**' ':!:**/dist/**' ':!:node_modules/**' ':!:**/node_modules/**' | head -3000)"
 if [ -n "$JSONFILES" ]; then
+  # One interpreter for all of them, same reason as python syntax (ASK-1795).
   run_check "json parse" bash -c '
     cd "$1" || exit 1
-    fail=0
-    while IFS= read -r f; do
-      [ -f "$f" ] || continue
-      python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>&1 || fail=1
-    done <<< "$2"
-    exit $fail
+    printf "%s\n" "$2" | python3 -c "
+import json, os, sys
+fail = 0
+for f in sys.stdin.read().splitlines():
+    if not os.path.isfile(f):
+        continue
+    try:
+        with open(f) as fh:
+            json.load(fh)
+    except Exception as e:
+        print(f\"{f}: {type(e).__name__}: {e}\")
+        fail = 1
+sys.exit(fail)
+"
   ' _ "$TARGET" "$JSONFILES"
 fi
 
@@ -292,6 +492,62 @@ TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
 # REMOVES a broken suite and the gate would still run it and refuse. The whole
 # premise of --staged is "grade what the commit contains", and the file deciding
 # WHAT GETS GRADED was exempt from it.
+# THE INSTALLED GUARD MUST MATCH THE REVIEWED ONE (ASK-1144).
+#
+# `~/.claude/settings.json` runs destructive-op-deny.sh from the HOME tree; this
+# repo holds the vendored copy that gets reviewed. Nothing compared them, so a
+# corrected hook could merge while unattended agents kept executing the stale
+# one. Codex measured it on PR #279: checked_in_equals_installed=no.
+#
+# SCOPED TO A MACHINE THAT ACTUALLY RUNS HOOKS, and that is not a bypass. A
+# GitHub runner has no ~/.claude/hooks at all, so an unscoped check would be red
+# on every PR for a reason nobody can fix in a commit -- the exact shape the
+# .verify-suites comment below was written about, and the fastest way to get a
+# gate switched off. On a runner it prints a SKIP line rather than passing
+# silently: a check that could not run has to say so.
+# THE DENYLIST MUST NAME SERVERS THAT EXIST (ASK-1144). Operation-keyed denial
+# makes a MISSING namespace harmless; it does not make a DEAD one visible, and a
+# dead entry reading as coverage is what let the Linear hole survive review.
+# Machine-independent by construction (declared namespaces, not discovered), so
+# it means the same thing on a runner as on a laptop.
+# GUARDED ON THE FILES EXISTING, because verify.sh runs against trees that are
+# not this repo. The floor's own adversarial suite drives it at synthetic
+# fixtures with no q-system/ at all, and an unconditional check there fails for
+# "the file is missing" rather than for anything about the target -- 5 of 7
+# adversarial cases went red exactly that way. A check that cannot apply must
+# say so, not fail.
+_mcp_ns_check="$TARGET/q-system/.q-system/scripts/mcp-denylist-namespace-check.py"
+_mcp_ns_hook="$TARGET/q-system/.q-system/hooks/destructive-op-deny.sh"
+if [ -f "$_mcp_ns_check" ] && [ -f "$_mcp_ns_hook" ]; then
+  run_check "mcp-denylist-namespaces" \
+    python3 "$_mcp_ns_check" --hook "$_mcp_ns_hook"
+fi
+
+# AT PRE-COMMIT (--staged) DRIFT IS A WARN, NOT A FAILURE (ASK-1248).
+#
+# The install happens AFTER merge (kipi update, behind its provenance preflight).
+# So a branch that changes the hook can never commit while this check fails the
+# commit: the machine only gets the new copy once the branch lands, and the
+# branch only lands once it can commit. Measured 2026-09-23: the merge of main
+# into sana/ask-1144 was refused here, installed copy 480 lines vs 898. Merged,
+# it would also have refused every OTHER kipi-system commit on the machine until
+# someone installed by hand. --full (CI and a deliberate run) still FAILS on
+# drift, and `kipi update --dry` still prints it, so drift stays visible.
+_hooks_installer="$TARGET/q-system/.q-system/scripts/install-claude-hooks.py"
+if [ "$MODE" = "--staged" ] && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
+  if _drift="$(python3 "$_hooks_installer" --check 2>&1)"; then
+    say "installed-hooks-match-repo" "ok"
+  else
+    say "installed-hooks-match-repo" "WARN (drift; not fatal at pre-commit, --full fails)"
+    printf '%s\n' "$_drift" | sed 's/^/    /'
+  fi
+elif [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
+  run_check "installed-hooks-match-repo" \
+    python3 "$_hooks_installer" --check
+else
+  say "installed-hooks-match-repo" "SKIP (no ~/.claude/hooks on this machine)"
+fi
+
 MANIFEST="$TARGET/.verify-suites"
 if [ -f "$MANIFEST" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
@@ -341,8 +597,104 @@ if [ -f "$MANIFEST" ]; then
           continue
         fi
       fi
-      run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
-                _ "$TARGET" "$suite"
+      # THE RETRY COSTS AS MUCH AS THE FIRST RUN, and that is the whole problem
+      # (2026-08-29). A caller with a shorter timeout than the suite kills the hook
+      # mid-run, nothing is committed, the caller retries, and pays the full run
+      # again to reach the same failure. Measured three times in one session on a
+      # ~160s suite.
+      #
+      # Two changes, neither of which weakens the gate:
+      #
+      #   --ff   run the tests that failed LAST time first. The retry hits its
+      #          failure in seconds instead of after the whole suite.
+      #   -x     stop at the first failure. A commit blocked by one failing test is
+      #          blocked either way; there is nothing gained by spending another two
+      #          minutes proving the rest still pass. A GREEN run is unaffected: it
+      #          has no first failure, so it still runs every test. Measured on a
+      #          real hook: a failing pre-commit went 142s -> 2.84s, and a green
+      #          tree still ran all 5800 tests.
+      #
+      # `-o cache_dir` is what makes --ff work at all here. The --staged snapshot
+      # worktree is thrown away after every run, so pytest's cache died with it and
+      # --ff had nothing to read. The cache lives under git's COMMON DIR instead,
+      # keyed per suite. It is a CACHE OF ORDERING, never of verdicts: no run is
+      # skipped, so a corrupt or stale cache can only make the run slower, never
+      # green-by-cache.
+      #
+      # NOT `$REPO/.verify-cache` (Codex major, PR #269). That path is inside the
+      # working tree and matched no .gitignore entry, so every staged run left the
+      # checkout dirty -- and this fleet's unattended jobs commit with `git add -A`,
+      # so pytest cache files would ride into real commits and a human would be
+      # cleaning them at 3am. The common dir is the right home for two reasons at
+      # once: git never reports it in `status`, and it is SHARED across worktrees,
+      # so the primary checkout and every scratch worktree warm one cache instead
+      # of N. A .gitignore entry would have fixed only the first half.
+      #
+      # --full deliberately keeps NEITHER flag. Pre-push and CI want the complete
+      # picture, not the fastest no. The file-entry branch above also keeps neither:
+      # a single test file is already the fast case, so --ff would buy nothing and
+      # -x would hide sibling failures in the same file.
+      #
+      # --staged ALSO NARROWS THE SUITE TO THE TESTS THAT OWN THE CHANGE (ASK-1795).
+      # A suite used to run IN FULL on any staged path under it: every commit
+      # touching q-consult/ in the consulting instance ran ~6300 tests, 620s and
+      # 788s measured 2026-09-18, and the founder asked twice that day for the
+      # pre-commit door to stop doing that. verify_select.py picks the owning test
+      # files and prints WHY per staged path; a path no test names takes the
+      # suite's declared fallback (<suite>/.verify-fallback, else the full suite),
+      # never nothing. --full is untouched, so pre-push and CI still run all of it.
+      #
+      # The selector comes from the TREE BEING GRADED, same rule as the manifest.
+      # If it is missing or errors, the suite runs in full: a broken selector may
+      # cost time, it may never cost coverage.
+      if [ "$MODE" = "--staged" ]; then
+        _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
+        _sel_src="$TARGET/q-system/.q-system/verify_select.py"
+        [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
+        _sel_mode="full"; _sel_out=""
+        if [ -f "$_sel_src" ] && \
+           _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
+                       python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
+          _sel_mode="$(printf '%s\n' "$_sel_out" | head -1)"
+        else
+          echo "      selector unavailable or failed -> full suite"
+        fi
+        if [ "$_sel_mode" = "select" ]; then
+          _plug="$TMP/verify-select-plugin"
+          mkdir -p "$_plug"
+          cp "$_sel_src" "$_plug/_kipi_verify_select.py"
+          _list="$TMP/verify-select-$(printf '%s' "$suite" | tr / _).txt"
+          # sed -n, never `| head`: under pipefail head's early exit SIGPIPEs the
+          # writer and kills the script (the 141 scar in the discovery note above).
+          printf '%s\n' "$_sel_out" | sed -n '2,$p' | sed '/^$/d' > "$_list.rel"
+          sed "s|^|$TARGET/$suite/|" "$_list.rel" > "$_list"
+          _n=$(sed -n '$=' "$_list"); _n="${_n:-0}"
+          sed -n '1,40p' "$_list.rel" | sed 's/^/        /'
+          if [ "$_n" -gt 40 ]; then echo "        ... and $((_n - 40)) more"; fi
+          # Exit 5 is "collected nothing": every selected file was collect_ignored
+          # or held no test. That is an empty selection, so it takes the full
+          # suite rather than passing on zero tests run.
+          run_check "pytest:$suite ($_n selected)" bash -c '
+            cd "$1/$2" || exit 1
+            PYTHONPATH="$4${PYTHONPATH:+:$PYTHONPATH}" KIPI_VERIFY_SELECT="$5" \
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3" \
+              -p _kipi_verify_select
+            rc=$?
+            if [ "$rc" -eq 5 ]; then
+              echo "selection collected no tests -> full suite"
+              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"
+              rc=$?
+            fi
+            exit $rc' _ "$TARGET" "$suite" "$_cache" "$_plug" "$_list"
+        else
+          run_check "pytest:$suite" bash -c \
+            'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
+            _ "$TARGET" "$suite" "$_cache"
+        fi
+      else
+        run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
+                  _ "$TARGET" "$suite"
+      fi
     done < "$MANIFEST"
   else
     RAN+=("pytest")

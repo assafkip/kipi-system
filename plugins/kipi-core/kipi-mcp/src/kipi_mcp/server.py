@@ -1685,6 +1685,107 @@ def kipi_deliverables_check(date: str = "") -> str:
         raise ToolError(str(e))
 
 
+@mcp.tool()
+def kipi_browser_fetch(profile: str, url: str) -> str:
+    """Load ONE url in the headful research browser and return its HTML. Read only.
+
+    USE THIS ONLY FOR SURFACES THAT DEFEAT AN HTTP CLIENT. That category is
+    narrow and measured, not a default. NodeSeek is the proven member: it 403s
+    plain curl AND headless Chrome, and loads only in a real headful browser.
+
+    DO NOT USE THIS FOR REDDIT. Measured 2026-08-31, Reddit needs no browser at
+    all: it returns 200 to any request carrying an ordinary User-Agent, and 403
+    only to an empty UA or curl's default. Use kipi_reddit_thread and
+    kipi_reddit_listing, which are far cheaper and do not launch Chrome.
+    Reaching for the browser here burns a Chrome launch on work an HTTP GET
+    does in a fraction of the time.
+
+    Returns a status, never a stack trace:
+      ok     html was fetched, with its byte count
+      held   another Chrome holds this profile, almost always the founder's own
+             sign-in window. A persistent context allows one holder. This is
+             expected and transient; close the window and retry. Nothing here
+             will force the profile open.
+      error  the browser could not start. Environmental.
+
+    Args:
+        profile: a DECLARED profile name from browser_profiles.json, never a
+            directory path.
+        url: the page to load.
+    """
+    try:
+        from kipi_mcp.web_read import browser_fetch
+        return json.dumps(browser_fetch(profile, url))
+    except Exception as e:
+        logger.error("kipi_browser_fetch failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_browser_probe(profile: str) -> str:
+    """Liveness of every declared surface on one research browser profile.
+
+    Read only. Says whether each surface is still signed in, and reports
+    `unverified` for a marker that has never once been observed true, so an
+    unproven probe cannot masquerade as a healthy one.
+
+    Args:
+        profile: a DECLARED profile name from browser_profiles.json.
+    """
+    try:
+        from kipi_mcp.web_read import browser_probe
+        return json.dumps(browser_probe(profile))
+    except Exception as e:
+        logger.error("kipi_browser_probe failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_reddit_thread(permalink: str) -> str:
+    """Read one Reddit thread over plain HTTP. No browser, no account, read only.
+
+    ALWAYS REPORT THE COVERAGE. The first key of the result is
+    `coverage_summary`, e.g. "536 of 1190 comments (45.0%), 74 unexpanded stubs,
+    TRUNCATED, this is not the whole thread". One request does not return a whole
+    large thread: measured, 224 declared came back 97.3% complete while 1190 came
+    back 45.0%. A comment list quoted without its coverage is silent truncation,
+    and the caller cannot tell 45% from 100% by looking at the comments.
+
+    If the result is truncated, say so to the user rather than presenting it as
+    the thread. If it is refused (HTTP 429 or 403) that is a refusal, not an
+    empty thread.
+
+    Args:
+        permalink: e.g. /r/programming/comments/abc123/some_slug/
+    """
+    try:
+        from kipi_mcp.web_read import reddit_thread
+        return json.dumps(reddit_thread(permalink))
+    except Exception as e:
+        logger.error("kipi_reddit_thread failed", exc_info=True)
+        raise ToolError(str(e))
+
+
+@mcp.tool()
+def kipi_reddit_listing(subreddit: str, period: str = "month") -> str:
+    """Candidate threads in a subreddit, with the comment count Reddit declares
+    for each, so you can pick by size before spending a request per thread.
+
+    Read only, plain HTTP. Discovery uses listing HTML, never RSS: RSS returned
+    429 on 11 of 12 requests at 3s pacing while listing HTML ran clean.
+
+    Args:
+        subreddit: name without the r/ prefix.
+        period: hour, day, week, month, year or all. Defaults to month.
+    """
+    try:
+        from kipi_mcp.web_read import reddit_listing
+        return json.dumps(reddit_listing(subreddit, period=period))
+    except Exception as e:
+        logger.error("kipi_reddit_listing failed", exc_info=True)
+        raise ToolError(str(e))
+
+
 def main():
     """Entry point for the kipi MCP server."""
     mcp.run(transport="stdio")

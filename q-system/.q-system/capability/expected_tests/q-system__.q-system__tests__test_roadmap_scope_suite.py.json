@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_roadmap_scope_suite.py",
+ "runner": "python3",
+ "timeout_s": 120
+}
