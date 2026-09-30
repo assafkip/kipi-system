@@ -77,8 +77,19 @@ fi
 if [ -n "${KIPI_PERSIST_CMD:-}" ]; then
   bash -c "$KIPI_PERSIST_CMD" || true
 else
-  ( cd "$SKEL" && git add q-system/lessons lesson-candidates 2>/dev/null \
-    && git commit --no-verify --no-gpg-sign -m "chore(lessons): auto-learn $(date +%Y-%m-%d) — ${PUB} published, ${HELD} held" >/dev/null 2>&1 || true )
+  # ASK-2290: this commit used to pass --no-verify and send all output to
+  # /dev/null, so no repo gate ever saw a daily lesson commit, and the
+  # linear-issue-ref gate would have refused its message every night. It now
+  # goes through the hooks. The message carries its own [no-issue: reason], so
+  # the Linear gate passes it legitimately and counts it in the bypass ledger.
+  # A refusal is logged, never hidden, and does not fail the job: the lessons
+  # stay on disk and the next run tries again. Pinned by
+  # test/test-lessons-daily-commit-hooks.sh.
+  COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
+  if ( cd "$SKEL" && git add q-system/lessons lesson-candidates 2>/dev/null \
+       && git commit --no-gpg-sign -m "$COMMIT_MSG" >> "$LOG" 2>&1 ); then :; else
+    echo "$(TS) lessons commit did not land (hook refusal, nothing staged, or git error; output above). Lessons stay on disk." >> "$LOG"
+  fi
 fi
 
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
