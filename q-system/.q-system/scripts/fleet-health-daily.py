@@ -1500,6 +1500,31 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
     return out
 
 
+def committed_plist_templates(repo_root=None) -> list:
+    """Every committed `com.kipi.*.plist` template, as paths, from `git ls-files`.
+
+    WHY GIT AND NOT A GLOB (ASK-2277). The never-installed detector globbed
+    PLIST_TEMPLATE_DIR alone, so the templates under `automation/` were invisible
+    to it: git tracked 17, the detector saw 15, and a template committed there
+    could stay uninstalled forever with nothing red. "Committed" is the promise,
+    and only git knows it. This is the same pathspec install-plist.sh --all walks,
+    so the detector and the installer name one set. A tree that is not a git
+    checkout falls back to the old directory glob.
+    """
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--",
+             "*/com.kipi.*.plist", "com.kipi.*.plist"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is None or proc.returncode != 0:
+        return sorted(PLIST_TEMPLATE_DIR.glob("com.kipi.*.plist"))
+    return sorted((root / rel for rel in proc.stdout.split()
+                   if (root / rel).is_file()), key=lambda p: p.stem)
+
+
 def never_installed_findings(template_dir=None, launch_agents=None,
                             paused_labels=None) -> list:
     """A committed launchd template with no installed job at all.
@@ -1519,7 +1544,9 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     the header above `plist_drift_findings`), and this holds it: the finding names the
     one command that installs the job, and a human decides.
     """
-    templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
+    # A fixture dir is globbed; the default is the git-committed set (ASK-2277).
+    template_paths = (sorted(Path(template_dir).glob("com.kipi.*.plist"))
+                      if template_dir else committed_plist_templates())
     agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
     # THE OPT-OUT IS THE SAME ONE `detect_dark_jobs` USES (round 13, major, against
     # this detector on the day it shipped). Without it a template deliberately not
@@ -1527,7 +1554,7 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     # forever, which trains the operator to ignore the whole channel.
     paused = set(paused_labels or _paused_labels())
     out = []
-    for template in sorted(templates.glob("com.kipi.*.plist")):
+    for template in template_paths:
         label = template.stem
         if label in paused:
             continue
