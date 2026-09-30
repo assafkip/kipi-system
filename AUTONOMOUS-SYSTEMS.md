@@ -24,8 +24,10 @@ launchd jobs are:
 | `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
 | `com.kipi.spillover-linear-check` | 08:10 (not loaded on the Mac as of 2026-09-30, see 1.1) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
-Every job is auto-monitored by the watchdog and (for the ones we own) rebuildable from a committed
-installer, so the layer survives a lost `~/Library/LaunchAgents`.
+Every job whose plist is INSTALLED in `~/Library/LaunchAgents` under a watched prefix is
+auto-monitored by the watchdog (2.3). A committed plist that was never installed is not monitored:
+the watchdog discovers installed plists, not committed ones. The ones we own are rebuildable from a
+committed installer, so the layer survives a lost `~/Library/LaunchAgents`.
 
 Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
 - `com.kipi.lessons-daily` is WEEKLY: its plist sets `StartCalendarInterval` Weekday 1, Hour 6
@@ -52,6 +54,7 @@ list itself was not re-read from the routines API for this change.
 | fleet health check | daily 09:25 | chief `cloud/health-check.md` | adds cloud coverage of the chief-bot jobs (ASK-2191) |
 | client status | weekdays 07:25 | chief `cloud/client-status.md`; publishes to chief `kipi/status` | new (ASK-2192) |
 | Linear worker | Mon-Fri 09:40, 12:40, 15:40 | chief `cloud/linear-worker.md` | `com.kipi.dispatch`, retired 2026-09-30 |
+| Triage | weekdays 09:05 | chief `cloud/triage.md` | `com.triage.brief` / `.act` / `.respond`, retired 2026-09-30 |
 | meeting loop | daily 20:00 | instance-side prompt | an instance's meeting-loop launchd job, retired 2026-09-30 |
 
 **GitHub Actions**
@@ -64,7 +67,6 @@ list itself was not re-read from the routines API for this change.
 
 | Job | When | Cloud prompt | Waiting on |
 |-----|------|--------------|------------|
-| `com.triage.brief` / `.act` / `.respond` | weekdays 09:00 / 09:05; respond every 10 min | chief `cloud/triage.md` | a cloud environment secret |
 | `com.lgtm.brief` / `.act` / `.respond` / `.week` | weekdays 08:30 / 08:35; respond every 10 min; Fri 16:00 | chief `cloud/lgtm.md` | a cloud environment secret |
 | `com.kipi.lessons-daily` | Mon 06:00 (weekly) | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
 
@@ -119,10 +121,9 @@ Tests: `test-kipi-update-preserve-scan.sh`, `test-kipi-update-preserve-integrati
 `launchd-health-check.py` auto-discovers every `~/Library/LaunchAgents/<prefix>*.plist` for the
 prefixes in `WATCHED_PREFIXES` (`launchd-health-check.py:59-65`): `com.kipi.`, `com.cole.`,
 `com.claudedaddy.`, `com.ask.`, `com.assaf.`, plus any line in
-`~/.config/kipi/launchd-watch-prefixes.txt` (what that file holds on the Mac today: UNKNOWN from
-the repo). It does NOT watch `io.askconsulting.*` or chief's bot jobs (`com.chief.*`,
-`com.mailroom.*` and the other `com.<bot>.*`), except that a chief bot named `cole` installs as
-`com.cole.<job>` and so matches the `com.cole.` prefix. Labels in `~/.config/kipi/launchd-paused.txt`
+`~/.config/kipi/launchd-watch-prefixes.txt`. That file is how an instance adds its own job family:
+a family listed there IS reported, one that is not listed and matches no base prefix is not. What
+a given machine's file holds is machine state, not repo state; read the file, not this doc. Labels in `~/.config/kipi/launchd-paused.txt`
 or `cole-pause.state` are printed, not alerted. It reads each job's `LastExitStatus` and
 alerts (deduped, 6h TTL) on any non-zero. It always exits 0 so it never becomes the failing job it
 reports. `LastExitStatus` arrives as a raw `wait(2)` status (exit 3 → 768); `normalize_exit` decodes it
@@ -284,6 +285,8 @@ python3 q-system/.q-system/scripts/lessons-distill.py --dry
 # and its installer refuses (exit 2) unless run from the skeleton checkout itself.
 bash q-system/.q-system/scripts/install-lessons-daily.sh
 bash <instance>/automation/install-launchd.sh
+# every committed kipi plist (or one: pass its label instead of --all)
+bash q-system/.q-system/scripts/install-plist.sh --all
 
 # run the test suite for these systems
 bash q-system/.q-system/scripts/test/test-lessons-scrub.sh
