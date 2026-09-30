@@ -9,7 +9,8 @@
 # hid everything else. A bypass on an unattended job is invisible by design.
 #
 # What it proves, against a hermetic temp repo. The commit-msg hook is the
-# REAL linear-issue-ref-check.py; the pre-commit hook is a stub that records it
+# REAL linear-issue-ref-check.py (the one gate this message could fail; the
+# client-name guard is not installed here); the pre-commit hook is a stub that records it
 # ran (the production lefthook chain needs the whole repo, so it cannot run
 # hermetically; what is pinned here is that the chain is no longer skipped):
 #   1. the script names no --no-verify anywhere outside comments;
@@ -18,7 +19,8 @@
 #      commit-msg hook, so the message passes that gate on its own merits;
 #   4. negative control: a refusing commit-msg or pre-commit hook leaves NO
 #      commit, the alert says so, and the job exits non-zero (the exit code is
-#      this job's wire to Linear, ASK-182). On the pre-fix script this fails
+#      this job's wire to Linear, ASK-182), and neither the Notion mirror nor
+#      the fleet fan-out runs. On the pre-fix script this fails
 #      too, because --no-verify committed straight past the refusal;
 #   5. a run with nothing new to stage is NOT a failure (held lessons are
 #      gitignored), so the exit-1 path cannot page on a quiet held-only night.
@@ -90,7 +92,8 @@ run_job() {
   printf '%s' "$summary" > "$tmp/summary.json"
   PATH="$tmp/bin:$PATH" \
   KIPI_DISTILL_CMD="cat '$tmp/summary.json'" \
-  KIPI_PROPAGATE_CMD='true' KIPI_NOTION_SYNC_CMD='true' \
+  KIPI_PROPAGATE_CMD="touch '$tmp/propagated'" \
+  KIPI_NOTION_SYNC_CMD="touch '$tmp/notion-synced'" \
   KIPI_NOTIFY_CMD="printf '%s\\n' \"\$1\" >> '$tmp/notify.txt'" \
   KIPI_LESSONS_LOG="$tmp/lessons-daily.log" \
   KIPI_STREAK_FILE="$tmp/streak.json" KIPI_ESCALATIONS_FILE="$tmp/esc.jsonl" \
@@ -124,8 +127,20 @@ if [ "$(commits "$T")" = "1" ]; then
     *)     ok "commit message carries no emdash" ;;
   esac
   [ "$JOB_RC" -eq 0 ] && ok "clean run exits 0" || bad "clean run exits $JOB_RC"
+  [ -e "$T/propagated" ] && ok "clean run still propagates" || bad "clean run did not propagate"
 else
   bad "daily commit did not land; log: $(tail -3 "$T/lessons-daily.log" 2>/dev/null | tr '\n' ' ')"
+fi
+rm -rf "$T"
+
+# --- 3b. a foreign staged file does not ride the lesson commit ------------
+T="$(build_fixture real)"
+printf 'x\n' > "$T/skel/foreign.txt"; git -C "$T/skel" add foreign.txt
+run_job "$T"
+if git -C "$T/skel" show --name-only --format= HEAD 2>/dev/null | grep -qx foreign.txt; then
+  bad "foreign staged file rode the lesson commit"
+else
+  ok "lesson commit carries only lesson paths (commits=$(commits "$T"))"
 fi
 rm -rf "$T"
 
@@ -139,11 +154,14 @@ for mode in refuse refuse-precommit; do
   grep -q 'lessons commit did not land' "$T/lessons-daily.log" 2>/dev/null \
     && ok "$mode: job log records the refused commit" \
     || bad "$mode: job log is silent about the refused commit"
-  grep -q 'lessons commit REFUSED' "$T/notify.txt" 2>/dev/null \
+  grep -q 'lessons commit FAILED' "$T/notify.txt" 2>/dev/null \
     && ok "$mode: alert names the refused commit" \
     || bad "$mode: alert is silent about the refused commit"
   [ "$JOB_RC" -ne 0 ] && ok "$mode: job exits non-zero" \
                       || bad "$mode: job exits 0 after a refused commit"
+  [ ! -e "$T/propagated" ] && [ ! -e "$T/notion-synced" ] \
+    && ok "$mode: refused lessons are not propagated or mirrored" \
+    || bad "$mode: refused lessons still shipped (propagated or mirrored)"
   rm -rf "$T"
 done
 

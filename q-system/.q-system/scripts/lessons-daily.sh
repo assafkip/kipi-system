@@ -98,17 +98,31 @@ else
     PERSIST="FAILED"
   elif ( cd "$SKEL" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
     echo "$(TS) lessons commit: nothing staged" >> "$LOG"
-  elif ! ( cd "$SKEL" && git commit --no-gpg-sign -m "$COMMIT_MSG" ) >> "$LOG" 2>&1; then
+  elif ! ( cd "$SKEL" || exit 1
+           CPATHS=()
+           for p in "${LPATHS[@]}"; do
+             if [ -n "$(git ls-files -- "$p")" ]; then CPATHS+=("$p"); fi
+           done
+           git commit --no-gpg-sign -m "$COMMIT_MSG" -- "${CPATHS[@]}" ) >> "$LOG" 2>&1; then
+    # The pathspec keeps foreign staged files out of the lesson commit. A
+    # path git knows nothing about (an empty lesson-candidates/) is a fatal
+    # pathspec error, so only paths with index entries are named.
     PERSIST="FAILED"
   fi
   [ "${PERSIST:-}" = "FAILED" ] && echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons stay on disk." >> "$LOG"
 fi
 
+# A refused commit may be a content gate (gitleaks, client-name guard) saying
+# these lessons must not ship. Mirroring or fanning them out anyway would ship
+# exactly what the gate stopped, so both are skipped (PR 487 review round 2).
+
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
 # "the process needs to constantly write to Notion"). Off without credentials;
 # a Notion outage is logged and never fails the lessons job.
 if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\""; fi
-if eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
+if [ "${PERSIST:-}" = "FAILED" ]; then
+  echo "$(TS) notion sync skipped: lessons commit did not land" >> "$LOG"
+elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
   echo "$(TS) notion sync failed (non-fatal, see above)" >> "$LOG"
 fi
 
@@ -120,7 +134,9 @@ fi
 STREAK_PY="$SKEL/q-system/.q-system/scripts/lessons_streak.py"
 streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$@"; }
 
-if [ "$PUB" -gt 0 ]; then
+if [ "${PERSIST:-}" = "FAILED" ]; then
+  PROP="no propagation (lessons commit did not land)"
+elif [ "$PUB" -gt 0 ]; then
   if [ -n "${KIPI_PROPAGATE_CMD:-}" ]; then
     if bash -c "$KIPI_PROPAGATE_CMD" >> "$LOG" 2>&1; then PROP="propagated to fleet"; else PROP="propagate FAILED"; fi
   else
@@ -166,7 +182,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
-[ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit REFUSED by the repo hooks, not persisted, see log"
+[ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 notify "$MSG"
 echo "$(TS) slacked: $MSG" >> "$LOG"
 
