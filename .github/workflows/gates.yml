@@ -22,6 +22,13 @@ on:
 permissions:
   contents: read
 
+# One gates run at a time (#484 review). The report-red step reads the open
+# issue and then creates one: two red runs at once (the schedule plus a manual
+# dispatch) could both see none and both create. Queue, never cancel a gate.
+concurrency:
+  group: nightly-gates
+  cancel-in-progress: false
+
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -110,3 +117,26 @@ jobs:
 
           Read by the gates-red detector in fleet-health-daily.py, which files it to Linear triage. Close this issue once the nightly is green again."
           fi
+
+  # THE CLOSER (#484 review). Without it the open issue outlives the fix, and the
+  # gates-red detector refiles its Linear issue every morning over a green
+  # nightly: the cry-wolf shape that costs the real alert later.
+  report-green:
+    needs: gates
+    if: success()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Close any open gates-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for num in $(gh issue list --label gates-red --state open --limit 100 \
+                         --json number --jq '.[].number'); do
+            gh issue close "$num" --comment "Green again: $RUN_URL"
+          done

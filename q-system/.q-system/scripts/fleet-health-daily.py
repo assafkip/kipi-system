@@ -1623,12 +1623,27 @@ def _gates_red_blind(reason: str) -> list:
         "body": (f"`gh issue list --label {GATES_RED_LABEL}` did not answer: {reason}\n\n"
                  "A red nightly gates.yml run opens a GitHub issue and this detector is "
                  "its only reader, so today a red run could not reach triage.\n\n"
-                 "## Action\nCheck `gh auth status` for the account the fleet-health "
+                 "## Action\nIf the reason says gh is not installed, install it; "
+                 "otherwise check `gh auth status` for the account the fleet-health "
                  "job runs as."),
     }]
 
 
-def gates_red_findings(repo_root=None, run=None) -> list:
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin, and com.kipi.fleet-health
+# sets none of its own, while gh lives in Homebrew. The first cut shelled bare
+# `gh`, so under launchd every run was FileNotFoundError and a blind finding
+# sent the operator to `gh auth status` for a PATH problem (#484 review).
+GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin"))
+
+
+def _find_gh(gh_dirs=None):
+    """gh on the job's own PATH first, then the install dirs launchd leaves out."""
+    import shutil
+    dirs = [os.environ.get("PATH", "")] + list(GH_DIRS if gh_dirs is None else gh_dirs)
+    return shutil.which("gh", path=os.pathsep.join(d for d in dirs if d))
+
+
+def gates_red_findings(repo_root=None, run=None, gh_dirs=None) -> list:
     """Every OPEN `gates-red` GitHub issue, as one finding each (ASK-2262).
 
     THE ROUTE THIS COMPLETES. A red nightly `gates.yml` run used to email only the
@@ -1648,8 +1663,12 @@ def gates_red_findings(repo_root=None, run=None) -> list:
     if not (root / ".github" / "workflows" / "gates.yml").is_file():
         return []
     run = run or subprocess.run
+    gh = _find_gh(gh_dirs)
+    if not gh:
+        return _gates_red_blind("gh is not installed on this machine's PATH or in "
+                                + ", ".join(gh_dirs if gh_dirs is not None else GH_DIRS))
     try:
-        proc = run(["gh", "issue", "list", "--label", GATES_RED_LABEL, "--state", "open",
+        proc = run([gh, "issue", "list", "--label", GATES_RED_LABEL, "--state", "open",
                     "--limit", "50", "--json", "number,title,url,updatedAt"],
                    capture_output=True, text=True, timeout=60, cwd=str(root))
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1666,9 +1685,9 @@ def gates_red_findings(repo_root=None, run=None) -> list:
         "title": f"nightly gates.yml run is red: GitHub issue #{i['number']}",
         "body": (f"{i.get('url', '')}\n\nOpened by the `report-red` job in "
                  f"`.github/workflows/gates.yml` (last update {i.get('updatedAt', '?')}). "
-                 "Each further red run comments on that issue.\n\n## Action\nOpen the "
-                 "linked run, fix the failing step, and close the GitHub issue once the "
-                 "nightly is green."),
+                 "Each further red run comments on that issue, and the next green run "
+                 "closes it (`report-green`), after which this finding stops.\n\n## Action\n"
+                 "Open the linked run and fix the failing step."),
     } for i in issues]
 
 

@@ -116,14 +116,19 @@ def test_the_gates_job_cannot_be_silenced_at_job_level():
     assert "if" not in keys, "job-level if: the job can be skipped, and skipped is not red"
     assert "continue-on-error" not in gates, "no step in the gates job may swallow a failure"
     assert not re.search(r"(?m)^\s+if:", gates), "a step-level if: can skip a gate"
+    # #484 review: the cheapest silencers live INSIDE a run: line, not in a key.
+    for pat, why in ((r"\|\|\s*(true|:)\b", "`|| true` swallows a gate's exit"),
+                     (r"\bexit\s+0\b", "`exit 0` overrides a gate's exit"),
+                     (r"\bset\s+\+e\b", "`set +e` stops a failing line failing the step")):
+        assert not re.search(pat, gates), why
 
 
 def test_a_red_run_opens_or_updates_one_issue():
     """The route out of a red run: no secret, one deduped issue, a named consumer."""
     text = _text()
     jobs = _jobs(_code_lines(text))
-    reporters = [j for j, b in jobs.items() if j != "gates"]
-    assert reporters == ["report-red"], f"expected one reporter job, got {reporters}"
+    reporters = sorted(j for j in jobs if j != "gates")
+    assert reporters == ["report-green", "report-red"], f"unexpected reporter jobs {reporters}"
     rep = jobs["report-red"]
     keys = _job_keys(rep)
     assert keys.get("needs") == "gates", "the reporter must follow the gates job"
@@ -135,7 +140,26 @@ def test_a_red_run_opens_or_updates_one_issue():
     assert "gh issue comment" in rep and "gh issue create" in rep, "update or open"
     # The consumer this route depends on. Without it the issue is an output nobody reads.
     fh = (ROOT / "q-system/.q-system/scripts/fleet-health-daily.py").read_text()
-    assert '"id": "gates-red"' in fh and "--label" in fh and "gates-red" in fh
+    assert '"id": "gates-red"' in fh and "--label" in fh
+
+
+def test_a_green_run_closes_the_issue():
+    """#484 review: without a closer the open issue outlives the fix, and the
+    detector refiles (reopens) a Linear issue every morning over a green nightly."""
+    grn = _jobs(_code_lines(_text()))["report-green"]
+    keys = _job_keys(grn)
+    assert keys.get("needs") == "gates"
+    assert keys.get("if") == "success()", "the closer runs only on a green gates job"
+    assert re.search(r"(?m)^\s+issues:\s*write\s*$", grn)
+    assert "github.token" in grn and "gh issue close" in grn and "--label gates-red" in grn
+
+
+def test_two_runs_cannot_race_to_two_issues():
+    """#484 review: read-then-create is a window; serialize the workflow."""
+    top = _text().split("\njobs:", 1)[0]
+    assert re.search(r"(?m)^concurrency:", top), "no workflow concurrency group"
+    assert re.search(r"(?m)^  cancel-in-progress:\s*false\s*$", top), \
+        "queue a second run, never cancel a running gate"
 
 
 def test_names_no_machine_path():

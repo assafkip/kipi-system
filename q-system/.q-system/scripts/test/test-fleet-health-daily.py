@@ -595,6 +595,7 @@ check("its lesson slug is a real file",
 # no test ever shells the real `gh`.
 # ---------------------------------------------------------------------------
 import json as _json
+import os
 import subprocess as _sp2
 import tempfile as _tf2
 
@@ -638,6 +639,37 @@ with _tf2.TemporaryDirectory() as _tmp:
     check("a missing gh is blind too",
           [f["subject"] for f in fh.gates_red_findings(repo_root=_root, run=_raise)],
           ["gates-red-blind"])
+
+# #484 review: launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin and gh lives in
+# Homebrew. The detector must find gh there, and an absent gh must say "not
+# installed", not send the operator to `gh auth status`.
+_seen = []
+
+
+def _rec(argv, *a, **k):
+    _seen.append(argv[0])
+    return _Proc(0, "[]")
+
+
+with _tf2.TemporaryDirectory() as _tmp:
+    _root = Path(_tmp)
+    (_root / ".github" / "workflows").mkdir(parents=True)
+    (_root / ".github" / "workflows" / "gates.yml").write_text("name: x\n")
+    _bin = _root / "brew" / "bin"
+    _bin.mkdir(parents=True)
+    (_bin / "gh").write_text("#!/bin/sh\n")
+    (_bin / "gh").chmod(0o755)
+    _saved_path = os.environ.get("PATH", "")
+    try:
+        os.environ["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+        fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_bin)])
+        check("gh is found outside launchd's PATH", _seen, [str(_bin / "gh")])
+        _absent = fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_root / "none")])
+        check("an absent gh is blind and says it is not installed",
+              ([f["subject"] for f in _absent], "not installed" in _absent[0]["body"] if _absent else None),
+              (["gates-red-blind"], True))
+    finally:
+        os.environ["PATH"] = _saved_path
 
 check("gates-red is registered", "gates-red" in _by_id, True)
 check("gates-red files an issue", _by_id.get("gates-red", {}).get("action"), "file_issue")
