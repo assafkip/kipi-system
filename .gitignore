@@ -182,3 +182,9 @@ q-system/output/.update-check-*
 .sana-needs-scope
 .sana-blocked-capability
 .codex-blocked-capability
+
+# Held lessons are what the client-data gate could NOT clear (ASK-2278). This
+# repo is public; lessons-daily.sh adds the whole lesson-candidates/ dir, so
+# without this rule every held lesson was committed and pushed. They stay on
+# the machine that wrote them. The ledger (.processed.json) is still tracked.
+/lesson-candidates/held-*.md
