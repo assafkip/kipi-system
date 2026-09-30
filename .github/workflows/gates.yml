@@ -70,3 +70,43 @@ jobs:
 
       - name: prd-os tests
         run: pytest plugins/prd-os/tests/ -q
+
+  # A RED RUN MUST REACH A QUEUE (ASK-2262). Before this a failed nightly only
+  # emailed the account that owns the cron, and the founder is not the queue. The
+  # repo holds no Linear secret on purpose, so the route is the built-in token:
+  # open ONE issue labelled gates-red, or comment on the one already open (the
+  # title is the dedup key, so a week of red is one issue, not seven). The
+  # consumer is the `gates-red` detector in fleet-health-daily.py, which files
+  # each open gates-red issue into Sana's Linear triage. Close the issue when the
+  # nightly is green again.
+  report-red:
+    needs: gates
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the one gates-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="gates-red: nightly gates failed"
+          gh label create gates-red --color B60205 \
+            --description "A nightly gates.yml run failed" --force
+          # --jq picks the first exact-title match itself. No `| head -1`: under
+          # pipefail a closed pipe is exit 141 and the job dies with no issue.
+          num="$(gh issue list --label gates-red --state open --limit 100 \
+            --json number,title \
+            --jq "[.[] | select(.title == \"$title\")] | first | .number // empty")"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still red: $RUN_URL"
+          else
+            gh issue create --title "$title" --label gates-red \
+              --body "The nightly gates workflow failed: $RUN_URL
+
+          Read by the gates-red detector in fleet-health-daily.py, which files it to Linear triage. Close this issue once the nightly is green again."
+          fi

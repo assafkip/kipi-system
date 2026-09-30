@@ -1586,6 +1586,69 @@ def detect_plist_drift(_ctx) -> list:
     return plist_drift_findings()
 
 
+GATES_RED_LABEL = "gates-red"
+
+
+def _gates_red_blind(reason: str) -> list:
+    return [{
+        "subject": "gates-red-blind",
+        "title": "Could not read the nightly gates-red issues on GitHub",
+        "body": (f"`gh issue list --label {GATES_RED_LABEL}` did not answer: {reason}\n\n"
+                 "A red nightly gates.yml run opens a GitHub issue and this detector is "
+                 "its only reader, so today a red run could not reach triage.\n\n"
+                 "## Action\nCheck `gh auth status` for the account the fleet-health "
+                 "job runs as."),
+    }]
+
+
+def gates_red_findings(repo_root=None, run=None) -> list:
+    """Every OPEN `gates-red` GitHub issue, as one finding each (ASK-2262).
+
+    THE ROUTE THIS COMPLETES. A red nightly `gates.yml` run used to email only the
+    account that owns the cron. The repo holds no Linear secret, so the workflow's
+    `report-red` job opens (or comments on) one issue labelled `gates-red` with the
+    built-in token. An issue nobody reads is no route at all: this detector is the
+    reader, and fleet-health's filer turns each open issue into a Linear issue in
+    Sana's triage, keyed by the issue number so a week of red stays one ticket.
+
+    A gh that cannot answer is BLIND, never zero findings: an unreadable queue that
+    reports empty is the silent all-clear this whole route exists to remove.
+    `run` is injected so tests never shell the real gh.
+    """
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    # Only the repo that carries the workflow has anything to read. An instance
+    # checkout without it is not asked, so it cannot file a blind finding daily.
+    if not (root / ".github" / "workflows" / "gates.yml").is_file():
+        return []
+    run = run or subprocess.run
+    try:
+        proc = run(["gh", "issue", "list", "--label", GATES_RED_LABEL, "--state", "open",
+                    "--limit", "50", "--json", "number,title,url,updatedAt"],
+                   capture_output=True, text=True, timeout=60, cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _gates_red_blind(exc.__class__.__name__)
+    if proc.returncode != 0:
+        return _gates_red_blind((proc.stderr or proc.stdout or "").strip()[-300:]
+                                or f"exit {proc.returncode}")
+    try:
+        issues = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return _gates_red_blind("unparseable gh output")
+    return [{
+        "subject": f"gates-red-{i['number']}",
+        "title": f"nightly gates.yml run is red: GitHub issue #{i['number']}",
+        "body": (f"{i.get('url', '')}\n\nOpened by the `report-red` job in "
+                 f"`.github/workflows/gates.yml` (last update {i.get('updatedAt', '?')}). "
+                 "Each further red run comments on that issue.\n\n## Action\nOpen the "
+                 "linked run, fix the failing step, and close the GitHub issue once the "
+                 "nightly is green."),
+    } for i in issues]
+
+
+def detect_gates_red(_ctx) -> list:
+    return gates_red_findings()
+
+
 def detect_promoted_audit(_ctx) -> list:
     """RUN the promoted-rows audit daily; file a finding only when it cannot.
 
@@ -1924,6 +1987,13 @@ def detect_sweep_degraded(_ctx) -> list:
 
 
 DETECTORS = [
+    {
+        "id": "gates-red",
+        "description": "an open gates-red GitHub issue: the nightly gates.yml run went red",
+        "detect": detect_gates_red,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",

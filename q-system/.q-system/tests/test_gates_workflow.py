@@ -93,6 +93,51 @@ def test_design_chain_tests_cannot_skip_to_green():
     assert re.search(r'DC_REQUIRE_REAL_PRODUCERS:\s*"1"', cap), "a skip would read as green"
 
 
+def _jobs(text: str) -> dict[str, str]:
+    """Each job's block, keyed by its id: the 2-space keys under `jobs:`."""
+    body = text.split("\njobs:\n", 1)[1]
+    parts = re.split(r"(?m)^  ([A-Za-z0-9_-]+):\s*$", body)
+    return {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
+
+
+def _job_keys(block: str) -> dict[str, str]:
+    """A job's own keys (4-space indent), never its steps' keys."""
+    return {m.group(1): m.group(2).strip()
+            for m in re.finditer(r"(?m)^    ([A-Za-z_-]+):(.*)$", block)}
+
+
+# ASK-2262 (#478 reviewer): per-step checks miss the job-level ways to silence the
+# nightly. Each of these keeps every step "running" in the text while the job can
+# no longer fail, or never starts.
+def test_the_gates_job_cannot_be_silenced_at_job_level():
+    gates = _jobs(_code_lines(_text()))["gates"]
+    keys = _job_keys(gates)
+    assert "continue-on-error" not in keys, "job-level continue-on-error: red reads green"
+    assert "if" not in keys, "job-level if: the job can be skipped, and skipped is not red"
+    assert "continue-on-error" not in gates, "no step in the gates job may swallow a failure"
+    assert not re.search(r"(?m)^\s+if:", gates), "a step-level if: can skip a gate"
+
+
+def test_a_red_run_opens_or_updates_one_issue():
+    """The route out of a red run: no secret, one deduped issue, a named consumer."""
+    text = _text()
+    jobs = _jobs(_code_lines(text))
+    reporters = [j for j, b in jobs.items() if j != "gates"]
+    assert reporters == ["report-red"], f"expected one reporter job, got {reporters}"
+    rep = jobs["report-red"]
+    keys = _job_keys(rep)
+    assert keys.get("needs") == "gates", "the reporter must follow the gates job"
+    assert keys.get("if") == "failure()", "the reporter runs only when gates failed"
+    assert re.search(r"(?m)^\s+issues:\s*write\s*$", rep), "needs issues: write"
+    assert "github.token" in rep, "the built-in token, never a stored secret"
+    assert "gates-red" in rep and "--label gates-red" in rep
+    assert "gates-red: nightly gates failed" in rep, "the title is the dedup key"
+    assert "gh issue comment" in rep and "gh issue create" in rep, "update or open"
+    # The consumer this route depends on. Without it the issue is an output nobody reads.
+    fh = (ROOT / "q-system/.q-system/scripts/fleet-health-daily.py").read_text()
+    assert '"id": "gates-red"' in fh and "--label" in fh and "gates-red" in fh
+
+
 def test_names_no_machine_path():
     text = _text()
     for bad in ("/Users/", "/home/", "~/projects", "$HOME/projects"):
