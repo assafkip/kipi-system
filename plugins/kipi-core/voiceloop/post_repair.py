@@ -449,13 +449,17 @@ def violations(text, linter, phrases_path):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 2:
-        print("usage: post_repair.py <file>", file=sys.stderr)
+    # The engine cannot know where a deployment keeps its linter (the public mirror has
+    # no q-system/), so the linter path is an argument. It used to call repair(text)
+    # with 1 of 4 arguments and raised TypeError on every run (PR #475 review).
+    if len(sys.argv) != 3:
+        print("usage: post_repair.py <file> <path/to/voice-lint.py>", file=sys.stderr)
         raise SystemExit(2)
     with open(sys.argv[1], encoding="utf-8") as fh:
         original = fh.read()
-    fixed, what = repair(original)
-    left = violations(fixed)
+    cli_linter = _load_linter(sys.argv[2])
+    fixed, what = repair(original, set(), cli_linter, {})
+    left = violations(fixed, cli_linter, "")
     for line in what:
         print(f"  repaired: {line}")
     print(f"  blocking violations remaining after repair: {len(left)}")

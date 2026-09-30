@@ -830,7 +830,13 @@ def repair_capitalization(text):
         # appears before the start on the prose line, and count the same way on the raw
         # line with code spans masked. A letter/digit boundary, not \w: `_` is a word
         # character, so `_the rest_` never matched at its own start.
-        pattern = re.compile(r"(?<![A-Za-z0-9'-])" + re.escape(word) + r"(?![A-Za-z0-9'-])")
+        # re.I on BOTH sides: `prose_lines` is a snapshot from before this loop edits a
+        # line, so an earlier start on the same line is lowercase there and already
+        # capitalized here. Counting case-sensitively put the second same-word start on
+        # the wrong occurrence (PR #475 review round 2). Edits change case only, so a
+        # case-blind count is identical in both views.
+        pattern = re.compile(r"(?<![A-Za-z0-9'-])" + re.escape(word) + r"(?![A-Za-z0-9'-])",
+                             re.IGNORECASE)
         column = violation.get("column")
         if column is None or index >= len(prose_lines):
             continue

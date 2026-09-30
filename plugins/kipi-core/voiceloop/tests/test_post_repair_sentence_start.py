@@ -80,3 +80,29 @@ def test_voice_lint_repair_capitalization_pins_the_start_not_the_first_match():
     assert "The rest of your list" in out, out
     assert LINTER.check_capitalization(out) == [], LINTER.check_capitalization(out)
     assert fixed == ["the"], fixed
+
+
+# PR #475 review round 2.
+
+def test_voice_lint_two_same_word_starts_on_one_line_each_get_their_own():
+    out, fixed, _left = LINTER.repair_capitalization(
+        "I saw the team. the rest is fine. the end came fast.")
+    assert out == "I saw the team. The rest is fine. The end came fast.", out
+    assert LINTER.check_capitalization(out) == [], LINTER.check_capitalization(out)
+
+
+def test_voice_lint_never_rewrites_a_loose_word_inside_a_code_span():
+    out, _fixed, _left = LINTER.repair_capitalization(
+        "Run `use the thing` first. the output is clean.")
+    assert out == "Run `use the thing` first. The output is clean.", out
+
+
+def test_the_command_line_entry_point_runs_instead_of_raising(tmp_path):
+    import subprocess
+    draft = tmp_path / "draft.md"
+    draft.write_text("I read it from the abuse side. the rest is fine.\n", encoding="utf-8")
+    run = subprocess.run([sys.executable, os.path.join(PKG, "post_repair.py"),
+                          str(draft), LINTER_PATH], capture_output=True, text=True)
+    assert "Traceback" not in run.stderr, run.stderr
+    assert run.returncode in (0, 1), (run.returncode, run.stderr)
+    assert "capitalized sentence start 'the'" in run.stdout, run.stdout
