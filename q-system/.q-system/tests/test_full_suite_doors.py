@@ -94,10 +94,16 @@ def test_a_local_reusable_call_is_judged_by_what_it_runs():
     ("on: workflow_dispatch\n", False),
     ("\"on\":\n  pull_request_target:\n", True),
     ("on:\n  push:\n    branches: ['feat/**']\n", True),
+    ("on:  # PR #492 review: a trailing comment zeroed the triggers\n  pull_request:\n", True),
     ("on:\n  workflow_dispatch:\n    inputs:\n      push:\n        type: string\n", False),
 ])
 def test_triggers(on, pr_or_push):
     assert fsd.runs_on_pr_or_push(on + "jobs:\n") is pr_or_push
+
+
+def test_a_trailing_comment_on_steps_does_not_hide_the_steps():
+    text = ON_PR + "jobs:\n  j:\n    steps:  # the build\n      - run: pytest tests/\n"
+    assert fsd.workflow_doors(text)
 
 
 def test_the_nightly_class_is_not_a_door():

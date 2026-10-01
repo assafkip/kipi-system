@@ -23,7 +23,8 @@ same doors is noise; a door opening or closing is the event.
 
 SINGLE WRITER of its state file (~/.config/kipi/fleet-full-suite/state.json).
 
-EXIT: 0 no doors and no slow test step, 1 either, 2 could not read the population (an empty
+EXIT: 0 a completed scan (doors are the alert's job, not the exit code's; with
+--fail-on-doors, 1 when any are open), 3 an alert that was not delivered, 2 could not read the population (an empty
 listing is a failure, never an all-clear: a scanner that saw nothing must not
 report zero doors).
 
@@ -64,12 +65,25 @@ class ScanError(RuntimeError):
     pass
 
 
+# Every sibling daily job bounds its subprocesses. Without this a hung `gh` held
+# the run forever and the watchdog read a hung job as a healthy one (PR #492 review).
+GH_TIMEOUT_S = int(os.environ.get("KIPI_GH_TIMEOUT_S", "60"))  # env: test seam
+
+
+def _gh(args):
+    try:
+        return subprocess.run(gh_cmd() + list(args), capture_output=True, text=True,
+                              timeout=GH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise ScanError(f"gh {' '.join(args[:3])} timed out after {GH_TIMEOUT_S}s")
+
+
 def gh_cmd() -> list[str]:
     return shlex.split(os.environ.get("KIPI_GH", "gh"))
 
 
 def gh_json(*args: str):
-    p = subprocess.run(gh_cmd() + list(args), capture_output=True, text=True)
+    p = _gh(args)
     if p.returncode != 0:
         # A failed `gh api` prints its error JSON to STDOUT, so stdout is not data here.
         raise ScanError(f"gh {' '.join(args[:3])} failed: {(p.stderr or p.stdout).strip()[:200]}")
@@ -77,7 +91,7 @@ def gh_json(*args: str):
 
 
 def gh_json_or_404(*args: str):
-    p = subprocess.run(gh_cmd() + list(args), capture_output=True, text=True)
+    p = _gh(args)
     if p.returncode != 0:
         if "Not Found" in (p.stdout + p.stderr) or "HTTP 404" in p.stderr:
             return None
@@ -212,26 +226,36 @@ def fingerprint(doors: list[dict], slow: list[dict] = ()) -> str:
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
 
 
-def write_state(state_dir: Path, report: dict) -> dict | None:
-    """The ONE writer of state.json. Returns the previous state, if any."""
+def read_state(state_dir: Path) -> dict | None:
+    f = state_dir / "state.json"
+    if not f.is_file():
+        return None
+    try:
+        return json.loads(f.read_text())
+    except ValueError:
+        return None                 # a corrupt state reads as "changed", never as quiet
+
+
+def write_state(state_dir: Path, report: dict) -> None:
+    """The ONE writer of state.json. Called only AFTER an alert was delivered (or
+    none was due): written first, a failed alert left the new state recorded and
+    the door was never announced again (PR #492 review)."""
     state_dir.mkdir(parents=True, exist_ok=True)
     f = state_dir / "state.json"
-    prev = None
-    if f.is_file():
-        try:
-            prev = json.loads(f.read_text())
-        except ValueError:
-            prev = None             # a corrupt state reads as "changed", never as quiet
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(report, indent=1, sort_keys=True))
     os.replace(tmp, f)
-    return prev
 
 
-def alert(line: str) -> None:
+def alert(line: str) -> bool:
+    """True only when the alert path accepted the line."""
     cmd = os.environ.get("KIPI_ALERT_CMD")
     argv = shlex.split(cmd) if cmd else ["bash", str(HERE / "slack-notify.sh")]
-    subprocess.run(argv + [line], capture_output=True, text=True)
+    try:
+        return subprocess.run(argv + [line], capture_output=True, text=True,
+                              timeout=GH_TIMEOUT_S).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def main(argv=None) -> int:
@@ -240,7 +264,11 @@ def main(argv=None) -> int:
     ap.add_argument("--no-ci", action="store_true")
     ap.add_argument("--no-local", action="store_true")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--no-alert", action="store_true", help="measure only; never alert")
+    ap.add_argument("--no-alert", action="store_true",
+                    help="measure only: never alert and never touch the state file")
+    ap.add_argument("--fail-on-doors", action="store_true",
+                    help="exit 1 when doors or slow steps are open (for a CLI caller; the "
+                         "daily job leaves it off so the watchdog reads exit != 0 as broken)")
     ap.add_argument("--state-dir", default="")
     ap.add_argument("--projects-root", default="")
     ap.add_argument("--registry", default="")
@@ -264,7 +292,7 @@ def main(argv=None) -> int:
 
     report = {"doors": doors, "slow_steps": slow, "fingerprint": fingerprint(doors, slow),
               "repos_scanned": nrepos, "checkouts_scanned": nlocal}
-    prev = write_state(state_dir, report)
+    prev = read_state(state_dir)
     changed = prev is None or prev.get("fingerprint") != report["fingerprint"]
     if a.json:
         print(json.dumps(report, indent=1))
@@ -275,13 +303,25 @@ def main(argv=None) -> int:
             print(f"  {d['repo']} [{d['where']}] {d['door']}: {d['what'][:160]}")
         for s in slow:
             print(f"  SLOW {s['repo']} {s['door']} step '{s['step']}': {s['seconds']}s on run {s['run']}")
-    if changed and not a.no_alert:
+    if a.no_alert:
+        pass                        # measure only: the dedup state is the job's, not ours
+    elif not changed:
+        write_state(state_dir, report)
+    else:
         was = len((prev or {}).get("doors", [])) if prev else "unknown"
         where = ", ".join(sorted({f"{d['repo']}:{d['door']}" for d in doors}))[:300]
-        alert(f"fleet full-suite doors changed: {len(doors)} open (was {was}), "
-              f"{len(slow)} slow test step(s). "
-              f"{where or 'none open'}. RULE-2026-10-01-A: only the nightly may run a whole suite.")
-    return 1 if doors or slow else 0
+        if alert(f"fleet full-suite doors changed: {len(doors)} open (was {was}), "
+                 f"{len(slow)} slow test step(s). "
+                 f"{where or 'none open'}. RULE-2026-10-01-A: only the nightly may run a whole suite."):
+            write_state(state_dir, report)
+        else:
+            # Not recorded, so the next run sees the change again and retries.
+            print("fleet-full-suite-scan: alert NOT delivered; state left unchanged", file=sys.stderr)
+            return 3
+    # EXIT 0 ON A COMPLETED SCAN, doors or not (PR #492 review): launchd-health-check
+    # reads a non-zero exit as a broken job and pages, twice a day, and a normal
+    # "doors open" day was indistinguishable from a blind scan (2).
+    return 1 if a.fail_on_doors and (doors or slow) else 0
 
 
 if __name__ == "__main__":

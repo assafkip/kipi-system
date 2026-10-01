@@ -68,7 +68,7 @@ def _table(repos):
     return t
 
 
-def _run(tmp_path, table, *extra):
+def _run(tmp_path, table, *extra, alert_rc=0, env_extra=None):
     tf = tmp_path / "gh.json"
     tf.write_text(json.dumps(table))
     stub = tmp_path / "gh_stub.py"
@@ -76,8 +76,8 @@ def _run(tmp_path, table, *extra):
     alerts = tmp_path / "alerts.txt"
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(KIPI_GH=f"{sys.executable} {stub} {tf}",
-               KIPI_ALERT_CMD=f"{sys.executable} -c \"import sys; open('{alerts}','a').write(sys.argv[1]+chr(10))\"",
-               HOME=str(tmp_path))
+               KIPI_ALERT_CMD=f"{sys.executable} -c \"import sys; open('{alerts}','a').write(sys.argv[1]+chr(10)); sys.exit({alert_rc})\"",
+               HOME=str(tmp_path), **(env_extra or {}))
     p = subprocess.run([sys.executable, str(SCRIPT), "--json", "--state-dir", str(tmp_path / "state"),
                         "--registry", str(tmp_path / "none.json"), *extra],
                        env=env, capture_output=True, text=True)
@@ -97,7 +97,7 @@ def _checkout(root: Path, name: str, origin: str, hook: str):
 
 
 def test_ci_doors_disabled_nightly_and_hidden(tmp_path):
-    p, alerts = _run(tmp_path, _table(["app"]), "--no-local")
+    p, alerts = _run(tmp_path, _table(["app"]), "--no-local", "--fail-on-doors")
     assert p.returncode == 1, p.stderr
     rep = json.loads(p.stdout)
     assert [d["door"] for d in rep["doors"]] == [".github/workflows/full.yml"], rep["doors"]
@@ -123,6 +123,36 @@ def test_a_repeat_is_quiet_and_a_change_alerts(tmp_path):
         [0, json.dumps(_b64(FULL.replace("pytest tests/", "pytest tests/test_a.py")))]
     p, a3 = _run(tmp_path, t, "--no-local")
     assert len(a3) == 2 and "0 open" in a3[-1], a3
+
+
+def test_a_normal_day_with_doors_exits_0_for_the_watchdog(tmp_path):
+    # launchd-health-check reads exit != 0 as a broken job (PR #492 review).
+    p, _ = _run(tmp_path, _table(["app"]), "--no-local")
+    assert p.returncode == 0, p.stderr
+
+
+def test_an_undelivered_alert_is_retried_next_run(tmp_path):
+    t = _table(["app"])
+    p, a1 = _run(tmp_path, t, "--no-local", alert_rc=1)
+    assert p.returncode == 3 and not (tmp_path / "state" / "state.json").exists()
+    p, a2 = _run(tmp_path, t, "--no-local")
+    assert p.returncode == 0 and len(a2) == 2, "the change must be announced again"
+
+
+def test_no_alert_never_touches_the_state(tmp_path):
+    p, alerts = _run(tmp_path, _table(["app"]), "--no-local", "--no-alert")
+    assert alerts == [] and not (tmp_path / "state" / "state.json").exists()
+
+
+def test_a_hung_gh_is_a_blind_scan(tmp_path):
+    t = _table(["app"])
+    stub_sleep = tmp_path / "sleep_gh.py"
+    stub_sleep.write_text("import time; time.sleep(30)\n")
+    p = subprocess.run([sys.executable, str(SCRIPT), "--no-local", "--state-dir", str(tmp_path / "s")],
+                       env={**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                            "KIPI_GH": f"{sys.executable} {stub_sleep}", "KIPI_GH_TIMEOUT_S": "1",
+                            "HOME": str(tmp_path)}, capture_output=True, text=True, timeout=20)
+    assert p.returncode == 2 and "timed out" in p.stderr, p.stderr
 
 
 def test_an_empty_population_is_a_failure_not_an_all_clear(tmp_path):

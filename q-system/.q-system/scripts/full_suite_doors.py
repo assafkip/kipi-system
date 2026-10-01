@@ -66,7 +66,8 @@ def code_lines(text: str) -> str:
 def triggers(text: str) -> set[str]:
     """The event names under the top-level `on:` (or the quoted forms)."""
     code = code_lines(text)
-    m = re.search(r"""(?m)^(?:on|"on"|'on'|true):[ \t]*(.*)$""", code)
+    # A trailing comment on the `on:` line zeroed every trigger (PR #492 review).
+    m = re.search(r"""(?m)^(?:on|"on"|'on'|true):[ \t]*([^#\n]*)(?:#.*)?$""", code)
     if not m:
         return set()
     inline = m.group(1).strip()
@@ -107,7 +108,7 @@ def _steps(text: str) -> list[str]:
     `env:`-first step was read as part of the step before it)."""
     code = code_lines(text)
     blocks = []
-    for sm in re.finditer(r"(?m)^(\s*)steps:\s*$", code):
+    for sm in re.finditer(r"(?m)^(\s*)steps:\s*(?:#.*)?$", code):
         ind = len(sm.group(1))
         body = []
         for line in code[sm.end():].splitlines()[1:]:
