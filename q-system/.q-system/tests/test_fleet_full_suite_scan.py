@@ -105,6 +105,15 @@ def test_ci_doors_disabled_nightly_and_hidden(tmp_path):
     assert len(alerts) == 1 and "1 open" in alerts[0], alerts
 
 
+def test_an_exempted_workflow_that_grew_slow_is_still_reported(tmp_path):
+    t = _table(["app"])
+    exempt = "# full-suite-exempt: 20s measured on run 1 (2026-10-01)\n" + HIDDEN
+    t[f"api repos/{OWNER}/app/contents/.github/workflows/hidden.yml?ref=main"] = [0, json.dumps(_b64(exempt))]
+    p, _ = _run(tmp_path, t, "--no-local")
+    rep = json.loads(p.stdout)
+    assert [(s["door"], s["seconds"]) for s in rep["slow_steps"]] == [(".github/workflows/hidden.yml", 349)]
+
+
 def test_a_repeat_is_quiet_and_a_change_alerts(tmp_path):
     t = _table(["app"])
     _, a1 = _run(tmp_path, t, "--no-local")

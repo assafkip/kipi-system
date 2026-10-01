@@ -122,7 +122,10 @@ def scan_ci(owner: str) -> tuple[list[dict], int]:
                 continue
             for d in fsd.resolve_local(fsd.workflow_doors(text), read):
                 doors.append({"repo": name, "where": "ci", "door": path, "what": d})
-            if fsd.runs_on_pr_or_push(text) and not fsd.exemption(text) and ids.get(path):
+            # An exemption does NOT silence the estimator (theia PR #6 review): it
+            # certifies "under 60s", and this is the only code that notices when
+            # that stops being true. Without it the line's "re-measure" had no reader.
+            if fsd.runs_on_pr_or_push(text) and ids.get(path):
                 slow += slow_steps(owner, name, path, ids[path])
     return doors, len(repos), slow
 
