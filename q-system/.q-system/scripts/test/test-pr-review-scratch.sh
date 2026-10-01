@@ -38,6 +38,11 @@ head -c 1024 /dev/zero > "$TMPDIR/repro-copy"
 git -C "$STUB_REPO" worktree add -q --detach "$STUB_OUTSIDE" HEAD
 # Round 2: a copy on a BRANCH (not detached at the head) is still the engine's.
 git -C "$STUB_REPO" worktree add -q -b engine-branch "$STUB_OUTSIDE-branch" HEAD
+# Round 3: a concurrent review's copy in ITS scratch dir, under the same base.
+mkdir -p "$STUB_SCRATCH_BASE/run.concurrent"
+git -C "$STUB_REPO" worktree add -q --detach "$STUB_SCRATCH_BASE/run.concurrent/copy" HEAD
+# This run's own copy, the way the prompt says to cut it.
+git -C "$STUB_REPO" worktree add -q --detach "$TMPDIR/copy" HEAD
 # A concurrent reviewer's tree appearing mid-run: never the engine's to remove.
 git -C "$STUB_REPO" worktree add -q --detach "$STUB_REVIEW_TREES/other__pr-9" HEAD
 echo "FINDINGS:"; echo "END FINDINGS"
@@ -59,7 +64,7 @@ run_engine claude "$T/out.txt"
 EOF
   HOME="$T/home" PATH="$T/bin" STUB_ARGV="$T/argv" STUB_TMPDIR="$T/tmpdir" \
     STUB_REPO="$T/repo" STUB_OUTSIDE="$T/outside-copy" \
-    STUB_REVIEW_TREES="$T/home/.config/kipi/review-trees" "$T/bin/bash" "$T/drive.sh"
+    STUB_REVIEW_TREES="$T/home/.config/kipi/review-trees" STUB_SCRATCH_BASE="$BASE" "$T/bin/bash" "$T/drive.sh"
 }
 drive ""
 echo "drive rc=$?"
@@ -72,6 +77,10 @@ check "a worktree the engine cut outside TMPDIR is removed" \
   '[ ! -e "$T/outside-copy" ] && ! git -C "$T/repo" worktree list | grep -q outside-copy'
 check "a branch worktree the engine cut is removed" \
   '[ ! -e "$T/outside-copy-branch" ]'
+check "a concurrent run's scratch copy survives" \
+  '[ -d "$BASE/run.concurrent/copy" ] && git -C "$T/repo" worktree list | grep -q run.concurrent'
+check "this run's own TMPDIR copy is unregistered" \
+  '! git -C "$T/repo" worktree list | grep -qF "$scratch/copy"'
 check "a review tree that appears mid-run survives" \
   '[ -d "$T/home/.config/kipi/review-trees/other__pr-9" ]'
 check "a worktree that predates the run survives" \

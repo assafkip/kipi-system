@@ -922,6 +922,13 @@ _wt_rows() {
     END{if(p!="")print p" "h" "d}'
 }
 review_scratch_cleanup() {
+  # Empty would make "$own"/* read as /*, claiming every path: use a sentinel.
+  local own="${REVIEW_SCRATCH:-/nonexistent-review-scratch}"
+  # git lists PHYSICAL paths (macOS: /var/folders is /private/var/folders), so
+  # both prefixes are resolved the same way before any comparison.
+  local own_p base_p
+  own_p="$(cd "$own" 2>/dev/null && pwd -P)" || own_p="$own"
+  base_p="$(cd "$SCRATCH_BASE" 2>/dev/null && pwd -P)" || base_p="$SCRATCH_BASE"
   case "$REVIEW_SCRATCH" in
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
@@ -933,12 +940,19 @@ review_scratch_cleanup() {
   # (PR #495 round 2: a copy cut at the base revision or on a branch is still
   # the engine's). A concurrent reviewer's tree lives under review-trees/ and an
   # agent's under ~/projects; neither is a temp root, so neither is touched.
+  # Inside SCRATCH_BASE only THIS run's own dir is ours (round 3): a concurrent
+  # review of another PR on the same repo keeps its $TMPDIR/copy there. A copy
+  # some engine left in /tmp or /var/folders against the prompt's rule is
+  # removed even if it was a concurrent run's: that costs that review a rerun,
+  # never data, and it is the exact litter that filled the disk.
   if [ -n "$WT_BEFORE" ]; then
     _wt_rows | while read -r path sha det; do
       grep -qxF "$path" <<<"$WT_BEFORE" && continue
       case "$path" in */review-trees/*) continue ;; esac
       case "$path" in
-        "$SCRATCH_BASE"/*|/tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) ;;
+        "$own"/*|"$own_p"/*) ;;
+        "$SCRATCH_BASE"/*|"$base_p"/*) continue ;;
+        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) ;;
         *) continue ;;
       esac
       git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true
