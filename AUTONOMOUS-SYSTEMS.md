@@ -102,8 +102,10 @@ list itself was not re-read from the routines API for this change.
 
 `com.kipi.spillover-linear-check` was installed and loaded on 2026-09-30 and is listed in section 1.
 
-Not loaded on 2026-09-30, although a committed plist names them:
-`com.kipi.ticket-watch` and `com.cole.fleet-env-health` (plist present, not loaded).
+`com.kipi.ticket-watch` is loaded on the Mac (`launchctl list`, 2026-10-01).
+
+Not loaded on 2026-09-30, although a committed plist names it:
+`com.cole.fleet-env-health` (plist present, not loaded).
 Retired plists (`*.retired-<date>`) are not listed.
 
 ---
