@@ -45,13 +45,14 @@ is a real finding and it has its own issue; it is not this script's job.
 
 THE ASYMMETRY. Everything uncertain resolves UPWARD. An unreadable diff, a
 missing base ref, a crash in here: the caller runs the FULL suite. This script can
-make a run cheaper only when it can name exactly why that is safe. And the full
-suite still runs on every push to main, so a selection that was too narrow is
-caught at merge, by the same gate, not never.
+make a run cheaper only when it can name exactly why that is safe. The full
+suite runs only in the nightly gates.yml (since 2026-09-30 a push to main is
+scoped too), so a selection that was too narrow is caught there, by the same
+gate, not at merge.
 
 It prints and exits 0 (2 on an unreadable diff). It enforces nothing by itself:
-capability-gate.py --diff-base is the caller that acts on it, and CI passes that
-flag on pull requests only.
+capability-gate.py --diff-base is the caller that acts on it, and validate.yml
+passes that flag on pull requests and on pushes to main.
 
 NO --head FLAG, ON PURPOSE. The declared tests are read from the checkout on
 disk, so the diff has to end at that same checkout. Pointed at another ref it
@@ -336,7 +337,7 @@ def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
     and are used by almost everything, so the transitive walk reaches the width cap
     on most changes and IS the full suite. One step closes the case the review
     named, a lib with its own test plus a caller whose test breaks with it. A break
-    two steps out is caught by the full run on the push to main."""
+    two steps out is caught by the nightly full run, not at merge."""
     return sorted(c for c in files_naming(path, index) if c != path)
 
 
