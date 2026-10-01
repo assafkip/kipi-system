@@ -43,8 +43,8 @@ from pathlib import Path
 #
 # Measured, not assumed. The anchoring pair is producer-observed and pinned in
 # test_memory_lint.py OBSERVED_SLUGS:
-#   /Users/assafkipnis/.config/kipi/worktrees/ask-1903
-#     -> -Users-assafkipnis--config-kipi-worktrees-ask-1903
+#   /Users/someone/.config/kipi/worktrees/ask-1903
+#     -> -Users-someone--config-kipi-worktrees-ask-1903
 # The underscore half was observed the same way on a client instance; this repo
 # is public, so that pair is pinned in a generic path instead of being named.
 #
@@ -69,10 +69,10 @@ def project_state_root(project_dir: str) -> str:
     files and 35 structural findings.
 
     Observed live in the session that wrote this, two independent readings:
-      cwd          /Users/assafkipnis/.config/kipi/worktrees/ask-1903
-      transcripts  .../-Users-assafkipnis--config-kipi-worktrees-ask-1903/ (no memory/)
-      corpus       .../-Users-assafkipnis-projects-kipi-system/memory
-    and /Users/assafkipnis/projects/kipi-system is that worktree's main worktree.
+      cwd          /Users/someone/.config/kipi/worktrees/ask-1903
+      transcripts  .../-Users-someone--config-kipi-worktrees-ask-1903/ (no memory/)
+      corpus       .../-Users-someone-projects-kipi-system/memory
+    and /Users/someone/projects/kipi-system is that worktree's main worktree.
 
     A path outside any repository answers for itself, so this is additive: the
     non-repo derivation is byte-identical to what it was before.

@@ -161,8 +161,8 @@ def inject_grandfathered(root):
 # named a directory the producer never creates.
 #
 # Read live from this worktree's own SessionStart hook output, which wrote to
-# .../projects/-Users-assafkipnis--config-kipi-worktrees-ask-1903/ while
-# CLAUDE_PROJECT_DIR was /Users/assafkipnis/.config/kipi/worktrees/ask-1903.
+# .../projects/-Users-someone--config-kipi-worktrees-ask-1903/ while
+# CLAUDE_PROJECT_DIR was /Users/someone/.config/kipi/worktrees/ask-1903.
 # The double hyphen is the whole finding: the dot in `.config` is a separator.
 #
 # The second pair is the underscore half of the same character class, in a
@@ -171,10 +171,10 @@ def inject_grandfathered(root):
 # so the engagement is not named here. The real pair above is what anchors the
 # class to the producer; this one pins that `_` is in it.
 OBSERVED_SLUGS = (
-    ("/Users/assafkipnis/.config/kipi/worktrees/ask-1903",
-     "-Users-assafkipnis--config-kipi-worktrees-ask-1903"),
-    ("/Users/assafkipnis/projects/consulting/projects/An_Example_Co",
-     "-Users-assafkipnis-projects-consulting-projects-An-Example-Co"),
+    ("/Users/someone/.config/kipi/worktrees/ask-1903",
+     "-Users-someone--config-kipi-worktrees-ask-1903"),
+    ("/Users/someone/projects/consulting/projects/An_Example_Co",
+     "-Users-someone-projects-consulting-projects-An-Example-Co"),
 )
 
 
@@ -224,11 +224,11 @@ def check_worktree_corpus():
     `PASS no auto-memory directory`.
 
     The producer observation behind this check, read live in the session that
-    wrote it: cwd was /Users/assafkipnis/.config/kipi/worktrees/ask-1903, the
-    transcript directory was .../-Users-assafkipnis--config-kipi-worktrees-ask-1903
+    wrote it: cwd was /Users/someone/.config/kipi/worktrees/ask-1903, the
+    transcript directory was .../-Users-someone--config-kipi-worktrees-ask-1903
     and held no memory/, and the corpus the session actually used was
-    .../-Users-assafkipnis-projects-kipi-system/memory -- the slug of
-    /Users/assafkipnis/projects/kipi-system, which is that worktree's MAIN
+    .../-Users-someone-projects-kipi-system/memory -- the slug of
+    /Users/someone/projects/kipi-system, which is that worktree's MAIN
     worktree, not its cwd.
 
     Built as a real git worktree in a TemporaryDirectory so the check can go RED
