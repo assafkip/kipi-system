@@ -161,8 +161,8 @@ if [ "$MODE" = "--staged" ]; then
   # still import `helper` were not selected. Reviewer finding on PR #371, with a
   # reproducer: with renames on, the selection was the declared fallback alone;
   # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
-  ANY_STAGED="$(git -C "$REPO" diff --cached --no-renames --name-only)"
-  STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
+  ANY_STAGED="$(git -C "$REPO" -c core.quotePath=false diff --cached --no-renames --name-only)"
+  STAGED="$(git -C "$REPO" -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR)"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
@@ -333,8 +333,12 @@ elif [ "$MODE" = "--changed" ]; then
   if [ -n "$_mb" ]; then
     # --no-renames for the same reason as --staged (PR #371): a rename must
     # surface the OLD module name, or the tests importing it go unselected.
-    ANY_STAGED="$(git -C "$REPO" diff --no-renames --name-only "$_mb" "$_rev")"
-    STAGED="$(git -C "$REPO" diff --name-only --diff-filter=ACMR "$_mb" "$_rev")"
+    # core.quotePath=false on all four diffs: by default git prints a non-ASCII
+    # path quoted and octal-escaped, `"suite/test_caf\303\251.py"`, which no
+    # `^suite/` gate matches, so the suite was skipped at exit 0 (PR #489
+    # review, reproduced).
+    ANY_STAGED="$(git -C "$REPO" -c core.quotePath=false diff --no-renames --name-only "$_mb" "$_rev")"
+    STAGED="$(git -C "$REPO" -c core.quotePath=false diff --name-only --diff-filter=ACMR "$_mb" "$_rev")"
     if [ -z "$ANY_STAGED" ]; then
       echo "verify.sh --changed: $CHANGED_REV changes nothing against $_base_ref, nothing to verify."
       exit 0
