@@ -93,6 +93,7 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 |
 | `com.kipi.fleet-health` | 08:15 |
 | `com.kipi.linear-triage-health` | 09:00 |
+| `com.kipi.fleet-full-suite-scan` | 08:20 (alerts on a state change only; RULE-2026-10-01-A) |
 | `com.kipi.linear-dor` | 03:00 |
 | `com.kipi.disk-janitor` | 04:30 |
 | `com.kipi.voice-refresh` | day 1 of the month, 09:00 |

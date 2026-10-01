@@ -22,7 +22,8 @@ Honest limit: a pytest argument built from a shell variable is not judged. A
 selector-built list is the normal shape of that, and this test cannot tell it
 from a variable holding a directory.
 
-The second half drives verify.yml's step for real, with a recording `bash` stub
+The detector is full_suite_doors.py, shared with the fleet scanner; its fixtures
+live in test_full_suite_doors.py. The second half drives verify.yml's step for real, with a recording `bash` stub
 on a sealed PATH, the way test_validate_workflow.py drives validate.yml.
 
 KIPI_WORKFLOWS_DIR grades another directory (the pre-fix workflows go red).
@@ -31,7 +32,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -43,74 +43,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = Path(os.environ.get("KIPI_WORKFLOWS_DIR") or ROOT / ".github" / "workflows")
 NIGHTLY = "gates.yml"
 
-# Options whose NEXT token is a value, not a test path.
-_PYTEST_VALUE_OPTS = {"-m", "-k", "-o", "-p", "-c", "-n", "--rootdir", "--ignore",
-                      "--deselect", "--junitxml", "--maxfail", "--confcutdir", "-W"}
-
-
-def _code(text: str) -> str:
-    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
-
-
-def _steps(text: str) -> list[str]:
-    return re.split(r"(?m)^\s*- (?=name:|uses:|run:)", _code(text))[1:]
-
-
-def _pytest_door(line: str) -> bool:
-    # pytest as the COMMAND (`pip install pytest` names it as a package).
-    m = re.search(r"(?:^|[;&|(]\s*)(?:python3?\s+-m\s+)?(?:py\.test|pytest)\b(.*)$", line)
-    if not m:
-        return False
-    try:
-        toks = shlex.split(m.group(1), comments=False)
-    except ValueError:
-        toks = m.group(1).split()
-    toks = [t for t in toks if t not in ("|", "||", "&&", ";", "\\")]
-    paths, skip = [], False
-    for t in toks:
-        if skip:
-            skip = False
-            continue
-        if t in _PYTEST_VALUE_OPTS:
-            skip = True
-            continue
-        if t.startswith("-"):
-            continue
-        if t in ("tee",) or t.startswith((">", "2>")):
-            break
-        paths.append(t)
-    if not paths:
-        return True                      # bare pytest: the whole rootdir
-    for p in paths:
-        if p.startswith("$"):
-            continue                     # the documented limit above
-        if not (p.endswith(".py") or ".py::" in p):
-            return True                  # a directory: a whole suite
-    return False
-
-
-def full_suite_doors(text: str) -> list[str]:
-    hits = []
-    for step in _steps(text):
-        for line in step.splitlines():
-            s = re.sub(r"^(?:-\s*)?run:\s*", "", line.strip())
-            if re.match(r"^(?:-\s*)?name:", s):
-                continue                 # a step's label is not code
-            # verify.sh as the COMMAND, never as an argument: the harness steps
-            # pass it to test_verify_*.sh, which grade it on fixtures.
-            v = re.search(r"(?:^|[;&|]\s*|(?:^|\s)(?:bash|sh)\s+)(?:\S*/)?verify\.sh\b(.*)$", s)
-            if v and not re.match(r"\s+--(changed|staged)\b", v.group(1)):
-                hits.append(f"verify.sh runs --full: {s}")
-            if "capability-gate.py" in s and "--diff-base" not in s and "--check-only" not in s:
-                hits.append(f"capability gate with no diff base: {s}")
-            if _pytest_door(s):
-                hits.append(f"pytest over a whole suite: {s}")
-            if re.search(r"\bkipi\s+check\b", s):
-                hits.append(f"kipi check runs the full gate: {s}")
-        # As a command: the protected-files step lists the name as a string.
-        if re.search(r"python3?\s+\S*validate-separation\.py", step) and not re.search(r'CAPABILITY_GATE_SKIP:\s*"?1"?', step):
-            hits.append("validate-separation.py without CAPABILITY_GATE_SKIP runs the full gate")
-    return hits
+sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
+import full_suite_doors as fsd  # noqa: E402  the ONE detector (fleet scanner shares it)
 
 
 def _workflow_files() -> list[Path]:
@@ -123,42 +57,16 @@ def _workflow_files() -> list[Path]:
 def test_only_the_nightly_can_run_a_whole_suite(wf):
     if wf == NIGHTLY:
         pytest.skip("the nightly is the one place the full suite runs")
-    doors = full_suite_doors((WORKFLOWS / wf).read_text())
+    text = (WORKFLOWS / wf).read_text()
+    doors = fsd.resolve_local(fsd.workflow_doors(text),
+                              lambda rel: (ROOT / rel).read_text() if (ROOT / rel).is_file() else None)
     assert not doors, f"{wf} can run a whole suite on PR or push:\n  " + "\n  ".join(doors)
 
 
-def test_the_nightly_still_exists():
+def test_the_nightly_still_exists_and_is_nightly_only():
     assert (WORKFLOWS / NIGHTLY).is_file(), "the full suite needs its one home"
-
-
-@pytest.mark.parametrize("snippet,door", [
-    ("      - run: bash q-system/.q-system/verify.sh --full", True),
-    ("      - run: bash q-system/.q-system/verify.sh", True),
-    ("      - run: bash q-system/.q-system/verify.sh --changed --base \"$base\"", False),
-    ("      - run: bash q-system/.q-system/verify.sh --staged", False),
-    ("      - run: bash q-system/.q-system/test_verify_changed.sh q-system/.q-system/verify.sh", False),
-    ("      - run: q-system/.q-system/verify.sh", True),
-    ("      - name: verify.sh --full\n        run: echo labelled only", False),
-    ("      - run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .", True),
-    ("      - run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base x", False),
-    ("      - run: pytest plugins/prd-os/tests/ -q", True),
-    ("      - run: python3 -m pytest -q", True),
-    ("      - run: python -m pytest tests -m \"not slow\"", True),
-    ("      - run: pytest q-system/.q-system/tests/test_auto_commit.py -q", False),
-    ("      - run: pytest a/test_x.py::test_one -m \"not slow\"", False),
-    ("      - run: python3 -m pytest $TEST_TARGETS -q", False),
-    ("      - run: kipi check", True),
-    ("      - run: pip install pytest", False),
-    ("      - run: |\n          FILES=(\n            \"validate-separation.py\"\n          )", False),
-    ("      - name: v\n        run: python3 validate-separation.py 1 --verbose", True),
-    ("      - name: v\n        run: python3 validate-separation.py 1 --verbose\n"
-     "        env:\n          CAPABILITY_GATE_SKIP: \"1\"", False),
-    ("      # a comment naming verify.sh --full is not a door\n      - run: echo hi", False),
-])
-def test_the_detector_fires_on_every_door_and_only_there(snippet, door):
-    """A detector with no fixture of its own is a check nobody has seen fail."""
-    hits = full_suite_doors("jobs:\n  j:\n    steps:\n" + snippet + "\n")
-    assert bool(hits) is door, (snippet, hits)
+    assert not fsd.runs_on_pr_or_push((WORKFLOWS / NIGHTLY).read_text()), \
+        "the nightly must not run on PR or push"
 
 
 # ---------------------------------------------------------------- verify.yml drive
