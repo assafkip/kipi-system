@@ -13,7 +13,6 @@ allowed_files:
 disallowed_files: []
 required_checks:
   - bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh
-  - bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh
 required_reviews: []
 bypass_check: "bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh"
 gate_lifecycle: historical-receipt

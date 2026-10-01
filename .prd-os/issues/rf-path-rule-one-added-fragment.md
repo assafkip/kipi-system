@@ -8,11 +8,13 @@ allowed_files:
   - q-system/.q-system/scripts/converge.sh
   - q-system/.q-system/scripts/receipt-carry-approval.sh
   - q-system/.q-system/scripts/test/test-receipt-carry-approval.sh
+  - q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh
 disallowed_files: []
 required_checks:
+  - bash q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh
   - bash q-system/.q-system/scripts/test/test-receipt-carry-approval.sh
 required_reviews: []
-bypass_check: "grep -nF -- '--diff-filter=A' q-system/.q-system/scripts/receipt-carry-approval.sh"
+bypass_check: "bash q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

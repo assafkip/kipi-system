@@ -8,11 +8,12 @@ allowed_files:
   - q-system/.q-system/scripts/converge.sh
   - q-system/.q-system/scripts/test/test-converge*.sh
   - q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh
+  - q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh
 disallowed_files: []
 required_checks:
-  - bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh
+  - bash q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh
 required_reviews: []
-bypass_check: "! grep -nE 'diff --quiet -- \\.prd-os/receipts\\.jsonl' q-system/.q-system/scripts/converge.sh"
+bypass_check: "bash q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

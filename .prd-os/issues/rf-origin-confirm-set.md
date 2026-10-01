@@ -7,11 +7,13 @@ parent_prd: prd-receipts-fragments-2026-10-01
 allowed_files:
   - q-system/.q-system/scripts/converge.sh
   - q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh
+  - q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh
 disallowed_files: []
 required_checks:
+  - bash q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh
   - bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh
 required_reviews: []
-bypass_check: "! grep -nF 'show \"FETCH_HEAD:.prd-os/receipts.jsonl\"' q-system/.q-system/scripts/converge.sh"
+bypass_check: "bash q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

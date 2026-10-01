@@ -8,11 +8,13 @@ allowed_files:
   - .github/workflows/validate.yml
   - q-system/.q-system/scripts/receipts-ledger-check.py
   - q-system/.q-system/scripts/test/test-receipts-ledger-check.sh
+  - q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh
 disallowed_files: []
 required_checks:
+  - bash q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh
   - bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh
 required_reviews: []
-bypass_check: "grep -nF 'receipts-ledger-check.py' .github/workflows/validate.yml"
+bypass_check: "bash q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

@@ -248,9 +248,9 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "id": "rf-converge-untracked-recovery",
     "finding_id": "finding-1",
     "title": "converge recovers an UNTRACKED (and ignored) fragment, not only a modified line",
-    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge*.sh", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
-    "bypass_check": "! grep -nE 'diff --quiet -- \\.prd-os/receipts\\.jsonl' q-system/.q-system/scripts/converge.sh",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge*.sh", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh", "q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-rf-converge-untracked-recovery.sh",
     "acceptance": "A run killed after writing a fragment and before committing it is finished by the next run (committed and pushed), never dedup'd into a permanent miss."
   },
   {
@@ -266,18 +266,18 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "id": "rf-single-writer-in-validate",
     "finding_id": "finding-3",
     "title": "The monolith-append refusal runs in validate against a named switch-over sha, not only in lefthook",
-    "allowed_files": [".github/workflows/validate.yml", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
-    "bypass_check": "grep -nF 'receipts-ledger-check.py' .github/workflows/validate.yml",
+    "allowed_files": [".github/workflows/validate.yml", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh", "q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh", "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-rf-single-writer-in-validate.sh",
     "acceptance": "A PR that appends a line to .prd-os/receipts.jsonl after the switch-over sha fails validate with the line named."
   },
   {
     "id": "rf-path-rule-one-added-fragment",
     "finding_id": "finding-4",
     "title": "Path rules accept exactly one ADDED fragment, anchored, regular file, no monolith change",
-    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "q-system/.q-system/scripts/test/test-receipt-carry-approval.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipt-carry-approval.sh"],
-    "bypass_check": "grep -nF -- '--diff-filter=A' q-system/.q-system/scripts/receipt-carry-approval.sh",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "q-system/.q-system/scripts/test/test-receipt-carry-approval.sh", "q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh", "bash q-system/.q-system/scripts/test/test-receipt-carry-approval.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-rf-path-rule-one-added-fragment.sh",
     "acceptance": "The carry refuses a head that deletes or modifies a receipt, adds a nested path under receipts.d/, or touches the monolith; it allows exactly one added receipts.d/<name>.jsonl."
   },
   {
@@ -293,9 +293,9 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "id": "rf-origin-confirm-set",
     "finding_id": "finding-6",
     "title": "converge's origin confirm reads monolith + fragments at FETCH_HEAD through the same predicate as the local dedup",
-    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
-    "bypass_check": "! grep -nF 'show \"FETCH_HEAD:.prd-os/receipts.jsonl\"' q-system/.q-system/scripts/converge.sh",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh", "q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh", "bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-rf-origin-confirm-set.sh",
     "acceptance": "A receipt present on origin only as a fragment is CONFIRMED; one present only in the local tree is not."
   },
   {
@@ -321,7 +321,7 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "finding_id": "finding-9",
     "title": "Locate the PR receipt gate (LEDGER_PREFIX / pr-receipt-gate.py) and accept fragments there, or remove the stale citations",
     "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "plugins/prd-os/scripts/prd_split.py", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh", "q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh", "bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh"],
     "bypass_check": "bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh",
     "acceptance": "Either the live gate is found and admits a fragment receipt (proved on a test PR), or every citation of it is removed with the measurement that it no longer exists. This issue runs FIRST: a live gate that admits only the monolith would block every merge."
   },
