@@ -167,6 +167,21 @@ def test_a_red_nightly_is_reported(tmp_path):
     assert "1 red nightly" in alerts[-1]
 
 
+def test_a_persistently_red_nightly_alerts_once(tmp_path):
+    t = _table(["app"])
+    key = f"api repos/{OWNER}/app/actions/workflows/3/runs?event=schedule&status=completed&per_page=1"
+    t[key] = [0, json.dumps({"workflow_runs": [{"id": 33, "conclusion": "failure"}]})]
+    _, a1 = _run(tmp_path, t, "--no-local")
+    t[key] = [0, json.dumps({"workflow_runs": [{"id": 34, "conclusion": "failure"}]})]
+    _, a2 = _run(tmp_path, t, "--no-local")
+    assert len(a1) == len(a2) == 1, "a new red run of the same nightly is the same state"
+
+
+def test_the_alert_names_the_population_it_saw(tmp_path):
+    _, alerts = _run(tmp_path, _table(["app"]), "--no-local")
+    assert "scanned 1 repos (was ?)" in alerts[0], alerts
+
+
 def test_testlike_is_whole_words():
     import importlib.util
     s = importlib.util.spec_from_file_location("fss", SCRIPT)

@@ -38,7 +38,9 @@ NOT a door:
 
 HONEST LIMITS. A step that runs its suite inside a script it calls (a build
 gate, a Makefile target under another name) is invisible to text. The fleet
-scanner adds an INDEPENDENT estimator for that class: measured step durations.
+scanner adds a second estimator from measured step durations, but it reads only
+steps whose NAME looks like a test (test, suite, gate, verify, ...). A suite in
+a called script under a non-test step name is missed by both.
 A pytest argument built from a shell variable is not judged (a
 selector-built list is the normal shape of that). A hook that calls a script
 is judged by the hook's own text, not the script's. Neither the trigger reader
@@ -207,6 +209,20 @@ def line_doors(line: str) -> list[str]:
     return hits
 
 
+def _nightly_only_step(step: str) -> bool:
+    """A step whose `if:` admits only schedule / workflow_dispatch runs on no PR
+    and no push, so it is the nightly class even inside a push workflow (PR #492
+    review: a correctly guarded full run was reported as a door, and the only
+    exemption needs under 60s, which a full suite cannot meet)."""
+    m = re.search(r"(?m)^\s*(?:-\s*)?if:\s*(.+)$", step)
+    if not m:
+        return False
+    expr = m.group(1)
+    allowed = re.findall(r"github\.event_name\s*==\s*'(\w+)'", expr)
+    return (bool(allowed) and set(allowed) <= {"schedule", "workflow_dispatch"}
+            and not re.search(r"!=|&&|\bpush\b|pull_request", expr))
+
+
 def workflow_doors(text: str) -> list[str]:
     """Doors a workflow opens on PR or push. Empty for the nightly class and for
     a measured exemption under EXEMPT_MAX_S."""
@@ -214,6 +230,8 @@ def workflow_doors(text: str) -> list[str]:
         return []
     hits = []
     for step in _steps(text):
+        if _nightly_only_step(step):
+            continue
         for line in step.splitlines():
             hits += line_doors(line)
         if re.search(r"python3?\s+\S*validate-separation\.py", step) and \

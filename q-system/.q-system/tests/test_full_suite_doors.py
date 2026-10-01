@@ -62,6 +62,13 @@ def wf(steps: str, on: str = ON_PR) -> str:
     ("      - if: github.event_name == 'push'\n        run: pytest tests/", True),
     ("      - env:\n          CI: true\n        run: npm test", True),
     ("      - uses: ./.github/workflows/full.yml", True),
+    # PR #492 review round 3: a step guarded to the nightly events is not a door.
+    ("      - if: github.event_name == 'schedule'\n        run: pytest tests/", False),
+    ("      - name: full\n        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'\n"
+     "        run: pytest tests/", False),
+    ("      - if: github.event_name != 'schedule'\n        run: pytest tests/", True),
+    ("      - if: github.event_name == 'push'\n        run: pytest tests/", True),
+    ("      - if: github.event_name == 'schedule' && always()\n        run: pytest tests/", True),
     # PR #492 review round 2: runners the first table did not know.
     ("      - run: uv run pytest", True),
     ("      - run: poetry run pytest tests/", True),

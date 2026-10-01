@@ -246,7 +246,9 @@ def scan_local(owner: str, checkouts: list[Path]) -> list[dict]:
 def fingerprint(doors: list[dict], slow: list[dict] = (), red: list[dict] = ()) -> str:
     keys = sorted(f"{d['repo']}|{d['where']}|{d['door']}|{d['what']}" for d in doors)
     keys += sorted(f"slow|{s['repo']}|{s['door']}|{s['step']}" for s in slow)
-    keys += sorted(f"red|{r['repo']}|{r['door']}|{r['run']}" for r in red)
+    # Identity, not the run id (PR #492 review): a nightly red for a week is ONE
+    # state, alerted once, the same rule slow_steps follows for its seconds.
+    keys += sorted(f"red|{r['repo']}|{r['door']}" for r in red)
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
 
 
@@ -341,8 +343,12 @@ def main(argv=None) -> int:
     else:
         was = len((prev or {}).get("doors", [])) if prev else "unknown"
         where = ", ".join(sorted({f"{d['repo']}:{d['door']}" for d in doors}))[:300]
+        # The population sizes ride in the line (PR #492 review): a scan that saw
+        # fewer repos reads as doors closing unless the reader can see it shrank.
+        pr_, pc = ((prev or {}).get("repos_scanned", "?"), (prev or {}).get("checkouts_scanned", "?"))
         if alert(f"fleet full-suite doors changed: {len(doors)} open (was {was}), "
-                 f"{len(slow)} slow test step(s), {len(red)} red nightly run(s). "
+                 f"{len(slow)} slow test step(s), {len(red)} red nightly run(s); "
+                 f"scanned {nrepos} repos (was {pr_}), {nlocal} checkouts (was {pc}). "
                  f"{where or 'none open'}. RULE-2026-10-01-A: only the nightly may run a whole suite."):
             write_state(state_dir, report)
         else:
