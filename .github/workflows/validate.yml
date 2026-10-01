@@ -61,8 +61,8 @@ jobs:
       # artifact on every push of every PR, and then once more on the merge push.
       # change-size.py picks the declared tests that name the changed files. It
       # falls back to the FULL suite on anything it cannot vouch for: a change to
-      # the gate, the classifier, a workflow, lefthook or verify.sh, a dependency
-      # manifest, a capability declaration, a new third-party import, a selection
+      # the gate, the classifier, either selector, a pytest config or conftest, a
+      # dependency manifest, a capability declaration, a new third-party import, a selection
       # wider than 60, or any error reading the diff. Structure, declared-vs-actual
       # and wiring checks are not tests and run in full either way. The checkout
       # above uses fetch-depth 0, so origin/<base> and the push's `before` resolve.
@@ -123,8 +123,11 @@ jobs:
           CI: true
           CAPABILITY_GATE_SKIP: "1"
 
-      - name: Run prd-os tests
-        run: pytest plugins/prd-os/tests/ -q
+      # NO UNSCOPED prd-os STEP (RULE-2026-10-01-A). One stood here and ran all of
+      # plugins/prd-os/tests on every PR and push, whatever the change touched.
+      # plugins/prd-os is a declared suite in .verify-suites, so verify.yml grades
+      # it scoped to what a change owns, and the nightly gates.yml runs it in full.
+      # test_ci_workflows.py fails if a whole-directory pytest comes back here.
 
       # The skeleton's own harnesses had NO runner (adversarial review finding-5):
       # test_auto_commit, test_token_guard and test_fable_escalation all sat unrun,

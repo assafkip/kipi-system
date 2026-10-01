@@ -745,7 +745,8 @@ def select_for_diff(root, base, notes):
         return None
     notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
                  f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
-                 "the full suite runs only in the nightly gates workflow")
+                 "the full suite runs only in the nightly gates workflow, "
+                 "when that workflow is enabled")
     return set(selected)
 
 

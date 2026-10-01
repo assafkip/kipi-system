@@ -28,7 +28,7 @@ ESCALATORS force the FULL SUITE (and tier L) whatever the line count says. Line
 count alone never does: a large diff names more files, so it selects more tests,
 and it becomes a full run through the last escalator when it truly is suite-wide.
   * the machinery that decides what runs (this file, the gate, the manifest
-    assembler, CI workflows, lefthook, verify.sh, any conftest.py)
+    assembler, verify_select.py, any conftest.py)
   * a file CI installs from or every test loads (requirements*.txt,
     pyproject.toml, pytest.ini, tox.ini, setup.cfg, any conftest.py)
   * a capability declaration other than an expected_tests entry
@@ -37,7 +37,15 @@ and it becomes a full run through the last escalator when it truly is suite-wide
     counted WITHOUT the always-run scanners: a fixed floor is not evidence that
     this diff is suite-wide)
 
-NOT AN ESCALATOR: a changed file no declared test names. "The full suite" means
+NOT AN ESCALATOR: a CI workflow, lefthook.yml or verify.sh (RULE-2026-10-01-A,
+2026-10-01). They run the tests that name them, like any other file. A workflow
+change used to buy a full run, and that was the door the full suite kept coming
+back through: every CI-only PR paid ~20 minutes, which the 2026-09-30 freeze
+forbids. What they decide is pinned by their own tests (test_ci_workflows.py,
+test_validate_workflow.py and the verify harnesses), and a selection those miss
+is the nightly's to catch.
+
+NOT AN ESCALATOR EITHER: a changed file no declared test names. "The full suite" means
 the declared tests, so when none of them can see the file, running all of them
 exercises it exactly as much as running none. Escalating there buys no coverage;
 measured on the last 80 commits of main it bought 17 minutes. The missing owner
@@ -87,10 +95,13 @@ FULL_RUN_PATHS = (
     "q-system/.q-system/scripts/change-size.py",
     "q-system/.q-system/scripts/capability-gate.py",
     "q-system/.q-system/scripts/capability_manifest.py",
-    "q-system/.q-system/verify.sh",
-    "lefthook.yml",
+    # The verify door's selector. A change here can make every scoped verify
+    # run wrong, so it does not get to grade itself narrowly either.
+    "q-system/.q-system/verify_select.py",
 )
-FULL_RUN_PREFIXES = (".github/workflows/",)
+# EMPTY ON PURPOSE (RULE-2026-10-01-A). `.github/workflows/` was here, and with
+# verify.sh and lefthook.yml it turned every CI edit into a full-suite run.
+FULL_RUN_PREFIXES: tuple[str, ...] = ()
 # Files that configure or are installed into EVERY test run. pytest.ini was the
 # one this list missed (codex, PR #377 round 5): it sets the options for every
 # pytest invocation in the repo, so a PR editing it ran 72 of 236 and went green.

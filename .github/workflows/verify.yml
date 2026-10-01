@@ -54,8 +54,37 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest
-      - name: verify.sh --full
-        run: bash q-system/.q-system/verify.sh --full
+      # SCOPED, NOT --full (RULE-2026-10-01-A, founder bar 2026-10-01: "no
+      # 6000-test runs on small changes"). This step ran `verify.sh --full` on
+      # every PR and every push to main: 12.5 min on run 36820282302, the same
+      # suite validate.yml had just graded. --changed runs the suites a change
+      # touches and, inside each, the tests verify_select.py says own it; a path
+      # no test names takes the suite's declared fallback or that whole suite,
+      # never nothing. The full suite runs only in the nightly gates.yml, and
+      # test_ci_workflows.py fails if any other workflow can run it.
+      #
+      # THE BASE, EXPLICIT. Without --base, --changed diffs against the merge-base
+      # with origin's default branch. On a push to main HEAD IS that branch, so the
+      # diff is empty and the step would pass having graded nothing. A push diffs
+      # against `before` (main as it was), or HEAD^ when that commit is not in
+      # the clone (a first push, a force-push); same rule as validate.yml.
+      - name: verify.sh --changed (the suites and tests this change owns)
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            base="origin/$BASE_REF"
+          else
+            base="$PUSH_BEFORE"
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "push base '${base}' is not a commit in this clone; diffing against HEAD^"
+              base="HEAD^"
+            fi
+          fi
+          echo "verify diff base: ${base}"
+          bash q-system/.q-system/verify.sh --changed --base "$base"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
       # THE HARNESS THAT GUARDS THE GATE NEEDS A CALLER TOO.
       #
       # codex, PR #259 round 5, minor: 15 adversarial cases asserting verify.sh's
