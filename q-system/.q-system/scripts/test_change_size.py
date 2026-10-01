@@ -58,7 +58,7 @@ def case_escalator_beats_line_count(cs):
     # full suite, because the line is in the machinery that decides what runs.
     for path in ("q-system/.q-system/scripts/capability-gate.py",
                  "q-system/.q-system/scripts/change-size.py",
-                 ".github/workflows/validate.yml", "lefthook.yml",
+                 "q-system/.q-system/verify_select.py",
                  "plugins/kipi-core/voiceloop/requirements-authorship.txt",
                  "plugins/prd-os/tests/conftest.py", "pyproject.toml",
                  "pytest.ini", "tox.ini", "setup.cfg",
@@ -69,6 +69,24 @@ def case_escalator_beats_line_count(cs):
 
 def test_an_escalator_is_never_reported_small(cs):
     case_escalator_beats_line_count(cs)
+
+
+T_CI = "q-system/.q-system/tests/test_ci_owner.py"
+
+
+def case_ci_files_run_their_own_tests(cs):
+    # RULE-2026-10-01-A: a workflow, lefthook.yml or verify.sh is NOT machinery
+    # that buys a full run. It runs the tests that name it, and only those.
+    declared = dict(DECLARED, **{T_CI: "validate.yml verify.yml lefthook.yml verify.sh"})
+    for path in (".github/workflows/validate.yml", ".github/workflows/verify.yml",
+                 "lefthook.yml", "q-system/.q-system/verify.sh"):
+        v = cs.plan([(path, 1)], declared, CODE)
+        assert not v["full_suite"], (path, v["reasons"])
+        assert v["selected_tests"] == [T_CI], (path, v["selected_tests"])
+
+
+def test_a_ci_file_runs_only_the_tests_that_name_it(cs):
+    case_ci_files_run_their_own_tests(cs)
 
 
 def test_a_newly_declared_test_runs_on_the_pr_that_declares_it(cs):

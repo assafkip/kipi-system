@@ -67,9 +67,6 @@
       "de19a82e0453": "instance-local direct call, unmetered; inventoried 2026-09-22",
       "fdbfca004275": "instance-local direct call, unmetered; inventoried 2026-09-22"
     },
-    "0e7f29b71bdc": {
-      "4d73e074592b": "instance-local direct call, unmetered; inventoried 2026-09-22"
-    },
     "f27c666d069e": {
       "61c7ab811ae6": "headless agent executor, -p first with the binary prepended; unmetered (PR #413 round 1 major)",
       "953a34d4044a": "instance-local direct call, unmetered; inventoried 2026-09-22",
@@ -77,6 +74,11 @@
     },
     "3bc51062973c": {
       "fb50e36b6001": "instance-local direct call, unmetered; inventoried 2026-09-22"
+    }
+  },
+  "api_by_design": {
+    "d180b942f629": {
+      "3787970899a8": "founder chose B on 2026-09-29 (ASK-2176): the investigations tool keeps its direct Anthropic API path (RULE-110, shareable), which runs only when a key is set; its claude -p path still strips the key. Waives ONLY the names-the-key check, never a bare call."
     }
   }
 }

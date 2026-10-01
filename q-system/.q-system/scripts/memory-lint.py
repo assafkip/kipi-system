@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from memory_conventions import (  # noqa: E402
     LINK_FIELDS,
     as_of_date,
+    claude_project_memory_dir,
     effective_status,
     parse_frontmatter,
 )
@@ -70,13 +71,14 @@ MD_LINK_RE = re.compile(r"\]\(([^)\s]+\.md)\)")
 def default_memory_dir() -> Path:
     """The current project's auto-memory dir.
 
-    Derived exactly as memory-freshness-check.py derives it (project path with
-    every '/' turned into '-'). Kept identical on purpose: two derivations of one
-    path is how a sweep and a hook end up reading different corpora and both
-    reporting clean.
+    ONE OWNER, and it is `memory_conventions.claude_project_memory_dir`, shared
+    with memory-freshness-check.py and memory-confidence-surface.py. This
+    function used to hold its own copy of the derivation, "kept identical on
+    purpose" -- and all three copies were identically WRONG, which is the way a
+    duplicated constant actually fails (ASK-1903). See the scar in
+    memory_conventions.py for the measurement.
     """
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    return Path.home() / ".claude" / "projects" / project_dir.replace("/", "-") / "memory"
+    return claude_project_memory_dir()
 
 
 def months_ago(today: datetime.date, months: int) -> datetime.date:

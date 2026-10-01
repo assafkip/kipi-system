@@ -11,7 +11,7 @@
 		     ProgramArguments below runs kipi-dispatch-pinned.sh, and the wrapper
 		     SETS KIPI_REPO to its own dedicated checkout before exec'ing
 		     dispatch. Declaring it here would override that with the shared
-		     checkout humans park on -- which is the 22.5h outage the wrapper
+		     checkout humans park on; which is the 22.5h outage the wrapper
 		     exists to end, reintroduced through the config instead of the code.
 		     The wrapper reads KIPI_REPO_MAIN (defaulting to ~/projects/kipi-system)
 		     for the fetch and the object store; that is a different variable on
@@ -40,7 +40,7 @@
 		     argument says nothing about them.
 
 		     IT IS A PREFERENCE, NOT A GUARANTEE. When only one repo is
-		     dispatchable, dispatch takes it anyway rather than idling -- an
+		     dispatchable, dispatch takes it anyway rather than idling; an
 		     absolute rule re-created the ready-queue starvation that
 		     test-ci-redrive 14g exists to prevent. So same-repo overlap is
 		     still POSSIBLE at this cap, and this number is what bounds it.
@@ -86,12 +86,26 @@
 		     that as "ran, opened no PR" and retries. Measured that day, three
 		     issues (ASK-734, ASK-747, ASK-833) each reached attempt 4 of a
 		     3-attempt cap with empty branches, and the live plist had drifted
-		     to 40 while this committed copy still read 12 -- so the ceiling
+		     to 40 while this committed copy still read 12; so the ceiling
 		     the founder had set was not the ceiling that ran. 10 is the
 		     founder's number; the drift is the part that made the spend
-		     unbounded, and it is fixed by writing BOTH copies. -->
+		     unbounded, and it is fixed by writing BOTH copies.
+
+		     LOWERED 10 -> 3, founder-approved 2026-09-28 (automation audit,
+		     q-system/output/automation-audit-2026-09-28.md). Idle days were
+		     spending plan usage: 6 issues Sat 26 Sep, 8 Sun 27 Sep, all Opus,
+		     and about half the sana/* branches never land on main. 3 is the
+		     plan's number until the worker moves to cloud sessions. Install
+		     the live copy too (see the unload/load lines above). -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
-		<string>10</string>
+		<string>3</string>
+
+		<!-- REVIEWER ON SONNET, founder-approved 2026-09-28 (same audit).
+		     pr-review-agent.sh defaults to claude-opus-5 (its line 144); a
+		     review is content review, which model-allocation.md gives to the
+		     Sonnet tier. Subscription only: every call is claude -p. -->
+		<key>KIPI_REVIEW_CLAUDE_MODEL</key>
+		<string>claude-sonnet-5</string>
 
 		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
 		     for safety rather than tidiness: a midnight reset hands a full

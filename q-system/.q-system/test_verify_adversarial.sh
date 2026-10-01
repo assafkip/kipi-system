@@ -78,7 +78,15 @@ rm -rf "$R"
 E="$(mktemp -d)"; git -C "$E" init -q .
 git -C "$E" config user.email t@t; git -C "$E" config user.name t
 mkdir -p "$E/q-system/.q-system"; cp "$VERIFY_SRC" "$E/q-system/.q-system/verify.sh"
-printf 'hello\n' > "$E/readme.txt"; git -C "$E" add -A
+# verify.sh IS TRACKED NOWHERE HERE, and that is the point of the fixture
+# (ASK-1900). `git add -A` tracked the copy of verify.sh itself, which is a .sh,
+# so SHFILES was non-empty and the shell-syntax check DID run -- this case had no
+# empty repo to assert about. It still went red, because a repo with no tracked
+# .json used to kill the script at the JSONFILES `grep -v` under pipefail: exit 1
+# with no message. Green for a reason unrelated to its own claim, and it turned
+# red the moment that silent death was fixed. Staging only readme.txt leaves
+# genuinely zero checks to discover, so the case now measures what it says.
+printf 'hello\n' > "$E/readme.txt"; git -C "$E" add readme.txt
 git -C "$E" commit -qm init
 run "$E" --full; check "empty repo FAILS (cannot-run)" 1 $?; rm -rf "$E"
 

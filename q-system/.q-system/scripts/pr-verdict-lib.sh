@@ -420,8 +420,11 @@ pr_head_sha() {
 # STALENESS, STATED. The record is rewritten every time the worker reaches the
 # PR. A run that never got there (another session's claim, a worktree that could
 # not be made) leaves the previous run's word standing. That is safe in the
-# direction that matters: "armed" only goes false if a human turns auto-merge
-# off, and converge re-arms anything recorded "unarmed"/"unknown" or absent
+# direction that matters: "armed" goes false only when a human turns auto-merge
+# off or when automerge_disarm does it at gate 50 (ASK-2036) -- the disarmer is
+# the SECOND writer of this record and writes it at the same call site, so the
+# next reader never sees a stale "armed" over a PR it just
+# unqueued. converge re-arms anything recorded "unarmed"/"unknown" or absent
 # (ASK-310), which is a no-op on a PR that is in fact armed. Absent means absent -- the
 # reader gets an empty string and must claim nothing.
 record_automerge() {
@@ -488,6 +491,71 @@ automerge_arm() {
   return 0
 }
 
+# automerge_disarm <pr> <dir> [errlog]
+# THE INVERSE OF automerge_arm, and it exists because arming is UNCONDITIONAL
+# (PR #446 review, finding 1 -- major). linear-worker.sh arms at step 5 forty-two
+# lines BEFORE it runs the review, on purpose: `--auto` is not "merge now", so
+# arming first and letting GitHub hold the PR until every required context is
+# green is the whole design. That design has one hole. The required context
+# `kipi/reviewer-approved` is posted by the reviewer ITSELF, including by the
+# degraded Opus fallback during a codex outage -- so a gate that decides after
+# the review "this approval is not independent" (rework_gate exit 50, ASK-2036)
+# was deciding about a PR GitHub had already been told to land. Not arming at the
+# gate is not enough when something armed it before the gate could see the
+# verdict. The arm has to come back off.
+#
+# THE SAFE DIRECTION IS TO WRITE, NOT TO SKIP. gh is only skipped when the probe
+# says EXPLICITLY false: disabling auto-merge on a PR that does not have it is a
+# harmless no-op, while trusting an unreadable probe as "nothing to do" leaves an
+# unreviewed PR queued to land. Same three-state discipline as the arm, opposite
+# bias, and for the same reason the arm's header gives: an empty probe answer is
+# "could not tell", never a reading.
+#
+# Runs in the CALLER's shell, never inside $( ):
+#   AUTOMERGE_DISARM_STATE  disarmed | armed | unknown   ("" when <pr> is empty)
+#   AUTOMERGE_DISARM_WAS    1 when the probe found it ARMED before this call
+#   AUTOMERGE_DISARM_ERR    gh's own refusal, one line, "" when it disarmed
+# STATE="armed" after this call is the state a caller must PAGE on: gh refused and
+# GitHub still owns the merge on code no independent reviewer read.
+automerge_disarm() {
+  local pr="${1:-}" dir="${2:-.}" errlog="${3:-/dev/null}" probe err
+  AUTOMERGE_DISARM_STATE="unknown"; AUTOMERGE_DISARM_WAS=0; AUTOMERGE_DISARM_ERR=""
+  # `gh pr merge --disable-auto ''` acts on whatever branch the cwd is on, so an
+  # empty number is not "disarm nothing", it is "disarm something else".
+  [ -n "$pr" ] || { AUTOMERGE_DISARM_STATE=""; return 0; }
+  if [ ! -d "$dir" ]; then
+    AUTOMERGE_DISARM_ERR="disarm dir '$dir' does not exist, so gh never ran"
+    return 0
+  fi
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  # ONLY an explicit false short-circuits. "unknown" and "" fall through to the
+  # write, per the bias stated in the header.
+  if [ "$probe" = "false" ]; then
+    AUTOMERGE_DISARM_STATE="disarmed"; return 0
+  fi
+  [ "$probe" = "true" ] && AUTOMERGE_DISARM_WAS=1
+  if err="$( cd "$dir" && gh pr merge --disable-auto "$pr" 2>&1 >/dev/null )"; then
+    AUTOMERGE_DISARM_STATE="disarmed"; return 0
+  fi
+  AUTOMERGE_DISARM_ERR="$(printf '%s' "$err" | tr '\n' ' ' | sed 's/  */ /g; s/ $//' | cut -c1-300)"
+  # ASK AGAIN before reporting it still armed: "auto-merge is not enabled" is one
+  # of the reasons `gh pr merge --disable-auto` refuses, and that refusal means
+  # the job is already done.
+  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )"; then
+    probe="unknown"
+  fi
+  case "$probe" in
+    false)      AUTOMERGE_DISARM_STATE="disarmed"; AUTOMERGE_DISARM_ERR="" ;;
+    true)       AUTOMERGE_DISARM_STATE="armed" ;;
+    *)          AUTOMERGE_DISARM_STATE="unknown" ;;
+  esac
+  return 0
+}
+
 # _sha_norm <sha>
 # Whitespace-stripped, lower-cased sha for comparison. Hex case and a stray
 # newline are not drift. A PREFIX is deliberately NOT treated as a match: both
@@ -496,7 +564,7 @@ automerge_arm() {
 # commit" would be a guess in the never-merge direction's favour.
 _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
 
-# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha]
+# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha] [degraded]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
@@ -510,6 +578,17 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 #                     separately; see the caller-owned cap note below.)
 #   40 = stale       (approving, but at a sha that is no longer the PR's head --
 #                     re-review at the new sha. NEVER merge, never auto-approve.)
+#   50 = degraded    (approving, at the right sha, but the ONLY review on record
+#                     was written by the Opus fallback during a codex outage. Not
+#                     an independent second opinion, so it does not satisfy the
+#                     review precondition on its own. NEVER merge; re-review once
+#                     codex answers. See the degraded section below.
+#                     DORMANT WHILE THE FLEET IS CLAUDE-PRIMARY: the writer sets
+#                     the flag only on the codex-outage branch, so nothing on the
+#                     scheduled path produces a 50 today. Correct and waiting,
+#                     not passing -- the scope note on degraded_from_record says
+#                     what it takes to arm it and why that is not this gate's
+#                     call.)
 #
 # WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
 # ----------------------------------------------------------
@@ -569,8 +648,46 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # linear-worker.sh -- neither touched by this issue) can never see it, and a
 # caller that does not know 40 falls out of its if-chain into the rework path,
 # which is the safe direction: not terminal, never a merge.
+#
+# WHY DEGRADED IS PART OF THE GATE (ASK-2036, sp-e9284708)
+# --------------------------------------------------------
+# During a codex outage pr-review-agent.sh runs the Opus fallback so
+# `kipi/reviewer-approved` -- a REQUIRED context -- does not wedge every PR in
+# the repo. That status posts SUCCESS. The record it writes says
+# `degraded: true` and `reviewed_by: claude-opus-5`, and the human-facing
+# surfaces (the status description, the Linear comment) say DEGRADED out loud.
+# THIS function said nothing, because nothing read the flag: for three weeks the
+# only consumer of `degraded` was a python heredoc inside
+# test-review-degraded-provenance.sh. So a fallback APPROVE reached exit 10
+# exactly like an independent one, the worker ARMED auto-merge on it, and a PR
+# reviewed only by the same model family that wrote the code could land. The
+# whole reason this loop pays for a second engine is that the checker is not
+# Claude; a degraded approval is that property quietly switched off.
+#
+# 50 IS NOT 20, and the distinction is what a caller says to the operator.
+# 20 means nobody reviewed it and there is no spec. 50 means a review happened,
+# found nothing, and was written by the wrong reader -- the code may well be
+# fine, it has simply never been independently read. Both hold the PR; only one
+# of them is fixed by re-running the review once codex answers.
+#
+# DRIFT OUTRANKS DEGRADED, for the same reason drift outranks the merge state: a
+# moved head means nobody read the code at ALL, so the re-review has to happen
+# first and the record it writes then decides independence. DEGRADED OUTRANKS
+# THE CONFLICT, because rebasing code nobody independently read does not make it
+# read, and a rebase round would spend the conflict budget on the wrong problem.
+#
+# ABSENT IS NOT INDEPENDENT AND IT IS NOT DEGRADED. The 5th argument is empty for
+# every record written before ASK-445, for a corrupt record, and for every caller
+# that has not been taught to pass it -- all three keep today's behaviour exactly.
+# That is deliberate and it is the expensive half to get wrong: reading absent as
+# degraded would stop every open PR on the board at once the day this shipped.
+#
+# 50 IS NOT 10, 30 OR 40. A caller that does not know 50 falls out of its
+# if-chain into the rework path, which is the same safe direction 40 relies on:
+# not terminal, never a merge.
 rework_gate() {
   local verdict="${1:-}" merge_state="${2:-}" reviewed_sha="${3:-}" current_sha="${4:-}"
+  local degraded="${5:-}"
   case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
     "APPROVE"|"APPROVE WITH NITS")
@@ -585,6 +702,11 @@ rework_gate() {
           return 40
         fi
       fi
+      # THE ONE NEW READ (ASK-2036). One line on purpose: the mutation in
+      # test-degraded-approval-gate.sh deletes exactly this line and requires the
+      # degraded case to fall back to 10, which is only a real kill if removing
+      # it leaves the rest of the function intact.
+      case "$degraded" in 1) return 50 ;; esac
       case "$merge_state" in
         "DIRTY"|"BEHIND")                 return 30 ;;
         *)                                return 10 ;;
@@ -754,5 +876,61 @@ head_sha_from_record() {
   [ -s "$f" ] || return 0
   python3 -c 'import json,sys
 try: print(json.load(open(sys.argv[1])).get("head_sha","") or "")
+except Exception: pass' "$f" 2>/dev/null || true
+}
+
+# degraded_from_record <verdict-json>
+# THREE-VALUED, and the third value is the whole point:
+#   1   the record says degraded -- codex was down and the Opus fallback wrote
+#       this review, so it is not a second lab's opinion
+#   0   the record says NOT degraded -- the primary slot was NOT filled by the
+#       codex-outage Opus fallback. THAT IS ALL IT SAYS. See the scope note.
+#   ""  the record has no `degraded` key, is corrupt, or does not exist
+#
+# WHAT `0` DOES NOT MEAN (PR #446 round 3, finding 1). This line used to read
+# "a real independent review", which is wider than anything the writer records.
+# `DEGRADED=1` is assigned at exactly ONE place in pr-review-agent.sh, inside
+# the codex-outage branch, and both engine defaults there have read `claude`
+# since the founder directive of 2026-09-06. pr-review-agent.sh:38-70 records
+# that posture in full, including the cost it accepts out loud: "Sana (the PR
+# author) is Claude, so a Claude reviewer shares her lab and model family and
+# re-derives her blind spots". So on the path the worker actually runs, every
+# record carries `degraded: false` -- and under the old wording that sentence
+# certified Claude reviewing Claude as the independent second opinion.
+#
+# The consequence for gate 50, stated rather than left to be discovered: it is
+# CORRECT AND DORMANT while the fleet is claude-primary. It fires on the codex
+# outage path, which is reachable today only via an `--engine codex` run.
+# Arming it on the scheduled path is `KIPI_REVIEW_ENGINE=codex
+# KIPI_REVIEW_PRIMARY_ENGINE=codex` (both together, or the two defaults flipped
+# back) -- the founder's 2026-09-06 call, not this reader's to make. The other
+# route, marking a claude-primary review non-independent in the writer, is what
+# ASK-2036's DoR excludes in its own words: "Not changing what the writer
+# records." Tracked separately; case 9 of test-degraded-approval-gate.sh pins
+# this contract so the overclaim cannot come back quietly.
+#
+# WHY IT EXISTS (ASK-2036, sp-e9284708). `degraded` shipped in ASK-445 and for
+# three weeks NOTHING in production read it. The only consumer was a python
+# heredoc defined inside test-review-degraded-provenance.sh, so the fail-safe
+# that suite proves lived entirely inside that suite. Meanwhile the fallback's
+# APPROVE reached the same waiting-on-merge branch a real codex APPROVE reaches,
+# and the worker armed auto-merge on it -- the independence the codex engine
+# exists to buy was gone and no gate could tell. A field with a schema, a writer
+# and no reader is documentation, not a control.
+#
+# EMPTY IS NOT FALSE, and forcing it to be would be the expensive mistake. Every
+# record written before ASK-445 lacks the key. Reading absent as `true` would
+# re-review every historical record on every open PR at once; reading it as
+# `false` would let a legacy record claim an independence nobody verified. Both
+# are guesses, and "I cannot tell" is the honest answer -- rework_gate treats it
+# exactly as it treats an absent head_sha: fall back to today's behaviour and
+# change nothing.
+degraded_from_record() {
+  local f="$1"
+  [ -s "$f" ] || return 0
+  python3 -c 'import json,sys
+try:
+    r = json.load(open(sys.argv[1]))
+    if "degraded" in r: print("1" if r["degraded"] else "0")
 except Exception: pass' "$f" 2>/dev/null || true
 }
