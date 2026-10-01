@@ -1,12 +1,14 @@
 ---
 id: prd-receipts-fragments-2026-10-01
 title: Receipts Fragments
-status: idea
+status: in-review
 created_at: 2026-10-01T20:33:05Z
-updated_at: 2026-10-01T20:33:05Z
+updated_at: 2026-10-01T20:38:48Z
 owner: sana
 reviewers: []
 findings_path: .prd-os/findings/prd-receipts-fragments-2026-10-01-findings.jsonl
+codex_reviewed_at: 2026-10-01T20:38:43Z
+reviewed_by: claude-review
 ---
 
 # Receipts Fragments
