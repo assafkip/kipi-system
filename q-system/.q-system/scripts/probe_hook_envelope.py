@@ -63,8 +63,18 @@ def build(root: pathlib.Path, shape: str, marker: str) -> None:
     }, indent=2))
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def ask(root: pathlib.Path) -> str:
-    env = dict(os.environ)
+    env = _subscription_env()
     env["CLAUDE_PROJECT_DIR"] = str(root)
     try:
         r = subprocess.run(["claude", "-p", PROMPT], cwd=str(root), env=env,

@@ -13,7 +13,7 @@
     {
       "id": "captoken-pr",
       "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
-      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Still OPEN, still NO maintainer reply. One comment 2026-08-28 from benrrr56-wq (authorAssociation NONE, a third party promoting their own checkpoint layer) -- not an approval, not an invite, do NOT treat it as one. When a MAINTAINER approves/invites the PR: re-clone if /tmp wiped, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval, gh pr create with q-system/output/captoken-pr-body.md. Then close this loop.",
+      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Checked 2026-09-19 (ASK-536): still OPEN, ZERO comments, NO maintainer reply (the 2026-08-28 third-party comment from benrrr56-wq is deleted). Patch still applies on upstream main b3c3e15 and tests/test-capability-approval.sh gives 12 passed, 0 failed. Check: gh issue view 14 --repo dwarvesf/claude-guardrails --json state,comments. Only a comment from a MAINTAINER that approves or invites the PR counts. Then: gh repo clone dwarvesf/claude-guardrails, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval to a fork, gh pr create with --body-file q-system/output/captoken-pr-body.md (title in captoken-pr-drafts-2026-06-16.md STEP 2). Then close this loop.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-06-20",

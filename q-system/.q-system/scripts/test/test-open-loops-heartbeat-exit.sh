@@ -14,6 +14,10 @@ set -uo pipefail
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUT="$SCRIPTS/open-loops-heartbeat.sh"
+# The heartbeat sources the worker's classifier (PR #421 round 16), so every
+# fixture tree needs it beside the script. Resolved once, here: the fixture
+# builders cd elsewhere, and a path relative to BASH_SOURCE breaks there.
+ENV_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env-failure-lib.sh"
 AUDIT="$SCRIPTS/run-step-audit.py"
 PASS=0
 FAIL=0
@@ -29,6 +33,7 @@ build_fixture() {
   mkdir -p "$inst/q-system/.q-system/scripts" "$tmp/bin"
 
   cp "$SUT" "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$ENV_LIB" "$skel/q-system/.q-system/scripts/env-failure-lib.sh"
   cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
   # Stub the ONE notification channel so a test can never reach the founder.
   printf '#!/bin/bash\nexit 0\n' > "$skel/q-system/.q-system/scripts/slack-notify.sh"
@@ -95,6 +100,7 @@ build_env_fixture() {
   skel="$tmp/skel"
   mkdir -p "$skel/q-system/output" "$skel/q-system/.q-system/scripts" "$tmp/bin"
   cp "$SUT"   "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$ENV_LIB" "$skel/q-system/.q-system/scripts/env-failure-lib.sh"
   cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
 
   # The notify stub COUNTS instead of exiting silently: the whole assertion is
@@ -116,10 +122,14 @@ build_env_fixture() {
 
   # The exact string the live log carried, once per failing instance. Records
   # every invocation so the test can prove the later instances were never tried.
+  # A variable, not a ${:-default}: bash matches quotes inside ${...} even within
+  # double quotes, so the apostrophe in "You've" there is an unterminated string.
+  local limit_default="You've hit your weekly limit · resets Aug 18 at 2pm (America/Los_Angeles)"
+  printf '%s\n' "${HB_LIMIT_LINE:-$limit_default}" > "$tmp/limit-line"
   cat > "$tmp/bin/claude" <<EOF
 #!/bin/bash
 echo "\$PWD" >> "$tmp/claude-calls"
-echo "You've hit your weekly limit · resets Aug 18 at 2pm (America/Los_Angeles)"
+cat "$tmp/limit-line"
 exit 1
 EOF
   chmod +x "$tmp/bin/claude"
@@ -148,6 +158,24 @@ if [ "${N_CALLS:-0}" = "1" ]; then
   PASS=$((PASS + 1))
 else
   echo "FAIL  sweep kept waking agents after the environment refused: $N_CALLS invocation(s)"
+  FAIL=$((FAIL + 1))
+fi
+
+# A REAL 529 IS AN OUTAGE HERE TOO (PR #421 round 16, minor). This file kept its
+# own copy of the classifier, without the 529 marker the worker's lib learned
+# from the 2026-08-18 log, so a real overload filed one ticket per instance and
+# kept waking agents. The line is the captured one (limit-charges-2026-09-23.json).
+R529="API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com."
+TMP529="$(HB_LIMIT_LINE="$R529" build_env_fixture)"
+PATH="$TMP529/bin:$PATH" KIPI_REPO="$TMP529/skel" \
+  bash "$TMP529/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+N529_NOTIFY="$(wc -l < "$TMP529/notifies" 2>/dev/null | tr -d ' ')"
+N529_CALLS="$(wc -l < "$TMP529/claude-calls" 2>/dev/null | tr -d ' ')"
+if [ "${N529_NOTIFY:-0}" = "1" ] && [ "${N529_CALLS:-0}" = "1" ]; then
+  echo "PASS  a real 529 halts the sweep with ONE alert (notifies=$N529_NOTIFY calls=$N529_CALLS)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  a real 529 did not halt as one outage: notifies=${N529_NOTIFY:-0} calls=${N529_CALLS:-0}, want 1 and 1"
   FAIL=$((FAIL + 1))
 fi
 
@@ -310,6 +338,7 @@ leak_case() {  # leak_case <script-path> <case-name> <expect: clean|leaks>
   mkdir -p "$skel/q-system/output" "$skel/q-system/.q-system/scripts" \
            "$inst/q-system/.q-system/scripts" "$tmp/bin"
   cp "$sut"   "$skel/q-system/.q-system/scripts/open-loops-heartbeat.sh"
+  cp "$ENV_LIB" "$skel/q-system/.q-system/scripts/env-failure-lib.sh"
   cp "$AUDIT" "$skel/q-system/.q-system/scripts/run-step-audit.py"
   printf '#!/bin/bash\nexit 0\n' > "$skel/q-system/.q-system/scripts/slack-notify.sh"
   printf 'print("- [ ] fixture loop [needs you] -> do the thing")\n' \

@@ -149,6 +149,10 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 # THE ONE SLUG DERIVATION (ASK-738).
 . "$SCRIPT_DIR/repo-slug-lib.sh"
+# The outage classifier the worker uses (PR #421 round 16): a limit refusal here
+# is the machine's, not an unusable review. See the claude dispatch below.
+. "$SCRIPT_DIR/env-failure-lib.sh"
+. "$SCRIPT_DIR/reviewer-token-lib.sh"
 
 
 
@@ -358,6 +362,18 @@ if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "REFUSING: PR #$PR's head moved between two reads (${HEAD_SHA:0:8} then ${HEAD_SHA_CONFIRM:0:8})." >&2
   echo "  Something is pushing to this branch right now. Reviewing either sha risks a green status on code the reviewer did not read." >&2
   echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
+# THE CALLER'S HEAD, WHEN IT HAS ONE (ASK-318, PR #437 round 2). The hosted
+# reviewer verifies that ITS event's head sha is in the checkout, but the head
+# this script reviews and posts on is resolved above through gh. A push landing
+# between the event and this read gives a head the checkout does not hold: the
+# agent would read the base tree and post on a sha it never opened. So a caller
+# that knows which head it verified pins it, and any other head is refused. The
+# newer push triggers its own run.
+if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPECT_HEAD" ]; then
+  echo "REFUSING: PR #$PR's head is ${HEAD_SHA:0:12}, but the caller verified ${KIPI_REVIEW_EXPECT_HEAD:0:12} (KIPI_REVIEW_EXPECT_HEAD)." >&2
+  echo "  The checkout holds the caller's head, not this one. No review was dispatched and NO status was posted." >&2
   exit 1
 fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
@@ -884,8 +900,15 @@ END FINDINGS"
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
 run_engine() {   # run_engine <claude|codex> <destination-file>
   case "$1" in
-    claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+    # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
+    # its verdict and the FINDINGS block this script parses. A Stop hook that exits 2
+    # forces one more turn, and that turn's text replaces the verdict. Measured on a
+    # week of real transcripts: reviewer verdicts say "does not exist" routinely
+    # ("cites a backstop that does not exist"). The lint still logs them advisory.
+    # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+    # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+    claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
@@ -992,12 +1015,24 @@ if [ "$ENGINE" != "codex" ]; then
     # a review nobody read is the worst outcome available in this script.
     if review_is_usable "$REVIEW"; then
       echo "$(TS) review written: $REVIEW"
+    elif is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      # THE RUNNER REFUSED, NOT THE REVIEW (PR #421 round 16, minor). A limit
+      # line exits 0 and has no FINDINGS block, so it read as an unusable review
+      # and converge paged "review produced no verdict", blaming the review for a
+      # machine outage. Exit 9, the machine's code: no status is posted (absent
+      # is not approved), and the worker marks env_halt for converge.
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
     else
       REVIEW_UNUSABLE=1
       echo "$(TS) the $ENGINE reviewer answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
     fi
   else
     rc=$?
+    if is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
+    fi
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
     exit "$rc"
   fi
@@ -1188,24 +1223,54 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "ts": ts}, open(out, "w"), indent=2)
 PY
 
-# Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
-# loop stops reworking -- so each minor must land in the spillover ledger or it
-# evaporates (no-orphan-findings.md). On REQUEST CHANGES the minors ride along
-# in the review, which is the spec for the next rework pass; capturing them
-# there too would double-file them.
+# Severity floor, minors half: APPROVE WITH NITS is a TERMINAL state -- the loop
+# stops reworking -- so a minor found here gets no second pass. On REQUEST CHANGES
+# the minors ride along in the review, which is the spec for the next rework pass.
+#
+# THE LEDGER IS NOT THEIR ROUTE, AND THIS BLOCK USED TO PRETEND IT WAS (ASK-1921,
+# claude review of PR #392, finding 1). It called `prd_runner.py spillover add`
+# with no --severity. That call defaults to `minor`, and `minor` sits in
+# SPILLOVER_REFUSED_SEVERITIES: "a minor is fixed in this change or rejected with a
+# reason; it is never queued" (founder 2026-09-12). So it returned 2 on every run,
+# the captured count was 0 BY CONSTRUCTION rather than by outage, and the alarm
+# built on that zero fired on every approved PR carrying a nit. Measured: the exact
+# argument list above, against the real runner, rc=2 with that refusal on stderr.
+#
+# Two consequences, and both are removals.
+#
+# 1. THE CAPTURE CALL IS GONE, not re-severitied. Filing a review minor at `medium`
+#    to clear the door launders the severity the reviewer chose. no-orphan-findings.md
+#    already names the only two legal ends for a NEW minor -- fixed in this change,
+#    or rejected with a reason -- and the ledger is neither of them.
+# 2. THE PAGE IS GONE WITH IT. An alert on a 100-percent policy refusal is the
+#    cry-wolf shape: nothing is down, there is nothing to act on, and it fires on
+#    every approved PR with a nit. founder-notifications.md asks for a state change,
+#    once, never per-event noise. The real loss on this path already has its own page
+#    further down: a review that never REACHED the issue, where the findings are
+#    genuinely unreadable by anyone.
+#
+# WHAT IS LEFT IS THE TRUE STATEMENT. Each minor is NAMED -- claim and location --
+# so the run log carries the findings and not just a tally. They also reach two
+# durable places without this block's help: the review comment on the PR, and the
+# FINDINGS block the reviewer posts onto the Linear issue.
+#
+# WHAT THIS STILL DOES NOT FIX: nobody is ASSIGNED the fix-or-reject decision that
+# no-orphan-findings.md requires. Routing that is a change with real Linear inflow
+# and its own blast radius, so it is captured rather than bundled here: sp-74e671a4,
+# filed as ASK-1940.
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
-  CAPTURED=0
   MINOR_COUNT=0
   while IFS='|' read -r _sev claim loc; do
     [ -n "$claim" ] || continue
     MINOR_COUNT=$((MINOR_COUNT+1))
-    python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
-      --source "$ISSUE" --desc "PR #$PR ${MINOR_TAG}review minor: $claim ($loc)" >/dev/null 2>&1 \
-      && CAPTURED=$((CAPTURED+1))
+    echo "  minor $MINOR_COUNT: $claim ($loc)" >&2
   done <<EOF
 $(extract_minor_findings "$REVIEW")
 EOF
-  echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
+  echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
+  if [ "$MINOR_COUNT" -gt 0 ]; then
+    echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
+  fi
 fi
 
 # The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
@@ -1255,10 +1320,26 @@ post_reviewer_status() {
   # Link only a real URL. The PR comment just above is what --post creates; when
   # that failed there is nothing to link, and a local file path is not a URL.
   case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
-  if gh "${args[@]}" >/dev/null 2>&1; then
+  # WHO WRITES THE GATE (ASK-362 stage 2): reviewer_status_run is the one rule,
+  # shared with receipt-carry-approval.sh's carry_post. Configured-but-empty
+  # returns REVIEWER_TOKEN_REFUSED and posts nothing; an absent status holds the
+  # PR, which is the safe side.
+  local rc=0 err
+  err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  # :-3, not bare: a missing lib must not kill the agent under set -u at the
+  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
+  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
+    printf '  %s\n' "$err" >&2
+    echo "  NO commit status posted on $sha" >&2
+    return 0
+  fi
+  if [ "$rc" = 0 ]; then
     echo "  commit status posted: $context=$state on $sha"
   else
-    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
+    # gh's own reason, already captured in $err: an expired reviewer token and a
+    # network blip need different fixes, and "NO gate moved" alone names neither
+    # (PR #431 review nit).
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved. gh: $(printf '%s' "${err:-printed no reason}" | tr '\n' ' ' | cut -c1-300)" >&2
   fi
 }
 

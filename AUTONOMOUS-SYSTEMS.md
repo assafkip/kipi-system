@@ -20,14 +20,91 @@ launchd jobs are:
 |-----|------|------|
 | `com.kipi.audit-rotate` | 23:55 | rotate audit logs |
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 | wake per-instance agents to advance open loops |
-| `com.kipi.fractional-cxo.opp-scan` | 08:00 | daily income/opportunity scan |
-| `com.kipi.fractional-cxo.bolt-on-discovery` | 07:00 | daily consulting-lead discovery |
-| `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — Slack-ping on any silent job death |
-| `com.kipi.lessons-daily` | 06:00 | **auto-learn** — distill → publish → propagate → Slack |
-| `com.kipi.spillover-linear-check` | 08:10 | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
+| `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — alert on any silent job death (families in 2.3) |
+| `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
+| `com.kipi.spillover-linear-check` | 08:10 (installed and loaded on the Mac 2026-09-30) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
-Every job is auto-monitored by the watchdog and (for the ones we own) rebuildable from a committed
-installer, so the layer survives a lost `~/Library/LaunchAgents`.
+Every job whose plist is INSTALLED in `~/Library/LaunchAgents` under a watched prefix is
+auto-monitored by the watchdog (2.3), except the watchdog's own label (`com.kipi.launchd-health`,
+`SELF_LABEL` in `launchd-health-check.py`), which it skips. That label is covered instead by
+`detect_dark_jobs` in `fleet-health-daily.py` (run by `com.kipi.fleet-health`), which reports it if its
+plist is on disk and not loaded. A committed plist that was never installed is invisible to the
+watchdog, which discovers installed plists, but it IS reported: `never_installed_findings` in
+`fleet-health-daily.py` (detector `launchd-never-installed`) walks every `com.kipi.*.plist` that
+`git ls-files` tracks, in any directory, and files one issue per template with no installed copy
+(ASK-2277; before that it globbed `q-system/.q-system/scripts/` only and missed `automation/`). The
+ones we own are rebuildable from a committed installer, so the layer survives a lost
+`~/Library/LaunchAgents`.
+
+Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
+- `com.kipi.lessons-daily` is WEEKLY: its plist sets `StartCalendarInterval` Weekday 1, Hour 6
+  (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:39`); the old row said "06:00" daily.
+- `com.kipi.fractional-cxo.opp-scan` and `com.kipi.fractional-cxo.bolt-on-discovery` are RETIRED,
+  not running: `launchd-intent-verify.py` (comment at :277-285) records that the 2026-08-01 jobs
+  audit retired both by renaming their plists. Their rows are removed above. Exact retirement date
+  beyond "by the 2026-08-01 audit": UNKNOWN.
+- Chief-bot jobs (`com.<bot>.*`) are not covered by `launchd-health`; that coverage moves to the
+  daily cloud health check (ASK-2191).
+
+### 1.1 Where each scheduled job runs (2026-09-30, ASK-2176 Phase 8)
+
+The automation cleanup (ASK-2176) moved scheduled work off the Mac where a fresh clone can do it.
+Mac rows below are read from `launchctl list` and each plist's `StartCalendarInterval` /
+`StartInterval` on 2026-09-30; Mac times are the machine's local time (PT). Cloud rows come from
+the routine prompts in the chief repo's `cloud/` directory and the ASK-2176 record; the routine
+list itself was not re-read from the routines API for this change.
+
+**Cloud routines (claude.ai)**
+
+| Routine | When (PT) | Prompt | Replaced |
+|---------|-----------|--------|----------|
+| fleet health check | daily 09:25 | chief `cloud/health-check.md` | adds cloud coverage of the chief-bot jobs (ASK-2191) |
+| client status | weekdays 07:25 | chief `cloud/client-status.md`; publishes to chief `kipi/status` | new (ASK-2192) |
+| Linear worker | Mon-Fri 09:40, 12:40, 15:40 | chief `cloud/linear-worker.md` | `com.kipi.dispatch`, retired 2026-09-30 |
+| Triage | weekdays 09:05 | chief `cloud/triage.md` | `com.triage.brief` / `.act` / `.respond`, retired 2026-09-30 |
+| LGTM | weekdays 08:35 | chief `cloud/lgtm.md`; reads GitHub through MCP (chief #47) | `com.lgtm.brief` / `.act` / `.respond` / `.week`, retired 2026-09-30 |
+| meeting loop | daily 20:00 | instance-side prompt | an instance's meeting-loop launchd job, retired 2026-09-30 |
+
+**GitHub Actions**
+
+| Workflow | When | What |
+|----------|------|------|
+| `.github/workflows/gates.yml` (Nightly gates) | 02:15 PDT (cron `15 9 * * *` UTC, so 01:15 PST) | every gate a fresh clone can run; no model call, no secret |
+
+**Still on the Mac, planned to move**
+
+| Job | When | Cloud prompt | Waiting on |
+|-----|------|--------------|------------|
+| `com.kipi.lessons-daily` | Mon 06:00 (weekly) | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
+
+**Staying on the Mac** (they read the Mac)
+
+| Job | When | Why it stays |
+|-----|------|--------------|
+| `com.gates.brief` | daily 02:15 | the Mac-only suites `gates.yml` cannot run: `kipi check` remote coverage, validate-separation phases 2-4, the untracked spillover census |
+| `com.gates.respond` | every 10 min | answers the gates channel on the Mac |
+| `com.kipi.launchd-health` | 09:30, 21:30 | reads the Mac's launchd state (2.3) |
+
+**Other jobs loaded on the Mac, not part of the move**
+
+| Job | When |
+|-----|------|
+| `com.kipi.audit-rotate` | 23:55 |
+| `com.kipi.openloops-heartbeat` | 08:40, 20:40 |
+| `com.kipi.fleet-health` | 08:15 |
+| `com.kipi.linear-triage-health` | 09:00 |
+| `com.kipi.fleet-full-suite-scan` | 08:20 (alerts on a state change only; RULE-2026-10-01-A) |
+| `com.kipi.linear-dor` | 03:00 |
+| `com.kipi.disk-janitor` | 04:30 |
+| `com.kipi.voice-refresh` | day 1 of the month, 09:00 |
+| `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
+| `com.kipi.pr86-review` | hourly at :17 |
+
+`com.kipi.spillover-linear-check` was installed and loaded on 2026-09-30 and is listed in section 1.
+
+Not loaded on 2026-09-30, although a committed plist names them:
+`com.kipi.ticket-watch` and `com.cole.fleet-env-health` (plist present, not loaded).
+Retired plists (`*.retired-<date>`) are not listed.
 
 ---
 
@@ -50,8 +127,14 @@ founder is warned. Policy: **warn + preserve** (founder-chosen). Fail-open: a mi
 Tests: `test-kipi-update-preserve-scan.sh`, `test-kipi-update-preserve-integration.sh` (RED→GREEN).
 
 ### 2.3 Detection — silent job death becomes a phone ping
-`launchd-health-check.py` auto-discovers every `com.kipi.*` job, reads its `LastExitStatus`, and
-Slack-pings (deduped, 6h TTL) on any non-zero. It always exits 0 so it never becomes the failing job it
+`launchd-health-check.py` auto-discovers every `~/Library/LaunchAgents/<prefix>*.plist` for the
+prefixes in `WATCHED_PREFIXES` (`launchd-health-check.py:59-65`): `com.kipi.`, `com.cole.`,
+`com.claudedaddy.`, `com.ask.`, `com.assaf.`, plus any line in
+`~/.config/kipi/launchd-watch-prefixes.txt`. That file is how an instance adds its own job family:
+a family listed there IS reported, one that is not listed and matches no base prefix is not. What
+a given machine's file holds is machine state, not repo state; read the file, not this doc. Labels in `~/.config/kipi/launchd-paused.txt`
+or `cole-pause.state` are printed, not alerted. It reads each job's `LastExitStatus` and
+alerts (deduped, 6h TTL) on any non-zero. It always exits 0 so it never becomes the failing job it
 reports. `LastExitStatus` arrives as a raw `wait(2)` status (exit 3 → 768); `normalize_exit` decodes it
 so the ping reads "exit 3". Runs 09:30 + 21:30. This is the deterministic backstop the philosophy
 demands — a prompt can't watch launchd; a job can. Test: `test_launchd_health_check.py` (11 cases).
@@ -80,7 +163,7 @@ write-back into the same store**; that loop is what compounds. kipi had the rail
 - **Fully autonomous** — no candidate queue, no human promotion on the happy path.
 - **Daily heartbeat + Slack on change.**
 
-### 3.3 The pipeline (`lessons-daily.sh`, launchd 06:00)
+### 3.3 The pipeline (`lessons-daily.sh`, launchd Mon 06:00, weekly)
 ```
 read every instance's new RCAs (source-hash ledger => each processed once)
   → DISTILL each into a HOW-only lesson via `claude -p` (drop all WHAT/specifics)
@@ -207,9 +290,14 @@ kipi lessons-run
 # preview without writing
 python3 q-system/.q-system/scripts/lessons-distill.py --dry
 
-# (re)install the daily jobs from committed installers
+# (re)install the jobs from committed installers. The lessons job is weekly (Mon 06:00),
+# and its installer refuses (exit 2) unless run from the skeleton checkout itself.
 bash q-system/.q-system/scripts/install-lessons-daily.sh
 bash <instance>/automation/install-launchd.sh
+# every committed kipi plist (or one: pass its label instead of --all).
+# --all refuses (exit 2) from a git worktree, so it cannot repoint live jobs at one.
+# Outside the skeleton it skips templates marked `kipi-scope: skeleton-only`.
+bash q-system/.q-system/scripts/install-plist.sh --all
 
 # run the test suite for these systems
 bash q-system/.q-system/scripts/test/test-lessons-scrub.sh

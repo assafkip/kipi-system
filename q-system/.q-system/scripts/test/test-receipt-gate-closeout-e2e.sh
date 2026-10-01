@@ -67,12 +67,25 @@ WORK_SHA="$(git -C "$REPO" rev-parse HEAD)"
 # --- the real closeout, run to completion -----------------------------------
 run() { python3 "$RUNNER" --repo-root "$REPO" "$@"; }
 
+# ASK-402: `mark` refuses, a receipt is written only by the code that computed
+# it. Same three facts, now each through its computing verb: verify runs the
+# spec's required_checks, complete-review seals a reviewer artifact per kind,
+# triage recounts the findings ledger. (A hand-typed `mark` here died at exit 2
+# after main merged ASK-402 and left every assertion below reading no ledger.)
+computed_receipts() {
+  run verify
+  printf 'ran, found nothing\n' > "$TMP/review-evidence.txt"
+  for kind in standard adversarial; do
+    run record-review "$kind"
+    run complete-review "$kind" --verdict "APPROVE" --evidence-file "$TMP/review-evidence.txt"
+  done
+  run triage
+}
+
 CLOSE_LOG="$TMP/close.log"
 {
   run load receipt-gate-e2e
-  run mark verified
-  run mark reviewed
-  run mark findings_triaged
+  computed_receipts
   run close
 } > "$CLOSE_LOG" 2>&1
 CLOSE_RC=$?
@@ -171,9 +184,7 @@ fi
 # again -- this asserts that, rather than trusting the read.
 {
   run load receipt-gate-e2e
-  run mark verified
-  run mark reviewed
-  run mark findings_triaged
+  computed_receipts
   run close
 } >> "$CLOSE_LOG" 2>&1
 git -C "$REPO" add -A
