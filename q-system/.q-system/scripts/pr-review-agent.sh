@@ -928,14 +928,19 @@ review_scratch_cleanup() {
   REVIEW_SCRATCH=""
   # `prune` only forgets trees whose directory is already gone; a live one the
   # engine cut OUTSIDE $TMPDIR (the scar's own /tmp/pr16head) survives it (PR #495
-  # review). So remove what THIS run added: a worktree absent from the snapshot,
-  # detached at the PR head, outside review-trees/. All three, because a
-  # concurrent reviewer of another PR adds its own tree to the same repo.
+  # review). So remove what THIS run added: a worktree absent from the snapshot
+  # that lives under a TEMP root. Scoped by WHERE, not by sha or detached state
+  # (PR #495 round 2: a copy cut at the base revision or on a branch is still
+  # the engine's). A concurrent reviewer's tree lives under review-trees/ and an
+  # agent's under ~/projects; neither is a temp root, so neither is touched.
   if [ -n "$WT_BEFORE" ]; then
     _wt_rows | while read -r path sha det; do
       grep -qxF "$path" <<<"$WT_BEFORE" && continue
-      [ "$det" = 1 ] && [ "$sha" = "${HEAD_SHA:-}" ] || continue
       case "$path" in */review-trees/*) continue ;; esac
+      case "$path" in
+        "$SCRATCH_BASE"/*|/tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) ;;
+        *) continue ;;
+      esac
       git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true
     done
   fi

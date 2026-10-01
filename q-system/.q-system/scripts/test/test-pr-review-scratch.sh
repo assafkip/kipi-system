@@ -36,6 +36,10 @@ printf '%s\n' "$TMPDIR" > "$STUB_TMPDIR"
 head -c 1024 /dev/zero > "$TMPDIR/repro-copy"
 # The scar's shape: a mutable copy cut OUTSIDE $TMPDIR.
 git -C "$STUB_REPO" worktree add -q --detach "$STUB_OUTSIDE" HEAD
+# Round 2: a copy on a BRANCH (not detached at the head) is still the engine's.
+git -C "$STUB_REPO" worktree add -q -b engine-branch "$STUB_OUTSIDE-branch" HEAD
+# A concurrent reviewer's tree appearing mid-run: never the engine's to remove.
+git -C "$STUB_REPO" worktree add -q --detach "$STUB_REVIEW_TREES/other__pr-9" HEAD
 echo "FINDINGS:"; echo "END FINDINGS"
 EOF
 chmod +x "$T/bin/claude"
@@ -54,7 +58,8 @@ source "$T/slice.sh"
 run_engine claude "$T/out.txt"
 EOF
   HOME="$T/home" PATH="$T/bin" STUB_ARGV="$T/argv" STUB_TMPDIR="$T/tmpdir" \
-    STUB_REPO="$T/repo" STUB_OUTSIDE="$T/outside-copy" "$T/bin/bash" "$T/drive.sh"
+    STUB_REPO="$T/repo" STUB_OUTSIDE="$T/outside-copy" \
+    STUB_REVIEW_TREES="$T/home/.config/kipi/review-trees" "$T/bin/bash" "$T/drive.sh"
 }
 drive ""
 echo "drive rc=$?"
@@ -65,6 +70,10 @@ check "engine ran with a scratch TMPDIR under the scratch base" \
 check "scratch dir is gone after the run" '[ -n "$scratch" ] && [ ! -e "$scratch" ]'
 check "a worktree the engine cut outside TMPDIR is removed" \
   '[ ! -e "$T/outside-copy" ] && ! git -C "$T/repo" worktree list | grep -q outside-copy'
+check "a branch worktree the engine cut is removed" \
+  '[ ! -e "$T/outside-copy-branch" ]'
+check "a review tree that appears mid-run survives" \
+  '[ -d "$T/home/.config/kipi/review-trees/other__pr-9" ]'
 check "a worktree that predates the run survives" \
   '[ -d "$T/bystander" ] && git -C "$T/repo" worktree list | grep -q bystander'
 check "stale scratch from a killed run is reaped" '[ ! -e "$BASE/run.stale" ]'
