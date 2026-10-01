@@ -2,7 +2,9 @@
 """Auto-commit hook - groups changed files by area and creates organized commits.
 
 Runs on Stop (async). Creates one commit per area with conventional commit messages.
-Never pushes. Skips if no uncommitted changes.
+Never pushes the checked-out branch. Skips if no uncommitted changes. At the end
+it hands session notes to notes-publish.py, which copies them onto origin's
+notes-only `kipi/notes` branch (ASK-2190; non-fatal, bounded by a timeout).
 """
 import calendar
 import hashlib
@@ -793,7 +795,78 @@ def another_commit_in_flight():
     return None
 
 
+NOTES_PUBLISH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             os.pardir, ".q-system", "scripts", "notes-publish.py")
+NOTES_PUBLISH_TIMEOUT = 60
+
+
+def publish_notes():
+    """Copy session notes onto origin's `kipi/notes` branch (ASK-2190).
+
+    The one step of this hook that talks to a remote, and it does NOT push the
+    checked-out branch: notes-publish.py builds a notes-only commit with git
+    plumbing and never touches HEAD, the index or the working tree. It exists
+    because this hook commits notes on whatever branch is checked out and never
+    pushes, so a cloud session (GitHub only) read a months-old handoff.
+
+    Non-fatal and bounded: a missing script, a timeout or any error is one line,
+    never an exception, so session exit is never blocked. Its report goes to
+    STDOUT, the channel the fleet wiring keeps (see main()).
+    """
+    script = os.path.normpath(NOTES_PUBLISH)
+    if not os.path.isfile(script):
+        return
+    try:
+        r = subprocess.run([sys.executable, script, "--repo", PROJ_DIR],
+                           capture_output=True, text=True,
+                           timeout=NOTES_PUBLISH_TIMEOUT)
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        if r.returncode != 0:
+            print(f"auto-commit: notes-publish exited {r.returncode}: "
+                  f"{r.stderr.strip()[-300:]}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(f"auto-commit: notes-publish timed out after "
+              f"{NOTES_PUBLISH_TIMEOUT}s; notes not published this turn")
+    except Exception as e:
+        print(f"auto-commit: notes-publish error: {e}", file=sys.stderr)
+
+
+# A paused merge/rebase/cherry-pick/revert. git reports its conflicted files as
+# ordinary changes, so without this guard the autosave staged and committed
+# conflict markers (cole-gtm 9e563be, 2026-09-29) and notes-publish would push
+# them to kipi/notes. The operation belongs to whoever started it.
+GIT_OPERATION_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                         "rebase-merge", "rebase-apply")
+
+
+def git_operation_in_progress():
+    """The marker of a paused git operation in this checkout, or None."""
+    for marker in GIT_OPERATION_MARKERS:
+        r = run(["git", "rev-parse", "--git-path", marker])
+        if r.returncode != 0:
+            return None
+        path = r.stdout.strip()
+        if not os.path.isabs(path):
+            path = os.path.join(PROJ_DIR, path)
+        if os.path.exists(path):
+            return marker
+    return None
+
+
 def main():
+    paused = git_operation_in_progress()
+    if paused is not None:
+        print(f"auto-commit: git merge in progress ({paused}); committing nothing, "
+              "notes not published. Finish or abort it first.")
+        return
+    try:
+        _commit_main()
+    finally:
+        publish_notes()
+
+
+def _commit_main():
     # Check we're in a git repo
     r = run(["git", "rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:

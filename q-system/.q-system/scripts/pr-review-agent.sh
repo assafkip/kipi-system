@@ -859,7 +859,10 @@ work that did not need doing.
 
 EVERY finding MUST ship a RUNNABLE REPRODUCER that you ACTUALLY RAN, with its real
 output pasted. A finding with no executed repro is an opinion and will be rejected.
-Write repros to \$TMPDIR and run them. If you cannot make it fail, DROP the finding
+Write repros to \$TMPDIR and run them. Need a copy of the tree to mutate? Use
+\`git worktree add --detach \"\$TMPDIR/copy\" HEAD\` from the tree you are in. Never
+\`git clone\`, and never write outside \$TMPDIR: it is deleted when you finish, and
+a copy anywhere else outlives the review and fills the disk. If you cannot make it fail, DROP the finding
 and say you tried. Dropping a finding you could not reproduce is a SUCCESS of this
 process, not a failure of it.
 
@@ -898,15 +901,87 @@ END FINDINGS"
 # `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
 # additional input from stdin..."), and outside a trusted directory it refuses
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
+#
+# ONE SCRATCH DIR PER RUN, REMOVED ON EXIT (2026-10-01). The Opus fallback built
+# its reproducers in /tmp/pr16head (a 1.4G worktree) and /tmp/pr16rev (a 1.8G FULL
+# clone) on cole-gtm PR #16, kept them across rounds, and filled the disk mid-review:
+# the verdict came back empty and posted kipi/reviewer-approved=failure on a sha
+# nothing had found fault with. So the engine gets $TMPDIR pointed at a dir this
+# script owns and deletes, any worktree the model cut from the review tree is
+# pruned with it, and the claude engine cannot run `git clone` at all.
+REVIEW_SCRATCH=""
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+WT_BEFORE=""
+# Worktrees of the review repo as "<path> <sha> <detached>" lines.
+_wt_rows() {
+  git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree /{p=substr($0,10); h=""; d=0}
+    /^HEAD /{h=$2}
+    /^detached/{d=1}
+    /^$/{if(p!="")print p" "h" "d; p=""}
+    END{if(p!="")print p" "h" "d}'
+}
+review_scratch_cleanup() {
+  # Empty would make "$own"/* read as /*, claiming every path: use a sentinel.
+  local own="${REVIEW_SCRATCH:-/nonexistent-review-scratch}"
+  # git lists PHYSICAL paths (macOS: /var/folders is /private/var/folders), so
+  # both prefixes are resolved the same way before any comparison.
+  local own_p base_p
+  own_p="$(cd "$own" 2>/dev/null && pwd -P)" || own_p="$own"
+  base_p="$(cd "$SCRATCH_BASE" 2>/dev/null && pwd -P)" || base_p="$SCRATCH_BASE"
+  case "$REVIEW_SCRATCH" in
+    "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
+  esac
+  REVIEW_SCRATCH=""
+  # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
+  # PR #495 took four rounds to rule out each wrong owner of a worktree found by
+  # location: a base-revision copy (round 2), a concurrent review's scratch
+  # (round 3), verify.sh's mktemp -d snapshot (round 4). Nothing outside our own
+  # dir can be proven ours, so nothing outside it is removed. A new worktree
+  # under a temp root (the scar's /tmp/pr16head shape) is printed with its size,
+  # so a run that ignored the prompt's $TMPDIR rule is visible, not silent.
+  if [ -n "$WT_BEFORE" ]; then
+    _wt_rows | while read -r path sha det; do
+      grep -qxF "$path" <<<"$WT_BEFORE" && continue
+      case "$path" in
+        "$own"/*|"$own_p"/*) git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true ;;
+        "$SCRATCH_BASE"/*|"$base_p"/*|*/review-trees/*) ;;
+        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+          echo "  WARN: a worktree appeared at $path during this review ($(du -sh "$path" 2>/dev/null | cut -f1)); not removed, its owner cannot be proven. If it is this engine's, it broke the \$TMPDIR rule." >&2 ;;
+      esac
+    done
+  fi
+  git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
+}
+trap 'release_wt_lock; review_scratch_cleanup' EXIT
+
+# Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
+# SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
+for _old in "$SCRATCH_BASE"/run.*; do
+  [ -d "$_old" ] || continue
+  [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
+done
+
 run_engine() {   # run_engine <claude|codex> <destination-file>
+  if [ -z "$REVIEW_SCRATCH" ]; then
+    WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
+    # A full disk is not "codex is down" (PR #495 review): stop here, named,
+    # rather than return 1 into the codex branch, which pages a wrong cause.
+    REVIEW_SCRATCH="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/run.XXXXXX")" || {
+      echo "REFUSING: cannot create a review scratch dir under $SCRATCH_BASE (disk full?). No review ran; no verdict posted." >&2
+      exit 4; }
+  fi
+  export TMPDIR="$REVIEW_SCRATCH"
   case "$1" in
     # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
     # its verdict and the FINDINGS block this script parses. A Stop hook that exits 2
     # forces one more turn, and that turn's text replaces the verdict. Measured on a
     # week of real transcripts: reviewer verdicts say "does not exist" routinely
     # ("cites a backstop that does not exist"). The lint still logs them advisory.
+    # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+    # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac

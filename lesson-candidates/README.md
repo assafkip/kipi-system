@@ -10,7 +10,8 @@ This directory holds the two things that must stay skeleton-side:
 - `held-<hash>.md` — a lesson the gate could NOT clear (deterministic scrub left a client-data
   signal, OR the LLM semantic pass flagged a residual real entity). It was NOT published. Read it,
   scrub by hand and move to `q-system/lessons/` if worth keeping, or delete. These are the only
-  human-in-the-loop items, and they are the SAFE ones (held, never leaked).
+  human-in-the-loop items. They are gitignored and never committed (ASK-2278): this repo is
+  public, and until 2026-09-30 the daily job's `git add lesson-candidates` pushed them.
 - `.processed.json` — the ledger of source RCAs already seen, so each learning is processed once
   (idempotent daily runs).
 

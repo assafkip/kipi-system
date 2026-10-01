@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/jev_backlog_rank.py",
+ "reason": "ASK-2015 scoring harness, hand-run and DELIBERATELY unwired. Its `rank` and `close` paths refuse while the gate receipt reads passed=false, and the measured verdict was FAIL (jev 0.769 against a free control at 0.878), so there is nothing for a schedule to run. Wiring it would put a vendor holding a perpetual output licence on a cron against the open backlog, which is a founder decision and not a side effect of landing the measurement. Wire it or retire it once the DoR's fallback is decided",
+ "spillover_id": "sp-57597149"
+}

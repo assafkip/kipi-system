@@ -656,6 +656,8 @@ def check_capitalization(text, file_path=""):
         violations.append({
             "rule": "capitalization",
             "line": find_line_number(prose, offset),
+            # where on the PROSE line the start sits; repair_capitalization pins by it
+            "column": offset - (prose.rfind("\n", 0, offset) + 1),
             "detail": f"sentence starts lowercase: '{word}' (published content uses real caps)",
         })
 
@@ -807,6 +809,7 @@ def repair_capitalization(text):
     worse than one that is sometimes silent.
     """
     lines = text.split("\n")
+    prose_lines = strip_code_preserving_lines(text).split("\n")
     fixed, left = [], []
     for violation in check_capitalization(text):
         found = _LOWERCASE_START_RE.search(violation.get("detail", ""))
@@ -821,10 +824,33 @@ def repair_capitalization(text):
         index = violation.get("line", 0) - 1
         if not 0 <= index < len(lines):
             continue
-        pattern = re.compile(r"(?<![\w'-])" + re.escape(word) + r"(?![\w'-])")
-        replaced, count = pattern.subn(word[0].upper() + word[1:], lines[index], 1)
-        if count:
-            lines[index] = replaced
+        # THE START, NOT THE FIRST MATCH ON THE LINE (ASK-2232, 2026-09-29). `subn(.., 1)`
+        # rewrote the word's first appearance on the line, so "from the abuse side. the
+        # rest" became "from The abuse side. the rest". Pin by how many times the word
+        # appears before the start on the prose line, and count the same way on the raw
+        # line with code spans masked. A letter/digit boundary, not \w: `_` is a word
+        # character, so `_the rest_` never matched at its own start.
+        # re.I on BOTH sides: `prose_lines` is a snapshot from before this loop edits a
+        # line, so an earlier start on the same line is lowercase there and already
+        # capitalized here. Counting case-sensitively put the second same-word start on
+        # the wrong occurrence (PR #475 review round 2). Edits change case only, so a
+        # case-blind count is identical in both views.
+        pattern = re.compile(r"(?<![A-Za-z0-9'-])" + re.escape(word) + r"(?![A-Za-z0-9'-])",
+                             re.IGNORECASE)
+        column = violation.get("column")
+        if column is None or index >= len(prose_lines):
+            continue
+        # mask the inline-code sentinel first: case-blind, `__CODE__` contains "code"
+        # (PR #475 review round 3), and the raw side masks the same span out
+        nth = len(pattern.findall(prose_lines[index][:column].replace("__CODE__", " " * 8)))
+        code = [m.span() for regex in (INLINE_CODE_RE, CODE_FENCE_RE)
+                for m in regex.finditer(lines[index])]
+        hits = [m for m in pattern.finditer(lines[index])
+                if not any(a <= m.start() < b for a, b in code)]
+        if nth < len(hits):
+            hit = hits[nth]
+            lines[index] = (lines[index][:hit.start()] + word[0].upper() + word[1:]
+                            + lines[index][hit.end():])
             fixed.append(word)
     return "\n".join(lines), fixed, left
 
