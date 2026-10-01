@@ -62,6 +62,19 @@ def wf(steps: str, on: str = ON_PR) -> str:
     ("      - if: github.event_name == 'push'\n        run: pytest tests/", True),
     ("      - env:\n          CI: true\n        run: npm test", True),
     ("      - uses: ./.github/workflows/full.yml", True),
+    # PR #492 review round 2: runners the first table did not know.
+    ("      - run: uv run pytest", True),
+    ("      - run: poetry run pytest tests/", True),
+    ("      - run: uv run pytest tests/test_a.py", False),
+    ("      - run: tox", True),
+    ("      - run: ./gradlew test", True),
+    ("      - run: ./gradlew test --tests com.x.ATest", False),
+    ("      - run: mvn -B test", True),
+    ("      - run: mvn test -Dtest=ATest", False),
+    ("      - run: dotnet test", True),
+    ("      - run: dotnet test --filter Category=Unit", False),
+    ("      - run: bundle exec rspec", True),
+    ("      - run: bundle exec rspec spec/a_spec.rb", False),
     # A step that opens with env: is its OWN step. Split only on name/uses/run,
     # it merged into the step above and lent that step its skip flag.
     ("      - name: v\n        run: python3 validate-separation.py 1\n"
@@ -103,6 +116,12 @@ def test_triggers(on, pr_or_push):
 
 def test_a_trailing_comment_on_steps_does_not_hide_the_steps():
     text = ON_PR + "jobs:\n  j:\n    steps:  # the build\n      - run: pytest tests/\n"
+    assert fsd.workflow_doors(text)
+
+
+def test_steps_at_the_keys_own_indent_are_read():
+    # Valid YAML: the list sits in the same column as `steps:` (PR #492 review).
+    text = ON_PR + "jobs:\n  j:\n    steps:\n    - run: pytest tests/\n    runs-on: x\n"
     assert fsd.workflow_doors(text)
 
 

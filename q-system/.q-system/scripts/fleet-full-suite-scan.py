@@ -57,7 +57,9 @@ HOOK_NAMES = ("pre-commit", "pre-push")
 # what its text says. Its identity, never its duration, goes into the fingerprint,
 # so a step that is slow every day alerts once.
 SLOW_STEP_S = fsd.EXEMPT_MAX_S
-TESTLIKE = __import__("re").compile(r"(?i)test|suite|pytest|gate|verify|jest|vitest")
+# Whole words: unanchored, `gate` matched inside "aggregate" and `test` inside
+# "latest" and "Attest" (PR #492 review).
+TESTLIKE = __import__("re").compile(r"(?i)\b(?:tests?|suites?|pytest|gates?|verify|jest|vitest)\b")
 LEFTHOOK_NAMES = ("lefthook.yml", "lefthook.yaml", ".lefthook.yml")
 
 
@@ -99,12 +101,12 @@ def gh_json_or_404(*args: str):
     return json.loads(p.stdout or "null")
 
 
-def scan_ci(owner: str) -> tuple[list[dict], int]:
+def scan_ci(owner: str) -> tuple[list[dict], int, list[dict], list[dict]]:
     repos = gh_json("repo", "list", owner, "--limit", "500", "--no-archived",
                     "--json", "name,defaultBranchRef")
     if not repos:
         raise ScanError(f"gh repo list {owner} returned no repos")
-    doors, slow = [], []
+    doors, slow, red = [], [], []
     for r in repos:
         name = r["name"]
         branch = (r.get("defaultBranchRef") or {}).get("name") or "main"
@@ -141,7 +143,23 @@ def scan_ci(owner: str) -> tuple[list[dict], int]:
             # that stops being true. Without it the line's "re-measure" had no reader.
             if fsd.runs_on_pr_or_push(text) and ids.get(path):
                 slow += slow_steps(owner, name, path, ids[path])
-    return doors, len(repos), slow
+            if "schedule" in fsd.triggers(text) and ids.get(path):
+                red += red_nightly(owner, name, path, ids[path])
+    return doors, len(repos), slow, red
+
+
+def red_nightly(owner: str, repo: str, path: str, wid) -> list[dict]:
+    """The nightly is the ONE place the full suite runs, so its result needs a
+    reader (cole-gtm PR #16 review: nothing read it). The last completed
+    scheduled run, if it did not succeed, is reported here."""
+    runs = gh_json_or_404("api", f"repos/{owner}/{repo}/actions/workflows/{wid}/runs"
+                          "?event=schedule&status=completed&per_page=1") or {}
+    out = []
+    for run in runs.get("workflow_runs", [])[:1]:
+        if run.get("conclusion") not in ("success", "skipped"):
+            out.append({"repo": repo, "door": path, "run": run["id"],
+                        "conclusion": run.get("conclusion")})
+    return out
 
 
 def _secs(a: str | None, b: str | None) -> int | None:
@@ -171,7 +189,12 @@ def _git(path: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items()
            if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                         "GIT_OBJECT_DIRECTORY")}
-    p = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True, env=env)
+    try:
+        p = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+                           env=env, timeout=GH_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        # The third subprocess family round 1 left unbounded (PR #492 review).
+        raise ScanError(f"git -C {path.name} {args[0]} timed out after {GH_TIMEOUT_S}s")
     return p.stdout.strip() if p.returncode == 0 else ""
 
 
@@ -220,9 +243,10 @@ def scan_local(owner: str, checkouts: list[Path]) -> list[dict]:
     return doors
 
 
-def fingerprint(doors: list[dict], slow: list[dict] = ()) -> str:
+def fingerprint(doors: list[dict], slow: list[dict] = (), red: list[dict] = ()) -> str:
     keys = sorted(f"{d['repo']}|{d['where']}|{d['door']}|{d['what']}" for d in doors)
     keys += sorted(f"slow|{s['repo']}|{s['door']}|{s['step']}" for s in slow)
+    keys += sorted(f"red|{r['repo']}|{r['door']}|{r['run']}" for r in red)
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
 
 
@@ -280,17 +304,22 @@ def main(argv=None) -> int:
     registry = Path(a.registry) if a.registry else HERE.parents[2] / "instance-registry.json"
     try:
         owner = a.owner or gh_json("api", "user")["login"]
-        doors, nrepos, slow = ([], 0, []) if a.no_ci else scan_ci(owner)
+        doors, nrepos, slow, red = ([], 0, [], []) if a.no_ci else scan_ci(owner)
         nlocal = 0
         if not a.no_local:
             cos = local_checkouts(registry, projects_root)
+            if not cos:
+                # Same rule as the repo listing (PR #492 review): zero checkouts is
+                # a scanner that saw nothing, never "zero local doors".
+                raise ScanError("no local checkouts found (registry and projects root both empty)")
             nlocal = len(cos)
             doors += scan_local(owner, cos)
     except (ScanError, KeyError, ValueError) as exc:
         print(f"fleet-full-suite-scan: could not read the population: {exc}", file=sys.stderr)
         return 2
 
-    report = {"doors": doors, "slow_steps": slow, "fingerprint": fingerprint(doors, slow),
+    report = {"doors": doors, "slow_steps": slow, "red_nightlies": red,
+              "fingerprint": fingerprint(doors, slow, red),
               "repos_scanned": nrepos, "checkouts_scanned": nlocal}
     prev = read_state(state_dir)
     changed = prev is None or prev.get("fingerprint") != report["fingerprint"]
@@ -303,6 +332,8 @@ def main(argv=None) -> int:
             print(f"  {d['repo']} [{d['where']}] {d['door']}: {d['what'][:160]}")
         for s in slow:
             print(f"  SLOW {s['repo']} {s['door']} step '{s['step']}': {s['seconds']}s on run {s['run']}")
+        for r in red:
+            print(f"  NIGHTLY RED {r['repo']} {r['door']}: {r['conclusion']} on run {r['run']}")
     if a.no_alert:
         pass                        # measure only: the dedup state is the job's, not ours
     elif not changed:
@@ -311,7 +342,7 @@ def main(argv=None) -> int:
         was = len((prev or {}).get("doors", [])) if prev else "unknown"
         where = ", ".join(sorted({f"{d['repo']}:{d['door']}" for d in doors}))[:300]
         if alert(f"fleet full-suite doors changed: {len(doors)} open (was {was}), "
-                 f"{len(slow)} slow test step(s). "
+                 f"{len(slow)} slow test step(s), {len(red)} red nightly run(s). "
                  f"{where or 'none open'}. RULE-2026-10-01-A: only the nightly may run a whole suite."):
             write_state(state_dir, report)
         else:
@@ -321,7 +352,7 @@ def main(argv=None) -> int:
     # EXIT 0 ON A COMPLETED SCAN, doors or not (PR #492 review): launchd-health-check
     # reads a non-zero exit as a broken job and pages, twice a day, and a normal
     # "doors open" day was indistinguishable from a blind scan (2).
-    return 1 if a.fail_on_doors and (doors or slow) else 0
+    return 1 if a.fail_on_doors and (doors or slow or red) else 0
 
 
 if __name__ == "__main__":

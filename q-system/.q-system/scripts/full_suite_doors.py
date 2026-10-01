@@ -112,7 +112,10 @@ def _steps(text: str) -> list[str]:
         ind = len(sm.group(1))
         body = []
         for line in code[sm.end():].splitlines()[1:]:
-            if line.strip() and len(line) - len(line.lstrip()) <= ind:
+            li = len(line) - len(line.lstrip())
+            # YAML lets a list sit at its key's own indent (`steps:` then `- run:`
+            # in the same column). Stopping there read zero steps (PR #492 review).
+            if line.strip() and (li < ind or (li == ind and not line.lstrip().startswith("- "))):
                 break
             body.append(line)
         cur: list[str] = []
@@ -134,7 +137,8 @@ def _steps(text: str) -> list[str]:
 
 
 def _pytest_door(line: str) -> bool:
-    m = re.search(_CMD_START + r"(?:python3?\s+-m\s+)?(?:py\.test|pytest)(?![\w:.-])(.*)$", line)
+    m = re.search(_CMD_START + r"(?:(?:uv|poetry|pipenv|hatch|pdm)\s+run\s+)?(?:python3?\s+-m\s+)?"
+                  r"(?:py\.test|pytest)(?![\w:.-])(.*)$", line)
     if not m:
         return False
     rest = m.group(1)
@@ -168,6 +172,12 @@ _OTHER = (
     (re.compile(_CMD_START + r"go\s+test\s+(?:\S+\s+)*\./\.\.\."), "go test ./..."),
     (re.compile(_CMD_START + r"cargo\s+test\b"), "cargo test"),
     (re.compile(_CMD_START + r"kipi\s+check\b"), "kipi check runs the full gate"),
+    # PR #492 review: each of these runs a whole suite by default.
+    (re.compile(_CMD_START + r"tox(?:\s+(?:-e\s+\S+|-p|-q|-v))*\s*(?:$|[;&|])"), "tox over every env"),
+    (re.compile(_CMD_START + r"(?:\./)?gradlew\s+(?:\S+\s+)*test\b(?!.*--tests)"), "gradle test"),
+    (re.compile(_CMD_START + r"mvn\s+(?:\S+\s+)*test\b(?!.*-Dtest=)"), "mvn test"),
+    (re.compile(_CMD_START + r"dotnet\s+test\b(?!.*--filter)"), "dotnet test"),
+    (re.compile(_CMD_START + r"(?:bundle\s+exec\s+)?rspec\s*(?:$|[;&|]|--)"), "rspec over the suite"),
 )
 
 

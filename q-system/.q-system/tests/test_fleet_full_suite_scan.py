@@ -155,6 +155,52 @@ def test_a_hung_gh_is_a_blind_scan(tmp_path):
     assert p.returncode == 2 and "timed out" in p.stderr, p.stderr
 
 
+def test_a_red_nightly_is_reported(tmp_path):
+    # cole-gtm PR #16 review: the nightly is the one full run, so its result needs a reader.
+    t = _table(["app"])
+    t[f"api repos/{OWNER}/app/actions/workflows/3/runs?event=schedule&status=completed&per_page=1"] = \
+        [0, json.dumps({"workflow_runs": [{"id": 33, "conclusion": "failure"}]})]
+    p, alerts = _run(tmp_path, t, "--no-local")
+    rep = json.loads(p.stdout)
+    assert rep["red_nightlies"] == [{"repo": "app", "door": ".github/workflows/nightly.yml",
+                                     "run": 33, "conclusion": "failure"}]
+    assert "1 red nightly" in alerts[-1]
+
+
+def test_testlike_is_whole_words():
+    import importlib.util
+    s = importlib.util.spec_from_file_location("fss", SCRIPT)
+    m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m)
+    for name, hit in (("Run deterministic build gate", True), ("pytest", True), ("Run tests", True),
+                      ("aggregate results", False), ("upload latest", False), ("Attest build", False)):
+        assert bool(m.TESTLIKE.search(name)) is hit, name
+
+
+def test_zero_local_checkouts_is_a_blind_scan(tmp_path):
+    empty = tmp_path / "projects"
+    empty.mkdir()
+    p, alerts = _run(tmp_path, _table(["app"]), "--no-ci", "--projects-root", str(empty))
+    assert p.returncode == 2 and alerts == [], p.stderr
+
+
+def test_a_hung_local_git_is_a_blind_scan(tmp_path):
+    root = tmp_path / "projects"
+    _checkout(root, "mine", f"https://github.com/{OWNER}/mine.git", "#!/bin/sh\n")
+    b = tmp_path / "bin"
+    b.mkdir()
+    (b / "git").write_text("#!/bin/sh\nsleep 30\n")
+    (b / "git").chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # --owner and a gh that always fails: this test must never reach the real gh.
+    env.update(PATH=f"{b}:{env['PATH']}", KIPI_GH_TIMEOUT_S="1", HOME=str(tmp_path),
+               KIPI_GH=f"{sys.executable} -c 'import sys; sys.exit(9)'")
+    p = subprocess.run([sys.executable, str(SCRIPT), "--no-ci", "--owner", OWNER, "--projects-root", str(root),
+                        "--registry", str(tmp_path / "none.json"), "--state-dir", str(tmp_path / "s")],
+                       env=env, capture_output=True, text=True, timeout=20)
+    assert p.returncode == 2 and "timed out" in p.stderr, p.stderr
+
+
 def test_an_empty_population_is_a_failure_not_an_all_clear(tmp_path):
     p, alerts = _run(tmp_path, _table([]), "--no-local")
     assert p.returncode == 2 and alerts == [], (p.returncode, p.stderr)
