@@ -365,6 +365,16 @@ def render_issue(i: dict, ev: list, flags: list) -> str:
             f"description:\n{body[:1800]}\n")
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def judge_batch(batch: list, timeout: int) -> tuple:
     """One `claude -p` call over N issues. Returns (verdicts, reason_or_empty).
 
@@ -387,7 +397,7 @@ def judge_batch(batch: list, timeout: int) -> tuple:
     try:
         res = subprocess.run([binary, "-p", prompt],
                              capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, env=_subscription_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"claude call failed ({type(exc).__name__} after {timeout}s)"
     if res.returncode != 0:

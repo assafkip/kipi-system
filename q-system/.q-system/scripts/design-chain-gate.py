@@ -3475,18 +3475,31 @@ def _hook(payload: dict) -> int:
 
     if ev == "PostToolUse" and tool in ("Write", "Edit", "MultiEdit"):
         fp = ti.get("file_path", "")
+        # the session's open round, read by design-engine-door.py (dc-18, Sana option A)
+        # the write may sit up to 3 folders below the round, as round_dir_for allows (dc-18 std-1).
+        # Computed before the enrol because the enrol now uses it too, so both arms read one value.
+        here = Path(fp).resolve() if fp else None
+        rd = next((d for d in (here.parents[:3] if here else []) if _is_round(d)), None)
         if is_page(fp) and not retired_reason(Path(fp)):
-            if governed(Path(fp).parent):
-                led["pages"][str(Path(fp).resolve())] = {"first_seen": time.time(), "via": tool}
+            # only a page inside a ROUND, the same gate the Bash branch two blocks down carries.
+            # `governed(parent)` was the whole filter, so in any opted-in instance a direct Write or
+            # Edit of an ordinary .tsx/.jsx/.vue/.svelte under src/ enrolled application source;
+            # chain_problems then demanded brief.md beside it (round_dir_for falls back to the page's
+            # own directory) and Stop refused the turn with a remediation nobody could perform.
+            # PR #374 round 7 fixed the identical shape on the Bash branch and this branch never got
+            # it (ASK-1909). `_is_round` already walks up to a design-chain.json, so it subsumes the
+            # `governed` check it replaces rather than sitting beside it.
+            # A page written into a governed instance but OUTSIDE every round is DROPPED, the same
+            # decision the Bash branch makes. That is the one thing the chain genuinely stops
+            # watching, and it is deliberate: an out-of-round page can never satisfy chain_problems,
+            # so enrolling it only ever produced an unfollowable refusal, never a design review.
+            if rd is not None:
+                led["pages"][str(here)] = {"first_seen": time.time(), "via": tool}
             save_ledger(sid, led)
         if fp and Path(fp).name in (CRAFT_MANIFEST, "proof.md") and (Path(fp).parent / "brief.md").is_file():
             record_citations(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
         if fp and Path(fp).name == "brief.md":
             record_brief_reads(Path(fp).resolve().parent, payload.get("transcript_path", ""), sid)
-        # the session's open round, read by design-engine-door.py (dc-18, Sana option A)
-        # the write may sit up to 3 folders below the round, as round_dir_for allows (dc-18 std-1)
-        here = Path(fp).resolve() if fp else None
-        rd = next((d for d in (here.parents[:3] if here else []) if _is_round(d)), None)
         if rd is not None:
             led["round"] = str(rd)
             save_ledger(sid, led)

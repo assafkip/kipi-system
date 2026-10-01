@@ -9,6 +9,10 @@
 #
 #   verify.sh --staged    what a commit would contain, checked against a COPY
 #   verify.sh --full      the working tree, everything
+#   verify.sh --changed [--base REF] [--rev SHA]
+#                         a COPY of one commit (default HEAD), pytest scoped to
+#                         what changed since its merge-base with origin's default
+#                         branch. The pre-push door (2026-09-30).
 #
 # --staged never touches your working tree. It turns the git INDEX into a real
 # commit object and checks that out as a throwaway worktree, then runs there.
@@ -24,6 +28,18 @@
 set -euo pipefail
 
 MODE="${1:---full}"
+CHANGED_BASE=""
+CHANGED_REV="HEAD"
+if [ "$MODE" = "--changed" ]; then
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) CHANGED_BASE="${2:?--base needs a ref}"; shift 2 ;;
+      --rev)  CHANGED_REV="${2:?--rev needs a commit}"; shift 2 ;;
+      *) echo "usage: verify.sh --changed [--base REF] [--rev SHA]" >&2; exit 2 ;;
+    esac
+  done
+fi
 REPO="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
@@ -60,11 +76,71 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A COLLISION IS NOT A FAILED CHECK, and the two must never share an exit status
+# (ASK-1900). Building the staged snapshot touches metadata every worktree of the
+# repo shares -- the index and .git/worktrees -- so a concurrent session, the
+# dispatcher, or a sibling lefthook command in the same `parallel: true` stage can
+# lose this script a lock. Nothing about the staged code is wrong when that
+# happens, and a caller that reads "your change will not pass later" from it goes
+# off editing code that was fine.
+#
+# 75 is EX_TEMPFAIL: retry is the correct response, not a source edit. It is still
+# non-zero, so the commit is still refused -- a gate that cannot run must not pass,
+# which is this script's one non-negotiable rule and it is not weakened here.
+EXIT_COLLISION=75
+snapshot_collision() {
+  echo "verify.sh: COLLISION, not a failed check. Could not $1." >&2
+  echo "  Another git process holds shared repository state. NOTHING WAS CHECKED:" >&2
+  echo "  no verdict on your staged content was reached, in either direction." >&2
+  echo "  Retry the commit. If it repeats with nothing else running, then it is real." >&2
+  if [ -n "${2:-}" ]; then printf '%s\n' "$2" | sed 's/^/  git: /' >&2; fi
+  exit "$EXIT_COLLISION"
+}
+
+# Does this git error name a lock or a name clash on shared state? Used to
+# classify, never to decide whether to refuse -- a refusal happens either way.
+is_collision_error() {
+  printf '%s' "$1" | grep -qiE \
+    'index\.lock|\.lock.: File exists|already (exists|registered|checked out)|Another git process|unable to create.*lock'
+}
+
 case "$MODE" in
-  --staged|--full) ;;
-  *) echo "usage: verify.sh [--staged|--full]" >&2; exit 2 ;;
+  --staged|--full|--changed) ;;
+  *) echo "usage: verify.sh [--staged|--full|--changed [--base REF] [--rev SHA]]" >&2; exit 2 ;;
 esac
 
+# Check SNAP out as a throwaway worktree at $TMP/wt and point TARGET at it.
+# Shared by --staged (a commit built from the index) and --changed (an existing
+# commit), so both doors grade a COPY by the same machinery, collisions included.
+materialise_snapshot() {
+  local SNAP="$1" _what="$2"
+  WT_OK=""
+  for _try in 1 2 3; do
+    if WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+                     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
+                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
+      WT_OK=1
+      break
+    fi
+    is_collision_error "$WT_ERR" || break
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+        -u GIT_COMMON_DIR git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+    sleep 0.2
+  done
+  if [ -z "$WT_OK" ]; then
+    if is_collision_error "$WT_ERR"; then
+      snapshot_collision "create the $_what worktree after 3 tries" "$WT_ERR"
+    fi
+    # Print what git said. The first version threw stderr away and the refusal
+    # was untraceable: a gate that cannot say why it refused gets bypassed.
+    echo "verify.sh: could not create the $_what worktree. Refusing." >&2
+    echo "$WT_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  TARGET="$TMP/wt"
+}
+
+SCOPED=""
 STAGED=""
 if [ "$MODE" = "--staged" ]; then
   # TWO DIFFERENT QUESTIONS, and conflating them opened a hole.
@@ -85,12 +161,13 @@ if [ "$MODE" = "--staged" ]; then
   # still import `helper` were not selected. Reviewer finding on PR #371, with a
   # reproducer: with renames on, the selection was the declared fallback alone;
   # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
-  ANY_STAGED="$(git -C "$REPO" diff --cached --no-renames --name-only)"
-  STAGED="$(git -C "$REPO" diff --cached --name-only --diff-filter=ACMR)"
+  ANY_STAGED="$(git -C "$REPO" diff -z --cached --no-renames --name-only | tr '\0' '\n')"
+  STAGED="$(git -C "$REPO" diff -z --cached --name-only --diff-filter=ACMR | tr '\0' '\n')"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
   fi
+  SCOPED=1
   # The staged snapshot, materialised AS A REAL REPOSITORY. Not the working
   # tree, and not a stash.
   #
@@ -111,7 +188,72 @@ if [ "$MODE" = "--staged" ]; then
   # would contain, so a repo-aware test is answered about the STAGED state
   # rather than about a directory that is not a repo.
   TMP="$(mktemp -d)"
-  TREE="$(git -C "$REPO" write-tree)"
+  # THE INDEX IS READ FROM A COPY TOO (ASK-1900), and that is a collision fix,
+  # not tidiness. `git write-tree` does not merely read the index: it writes the
+  # updated cache-tree extension back, so it takes `index.lock` -- and it takes it
+  # with LOCK_DIE_ON_ERROR, which means it does not degrade, it dies. Every other
+  # index-touching call here returns 0 while the lock is held; measured on a repo
+  # with a held lock: diff --cached 0, diff --cached ACMR 0, ls-files 0,
+  # rev-parse HEAD 0, write-tree 128.
+  #
+  # So one sibling holding the lock for a few milliseconds killed this script at
+  # the second command, under `set -e`, before it echoed a single line. lefthook
+  # then printed its own fail_text, which said the change "will not pass later".
+  # That is false: nothing was ever checked. Observed four times in one evening
+  # across two worktrees of this repo, each refusal back in 0.10-0.17s against a
+  # ~2.8s real run, each identical retry green. lefthook's pre-commit stage is
+  # `parallel: true` and several siblings shell out to git, so the contender is
+  # usually this same commit's own hook stage.
+  #
+  # A copy cannot be contended. Measured: write-tree against a copied index
+  # returns the IDENTICAL tree sha while the real index.lock is held.
+  # Which index -- git EXPORTS GIT_INDEX_FILE to its hooks, and for a pathspec
+  # commit (`git commit -- foo`) that is a temporary index, not .git/index. Read
+  # the exported one or the commit being graded is the wrong one.
+  _index_src="${GIT_INDEX_FILE:-}"
+  if [ -z "$_index_src" ]; then
+    _index_src="$(git -C "$REPO" rev-parse --path-format=absolute --git-path index 2>/dev/null || true)"
+    [ -n "$_index_src" ] || _index_src="$REPO/.git/index"
+  fi
+  # git runs hooks from the top of the worktree, so a relative export resolves
+  # against $REPO. --path-format=absolute covers the fallback; older git has no
+  # such flag and returns a relative path, which this also catches.
+  case "$_index_src" in /*) ;; *) _index_src="$REPO/$_index_src" ;; esac
+  if [ ! -f "$_index_src" ]; then
+    echo "verify.sh: cannot read the index at $_index_src. Refusing." >&2
+    exit 1
+  fi
+  # git replaces the index by rename, so a cp sees one complete version of it,
+  # never a torn one.
+  if ! CP_ERR="$(cp "$_index_src" "$TMP/index" 2>&1)"; then
+    echo "verify.sh: could not copy the index for the staged snapshot. Refusing." >&2
+    printf '%s\n' "$CP_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  # Kept as a branch rather than deleted: the copy removes the contention on the
+  # REAL index, and a failure here is then about the snapshot machinery rather
+  # than about the staged code. Either way it is not a failed check, and saying so
+  # is the whole point of ASK-1900.
+  TREE=""
+  for _try in 1 2 3; do
+    if TREE="$(GIT_INDEX_FILE="$TMP/index" git -C "$REPO" write-tree 2>"$TMP/write-tree.err")"; then
+      break
+    fi
+    TREE=""
+    _err="$(cat "$TMP/write-tree.err")"
+    # A NON-collision failure must not be retried. Retrying a deterministic error
+    # three times only makes the refusal slower and buries the real message.
+    is_collision_error "$_err" || break
+    sleep 0.2
+  done
+  if [ -z "$TREE" ]; then
+    if is_collision_error "${_err:-}"; then
+      snapshot_collision "write the staged tree after 3 tries" "${_err:-}"
+    fi
+    echo "verify.sh: could not build the staged tree. Refusing." >&2
+    printf '%s\n' "${_err:-}" | sed 's/^/  /' >&2
+    exit 1
+  fi
   # An empty repo has no HEAD to parent from; the adversarial suite covers it.
   if git -C "$REPO" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     SNAP="$(git -C "$REPO" commit-tree "$TREE" -p HEAD -m 'verify.sh staged snapshot')"
@@ -131,16 +273,12 @@ if [ "$MODE" = "--staged" ]; then
   # because the by-hand run is the one you use to convince yourself it works.
   # write-tree above deliberately KEEPS the inherited environment: it has to
   # read the index the commit is actually being built from.
-  if ! WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-                     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
-                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
-    # Print what git said. The first version threw stderr away and the refusal
-    # was untraceable: a gate that cannot say why it refused gets bypassed.
-    echo "verify.sh: could not create the staged worktree. Refusing." >&2
-    echo "$WT_ERR" | sed 's/^/  /' >&2
-    exit 1
-  fi
-  TARGET="$TMP/wt"
+  #
+  # `.git/worktrees` is shared by every worktree of the repo, so this is the
+  # second collision surface (ASK-1900) and it gets the same treatment as
+  # write-tree: retry a lock or a name clash, refuse anything else immediately,
+  # and never report either as a failed check.
+  materialise_snapshot "$SNAP" "staged"
   # AND NOW DROP THEM FOR THE REST OF THE RUN. Sanitizing only the `worktree
   # add` above fixed the crash and left the deeper half: every check below runs
   # with the hook's environment too, so a TEST that shells out to git inherits
@@ -155,6 +293,68 @@ if [ "$MODE" = "--staged" ]; then
   # This is the script's own thesis applied to itself. verify.sh exists so the
   # same checks run identically at every door; a run whose answers depend on
   # which door invoked it is the exact drift it was written to stop.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+elif [ "$MODE" = "--changed" ]; then
+  # THE PUSH DOOR, SCOPED (founder-directed 2026-09-30). Pre-push used to run
+  # --full: ~6300 tests in consulting, 6-13 min, pushes hitting a 30-min timeout,
+  # and CI then ran the SAME full suite again before any merge, because main
+  # requires the `validate` check. Every change paid the whole suite twice. The
+  # full suite now runs ONCE, in CI, which is the gate merges already wait on.
+  # This door runs the tests that own what the branch changed.
+  #
+  # WHAT IS GRADED: a copy of one COMMIT (default HEAD), not the working tree.
+  # A push sends commits; uncommitted edits never reach the remote, so grading
+  # them (as --full at pre-push did) could block a push on work it does not carry.
+  #
+  # WHAT CHANGED: the diff from the merge-base with origin's DEFAULT branch, never
+  # from the branch's own upstream. A new branch has no upstream, and cole-gtm's
+  # gate answered that with "no remote base to diff; running the suite", which is
+  # the full-suite tax on every first push. The default branch always exists.
+  _rev="$(git -C "$REPO" rev-parse --verify -q "${CHANGED_REV}^{commit}" || true)"
+  if [ -z "$_rev" ]; then
+    echo "verify.sh --changed: cannot resolve '$CHANGED_REV' to a commit. Refusing." >&2
+    exit 1
+  fi
+  _base_ref="$CHANGED_BASE"
+  if [ -z "$_base_ref" ]; then
+    _base_ref="$(git -C "$REPO" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -z "$_base_ref" ]; then
+      for _cand in origin/main origin/master; do
+        if git -C "$REPO" rev-parse --verify -q "$_cand^{commit}" >/dev/null; then
+          _base_ref="$_cand"; break
+        fi
+      done
+    fi
+  fi
+  _mb=""
+  if [ -n "$_base_ref" ]; then
+    _mb="$(git -C "$REPO" merge-base "$_base_ref" "$_rev" 2>/dev/null || true)"
+  fi
+  if [ -n "$_mb" ]; then
+    # --no-renames for the same reason as --staged (PR #371): a rename must
+    # surface the OLD module name, or the tests importing it go unselected.
+    # -z on all four diffs. By default git prints a non-ASCII path quoted and
+    # octal-escaped, `"suite/test_caf\303\251.py"`, which no `^suite/` gate
+    # matches, so the suite was skipped at exit 0 (PR #489 review, reproduced).
+    # core.quotePath=false fixed only the accent: a `"` or `\` in a name is
+    # quoted regardless (round 2 of the same review). NUL output is never quoted.
+    ANY_STAGED="$(git -C "$REPO" diff -z --no-renames --name-only "$_mb" "$_rev" | tr '\0' '\n')"
+    STAGED="$(git -C "$REPO" diff -z --name-only --diff-filter=ACMR "$_mb" "$_rev" | tr '\0' '\n')"
+    if [ -z "$ANY_STAGED" ]; then
+      echo "verify.sh --changed: $CHANGED_REV changes nothing against $_base_ref, nothing to verify."
+      exit 0
+    fi
+    SCOPED=1
+    _nchg=$(printf '%s\n' "$ANY_STAGED" | sed -n '$=')
+    echo "verify.sh --changed: $_nchg path(s) changed since merge-base with $_base_ref (${_mb:0:12})"
+  else
+    # NO BASE, NO GUESS. A repo with no origin default branch, or history that
+    # shares nothing with it, gets the FULL suite on the snapshot. A selector
+    # that cannot say what changed may cost time, never coverage.
+    echo "verify.sh --changed: no merge-base with origin's default branch -> full suite"
+  fi
+  TMP="$(mktemp -d)"
+  materialise_snapshot "$_rev" "changed"
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 else
   TARGET="$REPO"
@@ -212,7 +412,11 @@ echo "verify.sh ${MODE} in ${TARGET}"
 # This is not a linter and is not pretending to be one. It is the floor under
 # the floor: a file that does not compile cannot be reasoned about by anything
 # downstream, and this repo has no ruff installed to catch it.
-PYFILES="$(git -C "$REPO" ls-files '*.py' | head -4000)"
+# Enumerated from $TARGET, not $REPO: under --changed --rev the snapshot is a
+# DIFFERENT commit from the checkout's index, and a .py present only in the
+# pushed commit was never compiled (PR #489 review, reproduced: exit 0 on a
+# commit with a SyntaxError). In --full TARGET is REPO, so nothing changes there.
+PYFILES="$(git -C "$TARGET" ls-files -z '*.py' | tr '\0' '\n' | head -4000)"
 if [ -n "$PYFILES" ]; then
   # compile(), NOT py_compile, and NOT ast.parse either. Two fixes, one line.
   #
@@ -278,7 +482,7 @@ sys.exit(fail)
 fi
 
 # --- shell: syntax, every tracked .sh ------------------------------------
-SHFILES="$(git -C "$REPO" ls-files '*.sh' | head -2000)"
+SHFILES="$(git -C "$TARGET" ls-files -z '*.sh' | tr '\0' '\n' | head -2000)"
 if [ -n "$SHFILES" ]; then
   run_check "shell syntax" bash -c '
     cd "$1" || exit 1
@@ -294,7 +498,20 @@ fi
 # --- json: every tracked .json parses ------------------------------------
 # Config in this fleet IS behaviour: room lists, model tiers, source weights.
 # A malformed one fails at 07:30 in a launchd job nobody is watching.
-JSONFILES="$(git -C "$REPO" ls-files '*.json' | grep -v -E '(^|/)(dist|node_modules)/' | head -3000)"
+# EXCLUDED BY PATHSPEC, NOT BY `grep -v`, and that is a silent-death fix
+# (ASK-1900). grep exits 1 when nothing survives the filter, and under
+# `set -euo pipefail` a command substitution whose pipeline returns 1 kills this
+# script THERE: exit 1, in about a tenth of a second, with no message of its own
+# and no summary line -- the exact shape of refusal this issue is about, reached
+# by a second route. It fires on any repo whose tracked .json files are all under
+# dist/ or node_modules/, and on any repo with no tracked .json at all. Found by
+# the ASK-1900 reproducer, whose first fixture had no .json and which therefore
+# measured this instead of the race it was written for.
+# git ls-files exits 0 on an empty result, so the hazard is gone rather than
+# suppressed with `|| true` -- which would also have hidden a real grep error.
+# Verified identical on this repo: both forms select the same 563 files.
+JSONFILES="$(git -C "$TARGET" ls-files -z '*.json' \
+  ':!:dist/**' ':!:**/dist/**' ':!:node_modules/**' ':!:**/node_modules/**' | tr '\0' '\n' | head -3000)"
 if [ -n "$JSONFILES" ]; then
   # One interpreter for all of them, same reason as python syntax (ASK-1795).
   run_check "json parse" bash -c '
@@ -345,7 +562,7 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   exit 1
 fi
 
-TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
+TESTFILES="$(git -C "$TARGET" ls-files -z 'test_*.py' '*/test_*.py' | tr '\0' '\n')"
 
 # THE SUITE MANIFEST, `.verify-suites` at the repo root, one `dir` per line.
 # Each is a directory pytest is invoked FROM, because that is how these suites
@@ -406,14 +623,16 @@ fi
 # branch only lands once it can commit. Measured 2026-09-23: the merge of main
 # into sana/ask-1144 was refused here, installed copy 480 lines vs 898. Merged,
 # it would also have refused every OTHER kipi-system commit on the machine until
-# someone installed by hand. --full (CI and a deliberate run) still FAILS on
+# someone installed by hand. --changed (pre-push) gets the same WARN for the
+# same reason: a branch that edits a hook could commit and then never push.
+# --full on a machine with installed hooks (a deliberate run) still FAILS on
 # drift, and `kipi update --dry` still prints it, so drift stays visible.
 _hooks_installer="$TARGET/q-system/.q-system/scripts/install-claude-hooks.py"
-if [ "$MODE" = "--staged" ] && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
+if { [ "$MODE" = "--staged" ] || [ "$MODE" = "--changed" ]; } && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
   if _drift="$(python3 "$_hooks_installer" --check 2>&1)"; then
     say "installed-hooks-match-repo" "ok"
   else
-    say "installed-hooks-match-repo" "WARN (drift; not fatal at pre-commit, --full fails)"
+    say "installed-hooks-match-repo" "WARN (drift; not fatal at commit/push, --full fails)"
     printf '%s\n' "$_drift" | sed 's/^/    /'
   fi
 elif [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
@@ -442,7 +661,7 @@ if [ -f "$MANIFEST" ]; then
       # A file entry runs from the REPO ROOT against that path, so pytest
       # resolves it exactly as a human would typing the path.
       if [ -f "$TARGET/$suite" ]; then
-        if [ "$MODE" = "--staged" ]; then
+        if [ -n "$SCOPED" ]; then
           if ! printf '%s\n' "$STAGED" | grep -q "^$suite$"; then
             say "pytest:$suite" "skipped (not staged)"
             continue
@@ -463,11 +682,16 @@ if [ -f "$MANIFEST" ]; then
       # --staged runs only the suites that OWN a staged file. Not a weaker
       # check, a narrower input: the same pytest, on the same snapshot, scoped
       # to what this commit can have broken. The full suite is 5 minutes here,
-      # and a 5-minute pre-commit is a hook people delete. Pre-push and CI run
-      # --full, so nothing escapes; it just escapes later than the fastest
-      # possible door.
-      if [ "$MODE" = "--staged" ]; then
-        if ! printf '%s\n' "$STAGED" | grep -q "^$suite/"; then
+      # and a 5-minute pre-commit is a hook people delete. --changed (pre-push)
+      # scopes the same way over the branch's diff; CI runs --full and is the
+      # required merge check, so nothing reaches main unrun.
+      # ANY_STAGED, not STAGED: a branch or commit that only DELETES a module
+      # under the suite still has to run the tests that import it. STAGED drops
+      # deletions (it scopes syntax checks), so keying on it skipped the suite
+      # and a deleted-out-from-under import passed. Caught by
+      # test_verify_changed.sh "deleting a module runs the tests naming it".
+      if [ -n "$SCOPED" ]; then
+        if ! printf '%s\n' "$ANY_STAGED" | grep -q "^$suite/"; then
           say "pytest:$suite" "skipped (no staged files)"
           continue
         fi
@@ -517,12 +741,12 @@ if [ -f "$MANIFEST" ]; then
       # pre-commit door to stop doing that. verify_select.py picks the owning test
       # files and prints WHY per staged path; a path no test names takes the
       # suite's declared fallback (<suite>/.verify-fallback, else the full suite),
-      # never nothing. --full is untouched, so pre-push and CI still run all of it.
+      # never nothing. --full is untouched, and CI (the required check) runs all of it.
       #
       # The selector comes from the TREE BEING GRADED, same rule as the manifest.
       # If it is missing or errors, the suite runs in full: a broken selector may
       # cost time, it may never cost coverage.
-      if [ "$MODE" = "--staged" ]; then
+      if [ -n "$SCOPED" ]; then
         _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
         _sel_src="$TARGET/q-system/.q-system/verify_select.py"
         [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
@@ -530,7 +754,10 @@ if [ -f "$MANIFEST" ]; then
         if [ -f "$_sel_src" ] && \
            _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
                        python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
-          _sel_mode="$(printf '%s\n' "$_sel_out" | head -1)"
+          # Parameter expansion, not `| head -1`: under pipefail a selection past
+          # the pipe buffer SIGPIPEs printf and set -e aborts with no verdict
+          # (PR #489 review round 2).
+          _sel_mode="${_sel_out%%$'\n'*}"
         else
           echo "      selector unavailable or failed -> full suite"
         fi
@@ -576,8 +803,8 @@ if [ -f "$MANIFEST" ]; then
     FAILED+=("pytest: .verify-suites present but pytest is not installed")
     say "pytest" "FAILED (not installed)"
   fi
-elif [ -f "$REPO/pytest.ini" ] || [ -f "$REPO/pyproject.toml" ] || \
-     [ -d "$REPO/tests" ] || [ -n "$TESTFILES" ]; then
+elif [ -f "$TARGET/pytest.ini" ] || [ -f "$TARGET/pyproject.toml" ] || \
+     [ -d "$TARGET/tests" ] || [ -n "$TESTFILES" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
     run_check "pytest" bash -c 'cd "$1" && python3 -m pytest -q --no-header' _ "$TARGET"
   else

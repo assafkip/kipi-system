@@ -28,7 +28,7 @@ ESCALATORS force the FULL SUITE (and tier L) whatever the line count says. Line
 count alone never does: a large diff names more files, so it selects more tests,
 and it becomes a full run through the last escalator when it truly is suite-wide.
   * the machinery that decides what runs (this file, the gate, the manifest
-    assembler, CI workflows, lefthook, verify.sh, any conftest.py)
+    assembler, verify_select.py, any conftest.py)
   * a file CI installs from or every test loads (requirements*.txt,
     pyproject.toml, pytest.ini, tox.ini, setup.cfg, any conftest.py)
   * a capability declaration other than an expected_tests entry
@@ -37,7 +37,15 @@ and it becomes a full run through the last escalator when it truly is suite-wide
     counted WITHOUT the always-run scanners: a fixed floor is not evidence that
     this diff is suite-wide)
 
-NOT AN ESCALATOR: a changed file no declared test names. "The full suite" means
+NOT AN ESCALATOR: a CI workflow, lefthook.yml or verify.sh (RULE-2026-10-01-A,
+2026-10-01). They run the tests that name them, like any other file. A workflow
+change used to buy a full run, and that was the door the full suite kept coming
+back through: every CI-only PR paid ~20 minutes, which the 2026-09-30 freeze
+forbids. What they decide is pinned by their own tests (test_ci_workflows.py,
+test_validate_workflow.py and the verify harnesses), and a selection those miss
+is the nightly's to catch.
+
+NOT AN ESCALATOR EITHER: a changed file no declared test names. "The full suite" means
 the declared tests, so when none of them can see the file, running all of them
 exercises it exactly as much as running none. Escalating there buys no coverage;
 measured on the last 80 commits of main it bought 17 minutes. The missing owner
@@ -45,13 +53,14 @@ is a real finding and it has its own issue; it is not this script's job.
 
 THE ASYMMETRY. Everything uncertain resolves UPWARD. An unreadable diff, a
 missing base ref, a crash in here: the caller runs the FULL suite. This script can
-make a run cheaper only when it can name exactly why that is safe. And the full
-suite still runs on every push to main, so a selection that was too narrow is
-caught at merge, by the same gate, not never.
+make a run cheaper only when it can name exactly why that is safe. Since
+2026-09-30 a push to main is scoped too, so the full suite runs only in the
+nightly gates.yml. That workflow is disabled as of 2026-09-30, and while it is
+off a selection that was too narrow is caught by no scheduled job at all.
 
 It prints and exits 0 (2 on an unreadable diff). It enforces nothing by itself:
-capability-gate.py --diff-base is the caller that acts on it, and CI passes that
-flag on pull requests only.
+capability-gate.py --diff-base is the caller that acts on it, and validate.yml
+passes that flag on pull requests and on pushes to main.
 
 NO --head FLAG, ON PURPOSE. The declared tests are read from the checkout on
 disk, so the diff has to end at that same checkout. Pointed at another ref it
@@ -86,10 +95,13 @@ FULL_RUN_PATHS = (
     "q-system/.q-system/scripts/change-size.py",
     "q-system/.q-system/scripts/capability-gate.py",
     "q-system/.q-system/scripts/capability_manifest.py",
-    "q-system/.q-system/verify.sh",
-    "lefthook.yml",
+    # The verify door's selector. A change here can make every scoped verify
+    # run wrong, so it does not get to grade itself narrowly either.
+    "q-system/.q-system/verify_select.py",
 )
-FULL_RUN_PREFIXES = (".github/workflows/",)
+# EMPTY ON PURPOSE (RULE-2026-10-01-A). `.github/workflows/` was here, and with
+# verify.sh and lefthook.yml it turned every CI edit into a full-suite run.
+FULL_RUN_PREFIXES: tuple[str, ...] = ()
 # Files that configure or are installed into EVERY test run. pytest.ini was the
 # one this list missed (codex, PR #377 round 5): it sets the options for every
 # pytest invocation in the repo, so a PR editing it ran 72 of 236 and went green.
@@ -336,7 +348,8 @@ def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
     and are used by almost everything, so the transitive walk reaches the width cap
     on most changes and IS the full suite. One step closes the case the review
     named, a lib with its own test plus a caller whose test breaks with it. A break
-    two steps out is caught by the full run on the push to main."""
+    two steps out is caught only by the nightly full run (disabled as of
+    2026-09-30), never at merge."""
     return sorted(c for c in files_naming(path, index) if c != path)
 
 
