@@ -60,7 +60,7 @@ def _table(repos):
     for name, text in (("full", FULL), ("off", FULL), ("nightly", NIGHTLY), ("hidden", HIDDEN)):
         t[f"api repos/{OWNER}/app/contents/.github/workflows/{name}.yml?ref=main"] = [0, json.dumps(_b64(text))]
     for wid, rid in ((1, 11), (4, 44)):
-        t[f"api repos/{OWNER}/app/actions/workflows/{wid}/runs?status=success&per_page=1"] = \
+        t[f"api repos/{OWNER}/app/actions/workflows/{wid}/runs?status=success&event=pull_request&per_page=1"] = \
             [0, json.dumps({"workflow_runs": [{"id": rid}]})]
     step = lambda n, a, b: {"name": n, "started_at": f"2026-10-01T00:{a}Z", "completed_at": f"2026-10-01T00:{b}Z"}
     t[f"api repos/{OWNER}/app/actions/runs/11/jobs"] = [0, json.dumps({"jobs": [{"steps": [step("pytest", "00:00", "00:10")]}]})]
@@ -180,6 +180,23 @@ def test_a_persistently_red_nightly_alerts_once(tmp_path):
 def test_the_alert_names_the_population_it_saw(tmp_path):
     _, alerts = _run(tmp_path, _table(["app"]), "--no-local")
     assert "scanned 1 repos (was ?)" in alerts[0], alerts
+
+
+def test_a_nightly_full_run_is_not_the_doors_cost(tmp_path):
+    # Live 2026-10-01: a scheduled full run was read as a PR door's 432s.
+    t = _table(["app"])
+    for k in [k for k in t if "workflows/4/runs?status=success&event=pull_request" in k]:
+        del t[k]                         # hidden.yml has no PR/push success, only a nightly
+    p, _ = _run(tmp_path, t, "--no-local")
+    assert json.loads(p.stdout)["slow_steps"] == []
+
+
+def test_no_workflow_readable_is_a_blind_scan(tmp_path):
+    t = _table(["app"])
+    for k in [k for k in t if "/contents/.github/workflows/" in k]:
+        t[k] = [1, "gh: Server Error (HTTP 502)"]
+    p, alerts = _run(tmp_path, t, "--no-local")
+    assert p.returncode == 2 and alerts == [], (p.returncode, p.stderr)
 
 
 def test_testlike_is_whole_words():

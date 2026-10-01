@@ -218,9 +218,12 @@ def _nightly_only_step(step: str) -> bool:
     if not m:
         return False
     expr = m.group(1)
-    allowed = re.findall(r"github\.event_name\s*==\s*'(\w+)'", expr)
-    return (bool(allowed) and set(allowed) <= {"schedule", "workflow_dispatch"}
-            and not re.search(r"!=|&&|\bpush\b|pull_request", expr))
+    # EVERY `||` term must itself be a nightly-event check (PR #493 review): one
+    # widening term (`|| github.ref == 'refs/heads/main'`) runs the step on push.
+    expr = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", expr.strip())
+    terms = [s.strip().strip("()").strip() for s in expr.split("||")]
+    ok = re.compile(r"github\.event_name\s*==\s*'(?:schedule|workflow_dispatch)'")
+    return bool(terms) and all(ok.fullmatch(s) for s in terms)
 
 
 def workflow_doors(text: str) -> list[str]:

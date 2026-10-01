@@ -101,12 +101,13 @@ def gh_json_or_404(*args: str):
     return json.loads(p.stdout or "null")
 
 
-def scan_ci(owner: str) -> tuple[list[dict], int, list[dict], list[dict]]:
+def scan_ci(owner: str) -> tuple[list[dict], int, list[dict], list[dict], int]:
     repos = gh_json("repo", "list", owner, "--limit", "500", "--no-archived",
                     "--json", "name,defaultBranchRef")
     if not repos:
         raise ScanError(f"gh repo list {owner} returned no repos")
     doors, slow, red = [], [], []
+    read_ok = 0
     for r in repos:
         name = r["name"]
         branch = (r.get("defaultBranchRef") or {}).get("name") or "main"
@@ -136,6 +137,7 @@ def scan_ci(owner: str) -> tuple[list[dict], int, list[dict], list[dict]]:
             text = read(path)
             if text is None:
                 continue
+            read_ok += 1
             for d in fsd.resolve_local(fsd.workflow_doors(text), read):
                 doors.append({"repo": name, "where": "ci", "door": path, "what": d})
             # An exemption does NOT silence the estimator (theia PR #6 review): it
@@ -145,7 +147,12 @@ def scan_ci(owner: str) -> tuple[list[dict], int, list[dict], list[dict]]:
                 slow += slow_steps(owner, name, path, ids[path])
             if "schedule" in fsd.triggers(text) and ids.get(path):
                 red += red_nightly(owner, name, path, ids[path])
-    return doors, len(repos), slow, red
+    # PR #493 review: the repo count is fixed before any workflow is fetched, so
+    # a scan whose every read failed still said "0 open". Zero workflows read is
+    # a scanner that saw nothing.
+    if read_ok == 0:
+        raise ScanError(f"{len(repos)} repos listed but no workflow file could be read")
+    return doors, len(repos), slow, red, read_ok
 
 
 def red_nightly(owner: str, repo: str, path: str, wid) -> list[dict]:
@@ -171,10 +178,16 @@ def _secs(a: str | None, b: str | None) -> int | None:
 
 
 def slow_steps(owner: str, repo: str, path: str, wid) -> list[dict]:
-    runs = gh_json_or_404("api", f"repos/{owner}/{repo}/actions/workflows/{wid}/runs"
-                          "?status=success&per_page=1") or {}
+    # PR and push runs only (live, 2026-10-01): "the last successful run" of any
+    # event read a nightly FULL run as the PR door's cost (432s for a door that
+    # is scoped). The door is what a PR or a push pays.
+    picked = []
+    for ev in ("pull_request", "push"):
+        runs = gh_json_or_404("api", f"repos/{owner}/{repo}/actions/workflows/{wid}/runs"
+                              f"?status=success&event={ev}&per_page=1") or {}
+        picked += runs.get("workflow_runs", [])[:1]
     out = []
-    for run in runs.get("workflow_runs", [])[:1]:
+    for run in picked:
         jobs = gh_json_or_404("api", f"repos/{owner}/{repo}/actions/runs/{run['id']}/jobs") or {}
         for job in jobs.get("jobs", []):
             for st in job.get("steps", []):
@@ -182,7 +195,12 @@ def slow_steps(owner: str, repo: str, path: str, wid) -> list[dict]:
                 if s is not None and s > SLOW_STEP_S and TESTLIKE.search(st.get("name", "")):
                     out.append({"repo": repo, "door": path, "step": st["name"],
                                 "seconds": s, "run": run["id"]})
-    return out
+    # One row per step: the slower of its PR and push measurements.
+    best = {}
+    for o in out:
+        if o["step"] not in best or o["seconds"] > best[o["step"]]["seconds"]:
+            best[o["step"]] = o
+    return list(best.values())
 
 
 def _git(path: Path, *args: str) -> str:
@@ -306,7 +324,7 @@ def main(argv=None) -> int:
     registry = Path(a.registry) if a.registry else HERE.parents[2] / "instance-registry.json"
     try:
         owner = a.owner or gh_json("api", "user")["login"]
-        doors, nrepos, slow, red = ([], 0, [], []) if a.no_ci else scan_ci(owner)
+        doors, nrepos, slow, red, nwf = ([], 0, [], [], 0) if a.no_ci else scan_ci(owner)
         nlocal = 0
         if not a.no_local:
             cos = local_checkouts(registry, projects_root)
@@ -322,7 +340,7 @@ def main(argv=None) -> int:
 
     report = {"doors": doors, "slow_steps": slow, "red_nightlies": red,
               "fingerprint": fingerprint(doors, slow, red),
-              "repos_scanned": nrepos, "checkouts_scanned": nlocal}
+              "repos_scanned": nrepos, "workflows_read": nwf, "checkouts_scanned": nlocal}
     prev = read_state(state_dir)
     changed = prev is None or prev.get("fingerprint") != report["fingerprint"]
     if a.json:
@@ -348,7 +366,8 @@ def main(argv=None) -> int:
         pr_, pc = ((prev or {}).get("repos_scanned", "?"), (prev or {}).get("checkouts_scanned", "?"))
         if alert(f"fleet full-suite doors changed: {len(doors)} open (was {was}), "
                  f"{len(slow)} slow test step(s), {len(red)} red nightly run(s); "
-                 f"scanned {nrepos} repos (was {pr_}), {nlocal} checkouts (was {pc}). "
+                 f"scanned {nrepos} repos (was {pr_}), {nwf} workflows read "
+                 f"(was {(prev or {}).get('workflows_read', '?')}), {nlocal} checkouts (was {pc}). "
                  f"{where or 'none open'}. RULE-2026-10-01-A: only the nightly may run a whole suite."):
             write_state(state_dir, report)
         else:

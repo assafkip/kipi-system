@@ -69,6 +69,10 @@ def wf(steps: str, on: str = ON_PR) -> str:
     ("      - if: github.event_name != 'schedule'\n        run: pytest tests/", True),
     ("      - if: github.event_name == 'push'\n        run: pytest tests/", True),
     ("      - if: github.event_name == 'schedule' && always()\n        run: pytest tests/", True),
+    # PR #493 review: one widening || term runs the step on push.
+    ("      - if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'\n"
+     "        run: pytest tests/", True),
+    ("      - if: ${{ github.event_name == 'schedule' }}\n        run: pytest tests/", False),
     # PR #492 review round 2: runners the first table did not know.
     ("      - run: uv run pytest", True),
     ("      - run: poetry run pytest tests/", True),
