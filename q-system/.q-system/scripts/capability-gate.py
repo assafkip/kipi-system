@@ -709,8 +709,9 @@ def select_for_diff(root, base, notes):
     is never mistaken for a decision.
 
     validate.yml passes --diff-base on pushes to main too (2026-09-30), so the
-    full suite runs only in the nightly gates.yml, which passes none. A selection
-    that was too narrow is caught there, not at merge.
+    only caller that runs the full suite is the nightly gates.yml, which passes
+    none. That workflow is disabled as of 2026-09-30: while it is off, a
+    selection that was too narrow is caught by no scheduled job at all.
     """
     try:
         path = Path(__file__).resolve().parent / "change-size.py"
@@ -744,7 +745,7 @@ def select_for_diff(root, base, notes):
         return None
     notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
                  f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
-                 "the full suite runs in the nightly gates run")
+                 "the full suite runs only in the nightly gates workflow")
     return set(selected)
 
 

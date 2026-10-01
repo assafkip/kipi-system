@@ -55,8 +55,8 @@ jobs:
       # (prd-silent-absence-capability-gate-2026-07-23).
       #
       # A PULL REQUEST AND A PUSH TO MAIN BOTH RUN ONLY THE TESTS THEIR DIFF EARNS
-      # (ASK-1749 for PRs; pushes since 2026-09-30, founder-directed: the full
-      # suite runs only in the nightly gates.yml). Measured on run 35478270323:
+      # (ASK-1749 for PRs; pushes since 2026-09-30, ASK-2316, founder-directed:
+      # the full suite belongs to the nightly gates.yml). Measured on run 35478270323:
       # this step was 17m41s of a 19m36s job because it ran every declared
       # artifact on every push of every PR, and then once more on the merge push.
       # change-size.py picks the declared tests that name the changed files. It
@@ -109,7 +109,11 @@ jobs:
       # WHAT THE STEP ABOVE ACTUALLY RAN (claude review of PR #377, minor 2). On a
       # pull_request and on a push to main it is the SUBSET that diff earns, unless
       # change-size could not vouch for the diff. The full declared suite runs
-      # nowhere in this job; its only home is the nightly gates.yml. The skip is still
+      # nowhere in this job. Its only home is the nightly gates.yml, and that
+      # workflow is DISABLED as of 2026-09-30, so today no job runs the full
+      # declared suite and a selection that was too narrow is caught by nothing
+      # until it is turned back on. verify.yml's pytest run covers only the
+      # pytest-collectible slice, never a bash-runner artifact. The skip is still
       # right, because the double execution it avoids is of whatever that step ran.
       # Writing "just ran the full suite" here was the part that stopped being
       # true, and a wrong why-comment is worse than none.
