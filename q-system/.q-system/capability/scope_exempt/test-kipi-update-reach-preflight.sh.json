@@ -1,0 +1,4 @@
+{
+ "prefix": "test-kipi-update-reach-preflight.sh",
+ "reason": "ASK-1962 (RCA fleet-sync two-day spin, row T10): the reach-preflight harness lives at the repo root beside kipi-update.sh, which it copies with the rest of the root into a throwaway skeleton, so it cannot move under q-system/.q-system/scripts/ without rewriting its REAL= resolution. The prefix is this ONE file, not the root: the other 12 root test-kipi-update-*.sh stay undeclared and are captured as their own spillover item rather than exempted in bulk here."
+}

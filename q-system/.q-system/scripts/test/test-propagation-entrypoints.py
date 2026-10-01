@@ -90,11 +90,14 @@ EXEMPT = {
     "and destination are both synthetic fixtures under mktemp -d",
     "test-kipi-update-preserve-scan.sh": "a test harness for the same scanner; "
     "its copies are inside a throwaway temp fixture, not a real instance",
+    # ASK-1965: the earlier reason said the SOURCE was a synthetic fixture too.
+    # It is not: build_fleet's cp -R reads the real repo tree ($REAL). Only the
+    # destination is synthetic, which is the half that makes this safe.
     "test-kipi-update-reach-preflight.sh": "a test harness for the reach "
     "preflight; the match first_match() returns is the `cp -R` in build_fleet, "
-    "whose source and destination are both synthetic fixtures under mktemp -d. "
-    "Same class as the two preserve harnesses above, and it only ever invokes "
-    "the updater with --dry-run",
+    "which READS the real repo's q-system/ and WRITES it into a throwaway "
+    "skeleton under mktemp -d. No instance is ever a destination, and the "
+    "harness only ever invokes the updater with --dry-run",
     # --- ASK-1145 -------------------------------------------------------
     # These eleven were always undeclared. Nobody added them since: this test
     # was declared `runner: python3` on a pytest module, so the capability gate

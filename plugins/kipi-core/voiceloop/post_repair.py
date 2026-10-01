@@ -281,30 +281,54 @@ def repair(text, allowlist, linter, mapping):
     #    Offsets come from the linter's prose view, so they are indices into the STRIPPED
     #    text, not the raw text. Repair by locating the token in the raw text instead,
     #    which is why this walks matches rather than splicing by offset.
-    for _ in range(10):  # bounded: each pass fixes at least one or breaks
+    #    THE SENTENCE START, NOT THE FIRST OCCURRENCE (2026-09-29). This used to run
+    #    `pattern.subn(..., count=1)` over the whole draft, which rewrites the word's
+    #    FIRST appearance anywhere: live Reddit drafts shipped "from The abuse side" and
+    #    "the rest Of your list" while the real sentence start stayed lowercase. The prose
+    #    view keeps every line (fences blank to newlines, blockquotes empty in place), so
+    #    the start is pinned by its LINE and by how many times the word appears before it
+    #    on that line, counting only matches outside code in both views.
+    #    A letter/digit boundary, not \w: `_` is a word character, so a start behind
+    #    underscore italics (`_the rest_`) never matched at its own position (PR #475
+    #    review). A start that still cannot be placed is SKIPPED, not a reason to stop
+    #    fixing the starts after it.
+    unplaceable = set()
+    for _ in range(10):  # bounded: each pass fixes one start or marks it unplaceable
         prose = linter.strip_code_preserving_lines(repaired)
-        target = None
-        for offset in linter._sentence_start_offsets(prose):
-            token = re.match(r"[A-Za-z][\w'-]*", prose[offset:])
+        target = offset = None
+        for start in linter._sentence_start_offsets(prose):
+            token = re.match(r"[A-Za-z][\w'-]*", prose[start:])
             if not token or token.group() == "__CODE__" or token.group()[0].isupper():
                 continue
-            target = token.group()
+            if (prose.count("\n", 0, start), start, token.group()) in unplaceable:
+                continue
+            target, offset = token.group(), start
             break
         if target is None:
             break
 
+        word = re.compile(r"(?<![`A-Za-z0-9])" + re.escape(target) + r"(?![`A-Za-z0-9])")
+        line_no = prose.count("\n", 0, offset)
+        nth = len(word.findall(prose[prose.rfind("\n", 0, offset) + 1:offset]))
+        raw_lines = repaired.split("\n")
+        raw_line = raw_lines[line_no]
+        code = [m.span() for regex in (linter.INLINE_CODE_RE, linter.CODE_FENCE_RE)
+                for m in regex.finditer(raw_line)]
+        hits = [m for m in word.finditer(raw_line)
+                if not any(a <= m.start() < b for a, b in code)]
+        if nth >= len(hits):
+            unplaceable.add((line_no, offset, target))
+            continue
+        hit = hits[nth]
+
         if is_verbatim(target, allowlist):
-            pattern = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
-            repaired, n = pattern.subn(f"`{target}`", repaired, count=1)
-            if not n:
-                break
+            replacement = f"`{target}`"
             changes.append(f"protected verbatim token '{target}' with backticks")
         else:
-            pattern = re.compile(r"(?<![`\w])" + re.escape(target) + r"(?![`\w])")
-            repaired, n = pattern.subn(target[0].upper() + target[1:], repaired, count=1)
-            if not n:
-                break
+            replacement = target[0].upper() + target[1:]
             changes.append(f"capitalized sentence start '{target}'")
+        raw_lines[line_no] = raw_line[:hit.start()] + replacement + raw_line[hit.end():]
+        repaired = "\n".join(raw_lines)
 
     # 3. Proper nouns miscased against the linter's own list, in its canonical spelling.
     for noun in linter.load_proper_nouns(""):
@@ -425,13 +449,25 @@ def violations(text, linter, phrases_path):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 2:
-        print("usage: post_repair.py <file>", file=sys.stderr)
+    # The engine cannot know where a deployment keeps its linter (the public mirror has
+    # no q-system/), so the linter path is an argument. It used to call repair(text)
+    # with 1 of 4 arguments and raised TypeError on every run (PR #475 review).
+    # The verbatim-lowercase allowlist is deployment config too. Without it, tool names
+    # that are correct in lowercase get capitalized, so a run without it says so on
+    # stderr rather than printing a clean verdict over a mangled name (review round 3).
+    if len(sys.argv) not in (3, 4):
+        print("usage: post_repair.py <file> <path/to/voice-lint.py> "
+              "[path/to/verbatim-lowercase.txt]", file=sys.stderr)
         raise SystemExit(2)
     with open(sys.argv[1], encoding="utf-8") as fh:
         original = fh.read()
-    fixed, what = repair(original)
-    left = violations(fixed)
+    cli_linter = _load_linter(sys.argv[2])
+    cli_allowlist = load_verbatim_lowercase(sys.argv[3]) if len(sys.argv) == 4 else set()
+    if not cli_allowlist:
+        print("  WARNING: no verbatim-lowercase allowlist; lowercase tool names will be "
+              "capitalized", file=sys.stderr)
+    fixed, what = repair(original, cli_allowlist, cli_linter, {})
+    left = violations(fixed, cli_linter, "")
     for line in what:
         print(f"  repaired: {line}")
     print(f"  blocking violations remaining after repair: {len(left)}")

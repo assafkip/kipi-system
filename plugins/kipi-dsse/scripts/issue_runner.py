@@ -368,6 +368,36 @@ def _extract_marker_fields(text: str) -> dict[str, str] | None:
     return None
 
 
+def _closed_finding_class(paths: "Paths", prd_id: str, finding_id: str) -> str | None:
+    """The `finding_class` of the PRD finding this close settles, or None.
+
+    ASK-1968: a receipt read alone could not say what kind of problem its work
+    fixed (81 of 100 abstained). Only a value on findings_writer's closed list
+    is returned, because the receipt lands in a public ledger and its gate
+    refuses anything else. The list is imported, not restated. A missing
+    findings file (Linear-split issues, a worktree without .prd-os/findings)
+    means no class, never a refused close: the field is optional.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
+        from findings_writer import FINDING_CLASSES
+    except ImportError:
+        return None
+    cfg = Paths._load_config(paths.repo_root)
+    path = paths.repo_root / cfg.get("findings_dir", ".prd-os/findings") / f"{prd_id}-findings.jsonl"
+    if not path.is_file():
+        return None
+    for raw in path.read_text().splitlines():
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and rec.get("id") == finding_id:
+            value = rec.get("finding_class")
+            return value if value in FINDING_CLASSES else None
+    return None
+
+
 def _append_receipt(path: Path, entry: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
@@ -1413,6 +1443,9 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "findings_triaged_at": state["receipts"].get("findings_triaged"),
         "commit_sha": sha,
     }
+    finding_class = _closed_finding_class(paths, marker["prd_id"], marker["finding_id"])
+    if finding_class is not None:
+        receipt["finding_class"] = finding_class
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1

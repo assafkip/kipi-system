@@ -30,6 +30,15 @@ import subprocess
 
 from . import usage_ledger
 
+#: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
+#: hands text in and reads text back; none uses a tool. Without these flags each
+#: `claude -p` loads the full MCP config of its cwd and starts `npm exec
+#: @apify/actors-mcp-server`, and when the call exits that npm/node pair is not
+#: always killed. Captured 2026-09-23 13:10 PT: one hourly job fire made 27
+#: calls and left 7 apify servers reparented to launchd, and an earlier day's
+#: orphans grew swap from 8 GB to 18 GB and took free disk to 0.55 GB. An empty
+#: strict config means nothing is spawned, so there is nothing to orphan.
+NO_MCP_ARGS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}')
 #: Where the instruction ends and the INPUTS begin. Everything after it is the voice
 #: corpus and the source material, neither of which is a constraint.
 VOICE_MARKER = "VOICE REFERENCE:"
@@ -108,6 +117,16 @@ def _meter(row_fn, *args, **kwargs):
             pass
 
 
+def subscription_env():
+    """os.environ without ANTHROPIC_API_KEY: the env every headless `claude` call runs in.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude prefers
+    the key over the subscription login, so an inherited key turns every call
+    through here into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
               caller="run_model()", under_test="raise", model=None, allow_opencode=True):
     """THE model call. One implementation, so every caller gets the same guarantees.
@@ -158,9 +177,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             if active_model:
                 args.extend(["--model", active_model])
             args.append(prompt)
+            # env: OpenCode reads ANTHROPIC_API_KEY too, so this branch gets the
+            # same subscription-only env as the claude branch (codex minor, #464).
             result = subprocess.run(
                 args, capture_output=True, text=True,
-                timeout=timeout)
+                timeout=timeout, env=subscription_env())
             if result.returncode == 0:
                 parts = []
                 for line in result.stdout.splitlines():
@@ -198,11 +219,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        argv = [binary, "-p", prompt, *usage_ledger.JSON_FLAGS]
+        argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS]
         if model:
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
-                                text=True, timeout=timeout)
+                                text=True, timeout=timeout, env=subscription_env())
     except subprocess.TimeoutExpired as exc:
         _meter(usage_ledger.failure_row, "timeout", stdout=exc.stdout, stderr=exc.stderr, **who)
         return None
@@ -214,7 +235,8 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         # plain call so the fleet keeps working, and record an unmetered row.
         try:
             result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
-                                    capture_output=True, text=True, timeout=timeout)
+                                    capture_output=True, text=True, timeout=timeout,
+                                    env=subscription_env())
         except (subprocess.SubprocessError, OSError) as exc:
             _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
             return None

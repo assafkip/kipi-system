@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/silent-success-lint.py",
+ "reason": "repo-wide detector for failure paths that exit 0 and tell nobody (ASK-213). DELIBERATELY unwired: the baseline is not clean, and ASK-213 scopes CI arming to 'only if the baseline is clean'. Its paired suite test-silent-success-lint.sh proves the detectors and the --baseline ratchet on vendored fixtures and a throwaway repo, never on this tree. A live-repo ratchet inside that suite went red on 2026-08-30 from unrelated merges (validate run 33296036172), so arming by that door is refused too. Arm it (ratchet pinned at the PR base sha) or retire it under ASK-1872",
+ "spillover_id": "sp-b1be7b6d"
+}

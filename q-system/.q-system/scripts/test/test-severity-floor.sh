@@ -3000,34 +3000,43 @@ ok "an armed PR whose receipt landed pages exactly what it did before"
 S_CV_UN="$W2/state-conv-unarmed"; mkdir -p "$S_CV_UN/pr-reviews"
 seed_record "$S_CV_UN" 903 "APPROVE" "$SHA_A"
 printf 'unarmed\n' > "$S_CV_UN/pr-reviews/pr-903.automerge"
-gh_says 903 CLEAN "$SHA_A"
-: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+gh_arm 903 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
 run_converge "$S_CV_UN" "$W2/conv-unarmed.out" 1
 grep -qi "no human merge needed" "$W2/pages.txt" \
   && fail "THE DEFECT ON THE PHONE: the worker recorded PR #903 as NOT armed and converge Slacked
       that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
       fine -- the silent stall relocated into the alert channel. It said:
 $(cat "$W2/pages.txt")"
+# ASK-310 INVERTED THIS. It used to assert the page CARRIED "gh pr merge --auto
+# --squash 903": the suite pinned the defect, a loop that knows the fix and hands
+# a human the command. converge now runs that command itself, through the same
+# automerge_arm the worker uses, and the page carries no merge command.
+[ "$(grep -c '^pr merge --auto --squash 903$' "$ARMLOG" 2>/dev/null || true)" = "1" ] \
+  || fail "converge knows PR #903 is approved and recorded unarmed, and did not arm it exactly once.
+      gh calls: $(cat "$ARMLOG")"
 grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
-  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
-      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
-ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
+  && fail "converge armed PR #903 and still paged a human the merge command: $(cat "$W2/pages.txt")"
+ok "converge ARMS a PR the worker recorded as unarmed, and pages no merge command (ASK-310)"
 
 S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"
 seed_record "$S_CV_NONE" 904 "APPROVE" "$SHA_A"
-gh_says 904 CLEAN "$SHA_A"
-: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+gh_arm 904 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
 run_converge "$S_CV_NONE" "$W2/conv-none.out" 1
 grep -qi "no human merge needed" "$W2/pages.txt" \
   && fail "NOTHING RECORDED THE ARM and converge asserted it anyway. This is the reviewer's own
       repro: the worker never reached the arm this round, so the claim is backed by a comment
       rather than by a read. It said:
 $(cat "$W2/pages.txt")"
-grep -qi "gh pr merge --auto --squash 904" "$W2/conv-none.out" \
-  || fail "converge could not read the arm state and did not leave the operator the fallback
-      command. It said:
+# ASK-310: the fallback command is RUN, not handed over. automerge_arm asks the
+# PR its state first, so this is a read, not an assertion.
+[ "$(grep -c '^pr merge --auto --squash 904$' "$ARMLOG" 2>/dev/null || true)" = "1" ] \
+  || fail "nothing recorded PR #904's arm state and converge did not arm it exactly once.
+      gh calls: $(cat "$ARMLOG")
+      It said:
 $(sed 's/^/        /' "$W2/conv-none.out")"
-ok "converge claims nothing about a PR whose arm state nobody recorded"
+ok "converge arms a PR whose arm state nobody recorded instead of handing over the command (ASK-310)"
 
 # --- R5. an unarmed PR pages ONCE, and the flag CLEARS -----------------------
 # PR #33 round 3, finding 3 (minor). The comment justified per-run paging as "the

@@ -20,7 +20,13 @@
 #   2 turn cap        -> MAX_ROUNDS (default 4), the ceiling on rounds
 #   5 no progress     -> same verdict AND no new commit on the branch two rounds
 #                        running: the rework is not moving, stop burning rounds
-#   7 error threshold -> no PR, or a review that produced no verdict
+#   7 error threshold -> no PR, a review that produced no verdict, or a verdict
+#                        only the DEGRADED Opus fallback produced (ASK-2036).
+#                        The third meaning is NAMED here rather than left to the
+#                        branch: sp-bb12f937 is the same file reusing exit 8 for
+#                        a new meaning and leaving this contract describing the
+#                        old one, and a contract that lags its code is how the
+#                        next reader picks the wrong code.
 #   4 wall clock      -> inherited: each round is bounded inside the worker
 #                        (1800s work) and the reviewer (2400s review)
 #
@@ -926,8 +932,35 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   # unwritable ledger is caught there with exit 8 rather than twice.
   python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" refused_no_pr >>"$LOG" 2>&1 \
     || say "note: could not clear the stale refusal marker for $ISSUE; see $LOG"
+  # SAME CLEAR FOR THE ENVIRONMENTAL HALT (ASK-873), and for the same reason: a
+  # marker left by an earlier round would suppress a REAL failure's attempt
+  # forever, which is the retry-forever bug this file closes, inverted.
+  python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" env_halt >>"$LOG" 2>&1 \
+    || say "note: could not clear the stale env-halt marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
+
+  # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
+  # charges nothing when the RUNNER is unavailable -- an exhausted account is
+  # a property of the machine, identical for every issue. Without this read,
+  # the driver charges the attempt the worker deliberately withheld, and the
+  # fix that stopped 11 healthy issues going TERMINAL holds in the worker
+  # while leaking straight back in from here.
+  # READ BEFORE ANYTHING LOOKS AT THE PR (PR #421 round 15, major). It used to
+  # sit inside the no-PR branch only, so a halt on an issue that already had an
+  # open PR (a rework round) went on to the verdict logic and paged exit 7 or 5
+  # every tick, blaming the review or the agent. The mark is this round's alone:
+  # it was cleared just above, before the worker ran.
+  ENV_HALT_MARK="$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" env_halt "" 2>/dev/null || echo "")"
+  if [ -n "$ENV_HALT_MARK" ] && [ "$ENV_HALT_MARK" != "None" ]; then
+    say "$ISSUE was NOT ATTEMPTED: the runner itself was unavailable, which is a condition of the machine and not of this issue. No attempt is charged; it stays retryable and will be picked up once the runner is back."
+    # NO PAGE FOR A MACHINE OUTAGE (PR #421 round 1, major). The worker already
+    # paged once for the outage, under its shared claim; the exit-7 below filed
+    # one "Sana could not open a PR" ticket per issue per tick for the same dead
+    # account, blaming the agent. Exit 9, the worker's own infra code, with no
+    # notify: nothing is charged or ticketed.
+    exit 9
+  fi
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
@@ -991,8 +1024,60 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   #
   # The gate's NOTE goes through `say` so it lands in the run log with everything
   # else. Swallowing it would silently grandfather the blind spot it announces.
-  GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA")"; GATE=$?
+  #
+  # ARGUMENT 5 ARMS ASK-2036, and it is read from the SAME record the verdict and
+  # the reviewed sha come from -- one record, one read per field, no second
+  # reader. Empty for every pre-ASK-445 record, which the gate treats exactly as
+  # it treats an absent head_sha: today's behaviour, unchanged.
+  REVIEW_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")")"
+  GATE_NOTE="$(rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA" "$REVIEW_DEGRADED")"; GATE=$?
   [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
+  # 50 = THE ONLY REVIEW ON RECORD IS THE DEGRADED FALLBACK (ASK-2036). Codex was
+  # down, Opus filled the required status so the repo would not wedge, and the
+  # record says so. The code may well be fine; nothing independent has read it.
+  #
+  # TERMINAL FOR THIS RUN, NOT ANOTHER ROUND. Falling through to the rework loop
+  # would dispatch Sana against an approved diff with no findings to act on, and
+  # the review at the end of that round hits the SAME outage and writes the same
+  # degraded record -- rounds spent to the cap with nothing learned. The one
+  # thing that clears this is codex answering, which is a condition of the
+  # machine and not something a round can change (`self-healing-retry.md` rule 5:
+  # environmental-trigger stops on attempt 1).
+  #
+  # NO RECEIPT AND NO ARM, both deliberate: the receipt writer below is reached
+  # only from gate 10, and arming here would hand the PR to GitHub to land on a
+  # green status that a degraded review posted. Exit 7 rather than a new code --
+  # it is the existing "the review did not produce something we can act on" stop,
+  # and the redrives already re-enter a PR parked there, which is exactly the
+  # behaviour wanted once codex is back.
+  #
+  # "NOT ARMED" WAS A CLAIM THIS BRANCH COULD NOT MAKE (PR #446 review, finding
+  # 1 -- major, filed against the worker's copy of the same hole). The worker runs
+  # FIRST inside every round of this loop and its step 5 arms unconditionally 42
+  # lines before its own review, so by the time this branch reads the record the
+  # PR can already be queued to land -- on a `kipi/reviewer-approved` the degraded
+  # fallback posted itself. Declining to arm does not unqueue it. So the arm comes
+  # off here, through the one shared disarm, and the record is rewritten so the
+  # next reader is not told GitHub still owns this merge.
+  if [ "$GATE" = "50" ]; then
+    DEG_AMREC="$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge"
+    automerge_disarm "$PR" "$TARGET_REPO" "$LOG"
+    case "$AUTOMERGE_DISARM_STATE" in
+      disarmed)
+        record_automerge "$DEG_AMREC" "unarmed"
+        [ "$AUTOMERGE_DISARM_WAS" = "1" ] && say "auto-merge DISARMED on PR #$PR by converge -- it was queued to land on a review only the degraded fallback ran"
+        DEG_ARM="not armed" ;;
+      armed)
+        record_automerge "$DEG_AMREC" "armed"
+        DEG_ARM="STILL ARMED and gh refused to turn it off (${AUTOMERGE_DISARM_ERR:-gh printed no reason}) -- it can land unreviewed, run: gh pr merge --disable-auto $PR" ;;
+      *)
+        record_automerge "$DEG_AMREC" "unknown"
+        DEG_ARM="of UNKNOWN arm state -- gh answered neither the disarm nor the state (${AUTOMERGE_DISARM_ERR:-gh printed no reason}), run: gh pr merge --disable-auto $PR" ;;
+    esac
+    say "STOP exit-7: PR #$PR reads '$VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Not merged, $DEG_ARM. Re-review once codex answers: kipi review $PR --issue $ISSUE --post"
+    bash "$NOTIFY" "converge $ISSUE: PR #$PR is '$VERDICT' but only the degraded Opus fallback reviewed it (codex was down) - held, $DEG_ARM. Needs a real review: kipi review $PR --issue $ISSUE --post" 2>/dev/null || true
+    exit 7
+  fi
   if [ "$GATE" = "10" ]; then
     # NOBODY IS WAITING (ASK-222; PR #33 review, finding 2, one layer out from
     # where it was filed). This line and the page under it are the SECOND reporter
@@ -1028,25 +1113,50 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     # receipt.
     receipt_ensure "$SHA" "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR")" "$REVIEWED_SHA" "$PR"
 
-    AUTOMERGE="$(automerge_from_record "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge")"
+    AMREC="$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$PR").automerge"
+    AUTOMERGE="$(automerge_from_record "$AMREC")"
+    # APPROVED AND NOT RECORDED ARMED: ARM IT, DO NOT PAGE THE COMMAND (ASK-310).
+    # This branch used to page "Needs a human: gh pr merge --auto --squash N" --
+    # live on ASK-143 PR #2, 2026-08-15 -- while holding every fact that command
+    # needs. The loop is the actor on a merge, never the founder. Arming is safe
+    # because GitHub, not this script, merges: branch protection holds the PR
+    # until `validate` and `kipi/reviewer-approved` are both green, and
+    # enforce_admins=true means the arming token cannot skip them.
+    #
+    # Same call as the worker (automerge_arm in pr-verdict-lib.sh), so there is
+    # one arm with one semantics. An ARMED record is still trusted without a
+    # probe: re-reading a state the one reader published is the second-reader
+    # defect the record exists to close. Only a record that is NOT armed, or
+    # absent, reaches gh, and the result is written back through the same
+    # record_automerge so the next reader sees what this run did.
+    ARM_ERR=""
+    if [ "$AUTOMERGE" != "armed" ]; then
+      automerge_arm "$PR" "$TARGET_REPO" "$LOG"
+      AUTOMERGE="$AUTOMERGE_ARM_STATE"; ARM_ERR="$AUTOMERGE_ARM_ERR"
+      record_automerge "$AMREC" "$AUTOMERGE"
+      [ "$AUTOMERGE_ARM_NEW" = "1" ] && say "auto-merge armed on PR #$PR by converge (the worker's record did not say armed)"
+    fi
     case "$AUTOMERGE" in
       armed)
-        MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green. If it sits green: gh pr merge --auto --squash $PR"
+        MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green."
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;
       unarmed)
-        MERGE_LOG="Auto-merge is NOT armed on it, so it goes green and sits: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved but NOT armed -- it will sit green. Needs a human: gh pr merge --auto --squash $PR" ;;
+        # A REFUSAL is the page, in gh's own words. Never a human and a command:
+        # the command is what was just refused.
+        MERGE_LOG="converge tried to arm auto-merge and gh refused: ${ARM_ERR:-gh printed no reason}. It sits green until that refusal is cleared."
+        MERGE_PAGE="PR #$PR approved but arming auto-merge was refused by gh: ${ARM_ERR:-gh printed no reason}" ;;
       *)
-        MERGE_LOG="Nothing recorded whether auto-merge is armed on it this run, so check it landed: gh pr merge --auto --squash $PR"
-        MERGE_PAGE="PR #$PR approved -- its auto-merge state was never recorded, so check it landed: gh pr merge --auto --squash $PR" ;;
+        MERGE_LOG="converge tried to arm auto-merge and gh answered neither the arm nor the state: ${ARM_ERR:-gh printed no reason}"
+        MERGE_PAGE="PR #$PR approved but gh could neither arm auto-merge nor read its state: ${ARM_ERR:-gh printed no reason}" ;;
     esac
     # ARMED OR NOT, A HEAD NO RECEIPT COVERS DOES NOT LAND. pr-receipt-gate.py is
     # a blocking step in `validate`, the single required context on main, so it
     # fails the very check auto-merge waits on. The armed sentence is REPLACED
     # rather than extended: "no human merge needed" followed by "needs a human"
-    # is a page an operator learns to skim. The other two already say a human is
-    # needed and already carry the merge command, so those are extended -- both
-    # facts are true at once there and dropping either loses an action.
+    # is a page an operator learns to skim. The other two carry gh's own refusal
+    # (ASK-310: never a merge command, since that is what was refused), so those
+    # are extended -- both facts are true at once there and dropping either
+    # loses an action.
     #
     # AND IT REPORTS THE STATE, NOT A VERDICT IT NEVER READ (PR #42 review round
     # 2, finding 1, second half). This said "validate refuses it, so GitHub will

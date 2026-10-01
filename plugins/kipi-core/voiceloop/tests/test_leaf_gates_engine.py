@@ -120,6 +120,23 @@ class TestTheRulesStillBite:
             "It's not just a tool. It's a way of thinking about your work.")
         assert caught, "the not-just-a-X shape stopped being caught"
 
+    def test_a_redefinition_close_is_caught(self):
+        """2026-09-30, founder-directed: "X isn't X. It's a Y with a Z attached." Both
+        apostrophe spellings, because model output uses the curly one and a pattern that
+        only knows `'` misses the shape it was written for."""
+        for text in (
+            "A review nobody can repeat isn't a review. It's a guess with a stamp attached.",
+            "A review nobody can repeat isn’t a review. It’s a guess with a stamp attached.",
+        ):
+            rules = {v["rule"] for v in slop_shapes.check(text)}
+            assert "slop-redefinition-close" in rules, text
+
+    def test_a_plain_negation_is_not_a_redefinition_close(self):
+        """Negative control: the noun has to come back after the negation."""
+        rules = {v["rule"] for v in slop_shapes.check(
+            "The review isn't done. It's a draft for now.")}
+        assert "slop-redefinition-close" not in rules
+
     def test_ordinary_prose_is_not_caught(self):
         """Negative control. A rule that fires on everything protects nothing."""
         assert slop_shapes.check(

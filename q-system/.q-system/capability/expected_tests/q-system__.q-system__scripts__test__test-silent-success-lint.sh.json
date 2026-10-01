@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-silent-success-lint.sh",
+ "runner": "bash",
+ "timeout_s": 180
+}
