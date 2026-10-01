@@ -169,6 +169,45 @@ git -C "$R" commit -qm broken; BAD="$(git -C "$R" rev-parse HEAD)"
 git -C "$R" checkout -q main
 run "$R" --changed --rev "$BAD"; check "--rev compiles a file only that commit has" 1 $?
 
+# A selection bigger than the pipe buffer. `printf | head -1` SIGPIPEd under
+# pipefail and set -e aborted with no verdict (PR #489 review, round 2). 1200
+# owning tests with long names is well past 64 KB of selector output.
+R=$(fixture main)
+_long="$(printf 'x%.0s' $(seq 1 60))"
+for i in $(seq 1 1200); do
+  printf 'import mod_a\ndef test_a():\n    assert mod_a.VALUE == 1\n' > "$R/suite/test_owner_${_long}_$i.py"
+done
+git -C "$R" add -A; git -C "$R" commit -qm owners -q
+git -C "$R" push -q origin feature:main; git -C "$R" fetch -q origin
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" commit -qam touch
+run "$R" --changed; check "a selection past the pipe buffer still decides" 0 $?
+
+# A tracked .py whose name holds a double quote is still COMPILED. The syntax
+# floor enumerated with quoting, so the name never opened and it was skipped.
+R=$(fixture main)
+printf 'def (\n' > "$R/bad\"name.py"; git -C "$R" add -A; git -C "$R" commit -qm q
+# The fixture's red bystander would make --full exit 1 regardless, so the
+# witness here is the syntax check's own verdict line.
+OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --full 2>&1 )"
+case "$OUT" in
+  *"python syntax"*FAILED*) check "--full compiles a \" in a .py name" 1 1 ;;
+  *) check "--full compiles a \" in a .py name" 1 0 ;;
+esac
+
+# No manifest: whether pytest runs is decided from the GRADED tree. A commit that
+# adds the first tests/ dir, graded by --rev while HEAD has none, must run it.
+root="$(mktemp -d)"; ROOTS+=("$root"); R="$root/repo"
+git init -q -b main "$R"; git -C "$R" config user.email t@t; git -C "$R" config user.name t
+mkdir -p "$R/q-system/.q-system"; cp "$VERIFY_SRC" "$R/q-system/.q-system/verify.sh"
+cp "$SELECT_SRC" "$R/q-system/.q-system/verify_select.py"
+printf "print('ok')\n" > "$R/ok.py"; git -C "$R" add -A; git -C "$R" commit -qm init
+git clone -q --bare "$R" "$root/origin.git"; git -C "$R" remote add origin "$root/origin.git"; git -C "$R" fetch -q origin
+git -C "$R" checkout -q -b feature; mkdir -p "$R/tests"
+printf 'def test_red():\n    assert False\n' > "$R/tests/test_red.py"
+git -C "$R" add -A; git -C "$R" commit -qm tests; BAD="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q main
+run "$R" --changed --rev "$BAD"; check "no manifest: --rev runs the commit's new tests" 1 $?
+
 for r in "${ROOTS[@]}"; do rm -rf "$r"; done
 echo
 echo "changed: $pass passed, $fail failed"

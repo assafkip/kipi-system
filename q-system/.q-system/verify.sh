@@ -416,7 +416,7 @@ echo "verify.sh ${MODE} in ${TARGET}"
 # DIFFERENT commit from the checkout's index, and a .py present only in the
 # pushed commit was never compiled (PR #489 review, reproduced: exit 0 on a
 # commit with a SyntaxError). In --full TARGET is REPO, so nothing changes there.
-PYFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.py' | head -4000)"
+PYFILES="$(git -C "$TARGET" ls-files -z '*.py' | tr '\0' '\n' | head -4000)"
 if [ -n "$PYFILES" ]; then
   # compile(), NOT py_compile, and NOT ast.parse either. Two fixes, one line.
   #
@@ -482,7 +482,7 @@ sys.exit(fail)
 fi
 
 # --- shell: syntax, every tracked .sh ------------------------------------
-SHFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.sh' | head -2000)"
+SHFILES="$(git -C "$TARGET" ls-files -z '*.sh' | tr '\0' '\n' | head -2000)"
 if [ -n "$SHFILES" ]; then
   run_check "shell syntax" bash -c '
     cd "$1" || exit 1
@@ -510,8 +510,8 @@ fi
 # git ls-files exits 0 on an empty result, so the hazard is gone rather than
 # suppressed with `|| true` -- which would also have hidden a real grep error.
 # Verified identical on this repo: both forms select the same 563 files.
-JSONFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.json' \
-  ':!:dist/**' ':!:**/dist/**' ':!:node_modules/**' ':!:**/node_modules/**' | head -3000)"
+JSONFILES="$(git -C "$TARGET" ls-files -z '*.json' \
+  ':!:dist/**' ':!:**/dist/**' ':!:node_modules/**' ':!:**/node_modules/**' | tr '\0' '\n' | head -3000)"
 if [ -n "$JSONFILES" ]; then
   # One interpreter for all of them, same reason as python syntax (ASK-1795).
   run_check "json parse" bash -c '
@@ -562,7 +562,7 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   exit 1
 fi
 
-TESTFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files 'test_*.py' '*/test_*.py')"
+TESTFILES="$(git -C "$TARGET" ls-files -z 'test_*.py' '*/test_*.py' | tr '\0' '\n')"
 
 # THE SUITE MANIFEST, `.verify-suites` at the repo root, one `dir` per line.
 # Each is a directory pytest is invoked FROM, because that is how these suites
@@ -625,7 +625,7 @@ fi
 # it would also have refused every OTHER kipi-system commit on the machine until
 # someone installed by hand. --changed (pre-push) gets the same WARN for the
 # same reason: a branch that edits a hook could commit and then never push.
-# --full (CI and a deliberate run) still FAILS on
+# --full on a machine with installed hooks (a deliberate run) still FAILS on
 # drift, and `kipi update --dry` still prints it, so drift stays visible.
 _hooks_installer="$TARGET/q-system/.q-system/scripts/install-claude-hooks.py"
 if { [ "$MODE" = "--staged" ] || [ "$MODE" = "--changed" ]; } && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
@@ -754,7 +754,10 @@ if [ -f "$MANIFEST" ]; then
         if [ -f "$_sel_src" ] && \
            _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
                        python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
-          _sel_mode="$(printf '%s\n' "$_sel_out" | head -1)"
+          # Parameter expansion, not `| head -1`: under pipefail a selection past
+          # the pipe buffer SIGPIPEs printf and set -e aborts with no verdict
+          # (PR #489 review round 2).
+          _sel_mode="${_sel_out%%$'\n'*}"
         else
           echo "      selector unavailable or failed -> full suite"
         fi
@@ -800,8 +803,8 @@ if [ -f "$MANIFEST" ]; then
     FAILED+=("pytest: .verify-suites present but pytest is not installed")
     say "pytest" "FAILED (not installed)"
   fi
-elif [ -f "$REPO/pytest.ini" ] || [ -f "$REPO/pyproject.toml" ] || \
-     [ -d "$REPO/tests" ] || [ -n "$TESTFILES" ]; then
+elif [ -f "$TARGET/pytest.ini" ] || [ -f "$TARGET/pyproject.toml" ] || \
+     [ -d "$TARGET/tests" ] || [ -n "$TESTFILES" ]; then
   if command -v pytest >/dev/null 2>&1 || python3 -c "import pytest" 2>/dev/null; then
     run_check "pytest" bash -c 'cd "$1" && python3 -m pytest -q --no-header' _ "$TARGET"
   else
