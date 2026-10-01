@@ -27,7 +27,11 @@ git -C "$T/repo" worktree add -q -b other "$T/bystander" HEAD
 # Scratch a SIGKILLed run left behind 13 hours ago: must be reaped.
 BASE="$T/home/.config/kipi/review-scratch"
 mkdir -p "$BASE/run.stale"
-touch -t "$(date -v-13H +%Y%m%d%H%M)" "$BASE/run.stale"
+# GNU date first (CI is ubuntu), BSD second (macOS): `-v-13H` alone left the dir
+# fresh on Linux, so the reap check went red only in CI (PR #495 validate).
+stale_ts="$(date -d '13 hours ago' +%Y%m%d%H%M 2>/dev/null || date -v-13H +%Y%m%d%H%M)"
+touch -t "$stale_ts" "$BASE/run.stale"
+[ -n "$(find "$BASE/run.stale" -maxdepth 0 -mmin +720)" ] || { echo "FAIL setup: run.stale is not 12h old"; exit 1; }
 
 cat > "$T/bin/claude" <<'EOF'
 #!/bin/bash
