@@ -911,18 +911,54 @@ END FINDINGS"
 # pruned with it, and the claude engine cannot run `git clone` at all.
 REVIEW_SCRATCH=""
 SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+WT_BEFORE=""
+# Worktrees of the review repo as "<path> <sha> <detached>" lines.
+_wt_rows() {
+  git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree /{p=substr($0,10); h=""; d=0}
+    /^HEAD /{h=$2}
+    /^detached/{d=1}
+    /^$/{if(p!="")print p" "h" "d; p=""}
+    END{if(p!="")print p" "h" "d}'
+}
 review_scratch_cleanup() {
   case "$REVIEW_SCRATCH" in
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
   REVIEW_SCRATCH=""
+  # `prune` only forgets trees whose directory is already gone; a live one the
+  # engine cut OUTSIDE $TMPDIR (the scar's own /tmp/pr16head) survives it (PR #495
+  # review). So remove what THIS run added: a worktree absent from the snapshot,
+  # detached at the PR head, outside review-trees/. All three, because a
+  # concurrent reviewer of another PR adds its own tree to the same repo.
+  if [ -n "$WT_BEFORE" ]; then
+    _wt_rows | while read -r path sha det; do
+      grep -qxF "$path" <<<"$WT_BEFORE" && continue
+      [ "$det" = 1 ] && [ "$sha" = "${HEAD_SHA:-}" ] || continue
+      case "$path" in */review-trees/*) continue ;; esac
+      git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true
+    done
+  fi
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
 }
 trap 'release_wt_lock; review_scratch_cleanup' EXIT
 
+# Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
+# SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
+for _old in "$SCRATCH_BASE"/run.*; do
+  [ -d "$_old" ] || continue
+  [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
+done
+
 run_engine() {   # run_engine <claude|codex> <destination-file>
-  [ -n "$REVIEW_SCRATCH" ] || REVIEW_SCRATCH="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/run.XXXXXX")" || {
-    echo "  ERROR: cannot create a review scratch dir under $SCRATCH_BASE (disk full?)" >&2; return 1; }
+  if [ -z "$REVIEW_SCRATCH" ]; then
+    WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
+    # A full disk is not "codex is down" (PR #495 review): stop here, named,
+    # rather than return 1 into the codex branch, which pages a wrong cause.
+    REVIEW_SCRATCH="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/run.XXXXXX")" || {
+      echo "REFUSING: cannot create a review scratch dir under $SCRATCH_BASE (disk full?). No review ran; no verdict posted." >&2
+      exit 4; }
+  fi
   export TMPDIR="$REVIEW_SCRATCH"
   case "$1" in
     # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
