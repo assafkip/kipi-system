@@ -48,7 +48,7 @@ git -C "$STUB_REPO" worktree add -q --detach "$STUB_REVIEW_TREES/other__pr-9" HE
 echo "FINDINGS:"; echo "END FINDINGS"
 EOF
 chmod +x "$T/bin/claude"
-for tool in bash env git mkdir mktemp rm head printf cat awk cut grep find; do
+for tool in bash env git mkdir mktemp rm head printf cat awk cut grep find du; do
   ln -s "$(command -v "$tool")" "$T/bin/$tool"
 done
 
@@ -64,7 +64,7 @@ run_engine claude "$T/out.txt"
 EOF
   HOME="$T/home" PATH="$T/bin" STUB_ARGV="$T/argv" STUB_TMPDIR="$T/tmpdir" \
     STUB_REPO="$T/repo" STUB_OUTSIDE="$T/outside-copy" \
-    STUB_REVIEW_TREES="$T/home/.config/kipi/review-trees" STUB_SCRATCH_BASE="$BASE" "$T/bin/bash" "$T/drive.sh"
+    STUB_REVIEW_TREES="$T/home/.config/kipi/review-trees" STUB_SCRATCH_BASE="$BASE" "$T/bin/bash" "$T/drive.sh" 2> "$T/stderr"
 }
 drive ""
 echo "drive rc=$?"
@@ -73,10 +73,14 @@ scratch="$(cat "$T/tmpdir" 2>/dev/null)"
 check "engine ran with a scratch TMPDIR under the scratch base" \
   '[[ "$scratch" == "$BASE/run."* ]]'
 check "scratch dir is gone after the run" '[ -n "$scratch" ] && [ ! -e "$scratch" ]'
-check "a worktree the engine cut outside TMPDIR is removed" \
-  '[ ! -e "$T/outside-copy" ] && ! git -C "$T/repo" worktree list | grep -q outside-copy'
-check "a branch worktree the engine cut is removed" \
-  '[ ! -e "$T/outside-copy-branch" ]'
+# Round 4 cap: a worktree outside our own dir is never removed (its owner
+# cannot be proven: verify.sh's snapshot lives in a temp root too). Reported.
+check "a worktree outside TMPDIR survives and is warned about" \
+  '[ -d "$T/outside-copy" ] && grep -q "WARN: a worktree appeared at .*outside-copy " "$T/stderr"'
+check "a branch worktree outside TMPDIR survives and is warned about" \
+  '[ -d "$T/outside-copy-branch" ] && grep -q "outside-copy-branch" "$T/stderr"'
+check "nothing in our own scratch or review-trees is warned about" \
+  '! grep -q -e run.concurrent -e review-trees "$T/stderr"'
 check "a concurrent run's scratch copy survives" \
   '[ -d "$BASE/run.concurrent/copy" ] && git -C "$T/repo" worktree list | grep -q run.concurrent'
 check "this run's own TMPDIR copy is unregistered" \

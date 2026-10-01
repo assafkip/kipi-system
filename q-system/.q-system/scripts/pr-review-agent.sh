@@ -933,29 +933,22 @@ review_scratch_cleanup() {
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
   REVIEW_SCRATCH=""
-  # `prune` only forgets trees whose directory is already gone; a live one the
-  # engine cut OUTSIDE $TMPDIR (the scar's own /tmp/pr16head) survives it (PR #495
-  # review). So remove what THIS run added: a worktree absent from the snapshot
-  # that lives under a TEMP root. Scoped by WHERE, not by sha or detached state
-  # (PR #495 round 2: a copy cut at the base revision or on a branch is still
-  # the engine's). A concurrent reviewer's tree lives under review-trees/ and an
-  # agent's under ~/projects; neither is a temp root, so neither is touched.
-  # Inside SCRATCH_BASE only THIS run's own dir is ours (round 3): a concurrent
-  # review of another PR on the same repo keeps its $TMPDIR/copy there. A copy
-  # some engine left in /tmp or /var/folders against the prompt's rule is
-  # removed even if it was a concurrent run's: that costs that review a rerun,
-  # never data, and it is the exact litter that filled the disk.
+  # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
+  # PR #495 took four rounds to rule out each wrong owner of a worktree found by
+  # location: a base-revision copy (round 2), a concurrent review's scratch
+  # (round 3), verify.sh's mktemp -d snapshot (round 4). Nothing outside our own
+  # dir can be proven ours, so nothing outside it is removed. A new worktree
+  # under a temp root (the scar's /tmp/pr16head shape) is printed with its size,
+  # so a run that ignored the prompt's $TMPDIR rule is visible, not silent.
   if [ -n "$WT_BEFORE" ]; then
     _wt_rows | while read -r path sha det; do
       grep -qxF "$path" <<<"$WT_BEFORE" && continue
-      case "$path" in */review-trees/*) continue ;; esac
       case "$path" in
-        "$own"/*|"$own_p"/*) ;;
-        "$SCRATCH_BASE"/*|"$base_p"/*) continue ;;
-        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) ;;
-        *) continue ;;
+        "$own"/*|"$own_p"/*) git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true ;;
+        "$SCRATCH_BASE"/*|"$base_p"/*|*/review-trees/*) ;;
+        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+          echo "  WARN: a worktree appeared at $path during this review ($(du -sh "$path" 2>/dev/null | cut -f1)); not removed, its owner cannot be proven. If it is this engine's, it broke the \$TMPDIR rule." >&2 ;;
       esac
-      git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true
     done
   fi
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
