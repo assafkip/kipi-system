@@ -1,9 +1,9 @@
 ---
 id: prd-receipts-fragments-2026-10-01
 title: Receipts Fragments
-status: in-review
+status: approved
 created_at: 2026-10-01T20:33:05Z
-updated_at: 2026-10-01T20:38:48Z
+updated_at: 2026-10-01T20:46:50Z
 owner: sana
 reviewers: []
 findings_path: .prd-os/findings/prd-receipts-fragments-2026-10-01-findings.jsonl
@@ -243,5 +243,96 @@ rejected at approve. The template-vs-runner contract test enforces this list.
 -->
 
 ```json
-[]
+[
+  {
+    "id": "rf-converge-untracked-recovery",
+    "finding_id": "finding-1",
+    "title": "converge recovers an UNTRACKED (and ignored) fragment, not only a modified line",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge*.sh", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "bypass_check": "! grep -nE 'diff --quiet -- \\.prd-os/receipts\\.jsonl' q-system/.q-system/scripts/converge.sh",
+    "acceptance": "A run killed after writing a fragment and before committing it is finished by the next run (committed and pushed), never dedup'd into a permanent miss."
+  },
+  {
+    "id": "rf-reader-inventory",
+    "finding_id": "finding-2",
+    "title": "Every receipt reader reads monolith + fragments, and a repo-derived guard finds any new reader",
+    "allowed_files": ["plugins/prd-os/scripts/judgment_compiler.py", "plugins/prd-os/scripts/prd_runner.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/test_receipt_finding_class.py", "q-system/.q-system/scripts/accept-rate.py", "q-system/.q-system/scripts/receipts_store.py", "q-system/.q-system/scripts/test/test-updater-issue-sequence.py", "q-system/.q-system/scripts/test/test-severity-floor.sh", "q-system/.q-system/scripts/test/test-receipt-carry-approval.sh", "q-system/.q-system/tests/separation/test_containment_sequence.py", "q-system/.q-system/tests/separation/test_containment_claims.py", "q-system/.q-system/tests/separation/test_updater_dependency_receipt.py", "plugins/prd-os/tests/test_prd_runner.py", "q-system/.q-system/tests/test_receipt_readers_inventory.py"],
+    "required_checks": ["python3 -m pytest q-system/.q-system/tests/test_receipt_readers_inventory.py -q"],
+    "bypass_check": "python3 -m pytest q-system/.q-system/tests/test_receipt_readers_inventory.py -q",
+    "acceptance": "The inventory test greps the repo for receipts.jsonl / receipts_path and fails on any reader that does not go through a receipts_store helper; mutating one reader back to a raw open goes red."
+  },
+  {
+    "id": "rf-single-writer-in-validate",
+    "finding_id": "finding-3",
+    "title": "The monolith-append refusal runs in validate against a named switch-over sha, not only in lefthook",
+    "allowed_files": [".github/workflows/validate.yml", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "grep -nF 'receipts-ledger-check.py' .github/workflows/validate.yml",
+    "acceptance": "A PR that appends a line to .prd-os/receipts.jsonl after the switch-over sha fails validate with the line named."
+  },
+  {
+    "id": "rf-path-rule-one-added-fragment",
+    "finding_id": "finding-4",
+    "title": "Path rules accept exactly one ADDED fragment, anchored, regular file, no monolith change",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "q-system/.q-system/scripts/test/test-receipt-carry-approval.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipt-carry-approval.sh"],
+    "bypass_check": "grep -nF -- '--diff-filter=A' q-system/.q-system/scripts/receipt-carry-approval.sh",
+    "acceptance": "The carry refuses a head that deletes or modifies a receipt, adds a nested path under receipts.d/, or touches the monolith; it allows exactly one added receipts.d/<name>.jsonl."
+  },
+  {
+    "id": "rf-q-system-helper-copy",
+    "finding_id": "finding-5",
+    "title": "q-system gets its own receipts_store helper, drift-pinned to the plugin copies; converge's inline Python uses it",
+    "allowed_files": ["q-system/.q-system/scripts/receipts_store.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/receipts_store.py", "q-system/.q-system/scripts/converge.sh", "q-system/.q-system/tests/test_receipts_store_copies.py"],
+    "required_checks": ["python3 -m pytest q-system/.q-system/tests/test_receipts_store_copies.py -q"],
+    "bypass_check": "python3 -m pytest q-system/.q-system/tests/test_receipts_store_copies.py -q",
+    "acceptance": "The three helper copies are byte-identical; editing one turns the test red."
+  },
+  {
+    "id": "rf-origin-confirm-set",
+    "finding_id": "finding-6",
+    "title": "converge's origin confirm reads monolith + fragments at FETCH_HEAD through the same predicate as the local dedup",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "bypass_check": "! grep -nF 'show \"FETCH_HEAD:.prd-os/receipts.jsonl\"' q-system/.q-system/scripts/converge.sh",
+    "acceptance": "A receipt present on origin only as a fragment is CONFIRMED; one present only in the local tree is not."
+  },
+  {
+    "id": "rf-monolith-end-condition",
+    "finding_id": "finding-7",
+    "title": "The monolith write exception has a stated end: the switch-over sha, after which only history reads it",
+    "allowed_files": ["lefthook.yml", ".gitignore", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipt-carry-approval.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "grep -nE 'SWITCHOVER_SHA|switch-over' q-system/.q-system/scripts/receipts-ledger-check.py",
+    "acceptance": "Monolith lines dated before the switch-over sha stay valid history; a monolith append in a commit after it is refused."
+  },
+  {
+    "id": "rf-fragment-dir-from-config",
+    "finding_id": "finding-8",
+    "title": "The fragment directory is derived from config receipts_path in one place, so an override moves writers and readers together",
+    "allowed_files": ["plugins/prd-os/scripts/config.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/issue_runner.py", "plugins/kipi-dsse/scripts/receipts_store.py", "q-system/.q-system/scripts/receipts_store.py", "plugins/prd-os/tests/test_receipts_store.py"],
+    "required_checks": ["python3 -m pytest plugins/prd-os/tests/test_receipts_store.py -q"],
+    "bypass_check": "python3 -m pytest plugins/prd-os/tests/test_receipts_store.py -q",
+    "acceptance": "With receipts_path overridden, the writer and every reader use the same derived directory."
+  },
+  {
+    "id": "rf-locate-pr-receipt-gate",
+    "finding_id": "finding-9",
+    "title": "Locate the PR receipt gate (LEDGER_PREFIX / pr-receipt-gate.py) and accept fragments there, or remove the stale citations",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "plugins/prd-os/scripts/prd_split.py", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "bypass_check": "! grep -rnF 'LEDGER_PREFIX' q-system/.q-system/scripts/converge.sh q-system/.q-system/scripts/receipt-carry-approval.sh || grep -rnlF 'LEDGER_PREFIX =' .",
+    "acceptance": "Either the live gate is found and admits a fragment receipt (proved on a test PR), or every citation of it is removed with the measurement that it no longer exists. This issue runs FIRST: a live gate that admits only the monolith would block every merge."
+  },
+  {
+    "id": "rf-one-line-per-fragment",
+    "finding_id": "finding-10",
+    "title": "A fragment must hold exactly one JSON record; empty or multi-line fragments are refused",
+    "allowed_files": ["q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipts_store.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/receipts_store.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+    "acceptance": "The ledger check refuses an empty fragment and a two-line fragment, naming the file."
+  }
+]
 ```
