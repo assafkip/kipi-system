@@ -302,9 +302,9 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "id": "rf-monolith-end-condition",
     "finding_id": "finding-7",
     "title": "The monolith write exception has a stated end: the switch-over sha, after which only history reads it",
-    "allowed_files": ["lefthook.yml", ".gitignore", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipt-carry-approval.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
-    "bypass_check": "grep -nE 'SWITCHOVER_SHA|switch-over' q-system/.q-system/scripts/receipts-ledger-check.py",
+    "allowed_files": ["lefthook.yml", ".gitignore", "q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipt-carry-approval.sh", "q-system/.q-system/scripts/test/test-receipts-monolith-end.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-monolith-end.sh", "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-receipts-monolith-end.sh",
     "acceptance": "Monolith lines dated before the switch-over sha stay valid history; a monolith append in a commit after it is refused."
   },
   {
@@ -320,18 +320,18 @@ rejected at approve. The template-vs-runner contract test enforces this list.
     "id": "rf-locate-pr-receipt-gate",
     "finding_id": "finding-9",
     "title": "Locate the PR receipt gate (LEDGER_PREFIX / pr-receipt-gate.py) and accept fragments there, or remove the stale citations",
-    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "plugins/prd-os/scripts/prd_split.py", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
-    "bypass_check": "! grep -rnF 'LEDGER_PREFIX' q-system/.q-system/scripts/converge.sh q-system/.q-system/scripts/receipt-carry-approval.sh || grep -rnlF 'LEDGER_PREFIX =' .",
+    "allowed_files": ["q-system/.q-system/scripts/converge.sh", "q-system/.q-system/scripts/receipt-carry-approval.sh", "plugins/prd-os/scripts/prd_split.py", "q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh", "q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh", "bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh",
     "acceptance": "Either the live gate is found and admits a fragment receipt (proved on a test PR), or every citation of it is removed with the measurement that it no longer exists. This issue runs FIRST: a live gate that admits only the monolith would block every merge."
   },
   {
     "id": "rf-one-line-per-fragment",
     "finding_id": "finding-10",
     "title": "A fragment must hold exactly one JSON record; empty or multi-line fragments are refused",
-    "allowed_files": ["q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipts_store.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/receipts_store.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
-    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
-    "bypass_check": "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh",
+    "allowed_files": ["q-system/.q-system/scripts/receipts-ledger-check.py", "q-system/.q-system/scripts/receipts_store.py", "plugins/prd-os/scripts/receipts_store.py", "plugins/kipi-dsse/scripts/receipts_store.py", "q-system/.q-system/scripts/test/test-receipts-ledger-check.sh", "q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh"],
+    "required_checks": ["bash q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh", "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"],
+    "bypass_check": "bash q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh",
     "acceptance": "The ledger check refuses an empty fragment and a two-line fragment, naming the file."
   }
 ]

@@ -9,11 +9,13 @@ allowed_files:
   - q-system/.q-system/scripts/receipt-carry-approval.sh
   - plugins/prd-os/scripts/prd_split.py
   - q-system/.q-system/scripts/test/fixtures/silent-success/GREEN-checked-swallow.converge.sh
+  - q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh
 disallowed_files: []
 required_checks:
+  - bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh
   - bash q-system/.q-system/scripts/test/test-converge-receipt-fragments.sh
 required_reviews: []
-bypass_check: "! grep -rnF 'LEDGER_PREFIX' q-system/.q-system/scripts/converge.sh q-system/.q-system/scripts/receipt-carry-approval.sh || grep -rnlF 'LEDGER_PREFIX =' ."
+bypass_check: "bash q-system/.q-system/scripts/test/test-receipt-gate-admits-fragment.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

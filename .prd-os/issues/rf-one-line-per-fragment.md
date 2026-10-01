@@ -10,11 +10,13 @@ allowed_files:
   - plugins/prd-os/scripts/receipts_store.py
   - plugins/kipi-dsse/scripts/receipts_store.py
   - q-system/.q-system/scripts/test/test-receipts-ledger-check.sh
+  - q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh
 disallowed_files: []
 required_checks:
+  - bash q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh
   - bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh
 required_reviews: []
-bypass_check: "bash q-system/.q-system/scripts/test/test-receipts-ledger-check.sh"
+bypass_check: "bash q-system/.q-system/scripts/test/test-receipts-fragment-shape.sh"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---
