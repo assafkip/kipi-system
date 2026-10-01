@@ -161,8 +161,8 @@ if [ "$MODE" = "--staged" ]; then
   # still import `helper` were not selected. Reviewer finding on PR #371, with a
   # reproducer: with renames on, the selection was the declared fallback alone;
   # with `-c diff.renames=false`, both names appear and test_helper.py is picked.
-  ANY_STAGED="$(git -C "$REPO" -c core.quotePath=false diff --cached --no-renames --name-only)"
-  STAGED="$(git -C "$REPO" -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR)"
+  ANY_STAGED="$(git -C "$REPO" diff -z --cached --no-renames --name-only | tr '\0' '\n')"
+  STAGED="$(git -C "$REPO" diff -z --cached --name-only --diff-filter=ACMR | tr '\0' '\n')"
   if [ -z "$ANY_STAGED" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
@@ -333,12 +333,13 @@ elif [ "$MODE" = "--changed" ]; then
   if [ -n "$_mb" ]; then
     # --no-renames for the same reason as --staged (PR #371): a rename must
     # surface the OLD module name, or the tests importing it go unselected.
-    # core.quotePath=false on all four diffs: by default git prints a non-ASCII
-    # path quoted and octal-escaped, `"suite/test_caf\303\251.py"`, which no
-    # `^suite/` gate matches, so the suite was skipped at exit 0 (PR #489
-    # review, reproduced).
-    ANY_STAGED="$(git -C "$REPO" -c core.quotePath=false diff --no-renames --name-only "$_mb" "$_rev")"
-    STAGED="$(git -C "$REPO" -c core.quotePath=false diff --name-only --diff-filter=ACMR "$_mb" "$_rev")"
+    # -z on all four diffs. By default git prints a non-ASCII path quoted and
+    # octal-escaped, `"suite/test_caf\303\251.py"`, which no `^suite/` gate
+    # matches, so the suite was skipped at exit 0 (PR #489 review, reproduced).
+    # core.quotePath=false fixed only the accent: a `"` or `\` in a name is
+    # quoted regardless (round 2 of the same review). NUL output is never quoted.
+    ANY_STAGED="$(git -C "$REPO" diff -z --no-renames --name-only "$_mb" "$_rev" | tr '\0' '\n')"
+    STAGED="$(git -C "$REPO" diff -z --name-only --diff-filter=ACMR "$_mb" "$_rev" | tr '\0' '\n')"
     if [ -z "$ANY_STAGED" ]; then
       echo "verify.sh --changed: $CHANGED_REV changes nothing against $_base_ref, nothing to verify."
       exit 0
@@ -411,7 +412,11 @@ echo "verify.sh ${MODE} in ${TARGET}"
 # This is not a linter and is not pretending to be one. It is the floor under
 # the floor: a file that does not compile cannot be reasoned about by anything
 # downstream, and this repo has no ruff installed to catch it.
-PYFILES="$(git -C "$REPO" ls-files '*.py' | head -4000)"
+# Enumerated from $TARGET, not $REPO: under --changed --rev the snapshot is a
+# DIFFERENT commit from the checkout's index, and a .py present only in the
+# pushed commit was never compiled (PR #489 review, reproduced: exit 0 on a
+# commit with a SyntaxError). In --full TARGET is REPO, so nothing changes there.
+PYFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.py' | head -4000)"
 if [ -n "$PYFILES" ]; then
   # compile(), NOT py_compile, and NOT ast.parse either. Two fixes, one line.
   #
@@ -477,7 +482,7 @@ sys.exit(fail)
 fi
 
 # --- shell: syntax, every tracked .sh ------------------------------------
-SHFILES="$(git -C "$REPO" ls-files '*.sh' | head -2000)"
+SHFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.sh' | head -2000)"
 if [ -n "$SHFILES" ]; then
   run_check "shell syntax" bash -c '
     cd "$1" || exit 1
@@ -505,7 +510,7 @@ fi
 # git ls-files exits 0 on an empty result, so the hazard is gone rather than
 # suppressed with `|| true` -- which would also have hidden a real grep error.
 # Verified identical on this repo: both forms select the same 563 files.
-JSONFILES="$(git -C "$REPO" ls-files '*.json' \
+JSONFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files '*.json' \
   ':!:dist/**' ':!:**/dist/**' ':!:node_modules/**' ':!:**/node_modules/**' | head -3000)"
 if [ -n "$JSONFILES" ]; then
   # One interpreter for all of them, same reason as python syntax (ASK-1795).
@@ -557,7 +562,7 @@ if [ ${#FAILED[@]} -gt 0 ]; then
   exit 1
 fi
 
-TESTFILES="$(git -C "$REPO" ls-files 'test_*.py' '*/test_*.py')"
+TESTFILES="$(git -C "$TARGET" -c core.quotePath=false ls-files 'test_*.py' '*/test_*.py')"
 
 # THE SUITE MANIFEST, `.verify-suites` at the repo root, one `dir` per line.
 # Each is a directory pytest is invoked FROM, because that is how these suites
@@ -618,14 +623,16 @@ fi
 # branch only lands once it can commit. Measured 2026-09-23: the merge of main
 # into sana/ask-1144 was refused here, installed copy 480 lines vs 898. Merged,
 # it would also have refused every OTHER kipi-system commit on the machine until
-# someone installed by hand. --full (CI and a deliberate run) still FAILS on
+# someone installed by hand. --changed (pre-push) gets the same WARN for the
+# same reason: a branch that edits a hook could commit and then never push.
+# --full (CI and a deliberate run) still FAILS on
 # drift, and `kipi update --dry` still prints it, so drift stays visible.
 _hooks_installer="$TARGET/q-system/.q-system/scripts/install-claude-hooks.py"
-if [ "$MODE" = "--staged" ] && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
+if { [ "$MODE" = "--staged" ] || [ "$MODE" = "--changed" ]; } && [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then
   if _drift="$(python3 "$_hooks_installer" --check 2>&1)"; then
     say "installed-hooks-match-repo" "ok"
   else
-    say "installed-hooks-match-repo" "WARN (drift; not fatal at pre-commit, --full fails)"
+    say "installed-hooks-match-repo" "WARN (drift; not fatal at commit/push, --full fails)"
     printf '%s\n' "$_drift" | sed 's/^/    /'
   fi
 elif [ -d "$HOME/.claude/hooks" ] && [ -f "$_hooks_installer" ]; then

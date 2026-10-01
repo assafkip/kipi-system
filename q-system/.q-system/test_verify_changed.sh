@@ -153,6 +153,22 @@ printf 'def test_accent():\n    assert False\n' > "$R/suite/test_café.py"
 git -C "$R" add "suite/test_café.py"; git -C "$R" commit -qm accent
 run "$R" --changed; check "non-ASCII red test path still BLOCKS" 1 $?
 
+# A path with a double quote: git quotes it even with core.quotePath=false, so
+# only NUL-separated output reaches the ^suite/ gate (PR #489 review, round 2).
+R=$(fixture main)
+printf 'def test_q():\n    assert False\n' > "$R/suite/test_q\"uote.py"
+git -C "$R" add -A; git -C "$R" commit -qm quote
+run "$R" --changed; check "double-quote red test path still BLOCKS" 1 $?
+
+# --rev with HEAD elsewhere: a broken .py that exists ONLY in the pushed commit
+# must still be compiled. The file list came from the checkout's index, not the
+# snapshot, so it was never seen (PR #489 review, round 2).
+R=$(fixture main)
+printf 'def (\n' > "$R/only_in_rev.py"; git -C "$R" add only_in_rev.py
+git -C "$R" commit -qm broken; BAD="$(git -C "$R" rev-parse HEAD)"
+git -C "$R" checkout -q main
+run "$R" --changed --rev "$BAD"; check "--rev compiles a file only that commit has" 1 $?
+
 for r in "${ROOTS[@]}"; do rm -rf "$r"; done
 echo
 echo "changed: $pass passed, $fail failed"
