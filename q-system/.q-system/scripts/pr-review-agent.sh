@@ -859,7 +859,10 @@ work that did not need doing.
 
 EVERY finding MUST ship a RUNNABLE REPRODUCER that you ACTUALLY RAN, with its real
 output pasted. A finding with no executed repro is an opinion and will be rejected.
-Write repros to \$TMPDIR and run them. If you cannot make it fail, DROP the finding
+Write repros to \$TMPDIR and run them. Need a copy of the tree to mutate? Use
+\`git worktree add --detach \"\$TMPDIR/copy\" HEAD\` from the tree you are in. Never
+\`git clone\`, and never write outside \$TMPDIR: it is deleted when you finish, and
+a copy anywhere else outlives the review and fills the disk. If you cannot make it fail, DROP the finding
 and say you tried. Dropping a finding you could not reproduce is a SUCCESS of this
 process, not a failure of it.
 
@@ -898,7 +901,29 @@ END FINDINGS"
 # `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
 # additional input from stdin..."), and outside a trusted directory it refuses
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
+#
+# ONE SCRATCH DIR PER RUN, REMOVED ON EXIT (2026-10-01). The Opus fallback built
+# its reproducers in /tmp/pr16head (a 1.4G worktree) and /tmp/pr16rev (a 1.8G FULL
+# clone) on cole-gtm PR #16, kept them across rounds, and filled the disk mid-review:
+# the verdict came back empty and posted kipi/reviewer-approved=failure on a sha
+# nothing had found fault with. So the engine gets $TMPDIR pointed at a dir this
+# script owns and deletes, any worktree the model cut from the review tree is
+# pruned with it, and the claude engine cannot run `git clone` at all.
+REVIEW_SCRATCH=""
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+review_scratch_cleanup() {
+  case "$REVIEW_SCRATCH" in
+    "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
+  esac
+  REVIEW_SCRATCH=""
+  git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
+}
+trap 'release_wt_lock; review_scratch_cleanup' EXIT
+
 run_engine() {   # run_engine <claude|codex> <destination-file>
+  [ -n "$REVIEW_SCRATCH" ] || REVIEW_SCRATCH="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/run.XXXXXX")" || {
+    echo "  ERROR: cannot create a review scratch dir under $SCRATCH_BASE (disk full?)" >&2; return 1; }
+  export TMPDIR="$REVIEW_SCRATCH"
   case "$1" in
     # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
     # its verdict and the FINDINGS block this script parses. A Stop hook that exits 2
@@ -908,7 +933,7 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
