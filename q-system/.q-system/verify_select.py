@@ -8,8 +8,10 @@ founder asked twice the same day for the pre-commit door to stop running every
 test for every change. A 10-minute pre-commit is the hook people bypass, and a
 bypassed floor protects nothing.
 
-Pre-push and CI still run `verify.sh --full`, so nothing reaches main untested.
-This narrows the FASTEST door only.
+The same selection serves `verify.sh --changed` at pre-push (2026-09-30): there
+the input is the paths changed since the merge-base with origin's default branch
+instead of the index. CI runs `verify.sh --full` and is the required merge
+check, so nothing reaches main untested.
 
 Selection, per staged path under the suite:
   (a) a staged test file selects itself
@@ -26,7 +28,7 @@ Selection, per staged path under the suite:
 
 Known limit, stated so nobody reads more into a green: ownership is by NAME, one
 hop. A test that reaches a staged module only through another module is not
-selected. --full at pre-push is what catches that.
+selected. --full in CI (the required merge check) is what catches that.
 
 Protocol (read by verify.sh):
   stdin   the staged paths, repo-relative, one per line (deletions included:

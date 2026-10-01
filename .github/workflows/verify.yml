@@ -72,3 +72,7 @@ jobs:
       # by nothing. This caller is the only thing that runs it.
       - name: concurrent suite (collision is not a failed check)
         run: bash q-system/.q-system/test_verify_concurrent.sh q-system/.q-system/verify.sh
+      # The push door (--changed, 2026-09-30), wired in the SAME commit for the
+      # same reason as the two above: discovered by nothing else.
+      - name: changed suite (push runs only the owning tests, never nothing)
+        run: bash q-system/.q-system/test_verify_changed.sh q-system/.q-system/verify.sh

@@ -9,6 +9,10 @@
 #
 #   verify.sh --staged    what a commit would contain, checked against a COPY
 #   verify.sh --full      the working tree, everything
+#   verify.sh --changed [--base REF] [--rev SHA]
+#                         a COPY of one commit (default HEAD), pytest scoped to
+#                         what changed since its merge-base with origin's default
+#                         branch. The pre-push door (2026-09-30).
 #
 # --staged never touches your working tree. It turns the git INDEX into a real
 # commit object and checks that out as a throwaway worktree, then runs there.
@@ -24,6 +28,18 @@
 set -euo pipefail
 
 MODE="${1:---full}"
+CHANGED_BASE=""
+CHANGED_REV="HEAD"
+if [ "$MODE" = "--changed" ]; then
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) CHANGED_BASE="${2:?--base needs a ref}"; shift 2 ;;
+      --rev)  CHANGED_REV="${2:?--rev needs a commit}"; shift 2 ;;
+      *) echo "usage: verify.sh --changed [--base REF] [--rev SHA]" >&2; exit 2 ;;
+    esac
+  done
+fi
 REPO="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Where pytest's ordering cache lives. Git's COMMON dir, never the working tree:
@@ -89,10 +105,42 @@ is_collision_error() {
 }
 
 case "$MODE" in
-  --staged|--full) ;;
-  *) echo "usage: verify.sh [--staged|--full]" >&2; exit 2 ;;
+  --staged|--full|--changed) ;;
+  *) echo "usage: verify.sh [--staged|--full|--changed [--base REF] [--rev SHA]]" >&2; exit 2 ;;
 esac
 
+# Check SNAP out as a throwaway worktree at $TMP/wt and point TARGET at it.
+# Shared by --staged (a commit built from the index) and --changed (an existing
+# commit), so both doors grade a COPY by the same machinery, collisions included.
+materialise_snapshot() {
+  local SNAP="$1" _what="$2"
+  WT_OK=""
+  for _try in 1 2 3; do
+    if WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+                     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
+                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
+      WT_OK=1
+      break
+    fi
+    is_collision_error "$WT_ERR" || break
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+        -u GIT_COMMON_DIR git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+    sleep 0.2
+  done
+  if [ -z "$WT_OK" ]; then
+    if is_collision_error "$WT_ERR"; then
+      snapshot_collision "create the $_what worktree after 3 tries" "$WT_ERR"
+    fi
+    # Print what git said. The first version threw stderr away and the refusal
+    # was untraceable: a gate that cannot say why it refused gets bypassed.
+    echo "verify.sh: could not create the $_what worktree. Refusing." >&2
+    echo "$WT_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+  TARGET="$TMP/wt"
+}
+
+SCOPED=""
 STAGED=""
 if [ "$MODE" = "--staged" ]; then
   # TWO DIFFERENT QUESTIONS, and conflating them opened a hole.
@@ -119,6 +167,7 @@ if [ "$MODE" = "--staged" ]; then
     echo "verify.sh --staged: nothing staged, nothing to verify."
     exit 0
   fi
+  SCOPED=1
   # The staged snapshot, materialised AS A REAL REPOSITORY. Not the working
   # tree, and not a stash.
   #
@@ -229,30 +278,7 @@ if [ "$MODE" = "--staged" ]; then
   # second collision surface (ASK-1900) and it gets the same treatment as
   # write-tree: retry a lock or a name clash, refuse anything else immediately,
   # and never report either as a failed check.
-  WT_OK=""
-  for _try in 1 2 3; do
-    if WT_ERR="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-                     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR \
-                     git -C "$REPO" worktree add --detach "$TMP/wt" "$SNAP" 2>&1)"; then
-      WT_OK=1
-      break
-    fi
-    is_collision_error "$WT_ERR" || break
-    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-        -u GIT_COMMON_DIR git -C "$REPO" worktree prune >/dev/null 2>&1 || true
-    sleep 0.2
-  done
-  if [ -z "$WT_OK" ]; then
-    if is_collision_error "$WT_ERR"; then
-      snapshot_collision "create the staged worktree after 3 tries" "$WT_ERR"
-    fi
-    # Print what git said. The first version threw stderr away and the refusal
-    # was untraceable: a gate that cannot say why it refused gets bypassed.
-    echo "verify.sh: could not create the staged worktree. Refusing." >&2
-    echo "$WT_ERR" | sed 's/^/  /' >&2
-    exit 1
-  fi
-  TARGET="$TMP/wt"
+  materialise_snapshot "$SNAP" "staged"
   # AND NOW DROP THEM FOR THE REST OF THE RUN. Sanitizing only the `worktree
   # add` above fixed the crash and left the deeper half: every check below runs
   # with the hook's environment too, so a TEST that shells out to git inherits
@@ -267,6 +293,63 @@ if [ "$MODE" = "--staged" ]; then
   # This is the script's own thesis applied to itself. verify.sh exists so the
   # same checks run identically at every door; a run whose answers depend on
   # which door invoked it is the exact drift it was written to stop.
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+elif [ "$MODE" = "--changed" ]; then
+  # THE PUSH DOOR, SCOPED (founder-directed 2026-09-30). Pre-push used to run
+  # --full: ~6300 tests in consulting, 6-13 min, pushes hitting a 30-min timeout,
+  # and CI then ran the SAME full suite again before any merge, because main
+  # requires the `validate` check. Every change paid the whole suite twice. The
+  # full suite now runs ONCE, in CI, which is the gate merges already wait on.
+  # This door runs the tests that own what the branch changed.
+  #
+  # WHAT IS GRADED: a copy of one COMMIT (default HEAD), not the working tree.
+  # A push sends commits; uncommitted edits never reach the remote, so grading
+  # them (as --full at pre-push did) could block a push on work it does not carry.
+  #
+  # WHAT CHANGED: the diff from the merge-base with origin's DEFAULT branch, never
+  # from the branch's own upstream. A new branch has no upstream, and cole-gtm's
+  # gate answered that with "no remote base to diff; running the suite", which is
+  # the full-suite tax on every first push. The default branch always exists.
+  _rev="$(git -C "$REPO" rev-parse --verify -q "${CHANGED_REV}^{commit}" || true)"
+  if [ -z "$_rev" ]; then
+    echo "verify.sh --changed: cannot resolve '$CHANGED_REV' to a commit. Refusing." >&2
+    exit 1
+  fi
+  _base_ref="$CHANGED_BASE"
+  if [ -z "$_base_ref" ]; then
+    _base_ref="$(git -C "$REPO" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [ -z "$_base_ref" ]; then
+      for _cand in origin/main origin/master; do
+        if git -C "$REPO" rev-parse --verify -q "$_cand^{commit}" >/dev/null; then
+          _base_ref="$_cand"; break
+        fi
+      done
+    fi
+  fi
+  _mb=""
+  if [ -n "$_base_ref" ]; then
+    _mb="$(git -C "$REPO" merge-base "$_base_ref" "$_rev" 2>/dev/null || true)"
+  fi
+  if [ -n "$_mb" ]; then
+    # --no-renames for the same reason as --staged (PR #371): a rename must
+    # surface the OLD module name, or the tests importing it go unselected.
+    ANY_STAGED="$(git -C "$REPO" diff --no-renames --name-only "$_mb" "$_rev")"
+    STAGED="$(git -C "$REPO" diff --name-only --diff-filter=ACMR "$_mb" "$_rev")"
+    if [ -z "$ANY_STAGED" ]; then
+      echo "verify.sh --changed: $CHANGED_REV changes nothing against $_base_ref, nothing to verify."
+      exit 0
+    fi
+    SCOPED=1
+    _nchg=$(printf '%s\n' "$ANY_STAGED" | sed -n '$=')
+    echo "verify.sh --changed: $_nchg path(s) changed since merge-base with $_base_ref (${_mb:0:12})"
+  else
+    # NO BASE, NO GUESS. A repo with no origin default branch, or history that
+    # shares nothing with it, gets the FULL suite on the snapshot. A selector
+    # that cannot say what changed may cost time, never coverage.
+    echo "verify.sh --changed: no merge-base with origin's default branch -> full suite"
+  fi
+  TMP="$(mktemp -d)"
+  materialise_snapshot "$_rev" "changed"
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 else
   TARGET="$REPO"
@@ -567,7 +650,7 @@ if [ -f "$MANIFEST" ]; then
       # A file entry runs from the REPO ROOT against that path, so pytest
       # resolves it exactly as a human would typing the path.
       if [ -f "$TARGET/$suite" ]; then
-        if [ "$MODE" = "--staged" ]; then
+        if [ -n "$SCOPED" ]; then
           if ! printf '%s\n' "$STAGED" | grep -q "^$suite$"; then
             say "pytest:$suite" "skipped (not staged)"
             continue
@@ -588,11 +671,16 @@ if [ -f "$MANIFEST" ]; then
       # --staged runs only the suites that OWN a staged file. Not a weaker
       # check, a narrower input: the same pytest, on the same snapshot, scoped
       # to what this commit can have broken. The full suite is 5 minutes here,
-      # and a 5-minute pre-commit is a hook people delete. Pre-push and CI run
-      # --full, so nothing escapes; it just escapes later than the fastest
-      # possible door.
-      if [ "$MODE" = "--staged" ]; then
-        if ! printf '%s\n' "$STAGED" | grep -q "^$suite/"; then
+      # and a 5-minute pre-commit is a hook people delete. --changed (pre-push)
+      # scopes the same way over the branch's diff; CI runs --full and is the
+      # required merge check, so nothing reaches main unrun.
+      # ANY_STAGED, not STAGED: a branch or commit that only DELETES a module
+      # under the suite still has to run the tests that import it. STAGED drops
+      # deletions (it scopes syntax checks), so keying on it skipped the suite
+      # and a deleted-out-from-under import passed. Caught by
+      # test_verify_changed.sh "deleting a module runs the tests naming it".
+      if [ -n "$SCOPED" ]; then
+        if ! printf '%s\n' "$ANY_STAGED" | grep -q "^$suite/"; then
           say "pytest:$suite" "skipped (no staged files)"
           continue
         fi
@@ -642,12 +730,12 @@ if [ -f "$MANIFEST" ]; then
       # pre-commit door to stop doing that. verify_select.py picks the owning test
       # files and prints WHY per staged path; a path no test names takes the
       # suite's declared fallback (<suite>/.verify-fallback, else the full suite),
-      # never nothing. --full is untouched, so pre-push and CI still run all of it.
+      # never nothing. --full is untouched, and CI (the required check) runs all of it.
       #
       # The selector comes from the TREE BEING GRADED, same rule as the manifest.
       # If it is missing or errors, the suite runs in full: a broken selector may
       # cost time, it may never cost coverage.
-      if [ "$MODE" = "--staged" ]; then
+      if [ -n "$SCOPED" ]; then
         _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
         _sel_src="$TARGET/q-system/.q-system/verify_select.py"
         [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
