@@ -84,3 +84,29 @@ def test_fail_flag_and_an_empty_population(tmp_path):
     (tmp_path / "empty").mkdir()
     p, _ = _run(tmp_path, projects="empty")
     assert p.returncode == 2
+
+
+# --- review round 1 (PR #506) --------------------------------------------------
+
+
+def test_a_comment_naming_the_door_does_not_gate_a_direct_call(tmp_path):
+    _repo(tmp_path / "projects", "bot", {
+        "todo.py": "import subprocess\n# TODO: route through model-gate.sh\n"
+                   "subprocess.run(['claude', '-p', 'hi'])\n",
+        "doc.py": '"""Will route through model-gate.sh"""\nimport subprocess\n'
+                  "subprocess.run(['claude', '-p', 'hi'])\n",
+    })
+    p, _ = _run(tmp_path)
+    assert sorted(u["path"] for u in json.loads(p.stdout)["ungated"]) == ["doc.py", "todo.py"]
+
+
+def test_a_linked_worktree_is_not_a_second_checkout(tmp_path):
+    projects = _fleet(tmp_path)
+    env = _env()
+    subprocess.run(["git", "-C", str(projects / "bot"), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "x"], check=True, env=env)
+    subprocess.run(["git", "-C", str(projects / "bot"), "worktree", "add", "-q",
+                    str(projects / "bot-wt")], check=True, env=env)
+    p, _ = _run(tmp_path)
+    rep = json.loads(p.stdout)
+    assert rep["checkouts"] == 1 and len(rep["ungated"]) == 2

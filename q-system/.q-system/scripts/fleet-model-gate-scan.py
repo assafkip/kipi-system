@@ -16,13 +16,20 @@ repo, not two that drift.
 
 WHAT COUNTS AS GATED:
   .sh  a line run through model-gate.sh never reaches the detector: the token in
-       command position is the door, not `claude`. So a detected .sh site is an
-       ungated one.
+       command position is the door, not `claude`. A door wrapping a `bash -c`
+       body whose string holds `claude -p` IS still detected (the detector reads
+       -c strings), so that shape reads ungated: an over-count, the safe side.
   .py  the voiceloop wrapper (prompt_render.py) is the gate's own caller. Any
-       other .py site counts as gated only when the FILE names the door
-       (`model-gate.sh`) or calls `model_gate.check(`. That is a file-level
-       proxy: a file with one gated and one direct call reads gated. It is
-       printed below as an unscanned class, never hidden.
+       other .py site counts as gated only when its CODE, read as an AST, holds a
+       string literal ending in `model-gate.sh` or a call to `model_gate.check`.
+       A comment or a docstring naming the door does not count (PR #506 review:
+       a TODO comment marked a direct caller gated). Still a file-level answer:
+       a file with one gated and one direct call reads gated, which is printed
+       below as an unscanned class, never hidden.
+
+LINKED WORKTREES are skipped: a per-session worktree is a copy of a checkout
+already counted, and opening or removing one flipped the fingerprint and filed
+a ticket for no code change (PR #506 review, ASK-2400).
 
 WHAT IT CANNOT SEE is printed in every report as `unscanned`, so its silence is
 never read as coverage (PRD review finding 6).
@@ -40,6 +47,7 @@ Test seams: KIPI_ALERT_CMD, --state-dir, --projects-root, --registry.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -57,7 +65,25 @@ ffss = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ffss)
 
 WRAPPERS = {"plugins/kipi-core/voiceloop/prompt_render.py"}
-DOOR_MARKERS = ("model-gate.sh", "model_gate.check(")
+def _py_names_the_door(text: str) -> bool:
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return False  # unreadable reads ungated: the safe side
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = getattr(node, "body", [])
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                docstrings.add(id(body[0].value))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+                and node.value.rstrip().endswith("model-gate.sh")):
+            return True
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "check"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "model_gate"):
+            return True
+    return False
 UNSCANNED = [
     "cloud routines (they run off this machine)",
     "binaries not named claude (opencode, codex exec, the anthropic SDK)",
@@ -77,10 +103,16 @@ def ungated_in(top: Path) -> tuple[list[str], int]:
                 text = (top / rel).read_text(errors="replace")
             except OSError:
                 text = ""
-            if any(m in text for m in DOOR_MARKERS):
+            if _py_names_the_door(text):
                 continue
         out.append(rel)
     return out, len(sites)
+
+
+def is_linked_worktree(top: Path) -> bool:
+    git_dir = ffss._git(top, "rev-parse", "--absolute-git-dir")
+    common = ffss._git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return bool(git_dir and common) and Path(git_dir).resolve() != Path(common).resolve()
 
 
 def scan(checkouts: list[Path]) -> dict:
@@ -99,6 +131,9 @@ def scan(checkouts: list[Path]) -> dict:
 
 def fingerprint(report: dict) -> str:
     keys = sorted(f"{u['checkout']}|{u['path']}" for u in report["ungated"])
+    # A checkout that could not be read is part of the state, or a scan that
+    # read nothing would look like a clean, quiet day forever (PR #506 review).
+    keys += sorted(f"error|{e['checkout']}" for e in report["errors"])
     return hashlib.sha256("\n".join(keys).encode()).hexdigest()
 
 
@@ -114,13 +149,17 @@ def main(argv=None) -> int:
     home = Path(os.path.expanduser("~"))
     state_dir = Path(a.state_dir) if a.state_dir else home / ".config" / "kipi" / "fleet-model-gate-scan"
     registry = Path(a.registry) if a.registry else ROOT / "instance-registry.json"
-    projects = Path(a.projects_root) if a.projects_root else ROOT.parent
-    checkouts = ffss.local_checkouts(registry, projects)
+    # Same default as the sibling scan, so the two read one population.
+    projects = Path(a.projects_root) if a.projects_root else home / "projects"
+    checkouts = [c for c in ffss.local_checkouts(registry, projects) if not is_linked_worktree(c)]
     if not checkouts:
         print("fleet-model-gate-scan: no checkout could be read; refusing to report zero", file=sys.stderr)
         return 2
     report = scan(checkouts)
     report["fingerprint"] = fingerprint(report)
+    if report["errors"] and len(report["errors"]) == len(checkouts):
+        print("fleet-model-gate-scan: every checkout failed to read; refusing to report zero", file=sys.stderr)
+        return 2
     if a.json:
         print(json.dumps(report, indent=1))
     else:
@@ -134,7 +173,8 @@ def main(argv=None) -> int:
     if not a.no_alert and (prev or {}).get("fingerprint") != report["fingerprint"]:
         was = len(prev.get("ungated", [])) if prev else "unknown"
         line = (f"fleet-model-gate-scan: {len(report['ungated'])} model call sites not behind "
-                f"the model gate across {report['checkouts']} checkouts (was {was}); "
+                f"the model gate across {report['checkouts']} checkouts (was {was}), "
+                f"{len(report['errors'])} checkouts unreadable; "
                 f"run fleet-model-gate-scan.py for the list")
         if not ffss.alert(line):
             print("fleet-model-gate-scan: alert not delivered; state left unchanged", file=sys.stderr)
