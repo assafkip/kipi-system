@@ -73,7 +73,10 @@ DEFAULT_UNSETTLED_USD = 1.0
 #: Rows KNOWN to have cost nothing: the binary was never started, or a provider
 #: that reports no usage by design. Charging them the estimate locked a job out
 #: after 25 free calls and filed a ticket claiming $25 spent (PR #504 review).
-_FREE_SUBTYPES = ("failed:no-binary", "unmetered:")
+#: EXACT subtypes, never a prefix: "unmetered:" also matched cli:no-json-flag, a
+#: real billed call whose cost is only unknown, and pinned a job at $0.00 after 40
+#: calls (PR #504 review round 2).
+_FREE_SUBTYPES = frozenset({"failed:no-binary", "unmetered:opencode"})
 #: The round cap counts calls on one item over this many UTC days. A cap with no
 #: window refuses a long-lived item (ASK-45) forever after its 3rd call (PR #503
 #: review); a day window, unlike the old per-sha key, cannot be reset by a commit.
@@ -139,9 +142,15 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
     """({bot: usd}, fleet_usd) for one UTC day, from the usage ledger only.
 
     A usage row with no cost is charged the unsettled estimate, and so is every
-    admitted gate call that has no usage row yet (admitted calls today minus usage
-    rows today, per job): the cost of a call lands only when it finishes, and the
-    gate must not admit the tenth parallel call on the same pre-call total.
+    admitted gate call not yet settled (admitted calls today minus `settle` rows
+    today, per job): the cost of a call lands only when it finishes, and the gate
+    must not admit the tenth parallel call on the same pre-call total.
+
+    Settlement is the gate's OWN row, written by the gated caller when its call
+    returns. It used to be the count of usage rows for the bot, and any row the bot
+    wrote on another path cancelled one in-flight charge each: 120 parallel calls
+    passed a $25 budget (PR #503 review round 2). A call that crashes before it
+    settles stays charged for its day, which is the safe direction.
     """
     est = _env_number(UNSETTLED_USD_ENV, DEFAULT_UNSETTLED_USD)
     per: dict[str, float] = {}
@@ -150,15 +159,18 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
         if not str(row.get("ts") or "").startswith(day):
             continue
         bot = str(row.get("bot"))
-        settled[bot] = settled.get(bot, 0) + 1
         cost = row.get("total_cost_usd")
         ok = isinstance(cost, (int, float)) and not isinstance(cost, bool)
-        free = str(row.get("subtype") or "").startswith(_FREE_SUBTYPES)
+        free = str(row.get("subtype") or "") in _FREE_SUBTYPES
         per[bot] = per.get(bot, 0.0) + (float(cost) if ok else 0.0 if free else est)
     admitted: dict[str, int] = {}
     for r in gate_rows:
-        if r.get("kind") == "call" and r.get("day") == day:
+        if r.get("day") != day:
+            continue
+        if r.get("kind") == "call":
             admitted[str(r.get("job"))] = admitted.get(str(r.get("job")), 0) + 1
+        elif r.get("kind") == "settle":
+            settled[str(r.get("job"))] = settled.get(str(r.get("job")), 0) + 1
     for job, n in admitted.items():
         per[job] = per.get(job, 0.0) + max(0, n - settled.get(job, 0)) * est
     return per, sum(per.values())
@@ -284,7 +296,10 @@ def check(job: str, item: str | None = None, now: _dt.datetime | None = None) ->
             line = (f"model-gate: {verb} job={job} item={item} limit={reason} "
                     f"spent_job=${spent_job:.2f} spent_fleet=${fleet:.2f} rounds={rounds} limits={limits}")
             if not notify(line):
-                with open(path, "a", encoding="utf-8") as fh:
+                # "a+", not "a": _append reads the last byte, and on a write-only
+                # handle that raised, check() swallowed it as a gate error, and the
+                # failed alert was never retried (PR #503 review round 2).
+                with open(path, "a+", encoding="utf-8") as fh:
                     fcntl.flock(fh, fcntl.LOCK_EX)
                     _append(fh, {"schema": SCHEMA, "kind": "alert-failed",
                                  "job": "*fleet*" if reason == "fleet_ceiling" else job,
@@ -313,9 +328,36 @@ def _error_alert_once(job: str, day: str, err: str) -> None:
     notify(f"model-gate: gate error, failing closed for job={job}: {err[:200]}")
 
 
-def record(job: str, stdout: str, exit_code: int = 0) -> bool:
+def settle(job: str, now: _dt.datetime | None = None) -> bool:
+    """Mark one admitted call on `job` as finished, so its in-flight charge drops.
+
+    Called by the gated caller after the call returns, on every exit path, and
+    only for a decision whose kind was `call`. Never raises: a missed settle
+    over-charges one estimate, which is the safe direction.
+    """
+    try:
+        now = now or _now()
+        path = ledger_path()
+        with open(path, "a+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            _append(fh, {"schema": SCHEMA, "producer": PRODUCER, "kind": "settle", "job": job,
+                         "day": now.strftime("%Y-%m-%d"), "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ")})
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def record(job: str, stdout: str, exit_code: int = 0, no_binary: bool = False,
+           admitted_call: bool = False) -> bool:
     """Append the cost row for a call made through the shell door. Never raises."""
     try:
+        if admitted_call:
+            settle(job)
+        if no_binary:
+            # The door found no binary and never started it. Bash would report
+            # exit 127, and "failed:exit 127" is charged the estimate: 25 free
+            # calls locked the job out and filed a $25 ticket (PR #503 round 2).
+            return usage_ledger.append(usage_ledger.failure_row("no-binary", bot=job, job=job))
         if exit_code == 0 and usage_ledger._result_document(stdout) is not None:
             _text, row = usage_ledger.finish(stdout, bot=job, job=job)
         else:
@@ -336,6 +378,8 @@ def main(argv=None) -> int:
     r.add_argument("--job", required=True)
     r.add_argument("--stdout-file", required=True)
     r.add_argument("--exit", type=int, default=0)
+    r.add_argument("--no-binary", action="store_true")
+    r.add_argument("--call", action="store_true", help="the decision was an admitted call; settle it")
     args = ap.parse_args(argv)
     if args.cmd == "check":
         row = check(args.job, args.item)
@@ -345,7 +389,7 @@ def main(argv=None) -> int:
         text = open(args.stdout_file, encoding="utf-8", errors="replace").read()
     except OSError:
         text = ""
-    record(args.job, text, args.exit)
+    record(args.job, text, args.exit, no_binary=args.no_binary, admitted_call=args.call)
     return 0
 
 

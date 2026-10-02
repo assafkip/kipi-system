@@ -237,3 +237,55 @@ def test_yesterdays_spend_does_not_count_today(env, monkeypatch):
 def test_door_refuses_a_flag_with_no_value(env):
     r = _door(env, "--job")
     assert r.returncode == 2
+
+
+# --- review round 2 (PR #503, #504; ASK-2401) ---------------------------------
+
+
+def test_usage_rows_from_other_paths_do_not_cancel_the_in_flight_charge(env, monkeypatch):
+    """120 cheap rows the bot wrote outside the gate used to zero every in-flight call."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "3")
+    for _ in range(120):
+        spent(env, "bot", 0.0)
+    got = [mg.check("bot", now=DAY)["admit"] for _ in range(5)]
+    assert got == [True, True, True, False, False]
+    mg.settle("bot", now=DAY)
+    assert mg.check("bot", now=DAY)["admit"] is True  # a settled call frees its estimate
+
+
+def test_door_charges_nothing_for_a_binary_that_never_started(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    codes = [_door(env, "--job", "radar", "--", str(env["tmp"] / "no-such-claude"), "-p", "x").returncode
+             for _ in range(4)]
+    assert codes == [127, 127, 127, 127]
+    subs = [json.loads(x)["subtype"] for x in env["usage"].read_text().splitlines()]
+    assert subs == ["failed:no-binary"] * 4
+    assert mg.check("radar")["admit"] is True and alerts(env) == []
+
+
+def test_a_failed_alert_is_recorded_and_retried_not_a_gate_error(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    calls = env["tmp"] / "notify-calls"
+    fail = env["tmp"] / "fail.sh"
+    fail.write_text(f'#!/bin/bash\necho x >> "{calls}"\nexit 1\n')
+    fail.chmod(0o755)
+    monkeypatch.setenv("KIPI_MODEL_GATE_NOTIFY", str(fail))
+    spent(env, "lgtm", 26.0)
+    rows = [mg.check("lgtm", now=DAY) for _ in range(2)]
+    assert [r["kind"] for r in rows] == ["refusal", "refusal"]
+    kinds = [json.loads(x)["kind"] for x in (env["tmp"] / "gate.jsonl").read_text().splitlines()]
+    assert kinds.count("alert-failed") == 2
+    assert len(calls.read_text().splitlines()) == 2  # the second call retried the send
+
+
+def test_an_unmetered_but_billed_call_is_charged(env, monkeypatch):
+    """cli:no-json-flag is a real call with an unknown cost, not a free one."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    with open(env["usage"], "a") as fh:
+        for _ in range(2):
+            fh.write(json.dumps({"ts": "2026-10-05T01:00:00Z", "bot": "bot", "total_cost_usd": None,
+                                 "subtype": "unmetered:cli:no-json-flag"}) + "\n")
+    assert mg.check("bot", now=DAY)["admit"] is False
