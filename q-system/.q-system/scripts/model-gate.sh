@@ -26,8 +26,10 @@ PKG="${KIPI_MODEL_GATE_PKG:-$HERE/../../../plugins/kipi-core}"
 job="" item=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --job) job="${2:-}"; shift 2 ;;
-    --item) item="${2:-}"; shift 2 ;;
+    # A flag with no value: `shift 2` on one argument fails and the loop spun
+    # forever (PR #503 review). Refuse instead.
+    --job|--item) [ $# -ge 2 ] || { echo "model-gate.sh: $1 needs a value" >&2; exit 2; }
+      if [ "$1" = --job ]; then job="$2"; else item="$2"; fi; shift 2 ;;
     --) shift; break ;;
     *) echo "model-gate.sh: unknown argument $1 (usage: --job J [--item K] -- cmd...)" >&2; exit 2 ;;
   esac
@@ -53,6 +55,7 @@ if [ "$rc" -ne 0 ]; then
   echo "MODEL_GATE_ERROR job=$job: the gate did not run (exit $rc); refusing the call" >&2
   marker="${HOME}/.config/kipi/.model-gate-door-error-$(date -u +%Y-%m-%d)"
   if [ -n "${KIPI_MODEL_GATE_LEDGER:-}" ]; then marker="$(dirname "$KIPI_MODEL_GATE_LEDGER")/.model-gate-door-error-$(date -u +%Y-%m-%d)"; fi
+  mkdir -p "$(dirname "$marker")" 2>/dev/null
   if ( set -o noclobber; : > "$marker" ) 2>/dev/null; then
     notify="${KIPI_MODEL_GATE_NOTIFY:-bash $HERE/slack-notify.sh}"
     $notify "model-gate.sh: the gate did not run (exit $rc) for job=$job; calls are refused" >/dev/null 2>&1

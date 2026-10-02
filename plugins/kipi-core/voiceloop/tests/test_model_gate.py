@@ -180,3 +180,60 @@ def test_door_fails_closed_when_the_gate_cannot_run(env, monkeypatch):
               extra={"KIPI_MODEL_GATE_PKG": str(env["tmp"] / "nowhere")})
     assert r.returncode == 75 and "MODEL_GATE_ERROR" in r.stderr and not marker.exists()
     assert len(alerts(env)) == 1
+
+
+# --- review round 1 (PR #503, #504) -------------------------------------------
+
+
+def test_a_torn_last_line_does_not_brick_the_gate(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    mg.check("bot", now=DAY)
+    with open(env["tmp"] / "gate.jsonl", "a") as fh:
+        fh.write('{"kind": "call", "job": "vo')  # a crash mid-append
+    rows = [mg.check("bot", now=DAY) for _ in range(3)]
+    assert all(r["kind"] == "call" for r in rows)
+
+
+def test_known_free_rows_are_not_charged(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    with open(env["usage"], "a") as fh:
+        for sub in ("failed:no-binary", "unmetered:opencode", "failed:no-binary"):
+            fh.write(json.dumps({"ts": "2026-10-05T01:00:00Z", "bot": "bot",
+                                 "total_cost_usd": None, "subtype": sub}) + "\n")
+    assert mg.check("bot", now=DAY)["admit"] is True
+
+
+def test_the_fleet_ceiling_alerts_once_for_the_fleet(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "report")
+    spent(env, "big", 150.0)
+    monkeypatch.setenv("KIPI_MODEL_GATE_USD_BIG", "1000")
+    for job in ("a", "b", "c", "big"):
+        mg.check(job, now=DAY)
+    assert sum("fleet_ceiling" in a for a in alerts(env)) == 1
+
+
+def test_the_round_cap_is_per_item_across_jobs(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    for job in ("review-a", "review-b", "review-c"):
+        mg.check(job, item="owner/repo#7", now=DAY)
+    assert mg.check("review-d", item="owner/repo#7", now=DAY)["admit"] is False
+
+
+def test_the_round_window_releases_a_long_lived_item(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    old = DAY - dt.timedelta(days=8)
+    for _ in range(3):
+        mg.check("w", item="ASK-45", now=old)
+    assert mg.check("w", item="ASK-45", now=DAY)["admit"] is True
+
+
+def test_yesterdays_spend_does_not_count_today(env, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    spent(env, "lgtm", 99.0, day="2026-10-04")
+    assert mg.check("lgtm", now=DAY)["admit"] is True
+
+
+def test_door_refuses_a_flag_with_no_value(env):
+    r = _door(env, "--job")
+    assert r.returncode == 2
