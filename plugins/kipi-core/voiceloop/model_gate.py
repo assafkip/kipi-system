@@ -69,6 +69,15 @@ DEFAULT_ROUNDS = 3
 #: review finding 1 and 3).
 UNSETTLED_USD_ENV = "KIPI_MODEL_GATE_UNSETTLED_USD"
 DEFAULT_UNSETTLED_USD = 1.0
+#: Rows KNOWN to have cost nothing: the binary was never started, or a provider
+#: that reports no usage by design. Charging them the estimate locked a job out
+#: after 25 free calls and filed a ticket claiming $25 spent (PR #504 review).
+_FREE_SUBTYPES = ("failed:no-binary", "unmetered:")
+#: The round cap counts calls on one item over this many UTC days. A cap with no
+#: window refuses a long-lived item (ASK-45) forever after its 3rd call (PR #503
+#: review); a day window, unlike the old per-sha key, cannot be reset by a commit.
+ROUND_DAYS_ENV = "KIPI_MODEL_GATE_ROUND_DAYS"
+DEFAULT_ROUND_DAYS = 7
 SCHEMA = 1
 PRODUCER = "voiceloop.model_gate"
 REFUSED_EXIT = 3
@@ -143,7 +152,8 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
         settled[bot] = settled.get(bot, 0) + 1
         cost = row.get("total_cost_usd")
         ok = isinstance(cost, (int, float)) and not isinstance(cost, bool)
-        per[bot] = per.get(bot, 0.0) + (float(cost) if ok else est)
+        free = str(row.get("subtype") or "").startswith(_FREE_SUBTYPES)
+        per[bot] = per.get(bot, 0.0) + (float(cost) if ok else 0.0 if free else est)
     admitted: dict[str, int] = {}
     for r in gate_rows:
         if r.get("kind") == "call" and r.get("day") == day:
@@ -158,7 +168,18 @@ def _read_locked(fh) -> list[dict]:
     line anywhere else means the ledger is not ours to trust, and reading it as
     fewer rounds would be a fail-open, so it raises."""
     fh.seek(0)
-    lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    content = fh.read()
+    if content and not content.endswith("\n"):
+        # A crash mid-append left a partial row with no newline. It never completed,
+        # so it is cut off here, under the lock, and the cut is recorded. Left in
+        # place, the next append moved it mid-file and the gate refused every job
+        # until a human edited the ledger (PR #503 and #504 reviews).
+        keep = content[:content.rfind("\n") + 1]
+        fh.truncate(len(keep.encode("utf-8")))
+        _append(fh, {"schema": SCHEMA, "kind": "repair", "dropped_bytes":
+                     len(content.encode("utf-8")) - len(keep.encode("utf-8")), "ts": _now().strftime("%Y-%m-%dT%H:%M:%SZ")})
+        content = keep
+    lines = [ln for ln in content.splitlines() if ln.strip()]
     rows = []
     for i, line in enumerate(lines):
         try:
@@ -190,6 +211,16 @@ def notify(line: str) -> bool:
 
 
 def _append(fh, row: dict) -> None:
+    # A crash mid-append leaves a last line with no newline. Writing straight onto
+    # it welded the next row to the torn text and moved it mid-file, where the
+    # reader raises, and the gate refused every job until a human edited the file
+    # (PR #503 and #504 reviews). Terminate the torn line first.
+    fh.seek(0, os.SEEK_END)
+    if fh.tell() > 0:
+        fh.seek(fh.tell() - 1)
+        if fh.read(1) != "\n":
+            fh.seek(0, os.SEEK_END)
+            fh.write("\n")
     fh.seek(0, os.SEEK_END)
     fh.write(json.dumps(row, sort_keys=True) + "\n")
     fh.flush()
@@ -215,9 +246,13 @@ def check(job: str, item: str | None = None, now: _dt.datetime | None = None) ->
             spent_job = per.get(job, 0.0)
             # Rounds count only calls admitted in the CURRENT mode: report-week history
             # must not refuse every busy PR on the morning enforce starts (finding 5).
-            rounds = sum(1 for r in rows if r.get("kind") == "call" and r.get("job") == job
+            # Keyed on the ITEM alone, across jobs: three job names on one PR must not
+            # get three caps (PR #503 review). Windowed by UTC day, never by sha.
+            since = (now - _dt.timedelta(days=max(1, int(_env_number(ROUND_DAYS_ENV, DEFAULT_ROUND_DAYS))) - 1)
+                     ).strftime("%Y-%m-%d")
+            rounds = sum(1 for r in rows if r.get("kind") == "call"
                          and item is not None and r.get("item") == item
-                         and r.get("mode") == gate_mode)
+                         and r.get("mode") == gate_mode and str(r.get("day") or "") >= since)
             limits = {"job_budget": job_budget(job), "fleet_ceiling": _env_number(FLEET_USD_ENV, DEFAULT_FLEET_USD),
                       "round_cap": _env_number(ROUNDS_ENV, DEFAULT_ROUNDS)}
             reasons = []
@@ -235,9 +270,12 @@ def check(job: str, item: str | None = None, now: _dt.datetime | None = None) ->
                    "admit": admit}
             _append(fh, row)
             for reason in reasons:
-                if not _alerted(rows, job, reason, day):
+                # The fleet ceiling is ONE fact, so it is alerted once for the fleet,
+                # not once per job that asks (PR #504 review: 9 tickets for 1 breach).
+                key = "*fleet*" if reason == "fleet_ceiling" else job
+                if not _alerted(rows, key, reason, day):
                     # Claimed UNDER the lock, so two racing callers send one alert.
-                    _append(fh, {"schema": SCHEMA, "kind": "alert", "job": job, "reason": reason,
+                    _append(fh, {"schema": SCHEMA, "kind": "alert", "job": key, "reason": reason,
                                  "day": day, "ts": row["ts"]})
                     pending_alerts.append(reason)
         for reason in pending_alerts:
@@ -247,7 +285,8 @@ def check(job: str, item: str | None = None, now: _dt.datetime | None = None) ->
             if not notify(line):
                 with open(path, "a", encoding="utf-8") as fh:
                     fcntl.flock(fh, fcntl.LOCK_EX)
-                    _append(fh, {"schema": SCHEMA, "kind": "alert-failed", "job": job,
+                    _append(fh, {"schema": SCHEMA, "kind": "alert-failed",
+                                 "job": "*fleet*" if reason == "fleet_ceiling" else job,
                                  "reason": reason, "day": day, "ts": row["ts"]})
         return row
     except (GateError, OSError) as exc:
