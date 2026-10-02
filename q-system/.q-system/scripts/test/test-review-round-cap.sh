@@ -54,7 +54,7 @@ case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
   *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
-  *"commits/"*"/statuses"*) cat "$WORK/cur-state" 2>/dev/null ;;
+  *"commits/"*"/statuses"*) [ -s "$WORK/read-fails" ] && exit 1; cat "$WORK/cur-state" 2>/dev/null ;;
   *"api"*)                  echo '{}' ;;
 esac
 exit 0
@@ -168,6 +168,19 @@ $(cat "$GH_LOG")"
 grep -q 'commits/.*/statuses' "$GH_LOG" || fail "the cap never read the current status, so the no-downgrade check is vacuous"
 : > "$WORK/cur-state"
 ok "an existing success status is left alone"
+
+# A FAILED status read must leave the status untouched (PR review round 2,
+# major): unknown is not "no status", and pending over a live success
+# un-approves a cleared PR the cap then refuses to re-review.
+echo 1 > "$WORK/read-fails"; : > "$GH_LOG"
+before="$(calls)"
+run_reviewer "$WORK/r5c.out" --post
+[ "$(calls)" = "$before" ] || fail "a failed status read let the model run past the cap"
+grep -q 'commits/.*/statuses' "$GH_LOG" || fail "the failing read was never attempted, so this case is vacuous"
+grep -q 'state=pending' "$GH_LOG" && fail "the cap posted pending after a FAILED status read:
+$(cat "$GH_LOG")"
+: > "$WORK/read-fails"
+ok "a failed status read: 0 model calls, status left untouched"
 
 # The env var moves the cap: at 5, the next run reaches the model again.
 before="$(calls)"

@@ -417,10 +417,16 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.
-    CUR_STATE=""
-    [ -n "$HEAD_SHA" ] && CUR_STATE="$(gh api "repos/$STATUS_REPO_PATH/commits/$HEAD_SHA/statuses" \
-        --jq "[.[] | select(.context==\"$STATUS_CONTEXT\")][0].state" 2>/dev/null || true)"
-    if [ -n "$HEAD_SHA" ] && [ "$CUR_STATE" != "success" ]; then
+    # A FAILED read is not "no status": treating it as empty posted pending over
+    # a live success (PR review round 2, major). Unknown means hands off.
+    CUR_STATE=""; READ_OK=0
+    if [ -n "$HEAD_SHA" ] && CUR_STATE="$(gh api "repos/$STATUS_REPO_PATH/commits/$HEAD_SHA/statuses" \
+        --jq "[.[] | select(.context==\"$STATUS_CONTEXT\")][0].state" 2>/dev/null)"; then
+      READ_OK=1
+    fi
+    [ -n "$HEAD_SHA" ] && [ "$READ_OK" = 0 ] \
+      && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
+    if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
       reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
           -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
         || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
