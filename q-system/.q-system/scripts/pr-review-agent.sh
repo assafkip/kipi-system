@@ -382,6 +382,36 @@ echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# THE ROUND CAP. Every call below is a full paid model run, and nothing bounded
+# how many one PR could take: 4 to 7 rounds was routine and one PR took 16. The
+# round counter already existed but only fed a prompt hint, so the loop that
+# re-invokes this script had no brake. Past the cap this refuses BEFORE any tree
+# or model work, posts one comment and a PENDING status (never success: a cap is
+# not an approval, and never failure: it is not a finding), and exits 0 so the
+# caller stops instead of retrying. Raising KIPI_REVIEW_MAX_ROUNDS is the
+# deliberate way past it.
+MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
+case "$MAX_ROUNDS" in ''|*[!0-9]*) MAX_ROUNDS=3 ;; esac
+PRIOR_ROUNDS=$(( $(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG") - 1 ))
+if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
+  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+  if [ "$POST" = "1" ]; then
+    # One comment per PR, not one per refused call: the loop may keep calling,
+    # and a comment each time is the same waste moved to the PR thread.
+    CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
+    if [ ! -f "$CAP_MARK" ]; then
+      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
+        && : > "$CAP_MARK" \
+        || echo "  WARN: could not post the cap comment on PR #$PR" >&2
+    fi
+    [ -n "$HEAD_SHA" ] && { reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
+        -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
+      || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2; }
+  fi
+  exit 0
+fi
+
 # THE TREE MUST ACTUALLY CONTAIN THE PR (sp-a72a9567). $SKEL comes from this
 # script's own location, and the diff comes from `gh pr diff <N>` -- two
 # independent sources that nothing was checking against each other. Run from
