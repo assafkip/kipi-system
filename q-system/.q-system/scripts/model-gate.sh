@@ -63,10 +63,24 @@ if [ "$rc" -ne 0 ]; then
   exit 75
 fi
 
+# Settle only a decision the gate logged as a `call`: a report-mode gate error also
+# exits 0, and settling it would cancel some other call's in-flight charge.
+call_flag=""
+case "$decision" in *'"kind": "call"'*) call_flag="--call" ;; esac
+
+# A binary that is not there never starts and costs nothing. Left to bash it is
+# exit 127, recorded as "failed:exit 127", charged the estimate, and 25 such calls
+# locked the job out with a ticket claiming $25 spent (PR #503 review round 2).
+if ! command -v "$1" >/dev/null 2>&1; then
+  echo "model-gate.sh: $1: command not found" >&2
+  gate record --job "$job" --stdout-file /dev/null --no-binary $call_flag >/dev/null 2>&1
+  exit 127
+fi
+
 out="$(mktemp "${TMPDIR:-/tmp}/model-gate.XXXXXX")"
 "$@" > "$out"
 status=$?
 cat "$out"
-gate record --job "$job" --stdout-file "$out" --exit "$status" >/dev/null 2>&1
+gate record --job "$job" --stdout-file "$out" --exit "$status" $call_flag >/dev/null 2>&1
 rm -f "$out"
 exit "$status"
