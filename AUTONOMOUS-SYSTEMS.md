@@ -98,7 +98,6 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.disk-janitor` | 04:30 |
 | `com.kipi.voice-refresh` | day 1 of the month, 09:00 |
 | `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
-| `com.kipi.pr86-review` | hourly at :17 |
 
 `com.kipi.spillover-linear-check` was installed and loaded on 2026-09-30 and is listed in section 1.
 
