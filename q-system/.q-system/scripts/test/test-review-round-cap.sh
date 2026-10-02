@@ -54,6 +54,7 @@ case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
   *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
+  *"commits/"*"/statuses"*) cat "$WORK/cur-state" 2>/dev/null ;;
   *"api"*)                  echo '{}' ;;
 esac
 exit 0
@@ -66,6 +67,8 @@ CLAUDE_LOG="$WORK/claude-calls.txt"; : > "$CLAUDE_LOG"
 cat > "$STUB/claude" <<EOF
 #!/usr/bin/env bash
 echo call >> "$CLAUDE_LOG"
+# An environmental failure: output with no findings block, as a provider blip leaves.
+[ -s "$WORK/blip" ] && { echo "API Error: 529 overloaded"; exit 0; }
 cat <<'REVIEW'
 VERDICT: REQUEST CHANGES
 FINDINGS:
@@ -80,14 +83,29 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/codex"; chmod +x "$STUB/codex"
 export PATH="$STUB:$PATH"
 [ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub"
 
+NOTIFY_LOG="$WORK/notify.txt"; : > "$NOTIFY_LOG"
+cat > "$STUB/notify" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$NOTIFY_LOG"
+EOF
+chmod +x "$STUB/notify"
 calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
 run_reviewer() {  # run_reviewer <out-file> [extra args...]
   local out="$1"; shift
   ( cd "$WORK/skel" \
-    && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="/usr/bin/true" \
+    && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="$STUB/notify" \
        bash "$AGENT" 1 --engine claude "$@" ) >"$out" 2>&1
   echo $? > "$out.rc"
 }
+
+# Two provider blips first. They reach the model but produce no usable review,
+# so they must NOT count toward the cap (PR review round 1, major 1).
+echo 1 > "$WORK/blip"
+for n in a b; do run_reviewer "$WORK/blip$n.out" --post; sleep 1; done
+: > "$WORK/blip"
+[ "$(calls)" = "2" ] || fail "blip runs did not reach the stub ($(calls) calls)"
+: > "$CLAUDE_LOG"
+ok "two unusable (blip) rounds ran"
 
 # Rounds 1-3: each one must reach the model exactly once.
 for n in 1 2 3; do
@@ -128,13 +146,28 @@ grep "statuses/$SHA" "$GH_LOG" | grep -q 'context=kipi/reviewer-approved' \
   || fail "the pending status is not on kipi/reviewer-approved"
 ok "round 4 set kipi/reviewer-approved=pending on the head sha"
 
+[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "1" ] \
+  || fail "the cap did not alert the engineering queue exactly once:
+$(cat "$NOTIFY_LOG")"
+ok "round 4 alerted the engineering queue once"
+
 # Round 5: still capped, still 0 calls, and the comment is not repeated.
 : > "$GH_LOG"
 before="$(calls)"
 run_reviewer "$WORK/r5.out" --post
 [ "$(calls)" = "$before" ] || fail "round 5 called the model past the cap"
 grep -q 'pr comment' "$GH_LOG" && fail "round 5 posted the cap comment again; it must be posted once per PR"
-ok "round 5: 0 model calls, no repeat comment"
+[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "1" ] || fail "round 5 alerted again"
+ok "round 5: 0 model calls, no repeat comment or alert"
+
+# An approved sha is never downgraded by the cap (PR review round 1, major 2).
+echo success > "$WORK/cur-state"; : > "$GH_LOG"
+run_reviewer "$WORK/r5b.out" --post
+grep -q 'state=pending' "$GH_LOG" && fail "the cap posted pending over an existing success status:
+$(cat "$GH_LOG")"
+grep -q 'commits/.*/statuses' "$GH_LOG" || fail "the cap never read the current status, so the no-downgrade check is vacuous"
+: > "$WORK/cur-state"
+ok "an existing success status is left alone"
 
 # The env var moves the cap: at 5, the next run reaches the model again.
 before="$(calls)"

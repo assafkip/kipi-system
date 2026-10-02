@@ -392,22 +392,39 @@ echo "  head sha under review: ${HEAD_SHA:-unknown}"
 # deliberate way past it.
 MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
 case "$MAX_ROUNDS" in ''|*[!0-9]*) MAX_ROUNDS=3 ;; esac
-PRIOR_ROUNDS=$(( $(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG") - 1 ))
+# Count only USABLE rounds. A provider blip or auth failure still leaves a
+# review .md on disk, and counting those would cap a PR nobody ever reviewed
+# (PR review round 1, major). review_is_usable is the same predicate that
+# decides whether a round may set the gate, so "a round" means one thing.
+PRIOR_ROUNDS=0
+for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+  [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
+done
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
   CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
-    # One comment per PR, not one per refused call: the loop may keep calling,
-    # and a comment each time is the same waste moved to the PR thread.
+    # One comment and one alert per PR, not one per refused call: the loop may
+    # keep calling, and repeating them is the same waste moved elsewhere. The
+    # alert is what keeps a capped PR from parking silently: nothing machine-side
+    # consumes a pending status, so the decision goes to the engineering queue.
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
     if [ ! -f "$CAP_MARK" ]; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
         && : > "$CAP_MARK" \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
+      bash "$NOTIFY" "reviewer: PR #$PR hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close." >/dev/null 2>&1 || true
     fi
-    [ -n "$HEAD_SHA" ] && { reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
-        -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
-      || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2; }
+    # Never downgrade an approval. A cap is not a finding, so a sha that is
+    # already green stays green; pending goes only over a non-success state.
+    CUR_STATE=""
+    [ -n "$HEAD_SHA" ] && CUR_STATE="$(gh api "repos/$STATUS_REPO_PATH/commits/$HEAD_SHA/statuses" \
+        --jq "[.[] | select(.context==\"$STATUS_CONTEXT\")][0].state" 2>/dev/null || true)"
+    if [ -n "$HEAD_SHA" ] && [ "$CUR_STATE" != "success" ]; then
+      reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
+        || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
+    fi
   fi
   exit 0
 fi
