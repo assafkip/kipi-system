@@ -9,9 +9,9 @@ allowed_files:
   - AUTONOMOUS-SYSTEMS.md
 disallowed_files: []
 required_checks:
-  - python3 q-system/.q-system/scripts/test/test-loaded-label-has-template.py
+  - "bash -c '! grep -qF \"\\\"com.kipi.pr86-review\\\": (\" q-system/.q-system/scripts/test/test-loaded-label-has-template.py'"
 required_reviews: []
-bypass_check: "python3 q-system/.q-system/scripts/test/test-loaded-label-has-template.py"
+bypass_check: "bash -c '! launchctl list 2>/dev/null | grep -q com.kipi.pr86-review'"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---

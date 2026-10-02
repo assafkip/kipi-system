@@ -56,9 +56,9 @@ spent its day. The meter exists (`voiceloop/usage_ledger.py`); a limit does not.
   `--output-format json` it appends the cost row to the usage ledger (via
   `usage_ledger.finish`) without changing the caller's stdout.
 - Defaults, env-configurable: per-job $25/day (`KIPI_MODEL_GATE_JOB_USD`, per job
-  `KIPI_MODEL_GATE_USD_<JOB>`), fleet $100/day (`KIPI_MODEL_GATE_FLEET_USD`), round cap 3
+  `KIPI_MODEL_GATE_USD_<JOB>`), fleet $75/day (`KIPI_MODEL_GATE_FLEET_USD`), round cap 3
   (`KIPI_MODEL_GATE_ROUNDS`). Measured basis: the highest normal bot day was $14.11, the
-  highest normal fleet day $17.99; the cap of 3 matches the reviewer cap in PR #501.
+  highest normal fleet day $17.99, and $75 sits below the first runaway day ($99.42); the cap of 3 matches the reviewer cap in PR #501.
 - **Report-only until 2026-10-09.** Mode `report` logs and alerts but admits. From
   2026-10-09 the default is `enforce`. `KIPI_MODEL_GATE_MODE=report|enforce` overrides.
   The flip is a date constant in code, so nobody has to remember it; the alerts of the
@@ -115,10 +115,7 @@ spent its day. The meter exists (`voiceloop/usage_ledger.py`); a limit does not.
 
 - Follow-up tickets (other repos): route chief `talk.py run_claude` through the gate; route
   the consulting pipeline model helpers through the gate; then the remaining direct sites the
-  scanner lists.
-
-## Issues` below.
--->
+  scanner lists. Filed: ASK-2397 (chief), ASK-2398 (consulting).
 
 ## Issues
 
@@ -178,12 +175,12 @@ rejected at approve. The template-vs-runner contract test enforces this list.
   {"id": "mg-door-scan", "finding_id": "finding-6", "title": "Daily fleet scanner for model call sites not behind the gate (ASK-2395)",
    "allowed_files": ["q-system/.q-system/scripts/fleet-model-gate-scan.py", "q-system/.q-system/scripts/com.kipi.fleet-model-gate-scan.plist", "q-system/.q-system/tests/test_fleet_model_gate_scan.py", "AUTONOMOUS-SYSTEMS.md"],
    "required_checks": ["python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q"],
-   "bypass_check": "python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q",
+   "bypass_check": "python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q -k only_the_direct",
    "acceptance": "A checkout with a direct claude -p site is reported ungated and alerts once; the same site behind model-gate.sh is not; blind spots print as unscanned."},
   {"id": "mg-unload-pr86", "finding_id": "finding-7", "title": "Unload com.kipi.pr86-review and drop its exemption (ASK-2396)",
    "allowed_files": ["q-system/.q-system/scripts/test/test-loaded-label-has-template.py", "AUTONOMOUS-SYSTEMS.md"],
-   "required_checks": ["python3 q-system/.q-system/scripts/test/test-loaded-label-has-template.py"],
-   "bypass_check": "python3 q-system/.q-system/scripts/test/test-loaded-label-has-template.py",
-   "acceptance": "With the allowlist entry removed the check is red while the job is loaded and green once it is unloaded."}
+   "required_checks": ["bash -c '! grep -qF \"\\\"com.kipi.pr86-review\\\": (\" q-system/.q-system/scripts/test/test-loaded-label-has-template.py'"],
+   "bypass_check": "bash -c '! launchctl list 2>/dev/null | grep -q com.kipi.pr86-review'",
+   "acceptance": "The label no longer appears in the loaded-label check (which is red on main for two unrelated labels, ASK-2399) and launchd no longer lists it."}
 ]
 ```

@@ -13,7 +13,7 @@ disallowed_files: []
 required_checks:
   - python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q
 required_reviews: []
-bypass_check: "python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q"
+bypass_check: "python3 -m pytest q-system/.q-system/tests/test_fleet_model_gate_scan.py -q -k only_the_direct"
 gate_lifecycle: historical-receipt
 deliverables_count: 1
 ---
