@@ -121,13 +121,13 @@ def written_roots(registry: Path) -> list[str]:
     anywhere in the registry, so drift in an `eliminated` or `standalone` node --
     roots the updater never rsyncs -- aborted the whole fleet sync. The updater's
     loop (kipi-update.sh, the `for i in d['instances']` reader) writes only
-    `instances` entries, skips `status: merged*`, and skips `type: standalone` and
-    `skeleton_managed: false`. Same rule here; test_fleet_replica_divergence pins
-    it against the updater's own snippet so the two cannot drift.
+    `instances` entries and skips `status: merged*`; its guard
+    `[ "$itype" = "standalone" ] || [ -z "$prefix" ]` then skips standalone and
+    prefix-less entries. `skeleton_managed: false` only labels that skip, so an
+    opted-out entry WITH a prefix is still rsynced and stays in (PR #499 round 1).
+    test_fleet_replica_divergence pins both the snippet and the guard's text.
 
-    An entry with no subtree_prefix stays IN: the updater fails that whole run as
-    UNDECLARED, so keeping it can only make this gate stricter, never quieter. A
-    registry with no `instances` key falls back to every path, for the scar in
+    A registry with no `instances` key falls back to every path, for the scar in
     registry_roots: a shape change must widen the population, never zero it.
     """
     try:
@@ -143,7 +143,7 @@ def written_roots(registry: Path) -> list[str]:
             continue
         if str(i.get("status", "")).startswith("merged"):
             continue
-        if i.get("type") == "standalone" or i.get("skeleton_managed") is False:
+        if i.get("type", "subtree") == "standalone" or not (i.get("subtree_prefix") or ""):
             continue
         out.add(os.path.expanduser(i["path"]))
     return sorted(out)
@@ -525,6 +525,20 @@ def main() -> int:
             verdict(f"REFUSED (--only {args.only} is not a registered instance)")
             return EXIT_MISCONFIGURED
         roots = sorted({target} | ({skeleton_root} if skeleton_root else set()))
+
+    # LISTED BUT NOTHING WRITTEN IS NOT AN EMPTY POPULATION (PR #499 round 1). A
+    # registry whose every instance is standalone or prefix-less is one this run
+    # rsyncs into nowhere: nothing to protect, so OK. Refusing it aborted the whole
+    # updater (test-kipi-update-unmanaged-instance.sh went red). An `instances`
+    # list that is EMPTY, or a registry that cannot be read, is still the refusal.
+    if not roots and not args.claims and not args.only:
+        try:
+            listed = json.loads(registry.read_text()).get("instances") or []
+        except (OSError, ValueError, AttributeError):
+            listed = []
+        if listed:
+            verdict(f"OK ({len(listed)} registered instance(s), none written by this run)")
+            return 0
 
     if not roots:
         sys.stderr.write(
