@@ -91,6 +91,36 @@ def head_count(repo):
     return int(p.stdout.strip()) if p.returncode == 0 else 0
 
 
+def git(repo, *args, check=True):
+    return subprocess.run(["git", *args], cwd=repo, check=check,
+                          capture_output=True, text=True)
+
+
+def merge(repo, home, branch, message=None, resolve=None):
+    """Run a REAL `git merge --no-ff`, so git itself produces the merge commit.
+
+    `resolve` writes files into the tree BEFORE the merge commit is made, which
+    is how a conflict resolution (or an author sneaking content in) enters a
+    merge. Returns (rc, output).
+    """
+    env = dict(os.environ, HOME=str(home))
+    env.pop("LEFTHOOK_COMMIT_MSG_FILE", None)
+    argv = ["git", "merge", "--no-ff", branch]
+    if resolve is not None:
+        argv.append("--no-commit")
+    if message is not None:
+        argv += ["-m", message]
+    p = subprocess.run(argv, cwd=repo, capture_output=True, text=True, env=env)
+    if resolve is None:
+        return p.returncode, p.stdout + p.stderr
+    for name, body in resolve.items():
+        (repo / name).write_text(body)
+        git(repo, "add", name)
+    c = subprocess.run(["git", "commit", "-m", message or "merge"], cwd=repo,
+                       capture_output=True, text=True, env=env)
+    return c.returncode, p.stdout + p.stderr + c.stdout + c.stderr
+
+
 def main(guard):
     print(f"client-name-guard self-test against: {guard}\n")
 
@@ -189,6 +219,48 @@ def main(guard):
         record("no token list => WARN and pass, never block",
                rc == 0 and "no token list" in out, f"rc={rc}")
 
+    # --- 10. REGRESSION: a MERGE does not re-block content already on a parent -
+    # Measured 2026-09-23 (sp-7156177c, ASK-2058). `git diff --cached` at
+    # commit-msg time during a merge diffs the index against HEAD ONLY, so every
+    # line arriving from the merged branch reads as ADDED. On the real repo that
+    # made the guard refuse ANY merge of origin/main into ANY branch -- 60 files
+    # already on the public main carry client tokens -- and the voiceloop merge
+    # order sat undone for ten heartbeat runs because nobody had hit the gate.
+    # A name already committed on a parent cannot be kept out by this commit;
+    # blocking it only routes the author to --no-verify, which disarms every
+    # other hook in the repo.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "pub")
+        rc0, _ = commit(
+            repo, home,
+            f"Publish the case study\n\n{SKIP_TOKEN}: permission on file\n",
+            {"study.md": f"# Case study\n\n{CLIENT} shipped it.\n"})
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "diverge on the main line", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, "pub", message="Merge branch 'pub'")
+        record("a merge does NOT block on a name already committed on the parent",
+               rc0 == 0 and rc == 0 and head_count(repo) == before + 2,
+               f"branch rc={rc0}, merge rc={rc}")
+
+    # --- 11. REGRESSION: a name added BY the merge resolution still BLOCKS -----
+    # The half that must not be lost by fixing case 10. Content the merge itself
+    # introduces is new to both parents, so it is exactly what the guard is for.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "side")
+        commit(repo, home, "side work", {"side.md": "side\n"})
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "main work", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, "side", message="Merge branch 'side'",
+                        resolve={"resolved.md": f"note about {CLIENT}\n"})
+        record("a client name added BY the merge resolution still BLOCKS",
+               rc != 0 and head_count(repo) == before, f"rc={rc}")
+
     failed = [n for n, ok in results if not ok]
     print()
     if failed:
@@ -200,6 +272,12 @@ def main(guard):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--against", type=Path, default=GUARD,
+    # RESOLVED, not taken as given. The commit-msg hook is written into a temp
+    # repo and runs with THAT repo as cwd, so a relative --against path points
+    # nowhere from there: python exits 2, every case reads rc=1, and the suite
+    # prints a plausible-looking mix of PASS and FAIL before dying on the first
+    # case that needs a real commit to exist. A negative self-test that can
+    # report on a guard it never executed is worse than no negative self-test.
+    ap.add_argument("--against", type=lambda p: Path(p).resolve(), default=GUARD,
                     help="guard implementation to test (for the negative self-test)")
     sys.exit(main(ap.parse_args().against))
