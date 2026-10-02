@@ -80,3 +80,12 @@ def test_the_opencode_branch_is_gated_too(env, monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", f"{oc.parent}:/usr/bin:/bin")
     assert _run(monkeypatch, env) is None
     assert not env["ran"].exists()
+
+
+def test_every_admitted_call_is_settled_so_it_stops_counting_as_in_flight(env, monkeypatch, tmp_path):
+    """The in-flight charge drops on the gate's own settle row (ASK-2401). Without
+    it, three finished $0.50 calls still read as $1.00 each and the third is refused."""
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    assert [_run(monkeypatch, env) for _ in range(3)] == ["hi\n"] * 3
+    kinds = [json.loads(x)["kind"] for x in (tmp_path / "gate.jsonl").read_text().splitlines()]
+    assert kinds.count("call") == kinds.count("settle") == 3
