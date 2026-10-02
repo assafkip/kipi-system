@@ -135,6 +135,24 @@
       "skill": "faceless-explainer",
       "lane": "motion",
       "stage": "build"
+    },
+    {
+      "skill": "dataviz",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "figma",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "brand-guidelines",
+      "lane": "brand",
+      "stage": "build"
     }
-  ]
+  ],
+  "not_engines": {
+    "artifact-design": "Deliberately not an engine (ASK-1877). Its description is 'load before writing any artifact', so it loads for ordinary internal artifacts (reports, dashboards) that no design round governs; refusing it outside a round would block all of them. The public-page path is still held by the dogfood gate and the design-chain gate's Write/Edit ledger."
+  }
 }
