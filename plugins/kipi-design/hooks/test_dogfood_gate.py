@@ -185,6 +185,66 @@ finally:
 ok("[scope][mutation] marker tuple restored after the mutation",
    _dg.INTERNAL_PATH_MARKERS is _saved_markers and "/cockpit/" in _dg.INTERNAL_PATH_MARKERS)
 
+# ── ASK-1906: "report"/"reports" was missing from INTERNAL_PATH_MARKERS, so a
+# founder-only report page not already caught by some OTHER marker classified
+# PUBLIC and ran the AI-slop block.
+#
+# The four real paths named in the issue (two under q-consult/output/, one
+# under q-system/output/, one under a fourth fleet instance's output/ -- see
+# REPORT_PATHS_REAL below for why that instance's real name is genericized
+# here) all already sit under an "/output/" directory, and "/output/" was
+# already a marker before this fix --
+# measured directly: is_public_facing_page() on the real absolute paths already
+# returned False pre-fix. So testing those four AS-IS would pass whether or not
+# "report" is a marker, and would prove nothing about this fix (the exact "a
+# bound can fake your filter" trap). The isolated paths below strip every OTHER
+# marker (no /output/, no "dashboard", and no "/q-system/" -- the third real path
+# lives under q-system/, which is ITSELF an existing marker, so a naive copy of
+# it here would ride "/q-system/" and prove nothing either) so the assertion is
+# driven by "report" alone.
+REPORT_PATHS_ISOLATED = [
+    "/repo/q-consult/ai-builder-reports/dubsado-reliability-recon.html",
+    "/repo/q-consult/pipeline-reports/summary.html",
+    "/repo/consulting-instance/architecture-report/index.html",
+]
+for p in REPORT_PATHS_ISOLATED:
+    ok("[scope] report page with no other marker present is NOT public-facing: %s" % p,
+       is_public_facing_page(p) is False)
+
+# The four real directories named in ASK-1906. The 4th real instance name is a
+# client identifier this public repo's client-name-guard blocks from ever being
+# committed, so it is genericized here to "q-instance" -- the segment shape
+# (output/report-status-dashboard/) is what the case tests, not the fleet
+# instance's name. Kept as a named regression guard, not as evidence for the
+# "report" marker itself -- see the comment above.
+REPORT_PATHS_REAL = [
+    "/repo/q-consult/output/ai-builder-reports/dubsado-reliability-recon.html",
+    "/repo/q-consult/output/pipeline-reports/summary.html",
+    "/repo/q-system/output/architecture-report/index.html",
+    "/repo/q-instance/output/report-status-dashboard/index.html",
+]
+for p in REPORT_PATHS_REAL:
+    ok("[scope] real ASK-1906 report path is NOT public-facing: %s" % p,
+       is_public_facing_page(p) is False)
+
+# Negative self-test, same shape as the /cockpit/ mutation above: without "report" in
+# the markers, the ISOLATED paths (no other marker riding along) must flip PUBLIC.
+_saved_markers2 = _dg.INTERNAL_PATH_MARKERS
+try:
+    _dg.INTERNAL_PATH_MARKERS = tuple(m for m in _saved_markers2 if m != "report")
+    ok("[scope][mutation] removing the report marker makes the isolated report paths "
+       "PUBLIC again, so the cases above are driven by that marker and can fail",
+       all(_dg.is_public_facing_page(p) is True for p in REPORT_PATHS_ISOLATED))
+finally:
+    _dg.INTERNAL_PATH_MARKERS = _saved_markers2
+ok("[scope][mutation] marker tuple restored after the report mutation",
+   _dg.INTERNAL_PATH_MARKERS is _saved_markers2 and "report" in _dg.INTERNAL_PATH_MARKERS)
+
+# Acceptance criterion 2: a genuine public page is unaffected by the new marker.
+ok("[scope] normal public page is still public-facing after the report marker: "
+   "site/pricing/index.html",
+   is_public_facing_page("/repo/site/pricing/index.html") is True)
+
 if failures:
     print("test_dogfood_gate FAILED:")
     for f in failures:
