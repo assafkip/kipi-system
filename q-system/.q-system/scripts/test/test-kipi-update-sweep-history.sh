@@ -25,6 +25,12 @@ build() {
   cp "$ROOT/.gitignore" "$sk/.gitignore"
   cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
      "$sk/q-system/.q-system/scripts/propagation-leak-gate.py"
+  # The updater is fail-closed on the replica-divergence gate exactly as it is on
+  # the leak gate above: a skeleton missing it aborts before any sync. This
+  # population is one subtree instance carrying no declared replicated path, so
+  # the gate DISARMS and says so; provisioning it changes nothing asserted here.
+  cp "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" \
+     "$sk/q-system/.q-system/scripts/fleet-replica-divergence.py"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/q-system/hooks/auto-commit.py" "$sk/q-system/hooks/auto-commit.py"

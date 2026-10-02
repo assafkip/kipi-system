@@ -849,6 +849,103 @@ else
   echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
 fi
 
+# Preflight: refuse to overwrite a replica that has drifted AHEAD of the skeleton.
+#
+# The three preflights above ask whether the SOURCE is trustworthy. None of them
+# looks at the destinations. plugins/ rsyncs with `--delete`, so a line that
+# exists only in an instance's copy is not "inconsistent", it is scheduled for
+# deletion -- no diff, no conflict, no prompt, and the loss is silent because
+# rsync's job IS to make the destination match.
+#
+# Live when this was armed (2026-09-02): prd_runner.py is identical across 25
+# roots and different in consulting, and the difference is `_reject_unrunnable_gate`
+# -- the ONLY copy of it in 29 roots. An update run today deletes the fleet's
+# sole enforcer of a-gate-that-cannot-run-must-not-pass. That is not a
+# hypothetical this gate was built to imagine; it is what it found.
+#
+# BLOCKING, and only over the REPLICA half. The claim half (--claim) measures
+# something real -- 26 roots hold that lesson, 1 holds its enforcer -- but 25
+# roots is a backlog, not a fixable red, and a gate that is red on its own
+# population for months gets switched off (voice-loop-anywhere, plan-lint
+# grandfathering). Replica drift is one root with a named cause, so it can be
+# resolved instead of tolerated. Add --claim here when the enforcer count
+# reaches the claim count, not before.
+#
+# NOT wrapped in `[ -f ]`, for the reason spelled out at the leak gate above: a
+# guard that turns a DELETED script into a green run reproduces, one level up,
+# the exact failure it exists to prevent.
+REPLICA_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/fleet-replica-divergence.py"
+if [ ! -f "$REPLICA_GATE" ]; then
+  echo ""
+  echo "ABORT: fleet replica divergence gate missing at $REPLICA_GATE"
+  echo "It is fail-closed on purpose. Restore it or revert; do not rsync"
+  echo "--delete over 23 instances unchecked."
+  exit 1
+fi
+# `if` form, not a bare assignment: under `set -e` a failing command substitution
+# kills the script AT the assignment, so this gate's own abort message would
+# never print and the run would die silent.
+#
+# SCOPED TO --only, like the reach preflight below it (PR #460 review, major).
+# A staged single-instance rollout was aborting on drift in a root the run never
+# writes. The gate keeps the skeleton in its population either way: that is the
+# source being compared against, not a destination being protected.
+REPLICA_SCOPE=()
+if [ -n "$ONLY" ]; then
+  REPLICA_SCOPE=(--only "$ONLY")
+fi
+# --skeleton "$SCRIPT_DIR", not the registry's skeleton key (PR #460 review round
+# 2, minor). THIS tree is the one about to be rsynced out, so it is the one
+# direction has to be answered against. The gate defaulted to the registry key,
+# which this script never reads, so a run from any other checkout compared the
+# fleet against a tree it was not going to copy from -- reproduced against a
+# 137-commit unmerged branch. One reader of "which tree is the source", and it is
+# the script doing the copying.
+if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" --skeleton "$SCRIPT_DIR" "${REPLICA_SCOPE[@]+"${REPLICA_SCOPE[@]}"}" 2>&1)"; then
+  REPLICA_RC=0
+else
+  REPLICA_RC=$?
+fi
+printf '%s\n' "$REPLICA_OUT"
+# Proof of EXECUTION, not of existence. A zero-byte or comment-only .py is a
+# valid program that exits 0 with no output, and a truncated write is likelier
+# than a deletion. The verdict line is printed on every outcome INCLUDING the
+# refusals, so its absence means the gate did not run at all.
+if ! printf '%s' "$REPLICA_OUT" | grep -q "^fleet replica divergence: "; then
+  echo ""
+  echo "ABORT: the fleet replica divergence gate did not report a verdict."
+  echo "It exists but did not run as a gate. Restore it or revert; do not"
+  echo "rsync --delete over 23 instances unchecked."
+  exit 1
+fi
+if [ "$REPLICA_RC" -ne 0 ]; then
+  echo ""
+  if [ "$REPLICA_RC" -eq 3 ]; then
+    # Distinct code, distinct repair. 3 means the gate was asked to check
+    # something it cannot evaluate -- a declared path that resolves in no root.
+    # Its green would have been decoration, so it refuses to give one.
+    echo "ABORT: the divergence gate could not evaluate what it was asked to check"
+    echo "(named above). Fix the declared path; a check that resolves nowhere"
+    echo "reports green over coverage it never had."
+  elif [ "$REPLICA_RC" -eq 2 ]; then
+    # 2 is an EMPTY POPULATION: the registry named no roots, so nothing was
+    # compared. The drifted-ahead text below describes a comparison that ran and
+    # found something, which is the opposite fact, and it sends an operator
+    # hunting for an instance to reconcile when the file to fix is the registry
+    # (PR #460 review, minor).
+    echo "ABORT: the divergence gate resolved NO instance roots (named above)."
+    echo "Nothing was compared, so this is not a drift report. Fix"
+    echo "$SCRIPT_DIR/instance-registry.json; a gate with an empty population"
+    echo "cannot report on a fleet it never read."
+  else
+    echo "ABORT: a replica has drifted ahead of the skeleton (named above)."
+    echo "plugins/ rsyncs with --delete, so every line that exists only in the"
+    echo "instance copy is destroyed by this run. Reconcile the direction first;"
+    echo "do not resolve this by running an update."
+  fi
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
