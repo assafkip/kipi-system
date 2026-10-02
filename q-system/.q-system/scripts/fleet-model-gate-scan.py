@@ -19,13 +19,16 @@ WHAT COUNTS AS GATED:
        command position is the door, not `claude`. A door wrapping a `bash -c`
        body whose string holds `claude -p` IS still detected (the detector reads
        -c strings), so that shape reads ungated: an over-count, the safe side.
-  .py  the voiceloop wrapper (prompt_render.py) is the gate's own caller. Any
-       other .py site counts as gated only when its CODE, read as an AST, holds a
+  .py  a site counts as gated only when its CODE, read as an AST, holds a
        string literal ending in `model-gate.sh` or a call to `model_gate.check`.
        A comment or a docstring naming the door does not count (PR #506 review:
        a TODO comment marked a direct caller gated). Still a file-level answer:
        a file with one gated and one direct call reads gated, which is printed
-       below as an unscanned class, never hidden.
+       below as an unscanned class, never hidden. The voiceloop wrapper
+       (prompt_render.py) gets NO exemption by path: it was trusted as gated on
+       trees where it never called the gate, so "0 ungated" was reachable with the
+       chokepoint unmetered (PR #506 review round 2). It earns the exclusion per
+       run, like every other file, by calling model_gate.check.
 
 LINKED WORKTREES are skipped: a per-session worktree is a copy of a checkout
 already counted, and opening or removing one flipped the fingerprint and filed
@@ -64,7 +67,6 @@ _spec = importlib.util.spec_from_file_location("ffss", HERE / "fleet-full-suite-
 ffss = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ffss)
 
-WRAPPERS = {"plugins/kipi-core/voiceloop/prompt_render.py"}
 def _py_names_the_door(text: str) -> bool:
     try:
         tree = ast.parse(text)
@@ -95,7 +97,7 @@ UNSCANNED = [
 
 def ungated_in(top: Path) -> tuple[list[str], int]:
     """(ungated sites, all detected sites) for one checkout, as repo-relative paths."""
-    sites = cs.call_sites(top) - WRAPPERS
+    sites = cs.call_sites(top)
     out = []
     for rel in sorted(sites):
         if rel.endswith(".py"):

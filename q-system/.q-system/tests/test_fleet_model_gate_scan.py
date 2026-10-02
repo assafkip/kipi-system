@@ -110,3 +110,25 @@ def test_a_linked_worktree_is_not_a_second_checkout(tmp_path):
     p, _ = _run(tmp_path)
     rep = json.loads(p.stdout)
     assert rep["checkouts"] == 1 and len(rep["ungated"]) == 2
+
+
+def test_the_wrapper_is_gated_only_when_its_code_calls_the_gate(tmp_path):
+    """No exemption by path (PR #506 round 2, ASK-2402): the same wrapper bytes are
+    ungated until the file actually calls model_gate.check."""
+    rel = "plugins/kipi-core/voiceloop/prompt_render.py"
+    direct = "import subprocess\n\ndef run_model(p):\n    return subprocess.run(['claude', '-p', p])\n"
+    routed = ("import subprocess\nfrom . import model_gate\n\ndef run_model(p):\n"
+              "    if not model_gate.check('voiceloop')['admit']:\n        return None\n"
+              "    return subprocess.run(['claude', '-p', p])\n")
+    projects = tmp_path / "projects"
+    for name, text in (("unrouted", direct), ("routed", routed)):
+        r = projects / name
+        (r / rel).parent.mkdir(parents=True)
+        (r / rel).write_text(text)
+        for cmd in (["init", "-q"], ["add", "-A"]):
+            subprocess.run(["git", "-C", str(r), *cmd], check=True, env=_env())
+    p, _ = _run(tmp_path)
+    assert p.returncode == 0, p.stderr
+    rep = json.loads(p.stdout)
+    assert [(Path(u["checkout"]).name, u["path"]) for u in rep["ungated"]] == [("unrouted", rel)]
+    assert rep["sites"] == 2
