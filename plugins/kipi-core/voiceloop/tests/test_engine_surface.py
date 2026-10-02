@@ -63,6 +63,7 @@ EXPECTED_MODULES = (
     "gate_walk",
     "luar_env_backend",
     "luar_scorer",
+    "model_gate",
     "opener_gate",
     "placeholder_gate",
     "post_repair",
