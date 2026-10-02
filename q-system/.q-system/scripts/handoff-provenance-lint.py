@@ -307,7 +307,7 @@ def has_provenance(line: str) -> bool:
     return bool(_FALLBACK_RE.search(line))
 
 
-def unlabelled_lines(body: str) -> list[tuple[int, str]]:
+def unlabelled_lines(body: str, skip_frontmatter: bool = False) -> list[tuple[int, str]]:
     """(line number, text) for every measurement-shaped line with no provenance."""
     if SKIP_MARKER in body:
         return []
@@ -318,9 +318,14 @@ def unlabelled_lines(body: str) -> list[tuple[int, str]]:
     # leading frontmatter block is therefore skipped wholesale. Only leading: a `---`
     # further down is a horizontal rule, and treating it as a fence opener would
     # silently exempt the rest of the file.
+    # ADVISORY SCOPE ONLY (ASK-2389). PR #448 applied the skip to the BLOCKING scope
+    # too, so a last-handoff.md opening with `---` laundered every claim up to the
+    # next `---`; main before #448 blocked that exact fixture. No real handoff opens
+    # with frontmatter (10 of 10 checked start with a heading), so the blocking scope
+    # reads every line.
     lines = body.splitlines()
     start = 0
-    if lines and lines[0].strip() == "---":
+    if skip_frontmatter and lines and lines[0].strip() == "---":
         for i in range(1, len(lines)):
             if lines[i].strip() == "---":
                 start = i + 1
@@ -355,7 +360,7 @@ def main() -> int:
     except Exception:
         return 0
 
-    bad = unlabelled_lines(body)
+    bad = unlabelled_lines(body, skip_frontmatter=(mode == MODE_ADVISORY))
     if not bad:
         return 0
     # Pure-string checks first; git runs only on a file that would otherwise block.

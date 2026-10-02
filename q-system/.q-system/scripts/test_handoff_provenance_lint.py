@@ -144,10 +144,18 @@ def case_frontmatter_is_not_a_claim() -> bool:
     returns exit 0 because the path is out of scope entirely -- indistinguishable from
     the skip working. `--negative` flagged it DECORATION rather than the suite going
     green on a case that proved nothing (`feedback_check_must_be_able_to_fail`)."""
-    handoff_code, handoff_out, handoff_err = run_full(HANDOFF, FRONTMATTER_BODY)
+    # ASK-2389: the skip is the ADVISORY scope's. A handoff opening with the same
+    # block is read in full and blocks on the dated `description:` line.
+    handoff_code, _handoff_out, _handoff_err = run_full(HANDOFF, FRONTMATTER_BODY)
     mem_code, mem_out, mem_err = run_full(AUTO_MEMORY, FRONTMATTER_BODY)
-    return (handoff_code == 0 and handoff_err.strip() == "" and handoff_out.strip() == ""
+    return (handoff_code == 2
             and mem_code == 0 and mem_err.strip() == "" and mem_out.strip() == "")
+
+
+def case_leading_fence_does_not_launder_a_handoff() -> bool:
+    """ASK-2389 reproducer: `---`, a bare claim, `---`. Main before PR #448 blocked it;
+    #448's skip made the blocking scope pass it."""
+    return run(HANDOFF, "---\n- 1,366 rows flagged.\n---\n\nprose.\n") == 2
 
 
 def case_horizontal_rule_does_not_exempt_the_body() -> bool:
@@ -437,6 +445,7 @@ CASES = [
     ("auto-memory reports and does NOT block", case_auto_memory_reports_and_does_not_block),
     ("frontmatter is not a claim, both postures", case_frontmatter_is_not_a_claim),
     ("a mid-file --- does not exempt the body", case_horizontal_rule_does_not_exempt_the_body),
+    ("a leading --- does not launder a handoff", case_leading_fence_does_not_launder_a_handoff),
     ("auto-memory scope matches its owner", case_auto_memory_scope_matches_the_owner),
     # ASK-1953 round 2, the four Codex findings on PR #448.
     ("advisory finding reaches the model", case_r2_advisory_finding_reaches_the_model),
