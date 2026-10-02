@@ -220,6 +220,144 @@ cd "$REPO" 2>/dev/null || {
 }
 page_clear repo-missing
 
+# --- SELECTOR-DRIFT GUARD (ASK-355, from sp-d319d541):BEGIN -----------------
+# THIS FILE RUNS FROM THE FOUNDER'S WORKING TREE, so which branch is checked out
+# decides what the 15-minute heartbeat can do. During ASK-352 the reviewer-redrive
+# selector drove the real loop from an unmerged branch; a branch switch in that
+# checkout reverts the wiring mid-flight and this script keeps exiting 0 while
+# doing strictly less than it did a minute earlier.
+#
+# It is ADDITIVE LOSS, not corruption -- nothing is written wrong, the loop just
+# quietly does less -- which is exactly why nothing catches it. No error, no red
+# gate, no page. The capability manifest checks declared-vs-actual per TEST FILE;
+# it never asks whether the RUNNING dispatcher still has a call site it had a run
+# ago. So the guard has to live here, in the thing whose own wiring is at stake.
+#
+# PLACED BEFORE stale_check, DELIBERATELY. A branch switch is the very event that
+# both drops a selector AND makes this checkout look stale, and stale_check exits
+# the script. Behind it, this guard would be mute in the one scenario it exists
+# for. It is also cheap: two stats and one awk over this file, no network.
+#
+# RESOLVED MEANS BOTH HALVES. A selector is resolved when its script exists under
+# $REPO *and* this running copy still references it from a non-comment line.
+# Statting the path alone would report "healthy" for a dispatcher that no longer
+# calls the thing -- the silent downgrade with a green light on it.
+SELECTOR_SELF="${BASH_SOURCE[0]}"
+SELECTOR_STATE="$(dirname "$LOG")/redrive-selectors.state"
+SELECTOR_NAMES="ci-redrive.py review-redrive.py"
+
+# The awk SKIPS this whole guard block, which is why the BEGIN/END markers are
+# load-bearing and not decoration: SELECTOR_NAMES above names both selectors, so
+# without the skip every selector would always look referenced and the call-site
+# half would grade nothing. Comments are stripped before the match for the same
+# reason -- the redrive blocks below are surrounded by prose naming them.
+#
+# AND A RANGE THAT MATCHES NOTHING MUST SAY SO, NOT RETURN A NUMBER. Two live
+# defects were found here in one sitting, both green at the time:
+#
+#  1. The skip was anchored on `GUARD \(ASK-355\):BEGIN` while the marker reads
+#     `GUARD (ASK-355, from sp-d319d541):BEGIN`. It never armed, SELECTOR_NAMES
+#     counted as a live call site, and every selector read as resolved forever.
+#  2. The fix put the marker pattern INSIDE the awk program -- which awk then read
+#     off this very file and matched against ITSELF. So "the marker is missing"
+#     could never be true, and the mutation written to prove that branch survived.
+#
+# Hence: the block bounds are found by `grep -n` for a marker anchored at `^# --- `,
+# a shape the grep source line (indented, quoted) cannot wear, and the range is
+# excluded BY LINE NUMBER. No marker found means the guard cannot answer (rc 2) --
+# the caller then pages about the guard rather than reporting health it never
+# measured. Same lesson as the LINEAR-OUTAGE-GUARD anchors: a fixture must not be
+# anchored to the text it is testing.
+SELECTOR_UNREADABLE=2
+selector_resolved() {
+  local sel="$1" refs begin_line end_line
+  begin_line="$(grep -n '^# --- SELECTOR-DRIFT GUARD .*:BEGIN' "$SELECTOR_SELF" 2>/dev/null | head -1 | cut -d: -f1)"
+  end_line="$(grep -n '^# --- SELECTOR-DRIFT GUARD .*:END' "$SELECTOR_SELF" 2>/dev/null | head -1 | cut -d: -f1)"
+  case "$begin_line$end_line" in ''|*[!0-9]*) return "$SELECTOR_UNREADABLE" ;; esac
+  [ "$end_line" -gt "$begin_line" ] || return "$SELECTOR_UNREADABLE"
+  refs="$(awk -v sel="$sel" -v b="$begin_line" -v e="$end_line" '
+    NR >= b && NR <= e { next }
+    { line = $0; sub(/#.*/, "", line); if (index(line, sel)) n++ }
+    END { print n + 0 }
+  ' "$SELECTOR_SELF" 2>/dev/null)"
+  case "$refs" in ''|*[!0-9]*) return "$SELECTOR_UNREADABLE" ;; esac
+  [ -f "$REPO/q-system/.q-system/scripts/$sel" ] || return 1
+  [ "$refs" -gt 0 ]
+}
+
+selector_now() {
+  local sel rc
+  for sel in $SELECTOR_NAMES; do
+    selector_resolved "$sel"; rc=$?
+    case "$rc" in
+      0) printf '%s present\n' "$sel" ;;
+      "$SELECTOR_UNREADABLE") printf '%s unreadable\n' "$sel" ;;
+      *) printf '%s absent\n' "$sel" ;;
+    esac
+  done
+}
+
+selector_prev() { awk -v s="$1" '$1 == s { print $2 }' "$SELECTOR_STATE" 2>/dev/null; }
+
+# THE ONLY WRITER OF $SELECTOR_STATE. Temp-then-rename, so a run killed mid-write
+# leaves the previous run's answer intact rather than a truncated file that would
+# read as "this selector was never resolved" and swallow the next real loss.
+selector_state_write() {
+  local body="$1" tmp="$SELECTOR_STATE.tmp.$$"
+  printf '%s' "$body" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; say "selector drift: could not write $SELECTOR_STATE"; return 1; }
+  mv -f "$tmp" "$SELECTOR_STATE" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; say "selector drift: could not replace $SELECTOR_STATE"; return 1; }
+}
+
+# PAGE ON THE TRANSITION, NEVER ON THE LEVEL -- the same shape the liveness beacon
+# already takes. This runs every 900s, so a state-based page is 96 identical Slack
+# lines a day, which is how an alert trains someone to skim the channel.
+#
+# RECOVERY PAGES TOO. An operator who never hears the selector come back cannot
+# tell a degraded loop from a healthy one; note_degraded_transition in
+# pr-review-agent.sh already takes that posture and this matches it. Each
+# direction clears the other's marker, so a flap inside the re-ping window is
+# still heard.
+#
+# A FIRST RUN IS SILENT. With no previous record there is nothing to have lost,
+# and paging on first sighting would fire once per fresh machine and once per
+# state-file loss -- noise about the guard rather than about the loop.
+selector_drift_check() {
+  local now sel prev cur head branch
+  now="$(selector_now)"
+  head="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  # THE GUARD CANNOT READ ITSELF -> SAY SO AND CHANGE NOTHING. Writing this run's
+  # answer would overwrite a good baseline with a measurement that was never made,
+  # and comparing against it would page for the wrong reason. Loud and inert beats
+  # quiet and wrong.
+  if printf '%s\n' "$now" | grep -q ' unreadable$'; then
+    say "SELECTOR GUARD BROKEN: could not find its own BEGIN/END markers in $SELECTOR_SELF, so it measured nothing this run (branch $branch, HEAD $head)"
+    page_once selector-guard-broken "kipi dispatch: the redrive selector drift guard cannot read its own block markers in $SELECTOR_SELF (branch $branch, HEAD $head), so it is measuring nothing. Do: restore the SELECTOR-DRIFT GUARD BEGIN/END marker lines."
+    return 0
+  fi
+  page_clear selector-guard-broken
+  if [ -f "$SELECTOR_STATE" ]; then
+    for sel in $SELECTOR_NAMES; do
+      prev="$(selector_prev "$sel")"
+      cur="$(printf '%s\n' "$now" | awk -v s="$sel" '$1 == s { print $2 }')"
+      [ -n "$prev" ] || continue
+      [ "$prev" = "$cur" ] && continue
+      if [ "$cur" = "absent" ]; then
+        say "SELECTOR DRIFT: the redrive selector $sel resolved on the previous run and is gone now (branch $branch, HEAD $head)"
+        page_clear "selector-back-$sel"
+        page_once "selector-gone-$sel" "kipi dispatch: the redrive selector $sel is GONE from the running dispatcher (branch $branch, HEAD $head). The 15-min loop still exits 0 while doing strictly less than it did last run. Do: check out or merge the branch that carries it."
+      else
+        say "SELECTOR RECOVERED: the redrive selector $sel is resolved again (branch $branch, HEAD $head)"
+        page_clear "selector-gone-$sel"
+        page_once "selector-back-$sel" "kipi dispatch: the redrive selector $sel is BACK (branch $branch, HEAD $head). The loop is running its full set of redrives again. Nothing to do -- this is the all-clear."
+      fi
+    done
+  fi
+  selector_state_write "$now"
+}
+selector_drift_check
+# --- SELECTOR-DRIFT GUARD (ASK-355, from sp-d319d541):END -------------------
+
 # --- STALE-CHECKOUT REFUSAL (sp-c775b116) --------------------------------
 # The loop runs the founder's WORKING TREE, and nothing kept it in sync with
 # main. There is no `git pull` anywhere in this script. Observed 2026-07-30:

@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-dispatch-capability-drift.sh",
+ "runner": "bash",
+ "timeout_s": 180
+}
