@@ -62,8 +62,9 @@ jobs:
       # change-size.py picks the declared tests that name the changed files. It
       # falls back to the FULL suite on anything it cannot vouch for: a change to
       # the gate, the classifier, either selector, a pytest config or conftest, a
-      # dependency manifest, a capability declaration, a new third-party import, a selection
-      # wider than 60, or any error reading the diff. Structure, declared-vs-actual
+      # dependency manifest, a capability declaration, a new third-party import, or any
+      # error reading the diff. A WIDE selection is not a fallback: a file many tests
+      # name runs those tests (ASK-2388). Structure, declared-vs-actual
       # and wiring checks are not tests and run in full either way. The checkout
       # above uses fetch-depth 0, so origin/<base> and the push's `before` resolve.
       #
