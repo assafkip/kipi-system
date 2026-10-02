@@ -58,9 +58,10 @@ PER_JOB_PREFIX = "KIPI_MODEL_GATE_USD_"
 ENFORCE_FROM = "2026-10-09"
 #: Measured 2026-09-23..10-01 from the usage ledger: the highest normal bot day
 #: was $14.11 and the highest normal fleet day $17.99. The days this exists for
-#: were $99.42 and $582.76.
+#: were $99.42 and $582.76, so the ceiling sits BELOW the first of them: $100
+#: admitted an exact repeat of it (PR #502 review).
 DEFAULT_JOB_USD = 25.0
-DEFAULT_FLEET_USD = 100.0
+DEFAULT_FLEET_USD = 75.0
 #: Same number as the reviewer's own per-PR cap (PR #501).
 DEFAULT_ROUNDS = 3
 #: What a call with no settled cost is charged: one still in flight, a timeout,
