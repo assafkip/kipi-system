@@ -265,15 +265,27 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # reintroduce the same defect by being written the old way.
     optional = _gated(decide.decide_candidate, "decide.decide_candidate", trail,
                       recent_openers=recent_openers)
-    verdict = decide.decide_candidate(
-        post, regenerate=revise.reviser(runner=runner,
-                                        **_gated(revise.reviser,
-                                                 "revise.reviser", trail,
-                                                 claude_bin=claude_bin,
-                                                 model=model, author=author)),
-        channel=channel,
-        source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-        handles=False, **optional)
+    try:
+        verdict = decide.decide_candidate(
+            post, regenerate=revise.reviser(runner=runner,
+                                            **_gated(revise.reviser,
+                                                     "revise.reviser", trail,
+                                                     claude_bin=claude_bin,
+                                                     model=model, author=author)),
+            channel=channel,
+            source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
+            handles=False, **optional)
+    except GateRefused as exc:
+        # The `regenerate=` handoff is the other door into the reviser (PR #509
+        # round 4, major). `decide_candidate` lives in a repo this package cannot
+        # edit and calls `regenerate` on a gate violation, so a shut model gate
+        # raised through it and the lane crashed with no trail. Same outcome as
+        # the style-revise catch below: nothing ships, the trail says why.
+        trail["stages"].append({"stage": "gates", "status": "gated",
+                                "reasons": [f"regenerate not run: {exc}"]})
+        trail["style"] = {"status": "not_run", "gated": True,
+                          "reason": f"gate regenerate not run: {exc}"}
+        return None
     trail["stages"].append({"stage": "gates", "status": verdict.status,
                             "reasons": list(verdict.reasons or [])})
     if verdict.status != decide.SHIPPABLE:

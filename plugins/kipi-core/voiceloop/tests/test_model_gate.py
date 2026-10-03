@@ -282,6 +282,37 @@ def test_a_gate_refusal_in_the_style_revise_is_gated_not_a_crash(gate, monkeypat
     assert "model gate refused" in trail["style"]["reason"]
 
 
+def test_a_gate_refusal_through_the_regenerate_handoff_is_gated_not_a_crash(
+        gate, monkeypatch, tmp_path):
+    """The `regenerate=` closure handed to decide_candidate is the reviser's other door
+    (PR #509 round 4). A decide_candidate that calls it once, as revise.py documents,
+    must leave the lane with nothing shipped and a trail, never an escaped GateRefused.
+    """
+    import types
+    from voiceloop import gate_and_judge as gj, revise
+    _refusing_gate(monkeypatch)
+
+    def decide_candidate(post, regenerate=None, **k):
+        text = regenerate(post, [{"rule": "length", "detail": "too long"}])
+        return types.SimpleNamespace(status="shippable", text=text, reasons=[])
+    decide = types.SimpleNamespace(SHIPPABLE="shippable", decide_candidate=decide_candidate)
+    voicefp = types.SimpleNamespace(
+        style_review=lambda *a, **k: pytest.fail("style-reviewed a gated draft"),
+        style_feedback=lambda review: [],
+        drift_report=lambda text, **k: pytest.fail("fingerprinted a gated draft"))
+    trail = {"stages": []}
+    out = gj.gate_and_judge(
+        "a draft body", channel="x", idea_text="an idea", voice_prov={},
+        arch_id=None, arch_entry=None, runner=None, trail=trail,
+        at="2026-10-11T00:00:00Z", decide=decide, revise=revise,
+        voicefp_gate=voicefp, prompt_carried_for=lambda prov: False,
+        _append_voice_provenance=lambda *a, **k: pytest.fail("provenance for a gated draft"),
+        claude_bin=str(tmp_path / "claude"), model="m", author="an author")
+    assert out is None
+    assert trail["style"]["status"] == "not_run" and trail["style"]["gated"] is True
+    assert trail["stages"][-1]["status"] == "gated"
+
+
 def test_a_style_only_checklist_with_every_row_refused_is_not_accepted(gate, monkeypatch,
                                                                          tmp_path):
     from voiceloop import critic
