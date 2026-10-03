@@ -12,11 +12,15 @@ import datetime as dt
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from voiceloop import model_gate as mg
+# CI's verify runs pytest from a temp worktree with no voiceloop on sys.path; the
+# sibling tests (test_usage_ledger.py) insert the plugin dir the same way.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from voiceloop import model_gate as mg  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[4]
 DOOR = ROOT / "q-system" / ".q-system" / "scripts" / "model-gate.sh"
@@ -139,6 +143,11 @@ def test_an_instant_exit_with_no_tokens_is_free_but_a_timeout_is_charged(env, mo
     for _ in range(2):
         _row(env, "slow", subtype="failed:timeout", tokens_in=None, tokens_out=None)
     assert mg.check("slow", now=DAY)["admit"] is False
+    # PR #503 round 4: the shell door's timeout exits 124 (137 after KILL), not "timeout".
+    for code, bot in (("124", "door"), ("137", "killed")):
+        for _ in range(2):
+            _row(env, bot, subtype=f"failed:exit {code}", tokens_in=None, tokens_out=None)
+        assert mg.check(bot, now=DAY)["admit"] is False, code
 
 
 def test_a_failing_alert_is_retried_at_most_three_times_a_day(env, monkeypatch):

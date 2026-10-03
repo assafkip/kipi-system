@@ -166,9 +166,12 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
         # A non-zero exit with no result document and no tokens shows no spend at
         # all: the CLI died before the model ran (bad auth, bad flag). Charging it
         # the estimate let 75 instant failures refuse the whole fleet (PR #503 round
-        # 3). A timeout keeps the estimate: it burns tokens and prints nothing.
-        instant_fail = (subtype.startswith("failed:exit ") and row.get("tokens_in") is None
-                        and row.get("tokens_out") is None)
+        # 3). A timeout keeps the estimate: it burns tokens and prints nothing. That
+        # includes the shell door's own timeout, which exits 124 (137 after KILL):
+        # round 4 found a timeout loop through the door read as $0 and tripped nothing.
+        instant_fail = (subtype.startswith("failed:exit ")
+                        and subtype not in ("failed:exit 124", "failed:exit 137")
+                        and row.get("tokens_in") is None and row.get("tokens_out") is None)
         free = subtype in _FREE_SUBTYPES or instant_fail
         per[bot] = per.get(bot, 0.0) + (float(cost) if ok else 0.0 if free else est)
     admitted: dict[str, int] = {}
