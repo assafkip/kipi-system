@@ -411,15 +411,20 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
     # The marker goes down BEFORE the sends: when it waited on the comment, a
     # failed comment re-fired the ticket on every later call (PR #501 review).
-    # A failed send is logged once and never retried.
+    # The ticket send gets ONE retry, then a log line and nothing more (ASK-2428):
+    # the pending status below takes the PR out of review-redrive, so a single
+    # Linear blip left a capped PR with no signal anywhere (PR #501 round 5). A
+    # second failure is not a blip, and looping on it is the waste this cap stops.
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
       # The PR number again, as LETTERS: alert-to-linear's dedup strips every
       # digit, so "PR #501" and "PR #502" were one ticket and the second capped
       # PR only bumped a counter on the first (PR #501 review).
-      bash "$NOTIFY" "reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close." >/dev/null 2>&1 \
-        || echo "  WARN: could not file the cap ticket for PR #$PR; not retried" >&2
+      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
+      bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.

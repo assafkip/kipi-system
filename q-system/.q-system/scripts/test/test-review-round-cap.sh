@@ -87,6 +87,8 @@ NOTIFY_LOG="$WORK/notify.txt"; : > "$NOTIFY_LOG"
 cat > "$STUB/notify" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$NOTIFY_LOG"
+[ -s "$WORK/notify-fails" ] && exit 1
+exit 0
 EOF
 chmod +x "$STUB/notify"
 calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
@@ -189,6 +191,23 @@ run_reviewer "$WORK/r5e.out" --post
   || fail "a failed cap comment re-fired the ticket (or none filed):
 $(cat "$NOTIFY_LOG")"
 ok "a failed cap comment files one ticket, never a retry"
+
+# A failed cap ticket is retried ONCE, then logged and dropped (ASK-2428): the
+# pending status takes the PR out of review-redrive, so one Linear blip must not
+# leave it with no signal, and a dead sink must not be hammered.
+for _m in $(find "$WORK/home" -name '.round-cap-*'); do rm -f "$_m"; done
+echo 1 > "$WORK/notify-fails"; tickets="$(grep -c 'review round cap' "$NOTIFY_LOG")"
+run_reviewer "$WORK/r5f.out" --post
+[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 2))" ] \
+  || fail "a failed cap ticket was not tried exactly twice (send + one retry):
+$(cat "$NOTIFY_LOG")"
+grep -q 'after one retry; giving up' "$WORK/r5f.out" || fail "the given-up ticket was not logged:
+$(tail -20 "$WORK/r5f.out")"
+run_reviewer "$WORK/r5g.out" --post
+[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 2))" ] \
+  || fail "a later call re-tried the given-up ticket"
+: > "$WORK/notify-fails"
+ok "a failed cap ticket: one retry, logged, then never again"
 
 # An approved sha is never downgraded by the cap (PR review round 1, major 2).
 echo success > "$WORK/cur-state"; : > "$GH_LOG"
