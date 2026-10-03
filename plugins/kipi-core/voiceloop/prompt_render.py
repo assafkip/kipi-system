@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 
-from . import usage_ledger
+from . import model_gate, usage_ledger
 
 #: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
 #: hands text in and reads text back; none uses a tool. Without these flags each
@@ -117,6 +117,21 @@ def _meter(row_fn, *args, **kwargs):
             pass
 
 
+def _gate_admits(bot):
+    """True when the model gate admits this call. A refusal returns None to the
+    caller, the outcome every caller already handles. check() handles its own
+    ledger errors; anything that escapes it follows the gate's one policy:
+    report mode admits, enforce mode refuses.
+
+    Returns (admit, is_call): only a decision the gate logged as a `call` is
+    settled afterwards; settling a gate error would cancel another call's charge."""
+    try:
+        row = model_gate.check(bot, item=os.environ.get("KIPI_MODEL_ITEM") or None)
+        return bool(row["admit"]), row.get("kind") == "call"
+    except Exception:  # noqa: BLE001
+        return model_gate.mode() == "report", False
+
+
 def subscription_env():
     """os.environ without ANTHROPIC_API_KEY: the env every headless `claude` call runs in.
 
@@ -167,6 +182,26 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             "run_model needs an explicit claude_bin; the engine has no default binary "
             "because a default would be one machine's path shipped fleet-wide")
     binary = claude_bin
+    # THE MODEL GATE (ASK-2394). Asked here, after both short-circuits and before
+    # EITHER provider branch: a gate placed only on the claude subprocess would let
+    # the OpenCode branch spend past it (PRD review finding 3). The job key is the
+    # same `bot` the meter writes below, or the gate sums $0 forever (finding 2).
+    # Every admitted call is SETTLED when it returns, on every exit path, so the
+    # gate stops charging it as in flight. Counting the bot's usage rows instead let
+    # rows from other paths cancel in-flight charges (PR #503 review round 2).
+    gate_job = os.environ.get("CHIEF_BOT") or "voiceloop"
+    admit, is_call = _gate_admits(gate_job)
+    if not admit:
+        return None
+    try:
+        return _call_admitted(prompt, binary, timeout, caller, model, allow_opencode)
+    finally:
+        if is_call:
+            model_gate.settle(gate_job)
+
+
+def _call_admitted(prompt, binary, timeout, caller, model, allow_opencode):
+    """The provider call itself, after the gate admitted it. Only run_model calls this."""
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global
