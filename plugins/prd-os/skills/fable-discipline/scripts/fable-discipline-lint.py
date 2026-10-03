@@ -227,9 +227,34 @@ ISOLATION_TOKENS = (
 _DBPATH = re.compile(r"""(['"])([^'"]*[/\\][^'"]*\.(?:db|sqlite|sqlite3|duckdb))\1""")
 
 
+_SEGMENT_SPLIT = re.compile(r"[/\\{}()\[\]\s.,=+'\"]+")
+_SUBWORD_SPLIT = re.compile(r"[_-]+")
+
+
+def _path_words(low):
+    """Every path segment, plus each segment's _/- separated sub-words."""
+    words = set()
+    for seg in _SEGMENT_SPLIT.split(low):
+        if seg:
+            words.add(seg)
+            words.update(w for w in _SUBWORD_SPLIT.split(seg) if w)
+    return words
+
+
 def _is_isolated(p):
+    # Segment match, not substring (ASK-542): as a substring `temp` matched
+    # /repo/attempts/prod.db and /repo/contempt/prod.db, so the guard PASSED
+    # unsafe paths. A token that itself holds a separator (/var/folders,
+    # :memory:) cannot equal one segment, so it keeps the substring check.
     low = p.lower()
-    return any(tok in low for tok in ISOLATION_TOKENS)
+    words = _path_words(low)
+    for tok in ISOLATION_TOKENS:
+        if tok.isidentifier():
+            if tok in words:
+                return True
+        elif tok in low:
+            return True
+    return False
 
 
 def is_test_file(file_path):
