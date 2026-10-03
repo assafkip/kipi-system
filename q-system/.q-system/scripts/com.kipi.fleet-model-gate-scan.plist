@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Fleet model-gate door scan (ASK-2395, PRD prd-model-gate-2026-10-02). kipi-scope: skeleton-only
+
+     Every local checkout, read once a day for a model call site that does not
+     pass through the model gate. Caps used to be put on paths listed from
+     memory, and a day of uncapped review loops spent most of a week's usage.
+
+     ALERTS ON A STATE CHANGE ONLY, through slack-notify.sh, which files it in
+     Sana's Linear queue and pages nobody. Exit 0 on a completed scan; ungated
+     sites are the alert's job until the fleet is routed.
+
+     Skeleton-only: it reads instance-registry.json, which only the skeleton has.
+
+     TEMPLATE: __KIPI_REPO__ and __HOME__ are materialized by install-plist.sh.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-model-gate-scan -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.fleet-model-gate-scan</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/fleet-model-gate-scan.py</string>
+  </array>
+  <!-- Local 08:25, after the full-suite scan at 08:20. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>25</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/fleet-model-gate-scan.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/fleet-model-gate-scan.err.log</string>
+</dict>
+</plist>

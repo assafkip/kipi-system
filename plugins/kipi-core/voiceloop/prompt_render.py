@@ -28,8 +28,17 @@ import re
 import shutil
 import subprocess
 
-from . import usage_ledger
+from . import model_gate, usage_ledger
 
+#: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
+#: hands text in and reads text back; none uses a tool. Without these flags each
+#: `claude -p` loads the full MCP config of its cwd and starts `npm exec
+#: @apify/actors-mcp-server`, and when the call exits that npm/node pair is not
+#: always killed. Captured 2026-09-23 13:10 PT: one hourly job fire made 27
+#: calls and left 7 apify servers reparented to launchd, and an earlier day's
+#: orphans grew swap from 8 GB to 18 GB and took free disk to 0.55 GB. An empty
+#: strict config means nothing is spawned, so there is nothing to orphan.
+NO_MCP_ARGS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}')
 #: Where the instruction ends and the INPUTS begin. Everything after it is the voice
 #: corpus and the source material, neither of which is a constraint.
 VOICE_MARKER = "VOICE REFERENCE:"
@@ -89,6 +98,14 @@ def count_constraints(prompt):
     return len(CONSTRAINT_LINE.findall(instruction_section(prompt)))
 
 
+class GateRefused(RuntimeError):
+    """The model gate refused the call: nothing was asked, so nothing was answered.
+
+    Raised by callers that must not read a refusal as an empty answer (the reviser:
+    its None meant "the model produced nothing" and blamed a healthy reviser).
+    """
+
+
 def _meter(row_fn, *args, **kwargs):
     """Build and append one ledger row, swallowing anything the ledger raises.
 
@@ -108,8 +125,19 @@ def _meter(row_fn, *args, **kwargs):
             pass
 
 
+def subscription_env():
+    """os.environ without ANTHROPIC_API_KEY: the env every headless `claude` call runs in.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude prefers
+    the key over the subscription login, so an inherited key turns every call
+    through here into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
-              caller="run_model()", under_test="raise", model=None, allow_opencode=True):
+              caller="run_model()", under_test="raise", model=None, allow_opencode=True,
+              refused=None):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -148,6 +176,23 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             "run_model needs an explicit claude_bin; the engine has no default binary "
             "because a default would be one machine's path shipped fleet-wide")
     binary = claude_bin
+    # THE MODEL GATE. Asked after both short-circuits and before EITHER provider
+    # branch: a gate on the claude subprocess alone let the OpenCode branch past it
+    # (PRD review). The job key is the `job` the usage meter writes (CHIEF_JOB or
+    # the caller), not the bot: keyed on the bot, every voiceloop caller shared one
+    # count, so a critic.judge() loop and the reddit lane drew from one budget.
+    # A refusal returns `refused`, None by default: the outcome every caller already
+    # handles for a dead call. A caller that SCORES the answer passes its own sentinel,
+    # because None there read as a dead call and the critic failed the draft closed on
+    # a question the model was never asked (PR #509 review).
+    if not model_gate.check(os.environ.get("CHIEF_JOB") or caller,
+                            item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
+        # A refusal is metered like any call that returned nothing: a usage ledger
+        # that skipped it reads as an idle fleet exactly when the gate starts refusing.
+        _meter(usage_ledger.failure_row, "model-gate-refused",
+               bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+               job=os.environ.get("CHIEF_JOB") or caller, model=model)
+        return refused
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global
@@ -158,9 +203,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             if active_model:
                 args.extend(["--model", active_model])
             args.append(prompt)
+            # env: OpenCode reads ANTHROPIC_API_KEY too, so this branch gets the
+            # same subscription-only env as the claude branch (codex minor, #464).
             result = subprocess.run(
                 args, capture_output=True, text=True,
-                timeout=timeout)
+                timeout=timeout, env=subscription_env())
             if result.returncode == 0:
                 parts = []
                 for line in result.stdout.splitlines():
@@ -198,11 +245,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     try:
         # `--model` only when a caller asked for one, so every existing caller keeps the
         # CLI's own default and this stays additive.
-        argv = [binary, "-p", prompt, *usage_ledger.JSON_FLAGS]
+        argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS]
         if model:
             argv[1:1] = ["--model", model]
         result = subprocess.run(argv, capture_output=True,
-                                text=True, timeout=timeout)
+                                text=True, timeout=timeout, env=subscription_env())
     except subprocess.TimeoutExpired as exc:
         _meter(usage_ledger.failure_row, "timeout", stdout=exc.stdout, stderr=exc.stderr, **who)
         return None
@@ -214,7 +261,8 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         # plain call so the fleet keeps working, and record an unmetered row.
         try:
             result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
-                                    capture_output=True, text=True, timeout=timeout)
+                                    capture_output=True, text=True, timeout=timeout,
+                                    env=subscription_env())
         except (subprocess.SubprocessError, OSError) as exc:
             _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
             return None

@@ -306,6 +306,44 @@ fleet_authored_blob() {
   return 1
 }
 
+# INSTALL THE VENDORED HOOKS INTO THE TREE THAT RUNS THEM (ASK-1144).
+#
+# The fleet updater is the one deterministic, founder-invoked path that already
+# exists for "make this machine match the skeleton", so the hook install belongs
+# here rather than in a habit somebody has to remember. Before this, a corrected
+# destructive-op-deny.sh could be reviewed and merged while ~/.claude/hooks kept
+# the stale copy, and nothing reported the gap.
+#
+# NEVER FATAL TO THE UPDATE. The installer refuses a source that would weaken a
+# hook and refuses a short write, and either refusal is worth reading -- but an
+# update that aborts 23 instances because one hook did not install is a denial
+# of service where a loud warning is the right answer. Same reasoning the
+# source-provenance preflight above records for itself.
+install_vendored_hooks() {
+  local installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$installer" ] || return 0
+  echo "==> installing vendored hooks into ~/.claude/hooks"
+  # REPORT WHAT HAPPENED, NOT A GUESS AT WHY (PR #279 minor).
+  #
+  # This said "a vendored hook did not install, the guard may be older than the
+  # reviewed one" on EVERY non-zero exit -- including a deliberate ratchet
+  # refusal, where the installed copy is intact and the SOURCE was rejected.
+  # Naming a cause the run has not established is the same defect as the
+  # "dead consumer" liveness message fixed in ASK-1146: a confident diagnosis
+  # attached to a signal that does not support it.
+  #
+  # The installer already prints one precise line per hook. Showing that line is
+  # both shorter and true.
+  local _out _rc
+  _out="$(python3 "$installer" 2>&1)"; _rc=$?
+  printf '%s\n' "$_out"
+  if [ "$_rc" -ne 0 ]; then
+    echo "WARNING: the hook install reported a problem above (exit $_rc). The guard" >&2
+    echo "         running on this machine may not match the reviewed copy. Check with:" >&2
+    echo "         python3 $installer --check" >&2
+  fi
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -497,6 +535,7 @@ system_owned_paths_for_run() {
   done < <(managed_plugin_names)
 }
 FAILED_NAMES=""
+FAILED_IDS=""
 
 MODEL_SKIPPED_ROOT=""
 MODEL_SKIPPED_PATHS=()
@@ -588,6 +627,15 @@ echo "Remote: $SKELETON_REMOTE"
 echo "Branch: $SKELETON_BRANCH"
 [ "$DRY_RUN" = "--dry-run" ] && echo "MODE: DRY RUN (no changes)"
 echo ""
+
+# The DRY RUN half runs here because it only READS. The install itself is
+# deliberately further down, after the source-provenance preflight -- see the
+# call site below.
+if [ "$DRY_RUN" = "--dry-run" ]; then
+  _hook_installer="$SCRIPT_DIR/q-system/.q-system/scripts/install-claude-hooks.py"
+  [ -f "$_hook_installer" ] && python3 "$_hook_installer" --check || true
+  echo ""
+fi
 
 # Preflight: refuse to propagate if an enforcement hook is wired in the skeleton's
 # runtime .claude/settings.json but missing from settings-template.json -- it would
@@ -801,6 +849,103 @@ else
   echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
 fi
 
+# Preflight: refuse to overwrite a replica that has drifted AHEAD of the skeleton.
+#
+# The three preflights above ask whether the SOURCE is trustworthy. None of them
+# looks at the destinations. plugins/ rsyncs with `--delete`, so a line that
+# exists only in an instance's copy is not "inconsistent", it is scheduled for
+# deletion -- no diff, no conflict, no prompt, and the loss is silent because
+# rsync's job IS to make the destination match.
+#
+# Live when this was armed (2026-09-02): prd_runner.py is identical across 25
+# roots and different in consulting, and the difference is `_reject_unrunnable_gate`
+# -- the ONLY copy of it in 29 roots. An update run today deletes the fleet's
+# sole enforcer of a-gate-that-cannot-run-must-not-pass. That is not a
+# hypothetical this gate was built to imagine; it is what it found.
+#
+# BLOCKING, and only over the REPLICA half. The claim half (--claim) measures
+# something real -- 26 roots hold that lesson, 1 holds its enforcer -- but 25
+# roots is a backlog, not a fixable red, and a gate that is red on its own
+# population for months gets switched off (voice-loop-anywhere, plan-lint
+# grandfathering). Replica drift is one root with a named cause, so it can be
+# resolved instead of tolerated. Add --claim here when the enforcer count
+# reaches the claim count, not before.
+#
+# NOT wrapped in `[ -f ]`, for the reason spelled out at the leak gate above: a
+# guard that turns a DELETED script into a green run reproduces, one level up,
+# the exact failure it exists to prevent.
+REPLICA_GATE="$SCRIPT_DIR/q-system/.q-system/scripts/fleet-replica-divergence.py"
+if [ ! -f "$REPLICA_GATE" ]; then
+  echo ""
+  echo "ABORT: fleet replica divergence gate missing at $REPLICA_GATE"
+  echo "It is fail-closed on purpose. Restore it or revert; do not rsync"
+  echo "--delete over 23 instances unchecked."
+  exit 1
+fi
+# `if` form, not a bare assignment: under `set -e` a failing command substitution
+# kills the script AT the assignment, so this gate's own abort message would
+# never print and the run would die silent.
+#
+# SCOPED TO --only, like the reach preflight below it (PR #460 review, major).
+# A staged single-instance rollout was aborting on drift in a root the run never
+# writes. The gate keeps the skeleton in its population either way: that is the
+# source being compared against, not a destination being protected.
+REPLICA_SCOPE=()
+if [ -n "$ONLY" ]; then
+  REPLICA_SCOPE=(--only "$ONLY")
+fi
+# --skeleton "$SCRIPT_DIR", not the registry's skeleton key (PR #460 review round
+# 2, minor). THIS tree is the one about to be rsynced out, so it is the one
+# direction has to be answered against. The gate defaulted to the registry key,
+# which this script never reads, so a run from any other checkout compared the
+# fleet against a tree it was not going to copy from -- reproduced against a
+# 137-commit unmerged branch. One reader of "which tree is the source", and it is
+# the script doing the copying.
+if REPLICA_OUT="$(python3 "$REPLICA_GATE" --registry "$SCRIPT_DIR/instance-registry.json" --skeleton "$SCRIPT_DIR" "${REPLICA_SCOPE[@]+"${REPLICA_SCOPE[@]}"}" 2>&1)"; then
+  REPLICA_RC=0
+else
+  REPLICA_RC=$?
+fi
+printf '%s\n' "$REPLICA_OUT"
+# Proof of EXECUTION, not of existence. A zero-byte or comment-only .py is a
+# valid program that exits 0 with no output, and a truncated write is likelier
+# than a deletion. The verdict line is printed on every outcome INCLUDING the
+# refusals, so its absence means the gate did not run at all.
+if ! printf '%s' "$REPLICA_OUT" | grep -q "^fleet replica divergence: "; then
+  echo ""
+  echo "ABORT: the fleet replica divergence gate did not report a verdict."
+  echo "It exists but did not run as a gate. Restore it or revert; do not"
+  echo "rsync --delete over 23 instances unchecked."
+  exit 1
+fi
+if [ "$REPLICA_RC" -ne 0 ]; then
+  echo ""
+  if [ "$REPLICA_RC" -eq 3 ]; then
+    # Distinct code, distinct repair. 3 means the gate was asked to check
+    # something it cannot evaluate -- a declared path that resolves in no root.
+    # Its green would have been decoration, so it refuses to give one.
+    echo "ABORT: the divergence gate could not evaluate what it was asked to check"
+    echo "(named above). Fix the declared path; a check that resolves nowhere"
+    echo "reports green over coverage it never had."
+  elif [ "$REPLICA_RC" -eq 2 ]; then
+    # 2 is an EMPTY POPULATION: the registry named no roots, so nothing was
+    # compared. The drifted-ahead text below describes a comparison that ran and
+    # found something, which is the opposite fact, and it sends an operator
+    # hunting for an instance to reconcile when the file to fix is the registry
+    # (PR #460 review, minor).
+    echo "ABORT: the divergence gate resolved NO instance roots (named above)."
+    echo "Nothing was compared, so this is not a drift report. Fix"
+    echo "$SCRIPT_DIR/instance-registry.json; a gate with an empty population"
+    echo "cannot report on a fleet it never read."
+  else
+    echo "ABORT: a replica has drifted ahead of the skeleton (named above)."
+    echo "plugins/ rsyncs with --delete, so every line that exists only in the"
+    echo "instance copy is destroyed by this run. Reconcile the direction first;"
+    echo "do not resolve this by running an update."
+  fi
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -810,6 +955,22 @@ MODEL_RUN=0
 DRY_MODEL_ROOT=""
 ARCHIVE_TMP=""
 DRY_TMP=""
+
+# INSTALL ONLY ONCE THE SOURCE IS PROVEN (PR #279 major).
+#
+# This ran near the top, before the source-provenance preflight had shown the
+# working tree clean and equal to origin/$SKELETON_BRANCH. So an update that
+# ABORTED on an unverified source had already replaced the machine's live
+# destructive-op guard with whatever was in that tree -- an unreviewed gate
+# installed by a run that then refused to do anything else, which is the worst
+# possible order.
+#
+# Everything above this line either reads or refuses. Reaching here means the
+# source is the reviewed one, and only then is it allowed to become the guard.
+if [ "$DRY_RUN" != "--dry-run" ]; then
+  install_vendored_hooks
+  echo ""
+fi
 
 cleanup_dry_model() {
   if [ "${MODEL_RUN:-0}" = "1" ] && [ -n "${DRY_MODEL_ROOT:-}" ]; then
@@ -1069,6 +1230,10 @@ count_instance_failure() {
   # (measured 2026-08-04). A count is not a report.
   FAILED_NAMES="$FAILED_NAMES
     - ${name:-<unnamed>} (${path:-unknown path})"
+  # Names only, one per line, for the sweep-history row (ASK-776). Paths stay
+  # out: the row is a fleet record, and a name is all a reader needs.
+  FAILED_IDS="${FAILED_IDS}${name:-<unnamed>}
+"
 }
 
 abandon_instance() {
@@ -1691,10 +1856,15 @@ reach_preflight() {
     echo "reach preflight: disarmed (no fleet-reach-audit.py at $SCRIPT_DIR)"
     return 0
   fi
-  out="$(python3 "$audit" --json 2>/dev/null)" && rc=0 || rc=$?
-  if [ -z "$out" ]; then
+  # stderr is NOT redirected (ASK-1965). The audit raises a RuntimeError written
+  # for exactly the case where it cannot build the guard's pathspec; the old
+  # 2>/dev/null deleted it and left an ABORT naming only an exit code.
+  # A non-zero exit aborts even with stdout present: a raising audit is no verdict.
+  out="$(python3 "$audit" --json)" && rc=0 || rc=$?
+  if [ -z "$out" ] || [ "$rc" -ne 0 ]; then
     echo ""
     echo "ABORT: the reach preflight produced no verdict (exit $rc)."
+    echo "The audit's own error, if it wrote one, is printed directly above."
     echo "A preflight that cannot run must not pass. Fix it, or pass"
     echo "--skip-reach-preflight to proceed without it."
     exit 1
@@ -1727,6 +1897,16 @@ only = sys.argv[2]
 if only:
     rows = [r for r in rows if r.get("name") == only]
 fleet = [r for r in rows if r.get("verdict") == "BLOCKED-FLEET"]
+# `never-commit` paths are untracked INSIDE the instance loop (ASK-605), so an
+# instance blocked by nothing else must not abort the run before that loop. The
+# first version of that fix aborted the whole fleet here (PR #430 review). A
+# MIXED instance still aborts: fleet-unblock clears its other paths, and on the
+# next run it is never-commit-only, so this cannot deadlock.
+def _in_loop_only(r):
+    kinds = {b.get("kind") for b in (r.get("blocked_by") or [])}
+    return bool(kinds) and kinds <= {"never-commit"}
+in_loop = [r for r in fleet if _in_loop_only(r)]
+fleet = [r for r in fleet if not _in_loop_only(r)]
 founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
 ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 # MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
@@ -1735,12 +1915,26 @@ ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 other = [r for r in rows
          if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
 scope = f" (scoped to --only {only})" if only else ""
-print(f"reach preflight: {len(ok)} of {len(rows)} would sync now{scope}")
+# The headline says what the audit MEASURED (a dirty tree inside the synced
+# pathspec), never "would sync now": a stale skeleton or a dangling symlink
+# still fails the run after this line prints (PR #396 review, ASK-1965). The
+# unsyncable verdicts are counted IN the headline so the shortfall is explained
+# on the line an operator actually reads.
+counts = {}
+for r in other:
+    counts[r.get("verdict")] = counts.get(r.get("verdict"), 0) + 1
+unsyncable = "".join(f"; {n} {v}" for v, n in sorted(counts.items()))
+print(f"reach preflight: {len(ok)} of {len(rows)} clear of dirty-tree blockers"
+      f"{unsyncable}{scope} (stale skeleton and symlinks are separate gates)")
 for r in other:
     print(f"  {r['name']}: {r.get('verdict')} (counted in the total, not syncable)")
 for r in founder:
     print(f"  {r['name']}: founder work, correctly refused until committed "
           f"(not a fleet blocker, not counted against this run)")
+    for b in (r.get("blocked_by") or [])[:5]:
+        print(f"      {b.get('status','?')}  {b.get('path')}")
+for r in in_loop:
+    print(f"  {r['name']}: tracked never-commit state, untracked in the loop below")
     for b in (r.get("blocked_by") or [])[:5]:
         print(f"      {b.get('status','?')}  {b.get('path')}")
 for r in fleet:
@@ -1812,7 +2006,10 @@ while IFS='|' read -r name path prefix itype declared; do
       echo "    Add \"skeleton_managed\": false to its instance-registry.json entry"
       echo "    with a note, or give it a subtree_prefix so it actually syncs."
       UNDECLARED="$UNDECLARED $name"
-      FAIL=$((FAIL + 1))
+      # Through the helper, not a bare FAIL+1: the sweep-history row read this
+      # as failed=1 with no name, so the one class where the name is the whole
+      # value could never raise a regression (PR #439 review, major 2).
+      count_instance_failure
     fi
     echo ""
     continue
@@ -2205,6 +2402,71 @@ The file itself is untouched on disk." 2>/dev/null; then
         git reset --quiet -q -- "$sys_path" >/dev/null 2>&1 || true
       fi
     done
+
+    # ASK-605: TRACKED files the never-commit stanza ignores (measured 2026-09-23).
+    #
+    # fleet-reach-audit.py that day: REACH 21 of 24. All three refusals were hook
+    # state under .claude/state/, TRACKED and modified -- kb-graph-guard.json in
+    # two instances, stop-gate-firings.json in the third. They were committed
+    # before any ignore rule reached them, and an ignore rule cannot untrack a
+    # file. A hook rewrites them every session, so they are dirty on every run
+    # and the guard below refused every run. Committing them (the carve-out
+    # below) clears ONE run and re-blocks the next; untracking ends it.
+    #
+    # The list is the SHIPPED STANZA, printed by the same script that writes the
+    # managed ignore block, never a third hand list: whatever the block ignores
+    # is what gets untracked, so the two cannot drift -- WITHIN the guard's own
+    # pathspec. That pathspec excludes INSTANCE_OWNED_SUBTREES, so stanza paths
+    # under $prefix/output/ (.update-check-*, claude-integrity/) are ignored by the
+    # block but never untracked here. Harmless for the guard, which skips those
+    # subtrees too; not a promise that they leave the index (PR #430 review nit).
+    # Same three rules as the loop above, for the same reasons: only once the
+    # block is in place (untracked AND unignored is worse than tracked), never
+    # with founder work staged (the commit takes no pathspec -- see THE
+    # PATHSPEC TRAP), and the staged set must equal exactly what we untracked.
+    # `git rm --cached` never touches the worktree: the bytes stay on disk.
+    if [ "$GITIGNORE_BLOCK_OK" = "1" ]; then
+      stanza_file="$(mktemp)"
+      stanza_tracked=()
+      if python3 "$GITIGNORE_BLOCK" --skeleton "$SCRIPT_DIR" --print-stanza \
+          >"$stanza_file" 2>/dev/null; then
+        while IFS= read -r st_path; do
+          [ -n "$st_path" ] && stanza_tracked+=("$st_path")
+        done < <(git ls-files -c -i --exclude-from="$stanza_file" -- \
+                   "$prefix/" .claude/ plugins/ $(pathspec_owned_excludes "$prefix") \
+                   2>/dev/null)
+      else
+        say "  WARNING: could not read the never-commit stanza; tracked exhaust under it is left tracked"
+      fi
+      rm -- "$stanza_file"
+      if [ "${#stanza_tracked[@]}" -gt 0 ]; then
+        if [ -n "$(git diff --cached --name-only 2>/dev/null)" ]; then
+          say "  WARNING: ${#stanza_tracked[@]} never-commit path(s) are tracked, but the index already holds staged work. Leaving them."
+        elif ! wait_for_index_lock "$path" "untrack never-commit paths" ||
+            ! git rm --cached --quiet -- "${stanza_tracked[@]}" 2>/dev/null; then
+          say "  WARNING: could not untrack ${#stanza_tracked[@]} never-commit path(s)"
+        else
+          st_want="$(printf '%s\n' "${stanza_tracked[@]}" | LC_ALL=C sort)"
+          st_got="$(git diff --cached --name-only 2>/dev/null | LC_ALL=C sort)"
+          if [ "$st_got" != "$st_want" ]; then
+            say "  WARNING: untracking never-commit paths produced an unexpected index; backing out"
+            git reset --quiet -q -- "${stanza_tracked[@]}" >/dev/null 2>&1 || true
+          elif wait_for_index_lock "$path" "untrack never-commit commit" &&
+              git commit -q -m "chore: untrack never-commit exhaust [no-issue: fleet updater never-commit untrack]
+
+These paths are listed in the skeleton's never-commit stanza (the managed
+.gitignore block). While tracked, a hook rewrote them every session and the
+dirty-tree guard refused every fleet sync (ASK-605). The files are untouched on
+disk; the managed ignore block keeps them untracked." 2>/dev/null; then
+            say "  untracking ${#stanza_tracked[@]} never-commit path(s) (kept on disk):"
+            for st_path in "${stanza_tracked[@]}"; do say "    $st_path"; done
+          else
+            say "  WARNING: could not commit the never-commit untrack; backing out"
+            git reset --quiet -q -- "${stanza_tracked[@]}" >/dev/null 2>&1 || true
+          fi
+        fi
+      fi
+    fi
 
     # Clear the system's OWN artifacts first, so the guard below judges founder
     # work only. Each path is committed individually and only if it is actually
@@ -3068,6 +3330,42 @@ if [ -n "$ONLY" ] && [ "$((PASS+FAIL+SKIP))" -eq 0 ]; then
   echo "ERROR: no registered instance named '$ONLY'" >&2
   exit 1
 fi
+
+# ASK-776. The summary below went to stdout and nothing else: no history, no
+# alert. On 2026-09-23 a read-only audit found 21 of 24 instances syncing and
+# nothing had ever said so. One row per run, appended; this function is the only
+# writer and fleet-health-daily.py's detect_sweep_degraded is the reader.
+#
+# A skeleton running from a temp dir is a TEST FIXTURE (every kipi-update test
+# copies this script into mktemp), and it must never append to the live file.
+# Such a run records only when KIPI_FLEET_SWEEP_HISTORY names a path on purpose.
+# A write failure warns and never changes the run's exit code.
+record_sweep_history() {
+  local hist="${KIPI_FLEET_SWEEP_HISTORY:-}" mode="real" sha
+  if [ -z "$hist" ]; then
+    case "$SCRIPT_DIR" in
+      /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+    esac
+    case "$SCRIPT_DIR/" in "${TMPDIR:-/nonexistent-tmpdir}"*) return 0 ;; esac
+    hist="$HOME/.config/kipi/fleet-sweep-history.jsonl"
+  fi
+  [ "$DRY_RUN" = "--dry-run" ] && mode="dry"
+  sha="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  python3 - "$hist" "$mode" "$sha" "$PASS" "$FAIL" "$SKIP" "${ONLY:-}" "$FAILED_IDS" <<'PYEOF' ||
+import json, os, sys
+from datetime import datetime, timezone
+hist, mode, sha, updated, failed, skipped, only, ids = sys.argv[1:9]
+row = {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": mode,
+       "skeleton_sha": sha, "updated": int(updated), "failed": int(failed),
+       "skipped": int(skipped), "only": only,
+       "failed_names": [n for n in ids.splitlines() if n]}
+os.makedirs(os.path.dirname(hist) or ".", exist_ok=True)
+with open(hist, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(row) + "\n")
+PYEOF
+    echo "  WARN: could not append the sweep-history row to $hist"
+}
+record_sweep_history
 
 echo "=== Summary ==="
 echo "  Updated: $PASS"

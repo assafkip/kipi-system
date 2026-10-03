@@ -28,16 +28,26 @@ ESCALATORS force the FULL SUITE (and tier L) whatever the line count says. Line
 count alone never does: a large diff names more files, so it selects more tests,
 and it becomes a full run through the last escalator when it truly is suite-wide.
   * the machinery that decides what runs (this file, the gate, the manifest
-    assembler, CI workflows, lefthook, verify.sh, any conftest.py)
+    assembler, verify_select.py, any conftest.py)
   * a file CI installs from or every test loads (requirements*.txt,
     pyproject.toml, pytest.ini, tox.ini, setup.cfg, any conftest.py)
   * a capability declaration other than an expected_tests entry
   * a new third-party import in app code (a test importing pytest is not one)
-  * a selection so wide that it is the suite anyway (more than MAX_SELECTED,
-    counted WITHOUT the always-run scanners: a fixed floor is not evidence that
-    this diff is suite-wide)
 
-NOT AN ESCALATOR: a changed file no declared test names. "The full suite" means
+NOT AN ESCALATOR: a WIDE selection. A change many tests name runs exactly those
+tests (ASK-2388). The old cap turned "more than 60 name it" into the whole suite;
+PR #362 (the kipi CLI, 67 naming tests) scored full_suite on that alone, against
+RULE-2026-10-01-A ("no 6000-test runs on small changes").
+
+NOT AN ESCALATOR: a CI workflow, lefthook.yml or verify.sh (RULE-2026-10-01-A,
+2026-10-01). They run the tests that name them, like any other file. A workflow
+change used to buy a full run, and that was the door the full suite kept coming
+back through: every CI-only PR paid ~20 minutes, which the 2026-09-30 freeze
+forbids. What they decide is pinned by their own tests (test_ci_workflows.py,
+test_validate_workflow.py and the verify harnesses), and a selection those miss
+is the nightly's to catch.
+
+NOT AN ESCALATOR EITHER: a changed file no declared test names. "The full suite" means
 the declared tests, so when none of them can see the file, running all of them
 exercises it exactly as much as running none. Escalating there buys no coverage;
 measured on the last 80 commits of main it bought 17 minutes. The missing owner
@@ -45,13 +55,14 @@ is a real finding and it has its own issue; it is not this script's job.
 
 THE ASYMMETRY. Everything uncertain resolves UPWARD. An unreadable diff, a
 missing base ref, a crash in here: the caller runs the FULL suite. This script can
-make a run cheaper only when it can name exactly why that is safe. And the full
-suite still runs on every push to main, so a selection that was too narrow is
-caught at merge, by the same gate, not never.
+make a run cheaper only when it can name exactly why that is safe. Since
+2026-09-30 a push to main is scoped too, so the full suite runs only in the
+nightly gates.yml. That workflow is disabled as of 2026-09-30, and while it is
+off a selection that was too narrow is caught by no scheduled job at all.
 
 It prints and exits 0 (2 on an unreadable diff). It enforces nothing by itself:
-capability-gate.py --diff-base is the caller that acts on it, and CI passes that
-flag on pull requests only.
+capability-gate.py --diff-base is the caller that acts on it, and validate.yml
+passes that flag on pull requests and on pushes to main.
 
 NO --head FLAG, ON PURPOSE. The declared tests are read from the checkout on
 disk, so the diff has to end at that same checkout. Pointed at another ref it
@@ -73,10 +84,6 @@ from pathlib import Path
 
 S_MAX_LINES = 20
 M_MAX_LINES = 150
-# Above this the "selection" is most of the suite, and the honest name for that
-# is a full run. A change that many tests name is a shared-lib change.
-MAX_SELECTED = 60
-
 CAPABILITY_DIR = "q-system/.q-system/capability/"
 EXPECTED_TESTS_DIR = CAPABILITY_DIR + "expected_tests/"
 
@@ -86,10 +93,13 @@ FULL_RUN_PATHS = (
     "q-system/.q-system/scripts/change-size.py",
     "q-system/.q-system/scripts/capability-gate.py",
     "q-system/.q-system/scripts/capability_manifest.py",
-    "q-system/.q-system/verify.sh",
-    "lefthook.yml",
+    # The verify door's selector. A change here can make every scoped verify
+    # run wrong, so it does not get to grade itself narrowly either.
+    "q-system/.q-system/verify_select.py",
 )
-FULL_RUN_PREFIXES = (".github/workflows/",)
+# EMPTY ON PURPOSE (RULE-2026-10-01-A). `.github/workflows/` was here, and with
+# verify.sh and lefthook.yml it turned every CI edit into a full-suite run.
+FULL_RUN_PREFIXES: tuple[str, ...] = ()
 # Files that configure or are installed into EVERY test run. pytest.ini was the
 # one this list missed (codex, PR #377 round 5): it sets the options for every
 # pytest invocation in the repo, so a PR editing it ran 72 of 236 and went green.
@@ -153,16 +163,35 @@ _GENERIC_DIRS = frozenset({"test", "tests", "fixtures", "fixture", "scripts", "d
                            "q-system", ".q-system", "plugins", "templates", "hooks", "."})
 
 
-# ANY filesystem walk, by any spelling. This is deliberately NOT a pattern parser.
-# Four review rounds on this PR were one class -- "the selection can miss a test
-# that matters" -- and each round named another text form the parser did not know:
-# a fixture reached by directory, a `rglob`, a caller's test, then iterdir /
-# os.walk / os.listdir / a shell glob. A parser that must recognise every spelling
-# has a fifth gap waiting. So the question changes from WHICH FILES does this test
-# scan, which needs the spelling, to DOES THIS TEST SCAN AT ALL, which does not.
+# A filesystem walk, in the spellings this repo's declared tests actually use.
+# This is deliberately NOT a pattern parser. Four review rounds on PR #377 were one
+# class -- "the selection can miss a test that matters" -- and each round named
+# another text form the parser did not know: a fixture reached by directory, a
+# `rglob`, a caller's test, then iterdir / os.walk / os.listdir / a shell glob. A
+# parser that must recognise every spelling has a fifth gap waiting. So the question
+# changes from WHICH FILES does this test scan, which needs the spelling per pattern,
+# to DOES THIS TEST SCAN AT ALL, which needs one spelling per WALKING TOOL.
+#
+# FEWER SPELLINGS, NOT ZERO, and the difference is the whole honest claim (claude
+# review of PR #377, minor 1). The earlier wording here said the detector "does not
+# need the spelling", which is what made `grep -r` invisible: two declared tests walk
+# the tree with recursive grep and sat off the always-run floor, silently, for exactly
+# the reason a missing spelling always does. A tool this misses is a scanner being
+# skipped, and ASK-1918's `covers` mechanism is built on this function, so the gap
+# propagates -- a test the detector cannot see can never be taken off a floor it was
+# never on, and never gets the floor's protection either.
+#
+# WIDENED AGAINST THE CORPUS, NEVER SPECULATIVELY
+# (count-the-shape-in-the-corpus-before-you-widen-a-pattern-for-it). Measured over
+# the 278 declared tests, 2026-09-20: `grep -r` appears in 5, of which 2 were
+# invisible here. An `rg` INVOCATION appears in 0 -- the only `rg` token in the
+# corpus is a local variable in test_dc_reader_verdicts.py -- so ripgrep is
+# deliberately NOT in this pattern. Add it the day a declared test runs it, with the
+# count that says so.
 _SCAN_RE = re.compile(
     r"\b(?:r?glob|iterdir|listdir|scandir|walk|fnmatch)\b"
     r"|\bfind\s+[\"\'$./]|\bls\s+[-\"\'$./]|git\s+ls-files"
+    r"|\bgrep\s+(?:-\w+\s+)*-[A-Za-z]*r"
     r"|\bfor\s+\w+\s+in\s+[^\n]*\*")
 
 
@@ -317,7 +346,8 @@ def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
     and are used by almost everything, so the transitive walk reaches the width cap
     on most changes and IS the full suite. One step closes the case the review
     named, a lib with its own test plus a caller whose test breaks with it. A break
-    two steps out is caught by the full run on the push to main."""
+    two steps out is caught only by the nightly full run (disabled as of
+    2026-09-30), never at merge."""
     return sorted(c for c in files_naming(path, index) if c != path)
 
 
@@ -413,7 +443,9 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         # did not know, and round 4 deleted the line that made it select anything,
         # because a test that enumerates ALSO walks the tree, so `always` below
         # already covers every one of them. The parser was 40 lines that chose
-        # nothing. `scans_the_tree` is the whole answer to that class.
+        # nothing. `scans_the_tree` is the answer to that class, at ONE spelling per
+        # walking tool instead of one per pattern -- see its comment for what that
+        # does and does not buy.
         #
         # (`covers` is handled in its own pass above, over every changed path.)
         if is_test_path(path) or not is_code(path):
@@ -450,19 +482,18 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         selected |= direct | hop
 
     selected = {t for t in selected if t in declared} | always
-    # THE CAP COUNTS WHAT THE DIFF PULLED IN, NOT THE FLOOR. The always-run
-    # scanners are the same set on every PR, so counting them would push every
-    # change over the cap and back to a full run.
-    pulled = selected - always
-    if len(pulled) > MAX_SELECTED:
-        escalators.append(f"{len(pulled)} tests name the changed files, more than {MAX_SELECTED}: that is the suite")
+    # NO WIDTH CAP (ASK-2388). A cap at 60 named tests escalated PR #362 to the
+    # full suite for touching a file 67 tests name. Those 67 are the tests that
+    # can see the change; the other ~250 exercise it exactly as much as none do.
+    # Only the escalators above (the selector's own machinery, pytest config, a
+    # declaration) can make every OTHER selection wrong, so only they run all.
 
     # TWO ANSWERS, NOT ONE. Size decides the human ceremony (how much review a
     # change earns). ESCALATORS decide whether the whole suite runs. The first cut
     # welded them, so a 304-line change that exactly 2 declared tests name ran all
     # 235 -- and because CI diffs the whole PR against main, it ran them again on
-    # every 3-line review round. A bigger diff touches more files, names more
-    # tests, and reaches MAX_SELECTED by itself when it really is suite-wide.
+    # every 3-line review round. A bigger diff touches more files and so names
+    # more tests, and that wider selection is still the honest answer.
     full_suite = bool(escalators)
     if escalators:
         tier = "L"

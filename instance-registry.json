@@ -87,14 +87,6 @@
       "has_git": true
     },
     {
-      "name": "event_coordinator",
-      "path": "/Users/assafkipnis/projects/cole-gtm/projects/event_coordinator",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": null,
-      "type": "subtree",
-      "has_git": true
-    },
-    {
       "name": "investigations",
       "path": "/Users/assafkipnis/projects/intel/projects/kipi-investigations",
       "subtree_prefix": "q-system",
@@ -123,42 +115,6 @@
         "decision": "ASK-842",
         "reason": "Decided OFF 2026-08-14, recorded as a value because an absent dispatch key is a default and a default is not a refusal. This path is a ROOT, not a leaf: measured, it tracks 0 files under projects/ while holding 9 nested SEPARATE git repos there (strategy, website, personal-brand, event_coordinator, signal-desk, vc-signals-feed, competitive-analysis, notebooklm-daily-podcast, reddit-build-radar). That is the exact shape ASK-754 refused at the consulting root: preflight check 5 (dirty) is structurally blind to all nine while a dispatched agent still has filesystem reach into them, so an OK here would be an OK the gate cannot back. The root also tracks 3001 files under gtm/, the live outbound engine, so an agent-authored PR can reach an audience. Its 3 issues (ASK-127, ASK-717, ASK-718) are audits and a watchdog fix -- read-then-report work a supervised founder-initiated run handles without an unattended self-merging loop. NOT blocked on preflight: the 5 remaining failures are all curable (worker drift, merge-bypass-gate.py, pin the remote, commit WIP, enable branch protection). The reason is blast radius, not cost."
       }
-    },
-    {
-      "name": "travel-agent",
-      "path": "/Users/assafkipnis/projects/personal/projects/travel-agent",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": "q-travel",
-      "type": "subtree",
-      "has_git": true
-    },
-    {
-      "name": "fractional-cxo",
-      "path": "/Users/assafkipnis/projects/consulting/projects/fractional-cxo",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": null,
-      "type": "subtree",
-      "has_git": true
-    },
-    {
-      "name": "interview-coach",
-      "path": "/Users/assafkipnis/projects/micro-saas/projects/interview-coach",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": "q-coach",
-      "type": "subtree",
-      "has_git": true,
-      "dispatch": {
-        "enabled": true,
-        "expected_remote": "https://github.com/assafkip/kipi-interview-coach.git"
-      }
-    },
-    {
-      "name": "negotiator",
-      "path": "/Users/assafkipnis/projects/micro-saas/projects/negotiator",
-      "subtree_prefix": "q-system",
-      "instance_q_dir": "q-coach",
-      "type": "subtree",
-      "has_git": true
     },
     {
       "name": "reddit-build-radar",

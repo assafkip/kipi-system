@@ -44,6 +44,12 @@ stage "$LINEAR"
 allows || fail "a Linear-split issue's receipt was refused (prd_id linear:ASK-n)"
 ok "a Linear-split receipt passes"
 
+# --- ASK-1968: finding_class, copied at close from the finding it closes ---
+CLASSED='{"issue_id":"x","prd_id":"p","finding_id":"finding-1","closed_at":"2026-07-26T00:00:00Z","finding_class":"wiring"}'
+stage "$CLASSED"
+allows || fail "a receipt carrying a listed finding_class was refused"
+ok "a receipt with finding_class=wiring passes"
+
 # --- and the real committed ledger must pass, or the gate is unshippable ---
 if [ -f "$ROOT/$LEDGER" ]; then
   cp "$ROOT/$LEDGER" "$LEDGER"
@@ -82,6 +88,8 @@ a different scheme|{"issue_id":"x","prd_id":"jira:ASK-1"}
 linear: with a trailing suffix|{"issue_id":"x","prd_id":"linear:ASK-1-acme"}
 linear: with a team key longer than the producer allows|{"issue_id":"x","prd_id":"linear:ACMECORPPRICINGDEAL-1"}
 a Linear URL instead of the id|{"issue_id":"x","prd_id":"https://linear.app/ask-consulting/issue/ASK-1"}
+finding_class as free text|{"issue_id":"x","finding_class":"some free text"}
+finding_class off the fixed list|{"issue_id":"x","finding_class":"bogus"}
 an over-long value|{"issue_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 CASES
 ok "$i leak shapes all blocked"

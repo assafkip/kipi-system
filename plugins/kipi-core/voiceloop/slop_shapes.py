@@ -84,6 +84,22 @@ SHAPES = (
         re.compile(r"(?i)\bstop \w+ing\b[^.!?\n]{0,60}[.!?]\s*start \w+ing\b"),
         "a direct operational directive. Name the action and the object, once.",
     ),
+    (
+        # 2026-09-30, founder-directed: he flagged "X isn't X. It's a Y with a Z
+        # attached." as an AI tell. The noun must RETURN after the negation (`\1`),
+        # which is what separates this from an ordinary "the review isn't done."
+        # Measured before shipping: 0 hits across his exemplars, organic posts,
+        # writing examples, mined work and approved comments. Both apostrophes,
+        # because model output uses the curly one and a `'`-only pattern misses the
+        # sentence it was written for.
+        "slop-redefinition-close",
+        re.compile(r"(?i)\b(\w{3,})\b[^.!?\n]{0,60}?\b(?:isn['’]?t|is not)\s+"
+                   r"(?:\w+\s+){0,2}?\1\b[^.!?\n]{0,20}[.!?]\s+"
+                   r"(?:it['’]?s|its|it is|that['’]?s|thats)\s+"
+                   r"(?:just\s+)?(?:a|an)\s+\w+"),
+        "the consequence as a mechanism, not a metaphor. Say what breaks and how, "
+        "instead of redefining the thing as something it is not.",
+    ),
 )
 
 
