@@ -11,10 +11,16 @@ from __future__ import annotations
 import datetime as dt
 import json
 
+import sys
+from pathlib import Path
+
 import pytest
 
-from voiceloop import model_gate as mg
-from voiceloop import prompt_render
+# CI's verify runs pytest from a temp worktree with no voiceloop on sys.path; the
+# sibling tests (test_usage_ledger.py) insert the plugin dir the same way.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from voiceloop import model_gate as mg  # noqa: E402
+from voiceloop import prompt_render  # noqa: E402
 
 TODAY = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
 
