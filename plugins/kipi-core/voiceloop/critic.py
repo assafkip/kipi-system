@@ -125,9 +125,16 @@ STYLE = "style"
 PASS = "pass"
 FAIL = "fail"
 WARN = "warn"
+# The model gate refused the call, so the row was never judged. NOT a fail: before
+# PR #509 a refusal came back as None, scored like a dead call, and a quality row
+# failed the draft closed on a question nobody asked the model.
+NOT_JUDGED = "not-judged"
 
 ACCEPTED = "accepted"
 DISCARDED = "discarded"
+# Some row was never judged because the gate refused. Not accepted, so nothing banks
+# it, and not discarded on its merits, so nothing revises it.
+GATED = "gated"
 
 # Log stages, so a row says which part of the loop produced it without a reader
 # inferring it from the other fields.
@@ -136,6 +143,9 @@ STAGE_REGATE = "regate"          # the 15 deterministic gates re-judging a revis
 STAGE_CHECKLIST = "checklist"    # the checklist itself could not be read
 STAGE_FORMAT = "format"          # the answer did not follow the strict contract
 STAGE_COST = "cost"              # how many model calls this candidate cost, by tier
+# Prefix on a `counts` key for a call the model gate refused. Kept apart so the cost
+# row can name refusals without charging them as calls.
+REFUSED_KEY = "refused:"
 STAGE_CAPTURE = "capture"        # the caller's draft capture failed; the run continued
 
 
@@ -267,6 +277,11 @@ _BARE_HEAD = re.compile(r"^[\s*#]*(PASS|FAIL)\b", re.I)
 FORMAT_OK = "ok"
 FORMAT_LOOSE = "loose"
 FORMAT_UNPARSEABLE = "unparseable"
+FORMAT_GATED = "gated"            # no answer to parse: the gate refused the call
+
+#: What `run_model` hands back on a gate refusal, so it cannot be mistaken for a dead
+#: call (None) and scored by `parse_answer`.
+_GATE_REFUSED = object()
 
 
 def parse_answer(answer, tier):
@@ -345,11 +360,21 @@ def judge(text, row, runner=None, claude_bin=None, timeout=prompt_render.TIMEOUT
     raises instead of spending a real call.
     """
     tier = row.get("tier") or STYLE
-    if counts is not None:
-        counts[tier] = counts.get(tier, 0) + 1
     answer = prompt_render.run_model(build_prompt(text, row), claude_bin=claude_bin,
                                      timeout=timeout, runner=runner,
-                                     caller="critic.judge()", model=model_for(row))
+                                     caller="critic.judge()", model=model_for(row),
+                                     refused=_GATE_REFUSED)
+    if answer is _GATE_REFUSED:
+        # COUNTED AFTER THE GATE ANSWERS, under its own key (PR #509 round 3). Counted
+        # before, a refusal was charged as a model call, so the cost row inflated
+        # exactly when the gate was suppressing spend. The refusal stays on the row,
+        # named, and out of the total.
+        if counts is not None:
+            key = REFUSED_KEY + tier
+            counts[key] = counts.get(key, 0) + 1
+        return NOT_JUDGED, "model gate refused the call; this row was not judged", FORMAT_GATED
+    if counts is not None:
+        counts[tier] = counts.get(tier, 0) + 1
     # A failed call (timeout, missing binary, non-zero exit) takes the same posture as an
     # unparseable answer: closed on quality, open on style.
     return parse_answer(answer or "", row.get("tier") or STYLE)
@@ -405,7 +430,9 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
     quality = [r for r in rows if (r.get("tier") or STYLE) == QUALITY]
     style = [r for r in rows if (r.get("tier") or STYLE) != QUALITY]
     results = _wave(quality)
-    if any(verdict == FAIL for _row, verdict, _detail, _fmt in results):
+    # A refused row means the gate is shut for this job today: the style wave would be
+    # refused too, so asking is only more ledger lines.
+    if any(verdict in (FAIL, NOT_JUDGED) for _row, verdict, _detail, _fmt in results):
         return results
     return results + _wave(style)
 
@@ -427,11 +454,20 @@ def _row(at, channel, text, constraint_id, verdict, detail, attempt, stage):
 
 
 def _cost_row(at, channel, text, counts, attempt):
-    """One row per candidate saying what judging it cost, by tier."""
-    total = sum(counts.values())
-    detail = ", ".join(f"{tier}={n}" for tier, n in sorted(counts.items())) or "none"
-    return _row(at, channel, text, "calls", str(total),
-                f"critic model calls for this candidate: {detail}", attempt, STAGE_COST)
+    """One row per candidate saying what judging it cost, by tier.
+
+    Refused calls are listed but never totalled: the gate answered, no model did.
+    """
+    spent = {t: n for t, n in counts.items() if not t.startswith(REFUSED_KEY)}
+    refused = {t[len(REFUSED_KEY):]: n for t, n in counts.items()
+               if t.startswith(REFUSED_KEY)}
+    detail = ", ".join(f"{tier}={n}" for tier, n in sorted(spent.items())) or "none"
+    detail = f"critic model calls for this candidate: {detail}"
+    if refused:
+        detail += ("; refused by the model gate, not called: "
+                   + ", ".join(f"{tier}={n}" for tier, n in sorted(refused.items())))
+    return _row(at, channel, text, "calls", str(sum(spent.values())),
+                detail, attempt, STAGE_COST)
 
 
 def append(rows, path=None):
@@ -672,13 +708,33 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
             # THE CONTRACT-VIOLATION RATE IS A NUMBER, not a suspicion (sp-a55d1ffb).
             # A row lands whenever the answer did not follow the strict format, so the
             # rate is countable from the log instead of being inferred from vibes.
-            if fmt != FORMAT_OK:
+            if fmt not in (FORMAT_OK, FORMAT_GATED):
                 log_rows.append(_row(at, channel, text, row["id"], fmt,
                                      f"answer did not follow the VERDICT contract "
                                      f"({fmt}); verdict honoured as {verdict}",
                                      attempt, STAGE_FORMAT))
             if verdict == FAIL:
                 failures.append((row, detail))
+        # GATED BEFORE FAILED: a refused row is unknown, not bad. Revising would act on
+        # a judgment that never happened and accepting would bank an unjudged draft, so
+        # the candidate leaves as neither (PR #509 review).
+        # QUALITY rows only. A refused style row fails open like any unanswerable style
+        # row: a style row is not worth starving a slot for (`parse_verdict`).
+        gated = [row["id"] for row, verdict, _d, _f in results
+                 if verdict == NOT_JUDGED and (row.get("tier") or STYLE) == QUALITY]
+        # NOTHING JUDGED IS NOT ACCEPTED (PR #509 round 3). A checklist of style rows
+        # only, every one refused, left `gated` and `failures` both empty and banked a
+        # draft nobody read. Style fails open per ROW, when some other row was judged;
+        # it cannot fail the whole critique open. Same reasoning as the empty-checklist
+        # branch above: an absent critic must not look like one that approved.
+        if not gated and results and all(v == NOT_JUDGED for _r, v, _d, _f in results):
+            gated = [row["id"] for row, _v, _d, _f in results]
+        if gated:
+            log_rows.append(_cost_row(at, channel, text, counts, attempt))
+            _flush()
+            return Outcome(GATED, "", log_rows,
+                           [f"critic-{cid}: not judged, model gate refused" for cid in gated],
+                           attempts=attempt)
         if not failures:
             log_rows.append(_cost_row(at, channel, text, counts, attempt))
             _flush()
@@ -692,6 +748,11 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         attempt += 1
         try:
             revised = reviser(text, violations_for(failures))
+        except prompt_render.GateRefused as exc:
+            # The revision was never attempted. Not a verdict on the draft or the reviser.
+            log_rows.append(_cost_row(at, channel, text, counts, attempt))
+            _flush()
+            return Outcome(GATED, "", log_rows, [f"revise not run: {exc}"], attempts=attempt)
         except Exception as exc:                  # a broken reviser is not a hold
             reasons = [f"reviser raised: {exc}"]
             log_rows.append(_cost_row(at, channel, text, counts, attempt))

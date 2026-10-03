@@ -66,6 +66,19 @@ build_fleet() {
 
   case "$mode" in
     absent) rm -f "$skel/fleet-reach-audit.py" ;;
+    raises)
+      # The real audit's failure shape: a RuntimeError, nothing on stdout.
+      printf '#!/usr/bin/env python3\nraise RuntimeError("INSTANCE_OWNED_SUBTREES not found; the audit refuses to guess it")\n' \
+        > "$skel/fleet-reach-audit.py" ;;
+    unsyncable)
+      {
+        echo '#!/usr/bin/env python3'
+        echo 'import json'
+        echo 'rows = [{"name": "clean", "path": "/x", "prefix": "q-system", "blocked_by": [], "verdict": "WOULD-SYNC"},'
+        echo '        {"name": "gone", "path": "/nope", "prefix": "q-system", "blocked_by": [], "verdict": "MISSING"},'
+        echo '        {"name": "plain", "path": "/p", "prefix": "q-system", "blocked_by": [], "verdict": "NOT-A-REPO"}]'
+        echo 'print(json.dumps(rows))'
+      } > "$skel/fleet-reach-audit.py" ;;
     garbage)
       printf '#!/usr/bin/env python3\nimport sys\nsys.exit(3)\n' > "$skel/fleet-reach-audit.py"
       chmod +x "$skel/fleet-reach-audit.py" ;;
@@ -95,7 +108,7 @@ run_update() { local skel="$1"; shift; ( cd "$skel" && ./kipi-update.sh --dry-ru
 echo "== A. clean fleet: the verdict prints and the run proceeds =="
 SK="$(build_fleet "$T/a" WOULD-SYNC)"
 OUT="$(run_update "$SK")"
-has "$OUT" "reach preflight: 1 of 1 would sync now" \
+has "$OUT" "reach preflight: 1 of 1 clear of dirty-tree blockers" \
   && ok "the verdict prints on a CLEAN fleet too (liveness, not silence)" \
   || bad "no verdict on a clean fleet"
 has "$OUT" "ABORT:" && bad "a clean fleet was refused" || ok "a clean fleet is not refused"
@@ -140,6 +153,25 @@ OUT="$(run_update "$SK")"
 has "$OUT" "ABORT: the reach preflight produced no verdict" \
   && ok "a broken audit aborts -- a gate that cannot run must not pass" \
   || bad "a broken audit passed"
+
+echo "== D2. audit RAISES: the abort carries the audit's own diagnosis (ASK-1965) =="
+SK="$(build_fleet "$T/d2" WOULD-SYNC "" raises)"
+OUT="$(run_update "$SK")"
+has "$OUT" "ABORT:" && ok "a raising audit aborts" || bad "a raising audit passed"
+has "$OUT" "INSTANCE_OWNED_SUBTREES not found; the audit refuses to guess it" \
+  && ok "the audit's RuntimeError reaches the operator" \
+  || bad "the audit's diagnosis was discarded; the abort names only an exit code"
+
+echo "== D3. MISSING and NOT-A-REPO are named IN the headline (ASK-1965) =="
+SK="$(build_fleet "$T/d3" WOULD-SYNC "" unsyncable)"
+OUT="$(run_update "$SK")"
+HEADLINE="$(printf '%s\n' "$OUT" | grep '^reach preflight:' | head -1)"
+has "$HEADLINE" "1 MISSING" && has "$HEADLINE" "1 NOT-A-REPO" \
+  && ok "the headline names both unsyncable verdicts: $HEADLINE" \
+  || bad "the headline absorbs the shortfall: $HEADLINE"
+has "$HEADLINE" "would sync now" \
+  && bad "the headline still promises a sync the audit did not measure: $HEADLINE" \
+  || ok "the headline states only what the audit measured"
 
 echo "== E. the hatch, and the remedy carries the operator's args (finding 2) =="
 SK="$(build_fleet "$T/e" BLOCKED-FLEET)"

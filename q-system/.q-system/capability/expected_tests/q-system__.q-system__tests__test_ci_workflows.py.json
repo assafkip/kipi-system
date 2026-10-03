@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_ci_workflows.py",
+ "runner": "python3",
+ "timeout_s": 60
+}

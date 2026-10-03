@@ -107,6 +107,28 @@ REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 # case of "what if the second runner is also refused" bills a real model run, so
 # the branch stays untested, which is how the single-runner assumption shipped.
 CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-write}"
+# How long one Codex outage announcement stands (PR #421 rounds 8 and 9). Nothing
+# but a capability refusal ever reaches Codex, so nothing else would end it: past
+# this the claim may be taken over (one page a day at most) and an issue held
+# for the outage runs once more to find out whether Codex is back.
+CODEX_OUTAGE_MAX_AGE=86400
+# OPUS STANDS IN WHEN CODEX IS DOWN (founder, 2026-09-23: "you dont need codex
+# credits, you can use opus as a fallback - that has been recorded"). The
+# reviewer has done this since July (pr-review-agent.sh, marked DEGRADED); the
+# worker's second runner never did, so a Codex outage parked the issue (17 real
+# cases, 2026-08-30 to 2026-09-18) and, after PR #421, held it. The fallback
+# runs the SAME second-runner prompt, so the outcome logic below judges it
+# exactly as it judges Codex. Set KIPI_SECOND_RUNNER_FALLBACK to an empty string
+# to disable it (tests that pin the both-down hold do).
+# `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+# could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
+# And the main outage claim (PR #421 round 12). Since round 5 it is released only
+# by a run that hears the runner answer, and a queue that stays empty after an
+# outage never reaches the runner: the claim outlived its outage and the next
+# outage paged nobody. Past a day it may be taken over, so a continuing outage
+# is re-announced at most once a day.
+ENV_OUTAGE_MAX_AGE=86400
 STATE_DIR="${KIPI_STATE_DIR:-$HOME/.config/kipi}"
 ATTEMPTS="$STATE_DIR/linear-worker-attempts.json"
 # THE one writer of that ledger. Six functions here used to each do their own
@@ -120,6 +142,45 @@ REVIEWS_DIR="$STATE_DIR/pr-reviews"
 # THE ONE SLUG DERIVATION (ASK-738). gh binds to cwd and ignores every path
 # variable here, so every gh call below is scoped with -R from this lib.
 . "$SCRIPT_DIR/repo-slug-lib.sh"
+# WHOSE FAILURE IS IT (ASK-873). One detector for "the machine refused", shared
+# with the heartbeat rather than re-typed here -- see env-failure-lib.sh for why
+# a second pattern is the same defect it fixes.
+. "$SCRIPT_DIR/env-failure-lib.sh"
+# The halt is discovered INSIDE the `while read` loop, which is the right-hand
+# side of a pipe and therefore a subshell: nothing it assigns survives `done`.
+# The one alert has to name how many issues went unattempted, and that number is
+# only knowable after the loop, so the halt crosses the subshell boundary as a
+# FILE. Under $STATE_DIR so the suite's KIPI_STATE_DIR seam covers it too.
+#
+# PER-PROCESS, NOT ONE SHARED PATH (Codex round 3 on PR #200, major). Concurrent
+# workers are supported -- that is what the per-worktree claim lock and
+# test-linear-worker-parallel.sh are for -- and they all share $STATE_DIR. At one
+# shared path the marker stops meaning "THIS run halted":
+#   * the file is not removed after it is read, so a run still working when
+#     another run halts reads that other run's marker at the end of its own loop
+#     and reports a halt it never had -- a second page for one machine condition
+#     and a healthy run handing launchd an exit 9;
+#   * and the clear-before-the-loop below would, at a shared path, erase a
+#     marker a concurrent run had just written and was about to read.
+# `$$` is this script's pid and is unique among LIVE processes, which is exactly
+# the scope of the collision. A recycled pid can only ever meet a file left by a
+# DEAD run, and the clear below runs before the loop for that case.
+ENV_HALT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-env-halt.$$"
+# THIS RUN'S OWN COPY OF THE AGENT'S OUTPUT, for the same reason. The classifier
+# used to read a byte slice of the shared $LOG, so one line another worker
+# appended inside the window landed in the slice -- and is_environmental requires
+# EVERY non-blank line to be the machine's, so a foreign "ok ASK-999" turns a
+# real outage into ordinary output and the issue is charged for it. Same defect
+# as the marker, pointed at the ledger instead of the alert.
+RUN_OUT_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-runout.$$"
+# PROOF THIS RUN HEARD THE RUNNER ANSWER, the only thing that may re-arm the
+# once-per-outage page (PR #421 round 5, major). The release after the loop used
+# to be unconditional, so a tick that SKIPPED every ready issue (attempt cap,
+# --issue onto a capped issue, a tree claimed elsewhere) never ran `claude` and
+# still released the claim: the same outage then paged again and wrote a second
+# permanent Linear comment. A file and not a variable because the loop runs in a
+# pipe subshell, the same reason as the two files above.
+RUNNER_OK_FILE="${KIPI_STATE_DIR:-$HOME/.config/kipi}/linear-worker-runner-ok.$$"
 
 MAX_ATTEMPTS=3
 # Conflict rounds are capped SEPARATELY from failed attempts (ASK-212).
@@ -403,53 +464,35 @@ fi
 # row called on the board" for the repo-identity lookup AND for the reachability
 # set. Deriving the same logical value two ways is how the two sides drifted in
 # the first place, so there is exactly one function and both callers use it.
-REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" python3 - <<'PY' 2>/dev/null
-import json, os
-skel = os.path.realpath(os.environ["SKEL_PATH"])
-ok = True
-try:
-    reg = json.load(open(os.environ["REG"]))
-except Exception:
-    reg, ok = [], False
-entries = reg.get("instances", reg) if isinstance(reg, dict) else reg
-name = ""
-local = []
-
-
-def linear_project(entry):
-    """The name this row carries ON THE BOARD. Explicit field first, name second."""
-    return (entry.get("linear_project") or entry.get("name") or "").strip()
-
-
-for e in entries if isinstance(entries, list) else []:
-    if not isinstance(e, dict):
-        continue
-    p = e.get("path")
-    if not p:
-        continue
-    proj = linear_project(e)
-    if not name and os.path.realpath(p) == skel:
-        name = proj
-    if proj and os.path.isdir(p):
-        # The pinned remote travels WITH the row, because repo-preflight needs it
-        # and re-reading the registry to find it is the second reader ASK-729
-        # already refused to add.
-        d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
-        local.append({"project": proj, "path": p,
-                      "remote": d.get("expected_remote") or ""})
-local.sort(key=lambda r: r["project"])
+# ONE MODULE, THREE CONSUMERS (ASK-1951). This block used to carry the derivation
+# inline. ASK-1951 needed a THIRD reader -- linear-route-reachability-check.py,
+# the meter for issues sitting on a project no checkout backs -- and a retyped
+# copy of a derivation agrees on the day it is written and then diverges in
+# silence, which is the defect ASK-729 and ASK-840 each already paid for. So the
+# derivation moved to linear_registry.py and both sides import it.
+#
+# THE SKELETON ROW IS A CHECKOUT (ASK-1951). The inline version iterated
+# reg["instances"] only. `skeleton` is a SIBLING key, so this repo's own board
+# project -- kipi-system, the busiest on the board -- resolved to no checkout at
+# all, and every instance worker reported its 124 dispatchable issues UNREACHABLE
+# while the checkout sat on disk. Measured 2026-09-26: 124 of the 137 issues this
+# derivation called unreachable were that one project. linear_registry._rows()
+# yields the skeleton row, which is the whole fix.
+#
 # WHO OWNS THE UNSET POPULATION (codex PR #215 round 6, major). A founder-routed
 # issue with no project is claimed by no repo, so an earlier round widened
 # founder_scope to include unset -- in EVERY instance at once. All 23 workers
 # then paged about the same issue into one Linear queue, each with its own
 # ledger, so the dedup could not collapse them and the operator got N tickets to
 # close by hand. Exactly one worker has to own it, and the registry already
-# DECLARES which one: `skeleton.linear_project`. Read, not guessed -- the same
-# reason linear_project() exists twelve lines up.
-skel_row = reg.get("skeleton") if isinstance(reg, dict) else None
-skeleton_project = linear_project(skel_row) if isinstance(skel_row, dict) else ""
-print(json.dumps({"name": name, "local_repos": local, "ok": ok,
-                  "skeleton_project": skeleton_project}))
+# DECLARES which one: `skeleton.linear_project`, returned as skeleton_project.
+REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" \
+  MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
+import json, os, sys
+sys.path.insert(0, os.environ["MOD_DIR"])
+import linear_registry
+print(json.dumps(linear_registry.registry_facts(
+    os.environ["REG"], os.environ["SKEL_PATH"])))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
@@ -1343,7 +1386,7 @@ clear_automerge_pages() { python3 "$LEDGER" "$ATTEMPTS" clear-automerge "$1"; }
 # states are kept apart, never two: armed / unarmed / could not tell.
 AUTOMERGE=""
 arm_automerge() {
-  local pr="$1" dir="$2" probe
+  local pr="$1" dir="$2"
   AUTOMERGE="unknown"
   # `gh pr merge --auto --squash ''` acts on whatever branch the cwd is on, so an
   # empty number is not "arm nothing", it is "arm something else".
@@ -1352,30 +1395,19 @@ arm_automerge() {
   # round AND on every scheduled run for as long as the PR sits approved, so a
   # warning per pass would train the operator to skim the one that matters -- and
   # which exit code `gh pr merge` returns for an already-armed PR varies by
-  # version. Asking makes the no-op a real no-op.
-  if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
-                   -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
-    probe="unknown"
-  fi
-  if [ "$probe" = "true" ]; then
-    AUTOMERGE="armed"
-  elif ( cd "$dir" && gh pr merge --auto --squash "$pr" ) >/dev/null 2>&1; then
-    AUTOMERGE="armed"
+  # version. Asking makes the no-op a real no-op. The probe, the arm and the
+  # re-probe live in pr-verdict-lib.sh's automerge_arm (ASK-310) so converge.sh
+  # runs the SAME call instead of paging it to a human.
+  automerge_arm "$pr" "$dir" "$LOG"
+  AUTOMERGE="$AUTOMERGE_ARM_STATE"
+  if [ "$AUTOMERGE_ARM_NEW" = "1" ]; then
     say "$ISSUE: auto-merge armed on PR #$pr (GitHub merges it once every required check is green)"
+  elif [ "$AUTOMERGE" = "armed" ]; then
+    # Already armed, or the refusal WAS the no-op and the re-probe said so.
+    # Silent on purpose: this is the healthy state.
+    :
   else
-    # ASK THE STATE AGAIN BEFORE CRYING WOLF. `gh pr merge --auto` refuses for
-    # reasons that are not "unarmed", and an already-armed PR is one of them.
-    # The refusal alone cannot tell an armed PR from a broken one, so the PR is
-    # asked what it IS. Only ever runs on this path.
-    if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
-                     -q '.autoMergeRequest != null' 2>>"$LOG" )"; then
-      probe="unknown"
-    fi
-    if [ "$probe" = "true" ]; then
-      # It was already armed and the refusal WAS the no-op. Silent on purpose:
-      # this is the healthy state, reached through a blip.
-      AUTOMERGE="armed"
-    elif [ "$probe" = "unknown" ]; then
+    if [ "$AUTOMERGE" = "unknown" ]; then
       AUTOMERGE="unknown"
       # STILL AUDIBLE, but claiming only what can be backed. gh refused the arm
       # AND refused the state, so "it will sit green and unmerged" is a sentence
@@ -1418,6 +1450,55 @@ arm_automerge() {
   # to tell the operator who merges this PR and cannot re-probe without becoming
   # a second reader of one input; asserting instead is what put "no human merge
   # needed" on PRs nothing had armed.
+  record_automerge "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr").automerge" "$AUTOMERGE"
+  return 0
+}
+
+# disarm_automerge <pr-number> <dir>: take the merge back off the platform, and
+# publish what that reached. Sets $AUTOMERGE to unarmed | armed | unknown.
+#
+# WHY THIS EXISTS (PR #446 review, finding 1 -- major). Step 5 calls
+# arm_automerge UNCONDITIONALLY, forty-two lines before it runs the review. Gate
+# 50 -- "the only review on record is the degraded Opus fallback" -- is decided
+# AFTER that review, so at the moment gate 50 fires, GitHub has already been told
+# to land this PR. The fallback posts `kipi/reviewer-approved` itself, which is
+# the required context holding the PR, so "not arming" was never the whole fix:
+# the arm that already happened has to come off. Without this call the gate-50
+# branches printed an honest sentence over a PR that merged anyway.
+#
+# NOT SYMMETRIC WITH THE ARM, DELIBERATELY. The arm pages once per ISSUE through
+# claim_page_once, because an unarmed approved PR is a stall that does not change
+# between runs. A REFUSED disarm is the opposite class: unreviewed code queued to
+# land, which resolves itself the wrong way within minutes. It pages on every run
+# that sees it, and the flag it clears on success is the arm's own, so a PR that
+# went armed -> disarmed -> armed can page again.
+disarm_automerge() {
+  local pr="$1" dir="$2"
+  AUTOMERGE="unknown"
+  [ -n "$pr" ] || { AUTOMERGE=""; return 0; }
+  automerge_disarm "$pr" "$dir" "$LOG"
+  case "$AUTOMERGE_DISARM_STATE" in
+    disarmed)
+      AUTOMERGE="unarmed"
+      # Only audible when there was something to take off. A PR that was never
+      # armed reaches this every scheduled run for as long as it sits at 50.
+      [ "$AUTOMERGE_DISARM_WAS" = "1" ] && \
+        say "$ISSUE: auto-merge DISARMED on PR #$pr -- it was queued to land on a review only the degraded fallback ran"
+      ;;
+    armed)
+      AUTOMERGE="armed"
+      say "WARN: auto-merge is STILL ARMED on PR #$pr for $ISSUE and gh refused to turn it off: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. GitHub will land code no independent reviewer read. Do: gh pr merge --disable-auto $pr"
+      bash "$NOTIFY" "worker: $ISSUE PR #$pr is armed for auto-merge but only the DEGRADED Opus fallback reviewed it, and gh refused to disarm it: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. It can land unreviewed. Needs a human: gh pr merge --disable-auto $pr" 2>/dev/null || true
+      ;;
+    *)
+      AUTOMERGE="unknown"
+      say "WARN: could not disarm auto-merge on PR #$pr for $ISSUE and could not read its state either: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Whether it can still land unreviewed is UNKNOWN. Do: gh pr merge --disable-auto $pr"
+      bash "$NOTIFY" "worker: $ISSUE PR #$pr had only the DEGRADED fallback review it, and gh could neither disarm auto-merge nor read its state: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Needs a human to confirm it cannot land: gh pr merge --disable-auto $pr" 2>/dev/null || true
+      ;;
+  esac
+  # PUBLISHED for the same reason the arm publishes: converge.sh reads this record
+  # instead of re-probing, and a stale "armed" here would have it report that
+  # GitHub owns the merge on a PR this run just unqueued.
   record_automerge "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr").automerge" "$AUTOMERGE"
   return 0
 }
@@ -1481,6 +1562,24 @@ position_tree_on_pr_head() {
 }
 
 DONE=0
+# CLEARED BEFORE THE LOOP, so presence after it means exactly one thing: THIS
+# run halted. A marker left by a previous run would otherwise alert every 15
+# minutes about an outage that ended days ago -- the cry-wolf failure that
+# teaches the reader to mute the channel (founder-notifications.md).
+# Now that the path carries `$$` this clears only OUR OWN file, which is what
+# makes it safe to run while another worker is mid-loop. The unsuffixed name is
+# swept too: it is what pre-upgrade runs wrote, and nothing reads it any more.
+rm -f "$ENV_HALT_FILE" "$RUN_OUT_FILE" "$RUNNER_OK_FILE" "$STATE_DIR/linear-worker-env-halt" 2>/dev/null || true
+# AND ANY PAIR WHOSE PID IS DEAD (PR #421 round 1, minor). A run killed
+# mid-loop (launchd reap, SIGKILL, reboot) never reaches its own clear, and
+# nothing else ever removed its files. A live worker's pair is left alone:
+# `kill -0` answers for the pid, and a pid cannot be reused while its owner runs.
+for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-runout.* "$STATE_DIR"/linear-worker-runner-ok.*; do
+  [ -e "$_stale" ] || continue
+  _pid="${_stale##*.}"
+  case "$_pid" in ''|*[!0-9]*) continue ;; esac
+  kill -0 "$_pid" 2>/dev/null || rm -f "$_stale" 2>/dev/null || true
+done
 printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
   [ "$DONE" -ge "$LIMIT" ] && break
@@ -1535,6 +1634,31 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     continue
   fi
 
+  # HELD, NOT RE-RUN, WHILE CODEX IS DOWN (PR #421 round 9, major). An issue
+  # Sana refused on capability goes back to the pool unlabelled during a Codex
+  # outage, so every tick re-ran a paid Sana session on it only to reach the
+  # same dead Codex and post another "Worker run completed". While this issue's
+  # outage note stands and the outage claim is live, it is held instead: no
+  # run, no comment. It runs again when Codex answers for any issue (the claim
+  # is released) or the claim passes CODEX_OUTAGE_MAX_AGE. The env_halt mark is
+  # what converge.sh reads to charge nothing and page nothing for a run that
+  # was never attempted, the same mark the Sana halt leaves.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" codex_outage_noted "" 2>/dev/null)" = "True" ]; then
+    if env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+      say "skip $ISSUE: held while the second runner (Codex) is unavailable. No Sana run is spent on it until Codex answers or the outage claim is older than a day."
+      # Only a real run writes the ledger (PR #421 round 14, minor): this sits
+      # above the dry-run gate below, and --dry must change nothing.
+      [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true; }
+      continue
+    fi
+    # THE OUTAGE THAT NOTED IT IS OVER (PR #421 round 11, minor). The mark was
+    # cleared only when Codex answered for THIS issue, so an issue Sana later
+    # ran normally kept it, and any unrelated Codex outage afterwards held it
+    # for up to a day. No live claim means the note is stale: drop it here, and
+    # a later outage that reaches this issue notes it afresh.
+    [ "$APPLY" = "1" ] && { python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true; }
+  fi
+
   if [ "$APPLY" = "0" ]; then
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
     DONE=$((DONE+1)); continue
@@ -1581,7 +1705,13 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # silently stop ASK-212's rebase rounds from ever firing again.
     REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
     CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
-    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
+    # ARGUMENT 5: WAS THE REVIEW INDEPENDENT (ASK-2036, sp-e9284708). Same record
+    # the verdict and the reviewed sha come from, read through the lib's reader so
+    # this script never learns the field's name. Empty for every pre-ASK-445
+    # record, which the gate reads as unknown and answers exactly as it does today.
+    # APPENDED, NEVER INSERTED, for the reason $MERGE_STATE keeps argument 2.
+    PR_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
+    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA" "$PR_DEGRADED")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
     # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
     # both of them scars:
@@ -1614,6 +1744,37 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # about a budget guarding unreviewed code.
     if [ "$GATE" != "40" ] && [ -n "$REVIEWED_SHA" ] && [ -n "$CURRENT_SHA" ]; then
       clear_drift_rounds "$ISSUE"
+    fi
+    if [ "$GATE" = "50" ]; then
+      # THE ONLY REVIEW ON RECORD IS THE DEGRADED FALLBACK (ASK-2036). codex was
+      # down, Opus filled the required status so this repo would not wedge, and
+      # the record says `degraded: true`. The verdict approves and it is pinned
+      # to the head; what is missing is the INDEPENDENCE this loop pays a second
+      # engine for.
+      #
+      # IT SITS ABOVE GATE 10 AND ITS ARM, which is the whole production
+      # consequence. Before this branch existed a degraded approval reached 10,
+      # arm_automerge ran, and GitHub then landed the PR the moment `validate`
+      # went green -- over a `kipi/reviewer-approved` that the fallback itself
+      # had posted. Nothing independent had read the diff and nothing could say
+      # so. Not arming here is HALF the fix, and the half that is not enough: a
+      # PREVIOUS run reached step 5, armed unconditionally 42 lines before its
+      # review, and that arm outlives this run (PR #446 review, finding 1 --
+      # major). So this branch takes the arm off rather than merely declining to
+      # add one. On a PR that was never armed the disarm is a silent no-op.
+      #
+      # A SKIP, NOT A ROUND. Dispatching Sana would rework an approved diff with
+      # no findings to act on, and the review closing that round meets the same
+      # outage and writes the same record -- rounds spent to the cap, nothing
+      # learned. Per `self-healing-retry.md` rule 5 a dead external engine is
+      # environmental-trigger class: it stops on attempt 1 and waits for the
+      # machine, it does not retry logic at it. The cost of that choice, stated:
+      # during a long codex outage approved PRs accumulate unmerged. That is the
+      # direction the loop should fail in -- an unmerged PR costs a day, an
+      # auto-merged unreviewed one costs whatever it broke fleet-wide.
+      disarm_automerge "$EXISTING_PR" "$TARGET_REPO"
+      say "skip $ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but the only review on record is the DEGRADED Opus fallback (codex was down), so nothing independent has read this code. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $EXISTING_PR --issue $ISSUE --post"
+      continue
     fi
     if [ "$GATE" = "10" ]; then
       # ARM BEFORE THE SKIP (PR #33 review round 3, finding 1 -- major). This
@@ -1839,9 +2000,20 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' at $REVIEWED_SHA but the head is $CURRENT_SHA -- dispatching re-review round $DRIFT_ROUND/$MAX_DRIFT_ROUNDS"
   fi
   say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
-  python3 "$SYNC" progress "$ISSUE" \
-    "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
-    --agent "$AGENT" >/dev/null 2>&1 || true
+  # ONE PICKUP NOTE PER ATTEMPT THAT RUNS, not one per tick of an outage (PR #421
+  # round 6, major). The note goes out BEFORE the runner is reached, so while the
+  # account is dead every tick picked the same issue up and posted another
+  # identical "Attempt 1 of 3". The attempt charge used to cap that at three;
+  # with the outage no longer charged it was unbounded. A halt marks the issue
+  # (below, at 4a) and the note already on it stays true, because the attempt it
+  # names never ran. The mark is cleared the moment the runner answers.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" halted_pickup_noted "" 2>/dev/null)" = "True" ]; then
+    say "$ISSUE: the pickup note from the outage-halted run still stands (attempt $((N+1)) never ran); not posting it again"
+  else
+    python3 "$SYNC" progress "$ISSUE" \
+      "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
+      --agent "$AGENT" >/dev/null 2>&1 || true
+  fi
 
   # REWORK: if a PR already exists for this branch, the worker is not starting
   # fresh -- it is answering a review. Without this the prompt would say "do the
@@ -2071,12 +2243,51 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # before the Codex dispatch. This is the same move at the Sana dispatch, so
   # both runners establish the freshness their own readers assume.
   rm -f "$TREE/.sana-needs-scope" "$TREE/.sana-blocked-capability"
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$PROMPT"; then
-    say "ok $ISSUE"
-    python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
-      --agent "$AGENT" >/dev/null 2>&1 || true
+  # A PRIVATE CAPTURE, not a byte slice of the shared log (Codex round 3, major).
+  # The classifier has to read exactly THIS dispatch's output: a fixed tail of
+  # $LOG would let a PREVIOUS dispatch's limit line halt a healthy run, and an
+  # offset slice of $LOG lets a CONCURRENT worker's line land inside this one --
+  # which hides a real outage, because is_environmental requires every non-blank
+  # line to be the machine's. `tee -a` keeps the shared log streaming live for a
+  # human tailing it; the classifier reads the file nobody else writes.
+  # `set -o pipefail` inside the `bash -c`: shell options do not cross into a new
+  # bash, so without it run_bounded would score tee's exit status, not claude's.
+  ENV_FAIL=""
+  : > "$RUN_OUT_FILE" 2>/dev/null || true
+  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
+    AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+    # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
+    # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
+    # rc!=0 branch below never ran and the run reached the no-PR bump at step 5
+    # as an ordinary silent agent. Classifying only on failure would leave the
+    # exact measured outage unhandled.
+    if is_environmental "$AGENT_OUT"; then
+      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+    else
+      : > "$RUNNER_OK_FILE" 2>/dev/null || true
+      python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
+      say "ok $ISSUE"
+      python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
+        --agent "$AGENT" >/dev/null 2>&1 || true
+    fi
   else
     rc=$?
+    AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+    if is_environmental "$AGENT_OUT"; then
+      # NOT bump_attempt. An exhausted account is a property of the machine,
+      # identical for every issue the loop has not reached yet; charging it to
+      # THIS issue spends a real task's retry budget on an environment problem,
+      # and the attempts ledger makes that permanent. Measured 2026-08-15: 11
+      # healthy issues driven to TERMINAL in six hours, four charges each, no
+      # branch, no commit, no diff -- the agent never spoke because the account
+      # could not answer.
+      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+    else
+    # The runner answered and the failure is the issue's: the machine is up.
+    : > "$RUNNER_OK_FILE" 2>/dev/null || true
+    python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
     bump_attempt "$ISSUE" "claude run failed rc=$rc"
     N2="$(attempts_for "$ISSUE")"
     say "fail $ISSUE rc=$rc ($N2/$MAX_ATTEMPTS)"
@@ -2086,6 +2297,37 @@ Anything real you find and are not fixing: capture it, never just mention it:
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
     fi
+    fi
+  fi
+
+  # 4a. HALT, DO NOT MARCH ON (ASK-873). Every issue after this one would meet
+  # the identical dead runner, so continuing spends ~31 minutes per issue to
+  # learn a fact already known and charges each of them for it. The loop stops
+  # here; the ONE alert is fired after the loop, where the number of unattempted
+  # issues is finally knowable.
+  if [ -n "$ENV_FAIL" ]; then
+    say "$ISSUE: NOT ATTEMPTED -- the runner itself is unavailable ($ENV_FAIL). No attempt charged; halting the run."
+    # A DURABLE MARKER, read by converge.sh, for the same reason refused_no_pr is
+    # one: converge runs the worker and then charges its OWN attempt at exit-7
+    # when the counter did not move. It cannot tell this halt from an interrupted
+    # worker -- both leave the counter untouched and no PR -- so without the flag
+    # the fix holds inside the worker and leaks straight back in from the driver.
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    # Its own flag, not env_halt: converge.sh clears env_halt before every run
+    # it drives, so it cannot also mean "this issue's pickup note is posted".
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
+    # NO LINEAR COMMENT HERE (PR #421 round 1, major). It used to be posted on
+    # every halted run while the page was deduped, so one outage wrote one
+    # comment per tick on the same issue: the measured Aug 15-18 outage is ~288
+    # runs. The comment now rides with the page, after the loop, under the same
+    # once-per-outage claim.
+    ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+    # ISSUE|DONE: which issue the halt landed on, and how much budget had been
+    # spent before it. Both are needed to state the unattempted count honestly --
+    # the queue behind it is bounded by --limit, so "every ready issue after this
+    # one" would overstate a number a human then cannot reconcile against the log.
+    printf '%s|%s|%s' "$ISSUE" "$DONE" "$ENV_FAIL" > "$ENV_HALT_FILE" 2>/dev/null || true
+    break
   fi
 
   # 4b. A REFUSAL IS A DECISION, NOT A FAILURE (ASK-275).
@@ -2163,7 +2405,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_OUTAGE_NEW=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -2204,11 +2446,58 @@ to dodge a guard, disabling a gate). A gate that is inconvenient is a gate doing
 its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # run_bounded, not a bare call: an unbounded second runner at 3am is the
       # failure mode loop-exits.md exit 7 exists for. ONE invocation, no retry --
-      # a dead Codex must cost one timeout, not a spend loop.
-      if run_bounded "$TIMEOUT_SECONDS" bash -c "cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null >>'$LOG' 2>&1" _ "$CODEX_PROMPT"; then
+      # a dead Codex must cost one timeout, not a spend loop. With the Opus
+      # stand-in below, the worst case is TWO bounded runs (Codex, then Opus),
+      # each capped by TIMEOUT_SECONDS; never more, and never a loop.
+      # Captured privately and classified, exactly like Sana's run above. Until
+      # Codex round 3 this output went straight into the shared log and was never
+      # read: an exhausted Codex account printed its limit line, left no commit
+      # and no sentinel, and the issue was parked `blocked:capability` FOREVER
+      # for a condition of the machine. That is ASK-873's own defect one runner
+      # deeper, and strictly worse than the original -- an attempt count decays
+      # and gets retried; a park pulls the issue out of the picker until a human
+      # takes it back.
+      : > "$RUN_OUT_FILE" 2>/dev/null || true
+      if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
         crc=0
       else
         crc=$?
+      fi
+      CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""
+      # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
+      # is refused too (a Claude limit) does the outage path below apply.
+      if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        CODEX_STOOD_IN=1
+        SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
+        say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
+        : > "$RUN_OUT_FILE" 2>/dev/null || true
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+          crc=0
+        else
+          crc=$?
+        fi
+        CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+      fi
+      CODEX_ENV=""
+      # codex_env_reason, not is_environmental: Codex prints a transcript, and
+      # the every-line rule never matched a real Codex outage (PR #421 round 8).
+      if CODEX_ENV="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
+      else
+        CODEX_ENV=""
+        # Only CODEX answering ends a Codex outage. When Opus stood in, Codex
+        # is still down: the claim and this issue's note stay (PR #425 review).
+        if [ -z "$CODEX_STOOD_IN" ]; then
+        # This issue's outage note, if it had one, is spent: the next outage
+        # that reaches it says so again.
+        python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1 || true
+        # CODEX ANSWERED, whatever it said: the outage (if one was announced)
+        # is over, so the NEXT one pages again. Releasing only on a committing
+        # run (the round-1 version) left the claim held after an honest refusal
+        # and muted every later Codex outage (PR #421 round 2, major).
+        env_alert_release "$STATE_DIR/codex-outage" 2>/dev/null || true
+        fi
       fi
       if [ -f "$TREE/.codex-blocked-capability" ]; then
         CODEX_WHY="$(head -c 1500 "$TREE/.codex-blocked-capability" 2>/dev/null)"
@@ -2238,9 +2527,72 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
          && [ "$CODEX_HEAD_AFTER" != "$CODEX_HEAD_BEFORE" ]; then
         CODEX_CHANGED_FILES="$(git -C "$TREE" diff --name-only "$CODEX_HEAD_BEFORE" "$CODEX_HEAD_AFTER" 2>/dev/null || true)"
       fi
-      if [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
+      # A STAND-IN'S REFUSAL IS NOT CODEX'S (PR #425 review, major). Opus runs in
+      # the same Claude Code harness as Sana, so a refusal that came from that
+      # harness (a .claude/** path, a guard) repeats verbatim, and parking on it
+      # would pull the issue out of the picker for good when the one runner that
+      # could do it, Codex, only needs to be back. Only Codex's own refusal
+      # parks; a stand-in that did not finish the work is the outage hold.
+      if [ -n "$CODEX_STOOD_IN" ] && [ -z "$CODEX_ENV" ] \
+         && ! { [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; }; then
+        CODEX_ENV="Codex unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the Opus stand-in did not finish it either${CODEX_WHY:+: $(printf '%s' "$CODEX_WHY" | head -c 200)}"
+        CODEX_WHY=""
+      fi
+      # CHECKED FIRST, before any of the outcomes below. A runner that could not
+      # answer produced none of them: no commit, no sentinel, no refusal. Reading
+      # its silence as "Codex is also not equipped" is the category error this
+      # whole issue is about, so the machine's condition gets its own branch
+      # rather than falling into the park.
+      #
+      # IT DOES NOT HALT THE DISPATCHER, and that asymmetry is deliberate. Sana
+      # is THE runner: her outage makes every later dispatch in the queue waste
+      # ~31 minutes to learn a fact already known, so stopping is the cheap move.
+      # Codex is reached only on a capability refusal, which is rare, so halting
+      # the whole queue for it would trade one rare park for a fleet-wide stop --
+      # the false-halt cost env-failure-lib.sh spent two review rounds refusing.
+      # The issue simply is not parked: it keeps no label, returns to the pool,
+      # and the next run retries both runners once the account can answer again.
+      if [ -n "$CODEX_ENV" ]; then
+        say "$ISSUE the second runner is unavailable ($CODEX_ENV) -- a condition of the machine, not of this issue. NOT parking it."
+        # The label is the permanent damage; withholding it is the entire fix.
+        REFUSE_LABEL=""
+        # BOUNDED AND ANNOUNCED, NOT A HALT (PR #421 round 1, major). The
+        # queue keeps moving on purpose: Codex is only the second runner, so
+        # issues Claude can do still run (ASK-873's own test pins that). What
+        # was missing: a refusal did not advance DONE, so one run walked the
+        # whole ready queue past --limit, and nothing ever said Codex was down.
+        # Now the issue spends one unit of --limit budget, and ONE page goes
+        # out per Codex outage under its own claim, released below the first
+        # time a Codex run works again.
+        DONE=$((DONE+1))
+        # The issue returns to the pool uncharged, so the next tick picks it up
+        # at the same attempt number: mark its pickup note as standing, exactly
+        # as the Sana halt does (PR #421 round 7, major). Without this, Sana's
+        # healthy run cleared the mark every tick and each tick of one Codex
+        # outage posted another "Attempt 1 of 3".
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
+        # THE MARK CONVERGE READS FIRST (PR #421 round 13, major). This branch
+        # also records refused_no_pr, and converge.sh read that alone: it logged
+        # the issue as held at a label that was never applied and paged exit 7
+        # once per issue for a machine condition the worker had already paged.
+        # env_halt is what makes converge exit 9 with no charge and no page, the
+        # same mark the Sana halt and the hold leave.
+        python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+        mkdir -p "$STATE_DIR/codex-outage" 2>/dev/null || true
+        # The note is PER ISSUE and the page is per machine (PR #421 round 8):
+        # tying the note to the machine-wide claim left an issue that a later
+        # outage reached with no note at all while the claim was still held.
+        if python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" codex_outage_noted >/dev/null 2>&1; then
+          CODEX_OUTAGE_NEW=1
+        fi
+        # A day: nothing but a capability refusal ever reaches Codex, so nothing
+        # else would release this claim (see env_alert_claim's max age).
+        if env_alert_claim "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
+        fi
+      elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
-        say "$ISSUE Codex CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
+        say "$ISSUE $SECOND_RUNNER CONTINUED the work Sana was not equipped for (HEAD $CODEX_HEAD_BEFORE -> $CODEX_HEAD_AFTER) -- not parking it"
         # Clearing the label is the whole point: with it applied the picker never
         # offers the issue again, so a continuation that still parked would be a
         # continuation nobody could act on.
@@ -2261,7 +2613,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       fi
     fi
     if [ -z "$REFUSE_LABEL" ]; then
-      : # Codex continued it; there is nothing to park and no label to apply.
+      : # Either Codex continued the work, or Codex itself was unavailable.
+        # Both mean there is nothing to park and no label to apply; the say line
+        # in each branch above already recorded which of the two happened.
     elif python3 "$SYNC" label "$ISSUE" "$REFUSE_LABEL" >>"$LOG" 2>&1; then
       say "$ISSUE labelled $REFUSE_LABEL -- the picker will stop offering it"
     else
@@ -2273,15 +2627,25 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
     # Different next action per class. A capability block that says "re-scope this"
     # sends the drafter to rewrite a spec that was already right.
     if [ -n "$CODEX_CONTINUED" ]; then
-      REFUSE_NOTE="**Sana was not equipped; Codex was.** Not labelled \`blocked:capability\` -- the issue stays in the pool.
+      REFUSE_NOTE="**Sana was not equipped; the second runner was.** Not labelled \`blocked:capability\` -- the issue stays in the pool.
 
 Sana stopped here:
 
 $SCOPE_WHY
 
-The Codex runner was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
+The second runner ($SECOND_RUNNER) was handed the same issue and committed on \`$BRANCH\` (HEAD now \`$CODEX_CONTINUED\`). A capability one runner lacks is not a capability the fleet lacks.
 
 **Next:** review the branch/PR as normal. No capability grant is needed and no founder decision is pending."
+    elif [ -n "$CODEX_ENV" ]; then
+      REFUSE_NOTE="**Not parked: the second runner was unavailable.** No label was applied, so this issue stays in the pool and the loop picks it up again.
+
+Sana stopped here:
+
+$SCOPE_WHY
+
+The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
+
+**Next:** nothing per issue, and no founder decision. The next run tries both runners again; if Codex is genuinely not equipped either, it parks then with both refusals named."
     elif [ "$REFUSE_KIND" = "capability" ]; then
       REFUSE_NOTE="**Blocked on a missing capability, not on scope.** Labelled \`blocked:capability\`; the picker will not offer it again until the capability exists.
 
@@ -2300,7 +2664,14 @@ $SCOPE_WHY
 
 **Next:** linear-dor-drafter.py re-scopes this into a Definition of Ready that is achievable from a non-interactive session, or it is closed. This is engineering work, not a founder decision -- no action is needed from the founder."
     fi
-    python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
+    # A Codex OUTAGE note goes out once per issue per outage (PR #421 round 4,
+    # major; per issue since round 8): posted every tick it wrote one "Not
+    # parked" comment per tick on the same issue. CODEX_OUTAGE_NEW is set by
+    # this issue's own claim above. Every other refusal note is a decision
+    # about this issue and still posts each time.
+    if [ -z "$CODEX_ENV" ] || [ -n "$CODEX_OUTAGE_NEW" ]; then
+      python3 "$SYNC" progress "$ISSUE" "$REFUSE_NOTE" --agent "$AGENT" >/dev/null 2>&1 || true
+    fi
     # A REFUSAL DOES NOT SKIP THE REVIEW (ASK-275, 2026-08-01).
     #
     # This was `release` + `continue` -- jumping the whole of step 5. The
@@ -2477,8 +2848,17 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
-    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1 \
-      || say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
+    REVIEW_RC=$?
+    if [ "$REVIEW_RC" = "9" ]; then
+      # The reviewer's RUNNER refused (PR #421 round 16, minor): the same account
+      # Sana just used ran out between the two calls. env_halt makes converge exit
+      # 9 with no charge and no "review produced no verdict" page.
+      say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+    elif [ "$REVIEW_RC" != "0" ]; then
+      say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
+    fi
     # Read back the verdict RECORD the reviewer just wrote (never re-grep the
     # review prose) and state what happens next in plain terms. Rework itself
     # fires on the NEXT run, through the severity-floor gate above.
@@ -2510,7 +2890,12 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (absent is not drift, fail toward terminal); the missing thing was the
     # sentence. Adds no per-run noise: the gate is silent whenever both shas were
     # read, which is every healthy round.
-    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA")"; FINAL_GATE=$?
+    # ARGUMENT 5 IS RE-READ, NOT REUSED FROM THE TOP OF THE RUN (ASK-2036). The
+    # reviewer a few lines up just rewrote this record, and whether THAT review
+    # was degraded is the only question the closing line may answer. Reusing
+    # $PR_DEGRADED would report on the review before this round's.
+    FINAL_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
+    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA" "$FINAL_DEGRADED")"; FINAL_GATE=$?
     [ -n "$FINAL_GATE_NOTE" ] && say "$FINAL_GATE_NOTE"
     # NO PAGE HERE, deliberately, and it is the one place in this pass that buys
     # silence: the NEXT scheduled run gates this same PR at 40, spends a drift
@@ -2524,6 +2909,20 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # replaces.
     if [ "$FINAL_GATE" = "40" ]; then
       say "$ISSUE NOT converged: PR #$PR_NUM still reads '$FINAL_VERDICT' recorded at $FINAL_REVIEWED_SHA while the head is $FINAL_CURRENT_SHA -- this round's review wrote no record, so the code at the head is still unreviewed. Re-review next run ($(drift_rounds_for "$ISSUE")/$MAX_DRIFT_ROUNDS drift round(s) spent)."
+    elif [ "$FINAL_GATE" = "50" ]; then
+      # The closing line is the one an operator scans, and without this arm it
+      # said "converged ... auto-merge armed, no human merge needed" over a
+      # review codex never ran (ASK-2036). Same posture as the 40 arm above: no
+      # page here, because the NEXT run gates this PR at 50 too and says so.
+      #
+      # THE SENTENCE WAS NOT THE FIX (PR #446 review, finding 1 -- major). This
+      # branch is reached AFTER arm_automerge ran unconditionally 42 lines up, so
+      # "Not merged" was a claim about a PR GitHub had already been told to land
+      # the moment `validate` went green -- over a `kipi/reviewer-approved` the
+      # degraded fallback posted itself. The disarm is what makes the sentence
+      # true; disarm_automerge owns the paging when gh refuses.
+      disarm_automerge "$PR_NUM" "$TREE"
+      say "$ISSUE NOT converged: PR #$PR_NUM reads '$FINAL_VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $PR_NUM --issue $ISSUE --post"
     else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")
@@ -2607,8 +3006,13 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   # partial diff is a real approval of the code that is there. It is not a
   # statement about the ISSUE, which is still held at $REFUSE_LABEL and is not
   # done. The closing line is the one an operator scans, so it says which.
-  if [ -n "$REFUSED" ]; then
+  if [ -n "$REFUSED" ] && [ -n "$REFUSE_LABEL" ]; then
     say "$ISSUE is NOT done: held at $REFUSE_LABEL. Any PR above carries only the half that shipped before the block, and the verdict on it is a verdict on that half."
+  elif [ -n "$REFUSED" ]; then
+    # A refusal that was NOT parked: Codex was unavailable, so no label was
+    # applied. Saying "held at " with nothing after it reads as a bug in the
+    # line rather than the fact it is reporting.
+    say "$ISSUE is NOT done and is NOT held: no label was applied, so it returns to the pool. Any PR above carries only the half that shipped before the block."
   fi
   # A REFUSAL COSTS A TURN, NOT A DISPATCH. This was a `continue` before the
   # DONE++ at the sentinel above; the fall-through moved the skip here so the
@@ -2619,6 +3023,74 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
   [ -n "$REFUSED" ] || DONE=$((DONE+1))
 done
 
+# THE ONE ALERT (ASK-873). Fired here rather than at the point of detection so
+# it can state how many issues went UNATTEMPTED -- that number is only knowable
+# once the loop has stopped. One machine-wide condition, one ticket, naming what
+# a human would otherwise reconstruct from eleven identical TERMINAL lines.
+rm -f "$RUN_OUT_FILE" 2>/dev/null || true
+if [ -f "$ENV_HALT_FILE" ]; then
+  HALT_RAW="$(cat "$ENV_HALT_FILE" 2>/dev/null)"
+  # CONSUMED ON READ. The marker has now done its whole job, and leaving it on
+  # disk is how a run's halt outlives the run: the path is per-pid, so a recycled
+  # pid would find a stale marker, and the clear-before-the-loop is then the only
+  # thing standing between a dead run's outage and a live run's exit 9.
+  rm -f "$ENV_HALT_FILE" 2>/dev/null || true
+  HALT_ISSUE="${HALT_RAW%%|*}"
+  HALT_REASON="${HALT_RAW#*|*|}"
+  HALT_DONE="$(printf '%s' "$HALT_RAW" | cut -d'|' -f2)"
+  # BOUNDED BY --limit, NOT BY THE QUEUE LENGTH. The run would never have
+  # reached more than LIMIT issues, so counting every ready issue behind the
+  # halt reports a number the run-log contradicts -- the ticket arguing with its
+  # own evidence (the same correction PR #198 took on the heartbeat's count).
+  UNATTEMPTED="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+halt, done, limit = sys.argv[1], int(sys.argv[2] or 0), int(sys.argv[3] or 0)
+ids = [i["id"] for i in json.load(sys.stdin)["ready"]]
+behind = len(ids) - (ids.index(halt) + 1) if halt in ids else 0
+budget = max(0, limit - done - 1)
+print(max(0, min(behind, budget)))
+' "$HALT_ISSUE" "$HALT_DONE" "$LIMIT" 2>/dev/null || echo 0)"
+  # THE LOCAL LINE IS UNCONDITIONAL. Whatever the paging decision below, this
+  # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
+  # finds nothing at all.
+  say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
+  # The alert above was already "one per run", and a run is the wrong unit for a
+  # fact about the MACHINE: concurrent workers each meet the same dead account
+  # and each file a ticket, and at the 15-minute tick the measured six-hour
+  # outage was 24 halted runs. The claim is shared across processes on purpose --
+  # the exact opposite of $ENV_HALT_FILE and $RUN_OUT_FILE above, because those
+  # carry this RUN's state and this carries the machine's. See env-failure-lib.sh
+  # for why mkdir and not a flag file, and for how the claim is released.
+  if env_alert_claim "$STATE_DIR" "$ENV_OUTAGE_MAX_AGE"; then
+    python3 "$SYNC" progress "$HALT_ISSUE" \
+      "**Not attempted.** The runner itself was unavailable ($HALT_REASON), which is a condition of the machine and not of this issue. No attempt was charged and the dispatcher halted rather than marching the rest of the queue into the same dead environment. It will be picked up normally once the runner is available. (One note per outage: later halts during the same outage stay silent.)" \
+      --agent "$AGENT" >/dev/null 2>&1 || true
+    bash "$NOTIFY" "kipi worker: dispatch HALTED, the runner itself is unavailable ($HALT_REASON). $HALT_ISSUE was not attempted and neither were $UNATTEMPTED issue(s) behind it -- one machine-wide condition, not one fault per issue. No attempts were charged. Nothing to fix per issue; the loop resumes on its own when the runner is available." 2>/dev/null || true
+  else
+    say "worker: this condition is already filed by another run; not filing a duplicate ticket for it"
+  fi
+  # 9, THE EXISTING INFRA CODE, never 0. ASK-184 pinned that a failed run must
+  # not report success to launchd or fleet-health-daily.py's launchd-failing
+  # detector goes blind to this job, and a halt is a failed run: the dispatcher
+  # stopped early with work still ready. It is not 1 (usage error) for the same
+  # reason the git-fetch guard is not: a caller has to be able to tell a dead
+  # environment from a bad invocation.
+  exit 9
+fi
+
+# THE STATE CHANGE BACK UP, and it is what keeps the guard above a dedupe rather
+# than a mute. Reaching this line means the loop finished with no environmental
+# halt, so this run OBSERVED a working runner -- the closest thing to an
+# "outage ended" event that exists, since nothing tells us when the account
+# resets. Releasing here re-arms the edge, so the next outage pages again.
+# ONLY IF THIS RUN ACTUALLY REACHED THE RUNNER (PR #421 round 5): finishing the
+# loop is not the same as observing a working runner when every issue was
+# skipped before dispatch. See $RUNNER_OK_FILE.
+if [ -f "$RUNNER_OK_FILE" ]; then
+  env_alert_release "$STATE_DIR"
+fi
+rm -f "$RUNNER_OK_FILE" 2>/dev/null || true
 say "worker: run complete"
 # The `exit 0` below is the last statement INSIDE the ASK-351 brace, and it has to
 # stay last and stay unconditional: it is what stops bash from ever reading this
