@@ -56,6 +56,14 @@ def test_report_admits_over_limit_and_enforce_refuses(gate, monkeypatch):
     assert model_gate.check("a", now=BEFORE)["admit"] is False
 
 
+def test_one_fleet_breach_alerts_once_not_once_per_job(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_FLEET", "1")
+    model_gate.check("first", now=AFTER)
+    for job in ("a", "b", "c", "d", "e"):
+        model_gate.check(job, now=AFTER)
+    assert len([x for x in gate() if "fleet" in x]) == 1
+
+
 def test_one_alert_per_job_per_day(gate, monkeypatch):
     monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
     for _ in range(4):
@@ -103,7 +111,9 @@ def test_run_model_asks_the_gate_before_any_provider(gate, monkeypatch, tmp_path
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("provider reached"))
     monkeypatch.setattr(model_gate, "_notify", lambda text: None)
     assert prompt_render.run_model("hi", str(tmp_path / "claude")) is None
-    assert not (tmp_path / "usage.jsonl").exists()
+    # The refusal is metered: a ledger blind to refusals reads as an idle fleet.
+    rows = [json.loads(x) for x in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert [r["subtype"] for r in rows] == ["failed:model-gate-refused"]
 
 
 def _door(*cmd, **env):
@@ -200,3 +210,42 @@ def test_run_model_keys_the_gate_on_the_callers_job_not_the_bot(gate, monkeypatc
                                                   model_gate._today() + ".jsonl"))]
     # the loop's second call is refused; a different caller of the same bot is not
     assert [r["job"] for r in day if r["kind"] == "call"] == ["critic.judge()", "revise"]
+
+
+def _checklist(tmp_path, *tiers):
+    path = tmp_path / "checklist.json"
+    path.write_text(json.dumps([{"id": f"row-{t}", "text": "Is it fine?", "tier": t}
+                                for t in tiers]))
+    return str(path)
+
+
+def test_a_gate_refusal_during_revise_is_gated_not_a_reviser_failure(gate, monkeypatch, tmp_path):
+    from voiceloop import critic, revise
+    _refusing_gate(monkeypatch)
+    # the critic is answered by a runner (no gate); only the reviser reaches the gate
+    out = critic.run("a draft", "x", path=_checklist(tmp_path, "quality"),
+                     log_path=str(tmp_path / "log.jsonl"),
+                     runner=lambda p: "VERDICT: FAIL\nWHY: no story",
+                     reviser=revise.reviser(claude_bin=str(tmp_path / "claude"), model="m"),
+                     regate=lambda t: pytest.fail("regated a revision that never ran"))
+    assert out.status == critic.GATED, out.reasons
+    assert not any("reviser returned nothing" in r for r in out.reasons)
+
+
+def test_a_refused_style_row_fails_open(gate, monkeypatch, tmp_path):
+    from voiceloop import critic
+    _refusing_gate(monkeypatch)
+    answers = {critic.MODEL_QUALITY: "VERDICT: PASS\nWHY: fine"}
+    real = prompt_render.run_model
+
+    def run_model(prompt, claude_bin, **k):
+        # quality is answered; style goes through the real (refusing) gate
+        if k.get("model") in answers:
+            return answers[k["model"]]
+        return real(prompt, claude_bin, **k)
+    monkeypatch.setattr(prompt_render, "run_model", run_model)
+    out = critic.run("a draft", "x", path=_checklist(tmp_path, "quality", "style"),
+                     log_path=str(tmp_path / "log.jsonl"), claude_bin=str(tmp_path / "claude"))
+    assert out.status == critic.ACCEPTED and out.text == "a draft"
+    verdicts = [json.loads(x)["verdict"] for x in (tmp_path / "log.jsonl").read_text().splitlines()]
+    assert critic.NOT_JUDGED in verdicts

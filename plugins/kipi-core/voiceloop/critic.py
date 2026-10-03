@@ -699,7 +699,10 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         # GATED BEFORE FAILED: a refused row is unknown, not bad. Revising would act on
         # a judgment that never happened and accepting would bank an unjudged draft, so
         # the candidate leaves as neither (PR #509 review).
-        gated = [row["id"] for row, verdict, _d, _f in results if verdict == NOT_JUDGED]
+        # QUALITY rows only. A refused style row fails open like any unanswerable style
+        # row: a style row is not worth starving a slot for (`parse_verdict`).
+        gated = [row["id"] for row, verdict, _d, _f in results
+                 if verdict == NOT_JUDGED and (row.get("tier") or STYLE) == QUALITY]
         if gated:
             log_rows.append(_cost_row(at, channel, text, counts, attempt))
             _flush()
@@ -719,6 +722,11 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         attempt += 1
         try:
             revised = reviser(text, violations_for(failures))
+        except prompt_render.GateRefused as exc:
+            # The revision was never attempted. Not a verdict on the draft or the reviser.
+            log_rows.append(_cost_row(at, channel, text, counts, attempt))
+            _flush()
+            return Outcome(GATED, "", log_rows, [f"revise not run: {exc}"], attempts=attempt)
         except Exception as exc:                  # a broken reviser is not a hold
             reasons = [f"reviser raised: {exc}"]
             log_rows.append(_cost_row(at, channel, text, counts, attempt))

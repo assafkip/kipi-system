@@ -98,6 +98,14 @@ def count_constraints(prompt):
     return len(CONSTRAINT_LINE.findall(instruction_section(prompt)))
 
 
+class GateRefused(RuntimeError):
+    """The model gate refused the call: nothing was asked, so nothing was answered.
+
+    Raised by callers that must not read a refusal as an empty answer (the reviser:
+    its None meant "the model produced nothing" and blamed a healthy reviser).
+    """
+
+
 def _meter(row_fn, *args, **kwargs):
     """Build and append one ledger row, swallowing anything the ledger raises.
 
@@ -179,6 +187,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     # a question the model was never asked (PR #509 review).
     if not model_gate.check(os.environ.get("CHIEF_JOB") or caller,
                             item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
+        # A refusal is metered like any call that returned nothing: a usage ledger
+        # that skipped it reads as an idle fleet exactly when the gate starts refusing.
+        _meter(usage_ledger.failure_row, "model-gate-refused",
+               bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+               job=os.environ.get("CHIEF_JOB") or caller, model=model)
         return refused
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
