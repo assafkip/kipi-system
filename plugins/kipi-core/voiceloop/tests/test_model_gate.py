@@ -344,3 +344,46 @@ def test_refused_calls_are_on_the_cost_row_but_not_counted_as_calls(gate, monkey
     assert cost[0]["verdict"] == "1", cost[0]
     assert "quality=1" in cost[0]["detail"] and "style=2" in cost[0]["detail"]
     assert "refused by the model gate, not called: style=2" in cost[0]["detail"]
+
+
+def _plugin_install(tmp_path, with_record=True):
+    """A plugin-cache-shaped tree: cache/kipi/kipi-core/<ver>/voiceloop, nothing beside it.
+
+    HOME is the temp dir too, so a fallback to the default record path can only
+    ever find this fixture, never the machine's real marketplace clone.
+    """
+    import shutil
+    root = tmp_path / "home" / ".claude" / "plugins"
+    pkg = root / "cache" / "kipi" / "kipi-core" / "9.9.9"
+    shutil.copytree(os.path.join(PKG, "voiceloop"), pkg / "voiceloop",
+                    ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    sent = tmp_path / "sent.txt"
+    if with_record:
+        scripts = root / "marketplaces" / "kipi" / "q-system" / ".q-system" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "slack-notify.sh").write_text(f'#!/bin/bash\necho "$1" >> "{sent}"\n')
+        (root / "known_marketplaces.json").write_text(json.dumps(
+            {"kipi": {"installLocation": str(root / "marketplaces" / "kipi")}}))
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("KIPI_", "PYTEST_")) and k != "PYTHONPATH"}
+    env.update(HOME=str(tmp_path / "home"), KIPI_MODEL_GATE_DIR=str(tmp_path / "gate"),
+               KIPI_MODEL_GATE_MARKER_DIR=str(tmp_path), KIPI_MODEL_GATE_PER_JOB="0",
+               KIPI_MODEL_GATE_MODE="enforce", PYTHONDONTWRITEBYTECODE="1")
+    run = subprocess.run([sys.executable, "-m", "voiceloop.model_gate", "check", "--job", "a"],
+                         cwd=pkg, env=env, capture_output=True, text=True)
+    return run, (sent.read_text().splitlines() if sent.exists() else [])
+
+
+def test_a_refusal_from_the_plugin_install_reaches_the_sender(tmp_path):
+    # ASK-2442: _notify resolved slack-notify.sh as <plugin>/../../../q-system, which
+    # from the cache is cache/kipi/q-system: no such file, so every alert from an
+    # installed plugin failed and the refusal it reported was silent.
+    run, sent = _plugin_install(tmp_path)
+    assert run.returncode == model_gate.REFUSE, run.stderr
+    assert len(sent) == 1 and "calls refused" in sent[0], (sent, run.stderr)
+
+
+def test_no_resolvable_sender_says_so_instead_of_failing_quietly(tmp_path):
+    run, sent = _plugin_install(tmp_path, with_record=False)
+    assert run.returncode == model_gate.REFUSE and sent == []
+    assert "no alert sender" in run.stderr, run.stderr

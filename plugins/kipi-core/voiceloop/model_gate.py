@@ -85,13 +85,43 @@ def gate_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".config", "kipi", "model-gate")
 
 
+_SENDER = os.path.join("q-system", ".q-system", "scripts", "slack-notify.sh")
+
+
+def _sender() -> str | None:
+    """The fleet alert script, from a source checkout or from a plugin install.
+
+    why the second rung (ASK-2442): Claude runs this module from the plugin cache,
+    cache/kipi/kipi-core/<ver>/voiceloop/, where three levels up is cache/kipi and
+    there is no q-system. The send exited 127 and every refusal alert from an
+    installed plugin was lost. The marketplace clone Claude records for `kipi` is
+    a full kipi-system checkout, so it carries the sender; read the record rather
+    than hardcode its path, the same move chief made for kipi-core in its PR #64.
+    """
+    if os.environ.get("KIPI_NOTIFY"):
+        return os.environ["KIPI_NOTIFY"]
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [os.path.join(here, "..", "..", "..", _SENDER)]
+    record = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "known_marketplaces.json")
+    try:
+        with open(record, encoding="utf-8") as fh:
+            loc = (json.load(fh).get("kipi") or {}).get("installLocation")
+        if loc:
+            candidates.append(os.path.join(loc, _SENDER))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def _notify(text: str) -> None:
     """One send, never retried. The caller already recorded that it alerted."""
     if not os.environ.get("KIPI_NOTIFY") and _under_pytest():
         return  # a suite never files a real ticket
-    script = os.environ.get("KIPI_NOTIFY") or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
-        "q-system", ".q-system", "scripts", "slack-notify.sh")
+    script = _sender()
+    if script is None:
+        print(f"model_gate: no alert sender found (no q-system beside the plugin, no kipi "
+              f"marketplace record); not sent: {text}", file=sys.stderr)
+        return
     try:
         rc = subprocess.run(["bash", script, text], capture_output=True, timeout=30).returncode
     except (OSError, subprocess.SubprocessError) as exc:
