@@ -53,7 +53,7 @@ printf '%s\n' "\$*" >> "$GH_LOG"
 case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
-  *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
+  *"pr comment"*)           [ -s "$WORK/comment-fails" ] && exit 1; echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
   *"commits/"*"/statuses"*) [ -s "$WORK/read-fails" ] && exit 1; cat "$WORK/cur-state" 2>/dev/null ;;
   *"api"*)                  echo '{}' ;;
 esac
@@ -159,6 +159,36 @@ run_reviewer "$WORK/r5.out" --post
 grep -q 'pr comment' "$GH_LOG" && fail "round 5 posted the cap comment again; it must be posted once per PR"
 [ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "1" ] || fail "round 5 alerted again"
 ok "round 5: 0 model calls, no repeat comment or alert"
+
+# The ticket must survive alert-to-linear's dedup PER PR. Its fingerprint strips
+# every digit, so a bare "PR #1" and "PR #2" were one ticket and a second capped
+# PR only bumped the first one's counter (PR #501 review).
+grep -q 'PR #1 (ref pr-b)' "$NOTIFY_LOG" || fail "the cap ticket does not carry the PR as letters:
+$(cat "$NOTIFY_LOG")"
+A2L="$ROOT/q-system/.q-system/scripts/alert-to-linear.py"  # fable-discipline-lint-skip: loads fingerprint() only; main() never runs, nothing is filed
+python3 - "$A2L" "$(grep 'review round cap' "$NOTIFY_LOG")" <<'PY' \
+  || fail "two capped PRs share one alert fingerprint, so the second never files a ticket"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("a2l", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+one = sys.argv[2]; two = one.replace("PR #1 (ref pr-b)", "PR #2 (ref pr-c)")
+sys.exit(0 if two != one and m.fingerprint(one) != m.fingerprint(two) else 1)
+PY
+ok "two capped PRs file two tickets"
+
+# A failed cap comment must not re-fire the ticket on every later call: the
+# marker used to be written only when the comment succeeded.
+MARKS="$(find "$WORK/home" -name '.round-cap-*')"
+[ -n "$MARKS" ] || fail "no cap marker found under the fixture HOME, so this case is vacuous"
+for _m in $MARKS; do rm -f "$_m"; done
+echo 1 > "$WORK/comment-fails"; tickets="$(grep -c 'review round cap' "$NOTIFY_LOG")"
+run_reviewer "$WORK/r5d.out" --post
+run_reviewer "$WORK/r5e.out" --post
+: > "$WORK/comment-fails"
+[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 1))" ] \
+  || fail "a failed cap comment re-fired the ticket (or none filed):
+$(cat "$NOTIFY_LOG")"
+ok "a failed cap comment files one ticket, never a retry"
 
 # An approved sha is never downgraded by the cap (PR review round 1, major 2).
 echo success > "$WORK/cur-state"; : > "$GH_LOG"

@@ -409,11 +409,17 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
     # alert is what keeps a capped PR from parking silently: nothing machine-side
     # consumes a pending status, so the decision goes to the engineering queue.
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
-    if [ ! -f "$CAP_MARK" ]; then
+    # The marker goes down BEFORE the sends: when it waited on the comment, a
+    # failed comment re-fired the ticket on every later call (PR #501 review).
+    # A failed send is logged once and never retried.
+    if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
-        && : > "$CAP_MARK" \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
-      bash "$NOTIFY" "reviewer: PR #$PR hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close." >/dev/null 2>&1 || true
+      # The PR number again, as LETTERS: alert-to-linear's dedup strips every
+      # digit, so "PR #501" and "PR #502" were one ticket and the second capped
+      # PR only bumped a counter on the first (PR #501 review).
+      bash "$NOTIFY" "reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close." >/dev/null 2>&1 \
+        || echo "  WARN: could not file the cap ticket for PR #$PR; not retried" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.
