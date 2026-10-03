@@ -42,7 +42,7 @@ import pytest
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The 33 shipped modules, excluding __init__. Keep sorted; one line per module.
+# The 34 shipped modules, excluding __init__. Keep sorted; one line per module.
 EXPECTED_MODULES = (
     "archetype",
     "assemble",

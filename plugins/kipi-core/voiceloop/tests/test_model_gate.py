@@ -330,3 +330,53 @@ def test_an_unmetered_but_billed_call_is_charged(env, monkeypatch):
             fh.write(json.dumps({"ts": "2026-10-05T01:00:00Z", "bot": "bot", "total_cost_usd": None,
                                  "subtype": "unmetered:cli:no-json-flag"}) + "\n")
     assert mg.check("bot", now=DAY)["admit"] is False
+
+
+# --- review round 3 (PR #504) -------------------------------------------------
+
+
+@pytest.mark.parametrize("writer", ["settle", "record", "alert-failed"])
+def test_a_torn_line_is_cut_by_every_writer_not_only_by_check(env, monkeypatch, writer):
+    # Round 2 fixed the torn line on check() only. settle() runs first in the
+    # ordinary case (run_model's finally:, the door's `record --call`), welded the
+    # torn text mid-file, and every later check() was a gate-error: in enforce,
+    # every job refused until a human deleted the ledger.
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    assert mg.check("bot", now=DAY)["kind"] == "call"
+    with open(env["tmp"] / "gate.jsonl", "a") as fh:
+        fh.write('{"kind": "call", "job": "vo')  # a crash mid-append
+    if writer == "settle":
+        assert mg.settle("bot", now=DAY) is True
+    elif writer == "record":
+        assert mg.record("bot", "", 0, admitted_call=True) is True
+    else:
+        with open(env["tmp"] / "gate.jsonl", "a+") as fh:
+            mg._append(fh, {"kind": "alert-failed", "job": "bot", "reason": "x", "day": "2026-10-05"})
+    rows = [mg.check("bot", now=DAY) for _ in range(3)]
+    assert [r["kind"] for r in rows] == ["call"] * 3, rows
+    kinds = [json.loads(ln)["kind"] for ln in (env["tmp"] / "gate.jsonl").read_text().splitlines()]
+    assert kinds.count("repair") == 1
+
+
+@pytest.mark.parametrize("subtype", ["failed:opencode", "failed:opencode:TimeoutExpired",
+                                     "failed:opencode:FileNotFoundError"])
+def test_every_opencode_row_is_free_because_that_branch_never_calls_claude(env, monkeypatch, subtype):
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    with open(env["usage"], "a") as fh:
+        for _ in range(5):
+            fh.write(json.dumps({"ts": "2026-10-05T01:00:00Z", "bot": "bot", "total_cost_usd": None,
+                                 "subtype": subtype, "tokens_in": None, "tokens_out": None}) + "\n")
+    assert mg.check("bot", now=DAY)["admit"] is True
+
+
+def test_a_claude_subtype_that_merely_starts_like_opencode_is_still_charged(env, monkeypatch):
+    # Negative control for the opencode carve-out: it must stay that branch's own
+    # subtypes, not a prefix that a billed claude row could fall into.
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_JOB_USD", "2")
+    with open(env["usage"], "a") as fh:
+        for sub in ("failed:opencodex", "unmetered:opencode-cli"):
+            fh.write(json.dumps({"ts": "2026-10-05T01:00:00Z", "bot": "bot",
+                                 "total_cost_usd": None, "subtype": sub}) + "\n")
+    assert mg.check("bot", now=DAY)["admit"] is False

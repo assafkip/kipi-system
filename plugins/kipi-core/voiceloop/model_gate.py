@@ -76,7 +76,12 @@ DEFAULT_UNSETTLED_USD = 1.0
 #: EXACT subtypes, never a prefix: "unmetered:" also matched cli:no-json-flag, a
 #: real billed call whose cost is only unknown, and pinned a job at $0.00 after 40
 #: calls (PR #504 review round 2).
-_FREE_SUBTYPES = frozenset({"failed:no-binary", "unmetered:opencode"})
+_FREE_SUBTYPES = frozenset({"failed:no-binary", "unmetered:opencode", "failed:opencode"})
+#: The OpenCode branch's exception rows, `failed:opencode:<ExceptionName>`. That
+#: branch never starts claude, so none of its three row shapes is claude spend;
+#: listing only the success row charged 25 empty OpenCode runs $25 at $0 real
+#: spend (PR #504 review round 3). The colon keeps it to that producer's rows.
+_FREE_PREFIX = "failed:opencode:"
 #: The round cap counts calls on one item over this many UTC days. A cap with no
 #: window refuses a long-lived item (ASK-45) forever after its 3rd call (PR #503
 #: review); a day window, unlike the old per-sha key, cannot be reset by a commit.
@@ -166,13 +171,14 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
         # A non-zero exit with no result document and no tokens shows no spend at
         # all: the CLI died before the model ran (bad auth, bad flag). Charging it
         # the estimate let 75 instant failures refuse the whole fleet (PR #503 round
-        # 3). A timeout keeps the estimate: it burns tokens and prints nothing. That
-        # includes the shell door's own timeout, which exits 124 (137 after KILL):
-        # round 4 found a timeout loop through the door read as $0 and tripped nothing.
+        # 3). A timeout keeps the estimate: it burns tokens and prints nothing. 124
+        # and 137 are what a CALLER's own `timeout` wrapper (or a KILL) exits with;
+        # model-gate.sh sets no timeout and the gate never bounds call duration.
+        # Round 4 found such a timeout loop through the door read as $0.
         instant_fail = (subtype.startswith("failed:exit ")
                         and subtype not in ("failed:exit 124", "failed:exit 137")
                         and row.get("tokens_in") is None and row.get("tokens_out") is None)
-        free = subtype in _FREE_SUBTYPES or instant_fail
+        free = subtype in _FREE_SUBTYPES or subtype.startswith(_FREE_PREFIX) or instant_fail
         per[bot] = per.get(bot, 0.0) + (float(cost) if ok else 0.0 if free else est)
     admitted: dict[str, int] = {}
     for r in gate_rows:
@@ -191,18 +197,9 @@ def _read_locked(fh) -> list[dict]:
     """Every gate row. A torn LAST line is a crash mid-append and is skipped; a bad
     line anywhere else means the ledger is not ours to trust, and reading it as
     fewer rounds would be a fail-open, so it raises."""
+    _cut_torn_tail(fh)
     fh.seek(0)
     content = fh.read()
-    if content and not content.endswith("\n"):
-        # A crash mid-append left a partial row with no newline. It never completed,
-        # so it is cut off here, under the lock, and the cut is recorded. Left in
-        # place, the next append moved it mid-file and the gate refused every job
-        # until a human edited the ledger (PR #503 and #504 reviews).
-        keep = content[:content.rfind("\n") + 1]
-        fh.truncate(len(keep.encode("utf-8")))
-        _append(fh, {"schema": SCHEMA, "kind": "repair", "dropped_bytes":
-                     len(content.encode("utf-8")) - len(keep.encode("utf-8")), "ts": _now().strftime("%Y-%m-%dT%H:%M:%SZ")})
-        content = keep
     lines = [ln for ln in content.splitlines() if ln.strip()]
     rows = []
     for i, line in enumerate(lines):
@@ -237,17 +234,36 @@ def notify(line: str) -> bool:
         return False
 
 
-def _append(fh, row: dict) -> None:
-    # A crash mid-append leaves a last line with no newline. Writing straight onto
-    # it welded the next row to the torn text and moved it mid-file, where the
-    # reader raises, and the gate refused every job until a human edited the file
-    # (PR #503 and #504 reviews). Terminate the torn line first.
+def _cut_torn_tail(fh) -> None:
+    """Cut a partial last row (a crash mid-append) under the caller's lock, and
+    record the cut.
+
+    The ONE place a torn line is handled, and every writer passes through it via
+    _append. Round 2 cut it in the reader only and terminated it in the writer;
+    settle() writes first in the ordinary case, so the torn text was welded
+    mid-file and every later check() raised: in enforce, every job refused until a
+    human deleted the ledger (PR #503 and #504 reviews, rounds 1 to 3).
+    """
     fh.seek(0, os.SEEK_END)
-    if fh.tell() > 0:
-        fh.seek(fh.tell() - 1)
-        if fh.read(1) != "\n":
-            fh.seek(0, os.SEEK_END)
-            fh.write("\n")
+    size = fh.tell()
+    if size == 0:
+        return
+    fh.seek(size - 1)
+    if fh.read(1) == "\n":
+        return
+    fh.seek(0)
+    content = fh.read()
+    keep = content[:content.rfind("\n") + 1]
+    fh.truncate(len(keep.encode("utf-8")))
+    fh.seek(0, os.SEEK_END)
+    fh.write(json.dumps({"schema": SCHEMA, "kind": "repair", "dropped_bytes":
+                         len(content.encode("utf-8")) - len(keep.encode("utf-8")),
+                         "ts": _now().strftime("%Y-%m-%dT%H:%M:%SZ")}, sort_keys=True) + "\n")
+    fh.flush()
+
+
+def _append(fh, row: dict) -> None:
+    _cut_torn_tail(fh)
     fh.seek(0, os.SEEK_END)
     fh.write(json.dumps(row, sort_keys=True) + "\n")
     fh.flush()
