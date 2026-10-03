@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 
-from . import usage_ledger
+from . import model_gate, usage_ledger
 
 #: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
 #: hands text in and reads text back; none uses a tool. Without these flags each
@@ -98,6 +98,14 @@ def count_constraints(prompt):
     return len(CONSTRAINT_LINE.findall(instruction_section(prompt)))
 
 
+class GateRefused(RuntimeError):
+    """The model gate refused the call: nothing was asked, so nothing was answered.
+
+    Raised by callers that must not read a refusal as an empty answer (the reviser:
+    its None meant "the model produced nothing" and blamed a healthy reviser).
+    """
+
+
 def _meter(row_fn, *args, **kwargs):
     """Build and append one ledger row, swallowing anything the ledger raises.
 
@@ -128,7 +136,8 @@ def subscription_env():
 
 
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
-              caller="run_model()", under_test="raise", model=None, allow_opencode=True):
+              caller="run_model()", under_test="raise", model=None, allow_opencode=True,
+              refused=None):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -167,6 +176,23 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             "run_model needs an explicit claude_bin; the engine has no default binary "
             "because a default would be one machine's path shipped fleet-wide")
     binary = claude_bin
+    # THE MODEL GATE. Asked after both short-circuits and before EITHER provider
+    # branch: a gate on the claude subprocess alone let the OpenCode branch past it
+    # (PRD review). The job key is the `job` the usage meter writes (CHIEF_JOB or
+    # the caller), not the bot: keyed on the bot, every voiceloop caller shared one
+    # count, so a critic.judge() loop and the reddit lane drew from one budget.
+    # A refusal returns `refused`, None by default: the outcome every caller already
+    # handles for a dead call. A caller that SCORES the answer passes its own sentinel,
+    # because None there read as a dead call and the critic failed the draft closed on
+    # a question the model was never asked (PR #509 review).
+    if not model_gate.check(os.environ.get("CHIEF_JOB") or caller,
+                            item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
+        # A refusal is metered like any call that returned nothing: a usage ledger
+        # that skipped it reads as an idle fleet exactly when the gate starts refusing.
+        _meter(usage_ledger.failure_row, "model-gate-refused",
+               bot=os.environ.get("CHIEF_BOT") or "voiceloop",
+               job=os.environ.get("CHIEF_JOB") or caller, model=model)
+        return refused
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global

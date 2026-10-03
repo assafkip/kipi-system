@@ -42,7 +42,7 @@ def build_fleet(tmp_path, contents: dict[str, str | None], *, extra: dict | None
             target.write_text(text)
         else:
             root.mkdir(parents=True, exist_ok=True)
-        roots.append({"name": name, "path": str(root)})
+        roots.append({"name": name, "path": str(root), "subtree_prefix": "q-system"})
     registry = tmp_path / "instance-registry.json"
     payload = {"instances": roots}
     if extra:
@@ -115,7 +115,7 @@ def build_skeleton_fleet(tmp_path, *, shipped: list[str], replicas: dict[str, st
         target = tmp_path / name / REL
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
-        roots.append({"name": name, "path": str(tmp_path / name)})
+        roots.append({"name": name, "path": str(tmp_path / name), "subtree_prefix": "q-system"})
     registry = tmp_path / "instance-registry.json"
     registry.write_text(json.dumps({
         "skeleton": {"path": str(sk)}, "instances": roots,
@@ -532,3 +532,83 @@ def test_default_replicated_paths_all_resolve_in_the_real_fleet():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --- ASK-2387: the population is what the updater WRITES ---------------------
+
+def _mixed_registry(tmp_path, drift_in: str):
+    """Two agreeing written instances, plus eliminated/standalone/merged/opted-out
+    nodes. `drift_in` names the one root whose copy differs."""
+    names = {
+        "a": {"name": "a", "subtree_prefix": "q-system"}, "b": {"name": "b", "subtree_prefix": "q-system"},
+        "gone": None, "solo": None,
+        "merged": {"name": "merged", "status": "merged-into-a", "subtree_prefix": "q-system"},
+        # opted out but WITH a prefix: kipi-update.sh:1999 still rsyncs it
+        "optout": {"name": "optout", "skeleton_managed": False, "subtree_prefix": "q-system"},
+        "standtype": {"name": "standtype", "type": "standalone", "subtree_prefix": "q-system"},
+        "noprefix": {"name": "noprefix"},
+    }
+    for n in names:
+        t = tmp_path / n / REL
+        t.parent.mkdir(parents=True, exist_ok=True)
+        t.write_text("DRIFT\n" if n == drift_in else "same\n")
+    instances = [dict(v, path=str(tmp_path / k)) for k, v in names.items() if v is not None]
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps({
+        "instances": instances,
+        "standalone": [{"name": "solo", "path": str(tmp_path / "solo")}],
+        "eliminated": [{"name": "gone", "path": str(tmp_path / "gone")}],
+    }))
+    return reg
+
+
+@pytest.mark.parametrize("node", ["gone", "solo", "merged", "standtype", "noprefix"])
+def test_drift_in_a_root_the_updater_never_writes_does_not_abort(tmp_path, node):
+    # ASK-2387 reproducer: every registry path was in the population, so drift in
+    # an eliminated or standalone node aborted the whole fleet sync.
+    res = run(_mixed_registry(tmp_path, node), "--path", REL)
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.parametrize("node", ["b", "optout"])
+def test_drift_in_a_written_instance_still_aborts(tmp_path, node):
+    # optout: skeleton_managed false with a prefix is still rsynced (PR #499 r1).
+    res = run(_mixed_registry(tmp_path, node), "--path", REL)
+    assert res.returncode != 0, res.stdout + res.stderr
+
+
+def test_a_registry_whose_instances_are_all_unwritten_is_ok_not_empty(tmp_path):
+    # PR #499 round 1: refusing this aborted the updater
+    # (test-kipi-update-unmanaged-instance.sh). Nothing written, nothing to protect.
+    t = tmp_path / "solo" / REL
+    t.parent.mkdir(parents=True, exist_ok=True)
+    t.write_text("x\n")
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps({"instances": [
+        {"name": "solo", "path": str(tmp_path / "solo"), "type": "standalone"}]}))
+    res = run(reg, "--path", REL)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "none written by this run" in res.stdout
+
+
+def test_written_roots_is_the_updaters_own_filter(tmp_path):
+    """The updater's loop snippet, run on the same registry, picks the same roots.
+    Two copies of one rule drift; this is what notices."""
+    import importlib.util
+    import re
+    reg = _mixed_registry(tmp_path, "b")
+    src = (Path(__file__).resolve().parents[3] / "kipi-update.sh").read_text()
+    m = re.search(r"python3 -c \"\nimport json\nd = json.load\(open\('\$REGISTRY'\)\)\n(for i in d\['instances'\]:.*?)\n\"\)", src, re.S)
+    assert m, "kipi-update.sh's instance loop moved; re-point this test at it"
+    snippet = "import json\nd = json.load(open(%r))\n" % str(reg) + m.group(1)
+    out = subprocess.run([sys.executable, "-c", snippet], capture_output=True, text=True)
+    # The loop's rows, then the guard that skips them (kipi-update.sh, the
+    # `itype`/`prefix` test). Its TEXT is pinned too, so a change to the updater's
+    # rule turns this red instead of leaving two copies to drift (PR #499 r1).
+    assert '[ "$itype" = "standalone" ] || [ -z "$prefix" ]' in src, "the updater's skip guard moved"
+    updater = sorted({line.split("|")[1] for line in out.stdout.splitlines()
+                      if line.split("|")[3] != "standalone" and line.split("|")[2] != ""})
+    spec = importlib.util.spec_from_file_location("frd", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.written_roots(reg) == updater

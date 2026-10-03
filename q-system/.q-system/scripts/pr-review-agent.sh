@@ -382,6 +382,70 @@ echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
 
+# THE ROUND CAP. Every call below is a full paid model run, and nothing bounded
+# how many one PR could take: 4 to 7 rounds was routine and one PR took 16. The
+# round counter already existed but only fed a prompt hint, so the loop that
+# re-invokes this script had no brake. Past the cap this refuses BEFORE any tree
+# or model work, posts one comment and a PENDING status (never success: a cap is
+# not an approval, and never failure: it is not a finding), and exits 0 so the
+# caller stops instead of retrying. Raising KIPI_REVIEW_MAX_ROUNDS is the
+# deliberate way past it.
+MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
+case "$MAX_ROUNDS" in ''|*[!0-9]*) MAX_ROUNDS=3 ;; esac
+# Count only USABLE rounds. A provider blip or auth failure still leaves a
+# review .md on disk, and counting those would cap a PR nobody ever reviewed
+# (PR review round 1, major). review_is_usable is the same predicate that
+# decides whether a round may set the gate, so "a round" means one thing.
+PRIOR_ROUNDS=0
+for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+  [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
+done
+if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
+  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+  if [ "$POST" = "1" ]; then
+    # One comment and one alert per PR, not one per refused call: the loop may
+    # keep calling, and repeating them is the same waste moved elsewhere. The
+    # alert is what keeps a capped PR from parking silently: nothing machine-side
+    # consumes a pending status, so the decision goes to the engineering queue.
+    CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
+    # The marker goes down BEFORE the sends: when it waited on the comment, a
+    # failed comment re-fired the ticket on every later call (PR #501 review).
+    # The ticket send gets ONE retry, then a log line and nothing more (ASK-2428):
+    # the pending status below takes the PR out of review-redrive, so a single
+    # Linear blip left a capped PR with no signal anywhere (PR #501 round 5). A
+    # second failure is not a blip, and looping on it is the waste this cap stops.
+    if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
+      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
+        || echo "  WARN: could not post the cap comment on PR #$PR" >&2
+      # The PR number again, as LETTERS: alert-to-linear's dedup strips every
+      # digit, so "PR #501" and "PR #502" were one ticket and the second capped
+      # PR only bumped a counter on the first (PR #501 review).
+      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
+      bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
+    fi
+    # Never downgrade an approval. A cap is not a finding, so a sha that is
+    # already green stays green; pending goes only over a non-success state.
+    # A FAILED read is not "no status": treating it as empty posted pending over
+    # a live success (PR review round 2, major). Unknown means hands off.
+    CUR_STATE=""; READ_OK=0
+    if [ -n "$HEAD_SHA" ] && CUR_STATE="$(gh api "repos/$STATUS_REPO_PATH/commits/$HEAD_SHA/statuses" \
+        --jq "[.[] | select(.context==\"$STATUS_CONTEXT\")][0].state" 2>/dev/null)"; then
+      READ_OK=1
+    fi
+    [ -n "$HEAD_SHA" ] && [ "$READ_OK" = 0 ] \
+      && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
+    if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
+      reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
+        || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
+    fi
+  fi
+  exit 0
+fi
+
 # THE TREE MUST ACTUALLY CONTAIN THE PR (sp-a72a9567). $SKEL comes from this
 # script's own location, and the diff comes from `gh pr diff <N>` -- two
 # independent sources that nothing was checking against each other. Run from

@@ -42,7 +42,7 @@ import pytest
 
 PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The 33 shipped modules, excluding __init__. Keep sorted; one line per module.
+# The 34 shipped modules, excluding __init__. Keep sorted; one line per module.
 EXPECTED_MODULES = (
     "archetype",
     "assemble",
@@ -63,6 +63,7 @@ EXPECTED_MODULES = (
     "gate_walk",
     "luar_env_backend",
     "luar_scorer",
+    "model_gate",
     "opener_gate",
     "placeholder_gate",
     "post_repair",

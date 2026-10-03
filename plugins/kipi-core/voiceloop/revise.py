@@ -273,6 +273,10 @@ POST:
 """
 
 
+#: What run_model hands back on a gate refusal, so it is never read as an empty answer.
+_GATE_REFUSED = object()
+
+
 def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
                 model=None):
     """One bounded model call. Same chokepoint contract as the writer's."""
@@ -311,13 +315,24 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
     # allow_opencode=False: the reviser REQUIRES an explicit writer tier (the two
     # ValueErrors above), and the opencode branch would drop it for OPENCODE_MODEL.
     # Before PR #410 this call never touched opencode; it still does not.
-    return prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model,
-                                   caller="revise", under_test="none", allow_opencode=False)
+    # refused=: a gate refusal RAISES instead of returning None. None is "the model
+    # produced nothing", and critic.run reported a shut gate as "reviser returned
+    # nothing" and sent the operator to debug a healthy reviser (PR #509 review).
+    out = prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model,
+                                  caller="revise", under_test="none", allow_opencode=False,
+                                  refused=_GATE_REFUSED)
+    if out is _GATE_REFUSED:
+        raise prompt_render.GateRefused("model gate refused the revise call")
+    return out
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
            model=None, author=None):
-    """Return the revised post, or None. None is a discard upstream, never a hold."""
+    """Return the revised post, or None. None is a discard upstream, never a hold.
+
+    Raises `prompt_render.GateRefused` when the model gate refused the call: that is
+    not an empty revision, and a caller must not report it as one.
+    """
     out = _run_prompt(build_prompt(text, violations, author=author), claude_bin, timeout,
                       runner, model=model)
     out = prompt_render.strip_preamble(out or "")

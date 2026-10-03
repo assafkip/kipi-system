@@ -114,6 +114,41 @@ def registry_roots(registry: Path) -> list[str]:
     return sorted({os.path.expanduser(p) for p in found})
 
 
+def written_roots(registry: Path) -> list[str]:
+    """The roots `kipi-update.sh` actually writes: its own filter, not every path.
+
+    ASK-2387 (PR #460 review, HIGH). With no --only, the population was every path
+    anywhere in the registry, so drift in an `eliminated` or `standalone` node --
+    roots the updater never rsyncs -- aborted the whole fleet sync. The updater's
+    loop (kipi-update.sh, the `for i in d['instances']` reader) writes only
+    `instances` entries and skips `status: merged*`; its guard
+    `[ "$itype" = "standalone" ] || [ -z "$prefix" ]` then skips standalone and
+    prefix-less entries. `skeleton_managed: false` only labels that skip, so an
+    opted-out entry WITH a prefix is still rsynced and stays in (PR #499 round 1).
+    test_fleet_replica_divergence pins both the snippet and the guard's text.
+
+    A registry with no `instances` key falls back to every path, for the scar in
+    registry_roots: a shape change must widen the population, never zero it.
+    """
+    try:
+        data = json.loads(registry.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"cannot read registry {registry}: {exc}\n")
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("instances"), list):
+        return registry_roots(registry)
+    out = set()
+    for i in data["instances"]:
+        if not isinstance(i, dict) or not isinstance(i.get("path"), str):
+            continue
+        if str(i.get("status", "")).startswith("merged"):
+            continue
+        if i.get("type", "subtree") == "standalone" or not (i.get("subtree_prefix") or ""):
+            continue
+        out.add(os.path.expanduser(i["path"]))
+    return sorted(out)
+
+
 def registry_named_roots(registry: Path) -> dict[str, str]:
     """name -> path, for every registry node carrying BOTH a name and a path.
 
@@ -450,7 +485,10 @@ def main() -> int:
     registry = Path(args.registry) if args.registry else repo_root / "instance-registry.json"
     rel_paths = tuple(args.paths) if args.paths else DEFAULT_REPLICATED
 
-    roots = registry_roots(registry)
+    # Claims compare reach across the whole registry, so they keep every root. The
+    # replica scan protects DESTINATIONS, so it measures only what the updater
+    # writes (ASK-2387); the skeleton is added below, as the source.
+    roots = registry_roots(registry) if args.claims else written_roots(registry)
     # THE CALLER DECLARES THE SOURCE (review finding, PR #460 round 2, minor).
     # The gate read the registry's `skeleton` key while `kipi-update.sh` defines
     # the skeleton as its own `$SCRIPT_DIR` and never reads that key, so run from
@@ -461,6 +499,13 @@ def main() -> int:
     # as the default for a standalone run, where there is no caller to ask.
     skeleton_root = (os.path.expanduser(args.skeleton) if args.skeleton
                      else registry_skeleton(registry))
+    # written_roots holds destinations only; the source joins as the comparison,
+    # exactly as the --only branch below does. Only when a destination exists:
+    # zero destinations is the EMPTY_POPULATION refusal below, and the source alone
+    # would let a gate that measured nothing report green (preflight test, case
+    # "an empty population names itself").
+    if not args.claims and skeleton_root and roots:
+        roots = sorted(set(roots) | {skeleton_root})
 
     # SCOPE THE POPULATION TO WHAT THE RUN WILL ACTUALLY WRITE (review finding,
     # PR #460 round 1, major). `kipi-update.sh --only <name>` touches one
@@ -480,6 +525,20 @@ def main() -> int:
             verdict(f"REFUSED (--only {args.only} is not a registered instance)")
             return EXIT_MISCONFIGURED
         roots = sorted({target} | ({skeleton_root} if skeleton_root else set()))
+
+    # LISTED BUT NOTHING WRITTEN IS NOT AN EMPTY POPULATION (PR #499 round 1). A
+    # registry whose every instance is standalone or prefix-less is one this run
+    # rsyncs into nowhere: nothing to protect, so OK. Refusing it aborted the whole
+    # updater (test-kipi-update-unmanaged-instance.sh went red). An `instances`
+    # list that is EMPTY, or a registry that cannot be read, is still the refusal.
+    if not roots and not args.claims and not args.only:
+        try:
+            listed = json.loads(registry.read_text()).get("instances") or []
+        except (OSError, ValueError, AttributeError):
+            listed = []
+        if listed:
+            verdict(f"OK ({len(listed)} registered instance(s), none written by this run)")
+            return 0
 
     if not roots:
         sys.stderr.write(
