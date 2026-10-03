@@ -127,3 +127,34 @@ def test_a_suite_without_a_gate_dir_never_touches_the_live_ledger(monkeypatch):
     monkeypatch.delenv("KIPI_MODEL_GATE_DIR", raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     assert not model_gate.gate_dir().startswith(os.path.expanduser("~/.config"))
+
+
+def test_defaults_are_below_the_runaway_day():
+    # 2026-10-01: critic.judge() made 1180 calls. A default above that stops nothing.
+    assert (model_gate.PER_JOB_DEFAULT, model_gate.FLEET_DEFAULT) == (150, 300)
+
+
+def test_default_per_job_limit_stops_a_critic_judge_loop(gate):
+    admits = [model_gate.check("critic.judge()", now=AFTER)["admit"] for _ in range(151)]
+    assert admits.count(True) == 150 and admits[-1] is False
+
+
+def test_run_model_keys_the_gate_on_the_callers_job_not_the_bot(gate, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    monkeypatch.delenv("CHIEF_JOB", raising=False)
+    monkeypatch.setenv("CHIEF_BOT", "voiceloop")
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "1")
+    monkeypatch.setattr(model_gate, "_notify", lambda text: None)
+    seen = []
+    real = model_gate.check
+    monkeypatch.setattr(model_gate, "check", lambda job, **k: seen.append(job) or real(job, **k))
+    missing = str(tmp_path / "no-claude")  # admitted calls stop at the no-binary arm
+    monkeypatch.setenv("KIPI_USAGE_LEDGER", str(tmp_path / "usage.jsonl"))
+    for caller in ("critic.judge()", "critic.judge()", "revise"):
+        prompt_render.run_model("hi", missing, caller=caller, allow_opencode=False)
+    assert seen == ["critic.judge()", "critic.judge()", "revise"]
+    day = [json.loads(x) for x in open(os.path.join(os.environ["KIPI_MODEL_GATE_DIR"],
+                                                  model_gate._today() + ".jsonl"))]
+    # the loop's second call is refused; a different caller of the same bot is not
+    assert [r["job"] for r in day if r["kind"] == "call"] == ["critic.judge()", "revise"]

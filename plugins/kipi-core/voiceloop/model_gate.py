@@ -6,7 +6,7 @@ A count needs none of that. One line per admitted call, two limits, one alert.
 
     check(job, item=None) -> {"admit": bool, "mode": str, "reason": str|None}
 
-* Counts admitted calls per job per UTC day, and across the fleet per day.
+* Counts admitted calls per job (the usage ledger's `job`) per UTC day, and across the fleet per day.
 * Ledger: one JSON line per admitted call, in one append-only file per UTC day
   under KIPI_MODEL_GATE_DIR (default ~/.config/kipi/model-gate/). Sharded by
   day so a check reads one day of lines, not the whole history. File-locked.
@@ -31,11 +31,14 @@ import subprocess
 import sys
 import tempfile
 
-# Defaults derived 2026-10-03 from usage-ledger.jsonl, 2026-09-26..10-03 (UTC):
-# busiest job-day 1657 calls, busiest fleet-day 1679, each x1.5 rounded up.
-# The floors keep a quiet week from deriving a cap that strangles a normal day.
-PER_JOB_DEFAULT = max(2486, 100)
-FLEET_DEFAULT = max(2519, 300)
+# why these numbers: the first defaults (2486 / 2519) were x1.5 of the busiest
+# day in the window, and that day, 2026-10-01, WAS the runaway (critic.judge()
+# 1180 calls, revise 271). A cap derived from the incident cannot stop it.
+# Set 2026-10-03, founder-directed. A "job" is the usage ledger's `job` field
+# (CHIEF_JOB or the caller name, e.g. critic.judge()), not the bot, so one
+# looping caller hits 150 without starving the rest of its bot.
+PER_JOB_DEFAULT = 150
+FLEET_DEFAULT = 300
 ENFORCE_FROM = "2026-10-10"
 REFUSE = 3
 

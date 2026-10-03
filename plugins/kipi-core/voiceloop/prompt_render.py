@@ -169,9 +169,11 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     binary = claude_bin
     # THE MODEL GATE. Asked after both short-circuits and before EITHER provider
     # branch: a gate on the claude subprocess alone let the OpenCode branch past it
-    # (PRD review). The job key is the `bot` the usage meter writes. A refusal is
-    # None, the outcome every caller already handles for a dead call.
-    if not model_gate.check(os.environ.get("CHIEF_BOT") or "voiceloop",
+    # (PRD review). The job key is the `job` the usage meter writes (CHIEF_JOB or
+    # the caller), not the bot: keyed on the bot, every voiceloop caller shared one
+    # count, so a critic.judge() loop and the reddit lane drew from the same 150.
+    # A refusal is None, the outcome every caller already handles for a dead call.
+    if not model_gate.check(os.environ.get("CHIEF_JOB") or caller,
                             item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
         return None
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
