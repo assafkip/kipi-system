@@ -28,7 +28,7 @@ import re
 import shutil
 import subprocess
 
-from . import usage_ledger
+from . import model_gate, usage_ledger
 
 #: No MCP servers for a headless model call (ASK-2072). Every caller of `run_model`
 #: hands text in and reads text back; none uses a tool. Without these flags each
@@ -167,6 +167,13 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
             "run_model needs an explicit claude_bin; the engine has no default binary "
             "because a default would be one machine's path shipped fleet-wide")
     binary = claude_bin
+    # THE MODEL GATE. Asked after both short-circuits and before EITHER provider
+    # branch: a gate on the claude subprocess alone let the OpenCode branch past it
+    # (PRD review). The job key is the `bot` the usage meter writes. A refusal is
+    # None, the outcome every caller already handles for a dead call.
+    if not model_gate.check(os.environ.get("CHIEF_BOT") or "voiceloop",
+                            item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
+        return None
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global
