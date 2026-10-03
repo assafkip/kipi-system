@@ -84,6 +84,7 @@ ROUND_DAYS_ENV = "KIPI_MODEL_GATE_ROUND_DAYS"
 DEFAULT_ROUND_DAYS = 7
 SCHEMA = 1
 PRODUCER = "voiceloop.model_gate"
+ALERT_RETRIES = 3
 REFUSED_EXIT = 3
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_NOTIFY = os.path.normpath(os.path.join(
@@ -161,7 +162,14 @@ def spend(day: str, gate_rows: list[dict] = ()) -> tuple[dict, float]:
         bot = str(row.get("bot"))
         cost = row.get("total_cost_usd")
         ok = isinstance(cost, (int, float)) and not isinstance(cost, bool)
-        free = str(row.get("subtype") or "") in _FREE_SUBTYPES
+        subtype = str(row.get("subtype") or "")
+        # A non-zero exit with no result document and no tokens shows no spend at
+        # all: the CLI died before the model ran (bad auth, bad flag). Charging it
+        # the estimate let 75 instant failures refuse the whole fleet (PR #503 round
+        # 3). A timeout keeps the estimate: it burns tokens and prints nothing.
+        instant_fail = (subtype.startswith("failed:exit ") and row.get("tokens_in") is None
+                        and row.get("tokens_out") is None)
+        free = subtype in _FREE_SUBTYPES or instant_fail
         per[bot] = per.get(bot, 0.0) + (float(cost) if ok else 0.0 if free else est)
     admitted: dict[str, int] = {}
     for r in gate_rows:
@@ -209,7 +217,10 @@ def _alerted(rows: list[dict], job: str, reason: str, day: str) -> bool:
                and r.get("reason") == reason and r.get("day") == day)
     failed = sum(1 for r in rows if r.get("kind") == "alert-failed" and r.get("job") == job
                  and r.get("reason") == reason and r.get("day") == day)
-    return sent - failed > 0
+    # A send that keeps failing is retried at most ALERT_RETRIES times a day, then
+    # dropped: retrying on every gated call when the notifier can never work turned
+    # one breach into a send attempt per call (PR #503 round 3).
+    return sent - failed > 0 or failed >= ALERT_RETRIES
 
 
 def notify(line: str) -> bool:
