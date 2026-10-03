@@ -1,0 +1,129 @@
+"""The call-count model gate. Every ledger, marker and alert sink is a temp path."""
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+
+import pytest
+
+PKG = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PKG)
+
+from voiceloop import model_gate, prompt_render  # noqa: E402
+
+DOOR = os.path.join(PKG, "..", "..", "q-system", ".q-system", "scripts", "model-gate.sh")
+BEFORE = dt.datetime(2026, 10, 9, 12, tzinfo=dt.timezone.utc)
+AFTER = dt.datetime(2026, 10, 11, 12, tzinfo=dt.timezone.utc)
+
+
+@pytest.fixture
+def gate(tmp_path, monkeypatch):
+    sent = tmp_path / "sent.txt"
+    stub = tmp_path / "notify.sh"
+    # Exits with $NOTIFY_RC so a test can make the send fail.
+    stub.write_text(f'#!/bin/bash\necho "$1" >> "{sent}"\nexit "${{NOTIFY_RC:-0}}"\n')
+    for k in ("KIPI_MODEL_GATE_MODE", "KIPI_MODEL_GATE_PER_JOB", "KIPI_MODEL_GATE_FLEET"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("KIPI_MODEL_GATE_DIR", str(tmp_path / "gate"))
+    monkeypatch.setenv("KIPI_MODEL_GATE_MARKER_DIR", str(tmp_path))
+    monkeypatch.setenv("KIPI_NOTIFY", str(stub))
+    return lambda: sent.read_text().splitlines() if sent.exists() else []
+
+
+def test_per_job_limit_refuses_that_job_only(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "2")
+    assert [model_gate.check("a", now=AFTER)["admit"] for _ in range(3)] == [True, True, False]
+    assert model_gate.check("b", now=AFTER)["admit"]
+
+
+def test_fleet_limit_refuses_every_job(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_FLEET", "2")
+    assert model_gate.check("a", now=AFTER)["admit"] and model_gate.check("b", now=AFTER)["admit"]
+    row = model_gate.check("c", now=AFTER)
+    assert not row["admit"] and row["reason"].startswith("fleet")
+
+
+def test_report_admits_over_limit_and_enforce_refuses(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    assert model_gate.check("a", now=BEFORE) == {
+        "admit": True, "mode": "report", "reason": "job a at 0/0 calls today"}
+    assert model_gate.check("a", now=AFTER)["admit"] is False
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "report")
+    assert model_gate.check("a", now=AFTER)["admit"] is True
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "reprot")  # a typo enforces
+    assert model_gate.check("a", now=BEFORE)["admit"] is False
+
+
+def test_one_alert_per_job_per_day(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    for _ in range(4):
+        model_gate.check("a", now=AFTER)
+        model_gate.check("b", now=AFTER)
+    model_gate.check("a", now=AFTER + dt.timedelta(days=1))
+    sent = gate()
+    assert len(sent) == 3, sent
+    assert sum("job a" in s for s in sent) == 2
+
+
+def test_a_failed_send_is_not_retried(gate, monkeypatch, capsys):
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    monkeypatch.setenv("NOTIFY_RC", "1")
+    for _ in range(3):
+        model_gate.check("a", now=AFTER)
+    assert len(gate()) == 1
+    assert "not retried" in capsys.readouterr().err
+    rows = [json.loads(x) for x in open(os.path.join(os.environ["KIPI_MODEL_GATE_DIR"], "2026-10-11.jsonl"))]
+    assert [r["kind"] for r in rows] == ["alerted"]
+
+
+def test_an_unusable_ledger_follows_the_mode_and_alerts_once(gate, tmp_path, monkeypatch):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    monkeypatch.setenv("KIPI_MODEL_GATE_DIR", str(blocker))
+    assert [model_gate.check("a", now=BEFORE)["admit"] for _ in range(3)] == [True] * 3
+    assert model_gate.check("a", now=AFTER)["admit"] is False
+    assert len(gate()) == 2  # one per day, never one per call
+
+
+def test_a_torn_line_is_skipped(gate, monkeypatch):
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "1")
+    os.makedirs(os.environ["KIPI_MODEL_GATE_DIR"])
+    with open(os.path.join(os.environ["KIPI_MODEL_GATE_DIR"], "2026-10-11.jsonl"), "w") as fh:
+        fh.write('{"kind": "call", "job": "a"')
+    assert model_gate.check("a", now=AFTER)["admit"]
+
+
+def test_run_model_asks_the_gate_before_any_provider(gate, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    monkeypatch.setenv("KIPI_USAGE_LEDGER", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("provider reached"))
+    monkeypatch.setattr(model_gate, "_notify", lambda text: None)
+    assert prompt_render.run_model("hi", str(tmp_path / "claude")) is None
+    assert not (tmp_path / "usage.jsonl").exists()
+
+
+def _door(*cmd, **env):
+    return subprocess.run(["bash", DOOR, "--job", "shell", "--", *cmd], capture_output=True,
+                          text=True, env={**os.environ, "KIPI_MODEL_GATE_PKG": PKG, **env})
+
+
+def test_shell_door_runs_admitted_and_refuses_with_75(gate):
+    ok = _door("echo", "ran", KIPI_MODEL_GATE_MODE="enforce")
+    assert (ok.returncode, ok.stdout) == (0, "ran\n")
+    no = _door("echo", "ran", KIPI_MODEL_GATE_MODE="enforce", KIPI_MODEL_GATE_PER_JOB="0")
+    assert (no.returncode, no.stdout) == (75, "")
+    assert "MODEL_GATE_REFUSED" in no.stderr
+
+
+def test_shell_door_enforce_date_matches_the_module():
+    assert re.search(r'"(\d{4}-\d{2}-\d{2})"', open(DOOR).read()).group(1) == model_gate.ENFORCE_FROM
+
+
+def test_a_suite_without_a_gate_dir_never_touches_the_live_ledger(monkeypatch):
+    monkeypatch.delenv("KIPI_MODEL_GATE_DIR", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert not model_gate.gate_dir().startswith(os.path.expanduser("~/.config"))
