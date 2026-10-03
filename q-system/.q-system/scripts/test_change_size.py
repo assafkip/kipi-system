@@ -421,9 +421,9 @@ def _read_declared_cases(cs, tmp_path):
 
 def case_scanners_do_not_trip_the_width_cap(cs):
     # A fixed floor is not evidence that THIS diff is suite-wide.
-    declared = dict(DECLARED, **{f"t/test-scan-{i}.py": "d.iterdir()" for i in range(cs.MAX_SELECTED + 5)})
+    declared = dict(DECLARED, **{f"t/test-scan-{i}.py": "d.iterdir()" for i in range(70)})
     v = cs.plan([(SCRIPT, 1)], declared, CODE)
-    assert not v["full_suite"] and len(v["selected_tests"]) > cs.MAX_SELECTED
+    assert not v["full_suite"] and len(v["selected_tests"]) > 60
 
 
 def test_the_always_run_floor_does_not_force_a_full_suite(cs):
@@ -440,12 +440,17 @@ def test_a_file_no_declared_test_names_is_not_swept_into_a_full_run(cs):
 
 
 def case_too_wide(cs):
-    declared = {f"t/test-{i}.sh": "bash widget.sh" for i in range(cs.MAX_SELECTED + 2)}
-    v = cs.plan([(SCRIPT, 1)], declared, CODE)
-    assert v["full_suite"] and "that is the suite" in v["reasons"][-1]
+    # ASK-2388, reproducer PR #362: 67 tests named the kipi CLI and the old cap at
+    # 60 ran the whole suite. A wide change runs exactly its naming tests.
+    naming = {f"t/test-{i}.sh": "bash widget.sh" for i in range(67)}
+    bystanders = {f"t/test-other-{i}.sh": "bash other.sh" for i in range(250)}
+    v = cs.plan([(SCRIPT, 1)], dict(naming, **bystanders), CODE)
+    assert not v["full_suite"], v["reasons"]
+    assert set(naming) <= set(v["selected_tests"])
+    assert not set(bystanders) & set(v["selected_tests"])
 
 
-def test_a_selection_wider_than_the_cap_is_a_full_run(cs):
+def test_a_wide_change_runs_its_naming_tests_not_the_suite(cs):
     case_too_wide(cs)
 
 
@@ -608,8 +613,8 @@ CS_MUTANTS = [
     ("** spans zero segments", 'out.append(".*" if last else "(?:[^/]+/)*")', 'out.append(".*" if last else "[^/]+/")', case_double_star_matches_at_every_position),
     ("* stops at a separator", 'out.append("[^/]*")', 'out.append(".*")', case_double_star_matches_at_every_position),
     ("covers is read for every changed path", "    for path, _ in changed:\n        selected |= {t for t, pats in declared_covers.items()", "    for path, _ in []:\n        selected |= {t for t, pats in declared_covers.items()", case_covers_is_read_even_when_the_changed_file_is_itself_a_test),
-    ("the floor is outside the width cap", "    pulled = selected - always", "    pulled = selected", case_scanners_do_not_trip_the_width_cap),
-    ("the width cap", "if len(pulled) > MAX_SELECTED:", "if False:", case_too_wide),
+    # ASK-2388: the mutant RE-INTRODUCES a width cap; the wide case must catch it.
+    ("no width cap", "    full_suite = bool(escalators)", "    full_suite = bool(escalators) or len(selected) > 60", case_too_wide),
     ("size is not a full run", "full_suite = bool(escalators)", "full_suite = bool(escalators) or app_lines > M_MAX_LINES", case_size_is_not_a_full_run),
 ]
 
