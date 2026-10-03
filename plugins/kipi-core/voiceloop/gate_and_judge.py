@@ -43,11 +43,13 @@ check, which is where the two halves would drift.
 """
 from __future__ import annotations
 
-# The only import in this module, and it is a PACKAGE one: the five
-# operator-specific dependencies stay injected (see the docstring). A sha
-# function carries no operator's rules, and the alternative was making the
-# caller pass the same one-line call as a sixth keyword argument.
+# PACKAGE imports only: the five operator-specific dependencies stay injected
+# (see the docstring). A sha function carries no operator's rules, and the
+# alternative was making the caller pass the same one-line call as a sixth
+# keyword argument. `GateRefused` is the package's own exception type, which
+# the injected reviser raises; catching it needs the type, not the module.
 from . import content_key
+from .prompt_render import GateRefused
 
 
 
@@ -318,10 +320,22 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         feedback = voicefp_gate.style_feedback(review)
         if not feedback:
             break
-        revised = revise.revise(verdict.text, feedback, runner=runner,
-                                **_gated(revise.revise, "revise.revise", trail,
-                                         claude_bin=claude_bin,
-                                         model=model, author=author))
+        try:
+            revised = revise.revise(verdict.text, feedback, runner=runner,
+                                    **_gated(revise.revise, "revise.revise", trail,
+                                             claude_bin=claude_bin,
+                                             model=model, author=author))
+        except GateRefused as exc:
+            # THE SECOND CALLER OF THE NEW CONTRACT (PR #509 round 3, major). This PR
+            # taught `revise` to raise on a gate refusal and taught only `critic.run`
+            # to catch it, so a shut gate here crashed the lane and `trail["style"]`
+            # was never written. Same outcome as critic.run's GATED: the HOLD was
+            # never repaired, so nothing ships, and the trail says the review did not
+            # complete, which keeps the receipt's `unchecked` honest.
+            style_stage.update(status="not_run", gated=True, revisions=revisions,
+                               reason=f"style revision not run: {exc}")
+            trail["style"] = style_stage
+            return None
         if not revised:
             break
         # THE RE-CHECK DETECTS; ONLY THE FIRST PASS REJECTS. A style revision is the

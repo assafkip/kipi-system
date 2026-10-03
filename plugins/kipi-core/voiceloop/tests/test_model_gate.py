@@ -249,3 +249,67 @@ def test_a_refused_style_row_fails_open(gate, monkeypatch, tmp_path):
     assert out.status == critic.ACCEPTED and out.text == "a draft"
     verdicts = [json.loads(x)["verdict"] for x in (tmp_path / "log.jsonl").read_text().splitlines()]
     assert critic.NOT_JUDGED in verdicts
+
+
+def test_a_gate_refusal_in_the_style_revise_is_gated_not_a_crash(gate, monkeypatch, tmp_path):
+    """gate_and_judge is the second caller of revise's raising contract (PR #509 round 3).
+
+    Real `revise` module, real refusing gate. A shut gate on the style revision must
+    leave the lane with critic.run's GATED outcome: nothing ships, and the trail says
+    the style review did not complete. Before the catch, GateRefused escaped here.
+    """
+    import types
+    from voiceloop import gate_and_judge as gj, revise
+    _refusing_gate(monkeypatch)
+    decide = types.SimpleNamespace(
+        SHIPPABLE="shippable",
+        decide_candidate=lambda post, **k: types.SimpleNamespace(
+            status="shippable", text=post, reasons=[]))
+    voicefp = types.SimpleNamespace(
+        style_review=lambda text, claims: {"level": "hold", "distance": 9.0},
+        style_feedback=lambda review: [{"rule": "style", "detail": "sentences run long"}],
+        drift_report=lambda text, **k: pytest.fail("fingerprinted a gated draft"))
+    trail = {"stages": []}
+    out = gj.gate_and_judge(
+        "a draft body", channel="x", idea_text="an idea", voice_prov={},
+        arch_id=None, arch_entry=None, runner=None, trail=trail,
+        at="2026-10-11T00:00:00Z", decide=decide, revise=revise,
+        voicefp_gate=voicefp, prompt_carried_for=lambda prov: False,
+        _append_voice_provenance=lambda *a, **k: pytest.fail("provenance for a gated draft"),
+        claude_bin=str(tmp_path / "claude"), model="m", author="an author")
+    assert out is None
+    assert trail["style"]["status"] == "not_run" and trail["style"]["gated"] is True
+    assert "model gate refused" in trail["style"]["reason"]
+
+
+def test_a_style_only_checklist_with_every_row_refused_is_not_accepted(gate, monkeypatch,
+                                                                         tmp_path):
+    from voiceloop import critic
+    _refusing_gate(monkeypatch)
+    out = critic.run("a draft nobody judged", "x", path=_checklist(tmp_path, "style", "style"),
+                     log_path=str(tmp_path / "log.jsonl"), claude_bin=str(tmp_path / "claude"))
+    assert out.status == critic.GATED and out.text == "", (out.status, out.reasons)
+
+
+def test_refused_calls_are_on_the_cost_row_but_not_counted_as_calls(gate, monkeypatch,
+                                                                     tmp_path):
+    from voiceloop import critic
+    _refusing_gate(monkeypatch)
+    answers = {critic.MODEL_QUALITY: "VERDICT: PASS\nWHY: fine"}
+    real = prompt_render.run_model
+
+    def run_model(prompt, claude_bin, **k):
+        if k.get("model") in answers:
+            return answers[k["model"]]
+        return real(prompt, claude_bin, **k)
+    monkeypatch.setattr(prompt_render, "run_model", run_model)
+    log = tmp_path / "log.jsonl"
+    critic.run("a draft", "x", path=_checklist(tmp_path, "quality", "style", "style"),
+               log_path=str(log), claude_bin=str(tmp_path / "claude"))
+    cost = [r for r in map(json.loads, log.read_text().splitlines())
+            if r["stage"] == critic.STAGE_COST]
+    assert len(cost) == 1
+    # one quality call answered, two style calls refused by the gate
+    assert cost[0]["verdict"] == "1", cost[0]
+    assert "quality=1" in cost[0]["detail"] and "style=2" in cost[0]["detail"]
+    assert "refused by the model gate, not called: style=2" in cost[0]["detail"]

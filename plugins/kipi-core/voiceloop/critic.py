@@ -143,6 +143,9 @@ STAGE_REGATE = "regate"          # the 15 deterministic gates re-judging a revis
 STAGE_CHECKLIST = "checklist"    # the checklist itself could not be read
 STAGE_FORMAT = "format"          # the answer did not follow the strict contract
 STAGE_COST = "cost"              # how many model calls this candidate cost, by tier
+# Prefix on a `counts` key for a call the model gate refused. Kept apart so the cost
+# row can name refusals without charging them as calls.
+REFUSED_KEY = "refused:"
 STAGE_CAPTURE = "capture"        # the caller's draft capture failed; the run continued
 
 
@@ -357,14 +360,21 @@ def judge(text, row, runner=None, claude_bin=None, timeout=prompt_render.TIMEOUT
     raises instead of spending a real call.
     """
     tier = row.get("tier") or STYLE
-    if counts is not None:
-        counts[tier] = counts.get(tier, 0) + 1
     answer = prompt_render.run_model(build_prompt(text, row), claude_bin=claude_bin,
                                      timeout=timeout, runner=runner,
                                      caller="critic.judge()", model=model_for(row),
                                      refused=_GATE_REFUSED)
     if answer is _GATE_REFUSED:
+        # COUNTED AFTER THE GATE ANSWERS, under its own key (PR #509 round 3). Counted
+        # before, a refusal was charged as a model call, so the cost row inflated
+        # exactly when the gate was suppressing spend. The refusal stays on the row,
+        # named, and out of the total.
+        if counts is not None:
+            key = REFUSED_KEY + tier
+            counts[key] = counts.get(key, 0) + 1
         return NOT_JUDGED, "model gate refused the call; this row was not judged", FORMAT_GATED
+    if counts is not None:
+        counts[tier] = counts.get(tier, 0) + 1
     # A failed call (timeout, missing binary, non-zero exit) takes the same posture as an
     # unparseable answer: closed on quality, open on style.
     return parse_answer(answer or "", row.get("tier") or STYLE)
@@ -444,11 +454,20 @@ def _row(at, channel, text, constraint_id, verdict, detail, attempt, stage):
 
 
 def _cost_row(at, channel, text, counts, attempt):
-    """One row per candidate saying what judging it cost, by tier."""
-    total = sum(counts.values())
-    detail = ", ".join(f"{tier}={n}" for tier, n in sorted(counts.items())) or "none"
-    return _row(at, channel, text, "calls", str(total),
-                f"critic model calls for this candidate: {detail}", attempt, STAGE_COST)
+    """One row per candidate saying what judging it cost, by tier.
+
+    Refused calls are listed but never totalled: the gate answered, no model did.
+    """
+    spent = {t: n for t, n in counts.items() if not t.startswith(REFUSED_KEY)}
+    refused = {t[len(REFUSED_KEY):]: n for t, n in counts.items()
+               if t.startswith(REFUSED_KEY)}
+    detail = ", ".join(f"{tier}={n}" for tier, n in sorted(spent.items())) or "none"
+    detail = f"critic model calls for this candidate: {detail}"
+    if refused:
+        detail += ("; refused by the model gate, not called: "
+                   + ", ".join(f"{tier}={n}" for tier, n in sorted(refused.items())))
+    return _row(at, channel, text, "calls", str(sum(spent.values())),
+                detail, attempt, STAGE_COST)
 
 
 def append(rows, path=None):
@@ -703,6 +722,13 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
         # row: a style row is not worth starving a slot for (`parse_verdict`).
         gated = [row["id"] for row, verdict, _d, _f in results
                  if verdict == NOT_JUDGED and (row.get("tier") or STYLE) == QUALITY]
+        # NOTHING JUDGED IS NOT ACCEPTED (PR #509 round 3). A checklist of style rows
+        # only, every one refused, left `gated` and `failures` both empty and banked a
+        # draft nobody read. Style fails open per ROW, when some other row was judged;
+        # it cannot fail the whole critique open. Same reasoning as the empty-checklist
+        # branch above: an absent critic must not look like one that approved.
+        if not gated and results and all(v == NOT_JUDGED for _r, v, _d, _f in results):
+            gated = [row["id"] for row, _v, _d, _f in results]
         if gated:
             log_rows.append(_cost_row(at, channel, text, counts, attempt))
             _flush()
