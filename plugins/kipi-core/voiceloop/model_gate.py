@@ -102,14 +102,17 @@ def _sender() -> str | None:
         return os.environ["KIPI_NOTIFY"]
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [os.path.join(here, "..", "..", "..", _SENDER)]
-    record = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "known_marketplaces.json")
+    plugins = os.path.join(os.path.expanduser("~"), ".claude", "plugins")
     try:
-        with open(record, encoding="utf-8") as fh:
+        with open(os.path.join(plugins, "known_marketplaces.json"), encoding="utf-8") as fh:
             loc = (json.load(fh).get("kipi") or {}).get("installLocation")
-        if loc:
+        if isinstance(loc, str) and loc:
             candidates.append(os.path.join(loc, _SENDER))
     except (OSError, ValueError, AttributeError):
-        pass
+        pass  # a missing or odd record must cost the alert, never the gate's verdict
+    # Last rung, the conventional clone path: a Claude upgrade that reshapes the
+    # record must not silently lose the alert again (PR #510 review).
+    candidates.append(os.path.join(plugins, "marketplaces", "kipi", _SENDER))
     return next((c for c in candidates if os.path.isfile(c)), None)
 
 

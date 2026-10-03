@@ -346,7 +346,7 @@ def test_refused_calls_are_on_the_cost_row_but_not_counted_as_calls(gate, monkey
     assert "refused by the model gate, not called: style=2" in cost[0]["detail"]
 
 
-def _plugin_install(tmp_path, with_record=True):
+def _plugin_install(tmp_path, with_record=True, record=None, with_clone=None):
     """A plugin-cache-shaped tree: cache/kipi/kipi-core/<ver>/voiceloop, nothing beside it.
 
     HOME is the temp dir too, so a fallback to the default record path can only
@@ -358,12 +358,18 @@ def _plugin_install(tmp_path, with_record=True):
     shutil.copytree(os.path.join(PKG, "voiceloop"), pkg / "voiceloop",
                     ignore=shutil.ignore_patterns("tests", "__pycache__"))
     sent = tmp_path / "sent.txt"
-    if with_record:
-        scripts = root / "marketplaces" / "kipi" / "q-system" / ".q-system" / "scripts"
+    # The record points at a clone OUTSIDE the conventional path, so a pass proves
+    # the record was read rather than the path guessed.
+    clone = tmp_path / "elsewhere" / "kipi"
+    if with_clone is not None:
+        clone = with_clone(root)
+    if with_record or with_clone is not None:
+        scripts = clone / "q-system" / ".q-system" / "scripts"
         scripts.mkdir(parents=True)
         (scripts / "slack-notify.sh").write_text(f'#!/bin/bash\necho "$1" >> "{sent}"\n')
+    if with_record:
         (root / "known_marketplaces.json").write_text(json.dumps(
-            {"kipi": {"installLocation": str(root / "marketplaces" / "kipi")}}))
+            record if record is not None else {"kipi": {"installLocation": str(clone)}}))
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("KIPI_", "PYTEST_")) and k != "PYTHONPATH"}
     env.update(HOME=str(tmp_path / "home"), KIPI_MODEL_GATE_DIR=str(tmp_path / "gate"),
@@ -387,3 +393,12 @@ def test_no_resolvable_sender_says_so_instead_of_failing_quietly(tmp_path):
     run, sent = _plugin_install(tmp_path, with_record=False)
     assert run.returncode == model_gate.REFUSE and sent == []
     assert "no alert sender" in run.stderr, run.stderr
+
+
+def test_a_reshaped_record_still_finds_the_conventional_clone(tmp_path):
+    # PR #510 review: a non-string installLocation raised TypeError out of check(),
+    # and a record Claude reshapes must not lose the alert while the clone is there.
+    run, sent = _plugin_install(tmp_path, record={"kipi": {"installLocation": 7}},
+                                with_clone=lambda root: root / "marketplaces" / "kipi")
+    assert run.returncode == model_gate.REFUSE, run.stderr
+    assert "Traceback" not in run.stderr and len(sent) == 1, (sent, run.stderr)
