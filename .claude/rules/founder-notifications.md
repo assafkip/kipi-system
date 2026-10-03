@@ -35,4 +35,4 @@ alert on state change, once.
 - The single sink stays `slack-notify.sh`; its destination is Sana's Linear
   triage via `alert-to-linear.py`.
 - Emitters: open-loops heartbeat, the corpus-similarity drift counter
-  (voice-stop-gate.py `authorship_page`), and any new always-on job.
+  (voice-stop-gate.py `authorship_page`), and any new always-on job. A line claiming an alert names its emitter: `named-emitter.md`.

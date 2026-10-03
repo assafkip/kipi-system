@@ -818,3 +818,152 @@ def test_a_skeleton_checkout_still_reads_the_registry_beside_it(
     got = m.project_candidates("[skelroot] auto-commit left 1 file(s)")
     assert "in-place" in got, got
     assert "stale" not in got, got
+
+
+# --- the sustained-failure rule, on ONE fingerprint (ASK-2013) ---------------
+
+# Real lines off the board, three different issue ids, one shape. The 45-day
+# replay found this fingerprint owning 5 tickets and ZERO of them worked.
+CONVERGE_STALL = [
+    "[kipi-system] converge ASK-1135: stalled at 'REQUEST CHANGES', no code change in round 2",
+    "[kipi-system] converge ASK-1959: stalled at 'REQUEST CHANGES', no code change in round 2",
+    "[kipi-system] converge ASK-355: stalled at 'REQUEST CHANGES', no code change in round 3",
+]
+
+
+def test_sustained_fingerprint_is_the_converge_stall_shape():
+    """The constant is pinned to real messages, not to a hash someone copied.
+
+    SUSTAINED_FINGERPRINT is a literal, so nothing otherwise stops a change to
+    _VOLATILE from re-pointing the rule at a shape nobody measured. This is the
+    check that goes RED instead.
+    """
+    for message in CONVERGE_STALL:
+        assert mod.fingerprint(message) == mod.SUSTAINED_FINGERPRINT, message
+
+
+def test_another_instance_firing_the_same_condition_is_untouched():
+    """THE BLAST-RADIUS CHECK. This file syncs to every instance, so the rule
+    having no reach beyond one instance's own wording is the thing that makes it
+    safe to ship fleet-wide."""
+    other = "[consulting] converge ASK-1135: stalled at 'REQUEST CHANGES', no code change in round 2"
+    assert mod.fingerprint(other) != mod.SUSTAINED_FINGERPRINT
+    assert not mod.sustained_defers(mod.fingerprint(other), 1)
+
+
+def test_the_sustained_shape_does_not_file_on_one_failure(isolated_state, monkeypatch):
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(CONVERGE_STALL[0], now=1000.0)
+    assert code == mod.EXIT_OK, line
+    assert fake.created == 0, "filed a ticket on a single failure"
+    assert "deferred (sustained rule" in line, line
+
+
+def test_the_second_observation_of_the_sustained_shape_files(isolated_state, monkeypatch):
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    mod.file_alert(CONVERGE_STALL[0], now=1000.0)
+    code, line = mod.file_alert(CONVERGE_STALL[1], now=2000.0)
+    assert code == mod.EXIT_OK and fake.created == 1, line
+    assert "filed ASK-101" in line, line
+
+
+def test_a_filed_sustained_ticket_resets_the_counter(isolated_state, monkeypatch):
+    """One deferral must not buy permanent silence. After the ticket is closed,
+    the next recurrence earns its ticket the same way the first one did."""
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    mod.file_alert(CONVERGE_STALL[0], now=1000.0)
+    mod.file_alert(CONVERGE_STALL[1], now=2000.0)
+    assert fake.created == 1
+
+    fake.state_type = "completed"          # Sana closed it; the shape comes back
+    code, line = mod.file_alert(CONVERGE_STALL[2], now=3000.0)
+    assert code == mod.EXIT_OK and fake.created == 1, line
+    assert "deferred (sustained rule" in line, line
+    code, line = mod.file_alert(CONVERGE_STALL[0], now=4000.0)
+    assert fake.created == 2, line
+
+
+def test_the_replay_of_702_real_tickets_keeps_every_worked_one():
+    """THE ACCEPTANCE CHECK, run rather than remembered.
+
+    The rule was chosen from the board's own rows, not from an argument, so the
+    evidence has to be re-runnable. This drives `replay_alert_sustained_rule.py`
+    over `alert-tickets-45d.json` -- 702 real alert tickets captured by
+    `capture_alert_tickets.py`, their producer, never a fixture anyone typed.
+
+    Naming those files here is also what keeps the pre-commit door fast:
+    verify_select.py maps a staged file to the tests that NAME it, and a file no
+    test names falls back to the whole suite. `mutate_sustained_rule.py` is the
+    paired receipt that these assertions can go RED.
+    """
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.run(
+        [sys.executable, os.path.join(here, "replay_alert_sustained_rule.py")],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "worked (completed/started): 11, kept 11, LOST 0" in proc.stdout, proc.stdout
+    assert f"scoped fingerprint {mod.SUSTAINED_FINGERPRINT}" in proc.stdout, proc.stdout
+    assert "never filed under this rule: 3" in proc.stdout, proc.stdout
+
+
+def test_the_global_rule_still_destroys_the_work_it_was_refused_for():
+    """The refusal, kept as a run. If this ever goes green, the reason the rule
+    is scoped to one fingerprint has evaporated and the scope should be
+    revisited -- deliberately, with the numbers, not by drift."""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    proc = subprocess.run(
+        [sys.executable, os.path.join(here, "replay_alert_sustained_rule.py"),
+         "--rule", "global"], capture_output=True, text=True)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "kept 3, LOST 8" in proc.stdout, proc.stdout
+
+
+def test_every_other_shape_still_files_on_the_first_failure(isolated_state, monkeypatch):
+    """THE NEGATIVE SELF-TEST. The measured cost of the global rule was 8 of the
+    11 worked tickets; a rule that quietly widened past its one fingerprint would
+    pay that cost with nothing saying so."""
+    fake = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: fake)
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_OK and fake.created == 1, line
+    assert "filed ASK-101" in line, line
+
+
+# --- the captured payload ships to a PUBLIC repo -----------------------------
+#
+# The reduction that produced alert-tickets-45d.json dropped every scored field
+# that could carry an instance name, and left `state_dir` behind as provenance:
+# one absolute path naming the founder's home directory, committed to a public
+# repo and synced fleet-wide by kipi update. validate-separation.py's full
+# skeleton sweep is exactly the gate for that, and it went RED on this file --
+# after the branch's review had already stored an APPROVE.
+#
+# This is the same trade the sweep's own comment records for
+# impeccable-receipt.json (PR #374 round 6): excluding the file was the wrong
+# answer, redacting the value is the right one. The reduction now collapses the
+# home prefix at the PRODUCER, so a re-capture cannot reintroduce it.
+#
+# Asserted on the SHIPPED file, not on a round-trip through the producer. A
+# producer test passes while the committed payload keeps the old string, which
+# is the only copy the sweep and the public actually see.
+
+def test_the_captured_payload_carries_no_absolute_home_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "alert-tickets-45d.json"), encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    # Derived from the sweep's own pattern rather than restated: the literal
+    # prefix cannot be typed here, because this file is under q-system/ too and
+    # a comment naming the banned data is the ban tripping itself (see CARVEOUT).
+    home = os.path.expanduser("~")
+    assert home.startswith("/"), home
+    raw = json.dumps(payload)
+    assert home not in raw, (
+        "the captured payload ships an absolute home path to a public repo; "
+        "validate-separation.py's full skeleton sweep fails on it")
+    assert payload["state_dir"].startswith("~/"), payload["state_dir"]

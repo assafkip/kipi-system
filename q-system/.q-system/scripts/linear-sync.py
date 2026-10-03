@@ -21,10 +21,12 @@ The deterministic half is still the part that decides WHAT to create and the par
 that remembers what was created; `create` adds the network call under the same
 two guards.
 
-WHY THE DEDUP KEY IS LOAD-BEARING: mcp__linear__*delete* and archive are both
-blocked by ~/.claude/hooks/destructive-op-deny.sh, and an agent cannot set
-ALLOW_DESTRUCTIVE=1 for itself. A duplicate issue is permanent. So there are two
-independent guards, and the remote one is the truth:
+WHY THE DEDUP KEY IS LOAD-BEARING: nothing in this file can take back what it
+creates. Its GraphQL mutations create and update, never delete or archive, and
+test_linear_sync_permanence.py derives that set from this source instead of
+trusting this sentence. A duplicate it mints stays until a person removes it
+outside this flow. So there are two independent guards, and the remote one is
+the truth:
 
     1. ledger guard  - fast, local, q-system/output/linear-ledger.jsonl
     2. remote guard  - authoritative, parses <!-- kipi-key: ... --> markers out of
@@ -34,6 +36,12 @@ The ledger is a cache. It is *.jsonl, which lefthook's blocked-paths rule refuse
 to commit, so it cannot travel with the repo. That is exactly why the remote guard
 exists: a fresh clone, a wiped ledger, or a parallel session must not produce
 duplicates.
+
+(ASK-1249) This paragraph used to credit a PreToolUse guard with refusing Linear
+deletes, and named a tool prefix that guard did not match (measured 2026-09-04).
+Whether an agent is refused a delete is that guard's claim, held by its own
+tests (ASK-1144). This file does not restate it, and the test above fails if it
+tries.
 """
 
 import argparse
@@ -314,9 +322,9 @@ def _state_for(cap: dict) -> str:
 # other Linear agent orchestrators, both of which simply use an API key. With a
 # key, `create` closes the loop and the drain round trip is optional.
 #
-# The permanence rule still dominates every design choice below: Linear delete
-# and archive are blocked by the destructive-op hook and an agent cannot
-# self-authorize them, so a duplicate is FOREVER. Hence: refetch the remote
+# The permanence rule still dominates every design choice below: this file has
+# no delete or archive mutation (module docstring), so a duplicate it creates
+# outlives the run that made it. Hence: refetch the remote
 # guard immediately before writing, append the ledger after EVERY single create
 # rather than at the end, and require --apply.
 
@@ -1192,9 +1200,9 @@ def main() -> int:
     p = sub.add_parser("create", help="apply a plan to live Linear (dry unless --apply)")
     p.add_argument("--plan", required=True, help="plan JSON from `plan`")
     p.add_argument("--team", default="ASK", help="Linear team KEY (default ASK)")
-    # Dry by default and --apply to write, because Linear objects are permanent:
-    # delete and archive are hook-blocked and an agent cannot self-authorize them,
-    # so an accidental run cannot be undone.
+    # Dry by default and --apply to write, because nothing here can undo a create
+    # (no delete or archive mutation, module docstring), so this tool cannot take
+    # back an accidental run.
     p.add_argument("--apply", action="store_true", help="actually write to Linear")
     p.set_defaults(func=cmd_create)
 

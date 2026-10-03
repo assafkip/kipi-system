@@ -83,8 +83,11 @@ _MAX_DEPTH = 4
 def _binary_like(node) -> bool:
     if isinstance(node, ast.Constant):
         return isinstance(node.value, str) and node.value.endswith("claude")
+    # ast.Starred (ASK-2072): `[binary, *NO_MCP_ARGS, "-p", prompt]` puts a starred
+    # constant between the binary and `-p`. Without it the engine's own wrapper stopped
+    # counting as a call site, and any later script in that shape would spend unmetered.
     return isinstance(node, (ast.Name, ast.Attribute, ast.Subscript, ast.Call,
-                             ast.IfExp, ast.BoolOp, ast.BinOp))
+                             ast.IfExp, ast.BoolOp, ast.BinOp, ast.Starred))
 
 
 def _is_dash_p(node) -> bool:

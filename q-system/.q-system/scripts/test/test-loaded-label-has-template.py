@@ -8,7 +8,6 @@ THE GAP. Measured on the founder's machine 2026-09-07:
     loaded with NO committed template ... 3
       com.kipi.audit-rotate    loaded 2026-05-18
       com.kipi.launchd-health  loaded 2026-06-30
-      com.kipi.pr86-review     loaded 2026-08-07
 
 None of the three had ever been added: `git log --all --diff-filter=A` over 3140
 commits returns nothing for any of those basenames, and no copy sat in any stale
@@ -67,13 +66,6 @@ ALLOWLIST = {
         "script a machine rebuild does not restore, which is half a fix wearing "
         "the shape of a whole one. Needs a founder decision: adopt the script "
         "into the repo, or leave the job machine-local."
-    ),
-    "com.kipi.pr86-review": (
-        "2026-09-07: a ONE-SHOT job for PR #86, hourly at :17, that self-disables "
-        "once a review completes or #86 leaves OPEN. Measured 2026-09-07: #86 is "
-        "still OPEN, so the job is doing exactly what it was built to do. "
-        "Committing a template for a job designed to delete itself would "
-        "resurrect it on every fresh checkout. Expected to age out on its own."
     ),
 }
 
@@ -183,9 +175,9 @@ def main():
         if note:
             print("        %s" % note)
 
-    # A STALE ENTRY WARNS, IT DOES NOT FAIL. com.kipi.pr86-review is built to
-    # unload itself when PR #86 closes, so failing on "allowlisted but no longer
-    # loaded" would turn this gate red on the good outcome. A gate that goes red
+    # A STALE ENTRY WARNS, IT DOES NOT FAIL. A one-shot job built to unload itself
+    # (com.kipi.pr86-review was one; it never did, and was unloaded by hand on
+    # 2026-10-02, ASK-2396) would otherwise turn this gate red on the good outcome. A gate that goes red
     # when the problem resolves is a gate that gets switched off.
     for label, note in sorted(ALLOWLIST.items()):
         if label not in loaded:

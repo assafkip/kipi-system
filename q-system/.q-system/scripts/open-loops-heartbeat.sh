@@ -164,7 +164,9 @@ work_instance() {
   }
   local agent_tmp="$AGENT_TMP"
   local agent_rc=0
-  ( cd "$path" && KIPI_INSTANCE_NAME="$name" $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ) || agent_rc=$?
+  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+  ( cd "$path" && KIPI_INSTANCE_NAME="$name" env -u ANTHROPIC_API_KEY $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ) || agent_rc=$?
   # Read it out, then delete it, BEFORE either branch decides anything. The
   # classifier below reads $agent_out and never the file, so there is exactly one
   # place the file has to go away and no future branch can be added past it --

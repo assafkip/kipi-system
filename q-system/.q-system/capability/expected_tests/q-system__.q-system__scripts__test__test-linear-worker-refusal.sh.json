@@ -1,0 +1,8 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-linear-worker-refusal.sh",
+ "runner": "bash",
+ "covers": [
+  "q-system/.q-system/scripts/linear-worker.sh",
+  "q-system/.q-system/scripts/linear-sync.py"
+ ]
+}

@@ -228,6 +228,30 @@ arm_case 5 armed 0
 grep -c 'autoMergeRequest' "$FAKE_GHLOG" >/dev/null 2>&1 \
   && fail "ASK-310: converge re-probed the arm state of a PR the record already calls armed -- a second reader of one input"
 ok "ASK-310: approved + recorded armed -> no gh arm call and no re-probe"
+
+# --- PR #429 review nits: automerge_arm's own contract ------------------------
+# Driven directly against the lib, with the same logging fake gh.
+arm_unit() {  # arm_unit <dir> -> "STATE|ERR", gh calls appended to FAKE_GHLOG
+  ( PATH="$WORK/bin:$PATH"; . "$ROOT/q-system/.q-system/scripts/pr-verdict-lib.sh"
+    automerge_arm 9 "$1" /dev/null
+    printf '%s|%s' "$AUTOMERGE_ARM_STATE" "$AUTOMERGE_ARM_ERR" )
+}
+# Nit: the header says an EMPTY probe means "could not tell", and the refused
+# path's re-probe mapped it to unarmed. gh exits 0 with no answer here.
+: > "$FAKE_ARMED_FILE"; echo 1 > "$FAKE_MERGE_RC_FILE"; : > "$FAKE_GHLOG"
+GOT="$(arm_unit "$WORK")"
+[ "${GOT%%|*}" = "unknown" ] \
+  || fail "PR #429 nit: an empty re-probe after a refused arm became '${GOT%%|*}', but an empty answer is 'could not tell' (unknown)"
+ok "automerge_arm: an empty probe answer is unknown, never unarmed"
+# Nit: a dir that does not exist made every gh call fail on cd, and the page
+# said "gh printed no reason" on a run where gh never ran.
+: > "$FAKE_GHLOG"
+GOT="$(arm_unit "$WORK/no-such-dir")"
+[ "${GOT%%|*}" = "unknown" ] || fail "PR #429 nit: a missing dir gave state '${GOT%%|*}', want unknown"
+case "${GOT#*|}" in *no-such-dir*) ;; *) fail "PR #429 nit: a missing dir's error does not name the dir: '${GOT#*|}'" ;; esac
+[ ! -s "$FAKE_GHLOG" ] || fail "PR #429 nit: gh was called for a dir that does not exist: $(cat "$FAKE_GHLOG")"
+ok "automerge_arm: a missing dir is named in the error, and gh never runs"
+: > "$FAKE_MERGE_RC_FILE"
 cp "$WORK/bin/gh.orig" "$WORK/bin/gh"
 
 # --- dry mode + arg handling -------------------------------------------------

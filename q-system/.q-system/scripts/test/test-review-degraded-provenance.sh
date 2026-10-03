@@ -100,20 +100,29 @@ run_writer() {  # run_writer <engine> <degraded> <verdict-dir> [writer-file]
   ) >/dev/null 2>&1
 }
 
-# THE CONSUMER. This is the point of the whole fix: something downstream reads
-# the record and answers "is this a second lab's opinion?" Three-valued on
-# purpose -- forcing a binary would make a legacy record lie in one direction or
-# the other, and "I cannot tell" is the honest answer for a record written
-# before the field existed.
+# THE CONSUMER, AND IT IS THE SHIPPED ONE (ASK-2036, sp-e9284708). This used to
+# be a python heredoc defined right here: the ONLY reader of `degraded` anywhere
+# in the fleet lived inside this test file. So every case below proved a fail-safe
+# that production did not have -- the PR #114 review said exactly that, and it was
+# right. `degraded_from_record` in pr-verdict-lib.sh is now the reader, called by
+# converge.sh and by both of linear-worker.sh's gate sites, and driving it here
+# means this suite follows the production reader instead of asserting a model of it.
+#
+# Three-valued on purpose -- forcing a binary would make a legacy record lie in one
+# direction or the other, and "I cannot tell" is the honest answer for a record
+# written before the field existed. rework_gate treats that third value exactly as
+# it treats an absent head_sha: today's behaviour, unchanged.
+. "$_SD/pr-verdict-lib.sh"
+declare -F degraded_from_record >/dev/null || {
+  echo "pr-verdict-lib.sh defines no degraded_from_record; the production reader this suite drives is gone"
+  exit 1
+}
 consumer_says() {  # consumer_says <record.json> -> independent|degraded|unknown
-  python3 - "$1" <<'PY'
-import json, sys
-r = json.load(open(sys.argv[1]))
-if "degraded" not in r:
-    print("unknown")
-else:
-    print("degraded" if r["degraded"] else "independent")
-PY
+  case "$(degraded_from_record "$1")" in
+    1) printf 'degraded\n' ;;
+    0) printf 'independent\n' ;;
+    *) printf 'unknown\n' ;;
+  esac
 }
 
 echo

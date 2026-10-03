@@ -943,8 +943,14 @@ if __name__ == "__main__":
                 rc = call()
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+                # Same rule as hook_fail_closed._payload: an unparseable payload
+                # is {} (nothing to judge), NOT "cannot tell". Refusing here
+                # blocked every Bash call while the helper allowed (PR #427 r3).
                 try:
-                    p = json.loads(raw or "{}")
+                    p = json.loads(raw) if raw.strip() else {}
+                except Exception:  # noqa: BLE001
+                    p = {}
+                try:
                     inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
                 except Exception:  # noqa: BLE001
                     inside = True

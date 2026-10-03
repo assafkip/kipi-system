@@ -190,7 +190,9 @@ if __name__ == "__main__":
     # pipe that never closes would hang the update), and `if !` already treats
     # its exit 1 on a crash as an abort. Only hook mode needs the wrap.
     if "--check" in sys.argv:
-        main()
+        # sys.exit, not a bare call: if main() ever returns, falling through
+        # would read stdin and hang the kipi update preflight (PR #427 r3).
+        sys.exit(main())
     try:
         from hook_fail_closed import run as _fail_closed
     except Exception:  # noqa: BLE001
@@ -206,8 +208,14 @@ if __name__ == "__main__":
                 rc = call()
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
+                # Same rule as hook_fail_closed._payload: an unparseable payload
+                # is {} (nothing to judge), NOT "cannot tell". Refusing here
+                # blocked every Bash call while the helper allowed (PR #427 r3).
                 try:
-                    p = json.loads(raw or "{}")
+                    p = json.loads(raw) if raw.strip() else {}
+                except Exception:  # noqa: BLE001
+                    p = {}
+                try:
                     inside = bool(in_jurisdiction(p if isinstance(p, dict) else {}))
                 except Exception:  # noqa: BLE001
                     inside = True

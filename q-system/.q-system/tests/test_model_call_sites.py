@@ -87,6 +87,14 @@ def test_the_wrapper_is_a_call_site():
     assert set(spec()["wrapper"]) <= cs.call_sites(ROOT)
 
 
+def test_a_starred_flag_tuple_before_dash_p_is_still_a_call_site():
+    # ASK-2072 put `*NO_MCP_ARGS` between the binary and `-p`, and the detector
+    # stopped seeing the engine's own wrapper. Pin that shape, and its negative.
+    assert cs.py_calls('binary = \"claude\"\nargv = [binary, *NO_MCP_ARGS, "-p", prompt]')
+    assert cs.py_calls('binary = \"claude\"\nargv = [binary, "-p", prompt, *NO_MCP_ARGS]')
+    assert not cs.py_calls('binary = \"claude\"\nargv = ["echo", "-n", "x"]')
+
+
 def test_this_tree_has_no_unlisted_model_call():
     s = spec()
     # shared rows propagate; skeleton rows are this repo's root files, which do
