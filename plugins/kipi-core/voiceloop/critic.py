@@ -125,9 +125,16 @@ STYLE = "style"
 PASS = "pass"
 FAIL = "fail"
 WARN = "warn"
+# The model gate refused the call, so the row was never judged. NOT a fail: before
+# PR #509 a refusal came back as None, scored like a dead call, and a quality row
+# failed the draft closed on a question nobody asked the model.
+NOT_JUDGED = "not-judged"
 
 ACCEPTED = "accepted"
 DISCARDED = "discarded"
+# Some row was never judged because the gate refused. Not accepted, so nothing banks
+# it, and not discarded on its merits, so nothing revises it.
+GATED = "gated"
 
 # Log stages, so a row says which part of the loop produced it without a reader
 # inferring it from the other fields.
@@ -267,6 +274,11 @@ _BARE_HEAD = re.compile(r"^[\s*#]*(PASS|FAIL)\b", re.I)
 FORMAT_OK = "ok"
 FORMAT_LOOSE = "loose"
 FORMAT_UNPARSEABLE = "unparseable"
+FORMAT_GATED = "gated"            # no answer to parse: the gate refused the call
+
+#: What `run_model` hands back on a gate refusal, so it cannot be mistaken for a dead
+#: call (None) and scored by `parse_answer`.
+_GATE_REFUSED = object()
 
 
 def parse_answer(answer, tier):
@@ -349,7 +361,10 @@ def judge(text, row, runner=None, claude_bin=None, timeout=prompt_render.TIMEOUT
         counts[tier] = counts.get(tier, 0) + 1
     answer = prompt_render.run_model(build_prompt(text, row), claude_bin=claude_bin,
                                      timeout=timeout, runner=runner,
-                                     caller="critic.judge()", model=model_for(row))
+                                     caller="critic.judge()", model=model_for(row),
+                                     refused=_GATE_REFUSED)
+    if answer is _GATE_REFUSED:
+        return NOT_JUDGED, "model gate refused the call; this row was not judged", FORMAT_GATED
     # A failed call (timeout, missing binary, non-zero exit) takes the same posture as an
     # unparseable answer: closed on quality, open on style.
     return parse_answer(answer or "", row.get("tier") or STYLE)
@@ -405,7 +420,9 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
     quality = [r for r in rows if (r.get("tier") or STYLE) == QUALITY]
     style = [r for r in rows if (r.get("tier") or STYLE) != QUALITY]
     results = _wave(quality)
-    if any(verdict == FAIL for _row, verdict, _detail, _fmt in results):
+    # A refused row means the gate is shut for this job today: the style wave would be
+    # refused too, so asking is only more ledger lines.
+    if any(verdict in (FAIL, NOT_JUDGED) for _row, verdict, _detail, _fmt in results):
         return results
     return results + _wave(style)
 
@@ -672,13 +689,23 @@ def run(text, channel, at=None, runner=None, reviser=None, regate=None,
             # THE CONTRACT-VIOLATION RATE IS A NUMBER, not a suspicion (sp-a55d1ffb).
             # A row lands whenever the answer did not follow the strict format, so the
             # rate is countable from the log instead of being inferred from vibes.
-            if fmt != FORMAT_OK:
+            if fmt not in (FORMAT_OK, FORMAT_GATED):
                 log_rows.append(_row(at, channel, text, row["id"], fmt,
                                      f"answer did not follow the VERDICT contract "
                                      f"({fmt}); verdict honoured as {verdict}",
                                      attempt, STAGE_FORMAT))
             if verdict == FAIL:
                 failures.append((row, detail))
+        # GATED BEFORE FAILED: a refused row is unknown, not bad. Revising would act on
+        # a judgment that never happened and accepting would bank an unjudged draft, so
+        # the candidate leaves as neither (PR #509 review).
+        gated = [row["id"] for row, verdict, _d, _f in results if verdict == NOT_JUDGED]
+        if gated:
+            log_rows.append(_cost_row(at, channel, text, counts, attempt))
+            _flush()
+            return Outcome(GATED, "", log_rows,
+                           [f"critic-{cid}: not judged, model gate refused" for cid in gated],
+                           attempts=attempt)
         if not failures:
             log_rows.append(_cost_row(at, channel, text, counts, attempt))
             _flush()

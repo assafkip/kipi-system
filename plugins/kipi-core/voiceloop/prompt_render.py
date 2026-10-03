@@ -128,7 +128,8 @@ def subscription_env():
 
 
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
-              caller="run_model()", under_test="raise", model=None, allow_opencode=True):
+              caller="run_model()", under_test="raise", model=None, allow_opencode=True,
+              refused=None):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -171,11 +172,14 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     # branch: a gate on the claude subprocess alone let the OpenCode branch past it
     # (PRD review). The job key is the `job` the usage meter writes (CHIEF_JOB or
     # the caller), not the bot: keyed on the bot, every voiceloop caller shared one
-    # count, so a critic.judge() loop and the reddit lane drew from the same 150.
-    # A refusal is None, the outcome every caller already handles for a dead call.
+    # count, so a critic.judge() loop and the reddit lane drew from one budget.
+    # A refusal returns `refused`, None by default: the outcome every caller already
+    # handles for a dead call. A caller that SCORES the answer passes its own sentinel,
+    # because None there read as a dead call and the critic failed the draft closed on
+    # a question the model was never asked (PR #509 review).
     if not model_gate.check(os.environ.get("CHIEF_JOB") or caller,
                             item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
-        return None
+        return refused
     if allow_opencode and os.environ.get("OPENCODE") and shutil.which("opencode"):
         try:
             # The writer is already inside the voice loop. Reloading the global

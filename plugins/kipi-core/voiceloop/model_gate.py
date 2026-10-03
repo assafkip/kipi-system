@@ -33,12 +33,18 @@ import tempfile
 
 # why these numbers: the first defaults (2486 / 2519) were x1.5 of the busiest
 # day in the window, and that day, 2026-10-01, WAS the runaway (critic.judge()
-# 1180 calls, revise 271). A cap derived from the incident cannot stop it.
-# Set 2026-10-03, founder-directed. A "job" is the usage ledger's `job` field
-# (CHIEF_JOB or the caller name, e.g. critic.judge()), not the bot, so one
-# looping caller hits 150 without starving the rest of its bot.
-PER_JOB_DEFAULT = 150
-FLEET_DEFAULT = 300
+# 1180 calls, revise 271, fleet 1679). A cap derived from the incident cannot stop
+# it. The second try (150 / 300) sat BELOW an ordinary day once voiceloop calls
+# were logged (PR #509 review): it would have refused normal work.
+# Derived 2026-10-03 from usage-ledger.jsonl, normal days since voiceloop logging
+# began, 2026-10-01 excluded: 09-30 (279), 10-02 (412), 10-03 (115, partial).
+#   per job: normal max 213 (one caller, 09-30) -> 2x, rounded down = 400
+#   fleet:   normal max 412 (10-02)             -> 2x, rounded down = 800
+# Both sit at or under half the runaway (1180 / 1679). A "job" is the usage
+# ledger's `job` field (CHIEF_JOB or the caller name, e.g. critic.judge()), not
+# the bot, so one looping caller stops without starving the rest of its bot.
+PER_JOB_DEFAULT = 400
+FLEET_DEFAULT = 800
 ENFORCE_FROM = "2026-10-10"
 REFUSE = 3
 

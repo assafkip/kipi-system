@@ -129,14 +129,56 @@ def test_a_suite_without_a_gate_dir_never_touches_the_live_ledger(monkeypatch):
     assert not model_gate.gate_dir().startswith(os.path.expanduser("~/.config"))
 
 
-def test_defaults_are_below_the_runaway_day():
-    # 2026-10-01: critic.judge() made 1180 calls. A default above that stops nothing.
-    assert (model_gate.PER_JOB_DEFAULT, model_gate.FLEET_DEFAULT) == (150, 300)
+def test_defaults_sit_between_a_normal_day_and_the_runaway():
+    # usage ledger since voiceloop logging began, 2026-10-01 excluded: busiest
+    # normal caller 213 calls, busiest normal fleet day 412. The runaway
+    # (2026-10-01) was critic.judge() 1180, fleet 1679. Above normal, or the gate
+    # refuses ordinary work; at most half the runaway, or it stops nothing in time.
+    assert 213 * 1.5 <= model_gate.PER_JOB_DEFAULT <= 1180 / 2
+    assert 412 * 1.5 <= model_gate.FLEET_DEFAULT <= 1679 / 2
 
 
 def test_default_per_job_limit_stops_a_critic_judge_loop(gate):
-    admits = [model_gate.check("critic.judge()", now=AFTER)["admit"] for _ in range(151)]
-    assert admits.count(True) == 150 and admits[-1] is False
+    n = model_gate.PER_JOB_DEFAULT
+    admits = [model_gate.check("critic.judge()", now=AFTER)["admit"] for _ in range(n + 1)]
+    assert admits.count(True) == n and admits[-1] is False
+
+
+def _refusing_gate(monkeypatch):
+    """Drive the REAL run_model into a gate refusal: enforce, per-job limit 0."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    monkeypatch.delenv("CHIEF_JOB", raising=False)
+    monkeypatch.setenv("KIPI_MODEL_GATE_MODE", "enforce")
+    monkeypatch.setenv("KIPI_MODEL_GATE_PER_JOB", "0")
+    monkeypatch.setattr(model_gate, "_notify", lambda text: None)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("provider reached"))
+
+
+def test_a_gate_refusal_is_never_scored_as_a_critic_fail(gate, monkeypatch, tmp_path):
+    from voiceloop import critic
+    _refusing_gate(monkeypatch)
+    row = {"id": "tells-a-story", "text": "Does it tell a story?", "tier": critic.QUALITY}
+    # A quality row fails CLOSED on a dead call; a refusal is not a dead call.
+    verdict, _detail, fmt = critic.judge("a draft", row, claude_bin=str(tmp_path / "claude"))
+    assert verdict == critic.NOT_JUDGED and verdict != critic.FAIL
+    assert fmt == critic.FORMAT_GATED
+
+
+def test_a_gated_critic_run_neither_revises_nor_accepts(gate, monkeypatch, tmp_path):
+    from voiceloop import critic
+    _refusing_gate(monkeypatch)
+    checklist = tmp_path / "checklist.json"
+    checklist.write_text(json.dumps([
+        {"id": "tells-a-story", "text": "Does it tell a story?", "tier": "quality"},
+        {"id": "no-hashtags", "text": "Is it free of hashtags?", "tier": "style"}]))
+    log = tmp_path / "critic-log.jsonl"
+    out = critic.run("a draft", "x", path=str(checklist), log_path=str(log),
+                     claude_bin=str(tmp_path / "claude"),
+                     reviser=lambda *a: pytest.fail("revised an unjudged draft"),
+                     regate=lambda t: pytest.fail("regated an unjudged draft"))
+    assert out.status == critic.GATED and out.text == ""
+    verdicts = [json.loads(x)["verdict"] for x in log.read_text().splitlines()]
+    assert critic.FAIL not in verdicts and critic.NOT_JUDGED in verdicts
 
 
 def test_run_model_keys_the_gate_on_the_callers_job_not_the_bot(gate, monkeypatch, tmp_path):
