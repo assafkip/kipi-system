@@ -229,6 +229,43 @@ EOF
   || fail "labels carry a major; derivation must override the prose APPROVE"
 ok "derive overrides prose: 'APPROVE' + a major label -> REQUEST CHANGES"
 
+# --- a major the reviewer marks nonblocking does not wedge the PR (ASK-2422) ---
+# Scar: a report-only gate PR took 4 review rounds, and round 4's only major was
+# one the reviewer itself called "not a blocker". The ladder read `^major|` and
+# nothing else, so the reviewer had no way to say it in the block. The fourth
+# field is that way; only the exact token releases, and never a blocker.
+nb_block() { printf '## VERDICT: APPROVE WITH NITS\n\nFINDINGS:\n%s\nEND FINDINGS\n' "$1" > "$WORK/$2"; }
+nb_block "major|a torn line in report-only code refuses nothing yet|gate.py:357|nonblocking
+minor|a stale comment|gate.py:170" nb1.md
+[ "$(verdict_from_findings "$WORK/nb1.md")" = "APPROVE WITH NITS" ] \
+  || fail "a nonblocking major + a minor must derive APPROVE WITH NITS, got '$(verdict_from_findings "$WORK/nb1.md")'"
+ok "derive: a major marked nonblocking -> APPROVE WITH NITS"
+nb_block "major|a torn line refuses every job|gate.py:357|nonblocking
+major|a real wedge|gate.py:12" nb2.md
+[ "$(verdict_from_findings "$WORK/nb2.md")" = "REQUEST CHANGES" ] \
+  || fail "one unmarked major beside a nonblocking one must still derive REQUEST CHANGES"
+ok "derive: an unmarked major still blocks beside a nonblocking one"
+nb_block "blocker|publishes a credential|x.sh:1|nonblocking" nb3.md
+[ "$(verdict_from_findings "$WORK/nb3.md")" = "BLOCK" ] \
+  || fail "a blocker marked nonblocking must still derive BLOCK"
+ok "derive: a blocker ignores the nonblocking mark"
+nb_block "major|a guess at the mark|gate.py:9|maybe
+major|the mark in the wrong field|nonblocking.py:3" nb4.md
+[ "$(verdict_from_findings "$WORK/nb4.md")" = "REQUEST CHANGES" ] \
+  || fail "only the exact 4th-field token may release a major"
+ok "derive: a near-miss mark or the word in the location still blocks"
+FOLLOW="$(extract_followup_findings "$WORK/nb2.md")"
+case "$FOLLOW" in *"torn line refuses"*) ;; *) fail "the nonblocking major is not listed as a follow-up: '$FOLLOW'";; esac
+case "$FOLLOW" in *"real wedge"*) fail "a blocking major was listed as a follow-up";; esac
+[ "$(extract_followup_findings "$WORK/nb1.md" | grep -c .)" = "2" ] \
+  || fail "nonblocking major + minor must list 2 follow-ups"
+ok "follow-ups: minors and nonblocking majors listed, blocking majors not"
+grep -q 'extract_followup_findings' "$REVIEWER" \
+  || fail "the reviewer does not list follow-ups through extract_followup_findings"
+grep -q '|nonblocking' "$REVIEWER" && grep -qi 'report-only' "$REVIEWER" \
+  || fail "the reviewer prompt does not teach the nonblocking mark and the report-only case"
+ok "reviewer wiring: prompt teaches the mark, capture lists the follow-ups"
+
 grep -q 'verdict_from_findings' "$REVIEWER" \
   || fail "reviewer does not derive the verdict from findings (prompt-only enforcement)"
 grep -q '"derived"\|derived' "$REVIEWER" || fail "verdict record must keep the derived value"

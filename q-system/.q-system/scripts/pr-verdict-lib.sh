@@ -309,6 +309,7 @@ has_complete_findings_block() {
 # function of them, so compute it instead of reading prose.
 #   any blocker -> BLOCK            (anchor: unrecoverable if merged)
 #   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
+#     ...unless its 4th field is `nonblocking` (ASK-2422, see _blocking_majors)
 #   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
 #   none        -> APPROVE
 # Empty when there is no COMPLETE FINDINGS block, so the caller falls back to
@@ -320,8 +321,8 @@ verdict_from_findings() {
   block="$(findings_block "$f")"
   printf '%s' "$block" | grep -q '^FINDINGS:' || return 0
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
-  elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
-  elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  elif printf '%s' "$block" | _blocking_majors | grep -q .; then printf 'REQUEST CHANGES'
+  elif printf '%s' "$block" | grep -qE '^(major|minor|nit)\|'; then printf 'APPROVE WITH NITS'
   # An empty block deriving APPROVE is a DELIBERATE contract, pinned by name in
   # test-severity-floor.sh: a round 2 that refutes everything must be able to land,
   # or approved PRs wedge forever. ASK-312 tried removing it and collided with that
@@ -724,6 +725,38 @@ extract_minor_findings() {
   local f="$1"
   [ -s "$f" ] || return 0
   findings_block "$f" | grep -E '^minor\|' || true
+}
+
+# _blocking_majors (stdin: a findings block)
+# The major rows that gate: every `major|claim|loc` row EXCEPT one whose 4th field
+# is exactly `nonblocking`.
+#
+# WHY THE MARK EXISTS (ASK-2422). A report-only gate PR took 4 review rounds, and
+# round 4's only major was one the reviewer itself called "not a blocker"; the next
+# PR's round 3 said the same words about its major. The ladder read `^major|` and
+# nothing else, so a reviewer had no way to put that judgment in the block, and its
+# own prose could not move the verdict. The mark is for a major the reviewer judges
+# safe to merge and fix after, including one that only bites in code the PR states
+# is report-only or dry-run. A blocker never reads the mark: real blockers block.
+#
+# EXACT 4TH FIELD, NOT A SUBSTRING. A location like `nonblocking.py:3` or a
+# claim that mentions the word must not release a gate; only the field does.
+_blocking_majors() {
+  awk -F'|' '/^major[|]/ { m = $4; gsub(/[ \t\r]/, "", m); if (m != "nonblocking") print }'
+}
+
+# extract_followup_findings <review-file>
+# What a terminal APPROVE WITH NITS leaves behind to fix: the minors, plus every
+# major the reviewer marked `nonblocking`. A released major is still a real defect;
+# it is listed with the minors so it reaches the run log, never dropped (ASK-2422).
+extract_followup_findings() {
+  local f="$1" block
+  [ -s "$f" ] || return 0
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 0
+  printf '%s\n' "$block" | awk -F'|' '
+    /^minor[|]/ { print; next }
+    /^major[|]/ { m = $4; gsub(/[ \t\r]/, "", m); if (m == "nonblocking") print }'
 }
 
 # review_comment_body <review-file> <verdict> <engine> <degraded>
