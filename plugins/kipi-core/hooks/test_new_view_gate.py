@@ -103,6 +103,10 @@ def main():
                                                     "new_string": "Phase 2 shipped today."}), 0)
         check("bold list phase", run(tmp, [], "Edit", {"file_path": "/r/h.md", "old_string": "",
                                                         "new_string": "- **Phase 2**: build"}), 2)
+        # 14d. review of #512: a shell read of the code is a view; a test run is not
+        check("bash grep of code", run(tmp, hist + [use("Bash", {"command": "grep -n foo src/app.py"})], "Edit", add2), 0)
+        check("bash cat of test only", run(tmp, hist + [use("Bash", {"command": "cat tests/test_app.py"})], "Edit", add2), 2)
+        check("pytest is not a view", run(tmp, hist + [use("Bash", {"command": "pytest src/app.py -q"})], "Edit", add2), 2)
         # 15. no transcript: fail open
         p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
             {"tool_name": "Edit", "tool_input": add1, "transcript_path": str(t / "none")}),

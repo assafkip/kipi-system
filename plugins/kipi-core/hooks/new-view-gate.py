@@ -29,8 +29,8 @@ THE RULE (deterministic, read from the session transcript):
   a different view".
 
 HONEST BOUNDARY: this proves a different thing was LOOKED AT between additions. It
-cannot prove the look changed the thinking. Bash `cat`/`sed` reads do not count
-(path extraction from shell text is guesswork); use Read/Grep or an agent.
+cannot prove the look changed the thinking. A Bash read (cat, sed -n, grep, rg,
+git show ...) counts when it names a non-test path; a test run never counts.
 
 Fails OPEN on missing/unreadable transcript or malformed input: a hook that fails
 closed on its own infrastructure blocks the fix too. Kill switch for the founder's
@@ -74,6 +74,10 @@ RE_TEST_DEF = re.compile(
 
 # A heading or a bold list item only. Prose that starts "Phase 2 ..." in a
 # handoff or PR body is not a new phase (review of #512).
+RE_BASH_READ = re.compile(
+    r"(^|[;&|]\s*|\s)(cat|sed\s+-n|head|tail|grep|rg|awk|less|git\s+(show|grep|log|diff))\b")
+RE_TEST_RUN = re.compile(r"\b(pytest|unittest|npm\s+test|go\s+test|cargo\s+test|jest|vitest)\b")
+
 RE_PHASE = re.compile(
     r"^(?:#{1,6}\s+|\s*[-*]\s+\*\*)Phase\s+[0-9A-Za-z.]+\b",
     re.MULTILINE | re.IGNORECASE,
@@ -156,6 +160,15 @@ def view_key(tool: str, inp: dict) -> str | None:
         return "kb:" + json.dumps(inp, sort_keys=True)[:200]
     if tool == "Bash" and re.search(r"\bmiyo\s+search\b", inp.get("command", "")):
         return "kb:" + inp.get("command", "")[:200]
+    # A shell read of a non-test path is a look at the code too. Review of #512:
+    # a real transcript had 34 Bash calls and 0 Read/Grep/Glob, so ignoring the
+    # shell blocked sessions that had looked. Test runners are not a view.
+    if tool == "Bash":
+        cmd = inp.get("command", "")
+        if RE_BASH_READ.search(cmd) and not RE_TEST_RUN.search(cmd):
+            paths = [w for w in re.findall(r"[\w./~\-]+", cmd) if "/" in w or "." in w]
+            if any(not is_test_path(w) for w in paths):
+                return "bash:" + " ".join(cmd.split())[:200]
     if tool in LOOK_TOOLS:
         target = inp.get("file_path") or inp.get("path") or ""
         pattern = inp.get("pattern") or ""
