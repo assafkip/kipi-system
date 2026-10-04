@@ -796,3 +796,33 @@ def test_the_fleet_update_refusal_reaches_stdout_too(tmp_path):
     assert "fleet updater run in progress" in out.stdout, (
         "the fleet-updater refusal did not reach STDOUT.\n"
         f"stdout={out.stdout!r}\nstderr={out.stderr!r}")
+
+
+class TestRcasReachGit:
+    """PR #511 review, major. .gitignore re-includes q-system/output/rca/, but
+    the `q-system/output/` prefix dropped those paths before classify ran, so
+    an RCA was never committed, never ignored and never reported."""
+
+    def test_an_rca_is_committable_content(self):
+        mod = _hook_module()
+        assert mod.classify("q-system/output/rca/rca-x-2026-10-03.md") == ("content", "add RCAs")
+        assert mod.classify("q-system/output/report.md") == mod.SKIP_DECLARED
+
+    def test_an_rca_survives_the_changed_file_filter(self, monkeypatch):
+        mod = _hook_module()
+
+        class R:
+            def __init__(self, out):
+                self.stdout, self.returncode = out, 0
+        outs = {"diff": "", "ls-files": "q-system/output/rca/rca-x-2026-10-03.md\nq-system/output/report.md\n"}
+        monkeypatch.setattr(mod, "run", lambda cmd, **k: R(outs.get(cmd[1], "")))
+        files = mod.get_changed_files()
+        assert "q-system/output/rca/rca-x-2026-10-03.md" in files
+        assert "q-system/output/report.md" not in files
+
+    def test_the_rca_directory_is_not_gitignored(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        r = subprocess.run(["git", "check-ignore", "-q", "q-system/output/rca/probe.md"],
+                           cwd=root, capture_output=True)
+        assert r.returncode == 1, "the RCA directory must not be ignored, or no RCA reaches git"

@@ -17,6 +17,8 @@ from collections import defaultdict
 
 PROJ_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
 
+RCA_PREFIX = "q-system/output/rca/"
+
 # Map file paths to commit areas
 AREA_MAP = [
     ("q-system/canonical/",           "content",  "update canonical files"),
@@ -33,6 +35,10 @@ AREA_MAP = [
     # did not list (*.md was not listed), and such a file is never committed,
     # never ignored and never even reported, so it blocks the fleet sync
     # invisibly. cole-gtm sat stuck on two of them.
+    # RCAs are the record, not exhaust, and .gitignore re-includes them. Without
+    # this row the prefix below dropped them before classify: un-ignored, never
+    # committed, never reported (PR #511 review). Must stay above the output row.
+    (RCA_PREFIX,                      "content",  "add RCAs"),
     ("q-system/output/",              None,       None),
     ("q-system/hooks/",               "chore",    "update hooks"),
     ("q-system/.q-system/agent-pipeline/", "feat", "update agent pipeline"),
@@ -144,7 +150,7 @@ def get_changed_files():
     # longer be committed for you) and is a deliberate design call, not a cleanup.
 
     # Filter out empty strings and gitignored patterns
-    return {f for f in files if f and not f.startswith("q-system/output/")}
+    return {f for f in files if f and (f.startswith(RCA_PREFIX) or not f.startswith("q-system/output/"))}
 
 
 # AREA_MAP's prefixes all start `q-system/`, which is the SKELETON. In an INSTANCE the
