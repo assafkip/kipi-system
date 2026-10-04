@@ -35,7 +35,8 @@ relevance is a judgment no transcript regex can make). A Bash read (cat, sed -n,
 grep, rg, git show ...) counts when it names a non-test path; a test run never
 counts, including a test file run directly (python3 x/test_a.py, bash test-a.sh) and
 a suite runner (verify.sh, run-tests, make test, npm test). A command is judged per
-segment (split on ; && || and newlines), so a read chained with a test run counts.
+segment (shell-lexed, split on ; && || & and newlines, quotes and backslash
+continuations respected), so a read chained with a test run counts.
 
 An internal error fails open and prints one line to stderr naming it.
 
@@ -57,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -109,8 +111,11 @@ RE_SUITE = re.compile(r"verify\.sh|ci-shaped-run\.sh|run[-_]tests?(\.sh)?")
 RE_RUN_OUTPUT = re.compile(r"(?:\d?>>?|\btee(?:\s+-a)?)\s*([^\s;&|<>]+)")
 # A Bash command is judged per segment. sp-df1f13a5: `git diff gate.py && python3
 # test_gate.py` lost the git-diff credit because the whole string was a test run.
-# A pipe is NOT a split: `python3 test_a.py | tail` is one test run, not a read.
-RE_SEGMENT_SPLIT = re.compile(r"\s*(?:;|&&|\|\||\n)\s*")
+# Segments come from the shell LEXER, not a regex (review round 2 of #514): a regex
+# split was quote-blind (`grep 'a; b' src/x.py` lost its path and was blocked) and
+# treated a backslash-newline as a boundary (a continued pytest run earned a view).
+# Two rounds produced one regex finding each, in opposite directions.
+SEGMENT_SEPS = {";", "&&", "||", "&", ";;"}
 # Running a test FILE directly is a test run too. ASK-2473: `cd repo && python3
 # hooks/test_x.py | tail` named a non-test path (the cd target) and a reader (tail),
 # so run-the-suite-then-add-a-test passed as a view.
@@ -155,6 +160,38 @@ def is_test_run(cmd: str) -> bool:
             if rest and is_test_file(rest[0]):
                 return True
     return False
+
+
+def bash_segments(cmd: str) -> list[str]:
+    """Split a shell command into pipelines on ; && || & and newlines, via shlex.
+
+    A pipe is NOT a split: `python3 test_a.py | tail` is one test run, not a read,
+    and `pytest | tee p.log` must keep its output file inside the test run.
+    Unbalanced quotes: the whole command is one segment, so a test run anywhere in
+    it grants no view (fail toward NOT crediting a look).
+    """
+    text = (cmd or "").replace("\\\n", " ")
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
+        lex.whitespace_split = True
+        lex.whitespace = " \t\r"
+        tokens = list(lex)
+    except ValueError:
+        return [cmd or ""]
+    segs, cur = [], []
+    for tok in tokens:
+        bare = tok.replace("\n", "")
+        # A quoted word may hold these chars too; only an all-operator token is one.
+        is_op = bool(tok) and not tok.strip(";&|()<>\n")
+        if is_op and (bare == "" or bare in SEGMENT_SEPS):
+            if cur:
+                segs.append(" ".join(cur))
+            cur = []
+            continue
+        cur.append(bare if is_op else tok)
+    if cur:
+        segs.append(" ".join(cur))
+    return segs or [""]
 
 
 def is_markdown(path: str) -> bool:
@@ -239,7 +276,7 @@ def view_key(tool: str, inp: dict) -> str | None:
     # shell blocked sessions that had looked. Test runners are not a view.
     if tool == "Bash":
         cmd = inp.get("command", "")
-        segs = RE_SEGMENT_SPLIT.split(cmd)
+        segs = bash_segments(cmd)
         outputs = {o for seg in segs if is_test_run(seg) for o in RE_RUN_OUTPUT.findall(seg)}
         for seg in segs:
             if not RE_BASH_READ.search(seg) or is_test_run(seg):

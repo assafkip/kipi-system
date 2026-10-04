@@ -156,6 +156,8 @@ def main():
         # 14i. sp-df1f13a5 nit 1: a code read chained with a test run keeps the read credit
         check("read && test run", run(tmp, hist + [use("Bash", {
             "command": "git diff src/app.py && python3 tests/test_app.py"})], "Edit", add2), 0)
+        check("newline-chained read + test run", run(tmp, hist + [use("Bash", {
+            "command": "git diff src/app.py\npython3 tests/test_app.py"})], "Edit", add2), 0)
         check("test run ; read", run(tmp, hist + [use("Bash", {
             "command": "python3 tests/test_app.py; cat src/app.py"})], "Edit", add2), 0)
         check("test run piped to tail", run(tmp, hist + [use("Bash", {
@@ -197,6 +199,21 @@ def main():
         # 14o. review of #514 minor 3: reading a suite runner's SOURCE is a view
         for cmd in ["cat q-system/.q-system/verify.sh", "sed -n '1,60p' scripts/run-tests.sh"]:
             check(f"read runner source: {cmd[:24]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 0)
+        # 14p. review round 2 of #514: segmentation is shell-tokenized, not regex-split.
+        # Major 1: a backslash-continued test run is ONE command, never a free view.
+        for cmd in ["python3 -m pytest \\\n  --rootdir ~/projects/kipi-system -q | tail -20",
+                    "bash q-system/.q-system/verify.sh \\\n  --base origin/main | tail -40"]:
+            check(f"continued test run: {cmd[:24]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 2)
+        # Major 2: a quoted ; or && is part of the pattern, not a command boundary.
+        for cmd in ["grep -n 'a; b' src/app.py", 'rg "foo && bar" src/x.py', "grep 'a;b' src/x.py",
+                    "grep -n 'x || y' src/app.py"]:
+            check(f"quoted metachar read: {cmd[:24]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 0)
+        # Unbalanced quotes: one segment, judged whole. A test run in it grants nothing.
+        check("unbalanced quote + test run", run(tmp, hist + [use("Bash", {
+            "command": "cat src/app.py; pytest -q 'oops"})], "Edit", add2), 2)
+        # The chained read still counts after the rewrite (sp-df1f13a5 kept).
+        check("chained read + test run", run(tmp, hist + [use("Bash", {
+            "command": "git diff src/app.py && python3 tests/test_app.py"})], "Edit", add2), 0)
         # 14l. sp-df1f13a5 nit 4: an internal bug fails open AND names itself on stderr
         rc, err = run_err(tmp, [[{"type": "user", "message": {"content": 5}}]], "Edit", add1)
         check("internal error is loud", (rc, len(err.strip().splitlines()), "TypeError" in err), (0, 1, True))
