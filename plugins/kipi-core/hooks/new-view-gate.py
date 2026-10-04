@@ -29,8 +29,16 @@ THE RULE (deterministic, read from the session transcript):
   a different view".
 
 HONEST BOUNDARY: this proves a different thing was LOOKED AT between additions. It
-cannot prove the look changed the thinking. A Bash read (cat, sed -n, grep, rg,
-git show ...) counts when it names a non-test path; a test run never counts.
+cannot prove the look changed the thinking. ANY fresh non-test read satisfies the
+gate, including one unrelated to the problem (sp-e96411d5 item 1, kept on purpose:
+relevance is a judgment no transcript regex can make). A Bash read (cat, sed -n,
+grep, rg, git show ...) counts when it names a non-test path; a test run never
+counts, including a test file run directly (python3 x/test_a.py, bash test-a.sh).
+
+A PAST Write is judged by what Claude Code stored for it: toolUseResult.type
+create|update and originalFile. A rewrite of an existing test file with no new defs
+is then not an addition. When that record is missing (an older transcript, a call
+still pending), the Write to a test file counts as an addition, conservatively.
 
 Fails OPEN on missing/unreadable transcript or malformed input: a hook that fails
 closed on its own infrastructure blocks the fix too. Kill switch for the founder's
@@ -46,6 +54,10 @@ import os
 import re
 import sys
 from pathlib import Path
+
+# Keys tool_calls() adds to a COPY of a past Write's input. Never in a live payload.
+PRIOR_TEXT = "__nvg_original_file__"
+PRIOR_NEW = "__nvg_created__"
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 AGENT_TOOLS = {"Agent", "Task"}
@@ -77,6 +89,10 @@ RE_TEST_DEF = re.compile(
 RE_BASH_READ = re.compile(
     r"(^|[;&|]\s*|\s)(cat|sed\s+-n|head|tail|grep|rg|awk|less|git\s+(show|grep|log|diff))\b")
 RE_TEST_RUN = re.compile(r"\b(pytest|unittest|npm\s+test|go\s+test|cargo\s+test|jest|vitest)\b")
+# Running a test FILE directly is a test run too. ASK-2473: `cd repo && python3
+# hooks/test_x.py | tail` named a non-test path (the cd target) and a reader (tail),
+# so run-the-suite-then-add-a-test passed as a view.
+INTERPRETERS = {"python", "python3", "bash", "sh", "zsh", "node", "deno", "bun", "ruby", "perl"}
 
 RE_PHASE = re.compile(
     r"^(?:#{1,6}\s+|\s*[-*]\s+\*\*)Phase\s+[0-9A-Za-z.]+\b",
@@ -95,6 +111,22 @@ def is_test_file(path: str) -> bool:
 
 def is_test_path(path: str) -> bool:
     return bool(path) and bool(RE_TEST_PATH.search(path.replace("\\", "/")))
+
+
+def is_test_run(cmd: str) -> bool:
+    """A Bash command that runs tests: a runner, or an interpreter given a test file."""
+    if RE_TEST_RUN.search(cmd or ""):
+        return True
+    words = re.split(r"[\s;&|()]+", cmd or "")
+    for i, w in enumerate(words):
+        name = w.rsplit("/", 1)[-1]
+        if w.startswith("./") and is_test_file(w):
+            return True
+        if name in INTERPRETERS or re.fullmatch(r"python3\.\d+", name):
+            rest = [x for x in words[i + 1:] if x and not x.startswith("-")]
+            if rest and is_test_file(rest[0]):
+                return True
+    return False
 
 
 def is_markdown(path: str) -> bool:
@@ -119,6 +151,11 @@ def _old_and_new(tool: str, inp: dict, read_disk: bool) -> tuple[str, str, bool]
     # Write
     new = inp.get("content", "")
     if not read_disk:
+        # tool_calls() copies the stored outcome of a past Write onto its input.
+        if isinstance(inp.get(PRIOR_TEXT), str):
+            return inp[PRIOR_TEXT], new, False
+        if inp.get(PRIOR_NEW):
+            return "", new, True
         return "", new, False
     p = Path(path)
     if not p.exists():
@@ -143,7 +180,8 @@ def addition_kind(tool: str, inp: dict, read_disk: bool = True) -> str | None:
         # A PAST Write cannot be diffed (disk has moved on), and a test file in
         # check(...) style has no def to count. Found live 2026-10-03: the gate's
         # own self-test was written that way and did not reset the clock.
-        if tool == "Write" and not read_disk and new.strip() and is_test_file(path):
+        if (tool == "Write" and not read_disk and new.strip() and is_test_file(path)
+                and PRIOR_TEXT not in inp):
             return "test"
     if is_markdown(path) and _count(RE_PHASE, new) > _count(RE_PHASE, old):
         return "phase"
@@ -165,7 +203,7 @@ def view_key(tool: str, inp: dict) -> str | None:
     # shell blocked sessions that had looked. Test runners are not a view.
     if tool == "Bash":
         cmd = inp.get("command", "")
-        if RE_BASH_READ.search(cmd) and not RE_TEST_RUN.search(cmd):
+        if RE_BASH_READ.search(cmd) and not is_test_run(cmd):
             paths = [w for w in re.findall(r"[\w./~\-]+", cmd) if "/" in w or "." in w]
             if any(not is_test_path(w) for w in paths):
                 return "bash:" + " ".join(cmd.split())[:200]
@@ -189,22 +227,30 @@ def _records(transcript_path):
     out = []
     for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         try:
-            out.append(json.loads(line))
+            rec = json.loads(line)
         except Exception:
             continue
+        # ASK-2472: a list/str/number line raised AttributeError in tool_calls.
+        if isinstance(rec, dict):
+            out.append(rec)
     return out
 
 
 def tool_calls(records) -> list[tuple[str, dict]]:
     """(name, input) for every tool call that was not refused or errored."""
+    records = [r for r in records if isinstance(r, dict)]
     failed = set()
+    stored = {}
     for rec in records:
         msg = rec.get("message", {})
         if isinstance(msg, dict):
             for item in msg.get("content", []) or []:
-                if (isinstance(item, dict) and item.get("type") == "tool_result"
-                        and item.get("is_error")):
+                if not (isinstance(item, dict) and item.get("type") == "tool_result"):
+                    continue
+                if item.get("is_error"):
                     failed.add(item.get("tool_use_id"))
+                if isinstance(rec.get("toolUseResult"), dict):
+                    stored[item.get("tool_use_id")] = rec["toolUseResult"]
     calls = []
     for rec in records:
         msg = rec.get("message", {})
@@ -213,18 +259,32 @@ def tool_calls(records) -> list[tuple[str, dict]]:
         for item in msg.get("content", []) or []:
             if (isinstance(item, dict) and item.get("type") == "tool_use"
                     and item.get("id") not in failed):
-                calls.append((item.get("name", ""), item.get("input") or {}))
+                name, inp = item.get("name", ""), item.get("input") or {}
+                res = stored.get(item.get("id"))
+                if name == "Write" and isinstance(inp, dict) and res:
+                    inp = dict(inp)
+                    if res.get("type") == "update" and isinstance(res.get("originalFile"), str):
+                        inp[PRIOR_TEXT] = res["originalFile"]
+                    elif res.get("type") == "create":
+                        inp[PRIOR_NEW] = True
+                calls.append((name, inp))
     return calls
+
+
+def last_addition(calls) -> int:
+    """Index of the last past test/phase addition, -1 if none this session."""
+    last_add = -1
+    for i, (name, inp) in enumerate(calls):
+        # Past writes: the file on disk has moved on, so judge them by their own
+        # input plus the stored originalFile tool_calls() attached.
+        if addition_kind(name, inp, read_disk=False):
+            last_add = i
+    return last_add
 
 
 def has_new_view(calls) -> bool:
     """Since the last addition, was a view taken that was not used before it?"""
-    last_add = -1
-    for i, (name, inp) in enumerate(calls):
-        # Past writes: the file on disk has moved on, so judge them by their own
-        # input only (a Write to a test file with test defs counts as an add).
-        if addition_kind(name, inp, read_disk=False):
-            last_add = i
+    last_add = last_addition(calls)
     before = {view_key(n, x) for n, x in calls[:last_add + 1]} - {None}
     after = [view_key(n, x) for n, x in calls[last_add + 1:]]
     return any(k and k not in before for k in after)
@@ -248,12 +308,19 @@ def main() -> int:
         return 0
     if records is None:
         return 0
-    if has_new_view(tool_calls(records)):
+    try:
+        calls = tool_calls(records)
+        if has_new_view(calls):
+            return 0
+        prior = last_addition(calls) >= 0
+    except Exception:
         return 0
     path = inp.get("file_path") or inp.get("notebook_path") or ""
+    # ASK-2473: with no earlier addition, "since the last test was added" was false.
+    when = ("no NEW view was taken since the last test/phase was added" if prior
+            else "no view was taken yet this session")
     print(
-        f"BLOCKED by new-view-gate: this write adds a {kind} ({path}) and no NEW "
-        "view was taken since the last test/phase was added.\n"
+        f"BLOCKED by new-view-gate: this write adds a {kind} ({path}) and {when}.\n"
         "Adding another test or phase from the same view tests the view, not the "
         "code. First look at the problem differently, with ONE of:\n"
         "  - a fresh agent (Agent tool) on the problem, not on your fix\n"

@@ -15,14 +15,18 @@ HOOK = Path(__file__).with_name("new-view-gate.py")
 _n = 0
 
 
-def use(name, inp, error=False):
+def use(name, inp, error=False, result=None):
     global _n
     _n += 1
     tid = f"t{_n}"
     rows = [{"type": "assistant", "message": {"content": [
         {"type": "tool_use", "id": tid, "name": name, "input": inp}]}}]
-    rows.append({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": tid, "is_error": error}]}})
+    user = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": tid, "is_error": error}]}}
+    if result is not None:
+        # Claude Code stores the Write outcome here: type create|update + originalFile.
+        user["toolUseResult"] = result
+    rows.append(user)
     return rows
 
 
@@ -35,6 +39,16 @@ def run(tmp, calls, tool, inp, env_extra=None):
         {"tool_name": tool, "tool_input": inp, "transcript_path": str(tr)}),
         capture_output=True, text=True, env=env)
     return p.returncode
+
+
+def run_err(tmp, calls, tool, inp):
+    tr = Path(tmp) / f"tre{_n}.jsonl"
+    tr.write_text("\n".join(json.dumps(r) for c in calls for r in c))
+    env = {k: v for k, v in os.environ.items() if k != "NEW_VIEW_GATE_OFF"}
+    p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
+        {"tool_name": tool, "tool_input": inp, "transcript_path": str(tr)}),
+        capture_output=True, text=True, env=env)
+    return p.returncode, p.stderr
 
 
 def main():
@@ -107,6 +121,38 @@ def main():
         check("bash grep of code", run(tmp, hist + [use("Bash", {"command": "grep -n foo src/app.py"})], "Edit", add2), 0)
         check("bash cat of test only", run(tmp, hist + [use("Bash", {"command": "cat tests/test_app.py"})], "Edit", add2), 2)
         check("pytest is not a view", run(tmp, hist + [use("Bash", {"command": "pytest src/app.py -q"})], "Edit", add2), 2)
+        # 14e. ASK-2473: running a test file directly is a test run, not a view,
+        # even when the command also names a non-test path (cd, a tail pipe)
+        check("direct python test run", run(tmp, hist + [use("Bash", {
+            "command": "cd ~/projects/r && python3 plugins/k/hooks/test_app.py 2>&1 | tail -3"})], "Edit", add2), 2)
+        check("direct bash test run", run(tmp, hist + [use("Bash", {
+            "command": "cd ~/projects/r && bash scripts/test-app.sh | tail -5"})], "Edit", add2), 2)
+        check("python -m pytest run", run(tmp, hist + [use("Bash", {
+            "command": "cd ~/projects/r && python3 -m pytest -q src/app.py | tail -3"})], "Edit", add2), 2)
+        # 14f. ASK-2473: no prior addition means the message must not claim one
+        rc, err = run_err(tmp, [], "Edit", add1)
+        check("first-add message", (rc, "no view was taken yet this session" in err,
+                                    "since the last" in err), (2, True, False))
+        rc, err = run_err(tmp, hist, "Edit", add2)
+        check("later-add message", (rc, "since the last" in err), (2, True))
+        # 14g. ASK-2472: a non-dict JSONL record is skipped, not a crash
+        check("non-dict record skipped", run(tmp, [[[1, 2], "s", 3]], "Edit", add1), 2)
+        check("non-dict record + view", run(tmp, [[[1, 2]], use("Read", {"file_path": src})], "Edit", add1), 0)
+        # 14h. ASK-2472: a past Write that REWROTE a test file without new defs is
+        # not an addition; its stored originalFile decides
+        body = "def test_a():\n    pass\n"
+        same = [use("Read", {"file_path": src}),
+                use("Write", {"file_path": tst, "content": body},
+                    result={"type": "update", "filePath": tst, "originalFile": body})]
+        check("past rewrite no new defs", run(tmp, same, "Edit", add2), 0)
+        grew = [use("Read", {"file_path": src}),
+                use("Write", {"file_path": tst, "content": body + "def test_b():\n    pass\n"},
+                    result={"type": "update", "filePath": tst, "originalFile": body})]
+        check("past rewrite with new def", run(tmp, grew, "Edit", add2), 2)
+        made = [use("Read", {"file_path": src}),
+                use("Write", {"file_path": tst, "content": "check('a', 1, 1)"},
+                    result={"type": "create", "filePath": tst, "originalFile": None})]
+        check("past create counts", run(tmp, made, "Edit", add2), 2)
         # 15. no transcript: fail open
         p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
             {"tool_name": "Edit", "tool_input": add1, "transcript_path": str(t / "none")}),
