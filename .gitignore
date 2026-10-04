@@ -30,6 +30,13 @@ q-system/output/content-intel/*
 q-system/output/investor-updates/*
 q-system/output/marketing/linkedin/*
 !**/.gitkeep
+# RCAs are the record, not exhaust. The `**` rule above swallowed them, so no
+# RCA ever reached git and a lost checkout lost every postmortem. Git cannot
+# re-include a file under an excluded parent, so the directory is re-included
+# first, then its contents. build-template-repo.sh copies this file, so new
+# instances get the rule too.
+!q-system/output/rca/
+!q-system/output/rca/**
 
 # Plans (auto-created by Claude Code)
 .claude/plans/
