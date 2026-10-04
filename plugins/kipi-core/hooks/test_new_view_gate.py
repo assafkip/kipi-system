@@ -153,6 +153,37 @@ def main():
                 use("Write", {"file_path": tst, "content": "check('a', 1, 1)"},
                     result={"type": "create", "filePath": tst, "originalFile": None})]
         check("past create counts", run(tmp, made, "Edit", add2), 2)
+        # 14i. sp-df1f13a5 nit 1: a code read chained with a test run keeps the read credit
+        check("read && test run", run(tmp, hist + [use("Bash", {
+            "command": "git diff src/app.py && python3 tests/test_app.py"})], "Edit", add2), 0)
+        check("test run ; read", run(tmp, hist + [use("Bash", {
+            "command": "python3 tests/test_app.py; cat src/app.py"})], "Edit", add2), 0)
+        check("test run piped to tail", run(tmp, hist + [use("Bash", {
+            "command": "python3 tests/test_app.py | tail -3"})], "Edit", add2), 2)
+        # 14j. sp-df1f13a5 nit 2: suite runners are test runs, not views
+        for cmd in ["bash q-system/.q-system/verify.sh --changed --base origin/main | tail",
+                    "bash scripts/ci-shaped-run.sh --all 2>&1 | tail -3",
+                    "./run-tests.sh src/app.py | tail", "cd src/app.d && make test 2>&1 | tail -5",
+                    "npm test -- src/app.js | tail"]:
+            check(f"suite runner: {cmd[:30]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 2)
+        # 14k. sp-df1f13a5 nit 3: a past check()-style rewrite that adds checks resets
+        # the clock; one that adds none does not; an EMPTY stored original still counts
+        cbody = "check('a', 1, 1)\n"
+        cgrew = [use("Read", {"file_path": src}),
+                 use("Write", {"file_path": tst, "content": cbody + "check('b', 2, 2)\n"},
+                     result={"type": "update", "filePath": tst, "originalFile": cbody})]
+        check("past check-style rewrite adds checks", run(tmp, cgrew, "Edit", add2), 2)
+        csame = [use("Read", {"file_path": src}),
+                 use("Write", {"file_path": tst, "content": cbody},
+                     result={"type": "update", "filePath": tst, "originalFile": cbody})]
+        check("past check-style rewrite no new checks", run(tmp, csame, "Edit", add2), 0)
+        cempty = [use("Read", {"file_path": src}),
+                  use("Write", {"file_path": tst, "content": cbody},
+                      result={"type": "update", "filePath": tst, "originalFile": ""})]
+        check("past write over empty original", run(tmp, cempty, "Edit", add2), 2)
+        # 14l. sp-df1f13a5 nit 4: an internal bug fails open AND names itself on stderr
+        rc, err = run_err(tmp, [[{"type": "user", "message": {"content": 5}}]], "Edit", add1)
+        check("internal error is loud", (rc, len(err.strip().splitlines()), "TypeError" in err), (0, 1, True))
         # 15. no transcript: fail open
         p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
             {"tool_name": "Edit", "tool_input": add1, "transcript_path": str(t / "none")}),

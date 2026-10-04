@@ -33,12 +33,17 @@ cannot prove the look changed the thinking. ANY fresh non-test read satisfies th
 gate, including one unrelated to the problem (sp-e96411d5 item 1, kept on purpose:
 relevance is a judgment no transcript regex can make). A Bash read (cat, sed -n,
 grep, rg, git show ...) counts when it names a non-test path; a test run never
-counts, including a test file run directly (python3 x/test_a.py, bash test-a.sh).
+counts, including a test file run directly (python3 x/test_a.py, bash test-a.sh) and
+a suite runner (verify.sh, run-tests, make test, npm test). A command is judged per
+segment (split on ; && || and newlines), so a read chained with a test run counts.
+
+An internal error fails open and prints one line to stderr naming it.
 
 A PAST Write is judged by what Claude Code stored for it: toolUseResult.type
 create|update and originalFile. A rewrite of an existing test file with no new defs
-is then not an addition. When that record is missing (an older transcript, a call
-still pending), the Write to a test file counts as an addition, conservatively.
+is then not an addition, unless it adds check()/assert lines (a check-style file has
+no defs). When that record is missing or its original is empty (an older transcript,
+a call still pending), the Write to a test file counts as an addition, conservatively.
 
 Fails OPEN on missing/unreadable transcript or malformed input: a hook that fails
 closed on its own infrastructure blocks the fix too. Kill switch for the founder's
@@ -84,11 +89,23 @@ RE_TEST_DEF = re.compile(
     re.MULTILINE,
 )
 
+# A test file in check(...)/assert style has no def to count, so its additions are
+# counted as checks. sp-df1f13a5: the gate's own self-test is this shape.
+RE_CHECK = re.compile(r"^\s*(?:assert\b|check\s*\(|expect\s*\()", re.MULTILINE)
+
 # A heading or a bold list item only. Prose that starts "Phase 2 ..." in a
 # handoff or PR body is not a new phase (review of #512).
 RE_BASH_READ = re.compile(
     r"(^|[;&|]\s*|\s)(cat|sed\s+-n|head|tail|grep|rg|awk|less|git\s+(show|grep|log|diff))\b")
-RE_TEST_RUN = re.compile(r"\b(pytest|unittest|npm\s+test|go\s+test|cargo\s+test|jest|vitest)\b")
+RE_TEST_RUN = re.compile(
+    r"\b(pytest|unittest|npm\s+test|go\s+test|cargo\s+test|jest|vitest|make\s+test)\b"
+    # Suite runners. sp-df1f13a5: `bash q-system/.q-system/verify.sh --changed | tail`
+    # named a non-test path and a reader, so running the suite still passed as a view.
+    r"|(^|[/\s])(verify\.sh|ci-shaped-run\.sh|run[-_]tests?(\.sh)?)\b")
+# A Bash command is judged per segment. sp-df1f13a5: `git diff gate.py && python3
+# test_gate.py` lost the git-diff credit because the whole string was a test run.
+# A pipe is NOT a split: `python3 test_a.py | tail` is one test run, not a read.
+RE_SEGMENT_SPLIT = re.compile(r"\s*(?:;|&&|\|\||\n)\s*")
 # Running a test FILE directly is a test run too. ASK-2473: `cd repo && python3
 # hooks/test_x.py | tail` named a non-test path (the cd target) and a reader (tail),
 # so run-the-suite-then-add-a-test passed as a view.
@@ -177,12 +194,17 @@ def addition_kind(tool: str, inp: dict, read_disk: bool = True) -> str | None:
             return "test"
         if is_new and new.strip() and is_test_file(path):
             return "test"
-        # A PAST Write cannot be diffed (disk has moved on), and a test file in
-        # check(...) style has no def to count. Found live 2026-10-03: the gate's
-        # own self-test was written that way and did not reset the clock.
-        if (tool == "Write" and not read_disk and new.strip() and is_test_file(path)
-                and PRIOR_TEXT not in inp):
-            return "test"
+        # A PAST Write cannot be diffed against disk (it has moved on), and a test
+        # file in check(...) style has no def to count. Found live 2026-10-03: the
+        # gate's own self-test was written that way and did not reset the clock.
+        # sp-df1f13a5: #513 skipped this whenever a stored update record existed, so
+        # a rewrite adding three check() lines no longer reset it. With a non-empty
+        # stored original, compare checks; with none (missing, empty), count it.
+        if tool == "Write" and not read_disk and new.strip() and is_test_file(path):
+            if not inp.get(PRIOR_TEXT):
+                return "test"
+            if _count(RE_CHECK, new) > _count(RE_CHECK, old):
+                return "test"
     if is_markdown(path) and _count(RE_PHASE, new) > _count(RE_PHASE, old):
         return "phase"
     return None
@@ -203,8 +225,10 @@ def view_key(tool: str, inp: dict) -> str | None:
     # shell blocked sessions that had looked. Test runners are not a view.
     if tool == "Bash":
         cmd = inp.get("command", "")
-        if RE_BASH_READ.search(cmd) and not is_test_run(cmd):
-            paths = [w for w in re.findall(r"[\w./~\-]+", cmd) if "/" in w or "." in w]
+        for seg in RE_SEGMENT_SPLIT.split(cmd):
+            if not RE_BASH_READ.search(seg) or is_test_run(seg):
+                continue
+            paths = [w for w in re.findall(r"[\w./~\-]+", seg) if "/" in w or "." in w]
             if any(not is_test_path(w) for w in paths):
                 return "bash:" + " ".join(cmd.split())[:200]
     if tool in LOOK_TOOLS:
@@ -313,7 +337,11 @@ def main() -> int:
         if has_new_view(calls):
             return 0
         prior = last_addition(calls) >= 0
-    except Exception:
+    except Exception as exc:
+        # Fail open, but never silently. sp-df1f13a5: a bare `return 0` here turned
+        # any internal bug into a fleet-wide open gate with no operator signal.
+        print(f"new-view-gate: internal error, failing open: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
         return 0
     path = inp.get("file_path") or inp.get("notebook_path") or ""
     # ASK-2473: with no earlier addition, "since the last test was added" was false.
