@@ -181,6 +181,22 @@ def main():
                   use("Write", {"file_path": tst, "content": cbody},
                       result={"type": "update", "filePath": tst, "originalFile": ""})]
         check("past write over empty original", run(tmp, cempty, "Edit", add2), 2)
+        # 14m. review of #514 major 1: reading the test run's OWN output file is not a view
+        for cmd in ["bash q-system/.q-system/verify.sh --changed > /tmp/v.log; tail -40 /tmp/v.log",
+                    "make test > /tmp/t.log 2>&1; cat /tmp/t.log",
+                    "python3 tests/test_app.py > /tmp/o.txt; tail -5 /tmp/o.txt",
+                    "pytest -q 2>&1 | tee /tmp/p.log; grep FAIL /tmp/p.log"]:
+            check(f"run then read own log: {cmd[:30]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 2)
+        check("run to log, then read code", run(tmp, hist + [use("Bash", {
+            "command": "pytest -q > /tmp/p.log; grep -n foo src/app.py"})], "Edit", add2), 0)
+        # 14n. review of #514 major 2: a LIVE edit adding check() lines is a test add
+        cadd = {"file_path": str(t / "test_gate.py"), "old_string": "check('a', 1, 1)",
+                "new_string": "check('a', 1, 1)\ncheck('b', 2, 2)"}
+        check("live check() add, no view", run(tmp, [], "Edit", cadd), 2)
+        check("live check() add, with view", run(tmp, [use("Read", {"file_path": src})], "Edit", cadd), 0)
+        # 14o. review of #514 minor 3: reading a suite runner's SOURCE is a view
+        for cmd in ["cat q-system/.q-system/verify.sh", "sed -n '1,60p' scripts/run-tests.sh"]:
+            check(f"read runner source: {cmd[:24]}", run(tmp, hist + [use("Bash", {"command": cmd})], "Edit", add2), 0)
         # 14l. sp-df1f13a5 nit 4: an internal bug fails open AND names itself on stderr
         rc, err = run_err(tmp, [[{"type": "user", "message": {"content": 5}}]], "Edit", add1)
         check("internal error is loud", (rc, len(err.strip().splitlines()), "TypeError" in err), (0, 1, True))
