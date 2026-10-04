@@ -846,6 +846,16 @@ GIT_OPERATION_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
                          "rebase-merge", "rebase-apply")
 
 
+def is_remote_session(env=None):
+    """True in a Claude Code cloud session, which sets CLAUDE_CODE_REMOTE=true.
+
+    Same reading as notes-publish.py's is_remote_session; kept local because
+    this hook must run with nothing importable beside it.
+    """
+    env = os.environ if env is None else env
+    return env.get("CLAUDE_CODE_REMOTE", "").strip().lower() in ("1", "true", "yes")
+
+
 def git_operation_in_progress():
     """The marker of a paused git operation in this checkout, or None."""
     for marker in GIT_OPERATION_MARKERS:
@@ -896,6 +906,20 @@ def _commit_main():
     # only thing that tells a human to go look, so it has to reach the channel
     # that survives. Pinned by
     # test_a_refusal_reaches_the_channel_the_fleet_wiring_keeps.
+    # A CLOUD SESSION COMMITS NOTHING (sp-8680be69). A cloud routine works in a
+    # fresh clone and commits exactly the paths its prompt allowlists. This hook
+    # fired at a turn end of the weekly lessons routine, committed
+    # q-system/memory/.sycophancy-monthly-stamp onto local main before the routine
+    # cut its branch, and the branch carried it to PR #515 on the PUBLIC repo. The
+    # routine's allowlist checked the index, not the branch, so it never saw it.
+    # A cloud clone is thrown away at session end: there is no work to save here,
+    # only stray writes to ship. publish_notes still runs; it has its own
+    # remote-session handling.
+    if is_remote_session():
+        print("auto-commit: cloud session (CLAUDE_CODE_REMOTE); committing "
+              "nothing. A routine commits its own allowlisted paths.")
+        return
+
     live_run = fleet_update_in_progress()
     if live_run is not None:
         print(f"auto-commit: fleet updater run in progress ({live_run}); "

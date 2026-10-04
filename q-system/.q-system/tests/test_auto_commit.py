@@ -28,6 +28,10 @@ def _isolated_notify_cache(tmp_path_factory, monkeypatch):
     """
     monkeypatch.setenv("KIPI_CACHE_HOME",
                        str(tmp_path_factory.mktemp("cache")))
+    # A cloud session (CLAUDE_CODE_REMOTE) makes the hook commit nothing
+    # (sp-8680be69); every test here inherits os.environ, so scrub it or the
+    # whole file goes red when run inside a cloud routine.
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
 
 
 def _repo(tmp_path):
@@ -819,3 +823,54 @@ class TestRcasReachGit:
         files = mod.get_changed_files()
         assert "q-system/output/rca/rca-x-2026-10-03.md" in files
         assert "q-system/output/report.md" not in files
+
+
+# --- sp-8680be69: a cloud session commits nothing ------------------------------
+# The weekly lessons routine runs in a cloud clone of the PUBLIC kipi-system repo.
+# A turn-end fire of this hook committed q-system/memory/.sycophancy-monthly-stamp
+# onto local main BEFORE the routine cut its lessons branch, so the branch carried
+# it and the routine's staged-path allowlist never saw it (it checks the index, not
+# the branch). PR #515 shipped it until it was removed by hand.
+
+STAMP = "q-system/memory/.sycophancy-monthly-stamp"
+
+
+def _fire_env(root, **extra):
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    env.pop("CLAUDE_CODE_REMOTE", None)
+    env.update(extra)
+    return subprocess.run([sys.executable, HOOK], capture_output=True, text=True,
+                          cwd=root, env=env)
+
+
+def _head(run):
+    return run("git", "rev-parse", "HEAD").stdout.strip()
+
+
+@pytest.mark.parametrize("value", ["true", "1", "TRUE"])
+def test_a_cloud_session_commits_nothing_at_turn_end(tmp_path, value):
+    root, run = _repo(tmp_path)
+    _write(root, STAMP, "2026-09\n")
+    run("git", "add", STAMP)
+    run("git", "commit", "-q", "-m", "stamp")
+    _write(root, STAMP, "2026-10\n")  # the month rolled; the check rewrote it
+    before = _head(run)
+    out = _fire_env(root, CLAUDE_CODE_REMOTE=value)
+    assert _head(run) == before, run("git", "log", "--oneline", "-3").stdout
+    assert STAMP in run("git", "status", "--porcelain").stdout
+    # the refusal reaches stdout, the channel the fleet's `2>/dev/null` wiring keeps
+    assert "cloud session" in out.stdout
+
+
+def test_the_same_tree_outside_a_cloud_session_still_commits(tmp_path):
+    """Negative control: without the marker the stamp IS committed, so the test
+    above is red on the old hook and not passing because nothing ever commits."""
+    root, run = _repo(tmp_path)
+    _write(root, STAMP, "2026-09\n")
+    run("git", "add", STAMP)
+    run("git", "commit", "-q", "-m", "stamp")
+    _write(root, STAMP, "2026-10\n")
+    before = _head(run)
+    _fire_env(root, CLAUDE_CODE_REMOTE="false")
+    assert _head(run) != before
+    assert STAMP not in run("git", "status", "--porcelain").stdout
