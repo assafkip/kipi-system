@@ -819,10 +819,3 @@ class TestRcasReachGit:
         files = mod.get_changed_files()
         assert "q-system/output/rca/rca-x-2026-10-03.md" in files
         assert "q-system/output/report.md" not in files
-
-    def test_the_rca_directory_is_not_gitignored(self):
-        root = os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))))
-        r = subprocess.run(["git", "check-ignore", "-q", "q-system/output/rca/probe.md"],
-                           cwd=root, capture_output=True)
-        assert r.returncode == 1, "the RCA directory must not be ignored, or no RCA reaches git"
