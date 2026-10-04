@@ -22,8 +22,8 @@ THE RULE (deterministic, read from the session transcript):
     - a KB lookup (any mcp__miyo__* tool, or a Bash `miyo search`),
     - a Read/Grep/Glob of something that is NOT a test file (the code itself,
       canonical/, the lessons corpus, memory),
-  and that view's target was not already used before the previous addition.
-  Re-reading the same file you read last round is the same view, not a new one.
+  and that view's target was not used anywhere before the previous addition.
+  Re-reading any file already read earlier in the session is the same view.
 
   The first test/phase of a session needs a view too: "never add a test without
   a different view".
@@ -72,10 +72,21 @@ RE_TEST_DEF = re.compile(
     re.MULTILINE,
 )
 
+# A heading or a bold list item only. Prose that starts "Phase 2 ..." in a
+# handoff or PR body is not a new phase (review of #512).
 RE_PHASE = re.compile(
-    r"^(?:#{1,6}\s+|\s*[-*]\s+\**\s*|\s*\**)Phase\s+[0-9A-Za-z.]+\b",
+    r"^(?:#{1,6}\s+|\s*[-*]\s+\*\*)Phase\s+[0-9A-Za-z.]+\b",
     re.MULTILINE | re.IGNORECASE,
 )
+
+
+# The file itself is a test (not a conftest or fixture that lives in tests/).
+RE_TEST_FILE = re.compile(
+    r"(^|/)test[_\-][^/]*$|[_\-.]test\.[A-Za-z0-9]+$|\.spec\.[A-Za-z0-9]+$")
+
+
+def is_test_file(path: str) -> bool:
+    return bool(path) and bool(RE_TEST_FILE.search(path.replace("\\", "/")))
 
 
 def is_test_path(path: str) -> bool:
@@ -123,12 +134,12 @@ def addition_kind(tool: str, inp: dict, read_disk: bool = True) -> str | None:
     if is_test_path(path):
         if _count(RE_TEST_DEF, new) > _count(RE_TEST_DEF, old):
             return "test"
-        if is_new and new.strip():
+        if is_new and new.strip() and is_test_file(path):
             return "test"
         # A PAST Write cannot be diffed (disk has moved on), and a test file in
         # check(...) style has no def to count. Found live 2026-10-03: the gate's
         # own self-test was written that way and did not reset the clock.
-        if tool == "Write" and not read_disk and new.strip():
+        if tool == "Write" and not read_disk and new.strip() and is_test_file(path):
             return "test"
     if is_markdown(path) and _count(RE_PHASE, new) > _count(RE_PHASE, old):
         return "phase"

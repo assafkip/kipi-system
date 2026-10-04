@@ -96,6 +96,13 @@ def main():
         wrote = [use("Read", {"file_path": src}),
                  use("Write", {"file_path": str(t / "test_gate.py"), "content": "check('a', 1, 1)"})]
         check("past check-style write", run(tmp, wrote, "Edit", add1), 2)
+        # 14c. review of #512: conftest/fixtures in tests/ are not test adds; prose "Phase 2" is not a phase
+        check("new conftest", run(tmp, [], "Write", {"file_path": str(t / "tests" / "conftest.py"), "content": "import os"}), 0)
+        check("new fixture", run(tmp, [], "Write", {"file_path": str(t / "tests" / "data.json"), "content": "{}"}), 0)
+        check("prose phase", run(tmp, [], "Edit", {"file_path": "/r/h.md", "old_string": "",
+                                                    "new_string": "Phase 2 shipped today."}), 0)
+        check("bold list phase", run(tmp, [], "Edit", {"file_path": "/r/h.md", "old_string": "",
+                                                        "new_string": "- **Phase 2**: build"}), 2)
         # 15. no transcript: fail open
         p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
             {"tool_name": "Edit", "tool_input": add1, "transcript_path": str(t / "none")}),
