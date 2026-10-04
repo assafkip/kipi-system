@@ -111,3 +111,14 @@ def test_no_base_fails_closed_with_a_distinct_code(clone):
     r = subprocess.run([sys.executable, str(SCRIPT), "--base", "origin/nope"], cwd=clone,
                        capture_output=True, text=True)
     assert r.returncode == 3, r.stderr
+
+
+def test_added_then_deleted_is_still_refused(clone):
+    # The net diff is clean here; the pushed history still carries the blob.
+    commit(clone, "q-system/lessons/a.md")
+    commit(clone, "lesson-candidates/held-0001.md")
+    git(clone, "rm", "-q", "lesson-candidates/held-0001.md")
+    git(clone, "commit", "-q", "-m", "drop it")
+    assert git(clone, "diff", "--name-only", "origin/main...HEAD").split() == ["q-system/lessons/a.md"]
+    r = run_guard(clone)
+    assert r.returncode == 2 and "lesson-candidates/held-0001.md" in r.stderr, r.stderr

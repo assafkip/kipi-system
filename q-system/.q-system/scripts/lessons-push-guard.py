@@ -11,7 +11,9 @@ was `git diff --cached`. On 2026-10-04 the cloud session's own Stop hook
 committed `q-system/memory/.sycophancy-monthly-stamp` onto the lessons branch
 AFTER that check ran, and it reached PR #515 on this PUBLIC repo. A path that is
 already committed is never staged, so the staged check could not see it. This
-reads `origin/main...HEAD`, which is every commit the push would publish.
+reads every commit in `origin/main..HEAD`, not the net diff: a file added then
+deleted nets to zero in `origin/main...HEAD`, but the push still publishes the
+blob, permanently, on a public repo (chief #81 review, major 1).
 
 `--no-renames`: with rename detection a moved file reports only its new name,
 so a non-lesson file renamed INTO q-system/lessons/ would hide the deletion of
@@ -30,10 +32,11 @@ ALLOWED = re.compile(r"^(q-system/lessons/[^/]+\.md|lesson-candidates/\.processe
 
 def changed_paths(base: str, repo: str) -> list[str]:
     out = subprocess.run(
-        ["git", "-C", repo, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD"],
+        ["git", "-C", repo, "log", "-m", "--name-only", "--no-renames", "-z", "--pretty=format:",
+         f"{base}..HEAD"],
         capture_output=True, check=True,
     ).stdout.decode("utf-8", "surrogateescape")
-    return [p for p in out.split("\0") if p]
+    return sorted({p.strip("\n") for p in out.split("\0") if p.strip("\n")})
 
 
 def main(argv: list[str] | None = None) -> int:
