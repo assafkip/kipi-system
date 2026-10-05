@@ -69,7 +69,7 @@ def _lexicon_positive(lexicon):
 
 
 def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
-                  slot_kind="post", *, target_words):
+                  slot_kind="post", *, target_words, lane=None):
     """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance).
 
     `target_words` threads the length axis (selector.length_band) to the one place
@@ -118,8 +118,14 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     # scar -- a receipt for an action that did not occur. The echo gate and every
     # audit downstream trust correction_ids, so the cheapest wrong answer here is
     # the one that looks authoritative.
+    # `lane` + `scope_exclude` (2026-10-05): a founder can lift a correction for ONE
+    # lane of a channel while the rest of the channel keeps it. `scope` alone cannot
+    # say that: the lifted lane and the attended lane write the same channel. Filtered
+    # here, in the one list that feeds both the prompt and the receipt, so an excluded
+    # row is never recorded as applied.
     applied = [r for r in (corrections or [])
-               if not r.get("scope") or channel in r["scope"]]
+               if (not r.get("scope") or channel in r["scope"])
+               and not (lane and lane in (r.get("scope_exclude") or []))]
     his = [r for r in applied if r.get("source") != EXTERNAL_SOURCE]
     researched = [r for r in applied if r.get("source") == EXTERNAL_SOURCE]
     if his:

@@ -212,10 +212,29 @@ def _final_sentence(block):
     return parts[-1] if parts else block
 
 
+# The keyword-bait CTA: "Comment AUDIT and I'll send it", "reply YES to get the doc",
+# "follow me for more". why (2026-10-05): the closed list above held "follow for more"
+# and "comment below" but not these, so the shape passed every check. It did not
+# matter while every closing question was refused anyway; once a lane may end on a
+# question, the CTA ban has to stand on its own. Imperative at a sentence start only,
+# so "the comment thread and the PR" is not a hit.
+SOLICITATION_PATTERNS = (
+    re.compile(r"(?i)(?:^|[.!?]\s+)(?:comment|reply|type|dm)\s+(?:with\s+)?"
+               r"[\"']?[\w-]+[\"']?\s+(?:and|to|for|if)\b"),
+    re.compile(r"(?i)\bfollow me\s+(?:for|if|to)\b"),
+)
+
+
 def _solicitation_signals(ending):
     low = ending.lower()
     hits = [phrase for phrase in SOLICITATION_CLOSERS if phrase in low]
-    return [f"solicitation closer {hits[0]!r}"] if hits else []
+    if hits:
+        return [f"solicitation closer {hits[0]!r}"]
+    for pattern in SOLICITATION_PATTERNS:
+        match = pattern.search(ending)
+        if match:
+            return [f"solicitation closer {match.group(0).strip()!r}"]
+    return []
 
 
 def _pitch_close_signals(ending):
@@ -409,8 +428,18 @@ def question_only_scene_exemption(text):
     return not _CTA_VERB_RE.search(last)
 
 
-def signals(text):
+def signals(text, allow_reader_question=False):
     """Every marketer tell in the ending, named so a rejection can explain itself.
+
+    `allow_reader_question` exists for a deployment whose founder lifted the
+    closing-question rule for ONE lane (the first was a scheduled short-post lane,
+    2026-10-05: a controlled study measured an open question as raising replies,
+    and the lane's drafts carried almost no questions against roughly a third of
+    the top posts). It drops exactly two checks: the closing question and the reader
+    survey, because a survey question ("which of your X...") is the add-your-case
+    move, not a call to action. Solicitation, pitch and homework closers still
+    fire: the lifted rule was about questions, never about CTAs. Default False, so
+    every existing caller keeps the ban byte for byte.
 
     The ending is glyph-normalized before any list or pattern reads it: a curly
     apostrophe took "That's exactly what this solves" past the pitch patterns (which
@@ -424,18 +453,19 @@ def signals(text):
     # Written as a substitution rather than an early return on purpose: an early return
     # would hand a question-only post a pass on the survey heuristic too, and Amber's
     # condition 5 is explicit that the exemption is additive and never overrides it.
-    closing_question = ([] if question_only_scene_exemption(text)
+    closing_question = ([] if allow_reader_question or question_only_scene_exemption(text)
                         else _closing_question_signals(ending))
+    survey = [] if allow_reader_question else _reader_survey_signals(ending)
     return (_solicitation_signals(ending)
             + _pitch_close_signals(ending)
             + _homework_signals(ending)
             + closing_question
-            + _reader_survey_signals(ending))
+            + survey)
 
 
-def check(text):
+def check(text, allow_reader_question=False):
     """Violations in the gates' shape, so callers merge reports without special-casing."""
-    found = signals(text)
+    found = signals(text, allow_reader_question=allow_reader_question)
     if not found:
         return []
     return [{

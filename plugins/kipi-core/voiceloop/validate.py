@@ -113,6 +113,10 @@ def check_corrections(path, channels=None):
                         f"{rid}: unknown scope {ch!r}; the channel vocabulary is "
                         f"{list(channels.scopes)} (from "
                         f"{channels.source or 'the built-in default, no registry'})")
+            excl = row.get("scope_exclude")
+            if excl is not None and not (isinstance(excl, list)
+                                         and all(isinstance(x, str) and x for x in excl)):
+                problems.append(f"{rid}: scope_exclude must be a list of lane names")
     return problems
 
 
