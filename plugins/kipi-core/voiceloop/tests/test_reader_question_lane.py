@@ -49,8 +49,17 @@ CTAS = (
 def test_a_cta_parked_above_a_closing_question_is_still_refused():
     for cta in ("DM me for the checklist.", "Comment AUDIT to get the doc.",
                 "That's exactly what this solves."):
-        text = "The tool said every number matched.\n" + cta + "\nWould you trust that report?"
-        assert ending_gate.check(text, allow_reader_question=True), cta
+        for tail in ("\nWould you trust that report?", "\nWould you trust that report?!",
+                     "\nAnd then?\nWould you trust that report?\u2026"):
+            text = "The tool said every number matched.\n" + cta + tail
+            assert ending_gate.check(text, allow_reader_question=True), (cta, tail)
+
+
+def test_a_string_scope_exclude_never_substring_matches():
+    row = dict(ROW, scope_exclude="scheduled-x-and-more")
+    text, prov = assemble.voice_section(_Voice([row]), "x", 0, target_words=None,
+                                        lane="scheduled-x")
+    assert "no-q" in prov["correction_ids"]
 
 
 def test_a_cta_is_refused_with_or_without_the_switch():

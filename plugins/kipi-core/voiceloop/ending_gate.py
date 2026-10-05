@@ -467,11 +467,13 @@ def signals(text, allow_reader_question=False):
     # on the line ABOVE it ("DM me for the checklist." then "Would you trust it?") would
     # walk past checks that read only the last line. Before the switch that shape was
     # always refused by the question ban. So the CTA family also reads that line.
+    # The trigger is the module's own question detector ("?!", "?…" included), and the
+    # CTA family then reads EVERY earlier line, not only the one above (PR 519 round 3:
+    # a CTA two lines up walked past a one-line lookback).
     cta_lines = [ending]
-    if allow_reader_question and ending.rstrip().endswith("?"):
-        lines = _lines_without_trailing_hashtags(text)
-        if len(lines) >= 2:
-            cta_lines.append(normalize_glyphs(lines[-2]))
+    if allow_reader_question and _closing_question_signals(ending):
+        cta_lines += [normalize_glyphs(line)
+                      for line in _lines_without_trailing_hashtags(text)[:-1]]
     cta = []
     for line in cta_lines:
         cta += (_solicitation_signals(line) + _pitch_close_signals(line)

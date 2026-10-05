@@ -125,7 +125,8 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     # row is never recorded as applied.
     applied = [r for r in (corrections or [])
                if (not r.get("scope") or channel in r["scope"])
-               and not (lane and lane in (r.get("scope_exclude") or []))]
+               and not (lane and isinstance(r.get("scope_exclude"), list)
+                        and lane in r["scope_exclude"])]
     his = [r for r in applied if r.get("source") != EXTERNAL_SOURCE]
     researched = [r for r in applied if r.get("source") == EXTERNAL_SOURCE]
     if his:
