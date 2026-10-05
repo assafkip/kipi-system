@@ -224,6 +224,11 @@ SOLICITATION_PATTERNS = (
                r"(?:\"[^\"\n]{1,30}\"|'[^'\n]{1,30}'|[A-Z][A-Z0-9-]+)\s+"
                r"(?i:and|to|for|if)\b"),
     re.compile(r"(?i)\bfollow me\s+(?:for|if|to)\b"),
+    # Lowercase keyword, caught by what follows it: a promise or a payoff. "Reply rate
+    # and open rate" has neither, "comment audit and I'll send it" has both halves.
+    re.compile(r"(?i)(?:^|[.!?]\s+)(?:comment|reply|type|dm)\s+(?:with\s+)?[\w-]+\s+"
+               r"(?:and\s+i\b|and\s+i'll\b|to\s+get\b|to\s+receive\b|for\s+the\s+"
+               r"(?:link|doc|checklist|guide|template)\b)"),
 )
 
 
@@ -382,8 +387,8 @@ def question_only_scene_exemption(text):
 
     Amber's spec has five conditions. FOUR of them are string-length and regex checks and
     are implemented here exactly as written: sole sentence, under 160 chars, no CTA verb,
-    and `_reader_survey_signals` still running (that one lives in `signals`, which never
-    stops calling it).
+    and `_reader_survey_signals` still running (that one lives in `signals`, which stops
+    calling it only for a caller that passes `allow_reader_question=True`).
 
     The fifth, CARRIES A SCENE, is not checkable this way and this function does not
     pretend it is. A regex cannot tell a concrete moment from an abstract prompt dressed
@@ -458,11 +463,20 @@ def signals(text, allow_reader_question=False):
     closing_question = ([] if allow_reader_question or question_only_scene_exemption(text)
                         else _closing_question_signals(ending))
     survey = [] if allow_reader_question else _reader_survey_signals(ending)
-    return (_solicitation_signals(ending)
-            + _pitch_close_signals(ending)
-            + _homework_signals(ending)
-            + closing_question
-            + survey)
+    # With the switch on, a closing question no longer stops the post, so a CTA parked
+    # on the line ABOVE it ("DM me for the checklist." then "Would you trust it?") would
+    # walk past checks that read only the last line. Before the switch that shape was
+    # always refused by the question ban. So the CTA family also reads that line.
+    cta_lines = [ending]
+    if allow_reader_question and ending.rstrip().endswith("?"):
+        lines = _lines_without_trailing_hashtags(text)
+        if len(lines) >= 2:
+            cta_lines.append(normalize_glyphs(lines[-2]))
+    cta = []
+    for line in cta_lines:
+        cta += (_solicitation_signals(line) + _pitch_close_signals(line)
+                + _homework_signals(line))
+    return cta + closing_question + survey
 
 
 def check(text, allow_reader_question=False):

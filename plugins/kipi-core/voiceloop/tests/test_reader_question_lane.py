@@ -42,7 +42,15 @@ CTAS = (
     "The tool said every number matched.\n\nFollow me for more of these.",
     "The tool said every number matched.\n\nDM me and I'll send the checklist.",
     "The tool said every number matched.\n\nSubscribe for the full teardown.",
+    "The tool said every number matched.\n\nComment audit and I will send you the checklist.",
 )
+
+
+def test_a_cta_parked_above_a_closing_question_is_still_refused():
+    for cta in ("DM me for the checklist.", "Comment AUDIT to get the doc.",
+                "That's exactly what this solves."):
+        text = "The tool said every number matched.\n" + cta + "\nWould you trust that report?"
+        assert ending_gate.check(text, allow_reader_question=True), cta
 
 
 def test_a_cta_is_refused_with_or_without_the_switch():
