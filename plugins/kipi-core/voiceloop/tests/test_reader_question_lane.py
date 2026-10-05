@@ -52,8 +52,12 @@ def test_a_cta_is_refused_with_or_without_the_switch():
 
 
 def test_prose_that_mentions_a_comment_is_not_a_cta():
-    text = "Nobody read the review.\n\nThe comment thread and the PR both said nothing."
-    assert ending_gate.check(text, allow_reader_question=True) == []
+    for last in ("The comment thread and the PR both said nothing.",
+                 "Reply rate and open rate measure different things.",
+                 "Type checking and the lint both pass now.",
+                 "Comment thread and PR description disagreed."):
+        text = "Nobody read the review.\n\n" + last
+        assert ending_gate.check(text, allow_reader_question=True) == [], last
 
 
 class _Voice:
@@ -101,3 +105,7 @@ def test_validator_refuses_a_malformed_scope_exclude(tmp_path):
     good.write_text('{"id": "a", "instruction": "x", "class": "interpretive", '
                     '"status": "active", "scope_exclude": ["scheduled-x"]}\n')
     assert validate.check_corrections(str(good)) == []
+    typo = tmp_path / "typo.jsonl"
+    typo.write_text('{"id": "a", "instruction": "x", "class": "interpretive", '
+                    '"status": "active", "scope_exclude": ["scheduled-X"]}\n')
+    assert any("scope_exclude" in p for p in validate.check_corrections(str(typo)))

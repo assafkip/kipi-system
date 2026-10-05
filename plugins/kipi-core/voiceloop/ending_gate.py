@@ -216,11 +216,13 @@ def _final_sentence(block):
 # "follow me for more". why (2026-10-05): the closed list above held "follow for more"
 # and "comment below" but not these, so the shape passed every check. It did not
 # matter while every closing question was refused anyway; once a lane may end on a
-# question, the CTA ban has to stand on its own. Imperative at a sentence start only,
-# so "the comment thread and the PR" is not a hit.
+# question, the CTA ban has to stand on its own. The keyword must be QUOTED or ALL
+# CAPS: position alone is not mood, and "Reply rate and open rate differ" or "Type
+# checking and the lint pass" open with the same nouns (PR review, 2026-10-05).
 SOLICITATION_PATTERNS = (
-    re.compile(r"(?i)(?:^|[.!?]\s+)(?:comment|reply|type|dm)\s+(?:with\s+)?"
-               r"[\"']?[\w-]+[\"']?\s+(?:and|to|for|if)\b"),
+    re.compile(r"(?:^|[.!?]\s+)(?i:comment|reply|type|dm)\s+(?i:with\s+)?"
+               r"(?:\"[^\"\n]{1,30}\"|'[^'\n]{1,30}'|[A-Z][A-Z0-9-]+)\s+"
+               r"(?i:and|to|for|if)\b"),
     re.compile(r"(?i)\bfollow me\s+(?:for|if|to)\b"),
 )
 
