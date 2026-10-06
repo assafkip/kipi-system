@@ -66,7 +66,7 @@ def main() -> int:
     # a skipped turn must not reach it at all (ASK-2511: up to 7,995 bytes on
     # every task-notification).
     tc = _turn_classifier()
-    if tc is not None and not tc.should_inject(prompt):
+    if tc is not None and not tc.should_inject(prompt, "knowledge-inject"):
         return 0
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
     session_id = str(payload.get("session_id") or "unknown-session")

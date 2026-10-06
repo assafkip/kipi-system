@@ -32,6 +32,7 @@ Classes:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # Envelopes are matched at the START of the prompt only: a person who pastes a
 # notification and asks for something about it has typed text first, and that
@@ -49,7 +50,11 @@ WRITING_VERB_RE = re.compile(
     # "edit it", "polish this", "reword the opener" must never lose the voice.
     r"edit|edits|editing|revis\w*|polish\w*|rephras\w*|reword\w*|"
     r"comment|comments|dm|dms|tweet\w*|caption\w*|headline\w*|"
-    r"essay|newsletter|outreach"
+    r"essay|newsletter|outreach|"
+    # Outreach and surface words the voice loader always matched that have no
+    # status reading here (PR #523 review, round 2): "pitch it", "counter-offer".
+    r"pitch|pitches|proposal|counter-?offer\w*|negotiat\w*|rebut\w*|"
+    r"linkedin|substack|reddit|article|opener|cta|subject\s+line"
     r")\b"
 )
 
@@ -68,20 +73,38 @@ TRIVIAL_MAX_WORDS = 3
 STATUS_MAX_WORDS = 8
 
 
-# Harness OUTPUT envelopes. A sibling instance hook measured them: of 535 harness
-# messages in 2,305 real user-role turns, 529 begin with an envelope tag and no
-# person's message does. The command-name / command-message / command-args tags
-# are left OUT on purpose: they wrap a slash command whose arguments he typed
-# ("/voiceloop <idea>"), and silencing those would drop his voice.
-_HARNESS_HEADS = tuple("<" + t for t in (
-    "task-notification", "system-reminder", "local-command-caveat",
-    "local-command-stdout", "bash-stdout", "bash-stderr", "user-prompt-submit-hook",
-))
+# WHICH OPENERS MEAN "THE HARNESS WROTE THIS TURN" HAS ONE AUTHORITY:
+# voice-stop-gate.py `_INJECTED_OPENER`, which answers the same question for the
+# Stop gate and carries the scars (cross-session-message, the bare
+# "[SYSTEM NOTIFICATION" opener, and command-* deliberately OUT because a
+# slash-command turn is his turn). A second list here drifted within one review
+# round (PR #523, consulting PR #226), so this reads that regex instead of
+# keeping a copy. If it cannot load, nothing is treated as a notification and
+# the reason goes to stderr: fail open, never silent.
+_OPENER = None
+
+
+def _injected_opener():
+    global _OPENER
+    if _OPENER is None:
+        import importlib.util
+        import sys
+        try:
+            path = Path(__file__).resolve().parent / "voice-stop-gate.py"
+            spec = importlib.util.spec_from_file_location("_vsg_for_turn_classifier", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _OPENER = mod._INJECTED_OPENER
+        except Exception as exc:
+            sys.stderr.write(f"turn_classifier: voice-stop-gate opener unavailable, "
+                             f"notification check OFF: {exc!r}\n")
+            _OPENER = False
+    return _OPENER
 
 
 def is_notification(prompt: str) -> bool:
-    s = (prompt or "").lstrip()
-    return s.startswith(_HARNESS_HEADS)
+    opener = _injected_opener()
+    return bool(opener) and bool(opener.match(prompt or ""))
 
 
 def has_pasted_content(prompt: str) -> bool:
@@ -127,9 +150,20 @@ def names_something(words) -> bool:
     return False
 
 
-def should_inject(prompt: str) -> bool:
-    """False means every injector stays silent on this turn."""
-    return classify(prompt) in ("writing", "other")
+# Which classes each injector stays silent on. One classifier, one table, so the
+# hooks agree on WHAT a turn is and differ only where a measurement says so.
+# knowledge-inject keeps "status": its own entity resolver already returned 0
+# bytes on every status turn in the replay, and silencing it there only lost
+# short lookups like "what did we promise her?" (PR #523 review, round 2).
+_SILENT = {
+    "default": frozenset({"notification", "trivial", "status"}),
+    "knowledge-inject": frozenset({"notification", "trivial"}),
+}
+
+
+def should_inject(prompt: str, hook: str = "default") -> bool:
+    """False means this injector stays silent on this turn."""
+    return classify(prompt) not in _SILENT.get(hook, _SILENT["default"])
 
 
 # ---------------------------------------------------------------------------
@@ -141,17 +175,22 @@ def should_inject(prompt: str) -> bool:
 # Fixed shares need no shared state and still bound the sum.
 #
 # Numbers measured 2026-10-06 over the real non-notification prompts of three
-# sessions (see the ASK-2511 PR body). Voice gets its observed maximum plus
-# headroom and is the only share that is never cut below its anchor; the two
-# advisory injectors are cut to the size of one good item each.
+# sessions (see the ASK-2511 PR body). The two advisory injectors are cut to the
+# size of one good item each.
+#
+# VOICE IS NOT CAPPED, on purpose. A 7,000-byte voice share cut the legacy
+# fallback (voice-dna.md + writing-samples.md, ~42 KB) to 6,886 bytes and
+# writing-samples never reached the model (PR #523 review, round 2). The
+# founder's voice must never silently drop, so the budget bounds only what is
+# advisory. The corpus path measured 5,981 bytes at most.
 SHARES = {
-    "voice-dna-loader": 7000,
     # 175 of 176 lessons fit in 5000; the largest (4,777 bytes) plus the
     # header needs 5,400, and a share that can never carry a lesson whole
     # starves it silently.
     "lessons-inject": 5500,
     "knowledge-inject": 4000,
 }
+# The cap on ADVISORY bytes per turn. Voice is outside it (see above).
 TURN_BYTE_CAP = sum(SHARES.values())
 
 

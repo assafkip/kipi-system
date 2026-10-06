@@ -80,6 +80,8 @@ SHOULD_INJECT = [
     "edit it",
     "polish this",
     "reword the opener",
+    "pitch it to them",
+    "counter-offer at the higher number",
 ]
 
 # Neither class: each injector keeps its own trigger. Listed so a future widening
@@ -121,6 +123,22 @@ class TestClassifier(unittest.TestCase):
         self.assertTrue(tc.has_writing_verb(NOTIFICATION))
         self.assertEqual(tc.classify(NOTIFICATION), "notification")
 
+    def test_every_harness_opener_the_stop_gate_knows_is_a_notification(self):
+        # One authority (voice-stop-gate._INJECTED_OPENER). A peer session's
+        # message and the bare SYSTEM NOTIFICATION opener were the two a second
+        # list missed (consulting PR #226 review).
+        for head in ("<task-notification>", "<system-reminder>", "<cross-session-message>",
+                     "<local-command-stdout>", "<user-prompt-submit-hook>",
+                     "[SYSTEM NOTIFICATION] peer done"):
+            p = head + "\nhere is my version\nline one\n\nline two\n\nline three"
+            with self.subTest(head=head):
+                self.assertEqual(tc.classify(p), "notification")
+
+    def test_a_slash_command_turn_is_his_turn(self):
+        p = ("<command-message>voiceloop</command-message>\n<command-name>/voiceloop</command-name>\n"
+             "<command-args>draft a post about the audit</command-args>")
+        self.assertNotEqual(tc.classify(p), "notification")
+
     def test_typed_text_before_a_quoted_notification_is_not_silenced(self):
         p = "write a reply based on this:\n" + NOTIFICATION
         self.assertEqual(tc.classify(p), "writing")
@@ -148,7 +166,7 @@ def _sandbox(scripts):
     root = Path(tempfile.mkdtemp(prefix="ask2511-"))
     sdir = root / "q-system" / ".q-system" / "scripts"
     sdir.mkdir(parents=True)
-    for name in list(scripts) + ["turn_classifier.py"]:
+    for name in list(scripts) + ["turn_classifier.py", "voice-stop-gate.py"]:
         shutil.copy(HERE / name, sdir / name)
     (root / ".claude").mkdir()
     return root, sdir
@@ -203,6 +221,19 @@ class TestVoiceLoader(unittest.TestCase):
         # sandbox: the notification's own body, typed by a person, does inject.
         body = NOTIFICATION.split("<result>")[1].split("</result>")[0]
         self.assertIn("VOICE-MARKER-7731", _run(self.hook, body, self.root))
+
+    def test_the_full_size_legacy_voice_payload_arrives_uncut(self):
+        # PR #523 review, round 2: the real fallback is ~42 KB across TWO files,
+        # and a 7,000-byte voice cap dropped writing-samples.md entirely. A small
+        # fixture could not see that, so this one is producer-sized.
+        refs = self.root / "plugins" / "kipi-core" / "skills" / "founder-voice" / "references"
+        (refs / "voice-dna.md").write_text("VOICE-MARKER-7731\n" + ("a real voice rule line\n" * 1200))
+        (refs / "writing-samples.md").write_text("SAMPLES-MARKER-4417\n" + ("a real sample line\n" * 800))
+        out = _run(self.hook, "draft a reply to this comment", self.root)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertGreater(len(ctx.encode()), 40000)
+        self.assertIn("SAMPLES-MARKER-4417", ctx)
+        self.assertNotIn("cut at", ctx)
 
     def test_a_missing_classifier_fails_open_not_silent(self):
         (self.sdir / "turn_classifier.py").unlink()
@@ -271,6 +302,14 @@ class TestKnowledgeInject(unittest.TestCase):
     def test_a_notification_gets_nothing_and_never_reaches_supply(self):
         self.assertEqual(_run(self.hook, NOTIFICATION, self.root), "")
         self.assertFalse((self.root / "supply-called").exists())
+
+    def test_a_short_commitment_question_still_reaches_supply(self):
+        # Status-shaped, no proper noun. The entity resolver decides, not the
+        # turn gate (PR #523 review, round 2).
+        self.assertEqual(tc.classify("what did we promise her?"), "status")
+        out = _run(self.hook, "what did we promise her?", self.root)
+        self.assertTrue((self.root / "supply-called").exists())
+        self.assertIn("[knowledge-supply]", out)
 
     def test_a_real_prompt_is_capped_to_its_share(self):
         out = _run(self.hook, "what did we promise the client about the audit scope last week", self.root)

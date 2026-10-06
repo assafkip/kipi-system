@@ -265,7 +265,9 @@ def main():
     # they all measure the OUTPUT, none check that the INPUT arrived.
     output = {"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
-        "additionalContext": tc.cap(context, "voice-dna-loader") if tc is not None else context,
+        # Never capped: the voice payload is the one thing ASK-2511's budget
+        # must not cut (turn_classifier.SHARES says why).
+        "additionalContext": context,
     }}
     sys.stdout.write(json.dumps(output))
     sys.exit(0)
