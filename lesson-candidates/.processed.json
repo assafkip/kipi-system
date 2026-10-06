@@ -593,5 +593,113 @@
     "instance": "ASK_AI_consultant",
     "status": "published",
     "date": "2026-08-31"
+  },
+  "87bc65afff94d00d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "a-plan-that-restores-automation-must-not-silently-restore-th"
+  },
+  "7fb4ccbd14ab06db": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "make-every-guard-observe-the-property-it-names-not-a-cheaper"
+  },
+  "df326171f0ac2954": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "tie-a-cost-raising-option-flag-to-the-runtime-ceiling-in-cod"
+  },
+  "f48bc08a08080b3d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "verify-the-user-facing-surface-not-the-machinery-s-receipts"
+  },
+  "bf437caf6ec704ba": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "verify-a-guard-s-behavior-by-running-it-before-you-record-th"
+  },
+  "d3da7693616aa6dd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "judge-every-entry-path-not-just-the-one-that-got-the-judge"
+  },
+  "7c6ce0959b0df05d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "test-the-user-s-exact-phrasing-against-every-route-and-don-t"
+  },
+  "fdbb8f07c41fbf6b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "compute-the-number-before-you-explain-the-gap"
+  },
+  "d19442fce6410340": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "separate-unsafe-output-from-unusually-shaped-output-in-parse"
+  },
+  "d16d4a285a08044e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "cap-the-shared-expensive-resource-not-the-paths-that-last-fa"
+  },
+  "170e60fdf472e498": {
+    "instance": "4_points_consulting",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "keep-one-ledger-of-record-for-every-re-measured-number-in-a-"
+  },
+  "649c032ad535ae53": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "give-the-decision-maker-a-cohort-view-before-the-customer-fa"
+  },
+  "f5614503caf93ec1": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "make-absence-provable-and-make-rejected-work-visible-in-the-"
+  },
+  "87c87ea7e168eb94": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "don-t-gate-on-a-field-the-model-can-write"
+  },
+  "106a3241e65212bc": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "a-halt-meant-for-degraded-input-fires-when-there-is-no-input"
+  },
+  "731a0a36864a1c79": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "test-against-the-real-shape-of-production-data-and-wire-safe"
+  },
+  "e15c0bea3c5bb218": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "one-symptom-two-causes-separate-environment-gaps-from-tool-i"
+  },
+  "95f6080424235fe7": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-10-04",
+    "lesson_id": "a-guard-that-reports-ok-may-not-cover-the-writers-you-just-a"
   }
 }
