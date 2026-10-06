@@ -363,6 +363,37 @@ else
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
 fi
 
+# The scoped pytest runner, ONE body for the selected and the full-suite case.
+# args: target suite cache plugin_dir select_list(or "") serial_list(or "") xdist...
+# Exit 5 ("collected nothing") from a SELECTION reruns the full suite rather than
+# passing on zero tests. With a .verify-serial, phase one runs everything else
+# (in parallel when xdist args are given) and phase two runs the serial files in
+# one process; a 5 from one phase is fine, a 5 from both is "collected nothing".
+_VERIFY_RUN='
+  cd "$1/$2" || exit 1
+  cache="$3"; plug="$4"; list="$5"; serial="$6"; shift 6
+  export PYTHONPATH="$plug${PYTHONPATH:+:$PYTHONPATH}"
+  one() {
+    local base=(python3 -m pytest -q --no-header --ff -x -o cache_dir="$cache" -p _kipi_verify_select)
+    if [ -z "$serial" ]; then "${base[@]}" "$@"; return $?; fi
+    export KIPI_VERIFY_SERIAL="$serial"
+    KIPI_VERIFY_PHASE=parallel "${base[@]}" "$@"; local r1=$?
+    if [ "$r1" -ne 0 ] && [ "$r1" -ne 5 ]; then return "$r1"; fi
+    echo "serial pass (.verify-serial)"
+    KIPI_VERIFY_PHASE=serial "${base[@]}"; local r2=$?
+    if [ "$r2" -ne 0 ] && [ "$r2" -ne 5 ]; then return "$r2"; fi
+    if [ "$r1" -eq 5 ] && [ "$r2" -eq 5 ]; then return 5; fi
+    return 0
+  }
+  if [ -n "$list" ]; then export KIPI_VERIFY_SELECT="$list"; fi
+  one "$@"; rc=$?
+  if [ "$rc" -eq 5 ] && [ -n "$list" ]; then
+    echo "selection collected no tests -> full suite"
+    unset KIPI_VERIFY_SELECT
+    one "$@"; rc=$?
+  fi
+  exit $rc'
+
 say() { printf '  %-28s %s\n' "$1" "$2"; }
 
 run_check() {
@@ -751,9 +782,14 @@ if [ -f "$MANIFEST" ]; then
         _sel_src="$TARGET/q-system/.q-system/verify_select.py"
         [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
         _sel_mode="full"; _sel_out=""
+        # The commit door asks for the NARROW rule (imports, not bare words);
+        # the push door keeps the broad one. See verify_select.py's docstring.
+        _sel_door=""
+        [ "$MODE" = "--staged" ] && _sel_door="staged"
         if [ -f "$_sel_src" ] && \
            _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
-                       python3 "$_sel_src" --target "$TARGET" --suite "$suite")"; then
+                       python3 "$_sel_src" --target "$TARGET" --suite "$suite" \
+                         ${_sel_door:+--door "$_sel_door"})"; then
           # Parameter expansion, not `| head -1`: under pipefail a selection past
           # the pipe buffer SIGPIPEs printf and set -e aborts with no verdict
           # (PR #489 review round 2).
@@ -761,6 +797,27 @@ if [ -f "$MANIFEST" ]; then
         else
           echo "      selector unavailable or failed -> full suite"
         fi
+        # PARALLEL AT THE COMMIT DOOR (2026-10-05). The staged run used one core of
+        # ten: a one-file change to a hot module selected ~100 test files and the
+        # commit took 6 to 23 minutes. pytest-xdist spreads the selection across
+        # workers. --dist loadfile keeps every test of one FILE on one worker, so
+        # module-scoped fixtures and in-file ordering behave exactly as serially.
+        # A suite's `.verify-serial` (test paths relative to the suite, one per
+        # line) names files that share state ACROSS files; they run afterwards
+        # in a second, single-process pass, so nothing else runs beside them.
+        # No xdist installed means serial, said out loud, never a failure: speed
+        # is not coverage. --changed and --full are untouched.
+        _xd=()
+        if [ "$MODE" = "--staged" ] && [ -z "${KIPI_VERIFY_NO_XDIST:-}" ]; then
+          if python3 -c "import xdist" 2>/dev/null; then
+            _ncpu="$(python3 -c 'import os; print(os.cpu_count() or 1)')"
+            _xd=(-n "$_ncpu" --dist loadfile)
+          else
+            echo "      pytest-xdist not installed -> serial (pip install -r q-system/.q-system/requirements-verify.txt)"
+          fi
+        fi
+        _serial="$TARGET/$suite/.verify-serial"
+        [ -f "$_serial" ] || _serial=""
         if [ "$_sel_mode" = "select" ]; then
           _plug="$TMP/verify-select-plugin"
           mkdir -p "$_plug"
@@ -776,22 +833,22 @@ if [ -f "$MANIFEST" ]; then
           # Exit 5 is "collected nothing": every selected file was collect_ignored
           # or held no test. That is an empty selection, so it takes the full
           # suite rather than passing on zero tests run.
-          run_check "pytest:$suite ($_n selected)" bash -c '
-            cd "$1/$2" || exit 1
-            PYTHONPATH="$4${PYTHONPATH:+:$PYTHONPATH}" KIPI_VERIFY_SELECT="$5" \
-              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3" \
-              -p _kipi_verify_select
-            rc=$?
-            if [ "$rc" -eq 5 ]; then
-              echo "selection collected no tests -> full suite"
-              python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"
-              rc=$?
-            fi
-            exit $rc' _ "$TARGET" "$suite" "$_cache" "$_plug" "$_list"
+          run_check "pytest:$suite ($_n selected)" bash -c "$_VERIFY_RUN" _ \
+            "$TARGET" "$suite" "$_cache" "$_plug" "$_list" "$_serial" "${_xd[@]+"${_xd[@]}"}"
         else
-          run_check "pytest:$suite" bash -c \
-            'cd "$1/$2" && python3 -m pytest -q --no-header --ff -x -o cache_dir="$3"' \
-            _ "$TARGET" "$suite" "$_cache"
+          _plug="$TMP/verify-select-plugin"
+          mkdir -p "$_plug"
+          [ -f "$_sel_src" ] && cp "$_sel_src" "$_plug/_kipi_verify_select.py"
+          if [ -f "$_plug/_kipi_verify_select.py" ]; then
+            run_check "pytest:$suite" bash -c "$_VERIFY_RUN" _ \
+              "$TARGET" "$suite" "$_cache" "$_plug" "" "$_serial" "${_xd[@]+"${_xd[@]}"}"
+          else
+            # No selector anywhere: no plugin to load, so no phases. Same full,
+            # ordered, fail-fast run as before; parallel still applies.
+            run_check "pytest:$suite" bash -c \
+              'cache="$3"; cd "$1/$2" && shift 3 && python3 -m pytest -q --no-header --ff -x -o cache_dir="$cache" "$@"' \
+              _ "$TARGET" "$suite" "$_cache" "${_xd[@]+"${_xd[@]}"}"
+          fi
         fi
       else
         run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \

@@ -26,9 +26,24 @@ Selection, per staged path under the suite:
   A staged pytest config file (conftest.py, pytest.ini, pyproject.toml,
   setup.cfg, tox.ini) changes how EVERY test runs, so it selects the full suite.
 
+THE COMMIT DOOR IS NARROWER (`--door staged`, 2026-10-05). Rule (b) above matches
+the bare word, so a module called `send` or `queue` selected every test that says
+"send" or "queue" in a docstring or a variable name: 95 and 82 test files in
+consulting, of which 6 and 11 import the module. Consulting commits ran 6 to 23
+minutes. At the staged door a .py module is owned only by a test that
+  - IMPORTS it (an AST import whose dotted name is a suffix of the module path,
+    relative imports included, imports inside functions included), or
+  - is NAMED after it (test_<stem>.py, test_<stem>_*.py), or
+  - names its FILE (`<stem>.py`, for spec_from_file_location and subprocess) or
+    its DOTTED path (`pkg.<stem>`, for import_module, `-m`, string monkeypatch).
+A test file that does not parse is kept: the selector may cost time, never
+coverage. __init__.py, data files, config files and the fallback are unchanged.
+`--door changed` (pre-push, CI) keeps the broad word match, so the two doors that
+gate a push and a merge select exactly what they selected before.
+
 Known limit, stated so nobody reads more into a green: ownership is by NAME, one
 hop. A test that reaches a staged module only through another module is not
-selected. --full in CI (the required merge check) is what catches that.
+selected. --changed at pre-push, and the full suite nightly, are what catch that.
 
 Protocol (read by verify.sh):
   stdin   the staged paths, repo-relative, one per line (deletions included:
@@ -42,6 +57,7 @@ Protocol (read by verify.sh):
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -94,6 +110,51 @@ def names_for(rel: str, suite: str = "") -> tuple[str, re.Pattern[str]]:
     return base, re.compile(r"(?<![\w.-])" + re.escape(base) + r"(?![\w-])")
 
 
+def _import_targets(source: str) -> list[str] | None:
+    """Every dotted name a test file imports, at any depth. None if it does not parse."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    out: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            out.extend(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if base:
+                out.append(base)
+            for a in node.names:
+                if a.name != "*":
+                    out.append(f"{base}.{a.name}" if base else a.name)
+    return out
+
+
+def imports_or_names(rel: str, test: str, source: str) -> bool:
+    """The staged door's ownership test for a .py module (see the module docstring)."""
+    comps = rel[:-3].split("/")
+    stem = comps[-1]
+    tbase = os.path.basename(test)[:-3]
+    if tbase == f"test_{stem}" or tbase.startswith(f"test_{stem}_"):
+        return True
+    targets = _import_targets(source)
+    if targets is None:
+        return True
+    for t in targets:
+        parts = t.split(".")
+        if len(parts) <= len(comps) and comps[-len(parts):] == parts:
+            return True
+    # The file by name, same edges as a data file, so `decide.py` is found inside
+    # "pipeline/decide.py" but `send.py` is not found inside "resend.py".
+    if re.search(r"(?<![\w.-])" + re.escape(stem) + r"\.py(?![\w-])", source):
+        return True
+    if len(comps) >= 2:
+        dotted = r"\.".join(re.escape(c) for c in comps[-2:])
+        if re.search(r"(?<![\w.])" + dotted + r"\b", source):
+            return True
+    return False
+
+
 def read_fallback(target: str, suite: str, tests: list[str]) -> list[str] | None:
     path = os.path.join(target, suite, FALLBACK_FILE)
     if not os.path.isfile(path):
@@ -110,7 +171,7 @@ def read_fallback(target: str, suite: str, tests: list[str]) -> list[str] | None
     return present or None
 
 
-def select(target: str, suite: str, staged: list[str]) -> tuple[str, list[str], list[str]]:
+def select(target: str, suite: str, staged: list[str], door: str = "changed") -> tuple[str, list[str], list[str]]:
     prefix = suite.rstrip("/") + "/"
     in_suite = [p[len(prefix):] for p in staged if p.startswith(prefix)]
     why: list[str] = []
@@ -147,10 +208,16 @@ def select(target: str, suite: str, staged: list[str]) -> tuple[str, list[str], 
                 why.append(f"{rel}: test file deleted -> nothing to run for it")
             continue
         name, pat = names_for(rel, suite)
-        owners = [t for t in tests if t != rel and pat.search(text_of(t))]
+        narrow = (door == "staged" and rel.endswith(".py")
+                  and os.path.basename(rel) != "__init__.py")
+        if narrow:
+            owners = [t for t in tests if t != rel and imports_or_names(rel, t, text_of(t))]
+        else:
+            owners = [t for t in tests if t != rel and pat.search(text_of(t))]
         if owners:
             chosen.update(owners)
-            why.append(f"{rel}: named as '{name}' by {len(owners)} test file(s)")
+            how = "imported or named" if narrow else "named"
+            why.append(f"{rel}: {how} as '{name}' by {len(owners)} test file(s)")
         else:
             unowned.append(rel)
             why.append(f"{rel}: no test names '{name}' -> fallback")
@@ -192,6 +259,8 @@ def _selected() -> set[str] | None:
 
 
 def pytest_ignore_collect(collection_path, config):  # noqa: ARG001 - pytest hook signature
+    if _phase_ignores(os.path.realpath(str(collection_path))):
+        return True
     sel = _selected()
     if sel is None:
         return None
@@ -208,13 +277,44 @@ def pytest_ignore_collect(collection_path, config):  # noqa: ARG001 - pytest hoo
     return None
 
 
+_SERIAL: set[str] | None = None
+
+
+def _serial_files() -> set[str] | None:
+    """The suite's .verify-serial, resolved from the suite dir pytest runs in."""
+    global _SERIAL
+    if _SERIAL is None:
+        listing = os.environ.get("KIPI_VERIFY_SERIAL")
+        if not listing or not os.environ.get("KIPI_VERIFY_PHASE"):
+            return None
+        out = set()
+        with open(listing, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    out.add(os.path.realpath(line))
+        _SERIAL = out
+    return _SERIAL
+
+
+def _phase_ignores(p: str) -> bool:
+    ser = _serial_files()
+    if ser is None or not is_test_file(p):
+        return False
+    phase = os.environ.get("KIPI_VERIFY_PHASE")
+    return (p in ser) if phase == "parallel" else (p not in ser)
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--target", required=True, help="tree being graded")
     ap.add_argument("--suite", required=True, help="suite dir, relative to target")
+    # Default is the BROAD rule, so a verify.sh that predates this flag (an
+    # instance not yet synced) keeps selecting exactly what it did.
+    ap.add_argument("--door", choices=("staged", "changed"), default="changed")
     args = ap.parse_args(argv)
     staged = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
-    mode, files, why = select(args.target, args.suite, staged)
+    mode, files, why = select(args.target, args.suite, staged, args.door)
     for line in why:
         print(f"      {line}", file=sys.stderr)
     print(mode)
