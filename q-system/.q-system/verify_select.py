@@ -130,9 +130,14 @@ def _import_targets(source: str) -> list[str] | None:
     return out
 
 
-def imports_or_names(rel: str, test: str, source: str) -> bool:
+def imports_or_names(rel: str, test: str, source: str, suite: str = "") -> bool:
     """The staged door's ownership test for a .py module (see the module docstring)."""
-    comps = rel[:-3].split("/")
+    # REPO-relative, not suite-relative (PR #521 review): when the suite dir is
+    # itself a package, tests import `voiceloop.scoring`, and against the
+    # suite-relative path ["scoring"] that two-part name never matched, so the
+    # real owner was skipped at commit time.
+    full = f"{suite.strip('/')}/{rel}" if suite.strip("/") else rel
+    comps = full[:-3].split("/")
     stem = comps[-1]
     tbase = os.path.basename(test)[:-3]
     if tbase == f"test_{stem}" or tbase.startswith(f"test_{stem}_"):
@@ -211,7 +216,7 @@ def select(target: str, suite: str, staged: list[str], door: str = "changed") ->
         narrow = (door == "staged" and rel.endswith(".py")
                   and os.path.basename(rel) != "__init__.py")
         if narrow:
-            owners = [t for t in tests if t != rel and imports_or_names(rel, t, text_of(t))]
+            owners = [t for t in tests if t != rel and imports_or_names(rel, t, text_of(t), suite)]
         else:
             owners = [t for t in tests if t != rel and pat.search(text_of(t))]
         if owners:
