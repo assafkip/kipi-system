@@ -158,7 +158,7 @@ def build_context_from_corpus():
         return None
     sys.path.insert(0, str(root / "plugins" / "kipi-core"))
     try:
-        from voiceloop import corpus, selector
+        from voiceloop import assemble, corpus, selector
     except Exception:
         return None
 
@@ -204,7 +204,16 @@ def build_context_from_corpus():
         "shape of the voice still reads as AI. voice-lint catches part of it.\n",
         f"\n=== WHO IS WRITING ===\n\n{voice.identity.strip()}\n",
     ]
-    corrections = voice.active_corrections()
+    # The lane arrives by ENVIRONMENT because it is a Python contextvar in the writer
+    # process and this hook is a separate process. PR #519 round 4: rows lifted for
+    # `scheduled-x` (scope_exclude) were rendered here raw. Measured 2026-10-05 the
+    # scheduled writer's `claude -p` does not load this hook (untrusted runner dir,
+    # 0 UserPromptSubmit hook attachments in 931 runner transcripts), so this guards
+    # the day the launch changes, not a live leak. Same filter as voice_section.
+    corrections = assemble.corrections_for(
+        voice.active_corrections(),
+        os.environ.get("KIPI_VOICE_CHANNEL") or None,
+        os.environ.get("KIPI_VOICE_LANE") or None)
     if corrections:
         parts.append("\n=== CORRECTIONS (these override anything older) ===\n\n")
         for c in corrections[-4:]:
