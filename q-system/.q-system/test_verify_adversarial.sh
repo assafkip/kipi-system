@@ -419,7 +419,7 @@ printf '# touched\n' > "$R/suite/__init__.py"; git -C "$R" add suite/__init__.py
 run "$R" --staged; check "__init__.py selects by package name" 1 $?; rm -rf "$R"
 
 # --- THE COMMIT DOOR SELECTS BY IMPORT, NOT BY BARE WORD (2026-10-05) ---
-# A module called `send` selected 95 consulting test files that merely SAY "send";
+# A module called `send` selected 95 test files in one instance that merely SAY "send";
 # 11 import it. Each red witness below reaches mod_a one way; --staged must run it.
 R=$(ownrepo)
 printf 'def test_word():\n    """mod_a is mentioned here and never imported"""\n    assert False\n' \

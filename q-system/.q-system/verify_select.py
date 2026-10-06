@@ -29,7 +29,7 @@ Selection, per staged path under the suite:
 THE COMMIT DOOR IS NARROWER (`--door staged`, 2026-10-05). Rule (b) above matches
 the bare word, so a module called `send` or `queue` selected every test that says
 "send" or "queue" in a docstring or a variable name: 95 and 82 test files in
-consulting, of which 6 and 11 import the module. Consulting commits ran 6 to 23
+one instance, of which 6 and 11 import the module. Its commits ran 6 to 23
 minutes. At the staged door a .py module is owned only by a test that
   - IMPORTS it (an AST import whose dotted name is a suffix of the module path,
     relative imports included, imports inside functions included), or

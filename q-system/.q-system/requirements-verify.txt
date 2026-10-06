@@ -1,7 +1,7 @@
 # What verify.sh needs on every machine and in CI. Installed by
 # .github/workflows/verify.yml; on a machine: pip install -r this file.
 # pytest-xdist is what makes `verify.sh --staged` run on every core instead of
-# one (2026-10-05: a consulting commit check went from 765s to minutes). Without
+# one (2026-10-05: an instance commit check went from 765s to 109s). Without
 # it verify.sh still runs, serially, and says so.
 pytest
 pytest-xdist
