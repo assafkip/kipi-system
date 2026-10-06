@@ -479,6 +479,34 @@ else
 fi
 rm -rf "$R"
 
+# --- PR #521 REVIEW: a suite that is itself a PACKAGE is imported package-
+# qualified (`from suite import mod_a`, as voiceloop's tests do). Matched against
+# the suite-relative path that owner was skipped, and this red test passed.
+R=$(ownrepo)
+printf 'def test_q():\n    from suite import mod_a\n    assert False\n' > "$R/suite/test_qualified.py"
+git -C "$R" add -A; git -C "$R" commit -qm qualified
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "staged: package-qualified owner BLOCKS" 1 $?
+rm -rf "$R"
+
+# --- PR #521 REVIEW: a .verify-serial entry naming no file must not leave the
+# suite under xdist. The witness needs a worker, so it FAILS once the run drops
+# to one process, and the reason is printed.
+if python3 -c "import xdist" 2>/dev/null; then
+  R=$(ownrepo)
+  printf 'import os, mod_a\ndef test_par():\n    assert os.environ.get("PYTEST_XDIST_WORKER")\n' \
+    > "$R/suite/test_mod_a_par.py"
+  printf 'test_typo_does_not_exist.py\n' > "$R/suite/.verify-serial"
+  git -C "$R" add -A; git -C "$R" commit -qm typo
+  printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"; rc=$?
+  check "typo in .verify-serial -> single-process" 1 $rc
+  case "$OUT" in *"names a missing file: test_typo_does_not_exist.py"*)
+    check "typo in .verify-serial is named" 0 0 ;;
+    *) check "typo in .verify-serial is named" 0 1 ;; esac
+  rm -rf "$R"
+fi
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

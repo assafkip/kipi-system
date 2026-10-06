@@ -822,6 +822,20 @@ if [ -f "$MANIFEST" ]; then
         fi
         _serial="$TARGET/$suite/.verify-serial"
         [ -f "$_serial" ] || _serial=""
+        # A .verify-serial entry naming no file is a typo or a stale rename, and
+        # the test it meant to protect would then run under xdist (PR #521
+        # review). Drop to one process for the whole suite and say why: this
+        # costs time, never safety.
+        if [ -n "$_serial" ] && [ "${#_xd[@]}" -gt 0 ]; then
+          while IFS= read -r _entry || [ -n "$_entry" ]; do
+            _entry="${_entry%%#*}"; _entry="$(printf '%s' "$_entry" | tr -d '[:space:]')"
+            if [ -n "$_entry" ] && [ ! -f "$TARGET/$suite/$_entry" ]; then
+              echo "      .verify-serial names a missing file: $_entry -> whole suite single-process"
+              _xd=()
+              break
+            fi
+          done < "$_serial"
+        fi
         if [ "$_sel_mode" = "select" ]; then
           _plug="$TMP/verify-select-plugin"
           mkdir -p "$_plug"
