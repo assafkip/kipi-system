@@ -418,6 +418,67 @@ git -C "$R" add -A; git -C "$R" commit -qm pkg
 printf '# touched\n' > "$R/suite/__init__.py"; git -C "$R" add suite/__init__.py
 run "$R" --staged; check "__init__.py selects by package name" 1 $?; rm -rf "$R"
 
+# --- THE COMMIT DOOR SELECTS BY IMPORT, NOT BY BARE WORD (2026-10-05) ---
+# A module called `send` selected 95 consulting test files that merely SAY "send";
+# 11 import it. Each red witness below reaches mod_a one way; --staged must run it.
+R=$(ownrepo)
+printf 'def test_word():\n    """mod_a is mentioned here and never imported"""\n    assert False\n' \
+  > "$R/suite/test_mentions_word.py"
+git -C "$R" add -A; git -C "$R" commit -qm word
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "staged: a bare-word mention is NOT an owner" 0 $?
+# Control: the push door's broad rule still picks the same file.
+SEL="$(printf 'suite/mod_a.py\n' | python3 "$R/q-system/.q-system/verify_select.py" \
+        --target "$R" --suite suite --door changed 2>/dev/null)"
+case "$SEL" in *test_mentions_word.py*) check "changed door keeps the broad rule" 0 0 ;;
+  *) check "changed door keeps the broad rule" 0 1 ;; esac
+rm -rf "$R"
+
+for witness in \
+  'lazy:def test_w():\n    import mod_a\n    assert mod_a.VALUE == 2\n' \
+  'named:def test_w():\n    assert False\n' \
+  'path:import pathlib\ndef test_w():\n    assert not pathlib.Path("mod_a.py").exists()\n' \
+  'unparseable:def test_w(:\n'; do
+  kind="${witness%%:*}"; body="${witness#*:}"
+  R=$(ownrepo)
+  f="test_witness_$kind.py"; [ "$kind" = named ] && f="test_mod_a_extra.py"
+  printf "$body" > "$R/suite/$f"
+  git -C "$R" add -A; git -C "$R" commit -qm witness
+  printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  run "$R" --staged; check "staged: $kind owner is selected and BLOCKS" 1 $?
+  rm -rf "$R"
+done
+
+# --- PARALLEL AT THE COMMIT DOOR, AND .verify-serial REALLY SERIAL ---
+# Witnesses read PYTEST_XDIST_WORKER, which xdist sets in every worker and is
+# absent in a single-process run. Without xdist the run must SAY it is serial.
+R=$(ownrepo)
+printf 'import os, mod_a\ndef test_par():\n    assert os.environ.get("PYTEST_XDIST_WORKER")\n' \
+  > "$R/suite/test_mod_a_par.py"
+git -C "$R" add -A; git -C "$R" commit -qm par
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+if python3 -c "import xdist" 2>/dev/null; then
+  run "$R" --staged; check "staged runs under xdist workers" 0 $?
+  ( cd "$R" && KIPI_VERIFY_NO_XDIST=1 bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
+  check "control: without xdist the witness FAILS" 1 $?
+  printf 'test_mod_a_ser.py\n' > "$R/suite/.verify-serial"
+  printf 'import os, mod_a\ndef test_ser():\n    assert not os.environ.get("PYTEST_XDIST_WORKER")\n' \
+    > "$R/suite/test_mod_a_ser.py"
+  # Committed, so only mod_a.py is staged: a staged .verify-serial is a path no
+  # test names and would take the full-suite fallback, hiding what is measured.
+  git -C "$R" add suite/.verify-serial suite/test_mod_a_ser.py; git -C "$R" commit -qm ser
+  run "$R" --staged; check ".verify-serial file runs in one process" 0 $?
+  printf 'import mod_a\ndef test_ser():\n    assert False\n' > "$R/suite/test_mod_a_ser.py"
+  git -C "$R" commit -qam red-ser
+  printf 'VALUE = 1\n# touched again\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  run "$R" --staged; check "a red .verify-serial file BLOCKS" 1 $?
+else
+  OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"
+  case "$OUT" in *"pytest-xdist not installed -> serial"*) check "no xdist: says serial" 0 0 ;;
+    *) check "no xdist: says serial" 0 1 ;; esac
+fi
+rm -rf "$R"
+
 echo
 echo "adversarial: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

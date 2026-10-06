@@ -781,11 +781,11 @@ if [ -f "$MANIFEST" ]; then
         _cache="$VERIFY_CACHE_ROOT/$(printf '%s' "$suite" | tr / _)"
         _sel_src="$TARGET/q-system/.q-system/verify_select.py"
         [ -f "$_sel_src" ] || _sel_src="$SCRIPT_DIR/verify_select.py"
-        _sel_mode="full"; _sel_out=""
+        _sel_mode="full"; _sel_out=""; _sel_ok=""
         # The commit door asks for the NARROW rule (imports, not bare words);
         # the push door keeps the broad one. See verify_select.py's docstring.
         _sel_door=""
-        [ "$MODE" = "--staged" ] && _sel_door="staged"
+        if [ "$MODE" = "--staged" ]; then _sel_door="staged"; fi
         if [ -f "$_sel_src" ] && \
            _sel_out="$(printf '%s\n' "$ANY_STAGED" | \
                        python3 "$_sel_src" --target "$TARGET" --suite "$suite" \
@@ -794,14 +794,18 @@ if [ -f "$MANIFEST" ]; then
           # the pipe buffer SIGPIPEs printf and set -e aborts with no verdict
           # (PR #489 review round 2).
           _sel_mode="${_sel_out%%$'\n'*}"
+          _sel_ok=1
         else
           echo "      selector unavailable or failed -> full suite"
         fi
         # PARALLEL AT THE COMMIT DOOR (2026-10-05). The staged run used one core of
         # ten: a one-file change to a hot module selected ~100 test files and the
         # commit took 6 to 23 minutes. pytest-xdist spreads the selection across
-        # workers. --dist loadfile keeps every test of one FILE on one worker, so
-        # module-scoped fixtures and in-file ordering behave exactly as serially.
+        # workers. --dist worksteal, NOT loadfile, and that is measured: on a
+        # decide.py change (60 files) loadfile took 338s because it pinned all of
+        # test_daily.py, a file of 20-36s tests, to ONE worker; worksteal took
+        # 118s on the same files. Per-test spreading means two tests of one file
+        # can run side by side, which is what `.verify-serial` is for.
         # A suite's `.verify-serial` (test paths relative to the suite, one per
         # line) names files that share state ACROSS files; they run afterwards
         # in a second, single-process pass, so nothing else runs beside them.
@@ -811,7 +815,7 @@ if [ -f "$MANIFEST" ]; then
         if [ "$MODE" = "--staged" ] && [ -z "${KIPI_VERIFY_NO_XDIST:-}" ]; then
           if python3 -c "import xdist" 2>/dev/null; then
             _ncpu="$(python3 -c 'import os; print(os.cpu_count() or 1)')"
-            _xd=(-n "$_ncpu" --dist loadfile)
+            _xd=(-n "$_ncpu" --dist worksteal)
           else
             echo "      pytest-xdist not installed -> serial (pip install -r q-system/.q-system/requirements-verify.txt)"
           fi
@@ -835,20 +839,23 @@ if [ -f "$MANIFEST" ]; then
           # suite rather than passing on zero tests run.
           run_check "pytest:$suite ($_n selected)" bash -c "$_VERIFY_RUN" _ \
             "$TARGET" "$suite" "$_cache" "$_plug" "$_list" "$_serial" "${_xd[@]+"${_xd[@]}"}"
-        else
+        elif [ -n "$_serial" ] && [ -n "$_sel_ok" ]; then
+          # The full suite with phases needs the plugin, and the selector just ran
+          # cleanly, so it is safe to load.
           _plug="$TMP/verify-select-plugin"
           mkdir -p "$_plug"
-          [ -f "$_sel_src" ] && cp "$_sel_src" "$_plug/_kipi_verify_select.py"
-          if [ -f "$_plug/_kipi_verify_select.py" ]; then
-            run_check "pytest:$suite" bash -c "$_VERIFY_RUN" _ \
-              "$TARGET" "$suite" "$_cache" "$_plug" "" "$_serial" "${_xd[@]+"${_xd[@]}"}"
-          else
-            # No selector anywhere: no plugin to load, so no phases. Same full,
-            # ordered, fail-fast run as before; parallel still applies.
-            run_check "pytest:$suite" bash -c \
-              'cache="$3"; cd "$1/$2" && shift 3 && python3 -m pytest -q --no-header --ff -x -o cache_dir="$cache" "$@"' \
-              _ "$TARGET" "$suite" "$_cache" "${_xd[@]+"${_xd[@]}"}"
-          fi
+          cp "$_sel_src" "$_plug/_kipi_verify_select.py"
+          run_check "pytest:$suite" bash -c "$_VERIFY_RUN" _ \
+            "$TARGET" "$suite" "$_cache" "$_plug" "" "$_serial" "${_xd[@]+"${_xd[@]}"}"
+        else
+          # NEVER load a selector that failed or is missing as a plugin: a broken
+          # selector must cost time, never the run (test_verify_changed.sh
+          # "crashing selector"). With a .verify-serial but no plugin there are
+          # no phases, so the whole suite runs single-process.
+          if [ -n "$_serial" ]; then _xd=(); fi
+          run_check "pytest:$suite" bash -c \
+            'cache="$3"; cd "$1/$2" && shift 3 && python3 -m pytest -q --no-header --ff -x -o cache_dir="$cache" "$@"' \
+            _ "$TARGET" "$suite" "$_cache" "${_xd[@]+"${_xd[@]}"}"
         fi
       else
         run_check "pytest:$suite" bash -c 'cd "$1/$2" && python3 -m pytest -q --no-header' \
