@@ -216,6 +216,21 @@ def build_context_from_corpus():
     return "".join(parts)
 
 
+def _turn_classifier():
+    """The shared turn gate (ASK-2511). None if it cannot load: then this hook
+    behaves as it did before the gate existed, because failing CLOSED here would
+    silently drop the founder's voice, which is the worse miss."""
+    try:
+        import importlib.util
+        lib = Path(__file__).resolve().parent / "turn_classifier.py"
+        spec = importlib.util.spec_from_file_location("turn_classifier", lib)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -223,6 +238,12 @@ def main():
         sys.exit(0)
     user_prompt = payload.get("prompt", "")
     if not user_prompt or not looks_like_writing_request(user_prompt):
+        sys.exit(0)
+    # A notification, "ok", or "how much longer" is not a writing request even
+    # when its words match the list above: agent prose says "post" and "reply"
+    # constantly. 6,141 bytes went in on every one of them (ASK-2511).
+    tc = _turn_classifier()
+    if tc is not None and not tc.should_inject(user_prompt):
         sys.exit(0)
     # The corpus path first. The legacy dump stays reachable ONLY when voiceloop or the
     # corpus is absent, so this cannot leave an instance with no voice anchor at all;
@@ -241,7 +262,7 @@ def main():
     # they all measure the OUTPUT, none check that the INPUT arrived.
     output = {"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
-        "additionalContext": context,
+        "additionalContext": tc.cap(context, "voice-dna-loader") if tc is not None else context,
     }}
     sys.stdout.write(json.dumps(output))
     sys.exit(0)

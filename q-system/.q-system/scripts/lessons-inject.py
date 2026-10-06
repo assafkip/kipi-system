@@ -281,6 +281,21 @@ def rank(lessons, query):
     return scored
 
 
+def _turn_classifier():
+    """The shared turn gate (ASK-2511). None if it cannot load: then this hook
+    behaves as it did before the gate existed, because failing CLOSED here would
+    silently drop the founder's voice, which is the worse miss."""
+    try:
+        import importlib.util
+        lib = Path(__file__).resolve().parent / "turn_classifier.py"
+        spec = importlib.util.spec_from_file_location("turn_classifier", lib)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:
+        return None
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -294,6 +309,12 @@ def main():
     prompt = payload.get("prompt") or ""
     if not prompt.strip() or not TRIGGER_RE.search(prompt):
         return 0
+    # Agent prose in a task-notification says "fix", "test", "hook" in every
+    # paragraph; this fired up to 11,993 bytes on turns nobody typed (ASK-2511).
+    tc = _turn_classifier()
+    if tc is not None and not tc.should_inject(prompt):
+        return 0
+    ceiling = min(PAYLOAD_CEILING_CHARS, tc.SHARES["lessons-inject"]) if tc is not None else PAYLOAD_CEILING_CHARS
 
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     lessons_dir = get_qroot(root) / "lessons"
@@ -351,7 +372,7 @@ def main():
     parts, used, shown = [header], len(header), []
     for score, lid, title, body in picked:
         chunk = f"\n=== [{lid}] {title}  (relevance {score:.1f}) ===\n\n{body}\n"
-        if used + len(chunk) > PAYLOAD_CEILING_CHARS:
+        if used + len(chunk) > ceiling:
             # SKIP IT, do not stop (Codex minor, PR #277). `break` meant one
             # oversized top-ranked lesson returned the header alone -- and since
             # `len(parts) == 1` then returns 0 without recording anything, that
@@ -405,7 +426,7 @@ def main():
     # with 27 instance copies of it and nine stale token-guard forks.
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
-        "additionalContext": "".join(parts),
+        "additionalContext": tc.cap("".join(parts), "lessons-inject") if tc is not None else "".join(parts),
     }}))
     return 0
 
