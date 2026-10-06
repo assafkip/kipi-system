@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """turn_classifier: one answer to "does this turn deserve injected context?"
 
-Shared by every UserPromptSubmit injector (voice-dna-loader.py, lessons-inject.py,
-knowledge-inject.py, and the instance-local bank_corrected_post.py), so they agree.
+Shared by every UserPromptSubmit injector in this directory (voice-dna-loader.py,
+lessons-inject.py, knowledge-inject.py), so they agree. An instance-local hook can
+load it by path from the synced tree and must fail open when it is absent.
 Tests: test_turn_classifier.py. Stdlib only, no I/O.
 
 WHY (ASK-2511, 2026-10-06). Each injector had its own keyword trigger and none of
@@ -32,12 +33,9 @@ from __future__ import annotations
 
 import re
 
-# The two envelopes Claude Code wraps a background event in. Matched at the START
-# of the prompt only: a person who pastes a notification and asks for something
-# about it has typed text first, and that turn must not be silenced.
-_NOTIFICATION_HEAD = "<task-notification>"
-_SYSTEM_REMINDER_HEAD = "<system-reminder>"
-_SYSTEM_NOTIFICATION_MARK = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
+# Envelopes are matched at the START of the prompt only: a person who pastes a
+# notification and asks for something about it has typed text first, and that
+# turn must not be silenced.
 
 # The verbs from the ASK-2511 spec plus the surfaces that only ever mean a
 # writing request. Deliberately NOT voice-dna-loader's 60-pattern list: words
@@ -47,6 +45,9 @@ WRITING_VERB_RE = re.compile(
     r"(?i)\b("
     r"draft\w*|re-?draft\w*|write|writes|writing|written|wrote|rewrit\w*|"
     r"compose|composing|post|posts|posting|repl(?:y|ies|ying)|e-?mail\w*|"
+    # Short revision asks the voice loader always matched (PR #523 review):
+    # "edit it", "polish this", "reword the opener" must never lose the voice.
+    r"edit|edits|editing|revis\w*|polish\w*|rephras\w*|reword\w*|"
     r"comment|comments|dm|dms|tweet\w*|caption\w*|headline\w*|"
     r"essay|newsletter|outreach"
     r")\b"
@@ -67,11 +68,20 @@ TRIVIAL_MAX_WORDS = 3
 STATUS_MAX_WORDS = 8
 
 
+# Harness OUTPUT envelopes. A sibling instance hook measured them: of 535 harness
+# messages in 2,305 real user-role turns, 529 begin with an envelope tag and no
+# person's message does. The command-name / command-message / command-args tags
+# are left OUT on purpose: they wrap a slash command whose arguments he typed
+# ("/voiceloop <idea>"), and silencing those would drop his voice.
+_HARNESS_HEADS = tuple("<" + t for t in (
+    "task-notification", "system-reminder", "local-command-caveat",
+    "local-command-stdout", "bash-stdout", "bash-stderr", "user-prompt-submit-hook",
+))
+
+
 def is_notification(prompt: str) -> bool:
     s = (prompt or "").lstrip()
-    if s.startswith(_NOTIFICATION_HEAD):
-        return True
-    return s.startswith(_SYSTEM_REMINDER_HEAD) and _SYSTEM_NOTIFICATION_MARK in s[:400]
+    return s.startswith(_HARNESS_HEADS)
 
 
 def has_pasted_content(prompt: str) -> bool:
@@ -95,11 +105,26 @@ def classify(prompt: str) -> str:
     words = (prompt or "").split()
     if len(words) <= TRIVIAL_MAX_WORDS:
         return "trivial"
-    if len(words) <= STATUS_MAX_WORDS:
+    if len(words) <= STATUS_MAX_WORDS and not names_something(words):
         first = re.sub(r"[^a-z']", "", words[0].lower())
         if "?" in prompt or first in _STATUS_OPENERS:
             return "status"
     return "other"
+
+
+def names_something(words) -> bool:
+    """A capitalised word after the first: a person, a client, a product.
+
+    WHY (PR #523 CI): "what do we know about <Full Name>" is 7 words and opens
+    with "what", so the first cut called it status and knowledge-inject went
+    silent on exactly the question it exists for. A progress question names a
+    duration or a step, not a proper noun. "I" and "I'm" are not names.
+    """
+    for w in words[1:]:
+        core = re.sub(r"^[^A-Za-z]+|[^A-Za-z']+$", "", w)
+        if core[:1].isupper() and core not in ("I", "I'm", "I've", "I'd", "I'll"):
+            return True
+    return False
 
 
 def should_inject(prompt: str) -> bool:

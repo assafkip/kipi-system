@@ -292,7 +292,10 @@ def _turn_classifier():
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
-    except Exception:
+    except Exception as exc:
+        # Say so: a gate that switches itself off without a word is how the
+        # 25 KB-per-notification defect would come back unseen (PR #523 review).
+        sys.stderr.write(f"turn_classifier unavailable, turn gate OFF: {exc!r}\n")
         return None
 
 
@@ -369,10 +372,13 @@ def main():
         "overlap and is crude: it can MISS the relevant lesson silently, so the full "
         "title index from SessionStart remains the authority on what exists.\n"
     )
-    parts, used, shown = [header], len(header), []
+    # Sized in BYTES, the unit cap() trims in. Counted in chars, a non-ASCII
+    # lesson could fit here, be trimmed by cap(), and still be recorded as shown
+    # and suppressed for the session (PR #523 review).
+    parts, used, shown = [header], len(header.encode("utf-8")), []
     for score, lid, title, body in picked:
         chunk = f"\n=== [{lid}] {title}  (relevance {score:.1f}) ===\n\n{body}\n"
-        if used + len(chunk) > ceiling:
+        if used + len(chunk.encode("utf-8")) > ceiling:
             # SKIP IT, do not stop (Codex minor, PR #277). `break` meant one
             # oversized top-ranked lesson returned the header alone -- and since
             # `len(parts) == 1` then returns 0 without recording anything, that
@@ -381,7 +387,7 @@ def main():
             # starvation caused by one long file.
             continue
         parts.append(chunk)
-        used += len(chunk)
+        used += len(chunk.encode("utf-8"))
         shown.append(lid)
     if not shown:
         return 0

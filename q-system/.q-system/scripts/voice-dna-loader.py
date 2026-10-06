@@ -227,7 +227,10 @@ def _turn_classifier():
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
-    except Exception:
+    except Exception as exc:
+        # Say so: a gate that switches itself off without a word is how the
+        # 25 KB-per-notification defect would come back unseen (PR #523 review).
+        sys.stderr.write(f"turn_classifier unavailable, turn gate OFF: {exc!r}\n")
         return None
 
 

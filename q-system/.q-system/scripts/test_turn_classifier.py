@@ -77,6 +77,9 @@ SHOULD_INJECT = [
     "<pasted_content id=\"x1\">\nsome long text the founder pasted\n</pasted_content>\nfix this",
     "1. not actionable\n2. too technical\n3. makes no sense",
     "did you show me examples of posts?",
+    "edit it",
+    "polish this",
+    "reword the opener",
 ]
 
 # Neither class: each injector keeps its own trigger. Listed so a future widening
@@ -85,6 +88,10 @@ SHOULD_FALL_THROUGH = [
     "Would this mechanism be different and separate from the voice loop?",
     "I need you to identify why this is taking so long exactly. This is taking way too long.",
     "you can turn off the number check",
+    # A short question that NAMES someone is a knowledge lookup, not a status
+    # check (PR #523 CI: test_knowledge_supply went red on exactly this shape).
+    "what do we know about Jordan Example",
+    "is Acme Widgets still waiting on us?",
 ]
 
 
@@ -199,7 +206,15 @@ class TestVoiceLoader(unittest.TestCase):
 
     def test_a_missing_classifier_fails_open_not_silent(self):
         (self.sdir / "turn_classifier.py").unlink()
-        self.assertIn("VOICE-MARKER-7731", _run(self.hook, "write the post", self.root))
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE_", "KIPI_"))}
+        env.update({"HOME": str(self.root / "home"), "CLAUDE_PROJECT_DIR": str(self.root),
+                    "KIPI_VOICE_DIR": str(self.root / "none")})
+        (self.root / "home").mkdir(exist_ok=True)
+        r = subprocess.run([sys.executable, str(self.hook)], capture_output=True, text=True,
+                           input=json.dumps({"prompt": "write the post"}), env=env, timeout=60)
+        self.assertIn("VOICE-MARKER-7731", r.stdout)
+        # ...and it says the gate is off, so the fail-open is not silent.
+        self.assertIn("turn gate OFF", r.stderr)
 
 
 class TestLessonsInject(unittest.TestCase):
@@ -218,6 +233,16 @@ class TestLessonsInject(unittest.TestCase):
 
     def test_a_notification_gets_nothing(self):
         self.assertEqual(_run(self.hook, NOTIFICATION, self.root), "")
+
+    def test_a_non_ascii_lesson_is_never_trimmed_after_being_recorded(self):
+        les = self.root / "q-system" / "lessons"
+        for f in les.glob("*.md"):
+            f.unlink()
+        # ~3.6K chars but ~10K bytes: fits a char ceiling, not the byte share.
+        (les / "wide.md").write_text("---\nid: wide\ntitle: fix the hook test\n---\n\n"
+                                      + ("hook test fix \u2014\u2014\u2014\u2014\n" * 200))
+        out = _run(self.hook, "fix the failing hook test", self.root)
+        self.assertNotIn("cut at", out)
 
     def test_an_engineering_prompt_still_fires_and_stays_under_its_share(self):
         out = _run(self.hook, "fix the failing hook test before you commit the gate change", self.root)
