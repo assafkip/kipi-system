@@ -121,9 +121,10 @@ UNSCANNED = [
 ]
 
 
-def ungated_in(top: Path) -> tuple[list[str], int]:
-    """(ungated sites, all detected sites) for one checkout, as repo-relative paths."""
-    sites = cs.call_sites(top)
+def ungated_in(top: Path, sites=None) -> tuple[list[str], int]:
+    """(ungated sites, all detected sites) for one checkout, as repo-relative paths.
+    Pass `sites` when already detected: call_sites is the dominant cost."""
+    sites = cs.call_sites(top) if sites is None else sites
     out = []
     for rel in sorted(sites):
         if rel.endswith(".py"):
@@ -158,7 +159,8 @@ def loaded_launchd_labels(launchctl_cmd: list[str] | None = None) -> set[str] | 
         parts = line.split("\t")
         if len(parts) >= 3 and parts[2].strip():
             labels.add(parts[2].strip())
-    return labels
+    # Exit 0 with nothing parsed is a broken read, not a machine with no jobs.
+    return labels or None
 
 
 def _abs_paths(args: list) -> list[str]:
@@ -251,7 +253,10 @@ def read_weekly(state_dir: Path) -> dict | None:
         return {"weeks": {}}
     try:
         data = json.loads(f.read_text())
-        return data if isinstance(data, dict) and isinstance(data.get("weeks"), dict) else None
+        weeks = data.get("weeks") if isinstance(data, dict) else None
+        ok = isinstance(weeks, dict) and all(
+            isinstance(v, dict) and isinstance(v.get("ungated"), int) for v in weeks.values())
+        return data if ok else None
     except (OSError, ValueError):
         return None
 
@@ -268,17 +273,36 @@ def write_weekly(state_dir: Path, data: dict) -> None:
     os.replace(tmp, f)
 
 
-def weekly_verdict(weekly: dict, week: str, count: int) -> dict:
+def weekly_verdict(weekly: dict, week: str, count: int,
+                   by_checkout: dict | None = None) -> dict:
     """What this run owes the drain: file this week's line or not, and whether
-    the count failed to fall against the latest EARLIER week on record."""
+    the count failed to fall against the latest EARLIER week on record.
+
+    THE COMPARISON IS OVER CHECKOUTS PRESENT BOTH WEEKS. Compared as totals, a
+    checkout dropping out of the population (a loaded job whose plist will not
+    parse, a repo that stopped reading) read as remediation and became the
+    baseline; when it came back the job went red for a regression nobody made
+    (PR #526 review round 2). A week recorded before per-checkout counts falls
+    back to totals."""
     prior = sorted(k for k in weekly["weeks"] if k < week)
-    prev = weekly["weeks"][prior[-1]]["ungated"] if prior else None
+    last = weekly["weeks"][prior[-1]] if prior else None
     filed = bool(weekly["weeks"].get(week, {}).get("filed"))
+    cur, prev, dropped, added = count, None, [], []
+    if last is not None:
+        prev = last["ungated"]
+        before = last.get("by_checkout")
+        if isinstance(before, dict) and by_checkout is not None:
+            both = set(before) & set(by_checkout)
+            dropped = sorted(set(before) - both)
+            added = sorted(set(by_checkout) - both)
+            cur = sum(by_checkout[k] for k in both)
+            prev = sum(int(before[k]) for k in both)
     return {"week": week, "ungated": count, "prev_week": prior[-1] if prior else None,
-            "prev": prev, "delta": None if prev is None else count - prev,
+            "compared": cur, "prev": prev, "delta": None if prev is None else cur - prev,
+            "dropped": dropped, "added": added,
             # Zero is the terminal state, not a stall: a remediated fleet must be
             # green, or launchd-health files a job-death issue daily forever.
-            "not_falling": prev is not None and count > 0 and count >= prev, "file": not filed}
+            "not_falling": prev is not None and cur > 0 and cur >= prev, "file": not filed}
 
 
 def _repo_key(top: Path) -> str:
@@ -296,7 +320,7 @@ def scan(checkouts: list[Path]) -> dict:
     for top in checkouts:
         try:
             sites = sorted(cs.call_sites(top))
-            bad, _n = ungated_in(top)
+            bad, _n = ungated_in(top, sites)
         except RuntimeError as exc:
             errors.append({"checkout": str(top), "error": str(exc)[:200]})
             continue
@@ -356,7 +380,11 @@ def main(argv=None) -> int:
         print(f"fleet-model-gate-scan: {state_dir / 'weekly.json'} is unreadable; refusing to "
               "reset the drain's history", file=sys.stderr)
         return 2
-    verdict = weekly_verdict(weekly, iso_week(today), len(report["ungated"]))
+    unreadable = {e["checkout"] for e in report["errors"]}
+    by_checkout = {str(c): 0 for c in checkouts if str(c) not in unreadable}
+    for u in report["ungated"]:
+        by_checkout[u["checkout"]] = by_checkout.get(u["checkout"], 0) + 1
+    verdict = weekly_verdict(weekly, iso_week(today), len(report["ungated"]), by_checkout)
     report["weekly"] = verdict
     if report["errors"] and len(report["errors"]) == len(checkouts):
         print("fleet-model-gate-scan: every checkout failed to read; refusing to report zero", file=sys.stderr)
@@ -386,10 +414,16 @@ def main(argv=None) -> int:
         ffss.write_state(state_dir, report)
         if verdict["file"]:
             delta = "first week, no prior" if verdict["delta"] is None else f"delta {verdict['delta']:+d}"
+            scope = "" if verdict["delta"] is None else " over checkouts present both weeks"
+            if verdict["dropped"]:
+                scope += f", {len(verdict['dropped'])} checkouts dropped out"
+            if verdict["added"]:
+                scope += f", {len(verdict['added'])} new"
             line = (f"fleet-model-gate-scan weekly: {verdict['week']} {verdict['ungated']} ungated "
                     f"model call sites across {report['checkouts']} checkouts "
                     f"({runner_trees} launchd runner trees), last week "
                     f"{verdict['prev'] if verdict['prev'] is not None else 'none'}, {delta}"
+                    f"{scope}"
                     f"{'; NOT FALLING, the scan exits 4 until it does' if verdict['not_falling'] else ''}")
             if not ffss.alert(line):
                 print("fleet-model-gate-scan: weekly filing not delivered; week left unfiled", file=sys.stderr)
@@ -397,7 +431,8 @@ def main(argv=None) -> int:
             # The baseline is the count Sana was told, written once per week.
             # Overwritten per run, a same-week regression was never filed and
             # became next week's target (PR #526 review).
-            weekly["weeks"][verdict["week"]] = {"ungated": verdict["ungated"], "filed": True}
+            weekly["weeks"][verdict["week"]] = {"ungated": verdict["ungated"], "filed": True,
+                                                "by_checkout": by_checkout}
             write_weekly(state_dir, weekly)
     if verdict["not_falling"]:
         print(f"fleet-model-gate-scan: ungated {verdict['ungated']} is not lower than "

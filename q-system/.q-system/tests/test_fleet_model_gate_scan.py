@@ -30,7 +30,7 @@ def _repo(root: Path, name: str, files: dict) -> Path:
     return r
 
 
-def _run(tmp, *extra, projects="projects", labels=(), today="2026-10-05", alert_rc=0,
+def _run(tmp, *extra, projects="projects", labels=("t.unrelated",), today="2026-10-05", alert_rc=0,
          launchctl_rc=0):
     alerts = tmp / "alerts.txt"
     stub = tmp / "alert.sh"
@@ -216,6 +216,34 @@ def test_an_unreadable_launchctl_refuses_instead_of_filing_progress(tmp_path):
     p, lines = _run(tmp_path, launchctl_rc=1)
     assert p.returncode == 2 and "launchctl" in p.stderr
     assert lines == [] and not (tmp_path / "state" / "weekly.json").exists()
+
+
+def test_an_empty_launchctl_listing_is_unreadable_not_no_jobs(tmp_path):
+    _fleet(tmp_path)
+    p, lines = _run(tmp_path, labels=())
+    assert p.returncode == 2 and lines == []
+
+
+def test_a_checkout_dropping_out_is_not_progress(tmp_path):
+    """PR #526 review round 2: a loaded job whose plist stops parsing dropped its
+    runner tree, the total fell, "delta -1" was filed and became the baseline."""
+    projects = _fleet(tmp_path)
+    runner = _worktree(projects, tmp_path / "runners" / "run-a", {"e.sh": "#!/bin/bash\nclaude -p hi\n"})
+    _plist(tmp_path, "t.run", workdir=runner)
+    p, _ = _run(tmp_path, labels=("t.run",), today="2026-10-05")  # W41: 3 ungated
+    assert p.returncode == 0, p.stderr
+    (tmp_path / "agents" / "file-t.run.plist").write_text("not a plist")  # still LOADED
+    p, lines = _run(tmp_path, labels=("t.run",), today="2026-10-12")
+    assert p.returncode == 4, p.stderr  # nothing was fixed
+    assert "delta +0" in _weekly(lines)[-1] and "1 checkouts dropped out" in _weekly(lines)[-1]
+    _plist(tmp_path, "t.run", workdir=runner)  # repaired, zero code changed
+    p, _ = _run(tmp_path, labels=("t.run",), today="2026-10-19")
+    assert p.returncode == 4  # still flat, not a phantom regression from a fake baseline
+    # Fixing bot/run.sh alone would NOT count: the runner's own copy still runs
+    # ungated, and the dedupe then counts it. Fix a file only the runner has.
+    (runner / "e.sh").write_text("#!/bin/bash\necho no model\n")
+    p, lines = _run(tmp_path, labels=("t.run",), today="2026-10-26")
+    assert p.returncode == 0 and "delta -1" in _weekly(lines)[-1], (p.stderr, lines)
 
 
 def test_zero_ungated_is_green_every_week(tmp_path):
