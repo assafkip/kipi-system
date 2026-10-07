@@ -228,8 +228,11 @@ def agent_row(turns: list[dict], *, agent_id: str, agent_type: str | None,
         "model": models[0] if len(models) == 1 else ",".join(models) or None,
         "subtype": "subagent_stop", "is_error": False,
         "num_turns": sum(m["turns"] for m in per_model.values()),
-        # Unknown is None, never 0: a run on an unpriced model must not read as free.
-        "total_cost_usd": None if unpriced else round(total_cost, 6),
+        # Unknown is None, never 0: a run with NO priced model must not read as free.
+        # A mixed run keeps the priced part and says it is partial, so one new model
+        # does not erase every measured turn beside it (PR #528 round 2).
+        "total_cost_usd": round(total_cost, 6) if len(unpriced) < len(per_model) else None,
+        "cost_complete": not unpriced,
         "cost_basis": model_prices.SOURCE, "unpriced_models": unpriced,
         "duration_ms": None,
         "tokens_fresh_in": fresh, "tokens_cache_read": read, "tokens_cache_create": create,

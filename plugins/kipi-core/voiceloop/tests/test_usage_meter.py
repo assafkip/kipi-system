@@ -110,3 +110,10 @@ def test_a_stop_that_added_only_a_synthetic_turn_writes_no_row(tmp_path):
     assert len(_stop(tmp_path, t)) == 1
     _write(t, [_turn("m2", 0, model="<synthetic>", read=0, write=0, fresh=0)])
     assert len(_stop(tmp_path, t)) == 1
+
+
+def test_a_mixed_run_keeps_the_priced_part_and_says_it_is_partial(tmp_path):
+    t = tmp_path / "agent-a1.jsonl"
+    _write(t, [_turn("m1", 5), _turn("m2", 5, model="claude-future-9")])
+    r = _stop(tmp_path, t)[0]
+    assert r["total_cost_usd"] and r["cost_complete"] is False and r["unpriced_models"] == ["claude-future-9"]
