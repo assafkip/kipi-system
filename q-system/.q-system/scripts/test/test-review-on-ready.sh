@@ -149,6 +149,10 @@ grep -q '+SINCE_MARKER_FIX' "$P" || fail "the fix round prompt does not carry th
 grep -q 'FIRST_MARKER' "$P" && fail "the fix round prompt carries code from BEFORE the recorded sha; it must pass only the since-diff"
 grep -q 'pr diff 1' "$P" && fail "the fix round still tells the model to read the whole PR diff"
 grep -q "fix_sha=$FIX_SHA" "$STATE" || fail "state does not record the fix-only sha"
+# The fix-only verdict sets the PR's gate, so round 1's major must be re-checked
+# even though the fix diff may not touch it (PR #532 review, major).
+grep -q 'EARLIER BLOCKER AND MAJOR' "$P" && grep -q '^major|still wrong|FILE.txt:1$' "$P" \
+  || fail "the fix round prompt does not carry round 1's major for a re-check"
 ok "fix round: 1 call, prompt is the since-diff only"
 
 # 5. Any further head: zero model calls, exit 0, one-line reason.

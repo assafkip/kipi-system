@@ -901,10 +901,17 @@ fi
 # A fix-only review gets the diff since the recorded full-review sha PASTED IN,
 # and is told the rest of the PR is out of scope: telling it to run `gh pr diff`
 # hands it the whole PR again, which is the full re-review this budget removes.
-# Limited to the PR's own files when gh can name them, so a merge of main into
-# the branch does not turn the fix review into a review of main. git first (the
-# local tree), then GitHub's compare (a hosted runner fetches the head at depth
-# 1, so the old sha may be absent). Neither answering means no review: an empty
+# On the git path it is limited to the PR's own files when gh can name them, so
+# main brought into the branch does not turn the fix review into a review of
+# main. GitHub's compare (the fallback a hosted runner takes: it fetches the
+# head at depth 1, so the old sha may be absent) is NOT filtered and can carry
+# main's code; the model is still told only the PR is in scope.
+#
+# SCOPE IS NEW FINDINGS, NOT THE GATE (PR #532 review, major). A fix-only verdict
+# still writes kipi/reviewer-approved, so an earlier blocker or major in a file
+# the fix never touched must not fall out of scope and go green. Those findings
+# are pasted in from the last usable review and each must be re-checked on the
+# current head, wherever it lives. Neither answering means no review: an empty
 # since-diff would derive APPROVE on code nobody was shown.
 READ_CHANGE="## Read the change
 
@@ -938,14 +945,27 @@ if [ "$REVIEW_MODE" = "fix" ]; then
     SINCE_NOTE="
 (TRUNCATED at $SINCE_CAP characters. Read the rest with: git diff $SINCE_SHA $HEAD_SHA)"
   fi
+  PRIOR_GATING=""
+  for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+    [ -f "$_f" ] && review_is_usable "$_f" \
+      && PRIOR_GATING="$(findings_block "$_f" | grep -E '^(blocker|major)[|]' || true)"
+  done
+  [ -n "$PRIOR_GATING" ] || PRIOR_GATING="(none recorded)"
   READ_CHANGE="## THIS IS A FIX-ONLY REVIEW
 
-The whole PR was already reviewed in full at commit $SINCE_SHA. Your scope is ONLY
-the change since then, pasted below. Do NOT re-review the rest of the PR and do
-NOT run \`gh pr diff\`: code outside this diff is out of scope and a finding on
-it is dropped. Check that this change fixes what the earlier review raised
-(\`gh ${GH_R_PROMPT}pr view $PR --comments\`) and that it breaks nothing new.
-You may read any file in the tree for context.
+The whole PR was already reviewed in full at commit $SINCE_SHA. For NEW findings
+your scope is ONLY the change since then, pasted below. Do NOT re-review the rest
+of the PR and do NOT run \`gh pr diff\`: a NEW finding on code outside this diff
+is dropped. You may read any file in the tree for context.
+
+## EARLIER BLOCKER AND MAJOR FINDINGS: re-check EVERY one on the current head
+
+These are in scope WHEREVER they live, including files this diff does not touch.
+Your verdict sets the PR's gate, so an earlier blocker or major that is still
+live must be raised again at its original severity, with an executed repro on
+the current head. One that is fixed: say so and how you checked.
+
+$PRIOR_GATING
 
 ## The change since $SINCE_SHA (head $HEAD_SHA)
 
