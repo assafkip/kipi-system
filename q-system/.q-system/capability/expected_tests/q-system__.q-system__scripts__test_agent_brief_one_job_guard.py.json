@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/scripts/test_agent_brief_one_job_guard.py",
+  "runner": "python3",
+  "timeout_s": 120
+}
