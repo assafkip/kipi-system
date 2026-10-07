@@ -87,6 +87,14 @@ for an action item.
 - Surface fix: <what + commit>
 - Structural fix: <what + commit — the change that prevents the class, not the instance>
 
+## Recurrence
+
+Required when rca-lint finds this root cause matching the action items of an
+earlier RCA in the same directory (the lint names the file and the actions).
+Name that file, then one line per matched action: which action failed and why.
+
+- <earlier rca file>: action "<action>" failed because <why, e.g. marked built without a runtime test>
+
 ## Action items
 
 First-class and trackable. Each is a checkbox with an owner. Not prose.
