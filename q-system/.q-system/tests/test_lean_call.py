@@ -68,9 +68,15 @@ def stub(tmp_path, monkeypatch):
     return last
 
 
+LEAN_TAIL = ["--setting-sources", "",
+             "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+             "--system-prompt", lean_call.LEAN_SYSTEM_PROMPT,
+             "--tools", ""]
+
+
 def _is_lean(call, test_cwd):
     argv = call["argv"]
-    tail_ok = argv[-4:] == ["--setting-sources", "", "--tools", ""]
+    tail_ok = argv[-len(LEAN_TAIL):] == LEAN_TAIL
     cwd_ok = (call["ls"] == "" and Path(call["cwd"]).resolve() != Path(test_cwd).resolve()
               and Path(call["cwd"]).name.startswith("kipi-lean-"))
     return tail_ok, cwd_ok
@@ -81,7 +87,7 @@ def _is_lean(call, test_cwd):
 def test_default_is_lean_and_cwd_is_a_fresh_empty_dir(stub):
     lean_call.run([stub.exe, "-p", "hi"], capture_output=True, text=True)
     call = stub()
-    assert call["argv"] == ["-p", "hi", "--setting-sources", "", "--tools", ""]
+    assert call["argv"] == ["-p", "hi"] + LEAN_TAIL
     tail_ok, cwd_ok = _is_lean(call, os.getcwd())
     assert tail_ok and cwd_ok, call
     assert not Path(call["cwd"]).exists(), "the empty dir must be removed afterwards"
@@ -93,7 +99,9 @@ def test_a_declared_need_is_honored_and_logged(stub, tmp_path, capsys):
     lean_call.run([stub.exe, "-p", "hi"], needs_tools=["Read", "Grep"],
                   needs_settings=True, cwd=str(work), capture_output=True, text=True)
     call = stub()
-    assert call["argv"] == ["-p", "hi", "--tools", "Read,Grep"]
+    assert call["argv"] == ["-p", "hi", "--strict-mcp-config", "--mcp-config",
+                            '{"mcpServers":{}}', "--system-prompt",
+                            lean_call.LEAN_SYSTEM_PROMPT, "--tools", "Read,Grep"]
     assert Path(call["cwd"]).resolve() == work.resolve()
     err = capsys.readouterr().err
     assert "lean_call: declared tools=Read,Grep settings=on cwd=" in err
@@ -101,9 +109,22 @@ def test_a_declared_need_is_honored_and_logged(stub, tmp_path, capsys):
 
 def test_an_undeclared_need_hiding_in_argv_is_refused():
     for bad in (["claude", "-p", "x", "--tools", "Read"],
-                ["claude", "-p", "x", "--setting-sources=user"]):
+                ["claude", "-p", "x", "--setting-sources=user"],
+                ["claude", "-p", "x", "--mcp-config", "{}"],
+                ["claude", "-p", "x", "--system-prompt", "s"]):
         with pytest.raises(ValueError):
             lean_call.lean_argv(bad)
+
+
+def test_mcp_and_system_prompt_needs_are_declared(stub, capsys):
+    """Account connectors load from the login, not settings: strict MCP is the
+    only thing that keeps them out (measured 271k-458k overflow without it)."""
+    lean_call.run([stub.exe, "-p", "hi"], needs_mcp=True, system_prompt=None,
+                  capture_output=True, text=True)
+    argv = stub()["argv"]
+    assert "--strict-mcp-config" not in argv and "--system-prompt" not in argv
+    err = capsys.readouterr().err
+    assert "mcp=on" in err and "system_prompt=cli-default" in err
 
 
 def test_negative_control_the_check_sees_a_fat_call(stub):
