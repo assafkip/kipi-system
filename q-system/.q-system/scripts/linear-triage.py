@@ -71,6 +71,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Background `claude -p` goes through the lean-call contract (empty cwd, no
+# settings, no tools unless declared). RCA 2026-10-06 root cause #3.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lean_call  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
 
@@ -395,7 +400,7 @@ def judge_batch(batch: list, timeout: int) -> tuple:
         issues="\n".join(blocks),
     )
     try:
-        res = subprocess.run([binary, "-p", prompt],
+        res = lean_call.run([binary, "-p", prompt],
                              capture_output=True, text=True, timeout=timeout,
                              stdin=subprocess.DEVNULL, env=_subscription_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
