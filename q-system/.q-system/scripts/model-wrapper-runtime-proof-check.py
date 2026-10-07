@@ -22,13 +22,18 @@ code walks through):
 `<alias>.<func>` on an alias bound to that module. A function reached only
 through getattr or a string is not seen.
 
-WHAT IS A PROOF. A test file (a path call_sites treats as a test) holding a call
-to `prove(...)` or `assert_gated(...)` whose `target=` is a CONSTANT
-`"pkg.module:qualname"`. The registry is discovered from those calls, never a
-hand list. `prove()` checks at runtime that the named target was entered, so a
-label cannot name a function the test never drove.
+WHAT IS A PROOF. A green RECEIPT, never a parsed call. Test files holding a call
+to `prove(...)` or `assert_gated(...)` with a constant `target=` are discovered by
+AST (the registry is never a hand list), then this check RUNS each of them with
+pytest, one file at a time, with KIPI_GATE_PROOF_RECEIPTS pointed at a temp file.
+A wrapper is proven only when a file that PASSED left a receipt with ok=true
+whose resolved code file is exactly that wrapper's file. A skipped, unreachable
+or inverted test leaves no green receipt (PR #525 review: the first version
+counted the call's presence, the sin the RCA names). A codex or SDK wrapper is
+listed as `unprovable` rather than uncovered: gate_proof seals those providers
+and proves claude wrappers only.
 
-EXIT: 0 every wrapper proven, 1 at least one uncovered (the report lists them),
+EXIT: 0 every claude wrapper proven, 1 at least one uncovered (the report lists them),
 2 no root could be read, 3 an alert that was not delivered. This is a DAILY
 fleet check (com.kipi.model-wrapper-runtime-proof-check.plist), not part of the
 pytest collection, so a wrapper still waiting for its test cannot turn CI red.
@@ -44,7 +49,9 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -57,6 +64,8 @@ ffss = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ffss)
 
 PROOF_CALLS = {"prove", "assert_gated"}
+#: One proof file is a handful of stubbed calls; ten minutes means it is hung.
+PROOF_TIMEOUT_S = 600
 
 
 def _is_test(rel: str) -> bool:
@@ -137,6 +146,32 @@ def _imports(tree: ast.Module) -> tuple[set, set]:
     return named, attrs
 
 
+def _run_proofs(top: Path, files: list) -> list:
+    """Run each proof test file; return green receipts from files that passed."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.pop("PYTEST_CURRENT_TEST", None)
+    green = []
+    with tempfile.TemporaryDirectory(prefix="gate-proof-receipts-") as tmp:
+        for i, rel in enumerate(sorted(files)):
+            receipts = os.path.join(tmp, f"{i}.jsonl")
+            env["KIPI_GATE_PROOF_RECEIPTS"] = receipts
+            try:
+                rc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", rel],
+                                    cwd=top, env=env, capture_output=True, text=True,
+                                    timeout=PROOF_TIMEOUT_S).returncode
+            except subprocess.TimeoutExpired:
+                continue
+            if rc != 0:
+                continue  # a failing file's receipts prove nothing
+            try:
+                with open(receipts, encoding="utf-8") as fh:
+                    rows = [json.loads(ln) for ln in fh if ln.strip()]
+            except (OSError, ValueError):
+                rows = []
+            green += [{**r, "test": rel} for r in rows if r.get("ok") is True]
+    return green
+
+
 def _proof_targets(tree: ast.Module) -> set:
     out = set()
     for node in ast.walk(tree):
@@ -162,10 +197,13 @@ def scan_root(top: Path) -> dict:
             parsed[rel] = ast.parse((top / rel).read_text(errors="replace"))
         except (OSError, SyntaxError, ValueError):
             continue
-    targets, imported = set(), {}
+    targets, imported, proof_files = set(), {}, []
     for rel, tree in parsed.items():
         if _is_test(rel):
-            targets |= _proof_targets(tree)
+            found = _proof_targets(tree)
+            targets |= found
+            if found:
+                proof_files.append(rel)
         else:
             imported[rel] = _imports(tree)
     wrappers = []
@@ -184,18 +222,15 @@ def scan_root(top: Path) -> dict:
                        for other, (named, attrs) in imported.items() if other != rel)
             if used:
                 wrappers.append({"path": rel, "qualname": qual, "kind": kind})
-    return {"wrappers": wrappers, "targets": sorted(targets)}
+    receipts = _run_proofs(top, proof_files) if wrappers and proof_files else []
+    return {"wrappers": wrappers, "targets": sorted(targets), "receipts": receipts}
 
 
-def covered(wrapper: dict, targets) -> bool:
-    # A hyphenated script is loaded under an underscored module name (morning-brief.py
-    # as morning_brief), so the path is compared with hyphens read as underscores.
-    path = "/" + wrapper["path"].replace("-", "_")
-    for t in targets:
-        mod, _, qual = t.partition(":")
-        if qual == wrapper["qualname"] and path.endswith("/" + mod.replace(".", "/") + ".py"):
-            return True
-    return False
+def covered(top: Path, wrapper: dict, receipts) -> bool:
+    # Exact resolved file, not a path suffix: a vendored copy at another path with
+    # the same module tail is a different wrapper (PR #525 review finding 3).
+    path = os.path.realpath(top / wrapper["path"])
+    return any(r.get("file") == path and r.get("qualname") == wrapper["qualname"] for r in receipts)
 
 
 def check(roots: list[Path]) -> dict:
@@ -205,15 +240,20 @@ def check(roots: list[Path]) -> dict:
             scans[str(top)] = scan_root(top)
         except RuntimeError as exc:
             errors.append({"checkout": str(top), "error": str(exc)[:200]})
-    # A proof in any scanned checkout covers the wrapper wherever its file lives:
-    # an instance test may prove a skeleton wrapper it imports.
     targets = sorted({t for s in scans.values() for t in s["targets"]})
-    uncovered, proven = [], []
+    receipts = [r for s in scans.values() for r in s["receipts"]]
+    uncovered, proven, unprovable = [], [], []
     for top, s in scans.items():
         for w in s["wrappers"]:
-            (proven if covered(w, targets) else uncovered).append({"checkout": top, **w})
+            row = {"checkout": top, **w}
+            if w["kind"] != "claude":
+                unprovable.append(row)
+            elif covered(Path(top), w, receipts):
+                proven.append(row)
+            else:
+                uncovered.append(row)
     return {"checkouts": len(scans), "uncovered": uncovered, "proven": proven,
-            "targets": targets, "errors": errors}
+            "unprovable": unprovable, "targets": targets, "receipts": receipts, "errors": errors}
 
 
 def fingerprint(report: dict) -> str:
@@ -254,6 +294,9 @@ def main(argv=None) -> int:
               f"errors {len(report['errors'])}")
         for u in report["uncovered"]:
             print(f"  UNCOVERED {u['checkout']}  {u['path']}:{u['qualname']}  ({u['kind']})")
+        for p in report["unprovable"]:
+            print(f"  unprovable {p['checkout']}  {p['path']}:{p['qualname']}  "
+                  f"({p['kind']}: gate_proof proves claude only)")
         for p in report["proven"]:
             print(f"  proven    {p['checkout']}  {p['path']}:{p['qualname']}")
         if report["uncovered"]:

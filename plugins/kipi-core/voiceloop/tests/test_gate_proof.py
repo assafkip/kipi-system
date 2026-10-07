@@ -9,6 +9,7 @@ and the ledger (RCA token-burn-recurs-after-gate, root cause #1).
 Targets here are f-strings on purpose: the fleet check registers only CONSTANT
 targets, so these fixtures never count as a proof of a real wrapper.
 """
+import json
 import os
 import subprocess
 import sys
@@ -90,6 +91,56 @@ def test_the_environment_is_restored(tmp_path, monkeypatch):
     gate_proof.prove(lambda b: gated_wrapper("hi", b), workdir=str(tmp_path / "w"))
     assert dict(os.environ) == before
     assert not (tmp_path / "outer.jsonl").exists()
+
+
+def _fake_provider(d, name, marker):
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text(f"#!/bin/sh\ntouch {marker}\necho real-answer\n")
+    p.chmod(0o755)
+
+
+def test_codex_and_opencode_are_sealed(tmp_path, monkeypatch):
+    # PR #525 review finding 2: only claude was sealed, so a real codex or the
+    # OPENCODE branch of run_model ran from inside a proof.
+    real = tmp_path / "realbin"
+    _fake_provider(real, "codex", tmp_path / "codex-ran")
+    _fake_provider(real, "opencode", tmp_path / "opencode-ran")
+    monkeypatch.setenv("PATH", f"{real}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("OPENCODE", "1")
+    v = gate_proof.prove(lambda b: subprocess.run(["codex", "exec", "hi"], capture_output=True),
+                         workdir=str(tmp_path / "a"))
+    assert not v.ok and any("non-claude provider was invoked (codex)" in r for r in v.reasons)
+    v = gate_proof.prove(lambda b: gated_wrapper("hi", b), workdir=str(tmp_path / "b"))
+    assert v.ok, v.reasons  # OPENCODE lifted: run_model took the claude branch
+    assert not (tmp_path / "codex-ran").exists() and not (tmp_path / "opencode-ran").exists()
+
+
+def test_a_bot_job_name_does_not_leak_in(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHIEF_JOB", "some-bot-job")
+    v = gate_proof.prove(lambda b: gated_wrapper("hi", b), workdir=str(tmp_path))
+    assert v.ok and v.ledger_rows[0]["job"] == "gate-proof-fixture()"
+
+
+def test_no_temp_dir_is_left_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate_proof.tempfile, "tempdir", str(tmp_path))
+    gate_proof.prove(lambda b: gated_wrapper("hi", b))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_receipt_is_written_only_when_asked(tmp_path, monkeypatch):
+    receipts = tmp_path / "r.jsonl"
+    gate_proof.prove(lambda b: gated_wrapper("hi", b), target=f"{__name__}:gated_wrapper",
+                     workdir=str(tmp_path / "a"))
+    assert not receipts.exists()
+    monkeypatch.setenv(gate_proof.RECEIPTS_ENV, str(receipts))
+    gate_proof.prove(lambda b: gated_wrapper("hi", b), target=f"{__name__}:gated_wrapper",
+                     workdir=str(tmp_path / "b"))
+    gate_proof.prove(lambda b: early_return_wrapper("hi", b), target=f"{__name__}:early_return_wrapper",
+                     workdir=str(tmp_path / "c"))
+    rows = [json.loads(x) for x in receipts.read_text().splitlines()]
+    assert [(r["qualname"], r["ok"]) for r in rows] == [("gated_wrapper", True), ("early_return_wrapper", False)]
+    assert rows[0]["file"] == os.path.realpath(__file__)
 
 
 def test_live_is_refused_under_pytest(tmp_path):
