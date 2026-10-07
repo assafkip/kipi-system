@@ -54,7 +54,7 @@ import subprocess
 import sys
 import tempfile
 
-LEAN_FLAGS = ("--setting-sources", "--tools", "--mcp-config",
+LEAN_FLAGS = ("--setting-sources", "--tools", "--mcp-config", "--no-session-persistence",
               "--strict-mcp-config", "--system-prompt")
 EMPTY_MCP = '{"mcpServers":{}}'
 LEAN_SYSTEM_PROMPT = ("You are a careful assistant running as a background job. "
@@ -73,6 +73,9 @@ def lean_argv(argv, *, needs_tools=None, needs_settings=False, needs_mcp=False,
             "is visible" % ", ".join(clash))
     if not needs_settings:
         argv += ["--setting-sources", ""]
+    # One background call per issue/lesson must not leave a session dir per call
+    # under ~/.claude/projects (PR 531 review: 144 temp-cwd dirs already piled up).
+    argv += ["--no-session-persistence"]
     if not needs_mcp:
         argv += ["--strict-mcp-config", "--mcp-config", EMPTY_MCP]
     if system_prompt is not None:

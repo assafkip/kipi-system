@@ -68,7 +68,7 @@ def stub(tmp_path, monkeypatch):
     return last
 
 
-LEAN_TAIL = ["--setting-sources", "",
+LEAN_TAIL = ["--setting-sources", "", "--no-session-persistence",
              "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
              "--system-prompt", lean_call.LEAN_SYSTEM_PROMPT,
              "--tools", ""]
@@ -99,7 +99,8 @@ def test_a_declared_need_is_honored_and_logged(stub, tmp_path, capsys):
     lean_call.run([stub.exe, "-p", "hi"], needs_tools=["Read", "Grep"],
                   needs_settings=True, cwd=str(work), capture_output=True, text=True)
     call = stub()
-    assert call["argv"] == ["-p", "hi", "--strict-mcp-config", "--mcp-config",
+    assert call["argv"] == ["-p", "hi", "--no-session-persistence",
+                            "--strict-mcp-config", "--mcp-config",
                             '{"mcpServers":{}}', "--system-prompt",
                             lean_call.LEAN_SYSTEM_PROMPT, "--tools", "Read,Grep"]
     assert Path(call["cwd"]).resolve() == work.resolve()
