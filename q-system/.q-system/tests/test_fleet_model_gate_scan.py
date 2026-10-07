@@ -30,7 +30,8 @@ def _repo(root: Path, name: str, files: dict) -> Path:
     return r
 
 
-def _run(tmp, *extra, projects="projects", labels=(), today="2026-10-05", alert_rc=0):
+def _run(tmp, *extra, projects="projects", labels=(), today="2026-10-05", alert_rc=0,
+         launchctl_rc=0):
     alerts = tmp / "alerts.txt"
     stub = tmp / "alert.sh"
     stub.write_text(f'#!/bin/bash\necho "$*" >> "{alerts}"\nexit {alert_rc}\n')
@@ -42,7 +43,7 @@ def _run(tmp, *extra, projects="projects", labels=(), today="2026-10-05", alert_
     listing = tmp / "launchctl-list.txt"
     listing.write_text("PID\tStatus\tLabel\n" + "".join(f"-\t0\t{lab}\n" for lab in labels))
     lctl = tmp / "launchctl.sh"
-    lctl.write_text(f'#!/bin/bash\ncat "{listing}"\n')
+    lctl.write_text(f'#!/bin/bash\ncat "{listing}"\nexit {launchctl_rc}\n')
     lctl.chmod(0o755)
     env = _env()
     env["KIPI_ALERT_CMD"] = str(stub)
@@ -204,6 +205,49 @@ def test_a_loaded_launchd_job_running_from_a_linked_worktree_is_scanned(tmp_path
     assert ("run-b", "argjob.py") in paths, rep
     assert not any(n == "run-c" for n, _ in paths)  # a plist that is not LOADED runs nothing
     assert rep["checkouts"] == 3  # bot + two runner trees, each counted once
+    # PR #526 review: a worktree of a counted repo adds only its NEW files, not
+    # a second copy of direct.py and run.sh per runner.
+    assert len(rep["ungated"]) == 4, rep["ungated"]
+    assert rep["sites"] == 5  # run.sh, direct.py, routed.py, engine.sh, argjob.py
+
+
+def test_an_unreadable_launchctl_refuses_instead_of_filing_progress(tmp_path):
+    _fleet(tmp_path)
+    p, lines = _run(tmp_path, launchctl_rc=1)
+    assert p.returncode == 2 and "launchctl" in p.stderr
+    assert lines == [] and not (tmp_path / "state" / "weekly.json").exists()
+
+
+def test_zero_ungated_is_green_every_week(tmp_path):
+    _repo(tmp_path / "projects", "clean", {"a.sh": "#!/bin/bash\necho hi\n"})
+    for day in ("2026-10-05", "2026-10-12", "2026-10-19"):
+        p, _ = _run(tmp_path, today=day)
+        assert p.returncode == 0, (day, p.returncode, p.stderr)
+
+
+def test_a_corrupt_weekly_history_refuses_rather_than_resets(tmp_path):
+    _fleet(tmp_path)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "weekly.json").write_text("{not json")
+    p, _ = _run(tmp_path, today="2026-10-12")
+    assert p.returncode == 2 and "weekly.json" in p.stderr
+
+
+def test_the_baseline_is_the_count_that_was_filed(tmp_path):
+    projects = _fleet(tmp_path)
+    _run(tmp_path, today="2026-10-05")  # W41 files 2
+    (projects / "bot" / "run.sh").write_text("#!/bin/bash\necho no model\n")
+    p, _ = _run(tmp_path, today="2026-10-12")  # W42 files 1: fell, green
+    assert p.returncode == 0, p.stderr
+    for n in ("m1.sh", "m2.sh"):
+        (projects / "bot" / n).write_text("#!/bin/bash\nclaude -p hi\n")
+    subprocess.run(["git", "-C", str(projects / "bot"), "add", "-A"], check=True, env=_env())
+    p, _ = _run(tmp_path, today="2026-10-14")  # same-week regression to 3: red now
+    assert p.returncode == 4
+    state = json.loads((tmp_path / "state" / "weekly.json").read_text())
+    assert state["weeks"]["2026-W42"]["ungated"] == 1  # the filed count, not the last run
+    p, _ = _run(tmp_path, today="2026-10-19")  # W43 at 3 vs the filed 1: red
+    assert p.returncode == 4
 
 
 def test_a_runner_tree_already_in_the_registry_population_is_counted_once(tmp_path):

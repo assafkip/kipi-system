@@ -57,9 +57,10 @@ week with no prior is recorded only. SINGLE WRITER of weekly.json beside
 state.json (write_weekly), written only after the weekly line was delivered.
 
 EXIT: 0 a completed scan (ungated sites are the alert's job; with
---fail-on-ungated, 1 when any exist), 2 no checkout could be read (an empty
-population is a failure, never an all-clear), 3 an alert that was not delivered,
-4 the ungated count did not fall week over week.
+--fail-on-ungated, 1 when any exist), 2 the population could not be read (no
+checkout, launchctl unreadable, or weekly.json corrupt: a partial population is
+a failure, never an all-clear), 3 an alert that was not delivered, 4 the
+ungated count did not fall week over week (zero ungated is always green).
 
 Test seams: KIPI_ALERT_CMD, KIPI_LAUNCHCTL (the launchctl command),
 KIPI_LAUNCHAGENTS_DIR, KIPI_SCAN_TODAY (YYYY-MM-DD), --state-dir,
@@ -241,13 +242,18 @@ def iso_week(d: date) -> str:
     return f"{y}-W{w:02d}"
 
 
-def read_weekly(state_dir: Path) -> dict:
+def read_weekly(state_dir: Path) -> dict | None:
+    """The drain's history. A MISSING file is a first week; an unreadable one is
+    None, and the caller refuses: resetting it would turn a red job green with
+    no record (PR #526 review)."""
     f = state_dir / "weekly.json"
+    if not f.exists():
+        return {"weeks": {}}
     try:
         data = json.loads(f.read_text())
-        return data if isinstance(data.get("weeks"), dict) else {"weeks": {}}
-    except (OSError, ValueError, AttributeError):
-        return {"weeks": {}}
+        return data if isinstance(data, dict) and isinstance(data.get("weeks"), dict) else None
+    except (OSError, ValueError):
+        return None
 
 
 def write_weekly(state_dir: Path, data: dict) -> None:
@@ -270,19 +276,39 @@ def weekly_verdict(weekly: dict, week: str, count: int) -> dict:
     filed = bool(weekly["weeks"].get(week, {}).get("filed"))
     return {"week": week, "ungated": count, "prev_week": prior[-1] if prior else None,
             "prev": prev, "delta": None if prev is None else count - prev,
-            "not_falling": prev is not None and count >= prev, "file": not filed}
+            # Zero is the terminal state, not a stall: a remediated fleet must be
+            # green, or launchd-health files a job-death issue daily forever.
+            "not_falling": prev is not None and count > 0 and count >= prev, "file": not filed}
+
+
+def _repo_key(top: Path) -> str:
+    common = ffss._git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return str(Path(common).resolve()) if common else str(top.resolve())
 
 
 def scan(checkouts: list[Path]) -> dict:
+    """Rows are deduped on (repository, repo-relative path), base checkouts first.
+    A runner worktree of a counted repo adds only the files whose verdict there
+    differs: added whole, it double-counted 35 of 377 rows on the first live run
+    and named a side-branch copy as the file to fix (PR #526 review)."""
     ungated, total, errors = [], 0, []
+    seen_sites, seen_ungated = set(), set()
     for top in checkouts:
         try:
-            sites, n = ungated_in(top)
+            sites = sorted(cs.call_sites(top))
+            bad, _n = ungated_in(top)
         except RuntimeError as exc:
             errors.append({"checkout": str(top), "error": str(exc)[:200]})
             continue
-        total += n
-        ungated += [{"checkout": str(top), "path": p} for p in sites]
+        key = _repo_key(top)
+        for rel in sites:
+            if (key, rel) not in seen_sites:
+                seen_sites.add((key, rel))
+                total += 1
+        for rel in bad:
+            if (key, rel) not in seen_ungated:
+                seen_ungated.add((key, rel))
+                ungated.append({"checkout": str(top), "path": rel})
     return {"checkouts": len(checkouts), "sites": total, "ungated": ungated,
             "errors": errors, "unscanned": UNSCANNED}
 
@@ -310,6 +336,13 @@ def main(argv=None) -> int:
     # Same default as the sibling scan, so the two read one population.
     projects = Path(a.projects_root) if a.projects_root else home / "projects"
     checkouts, runner_trees, launchd_ok = checkouts_to_scan(registry, projects)
+    if not launchd_ok:
+        # A missing population piece reads as progress to the drain (the runner
+        # trees drop, the count falls, "delta -3" gets filed). Same rule as an
+        # empty population: refuse (PR #526 review).
+        print("fleet-model-gate-scan: launchctl list could not be read; refusing to report "
+              "a count without the runner trees", file=sys.stderr)
+        return 2
     if not checkouts:
         print("fleet-model-gate-scan: no checkout could be read; refusing to report zero", file=sys.stderr)
         return 2
@@ -319,6 +352,10 @@ def main(argv=None) -> int:
     report["launchd_readable"] = launchd_ok
     today = date.fromisoformat(os.environ["KIPI_SCAN_TODAY"]) if os.environ.get("KIPI_SCAN_TODAY") else date.today()
     weekly = read_weekly(state_dir)
+    if weekly is None:
+        print(f"fleet-model-gate-scan: {state_dir / 'weekly.json'} is unreadable; refusing to "
+              "reset the drain's history", file=sys.stderr)
+        return 2
     verdict = weekly_verdict(weekly, iso_week(today), len(report["ungated"]))
     report["weekly"] = verdict
     if report["errors"] and len(report["errors"]) == len(checkouts):
@@ -357,8 +394,11 @@ def main(argv=None) -> int:
             if not ffss.alert(line):
                 print("fleet-model-gate-scan: weekly filing not delivered; week left unfiled", file=sys.stderr)
                 return 3
-        weekly["weeks"][verdict["week"]] = {"ungated": verdict["ungated"], "filed": True}
-        write_weekly(state_dir, weekly)
+            # The baseline is the count Sana was told, written once per week.
+            # Overwritten per run, a same-week regression was never filed and
+            # became next week's target (PR #526 review).
+            weekly["weeks"][verdict["week"]] = {"ungated": verdict["ungated"], "filed": True}
+            write_weekly(state_dir, weekly)
     if verdict["not_falling"]:
         print(f"fleet-model-gate-scan: ungated {verdict['ungated']} is not lower than "
               f"{verdict['prev_week']} ({verdict['prev']})", file=sys.stderr)
