@@ -44,14 +44,27 @@ import importlib
 import json
 import os
 import random
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
 
 #: The env vars a proof redirects. Restored exactly afterwards, absent ones removed.
+# CHIEF_JOB/CHIEF_BOT re-key the gate and the ledger in a bot's env (PR #525 review);
+# OPENCODE sends run_model down a provider the claude stub cannot see; an API key
+# or base URL would let an SDK wrapper reach the billed API from a test.
 _REDIRECTED = ("PATH", "KIPI_USAGE_LEDGER", "KIPI_MODEL_GATE_DIR", "KIPI_MODEL_GATE_MARKER_DIR",
                "KIPI_NOTIFY", "PYTEST_CURRENT_TEST", "KIPI_MODEL_GATE_PER_JOB",
-               "KIPI_MODEL_GATE_FLEET")
+               "KIPI_MODEL_GATE_FLEET", "KIPI_MODEL_GATE_MODE", "KIPI_MODEL_ITEM",
+               "CHIEF_JOB", "CHIEF_BOT", "OPENCODE", "OPENCODE_MODEL",
+               "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+#: Every model binary a wrapper might shell. Each is stubbed and dropped from PATH,
+#: so a proof can never spend: a non-claude stub records the call and fails.
+SEALED_BINARIES = ("claude", "codex", "opencode")
+#: Set by model-wrapper-runtime-proof-check.py when it runs the proof tests. Never
+#: defaulted: a receipt only exists where the check asked for one.
+RECEIPTS_ENV = "KIPI_GATE_PROOF_RECEIPTS"
+_DEAD_URL = "http://127.0.0.1:9"  # discard port: an SDK call fails fast, never spends
 
 _STUB = r'''#!{python}
 import json, os, sys
@@ -71,6 +84,14 @@ if "--output-format" in sys.argv and "json" in sys.argv:
                                   "costUSD": {cost!r}}}}}}}))
 else:
     print("pong")
+'''
+
+_OTHER = '''#!{python}
+import json, os, sys
+with open({log!r}, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({{"binary": {name!r}, "argv": sys.argv[1:]}}) + "\\n")
+sys.stderr.write("gate_proof: {name} is sealed during a proof\\n")
+sys.exit(97)
 '''
 
 
@@ -112,7 +133,7 @@ def _sealed_path(stub_dir: str) -> str:
     # prepend, a wrapper that resolves the binary some other way (shutil.which
     # after reordering, a second lookup) still reaches the real tool and spends.
     keep = [d for d in os.environ.get("PATH", "").split(os.pathsep)
-            if d and not os.path.exists(os.path.join(d, "claude"))]
+            if d and not any(os.path.exists(os.path.join(d, b)) for b in SEALED_BINARIES)]
     return os.pathsep.join([stub_dir, *keep])
 
 
@@ -152,7 +173,18 @@ def prove(call, *, target: str | None = None, live_bin: str | None = None,
     """Drive ONE call through `call(claude_bin)` and judge what it left behind."""
     if live_bin and "pytest" in sys.modules:
         raise RuntimeError("gate_proof: live_bin is refused under pytest; a suite never spends a real call")
+    receipts = os.environ.get(RECEIPTS_ENV)
+    owned = workdir is None
     work = workdir or tempfile.mkdtemp(prefix="gate-proof-")
+    try:
+        v = _prove(call, target, live_bin, work, receipts)
+    finally:
+        if owned:
+            shutil.rmtree(work, ignore_errors=True)
+    return v
+
+
+def _prove(call, target, live_bin, work, receipts) -> Verdict:
     stub_dir = os.path.join(work, "bin")
     os.makedirs(stub_dir, exist_ok=True)
     log = os.path.join(work, "stub-calls.jsonl")
@@ -169,6 +201,12 @@ def prove(call, *, target: str | None = None, live_bin: str | None = None,
     with open(stub, "w") as fh:
         fh.write(_STUB.format(python=sys.executable, log=log, cost=marker))
     os.chmod(stub, 0o755)
+    other_log = os.path.join(work, "other-provider-calls.jsonl")
+    for name in SEALED_BINARIES[1:]:
+        path = os.path.join(stub_dir, name)
+        with open(path, "w") as fh:
+            fh.write(_OTHER.format(python=sys.executable, log=other_log, name=name))
+        os.chmod(path, 0o755)
 
     code = _resolve(target) if target else None
     entered = []
@@ -180,7 +218,7 @@ def prove(call, *, target: str | None = None, live_bin: str | None = None,
     v = Verdict(ok=False, target=target, live=bool(live_bin))
     env = {"KIPI_USAGE_LEDGER": ledger, "KIPI_MODEL_GATE_DIR": gate,
            "KIPI_MODEL_GATE_MARKER_DIR": work, "KIPI_NOTIFY": notify,
-           "PATH": _sealed_path(stub_dir)}
+           "PATH": _sealed_path(stub_dir), "ANTHROPIC_BASE_URL": _DEAD_URL}
     with _env(env):
         prev = sys.getprofile()
         if code is not None:
@@ -197,6 +235,10 @@ def prove(call, *, target: str | None = None, live_bin: str | None = None,
     v.gate_rows = [r for name in sorted(os.listdir(gate)) if name.endswith(".jsonl")
                    for r in _rows(os.path.join(gate, name))] if os.path.isdir(gate) else []
     calls = [r for r in v.gate_rows if r.get("kind") == "call"]
+    others = _rows(other_log)
+    if others:
+        v.reasons.append(f"a non-claude provider was invoked ({others[0].get('binary')}); "
+                         "this helper proves claude wrappers only")
     if v.error:
         v.reasons.append(f"the call raised {v.error}")
     if not live_bin and len(v.stub_calls) != 1:
@@ -220,6 +262,17 @@ def prove(call, *, target: str | None = None, live_bin: str | None = None,
         if not entered:
             v.reasons.append(f"target {target} was never entered during the call")
     v.ok = not v.reasons
+    if receipts and code is not None and not live_bin:
+        # The fleet check counts a wrapper proven only from a green receipt naming
+        # the exact file, so a skipped, unreachable or inverted test proves nothing.
+        try:
+            with open(receipts, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"target": target, "file": os.path.realpath(code.co_filename),
+                                     "qualname": target.partition(":")[2], "ok": v.ok,
+                                     "reasons": v.reasons}) + "\n")
+        except OSError as exc:
+            v.reasons.append(f"receipt not written: {exc}")
+            v.ok = False
     return v
 
 
