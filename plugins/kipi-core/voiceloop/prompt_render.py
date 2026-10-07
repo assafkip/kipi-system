@@ -39,6 +39,14 @@ from . import model_gate, usage_ledger
 #: orphans grew swap from 8 GB to 18 GB and took free disk to 0.55 GB. An empty
 #: strict config means nothing is spawned, so there is nothing to orphan.
 NO_MCP_ARGS = ("--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}')
+#: A BARE headless call: no settings files and no tools (2026-10-06, founder-directed
+#: "strip the unused session setup"). Measured the same 2-word prompt on the engine's
+#: argv: 76k tokens in from an instance cwd ($0.26), 350k from the runner repo root,
+#: 39k from an empty dir, 17k with `--setting-sources ""`, 3.6k with `--tools ""` too
+#: ($0.012). Same reddit verdict stripped vs full, 5 of 5. Not `--bare`: per the CLI
+#: help that mode authenticates by API key only, and this fleet runs on the
+#: subscription login (ASK-2176), so it would bill or fail.
+BARE_ARGS = ("--setting-sources", "", "--tools", "")
 #: Where the instruction ends and the INPUTS begin. Everything after it is the voice
 #: corpus and the source material, neither of which is a constraint.
 VOICE_MARKER = "VOICE REFERENCE:"
@@ -135,9 +143,30 @@ def subscription_env():
     return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
 
+def bare_cwd():
+    """An EMPTY directory for a bare call to run in, so no CLAUDE.md or .claude/ loads.
+
+    One stable path rather than a fresh mkdtemp per call: the CLI keeps a transcript
+    dir per cwd under ~/.claude/projects, and a fresh path per call would add one
+    there for every one of ~200 calls a day. If anything has been written into the
+    stable dir, a fresh empty one is used instead: an empty cwd is the property,
+    the stable path is only a convenience. Resolved at CALL time, never at import,
+    so no machine's path is baked into a module that ships fleet-wide.
+    """
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "kipi-headless-cwd")
+    try:
+        os.makedirs(path, exist_ok=True)
+        if not os.listdir(path):
+            return path
+    except OSError:
+        pass
+    return tempfile.mkdtemp(prefix="kipi-headless-cwd-")
+
+
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
               caller="run_model()", under_test="raise", model=None, allow_opencode=True,
-              refused=None):
+              refused=None, bare=True, run=None):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -149,10 +178,37 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     `under_test` is the ONE thing that legitimately differs. A missing POST is a defect and
     must raise; a missing COMMENT is a valid outcome the live path already handles. So a
     caller declares which it is instead of reimplementing the guard.
+
+    `runner` is a TEST seam and nothing else: it returns before the gate and the meter.
+    A deployment that wants to observe its live calls passes `run=`, a drop-in for
+    `subprocess.run` used on the claude branch, so the gate and the usage ledger still
+    run. 2026-10-06 measured why: one deployment wrapped every live call in a recording
+    `runner=`, and 135 influencer reviews in one day left no ledger row and never
+    reached the gate.
+
+    `bare` is the DEFAULT (RCA token-burn-recurs-after-gate, 2026-10-06): an empty
+    cwd plus BARE_ARGS, so no tools, no hooks, no CLAUDE.md. A caller that needs the
+    session (a writer whose prompt is not yet proven self-contained) declares
+    `bare=False`. Lean unless a need is declared, never the other way round.
     """
-    if runner is not None:
-        return runner(prompt)
     # A suite must never spend a real model call: slow, costs money, non-deterministic.
+    # A runner under pytest is the test seam: it never reaches the gate or the ledger,
+    # because a stub's call written to the live ledger is how 2026-09-22 polluted it.
+    if runner is not None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return runner(prompt)
+    if runner is not None:
+        # A LIVE runner is gated and metered like any call (RCA 2026-10-06 item 2):
+        # the early return used to sit above both, so any wrapper that passed a
+        # runner skipped the gate and the ledger. No usage comes back through a
+        # runner, so the row says "unmetered" rather than going missing.
+        job = os.environ.get("CHIEF_JOB") or caller
+        who = dict(bot=os.environ.get("CHIEF_BOT") or "voiceloop", job=job, model=model)
+        if not model_gate.check(job, item=os.environ.get("KIPI_MODEL_ITEM") or None)["admit"]:
+            _meter(usage_ledger.failure_row, "model-gate-refused", **who)
+            return refused
+        out = runner(prompt)
+        _meter(usage_ledger.failure_row, "runner", ok=out is not None, **who)
+        return out
     if os.environ.get("PYTEST_CURRENT_TEST"):
         if under_test == "raise":
             raise RuntimeError(
@@ -248,8 +304,13 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         argv = [binary, *NO_MCP_ARGS, "-p", prompt, *usage_ledger.JSON_FLAGS]
         if model:
             argv[1:1] = ["--model", model]
-        result = subprocess.run(argv, capture_output=True,
-                                text=True, timeout=timeout, env=subscription_env())
+        extra = {}
+        if bare:
+            argv[1:1] = list(BARE_ARGS)
+            extra["cwd"] = bare_cwd()
+        shell = run or subprocess.run
+        result = shell(argv, capture_output=True,
+                       text=True, timeout=timeout, env=subscription_env(), **extra)
     except subprocess.TimeoutExpired as exc:
         _meter(usage_ledger.failure_row, "timeout", stdout=exc.stdout, stderr=exc.stderr, **who)
         return None
@@ -260,9 +321,9 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
         # An older CLI that does not know --output-format json: fall back to the
         # plain call so the fleet keeps working, and record an unmetered row.
         try:
-            result = subprocess.run([a for a in argv if a not in usage_ledger.JSON_FLAGS],
-                                    capture_output=True, text=True, timeout=timeout,
-                                    env=subscription_env())
+            result = shell([a for a in argv if a not in usage_ledger.JSON_FLAGS],
+                           capture_output=True, text=True, timeout=timeout,
+                           env=subscription_env(), **extra)
         except (subprocess.SubprocessError, OSError) as exc:
             _meter(usage_ledger.failure_row, type(exc).__name__, stderr=str(exc), **who)
             return None
