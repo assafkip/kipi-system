@@ -98,12 +98,13 @@ def test_bare_adds_the_strip_args_and_an_empty_cwd(tmp_path, monkeypatch):
     assert kw["cwd"].startswith(str(tmp_path / "tmp")) and os.listdir(kw["cwd"]) == []
 
 
-def test_bare_is_the_default(tmp_path, monkeypatch):
+def test_bare_is_not_the_default(tmp_path, monkeypatch):
+    # An undeclared caller keeps its session: fleet writers have not been proven.
     cap = _captured()
     binary = _isolate(tmp_path, monkeypatch)
     seen = []
     prompt_render.run_model("hi", binary, run=_recording_run(seen, json.dumps(cap["json_stdout"])))
-    assert "--setting-sources" in seen[0]["argv"] and "cwd" in seen[0]["kw"]
+    assert "--setting-sources" not in seen[0]["argv"] and "cwd" not in seen[0]["kw"]
 
 
 def test_a_live_runner_is_gated_and_metered(tmp_path, monkeypatch):
@@ -167,7 +168,7 @@ def test_the_critic_judge_runs_bare(tmp_path, monkeypatch):
     monkeypatch.setattr(prompt_render, "run_model", spy)
     critic.judge("a post", {"id": "x", "tier": critic.STYLE, "text": "c"},
                  claude_bin=binary)
-    assert seen and seen[0].get("bare", True) is True, "the judge must not opt out of bare"
+    assert seen and seen[0].get("bare") is True, "the judge must opt in to bare"
 
 
 def test_the_reviser_declares_its_need_for_the_session():

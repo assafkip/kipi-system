@@ -166,7 +166,7 @@ def bare_cwd():
 
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
               caller="run_model()", under_test="raise", model=None, allow_opencode=True,
-              refused=None, bare=True, run=None):
+              refused=None, bare=False, run=None):
     """THE model call. One implementation, so every caller gets the same guarantees.
 
     why one (2026-08-06, founder-directed): "you shouldn't invent a new mechanism. we
@@ -186,10 +186,12 @@ def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
     `runner=`, and 135 influencer reviews in one day left no ledger row and never
     reached the gate.
 
-    `bare` is the DEFAULT (RCA token-burn-recurs-after-gate, 2026-10-06): an empty
-    cwd plus BARE_ARGS, so no tools, no hooks, no CLAUDE.md. A caller that needs the
-    session (a writer whose prompt is not yet proven self-contained) declares
-    `bare=False`. Lean unless a need is declared, never the other way round.
+    `bare=True` runs the call from an empty cwd with BARE_ARGS: no tools, no hooks, no
+    CLAUDE.md. Reviewers and classifiers opt in (critic.judge here; the deployment's
+    review lanes). It is NOT the default, on purpose: writers in other repos (a fleet
+    draft writer calls this without the argument) have not been proven to carry
+    everything in their prompt, and flipping the default would strip them on the next
+    fleet sync with nobody measuring it (2026-10-06).
     """
     # A suite must never spend a real model call: slow, costs money, non-deterministic.
     # A runner under pytest is the test seam: it never reaches the gate or the ledger,
