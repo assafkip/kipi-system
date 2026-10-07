@@ -128,10 +128,11 @@ def _resolve(target: str):
 
 
 def _sealed_path(stub_dir: str) -> str:
-    # why drop entries rather than set PATH to the stub dir alone: a wrapper may
-    # need git or sh on the way to the call. Why drop them at all: with only a
-    # prepend, a wrapper that resolves the binary some other way (shutil.which
-    # after reordering, a second lookup) still reaches the real tool and spends.
+    # why drop whole directories: with only a prepend, a wrapper that resolves the
+    # binary some other way (shutil.which after reordering, a second lookup) still
+    # reaches the real tool and spends. The cost: every other tool in a dropped
+    # directory (a package manager's bin) is unreachable during the proof. Directories
+    # with no model binary, the system ones holding git and sh, are kept.
     keep = [d for d in os.environ.get("PATH", "").split(os.pathsep)
             if d and not any(os.path.exists(os.path.join(d, b)) for b in SEALED_BINARIES)]
     return os.pathsep.join([stub_dir, *keep])

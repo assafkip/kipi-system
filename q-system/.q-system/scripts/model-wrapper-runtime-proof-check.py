@@ -315,7 +315,8 @@ def main(argv=None) -> int:
                       file=sys.stderr)
                 return 3
         ffss.write_state(state_dir, report)
-    return 1 if report["uncovered"] else 0
+    # An unreadable checkout is not a clean one (PR #525 review): its wrappers were never counted.
+    return 1 if report["uncovered"] or report["errors"] else 0
 
 
 if __name__ == "__main__":
