@@ -2040,7 +2040,9 @@ EOF
 # file persists across runs in the same dir and resets between cases.
 run_engine_reviewer() {
   local d="$1"; shift
-  ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$d/bin/notify" \
+  # Repeat runs on ONE head are the outage sequence under test, not new reviews:
+  # the human re-request door keeps the ready budget (ASK-2542) out of the way.
+  ( PATH="$d/bin:$PATH" HOME="$d/home" KIPI_NOTIFY="$d/bin/notify" KIPI_REVIEW_HUMAN_REREQUEST=1 \
     bash "$REVIEWER" 901 "$@" ) >"$d/out.txt" 2>"$d/err.txt"
   RC=$?
 }
