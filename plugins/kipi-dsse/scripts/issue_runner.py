@@ -1275,6 +1275,21 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     if not issue_id:
         sys.stderr.write("no active issue\n")
         return 2
+    if state.get("verify_contract") == VERIFY_CONTRACT and state["receipts"].get("verified"):
+        # ASK-1810. First, so an edited green is named for what it is rather than hidden
+        # behind a missing-receipt message.
+        green = state.get("verified_green")
+        probs = _green_shape_problems(green)
+        if probs:
+            sys.stderr.write(f"cannot close {issue_id}: the verified receipt's computed evidence is not whole "
+                             f"({'; '.join(probs)}). {GREEN_SHAPE_TEXT}. Re-run "
+                             "`issue_runner.py verify`.\n")
+            return 2
+        if state.get("verified_seal") != _evidence_seal(issue_id, state.get("verified_evidence") or [], green):
+            sys.stderr.write(f"cannot close {issue_id}: the verified receipt does not match its "
+                             f"evidence. {GREEN_SHAPE_TEXT}. Re-run `issue_runner.py verify`.\n")
+            return 2
+    # After the ASK-1810 check on purpose: a tampered green is named first.
     # RUNTIME RECEIPT (RCA 2026-10-02 / 2026-10-06): an issue whose title claims
     # a gate, cap, meter, budget, ledger, guard, limit, rate or quota fix closed on
     # source that read correctly and had never fired on the real caller. It needs a
@@ -1291,20 +1306,6 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
                 getattr(args, "runtime_receipt", None), terms)
         except runtime_receipt.ReceiptError as exc:
             sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
-            return 2
-    if state.get("verify_contract") == VERIFY_CONTRACT and state["receipts"].get("verified"):
-        # ASK-1810. First, so an edited green is named for what it is rather than hidden
-        # behind a missing-receipt message.
-        green = state.get("verified_green")
-        probs = _green_shape_problems(green)
-        if probs:
-            sys.stderr.write(f"cannot close {issue_id}: the verified receipt's computed evidence is not whole "
-                             f"({'; '.join(probs)}). {GREEN_SHAPE_TEXT}. Re-run "
-                             "`issue_runner.py verify`.\n")
-            return 2
-        if state.get("verified_seal") != _evidence_seal(issue_id, state.get("verified_evidence") or [], green):
-            sys.stderr.write(f"cannot close {issue_id}: the verified receipt does not match its "
-                             f"evidence. {GREEN_SHAPE_TEXT}. Re-run `issue_runner.py verify`.\n")
             return 2
     missing = [k for k in RECEIPT_FIELDS if not state["receipts"].get(k)]
     if missing:

@@ -73,8 +73,19 @@ SOURCE_ONLY_GIT = frozenset({"grep", "show", "diff", "log", "blame", "cat-file",
 _WRAPPERS = frozenset({"env", "time", "command", "nice", "nohup", "timeout",
                        "sudo", "xargs", "exec"})
 
-EXAMPLE = ("python3 plugins/prd-os/scripts/runtime_receipt.py capture "
+# Built from this file's own location, so the kipi-dsse mirror names its own copy.
+EXAMPLE = (f"python3 {Path(__file__).resolve()} capture "
            "--out receipt.json -- <the real caller, e.g. the job's own entry point>")
+# git global options that take a VALUE: `git -C <path> grep` read the path as the
+# subcommand and walked a pure source read through (PR #529 review, major 2).
+_GIT_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                             "--exec-path", "--super-prefix", "--config-env"})
+# A caller that never got going. Exit 126/127 is "could not run"; a traceback or
+# import error means the control under test was never reached (review, major 1).
+# A plain nonzero exit is NOT refused: a gate that refuses exits nonzero on purpose.
+_CRASH_RE = re.compile(r"Traceback \(most recent call last\)|ModuleNotFoundError|"
+                       r"ImportError|SyntaxError|command not found|"
+                       r"No such file or directory")
 
 
 class ReceiptError(ValueError):
@@ -102,7 +113,9 @@ def _python_is_source_only(argv: list[str]) -> bool:
         # proven the module loads. Anything else is a call.
         stmts = [s.strip() for s in re.split(r"[;\n]", rest[1]) if s.strip()]
         return bool(stmts) and all(
-            s.startswith(("import ", "from ")) or "ast." in s for s in stmts)
+            s.startswith(("import ", "from ")) or "ast." in s
+            or re.fullmatch(r"print\(\s*open\(.*\)\.read\w*\(.*\)\s*\)", s)
+            for s in stmts)
     if rest[0] == "-m" and len(rest) > 1:
         if rest[1] in ("py_compile", "compileall", "ast", "tokenize", "pyclbr"):
             return True
@@ -125,12 +138,22 @@ def _segment_is_source_only(argv: list[str]) -> bool:
     if not argv:
         return True
     name = Path(argv[0]).name
-    if name in ("bash", "sh", "zsh") and len(argv) > 2 and argv[1] == "-c":
-        return command_is_source_only(argv[2])
+    if name in ("bash", "sh", "zsh"):
+        # `-c`, `-lc`, `-ec`...: any short-flag cluster carrying c takes the script.
+        for i, a in enumerate(argv[1:-1], start=1):
+            if re.fullmatch(r"-[a-z]*c[a-z]*", a):
+                return command_is_source_only(argv[i + 1])
     if name in SOURCE_ONLY_COMMANDS:
         return True
     if name == "git":
-        sub = next((a for a in argv[1:] if not a.startswith("-")), "")
+        rest, sub = argv[1:], ""
+        while rest:
+            a = rest.pop(0)
+            if a in _GIT_VALUE_OPTS:
+                rest = rest[1:]
+            elif not a.startswith("-"):
+                sub = a
+                break
         return sub in SOURCE_ONLY_GIT
     if re.match(r"^python[0-9.]*$", name):
         return _python_is_source_only(argv)
@@ -207,6 +230,12 @@ def load_receipt(path: str | None, terms: list[str]) -> dict:
                            f"timestamp ({data['ran_at']!r})") from exc
     if ran_at > datetime.now(timezone.utc) + timedelta(minutes=5):
         raise ReceiptError(f"runtime receipt {path}: ran_at is in the future")
+    code = data.get("exit_code")
+    if code in (126, 127) or (code not in (0, None) and _CRASH_RE.search(str(data["output"]))):
+        raise ReceiptError(
+            f"runtime receipt {path}: the caller crashed before it could exercise the "
+            f"control (exit {code}). A crash is not runtime proof. Fix the run, then "
+            f"capture again:\n  {EXAMPLE}")
     if command_is_source_only(str(data["command"])):
         raise ReceiptError(
             f"runtime receipt {path} only reads source ({data['command']!r}). grep, "
@@ -229,14 +258,20 @@ def capture(out: str, argv: list[str]) -> int:
         sys.stderr.write("capture needs a command after --\n")
         return 2
     ran_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    proc = subprocess.run(argv, capture_output=True, text=True)
-    output = (proc.stdout + proc.stderr)[-8000:]
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True)
+        code, output = proc.returncode, (proc.stdout + proc.stderr)[-8000:]
+    except OSError as exc:
+        code, output = 127, f"could not run: {exc}"
+    # A real run that prints nothing is still an observation; record that it was
+    # silent rather than writing an empty field the loader would refuse.
+    output = output or f"(no output; exit {code})"
     Path(out).write_text(json.dumps({
         "command": shlex.join(argv), "output": output,
-        "exit_code": proc.returncode, "ran_at": ran_at,
+        "exit_code": code, "ran_at": ran_at,
     }, indent=2) + "\n")
     sys.stdout.write(output)
-    return proc.returncode
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:

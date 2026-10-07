@@ -85,6 +85,10 @@ def test_the_dsse_copy_is_the_same_file():
     "python3 -m pytest tests/ --collect-only",
     "env FOO=1 grep x y",
     "bash -c 'grep -c row ledger.jsonl'",
+    "git -C /some/repo grep -n cap -- scripts/x.py",
+    "git -C . show HEAD:scripts/gate.py",
+    "bash -lc 'grep -n MAX_ROUNDS scripts/reviewer.py'",
+    "python3 -c \"print(open('scripts/gate.py').read())\"",
 ])
 def test_source_only_commands_are_recognised(cmd):
     assert rr.command_is_source_only(cmd), cmd
@@ -254,3 +258,44 @@ def test_promoted_audit_leaves_a_runtime_claim_promoted(tmp_path, monkeypatch, c
     assert after["sp-meter"] == "promoted", "a tracker 'Done' closed a runtime claim"
     assert after["sp-plain"] == "resolved"
     assert "RUNTIME RECEIPT" in capsys.readouterr().out
+
+
+def test_a_crashed_caller_is_not_runtime_proof(repo, tmp_path):
+    """PR #529 review, major 1: an import error never reached the cap."""
+    _add(repo, "sp-cap", "cap the reviewer at two rounds")
+    out = tmp_path / "crash.json"
+    subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out), "--",
+                    sys.executable, "-c", "import nonexistent_dependency_xyz"],
+                   capture_output=True, text=True)
+    r = _cli(repo, "spillover", "resolve", "sp-cap", "--resolution-ref", "iss-1",
+             "--runtime-receipt", str(out))
+    assert r.returncode == 2 and "crashed" in r.stderr, r.stderr
+    assert _row(repo, "sp-cap")["status"] == "open"
+
+
+def test_a_gate_that_refuses_with_nonzero_is_still_proof(repo, tmp_path):
+    """Negative-fire for the crash check: a refusal is the control acting."""
+    _add(repo, "sp-cap", "cap the reviewer at two rounds")
+    out = tmp_path / "refused.json"
+    subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out), "--",
+                    sys.executable, "-c", "import sys; print('refused: cap reached'); sys.exit(2)"],
+                   capture_output=True, text=True)
+    r = _cli(repo, "spillover", "resolve", "sp-cap", "--resolution-ref", "iss-1",
+             "--runtime-receipt", str(out))
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_silent_real_run_captures_a_receipt_its_loader_accepts(tmp_path):
+    out = tmp_path / "quiet.json"
+    subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out), "--",
+                    sys.executable, "-c", "pass"], capture_output=True, text=True)
+    assert rr.load_receipt(str(out), ["cap"])["exit_code"] == 0
+
+
+def test_capture_of_a_missing_command_writes_a_refusable_receipt(tmp_path):
+    out = tmp_path / "missing.json"
+    proc = subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out),
+                           "--", "no-such-binary-xyz"], capture_output=True, text=True)
+    assert proc.returncode == 127 and "Traceback" not in proc.stderr
+    with pytest.raises(rr.ReceiptError, match="crashed"):
+        rr.load_receipt(str(out), ["cap"])
