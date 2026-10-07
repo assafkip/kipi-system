@@ -148,15 +148,28 @@ def header_present(found, title):
 # plan-lint it reads the date in the FILENAME (then the **Date:** line), so a
 # back-dated filename walks past it.
 RECURRENCE_CUTOFF = "2026-10-06"
+RECURRENCE_SKIP_MARKER = "rca-recurrence-skip"
+# An undated RCA is being written now, so every dated sibling precedes it and
+# the cutoff never exempts it (PR 527 review: dropping the date was a hole).
+UNDATED = "9999-12-31"
 
 # An action item matches when the rarity-weighted overlap between its terms and
 # the new RCA's root-cause terms reaches RECURRENCE_SCORE. An earlier RCA
 # counts as recurring when RECURRENCE_MIN_ACTIONS of its actions match.
-# Measured 2026-10-06 over two real corpora (44 RCAs, every earlier pair):
-# 6.0 kept the known recurrence (5 of 6 actions matched) and flagged few other
-# pairs; 5.0 flagged many more on shared generic words; 7.0 lost the known one.
+# Measured 2026-10-06 over three real RCA dirs (33 + 11 + 6 RCAs, every
+# earlier pair), sweeping cap x floor x score together: cap 2.5, floor 5,
+# score 6.0 flags 4 pairs, keeps the known recurrence, and drops the
+# reviewer's false pair (generic hook/guard/setting vocabulary). Floor 4 kept
+# that false pair; score 7.0 lost the known recurrence at every cap.
 RECURRENCE_SCORE = 6.0
 RECURRENCE_MIN_ACTIONS = 2
+
+# Two guards against a bar that loosens as the directory grows (PR 527 review):
+# a pair-unique term weighs ln(n+2), so at n=20 two shared identifiers reached
+# 6.0 and an unrelated RCA was blocked. The cap bounds one term's weight, and
+# the floor needs this many DISTINCT shared terms whatever n is.
+RECURRENCE_WEIGHT_CAP = 2.5
+RECURRENCE_MIN_SHARED = 5
 
 # A Recurrence line answers an action when it shares this many terms with it.
 RECURRENCE_LINE_TERMS = 3
@@ -225,6 +238,32 @@ def _doc_date(file_path, text):
     return m.group(1) if m else None
 
 
+def _is_earlier(old_path, old_date, new_path, new_date):
+    """Same-day RCAs order by mtime: a follow-up written in the same session
+    as the earlier RCA is still a recurrence of it (PR 527 review)."""
+    if old_date != new_date:
+        return old_date < new_date
+    try:
+        return Path(old_path).stat().st_mtime < Path(str(new_path)).stat().st_mtime
+    except OSError:
+        return False
+
+
+def _recurrence_section(text):
+    """Body of the first '## Recurrence...' heading. Prefix match, like
+    header_present: '## Recurrence (ASK-1)' is still the section."""
+    out, capturing = [], False
+    for line in text.splitlines():
+        if re.match(r"##\s+", line):
+            if capturing:
+                break
+            capturing = bool(re.match(r"##\s+Recurrence\b", line, re.I))
+            continue
+        if capturing:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _root_cause_text(text):
     return section_body(text, "Surface root cause") + "\n" + section_body(text, "Structural root cause")
 
@@ -259,9 +298,7 @@ def recurrence_matches(file_path, text):
     other RCAs in the directory every term weighs little, so more terms must be
     shared before anything matches. Measured, not argued: plain overlap counts
     flagged pairs on words like 'hook', 'post' and 'read'."""
-    my_date = _doc_date(file_path, text)
-    if not my_date:
-        return []
+    my_date = _doc_date(file_path, text) or UNDATED
     root = _terms(_root_cause_text(text))
     if not root:
         return []
@@ -270,17 +307,21 @@ def recurrence_matches(file_path, text):
     hits = []
     for old_path, old_text in siblings:
         old_date = _doc_date(old_path, old_text)
-        if not old_date or old_date >= my_date:
+        if not old_date or not _is_earlier(old_path, old_date, file_path, my_date):
             continue
         others = [term_sets[p] for p, _ in siblings if p != old_path]
         n = len(others)
 
         def weight(term, others=others, n=n):
             df = sum(1 for s in others if term in s)
-            return math.log((n + 2) / (df + 1))
+            return min(RECURRENCE_WEIGHT_CAP, math.log((n + 2) / (df + 1)))
 
-        matched = [a for a in _action_items(old_text)
-                   if sum(weight(t) for t in _terms(a) & root) >= RECURRENCE_SCORE]
+        matched = []
+        for a in _action_items(old_text):
+            shared = _terms(a) & root
+            if (len(shared) >= RECURRENCE_MIN_SHARED
+                    and sum(weight(t) for t in shared) >= RECURRENCE_SCORE):
+                matched.append(a)
         if len(matched) >= RECURRENCE_MIN_ACTIONS:
             hits.append((old_path.name, matched))
     return hits
@@ -309,13 +350,18 @@ def _unanswered_actions(recurrence_text, actions):
 
 
 def recurrence_violations(file_path, text):
-    my_date = _doc_date(file_path, text)
-    if not my_date or my_date < RECURRENCE_CUTOFF:
+    # Its own marker, so a false positive costs only this check. The file-wide
+    # rca-lint-skip would also drop the structure, evidence and blameless
+    # checks (PR 527 review).
+    if RECURRENCE_SKIP_MARKER in text:
+        return []
+    my_date = _doc_date(file_path, text) or UNDATED
+    if my_date < RECURRENCE_CUTOFF:
         return []
     hits = recurrence_matches(file_path, text)
     if not hits:
         return []
-    rec = section_body(text, "Recurrence")
+    rec = _recurrence_section(text)
     violations = []
     for old_name, actions in hits:
         listed = "\n".join(f"      - {a}" for a in actions)
@@ -325,7 +371,8 @@ def recurrence_violations(file_path, text):
                 "detail": f"root cause matches {len(actions)} action item(s) of the earlier RCA "
                           f"{old_name}. Add a '## Recurrence' section that names {old_name} and, per "
                           f"action, says which action failed and why (e.g. 'marked built without a "
-                          f"runtime test'):\n{listed}",
+                          f"runtime test'). Not a recurrence? Add <!-- {RECURRENCE_SKIP_MARKER} --> "
+                          f"(skips only this check):\n{listed}",
             })
             continue
         if old_name not in rec:

@@ -215,6 +215,61 @@ def test_only_earlier_rcas_count(tmp_path):
     assert code == 0, err
 
 
+def test_four_shared_terms_never_match_however_large_the_dir(tmp_path):
+    # PR 527 review: a pair-unique term weighs ln(n+2), so in a big directory
+    # a few shared identifiers summed past the score and blocked an unrelated
+    # RCA. Exactly 4 shared terms per action, 20 unrelated siblings: no match.
+    target = setup_corpus(tmp_path, new_rca(
+        surface="A renderer budget mismatch inside the quota_throttle wrapper.",
+        structural="The nightly sweeper started late."))
+    for i in range(20):
+        w = f"zeta{i}word"
+        (target.parent / f"rca-bulk-{i}-2029-10-01.md").write_text(rca(
+            f"bulk {w}", "2029-10-01", f"The {w} failed.", f"No owner for {w}.",
+            [f"Fix the {w} first.", f"Test the {w} again."]))
+    code, err = run_hook(target)
+    assert code == 0, err
+
+
+def test_heading_with_suffix_still_counts(tmp_path):
+    suffixed = RECURRENCE_OK.replace("## Recurrence", "## Recurrence (ASK-1)")
+    target = setup_corpus(tmp_path, new_rca(extra=suffixed))
+    code, err = run_hook(target)
+    assert code == 0, err
+
+
+def test_undated_rca_is_still_checked(tmp_path):
+    undated = new_rca().replace(f"**Date:** {NEW_DATE}\n", "")
+    target = setup_corpus(tmp_path, undated, new_name="rca-widget-again.md")
+    code, err = run_hook(target)
+    assert code == 2, err
+    assert "recurrence-unnamed" in err
+
+
+def test_same_day_follow_up_is_checked(tmp_path):
+    import os
+    target = setup_corpus(tmp_path, new_rca(date=OLD_DATE),
+                          new_name=f"rca-widget-again-{OLD_DATE}.md")
+    old = target.parent / f"rca-widget-quota-{OLD_DATE}.md"
+    os.utime(old, (1_000_000_000, 1_000_000_000))  # written before the follow-up
+    code, err = run_hook(target)
+    assert code == 2, err
+    assert "recurrence-unnamed" in err
+
+
+def test_recurrence_skip_only_skips_recurrence(tmp_path):
+    marker = "\n<!-- rca-recurrence-skip -->\n"
+    target = setup_corpus(tmp_path, new_rca() + marker)
+    code, err = run_hook(target)
+    assert code == 0, err
+    # The other checks still run under the recurrence-only marker.
+    broken = new_rca().replace("## Verification", "## Notes") + marker
+    target.write_text(broken)
+    code, err = run_hook(target)
+    assert code == 2, err
+    assert "Verification" in err and "[recurrence-" not in err
+
+
 def test_skip_marker_still_bypasses(tmp_path):
     target = setup_corpus(tmp_path, new_rca() + "\n<!-- rca-lint-skip -->\n")
     code, err = run_hook(target)

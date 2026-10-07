@@ -92,6 +92,7 @@ for an action item.
 Required when rca-lint finds this root cause matching the action items of an
 earlier RCA in the same directory (the lint names the file and the actions).
 Name that file, then one line per matched action: which action failed and why.
+If the match is wrong, add `<!-- rca-recurrence-skip -->` instead; it skips only this check.
 
 - <earlier rca file>: action "<action>" failed because <why, e.g. marked built without a runtime test>
 
