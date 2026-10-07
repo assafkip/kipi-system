@@ -149,7 +149,7 @@ def test_a_dirty_stable_dir_is_not_used(tmp_path, monkeypatch):
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     import tempfile
     monkeypatch.setattr(tempfile, "tempdir", None)
-    stable = tmp_path / "kipi-headless-cwd"
+    stable = tmp_path / "voiceloop-headless-cwd"
     stable.mkdir()
     (stable / "CLAUDE.md").write_text("planted")
     got = prompt_render.bare_cwd()

@@ -154,14 +154,14 @@ def bare_cwd():
     so no machine's path is baked into a module that ships fleet-wide.
     """
     import tempfile
-    path = os.path.join(tempfile.gettempdir(), "kipi-headless-cwd")
+    path = os.path.join(tempfile.gettempdir(), "voiceloop-headless-cwd")
     try:
         os.makedirs(path, exist_ok=True)
         if not os.listdir(path):
             return path
     except OSError:
         pass
-    return tempfile.mkdtemp(prefix="kipi-headless-cwd-")
+    return tempfile.mkdtemp(prefix="voiceloop-headless-cwd-")
 
 
 def run_model(prompt, claude_bin, timeout=TIMEOUT_SECONDS, runner=None,
