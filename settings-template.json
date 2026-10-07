@@ -178,6 +178,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/agent-brief-one-job-guard.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/agent-brief-one-job-guard.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": ".*",
         "hooks": [
           {
