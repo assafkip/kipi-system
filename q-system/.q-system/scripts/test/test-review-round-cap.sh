@@ -93,9 +93,12 @@ EOF
 chmod +x "$STUB/notify"
 calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
 run_reviewer() {  # run_reviewer <out-file> [extra args...]
+  # Several rounds on ONE head are what the ready budget (ASK-2542) now refuses,
+  # so this suite drives the human re-request door: the round cap still bounds it.
   local out="$1"; shift
   ( cd "$WORK/skel" \
     && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="$STUB/notify" \
+       KIPI_REVIEW_HUMAN_REREQUEST=1 \
        bash "$AGENT" 1 --engine claude "$@" ) >"$out" 2>&1
   echo $? > "$out.rc"
 }

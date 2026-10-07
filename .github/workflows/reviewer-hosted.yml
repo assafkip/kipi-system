@@ -11,7 +11,10 @@ name: Reviewer Hosted
 # repo secret turns it on (subscription only; the billed API key is never used).
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    # ready_for_review (ASK-2542): pr-review-agent.sh skips drafts, so a PR
+    # opened as a draft gets its one full review when it is marked ready, not
+    # on whichever push happens to come next.
+    types: [opened, reopened, synchronize, ready_for_review]
 
 # One review per PR at a time: a new push supersedes a running review of the
 # old head, which the reviewer would only post onto a stale sha anyway.
