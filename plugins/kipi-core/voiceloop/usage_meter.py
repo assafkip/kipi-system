@@ -86,9 +86,21 @@ def review_text(raw: str) -> str:
     refusal must still be readable by is_environmental, and dropping it would turn
     "the runner is down" into "the review said nothing".
     """
-    from usage_ledger import finish  # local import: a broken ledger module must not break the text
+    from usage_ledger import _result_document, finish  # local import: a broken ledger must not break the text
     text, _row = finish(raw, bot="pr-review")
-    return text if text is not None else raw
+    if text is not None:
+        return text
+    doc = _result_document(raw)
+    if isinstance(doc, dict):
+        # An error document (a usage-limit refusal, most often) must reach
+        # is_environmental as the plain line the CLI would have printed, not as a
+        # JSON blob: as JSON, an outage became a failing required status instead of
+        # exit 9 (PR #528 review, major).
+        parts = [doc.get(k) for k in ("result", "error", "message")]
+        plain = "\n".join(p for p in parts if isinstance(p, str) and p.strip())
+        if plain:
+            return plain + "\n"
+    return raw
 
 
 def meter_review(raw_path: str, out_path: str, *, stderr_path: str | None, rc: int,
@@ -281,7 +293,9 @@ def meter_subagent(payload: dict) -> dict | None:
     state = _state_file(agent_id or path)
     done = _metered(state)
     new = [t for t in turns if t["id"] not in done]
-    if not new:
+    # A harness placeholder turn is not an API call; a stop that added only those
+    # would write a zero-turn, zero-cost row (PR #528 review, minor).
+    if not [t for t in new if t.get("model") != "<synthetic>"]:
         return None
     import usage_ledger as ul
     row = agent_row(new, agent_id=agent_id, agent_type=payload.get("agent_type"),
@@ -289,7 +303,12 @@ def meter_subagent(payload: dict) -> dict | None:
     if row["unpriced_models"]:
         log(f"subagent-stop {agent_id}: no price for {row['unpriced_models']}; cost left unknown")
     if ul.append(row):
-        _save_metered(state, done | {t["id"] for t in new})
+        # Append first, then state: a lost state write re-charges on the next
+        # stop (visible, logged); the reverse order would drop a row silently.
+        try:
+            _save_metered(state, done | {t["id"] for t in new})
+        except OSError as exc:
+            log(f"subagent-stop {agent_id}: state write failed ({exc}); the next stop may re-charge these turns")
     else:
         log(f"subagent-stop {agent_id}: ledger append refused or failed ({ul.ledger_path()})")
     return row

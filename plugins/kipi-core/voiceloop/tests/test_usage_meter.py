@@ -95,3 +95,18 @@ def test_fail_open_bad_payload_and_missing_transcript_exit_zero_and_log(tmp_path
     p = subprocess.run([sys.executable, "-I", str(METER), "subagent-stop"], input="not json",
                        capture_output=True, text=True, env=env, timeout=60)
     assert p.returncode == 0 and "payload is not JSON" in (tmp_path / "meter.log").read_text()
+
+
+def test_a_limit_refusal_reaches_the_review_file_as_plain_text(tmp_path):
+    import usage_meter
+    raw = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True,
+                      "result": "Claude AI usage limit reached|1760000000"})
+    assert usage_meter.review_text(raw) == "Claude AI usage limit reached|1760000000\n"
+
+
+def test_a_stop_that_added_only_a_synthetic_turn_writes_no_row(tmp_path):
+    t = tmp_path / "agent-a1.jsonl"
+    _write(t, [_turn("m1", 5)])
+    assert len(_stop(tmp_path, t)) == 1
+    _write(t, [_turn("m2", 0, model="<synthetic>", read=0, write=0, fresh=0)])
+    assert len(_stop(tmp_path, t)) == 1
