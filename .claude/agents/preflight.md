@@ -2,7 +2,7 @@
 name: preflight
 model: claude-haiku-4-5
 description: "Pipeline preflight check. Verify tool availability before morning routine."
-allowed-tools: "Read Grep mcp__claude_ai_Google_Calendar__gcal_list_events mcp__claude_ai_Gmail__gmail_search_messages mcp__claude_ai_Notion__notion-search"
+allowed-tools: "Read Grep mcp__claude_ai_Google_Calendar__gcal_list_events mcp__claude_ai_Gmail__gmail_search_messages mcp__claude_ai_Google_Calendar__list_events mcp__claude_ai_Gmail__search_threads mcp__claude_ai_Notion__notion-search"
 ---
 
 # Preflight Agent

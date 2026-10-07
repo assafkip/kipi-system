@@ -17,7 +17,7 @@ A full marketing automation system lives in `marketing/`. See `marketing/README.
 - State tracked in `memory/marketing-state.md`
 - Gamma MCP for decks/one-pagers/social cards (if configured)
 
-**Notion MCP server rule:** Use the project-scoped Notion API server for all CRM operations.
+**Notion rule:** Use the Notion server whose token can actually see the CRM parent page; a project-scoped server may not. When an instance knows which one, its own instance rule names it.
 
 **Notion databases (configured during setup):**
 - Content Pipeline DB: {{CONTENT_PIPELINE_DB_ID}}

@@ -26,3 +26,4 @@ keep-coding-instructions: true
 - Crisp talk tracks over long narratives
 - Never use emdashes
 - DMs/emails start with "I" not the person's name
+  - Superseded by the global Output Rules: cold DMs lead with their pain, no greeting; client emails open the way he normally does ("Hey"/"Hi" is fine); never a line of only "I".
