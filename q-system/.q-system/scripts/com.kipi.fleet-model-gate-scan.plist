@@ -7,8 +7,13 @@
      memory, and a day of uncapped review loops spent most of a week's usage.
 
      ALERTS ON A STATE CHANGE ONLY, through slack-notify.sh, which files it in
-     Sana's Linear queue and pages nobody. Exit 0 on a completed scan; ungated
-     sites are the alert's job until the fleet is routed.
+     Sana's Linear queue and pages nobody. Exit 0 on a completed scan.
+
+     THE DRAIN (ASK-2540): once per ISO week it files one line with the ungated
+     count and the delta through the same path, and exits 4 on every run while
+     the count is not lower than last week's, so launchd-health sees a red job
+     instead of a flat number nobody reads. It also scans the trees LOADED
+     launchd jobs run from, linked worktrees included.
 
      Skeleton-only: it reads instance-registry.json, which only the skeleton has.
 
