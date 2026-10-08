@@ -943,15 +943,21 @@ Then:
 - **VERDICT:** decided by THIS RULE, not by feel:
     - any blocker or major finding      => REQUEST CHANGES (BLOCK only if merging
       as-is would cause permanent or unrecoverable damage)
-    - only minor/nit findings           => APPROVE WITH NITS
+    - EXCEPT a major you mark nonblocking (below): it does not gate, it is a
+      follow-up. Mark a major nonblocking when you would say it is not a blocker
+      for THIS merge, or when it only bites in code the PR states is report-only,
+      dry-run or not yet enforced. Never mark a blocker; a blocker always blocks.
+    - only minor/nit findings, or majors all marked nonblocking => APPROVE WITH NITS
     - no finding survived reproduction  => APPROVE
   A bar this high ALWAYS finds something; that is what APPROVE WITH NITS is for.
-  On APPROVE WITH NITS the pipeline captures every minor as a tracked follow-up,
-  so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
+  On APPROVE WITH NITS the pipeline captures every minor, and every nonblocking
+  major, as a tracked follow-up, so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
   wedges the PR forever and is itself a review defect.
   State the verdict and the single most important thing to fix first.
 - **Last, a machine-readable findings block**, EXACTLY this shape, one line per
-  finding, empty block if none. The pipeline parses it; keep prose out of it:
+  finding, empty block if none. The pipeline parses it; keep prose out of it.
+  To mark a major nonblocking, add a 4th field with exactly the word nonblocking
+  after file:line (the field is the |nonblocking suffix, nothing else):
 
 FINDINGS:
 severity|one-sentence claim|file:line
@@ -1397,12 +1403,14 @@ PY
 # filed as ASK-1940.
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
   MINOR_COUNT=0
-  while IFS='|' read -r _sev claim loc; do
+  # Minors AND majors the reviewer marked nonblocking (ASK-2422): a released major
+  # is still a defect, so it is named here with the minors, never dropped.
+  while IFS='|' read -r sev claim loc _mark; do
     [ -n "$claim" ] || continue
     MINOR_COUNT=$((MINOR_COUNT+1))
-    echo "  minor $MINOR_COUNT: $claim ($loc)" >&2
+    echo "  $sev $MINOR_COUNT: $claim ($loc)" >&2
   done <<EOF
-$(extract_minor_findings "$REVIEW")
+$(extract_followup_findings "$REVIEW")
 EOF
   echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
   if [ "$MINOR_COUNT" -gt 0 ]; then
