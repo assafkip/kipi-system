@@ -95,6 +95,7 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.linear-triage-health` | 09:00 |
 | `com.kipi.fleet-full-suite-scan` | 08:20 (alerts on a state change only; RULE-2026-10-01-A) |
 | `com.kipi.fleet-model-gate-scan` | 08:25 (model call sites not behind the model gate; alerts on a state change only; ASK-2395) |
+| `com.kipi.model-wrapper-runtime-proof-check` | 08:30 (model-calling wrappers with no `gate_proof` runtime test; alerts on a state change only; ASK-2540) |
 | `com.kipi.linear-dor` | 03:00 |
 | `com.kipi.disk-janitor` | 04:30 |
 | `com.kipi.voice-refresh` | day 1 of the month, 09:00 |

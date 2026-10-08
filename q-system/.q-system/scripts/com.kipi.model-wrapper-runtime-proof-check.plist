@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Model-wrapper runtime-proof check (ASK-2540, RCA token-burn-recurs-after-gate). kipi-scope: skeleton-only
+
+     Every local checkout, read once a day for a model-calling wrapper that has no
+     test driving one call through it with voiceloop.gate_proof. A wrapper whose
+     source calls the gate is NOT proven: the 2026-10-06 wrapper did, below an early
+     return its real caller always took.
+
+     Exits 1 while any wrapper is uncovered (launchd ignores it); the drain is the
+     alert, sent ON A STATE CHANGE ONLY through slack-notify.sh into Sana's queue.
+
+     TEMPLATE: __KIPI_REPO__ and __HOME__ are materialized by install-plist.sh.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.model-wrapper-runtime-proof-check -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.model-wrapper-runtime-proof-check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/model-wrapper-runtime-proof-check.py --fleet</string>
+  </array>
+  <!-- Local 08:30, after the model-gate door scan at 08:25. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/model-wrapper-runtime-proof-check.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/model-wrapper-runtime-proof-check.err.log</string>
+</dict>
+</plist>
