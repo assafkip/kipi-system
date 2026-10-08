@@ -74,6 +74,10 @@
           {
             "type": "command",
             "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/design-chain-gate.py\"; fi"
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/plugins/kipi-core/voiceloop/usage_meter.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/plugins/kipi-core/voiceloop/usage_meter.py\" subagent-stop || true"
           }
         ]
       }

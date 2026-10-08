@@ -1026,6 +1026,32 @@ for _old in "$SCRATCH_BASE"/run.*; do
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
+# One usage-ledger row per claude run, written by voiceloop/usage_meter.py (the
+# ledger's single writer is usage_ledger.append; nothing here opens the ledger).
+# FAIL-OPEN: a missing or broken meter must never cost the review. The fallback
+# below rebuilds the plain text itself and names the reason in the meter log.
+METER_PY="${KIPI_USAGE_METER_PY:-$SCRIPT_DIR/../../../plugins/kipi-core/voiceloop/usage_meter.py}"
+meter_review_run() {   # meter_review_run <destination-file> <rc>
+  local dest="$1" rc="$2" mlog="${KIPI_USAGE_METER_LOG:-$HOME/.config/kipi/logs/usage-meter.log}"
+  if [ -f "$METER_PY" ]; then
+    python3 "$METER_PY" review --raw "$dest.json" --stderr "$dest.stderr" --out "$dest" --rc "$rc" \
+      --item "${REVIEW_SLUG:-local}#$PR" --model "$CLAUDE_MODEL" 2>>"$dest.stderr" || true
+  fi
+  if [ ! -e "$dest" ]; then
+    mkdir -p "$(dirname "$mlog")" 2>/dev/null
+    echo "$(TS) review ${REVIEW_SLUG:-local}#$PR: meter unavailable ($METER_PY); no ledger row, review text rebuilt inline" >> "$mlog" 2>/dev/null
+    { cat "$dest.stderr" 2>/dev/null
+      python3 -c 'import json,sys
+raw=open(sys.argv[1],errors="replace").read()
+try:
+    d=json.loads(raw); assert d.get("type")=="result" and not d.get("is_error"); sys.stdout.write(str(d.get("result") or "")+"\n")
+except Exception:
+    sys.stdout.write(raw)' "$dest.json" 2>/dev/null || cat "$dest.json" 2>/dev/null
+    } > "$dest"
+  fi
+  command rm -f -- "$dest.json" "$dest.stderr"
+}
+
 run_engine() {   # run_engine <claude|codex> <destination-file>
   if [ -z "$REVIEW_SCRATCH" ]; then
     WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
@@ -1044,8 +1070,12 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # ("cites a backstop that does not exist"). The lint still logs them advisory.
     # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+    # --output-format json + meter_review_run (ASK-2541): 35 reviews on 2026-10-06
+    # left zero usage-ledger rows. The meter turns the json back into the exact
+    # text a plain -p call printed, so the FINDINGS reader below is unchanged.
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --output-format json --disallowedTools 'Bash(git clone:*)' </dev/null > '$2.json' 2> '$2.stderr'" _ "$PROMPT"
+            local rc=$?; meter_review_run "$2" "$rc"; return "$rc" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
