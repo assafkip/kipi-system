@@ -61,6 +61,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
+import runtime_receipt  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
@@ -1288,6 +1289,24 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
             sys.stderr.write(f"cannot close {issue_id}: the verified receipt does not match its "
                              f"evidence. {GREEN_SHAPE_TEXT}. Re-run `issue_runner.py verify`.\n")
             return 2
+    # After the ASK-1810 check on purpose: a tampered green is named first.
+    # RUNTIME RECEIPT (RCA 2026-10-02 / 2026-10-06): an issue whose title claims
+    # a gate, cap, meter, budget, ledger, guard, limit, rate or quota fix closed on
+    # source that read correctly and had never fired on the real caller. It needs a
+    # receipt of a real call; runtime_receipt.py is mirrored from prd-os.
+    runtime_ref = None
+    try:
+        _p, _fm, _t = _load_spec(paths, issue_id)
+        terms = runtime_receipt.claims_runtime_control(str(_fm.get("title") or ""))
+    except FileNotFoundError:
+        terms = []
+    if terms:
+        try:
+            runtime_ref = runtime_receipt.load_receipt(
+                getattr(args, "runtime_receipt", None), terms)
+        except runtime_receipt.ReceiptError as exc:
+            sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
+            return 2
     missing = [k for k in RECEIPT_FIELDS if not state["receipts"].get(k)]
     if missing:
         sys.stderr.write(
@@ -1446,6 +1465,8 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     finding_class = _closed_finding_class(paths, marker["prd_id"], marker["finding_id"])
     if finding_class is not None:
         receipt["finding_class"] = finding_class
+    if runtime_ref is not None:
+        receipt["runtime_receipt"] = runtime_ref
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
@@ -1822,7 +1843,12 @@ def main(argv: list[str] | None = None) -> int:
     p_amend.add_argument("--reason", required=True, help="why the spec is being amended")
     p_amend.set_defaults(func=cmd_amend)
 
-    sub.add_parser("close").set_defaults(func=cmd_close)
+    p_close = sub.add_parser("close")
+    p_close.add_argument("--runtime-receipt", dest="runtime_receipt",
+                         help="JSON receipt of a REAL call; required when the issue "
+                              "title claims a gate/cap/meter/budget/ledger/guard/limit/"
+                              "rate/quota fix (runtime_receipt.py capture)")
+    p_close.set_defaults(func=cmd_close)
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     sub.add_parser("allowed-files").set_defaults(func=cmd_allowed_files)
 
