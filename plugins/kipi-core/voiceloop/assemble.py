@@ -54,6 +54,24 @@ BUDGET_CHARS = 24000     # asserted by validate.feasible + the consumer's suite,
 #: uses this field behaves byte for byte as before (ASK fleet-wide).
 EXTERNAL_SOURCE = "external-performance"
 
+
+def corrections_for(corrections, channel, lane=None):
+    """The correction rows one writer may see. THE one scope filter.
+
+    `scope` keeps a row to its channels; `scope_exclude` lifts it for one lane of a
+    channel. `channel=None` means the caller cannot know the channel (the
+    voice-dna-loader hook reads a bare prompt), so `scope` is not applied there; a
+    lane still is. PR #519 round 4: the hook rendered `active_corrections()` raw
+    while `voice_section` filtered, so a row lifted for scheduled-x still reached
+    that lane through the hook. Two readers of one fact is the defect class; both
+    now call this.
+    """
+    return [r for r in (corrections or [])
+            if (channel is None or not r.get("scope") or channel in r["scope"])
+            and not (lane and isinstance(r.get("scope_exclude"), list)
+                     and lane in r["scope_exclude"])]
+
+
 def _lexicon_positive(lexicon):
     lines = []
     prefer = lexicon.get("prefer") or []
@@ -123,10 +141,7 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     # say that: the lifted lane and the attended lane write the same channel. Filtered
     # here, in the one list that feeds both the prompt and the receipt, so an excluded
     # row is never recorded as applied.
-    applied = [r for r in (corrections or [])
-               if (not r.get("scope") or channel in r["scope"])
-               and not (lane and isinstance(r.get("scope_exclude"), list)
-                        and lane in r["scope_exclude"])]
+    applied = corrections_for(corrections, channel, lane)
     his = [r for r in applied if r.get("source") != EXTERNAL_SOURCE]
     researched = [r for r in applied if r.get("source") == EXTERNAL_SOURCE]
     if his:
