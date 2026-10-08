@@ -43,6 +43,9 @@ build_skeleton() {
   cp "$ROOT/kipi-update-deletion-guard.py" "$sk/kipi-update-deletion-guard.py"
   cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
      "$sk/q-system/.q-system/scripts/propagation-leak-gate.py"
+  # the branch half of the preflight is its own script since issue #2 PR A
+  cp "$ROOT/q-system/.q-system/scripts/skeleton-provenance.sh" \
+     "$sk/q-system/.q-system/scripts/skeleton-provenance.sh"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$sk/validate-separation.py"
