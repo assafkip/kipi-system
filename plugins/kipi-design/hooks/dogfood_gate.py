@@ -362,10 +362,31 @@ def scan_html(content, fp, brand=None):
 # gtm/dashboard/server.py with WorkingDirectory gtm/dashboard -- it SERVES a
 # different surface and never writes gtm/cockpit/*.html. The label and the directory
 # disagree, which is exactly why the name was not evidence (Codex minor, round 3).
+# "report" (ASK-1906): a founder-only report page not already caught by another
+# marker (no /output/, no "dashboard") classified PUBLIC and ran the AI-slop
+# block. design-chain-gate.py already treats a "report"/"reports" path SEGMENT
+# as internal (confirmed correct on fleet evidence, ASK-1875), so the two
+# sibling gates were disagreeing on this exact word.
+#
+# Decision: added as a bare substring marker, matching every entry already in
+# this tuple, NOT rewritten to segment matching (design-chain-gate's INTERNAL_DIRS
+# checks Path(p).parts membership instead of substring). Reasons:
+#   1. Scope: this issue's Definition of Ready names two files (this one and its
+#      test). Converting the whole tuple to segment matching touches every
+#      marker's semantics at once (several, like "morning" and "-log", match
+#      against the FILENAME, e.g. morning-log-2026-07-31.html, not a directory
+#      segment -- design-chain-gate's segment check only inspects parts[:-1] and
+#      would silently stop catching those without a parallel filename-prefix
+#      rule). That is a separate, larger change with its own blast radius.
+#   2. This repeats a class of bug ALREADY PRESENT here, not a new one: "/test"
+#      already matches "/testimonials/" the same way "report" now matches
+#      "reportage". design-chain-gate fixed that class for itself in round 3;
+#      fixing it here too is real and worth doing, but as its own issue so it
+#      gets its own test budget instead of riding in on this one.
 INTERNAL_PATH_MARKERS = (
     "/q-system/", "/node_modules/", "/templates/", "/template/", "/test", "/tests/",
     "fixture", "dashboard", "/cockpit/", "schedule", "morning", "-log", "/logs/",
-    "/output/", "/build/", "/dist/", "debug", "/.git/", "storybook",
+    "/output/", "/build/", "/dist/", "debug", "/.git/", "storybook", "report",
     "/fingerprint/", "_harvest")   # internal harvest tooling, not a shipped page
 
 
