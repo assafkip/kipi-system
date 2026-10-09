@@ -45,9 +45,10 @@ DEFAULTS = {
     "min_trust_signals": 2,
 }
 FEEL_RE = re.compile(r'(?m)^\*\*Feel \(founder, \d{4}-\d{2}-\d{2}\):\*\*\s*"([^"]+)"')
-PRIMARY_RE = re.compile(r"(?im)^\s*[-*]?\s*Primary reference:\s*(\S+)")
-PATH_RE = re.compile(r"(?im)^\s*[-*]?\s*Page path:\s*(.+)$")
-TRUST_RE = re.compile(r"(?im)^\s*[-*]?\s*Trust signals:\s*(.+)$")
+# labels may be written bold ("**Trust signals:**"), the way a brief usually is
+PRIMARY_RE = re.compile(r"(?im)^\s*[-*]?\s*\**Primary reference:\**\s*(\S+)")
+PATH_RE = re.compile(r"(?im)^\s*[-*]?\s*\**Page path:\**\s*(.+)$")
+TRUST_RE = re.compile(r"(?im)^\s*[-*]?\s*\**Trust signals:\**\s*(.+)$")
 SIDE_RE = re.compile(r"(?im)^\s*[-*]?\s*SIDE-BY-SIDE:\s*(.+?)\s+vs\s+(\S+?):\s*(AS GOOD|NOT AS GOOD)\b")
 
 

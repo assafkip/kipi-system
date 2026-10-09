@@ -190,6 +190,12 @@ class ReferenceStage(unittest.TestCase):
         (self.i.rd / "critique.md").write_text(CRITIQUE.replace("AS GOOD", "NOT AS GOOD", 1))
         self.has("is NOT AS GOOD")
 
+    def test_bold_labels_are_read(self):
+        (self.i.rd / "brief.md").write_text(BRIEF.replace("Trust signals:", "**Trust signals:**"))
+        (self.i.rd / "directions.md").write_text(DIRS.replace("Primary reference:", "**Primary reference:**")
+                                                 .replace("Page path:", "**Page path:**"))
+        self.assertEqual(self.i.problems(), [])
+
     # ---- the positive control, then scope
 
     def test_the_complete_round_passes(self):
