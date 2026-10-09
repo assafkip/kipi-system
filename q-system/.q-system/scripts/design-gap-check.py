@@ -40,6 +40,7 @@ import urllib.parse
 import urllib.request
 import hashlib
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -251,6 +252,24 @@ def load_exemplars(refs: Path) -> dict:
     return out
 
 
+def primary_only(ex: dict, refs: Path) -> tuple[dict, str | None]:
+    """dc-25: when the roster names ONE primary exemplar, the floors are that site's, not the
+    least of the whole set. Founder, 2026-10-09, on a designer's read of why measured rounds
+    stayed generic: limits from the busiest site and floors from the plainest average a set
+    into a blend, so a round goes deep on one reference instead. With no primary declared the
+    whole-set floor stands, exactly as before. Returns (captures to floor against, primary stem)."""
+    try:
+        items = json.loads((refs / "exemplars.json").read_text())["exemplars"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ex, None
+    prim = [e.get("url") for e in items if isinstance(e, dict) and e.get("primary") is True]
+    if len(prim) != 1 or not isinstance(prim[0], str):
+        return ex, None
+    # the same slug design-exemplar-capture.py names the capture file with
+    stem = re.sub(r"[^a-z0-9]+", "-", prim[0].split("//")[-1].split("/")[0].lower()).strip("-")
+    return ({stem: ex[stem]} if stem in ex else {}), stem
+
+
 def usable(ex: dict) -> tuple[dict, list[str]]:
     """Split the captures into the ones that describe a DESIGN and the ones that describe
     an error page, and hand back the rejects BY NAME.
@@ -418,7 +437,13 @@ def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
         for r in rejected:
             print(f"  {r}")
         print()
-    if len(ex) < 3:
+    ex, primary = primary_only(ex, refs)
+    if primary and not ex:
+        print(f"could not measure: the roster's primary exemplar has no usable capture "
+              f"({primary}.json) in {refs}. Run design-exemplar-capture.py {refs} --only {primary}.",
+              file=sys.stderr)
+        return COULD_NOT_MEASURE
+    if not primary and len(ex) < 3:
         print(f"could not measure: only {len(ex)} usable exemplar capture(s) in {refs}; the floors "
               f"would be set by too small a set to mean anything. Run design-exemplar-capture.py.",
               file=sys.stderr)
@@ -431,7 +456,8 @@ def report(round_dir: Path, url_base: str, refs: Path, write: bool) -> int:
         return COULD_NOT_MEASURE
 
     print(f"GAP TO THE EXEMPLARS: {', '.join(sorted(ex))}")
-    print("floor = the least any one of them reaches. Derived from the captures, not chosen.\n")
+    print("floor = the PRIMARY exemplar's own values (dc-25: one reference, gone deep).\n" if primary else
+          "floor = the least any one of them reaches. Derived from the captures, not chosen.\n")
     changed = [n for n in names if sha(round_dir / n) != measured[n]]
     if changed:
         print(f"could not measure: {changed} changed while being measured, so no verdict can be "
