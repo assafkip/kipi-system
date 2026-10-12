@@ -593,5 +593,142 @@
     "instance": "ASK_AI_consultant",
     "status": "published",
     "date": "2026-08-31"
+  },
+  "87bc65afff94d00d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "guard-each-invariant-with-its-own-test-and-re-check-why-some"
+  },
+  "7fb4ccbd14ab06db": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "verify-the-real-property-not-a-cheaper-proxy"
+  },
+  "05c68bd790aaaf9e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "verify-quality-gates-against-real-output-per-item-and-confir"
+  },
+  "c13041d78d9ad6e1": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "diagnosing-why-only-one-node-fails-a-fleet-wide-template-syn"
+  },
+  "df326171f0ac2954": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "encode-cost-multiplier-and-timeout-ceiling-contracts-in-exec"
+  },
+  "f48bc08a08080b3d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "verify-the-user-facing-output-not-just-the-pipeline"
+  },
+  "7981cddaedc4df6d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "close-the-loop-between-a-changed-goal-and-its-enforcers"
+  },
+  "bf437caf6ec704ba": {
+    "instance": "ASK_AI_consultant",
+    "status": "held",
+    "date": "2026-10-12"
+  },
+  "d3da7693616aa6dd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "put-a-quality-judge-on-every-generation-path-not-just-the-pr"
+  },
+  "7c6ce0959b0df05d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "make-every-request-shape-routable-and-verify-output-against-"
+  },
+  "fdbb8f07c41fbf6b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "reconcile-summary-counts-against-data-already-retrieved"
+  },
+  "d5c2cb5c43e7ab6f": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "guard-the-whole-population-test-the-data-flow-and-distrust-e"
+  },
+  "d19442fce6410340": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "grade-parser-failures-by-severity-instead-of-rejecting-whole"
+  },
+  "4bc83a9b80bf3145": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "verify-cost-and-safety-controls-by-observing-real-executions"
+  },
+  "d16d4a285a08044e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "put-spend-limits-on-the-shared-choke-point-not-on-each-path-"
+  },
+  "170e60fdf472e498": {
+    "instance": "4_points_consulting",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "keep-a-single-ledger-of-record-for-re-measured-claims"
+  },
+  "649c032ad535ae53": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "don-t-let-the-deliverable-be-the-only-place-analysis-happens"
+  },
+  "f5614503caf93ec1": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "make-empty-results-distinguishable-from-rejected-or-broken-o"
+  },
+  "87c87ea7e168eb94": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "keep-source-derived-and-model-derived-fields-separate-in-gat"
+  },
+  "106a3241e65212bc": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "don-t-let-a-fail-safe-gate-halt-the-run-when-there-is-nothin"
+  },
+  "731a0a36864a1c79": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "test-against-real-data-shape-and-wire-safeguards-into-the-li"
+  },
+  "e15c0bea3c5bb218": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "same-symptom-different-root-causes-diagnose-each-failing-dep"
+  },
+  "95f6080424235fe7": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "verify-safety-guards-by-testing-them-against-known-violation"
   }
 }
