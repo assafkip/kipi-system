@@ -1047,10 +1047,19 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=true --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
+# THE REVIEWER READS GITHUB (founder-directed 2026-10-13: "it should still read.
+# That is the only way to stay updated"). With no -s flag codex used its default
+# read-only sandbox, which has NO NETWORK: every `gh pr view/diff` since the first
+# codex review on 2026-07-29 failed with "error connecting to api.github.com".
+# It used to fall back to the local tree; once AGENTS.md carried a fail-stop rule
+# it stopped instead, and two PRs got an unread APPROVE. workspace-write is
+# confined to -C $REVIEW_ROOT, the detached throwaway tree pinned to the PR sha
+# (sp-8f95bba0), never a checkout anyone uses; network_access turns GitHub on.
+#
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
 # The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,

@@ -270,7 +270,24 @@ review_declined_to_start() {
 review_is_usable() {
   local f="${1:-}"
   has_complete_findings_block "$f" || return 1
+  review_could_not_read "$f" && return 1
   ! review_declined_to_start "$f"
+}
+
+# review_could_not_read <review-file>
+# True when the reviewer SAID it inspected nothing: a stated verdict of REVIEW
+# BLOCKED or NOT ISSUED. Exit 0 = it could not read (the review is not a review).
+#
+# THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
+# `gh pr diff` failed, and the reviewer stopped honestly with one of these
+# verdicts over an EMPTY findings block. extract_verdict reads them as 'none', an
+# empty block derives APPROVE, and the harsher-of-two took APPROVE: a green
+# required gate on a PR nobody read, and one merged. A stated verdict line, not
+# a phrase anywhere, so a real review that quotes this function still lands.
+review_could_not_read() {
+  local f="${1:-}"
+  [ -s "$f" ] || return 1
+  grep -qiE '^[[:space:]*]*VERDICT:[[:space:]*]*(REVIEW[[:space:]]+BLOCKED|NOT[[:space:]]+ISSUED)' "$f"
 }
 
 # has_complete_findings_block <review-file>
