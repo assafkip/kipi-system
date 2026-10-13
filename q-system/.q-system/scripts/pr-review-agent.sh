@@ -1026,6 +1026,17 @@ for _old in "$SCRATCH_BASE"/run.*; do
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
+# codex-sandbox-begin
+# WRITE + NETWORK ONLY IN THE THROWAWAY TREE (PR review round 1). The degraded
+# path can set REVIEW_ROOT to a worktree found by search, which may be a checkout
+# someone is using; there the reviewer stays read-only (and so offline), exactly
+# as before this change.
+if [ "${HEAD_SHA_ISOLATED:-0}" = "1" ]; then
+  CODEX_SANDBOX="-s workspace-write -c sandbox_workspace_write.network_access=true"
+else
+  CODEX_SANDBOX="-s read-only"
+fi
+# codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
   if [ -z "$REVIEW_SCRATCH" ]; then
     WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
@@ -1047,7 +1058,7 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=true --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
@@ -1058,7 +1069,8 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
 # It used to fall back to the local tree; once AGENTS.md carried a fail-stop rule
 # it stopped instead, and two PRs got an unread APPROVE. workspace-write is
 # confined to -C $REVIEW_ROOT, the detached throwaway tree pinned to the PR sha
-# (sp-8f95bba0), never a checkout anyone uses; network_access turns GitHub on.
+# (sp-8f95bba0); network_access turns GitHub on. CODEX_SANDBOX (above run_engine)
+# grants both only when that isolated tree exists.
 #
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.

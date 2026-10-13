@@ -67,17 +67,71 @@ FINDINGS:
 END FINDINGS
 R
 
+# another phrasing of "I read nothing" (review round 1, major 2)
+printf 'codex\n**VERDICT: REVIEW NOT ISSUED**\nCould not fetch the diff.\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/review-not-issued.md"
+printf 'codex\nVERDICT: unable to review (no diff)\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/unable.md"
+# a REAL review that quotes a blocked verdict must still land (review round 1, major 1)
+cat > "$WORK/quotes-in-row.md" <<'R'
+codex
+Read every changed file. One finding.
+
+VERDICT: REQUEST CHANGES
+
+FINDINGS:
+major|the parser misses a reviewer line "VERDICT: NOT ISSUED" in fixtures|lib.sh:10
+END FINDINGS
+R
+cat > "$WORK/quotes-in-prose.md" <<'R'
+codex
+Read every changed file. The fixture contains:
+
+    VERDICT: REVIEW BLOCKED
+
+which is test data, not my verdict.
+
+VERDICT: APPROVE
+
+FINDINGS:
+END FINDINGS
+R
+# a blocked verdict from an EARLIER round's block, then a real final answer
+cat > "$WORK/earlier-round.md" <<'R'
+Round 1 said:
+VERDICT: NOT ISSUED
+FINDINGS:
+END FINDINGS
+codex
+Read the diff and both files this round; nothing remains.
+
+VERDICT: APPROVE
+
+FINDINGS:
+END FINDINGS
+R
+
 if review_is_usable "$WORK/not-issued.md"; then bad "NOT ISSUED + empty block read as usable"; else ok "NOT ISSUED is unusable"; fi
 if review_is_usable "$WORK/blocked.md"; then bad "REVIEW BLOCKED + empty block read as usable"; else ok "REVIEW BLOCKED is unusable"; fi
+if review_is_usable "$WORK/review-not-issued.md"; then bad "REVIEW NOT ISSUED read as usable"; else ok "REVIEW NOT ISSUED is unusable"; fi
+if review_is_usable "$WORK/unable.md"; then bad "'unable to review' read as usable"; else ok "'unable to review' is unusable"; fi
 if review_is_usable "$WORK/clean.md"; then ok "a real empty-findings APPROVE stays usable"; else bad "real clean review rejected"; fi
+if review_is_usable "$WORK/quotes-in-row.md"; then ok "a findings row quoting a blocked verdict stays usable"; else bad "quote inside a findings row discarded the review"; fi
+if review_is_usable "$WORK/quotes-in-prose.md"; then ok "an indented quote in prose stays usable"; else bad "indented quote discarded the review"; fi
+if review_is_usable "$WORK/earlier-round.md"; then ok "an earlier round's blocked verdict does not void this round"; else bad "earlier round voided a real review"; fi
 
-# the reviewer can read GitHub: workspace-write confined to the detached review
-# tree, network on. Proven live 2026-10-13 (codex 0.153.4 ran gh pr view in this mode).
-line="$(grep -E '^[[:space:]]*"codex exec ' "$AGENT")"
-case "$line" in
-  *"-s workspace-write"*"sandbox_workspace_write.network_access=true"*) ok "codex runs with network on" ;;
-  *) bad "codex exec has no network: $line" ;;
-esac
+# write + network only in the isolated tree (review round 1, major 3). The block
+# is EXECUTED both ways, not grepped. Network was proven live 2026-10-13: codex
+# 0.153.4 ran gh pr view in workspace-write with network_access=true.
+block="$(sed -n '/^# codex-sandbox-begin/,/^# codex-sandbox-end/p' "$AGENT")"
+[ -n "$block" ] || bad "codex-sandbox block missing from pr-review-agent.sh"
+iso="$(HEAD_SHA_ISOLATED=1; eval "$block"; echo "$CODEX_SANDBOX")"
+live="$(HEAD_SHA_ISOLATED=0; eval "$block"; echo "$CODEX_SANDBOX")"
+unset_="$(unset HEAD_SHA_ISOLATED; eval "$block"; echo "$CODEX_SANDBOX")"
+[ "$iso" = "-s workspace-write -c sandbox_workspace_write.network_access=true" ] \
+  && ok "isolated tree: write confined there, network on" || bad "isolated tree got: $iso"
+[ "$live" = "-s read-only" ] && ok "found or live tree: read-only" || bad "found tree got: $live"
+[ "$unset_" = "-s read-only" ] && ok "unknown isolation: read-only" || bad "unset isolation got: $unset_"
+grep -qE '"codex exec [^"]*\$CODEX_SANDBOX' "$AGENT" && ok "codex exec uses CODEX_SANDBOX" \
+  || bad "codex exec does not use CODEX_SANDBOX"
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
