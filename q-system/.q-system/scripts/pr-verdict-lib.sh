@@ -275,9 +275,17 @@ review_is_usable() {
 }
 
 # review_could_not_read <review-file>
-# True when the reviewer's OWN final answer says it inspected nothing: a stated
-# verdict of REVIEW BLOCKED, NOT ISSUED, or any "unable / cannot / not reviewed"
-# verdict. Exit 0 = it could not read (the review is not a review).
+# True when the reviewer's OWN final answer states a verdict that is NOT one of
+# the four real ones (APPROVE WITH NITS, REQUEST CHANGES, APPROVE, BLOCK): REVIEW
+# BLOCKED, NOT ISSUED, INCONCLUSIVE, NO REVIEW, or anything else. Exit 0 = the
+# review is not a review. No stated verdict line at all is NOT this function's
+# call; the findings/prose paths decide that as before.
+#
+# AN ALLOWLIST, NOT A PHRASE LIST (PR review round 2). Enumerating ways to say
+# "I read nothing" never closes (INCONCLUSIVE, NO REVIEW...), and substring words
+# like CANNOT also hit real verdicts ("REQUEST CHANGES: cannot merge as is").
+# Four values are real, so everything else stated is refused. BLOCK must be a
+# whole word: "BLOCKED" is a refusal, not the severity verdict.
 #
 # THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
 # `gh pr diff` failed, and the reviewer stopped honestly with one of these
@@ -298,11 +306,14 @@ _final_answer_before_last_block() {
        END { printf "%s", last }' "${1:-}" 2>/dev/null
 }
 review_could_not_read() {
-  local f="${1:-}" answer
+  local f="${1:-}" answer value
   [ -s "$f" ] || return 1
   answer="$(_final_answer_before_last_block "$f")"
   [ -n "$answer" ] || return 1
-  grep -qiE '^(\*\*)?VERDICT:.*(REVIEW[[:space:]]+BLOCKED|NOT[[:space:]]+ISSUED|UNABLE|CANNOT|NOT[[:space:]]+(REVIEWED|INSPECTED|PERFORMED|POSSIBLE))' <<<"$answer"
+  value="$(awk 'toupper($0) ~ /^(\*\*)?VERDICT:/ { v = $0 } END { print v }' <<<"$answer")"
+  [ -n "$value" ] || return 1
+  value="$(sed -E 's/^[*]*[Vv][Ee][Rr][Dd][Ii][Cc][Tt]:[[:space:]*_]*//' <<<"$value" | tr '[:lower:]' '[:upper:]')"
+  ! grep -qE '^(APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK)([^A-Z]|$)' <<<"$value"
 }
 
 # has_complete_findings_block <review-file>

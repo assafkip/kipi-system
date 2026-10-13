@@ -109,6 +109,20 @@ FINDINGS:
 END FINDINGS
 R
 
+# round 2: other refusals, and real verdicts that carry refusal-ish words
+printf 'codex\nVERDICT: INCONCLUSIVE\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/inconclusive.md"
+printf 'codex\n**VERDICT: NO REVIEW**\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/no-review.md"
+printf 'codex\nVERDICT: BLOCKED\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/bare-blocked.md"
+printf 'codex\nRead both files.\n\nVERDICT: REQUEST CHANGES, cannot merge until the lock is fixed\n\nFINDINGS:\nmajor|lock is not released|a.sh:3\nEND FINDINGS\n' > "$WORK/rc-cannot.md"
+printf 'codex\nRead both files.\n\n**VERDICT: APPROVE WITH NITS** (unable to test on Linux)\n\nFINDINGS:\nnit|typo|a.sh:1\nEND FINDINGS\n' > "$WORK/nits-unable.md"
+printf 'codex\nRead every file.\n\nVERDICT: BLOCK\n\nFINDINGS:\nblocker|leaks a token|a.sh:9\nEND FINDINGS\n' > "$WORK/block.md"
+for x in inconclusive no-review bare-blocked; do
+  if review_is_usable "$WORK/$x.md"; then bad "$x read as usable"; else ok "$x is unusable"; fi
+done
+for x in rc-cannot nits-unable block; do
+  if review_is_usable "$WORK/$x.md"; then ok "real verdict $x stays usable"; else bad "real verdict $x discarded"; fi
+done
+
 if review_is_usable "$WORK/not-issued.md"; then bad "NOT ISSUED + empty block read as usable"; else ok "NOT ISSUED is unusable"; fi
 if review_is_usable "$WORK/blocked.md"; then bad "REVIEW BLOCKED + empty block read as usable"; else ok "REVIEW BLOCKED is unusable"; fi
 if review_is_usable "$WORK/review-not-issued.md"; then bad "REVIEW NOT ISSUED read as usable"; else ok "REVIEW NOT ISSUED is unusable"; fi

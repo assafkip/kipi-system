@@ -1034,7 +1034,11 @@ done
 if [ "${HEAD_SHA_ISOLATED:-0}" = "1" ]; then
   CODEX_SANDBOX="-s workspace-write -c sandbox_workspace_write.network_access=true"
 else
+  # Offline here means gh fails, so the reviewer can only answer "not issued";
+  # review_is_usable refuses that answer and the status stays UNSTATED (never a
+  # fabricated APPROVE). Said out loud so the degraded run is visible.
   CODEX_SANDBOX="-s read-only"
+  echo "  WARN: no isolated review tree, so codex runs read-only and OFFLINE; expect an unusable review and an UNSTATED status, not an approval." >&2
 fi
 # codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
