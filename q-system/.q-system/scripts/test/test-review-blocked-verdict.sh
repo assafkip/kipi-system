@@ -84,7 +84,7 @@ grep -qE '^if ! gh pr view "\$PR" \$KIPI_GH_REPO_ARGS > "\$PR_CONTEXT_DIR/pr.txt
 grep -q 'PR_CONTEXT_DIR/pr.diff' "$AGENT" && ok "the prompt points at the fetched diff" || bad "the prompt does not point at the fetched diff"
 
 grep -q "disallowedTools 'Bash(git clone:\*)' 'Bash(gh:\*)' 'Bash(curl:\*)'" "$AGENT" \
-  && ok "the claude engine is denied gh and curl" || bad "the claude engine can still run gh or curl"
+  && ok "the claude engine blocks direct gh/curl Bash calls (not containment; see the follow-up)" || bad "the direct gh/curl block on the claude engine is gone"
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

@@ -1057,9 +1057,11 @@ done
 # kipi/reviewer-approved=success or running gh pr merge itself (independent
 # review of this change, 2026-10-13). The PR is fetched FRESH at review start
 # into PR_CONTEXT_DIR, which the prompt points at. codex runs read-only, which
-# also means offline. The claude engine keeps its network but run_engine denies
-# it gh and curl. Still open (follow-up): claude runs inside the PR's worktree,
-# so it loads that PR's own .claude/settings.json.
+# also means offline. The claude engine keeps its network; run_engine blocks the
+# direct `gh` and `curl` Bash calls, which is NOT containment: python3 (allowed
+# in user settings) can still shell out to gh, WebFetch is open, and claude runs
+# inside the PR's worktree so it loads that PR's own .claude/settings.json.
+# Follow-up ASK-2648: no gh token in the claude engine's environment, or no Bash.
 CODEX_SANDBOX="-s read-only"
 # codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
