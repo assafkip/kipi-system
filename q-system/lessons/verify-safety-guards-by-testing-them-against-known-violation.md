@@ -1,0 +1,8 @@
+---
+id: verify-safety-guards-by-testing-them-against-known-violation
+kind: methodology
+title: Verify safety guards by testing them against known violations
+date: 2026-10-12
+---
+
+A guard or linter that reports success is only trustworthy if it has been shown to fail when it should. In an adversarial review, do not accept a passing check as evidence of safety. Instead: (1) Re-read the invariant the guard claims to enforce, then independently enumerate what actually touches the protected resource, using runtime evidence such as logs, API audit trails, or observed writes rather than the code or the guard's own inventory. (2) Compare that independent list with what the guard knows about. Any writer, consumer, or actor that is absent from the guard's registry is invisible to it, so a green result only means 'no violations among declared actors'. (3) Plant a deliberate violation, such as an undeclared writer targeting the protected resource, and confirm the guard fails. If it stays green, the guard has a coverage gap. (4) Fix the gap by making the guard discover actors from the real source of truth, or by failing closed on anything undeclared, rather than trusting manual registration. (5) Separately classify risks by where they live: if the write path is fully deterministic with no model involved, rule out runtime model corruption explicitly and redirect attention to the real exposure points, which are usually manual or one-off bulk operations that bypass automated protections and rely only on backups or rollback artifacts. Treat each of those as unguarded until proven otherwise, and ensure they have verified rollback. Report every finding with the command or observation that produced it, so each claim is reproducible.
