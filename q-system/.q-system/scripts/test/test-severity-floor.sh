@@ -923,6 +923,7 @@ cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr diff 901"*) printf 'diff --git a/x b/x\n' ;;   # the PR context fetch (2026-10-13)
   *) exit 1 ;;
 esac
 exit 0

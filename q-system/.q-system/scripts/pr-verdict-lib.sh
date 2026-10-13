@@ -275,61 +275,36 @@ review_is_usable() {
 }
 
 # review_could_not_read <review-file>
-# True when the reviewer's OWN final answer states a verdict that is NOT one of
-# the four real ones (APPROVE WITH NITS, REQUEST CHANGES, APPROVE, BLOCK): REVIEW
-# BLOCKED, NOT ISSUED, INCONCLUSIVE, NO REVIEW, or anything else. Exit 0 = the
-# review is not a review. No stated verdict line at all is NOT this function's
-# call; the findings/prose paths decide that as before.
-#
-# AN ALLOWLIST, NOT A PHRASE LIST (PR review round 2). Enumerating ways to say
-# "I read nothing" never closes (INCONCLUSIVE, NO REVIEW...), and substring words
-# like CANNOT also hit real verdicts ("REQUEST CHANGES: cannot merge as is").
-# ONE READER (round 3). The value is read by extract_verdict, the same function
-# that reads the stated verdict for the gate, so the two can never disagree about
-# a shape: headings, bullets, bold, and APPROVED-as-APPROVE all come from there.
-# Only the LAST verdict statement counts, so a quoted rule earlier in the answer
-# ("VERDICT: APPROVE only if...") cannot launder a final REVIEW BLOCKED.
+# True when the findings block is EMPTY and the reviewer never stated a verdict
+# extract_verdict recognizes. Exit 0 = nobody can say this review happened.
 #
 # THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
-# `gh pr diff` failed, and the reviewer stopped honestly with one of these
-# verdicts over an EMPTY findings block. extract_verdict reads them as 'none', an
-# empty block derives APPROVE, and the harsher-of-two took APPROVE: a green
-# required gate on a PR nobody read, and one merged.
+# `gh pr diff` failed, and the reviewer stopped honestly ("VERDICT: REVIEW
+# BLOCKED" / "NOT ISSUED") over an EMPTY findings block. An empty block derives
+# APPROVE by contract (a round 2 that refutes everything must land), the stated
+# verdict parsed as nothing, and the PR got a green required check unread.
 #
-# ANCHORED TO THE FINAL ANSWER (PR review round 1). Only the prose between the
-# previous END FINDINGS (or the top) and the LAST `FINDINGS:` is read, and only a
-# line that BEGINS with the verdict label. Codex prints its final answer
-# immediately before the closing block, so that is where its own verdict lives;
-# a real review quoting a blocked verdict inside a findings row, in indented
-# text, or in an earlier round's block still lands.
-_final_answer_before_last_block() {
-  awk '/^FINDINGS:/ { last = pre; pre = ""; inblock = 1; next }
-       /^END FINDINGS/ { inblock = 0; pre = ""; next }
-       !inblock { pre = pre $0 "\n" }
-       END { printf "%s", last }' "${1:-}" 2>/dev/null
-}
-# The reviewer's last verdict statement, in any shape it uses: `VERDICT: X`,
-# `**VERDICT: X**`, `- **VERDICT:** X`, or a `## VERDICT` heading with the value
-# on the next line. A label is VERDICT followed by a colon or the end of the
-# line, so prose like "verdict tokens:" is not one. Prints from that last label
-# to the end of the final answer,
-# so extract_verdict (THE verdict reader) decides what it says.
-_last_verdict_statement() {
-  awk '{ lines[NR] = $0; t = toupper($0); sub(/^[[:space:]#>*_-]+/, "", t)
-         if (t ~ /^VERDICT[*_]*[[:space:]]*(:|$)/) last = NR }
-       END { if (last) for (i = last; i <= NR; i++) print lines[i] }' <<<"${1:-}"
-}
+# WHY THIS SHAPE (after an independent review measured the earlier shapes over
+# all 711 saved reviews). Hunting for refusal PHRASES never closes ("Final
+# verdict: NOT ISSUED", a table row, no verdict line at all), and a label finder
+# that disagreed with extract_verdict on case refused 41 real reviews. So the
+# rule is stated as the contract itself: an empty block may only derive APPROVE
+# when the reviewer SAID a verdict. Rows present -> a review happened, not this
+# function's call. Empty and a stated verdict (any case) -> usable, and
+# resolve_verdict keeps the harsher of stated and derived. Empty and nothing
+# stated -> unusable, the status stays UNSTATED.
 review_could_not_read() {
-  local f="${1:-}" answer stmt tmp verdict
+  local f="${1:-}" block upper verdict
   [ -s "$f" ] || return 1
-  answer="$(_final_answer_before_last_block "$f")"
-  [ -n "$answer" ] || return 1
-  stmt="$(_last_verdict_statement "$answer")"
-  [ -n "$stmt" ] || return 1
-  tmp="$(mktemp)"
-  printf '%s\n' "$stmt" > "$tmp"
-  verdict="$(extract_verdict "$tmp")"
-  rm -f "$tmp"
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 1
+  grep -qE '^(blocker|major|minor|nit)\|' <<<"$block" && return 1
+  # extract_verdict matches upper-case labels and tokens; real reviews write
+  # "Verdict:" and "**Verdict: APPROVE WITH NITS.**", so read an upper-cased copy
+  upper="$(mktemp)"
+  tr '[:lower:]' '[:upper:]' < "$f" > "$upper"
+  verdict="$(extract_verdict "$upper")"
+  rm -f "$upper"
   [ -z "$verdict" ]
 }
 

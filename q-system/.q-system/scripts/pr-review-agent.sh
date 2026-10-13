@@ -805,13 +805,30 @@ echo "  round: $ROUND (engine: $ENGINE)"
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
 # with findings still arriving). So from round 2 on, the reviewer is told the
 # round and is required to re-prove any finding it wants to raise again.
+# FETCH THE PR FRESH, OUTSIDE THE SANDBOX (2026-10-13). The reviewer is offline
+# on purpose (CODEX_SANDBOX), so the script reads GitHub at review start and the
+# prompt points at these files. A failed fetch is the machine's failure, not a
+# review: exit 9, no status posted (absent is not approved).
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXXX")" || {
+  echo "REFUSING: cannot create a PR context dir under $SCRATCH_BASE. No review ran; no verdict posted." >&2
+  exit 4; }
+if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
+   || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
+  echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
+  exit 9
+fi
+if [ "$ROUND" -gt 1 ]; then
+  gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
+fi
+
 ROUND_RULE=""
 if [ "$ROUND" -gt 1 ]; then
   ROUND_RULE="
 
 ## THIS IS REVIEW ROUND $ROUND OF THIS PR
 
-Earlier rounds are in the PR comments (\`gh ${GH_R_PROMPT}pr view $PR --comments\`). Read them
+Earlier rounds are in the PR comments, fetched for you: $PR_CONTEXT_DIR/comments.txt. Read them
 AFTER you have formed your own read of the code, never before -- your value is
 that you did not inherit anyone's frame.
 
@@ -856,8 +873,12 @@ fail safe for the author -- it just burns a round.
 
 ## Read the change
 
-  gh ${GH_R_PROMPT}pr view $PR
-  gh ${GH_R_PROMPT}pr diff $PR
+The PR was fetched from GitHub when this review started. Under codex the
+sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
+gh cannot reach GitHub there. The fetched copies:
+
+  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
+  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
 
 ## What your fresh eyes are FOR
 
@@ -996,6 +1017,9 @@ review_scratch_cleanup() {
   case "$REVIEW_SCRATCH" in
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
+  case "${PR_CONTEXT_DIR:-}" in
+    "$SCRATCH_BASE"/ctx.*) command rm -rf -- "$PR_CONTEXT_DIR" 2>/dev/null || true ;;
+  esac
   REVIEW_SCRATCH=""
   # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
   # PR #495 took four rounds to rule out each wrong owner of a worktree found by
@@ -1027,22 +1051,13 @@ for _old in "$SCRATCH_BASE"/run.*; do
 done
 
 # codex-sandbox-begin
-# WRITE + NETWORK ONLY IN THE THROWAWAY TREE (PR review round 1). The degraded
-# path can set REVIEW_ROOT to a worktree found by search, which may be a checkout
-# someone is using; there the reviewer stays read-only (and so offline), exactly
-# as before this change.
-if [ "${HEAD_SHA_ISOLATED:-0}" = "1" ]; then
-  CODEX_SANDBOX="-s workspace-write -c sandbox_workspace_write.network_access=true"
-else
-  # Offline here means gh fails, so codex can only answer "not issued";
-  # review_is_usable refuses that answer and the status stays UNSTATED (never a
-  # fabricated APPROVE). Routing this case to the Opus fallback instead was tried
-  # in review round 3 and changes the codex-down contract other tests pin
-  # (test-severity-floor.sh: a healthy run must not read DEGRADED); left as a
-  # follow-up rather than widened here.
-  CODEX_SANDBOX="-s read-only"
-  echo "  WARN: no isolated review tree, so codex runs read-only and OFFLINE; expect an unusable review and an UNSTATED status, not an approval." >&2
-fi
+# THE REVIEWER STAYS OFFLINE; THE SCRIPT READS GITHUB FOR IT. A reviewer with
+# network AND a logged-in gh, reading a PR author's diff, can be talked into
+# posting kipi/reviewer-approved=success or running gh pr merge itself
+# (independent review of this change, 2026-10-13). So codex is read-only (which
+# also means no network) and the PR is fetched FRESH from GitHub at review start
+# into PR_CONTEXT_DIR, which the prompt points at.
+CODEX_SANDBOX="-s read-only"
 # codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
   if [ -z "$REVIEW_SCRATCH" ]; then
@@ -1069,15 +1084,12 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
   esac
 }
 
-# THE REVIEWER READS GITHUB (founder-directed 2026-10-13: "it should still read.
-# That is the only way to stay updated"). With no -s flag codex used its default
-# read-only sandbox, which has NO NETWORK: every `gh pr view/diff` since the first
-# codex review on 2026-07-29 failed with "error connecting to api.github.com".
-# It used to fall back to the local tree; once AGENTS.md carried a fail-stop rule
-# it stopped instead, and two PRs got an unread APPROVE. workspace-write is
-# confined to -C $REVIEW_ROOT, the detached throwaway tree pinned to the PR sha
-# (sp-8f95bba0); network_access turns GitHub on. CODEX_SANDBOX (above run_engine)
-# grants both only when that isolated tree exists.
+# THE REVIEWER READS GITHUB THROUGH THE SCRIPT (founder-directed 2026-10-13:
+# "it should still read. That is the only way to stay updated"). With no -s flag
+# codex ran in its default read-only sandbox, which has NO NETWORK: every
+# `gh pr view/diff` it tried since the first codex review on 2026-07-29 failed.
+# The fix is not to give the reviewer the network (see CODEX_SANDBOX above); it
+# is fetch_pr_context, which reads the PR from GitHub when the review starts.
 #
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
