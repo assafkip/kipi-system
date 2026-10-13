@@ -116,7 +116,25 @@ printf 'codex\nVERDICT: BLOCKED\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/bare-bloc
 printf 'codex\nRead both files.\n\nVERDICT: REQUEST CHANGES, cannot merge until the lock is fixed\n\nFINDINGS:\nmajor|lock is not released|a.sh:3\nEND FINDINGS\n' > "$WORK/rc-cannot.md"
 printf 'codex\nRead both files.\n\n**VERDICT: APPROVE WITH NITS** (unable to test on Linux)\n\nFINDINGS:\nnit|typo|a.sh:1\nEND FINDINGS\n' > "$WORK/nits-unable.md"
 printf 'codex\nRead every file.\n\nVERDICT: BLOCK\n\nFINDINGS:\nblocker|leaks a token|a.sh:9\nEND FINDINGS\n' > "$WORK/block.md"
-for x in inconclusive no-review bare-blocked; do
+# a bare "BLOCKED" is read by extract_verdict as BLOCK: fail-closed, never APPROVE
+v="$(resolve_verdict "$(extract_verdict "$WORK/bare-blocked.md")" "$(verdict_from_findings "$WORK/bare-blocked.md")")"
+[ "$v" = "BLOCK" ] && ok "bare BLOCKED resolves to BLOCK, never APPROVE" || bad "bare BLOCKED resolved to '$v'"
+
+# round 3: every shape the one reader understands, and no laundering by an earlier quote
+printf 'codex\n## VERDICT\n\nREVIEW BLOCKED\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/heading.md"
+printf 'codex\n- **VERDICT:** NOT ISSUED, the diff never loaded\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/bullet.md"
+printf 'codex\nThe rule says VERDICT: APPROVE only if nothing is open.\nVERDICT: APPROVE only when read.\n\nVERDICT: REVIEW BLOCKED\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/launder.md"
+printf 'codex\nRead every file.\n\nVERDICT: APPROVED\n\nFINDINGS:\nEND FINDINGS\n' > "$WORK/approved.md"
+printf 'codex\nRead every file.\n\n## VERDICT\n\nREQUEST CHANGES\n\nFINDINGS:\nmajor|x|a.sh:1\nEND FINDINGS\n' > "$WORK/heading-real.md"
+printf 'codex\nThe verdict tokens: are parsed by extract_verdict, checked.\n\nFINDINGS:\nnit|x|a.sh:1\nEND FINDINGS\n\nVERDICT: REQUEST CHANGES\n' > "$WORK/prose-word.md"
+for x in heading bullet launder; do
+  if review_is_usable "$WORK/$x.md"; then bad "$x shape read as usable"; else ok "$x shape is unusable"; fi
+done
+for x in approved heading-real prose-word; do
+  if review_is_usable "$WORK/$x.md"; then ok "real $x stays usable"; else bad "real $x discarded"; fi
+done
+
+for x in inconclusive no-review; do
   if review_is_usable "$WORK/$x.md"; then bad "$x read as usable"; else ok "$x is unusable"; fi
 done
 for x in rc-cannot nits-unable block; do

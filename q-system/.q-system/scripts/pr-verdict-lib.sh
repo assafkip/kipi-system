@@ -284,8 +284,11 @@ review_is_usable() {
 # AN ALLOWLIST, NOT A PHRASE LIST (PR review round 2). Enumerating ways to say
 # "I read nothing" never closes (INCONCLUSIVE, NO REVIEW...), and substring words
 # like CANNOT also hit real verdicts ("REQUEST CHANGES: cannot merge as is").
-# Four values are real, so everything else stated is refused. BLOCK must be a
-# whole word: "BLOCKED" is a refusal, not the severity verdict.
+# ONE READER (round 3). The value is read by extract_verdict, the same function
+# that reads the stated verdict for the gate, so the two can never disagree about
+# a shape: headings, bullets, bold, and APPROVED-as-APPROVE all come from there.
+# Only the LAST verdict statement counts, so a quoted rule earlier in the answer
+# ("VERDICT: APPROVE only if...") cannot launder a final REVIEW BLOCKED.
 #
 # THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
 # `gh pr diff` failed, and the reviewer stopped honestly with one of these
@@ -305,15 +308,29 @@ _final_answer_before_last_block() {
        !inblock { pre = pre $0 "\n" }
        END { printf "%s", last }' "${1:-}" 2>/dev/null
 }
+# The reviewer's last verdict statement, in any shape it uses: `VERDICT: X`,
+# `**VERDICT: X**`, `- **VERDICT:** X`, or a `## VERDICT` heading with the value
+# on the next line. A label is VERDICT followed by a colon or the end of the
+# line, so prose like "verdict tokens:" is not one. Prints from that last label
+# to the end of the final answer,
+# so extract_verdict (THE verdict reader) decides what it says.
+_last_verdict_statement() {
+  awk '{ lines[NR] = $0; t = toupper($0); sub(/^[[:space:]#>*_-]+/, "", t)
+         if (t ~ /^VERDICT[*_]*[[:space:]]*(:|$)/) last = NR }
+       END { if (last) for (i = last; i <= NR; i++) print lines[i] }' <<<"${1:-}"
+}
 review_could_not_read() {
-  local f="${1:-}" answer value
+  local f="${1:-}" answer stmt tmp verdict
   [ -s "$f" ] || return 1
   answer="$(_final_answer_before_last_block "$f")"
   [ -n "$answer" ] || return 1
-  value="$(awk 'toupper($0) ~ /^(\*\*)?VERDICT:/ { v = $0 } END { print v }' <<<"$answer")"
-  [ -n "$value" ] || return 1
-  value="$(sed -E 's/^[*]*[Vv][Ee][Rr][Dd][Ii][Cc][Tt]:[[:space:]*_]*//' <<<"$value" | tr '[:lower:]' '[:upper:]')"
-  ! grep -qE '^(APPROVE WITH NITS|REQUEST CHANGES|APPROVE|BLOCK)([^A-Z]|$)' <<<"$value"
+  stmt="$(_last_verdict_statement "$answer")"
+  [ -n "$stmt" ] || return 1
+  tmp="$(mktemp)"
+  printf '%s\n' "$stmt" > "$tmp"
+  verdict="$(extract_verdict "$tmp")"
+  rm -f "$tmp"
+  [ -z "$verdict" ]
 }
 
 # has_complete_findings_block <review-file>

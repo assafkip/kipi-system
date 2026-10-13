@@ -1034,9 +1034,12 @@ done
 if [ "${HEAD_SHA_ISOLATED:-0}" = "1" ]; then
   CODEX_SANDBOX="-s workspace-write -c sandbox_workspace_write.network_access=true"
 else
-  # Offline here means gh fails, so the reviewer can only answer "not issued";
+  # Offline here means gh fails, so codex can only answer "not issued";
   # review_is_usable refuses that answer and the status stays UNSTATED (never a
-  # fabricated APPROVE). Said out loud so the degraded run is visible.
+  # fabricated APPROVE). Routing this case to the Opus fallback instead was tried
+  # in review round 3 and changes the codex-down contract other tests pin
+  # (test-severity-floor.sh: a healthy run must not read DEGRADED); left as a
+  # follow-up rather than widened here.
   CODEX_SANDBOX="-s read-only"
   echo "  WARN: no isolated review tree, so codex runs read-only and OFFLINE; expect an unusable review and an UNSTATED status, not an approval." >&2
 fi
