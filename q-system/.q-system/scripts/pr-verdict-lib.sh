@@ -293,6 +293,16 @@ review_is_usable() {
 # function's call. Empty and a stated verdict (any case) -> usable, and
 # resolve_verdict keeps the harsher of stated and derived. Empty and nothing
 # stated -> unusable, the status stays UNSTATED.
+# The reviewer's OWN words. Codex transcripts interleave `exec` blocks that echo
+# command output (the PR author's diff, fixtures, comments) between `codex`
+# messages, and the final answer follows the LAST line that is exactly `codex`.
+# Only that is read: an echoed "verdict: approve" in the author's text must not
+# turn a refusal into a stated verdict (independent review, 2026-10-13). A
+# transcript with no such marker (claude -p) is all final answer.
+_reviewer_final_answer() {
+  awk '{ lines[NR] = $0 } /^codex[[:space:]]*$/ { last = NR }
+       END { for (i = last + 1; i <= NR; i++) print lines[i] }' "${1:-}" 2>/dev/null
+}
 review_could_not_read() {
   local f="${1:-}" block upper verdict
   [ -s "$f" ] || return 1
@@ -302,7 +312,7 @@ review_could_not_read() {
   # extract_verdict matches upper-case labels and tokens; real reviews write
   # "Verdict:" and "**Verdict: APPROVE WITH NITS.**", so read an upper-cased copy
   upper="$(mktemp)"
-  tr '[:lower:]' '[:upper:]' < "$f" > "$upper"
+  _reviewer_final_answer "$f" | tr '[:lower:]' '[:upper:]' > "$upper"
   verdict="$(extract_verdict "$upper")"
   rm -f "$upper"
   [ -z "$verdict" ]

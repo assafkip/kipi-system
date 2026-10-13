@@ -816,6 +816,7 @@ PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXX
 if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
    || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
   echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
+  command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
   exit 9
 fi
 if [ "$ROUND" -gt 1 ]; then
@@ -1045,18 +1046,20 @@ trap 'release_wt_lock; review_scratch_cleanup' EXIT
 
 # Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
 # SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
-for _old in "$SCRATCH_BASE"/run.*; do
+for _old in "$SCRATCH_BASE"/run.* "$SCRATCH_BASE"/ctx.*; do
   [ -d "$_old" ] || continue
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
 # codex-sandbox-begin
-# THE REVIEWER STAYS OFFLINE; THE SCRIPT READS GITHUB FOR IT. A reviewer with
-# network AND a logged-in gh, reading a PR author's diff, can be talked into
-# posting kipi/reviewer-approved=success or running gh pr merge itself
-# (independent review of this change, 2026-10-13). So codex is read-only (which
-# also means no network) and the PR is fetched FRESH from GitHub at review start
-# into PR_CONTEXT_DIR, which the prompt points at.
+# THE SCRIPT READS GITHUB FOR THE REVIEWER. A reviewer with network AND a
+# logged-in gh, reading a PR author's diff, can be talked into posting
+# kipi/reviewer-approved=success or running gh pr merge itself (independent
+# review of this change, 2026-10-13). The PR is fetched FRESH at review start
+# into PR_CONTEXT_DIR, which the prompt points at. codex runs read-only, which
+# also means offline. The claude engine keeps its network but run_engine denies
+# it gh and curl. Still open (follow-up): claude runs inside the PR's worktree,
+# so it loads that PR's own .claude/settings.json.
 CODEX_SANDBOX="-s read-only"
 # codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
@@ -1078,7 +1081,7 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
