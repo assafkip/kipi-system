@@ -2293,6 +2293,22 @@ def vision_problems(rd: Path, cfg: dict, cfg_path: Path | None) -> list[str]:
     return probs
 
 
+def reference_problems(rd: Path, cfg: dict, cfg_path: Path | None, need_dirs: int) -> list[str]:
+    """The reference stage (dc-25): peer and craft roster with one primary, a fresh
+    ANALYSIS.json of every exemplar, the founder's three-word feel, a primary reference and a
+    whole-page path per direction, the trust signals the round uses, and a side-by-side verdict
+    per direction. The rules live in design-reference-check.py; this wrapper loads it only when
+    the instance declares a "references" block, so an instance that has not adopted it, and the
+    test kit that copies the gate beside its stand-ins, never needs the file."""
+    if cfg_path is None or not (cfg or {}).get("references"):
+        return []
+    try:
+        mod = _load_sibling_module("design-reference-check.py", "design_reference_check")
+    except OSError as e:
+        return [f"{CONFIG_NAME} declares a references stage and its checker is missing: {e}"]
+    return mod.reference_problems(rd, cfg, cfg_path, need_dirs)
+
+
 READER_ROWS = "gate/reader-runs.jsonl"
 DISPOSITIONS = "gate/dispositions.md"
 READER_DISPOSITION_RE = re.compile(r"(?m)^- reader (\S+) run ([0-9a-f]{8}): FOUNDER \S")
@@ -2666,6 +2682,7 @@ def chain_problems(page: Path, honor_seal: bool = True) -> list[str]:
     if n_dir < need_dirs:
         probs.append(f"directions.md names {n_dir} direction heading(s); "
                      f"{'one is' if need_dirs == 1 else 'three are'} required")
+    probs += reference_problems(rd, cfg, cfg_path, need_dirs)
     ex_dir = (cfg_path.parent / cfg.get("exemplars_dir", "design/exemplars")) if cfg_path else None
     if ex_dir and ex_dir.is_dir():
         # every exemplar counts, nested or dot-named: hiding one must not lower the floor (dc-15 adv-3);

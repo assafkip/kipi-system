@@ -25,6 +25,8 @@ EXPECTED = {
     "check_technique_parity.py",
     "design-reader-gate.py",       # dc-06: the reader gate
     "design-engine-door.py",       # dc-18: the one door on the Skill tool
+    "design-exemplar-analysis.py", # dc-25: whole-page breakdown of every exemplar
+    "design-reference-check.py",   # dc-25: the reference stage the gate loads by filename
 }
 # A sibling reference is ANY string constant naming a design script, with or without ".py".
 # Scar, same day, caught by both reviewers of this file's first version: it matched

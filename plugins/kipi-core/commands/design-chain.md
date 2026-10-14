@@ -43,6 +43,28 @@ Say what the page is trying to BE, in the founder's own words, before any constr
 quoted lines, `brief.md` quotes one of them verbatim, and a declared component has a spec marked
 reviewed. Scar: three sealed directions, all wrong, every one assembled from constraints.
 
+## Step 0b: the reference set, read whole
+
+Before the brief, the round knows what it is built FROM. Held by `reference_problems()` (rules in
+`design-reference-check.py`), only when the config has a `references` block and only for rounds dated
+on or after `references.since`:
+
+- **The set.** Every exemplar in the roster carries `"role": "peer"` (a practice like this one) or
+  `"craft"` (borrowed for its craft only). At least 3 peers and 1 craft site. Exactly one is
+  `"primary": true`, it is a peer, and it is the founder's pick.
+- **The analysis.** `design-exemplar-analysis.py <references-dir>` opens every exemplar in a real
+  browser, scrolls the whole page, and writes `ANALYSIS.json` plus `ANALYSIS.md`: per site its
+  technologies (builder or framework, CSS, animation, analytics, fonts, hosting), its design path (every
+  section in order, in a closed taxonomy), its techniques, its trust signals and its taxonomy (role,
+  hero archetype, density, colour mode, page length), then what each role shares as a group. The gate
+  refuses an analysis older than the roster, and a site that failed to analyse.
+- **The feel.** `VISION.md` carries `**Feel (founder, YYYY-MM-DD):** "word, word, word"`, three words in
+  the founder's own voice, and `brief.md` carries all three. Numbers cannot tell whether a page feels right.
+
+Scar, 2026-10-09: six measured rounds built from six software sites gave a one-person practice a
+software company's page; the founder was "not sold", and a designer's read named why: wrong kind of
+reference, no feel, a blend of the busiest and plainest site, first screen only, no trust signals.
+
 ## Step 1: read the owners, in full, this session
 
 Read every owner file the config names, whole. Held by `brief_read_problems()`: when the config asks
@@ -53,12 +75,18 @@ refuses a brief whose owners were not read in full, or a record copied from anot
 
 Quote the owner anchors verbatim. Held by `chain_problems()`, whose anchor check reads the owner
 files live and refuses a paraphrase.
+With a reference stage, the brief also names the round's trust signals on a `Trust signals:` line:
+two or more, each one a peer exemplar actually shows in `ANALYSIS.json` (`reference_problems()`).
 
 ## Step 3: directions.md
 
 Three directions, or one when the round BUILDS a pick (`implements` in `craft-manifest.json`, which
 must name a sealed round with three). Cite the exemplars: `chain_problems()` requires the configured
 floor, all of them up to three.
+With a reference stage, each direction goes deep on ONE site instead of blending the set, and is
+designed as a whole page: a `Primary reference:` line naming a peer from the roster, and a
+`Page path:` line of four or more sections written in the analysis taxonomy
+(`nav > hero > case-studies > about-person > writing > footer`). Held by `reference_problems()`.
 
 ## Step 3b: craft-manifest.json
 
@@ -85,6 +113,11 @@ hand: `seal` runs all three itself, writes `standard.json` and records the `stan
 The nine DNA questions per direction, answered. Mark every weakness `WEAK[tag]` and answer each with
 a disposition line; a founder finding is `FOUNDER-FINDING[tag]` and needs one too
 (`disposition_problems()`, `founder_finding_problems()`).
+With a reference stage, a designer's eye too: one line per direction,
+`SIDE-BY-SIDE: <direction> vs <primary host>: AS GOOD|NOT AS GOOD. <why>`, written with the page open
+next to its primary reference's full-page capture (`<host>-fullpage.png` beside the roster). A
+NOT AS GOOD blocks the seal: rules stop bad design, this is the step that asks for good
+(`reference_problems()`).
 
 ## Step 7: proof.md
 
