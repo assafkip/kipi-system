@@ -60,6 +60,7 @@ EXPECTED_MODULES = (
     "fingerprint",
     "form",
     "gate_and_judge",
+    "gate_proof",
     "gate_walk",
     "luar_env_backend",
     "luar_scorer",
