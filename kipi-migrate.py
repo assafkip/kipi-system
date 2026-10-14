@@ -30,7 +30,9 @@ from pathlib import Path
 # --- Constants ---
 
 SKELETON_DIR = os.path.dirname(os.path.abspath(__file__))
-SKELETON_REMOTE = "https://github.com/assafkip/kipi-system.git"
+# Overridable so a fork points at itself without a local patch (GitHub issue #2). Same variable
+# the shell scripts and q-system/hooks/auto-update.sh read; the default is the upstream skeleton.
+SKELETON_REMOTE = os.environ.get("KIPI_SKELETON_REMOTE", "https://github.com/assafkip/kipi-system.git")
 
 REQUIRED_CLAUDE_DIRS = [
     ".claude/agents",
