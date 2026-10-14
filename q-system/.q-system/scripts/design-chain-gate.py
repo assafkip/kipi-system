@@ -72,8 +72,17 @@ from pathlib import Path
 PAGE_EXTS = {".html", ".htm", ".astro", ".jsx", ".tsx", ".vue", ".svelte"}
 # Internal HTML the founder alone sees. A path SEGMENT, or a file whose name starts with one of the
 # known internal prefixes. It was a bare substring test against the whole path, so /testimonials/
-# matched "/test", /schedule-a-call/ matched "/schedule" and /reports/ matched "/report": three
-# ordinary marketing pages skipped the entire chain (PR #374 review, major).
+# matched "/test" and /schedule-a-call/ matched "/schedule": two ordinary marketing pages skipped
+# the entire chain (PR #374 review, major).
+#
+# A literal /reports/ SEGMENT is still internal, and that is deliberate rather than a leftover of
+# the substring bug. Measured across the fleet 2026-09-19 (PR #374 round 5, minor): every directory
+# actually named report or reports holds founder-only output -- ai-builder-reports and
+# pipeline-reports under the consulting instance's output/, q-system/output/architecture-report,
+# and a report-status-dashboard in a client instance. Freeing the word would put the chain in
+# front of real
+# internal pages, which is the false block design-auto-invoke.md records as the way a gate gets
+# switched off (the GTM cockpit, ASK-134). schedule and dashboard stay for the same measured reason.
 INTERNAL_DIRS = frozenset({
     "node_modules", ".git", "dist", "build", ".next", "coverage", "logs", "log", "test", "tests",
     "fixtures", "vendor", "site-packages", ".playwright-mcp", "exemplars", "schedule", "schedules",
@@ -133,10 +142,45 @@ IMPECCABLE_CHECK = "impeccable.txt"
 # `vercel deploy` was known, so netlify, `npx vercel --prod`, an s3 sync and an rsync to a host all
 # shipped an unsealed page (PR #374 review, major). `git push` is deliberately NOT here: it is the
 # most common command in this repo and pushing a branch is not publishing a page.
+# Two corrections from PR #374 review round 5 (both minor), and one rule that follows from them:
+#   - ANY `vercel` subcommand counted as a deploy, so read-only `vercel ls`, `vercel logs` and
+#     `vercel whoami` were refused mid-round. The only escape on offer is DESIGN_CHAIN_ALLOW=1,
+#     which disarms the whole gate, so a harmless command taught the operator to switch it off.
+#     The read-only subcommands are now named and exempt; anything else after `vercel`, including
+#     a subcommand nobody has thought of, still counts. Fail-closed on the unknown.
+#   - The verb list caught an rsync to a host but not its neighbours. scp, firebase, wrangler,
+#     surge and a `deploy` script run through a package manager publish just as hard.
+#   - One runner prefix for every tool, because `npx -y vercel --prod` and `bunx vercel --prod`
+#     walked past a prefix that only knew bare `npx` and only on some of the verbs. Environment
+#     assignments are consumed too: `VERCEL_TOKEN=x vercel --prod` is still a command at the start
+#     of a command (PR #378 review round 2).
+#
+# THE RULE FOR _VERCEL_READ_ONLY, because guessing it twice put a hole in the gate twice.
+# Round 1 of PR #378 caught `alias`: `vercel alias set` points a production domain at a
+# deployment. Round 2 caught `domains`: `vercel domains add <domain> <project>` does the same.
+# Both READ like read-only verbs. Both publish. Two rounds, one class, so the list gets a stated
+# predicate instead of another entry removed:
+#
+#   A verb belongs here only if NO subcommand of it can route traffic to a deployment.
+#
+# Audited against that rule, which excludes: alias, domains, dns, promote, redeploy, rollback,
+# target, rolling-release, git (connecting a repo makes future pushes deploy), and deploy itself.
+# What remains cannot put a page in front of anyone: listing, logs, local build, local dev, auth,
+# project/team metadata, env and secrets. When a new verb appears, apply the predicate; when in
+# doubt leave it off, because the cost of omitting one is a refused command with a named escape
+# and the cost of adding one wrongly is an unsealed page in front of the world.
+_RUNNER = r"(?:\w+=\S+\s+)*(?:(?:npx|bunx)\s+(?:-y\s+|--yes\s+)?|(?:pnpm|yarn)\s+dlx\s+)?"
+_VERCEL_READ_ONLY = (r"ls|list|logs|log|inspect|whoami|teams|projects|certs|secrets|build"
+                     r"|env|link|pull|dev|login|logout|help|--help|-h|--version")
 BASH_SHOW_RE = re.compile(
     r"(?:^|[|;&\n]\s*)(?:open\s+-a\b|open\s+[^|;&\n]*\.(?:html?|png|jpe?g|pdf)\b"
-    r"|(?:npx\s+)?vercel\b|netlify\s+deploy\b|aws\s+s3\s+sync\b"
-    r"|rsync\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
+    rf"|{_RUNNER}vercel\b(?!\s+(?:{_VERCEL_READ_ONLY})\b)"
+    rf"|{_RUNNER}netlify\s+deploy\b|aws\s+s3\s+sync\b|{_RUNNER}firebase\s+deploy\b|{_RUNNER}surge\b"
+    rf"|{_RUNNER}wrangler\s+(?:pages\s+)?(?:deploy|publish)\b"
+    # pnpm needs the explicit `run`: bare `pnpm deploy <dir>` is pnpm's own workspace-copy
+    # builtin and publishes nothing (PR #378 review round 2, nit)
+    r"|(?:npm|yarn|bun)\s+(?:run\s+)?deploy\b|pnpm\s+run\s+deploy\b"
+    r"|(?:rsync|scp)\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
 STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))

@@ -2,8 +2,9 @@
 """PR #374 review round 3: what counts as internal, and what counts as shipping.
 
 WHY. INTERNAL_MARKERS is documented as "a path segment match" and was a bare substring test, so
-/testimonials/ matched "/test", /schedule-a-call/ matched "/schedule" and /reports/ matched
-"/report": three ordinary marketing pages skipped the whole chain at every surface. BASH_SHOW_RE
+/testimonials/ matched "/test" and /schedule-a-call/ matched "/schedule": two ordinary marketing
+pages skipped the whole chain at every surface. A literal /reports/ segment stays internal on
+purpose, measured (round 5); test_the_internal_folders_are_still_internal pins that. BASH_SHOW_RE
 knew one deploy verb, `vercel deploy`, so `netlify deploy`, `npx vercel --prod` and `aws s3 sync`
 put an unsealed page in front of the world before Stop could refuse it.
 """
@@ -57,9 +58,61 @@ class WhatCountsAsShipping(unittest.TestCase):
                     "rsync -av site/ deploy@host:/var/www/"):
             self.assertTrue(self.shows(cmd), f"{cmd!r} shipped without the gate seeing it")
 
+    def test_the_neighbours_of_rsync_ship_too(self):
+        # the verb list caught an rsync to a host and missed everything beside it. A script whose name
+        # STARTS with deploy counts, deploy:prod included: a missed deploy ships an unsealed page,
+        # while a blocked deploy:check costs one named escape. Fail closed on publishing.
+        # (PR #374 review round 5, minor)
+        for cmd in ("scp -r site/ deploy@host:/var/www/", "firebase deploy --only hosting",
+                    "npx wrangler pages deploy site", "wrangler deploy", "surge site/ example.com",
+                    "npm run deploy", "pnpm run deploy", "yarn deploy", "npm run deploy:prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} shipped without the gate seeing it")
+
+    def test_a_read_only_vercel_subcommand_is_not_a_deploy(self):
+        # every vercel subcommand counted, so `vercel ls` was refused mid-round and the only escape
+        # offered was DESIGN_CHAIN_ALLOW=1, which disarms the whole gate (round 5, minor)
+        for cmd in ("vercel ls", "vercel logs my-app", "vercel whoami", "vercel inspect url",
+                    "npx vercel env pull", "vercel --version"):
+            self.assertFalse(self.shows(cmd), f"{cmd!r} was read as a deploy")
+
+    def test_an_unknown_vercel_subcommand_still_counts(self):
+        # fail closed: only the named read-only subcommands are exempt
+        for cmd in ("vercel promote dpl_abc", "vercel redeploy", "vercel --prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
+
+    def test_aliasing_a_deployment_onto_a_domain_is_publishing(self):
+        # alias READS like a read-only verb and is not one: `vercel alias set` points a production
+        # domain at a deployment. Exempting it let an unsealed page reach the world through a gate
+        # that refused it before (PR #378 review, major)
+        for cmd in ("vercel alias set dpl_abc example.com", "vercel alias ls",
+                    "vercel domains add example.com my-project", "vercel dns add example.com",
+                    "vercel promote dpl_abc", "vercel rollback", "vercel target add"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} slipped past the gate")
+
+    def test_a_local_build_is_not_a_deploy(self):
+        # renders locally, publishes nothing: the same false-block class this file exists to remove
+        self.assertFalse(self.shows("vercel build"))
+
+    def test_a_runner_prefix_does_not_hide_the_verb(self):
+        for cmd in ("npx -y vercel --prod", "bunx vercel --prod", "npx netlify deploy --prod",
+                    "pnpm dlx wrangler pages deploy site", "npx --yes surge site/ example.com",
+                    "npx firebase deploy --only hosting"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} walked past the runner prefix")
+
+    def test_an_env_assignment_does_not_hide_the_command(self):
+        # `VERCEL_TOKEN=x vercel --prod` is still a command at the start of a command
+        for cmd in ("VERCEL_TOKEN=x vercel --prod", "CI=1 NODE_ENV=production npx vercel --prod"):
+            self.assertTrue(self.shows(cmd), f"{cmd!r} hid behind an env assignment")
+
+    def test_pnpms_own_deploy_builtin_is_not_publishing(self):
+        # bare `pnpm deploy <dir>` copies a workspace locally; `pnpm run deploy` is the script
+        self.assertFalse(self.shows("pnpm deploy ./dist"))
+        self.assertTrue(self.shows("pnpm run deploy"))
+
     def test_ordinary_commands_are_not_deploys(self):
         for cmd in ("git push", "git push origin main", "npm run build", "python3 build.py",
-                    "rsync -av site/ ../backup/", "aws s3 ls s3://bucket"):
+                    "rsync -av site/ ../backup/", "aws s3 ls s3://bucket",
+                    "scp -r site/ ../backup/", "npm run predeploy"):
             self.assertFalse(self.shows(cmd), f"{cmd!r} was read as a deploy")
 
 
