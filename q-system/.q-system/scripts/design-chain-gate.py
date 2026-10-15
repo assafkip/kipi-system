@@ -139,7 +139,12 @@ BASH_SHOW_RE = re.compile(
     r"|rsync\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
-STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))
+DEFAULT_STATE_DIR = os.path.expanduser("~/.config/kipi/design-chain")
+STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", DEFAULT_STATE_DIR))
+# Stop may refuse this many times in a row before it stops spending the session (ASK-1876). The
+# harness sets stop_hook_active on a Stop that follows a refusal, and honoring it unconditionally
+# made the gate a one-shot nudge. A cap keeps it from looping forever on a page that cannot be sealed.
+STOP_BLOCK_CAP = 3
 CONFIG_NAME = "design-chain.json"
 
 
@@ -3058,6 +3063,21 @@ def open_pages(led: dict) -> list[tuple[str, list[str]]]:
     return out
 
 
+def state_relocated() -> bool:
+    """True when DESIGN_CHAIN_STATE points the ledger away from the default. Pointing it at an
+    empty directory makes every ledger-backed branch pass silently, so it is an override with the
+    same weight as DESIGN_CHAIN_ALLOW (ASK-1876). Tests relocate it for isolation, which is why
+    this names the override instead of refusing: refusing would break every test that does."""
+    return os.path.abspath(str(STATE_DIR)) != os.path.abspath(DEFAULT_STATE_DIR)
+
+
+def relocation_notice() -> None:
+    if state_relocated():
+        print(f"DESIGN CHAIN GATE (notice): DESIGN_CHAIN_STATE={STATE_DIR} relocates the session "
+              f"ledger. Pages enrolled in the default ledger are not seen. That is an override, "
+              f"same weight as DESIGN_CHAIN_ALLOW=1.", file=sys.stderr)
+
+
 def block(msg_lines: list[str]) -> int:
     print("DESIGN CHAIN GATE (blocked): a page was made this session and its design chain is not complete.", file=sys.stderr)
     for ln in msg_lines[:40]:
@@ -3068,7 +3088,10 @@ def block(msg_lines: list[str]) -> int:
         print(f"  ... and {len(msg_lines) - 40} more line(s) not shown. All of them: "
               f"`design-chain-gate.py status <round>`.", file=sys.stderr)
     print("  Steps: brief.md (verbatim owner anchors) -> directions.md (3) -> design-standard-check.py -> critique.md (9 per direction) -> proof.md -> checks/ -> gate/ -> `design-chain-gate.py seal <round>`.", file=sys.stderr)
-    print("  Override is DESIGN_CHAIN_ALLOW=1 in the founder's shell only.", file=sys.stderr)
+    print("  Override is DESIGN_CHAIN_ALLOW=1 in the founder's shell only. "
+          "DESIGN_CHAIN_STATE=<other dir> relocates the ledger and disarms this gate the same way; "
+          "it is the same override.", file=sys.stderr)
+    relocation_notice()
     return 2
 
 
@@ -3593,12 +3616,25 @@ def _hook(payload: dict) -> int:
     # SubagentStop is the same end of turn for a subagent, and dc-24 wired it in both settings files
     # while this branch read only "Stop", so the hook was inert (PR #374 review, major)
     if ev in ("Stop", "SubagentStop"):
-        if payload.get("stop_hook_active"):
-            return 0
         opens = open_pages(led)
-        if opens:
-            return block([f"{p}: {x}" for p, probs in opens for x in probs[:4]])
-        return 0
+        if not opens:
+            led["stop_blocks"] = 0
+            save_ledger(sid, led)
+            relocation_notice()
+            return 0
+        # stop_hook_active is the harness's loop guard, not a pass: honoring it on the first repeat
+        # made the Stop wiring a one-shot nudge (ASK-1876). Keep refusing up to STOP_BLOCK_CAP.
+        n = int(led.get("stop_blocks", 0))
+        if payload.get("stop_hook_active") and n >= STOP_BLOCK_CAP:
+            led["unsealed_at_stop"] = [p for p, _ in opens]
+            save_ledger(sid, led)
+            print(f"DESIGN CHAIN GATE (released): Stop refused {n} times; the session ends with "
+                  f"{len(opens)} unsealed page(s), recorded in the ledger: "
+                  + ", ".join(p for p, _ in opens[:5]), file=sys.stderr)
+            return 0
+        led["stop_blocks"] = n + 1
+        save_ledger(sid, led)
+        return block([f"{p}: {x}" for p, probs in opens for x in probs[:4]])
     return 0
 
 
