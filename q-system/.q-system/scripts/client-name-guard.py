@@ -110,14 +110,22 @@ def bypass_reason(message):
     return None
 
 
-def staged_added_lines():
-    """Added lines of the staged diff, still readable at commit-msg time.
+def merge_parents():
+    """The SHAs in MERGE_HEAD, or [] when this is not a merge commit.
 
-    The commit object does not exist yet, so --cached IS this commit's content.
-    Only ADDED lines: a diff that REMOVES a client name is the fix, not the
-    defect. Fails CLOSED -- we only reach here with an armed token list, and a
-    guard that cannot see what is being committed must not report all clear.
+    Empty on an ordinary commit and on a fast-forward (no commit object is
+    created, so no hook runs). Octopus merges list several; all of them count.
     """
+    r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        return []
+    return [s.strip() for s in r.stdout.splitlines() if s.strip()]
+
+
+def _added(*revs):
+    """Set of added-line bodies in `git diff --cached [rev] -U0`."""
     # DECODE WITH REPLACEMENT, NOT STRICTLY. `text=True` decodes as UTF-8 with
     # errors="strict", and one undecodable byte anywhere in the diff raises
     # UnicodeDecodeError -- which is not "no client name found", it is the guard
@@ -128,13 +136,42 @@ def staged_added_lines():
     # trade for THIS check: the tokens are ASCII, so a run of undecodable bytes
     # can only ever have hidden an ASCII name that was already unreadable as
     # text, while strict decoding hid the whole rest of the diff behind one byte.
-    r = subprocess.run(["git", "diff", "--cached", "-U0"],
+    r = subprocess.run(["git", "diff", "--cached", *revs, "-U0"],
                        capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "git diff --cached failed")
-    return "\n".join(l for l in r.stdout.splitlines()
-                      if l.startswith("+") and not l.startswith("+++"))
+    return {l[1:] for l in r.stdout.splitlines()
+            if l.startswith("+") and not l.startswith("+++")}
+
+
+def staged_added_lines():
+    """Added lines of the staged diff, still readable at commit-msg time.
+
+    The commit object does not exist yet, so --cached IS this commit's content.
+    Only ADDED lines: a diff that REMOVES a client name is the fix, not the
+    defect. Fails CLOSED -- we only reach here with an armed token list, and a
+    guard that cannot see what is being committed must not report all clear.
+
+    MERGE-AWARE, and this is not a softening (sp-7156177c, ASK-2058, measured
+    2026-09-23). `git diff --cached` diffs the index against HEAD ONLY, so on a
+    merge every line arriving from the other branch reads as ADDED even though
+    it is already committed -- on this repo, already PUBLIC. That made the guard
+    refuse ANY merge of origin/main into ANY branch (60 files on main carry
+    client tokens), which is not protection: the names are already out, the
+    commit cannot recall them, and the only route left is --no-verify, which
+    disarms every other hook in the repo. So on a merge we scan the lines that
+    are new relative to HEAD *and* to every merge parent -- exactly the content
+    this commit introduces, which is the only content it can still keep out.
+    A name added by the merge RESOLUTION is new to both parents and still blocks
+    (case 11 of the paired test).
+    """
+    new = _added()
+    for parent in merge_parents():
+        # Keep only what is ALSO new relative to this parent. A line already on
+        # a parent is not in that parent's added-set, so it drops out here.
+        new &= _added(parent)
+    return "\n".join(new)
 
 
 def load_tokens():
