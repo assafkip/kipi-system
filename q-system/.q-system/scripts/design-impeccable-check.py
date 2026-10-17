@@ -62,8 +62,14 @@ import threading
 import urllib.request
 from pathlib import Path
 
+# The detector ships in the kipi-design plugin (vendored 2026-10-16 when cole-gtm, its old
+# home, was retired: consulting RULE-2026-10-16-D). First the repo's own plugins/ copy that
+# `kipi update` syncs, then the plugin clone Claude Code loads, then the skeleton checkout.
+_DETECTOR_REL = "plugins/kipi-design/skills/impeccable/scripts/detector/detect-antipatterns.mjs"
 DETECTOR_CANDIDATES = (
-    "~/projects/cole-gtm/.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs",
+    str(Path(__file__).resolve().parents[3] / _DETECTOR_REL),
+    "~/.claude/plugins/marketplaces/kipi/" + _DETECTOR_REL,
+    "~/projects/kipi-system/" + _DETECTOR_REL,
 )
 # A page that must trip the detector. Kept here rather than in a fixture file so the
 # control cannot drift away from the thing it controls for.
