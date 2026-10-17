@@ -1,0 +1,8 @@
+impeccable (frontend design skill and anti-pattern detector), version 3.7.1
+Copyright 2026 Paul Bakaus
+Licensed under the Apache License, Version 2.0 (see LICENSE in this directory).
+
+Vendored into the kipi-design plugin on 2026-10-16, unmodified, from the copy that
+lived at cole-gtm/.agents/skills/impeccable (cole-gtm retired; consulting
+decisions.md RULE-2026-10-16-D). node_modules was not vendored; the detector's
+puppeteer dependency is declared in package.json.
