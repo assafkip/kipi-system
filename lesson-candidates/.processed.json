@@ -593,5 +593,129 @@
     "instance": "ASK_AI_consultant",
     "status": "published",
     "date": "2026-08-31"
+  },
+  "87bc65afff94d00d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "re-enabling-automation-must-not-revive-a-retired-implementat"
+  },
+  "7fb4ccbd14ab06db": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "make-guards-exercise-the-real-property-not-a-cheaper-proxy"
+  },
+  "df326171f0ac2954": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "encode-cost-vs-timeout-contracts-in-executable-checks-not-co"
+  },
+  "f48bc08a08080b3d": {
+    "instance": "ASK_AI_consultant",
+    "status": "held",
+    "date": "2026-10-19"
+  },
+  "bf437caf6ec704ba": {
+    "instance": "ASK_AI_consultant",
+    "status": "held",
+    "date": "2026-10-19"
+  },
+  "d3da7693616aa6dd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "audit-every-path-to-output-for-quality-judges-not-just-the-m"
+  },
+  "7c6ce0959b0df05d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "verify-routing-coverage-and-acceptance-signals-end-to-end"
+  },
+  "fdbb8f07c41fbf6b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "compute-counts-from-data-you-already-hold-before-inferring-t"
+  },
+  "d5c2cb5c43e7ab6f": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "verify-guards-against-enumerated-populations-data-flow-and-r"
+  },
+  "d19442fce6410340": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "tier-parser-failures-by-severity-instead-of-failing-the-whol"
+  },
+  "d16d4a285a08044e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "put-spend-limits-on-the-shared-choke-point-enforce-them-in-c"
+  },
+  "24c46bde3d31a602": {
+    "instance": "4_points_consulting",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "make-known-answer-controls-a-launch-gate-with-an-owner-and-a"
+  },
+  "7b82c37123a3de2d": {
+    "instance": "4_points_consulting",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "validate-the-instrument-on-a-partial-run-and-apply-constrain"
+  },
+  "170e60fdf472e498": {
+    "instance": "4_points_consulting",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "keep-a-single-ledger-of-record-for-derived-claims-and-re-ver"
+  },
+  "649c032ad535ae53": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "compute-decisions-where-the-decider-works-not-inside-the-del"
+  },
+  "f5614503caf93ec1": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "make-absence-provable-and-rejections-visible-in-ai-assisted-"
+  },
+  "87c87ea7e168eb94": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "gate-on-source-derived-evidence-not-mixed-provenance-fields"
+  },
+  "106a3241e65212bc": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "degrade-don-t-halt-when-a-fail-safe-gate-has-nothing-to-eval"
+  },
+  "731a0a36864a1c79": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "test-against-the-real-data-shape-and-wire-safeguards-into-th"
+  },
+  "e15c0bea3c5bb218": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "same-symptom-different-root-causes-diagnose-each-failing-dep"
+  },
+  "95f6080424235fe7": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "verify-your-safety-guard-actually-covers-what-you-just-shipp"
   }
 }
