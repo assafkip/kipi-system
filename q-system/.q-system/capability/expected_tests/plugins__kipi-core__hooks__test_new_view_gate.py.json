@@ -1,0 +1,5 @@
+{
+  "path": "plugins/kipi-core/hooks/test_new_view_gate.py",
+  "runner": "python3",
+  "timeout_s": 120
+}

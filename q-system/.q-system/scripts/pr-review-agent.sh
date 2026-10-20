@@ -805,13 +805,31 @@ echo "  round: $ROUND (engine: $ENGINE)"
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
 # with findings still arriving). So from round 2 on, the reviewer is told the
 # round and is required to re-prove any finding it wants to raise again.
+# FETCH THE PR FRESH, OUTSIDE THE SANDBOX (2026-10-13). The reviewer is offline
+# on purpose (CODEX_SANDBOX), so the script reads GitHub at review start and the
+# prompt points at these files. A failed fetch is the machine's failure, not a
+# review: exit 9, no status posted (absent is not approved).
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXXX")" || {
+  echo "REFUSING: cannot create a PR context dir under $SCRATCH_BASE. No review ran; no verdict posted." >&2
+  exit 4; }
+if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
+   || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
+  echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
+  command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
+  exit 9
+fi
+if [ "$ROUND" -gt 1 ]; then
+  gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
+fi
+
 ROUND_RULE=""
 if [ "$ROUND" -gt 1 ]; then
   ROUND_RULE="
 
 ## THIS IS REVIEW ROUND $ROUND OF THIS PR
 
-Earlier rounds are in the PR comments (\`gh ${GH_R_PROMPT}pr view $PR --comments\`). Read them
+Earlier rounds are in the PR comments, fetched for you: $PR_CONTEXT_DIR/comments.txt. Read them
 AFTER you have formed your own read of the code, never before -- your value is
 that you did not inherit anyone's frame.
 
@@ -856,8 +874,12 @@ fail safe for the author -- it just burns a round.
 
 ## Read the change
 
-  gh ${GH_R_PROMPT}pr view $PR
-  gh ${GH_R_PROMPT}pr diff $PR
+The PR was fetched from GitHub when this review started. Under codex the
+sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
+gh cannot reach GitHub there. The fetched copies:
+
+  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
+  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
 
 ## What your fresh eyes are FOR
 
@@ -996,6 +1018,9 @@ review_scratch_cleanup() {
   case "$REVIEW_SCRATCH" in
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
+  case "${PR_CONTEXT_DIR:-}" in
+    "$SCRATCH_BASE"/ctx.*) command rm -rf -- "$PR_CONTEXT_DIR" 2>/dev/null || true ;;
+  esac
   REVIEW_SCRATCH=""
   # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
   # PR #495 took four rounds to rule out each wrong owner of a worktree found by
@@ -1021,11 +1046,24 @@ trap 'release_wt_lock; review_scratch_cleanup' EXIT
 
 # Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
 # SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
-for _old in "$SCRATCH_BASE"/run.*; do
+for _old in "$SCRATCH_BASE"/run.* "$SCRATCH_BASE"/ctx.*; do
   [ -d "$_old" ] || continue
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
+# codex-sandbox-begin
+# THE SCRIPT READS GITHUB FOR THE REVIEWER. A reviewer with network AND a
+# logged-in gh, reading a PR author's diff, can be talked into posting
+# kipi/reviewer-approved=success or running gh pr merge itself (independent
+# review of this change, 2026-10-13). The PR is fetched FRESH at review start
+# into PR_CONTEXT_DIR, which the prompt points at. codex runs read-only, which
+# also means offline. The claude engine keeps its network; run_engine blocks the
+# direct `gh` and `curl` Bash calls, which is NOT containment: python3 (allowed
+# in user settings) can still shell out to gh, WebFetch is open, and claude runs
+# inside the PR's worktree so it loads that PR's own .claude/settings.json.
+# Follow-up ASK-2648: no gh token in the claude engine's environment, or no Bash.
+CODEX_SANDBOX="-s read-only"
+# codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
   if [ -z "$REVIEW_SCRATCH" ]; then
     WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
@@ -1045,12 +1083,19 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
+# THE REVIEWER READS GITHUB THROUGH THE SCRIPT (founder-directed 2026-10-13:
+# "it should still read. That is the only way to stay updated"). With no -s flag
+# codex ran in its default read-only sandbox, which has NO NETWORK: every
+# `gh pr view/diff` it tried since the first codex review on 2026-07-29 failed.
+# The fix is not to give the reviewer the network (see CODEX_SANDBOX above); it
+# is fetch_pr_context, which reads the PR from GitHub when the review starts.
+#
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
 # The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,

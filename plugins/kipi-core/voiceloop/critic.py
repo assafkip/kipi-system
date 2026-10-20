@@ -363,7 +363,7 @@ def judge(text, row, runner=None, claude_bin=None, timeout=prompt_render.TIMEOUT
     answer = prompt_render.run_model(build_prompt(text, row), claude_bin=claude_bin,
                                      timeout=timeout, runner=runner,
                                      caller="critic.judge()", model=model_for(row),
-                                     refused=_GATE_REFUSED)
+                                     refused=_GATE_REFUSED, bare=True)
     if answer is _GATE_REFUSED:
         # COUNTED AFTER THE GATE ANSWERS, under its own key (PR #509 round 3). Counted
         # before, a refusal was charged as a model call, so the cost row inflated

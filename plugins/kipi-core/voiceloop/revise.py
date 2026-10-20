@@ -318,7 +318,9 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
     # refused=: a gate refusal RAISES instead of returning None. None is "the model
     # produced nothing", and critic.run reported a shut gate as "reviser returned
     # nothing" and sent the operator to debug a healthy reviser (PR #509 review).
-    out = prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model,
+    # bare=False: the reviser writes his post, and a writer is not stripped until a
+    # dry run proves its prompt self-contained (2026-10-06 brief).
+    out = prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model, bare=False,
                                   caller="revise", under_test="none", allow_opencode=False,
                                   refused=_GATE_REFUSED)
     if out is _GATE_REFUSED:
