@@ -781,7 +781,9 @@ def _pass_exit_code(tally: Counter, batch: int, apply: bool) -> int:
         print(f"  NOTHING WAS WRITTEN ({tally['skipped']} skipped, {tally['failed']} "
               "failed); reporting a failed pass", file=sys.stderr)
         return 1
-    if apply and tally["failed"] > tally["written"]:
+    # A tie fails too: `>` let 1 written / 1 failed exit 0, a 50% model failure
+    # rate reported as a working night (review round 4 at 152cfce7).
+    if apply and tally["failed"] >= tally["written"]:
         print(f"  DEGRADED: {tally['failed']} failed against {tally['written']} "
               "written", file=sys.stderr)
         return 1

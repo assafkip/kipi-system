@@ -986,6 +986,17 @@ class TestD4TotalModelFailureIsNotAQuietNight(unittest.TestCase):
         rc, _, _ = run_lane(Board([]), says("HOLD", "x"))
         self.assertEqual(rc, 0)
 
+    def test_a_tied_split_on_an_apply_pass_exits_nonzero(self):
+        """Review round 4 (152cfce7): one written, one failed exited 0, so a 50%
+        model failure rate read as a working night."""
+        b = Board([alert("ASK-1", created="2026-08-01"), alert("ASK-2", created="2026-08-02")])
+        verdicts = {"ASK-1": ("PROMOTE", DOR), "ASK-2": None}
+        rc, out, err = run_lane(b, lambda i: verdicts[i["identifier"]])
+        self.assertIn("1 written", out)
+        self.assertIn("1 failed", out)
+        self.assertNotEqual(rc, 0, out + err)
+        self.assertIn("DEGRADED", err)
+
 
 class TestD5SkippedWritesAreNotSuccesses(unittest.TestCase):
     """R5: a skipped write counted as a success, so a fully-skipped batch exited 0."""
