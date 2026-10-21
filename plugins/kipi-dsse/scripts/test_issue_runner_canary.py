@@ -133,12 +133,18 @@ def test_a_typed_tally_is_not_shown_and_never_counts_as_caught(tmp_path):
     typed = repo / ".claude/state/mutants/probe-1/typed.json"
     typed.parent.mkdir(parents=True)
     typed.write_text(json.dumps({"name": "typed", "mutants_killed": "3 of 3"}))
+    # Shaped like the verb's record, but its run is of a check this issue does not have, so
+    # there is no clean run to compare it with.
+    unpaired = typed.with_name("unpaired.json")
+    unpaired.write_text(json.dumps({"runs": [{
+        "command": "python3 tests/old_check.py", "returncode": 1, "stdout": "",
+        "stderr": "FAIL: test_answer (__main__.T.test_answer)\n\nRan 1 test in 0.001s\n\nFAILED (failures=1)\n"}]}))
     r = _issue(repo, "verify")
     assert r.returncode == 0, r.stdout + r.stderr
     m = _mutants(repo)
     assert m["status"] == "gap", m
-    [row] = m["rows"]
-    assert row["status"] == "not shown" and row["name"] == "typed", row
+    assert [(x["name"], x["status"]) for x in m["rows"]] == [("typed", "not shown"),
+                                                             ("unpaired", "not shown")], m
 
 
 # --- the record lands only in the active issue's directory -----------------------------
