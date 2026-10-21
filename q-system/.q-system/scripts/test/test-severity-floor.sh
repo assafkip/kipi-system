@@ -229,6 +229,78 @@ EOF
   || fail "labels carry a major; derivation must override the prose APPROVE"
 ok "derive overrides prose: 'APPROVE' + a major label -> REQUEST CHANGES"
 
+# --- a major the reviewer marks nonblocking does not wedge the PR (ASK-2422) ---
+# Scar: a report-only gate PR took 4 review rounds, and round 4's only major was
+# one the reviewer itself called "not a blocker". The ladder read `^major|` and
+# nothing else, so the reviewer had no way to say it in the block. The fourth
+# field is that way; only the exact token releases, and never a blocker.
+nb_block() { printf '## VERDICT: APPROVE WITH NITS\n\nFINDINGS:\n%s\nEND FINDINGS\n' "$1" > "$WORK/$2"; }
+nb_block "major|a torn line in report-only code refuses nothing yet|gate.py:357|nonblocking
+minor|a stale comment|gate.py:170" nb1.md
+[ "$(verdict_from_findings "$WORK/nb1.md")" = "APPROVE WITH NITS" ] \
+  || fail "a nonblocking major + a minor must derive APPROVE WITH NITS, got '$(verdict_from_findings "$WORK/nb1.md")'"
+ok "derive: a major marked nonblocking -> APPROVE WITH NITS"
+nb_block "major|a torn line refuses every job|gate.py:357|nonblocking
+major|a real wedge|gate.py:12" nb2.md
+[ "$(verdict_from_findings "$WORK/nb2.md")" = "REQUEST CHANGES" ] \
+  || fail "one unmarked major beside a nonblocking one must still derive REQUEST CHANGES"
+ok "derive: an unmarked major still blocks beside a nonblocking one"
+nb_block "blocker|publishes a credential|x.sh:1|nonblocking" nb3.md
+[ "$(verdict_from_findings "$WORK/nb3.md")" = "BLOCK" ] \
+  || fail "a blocker marked nonblocking must still derive BLOCK"
+ok "derive: a blocker ignores the nonblocking mark"
+nb_block "major|a guess at the mark|gate.py:9|maybe
+major|the mark in the wrong field|nonblocking.py:3" nb4.md
+[ "$(verdict_from_findings "$WORK/nb4.md")" = "REQUEST CHANGES" ] \
+  || fail "only the exact trailing token may release a major"
+ok "derive: a near-miss mark or the word in the location still blocks"
+# A LITERAL PIPE IN THE CLAIM (ASK-2422 round 2, claude review of PR #540 major 1).
+# The claim is the only free-text field, so it is the only one that can hold a `|`,
+# and when it does every positional field shifts right. Reading the mark off field 4
+# then found the LOCATION there, called the row blocking, and wedged a PR the
+# reviewer had explicitly released -- silently, since the row still looked fine.
+# The mark is read off the END of the row, which does not shift.
+nb_block "major|the fallback swallows rc=2 | rc=3 and reports green|a.sh:40|nonblocking" nb5.md
+[ "$(verdict_from_findings "$WORK/nb5.md")" = "APPROVE WITH NITS" ] \
+  || fail "a pipe inside the claim shifted the mark off the row, got '$(verdict_from_findings "$WORK/nb5.md")'"
+ok "derive: a literal pipe in the claim does not re-block a released major"
+[ "$(extract_followup_findings "$WORK/nb5.md" | grep -c .)" = "1" ] \
+  || fail "the released major with a piped claim is not listed as a follow-up"
+ok "follow-ups: a piped claim is still listed"
+nb_block "major|a | b wedges every job|a.sh:1" nb6.md
+[ "$(verdict_from_findings "$WORK/nb6.md")" = "REQUEST CHANGES" ] \
+  || fail "a pipe in the claim must not release an UNMARKED major"
+ok "derive: a piped claim with no mark still blocks"
+# findings_row_parts: the split every log line and capture call reads. A positional
+# `IFS='|' read -r sev claim loc` puts the claim's tail in loc, so the run log and
+# the spillover description name a location the reviewer never wrote.
+PARTS="$(findings_row_parts 'major|the fallback swallows rc=2 | rc=3 and reports green|a.sh:40|nonblocking')"
+[ "$(printf '%s' "$PARTS" | sed -n 1p)" = "major" ] \
+  || fail "findings_row_parts lost the severity: '$PARTS'"
+[ "$(printf '%s' "$PARTS" | sed -n 2p)" = "the fallback swallows rc=2 | rc=3 and reports green" ] \
+  || fail "findings_row_parts truncated the claim at the internal pipe: '$PARTS'"
+[ "$(printf '%s' "$PARTS" | sed -n 3p)" = "a.sh:40" ] \
+  || fail "findings_row_parts read the wrong location: '$PARTS'"
+[ "$(findings_row_parts 'minor|plain claim|b.yml:72' | sed -n 3p)" = "b.yml:72" ] \
+  || fail "findings_row_parts broke the ordinary unmarked row"
+[ "$(findings_row_parts 'major|loc is the word itself|nonblocking' | sed -n 3p)" = "nonblocking" ] \
+  || fail "a 3-field row whose location is the word must keep it as the location"
+ok "findings_row_parts: severity, claim-with-pipes, location, mark stripped"
+grep -q 'findings_row_parts' "$REVIEWER" \
+  || fail "the reviewer still splits findings rows positionally (no findings_row_parts)"
+ok "reviewer wiring: the follow-up log reads rows through findings_row_parts"
+FOLLOW="$(extract_followup_findings "$WORK/nb2.md")"
+case "$FOLLOW" in *"torn line refuses"*) ;; *) fail "the nonblocking major is not listed as a follow-up: '$FOLLOW'";; esac
+case "$FOLLOW" in *"real wedge"*) fail "a blocking major was listed as a follow-up";; esac
+[ "$(extract_followup_findings "$WORK/nb1.md" | grep -c .)" = "2" ] \
+  || fail "nonblocking major + minor must list 2 follow-ups"
+ok "follow-ups: minors and nonblocking majors listed, blocking majors not"
+grep -q 'extract_followup_findings' "$REVIEWER" \
+  || fail "the reviewer does not list follow-ups through extract_followup_findings"
+grep -q '|nonblocking' "$REVIEWER" && grep -qi 'report-only' "$REVIEWER" \
+  || fail "the reviewer prompt does not teach the nonblocking mark and the report-only case"
+ok "reviewer wiring: prompt teaches the mark, capture lists the follow-ups"
+
 grep -q 'verdict_from_findings' "$REVIEWER" \
   || fail "reviewer does not derive the verdict from findings (prompt-only enforcement)"
 grep -q '"derived"\|derived' "$REVIEWER" || fail "verdict record must keep the derived value"
