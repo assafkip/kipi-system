@@ -1007,10 +1007,19 @@ def _mutant_rows(paths: Paths, issue_id: str, clean: dict) -> dict:
         status, reason = "refused", f"no new failure from {', '.join(silent)}"
     elif caught:
         status, reason = "ok", f"{len(caught)} mutant run(s) caught: {', '.join(caught)}"
+    elif rows:
+        # PR #542 review, minor 1: a break that crashes the import stops the runner before it
+        # prints a count. Telling that engineer "no mutant run, record one" sent them to redo
+        # the step they had just done, so a recorded-but-unshown run is named instead.
+        status, reason = "gap", (f"{len(rows)} mutant record(s), none shown by its own runner "
+                                 f"output: {', '.join(r['name'] for r in rows)}. A run is shown only "
+                                 "when a current check printed a count this can read; a break that "
+                                 "stops the runner first (an import crash) shows no failing test. "
+                                 "Break a line the tests call, record it, put the code back, verify")
     else:
-        status, reason = "gap", ("no mutant run shown by its own runner output, so the tests were "
-                                 "never shown able to fail. Record one: apply a one-line break, run "
-                                 "`issue_runner.py mutant <name>`, put the code back, verify again")
+        status, reason = "gap", ("no mutant run recorded, so the tests were never shown able to "
+                                 "fail. Record one: apply a one-line break, run `issue_runner.py "
+                                 "mutant <name>`, put the code back, verify again")
     return {"dir": _rel(paths, d), "status": status, "reason": reason, "rows": rows}
 
 

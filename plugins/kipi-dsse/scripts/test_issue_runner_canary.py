@@ -157,3 +157,24 @@ def test_a_mutant_name_cannot_escape_the_issue_directory(tmp_path):
     # this test on a runner with no `mutant` verb at all).
     assert "mutant name" in r.stderr, r.stderr
     assert not list((repo / ".claude/state").rglob("escape*")), "a record landed outside the issue dir"
+
+
+# --- a recorded mutant that shows nothing is named, not mistaken for no record --------
+
+def test_a_crash_mutant_is_named_in_the_gap_not_told_to_record_one(tmp_path):
+    # Review of PR #542, minor 1: a break that crashes the import stops unittest before it
+    # prints a count, so the run shows no failing test. The gap said "no mutant run" and
+    # told the engineer to record the mutant they had just recorded.
+    repo = _tool_repo(tmp_path)
+    tool = repo / "scripts/tool.py"
+    tool.write_text("def answer(flag=True:\n    return 42\n")
+    try:
+        assert _issue(repo, "mutant", "crash-import").returncode == 0
+    finally:
+        tool.write_text(TOOL)
+    r = _issue(repo, "verify")
+    assert r.returncode == 0, r.stdout + r.stderr
+    m = _mutants(repo)
+    assert m["status"] == "gap", m
+    assert [(x["name"], x["status"]) for x in m["rows"]] == [("crash-import", "not shown")], m
+    assert "crash-import" in m["reason"] and "no mutant run" not in m["reason"], m["reason"]
