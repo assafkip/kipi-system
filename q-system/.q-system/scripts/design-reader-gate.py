@@ -354,6 +354,16 @@ def shoot(url: str, viewports: list, dest: Path, refused: list | None = None,
     return out
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def ask_claude(png: Path, system: str, model: str, questions: list[str]) -> dict:
     """One fresh reader: a clean temp dir holding only the screenshot, --safe-mode, Read only."""
     prompt = ("Use the Read tool to open the image file 'screen.png' in the current directory. It is a "
@@ -365,7 +375,8 @@ def ask_claude(png: Path, system: str, model: str, questions: list[str]) -> dict
         shutil.copy(png, Path(wd) / "screen.png")
         r = subprocess.run(["claude", "-p", "--safe-mode", "--model", model, "--system-prompt", system,
                             "--allowedTools", "Read", "--output-format", "json", prompt],
-                           cwd=wd, capture_output=True, text=True, timeout=300)
+                           cwd=wd, capture_output=True, text=True, timeout=300,
+                           env=_subscription_env())
     try:
         doc = json.loads(r.stdout)
         text = doc.get("result", "")

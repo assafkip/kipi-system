@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/scripts/test/test_notes_publish.py",
+  "runner": "pytest",
+  "timeout_s": 120
+}

@@ -7,8 +7,8 @@ name: Reviewer Hosted
 #
 # This job runs the SAME reviewer, through hosted-review-gate.sh, on every PR
 # push. With no model secret on the repo the gate says so and runs nothing,
-# and the floor's red keeps holding the PR. Setting ANTHROPIC_API_KEY (or
-# CLAUDE_CODE_OAUTH_TOKEN) as a repo secret turns it on. No code change needed.
+# and the floor's red keeps holding the PR. Setting CLAUDE_CODE_OAUTH_TOKEN as a
+# repo secret turns it on (subscription only; the billed API key is never used).
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -31,7 +31,7 @@ jobs:
     # Job level, not step level: a step's own env is not visible to its `if`,
     # and the secrets context cannot be read in an `if` directly.
     env:
-      HAS_MODEL_SECRET: ${{ secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      HAS_MODEL_SECRET: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
     steps:
       # CHECK OUT THE BASE, NOT THE PR, for the reason reviewer-floor.yml gives
       # (Codex major, PR #96): this job holds a model secret and statuses: write
@@ -85,5 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The model the Mac reviewer runs (com.kipi.dispatch.plist); without it
+          # pr-review-agent.sh falls back to Opus (codex minor, #464).
+          KIPI_REVIEW_CLAUDE_MODEL: claude-sonnet-5

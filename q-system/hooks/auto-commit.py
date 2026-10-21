@@ -2,7 +2,9 @@
 """Auto-commit hook - groups changed files by area and creates organized commits.
 
 Runs on Stop (async). Creates one commit per area with conventional commit messages.
-Never pushes. Skips if no uncommitted changes.
+Never pushes the checked-out branch. Skips if no uncommitted changes. At the end
+it hands session notes to notes-publish.py, which copies them onto origin's
+notes-only `kipi/notes` branch (ASK-2190; non-fatal, bounded by a timeout).
 """
 import calendar
 import hashlib
@@ -14,6 +16,8 @@ import time
 from collections import defaultdict
 
 PROJ_DIR = os.environ.get("CLAUDE_PROJECT_DIR", ".")
+
+RCA_PREFIX = "q-system/output/rca/"
 
 # Map file paths to commit areas
 AREA_MAP = [
@@ -31,6 +35,10 @@ AREA_MAP = [
     # did not list (*.md was not listed), and such a file is never committed,
     # never ignored and never even reported, so it blocks the fleet sync
     # invisibly. cole-gtm sat stuck on two of them.
+    # RCAs are the record, not exhaust, and .gitignore re-includes them. Without
+    # this row the prefix below dropped them before classify: un-ignored, never
+    # committed, never reported (PR #511 review). Must stay above the output row.
+    (RCA_PREFIX,                      "content",  "add RCAs"),
     ("q-system/output/",              None,       None),
     ("q-system/hooks/",               "chore",    "update hooks"),
     ("q-system/.q-system/agent-pipeline/", "feat", "update agent pipeline"),
@@ -142,7 +150,7 @@ def get_changed_files():
     # longer be committed for you) and is a deliberate design call, not a cleanup.
 
     # Filter out empty strings and gitignored patterns
-    return {f for f in files if f and not f.startswith("q-system/output/")}
+    return {f for f in files if f and (f.startswith(RCA_PREFIX) or not f.startswith("q-system/output/"))}
 
 
 # AREA_MAP's prefixes all start `q-system/`, which is the SKELETON. In an INSTANCE the
@@ -793,7 +801,88 @@ def another_commit_in_flight():
     return None
 
 
+NOTES_PUBLISH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             os.pardir, ".q-system", "scripts", "notes-publish.py")
+NOTES_PUBLISH_TIMEOUT = 60
+
+
+def publish_notes():
+    """Copy session notes onto origin's `kipi/notes` branch (ASK-2190).
+
+    The one step of this hook that talks to a remote, and it does NOT push the
+    checked-out branch: notes-publish.py builds a notes-only commit with git
+    plumbing and never touches HEAD, the index or the working tree. It exists
+    because this hook commits notes on whatever branch is checked out and never
+    pushes, so a cloud session (GitHub only) read a months-old handoff.
+
+    Non-fatal and bounded: a missing script, a timeout or any error is one line,
+    never an exception, so session exit is never blocked. Its report goes to
+    STDOUT, the channel the fleet wiring keeps (see main()).
+    """
+    script = os.path.normpath(NOTES_PUBLISH)
+    if not os.path.isfile(script):
+        return
+    try:
+        r = subprocess.run([sys.executable, script, "--repo", PROJ_DIR],
+                           capture_output=True, text=True,
+                           timeout=NOTES_PUBLISH_TIMEOUT)
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        if r.returncode != 0:
+            print(f"auto-commit: notes-publish exited {r.returncode}: "
+                  f"{r.stderr.strip()[-300:]}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        print(f"auto-commit: notes-publish timed out after "
+              f"{NOTES_PUBLISH_TIMEOUT}s; notes not published this turn")
+    except Exception as e:
+        print(f"auto-commit: notes-publish error: {e}", file=sys.stderr)
+
+
+# A paused merge/rebase/cherry-pick/revert. git reports its conflicted files as
+# ordinary changes, so without this guard the autosave staged and committed
+# conflict markers (cole-gtm 9e563be, 2026-09-29) and notes-publish would push
+# them to kipi/notes. The operation belongs to whoever started it.
+GIT_OPERATION_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD",
+                         "rebase-merge", "rebase-apply")
+
+
+def is_remote_session(env=None):
+    """True in a Claude Code cloud session, which sets CLAUDE_CODE_REMOTE=true.
+
+    Same reading as notes-publish.py's is_remote_session; kept local because
+    this hook must run with nothing importable beside it.
+    """
+    env = os.environ if env is None else env
+    return env.get("CLAUDE_CODE_REMOTE", "").strip().lower() in ("1", "true", "yes")
+
+
+def git_operation_in_progress():
+    """The marker of a paused git operation in this checkout, or None."""
+    for marker in GIT_OPERATION_MARKERS:
+        r = run(["git", "rev-parse", "--git-path", marker])
+        if r.returncode != 0:
+            return None
+        path = r.stdout.strip()
+        if not os.path.isabs(path):
+            path = os.path.join(PROJ_DIR, path)
+        if os.path.exists(path):
+            return marker
+    return None
+
+
 def main():
+    paused = git_operation_in_progress()
+    if paused is not None:
+        print(f"auto-commit: git merge in progress ({paused}); committing nothing, "
+              "notes not published. Finish or abort it first.")
+        return
+    try:
+        _commit_main()
+    finally:
+        publish_notes()
+
+
+def _commit_main():
     # Check we're in a git repo
     r = run(["git", "rev-parse", "--is-inside-work-tree"])
     if r.returncode != 0:
@@ -817,6 +906,20 @@ def main():
     # only thing that tells a human to go look, so it has to reach the channel
     # that survives. Pinned by
     # test_a_refusal_reaches_the_channel_the_fleet_wiring_keeps.
+    # A CLOUD SESSION COMMITS NOTHING (sp-8680be69). A cloud routine works in a
+    # fresh clone and commits exactly the paths its prompt allowlists. This hook
+    # fired at a turn end of the weekly lessons routine, committed
+    # q-system/memory/.sycophancy-monthly-stamp onto local main before the routine
+    # cut its branch, and the branch carried it to PR #515 on the PUBLIC repo. The
+    # routine's allowlist checked the index, not the branch, so it never saw it.
+    # A cloud clone is thrown away at session end: there is no work to save here,
+    # only stray writes to ship. publish_notes still runs; it has its own
+    # remote-session handling.
+    if is_remote_session():
+        print("auto-commit: cloud session (CLAUDE_CODE_REMOTE); committing "
+              "nothing. A routine commits its own allowlisted paths.")
+        return
+
     live_run = fleet_update_in_progress()
     if live_run is not None:
         print(f"auto-commit: fleet updater run in progress ({live_run}); "

@@ -34,6 +34,16 @@ import os
 MODEL = os.environ.get("VOICE_SYNTH_MODEL", "")  # empty = CLI default; set to pin
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def run_claude(full_prompt):
     """Pipe a full prompt to `claude -p`, return parsed JSON (array)."""
     cmd = ["claude", "-p",
@@ -41,7 +51,8 @@ def run_claude(full_prompt):
            "Output ONLY a raw JSON array. No markdown fences, no prose."]
     if MODEL:
         cmd += ["--model", MODEL]
-    r = subprocess.run(cmd, input=full_prompt, capture_output=True, text=True)
+    r = subprocess.run(cmd, input=full_prompt, capture_output=True, text=True,
+                       env=_subscription_env())
     if r.returncode != 0:
         sys.exit(f"claude -p failed (exit {r.returncode}):\n{r.stderr[:2000]}")
     out = r.stdout.strip()

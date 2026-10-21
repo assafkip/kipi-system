@@ -37,9 +37,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # pytest must exist BEFORE the gate: declared tests import it, and the
-      # gate runs the full suite (first CI execution failed on step order,
-      # 2026-07-23).
+      # pytest must exist BEFORE the gate: declared tests import it (first CI
+      # execution failed on step order, 2026-07-23).
       - name: Install test dependencies
         run: pip install pytest
 
@@ -55,17 +54,26 @@ jobs:
       # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
       #
-      # A PULL REQUEST RUNS THE TESTS ITS DIFF EARNS; A PUSH TO MAIN RUNS THEM ALL
-      # (ASK-1749). Measured on run 35478270323: this step was 17m41s of a 19m36s
-      # job because it ran every declared artifact on every push of every PR, so a
-      # three-line review round waited that long before it could merge.
+      # A PULL REQUEST AND A PUSH TO MAIN BOTH RUN ONLY THE TESTS THEIR DIFF EARNS
+      # (ASK-1749 for PRs; pushes since 2026-09-30, ASK-2316, founder-directed:
+      # the full suite belongs to the nightly gates.yml). Measured on run 35478270323:
+      # this step was 17m41s of a 19m36s job because it ran every declared
+      # artifact on every push of every PR, and then once more on the merge push.
       # change-size.py picks the declared tests that name the changed files. It
       # falls back to the FULL suite on anything it cannot vouch for: a change to
-      # the gate, the classifier, a workflow, lefthook or verify.sh, a dependency
-      # manifest, a capability declaration, a new third-party import, a selection
-      # wider than 60, or any error reading the diff. Structure, declared-vs-actual
+      # the gate, the classifier, either selector, a pytest config or conftest, a
+      # dependency manifest, a capability declaration, a new third-party import, or any
+      # error reading the diff. A WIDE selection is not a fallback: a file many tests
+      # name runs those tests (ASK-2388). Structure, declared-vs-actual
       # and wiring checks are not tests and run in full either way. The checkout
-      # above uses fetch-depth 0, so origin/<base> resolves.
+      # above uses fetch-depth 0, so origin/<base> and the push's `before` resolve.
+      #
+      # THE PUSH BASE. `github.event.before` is main as it stood before this push,
+      # so the diff is exactly what the push landed. It is unusable on a branch's
+      # first push (all zeros) and after a force-push (the old tip is gone from
+      # the clone). Then the base is HEAD^, the first parent: main squash-merges,
+      # so HEAD^ is main one merge ago. If even that cannot resolve, the gate's
+      # own select_for_diff fails closed to the full suite, never to nothing.
       # ASK-1918, and it runs BEFORE the gate on purpose: a wrong `covers`
       # declaration would make the gate below select fewer tests, so the check on
       # the declarations cannot be downstream of the thing they steer.
@@ -74,13 +82,22 @@ jobs:
 
       - name: Capability gate (declared-vs-actual + the tests this change earns)
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "origin/${{ github.base_ref }}"
+          if [ "$EVENT" = "pull_request" ]; then
+            base="origin/$BASE_REF"
           else
-            python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+            base="$PUSH_BEFORE"
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "push base '${base}' is not a commit in this clone; diffing against HEAD^"
+              base="HEAD^"
+            fi
           fi
+          echo "capability gate diff base: ${base}"
+          python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "$base"
         env:
           CI: true
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
           # dc-25: a design-chain test with no browser SKIPS and the file exits 0, so the gate read
           # green over tests that never ran. With this set they fail instead.
           DC_REQUIRE_REAL_PRODUCERS: "1"
@@ -90,21 +107,28 @@ jobs:
       # run (finding-15). The skip is honored only with caller proof (GITHUB_ACTIONS
       # here).
       #
-      # WHAT THE STEP ABOVE ACTUALLY RAN DEPENDS ON THE EVENT (claude review of
-      # PR #377, minor 2). On a push to main it is the full declared suite; on a
-      # pull_request it is the SUBSET that diff earns (ASK-1749), so on a PR the full
-      # suite runs nowhere inside this job -- it runs on the push to main after merge.
-      # The skip is still right either way, because the double execution it avoids is
-      # of whatever that step ran. Writing "just ran the full suite" here was the part
-      # that stopped being true, and a wrong why-comment is worse than none.
+      # WHAT THE STEP ABOVE ACTUALLY RAN (claude review of PR #377, minor 2). On a
+      # pull_request and on a push to main it is the SUBSET that diff earns, unless
+      # change-size could not vouch for the diff. The full declared suite runs
+      # nowhere in this job. Its only home is the nightly gates.yml, and that
+      # workflow is DISABLED as of 2026-09-30, so today no job runs the full
+      # declared suite and a selection that was too narrow is caught by nothing
+      # until it is turned back on. verify.yml's pytest run covers only the
+      # pytest-collectible slice, never a bash-runner artifact. The skip is still
+      # right, because the double execution it avoids is of whatever that step ran.
+      # Writing "just ran the full suite" here was the part that stopped being
+      # true, and a wrong why-comment is worse than none.
       - name: Run skeleton validation (Phase 1)
         run: python3 validate-separation.py 1 --verbose
         env:
           CI: true
           CAPABILITY_GATE_SKIP: "1"
 
-      - name: Run prd-os tests
-        run: pytest plugins/prd-os/tests/ -q
+      # NO UNSCOPED prd-os STEP (RULE-2026-10-01-A). One stood here and ran all of
+      # plugins/prd-os/tests on every PR and push, whatever the change touched.
+      # plugins/prd-os is a declared suite in .verify-suites, so verify.yml grades
+      # it scoped to what a change owns, and the nightly gates.yml runs it in full.
+      # test_ci_workflows.py fails if a whole-directory pytest comes back here.
 
       # The skeleton's own harnesses had NO runner (adversarial review finding-5):
       # test_auto_commit, test_token_guard and test_fable_escalation all sat unrun,
