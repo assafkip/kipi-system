@@ -93,16 +93,19 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 |
 | `com.kipi.fleet-health` | 08:15 |
 | `com.kipi.linear-triage-health` | 09:00 |
+| `com.kipi.fleet-full-suite-scan` | 08:20 (alerts on a state change only; RULE-2026-10-01-A) |
+| `com.kipi.fleet-model-gate-scan` | 08:25 (model call sites not behind the model gate; alerts on a state change only; ASK-2395) |
 | `com.kipi.linear-dor` | 03:00 |
 | `com.kipi.disk-janitor` | 04:30 |
 | `com.kipi.voice-refresh` | day 1 of the month, 09:00 |
 | `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
-| `com.kipi.pr86-review` | hourly at :17 |
 
 `com.kipi.spillover-linear-check` was installed and loaded on 2026-09-30 and is listed in section 1.
 
-Not loaded on 2026-09-30, although a committed plist names them:
-`com.kipi.ticket-watch` and `com.cole.fleet-env-health` (plist present, not loaded).
+`com.kipi.ticket-watch` is loaded on the Mac (`launchctl list`, 2026-10-01).
+
+Not loaded on 2026-09-30, although a committed plist names it:
+`com.cole.fleet-env-health` (plist present, not loaded).
 Retired plists (`*.retired-<date>`) are not listed.
 
 ---

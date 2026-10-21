@@ -923,6 +923,7 @@ cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr diff 901"*) printf 'diff --git a/x b/x\n' ;;   # the PR context fetch (2026-10-13)
   *) exit 1 ;;
 esac
 exit 0
@@ -2022,6 +2023,7 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$d/gh-calls.log"
 case "\$1 \$2" in
+  "pr diff")    [ "$mode" = "fail-diff" ] && exit 1 ;;   # the PR context fetch (2026-10-13)
   "pr view")    printf '$oid\tsecond opinion under test\n' ;;
   "pr comment") printf '$COMMENT_URL_FIXTURE\n' ;;
 esac
@@ -2076,6 +2078,20 @@ printf '%s' "$CALL" | grep -qi 'degraded' \
 [ "$(pages_in "$Q1")" = "0" ] \
   || fail "a healthy codex review paged the founder: $(cat "$Q1/pages.txt")"
 ok "a healthy codex run runs no fallback, marks nothing degraded, pages nobody"
+
+# --- Q1b. GitHub unreachable at review start -> exit 9, nothing posted -------
+# (2026-10-13) The script fetches the PR for the reviewer. A failed fetch is the
+# machine's failure, not a review: no model runs, no status, no context left.
+Q1B="$W2/eng-fetch-fails"
+mk_engine_stubs "$Q1B" "$SHA_A" fail-diff "$CODEX_NOISY_APPROVE"
+run_engine_reviewer "$Q1B" --post --engine codex
+[ "$RC" = "9" ] || fail "a failed PR fetch exited $RC, want 9 (the machine's code). err: $(cat "$Q1B/err.txt")"
+[ -z "$(status_call "$Q1B")" ] || fail "a failed PR fetch still posted a status: $(status_call "$Q1B")"
+[ ! -s "$Q1B/codex-calls.log" ] && [ ! -s "$Q1B/claude-calls.log" ] \
+  || fail "a failed PR fetch still ran a model reviewer"
+ls "$Q1B/home/.config/kipi/review-scratch"/ctx.* >/dev/null 2>&1 \
+  && fail "a failed PR fetch left its context dir behind: $(ls -d "$Q1B/home/.config/kipi/review-scratch"/ctx.*)"
+ok "GitHub unreachable at review start: exit 9, no model, no status, no context dir left"
 
 # --- Q2. a reviewer that can only approve is not a gate ----------------------
 Q2="$W2/eng-block"

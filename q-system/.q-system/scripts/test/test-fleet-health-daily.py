@@ -588,6 +588,99 @@ check("it declares an action",
 check("its lesson slug is a real file",
       (_LESSONS / f"{_by_id['launchd-never-installed']['lesson']}.md").is_file(), True)
 
+# ---------------------------------------------------------------------------
+# gates-red (ASK-2262): the consumer of the GitHub issue a red nightly gates.yml
+# run opens. The workflow has no Linear secret, so the issue alone reaches nobody;
+# this detector is what carries it into Sana's Linear queue. `run` is injected so
+# no test ever shells the real `gh`.
+# ---------------------------------------------------------------------------
+import json as _json
+import os
+import subprocess as _sp2
+import tempfile as _tf2
+
+
+class _Proc:
+    def __init__(self, rc, out="", err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+with _tf2.TemporaryDirectory() as _tmp:
+    _root = Path(_tmp)
+    _calls = []
+
+    def _run_never(*a, **k):
+        _calls.append(a)
+        return _Proc(0, "[]")
+
+    check("a repo with no gates.yml is not asked about",
+          (fh.gates_red_findings(repo_root=_root, run=_run_never), _calls), ([], []))
+
+    (_root / ".github" / "workflows").mkdir(parents=True)
+    (_root / ".github" / "workflows" / "gates.yml").write_text("name: x\n")
+    _issue = {"number": 7, "title": "gates-red: nightly gates failed",
+              "url": "https://example.invalid/issues/7", "updatedAt": "2026-09-30T09:40:00Z"}
+    _found = fh.gates_red_findings(
+        repo_root=_root, run=lambda *a, **k: _Proc(0, _json.dumps([_issue])))
+    check("an open gates-red issue becomes one finding keyed by its number",
+          [f["subject"] for f in _found], ["gates-red-7"])
+    check("the finding carries the issue link", _issue["url"] in _found[0]["body"], True)
+    check("no open issue, no finding",
+          fh.gates_red_findings(repo_root=_root, run=lambda *a, **k: _Proc(0, "[]")), [])
+    # The negative control: a gh that cannot answer must not read as all-clear.
+    _blind = fh.gates_red_findings(
+        repo_root=_root, run=lambda *a, **k: _Proc(4, "", "gh: auth required"))
+    check("a gh that cannot answer is a blind finding, not zero",
+          [f["subject"] for f in _blind], ["gates-red-blind"])
+
+    def _raise(*a, **k):
+        raise FileNotFoundError("gh")
+
+    check("a missing gh is blind too",
+          [f["subject"] for f in fh.gates_red_findings(repo_root=_root, run=_raise)],
+          ["gates-red-blind"])
+
+# #484 review: launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin and gh lives in
+# Homebrew. The detector must find gh there, and an absent gh must say "not
+# installed", not send the operator to `gh auth status`.
+_seen = []
+
+
+def _rec(argv, *a, **k):
+    _seen.append(argv[0])
+    return _Proc(0, "[]")
+
+
+with _tf2.TemporaryDirectory() as _tmp:
+    _root = Path(_tmp)
+    (_root / ".github" / "workflows").mkdir(parents=True)
+    (_root / ".github" / "workflows" / "gates.yml").write_text("name: x\n")
+    _bin = _root / "brew" / "bin"
+    _bin.mkdir(parents=True)
+    (_bin / "gh").write_text("#!/bin/sh\n")
+    (_bin / "gh").chmod(0o755)
+    _saved_path = os.environ.get("PATH", "")
+    try:
+        # An EMPTY dir, not launchd's literal PATH: on an Ubuntu CI runner gh
+        # lives in /usr/bin, so that PATH still found it and this check read the
+        # host instead of the code (validate run 36780697979).
+        _nogh = _root / "empty-path"
+        _nogh.mkdir()
+        os.environ["PATH"] = str(_nogh)
+        fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_bin)])
+        check("gh is found outside launchd's PATH", _seen, [str(_bin / "gh")])
+        _absent = fh.gates_red_findings(repo_root=_root, run=_rec, gh_dirs=[str(_root / "none")])
+        check("an absent gh is blind and says it is not installed",
+              ([f["subject"] for f in _absent], "not installed" in _absent[0]["body"] if _absent else None),
+              (["gates-red-blind"], True))
+    finally:
+        os.environ["PATH"] = _saved_path
+
+check("gates-red is registered", "gates-red" in _by_id, True)
+check("gates-red files an issue", _by_id.get("gates-red", {}).get("action"), "file_issue")
+check("gates-red's lesson slug is a real file",
+      (_LESSONS / f"{_by_id.get('gates-red', {}).get('lesson', 'missing')}.md").is_file(), True)
+
 if failures:
     print("FAIL:")
     for line in failures:

@@ -399,3 +399,29 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   is applied with `apply-claude-changes.sh --root $HOME`; until then the drift
   test in `test_destructive_op_deny_anchor.py` is red on any machine with the
   live hook, which is the signal that it has not been applied.
+
+## PRs and pushes run the owning tests; the full suite runs only nightly (ASK-2316, 2026-10-01)
+
+### RULE-2026-10-01-A: No whole-suite run on a PR or a push; one full run, nightly
+- **Origin:** [SYSTEM-INFERRED] (Sana, on the founder's bar "no 6000-test runs on small changes")
+- **Decision:** A PR and a push to main run only the tests their change owns, in
+  every workflow. validate.yml passes the capability gate a diff base on both
+  events; verify.yml runs `verify.sh --changed --base <PR base, or the push's
+  before sha, else HEAD^>`; the unscoped prd-os pytest step is gone (verify grades
+  that suite scoped). A CI workflow, lefthook.yml or verify.sh change runs the
+  tests that name it. Still a full run: the gate, change-size.py, the manifest
+  assembler, verify_select.py, any conftest or pytest config, a dependency
+  manifest, a capability declaration, a new third-party import, a selection over
+  60. The full declared suite runs only in the nightly gates.yml.
+- **Reason:** The full suite kept returning through doors nobody listed (the
+  validate push, verify --full at 12.5 min on run 36820282302, the prd-os step).
+  A workflow edit changes what runs, and the tests that pin each workflow
+  (test_ci_workflows.py, test_validate_workflow.py, the verify harnesses) grade
+  that; a full run adds no coverage of the edit. A selector or test-config change
+  is different: it can make every other selection wrong, and it is rare, so it
+  pays the full run. test_ci_workflows.py reads every workflow and fails on any
+  whole-suite door outside gates.yml.
+- **Date:** 2026-10-01
+- **Revisit:** When gates.yml is re-enabled after the freeze. Until then no job
+  runs the full declared suite and a too-narrow selection is caught by nothing.
+

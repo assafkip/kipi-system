@@ -625,10 +625,39 @@ def capout_skip(path, issue, who, pr):
     why = capout(path, issue)
     if not why:
         return False
+    # ONCE PER CAP EVENT, not once per heartbeat (ASK-1172): 132 identical lines a
+    # day on 2026-08-30. The skip itself is unconditional -- only the line goes
+    # quiet -- and every park stays listed by `list-capouts`.
+    if not capout_notice_due(path, issue):
+        return True
     sys.stderr.write(
         "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
-        "re-entering it until a human clears the cap-out: %s\n"
-        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue)))
+        "re-entering it until a human clears the cap-out: %s  (said once per "
+        "cap-out; every parked issue: %s)\n"
+        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue), CAPOUT_LIST % path))
+    return True
+
+
+CAPOUT_LIST = ("python3 q-system/.q-system/scripts/attempts-ledger.py "
+               "%s list-capouts")
+
+
+def capout_notice_due(path, issue):
+    """True when this cap event has not been announced yet, or cannot be recorded.
+
+    FAILS LOUD: rc 2/3 means the ledger wrote nothing, so the line stays on. A
+    notice nobody recorded must not buy silence, or an unwritable disk would
+    mute every park it holds.
+    """
+    proc = subprocess.run(
+        [sys.executable, LEDGER_SCRIPT, path, "claim-capout-notice", issue],
+        capture_output=True, text=True)
+    if proc.returncode == 1:
+        return False
+    if proc.returncode != 0:
+        sys.stderr.write("ci-redrive: could not record the cap-out notice for %s "
+                         "(rc %s), announcing anyway: %s\n"
+                         % (issue, proc.returncode, (proc.stderr or "").strip()[:200]))
     return True
 
 
