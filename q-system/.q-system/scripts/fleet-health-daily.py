@@ -1500,6 +1500,31 @@ def plist_drift_findings(template_dir=None, launch_agents=None, render=None) -> 
     return out
 
 
+def committed_plist_templates(repo_root=None) -> list:
+    """Every committed `com.kipi.*.plist` template, as paths, from `git ls-files`.
+
+    WHY GIT AND NOT A GLOB (ASK-2277). The never-installed detector globbed
+    PLIST_TEMPLATE_DIR alone, so the templates under `automation/` were invisible
+    to it: git tracked 17, the detector saw 15, and a template committed there
+    could stay uninstalled forever with nothing red. "Committed" is the promise,
+    and only git knows it. This is the same pathspec install-plist.sh --all walks,
+    so the detector and the installer name one set. A tree that is not a git
+    checkout falls back to the old directory glob.
+    """
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--",
+             "*/com.kipi.*.plist", "com.kipi.*.plist"],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is None or proc.returncode != 0:
+        return sorted(PLIST_TEMPLATE_DIR.glob("com.kipi.*.plist"))
+    return sorted((root / rel for rel in proc.stdout.split()
+                   if (root / rel).is_file()), key=lambda p: p.stem)
+
+
 def never_installed_findings(template_dir=None, launch_agents=None,
                             paused_labels=None) -> list:
     """A committed launchd template with no installed job at all.
@@ -1519,7 +1544,9 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     the header above `plist_drift_findings`), and this holds it: the finding names the
     one command that installs the job, and a human decides.
     """
-    templates = Path(template_dir) if template_dir else PLIST_TEMPLATE_DIR
+    # A fixture dir is globbed; the default is the git-committed set (ASK-2277).
+    template_paths = (sorted(Path(template_dir).glob("com.kipi.*.plist"))
+                      if template_dir else committed_plist_templates())
     agents = Path(launch_agents) if launch_agents else LAUNCH_AGENTS
     # THE OPT-OUT IS THE SAME ONE `detect_dark_jobs` USES (round 13, major, against
     # this detector on the day it shipped). Without it a template deliberately not
@@ -1527,7 +1554,7 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     # forever, which trains the operator to ignore the whole channel.
     paused = set(paused_labels or _paused_labels())
     out = []
-    for template in sorted(templates.glob("com.kipi.*.plist")):
+    for template in template_paths:
         label = template.stem
         if label in paused:
             continue
@@ -1584,6 +1611,88 @@ def detect_plist_drift(_ctx) -> list:
             ),
         }]
     return plist_drift_findings()
+
+
+GATES_RED_LABEL = "gates-red"
+
+
+def _gates_red_blind(reason: str) -> list:
+    return [{
+        "subject": "gates-red-blind",
+        "title": "Could not read the nightly gates-red issues on GitHub",
+        "body": (f"`gh issue list --label {GATES_RED_LABEL}` did not answer: {reason}\n\n"
+                 "A red nightly gates.yml run opens a GitHub issue and this detector is "
+                 "its only reader, so today a red run could not reach triage.\n\n"
+                 "## Action\nIf the reason says gh is not installed, install it; "
+                 "otherwise check `gh auth status` for the account the fleet-health "
+                 "job runs as."),
+    }]
+
+
+# launchd hands a job PATH=/usr/bin:/bin:/usr/sbin:/sbin, and com.kipi.fleet-health
+# sets none of its own, while gh lives in Homebrew. The first cut shelled bare
+# `gh`, so under launchd every run was FileNotFoundError and a blind finding
+# sent the operator to `gh auth status` for a PATH problem (#484 review).
+GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local" / "bin"))
+
+
+def _find_gh(gh_dirs=None):
+    """gh on the job's own PATH first, then the install dirs launchd leaves out."""
+    import shutil
+    dirs = [os.environ.get("PATH", "")] + list(GH_DIRS if gh_dirs is None else gh_dirs)
+    return shutil.which("gh", path=os.pathsep.join(d for d in dirs if d))
+
+
+def gates_red_findings(repo_root=None, run=None, gh_dirs=None) -> list:
+    """Every OPEN `gates-red` GitHub issue, as one finding each (ASK-2262).
+
+    THE ROUTE THIS COMPLETES. A red nightly `gates.yml` run used to email only the
+    account that owns the cron. The repo holds no Linear secret, so the workflow's
+    `report-red` job opens (or comments on) one issue labelled `gates-red` with the
+    built-in token. An issue nobody reads is no route at all: this detector is the
+    reader, and fleet-health's filer turns each open issue into a Linear issue in
+    Sana's triage, keyed by the issue number so a week of red stays one ticket.
+
+    A gh that cannot answer is BLIND, never zero findings: an unreadable queue that
+    reports empty is the silent all-clear this whole route exists to remove.
+    `run` is injected so tests never shell the real gh.
+    """
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    # Only the repo that carries the workflow has anything to read. An instance
+    # checkout without it is not asked, so it cannot file a blind finding daily.
+    if not (root / ".github" / "workflows" / "gates.yml").is_file():
+        return []
+    run = run or subprocess.run
+    gh = _find_gh(gh_dirs)
+    if not gh:
+        return _gates_red_blind("gh is not installed on this machine's PATH or in "
+                                + ", ".join(gh_dirs if gh_dirs is not None else GH_DIRS))
+    try:
+        proc = run([gh, "issue", "list", "--label", GATES_RED_LABEL, "--state", "open",
+                    "--limit", "50", "--json", "number,title,url,updatedAt"],
+                   capture_output=True, text=True, timeout=60, cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _gates_red_blind(exc.__class__.__name__)
+    if proc.returncode != 0:
+        return _gates_red_blind((proc.stderr or proc.stdout or "").strip()[-300:]
+                                or f"exit {proc.returncode}")
+    try:
+        issues = json.loads(proc.stdout or "[]")
+    except ValueError:
+        return _gates_red_blind("unparseable gh output")
+    return [{
+        "subject": f"gates-red-{i['number']}",
+        "title": f"nightly gates.yml run is red: GitHub issue #{i['number']}",
+        "body": (f"{i.get('url', '')}\n\nOpened by the `report-red` job in "
+                 f"`.github/workflows/gates.yml` (last update {i.get('updatedAt', '?')}). "
+                 "Each further red run comments on that issue, and the next green run "
+                 "closes it (`report-green`), after which this finding stops.\n\n## Action\n"
+                 "Open the linked run and fix the failing step."),
+    } for i in issues]
+
+
+def detect_gates_red(_ctx) -> list:
+    return gates_red_findings()
 
 
 def detect_promoted_audit(_ctx) -> list:
@@ -1924,6 +2033,13 @@ def detect_sweep_degraded(_ctx) -> list:
 
 
 DETECTORS = [
+    {
+        "id": "gates-red",
+        "description": "an open gates-red GitHub issue: the nightly gates.yml run went red",
+        "detect": detect_gates_red,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
     {
         "id": "promoted-audit",
         "description": "daily re-check of promoted spillover rows against Linear; files only when the whole sweep was blind",

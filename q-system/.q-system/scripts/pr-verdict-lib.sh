@@ -270,7 +270,52 @@ review_declined_to_start() {
 review_is_usable() {
   local f="${1:-}"
   has_complete_findings_block "$f" || return 1
+  review_could_not_read "$f" && return 1
   ! review_declined_to_start "$f"
+}
+
+# review_could_not_read <review-file>
+# True when the findings block is EMPTY and the reviewer never stated a verdict
+# extract_verdict recognizes. Exit 0 = nobody can say this review happened.
+#
+# THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
+# `gh pr diff` failed, and the reviewer stopped honestly ("VERDICT: REVIEW
+# BLOCKED" / "NOT ISSUED") over an EMPTY findings block. An empty block derives
+# APPROVE by contract (a round 2 that refutes everything must land), the stated
+# verdict parsed as nothing, and the PR got a green required check unread.
+#
+# WHY THIS SHAPE (after an independent review measured the earlier shapes over
+# all 711 saved reviews). Hunting for refusal PHRASES never closes ("Final
+# verdict: NOT ISSUED", a table row, no verdict line at all), and a label finder
+# that disagreed with extract_verdict on case refused 41 real reviews. So the
+# rule is stated as the contract itself: an empty block may only derive APPROVE
+# when the reviewer SAID a verdict. Rows present -> a review happened, not this
+# function's call. Empty and a stated verdict (any case) -> usable, and
+# resolve_verdict keeps the harsher of stated and derived. Empty and nothing
+# stated -> unusable, the status stays UNSTATED.
+# The reviewer's OWN words. Codex transcripts interleave `exec` blocks that echo
+# command output (the PR author's diff, fixtures, comments) between `codex`
+# messages, and the final answer follows the LAST line that is exactly `codex`.
+# Only that is read: an echoed "verdict: approve" in the author's text must not
+# turn a refusal into a stated verdict (independent review, 2026-10-13). A
+# transcript with no such marker (claude -p) is all final answer.
+_reviewer_final_answer() {
+  awk '{ lines[NR] = $0 } /^codex[[:space:]]*$/ { last = NR }
+       END { for (i = last + 1; i <= NR; i++) print lines[i] }' "${1:-}" 2>/dev/null
+}
+review_could_not_read() {
+  local f="${1:-}" block upper verdict
+  [ -s "$f" ] || return 1
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 1
+  grep -qE '^(blocker|major|minor|nit)\|' <<<"$block" && return 1
+  # extract_verdict matches upper-case labels and tokens; real reviews write
+  # "Verdict:" and "**Verdict: APPROVE WITH NITS.**", so read an upper-cased copy
+  upper="$(mktemp)"
+  _reviewer_final_answer "$f" | tr '[:lower:]' '[:upper:]' > "$upper"
+  verdict="$(extract_verdict "$upper")"
+  rm -f "$upper"
+  [ -z "$verdict" ]
 }
 
 # has_complete_findings_block <review-file>
@@ -309,6 +354,7 @@ has_complete_findings_block() {
 # function of them, so compute it instead of reading prose.
 #   any blocker -> BLOCK            (anchor: unrecoverable if merged)
 #   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
+#     ...unless its 4th field is `nonblocking` (ASK-2422, see _blocking_majors)
 #   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
 #   none        -> APPROVE
 # Empty when there is no COMPLETE FINDINGS block, so the caller falls back to
@@ -320,8 +366,8 @@ verdict_from_findings() {
   block="$(findings_block "$f")"
   printf '%s' "$block" | grep -q '^FINDINGS:' || return 0
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
-  elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
-  elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  elif printf '%s' "$block" | _blocking_majors | grep -q .; then printf 'REQUEST CHANGES'
+  elif printf '%s' "$block" | grep -qE '^(major|minor|nit)\|'; then printf 'APPROVE WITH NITS'
   # An empty block deriving APPROVE is a DELIBERATE contract, pinned by name in
   # test-severity-floor.sh: a round 2 that refutes everything must be able to land,
   # or approved PRs wedge forever. ASK-312 tried removing it and collided with that
@@ -724,6 +770,75 @@ extract_minor_findings() {
   local f="$1"
   [ -s "$f" ] || return 0
   findings_block "$f" | grep -E '^minor\|' || true
+}
+
+# THE ROW SHAPE, and the one rule every reader below shares (ASK-2422).
+#
+# A findings row is `severity|claim|file:line` with an OPTIONAL trailing mark.
+# The claim is the only free-text field, so it is the only field that can hold a
+# literal `|` -- and when it does, every positional field shifts right.
+#
+# SCAR, round 1 of this very issue: the first version read the mark off field 4.
+# A reviewer writing `major|the fallback swallows rc=2 | rc=3|a.sh:40|nonblocking`
+# put the mark on $5, field 4 held the location, the row read as blocking, and the
+# PR the reviewer had explicitly released wedged anyway -- silently, because the
+# row still looked well-formed. The fix is to anchor on the END of the row, which
+# does not move: the mark is the LAST field, and only when the row has at least 4
+# of them, so a row whose LOCATION is the word `nonblocking` releases nothing.
+#
+# This awk fragment is the single owner of that rule. Every reader interpolates it
+# rather than restating the comparison, so the three call sites cannot drift.
+_NB_MARK_AWK='function nb(  m) { m = $NF; gsub(/[ \t\r]/, "", m); return (NF >= 4 && m == "nonblocking") }'
+
+# _blocking_majors (stdin: a findings block)
+# The major rows that gate: every `major|claim|loc` row EXCEPT one carrying the mark.
+#
+# WHY THE MARK EXISTS (ASK-2422). A report-only gate PR took 4 review rounds, and
+# round 4's only major was one the reviewer itself called "not a blocker"; the next
+# PR's round 3 said the same words about its major. The ladder read `^major|` and
+# nothing else, so a reviewer had no way to put that judgment in the block, and its
+# own prose could not move the verdict. The mark is for a major the reviewer judges
+# safe to merge and fix after, including one that only bites in code the PR states
+# is report-only or dry-run. A blocker never reads the mark: real blockers block.
+#
+# EXACT FIELD, NOT A SUBSTRING. A location like `nonblocking.py:3` or a claim that
+# mentions the word must not release a gate; only the trailing field does.
+_blocking_majors() {
+  awk -F'|' "$_NB_MARK_AWK"' /^major[|]/ { if (!nb()) print }'
+}
+
+# extract_followup_findings <review-file>
+# What a terminal APPROVE WITH NITS leaves behind to fix: the minors, plus every
+# major the reviewer marked `nonblocking`. A released major is still a real defect;
+# it is listed with the minors so it reaches the run log, never dropped (ASK-2422).
+extract_followup_findings() {
+  local f="$1" block
+  [ -s "$f" ] || return 0
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 0
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
+    /^minor[|]/ { print; next }
+    /^major[|]/ { if (nb()) print }'
+}
+
+# findings_row_parts <row>
+# Splits ONE findings row into severity, claim and location, on three lines in
+# that order, with the optional trailing mark removed.
+#
+# WHY A FUNCTION AND NOT `IFS='|' read -r sev claim loc`. That read is the same
+# positional parse the scar above describes: a claim containing a pipe lands its
+# tail in `loc`, so the run log names a location the reviewer never wrote. Here
+# the location is the last field before the mark and the claim is everything
+# between, so an internal pipe is preserved rather than mistaken for a delimiter.
+findings_row_parts() {
+  printf '%s' "$1" | awk -F'|' "$_NB_MARK_AWK"'
+    {
+      last = nb() ? NF - 1 : NF
+      if (last < 3) { print $1; print $2; print ""; next }
+      claim = $2
+      for (i = 3; i < last; i++) claim = claim "|" $i
+      print $1; print claim; print $last
+    }'
 }
 
 # review_comment_body <review-file> <verdict> <engine> <degraded>

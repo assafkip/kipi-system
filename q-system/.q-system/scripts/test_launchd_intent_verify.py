@@ -530,11 +530,14 @@ finally:
 # and a healthy fleet is exactly the state a job running against its own pause
 # decision produces. Wired after that return, the whole feature would be dead.
 _called = []
-wd.run_intent_check = lambda dry: _called.append(dry)
+# broken_labels joined the signature in ASK-1124 (PR #364): run() now tells the
+# intent check which jobs are already reported broken. A stub without it raised
+# TypeError on every run and turned validate red.
+wd.run_intent_check = lambda dry, broken_labels=frozenset(): _called.append((dry, set(broken_labels)))
 wd.discover_problems = lambda: []
 wd.STATE_FILE = _tmp / "never-written.json"
 wd.run(dry_run=True)
-check("run() calls the intent check even when no job is failing", _called, [True])
+check("run() calls the intent check even when no job is failing", _called, [(True, set())])
 
 # And run_intent_check swallows a broken manifest instead of taking the watchdog
 # down with it -- a watchdog that dies stops watching.

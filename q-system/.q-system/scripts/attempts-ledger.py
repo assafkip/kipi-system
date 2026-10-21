@@ -308,6 +308,34 @@ def op_capout(d, issue, why, ts):
     e["capout"] = True
     e["capout_at"] = ts
     e["capout_why"] = why
+    # A new cap event owes one new announcement (ASK-1172). Dropped here and not
+    # only compared by timestamp, because two cap-outs in one second share a ts.
+    e.pop("capout_noticed", None)
+    return True
+
+
+def op_capout_notice(d, issue, outcome):
+    """Claim the ONE announcement a cap event is owed (ASK-1172).
+
+    Measured 2026-08-30: the redrives wrote "not re-entering it until a human
+    clears the cap-out" on every heartbeat, 132 lines a day for three parks, 99
+    for one issue. The park was right; re-announcing an unchanged fact every 15
+    minutes was a channel teaching its reader to skim.
+
+    BOUND TO THE EVENT, not to the issue: the value stored is the `capout_at` it
+    announced, so a later cap-out (a different `capout_at`, or op_capout's pop)
+    is heard again. Not parked is "nothing to announce", never an announcement.
+    """
+    e = d.get(issue)
+    if not isinstance(e, dict) or not e.get("capout"):
+        outcome["result"] = "not-capped"
+        return False
+    event = e.get("capout_at") or "unknown"
+    if e.get("capout_noticed") == event:
+        outcome["result"] = "already"
+        return False
+    e["capout_noticed"] = event
+    outcome["result"] = "claimed"
     return True
 
 
@@ -536,7 +564,39 @@ def _run(path, op, rest, ts):
         # with no exit is a quieter version of the 29-hour outage the redrives
         # were built to end. The cap-out page names this command.
         (issue,) = _args(op, rest, 1)
-        _mutate(path, lambda d: op_clear(d, issue, ("capout", "capout_at", "capout_why")))
+        _mutate(path, lambda d: op_clear(
+            d, issue, ("capout", "capout_at", "capout_why", "capout_noticed")))
+        return 0
+    if op == "claim-capout-notice":       # -> 0 announce now, 1 stay quiet
+        # 1 covers "already announced for this cap event" AND "not parked": in
+        # both the caller has nothing to say. 2/3 mean nothing was recorded, and
+        # the caller announces anyway -- quiet is earned only by a written notice.
+        (issue,) = _args(op, rest, 1)
+        outcome = {}
+        _mutate(path, lambda d: op_capout_notice(d, issue, outcome))
+        return 0 if outcome.get("result") == "claimed" else 1
+    if op == "list-capouts":              # -> issue\tcapout_at\twhy\tclear command
+        # THE ONE PLACE a parked issue stays visible (ASK-1172). The redrives now
+        # announce a cap-out once and then go quiet, so the log line scrolls away
+        # while the park does not. A read, no lock, same posture as list-flagged,
+        # and a corrupt ledger fails through the exit-2 catch-all rather than
+        # printing nothing, which would read as "nothing is parked".
+        _args(op, rest, 0)
+        try:
+            with open(path) as fh:
+                d = json.load(fh)
+        except FileNotFoundError:
+            d = {}
+        if not isinstance(d, dict):
+            raise Usage("ledger at %s is not a JSON object (%s); cannot list cap-outs"
+                        % (path, type(d).__name__))
+        for issue in sorted(d):
+            e = d.get(issue)
+            if isinstance(e, dict) and e.get("capout"):
+                print("%s\t%s\t%s\tpython3 q-system/.q-system/scripts/attempts-ledger.py "
+                      "%s clear-capout %s" % (
+                          issue, e.get("capout_at") or "?",
+                          e.get("capout_why") or "no reason recorded", path, issue))
         return 0
 
     if op == "claim-flag":                # claim-flag <issue> <flag> -> 0 first time, 1 after

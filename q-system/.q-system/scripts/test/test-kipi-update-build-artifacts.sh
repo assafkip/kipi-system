@@ -40,6 +40,12 @@ cp "$ROOT/kipi-update-deletion-guard.py" "$SK/kipi-update-deletion-guard.py"
 mkdir -p "$SK/q-system/.q-system/scripts" "$SK/q-system/.q-system/state"
 cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
    "$SK/q-system/.q-system/scripts/propagation-leak-gate.py"
+# The updater is fail-closed on the replica-divergence gate too, exactly as
+# it is on the leak gate above: a skeleton without it aborts before any sync.
+# It DISARMS on this population (no instance here carries a replicated
+# plugins/ path) and says so, so provisioning it changes nothing asserted here.
+cp "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" \
+   "$SK/q-system/.q-system/scripts/fleet-replica-divergence.py"
 cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
    "$SK/q-system/.q-system/scripts/containment-targets.py"
 cp "$ROOT/validate-separation.py" "$SK/validate-separation.py"
