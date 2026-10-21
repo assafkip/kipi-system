@@ -31,11 +31,16 @@ esac
 # Seam for the test, so it can prove which command runs without a model.
 AGENT="${HOSTED_REVIEW_AGENT:-$(dirname "${BASH_SOURCE[0]}")/pr-review-agent.sh}"
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+# SUBSCRIPTION ONLY (founder, 2026-09-28: "I don't want to use the API").
+# Only the Claude Code OAuth token runs the reviewer; an ANTHROPIC_API_KEY is
+# never a credential here and is stripped below so the reviewer's `claude -p`
+# cannot fall through to billed API usage.
+unset ANTHROPIC_API_KEY
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   # ::warning:: so the off state shows on the PR's checks page, not only inside
   # a green job's log (PR #437 review minor).
-  echo "::warning title=Hosted reviewer off::no model secret on this repo; PR #$PR was not reviewed here"
-  echo "HOSTED REVIEWER OFF: no ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN secret on this repo."
+  echo "::warning title=Hosted reviewer off::no CLAUDE_CODE_OAUTH_TOKEN secret on this repo; PR #$PR was not reviewed here"
+  echo "HOSTED REVIEWER OFF: no CLAUDE_CODE_OAUTH_TOKEN secret on this repo (an ANTHROPIC_API_KEY is not used: subscription only)."
   echo "Nothing was reviewed and no status was posted. kipi/reviewer-approved stays as the floor left it (red), so PR #$PR stays blocked until the dispatcher Mac reviews it."
   exit 0
 fi

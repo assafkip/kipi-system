@@ -339,5 +339,114 @@ printf '[%s]\n' "$(ci_pr 320 ask-8712 cccc3333)" > "$WORK/board.json"
   && ok "clearing one issue does not un-park the others" \
   || bad "clear-capout ASK-8710 also released ASK-8712"
 
+echo "== a cap-out is announced once per cap event, not once per cycle (ASK-1172) =="
+
+# THE DEFECT, measured 2026-08-30 in the dispatcher log: 132 lines a day of
+# "not re-entering it until a human clears the cap-out", 99 of them for ASK-135
+# alone. capout_skip wrote that line on EVERY heartbeat for as long as the park
+# stood, so a fact that changed once was re-announced ~every 15 minutes into a log
+# nobody reads -- a channel training its reader to skim.
+#
+# Paired both ways, like every gate above: silence on the second cycle must not
+# turn into an OFFER (the park still holds), and a NEW cap event must be heard.
+PRINTS_OF() { grep -c "$1" "$2" 2>/dev/null || true; }
+
+printf '[%s]\n' "$(ci_pr 350 ask-8730 abab1111)" > "$WORK/board.json"
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8730 \
+  "hit the 3-round cap still at 'REQUEST CHANGES' on PR #350" >/dev/null 2>&1
+
+OUT1="$(select_ci)"; cp "$WORK/ci.err" "$WORK/cycle1.err"
+OUT2="$(select_ci)"; cp "$WORK/ci.err" "$WORK/cycle2.err"
+[ "$(PRINTS_OF ASK-8730 "$WORK/cycle1.err")" = "1" ] \
+  && grep -q "clear-capout" "$WORK/cycle1.err" \
+  && ok "the first cycle over a new cap-out announces it, with the clearing command" \
+  || bad "cycle 1 did not announce ASK-8730 once: $(cat "$WORK/cycle1.err")"
+[ "$(PRINTS_OF ASK-8730 "$WORK/cycle2.err")" = "0" ] \
+  && ok "a second cycle over the SAME cap-out emits nothing" \
+  || bad "cycle 2 re-announced an unchanged cap-out: $(cat "$WORK/cycle2.err")"
+[ -z "$OUT1$OUT2" ] \
+  && ok "going quiet did not un-park it -- neither cycle offered ASK-8730" \
+  || bad "a quiet cap-out was OFFERED: '$OUT1' / '$OUT2'"
+
+# ONE announcement per cap event, not one per consumer. Both redrives read the same
+# park, so review-redrive meeting it after ci-redrive already said it is a repeat.
+printf '[%s]\n' "$(reviewer_pr 351 ask-8730 abab1111)" > "$WORK/board.json"
+record 351 ASK-8730 abab1111
+OUT3="$(select_review)"
+[ "$(PRINTS_OF ASK-8730 "$WORK/rr.err")" = "0" ] && [ -z "$OUT3" ] \
+  && ok "the other redrive does not re-announce it either, and still refuses it" \
+  || bad "review-redrive re-announced or offered ASK-8730: '$OUT3' $(cat "$WORK/rr.err")"
+
+# A SECOND cap event is a second fact (op_capout's own rule), so it is heard once.
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8730 \
+  "hit the 3-round cap again on PR #351" >/dev/null 2>&1
+select_review >/dev/null; cp "$WORK/rr.err" "$WORK/cycle4.err"
+select_review >/dev/null; cp "$WORK/rr.err" "$WORK/cycle5.err"
+[ "$(PRINTS_OF ASK-8730 "$WORK/cycle4.err")" = "1" ] \
+  && grep -q "cap again" "$WORK/cycle4.err" \
+  && ok "a NEW cap event on the same issue is announced once, with its new reason" \
+  || bad "a re-cap was not announced: $(cat "$WORK/cycle4.err")"
+[ "$(PRINTS_OF ASK-8730 "$WORK/cycle5.err")" = "0" ] \
+  && ok "and then goes quiet again" \
+  || bad "the re-cap re-announced on the next cycle: $(cat "$WORK/cycle5.err")"
+
+# Clearing is a full reset: a cap after a clear is a fresh event, not a repeat.
+# Asserted SET first, so the "dropped" case below cannot pass on a key that was
+# never written.
+[ -n "$(capout_of ASK-8730 capout_noticed)" ] \
+  && ok "the announcement is recorded in the ledger, keyed to the cap event" \
+  || bad "no capout_noticed recorded for ASK-8730 after it was announced"
+python3 "$LEDGER" "$ATTEMPTS" clear-capout ASK-8730 >/dev/null 2>&1
+[ -z "$(capout_of ASK-8730 capout_noticed)" ] \
+  && ok "clear-capout also drops the announcement record" \
+  || bad "capout_noticed survived clear-capout: '$(capout_of ASK-8730 capout_noticed)'"
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8730 "capped after a clear" >/dev/null 2>&1
+select_review >/dev/null
+[ "$(PRINTS_OF ASK-8730 "$WORK/rr.err")" = "1" ] \
+  && ok "a cap-out after a clear is announced again" \
+  || bad "a post-clear cap-out was swallowed: $(cat "$WORK/rr.err")"
+
+# FAIL LOUD. Quiet is only earned by a notice the ledger RECORDED. A ledger that
+# cannot be written (read-only state dir: mkstemp fails, the op exits 2) must
+# leave the line ON, or a broken disk silently mutes every park it holds.
+python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8731 "capped, disk read-only" >/dev/null 2>&1
+printf '[%s]\n' "$(ci_pr 352 ask-8731 cdcd2222)" > "$WORK/board.json"
+chmod 555 "$WORK/state"
+select_ci >/dev/null; cp "$WORK/ci.err" "$WORK/ro1.err"
+select_ci >/dev/null; cp "$WORK/ci.err" "$WORK/ro2.err"
+chmod 755 "$WORK/state"
+[ "$(PRINTS_OF "ASK-8731 PR" "$WORK/ro1.err")" = "1" ] \
+  && [ "$(PRINTS_OF "ASK-8731 PR" "$WORK/ro2.err")" = "1" ] \
+  && ok "an unwritable ledger keeps announcing -- silence is never the failure mode" \
+  || bad "a notice the ledger could not record went quiet: $(cat "$WORK/ro2.err")"
+
+echo "== every parked issue is listed in one place (ASK-1172) =="
+
+# The announcement fires once and scrolls away; the park does not. `list-capouts`
+# is the one read that answers "what is parked right now", each row carrying the
+# command that clears it, so nobody has to reconstruct it from a log.
+LIST="$(python3 "$LEDGER" "$ATTEMPTS" list-capouts 2>&1)"; RC=$?
+[ "$RC" = "0" ] && printf '%s\n' "$LIST" | grep -q "^ASK-8731	" \
+  && printf '%s\n' "$LIST" | grep -q "^ASK-8712	" \
+  && printf '%s\n' "$LIST" | grep -q "clear-capout ASK-8731" \
+  && ok "list-capouts names every parked issue with its clearing command" \
+  || bad "list-capouts (rc=$RC) missed a parked issue: $LIST"
+printf '%s\n' "$LIST" | grep -q "^ASK-8710	" \
+  && bad "list-capouts listed ASK-8710, whose park was cleared" \
+  || ok "a cleared issue is not listed"
+# rc AND stdout, because an unknown op also prints nothing on stdout: without the
+# rc this case passed against a ledger that had no list-capouts at all.
+EMPTY="$WORK/empty-ledger.json"; printf '{}\n' > "$EMPTY"
+EOUT="$(python3 "$LEDGER" "$EMPTY" list-capouts 2>/dev/null)"; RC=$?
+[ "$RC" = "0" ] && [ -z "$EOUT" ] \
+  && ok "no parks lists nothing (exit 0, empty is an answer)" \
+  || bad "list-capouts on an empty ledger: rc=$RC out='$EOUT'"
+# And the corrupt case names the op, since "unknown op" is exit 2 as well.
+printf '[1]\n' > "$WORK/bad-ledger.json"
+python3 "$LEDGER" "$WORK/bad-ledger.json" list-capouts >/dev/null 2>"$WORK/bad.err"; RC=$?
+[ "$RC" = "2" ] && ! grep -q "unknown op" "$WORK/bad.err" \
+  && ok "a corrupt ledger fails loudly (exit 2), never reads as 'nothing parked'" \
+  || bad "list-capouts on a corrupt ledger: rc=$RC, $(cat "$WORK/bad.err")"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

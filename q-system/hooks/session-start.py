@@ -225,8 +225,41 @@ def check_claude_integrity(project_dir):
     return ""
 
 
+NOTES_PUBLISH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             os.pardir, ".q-system", "scripts", "notes-publish.py")
+
+
+def overlay_notes(project_dir):
+    """Pull notes from origin's kipi/notes that supersede the local copy.
+
+    why (codex major, PR #464): auto-commit publishes notes to kipi/notes, but
+    nothing here read that branch, so a cloud session on an instance repo still
+    loaded the stale default-branch handoff. notes-publish.py --overlay owns the
+    allowlist and the lineage rule; it runs in every session since round 3 (a
+    Mac that never reads the branch would keep-conflict forever) and is silent
+    locally unless it overlaid something; it never stages or commits.
+    Non-fatal and bounded: the hook's own cap is 5s, so this gives it 4 and
+    prints its single line.
+    """
+    import subprocess
+    script = os.path.normpath(NOTES_PUBLISH)
+    if not os.path.isfile(script):
+        return
+    try:
+        r = subprocess.run(["python3", script, "--overlay", "--repo", project_dir],
+                           capture_output=True, text=True, timeout=4)
+        if r.stdout.strip():
+            print(r.stdout.strip().splitlines()[0])
+    except Exception as e:
+        print(f"notes-overlay: skipped ({type(e).__name__})")
+
+
 def main():
     project_dir = get_project_dir()
+
+    # Before anything reads the handoff (load_handoff below): a cloud session
+    # must see the kipi/notes copy when it is newer than the checked-out one.
+    overlay_notes(project_dir)
 
     # .claude/ integrity tripwire (ASK-282). Runs BEFORE the daily sentinel,
     # deliberately.

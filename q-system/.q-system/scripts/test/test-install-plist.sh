@@ -22,8 +22,21 @@ fail() { echo "  FAIL $1"; FAILS=$((FAILS + 1)); }
 
 echo "test-install-plist.sh"
 
+# The set is what GIT tracks, not one directory (ASK-2277). A glob of
+# "$PLIST_DIR" counted 15 of the 17 committed templates and never rendered the
+# two under automation/, so a broken one there could not go red here.
+# ../../.. is the repo root, the same resolution install-plist.sh uses for
+# KIPI_REPO. The count is taken a SECOND way, with :(top) from the git toplevel,
+# so a wrong root cannot agree with itself: the first cut used ../.. and both
+# numbers read 15, because git answered for the q-system/ subtree only.
+REPO_ROOT="$(cd "$PLIST_DIR/../../.." && pwd)"
+TEMPLATES="$(git -C "$REPO_ROOT" ls-files -- '*/com.kipi.*.plist' 'com.kipi.*.plist')"
+GIT_COUNT="$(git -C "$PLIST_DIR" ls-files -- ':(top,glob)**/com.kipi.*.plist' | awk 'NF' | wc -l | tr -d ' ')"
+
 TEMPLATE_COUNT=0
-for template in "$PLIST_DIR"/com.kipi.*.plist; do
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  template="$REPO_ROOT/$rel"
   [ -e "$template" ] || continue
   TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
   label="$(basename "$template" .plist)"
@@ -46,21 +59,23 @@ for template in "$PLIST_DIR"/com.kipi.*.plist; do
     fi
     # 3. The render is a plist launchd can actually load.
     if command -v plutil >/dev/null 2>&1; then
-      if plutil -lint "$out" >/dev/null 2>&1; then
+      if plutil -lint "$out" >/dev/null 2>&1; then  # portability-lint-skip: guarded by command -v above
         pass "$label: rendered plist is valid XML plist"
       else
-        fail "$label: rendered plist fails plutil -lint"
+        fail "$label: rendered plist fails plutil -lint"  # portability-lint-skip: message text
       fi
     fi
   else
     fail "$label: --render-only failed"
   fi
-done
+done <<< "$TEMPLATES"
 
 if [ "$TEMPLATE_COUNT" -lt 3 ]; then
   fail "expected at least 3 com.kipi.*.plist templates, found $TEMPLATE_COUNT"
+elif [ "$TEMPLATE_COUNT" -ne "$GIT_COUNT" ]; then
+  fail "checked $TEMPLATE_COUNT templates but git tracks $GIT_COUNT"
 else
-  pass "found $TEMPLATE_COUNT plist templates"
+  pass "checked all $TEMPLATE_COUNT git-tracked plist templates"
 fi
 
 # 4. NEGATIVE SELF-TEST.

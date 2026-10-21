@@ -212,10 +212,36 @@ def _final_sentence(block):
     return parts[-1] if parts else block
 
 
+# The keyword-bait CTA: "Comment AUDIT and I'll send it", "reply YES to get the doc",
+# "follow me for more". why (2026-10-05): the closed list above held "follow for more"
+# and "comment below" but not these, so the shape passed every check. It did not
+# matter while every closing question was refused anyway; once a lane may end on a
+# question, the CTA ban has to stand on its own. The keyword must be QUOTED or ALL
+# CAPS: position alone is not mood, and "Reply rate and open rate differ" or "Type
+# checking and the lint pass" open with the same nouns (PR review, 2026-10-05).
+SOLICITATION_PATTERNS = (
+    re.compile(r"(?:^|[.!?]\s+)(?i:comment|reply|type|dm)\s+(?i:with\s+)?"
+               r"(?:\"[^\"\n]{1,30}\"|'[^'\n]{1,30}'|[A-Z][A-Z0-9-]+)\s+"
+               r"(?i:and|to|for|if)\b"),
+    re.compile(r"(?i)\bfollow me\s+(?:for|if|to)\b"),
+    # Lowercase keyword, caught by what follows it: a promise or a payoff. "Reply rate
+    # and open rate" has neither, "comment audit and I'll send it" has both halves.
+    re.compile(r"(?i)(?:^|[.!?]\s+)(?:comment|reply|type|dm)\s+(?:with\s+)?[\w-]+\s+"
+               r"(?:and\s+i\b|and\s+i'll\b|to\s+get\b|to\s+receive\b|for\s+the\s+"
+               r"(?:link|doc|checklist|guide|template)\b)"),
+)
+
+
 def _solicitation_signals(ending):
     low = ending.lower()
     hits = [phrase for phrase in SOLICITATION_CLOSERS if phrase in low]
-    return [f"solicitation closer {hits[0]!r}"] if hits else []
+    if hits:
+        return [f"solicitation closer {hits[0]!r}"]
+    for pattern in SOLICITATION_PATTERNS:
+        match = pattern.search(ending)
+        if match:
+            return [f"solicitation closer {match.group(0).strip()!r}"]
+    return []
 
 
 def _pitch_close_signals(ending):
@@ -361,8 +387,8 @@ def question_only_scene_exemption(text):
 
     Amber's spec has five conditions. FOUR of them are string-length and regex checks and
     are implemented here exactly as written: sole sentence, under 160 chars, no CTA verb,
-    and `_reader_survey_signals` still running (that one lives in `signals`, which never
-    stops calling it).
+    and `_reader_survey_signals` still running (that one lives in `signals`, which stops
+    calling it only for a caller that passes `allow_reader_question=True`).
 
     The fifth, CARRIES A SCENE, is not checkable this way and this function does not
     pretend it is. A regex cannot tell a concrete moment from an abstract prompt dressed
@@ -409,8 +435,18 @@ def question_only_scene_exemption(text):
     return not _CTA_VERB_RE.search(last)
 
 
-def signals(text):
+def signals(text, allow_reader_question=False):
     """Every marketer tell in the ending, named so a rejection can explain itself.
+
+    `allow_reader_question` exists for a deployment whose founder lifted the
+    closing-question rule for ONE lane (the first was a scheduled short-post lane,
+    2026-10-05: a controlled study measured an open question as raising replies,
+    and the lane's drafts carried almost no questions against roughly a third of
+    the top posts). It drops exactly two checks: the closing question and the reader
+    survey, because a survey question ("which of your X...") is the add-your-case
+    move, not a call to action. Solicitation, pitch and homework closers still
+    fire: the lifted rule was about questions, never about CTAs. Default False, so
+    every existing caller keeps the ban byte for byte.
 
     The ending is glyph-normalized before any list or pattern reads it: a curly
     apostrophe took "That's exactly what this solves" past the pitch patterns (which
@@ -424,18 +460,30 @@ def signals(text):
     # Written as a substitution rather than an early return on purpose: an early return
     # would hand a question-only post a pass on the survey heuristic too, and Amber's
     # condition 5 is explicit that the exemption is additive and never overrides it.
-    closing_question = ([] if question_only_scene_exemption(text)
+    closing_question = ([] if allow_reader_question or question_only_scene_exemption(text)
                         else _closing_question_signals(ending))
-    return (_solicitation_signals(ending)
-            + _pitch_close_signals(ending)
-            + _homework_signals(ending)
-            + closing_question
-            + _reader_survey_signals(ending))
+    survey = [] if allow_reader_question else _reader_survey_signals(ending)
+    # With the switch on, a closing question no longer stops the post, so a CTA parked
+    # on the line ABOVE it ("DM me for the checklist." then "Would you trust it?") would
+    # walk past checks that read only the last line. Before the switch that shape was
+    # always refused by the question ban. So the CTA family also reads that line.
+    # The trigger is the module's own question detector ("?!", "?…" included), and the
+    # CTA family then reads EVERY earlier line, not only the one above (PR 519 round 3:
+    # a CTA two lines up walked past a one-line lookback).
+    cta_lines = [ending]
+    if allow_reader_question and _closing_question_signals(ending):
+        cta_lines += [normalize_glyphs(line)
+                      for line in _lines_without_trailing_hashtags(text)[:-1]]
+    cta = []
+    for line in cta_lines:
+        cta += (_solicitation_signals(line) + _pitch_close_signals(line)
+                + _homework_signals(line))
+    return cta + closing_question + survey
 
 
-def check(text):
+def check(text, allow_reader_question=False):
     """Violations in the gates' shape, so callers merge reports without special-casing."""
-    found = signals(text)
+    found = signals(text, allow_reader_question=allow_reader_question)
     if not found:
         return []
     return [{
