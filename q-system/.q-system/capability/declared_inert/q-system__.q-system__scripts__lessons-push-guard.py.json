@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/lessons-push-guard.py",
+ "reason": "cross-repo caller: chief cloud/lessons-weekly.md runs main's copy before git push (sp-368fb6f6); this gate cannot see another repo, so the live wire-or-retire decision is the cross-repo-caller gap",
+ "spillover_id": "sp-887536cf"
+}

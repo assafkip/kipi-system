@@ -53,7 +53,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pytest
+      # From the fleet's verify requirements (pytest + pytest-xdist), so the
+      # adversarial suite's parallel and .verify-serial cases run for real here
+      # instead of taking their no-xdist branch (2026-10-05).
+      - run: pip install -r q-system/.q-system/requirements-verify.txt
       # SCOPED, NOT --full (RULE-2026-10-01-A, founder bar 2026-10-01: "no
       # 6000-test runs on small changes"). This step ran `verify.sh --full` on
       # every PR and every push to main: 12.5 min on run 36820282302, the same

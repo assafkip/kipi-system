@@ -270,7 +270,52 @@ review_declined_to_start() {
 review_is_usable() {
   local f="${1:-}"
   has_complete_findings_block "$f" || return 1
+  review_could_not_read "$f" && return 1
   ! review_declined_to_start "$f"
+}
+
+# review_could_not_read <review-file>
+# True when the findings block is EMPTY and the reviewer never stated a verdict
+# extract_verdict recognizes. Exit 0 = nobody can say this review happened.
+#
+# THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
+# `gh pr diff` failed, and the reviewer stopped honestly ("VERDICT: REVIEW
+# BLOCKED" / "NOT ISSUED") over an EMPTY findings block. An empty block derives
+# APPROVE by contract (a round 2 that refutes everything must land), the stated
+# verdict parsed as nothing, and the PR got a green required check unread.
+#
+# WHY THIS SHAPE (after an independent review measured the earlier shapes over
+# all 711 saved reviews). Hunting for refusal PHRASES never closes ("Final
+# verdict: NOT ISSUED", a table row, no verdict line at all), and a label finder
+# that disagreed with extract_verdict on case refused 41 real reviews. So the
+# rule is stated as the contract itself: an empty block may only derive APPROVE
+# when the reviewer SAID a verdict. Rows present -> a review happened, not this
+# function's call. Empty and a stated verdict (any case) -> usable, and
+# resolve_verdict keeps the harsher of stated and derived. Empty and nothing
+# stated -> unusable, the status stays UNSTATED.
+# The reviewer's OWN words. Codex transcripts interleave `exec` blocks that echo
+# command output (the PR author's diff, fixtures, comments) between `codex`
+# messages, and the final answer follows the LAST line that is exactly `codex`.
+# Only that is read: an echoed "verdict: approve" in the author's text must not
+# turn a refusal into a stated verdict (independent review, 2026-10-13). A
+# transcript with no such marker (claude -p) is all final answer.
+_reviewer_final_answer() {
+  awk '{ lines[NR] = $0 } /^codex[[:space:]]*$/ { last = NR }
+       END { for (i = last + 1; i <= NR; i++) print lines[i] }' "${1:-}" 2>/dev/null
+}
+review_could_not_read() {
+  local f="${1:-}" block upper verdict
+  [ -s "$f" ] || return 1
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 1
+  grep -qE '^(blocker|major|minor|nit)\|' <<<"$block" && return 1
+  # extract_verdict matches upper-case labels and tokens; real reviews write
+  # "Verdict:" and "**Verdict: APPROVE WITH NITS.**", so read an upper-cased copy
+  upper="$(mktemp)"
+  _reviewer_final_answer "$f" | tr '[:lower:]' '[:upper:]' > "$upper"
+  verdict="$(extract_verdict "$upper")"
+  rm -f "$upper"
+  [ -z "$verdict" ]
 }
 
 # has_complete_findings_block <review-file>

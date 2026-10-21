@@ -113,6 +113,14 @@ def check_corrections(path, channels=None):
                         f"{rid}: unknown scope {ch!r}; the channel vocabulary is "
                         f"{list(channels.scopes)} (from "
                         f"{channels.source or 'the built-in default, no registry'})")
+            excl = row.get("scope_exclude")
+            # Lane names are lowercase kebab. A case typo ("scheduled-X") would match
+            # no lane and silently keep the correction on, so the shape is checked here.
+            if excl is not None and not (isinstance(excl, list) and all(
+                    isinstance(x, str) and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", x)
+                    for x in excl)):
+                problems.append(f"{rid}: scope_exclude must be a list of lowercase "
+                                f"kebab lane names, got {excl!r}")
     return problems
 
 

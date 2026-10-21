@@ -127,6 +127,9 @@ def sh_violations(text):
 
 # --------------------------------------------------------------- python ----
 _SUBPROCESS = {"run", "Popen", "check_output", "check_call", "call"}
+# lean_call.run (scripts/lean_call.py) is subprocess.run with the lean flags; its
+# env= is the caller's, so the caller is checked exactly like a subprocess call.
+_RUNNERS = {"subprocess", "lean_call"}
 
 
 def _argv_list(node):
@@ -234,7 +237,7 @@ def py_violations(text, path="<src>"):
         for n in ast.walk(scope):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
                     and n.func.attr in _SUBPROCESS and isinstance(n.func.value, ast.Name) \
-                    and n.func.value.id == "subprocess":
+                    and n.func.value.id in _RUNNERS:
                 argv = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "args"), None)
                 if _model_expr(argv, scope, funcs):
                     calls.append((n, scope))
@@ -368,6 +371,7 @@ PY_CONTROLS = {
                                    'subprocess.run(["claude", "-p", x], env=subscription_env())\n',
     "an opencode run with no env=": 'import subprocess\nargs = ["opencode", "run", "--pure"]\n'
                                     'args.append(p)\nsubprocess.run(args, text=True)\n',
+    "a lean_call.run with no env=": 'import lean_call\nlean_call.run(["claude", "-p", x])\n',
     "a re-add after the helper": 'import os, subprocess\n' + HELPER +
                                  'e = subscription_env()\ne["ANTHROPIC_API_KEY"] = "k"\n'
                                  'subprocess.run(["claude", "-p", x], env=e)\n',
