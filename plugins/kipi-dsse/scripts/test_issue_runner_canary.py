@@ -14,6 +14,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 DSSE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location(
     "_ask1810_fixtures", DSSE / "test_issue_runner_verifiable_green.py")
@@ -108,8 +110,12 @@ def test_a_mutant_with_zero_new_failures_is_refused_by_name(tmp_path):
 
 # --- a test that fails in both runs is not the mutant's doing ---------------------------
 
-def test_a_failure_in_both_clean_and_mutant_runs_is_not_counted(tmp_path):
-    repo = _tool_repo(tmp_path, extra=BROKEN, check="python3 tests/test_tool.py || true")
+@pytest.mark.parametrize("check", ["python3 tests/test_tool.py || true",
+                                   "python3 -m pytest tests/test_tool.py -q || true"],
+                         ids=["unittest", "pytest"])
+def test_a_failure_in_both_clean_and_mutant_runs_is_not_counted(tmp_path, check):
+    # Both runners: unittest names a failure on stderr, pytest on stdout.
+    repo = _tool_repo(tmp_path, extra=BROKEN, check=check)
     assert _mutant_run(repo, "flip-answer").returncode == 0
     r = _issue(repo, "verify")
     assert r.returncode == 0, r.stdout + r.stderr
