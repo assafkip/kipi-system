@@ -425,3 +425,19 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Revisit:** When gates.yml is re-enabled after the freeze. Until then no job
   runs the full declared suite and a too-narrow selection is caught by nothing.
 
+## The Linear worker runs on the Mac again (2026-10-20)
+
+### RULE-2026-10-20-A: com.kipi.dispatch is the Linear worker; the cloud routine stays disabled
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "Move the worker back to the Mac.
+  I don't want it in the cloud.")
+- **Decision:** `com.kipi.dispatch` is loaded again, rendered from
+  `q-system/.q-system/scripts/com.kipi.dispatch.plist` the way `install-plist.sh`
+  renders it (KIPI_REPO = ~/projects/kipi-system): every 15 minutes, at most 3
+  tickets a day. The cloud routine `trig_01WhmVCjxRiCLGPwZsqYsHYK` ("Linear worker
+  (weekdays x3)") is disabled, not deleted. This reverses the ASK-2176 Phase 5 move
+  of 2026-09-30.
+- **Reason:** The founder's call. Seen the same day: the cloud routine sat at its
+  cap of 5 open own PRs per repo and picked no new ticket.
+- **Date:** 2026-10-20
+- **Revisit:** Only on a founder order. Turning the routine back on while the Mac
+  job runs puts two workers on one queue.

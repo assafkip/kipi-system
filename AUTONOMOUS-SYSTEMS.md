@@ -60,7 +60,6 @@ list itself was not re-read from the routines API for this change.
 |---------|-----------|--------|----------|
 | fleet health check | daily 09:25 | chief `cloud/health-check.md` | adds cloud coverage of the chief-bot jobs (ASK-2191) |
 | client status | weekdays 07:25 | chief `cloud/client-status.md`; publishes to chief `kipi/status` | new (ASK-2192) |
-| Linear worker | Mon-Fri 09:40, 12:40, 15:40 | chief `cloud/linear-worker.md` | `com.kipi.dispatch`, retired 2026-09-30 |
 | Triage | weekdays 09:05 | chief `cloud/triage.md` | `com.triage.brief` / `.act` / `.respond`, retired 2026-09-30 |
 | LGTM | weekdays 08:35 | chief `cloud/lgtm.md`; reads GitHub through MCP (chief #47) | `com.lgtm.brief` / `.act` / `.respond` / `.week`, retired 2026-09-30 |
 | meeting loop | daily 20:00 | instance-side prompt | an instance's meeting-loop launchd job, retired 2026-09-30 |
@@ -96,6 +95,7 @@ list itself was not re-read from the routines API for this change.
 | `com.kipi.fleet-full-suite-scan` | 08:20 (alerts on a state change only; RULE-2026-10-01-A) |
 | `com.kipi.fleet-model-gate-scan` | 08:25 (model call sites not behind the model gate; alerts on a state change only; ASK-2395) |
 | `com.kipi.linear-dor` | 03:00 |
+| `com.kipi.dispatch` (the Linear worker) | every 15 min, at most 3 tickets a day; back from the cloud 2026-10-20, the routine is disabled (RULE-2026-10-20-A) |
 | `com.kipi.disk-janitor` | 04:30 |
 | `com.kipi.voice-refresh` | day 1 of the month, 09:00 |
 | `com.kipi.browser-session-health`, `com.kipi.browser-session-deadman` | every 30 min |
