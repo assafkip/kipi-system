@@ -1,5 +1,9 @@
 {
-  "path": "q-system/.q-system/tests/test_lessons_daily_streak.py",
-  "runner": "python3",
-  "timeout_s": 120
+ "path": "q-system/.q-system/tests/test_lessons_daily_streak.py",
+ "runner": "python3",
+ "timeout_s": 120,
+ "covers": [
+  "q-system/.q-system/scripts/lessons-daily.sh",
+  "q-system/.q-system/scripts/lessons_streak.py"
+ ]
 }

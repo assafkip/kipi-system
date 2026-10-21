@@ -1,0 +1,140 @@
+{
+  "_doc": "Design skills that run only inside a /design-chain round (dc-18). design-engine-door.py refuses a listed skill when the session has no active round. lane: site|brand|deck|motion. stage: the chain stage the engine serves.",
+  "engines": [
+    {
+      "skill": "frontend-design",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "ui-ux-pro-max",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "design",
+      "lane": "brand",
+      "stage": "build"
+    },
+    {
+      "skill": "brand",
+      "lane": "brand",
+      "stage": "build"
+    },
+    {
+      "skill": "design-room",
+      "lane": "site",
+      "stage": "critique"
+    },
+    {
+      "skill": "deck-ai",
+      "lane": "deck",
+      "stage": "build"
+    },
+    {
+      "skill": "slideshow",
+      "lane": "deck",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes-animation",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes-creative",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes-keyframes",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "motion-graphics",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "general-video",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "website-to-video",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "product-launch-video",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "canvas-design",
+      "lane": "brand",
+      "stage": "build"
+    },
+    {
+      "skill": "web-artifacts-builder",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "theme-factory",
+      "lane": "brand",
+      "stage": "build"
+    },
+    {
+      "skill": "algorithmic-art",
+      "lane": "brand",
+      "stage": "build"
+    },
+    {
+      "skill": "scroll-craft",
+      "lane": "site",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes-core",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "hyperframes-media",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "remotion-best-practices",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "music-to-video",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "pr-to-video",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "explainer-visuals",
+      "lane": "motion",
+      "stage": "build"
+    },
+    {
+      "skill": "faceless-explainer",
+      "lane": "motion",
+      "stage": "build"
+    }
+  ]
+}

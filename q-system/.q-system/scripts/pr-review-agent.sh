@@ -149,6 +149,10 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 . "$SCRIPT_DIR/pr-verdict-lib.sh"
 # THE ONE SLUG DERIVATION (ASK-738).
 . "$SCRIPT_DIR/repo-slug-lib.sh"
+# The outage classifier the worker uses (PR #421 round 16): a limit refusal here
+# is the machine's, not an unusable review. See the claude dispatch below.
+. "$SCRIPT_DIR/env-failure-lib.sh"
+. "$SCRIPT_DIR/reviewer-token-lib.sh"
 
 
 
@@ -228,7 +232,9 @@ STATUS_REPO_PATH="{owner}/{repo}"
 # what made codex non-gating before the founder directive, and naively swapping
 # the pair would have introduced a fresh defect in the other direction:
 #
-#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs `pr-<N>-*.md`, so
+#   ENGINE_DIR (reviews + ROUND COUNTER). review_round() globs this repo's own
+#   `<owner>_<repo>__pr-<N>-*.md` (ASK-1957; it globbed the legacy `pr-<N>-*.md`
+#   and therefore counted nothing at all until then), so
 #   an engine reading another engine's review files counts their rounds as its own
 #   and arms the anti-re-litigation rule early. Each engine therefore KEEPS its
 #   historical directory across this change -- claude's rounds stay in $OUT_DIR,
@@ -244,9 +250,12 @@ STATUS_REPO_PATH="{owner}/{repo}"
 #   read to understand the contract, so it flips with the defaults rather than
 #   being left as an artifact of the previous direction. Note the asymmetry it
 #   creates: for the PRIMARY engine ENGINE_DIR and VERDICT_DIR are now the SAME
-#   directory ($OUT_DIR). That is safe because review_round globs `pr-<N>-*.md`
-#   and the record is `..._pr-<N>.verdict.json`, so neither ever counts the other
-#   -- measured on the live store, 88 .md at the root and 993 under codex/.
+#   directory ($OUT_DIR). That is safe because the round counter matches
+#   `<key>-*.md` and the record is `<key>.verdict.json` -- the `-` after the key
+#   is required, so the record's name can never satisfy the counter's pattern.
+#   (Before ASK-1957 the counter's pattern was the legacy `pr-<N>-*.md`, which
+#   could not match either, for the different and much worse reason that it
+#   matched none of the repo-keyed files the writer has produced since ASK-738.)
 PRIMARY_ENGINE="${KIPI_REVIEW_PRIMARY_ENGINE:-claude}"
 
 # WHO ASKED FOR THIS REVIEW (sp-53aad86f). The verdict record proved that A CODEX
@@ -298,7 +307,10 @@ REVIEW_UNUSABLE=0
 
 mkdir -p "$ENGINE_DIR" "$VERDICT_DIR"
 TS() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-REVIEW="$ENGINE_DIR/$(artifact_key "$REVIEW_SLUG" "$PR")-$(date +%Y%m%d-%H%M%S).md"
+# Through the shared convention (repo-slug-lib.sh), never assembled here: the
+# round counter reads these files back with review_md_name_glob, and the last
+# time this line spelled the shape itself the two drifted for good (ASK-1957).
+REVIEW="$(review_md_path "$ENGINE_DIR" "$REVIEW_SLUG" "$PR" "$(date +%Y%m%d-%H%M%S)")"
 
 # Same bash wall clock as the worker: macOS ships no `timeout` without coreutils,
 # and a review that never returns is worse than one that fails.
@@ -352,11 +364,87 @@ if [ -n "$HEAD_SHA_CONFIRM" ] && [ "$HEAD_SHA_CONFIRM" != "$HEAD_SHA" ]; then
   echo "  Re-run once the branch settles. No review was dispatched and NO status was posted." >&2
   exit 1
 fi
+# THE CALLER'S HEAD, WHEN IT HAS ONE (ASK-318, PR #437 round 2). The hosted
+# reviewer verifies that ITS event's head sha is in the checkout, but the head
+# this script reviews and posts on is resolved above through gh. A push landing
+# between the event and this read gives a head the checkout does not hold: the
+# agent would read the base tree and post on a sha it never opened. So a caller
+# that knows which head it verified pins it, and any other head is refused. The
+# newer push triggers its own run.
+if [ -n "${KIPI_REVIEW_EXPECT_HEAD:-}" ] && [ "$HEAD_SHA" != "$KIPI_REVIEW_EXPECT_HEAD" ]; then
+  echo "REFUSING: PR #$PR's head is ${HEAD_SHA:0:12}, but the caller verified ${KIPI_REVIEW_EXPECT_HEAD:0:12} (KIPI_REVIEW_EXPECT_HEAD)." >&2
+  echo "  The checkout holds the caller's head, not this one. No review was dispatched and NO status was posted." >&2
+  exit 1
+fi
 [ -n "$ISSUE" ] || ISSUE="$(printf '%s' "$PR_TITLE" | grep -oE 'ASK-[0-9]+' | head -1)"
 
 echo "$(TS) reviewing PR #$PR: $PR_TITLE"
 echo "  head sha under review: ${HEAD_SHA:-unknown}"
 [ -n "$ISSUE" ] && echo "  linked issue: $ISSUE"
+
+# THE ROUND CAP. Every call below is a full paid model run, and nothing bounded
+# how many one PR could take: 4 to 7 rounds was routine and one PR took 16. The
+# round counter already existed but only fed a prompt hint, so the loop that
+# re-invokes this script had no brake. Past the cap this refuses BEFORE any tree
+# or model work, posts one comment and a PENDING status (never success: a cap is
+# not an approval, and never failure: it is not a finding), and exits 0 so the
+# caller stops instead of retrying. Raising KIPI_REVIEW_MAX_ROUNDS is the
+# deliberate way past it.
+MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
+case "$MAX_ROUNDS" in ''|*[!0-9]*) MAX_ROUNDS=3 ;; esac
+# Count only USABLE rounds. A provider blip or auth failure still leaves a
+# review .md on disk, and counting those would cap a PR nobody ever reviewed
+# (PR review round 1, major). review_is_usable is the same predicate that
+# decides whether a round may set the gate, so "a round" means one thing.
+PRIOR_ROUNDS=0
+for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+  [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
+done
+if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
+  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+  if [ "$POST" = "1" ]; then
+    # One comment and one alert per PR, not one per refused call: the loop may
+    # keep calling, and repeating them is the same waste moved elsewhere. The
+    # alert is what keeps a capped PR from parking silently: nothing machine-side
+    # consumes a pending status, so the decision goes to the engineering queue.
+    CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
+    # The marker goes down BEFORE the sends: when it waited on the comment, a
+    # failed comment re-fired the ticket on every later call (PR #501 review).
+    # The ticket send gets ONE retry, then a log line and nothing more (ASK-2428):
+    # the pending status below takes the PR out of review-redrive, so a single
+    # Linear blip left a capped PR with no signal anywhere (PR #501 round 5). A
+    # second failure is not a blip, and looping on it is the waste this cap stops.
+    if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
+      gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
+        || echo "  WARN: could not post the cap comment on PR #$PR" >&2
+      # The PR number again, as LETTERS: alert-to-linear's dedup strips every
+      # digit, so "PR #501" and "PR #502" were one ticket and the second capped
+      # PR only bumped a counter on the first (PR #501 review).
+      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
+      bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
+        || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
+    fi
+    # Never downgrade an approval. A cap is not a finding, so a sha that is
+    # already green stays green; pending goes only over a non-success state.
+    # A FAILED read is not "no status": treating it as empty posted pending over
+    # a live success (PR review round 2, major). Unknown means hands off.
+    CUR_STATE=""; READ_OK=0
+    if [ -n "$HEAD_SHA" ] && CUR_STATE="$(gh api "repos/$STATUS_REPO_PATH/commits/$HEAD_SHA/statuses" \
+        --jq "[.[] | select(.context==\"$STATUS_CONTEXT\")][0].state" 2>/dev/null)"; then
+      READ_OK=1
+    fi
+    [ -n "$HEAD_SHA" ] && [ "$READ_OK" = 0 ] \
+      && echo "  WARN: could not read $STATUS_CONTEXT on $HEAD_SHA; status left untouched" >&2
+    if [ "$READ_OK" = 1 ] && [ "$CUR_STATE" != "success" ]; then
+      reviewer_status_run gh api -X POST "repos/$STATUS_REPO_PATH/statuses/$HEAD_SHA" \
+          -f state=pending -f "context=$STATUS_CONTEXT" -f "description=$CAP_MSG" >/dev/null 2>&1 \
+        || echo "  WARN: could not set $STATUS_CONTEXT=pending on $HEAD_SHA" >&2
+    fi
+  fi
+  exit 0
+fi
 
 # THE TREE MUST ACTUALLY CONTAIN THE PR (sp-a72a9567). $SKEL comes from this
 # script's own location, and the diff comes from `gh pr diff <N>` -- two
@@ -706,20 +794,42 @@ fi
 # $REVIEW is only a variable at this point -- the file is not created until the
 # reviewer's stdout redirect at the bottom -- so review_round's "existing + 1" is
 # exactly this run's round number. (Counting after the redirect would double it.)
-ROUND="$(review_round "$ENGINE_DIR" "$PR")"
+# The SLUG is passed because the counter keys on it exactly as this script's
+# writer does. Without it the counter globs the legacy `pr-<N>-*.md`, matches
+# none of the repo-keyed files written since ASK-738, and reports round 1 on
+# every run -- which is how ROUND_RULE below sat unarmed (ASK-1957).
+ROUND="$(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG")"
 echo "  round: $ROUND (engine: $ENGINE)"
 
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
 # with findings still arriving). So from round 2 on, the reviewer is told the
 # round and is required to re-prove any finding it wants to raise again.
+# FETCH THE PR FRESH, OUTSIDE THE SANDBOX (2026-10-13). The reviewer is offline
+# on purpose (CODEX_SANDBOX), so the script reads GitHub at review start and the
+# prompt points at these files. A failed fetch is the machine's failure, not a
+# review: exit 9, no status posted (absent is not approved).
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXXX")" || {
+  echo "REFUSING: cannot create a PR context dir under $SCRATCH_BASE. No review ran; no verdict posted." >&2
+  exit 4; }
+if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
+   || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
+  echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
+  command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
+  exit 9
+fi
+if [ "$ROUND" -gt 1 ]; then
+  gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
+fi
+
 ROUND_RULE=""
 if [ "$ROUND" -gt 1 ]; then
   ROUND_RULE="
 
 ## THIS IS REVIEW ROUND $ROUND OF THIS PR
 
-Earlier rounds are in the PR comments (\`gh ${GH_R_PROMPT}pr view $PR --comments\`). Read them
+Earlier rounds are in the PR comments, fetched for you: $PR_CONTEXT_DIR/comments.txt. Read them
 AFTER you have formed your own read of the code, never before -- your value is
 that you did not inherit anyone's frame.
 
@@ -764,8 +874,12 @@ fail safe for the author -- it just burns a round.
 
 ## Read the change
 
-  gh ${GH_R_PROMPT}pr view $PR
-  gh ${GH_R_PROMPT}pr diff $PR
+The PR was fetched from GitHub when this review started. Under codex the
+sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
+gh cannot reach GitHub there. The fetched copies:
+
+  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
+  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
 
 ## What your fresh eyes are FOR
 
@@ -831,7 +945,10 @@ work that did not need doing.
 
 EVERY finding MUST ship a RUNNABLE REPRODUCER that you ACTUALLY RAN, with its real
 output pasted. A finding with no executed repro is an opinion and will be rejected.
-Write repros to \$TMPDIR and run them. If you cannot make it fail, DROP the finding
+Write repros to \$TMPDIR and run them. Need a copy of the tree to mutate? Use
+\`git worktree add --detach \"\$TMPDIR/copy\" HEAD\` from the tree you are in. Never
+\`git clone\`, and never write outside \$TMPDIR: it is deleted when you finish, and
+a copy anywhere else outlives the review and fills the disk. If you cannot make it fail, DROP the finding
 and say you tried. Dropping a finding you could not reproduce is a SUCCESS of this
 process, not a failure of it.
 
@@ -848,15 +965,22 @@ Then:
 - **VERDICT:** decided by THIS RULE, not by feel:
     - any blocker or major finding      => REQUEST CHANGES (BLOCK only if merging
       as-is would cause permanent or unrecoverable damage)
-    - only minor/nit findings           => APPROVE WITH NITS
+    - EXCEPT a major you mark nonblocking (below): it does not gate, it is a
+      follow-up. Mark a major nonblocking when you would say it is not a blocker
+      for THIS merge, or when it only bites in code the PR states is report-only,
+      dry-run or not yet enforced. Never mark a blocker; a blocker always blocks.
+    - only minor/nit findings, or majors all marked nonblocking => APPROVE WITH NITS
     - no finding survived reproduction  => APPROVE
   A bar this high ALWAYS finds something; that is what APPROVE WITH NITS is for.
-  On APPROVE WITH NITS the pipeline captures every minor as a tracked follow-up,
-  so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
-  wedges the PR forever and is itself a review defect.
+  On APPROVE WITH NITS the pipeline names every minor in the run log and files
+  every nonblocking major to the spillover ledger as a tracked follow-up with a
+  Linear issue, so approving with nits does NOT lose them. Using REQUEST CHANGES
+  to log minors wedges the PR forever and is itself a review defect.
   State the verdict and the single most important thing to fix first.
 - **Last, a machine-readable findings block**, EXACTLY this shape, one line per
-  finding, empty block if none. The pipeline parses it; keep prose out of it:
+  finding, empty block if none. The pipeline parses it; keep prose out of it.
+  To mark a major nonblocking, end its line with the word nonblocking after
+  file:line (the mark is the trailing |nonblocking, nothing else):
 
 FINDINGS:
 severity|one-sentence claim|file:line
@@ -870,15 +994,115 @@ END FINDINGS"
 # `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
 # additional input from stdin..."), and outside a trusted directory it refuses
 # with "Not inside a trusted directory". Both are load-bearing, not decoration.
+#
+# ONE SCRATCH DIR PER RUN, REMOVED ON EXIT (2026-10-01). The Opus fallback built
+# its reproducers in /tmp/pr16head (a 1.4G worktree) and /tmp/pr16rev (a 1.8G FULL
+# clone) on cole-gtm PR #16, kept them across rounds, and filled the disk mid-review:
+# the verdict came back empty and posted kipi/reviewer-approved=failure on a sha
+# nothing had found fault with. So the engine gets $TMPDIR pointed at a dir this
+# script owns and deletes, any worktree the model cut from the review tree is
+# pruned with it, and the claude engine cannot run `git clone` at all.
+REVIEW_SCRATCH=""
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+WT_BEFORE=""
+# Worktrees of the review repo as "<path> <sha> <detached>" lines.
+_wt_rows() {
+  git -C "$REVIEW_REPO" worktree list --porcelain 2>/dev/null | awk '
+    /^worktree /{p=substr($0,10); h=""; d=0}
+    /^HEAD /{h=$2}
+    /^detached/{d=1}
+    /^$/{if(p!="")print p" "h" "d; p=""}
+    END{if(p!="")print p" "h" "d}'
+}
+review_scratch_cleanup() {
+  # Empty would make "$own"/* read as /*, claiming every path: use a sentinel.
+  local own="${REVIEW_SCRATCH:-/nonexistent-review-scratch}"
+  # git lists PHYSICAL paths (macOS: /var/folders is /private/var/folders), so
+  # both prefixes are resolved the same way before any comparison.
+  local own_p base_p
+  own_p="$(cd "$own" 2>/dev/null && pwd -P)" || own_p="$own"
+  base_p="$(cd "$SCRATCH_BASE" 2>/dev/null && pwd -P)" || base_p="$SCRATCH_BASE"
+  case "$REVIEW_SCRATCH" in
+    "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
+  esac
+  case "${PR_CONTEXT_DIR:-}" in
+    "$SCRATCH_BASE"/ctx.*) command rm -rf -- "$PR_CONTEXT_DIR" 2>/dev/null || true ;;
+  esac
+  REVIEW_SCRATCH=""
+  # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
+  # PR #495 took four rounds to rule out each wrong owner of a worktree found by
+  # location: a base-revision copy (round 2), a concurrent review's scratch
+  # (round 3), verify.sh's mktemp -d snapshot (round 4). Nothing outside our own
+  # dir can be proven ours, so nothing outside it is removed. A new worktree
+  # under a temp root (the scar's /tmp/pr16head shape) is printed with its size,
+  # so a run that ignored the prompt's $TMPDIR rule is visible, not silent.
+  if [ -n "$WT_BEFORE" ]; then
+    _wt_rows | while read -r path sha det; do
+      grep -qxF "$path" <<<"$WT_BEFORE" && continue
+      case "$path" in
+        "$own"/*|"$own_p"/*) git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null || true ;;
+        "$SCRATCH_BASE"/*|"$base_p"/*|*/review-trees/*) ;;
+        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
+          echo "  WARN: a worktree appeared at $path during this review ($(du -sh "$path" 2>/dev/null | cut -f1)); not removed, its owner cannot be proven. If it is this engine's, it broke the \$TMPDIR rule." >&2 ;;
+      esac
+    done
+  fi
+  git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
+}
+trap 'release_wt_lock; review_scratch_cleanup' EXIT
+
+# Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
+# SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
+for _old in "$SCRATCH_BASE"/run.* "$SCRATCH_BASE"/ctx.*; do
+  [ -d "$_old" ] || continue
+  [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
+done
+
+# codex-sandbox-begin
+# THE SCRIPT READS GITHUB FOR THE REVIEWER. A reviewer with network AND a
+# logged-in gh, reading a PR author's diff, can be talked into posting
+# kipi/reviewer-approved=success or running gh pr merge itself (independent
+# review of this change, 2026-10-13). The PR is fetched FRESH at review start
+# into PR_CONTEXT_DIR, which the prompt points at. codex runs read-only, which
+# also means offline. The claude engine keeps its network; run_engine blocks the
+# direct `gh` and `curl` Bash calls, which is NOT containment: python3 (allowed
+# in user settings) can still shell out to gh, WebFetch is open, and claude runs
+# inside the PR's worktree so it loads that PR's own .claude/settings.json.
+# Follow-up ASK-2648: no gh token in the claude engine's environment, or no Bash.
+CODEX_SANDBOX="-s read-only"
+# codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
+  if [ -z "$REVIEW_SCRATCH" ]; then
+    WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
+    # A full disk is not "codex is down" (PR #495 review): stop here, named,
+    # rather than return 1 into the codex branch, which pages a wrong cause.
+    REVIEW_SCRATCH="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/run.XXXXXX")" || {
+      echo "REFUSING: cannot create a review scratch dir under $SCRATCH_BASE (disk full?). No review ran; no verdict posted." >&2
+      exit 4; }
+  fi
+  export TMPDIR="$REVIEW_SCRATCH"
   case "$1" in
-    claude) run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && claude -p --model '$CLAUDE_MODEL' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+    # KIPI_BLOCKED_CLAIM_LINT_MODE=advisory (ASK-459): the reviewer's FINAL text is
+    # its verdict and the FINDINGS block this script parses. A Stop hook that exits 2
+    # forces one more turn, and that turn's text replaces the verdict. Measured on a
+    # week of real transcripts: reviewer verdicts say "does not exist" routinely
+    # ("cites a backstop that does not exist"). The lint still logs them advisory.
+    # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+    # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+    claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
+# THE REVIEWER READS GITHUB THROUGH THE SCRIPT (founder-directed 2026-10-13:
+# "it should still read. That is the only way to stay updated"). With no -s flag
+# codex ran in its default read-only sandbox, which has NO NETWORK: every
+# `gh pr view/diff` it tried since the first codex review on 2026-07-29 failed.
+# The fix is not to give the reviewer the network (see CODEX_SANDBOX above); it
+# is fetch_pr_context, which reads the PR from GitHub when the review starts.
+#
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
 # The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
@@ -980,12 +1204,24 @@ if [ "$ENGINE" != "codex" ]; then
     # a review nobody read is the worst outcome available in this script.
     if review_is_usable "$REVIEW"; then
       echo "$(TS) review written: $REVIEW"
+    elif is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      # THE RUNNER REFUSED, NOT THE REVIEW (PR #421 round 16, minor). A limit
+      # line exits 0 and has no FINDINGS block, so it read as an unusable review
+      # and converge paged "review produced no verdict", blaming the review for a
+      # machine outage. Exit 9, the machine's code: no status is posted (absent
+      # is not approved), and the worker marks env_halt for converge.
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
     else
       REVIEW_UNUSABLE=1
       echo "$(TS) the $ENGINE reviewer answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
     fi
   else
     rc=$?
+    if is_environmental "$(cat "$REVIEW" 2>/dev/null)"; then
+      echo "$(TS) the $ENGINE reviewer's runner is unavailable ($(environmental_reason "$(cat "$REVIEW")")); no review, no status. Exit 9." >&2
+      exit 9
+    fi
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
     exit "$rc"
   fi
@@ -1176,24 +1412,109 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "ts": ts}, open(out, "w"), indent=2)
 PY
 
-# Severity floor, capture half: APPROVE WITH NITS is a TERMINAL state -- the
-# loop stops reworking -- so each minor must land in the spillover ledger or it
-# evaporates (no-orphan-findings.md). On REQUEST CHANGES the minors ride along
-# in the review, which is the spec for the next rework pass; capturing them
-# there too would double-file them.
+# Severity floor, minors half: APPROVE WITH NITS is a TERMINAL state -- the loop
+# stops reworking -- so a minor found here gets no second pass. On REQUEST CHANGES
+# the minors ride along in the review, which is the spec for the next rework pass.
+#
+# THE LEDGER IS NOT THEIR ROUTE, AND THIS BLOCK USED TO PRETEND IT WAS (ASK-1921,
+# claude review of PR #392, finding 1). It called `prd_runner.py spillover add`
+# with no --severity. That call defaults to `minor`, and `minor` sits in
+# SPILLOVER_REFUSED_SEVERITIES: "a minor is fixed in this change or rejected with a
+# reason; it is never queued" (founder 2026-09-12). So it returned 2 on every run,
+# the captured count was 0 BY CONSTRUCTION rather than by outage, and the alarm
+# built on that zero fired on every approved PR carrying a nit. Measured: the exact
+# argument list above, against the real runner, rc=2 with that refusal on stderr.
+#
+# Two consequences, and both are removals.
+#
+# 1. THE CAPTURE CALL IS GONE, not re-severitied. Filing a review minor at `medium`
+#    to clear the door launders the severity the reviewer chose. no-orphan-findings.md
+#    already names the only two legal ends for a NEW minor -- fixed in this change,
+#    or rejected with a reason -- and the ledger is neither of them.
+# 2. THE PAGE IS GONE WITH IT. An alert on a 100-percent policy refusal is the
+#    cry-wolf shape: nothing is down, there is nothing to act on, and it fires on
+#    every approved PR with a nit. founder-notifications.md asks for a state change,
+#    once, never per-event noise. The real loss on this path already has its own page
+#    further down: a review that never REACHED the issue, where the findings are
+#    genuinely unreadable by anyone.
+#
+# WHAT IS LEFT IS THE TRUE STATEMENT. Each minor is NAMED -- claim and location --
+# so the run log carries the findings and not just a tally. They also reach two
+# durable places without this block's help: the review comment on the PR, and the
+# FINDINGS block the reviewer posts onto the Linear issue.
+#
+# WHAT THIS STILL DOES NOT FIX: nobody is ASSIGNED the fix-or-reject decision that
+# no-orphan-findings.md requires. Routing that is a change with real Linear inflow
+# and its own blast radius, so it is captured rather than bundled here: sp-74e671a4,
+# filed as ASK-1940.
+# A NONBLOCKING MAJOR IS NOT A MINOR, AND THE TWO ROUTE DIFFERENTLY (ASK-2422,
+# round 1 finding 2). The block above released a major from the gate and then
+# handed it to the minors path, which files nothing BY POLICY and said so in a
+# sentence about minors. So the one severity no-orphan-findings.md requires to be
+# captured -- medium and up -- was the one severity that reached nobody, under a
+# log line calling it a minor. The severity the reviewer chose decides the route:
+#   minor -> named here, not queued (policy: fixed in this change or rejected)
+#   major -> ledger row + Linear capture ticket for Sana, at its real severity
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
-  CAPTURED=0
   MINOR_COUNT=0
-  while IFS='|' read -r _sev claim loc; do
+  NB_MAJOR_COUNT=0
+  NB_MAJOR_CAPTURED=0
+  # findings_row_parts, not `IFS='|' read`: a claim may contain a literal pipe,
+  # and the positional read puts its tail in $loc (pr-verdict-lib.sh row shape).
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    { read -r sev; read -r claim; read -r loc; } < <(findings_row_parts "$row")
     [ -n "$claim" ] || continue
-    MINOR_COUNT=$((MINOR_COUNT+1))
-    python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" spillover add \
-      --source "$ISSUE" --desc "PR #$PR ${MINOR_TAG}review minor: $claim ($loc)" >/dev/null 2>&1 \
-      && CAPTURED=$((CAPTURED+1))
+    if [ "$sev" = "major" ]; then
+      NB_MAJOR_COUNT=$((NB_MAJOR_COUNT+1))
+      echo "  nonblocking major $NB_MAJOR_COUNT: $claim ($loc)" >&2
+      # --severity major is the WHOLE POINT of this call and the lesson of
+      # ASK-1921: the severity-less version defaulted to `minor`, which the
+      # runner refuses by policy, so it returned 2 every time and the capture
+      # count was zero by construction. `major` is accepted, so this call can
+      # actually succeed -- and its rc means something.
+      #
+      # NO DoR IS PASSED ON PURPOSE. prd_runner's own note: the DoR is written by
+      # the agent that CONFIRMED the finding, and a later one guesses. This
+      # reviewer did not author the finding, so it files the capture ticket and
+      # leaves the DoR to `spillover needs-dor`, which is Sana's drain.
+      #
+      # cd "$SKEL" because discover_repo_root() reads the CWD, and the reviewer's
+      # CWD is the REVIEWED repo, which need not have a .prd-os/ at all.
+      #
+      # BEHIND THE POST GUARD, unlike everything else in this block. This call
+      # files a real Linear issue, and a dry run that mutates the ledger is the
+      # defect sp-8424aa32 already names against this very file. A dry run says
+      # what it WOULD file and files nothing.
+      if [ "$POST" != "1" ]; then
+        echo "    WOULD CAPTURE (dry run): spillover add --severity major -- $claim ($loc)" >&2
+      elif CAP_OUT="$( (cd "$SKEL" && python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" \
+            spillover add --source "$ISSUE" --severity major \
+            --desc "PR #$PR review, nonblocking major: $claim ($loc)") 2>&1 )"; then
+        NB_MAJOR_CAPTURED=$((NB_MAJOR_CAPTURED+1))
+        echo "    captured: $CAP_OUT" >&2
+      else
+        # A FAILED capture IS a state change worth paging: a released major that
+        # reached no ledger and no issue is exactly the orphan the rule forbids.
+        # This is not the ASK-1921 cry-wolf shape -- that alarm fired on a 100%
+        # policy refusal with nothing down. This one fires only on a real failure.
+        echo "    UNCAPTURED major: $claim ($loc) -- rc nonzero${CAP_OUT:+: $CAP_OUT}" >&2
+        bash "$NOTIFY" "reviewer: PR #$PR released a nonblocking major on $ISSUE and the spillover capture FAILED${CAP_OUT:+ ($CAP_OUT)}. The finding is on the PR only; nothing queued it." 2>/dev/null || true
+      fi
+    else
+      MINOR_COUNT=$((MINOR_COUNT+1))
+      echo "  $sev $MINOR_COUNT: $claim ($loc)" >&2
+    fi
   done <<EOF
-$(extract_minor_findings "$REVIEW")
+$(extract_followup_findings "$REVIEW")
 EOF
-  echo "  minors captured as spillover: $CAPTURED of $MINOR_COUNT"
+  echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
+  if [ "$NB_MAJOR_COUNT" -gt 0 ]; then
+    echo "  ${MINOR_TAG}nonblocking majors on a terminal verdict: $NB_MAJOR_COUNT (captured: $NB_MAJOR_CAPTURED)"
+  fi
+  if [ "$MINOR_COUNT" -gt 0 ]; then
+    echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
+  fi
 fi
 
 # The verdict as a COMMIT STATUS on the sha the reviewer read (ASK-217).
@@ -1243,10 +1564,26 @@ post_reviewer_status() {
   # Link only a real URL. The PR comment just above is what --post creates; when
   # that failed there is nothing to link, and a local file path is not a URL.
   case "$target" in https://*) args+=(-f "target_url=$target") ;; esac
-  if gh "${args[@]}" >/dev/null 2>&1; then
+  # WHO WRITES THE GATE (ASK-362 stage 2): reviewer_status_run is the one rule,
+  # shared with receipt-carry-approval.sh's carry_post. Configured-but-empty
+  # returns REVIEWER_TOKEN_REFUSED and posts nothing; an absent status holds the
+  # PR, which is the safe side.
+  local rc=0 err
+  err="$(reviewer_status_run gh "${args[@]}" 2>&1 >/dev/null)" || rc=$?
+  # :-3, not bare: a missing lib must not kill the agent under set -u at the
+  # one step that writes the gate (PR #431 round 2). It then fails the post loudly.
+  if [ "$rc" = "${REVIEWER_TOKEN_REFUSED:-3}" ]; then
+    printf '  %s\n' "$err" >&2
+    echo "  NO commit status posted on $sha" >&2
+    return 0
+  fi
+  if [ "$rc" = 0 ]; then
     echo "  commit status posted: $context=$state on $sha"
   else
-    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved" >&2
+    # gh's own reason, already captured in $err: an expired reviewer token and a
+    # network blip need different fixes, and "NO gate moved" alone names neither
+    # (PR #431 review nit).
+    echo "  WARN: could not post commit status '$context' (state=$state) on sha $sha; the review is recorded but NO gate moved. gh: $(printf '%s' "${err:-printed no reason}" | tr '\n' ' ' | cut -c1-300)" >&2
   fi
 }
 

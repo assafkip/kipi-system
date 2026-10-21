@@ -28,7 +28,9 @@ plain hyphenated slug (`chris-pi-onboarding`) is structurally indistinguishable
 from any other issue id and WILL pass. Reducing the surface to "slugs the
 founder chose" is the honest description of the protection; it is not a
 semantic leak detector, and naming issues after clients remains a judgment call
-the founder makes when creating them.
+the founder makes when creating them. The one non-slug form, a `prd_id` of
+`linear:ASK-1808`, adds no surface: a Linear identifier is a team key and a
+number, never a name.
 
 Exit 0 clean, exit 1 on any violation (lefthook pre-commit contract).
 """
@@ -59,10 +61,32 @@ ALLOWED_KEYS = {
     # no free text.
     "reopened_at",
     "receipts",
+    # ASK-1968: what KIND of problem the closed finding was. Allowed only with a
+    # value from FINDING_CLASSES below, never free text.
+    "finding_class",
+}
+# Same list as findings_writer.py FINDING_CLASSES. Restated, not imported: this
+# gate runs at commit time and must not crash when a plugin is absent.
+# test_receipt_finding_class.py fails when the two drift.
+FINDING_CLASSES = {
+    "correctness",
+    "security",
+    "wiring",
+    "test-gap",
+    "data-integrity",
+    "docs",
+    "other",
 }
 NESTED_RECEIPT_KEYS = {"findings_triaged", "reviewed", "verified"}
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# The one other prd_id the producer writes: `prd_split.py --from-linear ASK-n` marks the spec
+# `prd=linear:ASK-n` and close copies it here. Refused as "not a plain slug" until ASK-1814,
+# so every Linear-split issue closed locally and could not commit its receipt (ASK-1808 was
+# the first to try). prd_id only, anchored, a Linear key and a number and nothing else.
+# The key is bounded exactly as the producer bounds it (prd_split.py LINEAR_ISSUE_ID_RE,
+# 1 to 10 characters): unbounded, `linear:ACMECORPPRICINGDEAL-1` passed (review of 0801a08f).
+LINEAR_PRD_RE = re.compile(r"^linear:[A-Z][A-Z0-9]{0,9}-[0-9]+$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MAX_VALUE_LEN = 120
@@ -102,10 +126,16 @@ def check_value(where: str, key: str, value) -> list[str]:
             f"{where}: `{key}` looks like a path or address ({value!r}); the ledger "
             "carries ids and timestamps only"
         )
+    if key == "finding_class" and value not in FINDING_CLASSES:
+        problems.append(
+            f"{where}: `finding_class`={value!r} is not one of {sorted(FINDING_CLASSES)}"
+        )
     if key.endswith("_at") and not ISO_RE.match(value):
         problems.append(f"{where}: `{key}`={value!r} is not an ISO-8601 timestamp")
     elif key == "commit_sha" and not SHA_RE.match(value):
         problems.append(f"{where}: `commit_sha`={value!r} is not a hex sha")
+    elif key == "prd_id" and LINEAR_PRD_RE.match(value):
+        pass
     elif key.endswith("_id") and not SLUG_RE.match(value):
         problems.append(f"{where}: `{key}`={value!r} is not a plain slug")
     return problems

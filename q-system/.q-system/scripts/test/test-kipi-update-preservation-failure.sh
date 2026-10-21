@@ -31,6 +31,12 @@ run_failure_case() {
     "$skeleton/q-system/.q-system/state"
   cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
     "$skeleton/q-system/.q-system/scripts/propagation-leak-gate.py"
+# The updater is fail-closed on the replica-divergence gate too, exactly as
+# it is on the leak gate above: a skeleton without it aborts before any sync.
+# It DISARMS on this population (no instance here carries a replicated
+# plugins/ path) and says so, so provisioning it changes nothing asserted here.
+cp "$ROOT/q-system/.q-system/scripts/fleet-replica-divergence.py" \
+    "$skeleton/q-system/.q-system/scripts/fleet-replica-divergence.py"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
     "$skeleton/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$skeleton/validate-separation.py"

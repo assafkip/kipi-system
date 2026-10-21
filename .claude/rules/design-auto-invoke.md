@@ -54,3 +54,7 @@ PR #49 round 3).
 - Template files, config files, or build output
 - System HTML (morning schedule, logs, debug views)
 - Test files or documentation
+
+## One door (dc-22)
+
+Design work routes through `/design-chain`. The design skills named above are engines, not commands: `design-engine-door.py` (PreToolUse and PostToolUse on the Skill tool) refuses a listed engine when the session has no open design-chain round, and records each run inside one in the round's `engines.jsonl`. The four engines in this repo also carry `user-invocable: false`; the other 23 in `design-engines.json` are marketplace skills this repo cannot edit, so they stay in the slash menu and the DOOR is what keeps them behind a round. Receipts: `test_design_engine_door.py` (the door) and `test_dc_one_door_menu.py` (the four in this repo).

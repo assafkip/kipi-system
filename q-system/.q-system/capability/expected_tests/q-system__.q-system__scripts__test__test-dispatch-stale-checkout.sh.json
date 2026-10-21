@@ -1,5 +1,9 @@
 {
  "path": "q-system/.q-system/scripts/test/test-dispatch-stale-checkout.sh",
  "runner": "bash",
- "timeout_s": 120
+ "timeout_s": 120,
+ "covers": [
+  "q-system/.q-system/scripts/linear-worker.sh",
+  "q-system/.q-system/scripts/review-redrive.py"
+ ]
 }

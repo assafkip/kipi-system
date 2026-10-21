@@ -181,3 +181,44 @@ verdict_record_write_path() {
 review_tree_path() {
   printf '%s/review-trees/%s' "${1:-}" "$(artifact_key "${2:-}" "${3:-}")"
 }
+
+# --- the review-prose filename, and the pattern that counts it (ASK-1957) ----
+# ONE definition of the shape `<artifact key>-<stamp>.md`, because there are two
+# readers of it and they had already drifted. This block re-keyed every review
+# artifact by repo; the writer (pr-review-agent.sh) followed, and the round
+# counter (pr-verdict-lib.sh review_round) did not -- it went on globbing the
+# legacy `pr-<N>-*.md`. A slug resolves for EVERY repo, the home one included
+# (slug_for_repo falls back to the target's own origin url), so that glob matched
+# nothing on every run. review_round returned 1 forever and ROUND_RULE, which is
+# gated on ROUND > 1, never armed once: every repeat review was told it was round
+# 1 and was free to re-litigate findings the author had already answered. That is
+# the exact grind the rule was written to stop (fleet-sync RCA 2026-09-20, T5).
+#
+# So the counter no longer spells the shape. It asks for the same path with `*`
+# where the writer puts its timestamp, which is why the glob is DERIVED from the
+# path builder rather than written next to it: a second copy agrees on the day it
+# is typed and stops describing the system the moment the shape moves.
+
+# review_md_name <slug> <pr> <stamp> -> the basename the reviewer writes.
+# THE convention. Everything else here is a view of this line.
+review_md_name() {
+  printf '%s-%s.md' "$(artifact_key "${1:-}" "${2:-}")" "${3:-}"
+}
+
+# review_md_path <dir> <slug> <pr> <stamp> -> the full path the writer writes.
+review_md_path() {
+  printf '%s/%s' "${1:-}" "$(review_md_name "${2:-}" "${3:-}" "${4:-}")"
+}
+
+# review_md_name_glob <slug> <pr> -> the basename pattern matching every round of
+# this repo's PR. For a caller that already holds the directory (`find -name`),
+# which is quote-safe and does not care whether the directory has a trailing
+# slash -- both of which a full-path `-path` match gets wrong.
+review_md_name_glob() {
+  review_md_name "${1:-}" "${2:-}" '*'
+}
+
+# review_md_glob <dir> <slug> <pr> -> the same pattern, rooted at a directory.
+review_md_glob() {
+  review_md_path "${1:-}" "${2:-}" "${3:-}" '*'
+}

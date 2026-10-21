@@ -9,6 +9,9 @@
 # phantom failures that had nothing to do with verify.sh. A test harness that
 # perturbs its own subject is measuring itself.
 VERIFY_SRC="${1:?usage: adversarial.sh /path/to/verify.sh}"
+# The selector ships beside verify.sh and --staged reads it from the graded tree,
+# so every fixture repo carries it exactly as a real instance does (ASK-1795).
+SELECT_SRC="$(dirname "$VERIFY_SRC")/verify_select.py"
 pass=0; fail=0
 
 newrepo() {
@@ -17,6 +20,7 @@ newrepo() {
   git -C "$d" config user.email t@t; git -C "$d" config user.name t
   mkdir -p "$d/q-system/.q-system"
   cp "$VERIFY_SRC" "$d/q-system/.q-system/verify.sh"
+  if [ -f "$SELECT_SRC" ]; then cp "$SELECT_SRC" "$d/q-system/.q-system/verify_select.py"; fi
   printf "print('ok')\n" > "$d/good.py"
   printf '{"a": 1}\n'    > "$d/good.json"
   printf 'echo hi\n'     > "$d/good.sh"
@@ -74,7 +78,15 @@ rm -rf "$R"
 E="$(mktemp -d)"; git -C "$E" init -q .
 git -C "$E" config user.email t@t; git -C "$E" config user.name t
 mkdir -p "$E/q-system/.q-system"; cp "$VERIFY_SRC" "$E/q-system/.q-system/verify.sh"
-printf 'hello\n' > "$E/readme.txt"; git -C "$E" add -A
+# verify.sh IS TRACKED NOWHERE HERE, and that is the point of the fixture
+# (ASK-1900). `git add -A` tracked the copy of verify.sh itself, which is a .sh,
+# so SHFILES was non-empty and the shell-syntax check DID run -- this case had no
+# empty repo to assert about. It still went red, because a repo with no tracked
+# .json used to kill the script at the JSONFILES `grep -v` under pipefail: exit 1
+# with no message. Green for a reason unrelated to its own claim, and it turned
+# red the moment that silent death was fixed. Staging only readme.txt leaves
+# genuinely zero checks to discover, so the case now measures what it says.
+printf 'hello\n' > "$E/readme.txt"; git -C "$E" add readme.txt
 git -C "$E" commit -qm init
 run "$E" --full; check "empty repo FAILS (cannot-run)" 1 $?; rm -rf "$E"
 
@@ -286,6 +298,214 @@ printf '\xef\xbb\xbfdef f():\n    return 1\n' > "$R/withbom.py"
 git -C "$R" add withbom.py
 run "$R" --staged; check "valid file with a UTF-8 BOM still PASSES" 0 $?
 rm -rf "$R"
+
+# --- ASK-1795: --staged RUNS THE TESTS THAT OWN THE CHANGE, NOT THE WHOLE SUITE ---
+#
+# Every commit touching q-consult/ in consulting ran ~6300 tests (620s, 788s
+# measured 2026-09-18). Each fixture below holds a suite with one RED test that
+# names nothing, test_red_bystander.py. It is the witness: a staged run that
+# passes proves it was NOT run, and a run that must reach the full suite proves
+# it WAS, because it blocks. Committed with plain `git commit`, the fixture repo
+# has no hook, so the red test can sit in history.
+ownrepo() {
+  local d; d="$(newrepo)"
+  mkdir -p "$d/suite"
+  printf 'suite\n' > "$d/.verify-suites"
+  printf 'VALUE = 1\n' > "$d/suite/mod_a.py"
+  printf 'import mod_a\ndef test_a():\n    assert mod_a.VALUE == 1\n' > "$d/suite/test_mod_a.py"
+  printf 'def test_bystander():\n    assert False\n' > "$d/suite/test_red_bystander.py"
+  printf '{"k": 1}\n' > "$d/suite/data.json"
+  printf 'import json\ndef test_data():\n    assert json.load(open("data.json"))["k"] == 1\n' \
+    > "$d/suite/test_data.py"
+  git -C "$d" add -A; git -C "$d" commit -qm fixture
+  printf '%s' "$d"
+}
+
+R=$(ownrepo)
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"; rc=$?
+check "staged module runs ONLY its owning test" 0 $rc
+case "$OUT" in
+  *"(1 selected)"*) check "selection is printed with its count" 0 0 ;;
+  *) echo "$OUT" | sed 's/^/    /'; check "selection is printed with its count" 0 1 ;;
+esac
+case "$OUT" in
+  *"named as 'mod_a' by 1 test file"*) check "selection prints its reason" 0 0 ;;
+  *) check "selection prints its reason" 0 1 ;;
+esac
+rm -rf "$R"
+
+# THE NEGATIVE SELF-TEST. Narrowing must not mean skipping: a red OWNING test
+# still blocks.
+R=$(ownrepo)
+printf 'VALUE = 2\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "red owning test still BLOCKS" 1 $?; rm -rf "$R"
+
+# A staged test file selects itself.
+R=$(ownrepo)
+printf 'def test_new():\n    assert False\n' > "$R/suite/test_new.py"; git -C "$R" add suite/test_new.py
+run "$R" --staged; check "staged red test file BLOCKS" 1 $?; rm -rf "$R"
+
+# A data file selects the tests that name its basename.
+R=$(ownrepo)
+printf '{"k": 2}\n' > "$R/suite/data.json"; git -C "$R" add suite/data.json
+run "$R" --staged; check "staged json runs the test naming it" 1 $?; rm -rf "$R"
+
+# A path NO test names, and no declared fallback: the FULL suite runs, so the
+# bystander blocks. Never an empty selection that passes.
+R=$(ownrepo)
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md
+run "$R" --staged; check "unowned path, no fallback -> full suite" 1 $?; rm -rf "$R"
+
+# The same path with a DECLARED fallback runs the fallback, and the fallback is
+# really run: green passes, red blocks.
+R=$(ownrepo)
+printf 'test_mod_a.py\n' > "$R/suite/.verify-fallback"
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md suite/.verify-fallback
+run "$R" --staged; check "unowned path runs the declared fallback" 0 $?; rm -rf "$R"
+R=$(ownrepo)
+printf 'test_red_bystander.py\n' > "$R/suite/.verify-fallback"
+printf 'notes\n' > "$R/suite/readme.md"; git -C "$R" add suite/readme.md suite/.verify-fallback
+run "$R" --staged; check "a red declared fallback BLOCKS" 1 $?; rm -rf "$R"
+
+# conftest collect_ignore still holds. Explicit pytest file arguments bypass it
+# (measured, pytest 9.0.3), which is why selection prunes at collection instead.
+R=$(ownrepo)
+printf 'collect_ignore = ["test_ignored.py"]\n' > "$R/suite/conftest.py"
+printf 'import mod_a\ndef test_ign():\n    assert False\n' > "$R/suite/test_ignored.py"
+git -C "$R" add -A; git -C "$R" commit -qm ignore
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "collect_ignore still honoured" 0 $?; rm -rf "$R"
+
+# A staged pytest config changes every test: full suite.
+R=$(ownrepo)
+printf '# touched\n' > "$R/suite/conftest.py"; git -C "$R" add suite/conftest.py
+run "$R" --staged; check "staged conftest -> full suite" 1 $?; rm -rf "$R"
+
+# No selector in the graded tree: the full suite, never a skip. The fixture's
+# verify.sh sits in the same dir, so SCRIPT_DIR finds nothing either.
+R=$(ownrepo)
+git -C "$R" rm -q q-system/.q-system/verify_select.py
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "missing selector -> full suite" 1 $?; rm -rf "$R"
+
+# --full is untouched: the bystander blocks.
+R=$(ownrepo); run "$R" --full; check "--full still runs every test" 1 $?; rm -rf "$R"
+
+# --- A RENAME HIDES THE OLD MODULE NAME unless renames are off (PR #371 review).
+# `git diff --cached --name-only` detects renames and prints only the NEW path,
+# so a `git mv mod_a.py mod_b.py` left the tests that still import mod_a
+# unselected: they took the declared fallback and the commit passed with a
+# broken import. Visible only once a suite declares a fallback, which is the
+# consulting case this was built for.
+R=$(ownrepo)
+printf 'test_data.py\n' > "$R/suite/.verify-fallback"
+git -C "$R" add suite/.verify-fallback; git -C "$R" commit -qm fallback
+git -C "$R" mv suite/mod_a.py suite/mod_b.py
+run "$R" --staged; check "a renamed module still selects its tests" 1 $?; rm -rf "$R"
+
+# --- AN __init__.py IS ITS PACKAGE, not the literal string "__init__".
+# At the suite root dirname is empty, so the name fell back to "__init__" and
+# selected whichever file happened to contain that token. Here the red test
+# names the package and nothing names "__init__", so the old behaviour took the
+# green fallback and passed.
+R=$(ownrepo)
+printf 'test_data.py\n' > "$R/suite/.verify-fallback"
+printf '' > "$R/suite/__init__.py"
+printf 'def test_pkg():\n    """guards the suite package"""\n    assert False\n' \
+  > "$R/suite/test_pkg_named.py"
+git -C "$R" add -A; git -C "$R" commit -qm pkg
+printf '# touched\n' > "$R/suite/__init__.py"; git -C "$R" add suite/__init__.py
+run "$R" --staged; check "__init__.py selects by package name" 1 $?; rm -rf "$R"
+
+# --- THE COMMIT DOOR SELECTS BY IMPORT, NOT BY BARE WORD (2026-10-05) ---
+# A module called `send` selected 95 test files in one instance that merely SAY "send";
+# 11 import it. Each red witness below reaches mod_a one way; --staged must run it.
+R=$(ownrepo)
+printf 'def test_word():\n    """mod_a is mentioned here and never imported"""\n    assert False\n' \
+  > "$R/suite/test_mentions_word.py"
+git -C "$R" add -A; git -C "$R" commit -qm word
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "staged: a bare-word mention is NOT an owner" 0 $?
+# Control: the push door's broad rule still picks the same file.
+SEL="$(printf 'suite/mod_a.py\n' | python3 "$R/q-system/.q-system/verify_select.py" \
+        --target "$R" --suite suite --door changed 2>/dev/null)"
+case "$SEL" in *test_mentions_word.py*) check "changed door keeps the broad rule" 0 0 ;;
+  *) check "changed door keeps the broad rule" 0 1 ;; esac
+rm -rf "$R"
+
+for witness in \
+  'lazy:def test_w():\n    import mod_a\n    assert mod_a.VALUE == 2\n' \
+  'named:def test_w():\n    assert False\n' \
+  'path:import pathlib\ndef test_w():\n    assert not pathlib.Path("mod_a.py").exists()\n' \
+  'unparseable:def test_w(:\n'; do
+  kind="${witness%%:*}"; body="${witness#*:}"
+  R=$(ownrepo)
+  f="test_witness_$kind.py"; [ "$kind" = named ] && f="test_mod_a_extra.py"
+  printf "$body" > "$R/suite/$f"
+  git -C "$R" add -A; git -C "$R" commit -qm witness
+  printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  run "$R" --staged; check "staged: $kind owner is selected and BLOCKS" 1 $?
+  rm -rf "$R"
+done
+
+# --- PARALLEL AT THE COMMIT DOOR, AND .verify-serial REALLY SERIAL ---
+# Witnesses read PYTEST_XDIST_WORKER, which xdist sets in every worker and is
+# absent in a single-process run. Without xdist the run must SAY it is serial.
+R=$(ownrepo)
+printf 'import os, mod_a\ndef test_par():\n    assert os.environ.get("PYTEST_XDIST_WORKER")\n' \
+  > "$R/suite/test_mod_a_par.py"
+git -C "$R" add -A; git -C "$R" commit -qm par
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+if python3 -c "import xdist" 2>/dev/null; then
+  run "$R" --staged; check "staged runs under xdist workers" 0 $?
+  ( cd "$R" && KIPI_VERIFY_NO_XDIST=1 bash q-system/.q-system/verify.sh --staged >/dev/null 2>&1 )
+  check "control: without xdist the witness FAILS" 1 $?
+  printf 'test_mod_a_ser.py\n' > "$R/suite/.verify-serial"
+  printf 'import os, mod_a\ndef test_ser():\n    assert not os.environ.get("PYTEST_XDIST_WORKER")\n' \
+    > "$R/suite/test_mod_a_ser.py"
+  # Committed, so only mod_a.py is staged: a staged .verify-serial is a path no
+  # test names and would take the full-suite fallback, hiding what is measured.
+  git -C "$R" add suite/.verify-serial suite/test_mod_a_ser.py; git -C "$R" commit -qm ser
+  run "$R" --staged; check ".verify-serial file runs in one process" 0 $?
+  printf 'import mod_a\ndef test_ser():\n    assert False\n' > "$R/suite/test_mod_a_ser.py"
+  git -C "$R" commit -qam red-ser
+  printf 'VALUE = 1\n# touched again\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  run "$R" --staged; check "a red .verify-serial file BLOCKS" 1 $?
+else
+  OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"
+  case "$OUT" in *"pytest-xdist not installed -> serial"*) check "no xdist: says serial" 0 0 ;;
+    *) check "no xdist: says serial" 0 1 ;; esac
+fi
+rm -rf "$R"
+
+# --- PR #521 REVIEW: a suite that is itself a PACKAGE is imported package-
+# qualified (`from suite import mod_a`, as voiceloop's tests do). Matched against
+# the suite-relative path that owner was skipped, and this red test passed.
+R=$(ownrepo)
+printf 'def test_q():\n    from suite import mod_a\n    assert False\n' > "$R/suite/test_qualified.py"
+git -C "$R" add -A; git -C "$R" commit -qm qualified
+printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+run "$R" --staged; check "staged: package-qualified owner BLOCKS" 1 $?
+rm -rf "$R"
+
+# --- PR #521 REVIEW: a .verify-serial entry naming no file must not leave the
+# suite under xdist. The witness needs a worker, so it FAILS once the run drops
+# to one process, and the reason is printed.
+if python3 -c "import xdist" 2>/dev/null; then
+  R=$(ownrepo)
+  printf 'import os, mod_a\ndef test_par():\n    assert os.environ.get("PYTEST_XDIST_WORKER")\n' \
+    > "$R/suite/test_mod_a_par.py"
+  printf 'test_typo_does_not_exist.py\n' > "$R/suite/.verify-serial"
+  git -C "$R" add -A; git -C "$R" commit -qm typo
+  printf 'VALUE = 1\n# touched\n' > "$R/suite/mod_a.py"; git -C "$R" add suite/mod_a.py
+  OUT="$( cd "$R" && bash q-system/.q-system/verify.sh --staged 2>&1 )"; rc=$?
+  check "typo in .verify-serial -> single-process" 1 $rc
+  case "$OUT" in *"names a missing file: test_typo_does_not_exist.py"*)
+    check "typo in .verify-serial is named" 0 0 ;;
+    *) check "typo in .verify-serial is named" 0 1 ;; esac
+  rm -rf "$R"
+fi
 
 echo
 echo "adversarial: $pass passed, $fail failed"

@@ -1249,6 +1249,22 @@ def _reject_unrunnable_gate(command: str) -> None:
             f"  command: {cmd[:160]}")
 
 
+def _gate_protects(cfg: Config, issue_id: str) -> str:
+    """The property a gate defends, read from its owning issue spec's `title`.
+
+    Scar 2026-09-20 (ASK-1969): a gate row carried a command and ids only. Given
+    the ids, a judge could not say what the gate defends on 50 of 100 rows; the
+    spec title already says it, so it travels with the row. Empty when the spec
+    is absent or unreadable: the gate still registers, and readers print
+    "(not recorded)" rather than guessing."""
+    path = cfg.issues_dir / f"{issue_id}.md"
+    try:
+        title = _parse_frontmatter(path.read_text()).get("title", "")
+    except (OSError, ValueError):
+        return ""
+    return title.strip().strip("\"'").strip()
+
+
 def gate_register(
     cfg: Config,
     *,
@@ -1256,6 +1272,7 @@ def gate_register(
     issue_id: str,
     command: str,
     lifecycle: str = LEGACY_GATE_LIFECYCLE,
+    protects: str | None = None,
 ) -> dict:
     """Idempotent append: gate_id = <issue_id>-<sha256(command)[:8]>; an
     existing gate_id is a no-op. Single-line write + flush (atomic at line
@@ -1291,6 +1308,11 @@ def gate_register(
               "command": command,
               "lifecycle": lifecycle,
               "registered_at": _now_iso()}
+    # Not part of gate_id: the id stays issue_id + sha256(command), so adding this
+    # field re-registers nothing. Old rows lack it and every reader tolerates that.
+    protects = (protects if protects is not None else _gate_protects(cfg, issue_id)).strip()
+    if protects:
+        record["protects"] = protects
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -2795,6 +2817,21 @@ SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker"
 SPILLOVER_SEVERITY_ORDER = ("low", "minor", "medium", "high", "major", "blocker")
 SPILLOVER_KNOWN_SEVERITIES = (
     SPILLOVER_BLOCKING_SEVERITIES + SPILLOVER_NONBLOCKING_SEVERITIES)
+# THE MINOR TIER IS NOT A QUEUE (ASK-1961, RULE-2026-09-12-A applied to the rows
+# written before it). Measured 2026-09-22: 618 open minor/low after last-row-wins, zero
+# inflow since the add door started refusing them, and no drain. `gates run`
+# listed them in its triage report anyway, so a 618-row "queue" nobody could
+# empty printed on every run. It is a closed tier: `gates run` counts it neither
+# in the verdict nor in the report, and states its size on one line so the
+# number never goes quiet. A row still leaves only by resolve or void.
+SPILLOVER_CLOSED_TIER = tuple(
+    s for s in SPILLOVER_REFUSED_SEVERITIES if s in SPILLOVER_KNOWN_SEVERITIES)
+
+
+def _in_closed_tier(record: dict) -> bool:
+    # Absent severity is the documented `minor` default (see _is_blocking_severity).
+    sev = (record.get("severity") or "minor").strip().lower()
+    return sev in SPILLOVER_CLOSED_TIER
 
 
 def _spillover_blocks(record: dict, scope: str | None) -> bool:
@@ -3055,8 +3092,12 @@ def cmd_gates(cfg: Config, args) -> int:
         status = "green" if result.returncode == 0 else "RED"
         print(f"[{status}] {rec['gate_id']}: {command[:90]}")
         if result.returncode != 0:
+            # A red gate says what is at risk, not only which shell line failed
+            # (ASK-1969). Rows registered before the field existed print a marker.
+            at_risk = f"  protects: {rec.get('protects') or '(not recorded)'}"
+            print(at_risk)
             tail = (result.stdout + result.stderr).strip().splitlines()[-5:]
-            failures.append((rec["gate_id"], "\n".join(tail)))
+            failures.append((rec["gate_id"], "\n".join([at_risk, *tail])))
     # Spillover verdict, scoped by ATTRIBUTION and never by the clock (ASK-526).
     #
     # WHY ATTRIBUTION AND NOT SEVERITY ALONE. The severity filter that shipped
@@ -3087,7 +3128,8 @@ def cmd_gates(cfg: Config, args) -> int:
     # record-a-void.
     openv = _spillover_open(cfg)
     blocking = [r for r in openv if _spillover_blocks(r, scope)]
-    reported = [r for r in openv if r not in blocking]
+    closed_tier = [r for r in openv if r not in blocking and _in_closed_tier(r)]
+    reported = [r for r in openv if r not in blocking and r not in closed_tier]
     inherited = [r for r in openv if scope and r.get("source") != scope]
     if blocking:
         names = ", ".join(r["id"] for r in blocking)
@@ -3109,6 +3151,11 @@ def cmd_gates(cfg: Config, args) -> int:
               f"item(s), not blocking: {ids}{more}")
         print("  Triage with `prd_runner.py spillover triage`; raise one with "
               "`spillover add --severity major|blocker`.")
+    if closed_tier:
+        print(f"[closed-tier] spillover: {len(closed_tier)} open "
+              f"{'/'.join(SPILLOVER_CLOSED_TIER)}-or-untriaged row(s) written before "
+              f"2026-09-12: not a queue, not counted (ASK-1961). A row leaves by "
+              f"resolve or void; raise a real one with `spillover reclassify`.")
     # The census prints on EVERY run, red or green, passing or failing. An
     # inherited backlog that stops being PRINTED is functionally deleted for an
     # operator with ADHD, so the number leaving the blocking set must never mean

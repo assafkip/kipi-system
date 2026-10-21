@@ -1,5 +1,10 @@
 {
  "path": "plugins/prd-os/tests/test_judgment_compiler.py",
  "runner": "python3",
- "timeout_s": 240
+ "timeout_s": 240,
+ "covers": [
+  "plugins/prd-os/scripts/**/*.py",
+  "plugins/prd-os/commands/*.md",
+  "kipi"
+ ]
 }

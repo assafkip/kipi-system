@@ -380,7 +380,7 @@ class TestAssemble:
     def test_order_identity_pov_lexicon_exemplars_corrections(self, tmp_path):
         cor = [{"id": "c1", "status": "active", "instruction": "Never open with a number."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         order = [text.find("WHO IS WRITING"), text.find("WHAT HE WRITES"),
                  text.find("reaches for"), text.find("POSTS HE HAS WRITTEN"),
                  text.find("STANDING CORRECTIONS")]
@@ -391,7 +391,7 @@ class TestAssemble:
         cor = [{"id": "c1", "status": "active", "scope": ["x"],
                 "instruction": "X only rule."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, _ = assemble.voice_section(v, "linkedin", counter=0)
+        text, _ = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         assert "X only rule" not in text
 
     def test_off_channel_correction_is_not_recorded_as_applied(self, tmp_path):
@@ -409,7 +409,7 @@ class TestAssemble:
                {"id": "off", "status": "active", "scope": ["x"],
                 "instruction": "X only rule."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         assert "X only rule" not in text, "precondition: the rule is withheld"
         assert prov["correction_ids"] == ["on"], (
             "provenance named %r; it must name only what the prompt carried"
@@ -418,19 +418,19 @@ class TestAssemble:
     def test_promoted_correction_stops_loading(self, tmp_path):
         cor = [{"id": "c1", "status": "promoted", "instruction": "Old rule."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         assert "Old rule" not in text and prov["correction_ids"] == []
 
     def test_empty_voice_dir_yields_empty_section_not_a_raise(self, tmp_path):
         v = corpus.load(str(tmp_path / "nowhere"))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         assert text == "" and prov["exemplar_ids"] == []
 
     def test_provenance_texts_match_prompt_exemplars(self, tmp_path):
         """The echo gate compares output to prov['exemplar_texts']; they must be
         the exact bodies the prompt carried."""
         v = corpus.load(_voice_dir(tmp_path))
-        text, prov = assemble.voice_section(v, "linkedin", counter=2)
+        text, prov = assemble.voice_section(v, "linkedin", counter=2, target_words=None)
         for body in prov["exemplar_texts"]:
             assert body.strip() in text
 
@@ -442,7 +442,7 @@ class TestAssemble:
                 "source": assemble.EXTERNAL_SOURCE,
                 "instruction": "End on a colon line."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         standing = text.find("STANDING CORRECTIONS")
         researched = text.find("RESEARCHED SHAPES")
         assert -1 not in (standing, researched) and standing < researched
@@ -457,7 +457,7 @@ class TestAssemble:
         cor = [{"id": "c1", "status": "active",
                 "instruction": "Never open with a number."}]
         v = corpus.load(_voice_dir(tmp_path, corrections=cor))
-        text, prov = assemble.voice_section(v, "linkedin", counter=0)
+        text, prov = assemble.voice_section(v, "linkedin", counter=0, target_words=None)
         assert "STANDING CORRECTIONS" in text
         assert "RESEARCHED SHAPES" not in text
         assert prov["external_correction_ids"] == []
@@ -591,7 +591,7 @@ class TestValidate:
             "this fixture must be a single length register, or a length target "
             "reaches the thin rows and the counter window stops mattering")
         assert len(pool) > 12, f"rotation period is {len(pool)}, nothing to miss"
-        lengths = [len(assemble.voice_section(voice, "x", c)[0])
+        lengths = [len(assemble.voice_section(voice, "x", c, target_words=None)[0])
                    for c in range(len(pool))]
         assert lengths.index(min(lengths)) >= 12, (
             f"the thinnest prompt is at counter {lengths.index(min(lengths))}, "
@@ -640,7 +640,7 @@ class TestValidate:
         rules = sum(len(c["instruction"]) for c in heavy)
         base = selector.resolved_pool(voice.active_exemplars(), "x", "post",
                                       selector.DEFAULT_K)
-        thin_none = min(len(assemble.voice_section(voice, "x", c)[0])
+        thin_none = min(len(assemble.voice_section(voice, "x", c, target_words=None)[0])
                         for c in range(len(base)))
         assert rules / thin_none <= validate.CORRECTION_SHARE_CEILING, (
             "the untargeted path must read CLEAN here, or a guard that samples "

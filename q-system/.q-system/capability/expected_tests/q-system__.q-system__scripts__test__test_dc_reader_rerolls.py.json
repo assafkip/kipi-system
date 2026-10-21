@@ -1,0 +1,6 @@
+{
+ "path": "q-system/.q-system/scripts/test/test_dc_reader_rerolls.py",
+ "runner": "python3",
+ "timeout_s": 300,
+ "_why_timeout": "the reader gate drives a real browser per page version; measured ~90s locally, and CI killed it at the 60s default once dc-25 installed chromium (PR #374)"
+}

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -81,8 +82,13 @@ SETTLED = [
 
 
 # --- subprocess harness (the real hook path) ---------------------------------
-def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
-    """Feed `answer` as the final assistant text through the Stop hook. -> (rc, stderr)"""
+def run_hook_in_root(answer: str, mode: str = "advisory") -> tuple[int, str, Path]:
+    """Same as `run_hook`, but also hands back the throwaway project root.
+
+    The root is what the hook writes its log under, so a test that asserts the log
+    needs it. `run_hook` keeps its two-value shape so the existing cases are
+    untouched.
+    """
     tmp = Path(tempfile.mkdtemp())
     transcript = tmp / "transcript.jsonl"
     rows = [
@@ -97,9 +103,23 @@ def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
     proc = subprocess.run(
         [sys.executable, str(LINT)], input=payload, capture_output=True, text=True,
         env={"CLAUDE_PROJECT_DIR": str(tmp), "PATH": "/usr/bin:/bin",
-             "KIPI_BLOCKED_CLAIM_LINT_MODE": mode},
+             **({} if mode is None else {"KIPI_BLOCKED_CLAIM_LINT_MODE": mode})},
         check=False)
-    return proc.returncode, proc.stderr
+    return proc.returncode, proc.stderr, tmp
+
+
+def run_hook(answer: str, mode: str = "advisory") -> tuple[int, str]:
+    """Feed `answer` as the final assistant text through the Stop hook. -> (rc, stderr)"""
+    rc, err, _ = run_hook_in_root(answer, mode)
+    return rc, err
+
+
+def log_rows(root: Path) -> list[dict]:
+    """Every row the hook appended to its own log. [] when the file is absent."""
+    log = root / "q-system" / "output" / "blocked-claim-lint.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
 
 
 def main() -> int:
@@ -249,12 +269,176 @@ def main() -> int:
     rc_loop, _ = run_hook_loop_guard()
     cases.append(("stop_hook_active short-circuits (no block loop)", rc_loop == 0))
 
+    # === ASK-1958: a blocking stop leaves a firing record ====================
+    # RCA rca-fleet-sync-two-day-spin-2026-09-20, row T6. Advisory mode logged every
+    # finding; the blocking branch returned 2 and wrote NOTHING. So the mode that
+    # actually stops a turn was the one mode with no artifact -- exactly backwards,
+    # because a block is the event worth counting. Nobody could answer "has this ever
+    # blocked, and on what" from the repo.
+    rc_blk, _, root_blk = run_hook_in_root(CLAIMS[0][1], mode="blocking")
+    rows_blk = [r for r in log_rows(root_blk) if r.get("event") == "blocked"]
+    cases.append(("blocking mode appends a firing row",
+                  rc_blk == 2 and len(rows_blk) == 1))
+    row = rows_blk[-1] if rows_blk else {}
+    cases.append(("the firing row names the hook",
+                  row.get("hook") == "blocked-claim-evidence-lint.py"))
+    cases.append(("the firing row names the reason (the sub-shapes that fired)",
+                  row.get("reason") == "rollup-as-config"))
+    cases.append(("the firing row carries a timestamp", bool(row.get("ts"))))
+
+    # Advisory mode still logs, and is distinguishable from a block. Losing that
+    # separation would make the calibration corpus and the firing record the same
+    # undifferentiated pile.
+    rc_adv2, _, root_adv = run_hook_in_root(CLAIMS[0][1], mode="advisory")
+    rows_adv = log_rows(root_adv)
+    cases.append(("advisory mode still logs its finding",
+                  rc_adv2 == 0 and len(rows_adv) == 1))
+    cases.append(("an advisory row is not marked as a block",
+                  bool(rows_adv) and rows_adv[0].get("event") == "advisory"))
+
+    # NEGATIVE CONTROL. This hook runs on every turn. A row on the pass path would
+    # grow an unbounded log in every instance and bury the firings it exists to show.
+    _, _, root_clean = run_hook_in_root("- Picked the branch-protection read.",
+                                        mode="blocking")
+    cases.append(("a clean answer writes no row at all", log_rows(root_clean) == []))
+
+    cases.extend(measured_mode_cases(mod))
+
     failures = 0
     for name, ok in cases:
         print(f"{'PASS' if ok else 'FAIL'}: {name}")
         failures += 0 if ok else 1
     print(f"\n{len(cases) - failures}/{len(cases)} passed")
     return 1 if failures else 0
+
+
+TALLY = HERE / "test" / "fixtures" / "blocked-claim-lint-tally-2026-09-23.json"
+# The labelled sentences stay OFF this public repo (PR #428 review blocker: a
+# denylist scrub let a person's name and a prospect through). Point this at the
+# calibrating machine's copy to run the drift and replay checks.
+PRIVATE_REPLAY = os.environ.get(
+    "KIPI_BLOCKED_CLAIM_REPLAY",
+    str(Path.home() / ".local/state/kipi/calibration/"
+        "blocked-claim-lint-replay-2026-09-23.json"))
+
+# Real sentences from the fleet's advisory log, chosen because they name nobody.
+REAL_DOES_NOT_EXIST = "That command doesn't exist."
+REAL_NOTHING_WRITTEN = "Nothing was written to the tree."
+REAL_BARE_BLOCKED = "PR #306 is BLOCKED."
+
+
+def _strings(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from _strings(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _strings(v)
+    elif isinstance(node, str):
+        yield node
+
+
+def measured_mode_cases(mod) -> list[tuple[str, bool]]:
+    """ASK-459: which triggers block is a MEASUREMENT, recomputed here from counts.
+
+    This test does not trust BLOCKING_TRIGGERS: it recomputes the set from the
+    labelled tally and fails when the table and the measurement disagree, so the
+    blocking set only moves by re-labelling evidence.
+    """
+    cases: list[tuple[str, bool]] = []
+    data = json.loads(TALLY.read_text(encoding="utf-8"))
+    tally = data.get("tally", {})
+    total = sum(v.get("labelled", 0) for v in tally.values())
+    cases.append(("tally carries provenance and at least 200 labelled rows",
+                  bool(data.get("provenance", {}).get("source")) and total >= 200))
+    # The public file holds counts, never prose. A "text" key or a long string
+    # outside the provenance block means sentences are leaking back in.
+    leaked = [s for s in _strings(tally) if len(s) > 40] + \
+             [k for k in _strings(data) if k in ("text", "rows_text", "sentence")]
+    cases.append((f"the public tally carries no sentence text ({len(leaked)} found)",
+                  not leaked))
+
+    for p in mod.PATTERNS:
+        cases.append((f"every trigger of {p.pattern_id} has an id",
+                      len(mod.TRIGGER_IDS.get(p.pattern_id, ())) == len(p.triggers)))
+    measured = {t for t, v in tally.items()
+                if v["labelled"] >= mod.MIN_LABELLED
+                and v["genuine"] / v["labelled"] >= mod.PRECISION_BAR}
+    cases.append((f"BLOCKING_TRIGGERS equals the measured set (measured "
+                  f"{sorted(measured)}, table {sorted(mod.BLOCKING_TRIGGERS)})",
+                  measured == set(mod.BLOCKING_TRIGGERS) and bool(measured)))
+
+    # Shadowing (PR #428 review): a precise claim next to a bare "blocked" blocks.
+    both = mod.evaluate(
+        "The commit is blocked because the config it reads does not exist.")
+    cases.append(("a 'does not exist' claim is not shadowed by 'blocked' beside it",
+                  [f.trigger for f in both] == ["does-not-exist"]
+                  and bool(mod.blocking_findings(both, "measured"))))
+
+    cases.extend(_private_replay_cases(mod))
+
+    # The real hook path.
+    rc, err, root = run_hook_in_root(REAL_DOES_NOT_EXIST, mode="measured")
+    fired = [f for row in log_rows(root) for f in row.get("findings", [])]
+    cases.append(("measured hook exits 2 on a real unsettled 'does not exist' claim",
+                  rc == 2 and "lookup-as-runtime-fact" in err))
+    cases.append(("the firing row records the trigger and that it blocked",
+                  any(f.get("trigger") == "does-not-exist" and f.get("blocking")
+                      for f in fired)))
+    rc, _, _ = run_hook_in_root(REAL_NOTHING_WRITTEN, mode="measured")
+    cases.append(("measured hook exits 2 on a real 'nothing was written' claim",
+                  rc == 2))
+    rc, _, root = run_hook_in_root(REAL_BARE_BLOCKED, mode="measured")
+    rows_adv = log_rows(root)
+    cases.append(("measured hook exits 0 on a bare-'blocked' claim and logs it advisory",
+                  rc == 0 and [r.get("event") for r in rows_adv] == ["advisory"]))
+
+    # The switch ships WITH THE SCRIPT: with no mode in the environment the hook runs
+    # measured. The RCA's promotion lived in one settings file and never reached the
+    # fleet; a default in code cannot be stranded that way.
+    rc, _, _ = run_hook_in_root(REAL_DOES_NOT_EXIST, mode=None)
+    cases.append(("with no mode in the environment the hook runs measured (exit 2)",
+                  rc == 2))
+    # A caller's exported mode wins, which is how the one-shot reviewer opts out.
+    rc, _, _ = run_hook_in_root(REAL_DOES_NOT_EXIST, mode="advisory")
+    cases.append(("an exported advisory mode still wins (exit 0)", rc == 0))
+    agent = (HERE / "pr-review-agent.sh").read_text()
+    cases.append(("pr-review-agent.sh runs its claude reviewer with the lint advisory",
+                  "claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded" in agent))
+    return cases
+
+
+def _private_replay_cases(mod) -> list[tuple[str, bool]]:
+    """Drift + replay against the labelled rows, where they exist (never in CI)."""
+    path = Path(PRIVATE_REPLAY)
+    if not path.exists():
+        print(f"NOTE: labelled replay rows absent ({path}); drift and replay "
+              "checks not run on this machine. The tally checks above still ran.")
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+    cases = [("private replay has at least 200 rows", len(rows) >= 200)]
+    drifted = [r["text"][:60] for r in rows
+               if [f.trigger for f in mod.evaluate(r["text"])][:1] != [r["trigger"]]]
+    cases.append((f"every labelled row still fires its labelled trigger "
+                  f"({len(drifted)} drifted)", not drifted))
+    counts: dict[str, list[int]] = {}
+    for r in rows:
+        g_n = counts.setdefault(r["trigger"], [0, 0])
+        g_n[0] += bool(r["genuine"])
+        g_n[1] += 1
+    tally = json.loads(TALLY.read_text(encoding="utf-8"))["tally"]
+    cases.append(("the public tally matches the labelled rows",
+                  {t: [v["genuine"], v["labelled"]] for t, v in tally.items()} == counts))
+    wrong_pass = [r for r in rows if r["genuine"] and r["trigger"] in mod.BLOCKING_TRIGGERS
+                  and not mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"replay: every genuine row on a blocking trigger blocks "
+                  f"({len(wrong_pass)} passed)", not wrong_pass))
+    wrong_block = [r for r in rows if r["trigger"] not in mod.BLOCKING_TRIGGERS
+                   and mod.blocking_findings(mod.evaluate(r["text"]), "measured")]
+    cases.append((f"replay: no row on an advisory trigger blocks "
+                  f"({len(wrong_block)} blocked)", not wrong_block))
+    return cases
 
 
 def run_hook_loop_guard() -> tuple[int, str]:

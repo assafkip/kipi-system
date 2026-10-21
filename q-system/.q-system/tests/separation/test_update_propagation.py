@@ -51,6 +51,15 @@ UPDATER_HELPERS = (
     # report and was not added here, so the divergence test below went red on
     # every PR merged against that main: the exact trap this list documents.
     "kipi-update-instance-ahead.py",
+    # The reach preflight (PR #396) and the unblocker its refusal names. Same
+    # trap as the line directly above, caught the same way: the derivation read
+    # the new invocations out of kipi-update.sh, this list did not carry them,
+    # and three tests went red because the fixture skeleton was incomplete.
+    # The preflight now DISARMS on a skeleton with no audit rather than
+    # aborting, so a fixture without them is legal -- but the fixture should
+    # still model the real skeleton, which has both.
+    "fleet-reach-audit.py",
+    "fleet-unblock.py",
     "settings-template.json",
 )
 
@@ -120,6 +129,7 @@ GATE_INFRASTRUCTURE = (
     "q-system/.q-system/scripts/propagation-leak-gate.py",
     "q-system/.q-system/scripts/containment-targets.py",
     "q-system/.q-system/state/propagation-leak-baseline.json",
+    "q-system/.q-system/scripts/fleet-replica-divergence.py",
     "validate-separation.py",
 )
 
@@ -266,6 +276,12 @@ def build_skeleton(root, env, body):
     for gate_file in (
         "q-system/.q-system/scripts/propagation-leak-gate.py",
         "q-system/.q-system/scripts/containment-targets.py",
+        # Same contract as the leak gate: the updater is fail-closed on this one
+        # too, so a skeleton without it aborts before any sync and this file's
+        # propagation model silently never runs. It DISARMS on this population
+        # (no instance here carries a replicated plugins/ path) and says so,
+        # which is why adding it does not change what these cases assert.
+        "q-system/.q-system/scripts/fleet-replica-divergence.py",
         "validate-separation.py",
     ):
         shutil.copy(REPO_ROOT / gate_file, skeleton / gate_file)

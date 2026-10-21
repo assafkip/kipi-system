@@ -13,10 +13,10 @@ Both are the same shape as two voice corpora, which took a night to kill
 (ASK-699, 2026-08-13). A duplicate that agrees today is still a duplicate.
 
 Usage:
-    python3 scripts/voice_ref.py --channel x --words 480   # long-form register
-    python3 scripts/voice_ref.py --channel x --words 25    # DM / comment register
-    python3 scripts/voice_ref.py --channel linkedin --words 200
-    python3 scripts/voice_ref.py --channel x --words 480 --ids-only
+    python3 scripts/voice_ref.py --channel x --words 480 --slot-kind post    # long-form
+    python3 scripts/voice_ref.py --channel x --words 25 --slot-kind comment  # reply register
+    python3 scripts/voice_ref.py --channel linkedin --words 200 --slot-kind post
+    python3 scripts/voice_ref.py --channel x --words 480 --slot-kind post --ids-only
 """
 from __future__ import annotations
 
@@ -56,7 +56,13 @@ def main() -> int:
     ap.add_argument("-k", type=int, default=selector.DEFAULT_K)
     ap.add_argument("--counter", type=int, default=0,
                     help="rotation position; the engine passes the postbook count")
-    ap.add_argument("--slot-kind", default="post", choices=["post", "comment"])
+    # REQUIRED, NOT DEFAULTED (ASK-1400). This defaulted silently to "post", so a
+    # caller asking for a reply's exemplars was handed his POSTS and told nothing.
+    # The hook that was this script's only invoker never passed the flag, which is
+    # how the wrong-kind defect (ASK-1399) reached drafts through a second door. A
+    # caller who must state the kind cannot inherit the wrong one.
+    ap.add_argument("--slot-kind", required=True, choices=["post", "comment"],
+                    help="post for an original piece, comment for a reply or comment")
     ap.add_argument("--ids-only", action="store_true")
     args = ap.parse_args()
 

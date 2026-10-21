@@ -953,6 +953,14 @@ def test_the_documented_hour_is_the_one_launchd_runs():
     Held by a check rather than by care, because the two live in different files and
     the only thing that had been keeping them together was somebody remembering. The
     plist is the record: it is what actually fires.
+
+    Amended 2026-09-20 (ASK-1924): the installed job was retired 2026-09-11, so the
+    doc stopped saying "Runs itself at 07:40" and started naming 07:40 as the hour
+    the retired job ran. The pattern moved with the sentence; the assertion did not.
+    Re-adding the old phrasing to satisfy this regex would have made CLAUDE.md
+    re-certify an unloaded job, which is the defect this issue exists to remove. The
+    plist still ships to instances via `kipi update`, so the hour in the doc is still
+    a second copy of the hour in the plist and still worth binding.
     """
     import pathlib
     import plistlib
@@ -962,7 +970,7 @@ def test_the_documented_hour_is_the_one_launchd_runs():
     when = plistlib.loads(plist.read_bytes())["StartCalendarInterval"]
     runs_at = "%02d:%02d" % (when["Hour"], when["Minute"])
     docs = (root / "CLAUDE.md").read_text(encoding="utf-8")
-    stated = re.search(r"Runs itself at ([0-9:]+) \(`com\.kipi\.morning-brief`\)", docs)
+    stated = re.search(r"`com\.kipi\.morning-brief` \(([0-9]{2}:[0-9]{2})\)", docs)
     assert stated, "CLAUDE.md no longer states the brief's schedule at all"
     assert stated.group(1) == runs_at, (
         f"CLAUDE.md says {stated.group(1)}, launchd runs {runs_at}")

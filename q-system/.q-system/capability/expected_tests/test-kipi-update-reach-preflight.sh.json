@@ -1,0 +1,5 @@
+{
+ "path": "test-kipi-update-reach-preflight.sh",
+ "runner": "bash",
+ "timeout_s": 600
+}

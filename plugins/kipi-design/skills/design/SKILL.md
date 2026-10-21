@@ -1,5 +1,6 @@
 ---
 name: design
+user-invocable: false
 description: "Unified design router: logo, CIP, banners, slides, icons, social photos, design tokens. Use for any visual asset creation, brand identity, or presentation design."
 argument-hint: "[design-type] [context]"
 license: MIT

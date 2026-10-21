@@ -132,6 +132,16 @@
       }
     },
     {
+      "id": "worker-degraded-approval-held",
+      "source": "linear-worker",
+      "class": "infra-failure",
+      "marker": "the only review on record is the DEGRADED Opus fallback",
+      "sites": 1,
+      "what": "rework_gate returned 50: the PR is approved and pinned to its own head, but the only verdict on record carries degraded:true -- codex was down and the Opus fallback filled the required status. The worker takes auto-merge back off and skips the issue.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry.md rule 5), and terminal on purpose rather than by omission. Gate 50 is computed from the STORED verdict record, and both drivers leave before their review step while it holds -- so a re-dispatch recomputes 50 from the same record and skips again. Nothing in this tree re-runs the review on a degraded record: no launchd job, no redrive, no converge branch. The state clears only when a fresh review overwrites the record, which today means the named command `kipi review <pr> --issue <issue> --post` once codex answers. Declaring a dispatch consumer here would be the validator-satisfying fiction ASK-352 is the scar for: re-entry that happens and changes nothing is not a consumer. The cost is stated in the code comment at this exit -- during a long codex outage approved PRs accumulate unmerged -- and that is the chosen direction to fail in, because an auto-merged unreviewed PR costs whatever it breaks fleet-wide."
+    },
+    {
       "id": "no-review-verdict",
       "source": "linear-worker",
       "class": "transient",
@@ -299,6 +309,26 @@
       }
     },
     {
+      "id": "codex-outage-hold",
+      "source": "linear-worker",
+      "class": "infra-retry",
+      "marker": "held while the second runner (Codex) is unavailable",
+      "sites": 1,
+      "what": "Sana refused this issue on capability and Codex, the second runner, was out of credits or at its usage limit. The issue is held unlabelled and uncharged while the Codex outage claim is live, so no tick spends a paid Sana run on it only to reach the same dead Codex (PR #421 round 9). It records env_halt so converge charges and pages nothing.",
+      "consumer": "com.kipi.dispatch -- the hold lifts when Codex answers for any issue (the outage claim is released) or the claim is older than CODEX_OUTAGE_MAX_AGE, and the next run dispatches the issue again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The issue keeps no label and no attempt charge, so the dispatcher re-selects it every tick; the worker releases the hold on its own once the claim is released or expired."
+      }
+    },
+    {
       "id": "drift-cap",
       "source": "linear-worker",
       "class": "exhausted-counter",
@@ -394,6 +424,16 @@
       }
     },
     {
+      "id": "converge-env-halt",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "was NOT ATTEMPTED: the runner itself was unavailable",
+      "sites": 1,
+      "what": "exit 9. The worker halted because the runner itself refused (a usage, session or weekly limit, 529 Overloaded, an auth failure) and recorded env_halt; converge charges no attempt and files no ticket.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry rule 5), and deliberately silent HERE because the worker already paged this outage once under its shared claim (env_alert_claim) and posted one Linear note on the halted issue. The exit-7 page this replaced filed one 'Sana could not open a PR' ticket per issue per tick for a single dead account (PR #421 round 1). The issue is not parked and nothing is charged, so the next dispatch after the runner recovers re-selects it; the consumer of the page is the worker's own emitter, not this exit."
+    },
+    {
       "id": "converge-no-pr-opened",
       "source": "converge",
       "class": "counted-retry",
@@ -414,6 +454,16 @@
       }
     },
     {
+      "id": "converge-degraded-approval-held",
+      "source": "converge",
+      "class": "infra-failure",
+      "marker": "but that verdict came from the DEGRADED Opus fallback",
+      "sites": 1,
+      "what": "exit 7. rework_gate returned 50: the PR reads APPROVE but the verdict record carries degraded:true, so codex never read this code. converge takes auto-merge off through the one shared disarm, rewrites the automerge record, and stops the round.",
+      "terminal": true,
+      "rationale": "environmental-trigger (self-healing-retry.md rule 5). Same state as worker-degraded-approval-held, reached one layer out: the worker runs first inside every round of this loop and skips on its own gate 50, so converge reads the same stored record and computes the same 50. A re-dispatch therefore re-derives 50 from an unchanged record and stops here again -- re-entry that changes nothing, which the registry refuses to certify as a consumer. Only a fresh review overwrites the record, and nothing in this tree triggers one for a degraded verdict; the exit line names the command that does. Held deliberately: an unmerged approved PR costs a day, a PR auto-merged over a `kipi/reviewer-approved` the fallback posted itself costs whatever it broke."
+    },
+    {
       "id": "converge-verdict-terminal",
       "source": "converge",
       "class": "done",
@@ -421,13 +471,13 @@
       "sites": 1,
       "what": "exit 1. The PR reached a terminal verdict. The receipt is written, auto-merge state is reported, and the run is over.",
       "terminal": true,
-      "rationale": "REFUSAL ON EVIDENCE, and the refusal is about the INSTRUMENTS. This row used to read consumer: GitHub, with a launchd liveness_check on com.kipi.dispatch and a reentry marker inside converge.sh -- the driver that just exited. Neither field could be about GitHub: liveness_check has one kind, launchd, which reads a local plist and a local run-log, and reentry must name a file in this repo containing the selector. GitHub's merge daemon has neither, so the row was certified by probing a job it did not name and by pointing at code inside the exit itself. That is the validator-satisfying fiction this registry exists to refuse, reached from the inside (codex PR #215 round 4, major). What the exit actually reports is four sub-states, and three of them -- unarmed, never-recorded, and armed-with-no-receipt -- say Needs a human in their own page text. A human is not an available actor. The fourth hands off to GitHub, which does land it, and which no instrument here can certify; saying so is the honest answer, not naming it a consumer. The issue is DONE either way, which is why the class stays done: no kipi driver has more to do.",
+      "rationale": "REFUSAL ON EVIDENCE, and the refusal is about the INSTRUMENTS. This row used to read consumer: GitHub, with a launchd liveness_check on com.kipi.dispatch and a reentry marker inside converge.sh -- the driver that just exited. Neither field could be about GitHub: liveness_check has one kind, launchd, which reads a local plist and a local run-log, and reentry must name a file in this repo containing the selector. GitHub's merge daemon has neither, so the row was certified by probing a job it did not name and by pointing at code inside the exit itself. That is the validator-satisfying fiction this registry exists to refuse, reached from the inside (codex PR #215 round 4, major). What the exit reports: an approved PR whose record is not armed now gets armed by converge itself (ASK-310, automerge_arm); only gh REFUSING the arm, or answering neither arm nor state, pages -- in gh's own words, to Sana's Linear queue. The one page that still names a person and a command is an approved head NO prd-os receipt covers, armed or not: that page carries the receipt fix, not a merge command. The fourth hands off to GitHub, which does land it, and which no instrument here can certify; saying so is the honest answer, not naming it a consumer. The issue is DONE either way, which is why the class stays done: no kipi driver has more to do.",
       "evidence": {
         "path": "q-system/.q-system/scripts/converge.sh",
-        "marker": "it will sit green. Needs a human",
-        "why": "The exit's own page text for the unarmed sub-state, which is a majority of what this exit reports and asks for a person by name. Code that says out loud it has no machine consumer."
+        "marker": "approved but arming auto-merge was refused by gh",
+        "why": "The exit's page text for the refused-arm sub-state (ASK-310). Before ASK-310 the unarmed sub-state paged 'Needs a human: gh pr merge'; converge now runs that arm itself, and what is left without a machine consumer is gh's refusal, which the page carries verbatim."
       },
-      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today, and neither does the unarmed one this exit reports. ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; a green approved PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Tracked open at sp-9b01682d."
+      "uncovered": "A PR that is approved, green and armed and still does not land has NO consumer today, and neither does one whose arm gh refused (ASK-310 arms the unarmed case; a refusal pages Sana's queue with gh's reason). ci-redrive.py selects FAILED conclusions and review-redrive.py selects an absent, drifted or refused verdict; a green approved PR has neither. review-redrive.py's own header routes this case to ASK-310's pr-land-if-green.sh, which does not exist in this tree and is wired into neither driver. Tracked open at sp-9b01682d."
     },
     {
       "id": "converge-review-no-verdict",

@@ -1,5 +1,6 @@
 ---
 name: deck-ai
+user-invocable: false
 description: Generate modern presentation decks (PDF) from markdown content. Local open-source alternative to Gamma — uses Slidev for layouts and Unsplash for imagery. Invoke when the user asks to "make a deck", "build slides from this", or "turn this into a presentation".
 ---
 

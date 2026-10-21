@@ -69,11 +69,30 @@ def _lexicon_positive(lexicon):
 
 
 def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
-                  slot_kind="post", target_words=None):
+                  slot_kind="post", *, target_words, lane=None):
     """(text, provenance) for one slot. Pure; empty Voice -> ('', empty provenance).
 
     `target_words` threads the length axis (selector.length_band) to the one place
-    that assembles a prompt. Default None is the pre-2026-08-13 answer byte for byte.
+    that assembles a prompt.
+
+    IT IS KEYWORD-ONLY AND REQUIRED, founder-directed 2026-09-19. It used to
+    default to None, and that default was the whole 2026-09-19 defect class: three
+    separate callers took it by accident (`cycle.supply_for_slot`,
+    `comment.build_prompt`, `generate.build_prompt`), and with no target `select`
+    skips its length window entirely -- `length_band(rows, None)` returns the pool
+    unranked -- so each of them could draw the four LONGEST rows in the corpus. On
+    the live ASK corpus that assembled 24,701 chars against a 24,000 budget once
+    three 300-plus-word posts were approved together.
+
+    None is still a legal ANSWER, meaning "this lane has no length axis". What is
+    no longer legal is not answering. The lesson this encodes is the instance's
+    own: a shared entry point serving more than one lane takes a required lane
+    argument, and a caller that does not know its lane is a defect surfaced at the
+    call site rather than a wrong verdict downstream
+    (q-system/lessons/calibrate-a-gate-against-the-corpus-it-claims-to-encode.md).
+
+    A caller that omits it now raises TypeError, which is a failing import and a
+    failing test rather than a quiet wrong prompt.
     """
     picked = selector.select(voice.active_exemplars(), channel, counter,
                              slot_index=slot_index, k=k, slot_kind=slot_kind,
@@ -99,8 +118,15 @@ def voice_section(voice, channel, counter, slot_index=0, k=selector.DEFAULT_K,
     # scar -- a receipt for an action that did not occur. The echo gate and every
     # audit downstream trust correction_ids, so the cheapest wrong answer here is
     # the one that looks authoritative.
+    # `lane` + `scope_exclude` (2026-10-05): a founder can lift a correction for ONE
+    # lane of a channel while the rest of the channel keeps it. `scope` alone cannot
+    # say that: the lifted lane and the attended lane write the same channel. Filtered
+    # here, in the one list that feeds both the prompt and the receipt, so an excluded
+    # row is never recorded as applied.
     applied = [r for r in (corrections or [])
-               if not r.get("scope") or channel in r["scope"]]
+               if (not r.get("scope") or channel in r["scope"])
+               and not (lane and isinstance(r.get("scope_exclude"), list)
+                        and lane in r["scope_exclude"])]
     his = [r for r in applied if r.get("source") != EXTERNAL_SOURCE]
     researched = [r for r in applied if r.get("source") == EXTERNAL_SOURCE]
     if his:

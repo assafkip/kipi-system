@@ -21,10 +21,26 @@ Verify the active DSSE issue. Execute in order:
    this receipt without running the checks -- `mark verified` refuses by
    design (ASK-402).
 
+   An issue loaded after ASK-1810 (its state carries `"verify_contract": 2`)
+   gets more from the same command, all computed by `verify` and sealed into
+   the receipt, never typed:
+   - a check that runs the full suite (`verify.sh --full`, bare `pytest`,
+     `kipi check`) is refused before anything runs; CI runs it once per PR;
+   - `real_path`: which of the issue's non-test `.py` files each check ran at
+     its tracked path, seen by `real_path_observer/sitecustomize.py`; a check
+     that only runs a copy is refused;
+   - `defined_vs_ran`: test functions in each named Python test file, from the
+     AST, against the runner's own count; hidden tests are refused;
+   - `repeats`: the checks rerun up to 10 times inside a 20-minute budget,
+     refused below 5 runs or on any red run.
+
 3. If `verify` exits 0:
    - Report: "verified receipt recorded at <timestamp>."
    - Read `checks` from its JSON output and list them, one per line
      (`checks_run` is the count).
+   - Under contract 2, also paste `real_path`, `defined_vs_ran` and `repeats`
+     from the same JSON. These are the closeout numbers; do not restate them
+     from memory.
 
 4. If `verify` exits 2:
    - It already printed which check failed and its exit code. Report that.

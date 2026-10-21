@@ -229,6 +229,78 @@ EOF
   || fail "labels carry a major; derivation must override the prose APPROVE"
 ok "derive overrides prose: 'APPROVE' + a major label -> REQUEST CHANGES"
 
+# --- a major the reviewer marks nonblocking does not wedge the PR (ASK-2422) ---
+# Scar: a report-only gate PR took 4 review rounds, and round 4's only major was
+# one the reviewer itself called "not a blocker". The ladder read `^major|` and
+# nothing else, so the reviewer had no way to say it in the block. The fourth
+# field is that way; only the exact token releases, and never a blocker.
+nb_block() { printf '## VERDICT: APPROVE WITH NITS\n\nFINDINGS:\n%s\nEND FINDINGS\n' "$1" > "$WORK/$2"; }
+nb_block "major|a torn line in report-only code refuses nothing yet|gate.py:357|nonblocking
+minor|a stale comment|gate.py:170" nb1.md
+[ "$(verdict_from_findings "$WORK/nb1.md")" = "APPROVE WITH NITS" ] \
+  || fail "a nonblocking major + a minor must derive APPROVE WITH NITS, got '$(verdict_from_findings "$WORK/nb1.md")'"
+ok "derive: a major marked nonblocking -> APPROVE WITH NITS"
+nb_block "major|a torn line refuses every job|gate.py:357|nonblocking
+major|a real wedge|gate.py:12" nb2.md
+[ "$(verdict_from_findings "$WORK/nb2.md")" = "REQUEST CHANGES" ] \
+  || fail "one unmarked major beside a nonblocking one must still derive REQUEST CHANGES"
+ok "derive: an unmarked major still blocks beside a nonblocking one"
+nb_block "blocker|publishes a credential|x.sh:1|nonblocking" nb3.md
+[ "$(verdict_from_findings "$WORK/nb3.md")" = "BLOCK" ] \
+  || fail "a blocker marked nonblocking must still derive BLOCK"
+ok "derive: a blocker ignores the nonblocking mark"
+nb_block "major|a guess at the mark|gate.py:9|maybe
+major|the mark in the wrong field|nonblocking.py:3" nb4.md
+[ "$(verdict_from_findings "$WORK/nb4.md")" = "REQUEST CHANGES" ] \
+  || fail "only the exact trailing token may release a major"
+ok "derive: a near-miss mark or the word in the location still blocks"
+# A LITERAL PIPE IN THE CLAIM (ASK-2422 round 2, claude review of PR #540 major 1).
+# The claim is the only free-text field, so it is the only one that can hold a `|`,
+# and when it does every positional field shifts right. Reading the mark off field 4
+# then found the LOCATION there, called the row blocking, and wedged a PR the
+# reviewer had explicitly released -- silently, since the row still looked fine.
+# The mark is read off the END of the row, which does not shift.
+nb_block "major|the fallback swallows rc=2 | rc=3 and reports green|a.sh:40|nonblocking" nb5.md
+[ "$(verdict_from_findings "$WORK/nb5.md")" = "APPROVE WITH NITS" ] \
+  || fail "a pipe inside the claim shifted the mark off the row, got '$(verdict_from_findings "$WORK/nb5.md")'"
+ok "derive: a literal pipe in the claim does not re-block a released major"
+[ "$(extract_followup_findings "$WORK/nb5.md" | grep -c .)" = "1" ] \
+  || fail "the released major with a piped claim is not listed as a follow-up"
+ok "follow-ups: a piped claim is still listed"
+nb_block "major|a | b wedges every job|a.sh:1" nb6.md
+[ "$(verdict_from_findings "$WORK/nb6.md")" = "REQUEST CHANGES" ] \
+  || fail "a pipe in the claim must not release an UNMARKED major"
+ok "derive: a piped claim with no mark still blocks"
+# findings_row_parts: the split every log line and capture call reads. A positional
+# `IFS='|' read -r sev claim loc` puts the claim's tail in loc, so the run log and
+# the spillover description name a location the reviewer never wrote.
+PARTS="$(findings_row_parts 'major|the fallback swallows rc=2 | rc=3 and reports green|a.sh:40|nonblocking')"
+[ "$(printf '%s' "$PARTS" | sed -n 1p)" = "major" ] \
+  || fail "findings_row_parts lost the severity: '$PARTS'"
+[ "$(printf '%s' "$PARTS" | sed -n 2p)" = "the fallback swallows rc=2 | rc=3 and reports green" ] \
+  || fail "findings_row_parts truncated the claim at the internal pipe: '$PARTS'"
+[ "$(printf '%s' "$PARTS" | sed -n 3p)" = "a.sh:40" ] \
+  || fail "findings_row_parts read the wrong location: '$PARTS'"
+[ "$(findings_row_parts 'minor|plain claim|b.yml:72' | sed -n 3p)" = "b.yml:72" ] \
+  || fail "findings_row_parts broke the ordinary unmarked row"
+[ "$(findings_row_parts 'major|loc is the word itself|nonblocking' | sed -n 3p)" = "nonblocking" ] \
+  || fail "a 3-field row whose location is the word must keep it as the location"
+ok "findings_row_parts: severity, claim-with-pipes, location, mark stripped"
+grep -q 'findings_row_parts' "$REVIEWER" \
+  || fail "the reviewer still splits findings rows positionally (no findings_row_parts)"
+ok "reviewer wiring: the follow-up log reads rows through findings_row_parts"
+FOLLOW="$(extract_followup_findings "$WORK/nb2.md")"
+case "$FOLLOW" in *"torn line refuses"*) ;; *) fail "the nonblocking major is not listed as a follow-up: '$FOLLOW'";; esac
+case "$FOLLOW" in *"real wedge"*) fail "a blocking major was listed as a follow-up";; esac
+[ "$(extract_followup_findings "$WORK/nb1.md" | grep -c .)" = "2" ] \
+  || fail "nonblocking major + minor must list 2 follow-ups"
+ok "follow-ups: minors and nonblocking majors listed, blocking majors not"
+grep -q 'extract_followup_findings' "$REVIEWER" \
+  || fail "the reviewer does not list follow-ups through extract_followup_findings"
+grep -q '|nonblocking' "$REVIEWER" && grep -qi 'report-only' "$REVIEWER" \
+  || fail "the reviewer prompt does not teach the nonblocking mark and the report-only case"
+ok "reviewer wiring: prompt teaches the mark, capture lists the follow-ups"
+
 grep -q 'verdict_from_findings' "$REVIEWER" \
   || fail "reviewer does not derive the verdict from findings (prompt-only enforcement)"
 grep -q '"derived"\|derived' "$REVIEWER" || fail "verdict record must keep the derived value"
@@ -251,6 +323,61 @@ touch "$RD/pr-9-20260726-120000.md"
 [ "$(review_round "$RD" 11)" = "4" ] || fail "another PR's reviews must not count toward this PR"
 [ "$(review_round "$RD" 9)"  = "2" ] || fail "per-PR counting broken"
 ok "review_round: 0/1/3 priors -> rounds 1/2/4, and PRs do not cross-count"
+
+# --- review_round counts what the REVIEWER ACTUALLY WRITES (ASK-1957) ---------
+# THE DEFECT: ASK-738 re-keyed every review artifact by repo, so the writer emits
+# `<owner>_<repo>__pr-<N>-<stamp>.md` -- while this counter went on globbing the
+# legacy `pr-<N>-*.md`. A slug resolves for EVERY repo (slug_for_repo falls back
+# to the target's own origin url), so the glob matched nothing on every run,
+# review_round returned 1 forever, and ROUND_RULE -- gated on ROUND > 1 -- never
+# armed once. A PR could reach round 5 with the reviewer told each time that it
+# was round 1, which is exactly the re-litigation grind that rule exists to stop.
+#
+# THE FILENAME IS NEVER RETYPED HERE. Both sides go through the one convention in
+# repo-slug-lib.sh: review_md_path builds what the writer writes, review_md_glob
+# builds what the counter globs, and both derive from artifact_key. Restating the
+# shape in the test would create a second source of truth that agrees on the day
+# it is written and silently stops describing the system afterwards.
+SLUGRD="$WORK/rounds-slugged"; mkdir -p "$SLUGRD"
+SL="assafkip/some-client"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "1" ] \
+  || fail "no prior reviews must be round 1 for a slugged repo"
+touch "$(review_md_path "$SLUGRD" "$SL" 42 20260922-101500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "2" ] \
+  || fail "the second report for a slugged repo must be round 2 -- review_round is not counting the files the reviewer writes"
+touch "$(review_md_path "$SLUGRD" "$SL" 42 20260922-111500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "3" ] \
+  || fail "two priors for a slugged repo must be round 3"
+ok "review_round: a slugged repo's second report is round 2 (ROUND_RULE can arm)"
+
+# Cross-repo counting is the defect ASK-738 closed; keying the counter must not
+# reopen it. Two repos' PR #42 live in one directory and must not see each other.
+touch "$(review_md_path "$SLUGRD" "assafkip/other-client" 42 20260922-121500)"
+[ "$(review_round "$SLUGRD" 42 "$SL")" = "3" ] \
+  || fail "another REPO's review of the same PR number must not count toward this repo"
+[ "$(review_round "$SLUGRD" 42 "assafkip/other-client")" = "2" ] \
+  || fail "per-repo counting broken"
+# The 2-argument form is what the block above exercises and what every legacy
+# caller passes; an empty slug is the legacy `pr-<N>` shape by construction.
+[ "$(review_round "$RD" 11)" = "4" ] \
+  || fail "the 2-argument (no-slug) form must keep counting the legacy shape"
+ok "review_round: repos do not cross-count, and the no-slug form is unchanged"
+
+# THE DIVERGENCE TEST the DoR asks for: the counter's glob must match the path
+# the writer builds. If either function stops deriving from artifact_key, or the
+# `-<stamp>.md` suffix moves on one side only, this case stops matching and the
+# test goes red instead of the round counter silently returning 1 in production.
+case "$(review_md_path "$SLUGRD" "$SL" 42 20260922-101500)" in
+  $(review_md_glob "$SLUGRD" "$SL" 42)) : ;;
+  *) fail "review_md_glob does not match review_md_path: writer and counter have diverged" ;;
+esac
+ok "review_md_glob matches review_md_path (one filename convention, two readers)"
+
+grep -q 'review_md_path' "$REVIEWER" \
+  || fail "reviewer does not build its review path through the shared convention (writer and counter would drift again)"
+grep -q 'review_round .*REVIEW_SLUG\|review_round.*\$REVIEW_SLUG' "$REVIEWER" \
+  || fail "reviewer computes its round without passing the repo slug -- the counter would glob the legacy shape"
+ok "reviewer writes through review_md_path and counts with its own slug"
 
 # --- severity anchors + anti-re-litigation are IN the reviewer prompt ---------
 # Interpretive rules cannot be hook-enforced (the model decides how it grades),
@@ -868,6 +995,7 @@ cat > "$SW/gh" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
   "pr view 901"*) printf '$SHA_A\tpin the sha the review actually read\n' ;;
+  "pr diff 901"*) printf 'diff --git a/x b/x\n' ;;   # the PR context fetch (2026-10-13)
   *) exit 1 ;;
 esac
 exit 0
@@ -1967,6 +2095,7 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$d/gh-calls.log"
 case "\$1 \$2" in
+  "pr diff")    [ "$mode" = "fail-diff" ] && exit 1 ;;   # the PR context fetch (2026-10-13)
   "pr view")    printf '$oid\tsecond opinion under test\n' ;;
   "pr comment") printf '$COMMENT_URL_FIXTURE\n' ;;
 esac
@@ -2021,6 +2150,20 @@ printf '%s' "$CALL" | grep -qi 'degraded' \
 [ "$(pages_in "$Q1")" = "0" ] \
   || fail "a healthy codex review paged the founder: $(cat "$Q1/pages.txt")"
 ok "a healthy codex run runs no fallback, marks nothing degraded, pages nobody"
+
+# --- Q1b. GitHub unreachable at review start -> exit 9, nothing posted -------
+# (2026-10-13) The script fetches the PR for the reviewer. A failed fetch is the
+# machine's failure, not a review: no model runs, no status, no context left.
+Q1B="$W2/eng-fetch-fails"
+mk_engine_stubs "$Q1B" "$SHA_A" fail-diff "$CODEX_NOISY_APPROVE"
+run_engine_reviewer "$Q1B" --post --engine codex
+[ "$RC" = "9" ] || fail "a failed PR fetch exited $RC, want 9 (the machine's code). err: $(cat "$Q1B/err.txt")"
+[ -z "$(status_call "$Q1B")" ] || fail "a failed PR fetch still posted a status: $(status_call "$Q1B")"
+[ ! -s "$Q1B/codex-calls.log" ] && [ ! -s "$Q1B/claude-calls.log" ] \
+  || fail "a failed PR fetch still ran a model reviewer"
+ls "$Q1B/home/.config/kipi/review-scratch"/ctx.* >/dev/null 2>&1 \
+  && fail "a failed PR fetch left its context dir behind: $(ls -d "$Q1B/home/.config/kipi/review-scratch"/ctx.*)"
+ok "GitHub unreachable at review start: exit 9, no model, no status, no context dir left"
 
 # --- Q2. a reviewer that can only approve is not a gate ----------------------
 Q2="$W2/eng-block"
@@ -2945,34 +3088,43 @@ ok "an armed PR whose receipt landed pages exactly what it did before"
 S_CV_UN="$W2/state-conv-unarmed"; mkdir -p "$S_CV_UN/pr-reviews"
 seed_record "$S_CV_UN" 903 "APPROVE" "$SHA_A"
 printf 'unarmed\n' > "$S_CV_UN/pr-reviews/pr-903.automerge"
-gh_says 903 CLEAN "$SHA_A"
-: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+gh_arm 903 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
 run_converge "$S_CV_UN" "$W2/conv-unarmed.out" 1
 grep -qi "no human merge needed" "$W2/pages.txt" \
   && fail "THE DEFECT ON THE PHONE: the worker recorded PR #903 as NOT armed and converge Slacked
       that no human merge is needed. Nobody acts, the PR sits green, and the page said it was
       fine -- the silent stall relocated into the alert channel. It said:
 $(cat "$W2/pages.txt")"
+# ASK-310 INVERTED THIS. It used to assert the page CARRIED "gh pr merge --auto
+# --squash 903": the suite pinned the defect, a loop that knows the fix and hands
+# a human the command. converge now runs that command itself, through the same
+# automerge_arm the worker uses, and the page carries no merge command.
+[ "$(grep -c '^pr merge --auto --squash 903$' "$ARMLOG" 2>/dev/null || true)" = "1" ] \
+  || fail "converge knows PR #903 is approved and recorded unarmed, and did not arm it exactly once.
+      gh calls: $(cat "$ARMLOG")"
 grep -qi "gh pr merge --auto --squash 903" "$W2/pages.txt" \
-  || fail "converge knows PR #903 is unarmed and its page does not carry the command that fixes
-      it, so the operator is told there is a problem and not what to do: $(cat "$W2/pages.txt")"
-ok "converge does not claim auto-merge on a PR the worker recorded as unarmed"
+  && fail "converge armed PR #903 and still paged a human the merge command: $(cat "$W2/pages.txt")"
+ok "converge ARMS a PR the worker recorded as unarmed, and pages no merge command (ASK-310)"
 
 S_CV_NONE="$W2/state-conv-none"; mkdir -p "$S_CV_NONE/pr-reviews"
 seed_record "$S_CV_NONE" 904 "APPROVE" "$SHA_A"
-gh_says 904 CLEAN "$SHA_A"
-: > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
+gh_arm 904 CLEAN "$SHA_A" 0 false
+: > "$ARMLOG"; : > "$W2/converge-dispatch.txt"; : > "$W2/pages.txt"
 run_converge "$S_CV_NONE" "$W2/conv-none.out" 1
 grep -qi "no human merge needed" "$W2/pages.txt" \
   && fail "NOTHING RECORDED THE ARM and converge asserted it anyway. This is the reviewer's own
       repro: the worker never reached the arm this round, so the claim is backed by a comment
       rather than by a read. It said:
 $(cat "$W2/pages.txt")"
-grep -qi "gh pr merge --auto --squash 904" "$W2/conv-none.out" \
-  || fail "converge could not read the arm state and did not leave the operator the fallback
-      command. It said:
+# ASK-310: the fallback command is RUN, not handed over. automerge_arm asks the
+# PR its state first, so this is a read, not an assertion.
+[ "$(grep -c '^pr merge --auto --squash 904$' "$ARMLOG" 2>/dev/null || true)" = "1" ] \
+  || fail "nothing recorded PR #904's arm state and converge did not arm it exactly once.
+      gh calls: $(cat "$ARMLOG")
+      It said:
 $(sed 's/^/        /' "$W2/conv-none.out")"
-ok "converge claims nothing about a PR whose arm state nobody recorded"
+ok "converge arms a PR whose arm state nobody recorded instead of handing over the command (ASK-310)"
 
 # --- R5. an unarmed PR pages ONCE, and the flag CLEARS -----------------------
 # PR #33 round 3, finding 3 (minor). The comment justified per-run paging as "the

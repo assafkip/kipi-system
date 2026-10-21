@@ -46,7 +46,6 @@ words with a model's, which is the exact thing the voice system exists to preven
 from __future__ import annotations
 
 import os
-import subprocess
 
 from . import prompt_render
 
@@ -274,6 +273,10 @@ POST:
 """
 
 
+#: What run_model hands back on a gate refusal, so it is never read as an empty answer.
+_GATE_REFUSED = object()
+
+
 def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
                 model=None):
     """One bounded model call. Same chokepoint contract as the writer's."""
@@ -301,26 +304,37 @@ def _run_prompt(prompt, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
         raise ValueError(
             "revise needs an explicit model; the engine has no default tier because "
             "the writer's tier is the operator's choice, not the package's")
-    binary = claude_bin
-    if not os.path.exists(binary):
-        return None
-    try:
-        # THE REVISER WRITES, so it gets the writer's tier (2026-08-13). It edits a post
-        # that is already in his voice and must not flatten it; that is the same
-        # cross-source judgment the writer needs, not the cheap comparison a critic does.
-        result = subprocess.run([binary, "--model", model, "-p", prompt],
-                                capture_output=True,
-                                text=True, timeout=timeout)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
+    # THE REVISER WRITES, so it gets the writer's tier (2026-08-13). It edits a post
+    # that is already in his voice and must not flatten it; that is the same
+    # cross-source judgment the writer needs, not the cheap comparison a critic does.
+    #
+    # Through the one chokepoint, not its own subprocess (PR #410 review, ASK-2008):
+    # this call is the expensive one, up to two per draft at the writer's tier, and
+    # its own `claude -p` wrote no usage row, so a per-bot spend report charged the
+    # repair loop to nobody. run_model meters it and hands back the same bytes.
+    # allow_opencode=False: the reviser REQUIRES an explicit writer tier (the two
+    # ValueErrors above), and the opencode branch would drop it for OPENCODE_MODEL.
+    # Before PR #410 this call never touched opencode; it still does not.
+    # refused=: a gate refusal RAISES instead of returning None. None is "the model
+    # produced nothing", and critic.run reported a shut gate as "reviser returned
+    # nothing" and sent the operator to debug a healthy reviser (PR #509 review).
+    # bare=False: the reviser writes his post, and a writer is not stripped until a
+    # dry run proves its prompt self-contained (2026-10-06 brief).
+    out = prompt_render.run_model(prompt, claude_bin, timeout=timeout, model=model, bare=False,
+                                  caller="revise", under_test="none", allow_opencode=False,
+                                  refused=_GATE_REFUSED)
+    if out is _GATE_REFUSED:
+        raise prompt_render.GateRefused("model gate refused the revise call")
+    return out
 
 
 def revise(text, violations, claude_bin=None, timeout=TIMEOUT_SECONDS, runner=None,
            model=None, author=None):
-    """Return the revised post, or None. None is a discard upstream, never a hold."""
+    """Return the revised post, or None. None is a discard upstream, never a hold.
+
+    Raises `prompt_render.GateRefused` when the model gate refused the call: that is
+    not an empty revision, and a caller must not report it as one.
+    """
     out = _run_prompt(build_prompt(text, violations, author=author), claude_bin, timeout,
                       runner, model=model)
     out = prompt_render.strip_preamble(out or "")
