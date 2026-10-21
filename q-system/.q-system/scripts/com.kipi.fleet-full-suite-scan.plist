@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Fleet full-suite door scan (RULE-2026-10-01-A). kipi-scope: skeleton-only
+
+     Every repo of the account and every local checkout, read once a day for a
+     door that can run a WHOLE test suite on a PR, a push or a local hook. The
+     founder bar is "no 6000-test runs on small changes", and the full suite kept
+     coming back through doors nobody listed. A list kept by hand missed the repo
+     the rule was written in, so the scanner reads the population at run time.
+
+     ALERTS ON A STATE CHANGE ONLY, through slack-notify.sh, which files it in
+     Sana's Linear queue and pages nobody. Exit 1 (doors open) is a normal day
+     until the fleet is clean; launchd does not alert on it, the scanner does.
+
+     Skeleton-only: it reads instance-registry.json, which only the skeleton has,
+     and one scanner per machine is the population, not one per instance.
+
+     TEMPLATE: __KIPI_REPO__ and __HOME__ are materialized by install-plist.sh.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-full-suite-scan -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.fleet-full-suite-scan</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- A login shell so gh finds its auth the way it does for a person. -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/fleet-full-suite-scan.py</string>
+  </array>
+  <!-- Local 08:20, after fleet-health at 08:15. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>20</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/fleet-full-suite-scan.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/fleet-full-suite-scan.err.log</string>
+</dict>
+</plist>

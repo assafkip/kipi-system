@@ -120,7 +120,9 @@ CODEX_OUTAGE_MAX_AGE=86400
 # runs the SAME second-runner prompt, so the outcome logic below judges it
 # exactly as it judges Codex. Set KIPI_SECOND_RUNNER_FALLBACK to an empty string
 # to disable it (tests that pin the both-down hold do).
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-claude -p --model claude-opus-5}"
+# `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+# could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -2252,7 +2254,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # bash, so without it run_bounded would score tee's exit status, not claude's.
   ENV_FAIL=""
   : > "$RUN_OUT_FILE" 2>/dev/null || true
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
+  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
+  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -2468,7 +2472,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
         : > "$RUN_OUT_FILE" 2>/dev/null || true
-        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
           crc=0
         else
           crc=$?

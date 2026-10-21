@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/scripts/test/test_lessons_push_guard.py",
+  "runner": "pytest",
+  "timeout_s": 120
+}

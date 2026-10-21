@@ -262,6 +262,16 @@ def build_packet(trigger, reason, transcript_path):
 # the call
 # --------------------------------------------------------------------------
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def call_fable(packet, timeout):
     """(triage, failure). Never raises, never hangs, never leaks a child.
 
@@ -295,7 +305,7 @@ def call_fable(packet, timeout):
     if not command or not os.path.exists(command):
         return None, "claude binary not found"
 
-    env = dict(os.environ)
+    env = _subscription_env()
     # RECURSION GUARD. The child is itself a `claude` process, so without this
     # its own token-guard could hit a stuck block and escalate again, and each
     # escalation would fork another. One marker closes the whole tree.

@@ -42,11 +42,20 @@ else
     && ok "carries this PR's earlier review rounds between runs, so ROUND_RULE can arm" \
     || bad "PR #437 round 2 major: pr-reviews is not carried between runs; every push is round 1"
   has "state=success" "$W" && bad "the workflow itself writes state=success" || ok "the workflow never writes state=success itself"
+  # The Mac reviewer runs on the model com.kipi.dispatch.plist sets; the hosted
+  # one must run the same, not pr-review-agent.sh's Opus default (codex minor, #464).
+  MAC_MODEL="$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"]["KIPI_REVIEW_CLAUDE_MODEL"])' "$ROOT/q-system/.q-system/scripts/com.kipi.dispatch.plist" 2>/dev/null)"
+  [ -n "$MAC_MODEL" ] && has "KIPI_REVIEW_CLAUDE_MODEL: $MAC_MODEL" "$W" \
+    && ok "the hosted reviewer runs the Mac's reviewer model ($MAC_MODEL)" \
+    || bad "THE #464 MINOR: the workflow does not set KIPI_REVIEW_CLAUDE_MODEL to the Mac's '${MAC_MODEL:-<unreadable plist>}', so pr-review-agent.sh falls back to Opus"
+  has "secrets.ANTHROPIC_API_KEY" "$W" \
+    && bad "NO-API RULE (2026-09-28): the workflow hands the billed ANTHROPIC_API_KEY to the reviewer" \
+    || ok "the workflow passes no ANTHROPIC_API_KEY (subscription token only)"
 fi
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 STUB="$WORK/agent.sh"; LOG="$WORK/agent.log"
-printf '#!/usr/bin/env bash\necho "$*" >> "%s"\necho "EXPECT=${KIPI_REVIEW_EXPECT_HEAD:-<unset>}" >> "%s.env"\n' "$LOG" "$LOG" > "$STUB"; chmod +x "$STUB"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\necho "EXPECT=${KIPI_REVIEW_EXPECT_HEAD:-<unset>}" >> "%s.env"\necho "APIKEY=${ANTHROPIC_API_KEY:+set}" >> "%s.env"\n' "$LOG" "$LOG" "$LOG" > "$STUB"; chmod +x "$STUB"
 
 # A real repo with one commit: the gate must find the head object in the tree
 # it stands in before it lets the reviewer post on that sha.
@@ -68,25 +77,31 @@ run_gate "$WORK/b.out" 431 "$HEAD_SHA"; RC=$?
 grep -c 'HOSTED REVIEWER OFF' "$WORK/b.out" >/dev/null && ok "says it is off, in the job log" || bad "silent when off"
 
 echo "C. a credential"
-run_gate "$WORK/c.out" 431 "$HEAD_SHA" ANTHROPIC_API_KEY=k-test; RC=$?
+run_gate "$WORK/c.out" 431 "$HEAD_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test; RC=$?
 [ "$RC" = 0 ] && ok "exits with the reviewer's status" || bad "exited $RC with a credential"
 [ "$(cat "$LOG")" = "431 --post" ] && ok "execs the same reviewer: 431 --post" || bad "reviewer argv was '$(cat "$LOG")', want '431 --post'"
-[ "$(tail -1 "$LOG.env")" = "EXPECT=$HEAD_SHA" ] \
+grep -qx "EXPECT=$HEAD_SHA" "$LOG.env" \
   && ok "pins the agent to the head it verified (KIPI_REVIEW_EXPECT_HEAD)" \
   || bad "PR #437 round 2 major: the agent is not pinned to the verified head: $(tail -1 "$LOG.env" 2>/dev/null)"
-run_gate "$WORK/c2.out" 431 "$HEAD_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test
-[ "$(cat "$LOG")" = "431 --post" ] && ok "an OAuth token counts as a credential too" || bad "OAuth token did not run the reviewer"
+run_gate "$WORK/c2.out" 431 "$HEAD_SHA" ANTHROPIC_API_KEY=k-test
+[ ! -s "$LOG" ] && ok "an API key alone does not run the reviewer (no billed API, 2026-09-28)" || bad "NO-API RULE: an ANTHROPIC_API_KEY alone ran the reviewer on the billed API"
+grep -c 'HOSTED REVIEWER OFF' "$WORK/c2.out" >/dev/null && ok "an API key alone reports the reviewer off" || bad "API key alone: silent"
+: > "$LOG.env"
+run_gate "$WORK/c3.out" 431 "$HEAD_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test ANTHROPIC_API_KEY=k-test
+[ "$(cat "$LOG")" = "431 --post" ] && grep -qx "APIKEY=" "$LOG.env" \
+  && ok "with both set, the reviewer runs on the subscription token and never sees the API key" \
+  || bad "NO-API RULE: the reviewer inherited ANTHROPIC_API_KEY ($(tr '\n' ' ' < "$LOG.env"))"
 
 echo "D. malformed PR"
-run_gate "$WORK/d.out" '431;x' "$HEAD_SHA" ANTHROPIC_API_KEY=k-test; RC=$?
+run_gate "$WORK/d.out" '431;x' "$HEAD_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test; RC=$?
 [ "$RC" = 2 ] && [ ! -s "$LOG" ] && ok "refused, nothing run" || bad "malformed PR: rc=$RC, ran '$(cat "$LOG")'"
 
 
 echo "E. the head object is not in the tree (PR #437 major)"
-run_gate "$WORK/e.out" 431 "$ABSENT_SHA" ANTHROPIC_API_KEY=k-test; RC=$?
+run_gate "$WORK/e.out" 431 "$ABSENT_SHA" CLAUDE_CODE_OAUTH_TOKEN=t-test; RC=$?
 [ "$RC" = 1 ] && ok "refuses with exit 1, so the job shows red" || bad "absent head object: exited $RC, want 1"
 [ ! -s "$LOG" ] && ok "runs no reviewer on a tree that is not the head" || bad "THE DEFECT: reviewed a tree without the head object and would post on it: $(cat "$LOG")"
-run_gate "$WORK/e2.out" 431 "not-a-sha" ANTHROPIC_API_KEY=k-test; RC=$?
+run_gate "$WORK/e2.out" 431 "not-a-sha" CLAUDE_CODE_OAUTH_TOKEN=t-test; RC=$?
 [ "$RC" = 2 ] && [ ! -s "$LOG" ] && ok "a malformed sha is refused, nothing run" || bad "malformed sha: rc=$RC, ran '$(cat "$LOG")'"
 
 echo

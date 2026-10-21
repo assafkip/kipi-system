@@ -24,6 +24,7 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 G() { git -c user.email=t@t.t -c user.name=test -c commit.gpgsign=false "$@"; }
 
 GATE_REL="q-system/.q-system/scripts/propagation-leak-gate.py"
+DIVERGENCE_REL="q-system/.q-system/scripts/fleet-replica-divergence.py"
 BASELINE_REL="q-system/.q-system/state/propagation-leak-baseline.json"
 
 # The smallest skeleton kipi-update.sh will run: enough to clear its preflights
@@ -37,6 +38,11 @@ build_skeleton() {
   cp "$ROOT/kipi-update-preserve-scan.py" "$sk/kipi-update-preserve-scan.py"
 cp "$ROOT/kipi-update-deletion-guard.py" "$sk/kipi-update-deletion-guard.py"
   cp "$ROOT/$GATE_REL" "$sk/$GATE_REL"
+  # The updater is fail-closed on the replica-divergence gate too, exactly as it
+  # is on the leak gate: a skeleton without it aborts before any sync. It DISARMS
+  # on this population (no instance here carries a replicated plugins/ path) and
+  # says so, so provisioning it changes nothing this file asserts.
+  cp "$ROOT/$DIVERGENCE_REL" "$sk/$DIVERGENCE_REL"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$sk/validate-separation.py"

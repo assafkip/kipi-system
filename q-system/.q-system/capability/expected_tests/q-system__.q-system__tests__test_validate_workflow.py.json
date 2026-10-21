@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_validate_workflow.py",
+ "runner": "python3",
+ "timeout_s": 60
+}

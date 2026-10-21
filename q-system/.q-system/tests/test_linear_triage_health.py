@@ -13,6 +13,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -203,6 +204,37 @@ def test_each_threshold_can_fire_on_its_own():
     # and one under each boundary stays silent, so the >= is pinned in both directions
     assert health.breaches(dict(base, unrouted=health.UNROUTED_ALERT_AT - 1)) == []
     assert health.breaches(dict(base, needs_triage=health.TRIAGE_ALERT_AT - 1)) == []
+
+
+def test_a_local_write_failure_is_not_reported_as_linear_refusing(monkeypatch):
+    """PR #461 review, minor: the only operator-visible line named the wrong cause.
+
+    `no-such-project` is a lookup miss inside this machine's own registry-to-board
+    mapping. It never reached the network, so "refused by Linear" sends whoever
+    reads the ticket to check Linear's API for a fault that is not there.
+    """
+    base = {"unrouted": 0, "needs_triage": 0, "oldest_triage_days": 0.0,
+            "oldest_triage_id": ""}
+    m = dict(base, route_write_failures=2,
+             route_failure_kinds=["no-such-project"])
+    line = health.breaches(m)[0]
+    assert "refused by Linear" not in line
+    assert "no-such-project" in line
+
+
+def test_the_failure_kinds_survive_the_subprocess(monkeypatch):
+    """A count with its cause discarded can only be described by guessing."""
+    payload = json.dumps({"registry_ok": True, "pending": 4, "unroutable": 1,
+                          "written": 0, "write_failures": 1,
+                          "write_failure_kinds": ["no-such-label"]})
+
+    class Res:
+        stdout = payload
+
+    monkeypatch.setattr(health.subprocess, "run", lambda *a, **k: Res())
+    out = health.route_pending()
+    assert out["write_failures"] == 1
+    assert out["failure_kinds"] == ["no-such-label"]
 
 
 def test_dormancy_default_can_actually_fire_on_this_board():
@@ -1400,13 +1432,12 @@ def test_json_output_carries_the_route_keys_it_alerts_on(tmp_path):
     stricter half of the pair -- a serialization that happened to include a
     truthy count could pass an existence check while still dropping `ran`.
 
-    raw_decode, not json.loads, and the reason is recorded rather than worked
-    around silently: under --json this script prints the JSON object and THEN the
-    dormancy display block and the alert line, so stdout has never been a single
-    JSON document. Both of those prints predate ASK-1951 and no in-repo consumer
-    parses this stream (only the plist and this suite read the script at all), so
-    narrowing them is a separate change to what a launchd-wired meter prints. This
-    test reads the object it is about and leaves that alone.
+    raw_decode is kept deliberately, and it is no longer a workaround: ASK-2172
+    moved the dormancy block and the alert line off stdout, so `json.loads` now
+    succeeds here too (pinned by the ASK-2172 tests at the end of this file). This
+    test is about the ORDERING of the serialization, and reading only the leading
+    object keeps it able to fail for its own reason rather than going red on a
+    trailing-output regression another test already owns.
     """
     res = _run_health_copy(tmp_path, notify_exit=0, args=("--json",))
     m, _end = json.JSONDecoder().raw_decode(res.stdout.lstrip())
@@ -1427,3 +1458,101 @@ def test_human_output_says_not_measured_rather_than_zero(tmp_path):
     res = _run_health_copy(tmp_path, notify_exit=0)
     assert "on a dead project" in res.stdout
     assert "NOT MEASURED (check did not run)" in res.stdout, res.stdout
+
+
+# --- ASK-2172: --json stdout is ONE json document and nothing else -----------
+#
+# The deferral recorded in test_json_output_carries_the_route_keys_it_alerted_on
+# above is what this section closes. Two separate prose sources leaked past the
+# closing brace and each needs its own fixture to reach:
+#
+#   * the dormancy display block  -> FAKE_SYNC_ROUTED_DORMANT (3 dormant)
+#   * the alert status line       -> FAKE_LINEAR_SYNC (60 unrouted, breaches)
+#
+# A test using only one of them would go green against a fix that silenced only
+# that one, which is why both run here.
+
+def _run_dormant(tmp_path, *args):
+    script = _stage_health_copy(tmp_path, FAKE_SYNC_ROUTED_DORMANT)
+    return subprocess.run(
+        [sys.executable, str(script), "--no-notify", "--dormant-days", "30",
+         *args],
+        capture_output=True, text=True, timeout=120, env=_health_env())
+
+
+def test_json_stdout_is_a_single_document_with_dormant_work(tmp_path):
+    """ASK-2172. `--json` printed the JSON and THEN the dormancy block, so
+    `json.loads(stdout)` raised `Extra data: line 21 column 1`.
+
+    Observed RED on the pre-fix code: JSONDecodeError, both here and against the
+    live board (`--no-notify --json | json.load` exited 1).
+    """
+    res = _run_dormant(tmp_path, "--json")
+    m = json.loads(res.stdout)          # the whole assertion; Extra data = RED
+    assert m["dormant"] == 3, res.stdout
+    # Not merely suppressed: the identifiers are not in the JSON, so a run that
+    # dropped them would report less than the human one. They move to stderr.
+    assert "DORMANT (report only, writes nothing):" in res.stderr, res.stderr
+    assert "ASK-0" in res.stderr, res.stderr
+
+
+def test_json_stdout_is_a_single_document_when_a_threshold_breaches(tmp_path):
+    """The second prose source: the `would alert (suppressed by --no-notify)`
+    line. The dormant fixture breaches nothing, so it cannot reach this branch.
+    """
+    res = _run_health_copy(tmp_path, notify_exit=0, args=("--no-notify", "--json"))
+    m = json.loads(res.stdout)
+    assert m["unrouted"] == 60, res.stdout
+    assert "would alert (suppressed by --no-notify)" in res.stderr, res.stderr
+
+
+def test_json_stdout_is_a_single_document_when_nothing_breaches(tmp_path):
+    """And the quiet branch of the same three-way, which prints its own line.
+
+    Without this, silencing only the two noisy branches would read as done while
+    `no threshold breached; staying quiet` kept stdout unparseable on every
+    healthy run -- the common case.
+    """
+    res = _run_dormant(tmp_path, "--json")
+    json.loads(res.stdout)
+    assert "no threshold breached; staying quiet" in res.stderr, res.stderr
+
+
+# The human report is the thing that must NOT move. AGE counts are normalized
+# because the fixture's createdAt is fixed and "271d" grows by one every day --
+# a literal there is a test that goes red on a calendar, not on a defect. The
+# THRESHOLD is not an age and stays literal: `>=30d` is the argument this run was
+# given, so normalizing it would stop the test seeing --dormant-days ignored.
+HUMAN_REPORT = [
+    "team ASK: 3 open (3 fetched, 0 closed/self)",
+    "  unrouted (no project) : 0",
+    "  needs-triage          : 0",
+    "  oldest untriaged      : <N>d ",
+    "  dormant (>=30d)      : 3",
+    "  DoR tickets nothing can pick up: NOT MEASURED "
+    "(router did not run or the registry was unreadable)",
+    "",
+    "DORMANT (report only, writes nothing):",
+    "  ASK-0         <N>d  work 0",
+    "  ASK-1         <N>d  work 1",
+    "  ASK-2         <N>d  work 2",
+    "  on a dead project        : NOT MEASURED (check did not run)",
+    "",
+    "no threshold breached; staying quiet",
+    "",
+]
+
+
+def test_the_human_report_is_unchanged_line_for_line(tmp_path):
+    """The control for the three above. Routing the leaked lines to stderr under
+    --json must not move one byte of the report a person reads, and "still
+    prints the important bits" is not a check that can fail on a dropped line.
+
+    This is the assertion that would catch the lazy fix: wrapping every print in
+    `if not args.json` is indistinguishable from correct on the JSON tests, and
+    so is deleting the human report outright.
+    """
+    res = _run_dormant(tmp_path)
+    got = [re.sub(r"(?<!>=)\b\d+d\b", "<N>d", ln) for ln in res.stdout.split("\n")]
+    assert got == HUMAN_REPORT, "\n".join(got)
+    assert res.stderr == "", res.stderr

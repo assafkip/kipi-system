@@ -57,6 +57,57 @@ from pathlib import Path
 SKIP_MARKER = "voiceloop-band-lint-skip"
 TIMEOUT_SECONDS = 30
 
+# FULL REVIEW WHERE THE CHANNEL IS KNOWN (founder 2026-09-29: "run on its own in
+# full from any instance"). `voiceloop review` is the full non-generation path:
+# score plus the gate roster and the channel rules. It defaults to channel x, and
+# it does not reject an unknown channel. Measured 2026-09-29: a doc reviewed at
+# that default got markdown and length reported as X-timeline problems. So the
+# channel comes from the draft's path, only from this fixed table, and a path the
+# table does not name keeps `score` rather than being judged as a tweet.
+# Order matters: the first match wins. Each name must be a whole path segment or
+# a basename prefix, so a letter inside a word never reads as a channel.
+# PR #470 review: a `linkedin-comment-*` draft matched linkedin first and was held
+# to the 20-word post floor instead of the 5-word comment floor, a bare `email.md`
+# matched nothing because four patterns left the dot out of the trailing class, and
+# `LinkedIn-post.md` matched nothing because the table was case-sensitive.
+_CHANNEL_END = r"([-_./]|$)"
+CHANNEL_BY_PATH = tuple(
+    (re.compile(pattern + _CHANNEL_END, re.IGNORECASE), channel)
+    for pattern, channel in (
+        (r"(^|/)(linkedin|x|twitter)[-_](reply|comment)", "comment"),
+        (r"(^|/)linkedin", "linkedin"),
+        (r"(^|/)(x|twitter)", "x"),
+        (r"(^|/)substack", "substack"),
+        (r"(^|/)medium", "medium"),
+        (r"(^|/)email", "email"),
+        (r"(^|/)dm", "dm"),
+        (r"(^|/)(reply|comment)", "comment"),
+    )
+)
+
+# `score` prints "N finding(s) against M exemplar(s)"; `review` inserts
+# "on channel c". A tally regex that knew only the first shape would read every
+# review run as an engine that never finished.
+TALLY_RE = re.compile(r"\d+ finding\(s\)( on channel \S+)? against \d+ exemplar")
+
+
+def _infer_channel(file_path):
+    """The channel named by the draft's path, or None when the path names none."""
+    path_str = str(file_path).replace("\\", "/")
+    for pattern, channel in CHANNEL_BY_PATH:
+        if pattern.search(path_str):
+            return channel
+    return None
+
+
+def _engine_command(file_path):
+    """`review --channel c` for a known channel, else `score`, plus a label."""
+    channel = _infer_channel(file_path)
+    if channel is None:
+        return ["voiceloop", "score", file_path], "score"
+    return (["voiceloop", "review", "--channel", channel, file_path],
+            f"review, channel {channel}")
+
 
 def _load_voice_lint():
     """Import voice-lint.py as a module. Hyphenated name, so importlib not import."""
@@ -171,9 +222,10 @@ def main():
 
     env = dict(os.environ)
     env["VOICE_LOOP_CORPUS"] = str(corpus)
+    command, engine_label = _engine_command(file_path)
     try:
         result = subprocess.run(
-            ["voiceloop", "score", file_path],
+            command,
             capture_output=True, text=True, env=env, timeout=TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
@@ -214,12 +266,11 @@ def main():
         # And a nonzero exit with NO output emitted nothing at all, on either
         # channel -- a missing gate reading as a pass, which is the exact defect
         # class this hook's own docstring is about.
-        scored = any(re.search(r"\d+ finding\(s\) against \d+ exemplar", l)
-                     for l in lines)
+        scored = any(TALLY_RE.search(l) for l in lines)
         if not scored:
             detail = " | ".join(l.strip() for l in lines[:3]) or (
                 "no output at all (exit %d)" % result.returncode)
-            _emit("voiceloop-band-lint NOT CHECKED: `voiceloop score` did not "
+            _emit(f"voiceloop-band-lint NOT CHECKED: `voiceloop {command[1]}` did not "
                   f"complete on {file_path}, so bands, templated shapes and "
                   "corpus echo were NOT checked. This is an ENGINE fault, not a "
                   "finding about the draft, so the skip marker is the wrong fix: "
@@ -231,8 +282,7 @@ def main():
                     if l not in not_checked and not l.strip().startswith("NOT CHECKED:")]
         # The tally counts the fingerprint line too, so it cannot stand in for a
         # real finding.
-        real = [l for l in findings
-                if not re.match(r"^\s*\d+ finding\(s\) against \d+ exemplar", l)]
+        real = [l for l in findings if not TALLY_RE.match(l.strip())]
 
         if not_checked and not real:
             _emit("voiceloop-band-lint NOT CHECKED: the corpus has no "
@@ -240,7 +290,7 @@ def main():
                   "Run `voiceloop fingerprint` in the corpus directory. "
                   f"({not_checked[0].strip()})")
         elif real:
-            _emit(f"voiceloop (bands, templated shapes, corpus echo) on {file_path}:\n"
+            _emit(f"voiceloop ({engine_label}) on {file_path}:\n"
                   + "\n".join(real) + "\n"
                   + ("(bands were NOT computed: "
                      + not_checked[0].strip() + ")\n" if not_checked else "")
