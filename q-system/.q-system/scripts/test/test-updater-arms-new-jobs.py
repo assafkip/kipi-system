@@ -256,6 +256,25 @@ def run_updater(checkout, env):
                           capture_output=True, text=True, timeout=300, env=env)
 
 
+def explain_exit(label, proc):
+    """A non-zero updater names its cause on STDERR, one line per run.
+
+    capability-gate.py keeps only the last 20 lines of stdout+stderr. Validate run
+    39642449905 (Linux) showed three updater exit-code FAILs that pass on macOS, and
+    the stdout dumps that would have named the cause were cut off above the tail.
+    stderr is appended after stdout, so this line is the one CI keeps.
+    """
+    if proc.returncode == 0:
+        return
+    lines = (proc.stdout + proc.stderr).splitlines()
+    keys = ("capability gate", "ERROR", "Failed:", "RED", "abort", "ABORT", "refus",
+            "MISSING", "Traceback", "rror:")
+    hits = [l.strip()[:140] for l in lines if any(k in l for k in keys)][-6:]
+    last = [l.strip()[:140] for l in lines[-2:]]
+    print(f"[{label}] updater rc={proc.returncode}: " + " | ".join(hits + ["last:"] + last),
+          file=sys.stderr)
+
+
 def calls(log):
     return log.read_text() if log.exists() else ""
 
@@ -269,6 +288,7 @@ def case_updater_arms_only_the_missing_job():
     proc = run_updater(sk, env)
     if proc.returncode != 0:
         print(proc.stdout[-2000:], proc.stderr[-2000:], sep="\n")
+    explain_exit("case 1", proc)
     check("updater exits 0", proc.returncode, 0)
     new = agents / "com.kipi.new.plist"
     check("newly committed job is installed", new.is_file(), True)
@@ -390,6 +410,7 @@ def case_failed_bootstrap_rolls_back(build=None):
     # every day, because the rollback above makes the failed job retry every run.
     if first.returncode != 0:
         print(first.stdout[-2000:], first.stderr[-2000:], sep="\n")
+    explain_exit("case 8 run 1", first)
     check("an un-armable job does not fail the propagation", first.returncode, 0)
     check("the summary names the job", "LAUNCHD JOBS NOT ARMED" in first.stdout
           and "com.kipi.willfail" in first.stdout, True)
@@ -400,6 +421,7 @@ def case_failed_bootstrap_rolls_back(build=None):
     second = run_updater(sk, env)
     check("the second run retries and reports again", "com.kipi.willfail" in second.stdout
           and "LAUNCHD JOBS NOT ARMED" in second.stdout, True)
+    explain_exit("case 8 run 2", second)
     check("the second run also keeps exit 0", second.returncode, 0)
 
 
