@@ -59,6 +59,7 @@ the check can fail.
 Run: python3 q-system/.q-system/scripts/test/test-updater-arms-new-jobs.py
 """
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -188,9 +189,24 @@ def build_skeleton(work, name_it_skeleton):
     # no sidecar for this label, so the sidecar check cannot be what skips it.
     (scripts / "com.kipi.declared-retired.plist").write_text(
         DECLARED_RETIRED.format(label="com.kipi.declared-retired"))
-    registry = '{"instances": []}'
+    # ONE REAL INSTANCE, NOT AN EMPTY LIST. Main's replica-divergence preflight
+    # (ASK-1934, #460) aborts the updater when the registry resolves no instance
+    # roots, so `"instances": []` turned 12 checks red on a fixture problem, not
+    # on the arming code (2026-10-21, after merging main). Same shape as
+    # test-kipi-update-build-artifacts.sh: a committed subtree instance with no
+    # plugins/, which the divergence gate disarms on and says so.
+    inst = work / "inst"
+    (inst / "q-system").mkdir(parents=True, exist_ok=True)
+    (inst / ".claude").mkdir(parents=True, exist_ok=True)
+    (inst / "q-system" / "tracked.md").write_text("old\n")
+    git(["init", "-q"], inst)
+    git(["add", "-A", "-f"], inst)
+    git(["-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-q", "-m", "inst"], inst)
+    instances = json.dumps([{"name": "testinst", "path": str(inst.resolve()),
+                             "subtree_prefix": "q-system", "type": "subtree"}])
+    registry = '{"instances": %s}' % instances
     if name_it_skeleton:
-        registry = '{"skeleton": {"path": "%s"}, "instances": []}' % sk.resolve()
+        registry = '{"skeleton": {"path": "%s"}, "instances": %s}' % (sk.resolve(), instances)
     (sk / "instance-registry.json").write_text(registry)
     git(["init", "-q"], sk)
     git(["add", "-A"], sk)

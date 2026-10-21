@@ -334,8 +334,13 @@ install_vendored_hooks() {
   #
   # The installer already prints one precise line per hook. Showing that line is
   # both shorter and true.
-  local _out _rc
-  _out="$(python3 "$installer" 2>&1)"; _rc=$?
+  # `|| _rc=$?`, NEVER `; _rc=$?`. This file runs under `set -euo pipefail`, so
+  # a bare `_out="$(...)"` whose installer exits non-zero kills the whole update
+  # right there: no installer line, no WARNING below, exit 1. The "never fatal"
+  # contract above was dead code. Found 2026-10-21 when a scratch HOME with no
+  # settings.json made the updater die silently before arming any job (ASK-1130).
+  local _out _rc=0
+  _out="$(python3 "$installer" 2>&1)" || _rc=$?
   printf '%s\n' "$_out"
   if [ "$_rc" -ne 0 ]; then
     echo "WARNING: the hook install reported a problem above (exit $_rc). The guard" >&2
