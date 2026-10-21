@@ -10,6 +10,7 @@
     "q-system/.q-system/scripts/fable-escalate.py": "the fable escalation caller, Popen with a stdin prompt, unmetered",
     "q-system/.q-system/scripts/granola-voice-synthesize.py": "on-demand synthesis, founder-launched",
     "q-system/.q-system/scripts/lessons-distill.py": "scheduled distiller, two direct calls, unmetered",
+    "q-system/.q-system/scripts/linear-alert-triage.py": "the nightly alert-triage lane (ASK-1133), one call per alert with --tools '' --strict-mcp-config and a pinned model, unmetered",
     "q-system/.q-system/scripts/linear-dor-drafter.py": "scheduled drafter; --tools '' now comes from lean_call's default (ASK-1132), unmetered",
     "q-system/.q-system/scripts/linear-triage.py": "unwired per the capability manifest; runs by hand, unmetered",
     "q-system/.q-system/scripts/linear-worker.sh": "the worker itself; bash -c string, the biggest unmetered spender",
