@@ -617,6 +617,18 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
     return verdict, body
 
 
+def _subscription_env() -> dict:
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns a
+    nightly lane into metered spend. This lane first shipped with
+    {**os.environ, ...} and test-subscription-only.sh went red on it in CI
+    (validate run 39510514778, ASK-1133).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
     """Ask the pinned, tool-less model. None is a FAILURE, never a verdict."""
     ident = issue.get("identifier")
@@ -628,7 +640,8 @@ def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
         project=(issue.get("project") or {}).get("name") or "unassigned",
         title=issue.get("title") or "",
         description=(issue.get("description") or "(empty)")[:4000])
-    env = {**os.environ, "ANTHROPIC_MODEL": TRIAGE_MODEL}
+    env = _subscription_env()
+    env["ANTHROPIC_MODEL"] = TRIAGE_MODEL
     try:
         # OUTSIDE THE REPO: the project's settings, hooks and .mcp.json load from
         # the working directory, and none of them belong to a classifier.
