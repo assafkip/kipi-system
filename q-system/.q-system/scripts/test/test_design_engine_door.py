@@ -182,6 +182,15 @@ class Door(unittest.TestCase):
         for skill in ("anthropic-skills:canvas-design", "hyperframes-core", "nateherk-design:scroll-craft"):
             self.assertEqual(self.run_door(skill)[0], 2, skill)
 
+    def test_the_dc24_review_skills_are_engines_and_artifact_design_is_a_recorded_non_engine(self):
+        # ASK-1877: dataviz, figma and brand-guidelines returned PASS outside a round.
+        for skill in ("dataviz", "figma", "anthropic-skills:brand-guidelines"):
+            self.assertEqual(self.run_door(skill)[0], 2, skill)
+        # artifact-design loads for every artifact, so it stays unlisted, and the registry says why.
+        self.assertEqual(self.run_door("artifact-design")[0], 0)
+        doc = json.loads((HERE.parent / "design-engines.json").read_text())
+        self.assertIn("artifact-design", json.dumps(doc.get("not_engines", {})))
+
     def door_copy(self, registry_text):
         d = self.tmp / "bin"
         d.mkdir(exist_ok=True)
