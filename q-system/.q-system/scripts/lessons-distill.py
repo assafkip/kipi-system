@@ -33,6 +33,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Background `claude -p` goes through the lean-call contract (empty cwd, no
+# settings, no tools unless declared). RCA 2026-10-06 root cause #3.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lean_call  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("lessons_scrub", SCRIPTS / "lessons_scrub.py")
@@ -97,6 +102,16 @@ def rca_title(text):
     return m.group(1).strip() if m else "untitled"
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def distill_with_claude(title, cause):
     """Return {title, body, kind} HOW-only, or None on failure."""
     prompt = (
@@ -107,7 +122,7 @@ def distill_with_claude(title, cause):
         f"Learning: {title}\nDetail:\n{cause[:1800]}"
     )
     try:
-        r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=120)
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=120)
         m = re.search(r"\{.*\}", r.stdout, re.S)
         obj = json.loads(m.group(0)) if m else None
     except Exception:
@@ -126,7 +141,7 @@ def llm_verify_clean(text, mode):
     prompt = ("Does the text contain ANY specific real client, product, person, company, matter, or "
               "identifying number/codename? Reply exactly CLEAN or HELD.\n\n" + text[:2000])
     try:
-        r = subprocess.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90)
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=90)
         return r.stdout.strip().upper().startswith("CLEAN")
     except Exception:
         return False  # fail-closed: cannot verify -> hold

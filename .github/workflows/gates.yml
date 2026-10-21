@@ -1,0 +1,147 @@
+name: Nightly gates
+
+# The Mac's 02:15 Gates run, moved off the Mac for everything a fresh clone can
+# run (automation cleanup, Phase 7). No model call, no secret: zero usage.
+#
+# What stays on the Mac, because it reads the Mac: the launchd health check,
+# `kipi check`'s remote-coverage scan, validate-separation phases 2-4 (they
+# read every instance directory on disk), and the `prd_runner.py gates run`
+# spillover census. The census ledgers (.prd-os/gates.jsonl, spillover.jsonl)
+# are untracked, so on a fresh clone it measures an empty population and
+# prints an all-clear (PR #478 review, reproduced: "0 open total", exit 0).
+# A step that reports zero because it never saw the data is worse than no step.
+# Pinned by q-system/.q-system/tests/test_gates_workflow.py.
+
+on:
+  schedule:
+    # 02:15 PT during PDT (09:15 UTC). GitHub cron is UTC only, so this is
+    # 01:15 PT in winter; the hour is not load-bearing.
+    - cron: '15 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One gates run at a time (#484 review). The report-red step reads the open
+# issue and then creates one: two red runs at once (the schedule plus a manual
+# dispatch) could both see none and both create. Queue, never cancel a gate.
+concurrency:
+  group: nightly-gates
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Same reason as validate.yml: the updater-sequence test probes real
+          # commit ancestry, and a shallow clone reads every commit unreachable.
+          fetch-depth: 0
+
+      - name: Configure git identity for the updater tests
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: pip install pytest
+
+      # Without a browser every design-chain test skips and the gate reads green
+      # over tests that never ran (dc-25). DC_REQUIRE_REAL_PRODUCERS below makes
+      # a skip a failure.
+      - name: Install a browser for the design-chain producers
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+
+      - name: Coverage declarations are real
+        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
+
+      # The FULL declared suite, never the diff-scoped subset a PR earns.
+      - name: Capability gate, full suite
+        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
+        env:
+          CI: true
+          DC_REQUIRE_REAL_PRODUCERS: "1"
+
+      - name: Skeleton separation, phase 1
+        run: python3 validate-separation.py 1 --verbose
+        env:
+          CI: true
+          CAPABILITY_GATE_SKIP: "1"
+
+      - name: prd-os tests
+        run: pytest plugins/prd-os/tests/ -q
+
+  # A RED RUN MUST REACH A QUEUE (ASK-2262). Before this a failed nightly only
+  # emailed the account that owns the cron, and the founder is not the queue. The
+  # repo holds no Linear secret on purpose, so the route is the built-in token:
+  # open ONE issue labelled gates-red, or comment on the one already open (the
+  # title is the dedup key, so a week of red is one issue, not seven). The
+  # consumer is the `gates-red` detector in fleet-health-daily.py, which files
+  # each open gates-red issue into Sana's Linear triage; report-green closes it.
+  # Both reporters are main-only: workflow_dispatch runs on any ref, and a red
+  # branch must not file "nightly is red", nor a green branch close a real one.
+  report-red:
+    needs: gates
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the one gates-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="gates-red: nightly gates failed"
+          gh label create gates-red --color B60205 \
+            --description "A nightly gates.yml run failed" --force
+          # --jq picks the first exact-title match itself. No `| head -1`: under
+          # pipefail a closed pipe is exit 141 and the job dies with no issue.
+          num="$(gh issue list --label gates-red --state open --limit 100 \
+            --json number,title \
+            --jq "[.[] | select(.title == \"$title\")] | first | .number // empty")"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still red: $RUN_URL"
+          else
+            gh issue create --title "$title" --label gates-red \
+              --body "The nightly gates workflow failed: $RUN_URL
+
+          Read by the gates-red detector in fleet-health-daily.py, which files it to Linear triage. Close this issue once the nightly is green again."
+          fi
+
+  # THE CLOSER (#484 review). Without it the open issue outlives the fix, and the
+  # gates-red detector refiles its Linear issue every morning over a green
+  # nightly: the cry-wolf shape that costs the real alert later.
+  report-green:
+    needs: gates
+    if: success() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Close any open gates-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # An assignment, not `for n in $(gh ...)`: set -e never sees a failing
+          # command substitution in a for list, so a gh error closed nothing and
+          # exited 0 (#484 round 2).
+          nums="$(gh issue list --label gates-red --state open --limit 100 \
+            --json number --jq '.[].number')"
+          for num in $nums; do
+            gh issue close "$num" --comment "Green again: $RUN_URL"
+          done

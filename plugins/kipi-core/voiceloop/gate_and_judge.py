@@ -35,15 +35,21 @@ every line moved is a diff nobody can review. The parameters are named `decide` 
 that is worth more than a naming convention.
 
 The deployment's `cycle._gate_and_judge` binds the five and calls through, so
-`run_slot` and its three invariants were not touched.
+`run_slot` and its three invariants were not touched. That binder is the OTHER
+half of the injection boundary and it lives in a repo this package cannot see, so
+the guard below is exported as `gated_kwargs` (ASK-1937): a binder threading a
+kwarg of its own imports that name rather than writing a second copy of the
+check, which is where the two halves would drift.
 """
 from __future__ import annotations
 
-# The only import in this module, and it is a PACKAGE one: the five
-# operator-specific dependencies stay injected (see the docstring). A sha
-# function carries no operator's rules, and the alternative was making the
-# caller pass the same one-line call as a sixth keyword argument.
+# PACKAGE imports only: the five operator-specific dependencies stay injected
+# (see the docstring). A sha function carries no operator's rules, and the
+# alternative was making the caller pass the same one-line call as a sixth
+# keyword argument. `GateRefused` is the package's own exception type, which
+# the injected reviser raises; catching it needs the type, not the module.
 from . import content_key
+from .prompt_render import GateRefused
 
 
 
@@ -112,8 +118,15 @@ _DROP_DISPOSITION = {
 }
 
 
-def _gated(fn, label, trail, **maybe):
+def gated_kwargs(fn, label, trail, **maybe):
     """Keep only the kwargs this INJECTED callable actually takes, and SAY SO.
+
+    PUBLIC, and that is the point of the name (ASK-1937). Both sides of the
+    injection boundary need this check: the engine half is below, and the
+    instance's binder threads its own kwargs through the same door by importing
+    `from voiceloop.gate_and_judge import gated_kwargs`. Under the old private
+    name a binder's only options were reaching past an underscore or writing its
+    own copy, and a second copy is where a cross-repo contract drifts.
 
     THE CHOKEPOINT (RCA 2026-09-20, after PR #386 rounds 3 through 6 patched the
     same class four times). Rounds 3, 4 and 5 each guarded one kwarg at one site
@@ -162,6 +175,15 @@ def _gated(fn, label, trail, **maybe):
                 f"or pass {k}=None to accept the default on purpose.")
     _record_drops(trail, dropped)
     return keep
+
+
+# THE BACK-COMPAT ALIAS, and it is what the six call sites below still say. The
+# rename is a one-line export, not a six-line sweep through a body whose
+# reviewability is the reason nothing in this module was ever renamed (see the
+# `why they keep their original NAMES` paragraph in the module docstring).
+# `test_the_boundary_guard_is_a_PUBLIC_symbol_a_binder_can_import` pins the two
+# names to ONE function object, so a caller on either is running the same check.
+_gated = gated_kwargs
 
 
 def _record_drops(trail, dropped):
@@ -243,15 +265,27 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
     # reintroduce the same defect by being written the old way.
     optional = _gated(decide.decide_candidate, "decide.decide_candidate", trail,
                       recent_openers=recent_openers)
-    verdict = decide.decide_candidate(
-        post, regenerate=revise.reviser(runner=runner,
-                                        **_gated(revise.reviser,
-                                                 "revise.reviser", trail,
-                                                 claude_bin=claude_bin,
-                                                 model=model, author=author)),
-        channel=channel,
-        source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
-        handles=False, **optional)
+    try:
+        verdict = decide.decide_candidate(
+            post, regenerate=revise.reviser(runner=runner,
+                                            **_gated(revise.reviser,
+                                                     "revise.reviser", trail,
+                                                     claude_bin=claude_bin,
+                                                     model=model, author=author)),
+            channel=channel,
+            source_text=idea_text, prompt_carried=prompt_carried_for(voice_prov),
+            handles=False, **optional)
+    except GateRefused as exc:
+        # The `regenerate=` handoff is the other door into the reviser (PR #509
+        # round 4, major). `decide_candidate` lives in a repo this package cannot
+        # edit and calls `regenerate` on a gate violation, so a shut model gate
+        # raised through it and the lane crashed with no trail. Same outcome as
+        # the style-revise catch below: nothing ships, the trail says why.
+        trail["stages"].append({"stage": "gates", "status": "gated",
+                                "reasons": [f"regenerate not run: {exc}"]})
+        trail["style"] = {"status": "not_run", "gated": True,
+                          "reason": f"gate regenerate not run: {exc}"}
+        return None
     trail["stages"].append({"stage": "gates", "status": verdict.status,
                             "reasons": list(verdict.reasons or [])})
     if verdict.status != decide.SHIPPABLE:
@@ -298,10 +332,22 @@ def gate_and_judge(post, *, channel, idea_text, voice_prov, arch_id, arch_entry,
         feedback = voicefp_gate.style_feedback(review)
         if not feedback:
             break
-        revised = revise.revise(verdict.text, feedback, runner=runner,
-                                **_gated(revise.revise, "revise.revise", trail,
-                                         claude_bin=claude_bin,
-                                         model=model, author=author))
+        try:
+            revised = revise.revise(verdict.text, feedback, runner=runner,
+                                    **_gated(revise.revise, "revise.revise", trail,
+                                             claude_bin=claude_bin,
+                                             model=model, author=author))
+        except GateRefused as exc:
+            # THE SECOND CALLER OF THE NEW CONTRACT (PR #509 round 3, major). This PR
+            # taught `revise` to raise on a gate refusal and taught only `critic.run`
+            # to catch it, so a shut gate here crashed the lane and `trail["style"]`
+            # was never written. Same outcome as critic.run's GATED: the HOLD was
+            # never repaired, so nothing ships, and the trail says the review did not
+            # complete, which keeps the receipt's `unchecked` honest.
+            style_stage.update(status="not_run", gated=True, revisions=revisions,
+                               reason=f"style revision not run: {exc}")
+            trail["style"] = style_stage
+            return None
         if not revised:
             break
         # THE RE-CHECK DETECTS; ONLY THE FIRST PASS REJECTS. A style revision is the

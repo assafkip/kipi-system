@@ -147,5 +147,65 @@ class BashEnrolsOnlyRoundPages(unittest.TestCase):
         self.assertIn(str(self.page.resolve()), self.run_bash_scan())
 
 
+class WriteEnrolsOnlyRoundPages(unittest.TestCase):
+    """ASK-1909: the symmetric hole on the tool-write path.
+
+    The PostToolUse Write/Edit/MultiEdit branch enroled on `is_page and governed(parent)` with no
+    round check at all, so in any opted-in instance a direct Edit to an ordinary .tsx/.vue/.jsx/
+    .svelte under src/ entered the ledger, chain_problems demanded brief.md beside application
+    source, and Stop refused the turn with a remediation nobody could perform. PR #374 round 7 fixed
+    exactly this shape on the Bash branch; this branch never got the same gate.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="dc1909-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.inst = self.tmp / "inst"
+        self.state = self.tmp / "state"
+        self.state.mkdir(parents=True)
+        self.inst.mkdir()
+        (self.inst / "design-chain.json").write_text(json.dumps({"project": "dc1909", "owners": []}))
+        self.round = self.inst / "site" / "design" / "r1"
+        self.round.mkdir(parents=True)
+        (self.round / "brief.md").write_text("brief\n")
+        self.page = self.round / "Home-laptop.html"
+        self.src = self.inst / "src" / "components" / "Button.tsx"
+        self.src.parent.mkdir(parents=True)
+        self.loose = self.inst / "site" / "index.html"
+
+    def run_write(self, path: Path, sid: str, tool: str = "Write") -> dict:
+        path.write_text("<html><body><p>x</p></body></html>")
+        env = {k: v for k, v in os.environ.items() if k != "DESIGN_CHAIN_ALLOW"}
+        env.update({"CLAUDE_PROJECT_DIR": str(self.inst), "DESIGN_CHAIN_STATE": str(self.state)})
+        payload = {"hook_event_name": "PostToolUse", "tool_name": tool, "session_id": sid,
+                   "cwd": str(self.inst), "tool_input": {"file_path": str(path)}}
+        r = subprocess.run([sys.executable, str(GATE)], input=json.dumps(payload),
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        led = self.state / f"{sid}.json"
+        return json.loads(led.read_text()) if led.is_file() else {}
+
+    def test_application_source_a_write_touched_does_not_enrol(self):
+        # the reproducer: an ordinary component in a governed instance is not a design page
+        self.assertEqual(set(self.run_write(self.src, "s-src").get("pages", {})), set())
+
+    def test_an_edit_of_application_source_does_not_enrol(self):
+        # Edit and MultiEdit share the branch; a fix on Write alone would leave the hole open
+        self.assertEqual(set(self.run_write(self.src, "s-edit", "Edit").get("pages", {})), set())
+        self.assertEqual(set(self.run_write(self.src, "s-multi", "MultiEdit").get("pages", {})), set())
+
+    def test_a_page_written_inside_a_round_still_enrols(self):
+        led = self.run_write(self.page, "s-round")
+        self.assertIn(str(self.page.resolve()), led.get("pages", {}))
+        self.assertEqual(led.get("round"), str(self.round.resolve()))
+
+    def test_a_page_outside_any_round_is_dropped(self):
+        # the explicit decision (ASK-1909 acceptance 3): same as the Bash branch, a page written into
+        # a governed instance but outside every round is NOT watched. An out-of-round page can never
+        # satisfy chain_problems -- round_dir_for falls back to the page's own directory and then
+        # demands brief.md there -- so enroling it only ever produced an unfollowable refusal.
+        self.assertEqual(set(self.run_write(self.loose, "s-loose").get("pages", {})), set())
+
+
 if __name__ == "__main__":
     unittest.main()

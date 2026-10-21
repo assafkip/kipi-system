@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-subscription-only.sh",
+ "runner": "bash"
+}

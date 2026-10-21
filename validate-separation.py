@@ -527,6 +527,82 @@ def semantic_leakage_findings(text, source_path=None):
     return findings
 
 
+def memory_corpus_dir():
+    """The auto-memory corpus memory-lint will sweep, asked of memory-lint.
+
+    Restating the `~/.claude/projects/<slug>/memory` derivation here would make
+    a second owner for one path, which memory-lint's own `default_memory_dir`
+    docstring names as the way a sweep and a hook read different corpora and
+    both report clean. So the owner is imported and asked, and the answer is
+    handed to BOTH the subprocess and the classifier below.
+
+    Returns None when memory-lint cannot be loaded; the caller treats an unknown
+    corpus as "cannot tell", never as "healthy".
+    """
+    memory_lint = os.path.join(SCRIPT_DIR, "q-system", ".q-system", "scripts", "memory-lint.py")
+    if not file_exists(memory_lint):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("kipi_memory_lint", memory_lint)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        prior = os.environ.get("CLAUDE_PROJECT_DIR")
+        os.environ["CLAUDE_PROJECT_DIR"] = SCRIPT_DIR
+        try:
+            return str(module.default_memory_dir())
+        finally:
+            if prior is None:
+                os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            else:
+                os.environ["CLAUDE_PROJECT_DIR"] = prior
+    except Exception:
+        return None
+
+
+# memory-lint's own words for "the corpus is not there". Matched rather than
+# restated in full: the line also carries the path and a trailing parenthetical,
+# and pinning those would make this a second owner of the producer's wording.
+MEMORY_LINT_ABSENCE = "no memory directory at"
+
+
+def classify_memory_lint(corpus_dir, returncode, stdout):
+    """What Gate 1.2b should report from one memory-lint run.
+
+    Returns (kind, message) with kind in "skip" | "clean" | "findings" | "broken".
+
+    SCAR (ASK-1903, sp-21755bd0): the gate used "no `structural:` line" as the
+    only signal for a broken linter. memory-lint exits 0 and prints
+    "no memory directory at <path> (nothing to sweep)" with no summary whenever
+    the corpus is absent -- the ordinary state of a fresh clone or a git
+    worktree -- so every healthy run of those checkouts was reported as a broken
+    linter. Absence of the corpus is now read from the corpus path itself, not
+    inferred from the shape of stdout.
+    """
+    summary = next((l for l in stdout.splitlines() if l.startswith("structural:")), None)
+    if summary is None:
+        if returncode == 0 and corpus_dir and not os.path.isdir(corpus_dir):
+            # ROUND 3 (PR #458 review, minor): absence used to be read off
+            # `isdir` alone, so a memory-lint that crashed before printing
+            # anything and still exited 0 reported PASS. This is the branch
+            # every corpus-less checkout takes, so the gate's crash detection
+            # was off in exactly the population the skip branch targets. The
+            # producer now has to SAY it found nothing, about the same path the
+            # gate handed it -- an absence line naming some other directory
+            # means the subprocess swept a corpus this gate is not reporting on.
+            if any(MEMORY_LINT_ABSENCE in line and corpus_dir in line
+                   for line in stdout.splitlines()):
+                return ("skip", f"memory hygiene sweep skipped: no auto-memory directory at {corpus_dir}")
+            return ("broken", f"memory-lint produced neither a summary nor its "
+                              f"absence line for {corpus_dir} (exit {returncode})")
+        return ("broken", f"memory-lint produced no summary (exit {returncode})")
+    if summary.split()[1] != "0":
+        return ("findings", f"memory hygiene -- {summary}. Run: "
+                            f"python3 q-system/.q-system/scripts/memory-lint.py")
+    return ("clean", f"memory hygiene sweep clean ({summary})")
+
+
 def _load_containment_targets():
     script_path = os.path.join(
         SCRIPT_DIR,
@@ -796,17 +872,14 @@ def phase_1():
         warn("Gate 1.2b: memory-lint.py missing")
     else:
         lint_env = dict(os.environ, CLAUDE_PROJECT_DIR=SCRIPT_DIR)
-        lint_run = subprocess.run([sys.executable, memory_lint],
-                                  capture_output=True, text=True, env=lint_env)
-        summary = next((l for l in lint_run.stdout.splitlines()
-                        if l.startswith("structural:")), None)
-        if summary is None:
-            warn(f"Gate 1.2b: memory-lint produced no summary (exit {lint_run.returncode})")
-        elif summary.split()[1] != "0":
-            warn(f"Gate 1.2b: memory hygiene -- {summary}. Run: "
-                 f"python3 q-system/.q-system/scripts/memory-lint.py")
+        corpus = memory_corpus_dir()
+        argv = [sys.executable, memory_lint] + ([corpus] if corpus else [])
+        lint_run = subprocess.run(argv, capture_output=True, text=True, env=lint_env)
+        kind, message = classify_memory_lint(corpus, lint_run.returncode, lint_run.stdout)
+        if kind in ("skip", "clean"):
+            check(message, True)
         else:
-            check(f"memory hygiene sweep clean ({summary})", True)
+            warn(f"Gate 1.2b: {message}")
 
     for script in ["audit-morning.py", "verify-schedule.py", "token-guard.py"]:
         check(f"{script} exists", file_exists(os.path.join(scripts_dir, script)))
