@@ -42,6 +42,8 @@ class TestOverrides(unittest.TestCase):
         self.page = rnd / "D1.html"
         self.state = self.tmp / "state"
         self.sid = "sess-ovr"
+        self.transcript = self.tmp / "transcript.jsonl"
+        self.transcript.write_text("")
         # enroll the page the way the gate does: a Write PostToolUse
         rc, out = run({"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
                        "cwd": str(self.inst), "tool_input": {"file_path": str(self.page)}}, self.state)
@@ -56,6 +58,51 @@ class TestOverrides(unittest.TestCase):
     def stop(self, active, state=None):
         return run({"hook_event_name": "Stop", "session_id": self.sid, "stop_hook_active": active,
                     "cwd": str(self.inst)}, state or self.state)
+
+    def wired_stop(self, active):
+        """One logical Stop event as the harness actually delivers it.
+
+        `.claude/settings.json` wires design-chain-gate.py as TWO independent Stop entries, so the
+        harness runs it twice per end-of-turn with the same payload and the same transcript bytes.
+        The transcript grows between real events (the model answered), never between the two
+        sub-invocations of one. Returns both return codes.
+        """
+        self.transcript.write_text(self.transcript.read_text() + json.dumps({"turn": active}) + "\n")
+        p = {"hook_event_name": "Stop", "session_id": self.sid, "stop_hook_active": active,
+             "cwd": str(self.inst), "transcript_path": str(self.transcript)}
+        return run(p, self.state)[0], run(p, self.state)[0]
+
+    def test_a_wired_double_invocation_counts_one_stop_event_once(self):
+        # the deployed topology: 3 real events must each be refused by BOTH sub-invocations, and
+        # only the 4th releases. Pre-fix the second sub-invocation of event 2 released (rc 2,0).
+        self.assertEqual(self.wired_stop(False), (2, 2), "event 1")
+        self.assertEqual(self.wired_stop(True), (2, 2), "event 2")
+        self.assertEqual(self.wired_stop(True), (2, 2), "event 3")
+        self.assertEqual(self.wired_stop(True), (0, 0), "event 4 releases, idempotently")
+
+    def test_a_new_open_page_gets_its_own_strikes_after_a_release(self):
+        for active in (False, True, True, True):
+            self.wired_stop(active)
+        led = json.loads((self.state / f"{self.sid}.json").read_text())
+        self.assertTrue(led.get("unsealed_at_stop"), "the first episode must have released")
+        page2 = self.page.parent / "D2.html"
+        rc, out = run({"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
+                       "cwd": str(self.inst), "tool_input": {"file_path": str(page2)}}, self.state)
+        page2.write_text("<html><body><h1>y</h1></body></html>")
+        run({"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": self.sid,
+             "cwd": str(self.inst), "tool_input": {"file_path": str(page2)}}, self.state)
+        # a different set of unsealed pages is a different episode: it earns the full cap again
+        self.assertEqual(self.wired_stop(True), (2, 2), "second episode, strike 1")
+        self.assertEqual(self.wired_stop(True), (2, 2), "second episode, strike 2")
+
+    def test_a_stalled_event_key_still_releases(self):
+        # a model turn that writes no transcript bytes leaves the key unchanged, so dedupe cannot
+        # advance. The invocation ceiling is the loop exit: the session must still be able to end.
+        self.transcript.write_text("x\n")
+        p = {"hook_event_name": "Stop", "session_id": self.sid, "stop_hook_active": True,
+             "cwd": str(self.inst), "transcript_path": str(self.transcript)}
+        codes = [run(p, self.state)[0] for _ in range(14)]
+        self.assertIn(0, codes, f"a stalled key must not block forever: {codes}")
 
     def test_control_stop_blocks_with_the_page_in_the_ledger(self):
         rc, out = self.stop(False)

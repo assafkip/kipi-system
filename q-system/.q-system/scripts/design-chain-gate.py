@@ -145,6 +145,12 @@ STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", DEFAULT_STATE_DIR))
 # harness sets stop_hook_active on a Stop that follows a refusal, and honoring it unconditionally
 # made the gate a one-shot nudge. A cap keeps it from looping forever on a page that cannot be sealed.
 STOP_BLOCK_CAP = 3
+# Absolute ceiling on gate invocations per episode, counted raw, no dedupe. The event key below can
+# fail to advance (a model turn that writes no transcript bytes, an unreadable transcript), and a
+# counter that cannot advance is a gate that can never release, which hangs the session instead of
+# refusing it. Sits above 2 x STOP_BLOCK_CAP so the normal path always releases first and this
+# number never preempts the cap (PR #486 review).
+STOP_CALL_CEILING = 2 * STOP_BLOCK_CAP + 2
 CONFIG_NAME = "design-chain.json"
 
 
@@ -3052,6 +3058,27 @@ def _snapshot_key(payload: dict) -> str:
     return str(payload.get("tool_use_id") or "_last")
 
 
+def stop_event_key(payload: dict) -> str:
+    """One logical end-of-turn, the same value for both of the hook's wired invocations.
+
+    A Stop payload carries no tool_use_id, so the Bash branch's dedupe key is unavailable here. The
+    transcript is append-only and the harness writes it between two real Stop events (the model
+    answered in between) but not between the two sub-invocations of one, so its length and mtime are
+    the event cursor.
+
+    HONEST BOUNDARY: returns "" when there is no readable transcript, and "" means no dedupe at all
+    -- every invocation counts, which is the pre-fix behaviour. An unreadable transcript is not
+    treated as a match, because a key that collides across real events would refuse forever.
+    STOP_CALL_CEILING is the backstop for both cases.
+    """
+    tp = payload.get("transcript_path") or ""
+    try:
+        st = os.stat(tp)
+    except OSError:
+        return ""
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
 def open_pages(led: dict) -> list[tuple[str, list[str]]]:
     out = []
     for p in list(led.get("pages", {})):
@@ -3618,21 +3645,42 @@ def _hook(payload: dict) -> int:
     if ev in ("Stop", "SubagentStop"):
         opens = open_pages(led)
         if not opens:
-            led["stop_blocks"] = 0
+            for k in ("stop_blocks", "stop_calls", "stop_event", "stop_pages"):
+                led.pop(k, None)
             save_ledger(sid, led)
             relocation_notice()
             return 0
+        # An episode is one SET of unsealed pages, not one session. Keying the counter to the session
+        # meant that once the cap released for one page, a page opened afterwards inherited a spent
+        # counter and got almost no strikes (PR #486 review, minor). A changed set is a new episode.
+        pages = sorted(p for p, _ in opens)
+        if led.get("stop_pages") != pages:
+            led["stop_pages"] = pages
+            led["stop_blocks"] = 0
+            led["stop_calls"] = 0
+            led["stop_event"] = ""
         # stop_hook_active is the harness's loop guard, not a pass: honoring it on the first repeat
         # made the Stop wiring a one-shot nudge (ASK-1876). Keep refusing up to STOP_BLOCK_CAP.
+        #
+        # Counted per real end-of-turn, never per invocation: settings.json wires this hook as TWO
+        # Stop entries (the same double wiring ledger_lock exists for), so a bare increment spent
+        # two strikes on one event and released after ~1.5 of the 3 promised (PR #486 review, major).
+        key = stop_event_key(payload)
+        counted = bool(key) and led.get("stop_event") == key
         n = int(led.get("stop_blocks", 0))
-        if payload.get("stop_hook_active") and n >= STOP_BLOCK_CAP:
+        prior = (n - 1 if counted and n else n)     # refusals that happened BEFORE this event
+        calls = int(led.get("stop_calls", 0)) + 1
+        led["stop_calls"] = calls
+        if payload.get("stop_hook_active") and (prior >= STOP_BLOCK_CAP or calls > STOP_CALL_CEILING):
             led["unsealed_at_stop"] = [p for p, _ in opens]
             save_ledger(sid, led)
-            print(f"DESIGN CHAIN GATE (released): Stop refused {n} times; the session ends with "
+            print(f"DESIGN CHAIN GATE (released): Stop refused {prior} times; the session ends with "
                   f"{len(opens)} unsealed page(s), recorded in the ledger: "
                   + ", ".join(p for p, _ in opens[:5]), file=sys.stderr)
             return 0
-        led["stop_blocks"] = n + 1
+        if not counted:
+            led["stop_blocks"] = n + 1
+            led["stop_event"] = key
         save_ledger(sid, led)
         return block([f"{p}: {x}" for p, probs in opens for x in probs[:4]])
     return 0
