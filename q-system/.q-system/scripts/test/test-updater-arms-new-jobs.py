@@ -247,6 +247,15 @@ def env_for(work, home, fail_bootstrap_for=""):
     stub.chmod(0o755)
     env = dict(os.environ)
     env["HOME"] = str(home)
+    # The scratch HOME carries the git identity a real HOME has. Without one the
+    # updater's instance commit ran on whatever the host could guess: macOS
+    # guesses from the account, the ubuntu runner's name is empty and git refuses
+    # ("fatal: empty ident name"), so every updater run exited 1 in CI and 0 on a
+    # Mac (validate run 39650328885). A file in HOME, not GIT_AUTHOR_* env: that
+    # is where the updater reads it in production.
+    gitconfig = home / ".gitconfig"
+    if not gitconfig.exists():
+        gitconfig.write_text("[user]\n\tname = kipi fixture\n\temail = fixture@example.invalid\n")
     env["KIPI_LAUNCHCTL"] = str(stub)
     return env, log
 
