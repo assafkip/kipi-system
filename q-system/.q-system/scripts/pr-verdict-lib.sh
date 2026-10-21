@@ -727,9 +727,26 @@ extract_minor_findings() {
   findings_block "$f" | grep -E '^minor\|' || true
 }
 
+# THE ROW SHAPE, and the one rule every reader below shares (ASK-2422).
+#
+# A findings row is `severity|claim|file:line` with an OPTIONAL trailing mark.
+# The claim is the only free-text field, so it is the only field that can hold a
+# literal `|` -- and when it does, every positional field shifts right.
+#
+# SCAR, round 1 of this very issue: the first version read the mark off field 4.
+# A reviewer writing `major|the fallback swallows rc=2 | rc=3|a.sh:40|nonblocking`
+# put the mark on $5, field 4 held the location, the row read as blocking, and the
+# PR the reviewer had explicitly released wedged anyway -- silently, because the
+# row still looked well-formed. The fix is to anchor on the END of the row, which
+# does not move: the mark is the LAST field, and only when the row has at least 4
+# of them, so a row whose LOCATION is the word `nonblocking` releases nothing.
+#
+# This awk fragment is the single owner of that rule. Every reader interpolates it
+# rather than restating the comparison, so the three call sites cannot drift.
+_NB_MARK_AWK='function nb(  m) { m = $NF; gsub(/[ \t\r]/, "", m); return (NF >= 4 && m == "nonblocking") }'
+
 # _blocking_majors (stdin: a findings block)
-# The major rows that gate: every `major|claim|loc` row EXCEPT one whose 4th field
-# is exactly `nonblocking`.
+# The major rows that gate: every `major|claim|loc` row EXCEPT one carrying the mark.
 #
 # WHY THE MARK EXISTS (ASK-2422). A report-only gate PR took 4 review rounds, and
 # round 4's only major was one the reviewer itself called "not a blocker"; the next
@@ -739,10 +756,10 @@ extract_minor_findings() {
 # safe to merge and fix after, including one that only bites in code the PR states
 # is report-only or dry-run. A blocker never reads the mark: real blockers block.
 #
-# EXACT 4TH FIELD, NOT A SUBSTRING. A location like `nonblocking.py:3` or a
-# claim that mentions the word must not release a gate; only the field does.
+# EXACT FIELD, NOT A SUBSTRING. A location like `nonblocking.py:3` or a claim that
+# mentions the word must not release a gate; only the trailing field does.
 _blocking_majors() {
-  awk -F'|' '/^major[|]/ { m = $4; gsub(/[ \t\r]/, "", m); if (m != "nonblocking") print }'
+  awk -F'|' "$_NB_MARK_AWK"' /^major[|]/ { if (!nb()) print }'
 }
 
 # extract_followup_findings <review-file>
@@ -754,9 +771,29 @@ extract_followup_findings() {
   [ -s "$f" ] || return 0
   block="$(findings_block "$f")"
   [ -n "$block" ] || return 0
-  printf '%s\n' "$block" | awk -F'|' '
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
     /^minor[|]/ { print; next }
-    /^major[|]/ { m = $4; gsub(/[ \t\r]/, "", m); if (m == "nonblocking") print }'
+    /^major[|]/ { if (nb()) print }'
+}
+
+# findings_row_parts <row>
+# Splits ONE findings row into severity, claim and location, on three lines in
+# that order, with the optional trailing mark removed.
+#
+# WHY A FUNCTION AND NOT `IFS='|' read -r sev claim loc`. That read is the same
+# positional parse the scar above describes: a claim containing a pipe lands its
+# tail in `loc`, so the run log names a location the reviewer never wrote. Here
+# the location is the last field before the mark and the claim is everything
+# between, so an internal pipe is preserved rather than mistaken for a delimiter.
+findings_row_parts() {
+  printf '%s' "$1" | awk -F'|' "$_NB_MARK_AWK"'
+    {
+      last = nb() ? NF - 1 : NF
+      if (last < 3) { print $1; print $2; print ""; next }
+      claim = $2
+      for (i = 3; i < last; i++) claim = claim "|" $i
+      print $1; print claim; print $last
+    }'
 }
 
 # review_comment_body <review-file> <verdict> <engine> <degraded>
