@@ -1,0 +1,767 @@
+{
+ "banner": [
+  "Reading additional input from stdin...",
+  "OpenAI Codex v0.153.4",
+  "--------",
+  "workdir: ~/.config/kipi/worktrees/ask-1126",
+  "model: gpt-6-astra",
+  "provider: openai",
+  "approval: never",
+  "sandbox: workspace-write [workdir, /tmp, $TMPDIR]",
+  "reasoning effort: low",
+  "reasoning summaries: none",
+  "session id: 01a0aa94-f99d-7390-9137-81bb4c6af72b",
+  "--------",
+  "user"
+ ],
+ "prompt_note": "the echoed prompt is not kept (it quotes issue text); replays put the worker's own opening line in its place",
+ "provenance": {
+  "source": "~/.config/kipi/linear-worker.log on the founder machine, read 2026-09-23",
+  "method": "every block that starts at a worker line '<issue> handing to the Codex runner' and ends at the next timestamped worker line. The banner and the echoed prompt are dropped; the last 6 non-blank lines of Codex's own output are kept verbatim, and so is every distinct ERROR: line anywhere in the block (error_lines), each cut at 300 characters, with the home path written as ~, the account name as <owner>, every project directory name as <instance>, and client names as <client>.",
+  "label_rule": "outage when Codex printed an ERROR line naming out-of-credits or a usage limit and did NOT record a blocker of its own (the worker's next line is not 'Codex is ALSO not equipped'). Read from the log, not from the classifier under test.",
+  "rc": "read from the worker's own '(rc=N)' line after the block; null when the worker did not log one",
+  "captured_for": "PR #421 round 8 (ASK-2009)"
+ },
+ "runs": [
+  {
+   "ts": "2026-08-12T17:40:40Z",
+   "issue": "ASK-284",
+   "rc": 0,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop",
+    "hook: Stop Completed",
+    "hook: Stop Completed",
+    "tokens used",
+    "15,422",
+    "Ready for your OK to execute the plan exactly as stated."
+   ]
+  },
+  {
+   "ts": "2026-08-15T00:15:32Z",
+   "issue": "ASK-144",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "Writing `.codex-blocked-capability` was also refused because these hook files are missing:",
+    "```text",
+    ".../rca/scripts/rca-lint.py",
+    ".../fable-discipline/scripts/fable-discipline-lint.py",
+    "```",
+    "No task changes or commit were made."
+   ]
+  },
+  {
+   "ts": "2026-08-15T01:00:04Z",
+   "issue": "ASK-143",
+   "rc": 0,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop",
+    "hook: Stop Completed",
+    "hook: Stop Completed",
+    "tokens used",
+    "14,618",
+    "Waiting for `OK` to execute the plan exactly as stated."
+   ]
+  },
+  {
+   "ts": "2026-08-15T01:08:29Z",
+   "issue": "ASK-143",
+   "rc": 0,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop",
+    "hook: Stop Completed",
+    "hook: Stop Completed",
+    "tokens used",
+    "14,575",
+    "Reply **OK** and I’ll execute the plan exactly as written."
+   ]
+  },
+  {
+   "ts": "2026-08-15T01:12:43Z",
+   "issue": "ASK-143",
+   "rc": null,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: PreToolUse",
+    "hook: PreToolUse Completed",
+    "hook: PreToolUse Completed",
+    "exec",
+    "/bin/zsh -lc \"sed -n '16580,16720p' ~/.config/kipi/linear-worker.log && rg -n 'Outcome:|Files:|Check:|Blast radius:|Not doing:' ~/.config/kipi/linear-worker.log | tail -n 30\" in ~/.config/kipi/worktrees/ask-143",
+    " succeeded in 0ms:"
+   ]
+  },
+  {
+   "ts": "2026-08-15T01:00:04Z",
+   "issue": "ASK-143",
+   "rc": null,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "The code fix is complete and green, but this runner is also missing one required capability at the commit boundary.",
+    "Exact refusal:",
+    "- Capability missing: write access to the linked worktree Git metadata at `~/projects/<instance>/projects/product/.git/worktrees/ask-143`",
+    "- Refused by: Codex filesystem sandbox",
+    "- Error: `index.lock: Operation not permitted`",
+    "I’m recording that exact blocker in `.codex-blocked-capability` now, as required. I will not route around the Git metadata guard."
+   ]
+  },
+  {
+   "ts": "2026-08-15T04:00:00Z",
+   "issue": "ASK-141",
+   "rc": 0,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop",
+    "hook: Stop Completed",
+    "hook: Stop Completed",
+    "tokens used",
+    "19,380",
+    "Plan confirmed and skills loaded. Waiting for your OK to execute."
+   ]
+  },
+  {
+   "ts": "2026-08-15T04:05:06Z",
+   "issue": "ASK-141",
+   "rc": 0,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop",
+    "hook: Stop Completed",
+    "hook: Stop Completed",
+    "tokens used",
+    "18,687",
+    "Ready for your OK to execute the two-file ASK-141 plan."
+   ]
+  },
+  {
+   "ts": "2026-08-15T04:09:59Z",
+   "issue": "ASK-141",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "- RED: `29 passed, 2 failed`",
+    "- Scoped edits completed",
+    "- GREEN: `31 passed, 1 warning`",
+    "- Commit blocked because Git could not create `index.lock` outside the writable sandbox",
+    "- No permission workaround attempted",
+    "- No commit created"
+   ]
+  },
+  {
+   "ts": "2026-08-18T14:24:22Z",
+   "issue": "ASK-897",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "- Fixed working tree: `RATCHET PASS: always-on total 512 (baseline 512, target 300)`",
+    "- Test green: `PASS: 4 voice executables are wired...`",
+    "- Commit blocked: Git index lock returned `Operation not permitted`",
+    "- No permission bypass attempted",
+    "- No commit created",
+    "Exact refusal recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-897/.codex-blocked-capability)."
+   ]
+  },
+  {
+   "ts": "2026-08-21T19:21:49Z",
+   "issue": "ASK-136",
+   "rc": null,
+   "label": "answered",
+   "why": "no outage ERROR line",
+   "error_lines": [],
+   "tail": [
+    "+          },",
+    "+          {",
+    "+            \"type\": \"command\",",
+    "             \"command\": \"if [ -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\\\" ]; then python3 \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\\\"; fi\",",
+    "             \"timeout\": 5",
+    "           },"
+   ]
+  },
+  {
+   "ts": "2026-08-21T19:52:27Z",
+   "issue": "ASK-136",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "- Fix completed in the three scoped files.",
+    "- RED: `quick-plan` was `NEEDS_WORK`.",
+    "- GREEN: `QUICK_PLAN_STATUS=LIVE`, tests and wiring checks exit 0.",
+    "- Commit could not run because the sandbox denied Git’s linked-worktree `index.lock`.",
+    "- Exact refusal recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-136/.codex-blocked-capability).",
+    "- Changes remain uncommitted."
+   ]
+  },
+  {
+   "ts": "2026-08-21T21:21:33Z",
+   "issue": "ASK-970",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "```text",
+    "cannot lock ref 'ORIG_HEAD':",
+    ".../.git/worktrees/ask-970/ORIG_HEAD.lock:",
+    "Operation not permitted",
+    "```",
+    "This sandbox cannot update Git metadata, so it cannot fast-forward the base or create the mandatory ASK-970 commit. Linear access was also unavailable."
+   ]
+  },
+  {
+   "ts": "2026-08-29T14:28:31Z",
+   "issue": "ASK-148",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "Blocked capability recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-148/.codex-blocked-capability).",
+    "Commit was refused by the filesystem sandbox:",
+    "```text",
+    "fatal: Unable to create '~/projects/<instance>/.git/worktrees/ask-148/index.lock': Operation not permitted",
+    "```",
+    "No route-around attempted. Sana’s staged changes remain untouched. No commit was created."
+   ]
+  },
+  {
+   "ts": "2026-08-30T19:55:03Z",
+   "issue": "ASK-1168",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM.",
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM."
+   ]
+  },
+  {
+   "ts": "2026-08-30T20:18:02Z",
+   "issue": "ASK-1168",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM.",
+    "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 1:29 PM."
+   ]
+  },
+  {
+   "ts": "2026-08-30T20:34:24Z",
+   "issue": "ASK-1168",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [
+    "ERROR: file or directory not found: q-system/.q-system/tests/test_destructive_op_deny_anchor.py"
+   ],
+   "tail": [
+    "- Shell syntax: green",
+    "- Commit command result:",
+    "```text",
+    "fatal: Unable to create '~/projects/<instance>/.git/worktrees/ask-1168/index.lock': Operation not permitted",
+    "```",
+    "Blocker recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1168/.codex-blocked-capability). No permission bypass was attempted."
+   ]
+  },
+  {
+   "ts": "2026-08-30T20:46:46Z",
+   "issue": "ASK-1168",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "- GREEN: `32 passed, 41 subtests passed in 2.05s`",
+    "- Commit command:",
+    "  `LEFTHOOK_EXCLUDE=verify git commit -F .commitmsg-1168.txt`",
+    "- Refusal:",
+    "  `fatal: Unable to create '~/projects/<instance>/.git/worktrees/ask-1168/index.lock': Operation not permitted`",
+    "- Block recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1168/.codex-blocked-capability)."
+   ]
+  },
+  {
+   "ts": "2026-09-12T17:16:34Z",
+   "issue": "ASK-135",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "Blocked by my filesystem sandbox. Actual output from `git merge --abort`:",
+    "```text",
+    "fatal: Unable to create '~/projects/<instance>/.git/worktrees/ask-135/index.lock': Operation not permitted",
+    "```",
+    "Git metadata is outside my writable roots, preventing staging and committing. Linear also requires reauthentication.",
+    "Recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-135/.codex-blocked-capability). No bypass attempted, no commit created, merge unchanged."
+   ]
+  },
+  {
+   "ts": "2026-09-14T14:45:20Z",
+   "issue": "ASK-1241",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop Completed",
+    "tokens used",
+    "36,580",
+    "Blocked at step 1: Linear refused the DoR read with `UNAUTHORIZED: oauth_token_invalid_grant`, requiring reauthentication.",
+    "Recorded the exact refusal in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1241/.codex-blocked-capability).",
+    "No workaround, patch, or commit attempted. <client> access remains untested."
+   ]
+  },
+  {
+   "ts": "2026-09-14T15:01:55Z",
+   "issue": "ASK-1240",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "tokens used",
+    "23,228",
+    "Also blocked. Recorded the exact limits in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1240/.codex-blocked-capability):",
+    "- Linear refused the DoR read: reauthentication required.",
+    "- This runner has a `kipi-system` worktree and no write permission to <client>.",
+    "No implementation or commit made. No permission bypass attempted. Stopped under step 5."
+   ]
+  },
+  {
+   "ts": "2026-09-15T14:56:15Z",
+   "issue": "ASK-1171",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "tokens used",
+    "39,059",
+    "Blocked under step 5. Wrote and verified [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1171/.codex-blocked-capability).",
+    "- Sandbox excludes writes and commits in both target repos. Escalation is disabled.",
+    "- Linear issue read returned `UNAUTHORIZED`, requiring reauthentication.",
+    "- No permission bypass, target changes, or implementation commit."
+   ]
+  },
+  {
+   "ts": "2026-09-16T14:02:07Z",
+   "issue": "ASK-1128",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: PostToolUse Completed",
+    "hook: PostToolUse Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "tokens used",
+    "17,704"
+   ]
+  },
+  {
+   "ts": "2026-09-16T14:17:58Z",
+   "issue": "ASK-1126",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-16T15:05:18Z",
+   "issue": "ASK-1121",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-16T15:36:05Z",
+   "issue": "ASK-1117",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-16T16:11:02Z",
+   "issue": "ASK-984",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-16T16:24:05Z",
+   "issue": "ASK-914",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T14:12:46Z",
+   "issue": "ASK-1122",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T15:30:57Z",
+   "issue": "ASK-722",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T15:47:46Z",
+   "issue": "ASK-721",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T16:02:17Z",
+   "issue": "ASK-709",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T16:18:03Z",
+   "issue": "ASK-634",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-17T16:33:34Z",
+   "issue": "ASK-587",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-18T14:08:38Z",
+   "issue": "ASK-586",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-18T14:24:30Z",
+   "issue": "ASK-570",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-18T16:28:20Z",
+   "issue": "ASK-540",
+   "rc": 1,
+   "label": "outage",
+   "why": "an ERROR line naming out-of-credits or a usage limit, and Codex recorded no blocker",
+   "error_lines": [
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ],
+   "tail": [
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit",
+    "hook: UserPromptSubmit Completed",
+    "hook: UserPromptSubmit Completed",
+    "ERROR: Your workspace is out of credits. Add credits to continue.",
+    "ERROR: Your workspace is out of credits. Add credits to continue."
+   ]
+  },
+  {
+   "ts": "2026-09-19T14:02:47Z",
+   "issue": "ASK-538",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop Completed",
+    "tokens used",
+    "32,151",
+    "Blocked on step 1: this harness has no callable Linear tools, and the worktree contains no saved ASK-538 DoR. This is a missing capability, not a permission rejection.",
+    "Recorded the details in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-538/.codex-blocked-capability).",
+    "Existing work preserved. No implementation changes, tests, or commit. No permission bypass attempted."
+   ]
+  },
+  {
+   "ts": "2026-09-19T14:23:22Z",
+   "issue": "ASK-537",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "42,277",
+    "Blocked by API connectivity in this harness:",
+    "- GitHub: `error connecting to api.github.com`",
+    "- Linear: `network: [Errno 8] nodename nor servname provided, or not known`",
+    "Recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-537/.codex-blocked-capability).",
+    "Sana’s commits remain intact. No gate bypass, remote changes, or new commit. Stopped under step 5."
+   ]
+  },
+  {
+   "ts": "2026-09-21T17:08:00Z",
+   "issue": "ASK-1967",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "tokens used",
+    "63,844",
+    "Blocked on the required DoR read:",
+    "- Linear connector: `oauth_token_invalid_grant`.",
+    "- Browser access to Linear: explicitly denied by security policy.",
+    "Recorded in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1967/.codex-blocked-capability). No commit made. Sana’s work is unchanged; settings write capability remains untested."
+   ]
+  },
+  {
+   "ts": "2026-09-21T17:50:30Z",
+   "issue": "ASK-1966",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop Completed",
+    "tokens used",
+    "32,099",
+    "Blocked under step 5. Both Linear reads returned `UNAUTHORIZED`: `oauth_token_invalid_grant`, “Reauthentication required.”",
+    "Recorded and verified in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1966/.codex-blocked-capability).",
+    "No bypass attempted. No implementation changes or commit made. The DoR remains unread; I’m not judging the spec unworkable."
+   ]
+  },
+  {
+   "ts": "2026-09-21T19:23:04Z",
+   "issue": "ASK-1964",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop Completed",
+    "tokens used",
+    "29,912",
+    "Blocked on Linear authentication: `get_issue(\"ASK-1964\")` returned `UNAUTHORIZED`, reason `oauth_token_invalid_grant`.",
+    "Recorded the exact refusal in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1964/.codex-blocked-capability).",
+    "Stopped per step 5. No bypass, implementation, or commit. The Definition of Ready remains unread, not judged unworkable."
+   ]
+  },
+  {
+   "ts": "2026-09-21T20:09:39Z",
+   "issue": "ASK-1963",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "hook: Stop Completed",
+    "tokens used",
+    "27,851",
+    "Blocked by Linear authentication: the issue read returned `UNAUTHORIZED / oauth_token_invalid_grant`. This harness also excludes `chief` from writable directories.",
+    "Recorded the exact limitations in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1963/.codex-blocked-capability).",
+    "Stopped under step 5. No workaround, code changes, or commit."
+   ]
+  },
+  {
+   "ts": "2026-09-22T16:39:29Z",
+   "issue": "ASK-1961",
+   "rc": null,
+   "label": "answered",
+   "why": "Codex recorded its own blocker",
+   "error_lines": [],
+   "tail": [
+    "1 failed, 4 passed in 0.21s",
+    "python3 -m pytest -q plugins/prd-os/tests/test_spillover_minor_tier.py",
+    "5 passed in 0.18s",
+    "```",
+    "Combined spillover checks: `77 passed in 8.17s`.",
+    "Recorded the blocker in [.codex-blocked-capability](~/.config/kipi/worktrees/ask-1961/.codex-blocked-capability). Edits remain uncommitted on `sana/ask-1961`."
+   ]
+  }
+ ]
+}

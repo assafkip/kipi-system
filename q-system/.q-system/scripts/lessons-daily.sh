@@ -77,15 +77,63 @@ fi
 if [ -n "${KIPI_PERSIST_CMD:-}" ]; then
   bash -c "$KIPI_PERSIST_CMD" || true
 else
-  ( cd "$SKEL" && git add q-system/lessons lesson-candidates 2>/dev/null \
-    && git commit --no-verify --no-gpg-sign -m "chore(lessons): auto-learn $(date +%Y-%m-%d) — ${PUB} published, ${HELD} held" >/dev/null 2>&1 || true )
+  # ASK-2290: this commit used to pass --no-verify and send all output to
+  # /dev/null, so no repo gate ever saw a daily lesson commit, and the
+  # linear-issue-ref gate would have refused its message every night. It now
+  # goes through the hooks. The message carries its own [no-issue: reason], so
+  # the Linear gate passes it legitimately and counts it in the bypass ledger.
+  # A refused commit is a failed run, same wire as a failed propagation
+  # (ASK-182, lines above): the alert says so and the job exits 1, so Linear
+  # sees it. The job is WEEKLY (plist Weekday 1), so a silent refusal would
+  # leave a week of lessons uncommitted with nobody told (PR review, ASK-2290).
+  # "Nothing staged" is not a failure: held lessons are gitignored (ASK-2278),
+  # so a held-only run legitimately has nothing to commit.
+  # Pinned by test/test-lessons-daily-commit-hooks.sh.
+  COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
+  LPATHS=()
+  for p in q-system/lessons lesson-candidates; do [ -e "$SKEL/$p" ] && LPATHS+=("$p"); done
+  if [ "${#LPATHS[@]}" -eq 0 ]; then
+    echo "$(TS) lessons commit: no lesson paths exist, nothing to persist" >> "$LOG"
+  elif ! ( cd "$SKEL" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
+    PERSIST="FAILED"
+  elif ( cd "$SKEL" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
+    echo "$(TS) lessons commit: nothing staged" >> "$LOG"
+  elif ! ( cd "$SKEL" || exit 1
+           CPATHS=()
+           for p in "${LPATHS[@]}"; do
+             if [ -n "$(git diff --cached --name-only -- "$p")" ]; then CPATHS+=("$p"); fi
+           done
+           git commit --no-gpg-sign -m "$COMMIT_MSG" -- "${CPATHS[@]}" ) >> "$LOG" 2>&1; then
+    # The pathspec keeps foreign staged files out of the lesson commit. A
+    # path git knows nothing about (an empty lesson-candidates/) is a fatal
+    # pathspec error, so only paths with STAGED changes are named; the
+    # diff --cached test above guarantees at least one (and, unlike ls-files,
+    # it sees a staged deletion), so CPATHS is never empty under set -u.
+    PERSIST="FAILED"
+  fi
+  if [ "${PERSIST:-}" = "FAILED" ]; then
+    # Unstage what this job staged. Left in the index, q-system/lessons is the
+    # exact state kipi-update.sh aborts on ("q-system/ is staged but not
+    # committed"), which would jam every fleet update until someone resets it,
+    # and the next commit would silently absorb it (PR 487 review round 3).
+    # Path-limited reset: the working tree, and so the lessons, are untouched.
+    ( cd "$SKEL" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
+      || echo "$(TS) WARNING: could not unstage ${LPATHS[*]}; kipi-update.sh will abort until reset" >> "$LOG"
+    echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons unstaged, still on disk." >> "$LOG"
+  fi
 fi
+
+# A refused commit may be a content gate (gitleaks, client-name guard) saying
+# these lessons must not ship. Mirroring or fanning them out anyway would ship
+# exactly what the gate stopped, so both are skipped (PR 487 review round 2).
 
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
 # "the process needs to constantly write to Notion"). Off without credentials;
 # a Notion outage is logged and never fails the lessons job.
 if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\""; fi
-if eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
+if [ "${PERSIST:-}" = "FAILED" ]; then
+  echo "$(TS) notion sync skipped: lessons commit did not land" >> "$LOG"
+elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
   echo "$(TS) notion sync failed (non-fatal, see above)" >> "$LOG"
 fi
 
@@ -97,7 +145,9 @@ fi
 STREAK_PY="$SKEL/q-system/.q-system/scripts/lessons_streak.py"
 streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$@"; }
 
-if [ "$PUB" -gt 0 ]; then
+if [ "${PERSIST:-}" = "FAILED" ]; then
+  PROP="no propagation (lessons commit did not land)"
+elif [ "$PUB" -gt 0 ]; then
   if [ -n "${KIPI_PROPAGATE_CMD:-}" ]; then
     if bash -c "$KIPI_PROPAGATE_CMD" >> "$LOG" 2>&1; then PROP="propagated to fleet"; else PROP="propagate FAILED"; fi
   else
@@ -143,6 +193,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
+[ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 notify "$MSG"
 echo "$(TS) slacked: $MSG" >> "$LOG"
 
@@ -153,4 +204,5 @@ echo "$(TS) slacked: $MSG" >> "$LOG"
 case "$PROP" in
   "propagate FAILED"*) echo "$(TS) propagation failed -> exit 1" >> "$LOG"; exit 1 ;;
 esac
+if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
 exit 0

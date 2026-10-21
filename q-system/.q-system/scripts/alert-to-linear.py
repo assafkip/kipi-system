@@ -98,6 +98,49 @@ TRIAGE_LABEL_DESCRIPTION = (
 # still-true rather than as one stale ticket nobody has touched.
 REPEAT_COMMENT_AFTER_HOURS = 12
 
+# THE SUSTAINED-FAILURE RULE, SCOPED TO EXACTLY ONE SHAPE (ASK-2013).
+#
+# ONE hardcoded fingerprint, not a config file and not an allowlist, because the
+# global version of this rule was MEASURED and it destroys real work:
+# `q-system/.q-system/tests/replay_alert_sustained_rule.py --rule global`
+# replays 702 real alert tickets from a 45-day window and loses 8 of the 11 that
+# Sana actually worked (ASK-2058, 1698, 1694, 1224, 1212, 1146, 1144, 1136).
+# Recurrence does not separate the work from the noise on this board; it very
+# nearly inverts it. So the rule applies where the evidence supports it and
+# nowhere else.
+#
+# This hash is the shape "[kipi-system] converge ASK-N: stalled at 'REQUEST
+# CHANGES', no code change in round N" -- the highest-volume fingerprint in that
+# window (5 tickets) with ZERO of them worked. It is a literal rather than
+# `fingerprint(<example>)` on purpose: a change to _VOLATILE should turn
+# test_sustained_fingerprint_is_the_converge_stall_shape RED, not silently
+# re-point the rule at whatever shape the new normalizer produces.
+#
+# The `[kipi-system]` prefix is part of the normalized text, so another instance
+# firing the same condition hashes differently and is untouched by this. That is
+# what keeps a fleet-synced file safe to change here.
+SUSTAINED_FINGERPRINT = "b9e91e84bf2bdfd6"
+
+# Observations of the shape (counted on the CREATE path only) before a ticket is
+# opened. 2 = "not on a single failure".
+SUSTAINED_MIN_OBSERVATIONS = 2
+
+
+def sustained_defers(fp: str, observations: int) -> bool:
+    """True when this observation must NOT open a ticket yet.
+
+    `observations` INCLUDES the one being decided, and counts only firings that
+    reached the create path -- a repeat landing on an already-open ticket never
+    gets here, so this is "how many separate tickets this shape would have
+    opened", not "how many times it fired".
+
+    The single decision point for the rule, so the replay can score the same
+    predicate production runs instead of restating it: a test that retypes the
+    rule agrees on the day it is written and stops describing the system the
+    moment the rule moves.
+    """
+    return fp == SUSTAINED_FINGERPRINT and observations < SUSTAINED_MIN_OBSERVATIONS
+
 
 def _state_dir() -> str:
     """Fingerprint -> ticket map, OUTSIDE any repo.
@@ -971,6 +1014,27 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
             f"another writer holds this alert's lock and did not publish a "
             f"ticket within {LOCK_WAIT_SECONDS:g}s; refusing to create a "
             f"duplicate. NOT filed: {message}")
+
+    # THE SUSTAINED-FAILURE GATE, for the one fingerprint named at the top.
+    #
+    # Placed AFTER the may_create guard on purpose: only a lock holder advances
+    # the counter, so two concurrent callers cannot each bank an observation and
+    # jointly reach the threshold on what was one firing. The unlocked caller
+    # returns exactly what it returned before this rule existed.
+    #
+    # The state written here keeps `pending_count`; the create path below
+    # REPLACES the whole state dict, so a filed ticket clears the counter and the
+    # next recurrence after a close has to earn its ticket the same way. Without
+    # that, one deferral would buy silence forever and every later firing would
+    # file on sight.
+    pending = int(prior.get("pending_count", 0)) + 1
+    if sustained_defers(fp, pending):
+        _write_state(fp, {**prior, "pending_count": pending, "last_at": now,
+                          "pending_first_at": prior.get("pending_first_at", now)})
+        return EXIT_OK, (
+            f"deferred (sustained rule: observation {pending} of "
+            f"{SUSTAINED_MIN_OBSERVATIONS} for this shape); NOT filed: "
+            f"{title_for(message)}")
 
     # Bound BEFORE the try, never inside it. A name first assigned inside a
     # try/except is only bound on the paths that got that far, and the read of

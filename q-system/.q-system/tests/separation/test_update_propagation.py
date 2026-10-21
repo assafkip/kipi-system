@@ -129,6 +129,7 @@ GATE_INFRASTRUCTURE = (
     "q-system/.q-system/scripts/propagation-leak-gate.py",
     "q-system/.q-system/scripts/containment-targets.py",
     "q-system/.q-system/state/propagation-leak-baseline.json",
+    "q-system/.q-system/scripts/fleet-replica-divergence.py",
     "validate-separation.py",
 )
 
@@ -275,6 +276,12 @@ def build_skeleton(root, env, body):
     for gate_file in (
         "q-system/.q-system/scripts/propagation-leak-gate.py",
         "q-system/.q-system/scripts/containment-targets.py",
+        # Same contract as the leak gate: the updater is fail-closed on this one
+        # too, so a skeleton without it aborts before any sync and this file's
+        # propagation model silently never runs. It DISARMS on this population
+        # (no instance here carries a replicated plugins/ path) and says so,
+        # which is why adding it does not change what these cases assert.
+        "q-system/.q-system/scripts/fleet-replica-divergence.py",
         "validate-separation.py",
     ):
         shutil.copy(REPO_ROOT / gate_file, skeleton / gate_file)

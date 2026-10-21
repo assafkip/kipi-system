@@ -70,7 +70,16 @@ discover_drivers() {
   for f in "$dir"/*.sh; do
     [ -f "$f" ] || continue
     secs="$(sed -n 's/^[A-Z_]*TIMEOUT[A-Z_]*=\([0-9][0-9]*\).*/\1/p' "$f" | sort -rn | head -1)"
-    if grep -q 'claude -p' "$f" || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
+    # Comment lines are not code (ASK-2009): a sourced lib whose header QUOTES the
+    # outage line `claude -p` printed was discovered as a driver, and the rule's
+    # fix (a trailing top-level `exit`) would kill the worker that sources it.
+    # Measured on the scripts dir: ignoring comments drops exactly
+    # env-failure-lib.sh and redrive-unattempted.sh, neither of which calls the
+    # model; linear-worker, open-loops-heartbeat and pr-review-agent stay found.
+    # ONE process, not a pipe (PR #421 round 14, minor): under pipefail,
+    # `grep -v ... | grep -q` returned 141 on any file past the pipe buffer.
+    if awk '!/^[[:space:]]*#/ && /claude -p/ { hit = 1; exit } END { exit !hit }' "$f" \
+        || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
       echo "$f"
     fi
   done
@@ -288,6 +297,22 @@ if [ "$FOUND" = "planted-long-timeout.sh planted-model-caller.sh " ]; then
   ok "discovery caught both planted drivers and left the quick helper alone (found: $FOUND)"
 else
   bad "discovery is wrong; expected the two planted drivers only, got: ${FOUND:-<nothing>}"
+fi
+# A LONG model caller (PR #421 round 14, minor). The comment-stripping
+# discovery was a two-grep pipe, and under this suite's pipefail `grep -q`
+# exiting on the first match SIGPIPEs the upstream grep on any file larger than
+# the pipe buffer: status 141, read as "no match", so the model-call marker was
+# dead for exactly the long drivers it exists to catch. The 3-line plant above
+# is too short to see it; this one is not.
+SYN_LONG="$WORK/syn-long"; mkdir -p "$SYN_LONG"
+{ printf '#!/usr/bin/env bash\nset -uo pipefail\nclaude -p "review this" </dev/null\n'
+  i=0; while [ "$i" -lt 4000 ]; do printf 'echo "filler line %s, long enough to fill a pipe buffer quickly"\n' "$i"; i=$((i+1)); done
+} > "$SYN_LONG/planted-long-model-caller.sh"
+FOUND_LONG="$(discover_drivers "$SYN_LONG" | xargs -n1 basename | tr '\n' ' ')"
+if [ "$FOUND_LONG" = "planted-long-model-caller.sh " ]; then
+  ok "discovery finds a model caller in a file longer than the pipe buffer"
+else
+  bad "discovery misses a long model caller (the marker is SIGPIPE-dead under pipefail); got: ${FOUND_LONG:-<nothing>}"
 fi
 # ...and the planted driver, being undeclared and unwrapped, must be the red case.
 if why="$(assert_wrapped "$SYN/planted-model-caller.sh")" || [ -n "$(declared_gap planted-model-caller.sh)" ]; then

@@ -77,6 +77,12 @@ CARRY_PREFIX="carried from "
 # Command-prefix seam, same reason as REVIEWER_FLOOR_GH: a stub that replaces
 # `gh` sees exactly the argv production sends.
 RECEIPT_CARRY_GH="${RECEIPT_CARRY_GH:-gh}"
+# The one identity rule for this context. REVIEWER_TOKEN_LIB is a seam for the
+# test's mutant copies, which live away from this directory. A missing lib leaves
+# reviewer_status_run undefined, so carry_post fails and nothing is posted.
+# shellcheck source=reviewer-token-lib.sh
+. "${REVIEWER_TOKEN_LIB:-$(dirname "${BASH_SOURCE[0]}")/reviewer-token-lib.sh}" 2>/dev/null \
+  || echo "carry: reviewer-token-lib.sh not found; the carry will post nothing" >&2
 EXIT_DECLINED=10
 
 # Pure. Plural statuses list (newest first) on stdin. Prints
@@ -110,7 +116,11 @@ read_statuses() {  # read_statuses <repo-path> <sha>
 # all three guards. This script has no way to write anything else.
 carry_post() {
   local gh_cmd; read -r -a gh_cmd <<< "$RECEIPT_CARRY_GH"
-  "${gh_cmd[@]}" api -X POST "repos/$1/statuses/$2" \
+  # WHICH IDENTITY (ASK-362): the same rule as the reviewer's own POST, from the
+  # one shared helper. PR #431 round 1 found this writer still on the ambient
+  # admin login after the reviewer's had moved. A refusal (configured, empty)
+  # returns non-zero, so main pages "the status post FAILED" and posts nothing.
+  reviewer_status_run "${gh_cmd[@]}" api -X POST "repos/$1/statuses/$2" \
     -f "state=success" -f "context=$REVIEWER_CONTEXT" -f "description=$3"
 }
 

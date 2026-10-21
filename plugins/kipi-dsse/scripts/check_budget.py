@@ -13,9 +13,9 @@ was about to call it back, and the plugin runs in repos that have no q-system tr
 refuses on rule 1. The CLI below runs both rules over spec files, for /prd-split.
 
 Two rules:
-  1. No spec carries a full-suite check. CI runs `verify.sh --full` on every PR
-     (.github/workflows/verify.yml), so the whole suite already runs once at merge for
-     every issue. A spec that names it runs it twice. ENFORCED by verify.
+  1. No spec carries a full-suite check. Since 2026-10-01 (RULE-2026-10-01-A) the full
+     suite runs only in the nightly gates.yml; PRs and pushes run the owning tests. A
+     spec that names the full suite brings back the run that rule removed. ENFORCED by verify.
   2. At least one check targets the issue's own allowed_files tree. CLI only: nobody has
      measured it against the spec population, and an unmeasured rule gets no blocking door.
 

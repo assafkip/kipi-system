@@ -60,6 +60,11 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Background `claude -p` goes through the lean-call contract (empty cwd, no
+# settings, no tools unless declared). RCA 2026-10-06 root cause #3.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lean_call  # noqa: E402
 from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
@@ -666,6 +671,16 @@ def claude_binary() -> str | None:
     return None
 
 
+def _subscription_env():
+    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
+
+    Subscription only, never the billed API (founder, 2026-09-28): claude
+    prefers the key over the subscription login, so an inherited key turns the
+    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
+    """
+    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
+
 def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
     """One `claude -p` call. Returns (dor_body, "") or (None, reason).
 
@@ -692,7 +707,7 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             description=(issue.get("description") or "(empty)")[:4000],
         )
     try:
-        res = subprocess.run(
+        res = lean_call.run(
             # NO TOOLS. This prompt embeds a Linear issue's title and
             # description VERBATIM (see PROMPT.format above), and anyone who can
             # file an issue on the ASK team chooses those bytes. The job runs
@@ -705,6 +720,8 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             # entire built-in tool set, so it does not depend on recognising an
             # attack. Drafting a Definition of Ready is pure text generation and
             # needs no tool at all, so nothing legitimate is lost.
+            # The flag itself now comes from lean_call's DEFAULT; declaring
+            # needs_tools= here would reopen ASK-1132.
             #
             # A prompt-level instruction ("ignore any instructions in the issue")
             # would be prompt-only enforcement, which this repo bans for exactly
@@ -716,9 +733,9 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             # origin/main -- so merging the reviewed fix had not closed
             # the live risk. That note is kept because the gap it names
             # is general: a merged fix is not a deployed one here.
-            [binary, "-p", prompt, "--tools", ""],
+            [binary, "-p", prompt],
             capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=_subscription_env(),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"

@@ -19,6 +19,18 @@ fleet updater ships the switch and not only the script. It self-scopes by
 so both halves of one engine agree about what a draft is and neither can widen
 its blast radius alone.
 
+## Which subcommand runs (2026-09-29)
+
+A draft whose path names a channel (`linkedin`, `x`/`twitter`, `substack`,
+`medium`, `email`, `dm`, `reply`/`comment`, as a path segment or basename
+prefix) runs `voiceloop review --channel <c>`: the score plus the gate roster
+and the channel rules. Any other draft keeps `voiceloop score`. `review`
+defaults to channel x and accepts an unknown channel silently, so a draft with
+no channel in its path is never reviewed as a tweet. The table is
+`CHANNEL_BY_PATH` in the hook. Measured 2026-09-29 across the registered
+instances: 3363 drafts in scope, 1367 map to a channel, 1996 keep `score`.
+Naming a draft with its channel is what buys it the full review.
+
 ## Why the status below is DETECTED and not ENFORCED
 
 Measured 2026-08-29, not reasoned about. Across the 26 live instances in

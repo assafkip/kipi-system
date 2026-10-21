@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_gates_workflow.py",
+ "runner": "python3",
+ "timeout_s": 60
+}
