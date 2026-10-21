@@ -76,11 +76,16 @@ extract_sana_builder() {
   ' "$1"
 }
 # The Codex prompt: its assignment up to the run_bounded call that consumes it.
+# ENDS WHERE THE SHELL STRING ENDS, not at the run_bounded call below it. The
+# old end marker was the `_ "$CODEX_PROMPT"; then` line, so it swept in whatever
+# main put between the prompt and its runner. ASK-873 round 3 added
+# `: > "$RUN_OUT_FILE"` there; under `set -u` the render died on an unbound
+# variable and three checks went red on a prompt that was fine (2026-10-21).
 extract_codex_builder() {
   awk '
-    /^      CODEX_PROMPT="You are Codex/ { p = 1 }
-    p && /_ "\$CODEX_PROMPT"; then$/ { exit }
+    /^      CODEX_PROMPT="You are Codex/ { p = 1; s = NR }
     p { print }
+    p && NR > s && /[^\\]"$/ { exit }
   ' "$1"
 }
 
