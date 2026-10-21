@@ -965,15 +965,22 @@ Then:
 - **VERDICT:** decided by THIS RULE, not by feel:
     - any blocker or major finding      => REQUEST CHANGES (BLOCK only if merging
       as-is would cause permanent or unrecoverable damage)
-    - only minor/nit findings           => APPROVE WITH NITS
+    - EXCEPT a major you mark nonblocking (below): it does not gate, it is a
+      follow-up. Mark a major nonblocking when you would say it is not a blocker
+      for THIS merge, or when it only bites in code the PR states is report-only,
+      dry-run or not yet enforced. Never mark a blocker; a blocker always blocks.
+    - only minor/nit findings, or majors all marked nonblocking => APPROVE WITH NITS
     - no finding survived reproduction  => APPROVE
   A bar this high ALWAYS finds something; that is what APPROVE WITH NITS is for.
-  On APPROVE WITH NITS the pipeline captures every minor as a tracked follow-up,
-  so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
-  wedges the PR forever and is itself a review defect.
+  On APPROVE WITH NITS the pipeline names every minor in the run log and files
+  every nonblocking major to the spillover ledger as a tracked follow-up with a
+  Linear issue, so approving with nits does NOT lose them. Using REQUEST CHANGES
+  to log minors wedges the PR forever and is itself a review defect.
   State the verdict and the single most important thing to fix first.
 - **Last, a machine-readable findings block**, EXACTLY this shape, one line per
-  finding, empty block if none. The pipeline parses it; keep prose out of it:
+  finding, empty block if none. The pipeline parses it; keep prose out of it.
+  To mark a major nonblocking, end its line with the word nonblocking after
+  file:line (the mark is the trailing |nonblocking, nothing else):
 
 FINDINGS:
 severity|one-sentence claim|file:line
@@ -1440,16 +1447,71 @@ PY
 # no-orphan-findings.md requires. Routing that is a change with real Linear inflow
 # and its own blast radius, so it is captured rather than bundled here: sp-74e671a4,
 # filed as ASK-1940.
+# A NONBLOCKING MAJOR IS NOT A MINOR, AND THE TWO ROUTE DIFFERENTLY (ASK-2422,
+# round 1 finding 2). The block above released a major from the gate and then
+# handed it to the minors path, which files nothing BY POLICY and said so in a
+# sentence about minors. So the one severity no-orphan-findings.md requires to be
+# captured -- medium and up -- was the one severity that reached nobody, under a
+# log line calling it a minor. The severity the reviewer chose decides the route:
+#   minor -> named here, not queued (policy: fixed in this change or rejected)
+#   major -> ledger row + Linear capture ticket for Sana, at its real severity
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
   MINOR_COUNT=0
-  while IFS='|' read -r _sev claim loc; do
+  NB_MAJOR_COUNT=0
+  NB_MAJOR_CAPTURED=0
+  # findings_row_parts, not `IFS='|' read`: a claim may contain a literal pipe,
+  # and the positional read puts its tail in $loc (pr-verdict-lib.sh row shape).
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    { read -r sev; read -r claim; read -r loc; } < <(findings_row_parts "$row")
     [ -n "$claim" ] || continue
-    MINOR_COUNT=$((MINOR_COUNT+1))
-    echo "  minor $MINOR_COUNT: $claim ($loc)" >&2
+    if [ "$sev" = "major" ]; then
+      NB_MAJOR_COUNT=$((NB_MAJOR_COUNT+1))
+      echo "  nonblocking major $NB_MAJOR_COUNT: $claim ($loc)" >&2
+      # --severity major is the WHOLE POINT of this call and the lesson of
+      # ASK-1921: the severity-less version defaulted to `minor`, which the
+      # runner refuses by policy, so it returned 2 every time and the capture
+      # count was zero by construction. `major` is accepted, so this call can
+      # actually succeed -- and its rc means something.
+      #
+      # NO DoR IS PASSED ON PURPOSE. prd_runner's own note: the DoR is written by
+      # the agent that CONFIRMED the finding, and a later one guesses. This
+      # reviewer did not author the finding, so it files the capture ticket and
+      # leaves the DoR to `spillover needs-dor`, which is Sana's drain.
+      #
+      # cd "$SKEL" because discover_repo_root() reads the CWD, and the reviewer's
+      # CWD is the REVIEWED repo, which need not have a .prd-os/ at all.
+      #
+      # BEHIND THE POST GUARD, unlike everything else in this block. This call
+      # files a real Linear issue, and a dry run that mutates the ledger is the
+      # defect sp-8424aa32 already names against this very file. A dry run says
+      # what it WOULD file and files nothing.
+      if [ "$POST" != "1" ]; then
+        echo "    WOULD CAPTURE (dry run): spillover add --severity major -- $claim ($loc)" >&2
+      elif CAP_OUT="$( (cd "$SKEL" && python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" \
+            spillover add --source "$ISSUE" --severity major \
+            --desc "PR #$PR review, nonblocking major: $claim ($loc)") 2>&1 )"; then
+        NB_MAJOR_CAPTURED=$((NB_MAJOR_CAPTURED+1))
+        echo "    captured: $CAP_OUT" >&2
+      else
+        # A FAILED capture IS a state change worth paging: a released major that
+        # reached no ledger and no issue is exactly the orphan the rule forbids.
+        # This is not the ASK-1921 cry-wolf shape -- that alarm fired on a 100%
+        # policy refusal with nothing down. This one fires only on a real failure.
+        echo "    UNCAPTURED major: $claim ($loc) -- rc nonzero${CAP_OUT:+: $CAP_OUT}" >&2
+        bash "$NOTIFY" "reviewer: PR #$PR released a nonblocking major on $ISSUE and the spillover capture FAILED${CAP_OUT:+ ($CAP_OUT)}. The finding is on the PR only; nothing queued it." 2>/dev/null || true
+      fi
+    else
+      MINOR_COUNT=$((MINOR_COUNT+1))
+      echo "  $sev $MINOR_COUNT: $claim ($loc)" >&2
+    fi
   done <<EOF
-$(extract_minor_findings "$REVIEW")
+$(extract_followup_findings "$REVIEW")
 EOF
   echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
+  if [ "$NB_MAJOR_COUNT" -gt 0 ]; then
+    echo "  ${MINOR_TAG}nonblocking majors on a terminal verdict: $NB_MAJOR_COUNT (captured: $NB_MAJOR_CAPTURED)"
+  fi
   if [ "$MINOR_COUNT" -gt 0 ]; then
     echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
   fi
