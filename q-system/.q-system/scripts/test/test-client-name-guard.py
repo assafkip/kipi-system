@@ -681,6 +681,46 @@ def main(guard):
                p.returncode == 0 and "Traceback" not in out and "not synced" in out,
                f"rc={p.returncode}")
 
+    # --- 27. REGRESSION (PR #554 review round 2, major): over-cap zip ---------
+    # A member past the inflation cap was skipped and only the compressed bytes
+    # were scanned, where deflated text is invisible: a ~51 KB zip holding a name
+    # inside a 50 MB member reported clean. It must refuse, locally and in CI.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("big.txt", (b"A" * (50 * 1024 * 1024 + 1)) + f" {CLIENT}\n".encode())
+    big_zip = buf.getvalue()
+
+    def commit_bytes(repo, home, message, name, data):
+        (repo / name).write_bytes(data)
+        git(repo, "add", name)
+        env = dict(os.environ, HOME=str(home))
+        env.pop("LEFTHOOK_COMMIT_MSG_FILE", None)
+        p = subprocess.run(["git", "commit", "-m", message], cwd=repo,
+                           capture_output=True, text=True, env=env)
+        return p.returncode, p.stdout + p.stderr
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        rc, out = commit_bytes(repo, home, "add an archive", "a.zip", big_zip)
+        record("local: a zip member over the inflation cap BLOCKS (unscannable, not clean)",
+               rc != 0 and head_count(repo) == 0 and "Traceback" not in out, f"rc={rc}")
+        rc, out = commit_bytes(repo, home,
+                               f"add an archive\n\n{SKIP_TOKEN}: archive reviewed by hand\n",
+                               "a.zip", big_zip)
+        record("local: the bypass trailer still lets an intended archive through",
+               rc == 0 and head_count(repo) == 1, f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit_bytes(repo, home, "add an archive", "a.zip", big_zip)
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a zip member over the inflation cap FAILS as not fully scanned",
+               rc != 0 and "not fully scanned" in out
+               and CLIENT.lower() not in out.lower(), f"rc={rc}")
+
     failed = [n for n, ok in results if not ok]
     print()
     if failed:

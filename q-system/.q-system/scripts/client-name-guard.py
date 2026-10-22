@@ -451,10 +451,21 @@ def _blob_id(spec):
 
 
 # Inflation caps, so a crafted zip cannot exhaust memory in a hook or a runner.
-# Past a cap the rest is not inflated; the raw bytes are still scanned.
+# PAST A CAP THE FILE IS UNSCANNABLE, NOT CLEAN (PR #554 review round 2). The
+# first cut skipped an over-cap member and scanned only the compressed bytes,
+# where deflated text is invisible, so a 51 KB zip holding a 50 MB member with
+# a client name in it reported clean. Refusing costs one bypass trailer on a
+# legitimate huge archive; passing costs a name that can never be recalled.
 _ZIP_MEMBER_CAP = 50 * 1024 * 1024
 _ZIP_TOTAL_CAP = 200 * 1024 * 1024
 _ZIP_MAX_MEMBERS = 5000
+
+
+class Unscannable(RuntimeError):
+    """A binary whose content could not be fully read. Never reported clean.
+
+    The message carries sizes and counts only, never content, so CI can print it.
+    """
 
 
 def binary_text(data):
@@ -471,14 +482,26 @@ def binary_text(data):
     if data[:4] == b"PK\x03\x04":
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as z:
+                infos = z.infolist()
+                if len(infos) > _ZIP_MAX_MEMBERS:
+                    raise Unscannable(f"zip has {len(infos)} members, cap {_ZIP_MAX_MEMBERS}")
                 total = 0
-                for info in z.infolist()[:_ZIP_MAX_MEMBERS]:
-                    if info.file_size > _ZIP_MEMBER_CAP or total + info.file_size > _ZIP_TOTAL_CAP:
-                        continue
+                for info in infos:
+                    if info.file_size > _ZIP_MEMBER_CAP:
+                        raise Unscannable(f"a zip member inflates to {info.file_size} bytes, "
+                                          f"cap {_ZIP_MEMBER_CAP}")
                     total += info.file_size
-                    chunks.append(z.read(info))
-        except (zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError, EOFError):
-            pass
+                    if total > _ZIP_TOTAL_CAP:
+                        raise Unscannable(f"zip inflates past {_ZIP_TOTAL_CAP} bytes")
+                    if info.flag_bits & 0x1:
+                        raise Unscannable("an encrypted zip member cannot be read")
+                    try:
+                        chunks.append(z.read(info))
+                    except (RuntimeError, NotImplementedError) as exc:
+                        raise Unscannable(f"a zip member cannot be inflated "
+                                          f"({exc.__class__.__name__})") from None
+        except (zipfile.BadZipFile, OSError, EOFError):
+            pass   # not a readable zip after all: its raw bytes above are the scan
     return "\n".join(c.decode("utf-8", errors="replace") for c in chunks)
 
 
@@ -581,7 +604,10 @@ def staged_paths_and_binaries():
         data = _blob(f":{path}")
         if data is None:
             raise RuntimeError(f"cannot read the staged blob of {path}")
-        blobs.append((path, binary_text(data)))
+        try:
+            blobs.append((path, binary_text(data)))
+        except Unscannable as exc:
+            raise Unscannable(f"{path}: {exc}") from None
     return names, blobs
 
 
@@ -610,6 +636,11 @@ def run_message(message_path):
     try:
         content = staged_added_lines()
         names, blobs = staged_paths_and_binaries()
+    except Unscannable as exc:
+        print(f"BLOCK: a staged binary could not be fully scanned ({exc}).")
+        print("Refusing rather than reporting all clear: its compressed bytes hide text.")
+        print(f"  intend: put '{SKIP}: <reason>' on its OWN LINE in the commit message")
+        return 1
     except RuntimeError as exc:
         print(f"BLOCK: cannot read the staged diff ({exc}).")
         print("Refusing rather than reporting all clear. The list is armed, so")
@@ -682,7 +713,13 @@ def _scan_file(path, data, is_bin, terms, problems, line_hits=True):
     if data is None:
         return
     if is_bin:
-        found = hits(binary_text(data), terms)
+        try:
+            text = binary_text(data)
+        except Unscannable as exc:
+            print(f"::error file={shown}::binary not fully scanned ({exc}); refusing to report clean")
+            problems.append(f"{shown}: binary not fully scanned: {exc}")
+            return
+        found = hits(text, terms)
         if found:
             print(f"::error file={shown}::private term ({_kinds(found)}) inside a binary file")
             problems.append(f"{shown}: binary content: {_kinds(found)}")
