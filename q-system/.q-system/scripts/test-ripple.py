@@ -63,20 +63,41 @@ REPO_ROOT = os.path.normpath(os.path.join(QROOT, ".."))
 IS_SKELETON = os.path.isfile(os.path.join(REPO_ROOT, "instance-registry.json"))
 
 
+def _kept_out_of_repo(ref):
+    """True when .gitignore deliberately keeps this instance-owned file out of git.
+
+    ASK-2058 (2026-10-22): the scrub of this public skeleton untracks
+    my-project/relationships.md, a list of real people, and ignores it so an
+    auto-commit cannot add it back. Instances still own that file and the graph
+    edge from it, so the skeleton check skips it, but only when an explicit
+    ignore rule names it: a typo or a deleted file is not ignored and still fails.
+    While the file is still tracked, the existence check passes first and this
+    never runs.
+    """
+    r = subprocess.run(["git", "-C", REPO_ROOT, "check-ignore", "-q", "--no-index",
+                        os.path.join(QROOT, ref)], capture_output=True)
+    return r.returncode == 0
+
+
 def test_files_exist(graph):
-    missing, instance_owned_absent = [], []
+    missing, instance_owned_absent, kept_out = [], [], []
     for src, targets in graph.items():
         for ref in [src] + list(targets):
             if os.path.exists(os.path.join(QROOT, ref)):
                 continue
             if not IS_SKELETON and ref.startswith(INSTANCE_OWNED_PREFIXES):
                 instance_owned_absent.append(ref)
+            elif ref.startswith(INSTANCE_OWNED_PREFIXES) and _kept_out_of_repo(ref):
+                kept_out.append(ref)
             else:
                 missing.append(ref)
     if instance_owned_absent:
         skipped = sorted(set(instance_owned_absent))
         print(f"  SKIP: {len(skipped)} graph ref(s) under instance-owned dirs "
               f"absent here (canon is instance-owned, not synced): {skipped[:4]}...")
+    if kept_out:
+        print(f"  SKIP: {len(set(kept_out))} instance-owned graph ref(s) that "
+              f".gitignore keeps out of this public repo: {sorted(set(kept_out))}")
     test("all referenced files exist", len(missing) == 0, f"missing: {missing}")
 
 
