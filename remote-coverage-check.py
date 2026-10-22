@@ -16,6 +16,7 @@ Exit codes: 0 = every repo covered or explicitly allowlisted, 2 = at least one
 undeclared remote-less repo (the gate's whole point), 1 = usage/internal error.
 """
 import argparse
+import fcntl
 import json
 import os
 import subprocess
@@ -174,6 +175,13 @@ def declare(target, reason, public=None, private=None):
     repo path and its reason into the public repo again. A local-only repo is
     local-only BECAUSE its content is private, and its path and reason say so.
     The public file is still read, never written. Returns the stored path.
+
+    ONE LOCK OVER THE WHOLE READ, CHECK, APPEND, REPLACE (PR #550 review round
+    2). Two `kipi new` runs declaring at once each read the same list, each
+    appended its own row, and the second replace dropped the first row, so that
+    instance read as undeclared on every later check. The lock is a sibling
+    file, not the allowlist itself, because os.replace swaps the allowlist's
+    inode and a lock held on the old inode guards nothing.
     """
     import datetime
     public = public or ALLOWLIST
@@ -182,26 +190,31 @@ def declare(target, reason, public=None, private=None):
     tgt = target.rstrip("/")
     if tgt.startswith(home):
         tgt = "~" + tgt[len(home):]
-    if os.path.expanduser(tgt) in load_allowlist((public, private)):
-        return tgt, False
-    data = {"local_only": []}
-    if os.path.isfile(private):
-        with open(private) as fh:
-            data = json.load(fh)
-    data.setdefault("local_only", []).append({
-        "path": tgt,
-        "reason": reason.strip(),
-        "declared": datetime.date.today().isoformat(),
-        "review": "Re-decide when the blocking condition changes.",
-    })
     os.makedirs(os.path.dirname(private), exist_ok=True)
-    tmp = f"{private}.tmp.{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        json.dump(data, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, private)
-    return tgt, True
+    lock_fd = os.open(f"{private}.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if os.path.expanduser(tgt) in load_allowlist((public, private)):
+            return tgt, False
+        data = {"local_only": []}
+        if os.path.isfile(private):
+            with open(private) as fh:
+                data = json.load(fh)
+        data.setdefault("local_only", []).append({
+            "path": tgt,
+            "reason": reason.strip(),
+            "declared": datetime.date.today().isoformat(),
+            "review": "Re-decide when the blocking condition changes.",
+        })
+        tmp = f"{private}.tmp.{os.getpid()}"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, private)
+        return tgt, True
+    finally:
+        os.close(lock_fd)   # closing the descriptor releases the flock
 
 
 def registry_paths():
@@ -401,6 +414,70 @@ def self_test():
             ok = False
         else:
             print("  [d] a path already declared in either list is not re-added")
+
+        # d2: the read-modify-replace is ONE locked transaction (PR #550 review
+        # round 2). Deterministic half: while this process holds the lock, a
+        # forked declare must WAIT; unlocked code finishes at once. Load half:
+        # twelve forked writers at once, and every row must survive.
+        import time
+
+        def fork_declare(path, inherited=None):
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    # A forked child shares the parent's open lock descriptor,
+                    # and flock belongs to that shared description: unless the
+                    # child drops its copy, the parent's close releases nothing
+                    # and the child deadlocks on a lock it holds itself
+                    # (measured: the first cut of this test hung).
+                    if inherited is not None:
+                        os.close(inherited)
+                    declare(path, "a sentence long enough to be a reason", pub, priv)
+                    os._exit(0)
+                except BaseException:
+                    os._exit(1)
+            return pid
+
+        def reap(pid, secs=20):
+            """Exit status, or None after `secs`: a hung writer is a FAIL, not
+            a self-test that never returns."""
+            end = time.time() + secs
+            while time.time() < end:
+                done, status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    return status
+                time.sleep(0.05)
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            return None
+
+        held = os.open(f"{priv}.lock", os.O_WRONLY | os.O_CREAT, 0o600)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        pid = fork_declare("/x/held", inherited=held)
+        time.sleep(0.5)
+        waited = os.waitpid(pid, os.WNOHANG)[0] == 0
+        os.close(held)
+        status = reap(pid) if waited else 0
+        if not waited:
+            print("FAIL: [d2] declare did not wait for the allowlist lock")
+            ok = False
+        elif status != 0:
+            print("FAIL: [d2] the waiting declare did not finish once the lock was free")
+            ok = False
+        else:
+            print("  [d2] declare waits while another writer holds the lock")
+        paths = [f"/x/concurrent-{i}" for i in range(12)]
+        pids = [fork_declare(p) for p in paths]
+        codes = [reap(p) for p in pids]
+        stored = load_allowlist((priv,))
+        lost = [p for p in paths + ["/x/held"] if p not in stored]
+        bad = [c for c in codes if c != 0]   # None (hung) counts as a failure
+        if bad or lost:
+            print(f"FAIL: [d2] concurrent declares lost {len(lost)} row(s), "
+                  f"{len(bad)} writer(s) failed or hung")
+            ok = False
+        else:
+            print("  [d2] 12 concurrent declares, every row kept")
 
     print("SELF-TEST PASS" if ok else "SELF-TEST FAIL")
     return 0 if ok else 1
