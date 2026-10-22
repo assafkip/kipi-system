@@ -28,7 +28,9 @@ and "auto-commit left 9 file(s) ... c.py" are the same alert and get one ticket.
 
 EXIT CONTRACT, mirroring slack-notify.sh so existing callers are unchanged:
   0  filed (created a ticket, or recorded a repeat on the open one)
-  1  attempted and FAILED (reason on stderr, message text preserved there)
+  1  attempted and FAILED (reason on stderr, message text preserved there).
+     A failed create is also queued in linear-queue.py's offline queue, and the
+     next run that files successfully retries it (see _queue_for_retry).
   3  no Linear API key configured -- a setup state, not an error
   4  refused: running under pytest (see the fixture guard)
 
@@ -142,6 +144,13 @@ def sustained_defers(fp: str, observations: int) -> bool:
     return fp == SUSTAINED_FINGERPRINT and observations < SUSTAINED_MIN_OBSERVATIONS
 
 
+def _default_state_dir() -> str:
+    """The production state dir. Kept apart from _state_dir so the retry-queue
+    guard can tell a redirected (test) state dir from the real one."""
+    return os.path.join(
+        os.path.expanduser("~"), ".cache", "kipi", "alert-to-linear")
+
+
 def _state_dir() -> str:
     """Fingerprint -> ticket map, OUTSIDE any repo.
 
@@ -150,8 +159,7 @@ def _state_dir() -> str:
     which would rewrite the state, which alerts again. The cache would be its
     own alarm.
     """
-    return os.path.join(
-        os.path.expanduser("~"), ".cache", "kipi", "alert-to-linear")
+    return _default_state_dir()
 
 
 # Volatile spans, stripped before fingerprinting. Order matters: paths before
@@ -917,6 +925,174 @@ def _refetch_label_id(ln, team_id: str, name: str) -> str | None:
     return None
 
 
+# A FAILED CREATE IS QUEUED, NOT DROPPED (ASK-2848 sweep, 2026-10-22).
+#
+# Five alerts failed their create on 10-20 and 10-21 with HTTP 401, and more
+# with read timeouts, a TLS handshake timeout and a connection reset (one from
+# content-engine at 07:50 PT on 10-22). Each printed "NOT filed" into a job log
+# and was never retried, so the condition it reported reached nobody.
+#
+# THE QUEUE IS THE FLEET'S EXISTING ONE, not a second: linear-queue.py, whose
+# append_op is that file's only writer and whose pending entries /linear-drain
+# already reads. Entries carry source=alert-to-linear and the full message, so
+# this script can replay them through file_alert (same fingerprint dedup, same
+# labels, same project routing) and a human drain still sees a title and body.
+ALERT_QUEUE_SOURCE = "alert-to-linear"
+
+# ONE retry per run, after this run's own alert filed. slack-notify.sh caps the
+# whole call at `timeout 20`, and one create is up to six HTTP calls, so
+# draining more inside that budget risks the caller seeing a timeout for an
+# alert that did file. Alerts fire many times a day, so the queue still empties.
+DRAIN_PER_RUN = 1
+
+
+def _alert_queue_path() -> str | None:
+    """Where a failed create is queued, or None when it must not be.
+
+    Default: `.linear-queue.jsonl` at the root of the checkout this script runs
+    from, the same file linear-queue.py and /linear-drain use for that repo.
+
+    NONE FOR ANY FIXTURE RUN, unless the run names its own queue. A fixture
+    message on the real queue is not a stray line: the next good run replays it
+    and files a REAL ticket, which is ASK-635 arriving through a new door. So
+    pytest, a fake Linear URL (the bash exit-contract suite), or a redirected
+    state dir (the race test's children) all resolve to no queue at all.
+    """
+    explicit = os.environ.get("KIPI_LINEAR_QUEUE")
+    if explicit:
+        return explicit
+    if (os.environ.get("PYTEST_CURRENT_TEST")
+            or os.environ.get("KIPI_LINEAR_API_URL")
+            or _state_dir() != _default_state_dir()):
+        return None
+    try:
+        root = os.path.realpath(_common_repo_root(_own_checkout_root()))
+    except OSError:
+        return None
+    return os.path.join(root, ".linear-queue.jsonl")
+
+
+def _load_queue():
+    """linear-queue.py, pointed at _alert_queue_path(), or None. Never raises.
+
+    A fresh module object per call, so overriding its queue_path touches no
+    other user of that file and needs no process-wide env change.
+    """
+    path = _alert_queue_path()
+    if not path:
+        return None
+    try:
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "linear-queue.py")
+        spec = importlib.util.spec_from_file_location("kipi_linear_queue", src)
+        if spec is None or spec.loader is None:
+            return None
+        queue = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(queue)
+    except Exception:
+        return None
+    queue.queue_path = lambda: path
+    return queue
+
+
+def _queue_for_retry(message: str, fp: str, reason: str) -> tuple[str | None, str]:
+    """Queue a failed create. Returns (key, note); key is None if not queued.
+
+    ONE PENDING ENTRY PER SHAPE. Callers hold this fingerprint's lock, so the
+    check and the append cannot interleave with another create of the same
+    shape. Four failures during one outage replay as one create; four entries
+    would replay as one create plus three repeats.
+    """
+    queue = _load_queue()
+    if queue is None:
+        return None, "no queue for this run"
+    try:
+        for item in queue.pending_items():
+            if (item.get("source") == ALERT_QUEUE_SOURCE
+                    and item.get("fingerprint") == fp):
+                return item["key"], "already queued"
+        key = f"alert/{fp}/{int(time.time())}"
+        repo = (project_candidates(message) or [ALERT_QUEUE_SOURCE])[0]
+        ok = queue.append_op({
+            "op": "add", "key": key, "repo": repo, "kind": "issue",
+            "title": title_for(message),
+            "note": (f"Alert whose Linear create failed ({reason}).\n\n"
+                     f"```\n{message}\n```\n\n"
+                     f"<!-- kipi-alert-fingerprint: {fp} -->"),
+            "state": "Backlog", "source": ALERT_QUEUE_SOURCE,
+            "message": message, "fingerprint": fp, "reason": reason,
+        })
+    except Exception as exc:
+        return None, f"queue write failed ({exc})"
+    return (key, "queued") if ok else (None, "queue write failed")
+
+
+def _create_failed(message: str, fp: str, reason: str) -> tuple[int, str]:
+    """EXIT_FAILED with the message intact, and the alert queued for retry.
+
+    A drain's own failed replay lands here too and adds nothing: its entry is
+    still pending, so _queue_for_retry answers "already queued".
+    """
+    key, note = _queue_for_retry(message, fp, reason)
+    if key:
+        return EXIT_FAILED, (f"{reason}; NOT filed, queued for retry as {key}: "
+                             f"{message}")
+    return EXIT_FAILED, f"{reason}; NOT filed, NOT queued ({note}): {message}"
+
+
+def drain_queued_alerts(limit: int = DRAIN_PER_RUN,
+                        now: float | None = None) -> list[str]:
+    """Retry queued alerts through file_alert. Returns one line per attempt.
+
+    Never raises. Stops at the first retry that fails: Linear is failing again,
+    and hammering it with the rest of the queue only lengthens the caller's run.
+    A failed replay finds its own entry still pending and adds nothing, so a
+    failed retry leaves exactly the one entry it started with.
+
+    No extra lock: file_alert takes the fingerprint lock, so two drainers that
+    pick the same entry produce one ticket and one repeat, never two tickets.
+    """
+    queue = _load_queue()
+    if queue is None:
+        return []
+    out: list[str] = []
+    try:
+        items = [i for i in queue.pending_items()
+                 if i.get("source") == ALERT_QUEUE_SOURCE and i.get("message")]
+    except Exception:
+        return []
+    for item in items[:max(0, limit)]:
+        try:
+            code, line = file_alert(item["message"], now=now)
+        except Exception as exc:
+            code, line = EXIT_FAILED, f"unexpected {exc!r}"
+        if code != EXIT_OK:
+            out.append(f"retry of {item['key']} failed, still queued: {line}")
+            break
+        fp = item.get("fingerprint") or fingerprint(item["message"])
+        identifier = _read_state(fp).get("identifier") or "unrecorded"
+        try:
+            queue.append_op({"op": "drain", "key": item["key"],
+                             "identifier": identifier})
+        except Exception:
+            pass
+        out.append(f"retried {item['key']}: {line}")
+    return out
+
+
+def file_and_drain(message: str) -> tuple[int, list[str]]:
+    """main()'s job after its guards: file this alert, then retry the queue.
+
+    The retry runs only when this alert filed, because that is the one moment
+    this run has proof Linear is answering.
+    """
+    code, line = file_alert(message)
+    lines = [line]
+    if code == EXIT_OK:
+        lines.extend(drain_queued_alerts())
+    return code, lines
+
+
 def file_alert(message: str, now: float | None = None) -> tuple[int, str]:
     """(exit_code, human line). The whole job, in one place.
 
@@ -1046,7 +1222,7 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
         teams = (ln.graphql(TEAM_QUERY, {"key": TEAM_KEY}) or {}).get("teams") or {}
         nodes = teams.get("nodes") or []
         if not nodes:
-            return EXIT_FAILED, f"no Linear team {TEAM_KEY!r}; NOT filed: {message}"
+            return _create_failed(message, fp, f"no Linear team {TEAM_KEY!r}")
         team_id = nodes[0]["id"]
 
         payload = {
@@ -1088,9 +1264,9 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
         data = ln.graphql(ISSUE_CREATE, {"input": payload})
         issue = ((data or {}).get("issueCreate") or {}).get("issue") or {}
         if not issue.get("id"):
-            return EXIT_FAILED, f"issueCreate returned no issue; NOT filed: {message}"
+            return _create_failed(message, fp, "issueCreate returned no issue")
     except Exception as exc:
-        return EXIT_FAILED, f"Linear create failed ({exc}); NOT filed: {message}"
+        return _create_failed(message, fp, f"Linear create failed ({exc})")
 
     _write_state(fp, {"issue_id": issue["id"],
                       "identifier": issue.get("identifier"),
@@ -1151,15 +1327,17 @@ def main(argv: list[str]) -> int:
         return EXIT_REFUSED_FIXTURE
 
     try:
-        code, line = file_alert(message)
+        code, lines = file_and_drain(message)
     except Exception as exc:                       # never crash a Stop hook
         print(f"alert-to-linear: unexpected {exc!r}; NOT filed: {message}",
               file=sys.stderr)
         return EXIT_FAILED
 
     # A failed alert stays readable in the job log. A silently swallowed alert is
-    # the exact failure mode this whole path exists to prevent.
-    print(f"alert-to-linear: {line}", file=sys.stderr if code else sys.stdout)
+    # the exact failure mode this whole path exists to prevent. Retry lines
+    # follow this alert's own line; they never change this run's exit code.
+    for line in lines:
+        print(f"alert-to-linear: {line}", file=sys.stderr if code else sys.stdout)
     return code
 
 
