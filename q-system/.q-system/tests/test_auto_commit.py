@@ -238,7 +238,7 @@ def test_classify_covers_skeleton_and_instance_alike():
     mod = _hook_module()
     assert mod.classify("q-system/canonical/x.md") == ("content", "update canonical files")
     assert mod.classify("q-consult/canonical/x.md") == ("content", "update canonical files")
-    assert mod.classify("q-thaena/my-project/x.json") == ("content", "update project state")
+    assert mod.classify("q-client_e/my-project/x.json") == ("content", "update project state")
     assert mod.classify("q-consult/output/x.json") == mod.SKIP_DECLARED
     assert mod.classify("q-consult/pipeline/x.py") == mod.SKIP_UNCLASSIFIED
 
@@ -324,7 +324,7 @@ class TestTheFleetSyncSharesThisClassifier:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_work_product_is_never_system_state(self):
-        """The 162 files the old sweeper took from Alice."""
+        """The 162 files the old sweeper took from client-d."""
         for p in ["q-investigate/investigations/case-001/evidence/capture.pdf",
                   "q-investigate/.../generators/fill_sheet.py",
                   "output/opportunities/opps-2026-08-01.md",

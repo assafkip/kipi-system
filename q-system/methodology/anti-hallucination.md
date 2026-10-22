@@ -78,7 +78,7 @@ Order, most rigorous first:
 
 ## Worked example: catching a contradiction
 
-From the Pure Spectrum instance dashboard, 2026-05-11:
+From the client-b instance dashboard, 2026-05-11:
 
 > "Canonical corrections logged: JA3 send-status — `progress.md` was falsely claiming 'memo sent 2026-05-05' when `graph.jsonl` correctly held 'on hold pending send decision'; corrected today."
 

@@ -148,7 +148,7 @@ is_instance_owned() {
 #
 # Scar 2026-07-25: plugins/memory-lifecycle points at
 # /Users/assafkip/projects/memory-lifecycle -- an old username, long gone -- so
-# all_points_setup and Prodigy_Gold both failed there while instances that
+# client_a and client_c both failed there while instances that
 # received the plugin back when the link resolved passed. That asymmetry made a
 # skeleton-wide defect look instance-specific.
 SKELETON_PLUGIN_ROOT="$SCRIPT_DIR/plugins"
@@ -561,7 +561,7 @@ model_skip_scan() {
     # untracked, and skipping it is the whole point.
     #
     # Scar 2026-07-25: the exclusion shipped without this check and bricked
-    # Alice, which carries three submodules under q-investigate/tools/.
+    # client_d, which carries three submodules under q-investigate/tools/.
     if git -C "$instance_root" ls-files --error-unmatch -- "$nested_rel" \
         >/dev/null 2>&1; then
       continue
@@ -2502,7 +2502,7 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     # dirty forever, so never synced, so never given the fix that would help.
     #
     # We shell the SKELETON's copy, never the instance's. A blocked instance is by
-    # definition running stale code -- Alice's own pre-ASK-498 copy still had the
+    # definition running stale code -- client_d's own pre-ASK-498 copy still had the
     # `chore: update project files` catch-all and swept 162 files of investigation
     # evidence when run there. The instance most in need of sweeping is the one whose
     # sweeper cannot be trusted, and this is how that circle breaks.
@@ -2790,7 +2790,7 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
     # dirty file anywhere else is in a path this run is not permitted to write,
     # so it cannot be packaged into an infra commit and cannot be damaged.
     # Measured 2026-08-10: 182 dirty files across the four blocked instances,
-    # ZERO of them reachable by the sync. Alice's 162 are investigation
+    # ZERO of them reachable by the sync. client_d's 162 are investigation
     # evidence under q-investigate/. The guard was protecting an empty set and
     # charging four instances every future fix for it -- including the ASK-607
     # fix written to unblock stuck instances.

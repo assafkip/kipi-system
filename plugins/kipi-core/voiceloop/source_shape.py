@@ -37,8 +37,8 @@ import re
 # commits with types outside it. Two real mined commits scored ZERO signals and
 # would have reached a platform unconverted:
 #
-#   crm(10a-labs): both documents sent, ball is Bobby's
-#   content(10a-labs): the investigations one-pager, built off the real engine
+#   crm(client_i): both documents sent, ball is Sam's
+#   content(client_i): the investigations one-pager, built off the real engine
 #
 # Both name a client and a person by name. An allowlist of types is a guess about
 # vocabulary; the SHAPE (`word(scope):` opening a line) is the actual tell, and it

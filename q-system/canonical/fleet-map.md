@@ -10,7 +10,7 @@ grouped by TYPE; Cole's projects are marked `[cole-gtm]`. See `q-system/output/p
 **GTM consolidation (phase 2, 2026-07-06) — DONE.** Cole is the fleet's single GTM brain.
 Part 1: ASK's `products/` content/GTM machine (the "claudedaddy" auto-posting engines, 609MB)
 moved to `cole-gtm/products/`; the 5 `com.claudedaddy.*` jobs repoint there. Part 2: ASK core
-(`q-consult`, `clients`) renamed `consulting`; `Pure_spectrum_Q` / `4_points_consulting` / `Alice`
+(`q-consult`, `clients`) renamed `consulting`; `client_b` / `client_a` / `client_d`
 now cascade under `consulting/projects/`. The Cole↔ASK bridge is retired both sides (GTM lives in
 Cole now). See `q-system/output/plans/gtm-consolidation-ask-to-cole-2026-07-06.md`.
 
@@ -41,15 +41,15 @@ several client engagements. Nine more directories were not repos at all, includi
 `intel/projects/deliverables` (475 files, client run outputs, a live Vercel deploy, zero
 version control). Root cause: `kipi new` did `git init` and never created a remote, so inflow
 was automated and outflow was manual. 13 repos are now private on GitHub; `deliverables` became
-`gh:assafkip/ktlyst-deliverables`. `remote-coverage-check.py` at kipi-system root is the standing
+`ktlyst-deliverables` (private). `remote-coverage-check.py` at kipi-system root is the standing
 gate (currently 58 covered, 0 undeclared, 0 not-a-repo) and `kipi new` is private-by-default with
 a reasoned opt-out. Local-only is now a written declaration in `remote-coverage-allow.json`, not
-a silence. `AUDHD_KIDS` and `travel-agent` stay local-only (family-medical). See RULE-004..009 in
+a silence. `family_repo` and `travel-agent` stay local-only (family records). See RULE-004..009 in
 `decisions.md`.
 
 **Deployed-but-sourceless surfaces (2026-07-29).** The same audit surfaced a class the gate
 structurally cannot see: Vercel sites with no source anywhere on disk. Two prospect-facing demos
-(`ktlyst-demo-crinetics`, `sjifire-demo-v2`) were live, fully indexable, and named real
+(two Vercel projects, each named after its prospect) were live, fully indexable, and named real
 organizations. Both now carry robots.txt + `X-Robots-Tag: noindex`; content byte-identical.
 Access gating is still open, pending a founder-minted capability token. Tracked as `sp-784e3594`.
 
@@ -58,19 +58,19 @@ Access gating is still open, pending a founder-minted capability token. Tracked 
 ## 1. KTLYST Core Product (the company product)
 | Project | What it is |
 |---|---|
-| `ktlyst-saas/projects/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline). LIVE v5, standalone. Promoted from the former `ktlyst-hub/product-baseline` (RULE-2026-07-06-G). Origin → dedicated private repo `github.com/assafkip/ktlyst-saas-product` (v5 backed up 2026-07-07, verified); `ktlyst.git` kept as `legacy` remote for provenance. |
+| `ktlyst-saas/projects/product` | Security Learning Control Plane: threat-intel PDFs → governed defense artifacts (multi-agent Python pipeline). LIVE v5, standalone. Promoted from the former `ktlyst-hub/product-baseline` (RULE-2026-07-06-G). Origin → dedicated private repo `ktlyst-saas-product` (v5 backed up 2026-07-07, verified); `ktlyst.git` kept as `legacy` remote for provenance. |
 
 Note: `ktlyst-hub/` is DISSOLVED (RULE-G) — the old `product` + `product-baseline` copies are in `_archive/` (`product-ktlyst-old-2026-07-06`, `ktlyst-hub-dissolved-2026-07-07`). One live product now.
 
 ## 2. Investigation / OSINT — persona `intel`
 The 3 standalone investigation/OSINT projects moved under `intel/projects/`
-(persona reorg phase 4, 2026-07-06). 4_points + Alice stay under `consulting`.
+(persona reorg phase 4, 2026-07-06). client_a + client_d stay under `consulting`.
 The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also fits
 `intel` but lives under its own `ktlyst-saas` persona post-dissolution (RULE-G).
 | Project | What it is |
 |---|---|
-| `consulting/projects/4_points_consulting` `[consulting]` | Production investigation OS + client invoicing (27 live cases) |
-| `consulting/projects/Alice` `[consulting]` | Single-case investigation instance |
+| `consulting/projects/client_a` `[consulting]` | Production investigation OS + client invoicing (27 live cases) |
+| `consulting/projects/client_d` `[consulting]` | Single-case investigation instance |
 | `intel/projects/kipi-investigations` `[intel]` | Ingestion → Obsidian + deployed webapp (registry `investigations`; kipi-web frontend; 3 git worktrees re-linked on move) |
 | `intel/projects/ktlyst-extract` `[intel]` | PDF → structured intel (Next.js sibling of the product) |
 | `intel/projects/facebook-ads-library-search` `[intel]` | Meta Ad Library scraper → ad evidence (86 `runs/` capture files left forensic-intact) |
@@ -78,8 +78,8 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 ## 3. Consulting Instances (client / business engagement hubs)
 | Project | What it is |
 |---|---|
-| `consulting` `[persona]` | ASK Consulting business OS, renamed. GTM `products/` moved to `cole-gtm/products/`; keeps q-consult + clients. Registry entry still named `ASK_AI_consultant` → path `consulting`. Pure/4points/Alice cascade under it |
-| `consulting/projects/Pure_spectrum_Q` `[consulting]` | PureSpectrum fractional advisory hub (runs ps-slack-sync + ti-weekly jobs) |
+| `consulting` `[persona]` | ASK Consulting business OS, renamed. GTM `products/` moved to `cole-gtm/products/`; keeps q-consult + clients. Registry entry still named `ASK_AI_consultant` → path `consulting`. client_b/client_a/client_d cascade under it |
+| `consulting/projects/client_b` `[consulting]` | client-b fractional advisory hub (runs client_b-slack-sync + ti-weekly jobs) |
 | `consulting/projects/accountant` `[consulting]` | Books for KTLYST + ASK (2 cash-basis ledgers) |
 | `consulting/projects/lawyer` `[consulting]` | In-house legal advisor |
 | `cole-gtm/projects/event_coordinator` `[cole-gtm]` | Stub (still `{{DESCRIPTION}}` placeholder) |
@@ -88,10 +88,10 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 ## 4. GTM — owned by **Cole**
 | Project | What it is |
 |---|---|
-| `cole-gtm` | **The GTM home + Cole persona repo.** Cole Mercer (cole@ktlystlabs.com) + `gtm/` pipeline (ICP, positioning, campaigns, chris-pi deal); the 9 below cascade under `cole-gtm/projects/` |
+| `cole-gtm` | **The GTM home + Cole persona repo.** Cole Mercer (cole@ktlystlabs.com) + `gtm/` pipeline (ICP, positioning, campaigns, a prospect deal); the 9 below cascade under `cole-gtm/projects/` |
 | `cole-gtm/products/` `[cole-gtm]` | The "claudedaddy" content machine (moved from ASK 2026-07-06). AFTER DEDUP: `distribution-engine` LIVE (`com.claudedaddy.repo-distribution`, ships GitHub repos) + video product catalog + kits. Daily podcast is in `gtm/scripts/podcast/`. ARCHIVED 2026-07-06 (`~/projects/_archive/`): x/youtube/pinterest posters + jobs (didn't work), refill-engine (fed posters), ai-news-podcast (dead TTS predecessor) |
 | ~~`founder-signal-engine`~~ ARCHIVED 2026-07-06 | Was a dormant subset of `competitive-analysis` (same code, couldn't ingest on its own). Archived to `~/projects/_archive/`; competitive-analysis is the canonical superset |
-| `fractional-cxo` | Scans feeds for fractional roles, $250/hr floor, Slack-pings (NOT moved — still top-level) |
+| `fractional-cxo` | Scans feeds for fractional roles, a rate floor, Slack-pings (NOT moved — still top-level) |
 | `cole-gtm/projects/signal-desk` `[cole-gtm]` | Market signals → ranked contact actions |
 | `cole-gtm/projects/strategy` `[cole-gtm]` | Decks, investor docs, positioning research; canonical positioning source (post-dissolution, RULE-G) |
 | `cole-gtm/projects/notebooklm-daily-podcast` `[cole-gtm]` | Daily AI-news podcast (the "podcast" under Cole) |
@@ -147,8 +147,8 @@ Eyeball: retired. The `~/projects/eyeball` repo is gone from disk. The determini
 | `travel-agent` | Family travel planning |
 | `negotiator` | Car negotiation |
 | `school-negotiator` | Tuition negotiation |
-| `school-idf` | Classroom activities |
-| `AUDHD_KIDS` | Parenting knowledge base |
+| `school-repo` | Classroom activities |
+| `family_repo` | Parenting knowledge base |
 | `cole-gtm/projects/personal-brand` `[cole-gtm]` | Personal-brand advisory |
 
 ## Infra (not products)

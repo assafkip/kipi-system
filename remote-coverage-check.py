@@ -149,12 +149,20 @@ def find_uncovered_dirs(root, repo_set, allow):
     return out
 
 
+# Entries whose PATH names a client or a family repo live in a private file of
+# the same shape outside this public repo (ASK-2058), and are merged in here.
+PRIVATE_ALLOWLIST = os.path.expanduser("~/.config/kipi/remote-coverage-allow.json")
+
+
 def load_allowlist():
-    if not os.path.isfile(ALLOWLIST):
-        return {}
-    with open(ALLOWLIST) as fh:
-        data = json.load(fh)
-    return {os.path.expanduser(e["path"]): e for e in data.get("local_only", [])}
+    out = {}
+    for path in (ALLOWLIST, PRIVATE_ALLOWLIST):
+        if not os.path.isfile(path):
+            continue
+        with open(path) as fh:
+            data = json.load(fh)
+        out.update({os.path.expanduser(e["path"]): e for e in data.get("local_only", [])})
+    return out
 
 
 def registry_paths():

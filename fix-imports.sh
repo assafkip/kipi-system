@@ -6,7 +6,7 @@ for f in \
   ~/Desktop/ktlyst-hub/product/CLAUDE.md \
   ~/Desktop/ASK_AI_consultant/CLAUDE.md \
   ~/Desktop/ktlyst-hub/website/CLAUDE.md \
-  ~/Desktop/4_points_consulting/CLAUDE.md \
+  ~/Desktop/client_a/CLAUDE.md \
   ~/Desktop/ktlyst-hub/lawyer/CLAUDE.md
 do
   if [ -f "$f" ]; then

@@ -4,16 +4,6 @@
   "_reason_discipline": "THIS FILE IS COMMITTED TO A PUBLIC REPO. State the CLASS of sensitive content and the path that carries it, never the content itself. A reason that quotes the private data defeats the gate it documents. Detail belongs in the local-only repo, not here.",
   "local_only": [
     {
-      "path": "~/projects/personal/projects/AUDHD_KIDS",
-      "reason": "Tracked files carry health + education records about a specific minor, re-identifying against the owner's public identity. Class: family-medical. Not pushable, private included, until that content moves to a gitignored path.",
-      "carriers": [
-        "decks/SESSION-*.md",
-        "giver-project-*"
-      ],
-      "declared": "2026-07-29",
-      "review": "Re-decide once the carrier paths are gitignored. The canonical/ research corpus is general literature and would be pushable on its own."
-    },
-    {
       "path": "~/projects/personal/projects/travel-agent",
       "reason": "One tracked file carries health attributes, ages, and home city for minors. Class: family-medical. No names, and no card/passport/loyalty numbers (those are gitignored and verified never committed in full history), but the remaining combination is re-identifying.",
       "carriers": [
@@ -33,16 +23,6 @@
       "reason": "11-file duplicate of ~/projects/cole-gtm/products/kipi-rca, which IS pushed to gh:assafkip/kipi-rca.git. The work is already off-disk under the other path.",
       "declared": "2026-07-29",
       "review": "Delete-or-merge candidate; not a backup gap."
-    },
-    {
-      "path": "~/projects/consulting/projects/4_points_consulting/q-investigate/tools/osint-infra-mcp",
-      "reason": "4-file vendored third-party MCP tool, single seed commit, no local authorship.",
-      "declared": "2026-07-29"
-    },
-    {
-      "path": "~/projects/consulting/projects/Alice/q-investigate/tools/osint-infra-mcp",
-      "reason": "4-file vendored third-party MCP tool, single seed commit, no local authorship.",
-      "declared": "2026-07-29"
     },
     {
       "path": "~/projects/dev-tools",

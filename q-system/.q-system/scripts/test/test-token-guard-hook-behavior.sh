@@ -98,7 +98,7 @@ EOF
 echo "ok: PostToolUse failed Edit keeps the spiral counter"
 
 # --- 4) A guard-BLOCKED attempt must not escalate into a false exact-retry ---
-# Scar 3 (2026-07-02, Pure_spectrum_Q/qep_agent): at the 50-call volume ceiling,
+# Scar 3 (2026-07-02, client_b): at the 50-call volume ceiling,
 # each blocked Edit still incremented repeat_map; the 3rd blocked retry was
 # reported as "attempted this exact call 3 times" for a call that executed
 # ZERO times (exact-retry outranks volume in check order). Blocked attempts

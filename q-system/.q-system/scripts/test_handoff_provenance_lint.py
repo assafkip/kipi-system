@@ -6,7 +6,7 @@ handoff.md mixed verified measurements with unverified inferences in one prose v
 Reversal #5 rode in on that. A reader cannot distinguish 'recomputed from the export'
 from 'inferred last Tuesday' because the format has no field for it."
 
-Reversal #5 was a Brightspeed row dated five months in the future. It was inherited
+Reversal #5 was a Brindlecove row dated five months in the future. It was inherited
 verbatim from the handoff and repeated as fact across several turns. Recomputation
 showed no such row existed.
 
@@ -74,12 +74,12 @@ HANDOFF = "q-thing/memory/last-handoff.md"
 
 def case_bare_number_blocks() -> bool:
     """THE reproducer: reversal #5's shape -- a measurement-looking claim, no source."""
-    return run(HANDOFF, "- One Brightspeed row is dated 2026-12-21, five months out.\n") == 2
+    return run(HANDOFF, "- One Brindlecove row is dated 2026-12-21, five months out.\n") == 2
 
 
 def case_verified_marker_passes() -> bool:
     return run(HANDOFF,
-               "- Brightspeed has 332 hand-typed dates "
+               "- Brindlecove has 332 hand-typed dates "
                "[verified: openpyxl over the xlsx, 2026-07-28]\n") == 0
 
 
@@ -344,13 +344,13 @@ def case_skip_marker_bypasses() -> bool:
 
 def case_prose_without_numbers_passes() -> bool:
     """Only measurement-shaped claims are gated; the format stays writable."""
-    return run(HANDOFF, "- Picked up the Blue Peak thread with Zach; nothing decided.\n") == 0
+    return run(HANDOFF, "- Picked up the Red Cedar thread with Jordan; nothing decided.\n") == 0
 
 
 def case_multiple_bad_lines_still_blocks() -> bool:
     return run(HANDOFF,
                "- 1,366 Vyve rows flagged.\n"
-               "- 21 Brightspeed rows flagged.\n") == 2
+               "- 21 Brindlecove rows flagged.\n") == 2
 
 
 def case_mixed_file_blocks_on_the_bad_line() -> bool:

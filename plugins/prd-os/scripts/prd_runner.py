@@ -3081,7 +3081,7 @@ def cmd_gates(cfg: Config, args) -> int:
         # level re-runs the whole registry including itself, an exponential
         # process fork bomb (observed: 160+ prd_runner processes). Such a gate is
         # the anti-pattern created when an issue's bypass_check is `gates run`
-        # (the prior qep-wiring-sweep did exactly that). Skip it: a gate that runs
+        # (the prior client-b-wiring-sweep did exactly that). Skip it: a gate that runs
         # all gates can never be a meaningful member of the set it runs.
         if "prd_runner.py gates run" in command or _re.search(r"\bgates\s+run\b", command):
             skipped_self_ref += 1
