@@ -47,6 +47,6 @@ quick-plan per item → fable-discipline (reproducer first, verify against a cop
 
 ## Standing connections (do not drop)
 
-- **HuntKit tie-in:** extraction #1 must yield a generic sycophancy core (behavioral rules + decision-origin tagging, no Phase-6/harness/synthesizer references). Then update `~/projects/4_points_consulting/scripts/sync-huntkit.py` RULE_FILES to ship the generic core and rerun the sync — this retires the 2026-07-01 external feedback about dangling references in `huntkit/rules/sycophancy.md`.
+- **HuntKit tie-in:** extraction #1 must yield a generic sycophancy core (behavioral rules + decision-origin tagging, no Phase-6/harness/synthesizer references). Then update `~/projects/client_a/scripts/sync-huntkit.py` RULE_FILES to ship the generic core and rerun the sync — this retires the 2026-07-01 external feedback about dangling references in `huntkit/rules/sycophancy.md`.
 - **Open spillover sp-dd731488:** settings-template.json wires token-guard with `|| true` (swallows exit-2 blocks fleet-wide). Any work touching template hook wiring should resolve it properly (via the spillover flow, not hand-clearing).
-- Fleet context: huntkit auto-sync now fires from 4_points post-commit (`~/projects/4_points_consulting/scripts/sync-huntkit.py`, plan: `huntkit-parity-sync-2026-07-01.md`).
+- Fleet context: huntkit auto-sync now fires from client_a post-commit (`~/projects/client_a/scripts/sync-huntkit.py`, plan: `huntkit-parity-sync-2026-07-01.md`).

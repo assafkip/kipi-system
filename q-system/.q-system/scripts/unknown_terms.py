@@ -83,7 +83,7 @@ def _strip_signature(text: str) -> str:
 
 
 def _calendar_fragment(row: str) -> str:
-    """'09:00  Title (alice, bob)' -> 'Title'. Attendees are not terms."""
+    """'09:00  Title (sam, bob)' -> 'Title'. Attendees are not terms."""
     parts = row.split("  ", 1)
     body = parts[1] if len(parts) == 2 else row
     return _PAREN.sub(" ", body)

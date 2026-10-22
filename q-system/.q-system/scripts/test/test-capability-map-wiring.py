@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Wiring detection in capability-map-gen.py: what counts as "this engine is alive".
 
-WHY (ASK-122): the generator flagged 22 local engines in Alice as UNWIRED. Nearly
+WHY (ASK-122): the generator flagged 22 local engines in client-d as UNWIRED. Nearly
 all of them had a visible caller on disk -- `regenerate.sh` literally runs
 `python3 "$G/fill_sheet.py"`, `brightdata.sh` runs `mcp-client.py`, `pipeline.py`
 imports `geo_clues`. The scan simply never opened those files: it walked only
-.claude/, plugins/ and q-system/, and Alice's code lives in q-investigate/ and
+.claude/, plugins/ and q-system/, and client-d's code lives in q-investigate/ and
 scripts/. A gate that reports dead-and-alive the same way is not a gate.
 
 Second blind spot, same issue, already scarred once (ASK-230, provenance_vocabulary):
@@ -313,7 +313,7 @@ class TestMutantKills(unittest.TestCase):
         self.assertFalse(
             self.mod.is_excluded_tree(root / "q-investigate/output/gen.py", root),
             "a case-level output/ dir is not q-system/output/; un-anchoring this "
-            "darkens Alice's fill_sheet.py, which is LIVE and in ASK-122's table")
+            "darkens client-d's fill_sheet.py, which is LIVE and in ASK-122's table")
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ wearing different clothes:
 
 | Question answered more than once | Sites | What the drift cost |
 |---|---|---|
-| What is a plugin? | 284, 301, 440, 1130 + two separate `find`/glob enumerations | `pathspec ... did not match any files` took the whole config sync down on all_points_setup and Prodigy_Gold |
+| What is a plugin? | 284, 301, 440, 1130 + two separate `find`/glob enumerations | `pathspec ... did not match any files` took the whole config sync down on client_a and client_c |
 | What does the disposable dry-run copy contain? | 552 (rsync excludes) and 607 (symlink-walk skip set) | Kept in step on 2026-07-25 by passing one list into the other as argv. That is a wire between two lists, not one list |
 | Which untracked file is work in progress? | 452 and 894 | Each carries its own notion of founder work vs this sync's own debris |
 
@@ -161,7 +161,7 @@ model_walk_skips()         # projection B: paths only, WITHOUT .git --
 
 Both projections read `MODEL_SKIPPED_PATHS`; neither derives from the other,
 and `.git`'s asymmetry lives in one named place with the reason attached. The
-submodule carve-out (tracked-ness is the line, not nested-ness — scar: Alice's
+submodule carve-out (tracked-ness is the line, not nested-ness — scar: client-d's
 three submodules under `q-investigate/tools/`) moves into the scan unchanged.
 
 New fixture required, because no fixture in any of the 8 suites plants a link
@@ -332,8 +332,8 @@ python3 plugins/prd-os/scripts/prd_runner.py spillover add \
       test "$(grep -c -F 'FAIL=$((FAIL + 1))' kipi-update.sh)" -eq 1
       ```
       plus every distinctive scar token still present (`memory-lifecycle`,
-      `all_points_setup`, `Prodigy_Gold`, `23 of 23`, `98MB`,
-      `ASK_AI_consultant`, `21GB`, `605MB`, `40 residue files`, `Alice`,
+      `client_a`, `client_c`, `23 of 23`, `98MB`,
+      `ASK_AI_consultant`, `21GB`, `605MB`, `40 residue files`, `client_d`,
       `personal-brand`, `2569 ignored`, `q-investigate/tools`). All 13 verified
       present.
 - [x] Tests: still exactly the same 3 pre-existing failures, 357 passed

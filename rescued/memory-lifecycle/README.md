@@ -46,7 +46,7 @@ These memories are marked decay: fast.
 MUST verify before acting on their content.
 
   [FAST] Josh demo engagement (project_josh-demo.md)
-  [FAST] Antler IC deadline (project_antler-deadline.md)
+  [FAST] Investor IC deadline (project_investor-deadline.md)
 ==================================================
 ```
 

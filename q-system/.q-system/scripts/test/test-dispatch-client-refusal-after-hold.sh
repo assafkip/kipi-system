@@ -47,7 +47,7 @@ G() { git -c user.email=t@t.t -c user.name=t "$@"; }
 # Derived from shape, never from a list of client names, so this fixture is the
 # same fact the shipping check reads.
 HOMEREPO="$WORK/kipi-system"
-CLIENT="$WORK/consulting/projects/alice"
+CLIENT="$WORK/consulting/projects/client_d"
 PLAIN="$WORK/otherorg/projects/plainrepo"
 
 # EVERY ORIGIN IS A LOCAL BARE REPO reached through insteadOf. The first cut gave
@@ -80,7 +80,7 @@ mkrepo() {  # mkrepo <dir> <name> <rewrite:0|1>
   fi
 }
 mkrepo "$HOMEREPO" kipi-system 1
-mkrepo "$CLIENT"   alice        0
+mkrepo "$CLIENT"   client_d        0
 mkrepo "$PLAIN"    plainrepo    0
 
 # The dispatcher runs `bash ./kipi work $WORK_ARGS` from $REPO. This recorder IS
@@ -135,8 +135,8 @@ export PATH="$STUB:$PATH"
 REG="$WORK/registry.json"
 cat > "$REG" <<JSON
 {"instances":[
-  {"name":"alice","path":"$CLIENT","has_git":true,
-   "dispatch":{"enabled":true,"expected_remote":"https://github.com/assafkip/alice.git"}},
+  {"name":"client_d","path":"$CLIENT","has_git":true,
+   "dispatch":{"enabled":true,"expected_remote":"https://github.com/assafkip/client_d.git"}},
   {"name":"plainrepo","path":"$PLAIN","has_git":true,
    "dispatch":{"enabled":true,"expected_remote":"https://github.com/assafkip/plainrepo.git"}}
 ]}
@@ -145,7 +145,7 @@ JSON
 # --- CASE 0, NEGATIVE SELF-TEST: check 0 fires on the fixture's own shape -----
 # If the client path does not trip the preflight directly, nothing below means
 # anything -- the dispatcher would be refusing it for some unrelated reason.
-PF_OUT="$(bash "$ROOT/q-system/.q-system/scripts/repo-preflight.sh" "$CLIENT" "https://github.com/assafkip/alice.git" 2>&1)"
+PF_OUT="$(bash "$ROOT/q-system/.q-system/scripts/repo-preflight.sh" "$CLIENT" "https://github.com/assafkip/client_d.git" 2>&1)"
 PF_RC=$?
 printf '%s' "$PF_OUT" | grep -q '^FAIL client-repo:' \
   || fail "negative self-test: repo-preflight.sh did not refuse the client-shaped fixture $CLIENT as a client repo (rc=$PF_RC). It said:

@@ -9,8 +9,8 @@
 # One dispatch job exists fleet-wide, bound to the kipi-system checkout, so 18
 # ready owner:sana issues across 14 projects are skipped as out-of-repo every
 # cycle. The fix -- let the dispatcher iterate the registry -- aims an unattended
-# loop that runs agents, pushes branches and arms auto-merge at Alice,
-# Prodigy_Gold and Pure_spectrum_Q, which are CLIENT repos.
+# loop that runs agents, pushes branches and arms auto-merge at client_d,
+# client_c and client_b, which are CLIENT repos.
 #
 # Codex reviewed the first design and called opt-in plus a project filter
 # inadequate protection. That is the correct call and it is worth stating why,
@@ -99,8 +99,8 @@ for _root in $ENGAGEMENT_ROOTS; do
       # NESTED UNDER consulting/projects/*", so <root>/projects/<x> refused and
       # <root> did not. Measured 2026-08-14 against the repo that reading lets in,
       # the ASK_AI_consultant row, whose path IS the consulting engagement root:
-      #   - `git ls-files clients/` -> 12 TRACKED files under clients/alma,
-      #     clients/portant, clients/restaurent. Client material is in this repo's
+      #   - `git ls-files clients/` -> 12 TRACKED files under clients/client_l,
+      #     clients/client_h, clients/client_k. Client material is in this repo's
       #     own history, so an agent-authored PR here is a client-facing diff.
       #   - projects/ holds all 11 engagement repos as nested SEPARATE git repos,
       #     and the root tracks 0 files under projects/ -- so check 5 (dirty) is

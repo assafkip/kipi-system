@@ -188,7 +188,7 @@ def test_gate_ran_without_check(auditor):
 
 def test_action_cards_unconfirmed(auditor):
     cards = [
-        {"id": "C1", "type": "comment", "target": "Alice", "card_delivered": True, "founder_confirmed": False},
+        {"id": "C1", "type": "comment", "target": "Sam", "card_delivered": True, "founder_confirmed": False},
         {"id": "C2", "type": "DM", "target": "Bob", "card_delivered": True, "founder_confirmed": True},
     ]
     log = _make_log("2026-03-25", steps_done=list(_all_wednesday_steps()),

@@ -25,12 +25,12 @@ Names after Cole are PLACEHOLDERS — rename freely. Role is the anchor.
 
 ### 2. `<Name>-Intel/` — threat intel, investigations, OSINT
 - The KTLYST product: ktlyst-hub/product, product-baseline
-- Client/deployment: 4_points_consulting, Alice, kipi-investigations, ktlyst-extract
+- Client/deployment: client_a, client_d, kipi-investigations, ktlyst-extract
 - Tooling: facebook-ads-library-search, huntkit, ktlyst-review-panel
 - *Decision below: product (the thing you sell) vs deployments (client work) may want a sub-split.*
 
 ### 3. `<Name>-Advisory/` — fractional consulting, client engagements
-- ASK_AI_consultant, Pure_spectrum_Q, fractional-cxo
+- ASK_AI_consultant, client_b, fractional-cxo
 
 ### 4. `<Name>-Products/` — the shipped micro-SaaS portfolio
 - cheapcheck, briefonce, authorvoice, feedbackpin, runreceipts, shipgate
@@ -41,7 +41,7 @@ Names after Cole are PLACEHOLDERS — rename freely. Role is the anchor.
 - kipi-system (the factory — see decision 3), claude-focus, fable-discipline, kipi-rca, founder-voice-kit
 
 ### Personal (NOT a work persona — a plain bucket)
-- travel-agent, negotiator, school-negotiator, school-idf, AUDHD_KIDS
+- travel-agent, negotiator, school-negotiator, school-repo, family_repo
 
 ### Dissolves
 - `ktlyst-hub/` disappears. Its instances redistribute: product/product-baseline → Intel, website/personal-brand/event_coordinator → Cole-GTM, strategy → Cole-GTM or Advisory, accountant/lawyer → Ops (decision 4), deliverables → Intel or Platform.
@@ -80,7 +80,7 @@ Build `scripts/persona-reorg.py` that takes a persona-map JSON `{persona: [proje
 
 ### Move-risk tiers (do low-risk first to prove the script)
 - **Tier 0 (no automation deps):** the Next.js SaaS + python tools + personal projects. Just repos. Safe first movers.
-- **Tier 1 (registry only):** kipi instances (ASK, Pure_spectrum, 4_points, strategy...). Registry rewrite + `kipi check`.
+- **Tier 1 (registry only):** kipi instances (ASK, client_b, client_a, strategy...). Registry rewrite + `kipi check`.
 - **Tier 2 (launchd + registry):** podcast, fractional-cxo, signal jobs, heartbeats. Highest risk — move last, verify each job fires after reload.
 
 ### Order

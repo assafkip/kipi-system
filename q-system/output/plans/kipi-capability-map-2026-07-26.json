@@ -59,7 +59,7 @@
       "trigger": "manual `kipi new <path> <name>`",
       "depends": "skeleton tree, settings-template.json",
       "feeds": "instance registry",
-      "evidence": "Recent instances created this way: school-negotiator, interview-coach, norri-ai, thaena.",
+      "evidence": "Recent instances created this way: school-negotiator, interview-coach, client-f, client-e.",
       "linear": "ASK-54"
     },
     {
@@ -335,7 +335,7 @@
       "trigger": "Stop hook",
       "depends": "hook runtime, allowlist",
       "feeds": "q-system/memory",
-      "evidence": "Merged to main via PR #7 (5-issue gated flow) but gated OFF everywhere. Going live on 4_points means running the HELD kipi update, at which point the allowlist self-activates. Open spillover: sp-cac8540c (shell-read proxy tuning). 3 dedicated tests.",
+      "evidence": "Merged to main via PR #7 (5-issue gated flow) but gated OFF everywhere. Going live on client_a means running the HELD kipi update, at which point the allowlist self-activates. Open spillover: sp-cac8540c (shell-read proxy tuning). 3 dedicated tests.",
       "linear": "ASK-77"
     },
     {
