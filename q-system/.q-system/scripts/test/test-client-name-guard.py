@@ -30,6 +30,7 @@ import argparse
 import io
 import json
 import os
+import re
 import zipfile
 import subprocess
 import sys
@@ -458,12 +459,66 @@ def main(guard):
         record("CI --tree catches a name the HEAD^..HEAD range misses",
                missed_by_range and t.returncode != 0 and "early.md" in t.stdout,
                f"range rc={rc}, tree rc={t.returncode}")
+        # Exemptions are PINNED to a blob (review round 2): the reviewed version
+        # is skipped, any other version of the same path is scanned again.
         (repo / ".github").mkdir()
-        (repo / ".github" / "private-terms-exempt.txt").write_text("# reason\nearly.md\n")
+        pin = git(repo, "rev-parse", "HEAD:early.md").stdout.strip()
+        exempt = repo / ".github" / "private-terms-exempt.txt"
+        exempt.write_text(f"# reason\nearly.md {pin}\n")
         t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
                            cwd=repo, capture_output=True, text=True, env=env)
-        record("CI --tree skips a path listed in the exempt file", t.returncode == 0,
+        record("CI --tree skips a file pinned at its exact blob", t.returncode == 0,
                f"rc={t.returncode}")
+        exempt.write_text("# a path alone exempts nothing\nearly.md\n")
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree: a path-only exempt line exempts nothing", t.returncode != 0,
+               f"rc={t.returncode}")
+        exempt.write_text(f"early.md {pin}\n")
+        commit(repo, home, "edit the exempt file", {"early.md": f"note about {CLIENT}\nmore\n"})
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree: a CHANGED version of a pinned file is scanned again",
+               t.returncode != 0 and "early.md" in t.stdout, f"rc={t.returncode}")
+
+    # --- 19b. REGRESSION (review round 2): every pushed message, not HEAD's ----
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        commit(repo, home, f"notes from the {CLIENT} call", {"a.md": "clean\n"})
+        early = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit(repo, home, "tidy", {"b.md": "clean\n"})
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+
+        def tree(pushed):
+            env = {k: v for k, v in os.environ.items() if k not in ("PRIVATE_TERMS", "PUSH_COMMITS")}
+            env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret,
+                       PUSH_COMMITS=json.dumps(pushed))
+            return subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                                  cwd=repo, capture_output=True, text=True, env=env)
+        t1, t2 = tree([early, head]), tree([head])
+        record("CI --tree scans every message the push lists, not only HEAD's",
+               t1.returncode != 0 and t2.returncode == 0,
+               f"listed rc={t1.returncode}, head-only rc={t2.returncode}")
+        t3 = tree(["0" * 40])
+        record("CI --tree: a pushed commit missing from the clone fails closed",
+               t3.returncode != 0, f"rc={t3.returncode}")
+        t4 = tree([head] * 2048)
+        record("CI --tree: a push list at the payload cap fails closed",
+               t4.returncode != 0, f"rc={t4.returncode}")
+
+    # --- 19c. an author identity is a person's name too -------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "-c", f"user.name={CLIENT} Staffer", "commit", "-q", "--allow-empty",
+            "-m", "empty", env=dict(os.environ, HOME=str(home)))
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a name in a commit's AUTHOR fails", rc != 0, f"rc={rc}")
 
     # --- 20. an excluded spelling cannot regrow in CI ---------------------------
     # CI re-expands every spelling; without the shipped exclusions "the lab"
@@ -493,12 +548,25 @@ def main(guard):
         record("CI: an excluded spelling passes, its folder spelling still FAILS",
                rc1 == 0 and rc2 != 0, f"phrase rc={rc1}, folder rc={rc2}")
 
-    # --- 21. the workflow's no-base fallback is the tree scan, not HEAD^ -------
+    # --- 21. the workflow's shape (review rounds 1 and 2) ---------------------
+    # A structural read, because the properties live in YAML no unit test runs:
+    # base-branch code only, the environment-scoped secret, no fork oracle, and
+    # the full-tree fallback instead of HEAD^..HEAD.
     wf = HERE.parents[3] / ".github" / "workflows" / "private-terms.yml"
     if wf.exists():
-        text = wf.read_text()
-        record("private-terms.yml falls back to --tree, never HEAD^..HEAD",
-               "--tree" in text and 'base="HEAD^"' not in text)
+        code = "\n".join(l for l in wf.read_text().splitlines()
+                         if not l.lstrip().startswith("#"))
+        record("workflow: pull_request_target, never pull_request",
+               "pull_request_target:" in code
+               and not re.search(r"^\s*pull_request:", code, re.M))
+        record("workflow: the secret is an environment secret, environment private-terms",
+               "environment: private-terms" in code)
+        record("workflow: fork PRs never reach the secret",
+               "head.repo.full_name == github.repository" in code)
+        record("workflow: the PR head is fetched as data, never checked out",
+               "refs/pull/" in code and "ref: ${{ github.event.pull_request.head" not in code)
+        record("workflow: no-base fallback is --tree, never HEAD^..HEAD",
+               "--tree" in code and 'base="HEAD^"' not in code)
 
     failed = [n for n, ok in results if not ok]
     print()

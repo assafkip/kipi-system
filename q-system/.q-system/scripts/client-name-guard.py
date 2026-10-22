@@ -37,10 +37,11 @@ Every source lives OUTSIDE the repo and is read at hook time:
                                        (token_files, json_sources, dir_sources,
                                        exclude; see load_terms)
 
-CI cannot read a laptop, so CI reads the same expanded list from the repo secret
-PRIVATE_TERMS. `--sync-ci-secret` pushes it, from the lefthook pre-push stage,
-only when its digest changed. A CI log of a public repo is itself public, so the
-CI mode never prints a term: it prints the file, the line and the KIND.
+CI cannot read a laptop, so CI reads the same expanded list from the secret
+PRIVATE_TERMS in the `private-terms` environment, which only main may use.
+`--sync-ci-secret` pushes it, from the lefthook pre-push stage, only when its
+digest changed. A CI log of a public repo is itself public, so the CI mode never
+prints a term: it prints the file, the line and the KIND.
 
 Absent list => WARN and pass, never block, locally. A fresh clone by someone who
 is not the founder has no clients to protect, and a gate that fails closed on a
@@ -108,6 +109,12 @@ KIPI_CONFIG = Path.home() / ".config" / "kipi"
 TOKENS_FILE = KIPI_CONFIG / "client-tokens"
 SOURCES_FILE = KIPI_CONFIG / "private-terms.json"
 CI_SECRET = "PRIVATE_TERMS"
+# The secret lives in a GitHub ENVIRONMENT whose deployment policy admits only
+# main, never in the repo-wide secret store (ASK-2058 review round 2). A
+# repo-wide secret is readable by any workflow a same-repo PR edits; an
+# environment secret reaches only jobs running on main, which includes
+# pull_request_target (it runs the BASE branch's workflow) and not pull_request.
+CI_ENV = "private-terms"
 SKIP = "client-name-guard-skip"
 
 # Shorter than this false-positives on prose. The original list used the same
@@ -413,8 +420,11 @@ def _blob_id(spec):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-# Members past this size are skipped rather than inflated in a commit hook.
+# Inflation caps, so a crafted zip cannot exhaust memory in a hook or a runner.
+# Past a cap the rest is not inflated; the raw bytes are still scanned.
 _ZIP_MEMBER_CAP = 50 * 1024 * 1024
+_ZIP_TOTAL_CAP = 200 * 1024 * 1024
+_ZIP_MAX_MEMBERS = 5000
 
 
 def binary_text(data):
@@ -431,9 +441,12 @@ def binary_text(data):
     if data[:4] == b"PK\x03\x04":
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                for info in z.infolist():
-                    if info.file_size <= _ZIP_MEMBER_CAP:
-                        chunks.append(z.read(info))
+                total = 0
+                for info in z.infolist()[:_ZIP_MAX_MEMBERS]:
+                    if info.file_size > _ZIP_MEMBER_CAP or total + info.file_size > _ZIP_TOTAL_CAP:
+                        continue
+                    total += info.file_size
+                    chunks.append(z.read(info))
         except (zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError, EOFError):
             pass
     return "\n".join(c.decode("utf-8", errors="replace") for c in chunks)
@@ -446,7 +459,8 @@ def _changed_files(*diff_args):
     --no-renames so a rename reads as an add of the NEW path, whose name is the
     thing that becomes public. -z so an odd filename cannot split a record.
     """
-    st = _git("diff", *diff_args, "--name-status", "--no-renames", "-z")
+    st = _git("diff", *diff_args, "--name-status", "--no-renames", "--no-ext-diff",
+              "--no-textconv", "-z")
     if st.returncode != 0:
         raise RuntimeError(st.stderr.strip() or "git diff --name-status failed")
     parts = st.stdout.split("\0")
@@ -454,7 +468,8 @@ def _changed_files(*diff_args):
     for i in range(0, len(parts) - 1, 2):
         if parts[i][:1] in ("A", "M", "T", "C"):
             paths.append(parts[i + 1])
-    ns = _git("diff", *diff_args, "--numstat", "--no-renames", "-z")
+    ns = _git("diff", *diff_args, "--numstat", "--no-renames", "--no-ext-diff",
+              "--no-textconv", "-z")
     if ns.returncode != 0:
         raise RuntimeError(ns.stderr.strip() or "git diff --numstat failed")
     binary = set()
@@ -581,10 +596,26 @@ def run_message(message_path):
     return 1
 
 
-# Paths a FULL-TREE scan skips (one per line, '#' comments). Path names only,
-# never terms: this file is public. Used only by --tree, the fallback when a
-# push carries no usable base; a range scan never consults it.
+# Files a FULL-TREE scan skips: "<path> <blob sha>" per line, '#' comments.
+# Path names and object ids only, never terms: this file is public. Used only by
+# --tree, the fallback when a push carries no usable base; a range scan never
+# reads it. PINNED TO A BLOB (ASK-2058 review round 2): an exemption covers the
+# reviewed version of a file, so any later change to it is scanned again. A line
+# without a valid sha exempts nothing.
 EXEMPT_FILE = Path(".github") / "private-terms-exempt.txt"
+
+
+def load_exempt(path=EXEMPT_FILE):
+    pins = {}
+    if not path.exists():
+        return pins
+    for line in path.read_text().splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) == 2 and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", fields[1]):
+            pins[fields[0]] = fields[1]
+        elif fields:
+            print(f"client-name-guard: WARN exempt line ignored (needs '<path> <blob sha>'): {fields[0]}")
+    return pins
 
 
 def _safe_path(path, terms):
@@ -600,9 +631,10 @@ def _ci_terms():
         if fork:
             print("::notice::client-name-guard: fork PR, no secrets; the push to main re-runs this scan")
             return None, 0
-        print("::error::client-name-guard: PRIVATE_TERMS secret is missing or empty, so the "
-              "backstop is off. Run `python3 q-system/.q-system/scripts/client-name-guard.py "
-              "--sync-ci-secret` from a machine with the private sources.")
+        print(f"::error::client-name-guard: the {CI_SECRET} secret (environment {CI_ENV}) is "
+              "missing or empty, so the backstop is off. Run `python3 "
+              "q-system/.q-system/scripts/client-name-guard.py --sync-ci-secret` from a "
+              "machine with the private sources.")
         return None, 1
     return terms, None
 
@@ -678,7 +710,8 @@ def run_ci(base, head):
         print(f"::error::client-name-guard: no merge base for {base}..{head}; refusing to report clean")
         return 1
     start = mb.stdout.strip()
-    log = _git("log", "--format=%H%x00%B%x01", f"{start}..{head}")
+    # Identity lines too: an author or committer name is a person's name.
+    log = _git("log", "--format=%H%x00%an <%ae>%n%cn <%ce>%n%B%x01", f"{start}..{head}")
     for rec in log.stdout.split("\x01"):
         if "\x00" not in rec:
             continue
@@ -689,7 +722,7 @@ def run_ci(base, head):
         if found:
             problems.append(f"commit {sha[:10]} message: {_kinds(found)}")
 
-    diff = _git("diff", "-U0", "--no-color", "--no-ext-diff", start, head)
+    diff = _git("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", start, head)
     if diff.returncode != 0:
         print("::error::client-name-guard: git diff failed; refusing to report clean")
         return 1
@@ -716,7 +749,7 @@ def run_ci(base, head):
 
 
 def _tree_blobs(head):
-    """(path, bytes) for every blob in the tree at head, through one cat-file."""
+    """(path, blob sha, bytes) for every blob in the tree at head, one cat-file."""
     ls = subprocess.run(["git", "ls-tree", "-r", "-z", head], capture_output=True)
     entries = []
     for rec in ls.stdout.split(b"\0"):
@@ -735,41 +768,64 @@ def _tree_blobs(head):
         size = int(header[2])
         data = proc.stdout.read(size)
         proc.stdout.read(1)
-        yield path, data
+        yield path, sha, data
     proc.stdin.close()
     proc.wait()
 
 
+# A push payload lists at most this many commits; at the cap the list may be
+# truncated, and a truncated list cannot vouch for every message.
+_PUSH_COMMITS_CAP = 2048
+
+
 def run_ci_tree(head):
-    """Scan the WHOLE tree at head, and head's message (review blocker 2).
+    """Scan the WHOLE tree at head, and every message the push carried.
 
     The push fallback used to diff HEAD^..HEAD when GitHub's `before` was not a
     commit in the clone (a first push, a force-push), so a term added by any
-    earlier commit of that push passed as clean. Whatever the push contained,
-    the tree it produced is what is public now; scanning all of it cannot miss
-    a commit. Paths in EXEMPT_FILE are skipped; they are listed by path, with
-    the reason, because this file is public.
+    earlier commit of that push passed as clean (review round 1). The tree the
+    push produced is what is public now, and scanning all of it cannot miss a
+    commit's CONTENT. Messages are not in the tree, so every commit the push
+    payload lists (PUSH_COMMITS, a JSON array of SHAs) has its message and
+    identity scanned too (review round 2: HEAD's message alone missed the
+    earlier ones). A list at the payload cap may be truncated, so it fails
+    closed rather than vouching for messages it never saw.
     """
     terms, rc = _ci_terms()
     if terms is None:
         return rc
-    exempt = set()
-    if EXEMPT_FILE.exists():
-        exempt = {l.split("#", 1)[0].strip() for l in EXEMPT_FILE.read_text().splitlines()}
-        exempt.discard("")
+    pins = load_exempt()
     problems = []
-    msg = _git("log", "-1", "--format=%B", head).stdout
-    if not bypass_reason(msg):
-        found = hits(msg, terms)
+    try:
+        shas = json.loads(os.environ.get("PUSH_COMMITS") or "[]") or []
+    except ValueError:
+        shas = []
+    if len(shas) >= _PUSH_COMMITS_CAP:
+        print(f"::error::client-name-guard: the push lists {len(shas)} commits, the payload cap; "
+              f"messages past it cannot be verified, refusing to report clean")
+        return 1
+    seen = 0
+    for sha in list(dict.fromkeys([*shas, head])):
+        r = _git("log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", sha)
+        if r.returncode != 0:
+            print(f"::error::client-name-guard: pushed commit {str(sha)[:10]} is not in this clone; "
+                  f"refusing to report clean")
+            return 1
+        seen += 1
+        if bypass_reason(r.stdout):
+            continue
+        found = hits(r.stdout, terms)
         if found:
-            problems.append(f"head commit message: {_kinds(found)}")
-    scanned = 0
-    for path, data in _tree_blobs(head):
-        if path in exempt:
+            problems.append(f"commit {str(sha)[:10]} message: {_kinds(found)}")
+    scanned = skipped = 0
+    for path, sha, data in _tree_blobs(head):
+        if pins.get(path) == sha:
+            skipped += 1
             continue
         scanned += 1
         _scan_file(path, data, b"\0" in data[:8000], terms, problems)
-    return _finish(problems, terms, f"full tree at {head[:10]}, {scanned} files, {len(exempt)} exempt")
+    return _finish(problems, terms, f"full tree at {head[:10]}, {scanned} files, "
+                                    f"{skipped} pinned-exempt, {seen} messages")
 
 
 def sync_ci_secret():
@@ -801,14 +857,14 @@ def sync_ci_secret():
         return 0
     if vis.stdout.strip() != "PUBLIC":
         return 0
-    r = subprocess.run(["gh", "secret", "set", CI_SECRET, "-R", repo], input=blob,
-                       capture_output=True, text=True)
+    r = subprocess.run(["gh", "secret", "set", CI_SECRET, "-R", repo, "--env", CI_ENV],
+                       input=blob, capture_output=True, text=True)
     if r.returncode != 0:
         print(f"client-name-guard: WARN gh secret set failed for {repo}: {r.stderr.strip()}")
         return 0
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(digest + "\n")
-    print(f"client-name-guard: CI secret {CI_SECRET} refreshed on {repo} "
+    print(f"client-name-guard: CI secret {CI_SECRET} refreshed in {repo} environment {CI_ENV} "
           f"({sum(len(v) for v in payload['terms'].values())} terms)")
     return 0
 

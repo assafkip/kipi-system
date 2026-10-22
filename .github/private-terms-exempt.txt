@@ -1,11 +1,13 @@
-# Paths client-name-guard.py --ci --tree skips. That full-tree scan runs only
-# when a push to main carries no usable base (a first push, a force-push); a
-# normal PR or push scans the change, not the tree, and never reads this file.
-# Path names only, never terms: this file is public.
+# Files client-name-guard.py --ci --tree skips, as "<path> <blob sha>". That
+# full-tree scan runs only when a push to main carries no usable base (a first
+# push, a force-push); a normal PR or push scans the change, not the tree, and
+# never reads this file. Path names and object ids only, never terms: this file
+# is public. PINNED to a blob: the exemption covers the reviewed version, and
+# any later change to the file is scanned again. Re-pin only after a review.
 #
 # The live fleet registry. Moving it out of this repo is ASK-2860.
-instance-registry.json
+instance-registry.json a60e88d7a7342fa046b00de3784b39509f0f2e74
 # Third-party data whose ordinary words match an entry on the private list.
-plugins/kipi-design/skills/ui-ux-pro-max/data/google-fonts.csv
-plugins/kipi-design/skills/ui-ux-pro-max/src/data/google-fonts.csv
-q-system/.q-system/tests/fixtures/old_reddit_thread_trimmed.html
+plugins/kipi-design/skills/ui-ux-pro-max/data/google-fonts.csv 45ece9ea26e9df5405b987270067cb88dab79f67
+plugins/kipi-design/skills/ui-ux-pro-max/src/data/google-fonts.csv 45ece9ea26e9df5405b987270067cb88dab79f67
+q-system/.q-system/tests/fixtures/old_reddit_thread_trimmed.html 7d73a4116695cd994c35a611596d76e7f336671e
