@@ -111,14 +111,16 @@ def run(cmd, **kwargs):
 
 def get_changed_files():
     """Get all uncommitted files (staged + unstaged + untracked)."""
+    # -z, because without it git C-quotes a non-ASCII or spaced path and the quoted
+    # string matches no pathspec: such a file was never committable, only a silent
+    # `skipped:` line, which ASK-2824 turned into a page (PR #547 review, finding 3).
     # Staged and unstaged
-    r = run(["git", "diff", "--name-only", "HEAD"])
-    files = set(r.stdout.strip().splitlines()) if r.stdout.strip() else set()
+    r = run(["git", "diff", "--name-only", "-z", "HEAD"])
+    files = set(r.stdout.split("\0"))
 
     # Untracked
-    r = run(["git", "ls-files", "--others", "--exclude-standard"])
-    if r.stdout.strip():
-        files.update(r.stdout.strip().splitlines())
+    r = run(["git", "ls-files", "--others", "--exclude-standard", "-z"])
+    files.update(r.stdout.split("\0"))
 
     # THE `--cached` READ IS GONE AS REDUNDANCY, FOR THE SHAPE THAT MOTIVATED IT.
     #
@@ -486,12 +488,18 @@ def index_entries(files):
 
 
 def restore_index(files, before):
-    """(ok, error). Put every path's index entry back to `before`.
+    """(ok, error). ok means the index NOW holds `before` for these paths, read back.
 
     A path absent from `before` was not in the index, so it is removed again (mode 0).
     update-index and not `git restore --staged`: restore resets to HEAD, which would
     drop a blob another writer staged before this run (git cannot say who staged it).
+
+    Read back, never assumed (PR #547 review, finding 1): a `git add` refused on a
+    held index.lock stages nothing, and the first version still reported the files as
+    "still staged" and paged when its own restore then lost the same lock.
     """
+    if index_entries(files) == before:
+        return True, ""
     fmt = run(["git", "rev-parse", "--show-object-format"]).stdout.strip()
     null_oid = "0" * (64 if fmt == "sha256" else 40)
     payload = "".join((before.get(p) or f"0 {null_oid}\t{p}") + "\0" for p in files)
@@ -504,7 +512,7 @@ def restore_index(files, before):
         if "index.lock" not in err:
             break
         time.sleep(0.2)  # a peer's `git status` holds the lock for milliseconds
-    return False, err
+    return index_entries(files) == before, err
 
 
 def refusal_reason(out):
@@ -1074,6 +1082,11 @@ def _commit_main():
     # only thing that tells a human to go look, so it has to reach the channel
     # that survives. Pinned by
     # test_a_refusal_reaches_the_channel_the_fleet_wiring_keeps.
+    # UNDER --detach THAT CHANNEL IS THE LOG (ASK-2824). The wiring is async, and an
+    # async hook's stdout is shown nowhere either: 0 lines of this hook's output in
+    # the 40 newest consulting transcripts, measured 2026-10-22. The worker's stdout
+    # is <git-dir>/kipi-auto-commit.log, and the parent prints that path. Pinned by
+    # test_the_shipped_invocation_writes_its_refusals_to_the_log.
     # A CLOUD SESSION COMMITS NOTHING (sp-8680be69). A cloud routine works in a
     # fresh clone and commits exactly the paths its prompt allowlists. This hook
     # fired at a turn end of the weekly lessons routine, committed

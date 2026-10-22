@@ -170,6 +170,56 @@ def test_a_lock_collision_is_logged_and_unstaged_but_not_paged(tmp_path, pager):
     assert _pages(pager) == []
 
 
+def test_a_lost_lock_race_on_add_reports_the_index_truthfully(tmp_path, pager):
+    """PR #547 review, finding 1: `git add` refused on a held index.lock stages
+    nothing, yet the hook said the files were still staged and paged, because its
+    restore then lost the same lock. The lock is held for the whole run here."""
+    root, run, hooks = _repo(tmp_path)
+    (root / "memory" / "MEMORY.md").write_text("- raced\n")
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(root))
+    code = ("import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('ac', {HOOK!r})\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "open('.git/index.lock', 'w').close()\n"   # held from here to exit
+            "m.commit_group('chore', 'update session memory', ['memory/MEMORY.md'])\n")
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, env=env,
+                         capture_output=True, text=True)
+    (root / ".git" / "index.lock").unlink()
+    assert _staged(run) == []
+    assert "still staged" not in out.stdout, out.stdout
+    assert _pages(pager) == [], _pages(pager)
+
+
+def test_a_non_ascii_path_is_committed_not_refused(tmp_path, pager):
+    """PR #547 review, finding 3: git C-quotes such a path without -z, and the
+    quoted string matches no pathspec, so the file was never committable."""
+    root, run, hooks = _repo(tmp_path)
+    (root / "memory" / "café notes.md").write_text("x\n")
+    _fire(root)
+    assert "memory/café notes.md" in run(
+        "git", "-c", "core.quotePath=false", "ls-files").stdout
+    assert _pages(pager) == []
+
+
+def test_the_shipped_invocation_writes_its_refusals_to_the_log(tmp_path, pager):
+    """PR #547 review, finding 2. The wiring passes --detach, so the worker's
+    stdout, the hook's only readable channel, is the log. Fired the shipped way."""
+    root, run, hooks = _repo(tmp_path)
+    (root / "memory" / "MEMORY.md").write_text("- waits\n")
+    lock = root / ".git" / "index.lock"
+    lock.write_text("held")
+    try:
+        parent = _fire(root, "--detach")
+        deadline = time.time() + 20
+        while time.time() < deadline and "another commit is in flight" \
+                not in _commit_log(root):
+            time.sleep(0.2)
+    finally:
+        lock.unlink()
+    assert "kipi-auto-commit.log" in parent.stdout, parent.stdout
+    assert "another commit is in flight" in _commit_log(root)
+
+
 def test_a_clean_commit_pages_nobody_and_logs_nothing(tmp_path, pager):
     root, run, hooks = _repo(tmp_path)
     (root / "memory" / "MEMORY.md").write_text("- fine\n")
