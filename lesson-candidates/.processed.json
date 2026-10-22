@@ -675,22 +675,26 @@
   "649c032ad535ae53": {
     "instance": "client_b",
     "status": "published",
-    "date": "2026-09-14"
+    "date": "2026-09-14",
+    "lesson_id": "when-the-outbound-report-is-the-only-place-a-result-gets-com"
   },
   "f5614503caf93ec1": {
     "instance": "client_b",
     "status": "published",
-    "date": "2026-09-14"
+    "date": "2026-09-14",
+    "lesson_id": "a-verifier-that-rejects-every-finding-reads-as-a-clean-repor"
   },
   "87c87ea7e168eb94": {
     "instance": "client_b",
     "status": "published",
-    "date": "2026-09-14"
+    "date": "2026-09-14",
+    "lesson_id": "a-source-attribution-gate-must-never-read-the-model-s-own-an"
   },
   "106a3241e65212bc": {
     "instance": "client_b",
     "status": "published",
-    "date": "2026-09-14"
+    "date": "2026-09-14",
+    "lesson_id": "a-fail-safe-halt-should-not-fire-where-there-is-nothing-left"
   },
   "bf437caf6ec704ba": {
     "instance": "ASK_AI_consultant",
@@ -763,29 +767,5 @@
     "status": "hand-authored",
     "date": "2026-09-10",
     "lesson_id": "timestamps-from-different-writers-compare-as-instants-never-as-strings"
-  },
-  "hand-a-fail-safe-halt-should-not-fire-where-there-is-nothing-left": {
-    "instance": "skeleton",
-    "status": "hand-authored",
-    "date": "2026-09-14",
-    "lesson_id": "a-fail-safe-halt-should-not-fire-where-there-is-nothing-left"
-  },
-  "hand-a-source-attribution-gate-must-never-read-the-model-s-own-an": {
-    "instance": "skeleton",
-    "status": "hand-authored",
-    "date": "2026-09-14",
-    "lesson_id": "a-source-attribution-gate-must-never-read-the-model-s-own-an"
-  },
-  "hand-a-verifier-that-rejects-every-finding-reads-as-a-clean-repor": {
-    "instance": "skeleton",
-    "status": "hand-authored",
-    "date": "2026-09-14",
-    "lesson_id": "a-verifier-that-rejects-every-finding-reads-as-a-clean-repor"
-  },
-  "hand-when-the-outbound-report-is-the-only-place-a-result-gets-com": {
-    "instance": "skeleton",
-    "status": "hand-authored",
-    "date": "2026-09-14",
-    "lesson_id": "when-the-outbound-report-is-the-only-place-a-result-gets-com"
   }
 }
