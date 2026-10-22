@@ -9,6 +9,7 @@ notes-only `kipi/notes` branch (ASK-2190; non-fatal, bounded by a timeout).
 import calendar
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import os
@@ -389,9 +390,24 @@ def describe_change(path, per_path):
 
 
 def commit_group(commit_type, message, files):
-    """Stage files and create a commit."""
-    # Stage
-    run(["git", "add", "--"] + files)
+    """Stage files and create a commit. True if it committed.
+
+    A refusal puts the index back exactly as this run found it (ASK-2824). See
+    restore_index for the scar.
+    """
+    before = index_entries(files)
+    if before is None:
+        # Without the snapshot a refusal could not be undone, so do not stage.
+        report_commit_refusal(f"{commit_type}: {message}", files,
+                              "could not read the index before staging", "", True)
+        return False
+    r = run(["git", "add", "--"] + files)
+    if r.returncode != 0:
+        restored, err = restore_index(files, before)
+        report_commit_refusal(f"{commit_type}: {message}", files,
+                              refusal_reason(r.stderr + r.stdout),
+                              r.stderr + r.stdout + err, restored)
+        return False
 
     # Build commit message
     per_path, adds_total, dels_total = staged_linecounts(files)
@@ -429,9 +445,154 @@ def commit_group(commit_type, message, files):
     r = run(["git", "commit", "-m", full_msg, "--"] + files)
     if r.returncode == 0:
         print(f"  committed: {header} ({len(files)} files)")
-    else:
-        # Could be nothing to commit (already staged), not fatal
-        print(f"  skipped: {header} - {r.stderr.strip()[:80]}")
+        return True
+    restored, err = restore_index(files, before)
+    if restored and ("nothing to commit" in r.stdout + r.stderr
+                     or "no changes added to commit" in r.stdout + r.stderr):
+        # A writer moved the file back between the listing and the commit. Not a
+        # refusal: no gate spoke, and paging on it is noise.
+        print(f"  nothing to commit: {header}")
+        return True
+    report_commit_refusal(header, files, refusal_reason(r.stderr + r.stdout),
+                          r.stderr + r.stdout + err, restored)
+    return False
+
+
+# --- ASK-2824: a refused commit leaves the index as it found it -----------------
+#
+# THE SCAR (running consulting checkout, 2026-10-16 to 10-22). `git add` above stages
+# the group, then the pathspec commit is refused. Nothing undid the add, so every
+# refused turn end left the group STAGED: 10 state files sat in the index for days and
+# blocked follow_main.sh's merge. The refusal printed `r.stderr[:80]`, and the first 80
+# characters of a lefthook refusal are its banner box, measured: the reason was never
+# in it. The hook is wired async with `2>/dev/null`, so even that line reached nobody.
+#
+# So a refusal now (1) restores each path's index entry to what it was before this run
+# touched it, which also keeps another writer's staged blob intact, (2) writes git's
+# full output to a per-checkout log, and (3) pages the fleet alert path once per event.
+COMMIT_LOG_NAME = "kipi-auto-commit.log"
+COMMIT_LOG_MAX_BYTES = 1_000_000
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_BOX = set("─━│┃╭╮╰╯ ")
+
+
+def index_entries(files):
+    """{path: `git ls-files -s` record} for the paths staged now, or None if unreadable."""
+    r = run(["git", "ls-files", "-s", "-z", "--"] + files)
+    if r.returncode != 0:
+        return None
+    return {rec.split("\t", 1)[1]: rec for rec in r.stdout.split("\0") if "\t" in rec}
+
+
+def restore_index(files, before):
+    """(ok, error). Put every path's index entry back to `before`.
+
+    A path absent from `before` was not in the index, so it is removed again (mode 0).
+    update-index and not `git restore --staged`: restore resets to HEAD, which would
+    drop a blob another writer staged before this run (git cannot say who staged it).
+    """
+    fmt = run(["git", "rev-parse", "--show-object-format"]).stdout.strip()
+    null_oid = "0" * (64 if fmt == "sha256" else 40)
+    payload = "".join((before.get(p) or f"0 {null_oid}\t{p}") + "\0" for p in files)
+    err = ""
+    for _ in range(10):
+        r = run(["git", "update-index", "-z", "--index-info"], input=payload)
+        if r.returncode == 0:
+            return True, ""
+        err = r.stderr.strip()
+        if "index.lock" not in err:
+            break
+        time.sleep(0.2)  # a peer's `git status` holds the lock for milliseconds
+    return False, err
+
+
+def refusal_reason(out):
+    """The lines that say WHY: lefthook's failed-command lines, BLOCK, fatal, error."""
+    lines = [_ANSI.sub("", ln).strip() for ln in out.splitlines()]
+    lines = [ln for ln in lines if ln and not set(ln) <= _BOX]
+    why = [ln for ln in lines if "lefthook v" not in ln and ln.startswith(
+        ("\U0001F94A", "BLOCK", "fatal:", "error:", "verify.sh: COLLISION"))]
+    return "; ".join(why or lines[-3:])[:300] or "(git printed nothing)"
+
+
+def commit_log_path():
+    """<git-dir>/kipi-auto-commit.log: one per checkout, never tracked, never in status."""
+    r = run(["git", "rev-parse", "--absolute-git-dir"])
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    path = os.path.join(r.stdout.strip(), COMMIT_LOG_NAME)
+    try:
+        if os.path.getsize(path) > COMMIT_LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
+    return path
+
+
+def report_commit_refusal(header, files, reason, full_output, restored):
+    """Stdout line, full record in the log, one page per event. Never raises."""
+    log = commit_log_path()
+    state = ("unstaged again, nothing lost" if restored
+             else "COULD NOT be unstaged, they are still staged")
+    print(f"  REFUSED: {header} - {reason}")
+    print(f"  its {len(files)} file(s) are {state}. Full output: {log}")
+    if log:
+        try:
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(f"=== {time.strftime('%Y-%m-%dT%H:%M:%S%z')} REFUSED {header}\n"
+                         f"files: {' '.join(files)}\nindex: {state}\n"
+                         f"{_ANSI.sub('', full_output).rstrip()}\n")
+        except OSError as e:
+            print(f"  could not write {log}: {e}")
+    page_commit_refusal(header.split(" (")[0], reason, restored, log)
+
+
+def _commit_refusal_marker():
+    return os.path.join(_refusal_marker_dir("auto-commit-commit-refusals"),
+                        ACTIVE_REFUSAL_MARKER)
+
+
+def clear_commit_refusal_marker():
+    """A turn end that committed everything (or had nothing to commit) ends the event."""
+    try:
+        os.remove(_commit_refusal_marker())
+    except OSError:
+        pass
+
+
+def page_commit_refusal(subject, reason, restored, log):
+    """Page Sana's queue ONCE per refusal event, the shape page_refusal uses.
+
+    Its own marker directory: clear_refusal_markers empties the shrink guard's
+    directory on every turn with no shrink, which is nearly every turn, so a shared
+    marker would page on every refused turn end (the report_skipped scar).
+    """
+    marker = _commit_refusal_marker()
+    if os.path.exists(marker):
+        return False
+    notify = os.environ.get("KIPI_AUTOCOMMIT_NOTIFY") or os.path.join(
+        PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    if not os.path.isfile(notify):
+        print(f"auto-commit: no pager at {notify}; this refusal reached the log only")
+        return False
+    where = os.path.basename(os.path.abspath(PROJ_DIR))
+    tail = ("Its files were unstaged; nothing is lost." if restored else
+            "Its files could NOT be unstaged and are still staged.")
+    msg = (f"auto-commit could not commit in {where}: '{subject}' was refused: "
+           f"{reason[:200]}. {tail} Full output: {log}")
+    try:
+        r = subprocess.run(["bash", notify, msg], capture_output=True, text=True,
+                           timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"auto-commit: pager failed ({e}); will retry next refused turn")
+        return False
+    if r.returncode != 0:
+        print(f"auto-commit: pager failed rc={r.returncode}; will retry next refused turn")
+        return False
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(f"{subject}\n")
+    return True
 
 
 # --- ASK-1515: an unattended commit may never cement a mass deletion ----------
@@ -568,12 +729,12 @@ def shrink_refusals(paths):
     return refusals
 
 
-def _refusal_marker_dir():
+def _refusal_marker_dir(kind="auto-commit-refusals"):
     """One directory per checkout, so clearing one checkout never touches another."""
     cache = os.environ.get("KIPI_CACHE_HOME") or os.path.join(
         os.path.expanduser("~"), ".cache", "kipi")
     checkout = hashlib.sha256(os.path.abspath(PROJ_DIR).encode()).hexdigest()[:16]
-    return os.path.join(cache, "auto-commit-refusals", checkout)
+    return os.path.join(cache, kind, checkout)
 
 
 def clear_refusal_markers():
@@ -935,6 +1096,7 @@ def _commit_main():
     files = get_changed_files()
     if not files:
         clear_refusal_markers()
+        clear_commit_refusal_marker()
         print("auto-commit: no changes")
         return
 
@@ -947,16 +1109,49 @@ def _commit_main():
     clear_refusal_markers()
 
     if not groups:
+        clear_commit_refusal_marker()
         print("auto-commit: no committable changes")
         report_skipped(unclassified)
         return
 
     print(f"auto-commit: {len(files)} files in {len(groups)} groups")
-    for (commit_type, message), group_files_list in groups.items():
-        commit_group(commit_type, message, group_files_list)
+    committed = [commit_group(commit_type, message, group_files_list)
+                 for (commit_type, message), group_files_list in groups.items()]
+    if all(committed):
+        clear_commit_refusal_marker()
 
     report_skipped(unclassified)
     print("auto-commit: done")
+
+
+# --- ASK-2824: a session exit must not kill a commit halfway ---------------------
+#
+# MEASURED 2026-10-22 with a probe Stop hook under Claude Code 2.1.307: in a one-shot
+# `claude -p` session the async Stop hook got SIGTERM in the same second it started,
+# and a hook that ignored TERM was killed outright about 2s later, when the CLI
+# exited. A pre-commit here runs 35-150s, so every headless session in a checkout
+# (launchd jobs, fleet workers) killed this hook mid-commit, after `git add`. That is
+# the other way the group stayed staged, and no in-process handler can survive it.
+# A child in its OWN session was not signalled and ran to the end, measured the same
+# way. So the wiring passes --detach and the work runs there, its output in the log.
+DETACH_FLAG = "--detach"
+WORKER_ENV = "KIPI_AUTOCOMMIT_WORKER"
+
+
+def spawn_detached():
+    """Re-run this file in a new session; True if the worker started."""
+    log = commit_log_path()
+    try:
+        out = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
+        p = subprocess.Popen([sys.executable, os.path.abspath(__file__)],
+                             cwd=PROJ_DIR, env=dict(os.environ, **{WORKER_ENV: "1"}),
+                             stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        print(f"auto-commit: could not detach ({e}); running in the foreground")
+        return False
+    print(f"auto-commit: running detached as pid {p.pid}; output in {log}")
+    return True
 
 
 if __name__ == "__main__":
@@ -968,6 +1163,9 @@ if __name__ == "__main__":
         for path in system_state_paths(
                 [ln.strip() for ln in sys.stdin if ln.strip()]):
             print(path)
+        sys.exit(0)
+    if DETACH_FLAG in sys.argv and os.environ.get(WORKER_ENV) != "1" \
+            and spawn_detached():
         sys.exit(0)
     try:
         main()

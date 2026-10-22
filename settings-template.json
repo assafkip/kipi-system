@@ -438,7 +438,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" 2>/dev/null || true",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" --detach 2>/dev/null || true",
             "async": true
           },
           {
