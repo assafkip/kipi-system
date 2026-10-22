@@ -394,11 +394,26 @@ if [ -f "$WORKER" ]; then
   grep -q 'INFRA: git fetch failed' "$WORKER" \
     && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
     || bad "the producer was reworded: the pre-Linear guard now matches nothing"
-  # The braked guard reads an exit CODE, so the claim to re-derive is the code,
-  # not a string: linear-worker.sh must still answer 3 for a usage pause.
-  grep -qE '^#   3  PAUSED by the usage breaker' "$WORKER" \
-    && ok "linear-worker.sh still contracts exit 3 as the usage pause" \
-    || bad "the producer's exit contract moved: the braked guard now keys on a code nothing returns"
+  # The braked guard reads an exit CODE, so the claim to re-derive is the code
+  # the worker ACTUALLY RETURNS -- and that is what this runs. Grepping the line
+  # of documentation that promises exit 3 passed happily on a worker that had
+  # stopped returning it (claude review of PR #472, minor): a comment is not a
+  # producer, and deleting the brake while leaving its comment kept this green.
+  # So: inject a breaker that orders a pause and read the worker's own code.
+  BRAKE_STUB="$WORK/breaker-pause.sh"
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$BRAKE_STUB"
+  chmod +x "$BRAKE_STUB"
+  # KIPI_NOTIFY is /usr/bin/true: this drives the REAL worker, whose failure
+  # paths page. Same reason test-worker-usage-brake.sh pins it.
+  KIPI_STATE_DIR="$WORK/brake-state" \
+  KIPI_USAGE_BREAKER_CMD="bash $BRAKE_STUB" \
+  KIPI_USAGE_BREAKER_BOT="worker-test" \
+  KIPI_NOTIFY=/usr/bin/true \
+  bash "$WORKER" >/dev/null 2>&1
+  brake_rc=$?
+  [ "$brake_rc" = "3" ] \
+    && ok "linear-worker.sh answers 3 for a usage pause (ran it; rc=3)" \
+    || bad "the producer's exit contract moved: a paused breaker made the worker exit $brake_rc, not 3"
   # say() must reach stdout, or none of this text ever arrives in WORK_OUT.
   grep -qE '^say\(\).*tee' "$WORKER" \
     && ok "the worker's say() still tees to stdout, so the dispatcher can see it" \

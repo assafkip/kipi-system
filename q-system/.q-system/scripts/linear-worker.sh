@@ -253,6 +253,15 @@ done
 # the claim and the worktree. A brake that fires after the expensive setup has
 # already paid for the run it was meant to stop.
 #
+# $STATE_DIR is created HERE and not at its old spot further down, because the
+# brake redirects into $LOG, which lives in it (claude review of PR #472,
+# minor). On a first run, or any run with a fresh KIPI_STATE_DIR, the redirect
+# failed, bash answered 1, and `breaker_rc` held the redirect's failure instead
+# of the breaker's verdict -- so a brake ordering a pause (3) was read as "run"
+# and the pause never happened. Measured 2026-10-22: line 283 printed "No such
+# file or directory" and the run continued.
+mkdir -p "$STATE_DIR"
+#
 # usage_breaker.py reads the Step 2 usage ledger (ASK-2008) and answers in exit
 # codes, the contract the DoR pinned: 0 run, 3 paused. It files ONE Linear ticket
 # for Sana on the way into a pause and stays quiet while the pause holds -- this

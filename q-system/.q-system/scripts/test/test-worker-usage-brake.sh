@@ -82,6 +82,20 @@ else
   bad "brake at '${brake_line:-none}', fetch at '${fetch_line:-none}': not ordered"
 fi
 
+# 1b. a state dir that does not exist yet. The brake redirects into $LOG, which
+#     lives under $STATE_DIR, and nothing created it this early (claude review of
+#     PR #472, minor). Pre-fix the redirect failed, bash answered 1, breaker_rc
+#     held the redirect's failure instead of the breaker's verdict, and a brake
+#     ordering a pause was read as "run". Measured 2026-10-22 before the fix:
+#     line 283 printed "No such file or directory" and the run continued.
+FRESH="$TMP/never-made/state"
+rc="$(run_worker "$(make_stub 3)" "$FRESH")"
+[ "$rc" = "3" ] && ok "a paused breaker still exits 3 with no state dir on disk" \
+                || bad "the brake was swallowed by a missing state dir, got $rc"
+grep -q 'No such file or directory' "$TMP/last-out.txt" \
+  && bad "the brake wrote into a state dir that did not exist yet" \
+  || ok "the brake's log redirect resolved on a first run"
+
 # 2. running: the worker is NOT stopped by the brake. It may still exit nonzero
 #    for its own reasons (no queue, a dead environment); what it may not do is
 #    exit 3 or print the pause line.
