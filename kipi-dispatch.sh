@@ -1076,6 +1076,28 @@ if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed'; then
   say "worker stopped on an environment failure before reaching Linear; leaving linear-down state untouched (the worker pages this one itself)"
   exit 1
 fi
+# THE USAGE BRAKE STOPS THE RUN IN THE SAME PLACE, AND MUST BE READ THE SAME WAY
+# (ASK-2010; claude review of PR #472, major 2). rc=3 is linear-worker.sh's usage
+# breaker holding the bot. It fires as the FIRST thing after the argument parse,
+# before the fetch, the claim and every Linear call, so a braked run is no more
+# evidence that Linear recovered than a failed fetch is -- and clearing on it
+# ERASES the state that would page a real outage. Silence dressed as health, the
+# exact defect the guard above this line exists to close.
+#
+# KEYED ON THE EXIT CODE, NOT ON THE PAUSE LINE. linear-worker.sh's own header
+# says a caller must never have to parse a message to tell a brake from a break,
+# and a code cannot be reworded out from under this guard the way the INFRA
+# strings above were. `${WORK_RC:-0}` because the test harness slices this block
+# out and drives it with WORK_OUT alone; unset means "no brake", the safe read.
+#
+# NO PAGE and exit 0: the breaker files its own single Linear ticket on the way
+# into the pause and stays quiet while it holds, and a deliberately idle loop is
+# healthy, not down. Paging here would be one ticket per 15-minute beat for a
+# condition already on the board.
+if [ "${WORK_RC:-0}" -eq 3 ]; then
+  say "worker is BRAKED by the usage breaker: it stopped before reaching Linear, so nothing was picked and this is not evidence of recovery. Leaving linear-down state untouched; the breaker files its own ticket."
+  exit 0
+fi
 page_clear linear-down
 # --- LINEAR-OUTAGE-GUARD:END ---
 
