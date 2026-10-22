@@ -20,7 +20,7 @@ REPOS = {
     "kipi-investigations": "-Users-assafkipnis-projects-kipi-investigations",
     "ASK-AI-consultant": "-Users-assafkipnis-projects-ASK-AI-consultant",
     "ktlyst-hub-strategy": "-Users-assafkipnis-projects-ktlyst-hub-strategy",
-    "AUDHD-KIDS": "-Users-assafkipnis-projects-AUDHD-KIDS",
+    "family-repo": "-Users-assafkipnis-projects-family-repo",
 }
 TMP_GLOBS = ["-private-tmp-kipi-oss-export-1781105305",
              "-private-tmp-kipi-public-1781109312",

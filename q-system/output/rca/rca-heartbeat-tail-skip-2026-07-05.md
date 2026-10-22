@@ -10,7 +10,7 @@
 The fleet open-loops heartbeat (`open-loops-heartbeat.sh`) sweeps every registered
 instance twice a day. On every run since at least 2026-07-01, the sweep stopped
 after `travel-agent` and never processed the last 5 registry instances
-(`fractional-cxo`, `interview-coach`, `negotiator`, `reddit-build-radar`, `Alice`).
+(`fractional-cxo`, `interview-coach`, `negotiator`, `reddit-build-radar`, `client_d`).
 The post-sweep step-audit correctly noticed those 5 were expected but never
 logged, and Slacked the founder a `SILENTLY SKIPPED` alert on each run. The alert
 was real (the sweep genuinely skipped them) but the underlying skip was a bash
@@ -26,7 +26,7 @@ bug, not an instance problem — so the founder got a twice-daily false alarm.
   - interview-coach
   - negotiator
   - reddit-build-radar
-  - Alice
+  - client_d
 ```
 
 The sweep log always ends the iteration right after `travel-agent` woke its agent
@@ -88,7 +88,7 @@ processing: travel-agent
 TOTAL PROCESSED: 3  (expected 8)     <- stops right after the first stdin-reading child
 
 --- FIXED (child stdin redirected from /dev/null) ---
-processing: a ... travel-agent ... frac ... interview ... negotiator ... reddit ... Alice
+processing: a ... travel-agent ... frac ... interview ... negotiator ... reddit ... client_d
 TOTAL PROCESSED: 8  (expected 8)     <- full iteration restored
 ```
 

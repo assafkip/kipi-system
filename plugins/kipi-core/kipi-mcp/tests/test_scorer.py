@@ -337,9 +337,9 @@ class TestCrackDetect:
         return {"name": name, "last_contact_days": last_contact_days, "touches": touches, "status": status}
 
     def test_crack_detect_overdue_active_contact(self, scorer):
-        contacts = [self._contact("Alice", last_contact_days=10, status="active")]
+        contacts = [self._contact("Sam", last_contact_days=10, status="active")]
         result = scorer.crack_detect(contacts)
-        assert any(c["name"] == "Alice" for c in result["overdue"])
+        assert any(c["name"] == "Sam" for c in result["overdue"])
 
     def test_crack_detect_overdue_warm_contact(self, scorer):
         contacts = [self._contact("Bob", last_contact_days=8, status="warm")]

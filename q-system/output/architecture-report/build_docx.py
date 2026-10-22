@@ -189,7 +189,7 @@ def build() -> None:
     )
     add_para(
         doc,
-        "Kipi runs three businesses today: 4 Points Consulting, Pure Spectrum, and KTLYST Labs. "
+        "Kipi runs three businesses today: client-a, client-b, and KTLYST Labs. "
         "Each instance has its own voice, rules, stakeholders, and deliverables. State does not leak "
         "across instances because every cross-boundary read goes through a bridge protocol.",
     )
@@ -659,8 +659,8 @@ def build() -> None:
     add_heading(doc, "9.3 Other Instances on the Same Architecture", level=2)
     add_para(
         doc,
-        "The same skeleton runs multiple businesses outside the KTLYST cluster: 4_points_consulting, "
-        "Pure_spectrum_Q, ASK_AI_consultant, and others. Each gets its own rules, skills, voice, stakeholders, "
+        "The same skeleton runs multiple businesses outside the KTLYST cluster: client_a, "
+        "client_b, ASK_AI_consultant, and others. Each gets its own rules, skills, voice, stakeholders, "
         "and deliverables. The skeleton propagates infrastructure; instance-specific content stays in the instance.",
     )
 

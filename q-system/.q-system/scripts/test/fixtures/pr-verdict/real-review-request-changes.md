@@ -807,7 +807,7 @@ index ad9dd37..e4c9203 100644
 +
 +
 +# `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
-+# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
++# engine, not a second engine. client-d's run-sweep.sh writes one before every sweep
 +# (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
 +# on failure, so it is live DATA on a rollback path. No static scan can ever match
 +# it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
@@ -824,7 +824,7 @@ index ad9dd37..e4c9203 100644
 +
 +    WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
 +    q-system/, so an instance whose code lives anywhere else reported its own
-+    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
++    runners as absent. client-d flagged 22 engines UNWIRED while `regenerate.sh` ran
 +    four of them by path and `pipeline.py` imported two more. The scan has to
 +    follow the repo, not a layout the skeleton happens to use.
 +    """
@@ -896,7 +896,7 @@ index ad9dd37..e4c9203 100644
 -    # Wiring surfaces mirror capability-gate.py's WIRING_SURFACE_GLOBS. A narrower
 -    # list reports UNWIRED for engines that are in fact called by another engine or
 -    # by the kipi CLI: the first run of this generator flagged 60 UNWIRED in
--    # 4_points_consulting purely because python-calls-python was never read.
+-    # client_a purely because python-calls-python was never read.
 -    surfaces = ""
 -    for pat in (".claude/settings.json", "settings-template.json", "lefthook.yml",
 -                "Makefile", "*.sh", "kipi*", "validate-separation.py",
@@ -1052,11 +1052,11 @@ index 0000000..be842ab
 +#!/usr/bin/env python3
 +"""Wiring detection in capability-map-gen.py: what counts as "this engine is alive".
 +
-+WHY (ASK-122): the generator flagged 22 local engines in Alice as UNWIRED. Nearly
++WHY (ASK-122): the generator flagged 22 local engines in client-d as UNWIRED. Nearly
 +all of them had a visible caller on disk -- `regenerate.sh` literally runs
 +`python3 "$G/fill_sheet.py"`, `brightdata.sh` runs `mcp-client.py`, `pipeline.py`
 +imports `geo_clues`. The scan simply never opened those files: it walked only
-+.claude/, plugins/ and q-system/, and Alice's code lives in q-investigate/ and
++.claude/, plugins/ and q-system/, and client-d's code lives in q-investigate/ and
 +scripts/. A gate that reports dead-and-alive the same way is not a gate.
 +
 +Second blind spot, same issue, already scarred once (ASK-230, provenance_vocabulary):
@@ -1308,7 +1308,7 @@ SKIP_DIRS = {
 }
 
 # Substrings that mark a vendored tree wherever they appear in a path. Directory
-# NAME matching alone was not enough: 4_points_consulting keeps a virtualenv under
+# NAME matching alone was not enough: client_a keeps a virtualenv under
 # q-investigate/ whose inner dirs are named lib/ and python3.x/, so a name-only
 # filter admitted 5450 site-packages files as "engines" (recon run 2026-07-26).
 VENDOR_MARKERS = ("site-packages", "dist-packages", "/node_modules/", "/.git/")
@@ -1660,7 +1660,7 @@ MODULE_REF_RE = re.compile(
 
 
 # `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
-# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
+# engine, not a second engine. client-d's run-sweep.sh writes one before every sweep
 # (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
 # on failure, so it is live DATA on a rollback path. No static scan can ever match
 # it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
@@ -1677,7 +1677,7 @@ def _iter_surface_files(root: Path):
 
     WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
     q-system/, so an instance whose code lives anywhere else reported its own
-    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
+    runners as absent. client-d flagged 22 engines UNWIRED while `regenerate.sh` ran
     four of them by path and `pipeline.py` imported two more. The scan has to
     follow the repo, not a layout the skeleton happens to use.
     """
@@ -2717,7 +2717,7 @@ LIVE True .pr25rev/mut/q-system/.q-system/scripts/granola-voice-harvest.py :: .p
    396	
    397	
    398	# `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
-   399	# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
+   399	# engine, not a second engine. client-d's run-sweep.sh writes one before every sweep
    400	# (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
    401	# on failure, so it is live DATA on a rollback path. No static scan can ever match
    402	# it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
@@ -2734,7 +2734,7 @@ LIVE True .pr25rev/mut/q-system/.q-system/scripts/granola-voice-harvest.py :: .p
    413	
    414	    WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
    415	    q-system/, so an instance whose code lives anywhere else reported its own
-   416	    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
+   416	    runners as absent. client-d flagged 22 engines UNWIRED while `regenerate.sh` ran
    417	    four of them by path and `pipeline.py` imported two more. The scan has to
    418	    follow the repo, not a layout the skeleton happens to use.
    419	    """
@@ -3519,7 +3519,7 @@ Date:   Sun Aug 2 18:36:55 2026 -0700
     counts in every repo on a PR that is already in review.
     
     Verification: 9/9 wiring cases OK, capability-gate GREEN. Net effect of the
-    round: Alice UNWIRED 23 -> 16 with local actionable still 3 (the three
+    round: client-d UNWIRED 23 -> 16 with local actionable still 3 (the three
     dispositioned survivors are unchanged), kipi-investigations UNWIRED 36 -> 28.
 
 diff --git a/q-system/.q-system/scripts/capability-map-gen.py b/q-system/.q-system/scripts/capability-map-gen.py
@@ -3936,7 +3936,7 @@ here, and is already captured as sp-4fdb3d50. Widening that filter changes
 counts in every repo on a PR that is already in review.
 
 Verification: 9/9 wiring cases OK, capability-gate GREEN. Net effect of the
-round: Alice UNWIRED 23 -> 16 with local actionable still 3 (the three
+round: client-d UNWIRED 23 -> 16 with local actionable still 3 (the three
 dispositioned survivors are unchanged), kipi-investigations UNWIRED 36 -> 28.
 
 ---
@@ -3972,12 +3972,12 @@ differs) exactly that one case fails. 9/9 OK with it on.
 d20f412a7b2b6a376cf0e2cbfc67083a8b05413c
 fix(capability-map): see callers outside q-system/, count importing tests, skip dated snapshots (ASK-122)
 
-ASK-122 asked to audit 11 unwired engines in Alice. The premise was wrong:
+ASK-122 asked to audit 11 unwired engines in client-d. The premise was wrong:
 most flagged scripts had a visible caller on disk. capability-map-gen.py
 could not see them. Three detector defects, each its own false-dead class:
 
 1. The wiring-surface scan walked only .claude/, plugins/ and q-system/.
-   Alice's code lives in q-investigate/ and scripts/, so regenerate.sh
+   client-d's code lives in q-investigate/ and scripts/, so regenerate.sh
    running `python3 "$G/fill_sheet.py"` was invisible. Now repo-wide via
    _iter_surface_files() / _build_reference_index().
 
@@ -4005,7 +4005,7 @@ Verified by running the new test against the pre-fix generator from
 origin/main: 5 of 8 fail. Against the fixed generator: 8/8 OK. A test that
 cannot fail is not a test.
 
-Effect on Alice: UNWIRED 45 -> 23, local actionable 22 -> 3. Runtime 1.8s.
+Effect on client-d: UNWIRED 45 -> 23, local actionable 22 -> 3. Runtime 1.8s.
 
 ---
 7383d6cf0f833ca1258cae1e9bd19c48cb2b14fd
@@ -4236,7 +4236,7 @@ derived from wiring rather than from claims in prose.
 
 Three recon bugs found and fixed by running it, not by reading it:
 
-  - a virtualenv under 4_points_consulting/q-investigate/ admitted 5450
+  - a virtualenv under client_a/q-investigate/ admitted 5450
     site-packages files as capabilities. Directory-NAME filtering was not enough;
     now pyvenv.cfg and path markers are checked too.
   - nested instance repos were swallowed by their parent. ASK_AI_consultant is

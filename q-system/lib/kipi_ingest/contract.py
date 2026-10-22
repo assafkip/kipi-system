@@ -9,7 +9,7 @@ is the deterministic gate between updates.
 Two composable layers, each distilled from a real sibling tool (audited
 2026-07-06):
 
-  Layer 1 COUNTING  (from QEP) -- did we read every unit?
+  Layer 1 COUNTING  (from client-b) -- did we read every unit?
     ReadResult(attempted, captured, truncated, dropped) + reconcile().
     A cap or per-unit failure is COUNTED, never silent. reconcile() raises and
     names any enumerated unit with no result.
@@ -47,7 +47,7 @@ UNITS = ("page", "sheet", "row", "fenced_block", "doc_part", "record")
 
 
 # --------------------------------------------------------------------------- #
-# Fail-loud exceptions (the unreadable tier shared by QEP + product).
+# Fail-loud exceptions (the unreadable tier shared by client-b + product).
 # --------------------------------------------------------------------------- #
 class IngestError(Exception):
     """Base for every hard ingestion failure."""
@@ -55,7 +55,7 @@ class IngestError(Exception):
 
 class UnreadUnitError(IngestError):
     """Reconciliation found enumerated units with no captured result. Names them
-    so the miss is never silent (QEP's UnreadFileError, generalized to units)."""
+    so the miss is never silent (client-b's UnreadFileError, generalized to units)."""
 
 
 class UngroundedReferenceError(IngestError):

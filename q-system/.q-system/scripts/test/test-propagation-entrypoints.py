@@ -139,6 +139,13 @@ EXEMPT = {
     "exactly how it stays read-only on the real one",
     "test_fleet_unblock.py": "test harness; it copies one auditor into a "
     "synthetic skeleton fixture built under tmp_path",
+    # --- ASK-2058 -------------------------------------------------------
+    "remote-coverage-check.py": "the match first_match() returns is prose in "
+    "declare()'s docstring explaining the lock; the real call is "
+    "os.replace(tmp, private) in declare(), an atomic rewrite of the ONE "
+    "private allowlist file under ~/.config/kipi. It reads instances to audit "
+    "them and writes nothing into any of them. Same class as "
+    "kipi-update-gitignore-block.py",
 }
 
 

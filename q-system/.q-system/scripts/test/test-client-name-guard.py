@@ -40,6 +40,8 @@ GUARD = HERE.parent / "client-name-guard.py"
 # the guard under test, and validate-separation Gate 1.2 refuses a shipped file
 # that names a live instance.
 CLIENT = "Zorptech"
+# Synthetic stand-in for a token the private config records as NOT private.
+OWN_PUBLIC = "Quillbox"
 SKIP_TOKEN = "client-name-guard-skip"
 
 results = []
@@ -188,6 +190,37 @@ def main(guard):
         rc, out = commit(repo, home, "ordinary", {"a.md": f"{CLIENT}\n"})
         record("no token list => WARN and pass, never block",
                rc == 0 and "no token list" in out, f"rc={rc}")
+
+    # --- 10. REGRESSION: a recorded exclusion is honoured, exactly (ASK-2058) --
+    # The scrub of this repo was refused because client-tokens still held the
+    # founder's own public repo name, which private-terms.json already excludes
+    # with a recorded reason. The pre-fix guard never read the exclusion.
+    def armed_with_exclusion(tmp, config_text):
+        home, repo = make_repo(tmp, guard)
+        kipi = home / ".config" / "kipi"
+        (kipi / "client-tokens").write_text(f"{CLIENT}\n{OWN_PUBLIC}\n")
+        (kipi / "private-terms.json").write_text(config_text)
+        return home, repo
+
+    excl_cfg = '{"exclude": ["%s"], "json_sources": []}' % OWN_PUBLIC.lower()
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = armed_with_exclusion(tmp, excl_cfg)
+        rc, out = commit(repo, home, "ordinary",
+                         {"a.md": f"see the {OWN_PUBLIC} repo\n"})
+        record("an excluded spelling passes", rc == 0 and head_count(repo) == 1,
+               f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = armed_with_exclusion(tmp, excl_cfg)
+        rc, out = commit(repo, home, "ordinary",
+                         {"a.md": f"internal note about {CLIENT}\n"})
+        record("an exclusion is not a mute switch: other tokens still BLOCK",
+               rc != 0 and head_count(repo) == 0, f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = armed_with_exclusion(tmp, "{not json")
+        rc, out = commit(repo, home, "ordinary",
+                         {"a.md": f"see the {OWN_PUBLIC} repo\n"})
+        record("an unreadable config excludes nothing (stricter, never quieter)",
+               rc != 0 and head_count(repo) == 0, f"rc={rc}")
 
     failed = [n for n, ok in results if not ok]
     print()

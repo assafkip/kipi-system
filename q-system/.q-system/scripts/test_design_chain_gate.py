@@ -105,7 +105,7 @@ class Base(unittest.TestCase):
         (rd / "brief.md").write_text("# Brief\n\nReader: a tax practice owner.\nPain: retyping.\nOne thing: hours leak.\n\n" + "\n".join(anchors) + "\n")
         (rd / "directions.md").write_text("# A. The pair\nfrom the idea\n# B. The report\nfrom the idea\n# C. The records\nfrom the idea\n")
         (rd / "critique.md").write_text("".join(f"## {d}\n" + "".join(f"{i}. answer\n" for i in range(1, 10)) for d in "ABC"))
-        (rd / "proof.md").write_text("Pair-laptop.html: capability proof, INDEX Alice OSINT sweep\n")
+        (rd / "proof.md").write_text("Pair-laptop.html: capability proof, INDEX client-d OSINT sweep\n")
         (rd / "checks").mkdir(exist_ok=True); (rd / "checks" / "bio_gate.txt").write_text("ok\n")
         (rd / "gate").mkdir(exist_ok=True); (rd / "gate" / "icp.md").write_text("answers\n")
         self.measure()

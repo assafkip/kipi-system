@@ -21,7 +21,7 @@ issued first and evidenced afterward.
 
 ## The scar
 
-2026-07-28, Prodigy_Gold. A read-only trace of a client's automation produced six
+2026-07-28, client_c. A read-only trace of a client's automation produced six
 confident conclusions. All six were reversed later in the same session by evidence
 available from the first minute. One survived long enough to shape a client email
 draft. The founder caught the pattern; no hook, lint, or gate did. It was a recurrence

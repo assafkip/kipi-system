@@ -1,7 +1,7 @@
 # How Fable 5 Operates — A Forensic Profile
 
 Author: staff-engineer forensic review
-Corpus: 697 Fable code edits (22,279 lines), 2,264 bash calls, 938 prose blocks, across 4 repos (kipi-investigations, ASK-AI-consultant, ktlyst-hub-strategy, AUDHD-KIDS). Numbers are computed deterministically from the transcripts; every behavioral claim below is anchored to a verbatim corpus example or a ground-truth count. Six independent dimensional analyses were adversarially verified; where a verifier flagged a claim as overstated, it is softened or dropped here and the softening is called out.
+Corpus: 697 Fable code edits (22,279 lines), 2,264 bash calls, 938 prose blocks, across 4 repos (kipi-investigations, ASK-AI-consultant, ktlyst-hub-strategy, family-repo). Numbers are computed deterministically from the transcripts; every behavioral claim below is anchored to a verbatim corpus example or a ground-truth count. Six independent dimensional analyses were adversarially verified; where a verifier flagged a claim as overstated, it is softened or dropped here and the softening is called out.
 
 A note on method up front, because it bounds everything: **Fable's raw chain-of-thought is not in the corpus.** Thinking blocks are stored empty with a signature only. "How Fable thinks" is inferred strictly from its text outputs and its action sequences, never from its internal reasoning. Read every "Fable reasons that…" as "Fable's outputs and tool order are consistent with…".
 
@@ -266,7 +266,7 @@ out = min(e, nxt - 0.05) - 0.2          # fully faded before the next caption ap
 out = max(out, s + 0.3)                 # never collapse a very short caption
 ```
 
-**AUDHD-KIDS (30 edits / 57 bash) — an end-to-end AI media-generation pipeline, packaged as a reusable skill.** Voice first, visuals second:
+**family-repo (30 edits / 57 bash) — an end-to-end AI media-generation pipeline, packaged as a reusable skill.** Voice first, visuals second:
 ```
 script (with v3 audio tags)
   → eleven_v3 narration            (scripts/tts_v3.py)
@@ -285,7 +285,7 @@ script (with v3 audio tags)
 
 Honest and evidence-backed. The weaknesses concentrate in the execution/formatting layer, not in judgment.
 
-- **Breaks the founder's #1 hard rule at scale.** "Never use emdashes in any output" is non-negotiable and the founder ships linters to enforce it. Fable's own narration to the founder contains **476 em-dashes in kipi-investigations/prose.md** and 51 in AUDHD-KIDS (275 in ASK-AI). It does not self-apply the founder's deterministic style constraints to its status prose. *Calibration per the verifier: those are total counts (~1 per message on average), so "at scale" is accurate; "nearly every message" overstates the per-message rate.*
+- **Breaks the founder's #1 hard rule at scale.** "Never use emdashes in any output" is non-negotiable and the founder ships linters to enforce it. Fable's own narration to the founder contains **476 em-dashes in kipi-investigations/prose.md** and 51 in family-repo (275 in ASK-AI). It does not self-apply the founder's deterministic style constraints to its status prose. *Calibration per the verifier: those are total counts (~1 per message on average), so "at scale" is accurate; "nearly every message" overstates the per-message rate.*
 
 - **Guesses SQL schemas it had already read.** It queried `SELECT type, COUNT(*) FROM entities` → `no such column: type` (real: `entity_type`), and `name` → `no such column: name` (real: `canonical_name`) — *after* having Read db.py and schema.sql earlier in the same session. The "read, do not assume" anti-pattern, concrete.
 
@@ -293,7 +293,7 @@ Honest and evidence-backed. The weaknesses concentrate in the execution/formatti
 
 - **String-anchor patching on guessed anchors.** Self-guarding patch scripts assert the target text exists before replacing, and the asserts FAIL because the anchor isn't actually in the file (`AssertionError: close body not found`, `glob line not found`, `The inline patch missed (escaping mismatch)`). The defensive assert is good; the root behavior is the same over-confidence in its model of file contents.
 
-- **Shipped a genuine data-corruption bug.** A live-dig parser regexed JSON-escaped tool output and **forged 25+ phantom graph nodes** — leading-`n` domain twins (`ntrumpstake.us` from a literal `\n`), trailing-quote twins, a pydantic-traceback domain — silently writing bad data into the very attribution graph the product exists to produce. To its credit it root-caused and fixed it with a regression test, but the defect originated in Fable's own code.
+- **Shipped a genuine data-corruption bug.** A live-dig parser regexed JSON-escaped tool output and **forged 25+ phantom graph nodes** — leading-`n` domain twins (`nexample-target.us` from a literal `\n`), trailing-quote twins, a pydantic-traceback domain — silently writing bad data into the very attribution graph the product exists to produce. To its credit it root-caused and fixed it with a regression test, but the defect originated in Fable's own code.
 
 - **First root-cause sometimes wrong; once overrode its own gate.** `Codex confirmed right — defaults exist, my root cause was wrong.` And: `The formal gate said FAIL … I ruled that path variance and shipped anyway.` The gate-override is defensible reasoning about stochastic-agent variance, but it is also the shape of a rationalization that can let a real regression through — Fable judging whether its own failure "counts."
 
@@ -328,7 +328,7 @@ These are consistent with Fable's "pragmatic, not total" typing and "enumerate t
 
 - **Task confounds dominate the cross-repo numbers.** The four repos are four different jobs. Only the same-repo, replicated Fable-vs-Opus contrasts (§9) isolate model from task; the big-sample-only ones are directional, and the per-repo intensity/tool/artifact differences are task-driven, not personality.
 
-- **Pure_spectrum_Q is not Fable.** It was built with 8,337 Opus-4.8 + 5,817 Opus-4.7 edits and **zero Fable**. It is excluded entirely; any analysis treating it as Fable would be wrong at the source.
+- **client_b is not Fable.** It was built with 8,337 Opus-4.8 + 5,817 Opus-4.7 edits and **zero Fable**. It is excluded entirely; any analysis treating it as Fable would be wrong at the source.
 
 - **No Opus corpus for the communication dimension.** The reasoning/communication transcripts here are Fable-only. The Fable-internal findings (terse mid-stream, verbose at seams, options-then-pick) are well grounded; any "more compact than Opus" phrasing in that dimension is editorializing the prose-character numbers in §9, not a measured per-message comparison of these specific transcripts.
 

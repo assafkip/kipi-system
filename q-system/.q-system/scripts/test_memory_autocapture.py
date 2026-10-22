@@ -151,8 +151,8 @@ def test_env_cannot_spoof_instance(tmp_path, monkeypatch):
     # $KIPI_INSTANCE must NOT enable a non-allowlisted instance. Identity comes
     # only from the real repo dir (kipi-system here), which is not allowlisted.
     cfg = tmp_path / "autocapture_config.json"
-    cfg.write_text(json.dumps({"enabled_instances": ["4_points_consulting"]}))
-    monkeypatch.setenv("KIPI_INSTANCE", "4_points_consulting")
+    cfg.write_text(json.dumps({"enabled_instances": ["client_a"]}))
+    monkeypatch.setenv("KIPI_INSTANCE", "client_a")
     assert mac.is_enabled(config_path=cfg) is False
 
 
@@ -163,6 +163,6 @@ def test_gate_default_off(tmp_path):
 
 def test_gate_on_when_allowlisted(tmp_path):
     cfg = tmp_path / "autocapture_config.json"
-    cfg.write_text(json.dumps({"enabled_instances": ["4_points_consulting"]}))
-    assert mac.is_enabled(config_path=cfg, instance_id="4_points_consulting") is True
+    cfg.write_text(json.dumps({"enabled_instances": ["client_a"]}))
+    assert mac.is_enabled(config_path=cfg, instance_id="client_a") is True
     assert mac.is_enabled(config_path=cfg, instance_id="some_other") is False
