@@ -1044,7 +1044,7 @@ def test_a_queued_alert_is_drained_on_the_next_good_run(isolated_state, monkeypa
     assert _pending(isolated_state) == [], "a filed alert is still pending"
     drains = [o for o in _queue_ops(isolated_state) if o.get("op") == "drain"]
     assert [d["identifier"] for d in drains] == ["ASK-101"]
-    assert lines and "ASK-101" in lines[0]
+    assert lines and lines[0][0] is True and "ASK-101" in lines[0][1]
 
 
 def test_a_retry_that_fails_again_stays_queued_once(isolated_state, monkeypatch):
@@ -1054,7 +1054,8 @@ def test_a_retry_that_fails_again_stays_queued_once(isolated_state, monkeypatch)
     mod.file_alert(AUTOCOMMIT[0], now=1000.0)
     mod.drain_queued_alerts(limit=5, now=2000.0)
     ops = _queue_ops(isolated_state)
-    assert [o["op"] for o in ops] == ["add"], ops
+    assert [o["op"] for o in ops] == ["add", "retry_failed"], ops
+    assert len(_pending(isolated_state)) == 1
 
 
 def test_a_drain_after_the_shape_was_filed_counts_a_repeat(isolated_state, monkeypatch):
@@ -1080,7 +1081,7 @@ def test_a_good_run_drains_one_queued_alert(isolated_state, monkeypatch):
     assert code == mod.EXIT_OK
     assert healthy.created == 2, "the good run did not retry the queued alert"
     assert _pending(isolated_state) == []
-    assert any("ASK-102" in ln for ln in lines), lines
+    assert any(ok and "ASK-102" in ln for ok, ln in lines), lines
 
 
 def test_an_unlocked_caller_queues_nothing(isolated_state, monkeypatch):
@@ -1114,6 +1115,122 @@ def test_a_fixture_run_never_resolves_the_live_queue(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "_state_dir", mod._default_state_dir)
     live = mod._alert_queue_path()
     assert live and live.endswith(".linear-queue.jsonl"), live
+
+
+# --- PR #546 review round 1: the second consumer, the poison entry, EXIT_OK --
+#
+# The fleet reviewer and Codex both reproduced these against the first cut.
+# Each test below is that reviewer's reproducer, reduced to the fixture.
+
+def _mark_drained_like_linear_drain(state, key, identifier):
+    """/linear-drain step 5, verbatim: linear-queue.py mark-drained appends this
+    exact op. It never touches alert-to-linear's fingerprint state."""
+    with open(state / "linear-queue.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"op": "drain", "key": key,
+                             "identifier": identifier}) + "\n")
+
+
+def test_a_manual_drain_is_adopted_not_duplicated(isolated_state, monkeypatch):
+    """Reviewer finding 2 / Codex P1. /linear-drain created ASK-500 for a queued
+    alert. The next firing of that shape must count on ASK-500, not open a
+    second permanent ticket."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    key = _pending(isolated_state)[0]["key"]
+    _mark_drained_like_linear_drain(isolated_state, key, "ASK-500")
+
+    healthy = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    code, line = mod.file_alert(AUTOCOMMIT[1], now=2000.0)
+    assert code == mod.EXIT_OK
+    assert healthy.created == 0, "a manual drain's ticket was duplicated"
+    assert "ASK-500" in line, line
+
+
+def test_an_adopted_ticket_that_was_closed_opens_a_fresh_one(isolated_state, monkeypatch):
+    """Adoption must not hide a real recurrence: closed is still closed."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    key = _pending(isolated_state)[0]["key"]
+    _mark_drained_like_linear_drain(isolated_state, key, "ASK-500")
+
+    healthy = FakeLinear(state_type="completed")
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    mod.file_alert(AUTOCOMMIT[1], now=2000.0)
+    assert healthy.created == 1
+
+
+def test_the_queued_note_carries_the_kipi_key_marker(isolated_state, monkeypatch):
+    """Codex P2. /linear-drain's remote guard finds an existing issue only by
+    `<!-- kipi-key: <key> -->`; without it a stale drain creates a copy."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    item = _pending(isolated_state)[0]
+    assert f"<!-- kipi-key: {item['key']} -->" in item["note"]
+
+
+POISON = "[kipi-system] POISON: linear refuses this one, always"
+GOOD = "[kipi-system] real alert: the nightly backup job died at 03:00"
+
+
+class RefusesPoison(FakeLinear):
+    """Healthy Linear that permanently refuses one payload: the POISON alert's
+    own body. The escalation quotes its title but is a different payload."""
+
+    def graphql(self, query, variables):
+        if ("issueCreate" in query
+                and f"```\n{POISON}\n```" in variables["input"]["description"]):
+            raise RuntimeError("HTTP 400 description too large")
+        return FakeLinear.graphql(self, query, variables)
+
+
+def test_a_poison_entry_does_not_block_the_queue(isolated_state, monkeypatch):
+    """Reviewer finding 1. FIFO plus stop-on-failure left a refused entry at the
+    head forever, so every later queued alert was unreachable."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+    mod.file_alert(GOOD, now=1001.0)
+
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    for i in range(3):
+        mod.drain_queued_alerts(limit=1, now=2000.0 + i)
+    titles = [p["message"] for p in _pending(isolated_state)]
+    assert titles == [POISON], f"the good alert is stuck behind poison: {titles}"
+    assert linear.created == 1
+
+
+def test_a_poison_entry_stops_at_the_cap_and_escalates(isolated_state, monkeypatch):
+    """Reviewer finding 1, second half: a failed retry was a stdout line with
+    exit 0. At the cap it must stop costing HTTP every run AND reach the board."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    results = []
+    for i in range(mod.RETRY_CAP + 2):
+        results.extend(mod.drain_queued_alerts(limit=1, now=2000.0 + i))
+
+    failed_retries = [ln for ok, ln in results if not ok and ln.startswith("retry ")]
+    assert len(failed_retries) == mod.RETRY_CAP, "retries did not stop at the cap"
+    assert linear.created == 1, "the stuck entry was never escalated"
+    assert "failed" in linear.create_input["description"]
+    assert [p["message"] for p in _pending(isolated_state)] == [POISON], (
+        "a stuck entry must stay pending for a manual drain, not vanish")
+
+
+def test_a_replay_that_files_nothing_is_not_marked_drained(isolated_state, monkeypatch):
+    """Reviewer finding 3. EXIT_OK is not "filed": the sustained-failure rule
+    returns EXIT_OK with "NOT filed". Draining on it discarded the alert."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+
+    monkeypatch.setattr(mod, "_load_linear", lambda: FakeLinear())
+    monkeypatch.setattr(mod, "sustained_defers", lambda fp, n: True)
+    results = mod.drain_queued_alerts(limit=1, now=2000.0)
+    assert results and results[0][0] is False, results
+    assert len(_pending(isolated_state)) == 1, "a deferred replay was discarded"
 
 
 def test_with_no_queue_a_failed_create_says_so(monkeypatch, tmp_path):
