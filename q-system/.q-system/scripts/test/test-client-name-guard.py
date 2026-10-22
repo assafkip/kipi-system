@@ -27,7 +27,11 @@ not measuring this fix.
 """
 
 import argparse
+import io
+import json
 import os
+import re
+import zipfile
 import subprocess
 import sys
 import tempfile
@@ -40,8 +44,6 @@ GUARD = HERE.parent / "client-name-guard.py"
 # the guard under test, and validate-separation Gate 1.2 refuses a shipped file
 # that names a live instance.
 CLIENT = "Zorptech"
-# Synthetic stand-in for a token the private config records as NOT private.
-OWN_PUBLIC = "Quillbox"
 SKIP_TOKEN = "client-name-guard-skip"
 
 results = []
@@ -91,6 +93,54 @@ def head_count(repo):
     p = subprocess.run(["git", "rev-list", "--count", "HEAD"], cwd=repo,
                        capture_output=True, text=True)
     return int(p.stdout.strip()) if p.returncode == 0 else 0
+
+
+def git(repo, *args, check=True, env=None):
+    return subprocess.run(["git", *args], cwd=repo, check=check,
+                          capture_output=True, text=True, env=env)
+
+
+def add_public_remote(tmp, repo):
+    """A bare repo as `origin`, so `git push` creates refs/remotes/origin/*.
+
+    "Public" in the guard means "a remote-tracking branch contains it". A local
+    bare remote is the real mechanism, not a stand-in: push writes the same
+    remote-tracking ref it writes against GitHub.
+    """
+    bare = Path(tmp) / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True,
+                   capture_output=True)
+    git(repo, "remote", "add", "origin", str(bare))
+
+
+def merge(repo, home, branches, message, resolve=None):
+    """A REAL `git merge --no-ff --no-commit`, then a real `git commit`.
+
+    --no-commit so MERGE_HEAD holds every parent (an octopus lists several) and
+    `resolve` can write files the way a conflict resolution does. The commit is
+    made by git, so the commit-msg hook is the production one. Returns (rc, out).
+    """
+    env = dict(os.environ, HOME=str(home))
+    env.pop("LEFTHOOK_COMMIT_MSG_FILE", None)
+    p = subprocess.run(["git", "merge", "--no-ff", "--no-commit", *branches],
+                       cwd=repo, capture_output=True, text=True, env=env)
+    for name, body in (resolve or {}).items():
+        (repo / name).write_text(body)
+        git(repo, "add", name)
+    c = subprocess.run(["git", "commit", "-m", message], cwd=repo,
+                       capture_output=True, text=True, env=env)
+    return c.returncode, p.stdout + p.stderr + c.stdout + c.stderr
+
+
+def run_ci(guard, repo, base, head, env_extra):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PRIVATE_TERMS", "PR_TITLE", "PR_BODY", "FORK_PR")}
+    env["HOME"] = str(Path(repo).parent / "ci-home")   # a runner has no ~/.config/kipi
+    env.update(env_extra)
+    p = subprocess.run([sys.executable, str(guard), "--ci", "--base", base,
+                        "--head", head], cwd=repo, capture_output=True, text=True,
+                       env=env)
+    return p.returncode, p.stdout + p.stderr
 
 
 def main(guard):
@@ -191,35 +241,417 @@ def main(guard):
         record("no token list => WARN and pass, never block",
                rc == 0 and "no token list" in out, f"rc={rc}")
 
-    # --- 10. REGRESSION: a recorded exclusion is honoured, exactly (ASK-2058) --
-    # The scrub of this repo was refused because client-tokens still held the
-    # founder's own public repo name, which private-terms.json already excludes
-    # with a recorded reason. The pre-fix guard never read the exclusion.
-    def armed_with_exclusion(tmp, config_text):
+    # --- 10. REGRESSION: a merge does not re-block what a PUBLIC parent carries -
+    # ASK-2058 / sp-7156177c, measured 2026-09-23: `git diff --cached` during a
+    # merge diffs against HEAD only, so every line from the merged branch read as
+    # ADDED and the guard refused ANY merge of origin/main into ANY branch. A
+    # name already on a pushed branch of a public repo is already out; blocking
+    # it only routes the author to --no-verify.
+    with tempfile.TemporaryDirectory() as tmp:
         home, repo = make_repo(tmp, guard)
-        kipi = home / ".config" / "kipi"
-        (kipi / "client-tokens").write_text(f"{CLIENT}\n{OWN_PUBLIC}\n")
-        (kipi / "private-terms.json").write_text(config_text)
-        return home, repo
+        add_public_remote(tmp, repo)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "pub")
+        rc0, _ = commit(repo, home,
+                        f"Publish the case study\n\n{SKIP_TOKEN}: permission on file\n",
+                        {"study.md": f"# Case study\n\n{CLIENT} shipped it.\n"})
+        git(repo, "push", "-q", "origin", "pub")
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "diverge on the main line", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["pub"], "Merge branch 'pub'")
+        record("a merge does NOT block on a name a PUBLIC parent already carries",
+               rc0 == 0 and rc == 0 and head_count(repo) == before + 2,
+               f"branch rc={rc0}, merge rc={rc}")
 
-    excl_cfg = '{"exclude": ["%s"], "json_sources": []}' % OWN_PUBLIC.lower()
+    # --- 11. a name added BY the merge resolution still BLOCKS -----------------
     with tempfile.TemporaryDirectory() as tmp:
-        home, repo = armed_with_exclusion(tmp, excl_cfg)
-        rc, out = commit(repo, home, "ordinary",
-                         {"a.md": f"see the {OWN_PUBLIC} repo\n"})
-        record("an excluded spelling passes", rc == 0 and head_count(repo) == 1,
+        home, repo = make_repo(tmp, guard)
+        add_public_remote(tmp, repo)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "side")
+        commit(repo, home, "side work", {"side.md": "side\n"})
+        git(repo, "push", "-q", "origin", "side")
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "main work", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["side"], "Merge branch 'side'",
+                        resolve={"resolved.md": f"note about {CLIENT}\n"})
+        record("a client name added BY the merge resolution still BLOCKS",
+               rc != 0 and head_count(repo) == before, f"rc={rc}")
+
+    # --- 12. REGRESSION (PR #435 review blocker): a LOCAL parent excuses nothing
+    # PR #435 excused any line already on any parent. A branch that was never
+    # pushed is not public, so merging it is the step that makes its content
+    # publishable. Here the name entered the local branch under a bypass; the
+    # merge carries no bypass of its own and must be scanned.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        add_public_remote(tmp, repo)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "local-only")
+        rc0, _ = commit(repo, home,
+                        f"draft notes\n\n{SKIP_TOKEN}: private branch, never pushed\n",
+                        {"notes.md": f"engagement notes for {CLIENT}\n"})
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "main work", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["local-only"], "Merge branch 'local-only'")
+        record("a merge of a LOCAL, unpushed parent carrying a name BLOCKS",
+               rc0 == 0 and rc != 0 and head_count(repo) == before,
+               f"branch rc={rc0}, merge rc={rc}")
+
+    # --- 13. REGRESSION (PR #435 review minor): octopus, both parent orders ----
+    # MERGE_HEAD lists every parent. Reading only the first made the verdict
+    # depend on order. One public clean parent, one local parent with a name.
+    for order in (("pubclean", "localname"), ("localname", "pubclean")):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, repo = make_repo(tmp, guard)
+            add_public_remote(tmp, repo)
+            commit(repo, home, "base", {"base.md": "base\n"})
+            git(repo, "checkout", "-q", "-b", "pubclean")
+            commit(repo, home, "clean public work", {"p.md": "clean\n"})
+            git(repo, "push", "-q", "origin", "pubclean")
+            git(repo, "checkout", "-q", "-")
+            git(repo, "checkout", "-q", "-b", "localname")
+            commit(repo, home, f"notes\n\n{SKIP_TOKEN}: local only\n",
+                   {"n.md": f"call with {CLIENT}\n"})
+            git(repo, "checkout", "-q", "-")
+            commit(repo, home, "main work", {"other.md": "other\n"})
+            before = head_count(repo)
+            rc, out = merge(repo, home, list(order), "octopus")
+            record(f"octopus merge {order[0]}+{order[1]} with a local name BLOCKS",
+                   rc != 0 and head_count(repo) == before, f"rc={rc}")
+
+    # --- 14. REGRESSION (ASK-2058): the list is read from the registries -------
+    # Ten hand-typed tokens missed every name the registries held. The sources
+    # file points at a registry; the guard reads it at call time.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        reg = Path(tmp) / "clients.json"
+        reg.write_text(json.dumps({"clients": [
+            {"name": "Quexwell Labs", "slug": "quexwell-labs", "stage": "active",
+             "contacts": [{"name": "Morwen Tallis", "email": "mtallis@quexwell.example"}]},
+            {"name": "Vintrope Group", "slug": "vintrope", "stage": "prospect",
+             "contacts": []},
+            {"name": "Ordinaryword", "slug": "ordinaryword", "stage": "active",
+             "contacts": []}]}))
+        (home / ".config" / "kipi" / "private-terms.json").write_text(json.dumps({
+            "json_sources": [{"path": str(reg), "records": "clients",
+                              "keys": ["name", "slug"], "people": "contacts",
+                              "skip_when": {"stage": ["prospect"]}}],
+            "exclude": ["ordinaryword"]}))
+        cases = [("org from the registry", "quexwell_labs notes\n", False),
+                 ("contact full name", "met Morwen Tallis today\n", False),
+                 ("contact email", "cc mtallis@quexwell.example\n", False),
+                 ("prospect skipped by skip_when", "Vintrope Group posted a job\n", True),
+                 ("excluded term", "an ordinaryword here\n", True)]
+        for label, body, should_pass in cases:
+            rc, _ = commit(repo, home, "ordinary", {"f.md": body})
+            ok = (rc == 0) if should_pass else (rc != 0)
+            record(f"registry source: {label} {'passes' if should_pass else 'BLOCKS'}",
+                   ok, f"rc={rc}")
+            git(repo, "reset", "-q", "--mixed", check=False)
+
+    # --- 15. separator spellings of one token all block -----------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        (home / ".config" / "kipi" / "client-tokens").write_text("zorp_tech\n")
+        blocked = 0
+        for i, spelling in enumerate(("Zorp Tech", "ZorpTech", "zorp-tech")):
+            rc, _ = commit(repo, home, "ordinary", {f"v{i}.md": f"{spelling}\n"})
+            blocked += rc != 0
+            git(repo, "reset", "-q", "--mixed", check=False)
+        record("token zorp_tech blocks 'Zorp Tech', 'ZorpTech', 'zorp-tech'",
+               blocked == 3, f"blocked {blocked}/3")
+
+    # --- 16. the CI backstop: scans the range, never prints the term -----------
+    # A squash merge writes its message on GitHub from the PR title and body, so
+    # no local hook sees it. CI logs of a public repo are public, so the output
+    # must name the file and the KIND, never the matched term.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit(repo, home, "add notes", {"notes.md": f"x\nnote about {CLIENT}\n"})
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a name on an added line FAILS and points at the file",
+               rc != 0 and "notes.md" in out, f"rc={rc}")
+        record("CI: the output never contains the term",
+               CLIENT.lower() not in out.lower(), "term printed" if CLIENT.lower() in out.lower() else "")
+        rc, out = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                   "PR_TITLE": f"work for {CLIENT}"})
+        record("CI: a name in the PR title FAILS", rc != 0, f"rc={rc}")
+        rc, out = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                   "PR_TITLE": "clean title"})
+        record("CI: a clean range and title pass", rc == 0, f"rc={rc}")
+        rc, out = run_ci(guard, repo, base, head, {})
+        record("CI: a missing secret on this repo's own event FAILS closed",
+               rc != 0, f"rc={rc}")
+        rc, out = run_ci(guard, repo, base, head, {"FORK_PR": "true"})
+        record("CI: a fork PR without secrets passes with a notice",
+               rc == 0 and "fork" in out, f"rc={rc}")
+
+    # --- 17. REGRESSION (ASK-2058 review blocker 1): binaries and path names ---
+    # Neither is an added TEXT line, so the line scan passed both. The review's
+    # reproducer: a NUL-prefixed payload and a client-named directory.
+    def zip_bytes(member_text):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", member_text)
+        return buf.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        cases = [("raw bytes in a binary", "blob.bin", b"\0\x01" + f"{CLIENT} payload".encode()),
+                 ("text inside a zip member (.docx)", "report.docx",
+                  zip_bytes(f"<w:t>prepared for {CLIENT}</w:t>")),
+                 ("a path name", f"{CLIENT.lower()}-notes/plan.md", b"clean payload\n")]
+        for label, name, data in cases:
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            git(repo, "add", name)
+            env = dict(os.environ, HOME=str(home))
+            c = subprocess.run(["git", "commit", "-m", "ordinary"], cwd=repo,
+                               capture_output=True, text=True, env=env)
+            record(f"local: a name in {label} BLOCKS", c.returncode != 0,
+                   f"rc={c.returncode}")
+            git(repo, "reset", "-q", "--mixed", check=False)
+            path.unlink()
+
+    # --- 18. CI: the same three, and the log still never names the term -------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / "blob.bin").write_bytes(b"\0" + f"{CLIENT} payload".encode())
+        (repo / "report.docx").write_bytes(zip_bytes(f"prepared for {CLIENT}"))
+        (repo / f"{CLIENT.lower()}-notes").mkdir()
+        (repo / f"{CLIENT.lower()}-notes" / "plan.md").write_text("clean\n")
+        git(repo, "add", "-A")
+        commit(repo, home, "binaries")
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: binary, zip member and path name all FAIL",
+               rc != 0 and "blob.bin" in out and "report.docx" in out
+               and "path name" in out, f"rc={rc}")
+        record("CI: no term in the output, a term-bearing path is masked",
+               CLIENT.lower() not in out.lower(), "term printed" if CLIENT.lower() in out.lower() else "")
+
+    # --- 19. REGRESSION (review blocker 2): no base => the WHOLE tree ----------
+    # The workflow used to fall back to HEAD^..HEAD, so a name added two commits
+    # back in the same push passed. --tree reads every file the push left.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "first", {"early.md": f"note about {CLIENT}\n"})
+        commit(repo, home, "second", {"late.md": "clean\n"})
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, "HEAD^", "HEAD", {"PRIVATE_TERMS": secret})
+        missed_by_range = rc == 0
+        env = {k: v for k, v in os.environ.items() if k != "PRIVATE_TERMS"}
+        env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret)
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree catches a name the HEAD^..HEAD range misses",
+               missed_by_range and t.returncode != 0 and "early.md" in t.stdout,
+               f"range rc={rc}, tree rc={t.returncode}")
+        # Exemptions are PINNED to a blob (review round 2): the reviewed version
+        # is skipped, any other version of the same path is scanned again.
+        (repo / ".github").mkdir()
+        pin = git(repo, "rev-parse", "HEAD:early.md").stdout.strip()
+        exempt = repo / ".github" / "private-terms-exempt.txt"
+        exempt.write_text(f"# reason\nearly.md {pin}\n")
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree skips a file pinned at its exact blob", t.returncode == 0,
+               f"rc={t.returncode}")
+        exempt.write_text("# a path alone exempts nothing\nearly.md\n")
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree: a path-only exempt line exempts nothing", t.returncode != 0,
+               f"rc={t.returncode}")
+        exempt.write_text(f"early.md {pin}\n")
+        commit(repo, home, "edit the exempt file", {"early.md": f"note about {CLIENT}\nmore\n"})
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree: a CHANGED version of a pinned file is scanned again",
+               t.returncode != 0 and "early.md" in t.stdout, f"rc={t.returncode}")
+
+    # --- 19b. REGRESSION (review round 2): every pushed message, not HEAD's ----
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        commit(repo, home, f"notes from the {CLIENT} call", {"a.md": "clean\n"})
+        early = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit(repo, home, "tidy", {"b.md": "clean\n"})
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+
+        def tree(pushed):
+            env = {k: v for k, v in os.environ.items() if k not in ("PRIVATE_TERMS", "PUSH_COMMITS")}
+            env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret,
+                       PUSH_COMMITS=json.dumps(pushed))
+            return subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                                  cwd=repo, capture_output=True, text=True, env=env)
+        t1, t2 = tree([early, head]), tree([head])
+        record("CI --tree scans every message the push lists, not only HEAD's",
+               t1.returncode != 0 and t2.returncode == 0,
+               f"listed rc={t1.returncode}, head-only rc={t2.returncode}")
+        t3 = tree(["0" * 40])
+        record("CI --tree: a pushed commit missing from the clone fails closed",
+               t3.returncode != 0, f"rc={t3.returncode}")
+        t4 = tree([head] * 2048)
+        record("CI --tree: a push list at the payload cap fails closed",
+               t4.returncode != 0, f"rc={t4.returncode}")
+
+    # --- 19c. an author identity is a person's name too -------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "-c", f"user.name={CLIENT} Staffer", "commit", "-q", "--allow-empty",
+            "-m", "empty", env=dict(os.environ, HOME=str(home)))
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a name in a commit's AUTHOR fails", rc != 0, f"rc={rc}")
+
+    # --- 20. an excluded spelling cannot regrow in CI ---------------------------
+    # CI re-expands every spelling; without the shipped exclusions "the lab"
+    # regrew from "the_lab" (measured on this branch's first full-tree run).
+    # The payload is EXPORTED by the guard under test from a real private config
+    # (the laptop side), then read back by CI: the defect was in the export.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        kipi = home / ".config" / "kipi"
+        (kipi / "lab-tokens").write_text("the_lab\n")
+        (kipi / "private-terms.json").write_text(json.dumps({
+            "token_files": [str(kipi / "lab-tokens")], "exclude": ["the lab"]}))
+        exp = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys\n"
+             "s=importlib.util.spec_from_file_location('g',sys.argv[1])\n"
+             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
+             "print(g.export_payload(g.base_payload()))", str(guard)],
+            capture_output=True, text=True, env=dict(os.environ, HOME=str(home)))
+        secret = exp.stdout.strip()
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        rc1, _ = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                  "PR_TITLE": "notes from the lab"})
+        rc2, _ = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                  "PR_TITLE": "notes from the_lab"})
+        record("CI: an excluded spelling passes, its folder spelling still FAILS",
+               rc1 == 0 and rc2 != 0, f"phrase rc={rc1}, folder rc={rc2}")
+
+    # --- 21. the workflow's shape (review rounds 1 and 2) ---------------------
+    # A structural read, because the properties live in YAML no unit test runs:
+    # base-branch code only, the environment-scoped secret, no fork oracle, and
+    # the full-tree fallback instead of HEAD^..HEAD.
+    wf = HERE.parents[3] / ".github" / "workflows" / "private-terms.yml"
+    if wf.exists():
+        code = "\n".join(l for l in wf.read_text().splitlines()
+                         if not l.lstrip().startswith("#"))
+        record("workflow: pull_request_target, never pull_request",
+               "pull_request_target:" in code
+               and not re.search(r"^\s*pull_request:", code, re.M))
+        record("workflow: the secret is an environment secret, environment private-terms",
+               "environment: private-terms" in code)
+        record("workflow: fork PRs never reach the secret",
+               "head.repo.full_name == github.repository" in code)
+        record("workflow: the PR head is fetched as data, never checked out",
+               "refs/pull/" in code and "ref: ${{ github.event.pull_request.head" not in code)
+        record("workflow: no-base fallback is --tree, never HEAD^..HEAD",
+               "--tree" in code and 'base="HEAD^"' not in code)
+
+    # --- 22. REGRESSION (review round 3, blocker 1): `people` takes a list ----
+    # The live registry holds a list under `contacts` on some clients and ONE
+    # object under `contact` on others. The pre-fix loader read one key and
+    # iterated it as a list: a dict yields its keys, so that person was missed,
+    # and a list of keys crashed it.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        reg = Path(tmp) / "clients.json"
+        reg.write_text(json.dumps({"clients": [
+            {"name": "Quexwell Labs", "contacts": [{"name": "Morwen Tallis"}]},
+            {"name": "Brindlecap Partners",
+             "contact": {"name": "Ilsa Vantorre", "role": "cto"}}]}))
+
+        def people_from(people):
+            (home / ".config" / "kipi" / "private-terms.json").write_text(json.dumps({
+                "json_sources": [{"path": str(reg), "records": "clients",
+                                  "keys": ["name"], "people": people}]}))
+
+        people_from("contact")
+        rc, out = commit(repo, home, "ordinary", {"f.md": "met Ilsa Vantorre today\n"})
+        record("people: one {name} object under the key BLOCKS",
+               rc != 0 and "BLOCK" in out, f"rc={rc}")
+        git(repo, "reset", "-q", "--mixed", check=False)
+        people_from(["contacts", "contact"])
+        for label, body in (("list-shaped key", "met Morwen Tallis today\n"),
+                            ("object-shaped key", "met Ilsa Vantorre today\n")):
+            rc, out = commit(repo, home, "ordinary", {"f.md": body})
+            record(f"people: a list of keys, the {label} BLOCKS (no traceback)",
+                   rc != 0 and "BLOCK" in out and "Traceback" not in out, f"rc={rc}")
+            git(repo, "reset", "-q", "--mixed", check=False)
+
+    # --- 23. REGRESSION (review round 3, blocker 2): no partial list reaches CI
+    # An unreadable registry warned and dropped out, and --sync-ci-secret pushed
+    # the shorter list as if complete. A fake `gh` records what would be sent.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)   # client-tokens holds CLIENT
+        git(repo, "remote", "add", "origin",
+            "https://github.com/example-owner/example-public.git")
+        fakebin = Path(tmp) / "bin"
+        fakebin.mkdir()
+        log = Path(tmp) / "gh.log"
+        gh = fakebin / "gh"
+        gh.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n'
+                      'case "$*" in *"repo view"*) echo PUBLIC;; esac\nexit 0\n')
+        gh.chmod(0o755)
+
+        def sync():
+            env = dict(os.environ, HOME=str(home),
+                       PATH=f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}")
+            env.pop("PRIVATE_TERMS", None)
+            p = subprocess.run([sys.executable, str(guard), "--sync-ci-secret"],
+                               cwd=repo, capture_output=True, text=True, env=env)
+            pushed = log.exists() and "secret set" in log.read_text()
+            return p.returncode, p.stdout + p.stderr, pushed
+
+        kipi = home / ".config" / "kipi"
+        (kipi / "private-terms.json").write_text(json.dumps({"json_sources": [
+            {"path": str(Path(tmp) / "moved-away.json"), "records": "clients",
+             "keys": ["name"]}]}))
+        rc, out, pushed = sync()
+        record("sync: an unreadable source refuses the CI secret push",
+               rc == 0 and not pushed and "NOT synced" in out,
+               f"rc={rc}, pushed={pushed}")
+        (kipi / "private-terms.json").write_text(json.dumps({"json_sources": []}))
+        rc, out, pushed = sync()
+        record("sync: every source readable => the secret IS pushed (control)",
+               rc == 0 and pushed, f"rc={rc}, pushed={pushed}")
+
+    # --- 24. REGRESSION (review round 3, blocker 3): claim only what it detects
+    # The BLOCK text said "client money" while no live rate produced a hit.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        rc, out = commit(repo, home, "ordinary", {"f.md": f"note about {CLIENT}\n"})
+        record("BLOCK text names identifiers and claims no money detection",
+               rc != 0 and "identifiers" in out and "money" not in out.lower(),
                f"rc={rc}")
+
+    # --- 25. REGRESSION (review round 3, minor): an added "++" line is content -
+    # Its diff line reads "+++ ...", which the pre-fix parser took for a file
+    # header anywhere in the diff, so the line was never scanned.
     with tempfile.TemporaryDirectory() as tmp:
-        home, repo = armed_with_exclusion(tmp, excl_cfg)
-        rc, out = commit(repo, home, "ordinary",
-                         {"a.md": f"internal note about {CLIENT}\n"})
-        record("an exclusion is not a mute switch: other tokens still BLOCK",
-               rc != 0 and head_count(repo) == 0, f"rc={rc}")
-    with tempfile.TemporaryDirectory() as tmp:
-        home, repo = armed_with_exclusion(tmp, "{not json")
-        rc, out = commit(repo, home, "ordinary",
-                         {"a.md": f"see the {OWN_PUBLIC} repo\n"})
-        record("an unreadable config excludes nothing (stricter, never quieter)",
+        home, repo = make_repo(tmp, guard)
+        rc, out = commit(repo, home, "ordinary", {"f.md": f"++ {CLIENT} counter\n"})
+        record("an added line starting with '++' is scanned and BLOCKS",
                rc != 0 and head_count(repo) == 0, f"rc={rc}")
 
     failed = [n for n, ok in results if not ok]
@@ -233,6 +665,9 @@ def main(guard):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--against", type=Path, default=GUARD,
+    # RESOLVED, not taken as given. The hook runs with the temp repo as cwd, so
+    # a relative --against path points nowhere from there and every case reads
+    # rc=1: a negative self-test that reports on a guard it never ran.
+    ap.add_argument("--against", type=lambda p: Path(p).resolve(), default=GUARD,
                     help="guard implementation to test (for the negative self-test)")
     sys.exit(main(ap.parse_args().against))
