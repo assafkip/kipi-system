@@ -58,6 +58,30 @@ def ledger(tmp_path):
     return str(p)
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Every lane in this file reads a TEMPORARY shares config, never the live one.
+
+    `usage_breaker._cfg` falls back to `~/.config/kipi/usage-shares.json` when
+    `KIPI_USAGE_SHARES` is unset, so the in-process `decide` calls below were
+    reading the founder's real config and the subprocess lane went further and
+    POPPED the variable, which guaranteed the live read (claude review of PR
+    #472, major). Any `window_days`, `dollar_floor`, `priority` or `low_priority`
+    the real file carries would silently rewrite the verdicts this file asserts,
+    and nothing in a green run would say so.
+
+    An EMPTY config is the right temporary copy here: the module's own
+    DEFAULT_CFG is what the DoR's shares are specified against, and a copy of
+    whatever the machine happens to hold would reintroduce the same dependency
+    one level down.
+    """
+    cfg = tmp_path / "usage-shares.json"
+    cfg.write_text("{}")
+    monkeypatch.setenv(usage_breaker.CONFIG_ENV, str(cfg))
+    monkeypatch.setenv(usage_breaker.STATE_ENV, str(tmp_path / "in-process-breaker.json"))
+    return str(cfg)
+
+
 # --- the arithmetic, against the measured week ------------------------------
 
 def test_spend_by_bot_matches_the_measured_week(rows):
@@ -142,8 +166,18 @@ def run_cli(tmp_path, bot, now, *, notify, ledger, env_extra=None, args=()):
         "KIPI_USAGE_LEDGER": ledger,
         "KIPI_USAGE_BREAKER_STATE": str(tmp_path / "breaker.json"),
         "KIPI_NOTIFY": str(script),
+        # Point at the TEMPORARY config, never pop the variable. Popping it was
+        # not neutrality, it was a vote for the live `~/.config/kipi/usage-
+        # shares.json` (claude review of PR #472, major).
+        "KIPI_USAGE_SHARES": str(tmp_path / "cli-usage-shares.json"),
+        # Belt to that brace: even a future code path that forgets an env var
+        # resolves its `~` default inside tmp_path rather than in the founder's
+        # home. HOME is read at import time by DEFAULT_STATE / DEFAULT_CONFIG,
+        # and this subprocess imports fresh.
+        "HOME": str(tmp_path / "home"),
     })
-    env.pop("KIPI_USAGE_SHARES", None)
+    (tmp_path / "cli-usage-shares.json").write_text("{}")
+    (tmp_path / "home").mkdir(exist_ok=True)
     env.update(env_extra or {})
     return subprocess.run([sys.executable, MODULE, "check", "--bot", bot, "--now", now, *args],
                           capture_output=True, text=True, env=env)
@@ -267,6 +301,120 @@ def test_the_off_switch_is_honoured(tmp_path, notify, ledger):
                 env_extra={"KIPI_USAGE_BREAKER": "0"})
     assert r.returncode == 0, r.stderr
     assert paged(notify) == []
+
+
+# --- the state file: one locked, atomic read-modify-write -------------------
+
+WRITER_DRIVER = '''
+import json, sys, time
+sys.path.insert(0, {pkg!r})
+from voiceloop import usage_breaker as ub
+
+bot, mode, hold = sys.argv[1], sys.argv[2], float(sys.argv[3])
+
+def mutate(state):
+    state.setdefault("bots", {{}})[bot] = {{"paused_at": "2026-09-24T12:00:00Z"}}
+    time.sleep(hold)          # the window every read-modify-write has
+    return state
+
+if mode == "unsafe":          # what the pre-fix call sites did: two calls, no lock
+    ub.write_state(mutate(ub.read_state()))
+else:
+    ub.update_state(mutate)
+'''
+
+
+def _writers(tmp_path, state_file, mode, hold=1.0):
+    """Two processes writing DIFFERENT bots into one state file at the same time."""
+    driver = tmp_path / f"writer-{mode}.py"
+    driver.write_text(WRITER_DRIVER.format(
+        pkg=os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))))
+    env = dict(os.environ, KIPI_USAGE_BREAKER_STATE=str(state_file))
+    procs = [subprocess.Popen([sys.executable, str(driver), bot, mode, str(hold)],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+             for bot in ("alpha", "beta")]
+    for p in procs:
+        p.wait(timeout=60)
+    return sorted(json.loads(state_file.read_text())["bots"])
+
+
+def test_two_concurrent_writers_cannot_lose_an_update(tmp_path):
+    """The reproducer for the major: `write_state` was an unlocked read-modify-write.
+
+    The worker and chief's jobs entry both check the brake, and the worker ticks
+    every 15 minutes, so two processes landing in the same second is ordinary.
+    Pre-fix each read the state, each mutated its own copy, and the second write
+    erased the first bot's pause: that bot then re-entered the first-pause branch
+    on its next tick and filed a second Linear ticket out of a contract that
+    promises one.
+
+    The `unsafe` leg is the control. It drives the PRE-FIX pattern through the
+    same harness, so if this test ever passes both ways the harness is not
+    reproducing a race at all.
+    """
+    lost = _writers(tmp_path, tmp_path / "unsafe.json", "unsafe")
+    assert len(lost) == 1, f"control did not reproduce the race (got {lost})"
+
+    kept = _writers(tmp_path, tmp_path / "locked.json", "locked")
+    assert kept == ["alpha", "beta"], f"an update was lost under the lock: {kept}"
+
+
+def test_a_failed_write_leaves_the_previous_state_intact(tmp_path, monkeypatch):
+    """Atomicity, the other half of the major.
+
+    Pre-fix `write_state` opened the real file with mode "w" and serialized
+    INTO it, so a value json cannot encode truncated the live state file on its
+    way to raising. The brake then read `{bots: {}}` on the next tick and every
+    paused bot came back unpaused and re-paged.
+    """
+    state_file = tmp_path / "breaker.json"
+    monkeypatch.setenv(usage_breaker.STATE_ENV, str(state_file))
+    good = {"bots": {"lgtm": {"paused_at": "2026-09-24T12:00:00Z"}}}
+    assert usage_breaker.write_state(good)
+
+    assert not usage_breaker.write_state({"bots": {"lgtm": {object(): 1}}})
+    assert json.loads(state_file.read_text()) == good, "the failed write damaged the live state"
+    # No debris either: a tempfile left beside the target is the next run's
+    # puzzle, and on the live state dir it would be one per failed tick.
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")] == []
+
+
+# --- test isolation: no lane here may read a live config --------------------
+
+
+def test_no_lane_reads_the_live_shares_config(tmp_path, notify, ledger):
+    """The reproducer for the major: a config at the DEFAULT path must be ignored.
+
+    `_cfg` falls back to `~/.config/kipi/usage-shares.json`. This plants a config
+    at exactly that path under a fake HOME and makes it loud: a `min_total_usd`
+    nothing can clear, which turns the DoR's pausing bot into a running one. If
+    any lane resolves the default path, the verdict flips and this goes red.
+
+    Run RED against the pre-fix file (`env.pop("KIPI_USAGE_SHARES")`): the CLI
+    read the planted config and returned 0 instead of 3.
+    """
+    fake_home = tmp_path / "planted-home"
+    (fake_home / ".config" / "kipi").mkdir(parents=True)
+    (fake_home / ".config" / "kipi" / "usage-shares.json").write_text(
+        json.dumps({"min_total_usd": 1e9}))
+    r = run_cli(tmp_path, "lgtm", "2026-09-24T12:00:00Z", notify=notify, ledger=ledger,
+                env_extra={"HOME": str(fake_home)})
+    assert r.returncode == 3, (
+        "a config at the live default path changed the verdict: "
+        f"{r.returncode} instead of 3\n{r.stdout}{r.stderr}")
+
+
+def test_the_in_process_lane_is_pinned_to_a_temporary_config():
+    """The in-process half of the same major.
+
+    `decide` and `over_share` call `_cfg` too, so the autouse fixture has to
+    cover them and not only the subprocess. Asserting on the resolved path is
+    the only check here that can go red if the fixture is dropped.
+    """
+    resolved = os.environ.get(usage_breaker.CONFIG_ENV)
+    assert resolved, "KIPI_USAGE_SHARES is unset: _cfg would read the live default"
+    assert resolved != usage_breaker.DEFAULT_CONFIG
+    assert json.loads(open(resolved, encoding="utf-8").read()) == {}
 
 
 # --- the four findings from the claude review of PR #472 --------------------

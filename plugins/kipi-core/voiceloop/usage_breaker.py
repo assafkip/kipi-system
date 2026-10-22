@@ -70,11 +70,14 @@ Config:     `~/.config/kipi/usage-shares.json`  (`KIPI_USAGE_SHARES`).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 
 try:  # imported as part of the package
@@ -249,17 +252,94 @@ def read_state() -> dict:
 
 
 def write_state(state: dict) -> bool:
+    """Serialize to a sibling tempfile, then rename over the target.
+
+    Opening the target with "w" truncates it BEFORE `json.dump` has produced a
+    byte, so any value json cannot encode left the live state file half written
+    (claude review of PR #472, major). The next tick then read `{"bots": {}}`,
+    every paused bot came back unpaused, and the one-alert contract paged again
+    for pauses that were already recorded. A rename is atomic on POSIX, so the
+    target is either the old state or the new one and never a prefix of either.
+
+    This is the WRITE half only. A read-modify-write cycle goes through
+    `update_state`, which holds the lock across the whole cycle; this function
+    on its own cannot stop two writers from losing an update.
+    """
     target = state_path()
+    tmp = None
     try:
-        parent = os.path.dirname(target)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as fh:
+        parent = os.path.dirname(target) or "."
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=parent, prefix=".usage-breaker-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(state, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
         return True
     except (OSError, TypeError, ValueError) as exc:
         sys.stderr.write(f"usage_breaker: cannot write {target}: {exc}\n")
         return False
+    finally:
+        # A tempfile left beside the target is the next run's puzzle, and on the
+        # state dir it would accumulate one per failed tick.
+        if tmp and os.path.exists(tmp):
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+@contextlib.contextmanager
+def state_lock():
+    """One exclusive lock over a whole read-modify-write of the state file.
+
+    The lock lives beside the state file rather than on it, because the write is
+    a rename: locking the target would lock an inode that `os.replace` is about
+    to detach, and the next process would hold a lock on a file nobody reads.
+
+    DEGRADES OPEN, loudly. A brake that refuses to answer because it could not
+    make a lock file is the fail-CLOSED brake the module docstring rules out: it
+    would dark-start every bot at once. An unlockable path says so on stderr and
+    proceeds, which is exactly the pre-fix behaviour and no worse than it.
+    """
+    path = state_path() + ".lock"
+    fh = None
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fh = open(path, "a+", encoding="utf-8")  # noqa: SIM115 -- closed in finally
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        if fh is not None:
+            with contextlib.suppress(OSError):
+                fh.close()
+            fh = None
+        sys.stderr.write(f"usage_breaker: cannot lock {path}: {exc}; proceeding UNLOCKED\n")
+    try:
+        yield
+    finally:
+        if fh is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            with contextlib.suppress(OSError):
+                fh.close()
+
+
+def update_state(mutate) -> bool:
+    """THE read-modify-write chokepoint. Read, mutate and write under one lock.
+
+    `read_state()` then `write_state()` as two separate calls is a lost update
+    waiting for two processes: the worker ticks every 15 minutes and chief's
+    jobs entry checks the same brake, so a collision is ordinary, not exotic.
+    Whoever wrote second erased the other bot's pause, that bot re-entered the
+    first-pause branch on its next tick, and the "exactly one alert" contract
+    filed a second Linear ticket (claude review of PR #472, major).
+
+    `mutate` receives the freshly read state and returns the state to write.
+    It runs INSIDE the lock on purpose: a lock that covered only the read and
+    only the write would leave the same window between them.
+    """
+    with state_lock():
+        state = read_state()
+        return write_state(mutate(state))
 
 
 def _seconds_between(earlier: str, later: str) -> float:
@@ -362,15 +442,35 @@ def check(bot: str, now: str, cfg=None, dry: bool = False) -> int:
                          f"{bot} runs unbraked\n")
         return 0
     d = decide(rows, bot, now, cfg)
-    state = read_state()
-    entry = dict(state["bots"].get(bot) or {})
-    rc, effect = _state_verdict(d, entry, now)
 
     if dry:
+        # No lock: a dry check writes nothing, so it has no cycle to protect and
+        # no reason to make the round that DOES spend wait behind it.
+        entry = dict(read_state()["bots"].get(bot) or {})
+        rc, effect = _state_verdict(d, entry, now)
         sys.stderr.write(f"usage_breaker: DRY check -- {bot} would {effect} "
                          f"({d.reason}, {d.share_used:.3f} of {d.share_allowed:.3f} share, "
                          f"window ending {d.end}). Nothing recorded, nothing paged.\n")
         return rc
+
+    # THE WHOLE read-modify-write under ONE lock, not a lock per write. The
+    # verdict is derived from the entry that is about to be overwritten, so a
+    # lock that opened after `_state_verdict` would protect the write and leave
+    # the decision racing (claude review of PR #472, major; and the lessons
+    # corpus: a lock per append does not cover the operation between appends).
+    with state_lock():
+        return _act(bot, d, now)
+
+
+def _act(bot: str, d: Decision, now: str) -> int:
+    """The acting half of `check`. CALLED ONLY FROM INSIDE `state_lock()`.
+
+    Split out so the lock's extent is one `with` block and cannot be widened or
+    narrowed by an edit three branches down.
+    """
+    state = read_state()
+    entry = dict(state["bots"].get(bot) or {})
+    rc, effect = _state_verdict(d, entry, now)
 
     if effect in ("resume", "none"):
         if effect == "resume":
