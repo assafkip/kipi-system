@@ -73,10 +73,23 @@ def _kept_out_of_repo(ref):
     ignore rule names it: a typo or a deleted file is not ignored and still fails.
     While the file is still tracked, the existence check passes first and this
     never runs.
+
+    A LITERAL RULE FOR THAT EXACT PATH, NOT ANY RULE (PR #552 review round 1).
+    A glob such as `output/**` also ignores a typo under output/, so "ignored"
+    alone would skip the very mistake this check exists to catch. The deciding
+    rule must be a non-negated pattern with no wildcard, in a .gitignore inside
+    this repo, that spells out this file's path.
     """
-    r = subprocess.run(["git", "-C", REPO_ROOT, "check-ignore", "-q", "--no-index",
-                        os.path.join(QROOT, ref)], capture_output=True)
-    return r.returncode == 0
+    full = os.path.join(QROOT, ref)
+    r = subprocess.run(["git", "-C", REPO_ROOT, "check-ignore", "-v", "--no-index", full],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or "\t" not in r.stdout:
+        return False
+    source, _, pattern = r.stdout.split("\t", 1)[0].split(":", 2)
+    if os.path.isabs(source) or pattern.startswith("!") or any(c in pattern for c in "*?[\\"):
+        return False
+    rule_dir = os.path.join(REPO_ROOT, os.path.dirname(source))
+    return pattern.strip("/") == os.path.relpath(full, rule_dir)
 
 
 def test_files_exist(graph):
