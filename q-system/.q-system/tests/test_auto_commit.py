@@ -328,8 +328,8 @@ class TestTheFleetSyncSharesThisClassifier:
         for p in ["q-investigate/investigations/case-001/evidence/capture.pdf",
                   "q-investigate/.../generators/fill_sheet.py",
                   "output/opportunities/opps-2026-08-01.md",
-                  "q-pure/output/drafts/2026-08-10-sushma.md",
-                  "projects/2026_QEP_Agent_Automation/progress.md"]:
+                  "q-client_b/output/drafts/2026-08-10-sam.md",
+                  "projects/2026_client_b_automation/progress.md"]:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_it_filters_a_mixed_list_rather_than_all_or_nothing(self):

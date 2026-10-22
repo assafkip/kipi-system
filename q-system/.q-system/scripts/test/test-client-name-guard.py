@@ -27,8 +27,10 @@ not measuring this fix.
 """
 
 import argparse
+import io
 import json
 import os
+import zipfile
 import subprocess
 import sys
 import tempfile
@@ -390,6 +392,113 @@ def main(guard):
         rc, out = run_ci(guard, repo, base, head, {"FORK_PR": "true"})
         record("CI: a fork PR without secrets passes with a notice",
                rc == 0 and "fork" in out, f"rc={rc}")
+
+    # --- 17. REGRESSION (ASK-2058 review blocker 1): binaries and path names ---
+    # Neither is an added TEXT line, so the line scan passed both. The review's
+    # reproducer: a NUL-prefixed payload and a client-named directory.
+    def zip_bytes(member_text):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("word/document.xml", member_text)
+        return buf.getvalue()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        cases = [("raw bytes in a binary", "blob.bin", b"\0\x01" + f"{CLIENT} payload".encode()),
+                 ("text inside a zip member (.docx)", "report.docx",
+                  zip_bytes(f"<w:t>prepared for {CLIENT}</w:t>")),
+                 ("a path name", f"{CLIENT.lower()}-notes/plan.md", b"clean payload\n")]
+        for label, name, data in cases:
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            git(repo, "add", name)
+            env = dict(os.environ, HOME=str(home))
+            c = subprocess.run(["git", "commit", "-m", "ordinary"], cwd=repo,
+                               capture_output=True, text=True, env=env)
+            record(f"local: a name in {label} BLOCKS", c.returncode != 0,
+                   f"rc={c.returncode}")
+            git(repo, "reset", "-q", "--mixed", check=False)
+            path.unlink()
+
+    # --- 18. CI: the same three, and the log still never names the term -------
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / "blob.bin").write_bytes(b"\0" + f"{CLIENT} payload".encode())
+        (repo / "report.docx").write_bytes(zip_bytes(f"prepared for {CLIENT}"))
+        (repo / f"{CLIENT.lower()}-notes").mkdir()
+        (repo / f"{CLIENT.lower()}-notes" / "plan.md").write_text("clean\n")
+        git(repo, "add", "-A")
+        commit(repo, home, "binaries")
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: binary, zip member and path name all FAIL",
+               rc != 0 and "blob.bin" in out and "report.docx" in out
+               and "path name" in out, f"rc={rc}")
+        record("CI: no term in the output, a term-bearing path is masked",
+               CLIENT.lower() not in out.lower(), "term printed" if CLIENT.lower() in out.lower() else "")
+
+    # --- 19. REGRESSION (review blocker 2): no base => the WHOLE tree ----------
+    # The workflow used to fall back to HEAD^..HEAD, so a name added two commits
+    # back in the same push passed. --tree reads every file the push left.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "first", {"early.md": f"note about {CLIENT}\n"})
+        commit(repo, home, "second", {"late.md": "clean\n"})
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, "HEAD^", "HEAD", {"PRIVATE_TERMS": secret})
+        missed_by_range = rc == 0
+        env = {k: v for k, v in os.environ.items() if k != "PRIVATE_TERMS"}
+        env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret)
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree catches a name the HEAD^..HEAD range misses",
+               missed_by_range and t.returncode != 0 and "early.md" in t.stdout,
+               f"range rc={rc}, tree rc={t.returncode}")
+        (repo / ".github").mkdir()
+        (repo / ".github" / "private-terms-exempt.txt").write_text("# reason\nearly.md\n")
+        t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
+                           cwd=repo, capture_output=True, text=True, env=env)
+        record("CI --tree skips a path listed in the exempt file", t.returncode == 0,
+               f"rc={t.returncode}")
+
+    # --- 20. an excluded spelling cannot regrow in CI ---------------------------
+    # CI re-expands every spelling; without the shipped exclusions "the lab"
+    # regrew from "the_lab" (measured on this branch's first full-tree run).
+    # The payload is EXPORTED by the guard under test from a real private config
+    # (the laptop side), then read back by CI: the defect was in the export.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        kipi = home / ".config" / "kipi"
+        (kipi / "lab-tokens").write_text("the_lab\n")
+        (kipi / "private-terms.json").write_text(json.dumps({
+            "token_files": [str(kipi / "lab-tokens")], "exclude": ["the lab"]}))
+        exp = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys\n"
+             "s=importlib.util.spec_from_file_location('g',sys.argv[1])\n"
+             "g=importlib.util.module_from_spec(s);s.loader.exec_module(g)\n"
+             "print(g.export_payload(g.base_payload()))", str(guard)],
+            capture_output=True, text=True, env=dict(os.environ, HOME=str(home)))
+        secret = exp.stdout.strip()
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        rc1, _ = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                  "PR_TITLE": "notes from the lab"})
+        rc2, _ = run_ci(guard, repo, base, base, {"PRIVATE_TERMS": secret,
+                                                  "PR_TITLE": "notes from the_lab"})
+        record("CI: an excluded spelling passes, its folder spelling still FAILS",
+               rc1 == 0 and rc2 != 0, f"phrase rc={rc1}, folder rc={rc2}")
+
+    # --- 21. the workflow's no-base fallback is the tree scan, not HEAD^ -------
+    wf = HERE.parents[3] / ".github" / "workflows" / "private-terms.yml"
+    if wf.exists():
+        text = wf.read_text()
+        record("private-terms.yml falls back to --tree, never HEAD^..HEAD",
+               "--tree" in text and 'base="HEAD^"' not in text)
 
     failed = [n for n, ok in results if not ok]
     print()

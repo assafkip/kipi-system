@@ -8,7 +8,8 @@
 #   * a commit made with --no-verify, or from a machine without the list;
 #   * a hook that is not installed in the clone that made the commit.
 # So this job scans the PR title, the PR body, every commit message in the
-# range and every added line, against the PRIVATE_TERMS repo secret, which
+# range, every added line, every added path name and the content of every added
+# binary (zip containers inflated), against the PRIVATE_TERMS repo secret, which
 # `client-name-guard.py --sync-ci-secret` refreshes from the lefthook pre-push
 # stage whenever the private list changes.
 #
@@ -52,10 +53,12 @@ jobs:
         run: |
           if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$PUSH_BEFORE"; fi
           # A first push carries an all-zero `before`, and a force-push leaves
-          # one this clone does not have. Then the base is the first parent:
-          # main squash-merges, so HEAD^ is main one merge ago.
+          # one this clone does not have. This used to fall back to HEAD^..HEAD,
+          # which let a term added by any EARLIER commit of that push pass as
+          # clean (ASK-2058 review, blocker 2). Without a base there is no range
+          # to trust, so scan the whole tree the push produced instead.
           if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "base '${base}' is not a commit in this clone; scanning HEAD^..HEAD"
-            base="HEAD^"
+            echo "base '${base}' is not a commit in this clone; scanning the full tree at HEAD"
+            exec python3 q-system/.q-system/scripts/client-name-guard.py --ci --tree --head HEAD
           fi
           python3 q-system/.q-system/scripts/client-name-guard.py --ci --base "$base" --head HEAD

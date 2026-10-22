@@ -95,11 +95,13 @@ Usage:
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 KIPI_CONFIG = Path.home() / ".config" / "kipi"
@@ -245,6 +247,13 @@ def _json_source(src, add, warn):
             add(key, "email")
 
 
+# The exclusions the last load_terms applied. base_payload ships them to CI,
+# because CI re-expands every spelling and would otherwise regrow an excluded
+# one from a sibling ("the lab" from "the_lab"). Measured on this branch's
+# first full-tree run, 2026-10-22: exactly that false positive.
+_LAST_EXCLUDE = set()
+
+
 def load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}")):
     """{variant: kind} from every private source, or None when none exists.
 
@@ -311,6 +320,8 @@ def load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}")):
     # ("the_lab") is not, so expanding an exclusion to every separator spelling
     # would unblock the folder name too.
     dropped = {" ".join(x.lower().split()) for x in exclude}
+    global _LAST_EXCLUDE
+    _LAST_EXCLUDE = dropped
     return {t: k for t, k in terms.items() if t not in dropped}
 
 
@@ -321,10 +332,10 @@ def export_payload(payload):
 def base_payload():
     """The term list as CI receives it: kind -> sorted spellings.
 
-    Already expanded and already filtered by `exclude` on this machine, so the
-    private-terms.json config never has to reach CI. CI expands each spelling
-    again in load_terms; that only adds separator spellings of the same words,
-    so CI can be stricter than the laptop and never looser.
+    Already expanded and filtered on this machine, so private-terms.json never
+    has to reach CI. CI expands each spelling again in load_terms, which only
+    adds separator spellings of the same words, and then drops the shipped
+    exclusions, so an excluded spelling cannot regrow there.
     """
     terms = load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}", file=sys.stderr))
     if not terms:
@@ -332,7 +343,8 @@ def base_payload():
     by_kind = {}
     for t, k in terms.items():
         by_kind.setdefault(k, []).append(t)
-    return {"terms": {k: sorted(v) for k, v in sorted(by_kind.items())}}
+    return {"terms": {k: sorted(v) for k, v in sorted(by_kind.items())},
+            "exclude": sorted(_LAST_EXCLUDE)}
 
 
 # --- scanning --------------------------------------------------------------
@@ -390,6 +402,69 @@ def _staged_added(rev=None):
     return _added_lines(r.stdout)
 
 
+def _blob(spec):
+    """Raw bytes of a blob (":path" = the index, "<rev>:path"), or None."""
+    r = subprocess.run(["git", "cat-file", "blob", spec], capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def _blob_id(spec):
+    r = _git("rev-parse", "--verify", "--quiet", spec)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+# Members past this size are skipped rather than inflated in a commit hook.
+_ZIP_MEMBER_CAP = 50 * 1024 * 1024
+
+
+def binary_text(data):
+    """The searchable text of a binary blob (ASK-2058 review blocker 1).
+
+    Its raw bytes, decoded with replacement, catch a name stored as plain bytes
+    (a PDF string, a database page, a pickle). A zip container (.docx, .xlsx,
+    .pptx, .zip) deflates its text, so every member is inflated and scanned too:
+    the architecture .docx files in this repo carried client names exactly that
+    way. HONEST LIMIT: text drawn as pixels in an image is not text, and nothing
+    here reads it.
+    """
+    chunks = [data]
+    if data[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                for info in z.infolist():
+                    if info.file_size <= _ZIP_MEMBER_CAP:
+                        chunks.append(z.read(info))
+        except (zipfile.BadZipFile, RuntimeError, OSError, NotImplementedError, EOFError):
+            pass
+    return "\n".join(c.decode("utf-8", errors="replace") for c in chunks)
+
+
+def _changed_files(*diff_args):
+    """[(path, is_binary)] for every path the diff adds or modifies.
+
+    Deletions are excluded: removing a file that carried a name is the fix.
+    --no-renames so a rename reads as an add of the NEW path, whose name is the
+    thing that becomes public. -z so an odd filename cannot split a record.
+    """
+    st = _git("diff", *diff_args, "--name-status", "--no-renames", "-z")
+    if st.returncode != 0:
+        raise RuntimeError(st.stderr.strip() or "git diff --name-status failed")
+    parts = st.stdout.split("\0")
+    paths = []
+    for i in range(0, len(parts) - 1, 2):
+        if parts[i][:1] in ("A", "M", "T", "C"):
+            paths.append(parts[i + 1])
+    ns = _git("diff", *diff_args, "--numstat", "--no-renames", "-z")
+    if ns.returncode != 0:
+        raise RuntimeError(ns.stderr.strip() or "git diff --numstat failed")
+    binary = set()
+    for rec in ns.stdout.split("\0"):
+        f = rec.split("\t")
+        if len(f) == 3 and f[0] == "-" and f[1] == "-":
+            binary.add(f[2])
+    return [(p, p in binary) for p in paths]
+
+
 def merge_parents():
     """Every SHA in MERGE_HEAD, or [] when this commit is not a merge.
 
@@ -436,6 +511,35 @@ def staged_added_lines():
     return "\n".join(t for _, _, t in added if t in keep)
 
 
+def staged_paths_and_binaries():
+    """(path names, [(path, binary text)]) this commit adds that are not public.
+
+    The ASK-2058 review found both holes with one reproducer each: a name in a
+    binary blob and a name in a file's PATH passed the line scan, because
+    neither is an added text line. On a merge, a path a PUBLIC parent already
+    has, or a binary whose exact blob a public parent already has, is excused
+    for the same reason an already-public line is.
+    """
+    public = [p for p in merge_parents() if is_public(p)]
+    names, blobs = [], []
+    for path, is_bin in _changed_files("--cached"):
+        if any(_blob_id(f"{p}:{path}") for p in public):
+            path_public = True
+        else:
+            path_public = False
+            names.append(path)
+        if not is_bin:
+            continue
+        staged_id = _blob_id(f":{path}")
+        if path_public and any(_blob_id(f"{p}:{path}") == staged_id for p in public):
+            continue
+        data = _blob(f":{path}")
+        if data is None:
+            raise RuntimeError(f"cannot read the staged blob of {path}")
+        blobs.append((path, binary_text(data)))
+    return names, blobs
+
+
 def _report_local(found_by_where):
     for where, names in found_by_where:
         print(f"BLOCK: private term in {where}: {', '.join(sorted(names))}")
@@ -460,17 +564,83 @@ def run_message(message_path):
         return 0
     try:
         content = staged_added_lines()
+        names, blobs = staged_paths_and_binaries()
     except RuntimeError as exc:
         print(f"BLOCK: cannot read the staged diff ({exc}).")
         print("Refusing rather than reporting all clear. The list is armed, so")
         print("passing here would be an unverified claim that nothing leaked.")
         return 1
-    found = [(where, hits(text, terms))
-             for where, text in (("commit message", message), ("staged content", content))]
+    surfaces = [("commit message", message), ("staged content", content),
+                ("a staged file's path", "\n".join(names))]
+    surfaces += [(f"binary file {p}", text) for p, text in blobs]
+    found = [(where, hits(text, terms)) for where, text in surfaces]
     found = [(w, h) for w, h in found if h]
     if not found:
         return 0
     _report_local(found)
+    return 1
+
+
+# Paths a FULL-TREE scan skips (one per line, '#' comments). Path names only,
+# never terms: this file is public. Used only by --tree, the fallback when a
+# push carries no usable base; a range scan never consults it.
+EXEMPT_FILE = Path(".github") / "private-terms-exempt.txt"
+
+
+def _safe_path(path, terms):
+    """The path, unless the path itself carries a term. Then a marker: the CI log
+    is public, and printing the path would print the term."""
+    return "<a path that carries a private term>" if hits(path or "", terms) else path
+
+
+def _ci_terms():
+    fork = os.environ.get("FORK_PR") == "true"
+    terms = load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}"))
+    if not terms or not os.environ.get(CI_SECRET):
+        if fork:
+            print("::notice::client-name-guard: fork PR, no secrets; the push to main re-runs this scan")
+            return None, 0
+        print("::error::client-name-guard: PRIVATE_TERMS secret is missing or empty, so the "
+              "backstop is off. Run `python3 q-system/.q-system/scripts/client-name-guard.py "
+              "--sync-ci-secret` from a machine with the private sources.")
+        return None, 1
+    return terms, None
+
+
+def _kinds(found):
+    return ", ".join(sorted(set(found.values())))
+
+
+def _scan_file(path, data, is_bin, terms, problems, line_hits=True):
+    """Path name, then content (text lines with line numbers, or binary text)."""
+    shown = _safe_path(path, terms)
+    found = hits(path, terms)
+    if found:
+        print(f"::error::private term ({_kinds(found)}) in a file's path name")
+        problems.append(f"{shown}: path name: {_kinds(found)}")
+    if data is None:
+        return
+    if is_bin:
+        found = hits(binary_text(data), terms)
+        if found:
+            print(f"::error file={shown}::private term ({_kinds(found)}) inside a binary file")
+            problems.append(f"{shown}: binary content: {_kinds(found)}")
+        return
+    for n, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
+        found = hits(line, terms)
+        if found:
+            print(f"::error file={shown},line={n}::private term ({_kinds(found)})")
+            problems.append(f"{shown}:{n}: {_kinds(found)}")
+
+
+def _finish(problems, terms, scope):
+    if not problems:
+        print(f"client-name-guard: clean ({len(terms)} terms, {scope})")
+        return 0
+    print("client-name-guard: BLOCK. Private terms (kind only; the term is never printed here):")
+    for p in problems:
+        print(f"  {p}")
+    print("Run the local guard on your machine to see the term, then rename it to a placeholder.")
     return 1
 
 
@@ -480,21 +650,17 @@ def run_ci(base, head):
     A squash merge writes its commit message on GitHub from the PR title and
     body; an agent can commit with --no-verify or from a machine without the
     list. So CI scans the PR title and body, every commit message in the range,
-    and every added line, against the list in the PRIVATE_TERMS secret.
+    every added line, every added or modified path name, and the content of
+    every added or modified binary, against the list in the PRIVATE_TERMS
+    secret.
 
     It NEVER prints a term. This repo's CI logs are public, and a log line
-    naming the matched client would be the leak this job exists to stop.
+    naming the matched client would be the leak this job exists to stop. A path
+    that itself carries a term is printed as a marker, for the same reason.
     """
-    fork = os.environ.get("FORK_PR") == "true"
-    terms = load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}"))
-    if not terms or not os.environ.get(CI_SECRET):
-        if fork:
-            print("::notice::client-name-guard: fork PR, no secrets; the push to main re-runs this scan")
-            return 0
-        print("::error::client-name-guard: PRIVATE_TERMS secret is missing or empty, so the "
-              "backstop is off. Run `python3 q-system/.q-system/scripts/client-name-guard.py "
-              "--sync-ci-secret` from a machine with the private sources.")
-        return 1
+    terms, rc = _ci_terms()
+    if terms is None:
+        return rc
 
     body = os.environ.get("PR_BODY", "")
     if bypass_reason(body):
@@ -505,7 +671,7 @@ def run_ci(base, head):
     for label in ("PR_TITLE", "PR_BODY"):
         found = hits(os.environ.get(label, ""), terms)
         if found:
-            problems.append(f"{label.lower().replace('_', ' ')}: {', '.join(sorted(set(found.values())))}")
+            problems.append(f"{label.lower().replace('_', ' ')}: {_kinds(found)}")
 
     mb = _git("merge-base", base, head)
     if mb.returncode != 0:
@@ -521,27 +687,89 @@ def run_ci(base, head):
             continue
         found = hits(msg, terms)
         if found:
-            problems.append(f"commit {sha[:10]} message: {', '.join(sorted(set(found.values())))}")
+            problems.append(f"commit {sha[:10]} message: {_kinds(found)}")
 
     diff = _git("diff", "-U0", "--no-color", "--no-ext-diff", start, head)
     if diff.returncode != 0:
-        print(f"::error::client-name-guard: git diff failed; refusing to report clean")
+        print("::error::client-name-guard: git diff failed; refusing to report clean")
         return 1
     for path, line_no, text in _added_lines(diff.stdout):
         found = hits(text, terms)
         if found:
-            kinds = ", ".join(sorted(set(found.values())))
-            print(f"::error file={path},line={line_no}::private term ({kinds}) on an added line")
-            problems.append(f"{path}:{line_no}: {kinds}")
+            shown = _safe_path(path, terms)
+            print(f"::error file={shown},line={line_no}::private term ({_kinds(found)}) on an added line")
+            problems.append(f"{shown}:{line_no}: {_kinds(found)}")
 
-    if not problems:
-        print(f"client-name-guard: clean ({len(terms)} terms, {start[:10]}..{head[:10]})")
-        return 0
-    print("client-name-guard: BLOCK. Private terms (kind only; the term is never printed here):")
-    for p in problems:
-        print(f"  {p}")
-    print("Run the local guard on your machine to see the term, then rename it to a placeholder.")
-    return 1
+    try:
+        changed = _changed_files(start, head)
+    except RuntimeError as exc:
+        print(f"::error::client-name-guard: {exc}; refusing to report clean")
+        return 1
+    for path, is_bin in changed:
+        data = _blob(f"{head}:{path}") if is_bin else None
+        if is_bin and data is None:
+            print("::error::client-name-guard: cannot read a changed binary; refusing to report clean")
+            return 1
+        _scan_file(path, data, is_bin, terms, problems)
+
+    return _finish(problems, terms, f"{start[:10]}..{head[:10]}")
+
+
+def _tree_blobs(head):
+    """(path, bytes) for every blob in the tree at head, through one cat-file."""
+    ls = subprocess.run(["git", "ls-tree", "-r", "-z", head], capture_output=True)
+    entries = []
+    for rec in ls.stdout.split(b"\0"):
+        if not rec:
+            continue
+        meta, path = rec.split(b"\t", 1)
+        mode, kind, sha = meta.split()
+        if kind == b"blob":
+            entries.append((path.decode("utf-8", errors="replace"), sha.decode()))
+    proc = subprocess.Popen(["git", "cat-file", "--batch"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE)
+    for path, sha in entries:
+        proc.stdin.write(sha.encode() + b"\n")
+        proc.stdin.flush()
+        header = proc.stdout.readline().split()
+        size = int(header[2])
+        data = proc.stdout.read(size)
+        proc.stdout.read(1)
+        yield path, data
+    proc.stdin.close()
+    proc.wait()
+
+
+def run_ci_tree(head):
+    """Scan the WHOLE tree at head, and head's message (review blocker 2).
+
+    The push fallback used to diff HEAD^..HEAD when GitHub's `before` was not a
+    commit in the clone (a first push, a force-push), so a term added by any
+    earlier commit of that push passed as clean. Whatever the push contained,
+    the tree it produced is what is public now; scanning all of it cannot miss
+    a commit. Paths in EXEMPT_FILE are skipped; they are listed by path, with
+    the reason, because this file is public.
+    """
+    terms, rc = _ci_terms()
+    if terms is None:
+        return rc
+    exempt = set()
+    if EXEMPT_FILE.exists():
+        exempt = {l.split("#", 1)[0].strip() for l in EXEMPT_FILE.read_text().splitlines()}
+        exempt.discard("")
+    problems = []
+    msg = _git("log", "-1", "--format=%B", head).stdout
+    if not bypass_reason(msg):
+        found = hits(msg, terms)
+        if found:
+            problems.append(f"head commit message: {_kinds(found)}")
+    scanned = 0
+    for path, data in _tree_blobs(head):
+        if path in exempt:
+            continue
+        scanned += 1
+        _scan_file(path, data, b"\0" in data[:8000], terms, problems)
+    return _finish(problems, terms, f"full tree at {head[:10]}, {scanned} files, {len(exempt)} exempt")
 
 
 def sync_ci_secret():
@@ -591,17 +819,21 @@ def main() -> int:
     mode.add_argument("--message", type=Path,
                       help="the commit message file (lefthook commit-msg passes {1})")
     mode.add_argument("--ci", action="store_true",
-                      help="CI backstop: scan --base..--head, PR_TITLE, PR_BODY")
+                      help="CI backstop: scan --base..--head (or --tree), PR_TITLE, PR_BODY")
     mode.add_argument("--sync-ci-secret", action="store_true",
                       help="push the private list to the repo secret when it changed")
     ap.add_argument("--base")
     ap.add_argument("--head", default="HEAD")
+    ap.add_argument("--tree", action="store_true",
+                    help="with --ci: scan the whole tree at --head instead of a range")
     args = ap.parse_args()
     if args.message is not None:
         return run_message(args.message)
     if args.ci:
+        if args.tree:
+            return run_ci_tree(args.head)
         if not args.base:
-            ap.error("--ci needs --base")
+            ap.error("--ci needs --base or --tree")
         return run_ci(args.base, args.head)
     return sync_ci_secret()
 

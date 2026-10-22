@@ -101,7 +101,7 @@ No live hook performs automated cross-file consistency detection. Catches curren
 - Hook scripts: `q-system/.q-system/scripts/`
 - Verifier: `q-system/.q-system/sycophancy-harness.py`
 - Canonical: `q-system/canonical/`
-- Memory: instance-specific (e.g. `q-pure/memory/`, `q-investigate/memory/`)
+- Memory: instance-specific (e.g. `q-client_b/memory/`, `q-investigate/memory/`)
 - Settings: `.claude/settings.json`
 
 ## See also

@@ -53,7 +53,7 @@ def test_graph_valid():
 
 # Dirs kipi-update deliberately does NOT sync (kipi-update.sh rsync
 # --exclude list): instances OWN these and may trim or rename their canon
-# (q-pure keeps 3 canon files, not the skeleton's 14). The skeleton-authored
+# (q-client_b keeps 3 canon files, not the skeleton's 14). The skeleton-authored
 # ripple graph still ships via sync, so demanding skeleton canon exist in an
 # instance failed 6/22 instances on the capability gate's first full fleet
 # sweep (sp-07c9dad8, 2026-07-23). Skeleton stays strict; instances exempt

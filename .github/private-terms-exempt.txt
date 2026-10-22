@@ -1,0 +1,11 @@
+# Paths client-name-guard.py --ci --tree skips. That full-tree scan runs only
+# when a push to main carries no usable base (a first push, a force-push); a
+# normal PR or push scans the change, not the tree, and never reads this file.
+# Path names only, never terms: this file is public.
+#
+# The live fleet registry. Moving it out of this repo is ASK-2860.
+instance-registry.json
+# Third-party data whose ordinary words match an entry on the private list.
+plugins/kipi-design/skills/ui-ux-pro-max/data/google-fonts.csv
+plugins/kipi-design/skills/ui-ux-pro-max/src/data/google-fonts.csv
+q-system/.q-system/tests/fixtures/old_reddit_thread_trimmed.html
