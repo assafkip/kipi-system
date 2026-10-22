@@ -82,8 +82,9 @@ fi
 # left the machine, and kipi-update.sh refused every fan-out because the
 # checkout was not at origin/main. The alert only ever said "propagate FAILED".
 #
-# So with an origin, nothing is written to this checkout at all: the run opens a
-# fresh worktree at origin/main, distills into it, commits there through the
+# So with an origin, no lesson is written or committed in this checkout (its one
+# change is a fast-forward of main before the fan-out, see sync_skel_to_main):
+# the run opens a fresh worktree at origin/main, distills into it, commits there through the
 # repo's hooks, pushes a branch, opens a PR to main, arms auto-merge and runs the
 # fleet reviewer. Lessons reach main through review or the run fails loudly and
 # keeps the worktree. Main is protected (enforce_admins), so a PR is the only way.
@@ -131,9 +132,14 @@ if [ -z "${KIPI_PERSIST_CMD:-}" ] && [ -z "$FIXTURE_RUN" ] \
   # keeps merged branches (delete_branch_on_merge is off), so "merged" is asked
   # per branch rather than read from the branch list. The alert is how a stuck
   # lessons PR or an orphan branch reaches the board.
+  # The listing is captured on its own line so its exit status is checked. Piped
+  # straight into the loop, a failed ls-remote produced no refs and read as "no
+  # pending branches", so a network blip let the run distill past the guard
+  # (codex, PR #551 round 2). Unknown is not empty.
+  REMOTE_BR="$(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG")" \
+    || fail "could not list lessons branches on origin; nothing distilled"
   PENDING_BR=""
-  for ref in $(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG" \
-               | awk '{sub("refs/heads/", "", $2); print $2}'); do
+  for ref in $(printf '%s\n' "$REMOTE_BR" | awk 'NF {sub("refs/heads/", "", $2); print $2}'); do
     MERGED="$(cd "$LREPO" && gh pr list --state merged --head "$ref" --json number --jq 'length' 2>>"$LOG")" \
       || fail "could not ask GitHub whether $ref merged; nothing distilled"
     [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
@@ -270,17 +276,51 @@ elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
   echo "$(TS) notion sync failed (non-fatal, see above)" >> "$LOG"
 fi
 
+# BRING THE CHECKOUT TO MAIN BEFORE THE FAN-OUT (codex, PR #551 round 2).
+# kipi-update.sh fans out from the checkout it runs in and refuses unless that
+# checkout is ON main and AT origin/main (kipi-update.sh, "skeleton is not on" /
+# "not AT origin"). Nothing else moves this checkout, and main moves several
+# times a day, so a checkout switched to main is behind it within hours and the
+# weekly fan-out refused anyway. This is the "pull before propagating" the
+# updater asks a human for, done only where it cannot lose work:
+#   on main with no local commits -> fast-forward (--ff-only refuses if a dirty
+#     file is in the way, and then the updater refuses and the alert says so);
+#   any other branch, or local commits -> left alone. Switching branches under
+#     whoever is working in this checkout is not this job's call; the run fails
+#     and the alert names the branch.
+# A detached worktree at origin/main is NOT an alternative: the updater refuses
+# a detached HEAD by the same check.
+sync_skel_to_main() {
+  local br
+  br="$(git -C "$SKEL" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [ "$br" != main ]; then
+    echo "$(TS) skeleton checkout is on ${br:-a detached HEAD}, not main: left alone" >> "$LOG"
+    return 0
+  fi
+  if ! git -C "$SKEL" fetch -q origin main >> "$LOG" 2>&1; then
+    echo "$(TS) could not fetch origin/main before the fan-out" >> "$LOG"
+    return 0
+  fi
+  if ! git -C "$SKEL" merge-base --is-ancestor HEAD origin/main 2>>"$LOG"; then
+    echo "$(TS) skeleton main has commits origin/main lacks: left alone" >> "$LOG"
+    return 0
+  fi
+  git -C "$SKEL" merge --ff-only -q origin/main >> "$LOG" 2>&1 \
+    || echo "$(TS) fast-forward of skeleton main refused (see above)" >> "$LOG"
+}
+
 # --- streak bookkeeping: lessons_streak.py is the ONLY writer of the streak file
 # and the escalations ledger (atomic replace under one lock; Codex finding-9).
-# Rule (finding-10): only a real propagation attempt bumps the streak. A run
-# that publishes nothing neither resets nor increments it; that is the branch
-# below ("no propagation (nothing published)") and the "nothing new" exit above.
 STREAK_PY="$SKEL/q-system/.q-system/scripts/lessons_streak.py"
 streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$@"; }
 
+# Rule (finding-10): only a real propagation attempt bumps the streak. A run
+# that publishes nothing neither resets nor increments it; that is the branch
+# below ("no propagation (nothing published)") and the "nothing new" exit above.
 if [ "${PERSIST:-}" = "FAILED" ]; then
   PROP="no propagation (lessons commit did not land)"
 elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main every run (ASK-2736)
+  [ "$PUBLISH_MODE" = pr ] && sync_skel_to_main
   if [ -n "${KIPI_PROPAGATE_CMD:-}" ]; then
     if bash -c "$KIPI_PROPAGATE_CMD" >> "$LOG" 2>&1; then PROP="propagated to fleet"; else PROP="propagate FAILED"; fi
   else

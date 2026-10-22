@@ -63,8 +63,10 @@ check("summary reports 1 held", len(out3["held"]) == 1)
 rows = json.loads(ledger.read_text())
 check("ledger rows never carry the raw instance name",
       rows and all(r.get("instance") != "acme" and "acme" not in json.dumps(r) for r in rows.values()))
-check("ledger rows still carry a stable instance label",
-      len({r.get("instance") for r in rows.values()}) == 1)
+# Not any per-instance label either: a sha1 prefix of the name is reversed by
+# hashing a candidate list (codex, PR #551 round 2). One constant for all.
+check("ledger rows carry the constant 'redacted', never a per-instance label",
+      {r.get("instance") for r in rows.values()} == {"redacted"})
 
 print("ALL PASS" if not fails else f"SOME FAILED: {fails}")
 sys.exit(1 if fails else 0)

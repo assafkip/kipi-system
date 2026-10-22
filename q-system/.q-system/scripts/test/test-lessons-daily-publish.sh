@@ -8,21 +8,38 @@
 # origin/main. Six runs, 29 lessons, three commits that never left the machine,
 # and the weekly alert only ever said "propagate FAILED".
 #
-# The fixture reproduces that state: a real bare origin with main, and a
-# skeleton clone parked on a stale feature branch carrying a local commit. The
-# distiller, gh, the reviewer, the fan-out, Notion and Slack are stubs; git is
-# real, so "pushed" and "on main's history" are measured, not assumed.
+# The fixture: a real bare origin with main, and a skeleton clone in one of three
+# states (on a stale feature branch, on main but behind origin, on main with a
+# local commit). The distiller, gh, the reviewer, Notion and Slack are stubs; git
+# is real, so "pushed" and "on main's history" are measured, not assumed.
+#
+# THE FAN-OUT IS THE REAL kipi-update.sh, run --dry-run. It was `touch` until
+# codex's round-2 review of PR #551: the fixture rebuilt the stale-branch state
+# and the stub reported a fan-out the real updater refuses. The seed now carries
+# the updater, the gates it is fail-closed on, and one fixture instance, so its
+# own branch preflight decides (same recipe as test-kipi-update-dry-final-state.sh).
 #
 #   1. the lesson reaches origin on an auto/lessons-* branch built on main;
 #   2. the skeleton's own branch gets no commit and no stray lesson file;
 #   3. a PR to main is opened, auto-merge is armed, the reviewer is run;
-#   4. the run exits 0 and removes its worktree;
+#   4. on a feature branch the real updater refuses: the run exits 1, the
+#      alert names the branch, and the checkout is not switched or moved;
 #   5. negative control: a failed PR create exits non-zero, says so, and keeps
 #      the worktree; the pushed branch still holds the lesson;
 #   6. negative control: a failed push exits non-zero and keeps the worktree
 #      with the commit in it, named in the alert;
 #   7. negative control: last week's lessons PR still open stops the run before
-#      it distills, so the same sources cannot publish twice.
+#      it distills, so the same sources cannot publish twice;
+#  10. on main behind origin (the steady state): the run fast-forwards the
+#      checkout, the real updater passes, exit 0; a quiet week stays silent;
+#  11. on main with a local commit: left alone, the updater refuses, exit 1;
+#  12. negative control: a failed ls-remote stops the run before it distills.
+#
+# Cases 5 to 9 run on the healthy main state, so each non-zero exit comes from
+# the failure under test and not from a refused fan-out.
+#
+# SKELETON ONLY (capability/skeleton_only): the fixture copies kipi-update.sh and
+# its root-level helpers, which `kipi update` never ships to an instance.
 #
 # Never touches the live repo, log, Slack, Linear, GitHub or the fleet.
 
@@ -30,7 +47,9 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$SCRIPTS/../../.." && pwd)"
 SUT="$SCRIPTS/lessons-daily.sh"
+REAL_GIT="$(command -v git)"
 PASS=0
 FAIL=0
 ok()  { echo "PASS  $1"; PASS=$((PASS + 1)); }
@@ -38,21 +57,56 @@ bad() { echo "FAIL  $1"; FAIL=$((FAIL + 1)); }
 
 g() { git -c user.email=t@example.com -c user.name=t -c commit.gpgsign=false "$@"; }
 
-# build_fixture <gh-mode: ok|fail-create> -> echoes the temp root
+# seed_updater <seed-dir> <tmp>: the real updater and every gate it is
+# fail-closed on, an unarmed leak baseline, and a registry naming one instance.
+seed_updater() {
+  local s="$1" tmp="$2" f
+  mkdir -p "$s/q-system/.q-system/scripts" "$s/q-system/.q-system/state" \
+           "$s/.claude/rules" "$s/plugins/demo"
+  for f in kipi-update.sh kipi-update-preserve-scan.py kipi-update-deletion-guard.py \
+           kipi-settings-merge.py validate-separation.py; do cp "$ROOT/$f" "$s/$f"; done
+  for f in propagation-leak-gate.py fleet-replica-divergence.py containment-targets.py; do
+    cp "$SCRIPTS/$f" "$s/q-system/.q-system/scripts/$f"
+  done
+  printf '{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}\n' \
+    > "$s/q-system/.q-system/state/propagation-leak-baseline.json"
+  printf 'raise SystemExit(0)\n' > "$s/q-system/.q-system/scripts/capability-gate.py"
+  printf 'rule\n' > "$s/.claude/rules/example.md"
+  printf 'plugin\n' > "$s/plugins/demo/content.txt"
+  printf '{"permissions":{"allow":["Read"]},"hooks":{}}\n' > "$s/settings-template.json"
+  mkdir -p "$tmp/inst/q-system" "$tmp/inst/.claude" "$tmp/inst/plugins/demo"
+  printf 'old\n' > "$tmp/inst/q-system/tracked.md"
+  printf '{"permissions":{"allow":["Write"]},"hooks":{}}\n' > "$tmp/inst/.claude/settings.json"
+  printf 'plugin\n' > "$tmp/inst/plugins/demo/content.txt"
+  g init -q -b main "$tmp/inst" && g -C "$tmp/inst" add -A && g -C "$tmp/inst" commit -qm inst
+  printf '{"instances":[{"name":"fixture","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+    "$tmp/inst" > "$s/instance-registry.json"
+}
+
+# build_fixture <gh-mode: ok|fail-create|pending-branch|merged-branch>
+#               <skel-state: feature|main-behind|main-ahead> -> echoes the temp root
 build_fixture() {
-  local mode="$1" tmp
+  local mode="$1" state="${2:-main-behind}" tmp
   tmp="$(mktemp -d)"
   mkdir -p "$tmp/bin" "$tmp/seed/q-system/lessons" "$tmp/seed/lesson-candidates"
   printf 'keep\n' > "$tmp/seed/q-system/lessons/existing-lesson.md"
   printf '{"seenkey": {"status": "published"}}\n' > "$tmp/seed/lesson-candidates/.processed.json"
+  seed_updater "$tmp/seed" "$tmp"
   g init -q -b main "$tmp/seed"
   g -C "$tmp/seed" add -A && g -C "$tmp/seed" commit -qm "seed [no-issue: fixture]"
   g clone -q --bare "$tmp/seed" "$tmp/origin.git"
   g clone -q "$tmp/origin.git" "$tmp/skel"
-  # The live state: the checkout is on a feature branch with a local commit.
-  g -C "$tmp/skel" switch -q -c feature/stale
-  printf 'wip\n' > "$tmp/skel/wip.txt"
-  g -C "$tmp/skel" add wip.txt && g -C "$tmp/skel" commit -qm "wip [no-issue: fixture]"
+  case "$state" in
+    feature)      # the scar: a feature branch carrying a local commit
+      g -C "$tmp/skel" switch -q -c feature/stale
+      printf 'wip\n' > "$tmp/skel/wip.txt"
+      g -C "$tmp/skel" add wip.txt && g -C "$tmp/skel" commit -qm "wip [no-issue: fixture]" ;;
+    main-ahead)   # on main, with a commit origin never saw
+      g -C "$tmp/skel" commit -q --allow-empty -m "local only [no-issue: fixture]" ;;
+  esac
+  # main moves on after the checkout last pulled, in every state.
+  g -C "$tmp/seed" commit -q --allow-empty -m "someone else's merge [no-issue: fixture]"
+  g -C "$tmp/seed" push -q "$tmp/origin.git" main
   g -C "$tmp/skel" config user.email t@example.com
   g -C "$tmp/skel" config user.name t
   g -C "$tmp/skel" config commit.gpgsign false
@@ -62,7 +116,6 @@ build_fixture() {
   chmod +x "$tmp/hooks/pre-commit"
   g -C "$tmp/skel" config core.hooksPath "$tmp/hooks"
 
-  mkdir -p "$tmp/skel/q-system/.q-system/scripts"
   cp "$SUT" "$tmp/skel/q-system/.q-system/scripts/lessons-daily.sh"
   # The real streak helper; LESSONS_DIR unset (the pre-fix script) falls back
   # to the checkout's own lessons dir, which is the distiller's real default.
@@ -95,15 +148,18 @@ GH
 }
 
 PUBLISHED='{"scanned": 1, "published": ["a fixture lesson"], "held": []}'
-# run_job <tmp>; sets JOB_RC. The distill stub writes where the job tells it to.
+QUIET_RUN='{"scanned": 0, "published": [], "held": []}'
+# run_job <tmp> [summary]; sets JOB_RC. The distill stub writes where the job
+# tells it to. The fan-out is the real updater, dry, from the skeleton checkout,
+# exactly where production runs it; its sweep history goes to a fixture file.
 run_job() {
   local tmp="$1" summary="${2:-$PUBLISHED}"
   printf '%s' "$summary" > "$tmp/summary.json"
-  rm -f "$tmp/propagated" "$tmp/notify.txt"
+  rm -f "$tmp/notify.txt"
   PATH="$tmp/bin:$PATH" \
-  KIPI_DISTILL_CMD="printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; cat '$tmp/summary.json'" \
+  KIPI_DISTILL_CMD="if grep -q 'a fixture lesson' '$tmp/summary.json'; then printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; fi; cat '$tmp/summary.json'" \
   KIPI_REVIEW_CMD="echo \"\$PR_NUMBER\" >> '$tmp/review.calls'" \
-  KIPI_PROPAGATE_CMD="touch '$tmp/propagated'" \
+  KIPI_PROPAGATE_CMD="cd '$tmp/skel' && TMPDIR='$tmp' KIPI_FLEET_SWEEP_HISTORY='$tmp/sweep.jsonl' bash kipi-update.sh --dry-run" \
   KIPI_NOTION_SYNC_CMD="true" \
   KIPI_NOTIFY_CMD="printf '%s\\n' \"\$1\" >> '$tmp/notify.txt'" \
   KIPI_LESSONS_LOG="$tmp/lessons-daily.log" \
@@ -117,13 +173,14 @@ run_job() {
 auto_branch() { g -C "$1/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/lessons-*' | grep -vx 'auto/lessons-old' | head -1; }
 auto_count() { g -C "$1/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/lessons-*' | grep -vx 'auto/lessons-old' | wc -l | tr -d ' '; }
 worktrees_left() { find "$1/state" -maxdepth 1 -name 'wt-*' -type d 2>/dev/null | wc -l | tr -d ' '; }
+origin_main() { g -C "$1/origin.git" rev-parse main; }
 
-# --- 1-4. the happy path ---------------------------------------------------
-T="$(build_fixture ok)"
+# --- 1-4. the scar: the checkout is on a stale feature branch ---------------
+T="$(build_fixture ok feature)"
 SKEL_HEAD_BEFORE="$(g -C "$T/skel" rev-parse HEAD)"
 run_job "$T"
 BR="$(auto_branch "$T")"
-echo "      fixture: $T (exit=$JOB_RC, branch=${BR:-none})"
+echo "      fixture (feature): $T (exit=$JOB_RC, branch=${BR:-none})"
 if [ -n "$BR" ] && g -C "$T/origin.git" cat-file -e "$BR:q-system/lessons/fixture-lesson.md" 2>/dev/null; then
   ok "the lesson reached origin on $BR"
 else
@@ -136,8 +193,9 @@ else
   bad "the lesson branch is not a clean child of main"
 fi
 [ "$(g -C "$T/skel" rev-parse HEAD)" = "$SKEL_HEAD_BEFORE" ] \
-  && ok "the skeleton's feature branch got no commit" \
-  || bad "a lesson commit landed on the skeleton's feature branch (the stranding)"
+  && [ "$(g -C "$T/skel" symbolic-ref --short HEAD)" = "feature/stale" ] \
+  && ok "the skeleton's feature branch got no commit and was not switched" \
+  || bad "the skeleton checkout was committed to or switched (HEAD $(g -C "$T/skel" rev-parse --short HEAD))"
 [ ! -e "$T/skel/q-system/lessons/fixture-lesson.md" ] \
   && ok "no lesson file was left in the skeleton checkout" \
   || bad "a lesson file was written into the skeleton checkout"
@@ -149,27 +207,17 @@ grep -qx "77" "$T/review.calls" 2>/dev/null \
   && ok "the reviewer was run on the PR" || bad "the reviewer was never run"
 [ -e "$T/pre-commit.ran" ] && ok "the commit went through the repo's hooks" \
                            || bad "the commit skipped the repo's hooks"
-[ "$JOB_RC" -eq 0 ] && ok "a published run exits 0" || bad "a published run exits $JOB_RC"
-[ "$(worktrees_left "$T")" = "0" ] && ok "the worktree was removed" \
+[ "$(worktrees_left "$T")" = "0" ] && ok "the worktree was removed after a clean publish" \
                                    || bad "the worktree was left behind"
-# The fan-out ships main, which does not hold this run's lessons yet; the alert
-# must say exactly that and never "propagated to fleet" (PR #551 review).
-[ -e "$T/propagated" ] && ok "the run fanned out main" || bad "the run did not fan out"
-if grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
-   && ! grep -q 'propagated to fleet' "$T/notify.txt" 2>/dev/null; then
-  ok "the alert says main went out, not this run's lessons"
-else
-  bad "the alert claims these lessons were propagated: $(cat "$T/notify.txt" 2>/dev/null)"
-fi
-
-# --- 4b. a quiet week still carries last week's merged lessons ------------
-auto_branch "$T" >> "$T/merged.txt"     # last week's PR has merged
-run_job "$T" '{"scanned": 0, "published": [], "held": []}'
-[ "$JOB_RC" -eq 0 ] && [ -e "$T/propagated" ] \
-  && ok "quiet week: main is still fanned out (exit 0)" \
-  || bad "quiet week: no fan-out (exit=$JOB_RC); merged lessons would never ship"
-[ ! -s "$T/notify.txt" ] && ok "quiet week: nothing slacked" \
-                         || bad "quiet week: slacked on a quiet week: $(cat "$T/notify.txt")"
+# What `touch` hid: the real updater refuses this checkout. The run must say so.
+grep -q 'ABORT: the skeleton is not on main' "$T/lessons-daily.log" 2>/dev/null \
+  && ok "feature: the real updater refused the feature branch" \
+  || bad "feature: the real updater did not refuse; log: $(grep ABORT "$T/lessons-daily.log" | head -2)"
+[ "$JOB_RC" -ne 0 ] && ok "feature: a refused fan-out exits non-zero" \
+                    || bad "feature: a refused fan-out exits 0"
+grep -q 'the skeleton checkout is on feature/stale, not main' "$T/notify.txt" 2>/dev/null \
+  && ok "feature: the alert names the branch" \
+  || bad "feature: the alert does not name the branch: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 # --- 5. negative control: PR create fails ----------------------------------
@@ -239,6 +287,75 @@ echo "      fixture (merged-branch): $T (exit=$JOB_RC, branches=$(auto_count "$T
 [ "$JOB_RC" -eq 0 ] && [ "$(auto_count "$T")" = "1" ] \
   && ok "merged-branch: the run proceeds and publishes" \
   || bad "merged-branch: a merged branch blocked the run (exit=$JOB_RC)"
+rm -rf "$T"
+
+# --- 10. the steady state: on main, behind origin --------------------------
+# Main moves several times a day and nothing else pulls this checkout, so this
+# is the state every week after the checkout is switched to main.
+T="$(build_fixture ok main-behind)"
+run_job "$T"
+echo "      fixture (main-behind): $T (exit=$JOB_RC)"
+# The checkout's main must equal origin/main as it stood when the fan-out ran,
+# which is the commit before this run's lessons (they are on their own branch).
+[ "$(g -C "$T/skel" rev-parse HEAD)" = "$(origin_main "$T")" ] \
+  && ok "main-behind: the checkout was fast-forwarded to origin/main" \
+  || bad "main-behind: the checkout is still behind origin/main"
+! grep -q 'ABORT' "$T/lessons-daily.log" 2>/dev/null && [ "$JOB_RC" -eq 0 ] \
+  && ok "main-behind: the real updater passed and the run exits 0" \
+  || bad "main-behind: exit=$JOB_RC; $(grep -m2 ABORT "$T/lessons-daily.log")"
+if grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
+   && ! grep -q 'propagated to fleet' "$T/notify.txt" 2>/dev/null; then
+  ok "main-behind: the alert says main went out, not this run's lessons"
+else
+  bad "main-behind: the alert claims these lessons were propagated: $(cat "$T/notify.txt" 2>/dev/null)"
+fi
+# 10b. a quiet week still carries last week's merged lessons.
+auto_branch "$T" >> "$T/merged.txt"     # last week's PR has merged
+g -C "$T/seed" commit -q --allow-empty -m "another merge [no-issue: fixture]"
+g -C "$T/seed" push -q "$T/origin.git" main
+run_job "$T" "$QUIET_RUN"
+[ "$JOB_RC" -eq 0 ] && grep -q 'quiet week: fleet updated from main' "$T/lessons-daily.log" \
+  && [ "$(g -C "$T/skel" rev-parse HEAD)" = "$(origin_main "$T")" ] \
+  && ok "quiet week: main is fast-forwarded and fanned out (exit 0)" \
+  || bad "quiet week: no fan-out (exit=$JOB_RC); merged lessons would never ship"
+[ ! -s "$T/notify.txt" ] && ok "quiet week: nothing slacked" \
+                         || bad "quiet week: slacked on a quiet week: $(cat "$T/notify.txt")"
+[ "$(auto_count "$T")" = "1" ] && ok "quiet week: no lessons branch pushed" \
+                               || bad "quiet week: a quiet run pushed a lessons branch"
+rm -rf "$T"
+
+# --- 11. on main with a commit origin never saw: left alone ---------------
+T="$(build_fixture ok main-ahead)"
+SKEL_HEAD_BEFORE="$(g -C "$T/skel" rev-parse HEAD)"
+run_job "$T"
+echo "      fixture (main-ahead): $T (exit=$JOB_RC)"
+[ "$(g -C "$T/skel" rev-parse HEAD)" = "$SKEL_HEAD_BEFORE" ] \
+  && ok "main-ahead: the checkout's local commit was left alone" \
+  || bad "main-ahead: the checkout was moved off its local commit"
+grep -q 'not AT origin/main' "$T/lessons-daily.log" 2>/dev/null && [ "$JOB_RC" -ne 0 ] \
+  && ok "main-ahead: the real updater refused and the run exits non-zero" \
+  || bad "main-ahead: exit=$JOB_RC without the updater's refusal"
+rm -rf "$T"
+
+# --- 12. negative control: the remote branch list cannot be read -----------
+# An ls-remote that fails yields no refs. Read as "nothing pending", the run
+# distilled past the one-branch guard (codex, PR #551 round 2).
+T="$(build_fixture pending-branch)"
+cat > "$T/bin/git" <<GIT
+#!/bin/bash
+case " \$* " in *" ls-remote "*) echo "fatal: unable to access origin" >&2; exit 128 ;; esac
+exec "$REAL_GIT" "\$@"
+GIT
+chmod +x "$T/bin/git"
+run_job "$T"
+echo "      fixture (ls-remote-fails): $T (exit=$JOB_RC)"
+[ "$JOB_RC" -ne 0 ] && ok "ls-remote-fails: job exits non-zero" || bad "ls-remote-fails: job exits 0"
+[ "$(auto_count "$T")" = "0" ] && ! find "$T" -name fixture-lesson.md | grep -q . \
+  && ok "ls-remote-fails: nothing was distilled or pushed" \
+  || bad "ls-remote-fails: the run distilled with the remote unread"
+grep -q 'could not list lessons branches' "$T/notify.txt" 2>/dev/null \
+  && ok "ls-remote-fails: the alert says the list could not be read" \
+  || bad "ls-remote-fails: the alert is silent: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 echo "---"

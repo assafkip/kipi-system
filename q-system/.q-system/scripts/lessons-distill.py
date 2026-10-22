@@ -87,15 +87,20 @@ def new_learnings(instances, ledger):
 
 
 def public_instance_label(name):
-    """The instance as a ledger row may name it: an opaque, stable label.
+    """The instance as a ledger row may name it: one constant, for every instance.
 
     THE LEDGER SHIPS IN A PUBLIC REPO (ASK-2736, ASK-2058). Its rows used to carry
     the raw instance name, and instance names include client engagements; the
     ASK-2058 scrub relabelled 119 rows by hand and this writer would have put a
-    real name back in every new row. Nothing reads the field, so a hash costs
-    nothing and leaks nothing a term guard can match.
+    real name back in every new row.
+
+    Not a hash (codex, PR #551 round 2): an unsalted sha1 prefix of a name is
+    reversed by hashing a candidate list, and a stable per-instance label lets
+    rows be grouped by client. Nothing reads the field, so a constant costs
+    nothing. `name` stays in the signature so the call site keeps saying which
+    value is being withheld.
     """
-    return "inst-" + hashlib.sha1(name.encode()).hexdigest()[:8]
+    return "redacted"
 
 
 def new_sources(instances, ledger):
