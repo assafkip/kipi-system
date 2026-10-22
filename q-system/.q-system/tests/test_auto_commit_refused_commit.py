@@ -157,6 +157,19 @@ def test_it_pages_once_per_event_and_again_after_a_clean_turn(tmp_path, pager):
     assert len(_pages(pager)) == 2, f"the second event paged nobody: {_pages(pager)}"
 
 
+def test_a_lock_collision_is_logged_and_unstaged_but_not_paged(tmp_path, pager):
+    """Two turn ends racing for index.lock is the another_commit_in_flight case:
+    the next turn retries. Paging each race is the report_skipped flood."""
+    root, run, hooks = _repo(tmp_path)
+    _gate(hooks, "#!/bin/sh\necho \"fatal: Unable to create '/r/.git/index.lock': "
+                 "File exists.\" >&2\nexit 128\n")
+    (root / "memory" / "MEMORY.md").write_text("- raced\n")
+    _fire(root)
+    assert _staged(run) == []
+    assert "index.lock" in _commit_log(root)
+    assert _pages(pager) == []
+
+
 def test_a_clean_commit_pages_nobody_and_logs_nothing(tmp_path, pager):
     root, run, hooks = _repo(tmp_path)
     (root / "memory" / "MEMORY.md").write_text("- fine\n")

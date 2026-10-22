@@ -472,6 +472,7 @@ def commit_group(commit_type, message, files):
 # full output to a per-checkout log, and (3) pages the fleet alert path once per event.
 COMMIT_LOG_NAME = "kipi-auto-commit.log"
 COMMIT_LOG_MAX_BYTES = 1_000_000
+TRANSIENT_REFUSALS = ("index.lock", "verify.sh: COLLISION")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _BOX = set("─━│┃╭╮╰╯ ")
 
@@ -544,6 +545,12 @@ def report_commit_refusal(header, files, reason, full_output, restored):
                          f"{_ANSI.sub('', full_output).rstrip()}\n")
         except OSError as e:
             print(f"  could not write {log}: {e}")
+    if restored and any(t in full_output for t in TRANSIENT_REFUSALS):
+        # Two turn ends racing for index.lock, or verify.sh's EX_TEMPFAIL. Same
+        # contract as another_commit_in_flight: nothing is staged, the next turn
+        # end retries, and a page per race would be the report_skipped flood.
+        print("  a lock collision, not a gate: logged, not paged")
+        return
     page_commit_refusal(header.split(" (")[0], reason, restored, log)
 
 
