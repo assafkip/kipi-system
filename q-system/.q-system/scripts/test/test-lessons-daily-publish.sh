@@ -114,6 +114,10 @@ build_fixture() {
   mkdir -p "$tmp/hooks"
   printf '#!/bin/bash\ntouch "%s/pre-commit.ran"\nexit 0\n' "$tmp" > "$tmp/hooks/pre-commit"
   chmod +x "$tmp/hooks/pre-commit"
+  # commit-msg records which bypass ledger the real linear-issue-ref-check.py
+  # would append to (it honours LINEAR_BYPASS_LEDGER, else the repo toplevel).
+  printf '#!/bin/bash\nprintf "%%s\\n" "${LINEAR_BYPASS_LEDGER:-$(git rev-parse --show-toplevel)/q-system/output/linear-bypass.jsonl}" > "%s/bypass-ledger.seen"\nexit 0\n' "$tmp" > "$tmp/hooks/commit-msg"
+  chmod +x "$tmp/hooks/commit-msg"
   g -C "$tmp/skel" config core.hooksPath "$tmp/hooks"
 
   cp "$SUT" "$tmp/skel/q-system/.q-system/scripts/lessons-daily.sh"
@@ -264,6 +268,14 @@ echo "      fixture (pending-branch): $T (exit=$JOB_RC)"
   || bad "pending-branch: the run distilled while a lessons branch was unmerged"
 grep -q 'auto/lessons-old' "$T/notify.txt" 2>/dev/null \
   && ok "pending-branch: the alert names the branch" || bad "pending-branch: the alert does not name the branch"
+# The guard holds back distilling, not the fleet. This job is the fleet's only
+# unattended updater, so one stuck lessons PR used to stop every weekly update
+# while the alert only said "not distilling" (review of PR #551, round 3).
+[ "$(g -C "$T/skel" rev-parse HEAD)" = "$(origin_main "$T")" ] \
+  && ! grep -q 'ABORT' "$T/lessons-daily.log" 2>/dev/null \
+  && grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
+  && ok "pending-branch: the fleet was still updated from main, and the alert says so" \
+  || bad "pending-branch: no fan-out behind the guard; alert: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 # --- 8. the reviewer's reproducer: PR create fails, then a healthy week ----
@@ -309,6 +321,11 @@ if grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
 else
   bad "main-behind: the alert claims these lessons were propagated: $(cat "$T/notify.txt" 2>/dev/null)"
 fi
+# The [no-issue:] bypass row must reach the skeleton's countable ledger, not the
+# worktree that a clean publish deletes (review of PR #551, round 3).
+[ "$(cat "$T/bypass-ledger.seen" 2>/dev/null)" = "$T/skel/q-system/output/linear-bypass.jsonl" ] \
+  && ok "main-behind: the commit's bypass row goes to the skeleton's ledger" \
+  || bad "main-behind: the bypass row goes to $(cat "$T/bypass-ledger.seen" 2>/dev/null || echo nowhere)"
 # 10b. a quiet week still carries last week's merged lessons.
 auto_branch "$T" >> "$T/merged.txt"     # last week's PR has merged
 g -C "$T/seed" commit -q --allow-empty -m "another merge [no-issue: fixture]"

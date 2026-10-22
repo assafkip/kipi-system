@@ -124,6 +124,10 @@ if [ -z "${KIPI_PERSIST_CMD:-}" ] && [ -z "$FIXTURE_RUN" ] \
   git -C "$SKEL" worktree add -q --detach "$LREPO" origin/main >> "$LOG" 2>&1 \
     || fail "could not open a worktree at origin/main; nothing distilled"
   trap cleanup_wt EXIT
+  # The lessons commit's [no-issue:] bypass row must land in the skeleton's
+  # countable ledger, not in this worktree, which is deleted on a clean publish
+  # (review of PR #551, round 3). linear-issue-ref-check.py reads this override.
+  export LINEAR_BYPASS_LEDGER="${LINEAR_BYPASS_LEDGER:-$SKEL/q-system/output/linear-bypass.jsonl}"
   # ONE LESSONS BRANCH IN FLIGHT. The ledger travels with the lessons, so a run
   # distilling from a main that lacks an earlier run's unmerged rows publishes
   # the same sources twice. Any auto/lessons-* branch on origin with no MERGED
@@ -144,15 +148,24 @@ if [ -z "${KIPI_PERSIST_CMD:-}" ] && [ -z "$FIXTURE_RUN" ] \
       || fail "could not ask GitHub whether $ref merged; nothing distilled"
     [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
   done
+  # The guard holds back DISTILLING, not the fan-out. It used to `fail` here,
+  # which also skipped the weekly fleet update below, and this job is the
+  # fleet's only unattended caller of kipi-update.sh: one stuck lessons PR froze
+  # rules and plugins for the whole fleet while the alert said only "not
+  # distilling" (review of PR #551, round 3). Now the run distills nothing,
+  # still fans out main, names both in the alert, and exits 1.
   if [ -n "$PENDING_BR" ]; then
-    fail "lessons branch(es) not merged yet:$PENDING_BR. Not distilling until they merge (or the same sources publish twice). Merge its PR, open one, or delete the branch."
+    HOLD="lessons branch(es) not merged yet:$PENDING_BR. Not distilling until they merge (or the same sources publish twice). Merge its PR, open one, or delete the branch."
+    echo "$(TS) $HOLD" >> "$LOG"
   fi
 else
   echo "$(TS) lessons publish: DISARMED (no origin remote; committing in place)" >> "$LOG"
 fi
 export LESSONS_DIR="$LREPO/q-system/lessons"
 
-if [ -n "${KIPI_DISTILL_CMD:-}" ]; then
+if [ -n "${HOLD:-}" ]; then
+  SUMMARY='{"scanned": 0, "published": [], "held": [], "skipped": "a lessons branch is not merged"}'
+elif [ -n "${KIPI_DISTILL_CMD:-}" ]; then
   SUMMARY="$(bash -c "$KIPI_DISTILL_CMD" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
 else
   SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" --lessons-dir "$LESSONS_DIR" \
@@ -314,9 +327,10 @@ sync_skel_to_main() {
 STREAK_PY="$SKEL/q-system/.q-system/scripts/lessons_streak.py"
 streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$@"; }
 
-# Rule (finding-10): only a real propagation attempt bumps the streak. A run
-# that publishes nothing neither resets nor increments it; that is the branch
-# below ("no propagation (nothing published)") and the "nothing new" exit above.
+# Rule (finding-10): only a real propagation attempt bumps the streak. In local
+# mode a run that publishes nothing neither resets nor increments it; that is the
+# branch below ("no propagation (nothing published)") and the "nothing new" exit
+# above. In PR mode every run attempts the fan-out, so every run moves it.
 if [ "${PERSIST:-}" = "FAILED" ]; then
   PROP="no propagation (lessons commit did not land)"
 elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main every run (ASK-2736)
@@ -381,8 +395,10 @@ case "$PROP" in "propagate FAILED"*)
   SKEL_BRANCH="$(git -C "$SKEL" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
   [ "$SKEL_BRANCH" != "main" ] && MSG="$MSG · the skeleton checkout is on $SKEL_BRANCH, not main" ;;
 esac
+[ -n "${HOLD:-}" ] && MSG="$MSG · $HOLD"
 # Silent when nothing new and the weekly update went out: the header contract.
-if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ]; then
+# A held run is never silent: nothing was distilled and someone has to act.
+if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ] && [ -z "${HOLD:-}" ]; then
   echo "$(TS) quiet week: fleet updated from main, nothing new, not slacked" >> "$LOG"
 else
   notify "$MSG"
@@ -398,4 +414,5 @@ case "$PROP" in
 esac
 if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${PUBLISH:-}" ]; then echo "$(TS) lessons publish failed -> exit 1" >> "$LOG"; exit 1; fi
+if [ -n "${HOLD:-}" ]; then echo "$(TS) distilling held by an unmerged lessons branch -> exit 1" >> "$LOG"; exit 1; fi
 exit 0
