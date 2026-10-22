@@ -733,5 +733,11 @@
     "instance": "client-unlisted",
     "status": "published",
     "date": "2026-10-19"
+  },
+  "hand-timestamps-from-different-writers-compare-as-instants-never-as-strings": {
+    "instance": "skeleton",
+    "status": "hand-authored",
+    "date": "2026-09-10",
+    "lesson_id": "timestamps-from-different-writers-compare-as-instants-never-as-strings"
   }
 }
