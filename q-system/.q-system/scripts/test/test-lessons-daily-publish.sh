@@ -69,17 +69,27 @@ build_fixture() {
   cp "$SCRIPTS/lessons_streak.py" "$tmp/skel/q-system/.q-system/scripts/lessons_streak.py"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/skel/q-system/.q-system/scripts/install-plist.sh"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/bin/claude"
-  # gh: records argv; `pr create` prints a PR URL unless told to fail.
+  # gh: records argv. `pr create` prints a PR URL unless gh.mode says fail;
+  # `pr list --state merged --head B` answers 1 when B is in merged.txt, else 0.
+  # gh.mode is a file so one fixture can change behaviour between two runs.
   cat > "$tmp/bin/gh" <<GH
 #!/bin/bash
 echo "\$*" >> "$tmp/gh.calls"
+mode="\$(cat "$tmp/gh.mode" 2>/dev/null)"
 case "\$1 \$2" in
-  "pr create") [ "$mode" = "fail-create" ] && { echo "gh: create refused" >&2; exit 1; }
+  "pr create") [ "\$mode" = "fail-create" ] && { echo "gh: create refused" >&2; exit 1; }
                echo "https://github.com/fixture/repo/pull/77" ;;
-  "pr list")   [ "$mode" = "open-pr" ] && echo "https://github.com/fixture/repo/pull/76" ;;
+  "pr list")   head=""; while [ \$# -gt 0 ]; do [ "\$1" = "--head" ] && head="\$2"; shift; done
+               grep -qx "\$head" "$tmp/merged.txt" 2>/dev/null && echo 1 || echo 0 ;;
 esac
 exit 0
 GH
+  printf '%s' "$mode" > "$tmp/gh.mode"
+  # An earlier run's branch already on origin: unmerged, or merged.
+  case "$mode" in pending-branch|merged-branch)
+    g -C "$tmp/seed" push -q "$tmp/origin.git" main:refs/heads/auto/lessons-old ;;
+  esac
+  [ "$mode" = "merged-branch" ] && echo "auto/lessons-old" > "$tmp/merged.txt"
   chmod +x "$tmp/bin/claude" "$tmp/bin/gh" "$tmp/skel/q-system/.q-system/scripts/install-plist.sh"
   printf '%s' "$tmp"
 }
@@ -87,8 +97,9 @@ GH
 PUBLISHED='{"scanned": 1, "published": ["a fixture lesson"], "held": []}'
 # run_job <tmp>; sets JOB_RC. The distill stub writes where the job tells it to.
 run_job() {
-  local tmp="$1"
-  printf '%s' "$PUBLISHED" > "$tmp/summary.json"
+  local tmp="$1" summary="${2:-$PUBLISHED}"
+  printf '%s' "$summary" > "$tmp/summary.json"
+  rm -f "$tmp/propagated" "$tmp/notify.txt"
   PATH="$tmp/bin:$PATH" \
   KIPI_DISTILL_CMD="printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; cat '$tmp/summary.json'" \
   KIPI_REVIEW_CMD="echo \"\$PR_NUMBER\" >> '$tmp/review.calls'" \
@@ -102,7 +113,9 @@ run_job() {
   JOB_RC=$?
 }
 
-auto_branch() { g -C "$1/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/lessons-*' | head -1; }
+# Lessons branches this run pushed (an earlier run's auto/lessons-old excluded).
+auto_branch() { g -C "$1/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/lessons-*' | grep -vx 'auto/lessons-old' | head -1; }
+auto_count() { g -C "$1/origin.git" for-each-ref --format='%(refname:short)' 'refs/heads/auto/lessons-*' | grep -vx 'auto/lessons-old' | wc -l | tr -d ' '; }
 worktrees_left() { find "$1/state" -maxdepth 1 -name 'wt-*' -type d 2>/dev/null | wc -l | tr -d ' '; }
 
 # --- 1-4. the happy path ---------------------------------------------------
@@ -139,6 +152,24 @@ grep -qx "77" "$T/review.calls" 2>/dev/null \
 [ "$JOB_RC" -eq 0 ] && ok "a published run exits 0" || bad "a published run exits $JOB_RC"
 [ "$(worktrees_left "$T")" = "0" ] && ok "the worktree was removed" \
                                    || bad "the worktree was left behind"
+# The fan-out ships main, which does not hold this run's lessons yet; the alert
+# must say exactly that and never "propagated to fleet" (PR #551 review).
+[ -e "$T/propagated" ] && ok "the run fanned out main" || bad "the run did not fan out"
+if grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
+   && ! grep -q 'propagated to fleet' "$T/notify.txt" 2>/dev/null; then
+  ok "the alert says main went out, not this run's lessons"
+else
+  bad "the alert claims these lessons were propagated: $(cat "$T/notify.txt" 2>/dev/null)"
+fi
+
+# --- 4b. a quiet week still carries last week's merged lessons ------------
+auto_branch "$T" >> "$T/merged.txt"     # last week's PR has merged
+run_job "$T" '{"scanned": 0, "published": [], "held": []}'
+[ "$JOB_RC" -eq 0 ] && [ -e "$T/propagated" ] \
+  && ok "quiet week: main is still fanned out (exit 0)" \
+  || bad "quiet week: no fan-out (exit=$JOB_RC); merged lessons would never ship"
+[ ! -s "$T/notify.txt" ] && ok "quiet week: nothing slacked" \
+                         || bad "quiet week: slacked on a quiet week: $(cat "$T/notify.txt")"
 rm -rf "$T"
 
 # --- 5. negative control: PR create fails ----------------------------------
@@ -173,18 +204,41 @@ fi
   || bad "push-fail: the alert does not name the worktree"
 rm -rf "$T"
 
-# --- 7. negative control: last week's lessons PR is still open -------------
-# The ledger travels with the lessons, so distilling from a main without last
-# week's unmerged rows would publish the same sources twice.
-T="$(build_fixture open-pr)"
+# --- 7. negative control: an earlier lessons branch is not merged ----------
+# The ledger travels with the lessons, so distilling from a main without an
+# earlier run's unmerged rows would publish the same sources twice.
+T="$(build_fixture pending-branch)"
 run_job "$T"
-echo "      fixture (open-pr): $T (exit=$JOB_RC)"
-[ "$JOB_RC" -ne 0 ] && ok "open-pr: job exits non-zero" || bad "open-pr: job exits 0"
-[ -z "$(auto_branch "$T")" ] && ! find "$T" -name fixture-lesson.md | grep -q . \
-  && ok "open-pr: nothing was distilled or pushed" \
-  || bad "open-pr: the run distilled while a lessons PR was open"
-grep -q 'pull/76' "$T/notify.txt" 2>/dev/null \
-  && ok "open-pr: the alert names the open PR" || bad "open-pr: the alert does not name the open PR"
+echo "      fixture (pending-branch): $T (exit=$JOB_RC)"
+[ "$JOB_RC" -ne 0 ] && ok "pending-branch: job exits non-zero" || bad "pending-branch: job exits 0"
+[ "$(auto_count "$T")" = "0" ] && ! find "$T" -name fixture-lesson.md | grep -q . \
+  && ok "pending-branch: nothing was distilled or pushed" \
+  || bad "pending-branch: the run distilled while a lessons branch was unmerged"
+grep -q 'auto/lessons-old' "$T/notify.txt" 2>/dev/null \
+  && ok "pending-branch: the alert names the branch" || bad "pending-branch: the alert does not name the branch"
+rm -rf "$T"
+
+# --- 8. the reviewer's reproducer: PR create fails, then a healthy week ----
+# Run 1 pushes a branch and opens no PR. Checking open PRs only, run 2 saw
+# nothing in flight and pushed the same lesson a second time.
+T="$(build_fixture fail-create)"
+run_job "$T"
+printf 'ok' > "$T/gh.mode"
+run_job "$T"
+echo "      fixture (create-then-healthy): $T (exit=$JOB_RC, branches=$(auto_count "$T"))"
+[ "$JOB_RC" -ne 0 ] && [ "$(auto_count "$T")" = "1" ] \
+  && ok "create-then-healthy: run 2 refuses, one lessons branch on origin" \
+  || bad "create-then-healthy: run 2 exit=$JOB_RC, $(auto_count "$T") lessons branches (same sources twice)"
+rm -rf "$T"
+
+# --- 9. control: a MERGED earlier branch does not block --------------------
+# The repo keeps merged branches, so the guard must not read "exists" as "open".
+T="$(build_fixture merged-branch)"
+run_job "$T"
+echo "      fixture (merged-branch): $T (exit=$JOB_RC, branches=$(auto_count "$T"))"
+[ "$JOB_RC" -eq 0 ] && [ "$(auto_count "$T")" = "1" ] \
+  && ok "merged-branch: the run proceeds and publishes" \
+  || bad "merged-branch: a merged branch blocked the run (exit=$JOB_RC)"
 rm -rf "$T"
 
 echo "---"

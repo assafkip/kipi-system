@@ -90,6 +90,17 @@ fi
 #
 # With no origin there is nothing to strand against: the run commits in place,
 # and says so. Same DISARMED convention as kipi-update.sh's branch check.
+# KIPI_PERSIST_CMD replaces the whole persist-and-publish step, so a run with
+# that seam never opens a worktree or asks GitHub anything. The suites that set
+# it run this script in place, inside a real checkout with a real origin.
+#
+# FIXTURE GUARD, same rule as alert-to-linear.py's: under pytest, PR mode needs
+# a test-owned KIPI_LESSONS_WT_ROOT. Without one, a suite running this script in
+# place fetched, opened worktrees under the live state dir, asked GitHub, and
+# reached the real kipi-update.sh (PR #551 round 2: test_lessons_daily_streak,
+# stopped only by the updater's own not-on-main preflight).
+FIXTURE_RUN=""
+[ -n "${PYTEST_CURRENT_TEST:-}" ] && [ -z "${KIPI_LESSONS_WT_ROOT:-}" ] && FIXTURE_RUN=1
 WT_ROOT="${KIPI_LESSONS_WT_ROOT:-$HOME/.local/state/kipi/lessons}"
 PUBLISH_MODE=local
 LREPO="$SKEL"
@@ -102,7 +113,8 @@ cleanup_wt() {
     echo "$(TS) lessons worktree left at $LREPO (not clean, see above)" >> "$LOG"
   fi
 }
-if git -C "$SKEL" remote get-url origin >/dev/null 2>&1; then
+if [ -z "${KIPI_PERSIST_CMD:-}" ] && [ -z "$FIXTURE_RUN" ] \
+   && git -C "$SKEL" remote get-url origin >/dev/null 2>&1; then
   PUBLISH_MODE=pr
   LREPO="$WT_ROOT/wt-$(date +%Y%m%d-%H%M%S)-$$"
   mkdir -p "$WT_ROOT"
@@ -111,15 +123,23 @@ if git -C "$SKEL" remote get-url origin >/dev/null 2>&1; then
   git -C "$SKEL" worktree add -q --detach "$LREPO" origin/main >> "$LOG" 2>&1 \
     || fail "could not open a worktree at origin/main; nothing distilled"
   trap cleanup_wt EXIT
-  # ONE LESSONS PR AT A TIME. The ledger travels with the lessons, so a run
-  # distilling from a main that lacks last week's unmerged rows re-publishes
-  # the same sources as duplicates. A still-open lessons PR stops the run, and
-  # the alert is how a PR stuck in review reaches the board.
-  OPEN_PRS="$(cd "$LREPO" && gh pr list --state open --limit 200 --json headRefName,url \
-    --jq '.[] | select(.headRefName | startswith("auto/lessons-")) | .url' 2>>"$LOG")" \
-    || fail "could not list open lessons PRs; nothing distilled"
-  if [ -n "$OPEN_PRS" ]; then
-    fail "a previous lessons PR is still open ($(printf '%s' "$OPEN_PRS" | tr '\n' ' ')); not distilling until it merges, or the same sources publish twice"
+  # ONE LESSONS BRANCH IN FLIGHT. The ledger travels with the lessons, so a run
+  # distilling from a main that lacks an earlier run's unmerged rows publishes
+  # the same sources twice. Any auto/lessons-* branch on origin with no MERGED
+  # PR counts: an open PR, and also a branch whose PR never opened. Checking
+  # open PRs alone missed that second case (PR #551 review round 1). The repo
+  # keeps merged branches (delete_branch_on_merge is off), so "merged" is asked
+  # per branch rather than read from the branch list. The alert is how a stuck
+  # lessons PR or an orphan branch reaches the board.
+  PENDING_BR=""
+  for ref in $(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG" \
+               | awk '{sub("refs/heads/", "", $2); print $2}'); do
+    MERGED="$(cd "$LREPO" && gh pr list --state merged --head "$ref" --json number --jq 'length' 2>>"$LOG")" \
+      || fail "could not ask GitHub whether $ref merged; nothing distilled"
+    [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
+  done
+  if [ -n "$PENDING_BR" ]; then
+    fail "lessons branch(es) not merged yet:$PENDING_BR. Not distilling until they merge (or the same sources publish twice). Merge its PR, open one, or delete the branch."
   fi
 else
   echo "$(TS) lessons publish: DISARMED (no origin remote; committing in place)" >> "$LOG"
@@ -146,7 +166,12 @@ HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
 TITLES=$(field "'; '.join(d.get('published',[])[:5])")
 
 if [ "$PUB" = "0" ] && [ "$HELD" = "0" ]; then
-  echo "$(TS) nothing new" >> "$LOG"; exit 0
+  echo "$(TS) nothing new" >> "$LOG"
+  # PR mode still fans out: last week's lessons reached main through a PR after
+  # that run's fan-out, so this weekly update is what carries them to the fleet
+  # (PR #551 review round 1). It stays silent unless the fan-out fails.
+  [ "$PUBLISH_MODE" = pr ] || exit 0
+  QUIET=1
 fi
 
 # Persist new lessons + ledger in the skeleton, then fan to the fleet.
@@ -239,6 +264,8 @@ fi
 if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\" --lessons-dir \"$LESSONS_DIR\""; fi
 if [ "${PERSIST:-}" = "FAILED" ]; then
   echo "$(TS) notion sync skipped: lessons commit did not land" >> "$LOG"
+elif [ "${QUIET:-0}" = 1 ]; then
+  echo "$(TS) notion sync skipped: nothing new" >> "$LOG"
 elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
   echo "$(TS) notion sync failed (non-fatal, see above)" >> "$LOG"
 fi
@@ -253,7 +280,7 @@ streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$
 
 if [ "${PERSIST:-}" = "FAILED" ]; then
   PROP="no propagation (lessons commit did not land)"
-elif [ "$PUB" -gt 0 ]; then
+elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main every run (ASK-2736)
   if [ -n "${KIPI_PROPAGATE_CMD:-}" ]; then
     if bash -c "$KIPI_PROPAGATE_CMD" >> "$LOG" 2>&1; then PROP="propagated to fleet"; else PROP="propagate FAILED"; fi
   else
@@ -295,21 +322,32 @@ elif [ "$PROP" = "propagated to fleet" ]; then
   esac
 fi
 
-MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
+# In PR mode the fan-out ships MAIN, and this run's lessons are not on main yet.
+# Saying "propagated to fleet" beside "they reach the fleet after it merges" was
+# one alert contradicting itself (PR #551 review round 1), so the words say
+# what actually went out.
+PROP_TXT="$PROP"
+[ "$PUBLISH_MODE" = pr ] && [ "$PROP" = "propagated to fleet" ] && PROP_TXT="fleet updated from main"
+MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP_TXT}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"
-[ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · lessons in $PR_URL, they reach the fleet after it merges"
+[ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · this run's lessons are in $PR_URL, not in that update; they go out with the first weekly update after it merges"
 [ -n "${PUBLISH:-}" ] && MSG="$MSG · lessons publish $PUBLISH, lessons are in $LREPO"
 # The reason the alert never gave for six weeks (ASK-2736): name the branch.
 case "$PROP" in "propagate FAILED"*)
   SKEL_BRANCH="$(git -C "$SKEL" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
   [ "$SKEL_BRANCH" != "main" ] && MSG="$MSG · the skeleton checkout is on $SKEL_BRANCH, not main" ;;
 esac
-notify "$MSG"
-echo "$(TS) slacked: $MSG" >> "$LOG"
+# Silent when nothing new and the weekly update went out: the header contract.
+if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ]; then
+  echo "$(TS) quiet week: fleet updated from main, nothing new, not slacked" >> "$LOG"
+else
+  notify "$MSG"
+  echo "$(TS) slacked: $MSG" >> "$LOG"
+fi
 
 # Lessons that published but never reached the fleet are a half-done run: the
 # Slack line above says so, and this makes launchd (and therefore Linear) agree.
