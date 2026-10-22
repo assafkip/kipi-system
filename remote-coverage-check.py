@@ -154,15 +154,54 @@ def find_uncovered_dirs(root, repo_set, allow):
 PRIVATE_ALLOWLIST = os.path.expanduser("~/.config/kipi/remote-coverage-allow.json")
 
 
-def load_allowlist():
+def load_allowlist(paths=None):
     out = {}
-    for path in (ALLOWLIST, PRIVATE_ALLOWLIST):
+    for path in paths or (ALLOWLIST, PRIVATE_ALLOWLIST):
         if not os.path.isfile(path):
             continue
         with open(path) as fh:
             data = json.load(fh)
         out.update({os.path.expanduser(e["path"]): e for e in data.get("local_only", [])})
     return out
+
+
+def declare(target, reason, public=None, private=None):
+    """THE single writer for local-only decisions. Writes the PRIVATE file only.
+
+    Scar, ASK-2058 review of PR #550 (2026-10-22): the scrub moved the reads to
+    a private allowlist but left this writer pointed at the tracked one, so the
+    next `kipi new` with KIPI_LOCAL_ONLY would have committed a client or family
+    repo path and its reason into the public repo again. A local-only repo is
+    local-only BECAUSE its content is private, and its path and reason say so.
+    The public file is still read, never written. Returns the stored path.
+    """
+    import datetime
+    public = public or ALLOWLIST
+    private = private or PRIVATE_ALLOWLIST
+    home = os.path.expanduser("~")
+    tgt = target.rstrip("/")
+    if tgt.startswith(home):
+        tgt = "~" + tgt[len(home):]
+    if os.path.expanduser(tgt) in load_allowlist((public, private)):
+        return tgt, False
+    data = {"local_only": []}
+    if os.path.isfile(private):
+        with open(private) as fh:
+            data = json.load(fh)
+    data.setdefault("local_only", []).append({
+        "path": tgt,
+        "reason": reason.strip(),
+        "declared": datetime.date.today().isoformat(),
+        "review": "Re-decide when the blocking condition changes.",
+    })
+    os.makedirs(os.path.dirname(private), exist_ok=True)
+    tmp = f"{private}.tmp.{os.getpid()}"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, private)
+    return tgt, True
 
 
 def registry_paths():
@@ -332,6 +371,37 @@ def self_test():
         else:
             print("  [b] git worktree correctly counted as covered")
 
+    # d: --declare writes the PRIVATE allowlist, never the tracked public one
+    # (ASK-2058, PR #550 review). Temp files only; the live allowlists are never
+    # touched by a self-test.
+    with tempfile.TemporaryDirectory() as tmp:
+        pub = os.path.join(tmp, "public-allow.json")
+        priv = os.path.join(tmp, "private", "remote-coverage-allow.json")
+        with open(pub, "w") as fh:
+            json.dump({"local_only": [{"path": "/x/already", "reason": "r"}]}, fh)
+        before = open(pub).read()
+        tgt, added = declare(os.path.join(tmp, "private-client"),
+                             "a sentence long enough to be a reason", pub, priv)
+        stored = load_allowlist((priv,))
+        if open(pub).read() != before:
+            print("FAIL: [d] --declare wrote the PUBLIC allowlist")
+            ok = False
+        elif not added or os.path.expanduser(tgt) not in stored:
+            print("FAIL: [d] --declare did not record the path in the private allowlist")
+            ok = False
+        elif oct(os.stat(priv).st_mode & 0o777) != oct(0o600):
+            print("FAIL: [d] the private allowlist is not mode 600")
+            ok = False
+        else:
+            print("  [d] --declare writes the private allowlist only, mode 600")
+        _, again = declare("/x/already", "a sentence long enough to be a reason",
+                           pub, priv)
+        if again:
+            print("FAIL: [d] a path already in the public list was declared twice")
+            ok = False
+        else:
+            print("  [d] a path already declared in either list is not re-added")
+
     print("SELF-TEST PASS" if ok else "SELF-TEST FAIL")
     return 0 if ok else 1
 
@@ -357,28 +427,11 @@ def main():
                   "(>=20 chars). An entry without an arguable reason is a mute "
                   "button, not a decision.", file=sys.stderr)
             return 1
-        # The allowlist is committed to a PUBLIC repo. Name the data CLASS and
-        # the carrier path, never the private content itself.
-        import datetime
-        with open(ALLOWLIST) as fh:
-            data = json.load(fh)
-        tgt = args.declare.rstrip("/")
-        home = os.path.expanduser("~")
-        if tgt.startswith(home):
-            tgt = "~" + tgt[len(home):]
-        if any(e["path"] == tgt for e in data["local_only"]):
+        tgt, added = declare(args.declare, args.reason)
+        if not added:
             print(f"already declared: {tgt}")
             return 0
-        data["local_only"].append({
-            "path": tgt,
-            "reason": args.reason.strip(),
-            "declared": datetime.date.today().isoformat(),
-            "review": "Re-decide when the blocking condition changes.",
-        })
-        with open(ALLOWLIST, "w") as fh:
-            json.dump(data, fh, indent=2)
-            fh.write("\n")
-        print(f"declared local-only: {tgt}")
+        print(f"declared local-only: {tgt} (private allowlist {PRIVATE_ALLOWLIST})")
         return 0
 
     covered, uncovered, allowed, nonrepo = audit(args.root)
@@ -411,7 +464,8 @@ def main():
               "git -C <path> commit -m 'Seed'")
         print("                 gh repo create assafkip/<name> --private "
               "--source=<path> --push")
-        print(f"  or declare it: add a path + reason to {ALLOWLIST}")
+        print("  or declare it: python3 remote-coverage-check.py --declare <path> "
+              f"--reason '...'  (writes {PRIVATE_ALLOWLIST})")
         return 2
     return 0
 

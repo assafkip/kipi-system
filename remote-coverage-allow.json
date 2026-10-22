@@ -2,16 +2,8 @@
   "_doc": "Repos that are DELIBERATELY local-only. remote-coverage-check.py fails on any remote-less repo NOT listed here. An entry is a recorded decision, not a mute button: it needs a reason someone can argue with, and 'unblock' means either pushing the repo or changing the reason. Never delete a repo to clear the gate.",
   "_scar": "2026-07-29 audit: 12 remote-less repos found, oldest 219 commits. Some hold personal-sensitive data and must never get a hosted remote. An always-on auto-push would have published them, which is why creation is opt-in and this file exists.",
   "_reason_discipline": "THIS FILE IS COMMITTED TO A PUBLIC REPO. State the CLASS of sensitive content and the path that carries it, never the content itself. A reason that quotes the private data defeats the gate it documents. Detail belongs in the local-only repo, not here.",
+  "_private": "Since ASK-2058 (2026-10-22) `--declare` writes only the private ~/.config/kipi/remote-coverage-allow.json, which the check merges with this file. This file is read, never written: a local-only repo's path and reason are private by nature.",
   "local_only": [
-    {
-      "path": "~/projects/personal/projects/travel-agent",
-      "reason": "One tracked file carries health attributes, ages, and home city for minors. Class: family-medical. No names, and no card/passport/loyalty numbers (those are gitignored and verified never committed in full history), but the remaining combination is re-identifying.",
-      "carriers": [
-        "q-travel/family/profile.md"
-      ],
-      "declared": "2026-07-29",
-      "review": "A single line in the carrier file is the blocker. Move it to a gitignored private-notes.md and this repo becomes pushable private."
-    },
     {
       "path": "~/projects/personal",
       "reason": "Persona container holding 2 tracked files (.gitignore + README.md). projects/ is gitignored so it captures no work. A GitHub repo for two config files is noise, not backup.",
