@@ -593,5 +593,118 @@
     "instance": "ASK_AI_consultant",
     "status": "published",
     "date": "2026-08-31"
+  },
+  "87bc65afff94d00d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "re-enabling-a-switched-off-feature-must-not-revive-the-machi"
+  },
+  "7fb4ccbd14ab06db": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "check-the-property-not-its-proxy"
+  },
+  "df326171f0ac2954": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "check-a-slower-mode-against-the-hard-ceiling-and-wire-the-ch"
+  },
+  "f48bc08a08080b3d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "verify-the-user-facing-output-not-the-machinery-that-produce"
+  },
+  "bf437caf6ec704ba": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "verify-a-guard-s-behavior-by-running-it-before-you-record-th"
+  },
+  "d3da7693616aa6dd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "judge-the-lane-that-gets-used-not-the-lane-that-was-built-to"
+  },
+  "7c6ce0959b0df05d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "cover-every-request-variant-and-check-the-output-s-shape-bef"
+  },
+  "fdbb8f07c41fbf6b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "compute-the-number-from-data-you-already-hold-before-inferri"
+  },
+  "d5c2cb5c43e7ab6f": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "enumerate-a-guard-s-population-from-code-and-test-data-flow-"
+  },
+  "d19442fce6410340": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "separate-unsafe-output-from-unusually-shaped-output-in-parse"
+  },
+  "d16d4a285a08044e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "cap-the-shared-choke-point-not-each-path-that-reaches-it"
+  },
+  "170e60fdf472e498": {
+    "instance": "4_points_consulting",
+    "status": "held",
+    "date": "2026-10-05"
+  },
+  "649c032ad535ae53": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "put-the-decision-on-the-surface-where-the-work-happens-not-o"
+  },
+  "f5614503caf93ec1": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "make-empty-results-distinguish-nothing-found-from-everything"
+  },
+  "87c87ea7e168eb94": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "keep-source-derived-and-model-derived-fields-apart-in-any-ga"
+  },
+  "106a3241e65212bc": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "fail-safe-gates-should-degrade-the-output-not-halt-the-run"
+  },
+  "731a0a36864a1c79": {
+    "instance": "Pure_spectrum_Q",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "test-against-the-real-shape-of-your-data-and-wire-guards-ont"
+  },
+  "e15c0bea3c5bb218": {
+    "instance": "Alice",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "same-symptom-two-causes-check-the-environment-and-the-invoca"
+  },
+  "95f6080424235fe7": {
+    "instance": "Prodigy_Gold",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "a-safety-guard-must-be-run-against-the-real-write-path-not-t"
   }
 }
