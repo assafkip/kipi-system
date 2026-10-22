@@ -107,7 +107,7 @@ def detect_dark_jobs(_ctx) -> list:
     out = []
     for label in _launchd_labels():
         if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+                                 "com.claudedaddy.", "com.client_b.", "com.personal.")):
             continue
         if label in paused or _is_loaded(label):
             continue

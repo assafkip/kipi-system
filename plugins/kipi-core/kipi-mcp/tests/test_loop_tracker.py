@@ -222,7 +222,7 @@ def test_migration_from_json(tmp_path):
             {
                 "id": "L-2025-01-01-001",
                 "type": "email_sent",
-                "target": "Alice",
+                "target": "Sam",
                 "target_notion_id": None,
                 "opened": "2025-01-01",
                 "opened_by": "morning_routine",
@@ -277,7 +277,7 @@ def test_migration_from_json(tmp_path):
 
     assert len(rows) == 2
     assert rows[0]["id"] == "L-2025-01-01-001"
-    assert rows[0]["target"] == "Alice"
+    assert rows[0]["target"] == "Sam"
     assert rows[0]["touch_count"] == 2
     assert rows[1]["id"] == "L-2025-01-01-002"
     assert rows[1]["status"] == "closed"

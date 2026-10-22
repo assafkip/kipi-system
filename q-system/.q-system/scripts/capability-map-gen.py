@@ -45,7 +45,7 @@ SKIP_DIRS = {
 }
 
 # Substrings that mark a vendored tree wherever they appear in a path. Directory
-# NAME matching alone was not enough: 4_points_consulting keeps a virtualenv under
+# NAME matching alone was not enough: client_a keeps a virtualenv under
 # q-investigate/ whose inner dirs are named lib/ and python3.x/, so a name-only
 # filter admitted 5450 site-packages files as "engines" (recon run 2026-07-26).
 VENDOR_MARKERS = ("site-packages", "dist-packages", "/node_modules/", "/.git/")
@@ -489,7 +489,7 @@ MODULE_REF_RE = re.compile(
 
 
 # `fill_sheet.2026-07-28.py` beside `fill_sheet.py` is a dated SNAPSHOT of an
-# engine, not a second engine. Alice's run-sweep.sh writes one before every sweep
+# engine, not a second engine. client_d's run-sweep.sh writes one before every sweep
 # (`cp "$GEN/fill_sheet.py" "$DIR/backups/fill_sheet.$TODAY.py"`) and copies it back
 # on failure, so it is live DATA on a rollback path. No static scan can ever match
 # it -- the caller interpolates $TODAY -- so it would report UNWIRED forever and
@@ -506,7 +506,7 @@ def _iter_surface_files(root: Path):
 
     WHY REPO-WIDE (ASK-122): the previous list walked only .claude/, plugins/ and
     q-system/, so an instance whose code lives anywhere else reported its own
-    runners as absent. Alice flagged 22 engines UNWIRED while `regenerate.sh` ran
+    runners as absent. client_d flagged 22 engines UNWIRED while `regenerate.sh` ran
     four of them by path and `pipeline.py` imported two more. The scan has to
     follow the repo, not a layout the skeleton happens to use.
     """
@@ -518,7 +518,7 @@ def _iter_surface_files(root: Path):
         # A dated snapshot is DATA, and this file already says so by refusing to
         # collect it as an engine. It must not VOTE either: a rollback copy's
         # `import geo_clues` kept geo_clues.py LIVE after every real caller was
-        # gone, and Alice writes one snapshot per sweep so the phantom votes
+        # gone, and client_d writes one snapshot per sweep so the phantom votes
         # accumulate forever (Fable B3). Excluding it on one side only was the
         # same half-exclusion this file keeps repeating.
         if DATED_SNAPSHOT_RE.search(p.stem):

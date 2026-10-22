@@ -77,20 +77,20 @@ files. Strength = how directly it answers a report concern.
 |---|---|---|
 | **KTLYST_strategy** | **Strong** | Governance as a design primitive: 27+ deterministic gates + character-level provenance + honest BLOCKED verdicts. Governs capability *at generation time*. |
 | **ktlyst-website** | **Strong** | Public positioning *is* the governance layer: "Deterministic, Not Probabilistic," full audit trail, mandatory human approval before production. |
-| **4_points_consulting** | **Strong** | 18 IC structured-analytic techniques (ACH, deception detection, premortem) + A–F confidence + citation enforcement. Assumes AI is unreliable, plans for it. |
+| **client_a** | **Strong** | 18 IC structured-analytic techniques (ACH, deception detection, premortem) + A–F confidence + citation enforcement. Assumes AI is unreliable, plans for it. |
 | **ktlyst_lawyer** | **Strong** | Compliance/liability infrastructure cited to statute; turns regulatory obligation into contractual + audit procedure. Governance after capability. |
-| **ASK_AI_consultant** | **Strong** | Sells the fix: hardens orgs' unreliable AI into governed systems (Pure Spectrum proof, $600K+ avoidance). Closes the gap at the org level. |
+| **ASK_AI_consultant** | **Strong** | Sells the fix: hardens orgs' unreliable AI into governed systems (client-b proof, large cost avoidance). Closes the gap at the org level. |
 | **ktlyst (product)** | **Medium** | Zero-inference extraction + source citations + 5 validation gates + DSSE audit logs. Trades capability for verifiability. |
-| **Pure_spectrum_Q** | **Medium** | Provenance after a real hallucination incident (DQ-055); agents as discovery tools, not decision-makers; reversible/auditable controls. |
+| **client_b** | **Medium** | Provenance after a real hallucination incident (DQ-055); agents as discovery tools, not decision-makers; reversible/auditable controls. |
 | **kipi-investigations** | **Medium** | Every node/edge traced to the `tool_use_id` that produced it; analyst-approval gates on every edge; `{{UNVALIDATED}}` marks. |
 | **accountant** | **Medium** | Fail-closed egress filter (Rust): the LLM *cannot* see raw financial PII regardless of prompt. Constrain the model, don't trust it. |
 | **personal-brand** | **Medium-Strong** | A credible threat-intel expert publicly modeling responsible AI use — bridges the exact expert↔public trust gap (#15) the report measures. |
-| **AUDHD_KIDS** | **Medium** | Evidence-tiered (1–5), citation-enforced parent research for neurodivergent kids — fills a population the report never measures. |
+| **family_repo** | **Medium** | Evidence-tiered (1–5), citation-enforced parenting research — fills a population the report never measures. |
 | **travel-agent** | **Medium** | Even a consumer tool carries the signature: prices cited live, "founder decides," never auto-books. The discipline is reflexive. |
 | **fractional-cxo** | Tangential | Income finder; routes an AI-security expert toward governance roles, but doesn't itself close any gap. |
 | **gtm-partner** | Tangential | Agentic GTM with proof-gating discipline, but operates *within* the gap, doesn't close it. |
 | **school-negotiator** | Tangential | Consumer value from AI (#8) — negotiation coach. No governance angle. |
-| q-education / event_coordinator / school-idf / car-research | None | Placeholder, placeholder, non-AI activity, not on disk. |
+| q-education / event_coordinator / school-repo / car-research | None | Placeholder, placeholder, non-AI activity, not on disk. |
 
 ### The convergence finding (the actual headline)
 
@@ -130,15 +130,15 @@ in code, not prose.
 | **kipi-system core OS** | **4/4** | core | `prd_runner.py:471` gate engine; receipts `:660-769`; 11 blocking hooks in `settings.json` |
 | **ktlyst (product)** | **4/4** | independent | `v007.py:198` source_span must match PDF **verbatim**; `verdicts.py:69` `NOT_FOR_DEPLOYMENT` is the only legal value |
 | **accountant** | **4/4** | independent | `agent.rs:167` fail-closed egress before `reqwest.post`; `safe.rs` `SafeValue` enum has no String variant |
-| **Pure_spectrum_Q** | **4/4*** | independent | `validators/allowlist.py` fail-closed loader; `phase3_agent.py:128` agent can't fabricate `supporting_query_ids` |
+| **client_b** | **4/4*** | independent | `validators/allowlist.py` fail-closed loader; `phase3_agent.py:128` agent can't fabricate `supporting_query_ids` |
 | **ktlyst_lawyer** | **3/4** | independent | `stat-verify.py:196` citation validator; `decision-origin-tag-lint.py:42` human-decision tag enforcer |
 | **kipi-investigations** | **3/4** | independent | `investigator.py:879` `tool_use_id` provenance; `:1760` `{{UNVALIDATED}}` enforced |
 | KTLYST_strategy | 4/4 | **inherited** (prd-os) | `findings.schema.json` *"schema does not trust raw Codex output"* — shared core, not domain-built |
-| 4_points_consulting | 2/4 | independent | `findings-verify-hook.py:71` blocks a CONFIRMED finding whose identifier is still UNVERIFIED |
-| AUDHD_KIDS | 1/4 | independent | `compliance-check.py:147` auto-fails overclaims missing `{{UNVALIDATED}}` |
+| client_a | 2/4 | independent | `findings-verify-hook.py:71` blocks a CONFIRMED finding whose identifier is still UNVERIFIED |
+| family_repo | 1/4 | independent | `compliance-check.py:147` auto-fails overclaims missing `{{UNVALIDATED}}` |
 | travel-agent | 0/4 | — | all DOC; "never auto-book" enforced by *absence of a booking API*, not gate code |
 
-\* Pure Spectrum: the gate + anti-fabrication are shipped code; some uncertainty
+\* client-b: the gate + anti-fabrication are shipped code; some uncertainty
 marking lives in `decisions.md` (doc).
 
 ### What the code pass changed about the claim (calibration)
@@ -146,13 +146,13 @@ marking lives in `decisions.md` (doc).
 - **The airtight core is ~6 instances, not 12.** Genuinely independent,
   code-enforced governance — across **three stacks** (Python threat-intel, **Rust**
   finance, Python fraud/OSINT/legal) — exists in: ktlyst product (4/4), accountant
-  (4/4), Pure Spectrum (4/4), lawyer (3/4), investigations (3/4), plus the core OS
+  (4/4), client-b (4/4), lawyer (3/4), investigations (3/4), plus the core OS
   (4/4). That spread across unrelated domains and languages is the real, defensible
   convergence finding.
-- **The docs pass over-rated 4_points** (Strong → 2/4 in code): its CHALLENGE/
+- **The docs pass over-rated client_a** (Strong → 2/4 in code): its CHALLENGE/
   premortem human gates and A–F confidence scale are procedural, not hooked.
 - **Honest negatives** (these strengthen the claim by bounding it): investigations'
-  human gate is post-facto auto-approve, not a hard pre-ship block; AUDHD_KIDS is
+  human gate is post-facto auto-approve, not a hard pre-ship block; family_repo is
   doc-enforced except for the `{{UNVALIDATED}}` check; travel-agent has zero
   enforcing code.
 - **A real pattern the code surfaced:** travel-agent governs by *capability absence*
@@ -331,7 +331,7 @@ These are the next research targets if this becomes the plan.
   re-derived across 12 domains. 5 Strong, 6 Medium(+), 3 Tangential, rest None/empty.
 - 2026-06-26 — code-level proof pass complete (file:line citations, code-vs-doc).
   Result: airtight core is ~6 independently-built, code-enforced instances across 3
-  stacks (Python/Rust); 4_points downgraded Strong→2/4; honest negatives recorded.
+  stacks (Python/Rust); client_a downgraded Strong→2/4; honest negatives recorded.
   "12 domains" recalibrated to "~6 in real code." See Code-level proof pass section.
 - Open threads to refine next:
   - Decide the artifact: essay ("governance as code at n=1"), conference talk, or
