@@ -390,9 +390,16 @@ def main(guard):
         rc, out = run_ci(guard, repo, base, head, {})
         record("CI: a missing secret on this repo's own event FAILS closed",
                rc != 0, f"rc={rc}")
+        # PR #554 review round 1: FORK_PR was set by nothing and the workflow
+        # skips forks, so the old "fork passes with a notice" case tested only
+        # itself. The variable now changes nothing: still fails closed.
         rc, out = run_ci(guard, repo, base, head, {"FORK_PR": "true"})
-        record("CI: a fork PR without secrets passes with a notice",
-               rc == 0 and "fork" in out, f"rc={rc}")
+        record("CI: FORK_PR is not an escape hatch; no secret still FAILS",
+               rc != 0, f"rc={rc}")
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: BLOCK text points at file:line, not at a command that cannot show the term",
+               rc != 0 and "notes.md:2" in out and "Run the local guard" not in out,
+               f"rc={rc}")
 
     # --- 17. REGRESSION (ASK-2058 review blocker 1): binaries and path names ---
     # Neither is an added TEXT line, so the line scan passed both. The review's
@@ -653,6 +660,26 @@ def main(guard):
         rc, out = commit(repo, home, "ordinary", {"f.md": f"++ {CLIENT} counter\n"})
         record("an added line starting with '++' is scanned and BLOCKS",
                rc != 0 and head_count(repo) == 0, f"rc={rc}")
+
+    # --- 26. REGRESSION (PR #554 review round 1, major): no gh, no blocked push
+    # The pre-push sync ran `gh` unguarded; without it subprocess raised, the
+    # hook exited 1 and lefthook refused the push. PATH here holds git only.
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        git(repo, "remote", "add", "origin",
+            "https://github.com/example-owner/example-public.git")
+        gitonly = Path(tmp) / "gitonly"
+        gitonly.mkdir()
+        (gitonly / "git").symlink_to(shutil.which("git"))
+        env = dict(os.environ, HOME=str(home), PATH=str(gitonly))
+        env.pop("PRIVATE_TERMS", None)
+        p = subprocess.run([sys.executable, str(guard), "--sync-ci-secret"], cwd=repo,
+                           capture_output=True, text=True, env=env)
+        out = p.stdout + p.stderr
+        record("sync: no gh on PATH warns and exits 0, never blocks the push",
+               p.returncode == 0 and "Traceback" not in out and "not synced" in out,
+               f"rc={p.returncode}")
 
     failed = [n for n, ok in results if not ok]
     print()

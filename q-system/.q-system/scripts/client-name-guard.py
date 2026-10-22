@@ -57,7 +57,8 @@ is not the founder has no clients to protect, and a gate that fails closed on a
 missing local file blocks every contributor for nothing (scar: a-hook-that-
 fails-closed-on-a-missing-script-blocks-the-fix-too). In CI the opposite holds
 for this repo's own events: a missing secret there means the backstop is off,
-so it fails, except on a fork PR, which GitHub never hands secrets.
+so it fails. Fork PRs never reach this script: the workflow skips them (a
+pass or fail there would be an oracle), and the push to main scans the merge.
 
 ## Bypass
 
@@ -654,12 +655,11 @@ def _safe_path(path, terms):
 
 
 def _ci_terms():
-    fork = os.environ.get("FORK_PR") == "true"
+    # No fork branch (PR #554 review round 1): the workflow skips fork PRs and
+    # nothing set FORK_PR, so a "fork passes with a notice" path was unreachable
+    # code whose only test tested itself.
     terms = load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}"))
     if not terms or not os.environ.get(CI_SECRET):
-        if fork:
-            print("::notice::client-name-guard: fork PR, no secrets; the push to main re-runs this scan")
-            return None, 0
         print(f"::error::client-name-guard: the {CI_SECRET} secret (environment {CI_ENV}) is "
               "missing or empty, so the backstop is off. Run `python3 "
               "q-system/.q-system/scripts/client-name-guard.py --sync-ci-secret` from a "
@@ -701,7 +701,11 @@ def _finish(problems, terms, scope):
     print("client-name-guard: BLOCK. Private terms (kind only; the term is never printed here):")
     for p in problems:
         print(f"  {p}")
-    print("Run the local guard on your machine to see the term, then rename it to a placeholder.")
+    # Not "run the local guard to see the term" (PR #554 review round 1): the
+    # local guard scans staged content only, and --ci refuses without the
+    # secret, so that advice pointed at a command that cannot show it.
+    print("Open each file:line above on a machine with the private sources and "
+          "rename the term to a placeholder.")
     return 1
 
 
@@ -895,15 +899,28 @@ def sync_ci_secret():
     stamp = KIPI_CONFIG / f"private-terms.ci-digest.{repo.replace('/', '_')}"
     if stamp.exists() and stamp.read_text().strip() == digest:
         return 0
-    vis = subprocess.run(["gh", "repo", "view", repo, "--json", "visibility", "-q", ".visibility"],
-                         capture_output=True, text=True)
+    # NO gh, NO BLOCKED PUSH (PR #554 review round 1, major). subprocess raised
+    # FileNotFoundError on a machine without gh, the hook exited 1, and lefthook
+    # refused the push: the "never blocks" promise above was false.
+    try:
+        vis = subprocess.run(["gh", "repo", "view", repo, "--json", "visibility",
+                              "-q", ".visibility"], capture_output=True, text=True)
+    except OSError as exc:
+        print(f"client-name-guard: WARN gh unavailable ({exc.__class__.__name__}); "
+              "CI secret not synced")
+        return 0
     if vis.returncode != 0:
         print(f"client-name-guard: WARN cannot read {repo} visibility; CI secret not synced")
         return 0
     if vis.stdout.strip() != "PUBLIC":
         return 0
-    r = subprocess.run(["gh", "secret", "set", CI_SECRET, "-R", repo, "--env", CI_ENV],
-                       input=blob, capture_output=True, text=True)
+    try:
+        r = subprocess.run(["gh", "secret", "set", CI_SECRET, "-R", repo, "--env", CI_ENV],
+                           input=blob, capture_output=True, text=True)
+    except OSError as exc:
+        print(f"client-name-guard: WARN gh secret set could not run ({exc.__class__.__name__}); "
+              "CI secret not synced")
+        return 0
     if r.returncode != 0:
         print(f"client-name-guard: WARN gh secret set failed for {repo}: {r.stderr.strip()}")
         return 0
