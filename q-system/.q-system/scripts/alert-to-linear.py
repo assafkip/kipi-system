@@ -1027,6 +1027,11 @@ def _queue_for_retry(message: str, fp: str, reason: str) -> tuple[str | None, st
         for item in queue.pending_items():
             if (item.get("source") == ALERT_QUEUE_SOURCE
                     and item.get("fingerprint") == fp):
+                tries = sum(1 for op in queue.read_ops()
+                            if op.get("op") == "retry_failed"
+                            and op.get("key") == item["key"])
+                if tries >= RETRY_CAP:
+                    return item["key"], "past retry cap"
                 return item["key"], "already queued"
         key = f"alert/{fp}/{int(time.time())}"
         repo = (project_candidates(message) or [ALERT_QUEUE_SOURCE])[0]
@@ -1056,6 +1061,11 @@ def _create_failed(message: str, fp: str, reason: str) -> tuple[int, str]:
     still pending, so _queue_for_retry answers "already queued".
     """
     key, note = _queue_for_retry(message, fp, reason)
+    if key and note == "past retry cap":
+        # No drain will attempt this entry again (PR #546 review round 2,
+        # finding 3), so the line must not promise a retry.
+        return EXIT_FAILED, (f"{reason}; NOT filed, {key} is past its retry cap "
+                             f"and left for /linear-drain: {message}")
     if key:
         return EXIT_FAILED, (f"{reason}; NOT filed, queued for retry as {key}: "
                              f"{message}")
@@ -1156,13 +1166,16 @@ def drain_queued_alerts(limit: int = DRAIN_PER_RUN,
 def file_and_drain(message: str) -> tuple[int, list[tuple[bool, str]]]:
     """main()'s job after its guards: file this alert, then retry the queue.
 
-    The retry runs only when this alert filed, because that is the one moment
-    this run has proof Linear is answering. Each line carries whether it is a
-    success, so a failed retry reaches stderr even when this alert filed.
+    The retry runs only when this alert's own line names a ticket, because that
+    is the one proof this run has that Linear is answering. EXIT_OK is not that
+    proof: a noise alert and a sustained-rule deferral return it without any
+    API call, and draining on them during an outage spent a real entry's whole
+    retry budget (PR #546 review round 2, finding 1). Each line carries whether
+    it is a success, so a failed retry reaches stderr even when this alert filed.
     """
     code, line = file_alert(message)
     lines = [(code == EXIT_OK, line)]
-    if code == EXIT_OK:
+    if code == EXIT_OK and _FILED_LINE.match(line):
         lines.extend(drain_queued_alerts())
     return code, lines
 
@@ -1234,6 +1247,10 @@ def _file_alert_serialized(message: str, fp: str, ln, now: float,
         state_type = ((issue.get("state") or {}).get("type") or "").lower()
         still_open = bool(issue.get("id")) and state_type not in ("completed", "canceled")
         if still_open:
+            # Keep the UUID Linear just returned. An adopted ticket arrives here
+            # carrying its identifier (ASK-n); commentCreate and the state file
+            # have only ever been given the UUID, so that is what goes on.
+            prior = {**prior, "issue_id": issue["id"]}
             count = int(prior.get("count", 1)) + 1
             last_comment = float(prior.get("last_comment_at", prior.get("first_at", 0)))
             said = False

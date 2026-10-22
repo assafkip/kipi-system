@@ -1145,6 +1145,10 @@ def test_a_manual_drain_is_adopted_not_duplicated(isolated_state, monkeypatch):
     assert code == mod.EXIT_OK
     assert healthy.created == 0, "a manual drain's ticket was duplicated"
     assert "ASK-500" in line, line
+    # The state keeps the UUID the open-check returned, not the identifier, so
+    # the 12-hour commentCreate gets the id shape it was always given.
+    with open(isolated_state / f"{mod.fingerprint(AUTOCOMMIT[0])}.json") as fh:
+        assert json.load(fh)["issue_id"] == "iss-1"
 
 
 def test_an_adopted_ticket_that_was_closed_opens_a_fresh_one(isolated_state, monkeypatch):
@@ -1231,6 +1235,39 @@ def test_a_replay_that_files_nothing_is_not_marked_drained(isolated_state, monke
     results = mod.drain_queued_alerts(limit=1, now=2000.0)
     assert results and results[0][0] is False, results
     assert len(_pending(isolated_state)) == 1, "a deferred replay was discarded"
+
+
+# --- PR #546 review round 2 --------------------------------------------------
+
+NOISE = "[kipi-system] armed .claude/ integrity tripwire: 12 file(s) baselined"
+
+
+def test_a_good_run_that_filed_nothing_does_not_drain(isolated_state, monkeypatch):
+    """Round-2 finding 1. A noise alert returns EXIT_OK without touching Linear.
+    Draining on it during an outage burned a real entry's whole retry budget."""
+    assert mod.is_noise(NOISE)
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    for _ in range(mod.RETRY_CAP):
+        code, lines = mod.file_and_drain(NOISE)
+        assert code == mod.EXIT_OK
+    ops = [o["op"] for o in _queue_ops(isolated_state)]
+    assert ops == ["add"], f"noise runs spent retries: {ops}"
+
+
+def test_past_the_cap_the_log_does_not_promise_a_retry(isolated_state, monkeypatch):
+    """Round-2 finding 3. Past RETRY_CAP no drain will attempt the entry, so the
+    job log must not say "queued for retry"."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    for i in range(mod.RETRY_CAP):
+        mod.drain_queued_alerts(limit=1, now=2000.0 + i)
+    code, line = mod.file_alert(POISON, now=3000.0)
+    assert code == mod.EXIT_FAILED
+    assert "queued for retry" not in line, line
+    assert "/linear-drain" in line and POISON in line, line
 
 
 def test_with_no_queue_a_failed_create_says_so(monkeypatch, tmp_path):
