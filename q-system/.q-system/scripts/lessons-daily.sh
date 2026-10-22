@@ -22,6 +22,8 @@
 # escalating run: the logged automated action the detect-act-learn triad was
 # missing. Success resets the streak.
 set -uo pipefail
+# Unattended fetch and push: a credential prompt must fail, never hang the job.
+export GIT_TERMINAL_PROMPT=0
 
 SKEL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"   # scripts -> .q-system -> q-system -> repo root
 NOTIFY="$SKEL/q-system/.q-system/scripts/slack-notify.sh"
@@ -72,10 +74,64 @@ else
   printf '%s\n' "$ARM_OUT" >> "$LOG"
 fi
 
+# WHERE LESSONS ARE WRITTEN, COMMITTED AND SENT (ASK-2736).
+#
+# THE SCAR. This job used to write and commit lessons in the checkout it runs
+# from. From 2026-09-07 to 2026-10-19 that checkout sat on a feature branch, so
+# six weekly runs committed 29 lessons onto it, three of those commits never
+# left the machine, and kipi-update.sh refused every fan-out because the
+# checkout was not at origin/main. The alert only ever said "propagate FAILED".
+#
+# So with an origin, nothing is written to this checkout at all: the run opens a
+# fresh worktree at origin/main, distills into it, commits there through the
+# repo's hooks, pushes a branch, opens a PR to main, arms auto-merge and runs the
+# fleet reviewer. Lessons reach main through review or the run fails loudly and
+# keeps the worktree. Main is protected (enforce_admins), so a PR is the only way.
+#
+# With no origin there is nothing to strand against: the run commits in place,
+# and says so. Same DISARMED convention as kipi-update.sh's branch check.
+WT_ROOT="${KIPI_LESSONS_WT_ROOT:-$HOME/.local/state/kipi/lessons}"
+PUBLISH_MODE=local
+LREPO="$SKEL"
+KEEP_WT=0
+cleanup_wt() {
+  [ "$PUBLISH_MODE" = pr ] && [ -d "$LREPO" ] || return 0
+  if [ "$KEEP_WT" = 1 ]; then
+    echo "$(TS) lessons worktree KEPT at $LREPO" >> "$LOG"
+  elif ! git -C "$SKEL" worktree remove "$LREPO" >> "$LOG" 2>&1; then
+    echo "$(TS) lessons worktree left at $LREPO (not clean, see above)" >> "$LOG"
+  fi
+}
+if git -C "$SKEL" remote get-url origin >/dev/null 2>&1; then
+  PUBLISH_MODE=pr
+  LREPO="$WT_ROOT/wt-$(date +%Y%m%d-%H%M%S)-$$"
+  mkdir -p "$WT_ROOT"
+  git -C "$SKEL" fetch -q origin main >> "$LOG" 2>&1 \
+    || fail "could not fetch origin/main; nothing distilled"
+  git -C "$SKEL" worktree add -q --detach "$LREPO" origin/main >> "$LOG" 2>&1 \
+    || fail "could not open a worktree at origin/main; nothing distilled"
+  trap cleanup_wt EXIT
+  # ONE LESSONS PR AT A TIME. The ledger travels with the lessons, so a run
+  # distilling from a main that lacks last week's unmerged rows re-publishes
+  # the same sources as duplicates. A still-open lessons PR stops the run, and
+  # the alert is how a PR stuck in review reaches the board.
+  OPEN_PRS="$(cd "$LREPO" && gh pr list --state open --limit 200 --json headRefName,url \
+    --jq '.[] | select(.headRefName | startswith("auto/lessons-")) | .url' 2>>"$LOG")" \
+    || fail "could not list open lessons PRs; nothing distilled"
+  if [ -n "$OPEN_PRS" ]; then
+    fail "a previous lessons PR is still open ($(printf '%s' "$OPEN_PRS" | tr '\n' ' ')); not distilling until it merges, or the same sources publish twice"
+  fi
+else
+  echo "$(TS) lessons publish: DISARMED (no origin remote; committing in place)" >> "$LOG"
+fi
+export LESSONS_DIR="$LREPO/q-system/lessons"
+
 if [ -n "${KIPI_DISTILL_CMD:-}" ]; then
   SUMMARY="$(bash -c "$KIPI_DISTILL_CMD" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
 else
-  SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
+  SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" --lessons-dir "$LESSONS_DIR" \
+    --ledger "$LREPO/lesson-candidates/.processed.json" 2>>"$LOG")" \
+    || fail "lessons-distill.py exited non-zero"
 fi
 echo "$(TS) $SUMMARY" >> "$LOG"
 
@@ -111,14 +167,14 @@ else
   # Pinned by test/test-lessons-daily-commit-hooks.sh.
   COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
   LPATHS=()
-  for p in q-system/lessons lesson-candidates; do [ -e "$SKEL/$p" ] && LPATHS+=("$p"); done
+  for p in q-system/lessons lesson-candidates; do [ -e "$LREPO/$p" ] && LPATHS+=("$p"); done
   if [ "${#LPATHS[@]}" -eq 0 ]; then
     echo "$(TS) lessons commit: no lesson paths exist, nothing to persist" >> "$LOG"
-  elif ! ( cd "$SKEL" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
+  elif ! ( cd "$LREPO" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
     PERSIST="FAILED"
-  elif ( cd "$SKEL" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
+  elif ( cd "$LREPO" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
     echo "$(TS) lessons commit: nothing staged" >> "$LOG"
-  elif ! ( cd "$SKEL" || exit 1
+  elif ! ( cd "$LREPO" || exit 1
            CPATHS=()
            for p in "${LPATHS[@]}"; do
              if [ -n "$(git diff --cached --name-only -- "$p")" ]; then CPATHS+=("$p"); fi
@@ -130,6 +186,8 @@ else
     # diff --cached test above guarantees at least one (and, unlike ls-files,
     # it sees a staged deletion), so CPATHS is never empty under set -u.
     PERSIST="FAILED"
+  else
+    COMMITTED=1
   fi
   if [ "${PERSIST:-}" = "FAILED" ]; then
     # Unstage what this job staged. Left in the index, q-system/lessons is the
@@ -137,10 +195,38 @@ else
     # committed"), which would jam every fleet update until someone resets it,
     # and the next commit would silently absorb it (PR 487 review round 3).
     # Path-limited reset: the working tree, and so the lessons, are untouched.
-    ( cd "$SKEL" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
+    ( cd "$LREPO" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
       || echo "$(TS) WARNING: could not unstage ${LPATHS[*]}; kipi-update.sh will abort until reset" >> "$LOG"
     echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons unstaged, still on disk." >> "$LOG"
   fi
+fi
+
+# PUBLISH: the commit leaves this machine before anything else happens (ASK-2736).
+# Every failure keeps the worktree and names it, so nothing is lost and nothing
+# is silent. The reviewer verdict is not a publish failure: an armed PR waits for
+# it, and the open-PR check above alerts next run if it is still waiting.
+[ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && KEEP_WT=1
+if [ "$PUBLISH_MODE" = pr ] && [ "${COMMITTED:-0}" = 1 ]; then
+  KEEP_WT=1
+  BR="auto/lessons-$(date +%Y%m%d)-$(git -C "$LREPO" rev-parse --short HEAD)"
+  PR_BODY="Automated weekly lessons from lessons-daily.sh: ${PUB} published, ${HELD} held. Titles: ${TITLES:-none}"
+  if ! git -C "$LREPO" push -q origin "HEAD:refs/heads/$BR" >> "$LOG" 2>&1; then
+    PUBLISH="FAILED (push of $BR refused)"
+  elif ! PR_URL="$(cd "$LREPO" && gh pr create --base main --head "$BR" \
+         --title "$COMMIT_MSG" --body "$PR_BODY" 2>>"$LOG")"; then
+    PUBLISH="FAILED (branch $BR pushed, PR not opened)"
+  elif ! ( cd "$LREPO" && gh pr merge "$PR_URL" --auto --squash ) >> "$LOG" 2>&1; then
+    PUBLISH="FAILED ($PR_URL opened, auto-merge not armed)"
+  else
+    export PR_NUMBER="${PR_URL##*/}"
+    if [ -n "${KIPI_REVIEW_CMD:-}" ]; then REVIEW="bash -c \"\$KIPI_REVIEW_CMD\""; else
+      REVIEW="bash \"$LREPO/q-system/.q-system/scripts/pr-review-agent.sh\" \"$PR_NUMBER\" --post"; fi
+    ( cd "$LREPO" && eval "$REVIEW" ) >> "$LOG" 2>&1 \
+      || echo "$(TS) reviewer did not finish cleanly on $PR_URL; the armed PR waits for a verdict" >> "$LOG"
+    echo "$(TS) lessons published: $PR_URL (branch $BR, auto-merge armed)" >> "$LOG"
+    KEEP_WT=0
+  fi
+  [ -n "${PUBLISH:-}" ] && echo "$(TS) lessons publish $PUBLISH; lessons are in $LREPO" >> "$LOG"
 fi
 
 # A refused commit may be a content gate (gitleaks, client-name guard) saying
@@ -150,7 +236,7 @@ fi
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
 # "the process needs to constantly write to Notion"). Off without credentials;
 # a Notion outage is logged and never fails the lessons job.
-if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\""; fi
+if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\" --lessons-dir \"$LESSONS_DIR\""; fi
 if [ "${PERSIST:-}" = "FAILED" ]; then
   echo "$(TS) notion sync skipped: lessons commit did not land" >> "$LOG"
 elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
@@ -214,6 +300,14 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
+[ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"
+[ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · lessons in $PR_URL, they reach the fleet after it merges"
+[ -n "${PUBLISH:-}" ] && MSG="$MSG · lessons publish $PUBLISH, lessons are in $LREPO"
+# The reason the alert never gave for six weeks (ASK-2736): name the branch.
+case "$PROP" in "propagate FAILED"*)
+  SKEL_BRANCH="$(git -C "$SKEL" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
+  [ "$SKEL_BRANCH" != "main" ] && MSG="$MSG · the skeleton checkout is on $SKEL_BRANCH, not main" ;;
+esac
 notify "$MSG"
 echo "$(TS) slacked: $MSG" >> "$LOG"
 
@@ -225,4 +319,5 @@ case "$PROP" in
   "propagate FAILED"*) echo "$(TS) propagation failed -> exit 1" >> "$LOG"; exit 1 ;;
 esac
 if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
+if [ -n "${PUBLISH:-}" ]; then echo "$(TS) lessons publish failed -> exit 1" >> "$LOG"; exit 1; fi
 exit 0
