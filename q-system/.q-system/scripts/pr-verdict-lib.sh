@@ -1010,16 +1010,20 @@ _public_engine() {
 }
 
 # _public_finding_counts <review-file>
-# Prints "total blocker major minor nit", or nothing when no complete findings
-# block was parsed. Through findings_block, the one reader, so the counts on the
-# PR are the counts the verdict was derived from.
+# Prints "total blocker major minor nit nonblocking-majors", or nothing when no
+# complete findings block was parsed. Through findings_block, the one reader, so
+# the counts on the PR are the counts the verdict was derived from. The last
+# field uses _NB_MARK_AWK, the one owner of the nonblocking rule (PR #557 round
+# 2, minor): "major 1" beside an approving verdict reads as a contradiction
+# unless the summary says the reviewer released it.
 _public_finding_counts() {
   local block
   block="$(findings_block "$1")"
   [ -n "$block" ] || return 0
-  printf '%s\n' "$block" | awk -F'|' '
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
     /^(blocker|major|minor|nit)[|]/ { n[$1]++; t++ }
-    END { printf "%d %d %d %d %d", t, n["blocker"], n["major"], n["minor"], n["nit"] }'
+    /^major[|]/ { if (nb()) nbm++ }
+    END { printf "%d %d %d %d %d %d", t, n["blocker"], n["major"], n["minor"], n["nit"], nbm }'
 }
 
 # review_public_counts_line <review-file> <verdict> [degraded]
@@ -1049,7 +1053,7 @@ review_public_counts_line() {
 # guard cannot vouch, the body drops to review_public_counts_line.
 review_public_body() {
   local f="$1" verdict="${2:-}" engine="${3:-}" degraded="${4:-0}" guard="${5:-}"
-  local counts total b m mi n shown body rc=0
+  local counts total b m mi n nbm mdesc shown body rc=0
   counts="$(_public_finding_counts "$f")"
   shown="$f"
   case "$f" in "$HOME"/*) shown="~${f#"$HOME"}" ;; esac
@@ -1058,9 +1062,11 @@ review_public_body() {
     [ "$degraded" = "1" ] \
       && printf '**DEGRADED**: codex was down, this is the Opus fallback. Not an independent second opinion.\n\n'
     if [ -n "$counts" ]; then
-      read -r total b m mi n <<<"$counts"
+      read -r total b m mi n nbm <<<"$counts"
+      mdesc="$m"
+      [ "${nbm:-0}" -gt 0 ] && mdesc="$m, $nbm of them marked nonblocking by the reviewer"
       printf 'Findings: %s (blocker %s, major %s, minor %s, nit %s). Reviewer engine: `%s`.\n\n' \
-        "$total" "$b" "$m" "$mi" "$n" "$(_public_engine "$engine")"
+        "$total" "$b" "$mdesc" "$mi" "$n" "$(_public_engine "$engine")"
     else
       printf 'Findings: not parsed (no complete findings block in the review). Reviewer engine: `%s`.\n\n' \
         "$(_public_engine "$engine")"

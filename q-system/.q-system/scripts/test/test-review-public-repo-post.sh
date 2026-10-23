@@ -26,6 +26,7 @@
 #      private repo gets no such section (unchanged).
 #   7  the counts-only floor still says DEGRADED on an Opus-fallback run.
 #   8  round 2 after an unusable round 1: no earlier-rounds header over nothing.
+#   9  a major the reviewer marked nonblocking is named as such in the summary.
 #
 # Isolation: HOME, KIPI_STATE_DIR, the git repo, `gh`, the engines and the term
 # list are all fixtures under a mktemp dir. No live PR is read, no model runs,
@@ -79,6 +80,7 @@ case "\$*" in
     [ "\$v" = FAIL ] && { echo "error connecting to api.github.com" >&2; exit 1; }
     echo "\$v"; exit 0 ;;
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "$SHA" "a PR title" ;;
+  *"pr view"*"--comments"*) echo "EARLIER-ROUND-COMMENT-MARKER" ;;
   *"pr view"*)              echo "title: a PR title" ;;
   *"pr diff"*)              printf 'diff --git a/FILE.txt b/FILE.txt\n+$TERM_X onboarding notes\n' ;;
   *"pr comment"*)
@@ -272,10 +274,13 @@ fi
 assert_public_safe "case 6" failure
 run_post priv PRIVATE "$REVIEW_TERM"    # same HOME as case 5
 grep -q 'round: 2' "$WORK/run-priv.out" || fail "case 6b is not a round-2 run"
-if [ -f "$WORK/ctx-comments.txt" ] && ! grep -q 'Earlier rounds of this review' "$WORK/ctx-comments.txt"; then
-  ok "case 6b: a private round 2 gets the PR comments only (unchanged)"
+# Both halves (PR #557 round 2, minor): the PR comments DO arrive, and nothing
+# else is appended. The marker comes from the fake gh's `--comments` answer.
+if [ -f "$WORK/ctx-comments.txt" ] && grep -q 'EARLIER-ROUND-COMMENT-MARKER' "$WORK/ctx-comments.txt" \
+   && ! grep -q 'Earlier rounds of this review' "$WORK/ctx-comments.txt"; then
+  ok "case 6b: a private round 2 gets the PR comments, and only them (unchanged)"
 else
-  bad "case 6b: the private round-2 context changed or is missing"
+  bad "case 6b: the private round-2 context lost the PR comments or gained a section"
 fi
 
 # ===========================================================================
@@ -303,6 +308,17 @@ if [ -f "$WORK/ctx-comments.txt" ] && ! grep -q 'Earlier rounds of this review' 
 else
   bad "case 8: the round-2 context carries an earlier-rounds header over no usable round"
 fi
+
+# ===========================================================================
+echo "== 9. a nonblocking major is named as such in the summary (PR #557 round 2) =="
+REVIEW_NB="$WORK/review-nb.txt"
+printf 'VERDICT: APPROVE WITH NITS\nFINDINGS:\nmajor|safe to fix after merge|FILE.txt:1|nonblocking\nminor|a nit|FILE.txt:2\nEND FINDINGS\n' > "$REVIEW_NB"
+B9="$( HOME="$WORK/home-probe"; . "$SRC_DIR/pr-verdict-lib.sh"
+       review_public_body "$REVIEW_NB" "APPROVE WITH NITS" claude 0 "$SRC_DIR/client-name-guard.py" 2>/dev/null )"
+case "$B9" in *"major 1, 1 of them marked nonblocking by the reviewer"*) ok "case 9: the released major is named nonblocking" ;;
+  *) bad "case 9: the summary does not say the major is nonblocking" ;; esac
+case "$B9" in *"safe to fix"*|*"a nit"*) bad "case 9: finding text leaked into the summary" ;;
+  *) ok "case 9: no finding text in the summary" ;; esac
 
 echo
 if [ "$BAD" -gt 0 ]; then
