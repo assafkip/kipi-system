@@ -77,7 +77,11 @@ seed_updater() {
            "$s/.claude/rules" "$s/plugins/demo"
   for f in kipi-update.sh kipi-update-preserve-scan.py kipi-update-deletion-guard.py \
            kipi-settings-merge.py validate-separation.py; do cp "$ROOT/$f" "$s/$f"; done
-  for f in propagation-leak-gate.py fleet-replica-divergence.py containment-targets.py; do
+  # skeleton-provenance.sh: the updater ABORTs without it since PR #555 moved
+  # its origin proof there. Unseeded, every fan-out in this suite failed in CI
+  # (24 of 70) while the branch alone, without #555, stayed green.
+  for f in propagation-leak-gate.py fleet-replica-divergence.py containment-targets.py \
+           skeleton-provenance.sh; do
     cp "$SCRIPTS/$f" "$s/q-system/.q-system/scripts/$f"
   done
   printf '{"schema_version":1,"blocking_classes":["case_proof_gap","client_identity","dated_interaction","pricing","relationship","source_identity","sourced_interaction"],"classifier_sha256":null,"entries":[]}\n' \
@@ -398,7 +402,7 @@ echo "      fixture (main-ahead): $T (exit=$JOB_RC)"
 [ "$(g -C "$T/skel" rev-parse HEAD)" = "$SKEL_HEAD_BEFORE" ] \
   && ok "main-ahead: the checkout's local commit was left alone" \
   || bad "main-ahead: the checkout was moved off its local commit"
-grep -q 'not AT origin/main' "$T/lessons-daily.log" 2>/dev/null && [ "$JOB_RC" -ne 0 ] \
+grep -q 'is on main but not AT ' "$T/lessons-daily.log" 2>/dev/null && [ "$JOB_RC" -ne 0 ] \
   && ok "main-ahead: the real updater refused and the run exits non-zero" \
   || bad "main-ahead: exit=$JOB_RC without the updater's refusal"
 rm -rf "$T"
