@@ -235,6 +235,14 @@ def run(cfg: dict, apply: bool, now: float | None = None) -> dict:
         elif not apply:
             removed.append((wt, why + ", dry run"))
         else:
+            # Census re-taken per tree, right before its remove (PR #556 review):
+            # the one from the start of the pass cannot see an agent that resumed
+            # a dormant, clean tree while earlier trees were being checked, and
+            # `git worktree remove` does not refuse a tree a process is in.
+            live = held_dirs()
+            if live is None or _in_use(wt, live):
+                kept.append((wt, "a process is working in it"))
+                continue
             done, err = remove(wt)
             (removed if done else failed).append((wt, why if done else err))
     for label, rows in (("removed", removed), ("kept", kept), ("FAILED", failed)):

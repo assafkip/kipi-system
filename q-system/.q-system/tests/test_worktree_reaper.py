@@ -184,6 +184,17 @@ def test_a_process_working_inside_keeps_the_tree(env):
     assert out["kept"][os.path.realpath(wt)] == "a process is working in it"
 
 
+def test_a_process_that_arrives_mid_pass_keeps_the_tree(env, monkeypatch):
+    # PR #556 review, finding 1: the first census is empty, an agent resumes the
+    # dormant tree before its turn, and only a census taken at remove time sees it.
+    wt = env.make("done", merged=True)
+    censuses = iter([[], [os.path.realpath(wt)]])
+    monkeypatch.setattr(mod, "held_dirs", lambda: next(censuses))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["removed"] == [] and wt.exists()
+    assert out["kept"][os.path.realpath(wt)] == "a process is working in it"
+
+
 def test_failed_process_census_removes_nothing(env, monkeypatch):
     wt = env.make("done", merged=True)
     monkeypatch.setattr(mod, "held_dirs", lambda: None)
@@ -230,7 +241,10 @@ BASH_ADD = {"tool_name": "Bash", "tool_input": {"command": "git -C repo worktree
     ({"tool_name": "Bash", "tool_input": {"command": "git status"}}, 10**9, "allow"),
     ({"tool_name": "Bash", "tool_input": {"command": "git worktree remove ../x"}}, 10**9, "allow"),
     ({"tool_name": "EnterWorktree", "tool_input": {}}, 10**9, "deny"),
+    ({"tool_name": "EnterWorktree", "tool_input": {"name": "fix"}}, 10**9, "deny"),
     ({"tool_name": "EnterWorktree", "tool_input": {}}, 0, "allow"),
+    # PR #556 review, finding 2: entering an existing tree allocates nothing.
+    ({"tool_name": "EnterWorktree", "tool_input": {"path": "/x/wt"}}, 10**9, "allow"),
     ('{"broken": "git worktree add', 0, "deny"),
     ('{"broken": "git status', 10**9, "allow"),
 ])

@@ -4,7 +4,8 @@
 A worktree of the consulting repo is ~390 MB. On 2026-10-22 agents kept adding
 them until the disk hit 0 bytes free and every write on the Mac failed. This
 refuses `git worktree add` (Bash) and EnterWorktree when free space is under
-`refuse_worktree_below_gb` in worktree-reaper.json. Everything else is allowed.
+`refuse_worktree_below_gb` in worktree-reaper.json. Entering an existing
+worktree (EnterWorktree with `path`) and everything else is allowed.
 
 Contract: PreToolUse hook JSON on stdin. Deny = permissionDecision JSON on
 stdout, exit 0. Allow = no output, exit 0. A crash on a command that names a
@@ -33,7 +34,10 @@ def _reaper():
 
 def in_jurisdiction(payload: dict) -> bool:
     if payload.get("tool_name") == "EnterWorktree":
-        return True
+        # `path` enters a worktree that already exists and allocates nothing;
+        # only a create costs disk (PR #556 review). Refusing re-entry would
+        # block the agent from committing and freeing its own tree.
+        return not (payload.get("tool_input") or {}).get("path")
     if payload.get("tool_name") != "Bash":
         return False
     command = (payload.get("tool_input") or {}).get("command") or ""
