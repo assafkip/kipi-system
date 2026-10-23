@@ -40,8 +40,10 @@ if ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD -- q-system/ 2>/dev/null; t
   echo "The gate scanned the index and the seed copies HEAD; they must agree."
   exit 1
 fi
-# KIPI_SKELETON_REMOTE lets a fork point at itself (GitHub issue #2); default is upstream
-SKELETON_REMOTE="${KIPI_SKELETON_REMOTE:-https://github.com/assafkip/kipi-system.git}"
+# No SKELETON_REMOTE here: this creator SEEDS from the local checkout ($SCRIPT_DIR) via
+# `git archive HEAD -- q-system/`, it never fetches or pushes a skeleton remote. A
+# KIPI_SKELETON_REMOTE read here was a dead write that made the override test claim five
+# honoured sites when only three consume it (GitHub issue #2 PR A, review round 2).
 SKELETON_BRANCH="main"
 PREFIX="q-system"
 
