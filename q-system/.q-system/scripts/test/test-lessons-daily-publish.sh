@@ -34,6 +34,13 @@
 #      checkout, the real updater passes, exit 0; a quiet week stays silent;
 #  11. on main with a local commit: left alone, the updater refuses, exit 1;
 #  12. negative control: a failed ls-remote stops the run before it distills.
+#  13. every way the lessons half can fail still runs the fleet update: no
+#      claude CLI, fetch, worktree add, ls-remote, the merged check, the
+#      distiller, its JSON, and a refused lessons commit. One alert names both
+#      halves and the run exits 1. Rounds 3 and 4 of PR #551 each found an
+#      early `fail` that skipped the fan-out; this case enumerates the class.
+#  14. negative control: a non-lesson path on the lessons branch is refused by
+#      lessons-push-guard.py and never pushed to this public repo.
 #
 # Cases 5 to 9 run on the healthy main state, so each non-zero exit comes from
 # the failure under test and not from a refused fan-out.
@@ -124,6 +131,7 @@ build_fixture() {
   # The real streak helper; LESSONS_DIR unset (the pre-fix script) falls back
   # to the checkout's own lessons dir, which is the distiller's real default.
   cp "$SCRIPTS/lessons_streak.py" "$tmp/skel/q-system/.q-system/scripts/lessons_streak.py"
+  cp "$SCRIPTS/lessons-push-guard.py" "$tmp/skel/q-system/.q-system/scripts/lessons-push-guard.py"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/skel/q-system/.q-system/scripts/install-plist.sh"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/bin/claude"
   # gh: records argv. `pr create` prints a PR URL unless gh.mode says fail;
@@ -136,14 +144,15 @@ mode="\$(cat "$tmp/gh.mode" 2>/dev/null)"
 case "\$1 \$2" in
   "pr create") [ "\$mode" = "fail-create" ] && { echo "gh: create refused" >&2; exit 1; }
                echo "https://github.com/fixture/repo/pull/77" ;;
-  "pr list")   head=""; while [ \$# -gt 0 ]; do [ "\$1" = "--head" ] && head="\$2"; shift; done
+  "pr list")   [ "\$mode" = "fail-list" ] && { echo "gh: auth expired" >&2; exit 1; }
+               head=""; while [ \$# -gt 0 ]; do [ "\$1" = "--head" ] && head="\$2"; shift; done
                grep -qx "\$head" "$tmp/merged.txt" 2>/dev/null && echo 1 || echo 0 ;;
 esac
 exit 0
 GH
   printf '%s' "$mode" > "$tmp/gh.mode"
   # An earlier run's branch already on origin: unmerged, or merged.
-  case "$mode" in pending-branch|merged-branch)
+  case "$mode" in pending-branch|merged-branch|fail-list)
     g -C "$tmp/seed" push -q "$tmp/origin.git" main:refs/heads/auto/lessons-old ;;
   esac
   [ "$mode" = "merged-branch" ] && echo "auto/lessons-old" > "$tmp/merged.txt"
@@ -156,12 +165,16 @@ QUIET_RUN='{"scanned": 0, "published": [], "held": []}'
 # run_job <tmp> [summary]; sets JOB_RC. The distill stub writes where the job
 # tells it to. The fan-out is the real updater, dry, from the skeleton checkout,
 # exactly where production runs it; its sweep history goes to a fixture file.
+# Fault switches, all files in <tmp> so a case sets one without a new runner:
+# distill.fail (the distiller exits 3), stray.on (it also writes a non-lesson
+# file into lesson-candidates/), claude.bin (the CLI path the job checks).
 run_job() {
   local tmp="$1" summary="${2:-$PUBLISHED}"
   printf '%s' "$summary" > "$tmp/summary.json"
   rm -f "$tmp/notify.txt"
   PATH="$tmp/bin:$PATH" \
-  KIPI_DISTILL_CMD="if grep -q 'a fixture lesson' '$tmp/summary.json'; then printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; fi; cat '$tmp/summary.json'" \
+  KIPI_CLAUDE_BIN="$(cat "$tmp/claude.bin" 2>/dev/null || echo claude)" \
+  KIPI_DISTILL_CMD="[ -e '$tmp/distill.fail' ] && exit 3; if [ -e '$tmp/stray.on' ]; then printf 'not a lesson\n' > \"\${LESSONS_DIR%/q-system/lessons}/lesson-candidates/stray.txt\"; fi; if grep -q 'a fixture lesson' '$tmp/summary.json'; then printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; fi; cat '$tmp/summary.json'" \
   KIPI_REVIEW_CMD="echo \"\$PR_NUMBER\" >> '$tmp/review.calls'" \
   KIPI_PROPAGATE_CMD="cd '$tmp/skel' && TMPDIR='$tmp' KIPI_FLEET_SWEEP_HISTORY='$tmp/sweep.jsonl' bash kipi-update.sh --dry-run" \
   KIPI_NOTION_SYNC_CMD="true" \
@@ -373,6 +386,79 @@ echo "      fixture (ls-remote-fails): $T (exit=$JOB_RC)"
 grep -q 'could not list lessons branches' "$T/notify.txt" 2>/dev/null \
   && ok "ls-remote-fails: the alert says the list could not be read" \
   || bad "ls-remote-fails: the alert is silent: $(cat "$T/notify.txt" 2>/dev/null)"
+rm -rf "$T"
+
+# --- 13. a failed lessons half never skips the fleet update ------------------
+# This job is the fleet's only unattended caller of kipi-update.sh. Review
+# rounds 3 and 4 of PR #551 each found an early `fail` that exited before the
+# fan-out, so a broken gh login or an unreadable origin would have stopped
+# every weekly fleet update while the alert talked only about lessons. Same
+# failure class twice, so this case enumerates every site instead of pinning
+# the next one found. Each runs on the healthy main-behind state: the only
+# thing wrong is the lessons half.
+# fail_git <tmp> <ls-remote|worktree-add|first-fetch>: a git that fails one call.
+fail_git() {
+  local tmp="$1" what="$2" pat
+  case "$what" in
+    ls-remote)    pat='*" ls-remote "*) echo "fatal: unable to access origin" >&2; exit 128 ;;' ;;
+    worktree-add) pat='*" worktree add "*) echo "fatal: could not create work tree" >&2; exit 128 ;;' ;;
+    first-fetch)  pat="*\" fetch \"*) [ -e \"$tmp/fetch.failed\" ] || { touch \"$tmp/fetch.failed\"; echo \"fatal: unable to access origin\" >&2; exit 128; } ;;" ;;
+  esac
+  printf '#!/bin/bash\ncase " $* " in %s esac\nexec "%s" "$@"\n' "$pat" "$REAL_GIT" > "$tmp/bin/git"
+  chmod +x "$tmp/bin/git"
+}
+# check_fleet_ran <label> <tmp> <reason in the alert>
+check_fleet_ran() {
+  local label="$1" tmp="$2" reason="$3" alert lines
+  alert="$(cat "$tmp/notify.txt" 2>/dev/null)"
+  lines="$(grep -c . "$tmp/notify.txt" 2>/dev/null || echo 0)"
+  echo "      fixture ($label): $tmp (exit=$JOB_RC)"
+  [ "$JOB_RC" -ne 0 ] && ok "$label: exits non-zero" || bad "$label: exits 0"
+  [ "$(g -C "$tmp/skel" rev-parse HEAD)" = "$(origin_main "$tmp")" ] \
+    && ! grep -q 'ABORT' "$tmp/lessons-daily.log" 2>/dev/null \
+    && ok "$label: the fleet update still ran from a fast-forwarded main" \
+    || bad "$label: the lessons failure skipped the fleet update; log: $(tail -2 "$tmp/lessons-daily.log" | tr '\n' ' ')"
+  [ "$lines" = "1" ] && printf '%s' "$alert" | grep -q -- "$reason" \
+    && printf '%s' "$alert" | grep -q 'fleet updated from main' \
+    && ok "$label: one alert names the lessons failure and the fleet result" \
+    || bad "$label: alert ($lines line(s)) does not name both halves: $alert"
+}
+T="$(build_fixture ok)"; printf '%s' "$T/no-such-claude" > "$T/claude.bin"; run_job "$T"
+check_fleet_ran "no-claude" "$T" "no claude CLI"; rm -rf "$T"
+T="$(build_fixture ok)"; fail_git "$T" first-fetch; run_job "$T"
+check_fleet_ran "fetch-fails" "$T" "could not fetch origin/main"; rm -rf "$T"
+T="$(build_fixture ok)"; fail_git "$T" worktree-add; run_job "$T"
+check_fleet_ran "worktree-fails" "$T" "could not open a worktree"; rm -rf "$T"
+T="$(build_fixture ok)"; fail_git "$T" ls-remote; run_job "$T"
+check_fleet_ran "ls-remote-fails" "$T" "could not list lessons branches"; rm -rf "$T"
+T="$(build_fixture fail-list)"; run_job "$T"
+check_fleet_ran "gh-list-fails" "$T" "could not ask GitHub whether auto/lessons-old merged"; rm -rf "$T"
+T="$(build_fixture ok)"; touch "$T/distill.fail"; run_job "$T"
+check_fleet_ran "distill-fails" "$T" "lessons-distill.py exited non-zero"; rm -rf "$T"
+T="$(build_fixture ok)"; run_job "$T" "not json"
+check_fleet_ran "distill-no-json" "$T" "no parseable JSON"; rm -rf "$T"
+# A refused lessons commit. In PR mode the lessons sit in a worktree outside the
+# checkout, so fanning out main cannot ship what the gate stopped.
+T="$(build_fixture ok)"; printf '#!/bin/bash\necho "gate: refused" >&2\nexit 1\n' > "$T/hooks/pre-commit"; run_job "$T"
+check_fleet_ran "commit-refused" "$T" "lessons commit FAILED"
+[ "$(auto_count "$T")" = "0" ] && ok "commit-refused: nothing was pushed" \
+                               || bad "commit-refused: a refused commit reached origin"
+rm -rf "$T"
+
+# --- 14. negative control: a non-lesson path on the lessons branch ----------
+# The weekly cloud routine runs lessons-push-guard.py before its push because a
+# Stop hook once committed a non-lesson file that reached PR #515 on this public
+# repo. This push path must run the same guard (review of PR #551, round 4).
+T="$(build_fixture ok)"; touch "$T/stray.on"; run_job "$T"
+echo "      fixture (stray-path): $T (exit=$JOB_RC, branches=$(auto_count "$T"))"
+[ "$JOB_RC" -ne 0 ] && ok "stray-path: exits non-zero" || bad "stray-path: exits 0"
+[ "$(auto_count "$T")" = "0" ] && ok "stray-path: the branch was never pushed" \
+                               || bad "stray-path: a non-lesson file was pushed to origin"
+grep -q 'lessons-push-guard refused' "$T/notify.txt" 2>/dev/null \
+  && ok "stray-path: the alert names the push guard" \
+  || bad "stray-path: the alert does not name the guard: $(cat "$T/notify.txt" 2>/dev/null)"
+[ "$(worktrees_left "$T")" = "1" ] && ok "stray-path: the worktree is kept for recovery" \
+                                   || bad "stray-path: the worktree was removed"
 rm -rf "$T"
 
 echo "---"

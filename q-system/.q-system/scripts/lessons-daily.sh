@@ -43,12 +43,19 @@ notify() { if [ -n "${KIPI_NOTIFY_CMD:-}" ]; then bash -c "$KIPI_NOTIFY_CMD" "_"
 # Observed 2026-07-27: the 06:00 run logged "propagate FAILED", Slacked it, and
 # `launchctl list` still said LastExitStatus = 0. Pinned by
 # test/test-lessons-daily-exit.sh.
-fail() { echo "$(TS) FAILURE: $*" >> "$LOG"; notify "lessons-daily: $*"; exit 1; }
-
-# The plist pins PATH to include ~/.local/bin, so a missing binary here is a
-# broken machine, not a normal night. Skipping silently would make this job dark
-# with a clean exit status -- the one state the four bars forbid.
-command -v "${KIPI_CLAUDE_BIN:-claude}" >/dev/null 2>&1 || fail "no claude CLI on PATH -> nothing distilled"
+#
+# A LESSONS FAILURE NEVER SKIPS THE FLEET UPDATE (ASK-2736). This job is the
+# fleet's only unattended caller of kipi-update.sh, and the fan-out sat behind a
+# `fail` that exited on the spot. Review rounds 3 and 4 of PR #551 each found
+# more of them (the unmerged-branch guard, then fetch, worktree add, ls-remote
+# and the merged check): one broken gh login would have stopped every weekly
+# fleet update while the alert talked only about lessons. Same class twice, so
+# the shape changed instead of a fifth site patch: the lessons half is one
+# function, a failure in it records the reason and returns, and the fan-out
+# after it always runs. The run still exits 1 and its one alert names both
+# halves. Pinned by test/test-lessons-daily-publish.sh case 13.
+LESSONS_FAIL=""
+lessons_fail() { LESSONS_FAIL="$*"; echo "$(TS) FAILURE: $*" >> "$LOG"; }
 
 # Founder decision 2026-08-01: pin the distiller's model; unpinned it rides the
 # interactive default (Fable on 2026-08-01) and burns quota unattended.
@@ -114,168 +121,197 @@ cleanup_wt() {
     echo "$(TS) lessons worktree left at $LREPO (not clean, see above)" >> "$LOG"
   fi
 }
+# The mode is decided before anything in the lessons half can fail. Decided
+# inside it, a failure ahead of the decision (no claude CLI) left the run in
+# local mode, where publishing nothing means no fan-out at all.
 if [ -z "${KIPI_PERSIST_CMD:-}" ] && [ -z "$FIXTURE_RUN" ] \
    && git -C "$SKEL" remote get-url origin >/dev/null 2>&1; then
   PUBLISH_MODE=pr
   LREPO="$WT_ROOT/wt-$(date +%Y%m%d-%H%M%S)-$$"
-  mkdir -p "$WT_ROOT"
-  git -C "$SKEL" fetch -q origin main >> "$LOG" 2>&1 \
-    || fail "could not fetch origin/main; nothing distilled"
-  git -C "$SKEL" worktree add -q --detach "$LREPO" origin/main >> "$LOG" 2>&1 \
-    || fail "could not open a worktree at origin/main; nothing distilled"
-  trap cleanup_wt EXIT
-  # The lessons commit's [no-issue:] bypass row must land in the skeleton's
-  # countable ledger, not in this worktree, which is deleted on a clean publish
-  # (review of PR #551, round 3). linear-issue-ref-check.py reads this override.
-  export LINEAR_BYPASS_LEDGER="${LINEAR_BYPASS_LEDGER:-$SKEL/q-system/output/linear-bypass.jsonl}"
-  # ONE LESSONS BRANCH IN FLIGHT. The ledger travels with the lessons, so a run
-  # distilling from a main that lacks an earlier run's unmerged rows publishes
-  # the same sources twice. Any auto/lessons-* branch on origin with no MERGED
-  # PR counts: an open PR, and also a branch whose PR never opened. Checking
-  # open PRs alone missed that second case (PR #551 review round 1). The repo
-  # keeps merged branches (delete_branch_on_merge is off), so "merged" is asked
-  # per branch rather than read from the branch list. The alert is how a stuck
-  # lessons PR or an orphan branch reaches the board.
-  # The listing is captured on its own line so its exit status is checked. Piped
-  # straight into the loop, a failed ls-remote produced no refs and read as "no
-  # pending branches", so a network blip let the run distill past the guard
-  # (codex, PR #551 round 2). Unknown is not empty.
-  REMOTE_BR="$(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG")" \
-    || fail "could not list lessons branches on origin; nothing distilled"
-  PENDING_BR=""
-  for ref in $(printf '%s\n' "$REMOTE_BR" | awk 'NF {sub("refs/heads/", "", $2); print $2}'); do
-    MERGED="$(cd "$LREPO" && gh pr list --state merged --head "$ref" --json number --jq 'length' 2>>"$LOG")" \
-      || fail "could not ask GitHub whether $ref merged; nothing distilled"
-    [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
-  done
-  # The guard holds back DISTILLING, not the fan-out. It used to `fail` here,
-  # which also skipped the weekly fleet update below, and this job is the
-  # fleet's only unattended caller of kipi-update.sh: one stuck lessons PR froze
-  # rules and plugins for the whole fleet while the alert said only "not
-  # distilling" (review of PR #551, round 3). Now the run distills nothing,
-  # still fans out main, names both in the alert, and exits 1.
-  if [ -n "$PENDING_BR" ]; then
-    HOLD="lessons branch(es) not merged yet:$PENDING_BR. Not distilling until they merge (or the same sources publish twice). Merge its PR, open one, or delete the branch."
-    echo "$(TS) $HOLD" >> "$LOG"
-  fi
 else
   echo "$(TS) lessons publish: DISARMED (no origin remote; committing in place)" >> "$LOG"
 fi
 export LESSONS_DIR="$LREPO/q-system/lessons"
-
-if [ -n "${HOLD:-}" ]; then
-  SUMMARY='{"scanned": 0, "published": [], "held": [], "skipped": "a lessons branch is not merged"}'
-elif [ -n "${KIPI_DISTILL_CMD:-}" ]; then
-  SUMMARY="$(bash -c "$KIPI_DISTILL_CMD" 2>>"$LOG")" || fail "lessons-distill.py exited non-zero"
-else
-  SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" --lessons-dir "$LESSONS_DIR" \
-    --ledger "$LREPO/lesson-candidates/.processed.json" 2>>"$LOG")" \
-    || fail "lessons-distill.py exited non-zero"
-fi
-echo "$(TS) $SUMMARY" >> "$LOG"
-
-# A dead distiller emits no JSON, every count below parses as 0, and the run
-# reads as a quiet night. A zero result must prove it is empty, not broken.
-printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
-  || fail "lessons-distill.py emitted no parseable JSON summary"
-
+PUB=0; HELD=0; TITLES=""
 field() { printf '%s' "$SUMMARY" | python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
-PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
-HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
-TITLES=$(field "'; '.join(d.get('published',[])[:5])")
 
-if [ "$PUB" = "0" ] && [ "$HELD" = "0" ]; then
-  echo "$(TS) nothing new" >> "$LOG"
-  # PR mode still fans out: last week's lessons reached main through a PR after
-  # that run's fan-out, so this weekly update is what carries them to the fleet
-  # (PR #551 review round 1). It stays silent unless the fan-out fails.
-  [ "$PUBLISH_MODE" = pr ] || exit 0
-  QUIET=1
-fi
+# THE LESSONS HALF: distill, commit, publish. Every failure in it is
+# lessons_fail + return, never exit (see lessons_fail above). The one exit left
+# is local mode's quiet night, which has no fan-out to skip.
+lessons_half() {
+  # The plist pins PATH to include ~/.local/bin, so a missing binary here is a
+  # broken machine, not a normal night. Skipping silently would make this job dark
+  # with a clean exit status -- the one state the four bars forbid.
+  command -v "${KIPI_CLAUDE_BIN:-claude}" >/dev/null 2>&1 \
+    || { lessons_fail "no claude CLI on PATH -> nothing distilled"; return 1; }
 
-# Persist new lessons + ledger in the skeleton, then fan to the fleet.
-if [ -n "${KIPI_PERSIST_CMD:-}" ]; then
-  bash -c "$KIPI_PERSIST_CMD" || true
-else
-  # ASK-2290: this commit used to pass --no-verify and send all output to
-  # /dev/null, so no repo gate ever saw a daily lesson commit, and the
-  # linear-issue-ref gate would have refused its message every night. It now
-  # goes through the hooks. The message carries its own [no-issue: reason], so
-  # the Linear gate passes it legitimately and counts it in the bypass ledger.
-  # A refused commit is a failed run, same wire as a failed propagation
-  # (ASK-182, lines above): the alert says so and the job exits 1, so Linear
-  # sees it. The job is WEEKLY (plist Weekday 1), so a silent refusal would
-  # leave a week of lessons uncommitted with nobody told (PR review, ASK-2290).
-  # "Nothing staged" is not a failure: held lessons are gitignored (ASK-2278),
-  # so a held-only run legitimately has nothing to commit.
-  # Pinned by test/test-lessons-daily-commit-hooks.sh.
-  COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
-  LPATHS=()
-  for p in q-system/lessons lesson-candidates; do [ -e "$LREPO/$p" ] && LPATHS+=("$p"); done
-  if [ "${#LPATHS[@]}" -eq 0 ]; then
-    echo "$(TS) lessons commit: no lesson paths exist, nothing to persist" >> "$LOG"
-  elif ! ( cd "$LREPO" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
-    PERSIST="FAILED"
-  elif ( cd "$LREPO" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
-    echo "$(TS) lessons commit: nothing staged" >> "$LOG"
-  elif ! ( cd "$LREPO" || exit 1
-           CPATHS=()
-           for p in "${LPATHS[@]}"; do
-             if [ -n "$(git diff --cached --name-only -- "$p")" ]; then CPATHS+=("$p"); fi
-           done
-           git commit --no-gpg-sign -m "$COMMIT_MSG" -- "${CPATHS[@]}" ) >> "$LOG" 2>&1; then
-    # The pathspec keeps foreign staged files out of the lesson commit. A
-    # path git knows nothing about (an empty lesson-candidates/) is a fatal
-    # pathspec error, so only paths with STAGED changes are named; the
-    # diff --cached test above guarantees at least one (and, unlike ls-files,
-    # it sees a staged deletion), so CPATHS is never empty under set -u.
-    PERSIST="FAILED"
+  if [ "$PUBLISH_MODE" = pr ]; then
+    mkdir -p "$WT_ROOT"
+    git -C "$SKEL" fetch -q origin main >> "$LOG" 2>&1 \
+      || { lessons_fail "could not fetch origin/main; nothing distilled"; return 1; }
+    git -C "$SKEL" worktree add -q --detach "$LREPO" origin/main >> "$LOG" 2>&1 \
+      || { lessons_fail "could not open a worktree at origin/main; nothing distilled"; return 1; }
+    trap cleanup_wt EXIT
+    # The lessons commit's [no-issue:] bypass row must land in the skeleton's
+    # countable ledger, not in this worktree, which is deleted on a clean publish
+    # (review of PR #551, round 3). linear-issue-ref-check.py reads this override.
+    export LINEAR_BYPASS_LEDGER="${LINEAR_BYPASS_LEDGER:-$SKEL/q-system/output/linear-bypass.jsonl}"
+    # ONE LESSONS BRANCH IN FLIGHT. The ledger travels with the lessons, so a run
+    # distilling from a main that lacks an earlier run's unmerged rows publishes
+    # the same sources twice. Any auto/lessons-* branch on origin with no MERGED
+    # PR counts: an open PR, and also a branch whose PR never opened. Checking
+    # open PRs alone missed that second case (PR #551 review round 1). The repo
+    # keeps merged branches (delete_branch_on_merge is off), so "merged" is asked
+    # per branch rather than read from the branch list. The alert is how a stuck
+    # lessons PR or an orphan branch reaches the board.
+    # The listing is captured on its own line so its exit status is checked. Piped
+    # straight into the loop, a failed ls-remote produced no refs and read as "no
+    # pending branches", so a network blip let the run distill past the guard
+    # (codex, PR #551 round 2). Unknown is not empty.
+    REMOTE_BR="$(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG")" \
+      || { lessons_fail "could not list lessons branches on origin; nothing distilled"; return 1; }
+    PENDING_BR=""
+    for ref in $(printf '%s\n' "$REMOTE_BR" | awk 'NF {sub("refs/heads/", "", $2); print $2}'); do
+      MERGED="$(cd "$LREPO" && gh pr list --state merged --head "$ref" --json number --jq 'length' 2>>"$LOG")" \
+        || { lessons_fail "could not ask GitHub whether $ref merged; nothing distilled"; return 1; }
+      [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
+    done
+    # The guard holds back DISTILLING, not the fan-out. A stuck lessons PR is
+    # named in the alert and the run exits 1, but main still goes to the fleet
+    # (review of PR #551, round 3).
+    if [ -n "$PENDING_BR" ]; then
+      HOLD="lessons branch(es) not merged yet:$PENDING_BR. Not distilling until they merge (or the same sources publish twice). Merge its PR, open one, or delete the branch."
+      echo "$(TS) $HOLD" >> "$LOG"
+    fi
+  fi
+
+  if [ -n "${HOLD:-}" ]; then
+    SUMMARY='{"scanned": 0, "published": [], "held": [], "skipped": "a lessons branch is not merged"}'
+  elif [ -n "${KIPI_DISTILL_CMD:-}" ]; then
+    SUMMARY="$(bash -c "$KIPI_DISTILL_CMD" 2>>"$LOG")" \
+      || { lessons_fail "lessons-distill.py exited non-zero"; return 1; }
   else
-    COMMITTED=1
+    SUMMARY="$(cd "$SKEL" && python3 "$DISTILL" --lessons-dir "$LESSONS_DIR" \
+      --ledger "$LREPO/lesson-candidates/.processed.json" 2>>"$LOG")" \
+      || { lessons_fail "lessons-distill.py exited non-zero"; return 1; }
   fi
-  if [ "${PERSIST:-}" = "FAILED" ]; then
-    # Unstage what this job staged. Left in the index, q-system/lessons is the
-    # exact state kipi-update.sh aborts on ("q-system/ is staged but not
-    # committed"), which would jam every fleet update until someone resets it,
-    # and the next commit would silently absorb it (PR 487 review round 3).
-    # Path-limited reset: the working tree, and so the lessons, are untouched.
-    ( cd "$LREPO" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
-      || echo "$(TS) WARNING: could not unstage ${LPATHS[*]}; kipi-update.sh will abort until reset" >> "$LOG"
-    echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons unstaged, still on disk." >> "$LOG"
-  fi
-fi
+  echo "$(TS) $SUMMARY" >> "$LOG"
 
-# PUBLISH: the commit leaves this machine before anything else happens (ASK-2736).
-# Every failure keeps the worktree and names it, so nothing is lost and nothing
-# is silent. The reviewer verdict is not a publish failure: an armed PR waits for
-# it, and the open-PR check above alerts next run if it is still waiting.
-[ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && KEEP_WT=1
-if [ "$PUBLISH_MODE" = pr ] && [ "${COMMITTED:-0}" = 1 ]; then
-  KEEP_WT=1
-  BR="auto/lessons-$(date +%Y%m%d)-$(git -C "$LREPO" rev-parse --short HEAD)"
-  PR_BODY="Automated weekly lessons from lessons-daily.sh: ${PUB} published, ${HELD} held. Titles: ${TITLES:-none}"
-  if ! git -C "$LREPO" push -q origin "HEAD:refs/heads/$BR" >> "$LOG" 2>&1; then
-    PUBLISH="FAILED (push of $BR refused)"
-  elif ! PR_URL="$(cd "$LREPO" && gh pr create --base main --head "$BR" \
-         --title "$COMMIT_MSG" --body "$PR_BODY" 2>>"$LOG")"; then
-    PUBLISH="FAILED (branch $BR pushed, PR not opened)"
-  elif ! ( cd "$LREPO" && gh pr merge "$PR_URL" --auto --squash ) >> "$LOG" 2>&1; then
-    PUBLISH="FAILED ($PR_URL opened, auto-merge not armed)"
-  else
-    export PR_NUMBER="${PR_URL##*/}"
-    if [ -n "${KIPI_REVIEW_CMD:-}" ]; then REVIEW="bash -c \"\$KIPI_REVIEW_CMD\""; else
-      REVIEW="bash \"$LREPO/q-system/.q-system/scripts/pr-review-agent.sh\" \"$PR_NUMBER\" --post"; fi
-    ( cd "$LREPO" && eval "$REVIEW" ) >> "$LOG" 2>&1 \
-      || echo "$(TS) reviewer did not finish cleanly on $PR_URL; the armed PR waits for a verdict" >> "$LOG"
-    echo "$(TS) lessons published: $PR_URL (branch $BR, auto-merge armed)" >> "$LOG"
-    KEEP_WT=0
+  # A dead distiller emits no JSON, every count below parses as 0, and the run
+  # reads as a quiet night. A zero result must prove it is empty, not broken.
+  printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
+    || { lessons_fail "lessons-distill.py emitted no parseable JSON summary"; return 1; }
+
+  PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
+  HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
+  TITLES=$(field "'; '.join(d.get('published',[])[:5])")
+
+  if [ "$PUB" = "0" ] && [ "$HELD" = "0" ]; then
+    echo "$(TS) nothing new" >> "$LOG"
+    # PR mode still fans out: last week's lessons reached main through a PR after
+    # that run's fan-out, so this weekly update is what carries them to the fleet
+    # (PR #551 review round 1). It stays silent unless the fan-out fails.
+    [ "$PUBLISH_MODE" = pr ] || exit 0
+    QUIET=1
   fi
-  [ -n "${PUBLISH:-}" ] && echo "$(TS) lessons publish $PUBLISH; lessons are in $LREPO" >> "$LOG"
-fi
+
+  # Persist new lessons + ledger in the skeleton, then fan to the fleet.
+  if [ -n "${KIPI_PERSIST_CMD:-}" ]; then
+    bash -c "$KIPI_PERSIST_CMD" || true
+  else
+    # ASK-2290: this commit used to pass --no-verify and send all output to
+    # /dev/null, so no repo gate ever saw a daily lesson commit, and the
+    # linear-issue-ref gate would have refused its message every night. It now
+    # goes through the hooks. The message carries its own [no-issue: reason], so
+    # the Linear gate passes it legitimately and counts it in the bypass ledger.
+    # A refused commit is a failed run, same wire as a failed propagation
+    # (ASK-182, lines above): the alert says so and the job exits 1, so Linear
+    # sees it. The job is WEEKLY (plist Weekday 1), so a silent refusal would
+    # leave a week of lessons uncommitted with nobody told (PR review, ASK-2290).
+    # "Nothing staged" is not a failure: held lessons are gitignored (ASK-2278),
+    # so a held-only run legitimately has nothing to commit.
+    # Pinned by test/test-lessons-daily-commit-hooks.sh.
+    COMMIT_MSG="chore(lessons): auto-learn $(date +%Y-%m-%d), ${PUB} published, ${HELD} held [no-issue: automated daily lesson persist]"
+    LPATHS=()
+    for p in q-system/lessons lesson-candidates; do [ -e "$LREPO/$p" ] && LPATHS+=("$p"); done
+    if [ "${#LPATHS[@]}" -eq 0 ]; then
+      echo "$(TS) lessons commit: no lesson paths exist, nothing to persist" >> "$LOG"
+    elif ! ( cd "$LREPO" && git add -- "${LPATHS[@]}" ) >> "$LOG" 2>&1; then
+      PERSIST="FAILED"
+    elif ( cd "$LREPO" && git diff --cached --quiet -- "${LPATHS[@]}" ); then
+      echo "$(TS) lessons commit: nothing staged" >> "$LOG"
+    elif ! ( cd "$LREPO" || exit 1
+             CPATHS=()
+             for p in "${LPATHS[@]}"; do
+               if [ -n "$(git diff --cached --name-only -- "$p")" ]; then CPATHS+=("$p"); fi
+             done
+             git commit --no-gpg-sign -m "$COMMIT_MSG" -- "${CPATHS[@]}" ) >> "$LOG" 2>&1; then
+      # The pathspec keeps foreign staged files out of the lesson commit. A
+      # path git knows nothing about (an empty lesson-candidates/) is a fatal
+      # pathspec error, so only paths with STAGED changes are named; the
+      # diff --cached test above guarantees at least one (and, unlike ls-files,
+      # it sees a staged deletion), so CPATHS is never empty under set -u.
+      PERSIST="FAILED"
+    else
+      COMMITTED=1
+    fi
+    if [ "${PERSIST:-}" = "FAILED" ]; then
+      # Unstage what this job staged. Left in the index, q-system/lessons is the
+      # exact state kipi-update.sh aborts on ("q-system/ is staged but not
+      # committed"), which would jam every fleet update until someone resets it,
+      # and the next commit would silently absorb it (PR 487 review round 3).
+      # Path-limited reset: the working tree, and so the lessons, are untouched.
+      ( cd "$LREPO" && git reset -q -- "${LPATHS[@]}" ) >> "$LOG" 2>&1 \
+        || echo "$(TS) WARNING: could not unstage ${LPATHS[*]}; kipi-update.sh will abort until reset" >> "$LOG"
+      echo "$(TS) lessons commit did not land (hook refusal or git error; output above). Lessons unstaged, still on disk." >> "$LOG"
+    fi
+  fi
+
+  # PUBLISH: the commit leaves this machine before anything else happens (ASK-2736).
+  # Every failure keeps the worktree and names it, so nothing is lost and nothing
+  # is silent. The reviewer verdict is not a publish failure: an armed PR waits for
+  # it, and the open-PR check above alerts next run if it is still waiting.
+  [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && KEEP_WT=1
+  if [ "$PUBLISH_MODE" = pr ] && [ "${COMMITTED:-0}" = 1 ]; then
+    KEEP_WT=1
+    BR="auto/lessons-$(date +%Y%m%d)-$(git -C "$LREPO" rev-parse --short HEAD)"
+    PR_BODY="Automated weekly lessons from lessons-daily.sh: ${PUB} published, ${HELD} held. Titles: ${TITLES:-none}"
+    # THE PUSH GUARD (review of PR #551, round 4). This repo is public and a push is
+    # permanent. On 2026-10-04 a Stop hook committed a non-lesson file onto the
+    # cloud routine's lessons branch after its staged-set check, and it reached
+    # PR #515. lessons-push-guard.py reads every commit on the branch, so this
+    # path runs it before its push too.
+    if ! python3 "$SKEL/q-system/.q-system/scripts/lessons-push-guard.py" \
+           --repo "$LREPO" --base origin/main >> "$LOG" 2>&1; then
+      PUBLISH="FAILED (lessons-push-guard refused the branch, see log; nothing pushed)"
+    elif ! git -C "$LREPO" push -q origin "HEAD:refs/heads/$BR" >> "$LOG" 2>&1; then
+      PUBLISH="FAILED (push of $BR refused)"
+    elif ! PR_URL="$(cd "$LREPO" && gh pr create --base main --head "$BR" \
+           --title "$COMMIT_MSG" --body "$PR_BODY" 2>>"$LOG")"; then
+      PUBLISH="FAILED (branch $BR pushed, PR not opened)"
+    elif ! ( cd "$LREPO" && gh pr merge "$PR_URL" --auto --squash ) >> "$LOG" 2>&1; then
+      PUBLISH="FAILED ($PR_URL opened, auto-merge not armed)"
+    else
+      export PR_NUMBER="${PR_URL##*/}"
+      if [ -n "${KIPI_REVIEW_CMD:-}" ]; then REVIEW="bash -c \"\$KIPI_REVIEW_CMD\""; else
+        REVIEW="bash \"$LREPO/q-system/.q-system/scripts/pr-review-agent.sh\" \"$PR_NUMBER\" --post"; fi
+      ( cd "$LREPO" && eval "$REVIEW" ) >> "$LOG" 2>&1 \
+        || echo "$(TS) reviewer did not finish cleanly on $PR_URL; the armed PR waits for a verdict" >> "$LOG"
+      echo "$(TS) lessons published: $PR_URL (branch $BR, auto-merge armed)" >> "$LOG"
+      KEEP_WT=0
+    fi
+    [ -n "${PUBLISH:-}" ] && echo "$(TS) lessons publish $PUBLISH; lessons are in $LREPO" >> "$LOG"
+  fi
+}
+lessons_half
 
 # A refused commit may be a content gate (gitleaks, client-name guard) saying
 # these lessons must not ship. Mirroring or fanning them out anyway would ship
 # exactly what the gate stopped, so both are skipped (PR 487 review round 2).
+# PR mode is the exception for the fan-out only: the refused lessons sit in the
+# worktree and the fan-out ships the checkout's main, which never saw them, so
+# skipping it would only freeze the fleet (ASK-2736). The mirror reads the
+# worktree, so it is still skipped.
 
 # Mirror the corpus to the founder's Notion lessons database (founder 2026-09-02:
 # "the process needs to constantly write to Notion"). Off without credentials;
@@ -283,6 +319,8 @@ fi
 if [ -n "${KIPI_NOTION_SYNC_CMD:-}" ]; then NOTION_SYNC="bash -c \"$KIPI_NOTION_SYNC_CMD\""; else NOTION_SYNC="python3 \"$SKEL/q-system/.q-system/scripts/lessons_notion_sync.py\" --lessons-dir \"$LESSONS_DIR\""; fi
 if [ "${PERSIST:-}" = "FAILED" ]; then
   echo "$(TS) notion sync skipped: lessons commit did not land" >> "$LOG"
+elif [ -n "$LESSONS_FAIL" ]; then
+  echo "$(TS) notion sync skipped: the lessons half failed" >> "$LOG"
 elif [ "${QUIET:-0}" = 1 ]; then
   echo "$(TS) notion sync skipped: nothing new" >> "$LOG"
 elif eval "$NOTION_SYNC" >> "$LOG" 2>&1; then :; else
@@ -331,7 +369,7 @@ streak() { python3 "$STREAK_PY" --file "$STREAK_FILE" --ledger "$ESCALATIONS" "$
 # mode a run that publishes nothing neither resets nor increments it; that is the
 # branch below ("no propagation (nothing published)") and the "nothing new" exit
 # above. In PR mode every run attempts the fan-out, so every run moves it.
-if [ "${PERSIST:-}" = "FAILED" ]; then
+if [ "${PERSIST:-}" = "FAILED" ] && [ "$PUBLISH_MODE" != pr ]; then
   PROP="no propagation (lessons commit did not land)"
 elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main every run (ASK-2736)
   [ "$PUBLISH_MODE" = pr ] && sync_skel_to_main
@@ -396,6 +434,7 @@ case "$PROP" in "propagate FAILED"*)
   [ "$SKEL_BRANCH" != "main" ] && MSG="$MSG · the skeleton checkout is on $SKEL_BRANCH, not main" ;;
 esac
 [ -n "${HOLD:-}" ] && MSG="$MSG · $HOLD"
+[ -n "$LESSONS_FAIL" ] && MSG="$MSG · lessons FAILED: $LESSONS_FAIL"
 # Silent when nothing new and the weekly update went out: the header contract.
 # A held run is never silent: nothing was distilled and someone has to act.
 if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ] && [ -z "${HOLD:-}" ]; then
@@ -415,4 +454,5 @@ esac
 if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${PUBLISH:-}" ]; then echo "$(TS) lessons publish failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${HOLD:-}" ]; then echo "$(TS) distilling held by an unmerged lessons branch -> exit 1" >> "$LOG"; exit 1; fi
+if [ -n "$LESSONS_FAIL" ]; then echo "$(TS) lessons half failed -> exit 1" >> "$LOG"; exit 1; fi
 exit 0
