@@ -804,7 +804,11 @@ if [ -n "$SYNC_SCOPE_DIRTY" ]; then
   exit 1
 fi
 
-if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+# ARMED BY THE OVERRIDE TOO, NOT ONLY BY `origin` (ASK-2935, Codex P1 on PR #555). The
+# override names a remote to prove against, so "nothing to be stale against" is false
+# whenever it is set. Gated on origin alone, a checkout with the override and no origin
+# printed DISARMED and fanned an unproven HEAD to every instance.
+if [ -n "${KIPI_SKELETON_REMOTE:-}" ] || git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
   SKELETON_HEAD_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD || true)"
   if [ "$SKELETON_HEAD_BRANCH" != "$SKELETON_BRANCH" ]; then
     echo ""
@@ -852,7 +856,7 @@ if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
   fi
   PROVENANCE_OK=1     # fleet_ship_ref ships HEAD from here on: it is the proven ref
 else
-  echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
+  echo "skeleton branch check: DISARMED (no origin remote and no KIPI_SKELETON_REMOTE; nothing to be stale against)"
 fi
 
 # Preflight: refuse to overwrite a replica that has drifted AHEAD of the skeleton.
