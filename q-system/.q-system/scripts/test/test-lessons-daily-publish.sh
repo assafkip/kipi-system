@@ -411,7 +411,7 @@ fail_git() {
 check_fleet_ran() {
   local label="$1" tmp="$2" reason="$3" alert lines
   alert="$(cat "$tmp/notify.txt" 2>/dev/null)"
-  lines="$(grep -c . "$tmp/notify.txt" 2>/dev/null || echo 0)"
+  lines="$({ grep -c . "$tmp/notify.txt" 2>/dev/null || echo 0; } | head -1)"
   echo "      fixture ($label): $tmp (exit=$JOB_RC)"
   [ "$JOB_RC" -ne 0 ] && ok "$label: exits non-zero" || bad "$label: exits 0"
   [ "$(g -C "$tmp/skel" rev-parse HEAD)" = "$(origin_main "$tmp")" ] \
