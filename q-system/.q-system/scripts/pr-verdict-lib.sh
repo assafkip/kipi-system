@@ -935,6 +935,153 @@ review_comment_body() {
 # narrative, while under-reserving overruns the limit and loses the whole comment.
 review_comment_body_header_size() { printf '%s' 5000; }
 
+# repo_visibility <slug>
+# Prints PRIVATE or PUBLIC. Only an exact PRIVATE answer from GitHub is private.
+#
+# WHY IT FAILS CLOSED (ASK-2893). review_comment_body above posts the review's
+# narrative, and on a codex or claude transcript that narrative REPLAYS THE DIFF.
+# On the public kipi-system repo that put 188 term-carrying comments on public
+# PRs (scan of 2026-10-22), each one up to 55 KB, and a scrub PR leaked the very
+# terms it was removing, because the removed lines are in its diff. So the
+# question "may the full review go on this PR" has one safe default: no. A failed
+# lookup, an empty answer, an unknown slug and INTERNAL (visible to a whole
+# enterprise) all read PUBLIC. A private repo that reads PUBLIC by mistake loses
+# a comment's narrative; a public repo that reads PRIVATE leaks.
+#
+# The visibility comes from the repo itself, never from a list of repo names:
+# the reviewer is skeleton code that runs on every fleet repo, and a hardcoded
+# list is stale the day a repo flips.
+repo_visibility() {
+  local slug="${1:-}" v=""
+  v="$(gh repo view ${slug:+"$slug"} --json visibility -q .visibility 2>/dev/null)" || v=""
+  case "$v" in
+    PRIVATE) printf 'PRIVATE' ;;
+    *)       printf 'PUBLIC' ;;
+  esac
+}
+
+# private_terms_check <guard.py>   (stdin: the text that would be posted)
+# Exit 0: the guard loaded a term list and found no term. 1: a term hit.
+# 2: could not check (no guard file, import failure, or no term source on this
+# machine). The caller treats anything but 0 as a hit. It never prints a term:
+# this runs inside a review log, and a hit printed there is a second leak.
+#
+# Loads the guard by path, the same module the commit hook runs, so the reviewer
+# and the commit gate can never disagree about what a private term is. Both guard
+# APIs are accepted: load_tokens() on main as of 2026-10-23, and load_terms() from
+# the ASK-2058 guard rewrite (PR #554). hits() returns a list in one and a dict in
+# the other; both are empty when clean.
+private_terms_check() {
+  local guard="${1:-}"
+  [ -n "$guard" ] && [ -f "$guard" ] || return 2
+  python3 -I -c '
+import importlib.util, sys
+try:
+    spec = importlib.util.spec_from_file_location("kipi_client_name_guard", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "load_terms"):
+        terms = mod.load_terms(warn=lambda _msg: None)
+    else:
+        terms = mod.load_tokens()
+    if terms is None:
+        sys.exit(2)
+    found = mod.hits(sys.stdin.read(), terms)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+sys.exit(1 if found else 0)
+' "$guard" 2>/dev/null
+}
+
+# _public_verdict <verdict> / _public_engine <engine>
+# Only a value from a closed set may reach a public PR. The verdict is already
+# one of the four tokens extract_verdict knows or empty, but this function is the
+# public gate, so it does not lean on a property of a reader 900 lines away.
+_public_verdict() {
+  case "${1:-}" in
+    "APPROVE"|"APPROVE WITH NITS"|"REQUEST CHANGES"|"BLOCK") printf '%s' "$1" ;;
+    *) printf 'unstated' ;;
+  esac
+}
+_public_engine() {
+  case "${1:-}" in claude|codex) printf '%s' "$1" ;; *) printf 'unknown' ;; esac
+}
+
+# _public_finding_counts <review-file>
+# Prints "total blocker major minor nit nonblocking-majors", or nothing when no
+# complete findings block was parsed. Through findings_block, the one reader, so
+# the counts on the PR are the counts the verdict was derived from. The last
+# field uses _NB_MARK_AWK, the one owner of the nonblocking rule (PR #557 round
+# 2, minor): "major 1" beside an approving verdict reads as a contradiction
+# unless the summary says the reviewer released it.
+_public_finding_counts() {
+  local block
+  block="$(findings_block "$1")"
+  [ -n "$block" ] || return 0
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
+    /^(blocker|major|minor|nit)[|]/ { n[$1]++; t++ }
+    /^major[|]/ { if (nb()) nbm++ }
+    END { printf "%d %d %d %d %d %d", t, n["blocker"], n["major"], n["minor"], n["nit"], nbm }'
+}
+
+# review_public_counts_line <review-file> <verdict> [degraded]
+# The floor: a closed-set verdict, one integer and fixed words. Nothing from the
+# review text and no path, so there is nothing in it for the guard to find.
+# The DEGRADED words stay even here (PR #557 round 1, minor): an Opus-fallback
+# verdict that reads as an independent second opinion is a false claim, and the
+# floor is no place to start making one.
+review_public_counts_line() {
+  local counts total deg=""
+  counts="$(_public_finding_counts "$1")"
+  total="${counts%% *}"
+  [ "${3:-0}" = "1" ] && deg="DEGRADED (Opus fallback, not an independent second opinion). "
+  printf '%sVerdict: %s. Findings: %s. Review withheld: this repository is public.\n' \
+    "$deg" "$(_public_verdict "${2:-}")" "${total:-not parsed}"
+}
+
+# review_public_body <review-file> <verdict> <engine> <degraded> <guard.py>
+# What the reviewer may post on a PUBLIC repo (ASK-2893): the verdict, the finding
+# counts by severity, the engine, and where the full review sits on the
+# reviewer's machine. No review text, no finding text, no diff. The findings
+# still reach the linked Linear issue, which is private.
+#
+# THEN THE GUARD, on exactly these bytes. The path carries the repo slug, and a
+# slug can collide with a private term (the 2026-10-22 scrub hit one: a token in
+# client-tokens was the founder's own public repo name). On a hit, or when the
+# guard cannot vouch, the body drops to review_public_counts_line.
+review_public_body() {
+  local f="$1" verdict="${2:-}" engine="${3:-}" degraded="${4:-0}" guard="${5:-}"
+  local counts total b m mi n nbm mdesc shown body rc=0
+  counts="$(_public_finding_counts "$f")"
+  shown="$f"
+  case "$f" in "$HOME"/*) shown="~${f#"$HOME"}" ;; esac
+  body="$(
+    printf '## Verdict: %s\n\n' "$(_public_verdict "$verdict")"
+    [ "$degraded" = "1" ] \
+      && printf '**DEGRADED**: codex was down, this is the Opus fallback. Not an independent second opinion.\n\n'
+    if [ -n "$counts" ]; then
+      read -r total b m mi n nbm <<<"$counts"
+      mdesc="$m"
+      [ "${nbm:-0}" -gt 0 ] && mdesc="$m, $nbm of them marked nonblocking by the reviewer"
+      printf 'Findings: %s (blocker %s, major %s, minor %s, nit %s). Reviewer engine: `%s`.\n\n' \
+        "$total" "$b" "$mdesc" "$mi" "$n" "$(_public_engine "$engine")"
+    else
+      printf 'Findings: not parsed (no complete findings block in the review). Reviewer engine: `%s`.\n\n' \
+        "$(_public_engine "$engine")"
+    fi
+    printf 'This repository is public, so the review text, the finding details and the diff are not posted here. Full review on the reviewer machine: `%s`.\n' "$shown"
+  )"
+  printf '%s' "$body" | private_terms_check "$guard" || rc=$?
+  if [ "$rc" = 0 ]; then
+    printf '%s\n' "$body"
+  else
+    echo "  public repo: the summary did not clear the private-terms guard (rc=$rc; 1 = term hit, 2 = could not check). Posting the counts-only line." >&2
+    review_public_counts_line "$f" "$verdict" "$degraded"
+  fi
+}
+
 # review_round <reviews-dir> <pr-number> [repo-slug]
 # Which round the NEXT review of this PR will be: existing review files + 1.
 # Derived from disk, not from the worker's attempts json, because the reviewer

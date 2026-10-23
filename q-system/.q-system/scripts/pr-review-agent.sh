@@ -83,6 +83,8 @@
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
 #                            [--engine claude|codex]
 #         --post also comments the review on the PR and the Linear issue.
+#         On a PUBLIC repo the PR comment is the verdict and finding counts
+#         only, never the review text or the diff (ASK-2893).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -821,6 +823,26 @@ if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTE
 fi
 if [ "$ROUND" -gt 1 ]; then
   gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
+  # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the
+  # earlier rounds' findings are not in its comments any more. Without this the
+  # round rule below points the reviewer at a file with no findings in it, and
+  # the anti-re-litigation rule has nothing to apply to. The findings come from
+  # the review files on this machine, through findings_block, the one reader.
+  # The header goes down only over at least one usable round (PR #557 round 1,
+  # minor): a header with nothing under it says earlier findings exist and then
+  # shows none.
+  if [ "$(repo_visibility "$REVIEW_SLUG")" != "PRIVATE" ]; then
+    _EARLIER=""
+    for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+      [ -f "$_f" ] && review_is_usable "$_f" || continue
+      _EARLIER="$_EARLIER
+$(basename "$_f")
+$(findings_block "$_f")
+"
+    done
+    [ -z "$_EARLIER" ] || printf '\n\n--- Earlier rounds of this review, from the review files on this machine. The repository is public, so they are not in the PR comments above. ---\n%s' \
+      "$_EARLIER" >> "$PR_CONTEXT_DIR/comments.txt"
+  fi
 fi
 
 ROUND_RULE=""
@@ -1618,11 +1640,31 @@ if [ "$POST" = "1" ]; then
   # time, and post a self-copy of the wreckage. A degraded path may post something
   # worse; it may never eat the artifact.
   REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX" 2>/dev/null)" || REVIEW_BODY=""
+  # A PUBLIC REPO GETS COUNTS, NEVER THE REVIEW (ASK-2893). The rendered review
+  # below replays the diff, and on public kipi-system that put 188 term-carrying
+  # comments on public PRs; a scrub PR leaked the terms it was removing. Asked
+  # HERE, at post time, not once at the top of the run: a review takes minutes,
+  # and a stale PRIVATE is the one answer that leaks. repo_visibility fails
+  # closed, so a lookup that errors posts the summary. The commit status below
+  # is untouched either way: the gate must not depend on what the comment may say.
+  REPO_VISIBILITY="$(repo_visibility "$REVIEW_SLUG")"
   # POST_FILE is what gh sends; REVIEW_BODY is only ever a file WE created. Keeping
   # them separate is what makes the degraded path safe: with no temp file we post
   # the raw review unchanged and write nothing, instead of redirecting into the
   # artifact we are trying to read.
-  if [ -n "$REVIEW_BODY" ]; then
+  if [ "$REPO_VISIBILITY" != "PRIVATE" ]; then
+    # Never the raw-review fallback here: with no temp file a public repo gets no
+    # comment at all, and the status still lands.
+    POST_FILE=""
+    if [ -n "$REVIEW_BODY" ]; then
+      review_public_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" \
+        "$SCRIPT_DIR/client-name-guard.py" >"$REVIEW_BODY"
+      POST_FILE="$REVIEW_BODY"
+      echo "  public repo (${REVIEW_SLUG:-slug unresolved}): posting the verdict and finding counts only; the review stays at $REVIEW"
+    else
+      echo "  WARN: public repo and no temp file for the summary; posting NO comment (the raw review never goes on a public PR)" >&2
+    fi
+  elif [ -n "$REVIEW_BODY" ]; then
     review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
     POST_FILE="$REVIEW_BODY"
   else
@@ -1633,7 +1675,9 @@ if [ "$POST" = "1" ]; then
   # between a size rejection, an auth failure and a closed PR -- the same
   # discard-the-reason defect PR #46 fixed one call lower down.
   COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
-  if COMMENT_URL="$(gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+  if [ -z "$POST_FILE" ]; then
+    COMMENT_URL=""
+  elif COMMENT_URL="$(gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
     echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
   else
     COMMENT_URL=""
