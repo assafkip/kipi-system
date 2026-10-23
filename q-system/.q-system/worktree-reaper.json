@@ -1,0 +1,14 @@
+{
+  "_why": "ASK-2882. Read by worktree-reaper.py (daily) and worktree-disk-floor.py (PreToolUse). 2026-10-22 the disk hit 0 bytes free with 14 GB of finished agent worktrees on it.",
+  "roots": [
+    "~/projects/_wt/*",
+    "~/projects/*-wt*",
+    "~/projects/*/.wt-*",
+    "~/projects/*/.claude/worktrees/*",
+    "~/.config/kipi/worktrees/*",
+    "~/.config/kipi/review-trees/*"
+  ],
+  "min_idle_hours": 6,
+  "alarm_below_gb": 10,
+  "refuse_worktree_below_gb": 5
+}
