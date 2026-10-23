@@ -721,6 +721,60 @@ def main(guard):
                rc != 0 and "not fully scanned" in out
                and CLIENT.lower() not in out.lower(), f"rc={rc}")
 
+    # --- 28. REGRESSION (PR #554 review round 3, major): UTF-16 ---------------
+    # Git calls a UTF-16 file binary, and the binary read decoded only UTF-8, so
+    # "Z\0o\0r\0..." held a name no hit could see: the review's reproducer printed
+    # hits={} for a UTF-16LE payload. Every byte order and alignment, a BOM-less
+    # file, a zip member, and a Latin Extended-A spelling (the measured range of
+    # the live list) must refuse. A clean UTF-16 file is the control.
+    def zip_member(data):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("notes.txt", data)
+        return buf.getvalue()
+
+    ext_name = "Zorptęch"   # synthetic, with U+0119 from Latin Extended-A
+    text = f"prepared for {CLIENT} by the team\n"
+    utf16_cases = [
+        ("UTF-16LE, no BOM", "a.txt", text.encode("utf-16-le")),
+        ("UTF-16BE, no BOM", "b.txt", text.encode("utf-16-be")),
+        ("UTF-16 with a BOM", "c.txt", text.encode("utf-16")),
+        ("UTF-16LE at an odd offset", "d.bin", b"\x01" + text.encode("utf-16-le")),
+        ("a UTF-16 zip member", "e.zip", zip_member(text.encode("utf-16-le"))),
+        ("a Latin Extended-A spelling in UTF-16LE", "f.txt",
+         f"prepared for {ext_name}\n".encode("utf-16-le")),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        tokens = home / ".config" / "kipi" / "client-tokens"
+        tokens.write_text(tokens.read_text() + f"{ext_name}\n")
+        for label, name, data in utf16_cases:
+            rc, out = commit_bytes(repo, home, "add a document", name, data)
+            record(f"local: a name in {label} BLOCKS",
+                   rc != 0 and head_count(repo) == 0 and "Traceback" not in out, f"rc={rc}")
+            git(repo, "reset", "-q", "--mixed", check=False)
+            (repo / name).unlink()
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        rc, out = commit_bytes(repo, home, "add a document", "clean.txt",
+                               "nothing private in here\n".encode("utf-16"))
+        record("local: a clean UTF-16 file passes (control)",
+               rc == 0 and head_count(repo) == 1, f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        for _, name, data in utf16_cases[:2]:
+            (repo / name).write_bytes(data)
+        git(repo, "add", "-A")
+        commit(repo, home, "documents")
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a name in UTF-16LE and UTF-16BE files FAILS, term never printed",
+               rc != 0 and "a.txt" in out and "b.txt" in out
+               and CLIENT.lower() not in out.lower(), f"rc={rc}")
+
     failed = [n for n, ok in results if not ok]
     print()
     if failed:

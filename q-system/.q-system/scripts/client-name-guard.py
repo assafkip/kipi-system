@@ -468,6 +468,33 @@ class Unscannable(RuntimeError):
     """
 
 
+# UTF-16 (PR #554 review round 3, major). Git calls a UTF-16 file binary (its
+# ASCII letters come with NUL bytes), and the UTF-8 read below sees "Z\0o\0..",
+# so a client name in a UTF-16 document reported clean locally and in CI.
+#
+# A BOM marks a UTF-16 document: decode all of it, any script. Without one (a
+# BOM-less file, a string inside a .doc or a PE resource) decoding everything
+# as UTF-16 would turn every binary into a megabyte of CJK noise for hits() to
+# crawl, so only runs of Latin-script code units are kept. Latin script is
+# measured, not assumed: on 2026-10-23 every non-ASCII character in the live
+# 2226-term list sat in U+0100..U+017F. Both byte orders, both alignments: a
+# wrong alignment can only drop a run's first letter, which risks a false
+# BLOCK, never a miss. HONEST LIMIT: a non-Latin name stored as UTF-16 with no
+# BOM, and any UTF-32, are not read.
+_UTF16_BOMS = ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be"))
+_LATIN_RUN = re.compile("[\t\n\r\x20-\x7e\xa0-ɏ]{%d,}" % MIN_LEN)
+
+
+def _utf16_text(data):
+    out = [data[2:].decode(codec, errors="replace")
+           for bom, codec in _UTF16_BOMS if data.startswith(bom)]
+    for shift in (0, 1):
+        seg = data[shift:len(data) - (len(data) - shift) % 2]
+        for codec in ("utf-16-le", "utf-16-be"):
+            out.extend(_LATIN_RUN.findall(seg.decode(codec, errors="replace")))
+    return out
+
+
 def binary_text(data):
     """The searchable text of a binary blob (ASK-2058 review blocker 1).
 
@@ -475,8 +502,8 @@ def binary_text(data):
     (a PDF string, a database page, a pickle). A zip container (.docx, .xlsx,
     .pptx, .zip) deflates its text, so every member is inflated and scanned too:
     the architecture .docx files in this repo carried client names exactly that
-    way. HONEST LIMIT: text drawn as pixels in an image is not text, and nothing
-    here reads it.
+    way. Each of those is also read as UTF-16 (see _utf16_text). HONEST LIMIT:
+    text drawn as pixels in an image is not text, and nothing here reads it.
     """
     chunks = [data]
     if data[:4] == b"PK\x03\x04":
@@ -502,7 +529,10 @@ def binary_text(data):
                                           f"({exc.__class__.__name__})") from None
         except (zipfile.BadZipFile, OSError, EOFError):
             pass   # not a readable zip after all: its raw bytes above are the scan
-    return "\n".join(c.decode("utf-8", errors="replace") for c in chunks)
+    texts = [c.decode("utf-8", errors="replace") for c in chunks]
+    for c in chunks:
+        texts.extend(_utf16_text(c))
+    return "\n".join(texts)
 
 
 def _changed_files(*diff_args):
