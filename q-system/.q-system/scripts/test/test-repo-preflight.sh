@@ -11,7 +11,7 @@
 # checkout, so 18 ready owner:sana issues across 14 projects are skipped as
 # out-of-repo every cycle. The obvious fix -- let the dispatcher iterate the
 # registry -- points an unattended loop that RUNS AGENTS, PUSHES BRANCHES AND ARMS
-# AUTO-MERGE at Alice, Prodigy_Gold and Pure_spectrum_Q. Codex called opt-in plus a
+# AUTO-MERGE at client-d, client-c and client-b. Codex called opt-in plus a
 # project filter inadequate for that, and it was right: opt-in says which repos a
 # human MEANT to enter, it says nothing about whether entering one is SAFE right
 # now. The preflight is the part that answers "safe right now".
@@ -72,7 +72,7 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 # --- STAGE 0: the defect, stated as a check that can fail --------------------
 if [ ! -f "$PREFLIGHT" ]; then
   echo "  FAIL: THE DEFECT: no repo-preflight.sh exists, so a dispatcher that iterates"
-  echo "        the registry would enter Alice / Prodigy_Gold / Pure_spectrum_Q with no"
+  echo "        the registry would enter client-d / client-c / client-b with no"
   echo "        check on control-code version, hooks, remote, branch protection,"
   echo "        credentials, dirty state or a kill switch."
   echo "-------- 0 passed, 1 failed --------"

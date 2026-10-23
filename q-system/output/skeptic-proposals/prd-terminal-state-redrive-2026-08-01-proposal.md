@@ -31,7 +31,7 @@ Codex flagged this issue but it does not match any pre-defined anti-pattern clas
 
 ### finding-8 (blocker, routed to uncategorized, class: no-known-class)
 
-Opt-in, project filtering, and worktrees do not adequately protect client repos (Alice, Prodigy_Gold). The dispatcher would run each repo's local ./kipi, push branches, and auto-merge, while the PRD defines no per-repo preflight for control-code version, hooks, remote identity, branch protection, credentials, dirty state, or a client-specific kill switch.
+Opt-in, project filtering, and worktrees do not adequately protect client repos (client_d, client_c). The dispatcher would run each repo's local ./kipi, push branches, and auto-merge, while the PRD defines no per-repo preflight for control-code version, hooks, remote identity, branch protection, credentials, dirty state, or a client-specific kill switch.
 
 **Proposed anti-pattern phrasing:**
 

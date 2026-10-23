@@ -12,7 +12,7 @@ Statuses (finding-3, finding-16 — no instance-level acceptable-red exists):
   RED(gate)             gate exited non-zero (tail printed)
   RED(missing-gate)     subtree instance, synced tree present, gate script absent
   RED(missing-tree)     type=subtree but no q-system/.q-system dir — the sync
-                        itself never delivered (AUDHD_KIDS class, found 2026-07-23)
+                        itself never delivered (family_repo class, found 2026-07-23)
   SKIPPED(standalone)   type=standalone — no skeleton subtree by design; printed
                         loudly, never silently passed
   SKIPPED(merged)       registry status starts with "merged" (tombstone entry)

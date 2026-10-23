@@ -5,7 +5,7 @@
 - **Parent:** `prd-memory-outcome-scoring-2026-07-04` (shipped, PR #6 merged `49e7cd2`)
 - **Spillover resolved by this PRD:** `sp-04006168` (the agent deciding WHEN a recall was useful/dead_end/corrected)
 - **Author disposition:** senior-staff engineering call, autonomous run 2026-07-04
-- **Design partner:** `4_points_consulting` (27 live cases, highest memory reuse, highest cost of a stale memory)
+- **Design partner:** `client_a` (27 live cases, highest memory reuse, highest cost of a stale memory)
 
 ---
 
@@ -145,7 +145,7 @@ Modified:
 ## 8. Rollout (design-partner first, then fleet)
 
 1. Build + land on skeleton behind the guarded Stop-hook entry.
-2. Enable on `4_points_consulting` only (it is the design partner). Watch
+2. Enable on `client_a` only (it is the design partner). Watch
    `outcomes.jsonl` fill for ~1-2 weeks of real case work.
 3. Tune proxy thresholds against real signal (is "file was read" too generous?).
 4. When the design partner's `preferred`/`dead_end` verdicts match founder

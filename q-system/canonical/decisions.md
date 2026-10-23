@@ -58,7 +58,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   that sees every system IS fleet coverage. The tracks-not-ancestor check exists because
   `personal/.gitignore` line 1 is `projects/`, so nested work looked covered and was invisible.
 - **Note:** Diverges from the literal instruction ("push this to all of the systems").
-  Probe: `kipi check` run from inside instance `thaena` fires the gate. Not yet founder-ratified.
+  Probe: `kipi check` run from inside instance `client_e` fires the gate. Not yet founder-ratified.
 - **Date:** 2026-07-29
 - **Revisit:** If an instance ever needs a coverage answer scoped to itself
 
@@ -67,17 +67,17 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Decision:** An entry in `remote-coverage-allow.json` states the CLASS of sensitive
   content and the path carrying it. Never the content itself.
 - **Reason:** That file is committed to a PUBLIC repo. The first draft explained why the
-  family repos stay local by quoting a minor's diagnosis and school materials into
+  family repos stay local by quoting a family member's private records into
   kipi-system. gitleaks, blocked-paths, and large-files all passed it. Caught by re-reading,
   not by a gate. A reason that quotes the private data defeats the gate it documents.
 - **Date:** 2026-07-29
 - **Revisit:** Permanent
 
-### RULE-007: Family-Medical Repos Are Never Pushed, Private Included
+### RULE-007: Family Repos Are Never Pushed, Private Included
 - **Origin:** [SYSTEM-INFERRED]
-- **Decision:** `AUDHD_KIDS` and `travel-agent` stay local-only until their carrier files
+- **Decision:** `family_repo` and `travel-agent` stay local-only until their carrier files
   move to gitignored paths.
-- **Reason:** Health and education records about a specific minor, re-identifying against
+- **Reason:** Private records about a family member, re-identifying against
   the owner's public identity. Private on someone else's servers is still off-disk.
 - **Probe:** `git remote` returns 0 remotes for both, and `gh repo view` returns not-found,
   re-run after the private-by-default flip.
@@ -293,7 +293,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 ### RULE-2026-08-30-B: The morning brief lands in #general, not a DM or a new webhook
 - **Origin:** [SYSTEM-INFERRED]
 - **Decision:** The brief and the 4pm Linear digest both deliver to #general in
-  assafspace (C04Q71LA283) via the `colenotify` bot token, through
+  assafspace (<channel-id>) via the `colenotify` bot token, through
   `q-system/.q-system/scripts/slack_founder.py`. That module tries an incoming
   webhook FIRST and falls back to the bot token, so nothing changes the day a
   webhook exists again.
@@ -433,7 +433,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Decision:** `com.kipi.dispatch` is loaded again, rendered from
   `q-system/.q-system/scripts/com.kipi.dispatch.plist` the way `install-plist.sh`
   renders it (KIPI_REPO = ~/projects/kipi-system): every 15 minutes, at most 3
-  tickets a day. The cloud routine `trig_01WhmVCjxRiCLGPwZsqYsHYK` ("Linear worker
+  tickets a day. The cloud routine `<trigger-id>` ("Linear worker
   (weekdays x3)") is disabled, not deleted. This reverses the ASK-2176 Phase 5 move
   of 2026-09-30.
 - **Reason:** The founder's call. Seen the same day: the cloud routine sat at its

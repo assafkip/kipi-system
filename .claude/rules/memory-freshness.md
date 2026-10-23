@@ -51,7 +51,7 @@ If verification fails (tool says the fact is no longer true): update the memory 
 
 Index lines for `fast`-decay memories get a `[fast]` prefix so the freshness risk is visible at session start without reading the full file:
 
-`- [fast] [Josh Flashpoint demo](project_josh-flashpoint-demo.md) - ...`
+`- [fast] [Josh demo engagement](project_josh-demo.md) - ...`
 
 This lets the model see at a glance which memories require verification.
 

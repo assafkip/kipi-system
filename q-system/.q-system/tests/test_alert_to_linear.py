@@ -161,6 +161,10 @@ class FakeLinear:
 @pytest.fixture
 def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_state_dir", lambda: str(tmp_path))
+    # A failed create now lands in the retry queue, so every stubbed failure in
+    # this file writes one. It must be a tmp file: a queued fixture message on
+    # the real queue is filed for real by the next good run (the ASK-635 shape).
+    monkeypatch.setenv("KIPI_LINEAR_QUEUE", str(tmp_path / "linear-queue.jsonl"))
     return tmp_path
 
 
@@ -967,3 +971,309 @@ def test_the_captured_payload_carries_no_absolute_home_path():
         "the captured payload ships an absolute home path to a public repo; "
         "validate-separation.py's full skeleton sweep fails on it")
     assert payload["state_dir"].startswith("~/"), payload["state_dir"]
+
+
+# --- a failed create is queued, and the next good run drains it --------------
+#
+# THE SCAR (ASK-2848 sweep, 2026-10-22). Five alerts failed their create on 10-20
+# and 10-21 with HTTP 401, and more with read timeouts, a TLS handshake timeout
+# and a connection reset (content-engine at 07:50 PT today). Each printed "NOT
+# filed" into a job log nobody reads and was never retried. The fleet already
+# has an offline Linear queue (linear-queue.py, drained by /linear-drain), so a
+# failed create goes there through linear-queue's own single writer.
+
+class FailingCreate(FakeLinear):
+    """The live 10-20 shape: everything answers, issueCreate is refused."""
+
+    def graphql(self, query, variables):
+        if "issueCreate" in query:
+            raise RuntimeError("HTTP 401 Unauthorized")
+        return FakeLinear.graphql(self, query, variables)
+
+
+def _queue_ops(state):
+    path = state / "linear-queue.jsonl"
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _pending(state):
+    ops = _queue_ops(state)
+    drained = {o["key"] for o in ops if o.get("op") == "drain"}
+    return [o for o in ops if o.get("op") == "add" and o["key"] not in drained]
+
+
+def test_a_failed_create_is_queued_for_retry(isolated_state, monkeypatch):
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_FAILED, "a queued alert is still not a filed one"
+    assert AUTOCOMMIT[0] in line, "the undelivered message must stay readable"
+    pending = _pending(isolated_state)
+    assert len(pending) == 1, f"the failed create was dropped: {pending}"
+    item = pending[0]
+    assert item["source"] == "alert-to-linear"
+    assert item["kind"] == "issue"
+    assert item["message"] == AUTOCOMMIT[0]
+    assert item["fingerprint"] == mod.fingerprint(AUTOCOMMIT[0])
+    assert "HTTP 401" in item["reason"]
+    assert item["key"] in line, "the job log must name the queue entry"
+
+
+def test_a_repeating_failure_queues_one_retry_per_shape(isolated_state, monkeypatch):
+    """Four failures of one alert shape during an outage are one ticket's worth
+    of work. Four queue entries would replay as one create and three repeats,
+    which is noise the dedup already exists to prevent."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    for i, msg in enumerate(AUTOCOMMIT):
+        mod.file_alert(msg, now=1000.0 + i)
+    assert len(_pending(isolated_state)) == 1
+
+
+def test_a_queued_alert_is_drained_on_the_next_good_run(isolated_state, monkeypatch):
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert len(_pending(isolated_state)) == 1
+
+    healthy = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    lines = mod.drain_queued_alerts(limit=5, now=2000.0)
+
+    assert healthy.created == 1, "the queued alert never reached Linear"
+    assert AUTOCOMMIT[0] in healthy.create_input["description"]
+    assert _pending(isolated_state) == [], "a filed alert is still pending"
+    drains = [o for o in _queue_ops(isolated_state) if o.get("op") == "drain"]
+    assert [d["identifier"] for d in drains] == ["ASK-101"]
+    assert lines and lines[0][0] is True and "ASK-101" in lines[0][1]
+
+
+def test_a_retry_that_fails_again_stays_queued_once(isolated_state, monkeypatch):
+    """A drain during a second outage must neither drop the entry nor add a
+    second one for it."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    mod.drain_queued_alerts(limit=5, now=2000.0)
+    ops = _queue_ops(isolated_state)
+    assert [o["op"] for o in ops] == ["add", "retry_failed"], ops
+    assert len(_pending(isolated_state)) == 1
+
+
+def test_a_drain_after_the_shape_was_filed_counts_a_repeat(isolated_state, monkeypatch):
+    """The outage ends, the same alert fires and files, THEN the drain runs. The
+    queued copy must land on that ticket as a repeat, never open a second one."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    healthy = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    mod.file_alert(AUTOCOMMIT[1], now=1500.0)
+    mod.drain_queued_alerts(limit=5, now=2000.0)
+    assert healthy.created == 1, "the drain opened a duplicate ticket"
+    assert _pending(isolated_state) == []
+
+
+def test_a_good_run_drains_one_queued_alert(isolated_state, monkeypatch):
+    """The wiring main() uses: file this alert, then retry from the queue."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    healthy = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    code, lines = mod.file_and_drain(CARVEOUT[0])
+    assert code == mod.EXIT_OK
+    assert healthy.created == 2, "the good run did not retry the queued alert"
+    assert _pending(isolated_state) == []
+    assert any(ok and "ASK-102" in ln for ok, ln in lines), lines
+
+
+def test_an_unlocked_caller_queues_nothing(isolated_state, monkeypatch):
+    """may_create=False means another writer IS filing this shape right now.
+    Queueing it too would replay as a repeat at best."""
+    fp = mod.fingerprint(AUTOCOMMIT[0])
+    code, _ = mod._file_alert_serialized(AUTOCOMMIT[0], fp, FailingCreate(),
+                                         1000.0, may_create=False)
+    assert code == mod.EXIT_FAILED
+    assert _queue_ops(isolated_state) == []
+
+
+def test_a_fixture_run_never_resolves_the_live_queue(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL for the guard that keeps fixture messages off the real
+    queue. Under pytest, against a fake Linear URL, or with the state dir
+    redirected, and with no explicit KIPI_LINEAR_QUEUE, there is no queue. The
+    last case proves the guard is not simply always None."""
+    monkeypatch.delenv("KIPI_LINEAR_QUEUE", raising=False)
+    monkeypatch.delenv("KIPI_LINEAR_API_URL", raising=False)
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+    assert mod._alert_queue_path() is None
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    monkeypatch.setenv("KIPI_LINEAR_API_URL", "http://127.0.0.1:1/graphql")
+    assert mod._alert_queue_path() is None
+
+    monkeypatch.delenv("KIPI_LINEAR_API_URL")
+    monkeypatch.setattr(mod, "_state_dir", lambda: str(tmp_path))
+    assert mod._alert_queue_path() is None
+
+    monkeypatch.setattr(mod, "_state_dir", mod._default_state_dir)
+    live = mod._alert_queue_path()
+    assert live and live.endswith(".linear-queue.jsonl"), live
+
+
+# --- PR #546 review round 1: the second consumer, the poison entry, EXIT_OK --
+#
+# The fleet reviewer and Codex both reproduced these against the first cut.
+# Each test below is that reviewer's reproducer, reduced to the fixture.
+
+def _mark_drained_like_linear_drain(state, key, identifier):
+    """/linear-drain step 5, verbatim: linear-queue.py mark-drained appends this
+    exact op. It never touches alert-to-linear's fingerprint state."""
+    with open(state / "linear-queue.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"op": "drain", "key": key,
+                             "identifier": identifier}) + "\n")
+
+
+def test_a_manual_drain_is_adopted_not_duplicated(isolated_state, monkeypatch):
+    """Reviewer finding 2 / Codex P1. /linear-drain created ASK-500 for a queued
+    alert. The next firing of that shape must count on ASK-500, not open a
+    second permanent ticket."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    key = _pending(isolated_state)[0]["key"]
+    _mark_drained_like_linear_drain(isolated_state, key, "ASK-500")
+
+    healthy = FakeLinear()
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    code, line = mod.file_alert(AUTOCOMMIT[1], now=2000.0)
+    assert code == mod.EXIT_OK
+    assert healthy.created == 0, "a manual drain's ticket was duplicated"
+    assert "ASK-500" in line, line
+    # The state keeps the UUID the open-check returned, not the identifier, so
+    # the 12-hour commentCreate gets the id shape it was always given.
+    with open(isolated_state / f"{mod.fingerprint(AUTOCOMMIT[0])}.json") as fh:
+        assert json.load(fh)["issue_id"] == "iss-1"
+
+
+def test_an_adopted_ticket_that_was_closed_opens_a_fresh_one(isolated_state, monkeypatch):
+    """Adoption must not hide a real recurrence: closed is still closed."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    key = _pending(isolated_state)[0]["key"]
+    _mark_drained_like_linear_drain(isolated_state, key, "ASK-500")
+
+    healthy = FakeLinear(state_type="completed")
+    monkeypatch.setattr(mod, "_load_linear", lambda: healthy)
+    mod.file_alert(AUTOCOMMIT[1], now=2000.0)
+    assert healthy.created == 1
+
+
+def test_the_queued_note_carries_the_kipi_key_marker(isolated_state, monkeypatch):
+    """Codex P2. /linear-drain's remote guard finds an existing issue only by
+    `<!-- kipi-key: <key> -->`; without it a stale drain creates a copy."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    item = _pending(isolated_state)[0]
+    assert f"<!-- kipi-key: {item['key']} -->" in item["note"]
+
+
+POISON = "[kipi-system] POISON: linear refuses this one, always"
+GOOD = "[kipi-system] real alert: the nightly backup job died at 03:00"
+
+
+class RefusesPoison(FakeLinear):
+    """Healthy Linear that permanently refuses one payload: the POISON alert's
+    own body. The escalation quotes its title but is a different payload."""
+
+    def graphql(self, query, variables):
+        if ("issueCreate" in query
+                and f"```\n{POISON}\n```" in variables["input"]["description"]):
+            raise RuntimeError("HTTP 400 description too large")
+        return FakeLinear.graphql(self, query, variables)
+
+
+def test_a_poison_entry_does_not_block_the_queue(isolated_state, monkeypatch):
+    """Reviewer finding 1. FIFO plus stop-on-failure left a refused entry at the
+    head forever, so every later queued alert was unreachable."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+    mod.file_alert(GOOD, now=1001.0)
+
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    for i in range(3):
+        mod.drain_queued_alerts(limit=1, now=2000.0 + i)
+    titles = [p["message"] for p in _pending(isolated_state)]
+    assert titles == [POISON], f"the good alert is stuck behind poison: {titles}"
+    assert linear.created == 1
+
+
+def test_a_poison_entry_stops_at_the_cap_and_escalates(isolated_state, monkeypatch):
+    """Reviewer finding 1, second half: a failed retry was a stdout line with
+    exit 0. At the cap it must stop costing HTTP every run AND reach the board."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    results = []
+    for i in range(mod.RETRY_CAP + 2):
+        results.extend(mod.drain_queued_alerts(limit=1, now=2000.0 + i))
+
+    failed_retries = [ln for ok, ln in results if not ok and ln.startswith("retry ")]
+    assert len(failed_retries) == mod.RETRY_CAP, "retries did not stop at the cap"
+    assert linear.created == 1, "the stuck entry was never escalated"
+    assert "failed" in linear.create_input["description"]
+    assert [p["message"] for p in _pending(isolated_state)] == [POISON], (
+        "a stuck entry must stay pending for a manual drain, not vanish")
+
+
+def test_a_replay_that_files_nothing_is_not_marked_drained(isolated_state, monkeypatch):
+    """Reviewer finding 3. EXIT_OK is not "filed": the sustained-failure rule
+    returns EXIT_OK with "NOT filed". Draining on it discarded the alert."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+
+    monkeypatch.setattr(mod, "_load_linear", lambda: FakeLinear())
+    monkeypatch.setattr(mod, "sustained_defers", lambda fp, n: True)
+    results = mod.drain_queued_alerts(limit=1, now=2000.0)
+    assert results and results[0][0] is False, results
+    assert len(_pending(isolated_state)) == 1, "a deferred replay was discarded"
+
+
+# --- PR #546 review round 2 --------------------------------------------------
+
+NOISE = "[kipi-system] armed .claude/ integrity tripwire: 12 file(s) baselined"
+
+
+def test_a_good_run_that_filed_nothing_does_not_drain(isolated_state, monkeypatch):
+    """Round-2 finding 1. A noise alert returns EXIT_OK without touching Linear.
+    Draining on it during an outage burned a real entry's whole retry budget."""
+    assert mod.is_noise(NOISE)
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    for _ in range(mod.RETRY_CAP):
+        code, lines = mod.file_and_drain(NOISE)
+        assert code == mod.EXIT_OK
+    ops = [o["op"] for o in _queue_ops(isolated_state)]
+    assert ops == ["add"], f"noise runs spent retries: {ops}"
+
+
+def test_past_the_cap_the_log_does_not_promise_a_retry(isolated_state, monkeypatch):
+    """Round-2 finding 3. Past RETRY_CAP no drain will attempt the entry, so the
+    job log must not say "queued for retry"."""
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    mod.file_alert(POISON, now=1000.0)
+    linear = RefusesPoison()
+    monkeypatch.setattr(mod, "_load_linear", lambda: linear)
+    for i in range(mod.RETRY_CAP):
+        mod.drain_queued_alerts(limit=1, now=2000.0 + i)
+    code, line = mod.file_alert(POISON, now=3000.0)
+    assert code == mod.EXIT_FAILED
+    assert "queued for retry" not in line, line
+    assert "/linear-drain" in line and POISON in line, line
+
+
+def test_with_no_queue_a_failed_create_says_so(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "_state_dir", lambda: str(tmp_path))
+    monkeypatch.delenv("KIPI_LINEAR_QUEUE", raising=False)
+    monkeypatch.setattr(mod, "_load_linear", lambda: FailingCreate())
+    code, line = mod.file_alert(AUTOCOMMIT[0], now=1000.0)
+    assert code == mod.EXIT_FAILED
+    assert "NOT queued" in line and AUTOCOMMIT[0] in line

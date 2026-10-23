@@ -46,8 +46,8 @@ drift the way the first two did on 2026-07-28 (the scar recorded in that file).
 
 WHY STORES, DOCS AND PROMPT-DRIVEN CANDIDATES (founder-directed 2026-09-05, plan
 knowledge-supply-project-folders-2026-09-05): "every project reads its own folder,
-and each 4_points investigation is its own knowledge base." Measured before this:
-4_points had 45 investigation folders and 1,475 markdown files that no source
+and each client_a investigation is its own knowledge base." Measured before this:
+client_a had 45 investigation folders and 1,475 markdown files that no source
 class covered (index: 40 graph entities); a consulting instance had 83 files and an index of 0, so the reader never woke up there. Three additions, all declared as data in
 the manifest: `stores` (a glob of sub-directories, each a knowledge base with the
 qroot layout; naming one in the prompt scopes the search to it), a `docs` class
@@ -691,7 +691,7 @@ def load_stores(qroot: Path, root: Path, manifest: dict | None = None,
     """Read every store once. Returns (stores, problems). A store that fails to
     parse lands in problems and counts as present-but-unreadable in the receipt.
     The same loader reads the project qroot and every sub-store directory (a
-    4_points case folder has the same layout), so a case's own graph, canonical,
+    client_a case folder has the same layout), so a case's own graph, canonical,
     handoff and documents are read the way the project's are."""
     stores: dict = {"paths": {}, "name": name, "dir": qroot}
     problems: dict = {}
@@ -812,7 +812,7 @@ def load_stores(qroot: Path, root: Path, manifest: dict | None = None,
     folders = list((manifest or {}).get("folders") or [])
     max_bytes = int((manifest or {}).get("doc_max_bytes") or DOC_MAX_BYTES_DEFAULT)
     # The project walk never enters a sub-store root: each case is loaded by
-    # its own call, and the project's rglob("*") over 4_points was 57,081
+    # its own call, and the project's rglob("*") over client_a was 57,081
     # entries and 318 ms per prompt (measured 2026-09-05).
     exclude = {path for _, path in discover_stores(qroot, manifest or {})} if name == PROJECT_STORE else set()
     skip_dirs = set((manifest or {}).get("skip_dirs") if (manifest or {}).get("skip_dirs") is not None else DEFAULT_SKIP_DIRS)
@@ -822,7 +822,7 @@ def load_stores(qroot: Path, root: Path, manifest: dict | None = None,
     stores["doc_skipped_oversize"] = skipped
     stores["doc_skipped_dirs"] = skipped_dirs
     # A markdown file directly under a `targets`-style directory names a subject
-    # of the work (4_points: investigation/targets/<subject>.md). Its stem is an
+    # of the work (client_a: investigation/targets/<subject>.md). Its stem is an
     # entity that fires alone; a finding or note file's stem never does.
     target_names = []
     entity_dirs = set((manifest or {}).get("entity_dirs") or [])
@@ -1356,7 +1356,7 @@ def doc_candidates(scan: str, entities: list[dict], index: dict[str, Entity]) ->
 def search_docs_for_candidates(cands: list[str], search_stores: list[dict], root: Path,
                                deadline: float) -> tuple[dict[str, list[tuple[Path, int, str, str]]], str]:
     """Case-sensitive, whole-word, headings excluded: a heading is a section label
-    (the 2026-09-05 census over every 4_points case: Notes, Summary, Integrity),
+    (the 2026-09-05 census over every client_a case: Notes, Summary, Integrity),
     so "Next Steps" in a prompt never resolves to the heading that says so.
     Each hit carries its store so the caller can apply MAX_CANDIDATE_STORES."""
     file_store: dict[str, str] = {}
@@ -1984,7 +1984,7 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     scan = prompt[:PROMPT_SCAN_CHARS]
     truncated = len(prompt) > PROMPT_SCAN_CHARS
     entities = resolve_entities(scan, index, fire_alone)
-    # Naming a sub-store (a 4_points case) scopes every other entity's search to
+    # Naming a sub-store (a client_a case) scopes every other entity's search to
     # it plus the project level; naming none searches every store.
     # A case name the founder TYPED is the scope. A filename inside one case is
     # not: a targets/ stem narrows only its own entity's items to the cases that

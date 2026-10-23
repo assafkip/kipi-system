@@ -17,7 +17,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
   "date": "2026-03-12",
   "dateDisplay": "Thursday, March 12",
   "generated": "Thu, Mar 12, 2026 - 9:05am PT",
-  "effort": "14 Peaks call + debrief done. LinkedIn post published. 13 comments posted.",
+  "effort": "Investor call + debrief done. LinkedIn post published. 13 comments posted.",
   "callBanners": [],
   "meetingPrep": [],
   "sections": []
@@ -40,7 +40,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 ```json
 {
   "time": "2:00pm PT",
-  "info": "<strong>Sim</strong> - Design Partner Discovery (45 min)",
+  "info": "<strong>Pat</strong> - Design Partner Discovery (45 min)",
   "detail": "Google Meet: <a href='https://meet.google.com/abc'>meet.google.com/abc</a>"
 }
 ```
@@ -55,7 +55,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 
 ```json
 {
-  "title": "PREP: Sim - 2:00pm",
+  "title": "PREP: Pat - 2:00pm",
   "items": [
     "<strong>Context:</strong> Design partner prospect from Feb 19 batch",
     "<strong>Goal:</strong> Pure discovery. Ask what tools, where learning breaks down",
@@ -107,8 +107,8 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
 
 ```json
 {
-  "id": "cowgill",
-  "title": "Reply to John Cowgill (Costanoa) - he wants RSA meeting Mar 25",
+  "id": "jordan",
+  "title": "Reply to Jordan Lee (Example VC) - he wants RSA meeting Mar 25",
   "energy": "quickwin",
   "time": "2 min",
   "platform": "Email",
@@ -117,7 +117,7 @@ Claude NEVER writes raw HTML. Claude ONLY writes JSON conforming to this schema.
   "daysAgo": null,
   "context": "<span style='color:#34d399'>He replied!</span> \"Thanks Assaf. Let's find time Wednesday March 25.\"",
   "links": [
-    {"text": "Open email", "url": "mailto:john@costanoa.vc?subject=Re:%20RSA"}
+    {"text": "Open email", "url": "mailto:jordan@example.com?subject=Re:%20RSA"}
   ],
   "copyBlocks": [
     {
@@ -199,8 +199,8 @@ Items within each section sorted by friction (lowest first):
   "callBanners": [
     {
       "time": "2:00pm PT",
-      "info": "<strong>Sim</strong> - Design Partner Discovery (45 min)",
-      "detail": "Google Meet: <a href='https://meet.google.com/vvr-rokt-zws'>meet.google.com/vvr-rokt-zws</a>"
+      "info": "<strong>Pat</strong> - Design Partner Discovery (45 min)",
+      "detail": "Google Meet: <a href='https://meet.google.com/abc-defg-hij'>meet.google.com/abc-defg-hij</a>"
     }
   ],
   "meetingPrep": [],
@@ -213,14 +213,14 @@ Items within each section sorted by friction (lowest first):
       "collapsed": false,
       "items": [
         {
-          "id": "cowgill-reply",
-          "title": "Reply to John Cowgill (Costanoa) - RSA meeting Mar 25",
+          "id": "jordan-reply",
+          "title": "Reply to Jordan Lee (Example VC) - RSA meeting Mar 25",
           "energy": "quickwin",
           "time": "2 min",
           "platform": "Email",
           "badge": "WIN",
           "context": "<span style='color:#34d399'>He replied!</span> Wants to meet Wed Mar 25 at RSA.",
-          "links": [{"text": "Open email", "url": "mailto:john@costanoa.vc"}],
+          "links": [{"text": "Open email", "url": "mailto:jordan@example.com"}],
           "copyBlocks": [
             {
               "label": "Email Reply",
@@ -229,8 +229,8 @@ Items within each section sorted by friction (lowest first):
           ]
         },
         {
-          "id": "comment-mamica",
-          "title": "Comment on Michal Mamica's post - alert fatigue",
+          "id": "comment-casey",
+          "title": "Comment on Casey Park's post - alert fatigue",
           "energy": "quickwin",
           "time": "2 min",
           "platform": "LinkedIn",
@@ -252,8 +252,8 @@ Items within each section sorted by friction (lowest first):
       "meta": "reference only",
       "collapsed": true,
       "infoNotes": [
-        "<strong>Costanoa:</strong> Back on track. RSA meeting Mar 25.",
-        "<strong>14 Peaks:</strong> Follow-up sent. Awaiting internal review."
+        "<strong>Example VC:</strong> Back on track. RSA meeting Mar 25.",
+        "<strong>Another VC:</strong> Follow-up sent. Awaiting internal review."
       ],
       "pipeline": [
         {"value": 5, "label": "Active"},

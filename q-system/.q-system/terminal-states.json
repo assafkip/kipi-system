@@ -291,7 +291,7 @@
       "sites": 1,
       "what": "The issue is ready-shaped and owned by Sana, but its Linear project is not this repo. 18 such issues across 14 projects as of 2026-08-01; one dispatch job exists fleet-wide.",
       "terminal": true,
-      "rationale": "NO CONSUMER TODAY. This is the largest parked population and it is deliberately left terminal rather than given a fake tier. Piece C (fleet-dispatch-preflight) is the named plan and it does not start until a per-repo preflight exists: a dispatcher that runs a client repo's local ./kipi, pushes branches and arms auto-merge is a real hazard to Alice and Prodigy_Gold, and opt-in plus a project filter is not protection (finding-8). Revised to a consumer when that preflight ships."
+      "rationale": "NO CONSUMER TODAY. This is the largest parked population and it is deliberately left terminal rather than given a fake tier. Piece C (fleet-dispatch-preflight) is the named plan and it does not start until a per-repo preflight exists: a dispatcher that runs a client repo's local ./kipi, pushes branches and arms auto-merge is a real hazard to client_d and client_c, and opt-in plus a project filter is not protection (finding-8). Revised to a consumer when that preflight ships."
     },
     {
       "id": "attempts-cap-stuck",

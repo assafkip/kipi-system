@@ -123,21 +123,10 @@ def test_pricing_is_the_existing_generic_template():
     assert PRICING.read_text(encoding="utf-8") == PRICING_TEMPLATE
 
 
-def test_exported_instance_facts_are_absent_from_generic_templates():
-    templates = DISCOVERY.read_text(encoding="utf-8") + PRICING.read_text(
-        encoding="utf-8"
-    )
-    exported_fact_markers = (
-        "Ally",
-        "Ethan",
-        "Active Fence",
-        "Tova",
-        "Chris",
-        "$6,500",
-        "$1,500",
-        "$150/hour",
-        "handala",
-        "Iranian NVE",
-    )
-
-    assert all(marker not in templates for marker in exported_fact_markers)
+# A third test used to spell out the leaked instance facts (names and prices)
+# and assert the templates did not contain them. In a public repo that tuple
+# republished the very facts it guarded against (ASK-2058, 2026-10-22). It was
+# also redundant: the two tests above pin both templates byte for byte to
+# generic constants, so no fact can be present without one of them failing.
+# The general version of that check is client-name-guard.py, which scans every
+# added line at commit time against the private list held outside the repo.

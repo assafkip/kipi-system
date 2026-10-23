@@ -91,6 +91,7 @@ NOT_SECURITY = {
     "portability-lint-hook.py", "blocked-claim-evidence-lint.py", "voice-stop-gate.py",
     "kb-graph-guard.py", "auto-commit.py", "knowledge-inject.py", "lessons-inject.py",
     "voice-dna-loader.py", "capability-claim-lint.py", "evidence-read-log-lint.py",
+    "worktree-disk-floor.py",
 }
 
 

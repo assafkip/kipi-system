@@ -33,7 +33,7 @@ blocker in Parts A through C.
 > had. v1 and v2 both fixated on the client's remote n8n workflows and designed
 > coverage arithmetic for them. Nobody had measured the instance.
 >
-> **Measured 2026-07-28: `q-prodigy/` is 12 markdown files, 1,054 lines, 53,222
+> **Measured 2026-07-28: `q-client_c/` is 12 markdown files, 1,054 lines, 53,222
 > bytes, roughly 13,000 tokens.** Command in Verification below.
 >
 > At that size the entire coverage problem is imaginary. You do not need a
@@ -47,7 +47,7 @@ blocker in Parts A through C.
 
 ## Problem
 
-RCA `rca-conclusions-before-evidence-2026-07-28` (Prodigy_Gold): six conclusions
+RCA `rca-conclusions-before-evidence-2026-07-28` (client-c): six conclusions
 delivered in settled language, all six reversed later in the same session, one
 having already shaped a client email draft.
 
@@ -55,9 +55,9 @@ having already shaped a client email draft.
 
 | Reversal | Refuted by | On disk in the instance? |
 |---|---|---|
-| #5 future-dated Brightspeed row | `q-prodigy/memory/last-handoff.md:64` | YES |
-| #6 nobody works in the shared sheet | `q-prodigy/output/outreach/marilyn-data-findings-2026-07-22.md:4,8` | YES |
-| #1 staged rollout, reps in ~2 weeks | "a prior session log" per the RCA | **NO** -- not in the 12 instance files |
+| #5 future-dated vendor row | `q-client_c/memory/last-handoff.md:64` | YES |
+| #6 nobody works in the shared sheet | `q-client_c/output/outreach/contact-data-findings-2026-07-22.md:4,8` | YES |
+| #1 a rollout-timeline claim | "a prior session log" per the RCA | **NO** -- not in the 12 instance files |
 | #2, #3, #4 | n8n workflow nodes | NO -- remote, not files |
 
 So the instance held the answer to two of six, a session log held a third, and
@@ -191,7 +191,7 @@ untouched.
 ## Scenarios
 
 - **Reversal #6 replayed.** Session starts; all 12 instance files are in context,
-  including `marilyn-data-findings-2026-07-22.md`. The claim "nobody works in the
+  including `contact-data-findings-2026-07-22.md`. The claim "nobody works in the
   shared sheet" is contradicted by text already present, before any tool call.
 - **Reversal #5 replayed.** `last-handoff.md` is in context at turn one, so an
   inherited claim arrives with its correction attached.
@@ -225,15 +225,15 @@ untouched.
 The measurement this PRD rests on, reproducible:
 
 ```
-find q-prodigy -type f -name "*.md" | xargs wc -lc | tail -1
+find q-client_c -type f -name "*.md" | xargs wc -lc | tail -1
   -> 1054 lines, 53222 bytes  (~13,300 tokens)
-find q-prodigy -type f | wc -l
+find q-client_c -type f | wc -l
   -> 14 files (12 .md + 2 .gitkeep)
-grep -n "future-dated" q-prodigy/memory/last-handoff.md
+grep -n "future-dated" q-client_c/memory/last-handoff.md
   -> line 64, reversal #5's refutation
-grep -n "sheet" q-prodigy/output/outreach/marilyn-data-findings-2026-07-22.md
+grep -n "sheet" q-client_c/output/outreach/contact-data-findings-2026-07-22.md
   -> lines 4 and 8, reversal #6's source
-grep -riE "two weeks|leadership|roll ?out" q-prodigy/output/onboarding-call-2026-07-22.md
+grep -riE "two weeks|leadership|roll ?out" q-client_c/output/onboarding-call-2026-07-22.md
   -> no match; reversal #1's evidence is NOT in the instance
 ```
 
@@ -264,7 +264,7 @@ grep -riE "two weeks|leadership|roll ?out" q-prodigy/output/onboarding-call-2026
   unsolved and named. `{{UNVERIFIED}}`
 - What byte ceiling? 13k tokens is comfortable; the number where it stops being
   comfortable is unmeasured. `{{UNVERIFIED}}`
-- Do the other 23 instances measure similarly small, or is Prodigy_Gold unusually
+- Do the other 23 instances measure similarly small, or is client-c unusually
   light? One `find | wc` per instance answers it and has not been run.
 - Should `instance-digest.py` inject raw content or a structured digest? Raw is
   simpler and provably lossless; a digest is cheaper and reintroduces a
@@ -288,7 +288,7 @@ not be trusted to pick the fourth answer either.
 **Q2: What is the smallest experiment that would disprove the thesis?**
 
 A2: Run `find <instance> -type f -name "*.md" | xargs wc -l` across all 24
-instances. If several are an order of magnitude larger than Prodigy_Gold, "read
+instances. If several are an order of magnitude larger than client-c, "read
 everything" does not generalize and the deleted manifest work was premature
 rather than wrong. This is one command and has not been run.
 

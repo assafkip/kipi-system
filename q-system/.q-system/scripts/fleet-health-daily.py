@@ -71,6 +71,24 @@ QROOT = HERE.parent.parent
 REPO_ROOT = QROOT.parent
 NOTIFY = HERE / "slack-notify.sh"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+# The job families this scan owns. Client families are client names, and this
+# file ships in a public repo, so they are read from a private file outside it
+# (ASK-2058), one prefix per line, '#' comments allowed: the same shape as
+# launchd-health-check.py's EXTRA_PREFIXES_FILE. Missing file = base families.
+_BASE_JOB_PREFIXES = ("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
+                      "com.claudedaddy.", "com.personal.")
+PRIVATE_JOB_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "fleet-job-prefixes.txt"
+
+
+def job_prefixes() -> tuple:
+    try:
+        lines = PRIVATE_JOB_PREFIXES_FILE.read_text().splitlines()
+    except OSError:
+        return _BASE_JOB_PREFIXES
+    extra = [e for e in (l.split("#", 1)[0].strip() for l in lines)
+             if e and e not in _BASE_JOB_PREFIXES]
+    return _BASE_JOB_PREFIXES + tuple(extra)
 STATE = Path.home() / ".config" / "kipi" / "fleet-health-state.json"
 
 # Where fleet-wide findings are filed. Per-repo findings could route to their own
@@ -211,8 +229,7 @@ def detect_dark_jobs(_ctx) -> list:
     paused = _paused_labels()
     out = []
     for label in _launchd_labels():
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+        if not label.startswith(job_prefixes()):
             continue
         if label in paused or _is_loaded(label):
             continue
@@ -233,8 +250,7 @@ def detect_failing_jobs(_ctx) -> list:
         if len(parts) < 3:
             continue
         _pid, status, label = parts[0], parts[1], parts[2]
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+        if not label.startswith(job_prefixes()):
             continue
         if status in ("0", "-"):
             continue

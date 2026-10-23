@@ -3,7 +3,7 @@
 (issue autocapture-instance-guard, PRD prd-memory-autocapture-2026-07-04, finding-3).
 
 Proves the referee cannot enable itself beyond the design partner:
-- the allowlist config names only 4_points_consulting  -> test_allowlist_is_partner_only
+- the public allowlist config names nobody; the partner is in a private file  -> test_allowlist_is_partner_only
 - capture is OFF on a non-allowlisted instance, ON for the partner
   -> test_gate_off_off_partner / test_gate_on_for_partner
 - the Stop-hook entry is wired in BOTH settings.json and settings-template.json
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -50,19 +51,33 @@ def _stop_commands(settings_path: Path) -> list[str]:
 
 
 def test_allowlist_is_partner_only() -> None:
+    # The public config enables NOBODY. The design partner is a client, so its
+    # instance lives in the private allowlist outside this public repo (ASK-2058).
     cfg = json.loads(CONFIG.read_text())
     _check("allowlist_is_partner_only",
-           cfg.get("enabled_instances") == ["4_points_consulting"], f"cfg={cfg}")
+           cfg.get("enabled_instances") == [], f"cfg={cfg}")
 
 
 def test_gate_off_off_partner() -> None:
-    _check("gate_off_off_partner",
-           mac.is_enabled(config_path=CONFIG, instance_id="kipi-system") is False)
+    with tempfile.TemporaryDirectory() as tmp:
+        private = Path(tmp) / "autocapture-instances.txt"
+        private.write_text("partner_instance\n")
+        _check("gate_off_off_partner",
+               mac.is_enabled(config_path=CONFIG, instance_id="kipi-system",
+                              private_path=private) is False)
 
 
 def test_gate_on_for_partner() -> None:
-    _check("gate_on_for_partner",
-           mac.is_enabled(config_path=CONFIG, instance_id="4_points_consulting") is True)
+    with tempfile.TemporaryDirectory() as tmp:
+        private = Path(tmp) / "autocapture-instances.txt"
+        private.write_text("# the design partner\npartner_instance\n")
+        _check("gate_on_for_partner",
+               mac.is_enabled(config_path=CONFIG, instance_id="partner_instance",
+                              private_path=private) is True)
+        missing = Path(tmp) / "absent.txt"
+        _check("gate_off_without_private_list",
+               mac.is_enabled(config_path=CONFIG, instance_id="partner_instance",
+                              private_path=missing) is False)
 
 
 def test_wired_in_both() -> None:

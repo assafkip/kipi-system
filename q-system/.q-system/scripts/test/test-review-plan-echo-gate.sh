@@ -2,7 +2,7 @@
 # Reproducer for sp-df1a458f: a review that NEVER RAN must never fill the gate.
 # Pairs with review_is_usable() / findings_block() in pr-verdict-lib.sh.
 #
-# THE DEFECT (measured 2026-08-03, Alice PR #1 round 2). `codex exec` answered
+# THE DEFECT (measured 2026-08-03, client-d PR #1 round 2). `codex exec` answered
 # with a PLAN and no review -- "Reply `OK` and I'll execute exactly that plan." /
 # "Waiting for `OK` to execute the review plan." -- in 12 seconds of wall clock.
 # Its stdout carries the ECHOED PROMPT, and the prompt contains a literal
