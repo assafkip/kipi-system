@@ -775,6 +775,65 @@ def main(guard):
                rc != 0 and "a.txt" in out and "b.txt" in out
                and CLIENT.lower() not in out.lower(), f"rc={rc}")
 
+    # --- 29. REGRESSION (PR #554 review rounds 1 to 3): the bypass on main ----
+    # The PR check honoured a PR-body trailer, the squash on main kept only the
+    # title and commit messages, and the push scan went red on approved content.
+    # Each scenario runs ONE change through both scans: the PR scan of the
+    # branch, then a real `git merge --squash` committed with GitHub's
+    # COMMIT_MESSAGES layout ("* " before each commit message) and the push scan
+    # of main. The two verdicts must agree.
+    secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+    trailer = f"{SKIP_TOKEN}: case study, permission recorded"
+
+    def squash_scenario(commit_msgs, body):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, repo = make_repo(tmp, guard, armed=False)
+            commit(repo, home, "base", {"base.md": "base\n"})
+            base = git(repo, "rev-parse", "HEAD").stdout.strip()
+            git(repo, "checkout", "-q", "-b", "pr")
+            for i, msg in enumerate(commit_msgs):
+                commit(repo, home, msg, {f"study{i}.md": f"case study for {CLIENT}\n"})
+            pr_head = git(repo, "rev-parse", "HEAD").stdout.strip()
+            pr_rc, pr_out = run_ci(guard, repo, base, pr_head, {
+                "PRIVATE_TERMS": secret, "PR_TITLE": "add a case study", "PR_BODY": body})
+            git(repo, "checkout", "-q", base)
+            git(repo, "merge", "--squash", "-q", "pr")
+            msgs = git(repo, "log", "--reverse", "--format=%B%x00",
+                       f"{base}..{pr_head}").stdout.split("\0")
+            squash = "add a case study (#1)\n\n" + "\n".join(
+                f"* {m.strip()}\n" for m in msgs if m.strip())
+            commit(repo, home, squash)
+            main_head = git(repo, "rev-parse", "HEAD").stdout.strip()
+            push_rc, push_out = run_ci(guard, repo, base, main_head, {"PRIVATE_TERMS": secret})
+            return pr_rc, push_rc, pr_out + push_out
+
+    pr_rc, push_rc, out = squash_scenario([f"add a case study\n\n{trailer}"],
+                                          f"A case study.\n\n{trailer}")
+    record("bypass: commit + PR body trailer passes the PR AND the push to main",
+           pr_rc == 0 and push_rc == 0 and CLIENT.lower() not in out.lower(),
+           f"pr={pr_rc} push={push_rc}")
+    pr_rc, push_rc, out = squash_scenario(["add a case study"], f"A case study.\n\n{trailer}")
+    record("bypass: a PR body trailer alone cannot pass the PR, since main never gets it",
+           pr_rc != 0 and push_rc != 0 and "no commit does" in out,
+           f"pr={pr_rc} push={push_rc}")
+    pr_rc, push_rc, out = squash_scenario([f"add a case study\n\n{trailer}"], "A case study.")
+    record("bypass: a commit trailer alone passes the PR and the push alike",
+           pr_rc == 0 and push_rc == 0, f"pr={pr_rc} push={push_rc}")
+
+    # Control: on a multi-commit range (a rebase merge, a direct push) a range
+    # diff cannot tell which commit added a line, so one commit's trailer must
+    # not vouch for its sibling's content.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit(repo, home, f"add a case study\n\n{trailer}", {"study.md": f"for {CLIENT}\n"})
+        commit(repo, home, "more notes", {"notes.md": f"also {CLIENT}\n"})
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("bypass: one commit's trailer does not authorise a sibling commit (control)",
+               rc != 0 and "notes.md" in out, f"rc={rc}")
+
     failed = [n for n, ok in results if not ok]
     print()
     if failed:

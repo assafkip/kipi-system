@@ -63,9 +63,13 @@ pass or fail there would be an oracle), and the push to main scans the merge.
 ## Bypass
 
 Intentional (a public case study with recorded permission): put the bypass token
-on its OWN LINE in the commit message (or the PR body, for CI), with a reason:
+on its OWN LINE in the commit message, with a reason:
 
     client-name-guard-skip: case study, permission recorded 2026-08-01
+
+The squash merge carries that line to main, where the push scan honours it.
+For the PR check, the same line in the PR body bypasses it too, but only when a
+commit in the PR carries one: the body itself never reaches main (see run_ci).
 
 Naming the token in prose bypasses nothing. The guard reads a TRAILER, not a
 mention, and the line must start at column 0 so an indented quote of this very
@@ -780,11 +784,11 @@ def run_ci(base, head):
     """The backstop for every path a local hook never sees.
 
     A squash merge writes its commit message on GitHub from the PR title and
-    body; an agent can commit with --no-verify or from a machine without the
-    list. So CI scans the PR title and body, every commit message in the range,
-    every added line, every added or modified path name, and the content of
-    every added or modified binary, against the list in the PRIVATE_TERMS
-    secret.
+    the PR's commit messages (this repo squashes with COMMIT_MESSAGES); an
+    agent can commit with --no-verify or from a machine without the list. So
+    CI scans the PR title and body, every commit message in the range, every
+    added line, every added or modified path name, and the content of every
+    added or modified binary, against the list in the PRIVATE_TERMS secret.
 
     It NEVER prints a term. This repo's CI logs are public, and a log line
     naming the matched client would be the leak this job exists to stop. A path
@@ -794,17 +798,6 @@ def run_ci(base, head):
     if terms is None:
         return rc
 
-    body = os.environ.get("PR_BODY", "")
-    if bypass_reason(body):
-        print("client-name-guard: bypassed via trailer in the PR body")
-        return 0
-
-    problems = []
-    for label in ("PR_TITLE", "PR_BODY"):
-        found = hits(os.environ.get(label, ""), terms)
-        if found:
-            problems.append(f"{label.lower().replace('_', ' ')}: {_kinds(found)}")
-
     mb = _git("merge-base", base, head)
     if mb.returncode != 0:
         print(f"::error::client-name-guard: no merge base for {base}..{head}; refusing to report clean")
@@ -812,15 +805,49 @@ def run_ci(base, head):
     start = mb.stdout.strip()
     # Identity lines too: an author or committer name is a person's name.
     log = _git("log", "--format=%H%x00%an <%ae>%n%cn <%ce>%n%B%x01", f"{start}..{head}")
+    commits = []
     for rec in log.stdout.split("\x01"):
         if "\x00" not in rec:
             continue
         sha, msg = rec.strip("\n").split("\x00", 1)
-        if bypass_reason(msg):
+        commits.append((sha, msg, bool(bypass_reason(msg))))
+
+    # AUTHORISATION MUST REACH MAIN (PR #554 review rounds 1 to 3). The PR
+    # check honoured a PR-body trailer, but a squash keeps the PR title and the
+    # commit messages, never the body, so the push scan on main saw no trailer
+    # and went red on content the PR had approved. A trailer authorises the
+    # commit that carries it, as the commit-msg hook does, so:
+    #   * the PR body bypasses the PR check only when a commit in the range
+    #     also carries a trailer, which the squash then carries to main;
+    #   * content is authorised when EVERY commit in the range carries one.
+    #     A squash is one commit. A range diff cannot tell which commit added
+    #     a line, so one trailer never vouches for a sibling commit.
+    if bypass_reason(os.environ.get("PR_BODY", "")):
+        if any(ok for _, _, ok in commits):
+            print("client-name-guard: bypassed via trailer in the PR body")
+            return 0
+        print("client-name-guard: the PR body carries the bypass trailer but no commit does. "
+              "A squash keeps commit messages, not the body, so main would get no trailer: "
+              "scanning. To intend it, put the trailer on its own line in a commit message.")
+    content_ok = bool(commits) and all(ok for _, _, ok in commits)
+
+    problems = []
+    for label in ("PR_TITLE", "PR_BODY"):
+        found = hits(os.environ.get(label, ""), terms)
+        if found:
+            problems.append(f"{label.lower().replace('_', ' ')}: {_kinds(found)}")
+
+    for sha, msg, ok in commits:
+        if ok:
             continue
         found = hits(msg, terms)
         if found:
             problems.append(f"commit {sha[:10]} message: {_kinds(found)}")
+
+    if content_ok:
+        print(f"client-name-guard: content authorised: all {len(commits)} commit(s) in the "
+              f"range carry the bypass trailer")
+        return _finish(problems, terms, f"{start[:10]}..{head[:10]}, content authorised")
 
     diff = _git("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", start, head)
     if diff.returncode != 0:

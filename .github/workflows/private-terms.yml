@@ -4,7 +4,9 @@
 # The commit-msg guard runs on a laptop that holds the private registries. It
 # never sees three paths, and each one has put a client name into this repo:
 #   * a squash merge, whose commit message GitHub writes from the PR title and
-#     body (both client names found in 2026-08 sat in commit SUBJECTS);
+#     the PR's commit messages, never the body, under this repo's
+#     COMMIT_MESSAGES setting (both client names found in 2026-08 sat in
+#     commit SUBJECTS);
 #   * a commit made with --no-verify, or from a machine without the list;
 #   * a hook that is not installed in the clone that made the commit.
 # So this job scans the PR title, the PR body, every commit message and author
