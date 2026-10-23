@@ -55,8 +55,8 @@ Then syncs `.claude/` config (agents, rules, output-styles, plugins) via direct 
 | 5 | ktlyst_lawyer | subtree | none | No | None |
 | 6 | q-education | subtree | none | No | None |
 | 7 | ASK_AI_consultant | subtree | q-consult | Yes | **Spot check** (custom q-dir intact) |
-| 8 | 4_points_consulting | subtree | q-investigate | Yes | **Spot check** (custom q-dir intact) |
-| 9 | Pure_spectrum_Q | subtree | q-pure | Yes | None |
+| 8 | client_a | subtree | q-investigate | Yes | **Spot check** (custom q-dir intact) |
+| 9 | client_b | subtree | q-client-b | Yes | None |
 | 10 | q-investigate-osint-bot | standalone | N/A | No | Skipped (no skeleton) |
 
 ## 5. Rollout steps
@@ -147,7 +147,7 @@ git diff q-consult/
 ```
 Pass: exit 0, empty diff.
 
-**4_points_consulting** (`/Users/assafkip/Desktop/4_points_consulting`):
+**client_a** (`/Users/assafkip/Desktop/client_a`):
 ```bash
 python3 q-system/.q-system/scripts/test-ripple.py
 git diff q-investigate/

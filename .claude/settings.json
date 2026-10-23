@@ -247,6 +247,21 @@
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\"",
+            "timeout": 5
           }
         ]
       }
@@ -514,7 +529,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" --detach",
             "async": true
           },
           {

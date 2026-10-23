@@ -23,7 +23,7 @@ Layout: `<instance-root>/canonical/system-manifest.json`
      {"id": "groupme-to-sheet",
       "name": "GroupMe order intake to Google Sheet",
       "aliases": ["the ingest chain"],
-      "members": [{"ref": "Prodigy Gold - Parse LLM", "kind": "n8n-workflow"}]}]}
+      "members": [{"ref": "client-c - Parse LLM", "kind": "n8n-workflow"}]}]}
 
 CLI:
   python3 system_manifest.py check              # exit 2 if the manifest is malformed

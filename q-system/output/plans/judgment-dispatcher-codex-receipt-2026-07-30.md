@@ -268,7 +268,7 @@ Measured against Linear just now, all 29 ready issues:
 The producers are `fleet-health-daily.py` and `capability-map-gen.py`. They file
 fleet-wide findings into one Linear team. The worker cuts every worktree from
 `SKEL` (`linear-worker.sh:57`), which is kipi-system. Thirteen of the ready
-issues are `Audit N unwired engines in <other repo>` — accountant, Alice,
+issues are `Audit N unwired engines in <other repo>` — accountant, client_d,
 KTLYST_strategy, investigations, gtm-partner and so on. The worker cannot check
 those repos out. Nothing anywhere filters by target repo.
 
@@ -335,9 +335,9 @@ Measured properly, by Linear project rather than by reading titles:
 
 ```
 11  kipi-system
-18  everything else (ktlyst 4, 4_points 2, reddit-build-radar, negotiator,
-    investigations, interview-coach, fractional-cxo, Pure_spectrum_Q,
-    KTLYST_strategy, Alice, AUDHD_KIDS, ASK_AI_consultant, accountant, 1 unset)
+18  everything else (ktlyst 4, client_a 2, reddit-build-radar, negotiator,
+    investigations, interview-coach, fractional-cxo, client_b,
+    KTLYST_strategy, client_d, family_repo, ASK_AI_consultant, accountant, 1 unset)
 ```
 
 **18 of 29, not 13.** The worker cuts every worktree from `SKEL`

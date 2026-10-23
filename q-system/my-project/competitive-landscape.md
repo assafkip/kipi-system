@@ -11,7 +11,7 @@
 - **Switching friction:** Low — analyst can keep using Claude in parallel during eval
 
 ### 2. Manual Obsidian / Notion / spreadsheet building
-- **Examples:** Ally's "insane Obsidian board", spreadsheet-based investigations
+- **Examples:** the design partner's "insane Obsidian board", spreadsheet-based investigations
 - **How they solve it:** Manually link people/places/events as they read each report
 - **Where they fall short:** Doesn't scale past 5-10 reports, doesn't auto-surface cross-report connections, founder-attention-bound
 - **Switching friction:** Low — kipi-investigations exports back to Obsidian so prior work isn't wasted
@@ -23,16 +23,16 @@
 - **Switching friction:** N/A — most boutique teams can't access these in the first place
 
 ### 4. OSINT aggregator tools
-- **Examples:** IOC3 (Kaden's spin-off, $700K + FBI pilot, ~2026), various username-lookup graph tools
+- **Examples:** a funded username-to-graph startup (~2026), various username-lookup graph tools
 - **How they solve it:** Take a username/phone/email; aggregate from N OSINT sources; render in graph
 - **Where they fall short:** No compounding investigation memory; one-shot lookups, not multi-report synthesis; don't ingest customer's own reports
-- **Switching friction:** Complementary — kipi-investigations can consume IOC3-style output as one of N inputs
+- **Switching friction:** Complementary — kipi-investigations can consume that style of output as one of N inputs
 
 ## Named Adjacents
-- **IOC3 / Kaden's tool** — graph-based OSINT aggregator (closest by surface; we differ on compounding memory)
+- **Username-to-graph startup**: graph-based OSINT aggregator (closest by surface; we differ on compounding memory)
 - **Palantir** — enterprise comparator (we differ on price/deployment/scope)
 - **Maltego** — graph tool (we differ on compounding cross-investigation memory)
-- **Miro friend's tool** (name TBD per call) — knowledge graph with system integrations (we differ: BYO data, no system integration overhead)
+- **A friend's tool** (name TBD) — knowledge graph with system integrations (we differ: BYO data, no system integration overhead)
 
 ## Key Differentiator <!-- pin -->
 

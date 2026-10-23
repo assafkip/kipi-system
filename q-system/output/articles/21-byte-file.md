@@ -6,7 +6,7 @@ That's prompt theater. You write the rules. The model agrees. Three turns later 
 
 Then I tried something different.
 
-My consulting practice resolves "which client am I on" through a single text file. It's 21 bytes, named `.active-case`. The slug inside is something like `case-014-trump-coin`. That's it.
+My consulting practice resolves "which client am I on" through a single text file. It's 21 bytes, named `.active-case`. The slug inside is something like `case-014-example`. That's it.
 
 Twenty-four custom skills read that file. Each one resolves the active case by checking that one string before doing anything else.
 

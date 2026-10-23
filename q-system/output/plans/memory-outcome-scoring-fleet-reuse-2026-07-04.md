@@ -48,11 +48,11 @@ useful/dead_end/corrected — a design question, likely its own PRD). Also open:
 All 21 CAN run it (memory system is skeleton-standard). Value differs by usage:
 
 **High — long-running, heavy memory reuse, real cost of a stale memory:**
-- `4_points_consulting` (investigation OS, 27 live cases) — top candidate.
+- `client_a` (investigation OS, 27 live cases) — top candidate.
 - `investigations` (kipi-investigations, boutique intel) — top candidate.
 - `KTLYST_strategy` (GTM/positioning/relationships/deals canonical).
 - `ktlyst` (product, technical truth), `gtm-partner` (random-stuff-ideas; deals),
-  `Pure_spectrum_Q` (investigation).
+  `client_b` (investigation).
 
 **Medium — ongoing but stabler memory:**
 - `ASK_AI_consultant`, `fractional-cxo`, `ktlyst_lawyer`, `accountant`,
@@ -60,8 +60,8 @@ All 21 CAN run it (memory system is skeleton-standard). Value differs by usage:
 
 **Low — single-purpose / short-lived, little memory accumulation (harmless but
 no value; surface stays silent):**
-- `school-negotiator`, `interview-coach`, `negotiator`, `school-idf`,
-  `AUDHD_KIDS`, `travel-agent`, `event_coordinator`, `Alice`, `ktlyst-website`.
+- `school-negotiator`, `interview-coach`, `negotiator`, `school-repo`,
+  `family_repo`, `travel-agent`, `event_coordinator`, `client_d`, `ktlyst-website`.
 
 ## Decisions open for the founder
 
@@ -70,9 +70,9 @@ no value; surface stays silent):**
    Or hold and only enable where it earns its keep (would need a per-instance flag =
    new build). Default: push fleet-wide, it is harmless where unused.
 3. The value unlock is the auto-capture PRD. Highest ROI on the investigation
-   instances (4_points, kipi-investigations) where a wrong memory is expensive.
+   instances (client_a, kipi-investigations) where a wrong memory is expensive.
 
 ## Resume pointer
 
 Next unchecked: (a) merge PR #6, (b) `kipi update` to propagate, (c) scope the
-auto-capture PRD (start on 4_points or kipi-investigations as the design partner).
+auto-capture PRD (start on client_a or kipi-investigations as the design partner).

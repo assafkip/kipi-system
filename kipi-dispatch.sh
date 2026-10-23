@@ -478,8 +478,8 @@ compact_live_ledger() {
 # 18 ready owner:sana issues sit across 14 projects and no worker can pick them up,
 # because exactly one dispatch job exists fleet-wide and it is bound to this
 # checkout. Letting this script iterate the registry closes that gap and, done
-# naively, aims an unattended self-merging loop at Alice, Prodigy_Gold and
-# Pure_spectrum_Q -- CLIENT repos. So selection is two things that must both hold:
+# naively, aims an unattended self-merging loop at client_d, client_c and
+# client_b -- CLIENT repos. So selection is two things that must both hold:
 # a preflight every candidate has to pass, and a rotation so no repo starves.
 #
 # THE HOME REPO IS A STRUCTURAL CLASS, NOT A SETTING. Below, a candidate is

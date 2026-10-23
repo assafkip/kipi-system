@@ -357,7 +357,7 @@ def test_a_bare_reddit_url_handed_to_a_fetch_is_caught(audit, tmp_path):
 def test_a_classification_set_is_not_a_fetch_because_something_called_get(audit, tmp_path):
     """NEGATIVE CONTROL, and it is not hypothetical: a first version of the rule
     above put bare `get` on the fetch list and immediately condemned
-    `NOISE_HOSTS = {..., "reddit.com", ...}` in Alice's sweep, a classification
+    `NOISE_HOSTS = {..., "reddit.com", ...}` in client-d's sweep, a classification
     set, because the name reaches some `.get(...)`. dict.get and
     os.environ.get are not HTTP."""
     body = ('NOISE_HOSTS = {"reddit.com", "medium.com"}\n'

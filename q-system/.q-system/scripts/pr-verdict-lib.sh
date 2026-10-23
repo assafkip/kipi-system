@@ -176,7 +176,7 @@ extract_verdict() {
 # The reviewer prompt ends with a literal template -- `severity|one-sentence
 # claim|file:line` between the two markers -- and `codex exec` echoes the whole
 # prompt to stdout. When the model answers with a PLAN instead of a review, that
-# echo is the ONLY complete block in the stream. Measured 2026-08-03 on Alice PR
+# echo is the ONLY complete block in the stream. Measured 2026-08-03 on client_d PR
 # #1 round 2: the block was accepted, `severity|` matched no severity, no
 # severities derived APPROVE, and kipi/reviewer-approved -- a REQUIRED context on
 # main -- went green on code nobody had read, 12 seconds after dispatch.

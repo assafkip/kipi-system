@@ -17,10 +17,10 @@ codex_reviewed_at: 2026-07-24T20:47:46Z
 The generic skeleton promises that project facts live in instances, while
 generic paths contain templates and shared capabilities
 [`ARCHITECTURE.md:5`, `ARCHITECTURE.md:15-23`, `ARCHITECTURE.md:29-36`].
-That contract is broken. `q-system/canonical/discovery.md` names Ally, Ethan,
-Active Fence, Tova, an FBI contractor, and live investigation proof gaps
+That contract is broken. `q-system/canonical/discovery.md` names prospect
+contacts, a prospect organisation, an FBI contractor, and live investigation proof gaps
 [`q-system/canonical/discovery.md:18-49`].
-`q-system/canonical/pricing-framework.md` names Chris and records exact setup,
+`q-system/canonical/pricing-framework.md` names a client contact and records exact setup,
 support, and hourly pricing
 [`q-system/canonical/pricing-framework.md:21-39`].
 
@@ -82,7 +82,7 @@ content must never live in `q-system/` [`ARCHITECTURE.md:93-95`].
    verify hashes at that exact destination, then restore the generic files to
    their existing template schema. A 2026-07-24 read-only command confirmed
    that the destination canonical files exist and do not yet contain the cited
-   Ally or Chris records. The registry identifies this instance at
+   prospect-contact or client-contact records. The registry identifies this instance at
    `instance-registry.json:92-97`.
 4. Treat update propagation as preventive hardening. The current updater
    excludes canonical content
@@ -109,7 +109,7 @@ content must never live in `q-system/` [`ARCHITECTURE.md:93-95`].
 ## Scenarios
 
 - **Known leak migration.** An engineer runs the inventory, sees the cited
-  Chris pricing record, verifies its owner from registry and destination
+  client-contact pricing record, verifies its owner from registry and destination
   evidence, writes it to that instance-owned store, verifies the receipt, and
   restores the skeleton file to the same template schema.
 - **Unknown client name.** A fixture uses a synthetic client name not present
@@ -194,7 +194,8 @@ content must never live in `q-system/` [`ARCHITECTURE.md:93-95`].
 - **E6:** Read-only ownership command result, run 2026-07-24: the
   `investigations` registry destination contains
   `q-system/canonical/discovery.md` and `pricing-framework.md`, and neither file
-  matched `Ally|Chris|Active Fence|Tova|Ethan|6,500|1,500`.
+  matched a pattern of the cited contact names, the prospect organisation, and
+  the two cited price figures.
 
 ## Superseded issue draft
 
