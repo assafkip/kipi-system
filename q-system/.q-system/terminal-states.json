@@ -434,6 +434,21 @@
       "rationale": "environmental-trigger (self-healing-retry rule 5), and deliberately silent HERE because the worker already paged this outage once under its shared claim (env_alert_claim) and posted one Linear note on the halted issue. The exit-7 page this replaced filed one 'Sana could not open a PR' ticket per issue per tick for a single dead account (PR #421 round 1). The issue is not parked and nothing is charged, so the next dispatch after the runner recovers re-selects it; the consumer of the page is the worker's own emitter, not this exit."
     },
     {
+      "id": "converge-usage-braked",
+      "source": "converge",
+      "class": "transient",
+      "marker": "the usage breaker is holding this bot, so the round did no work by design",
+      "sites": 1,
+      "what": "exit 3. The worker exited 3 because the usage breaker (ASK-2010) is holding this bot. It stopped before the fetch, the claim and the worktree, so the round did no work by design; converge charges no attempt and pages nobody.",
+      "terminal": true,
+      "rationale": "A deliberate budget hold, not a failure, and silent HERE for the same reason as converge-env-halt: the breaker files its own single Linear ticket for Sana on the way into the pause and stays quiet while it holds, so a page from this exit would be one ticket per round for a condition already on the board. Before this branch existed a braked round fell through to the no-PR branch, charged an attempt and paged 'Sana could not open a PR'; three of those marked a healthy issue STUCK (claude review of PR #472, major 1). The issue is not parked and nothing is charged, so the next dispatch re-selects it once the breaker clears or grants its trial run.",
+      "evidence": {
+        "path": "plugins/kipi-core/voiceloop/usage_breaker.py",
+        "marker": "TRIAL_AFTER_SECONDS = 24 * 3600",
+        "why": "The breaker lets one trial run through 24h after a pause and clears the pause itself once usage drops, so the hold ends without anyone acting."
+      }
+    },
+    {
       "id": "converge-no-pr-opened",
       "source": "converge",
       "class": "counted-retry",
@@ -728,6 +743,21 @@
       "what": "The worker stopped on a git fetch failure BEFORE reaching Linear. The dispatcher exits without paging and without clearing the linear-down state.",
       "terminal": true,
       "rationale": "environmental-trigger, and deliberately silent HERE because the worker already pages this one itself -- double-paging one failure is how an operator learns to skim. The rule it enforces is that a run which never reached Linear is not evidence Linear recovered. The consumer of the page is the worker's own emitter, not this exit."
+    },
+    {
+      "id": "dispatch-worker-braked",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "worker is BRAKED by the usage breaker",
+      "sites": 1,
+      "what": "exit 0. The worker exited 3 because the usage breaker (ASK-2010) is holding the bot. It stopped before reaching Linear, so the dispatcher exits without paging and without clearing the linear-down state.",
+      "terminal": true,
+      "rationale": "A deliberate budget hold, and silent HERE because the breaker files its own single Linear ticket on the way into the pause; paging would be one ticket per 15-minute beat for a condition already on the board. Keyed on the exit code, not the message, and kept separate from dispatch-worker-infra-stop: a braked run never reached Linear, so it is no more evidence that Linear recovered than a failed fetch is, and clearing linear-down on it would erase the state that pages a real outage (claude review of PR #472, major 2).",
+      "evidence": {
+        "path": "plugins/kipi-core/voiceloop/usage_breaker.py",
+        "marker": "TRIAL_AFTER_SECONDS = 24 * 3600",
+        "why": "The breaker lets one trial run through 24h after a pause and clears the pause itself once usage drops, so the hold ends without anyone acting."
+      }
     },
     {
       "id": "dispatch-nothing-ready",

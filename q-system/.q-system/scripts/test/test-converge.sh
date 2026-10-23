@@ -490,6 +490,43 @@ set -e
 ok "a refusal costs no attempt, so correct refusals never accumulate into stuck"
 unset REAL_LEDGER ISSUE_UNDER_TEST
 
+# --- ASK-2010: a BRAKED round is not a failed one ----------------------------
+# linear-worker.sh exits 3 when the usage breaker holds the bot: the round did NO
+# work and that is deliberate. converge read WRC and spent it on two message
+# strings (claude review of PR #472, major 1), so a braked round fell straight
+# through to the no-PR branch -- it charged the issue an attempt and paged "Sana
+# could not open a PR", blaming the agent for work the fleet's own budget
+# refused. Three ticks of that mark a healthy issue STUCK.
+#
+# Same shape as the env_halt branch already here: an unattempted issue is not a
+# failed one. Different cause, so a different code; the worker, control.py and
+# this driver all answer 3 for a budget pause.
+cat > "$WORK/bin/brakedworker" <<'EOF'
+#!/usr/bin/env bash
+# The brake's real shape, copied from linear-worker.sh: one line, then code 3.
+echo "PAUSED: usage breaker holds 'worker' (see /dev/null). No work this run." >&2
+exit 3
+EOF
+chmod +x "$WORK/bin/brakedworker"
+brake_att() { python3 "$ROOT/q-system/.q-system/scripts/attempts-ledger.py" \
+  "$FAKE_STATE/linear-worker-attempts.json" get ASK-T2010 count 0 2>/dev/null || echo 0; }
+: > "$FAKE_PAGES"
+echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+set +e
+KIPI_CONVERGE_WORKER="$WORK/bin/brakedworker" KIPI_NOTIFY="$WORK/bin/pagesink" \
+  bash "$CONV" --issue ASK-T2010 --max-rounds 4 >"$WORK/out" 2>&1
+RC=$?
+set -e
+[ "$RC" = "3" ] \
+  || fail "THE DEFECT: a braked worker must end converge at exit 3 (budget cap), got rc=$RC
+      $(sed 's/^/        /' "$WORK/out")"
+[ "$(brake_att)" = "0" ] \
+  || fail "THE DEFECT: a braked round charged the issue an attempt (count=$(brake_att)); three of those mark a healthy issue stuck"
+[ -s "$FAKE_PAGES" ] \
+  && fail "THE DEFECT: a braked round paged -- the breaker files its own one ticket and this blames Sana on top.
+      Pages: $(cat "$FAKE_PAGES")"
+ok "ASK-2010: worker rc=3 -> converge exits 3, charges no attempt, pages nobody"
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"
