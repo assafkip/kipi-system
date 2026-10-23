@@ -61,6 +61,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
+import one_job  # noqa: E402
 
 
 TEMPLATE_RELPATH = Path(__file__).resolve().parent.parent / "templates" / "issue.md"
@@ -302,6 +303,7 @@ def _validate_entry(entry: object, index: int, id_re: re.Pattern = ISSUE_ID_RE) 
             f"entry #{index}: acceptance must not contain a '## Deliverables' "
             "heading; that section is generated and counted at close"
         )
+    _refuse_multi_pr(index, title, acceptance, resolved_deliverables)
 
     return {
         "id": issue_id,
@@ -322,6 +324,37 @@ def _validate_entry(entry: object, index: int, id_re: re.Pattern = ISSUE_ID_RE) 
         "deletes": list(entry.get("deletes", [])),
         "bypass_exempt": entry.get("bypass_exempt", ""),
     }
+
+
+def _refuse_multi_pr(
+    index: int, title: str, acceptance: str, deliverables: list[str]
+) -> None:
+    """One spec = one deliverable PR (ASK-2541).
+
+    why: RCA token-burn-recurs-after-gate-2026-10-06 root cause #4. A job that
+    bundled three PRs, a dry run and a review loop kept one agent alive for 57
+    turns, and every waiting turn re-read its whole context. A spec is what an
+    agent gets briefed from, so the split has to happen here, before a spec
+    exists, not in the agent's head. Same detector as the Agent-brief guard
+    (one_job.py), so the two cannot drift. Measured before wiring: 0 of 741
+    real manifest entries across four repos trip it.
+    """
+    reasons = one_job.multi_pr_reasons(
+        "\n".join([title, acceptance, *deliverables])
+    )
+    named = one_job.multi_pr_deliverables(deliverables)
+    if named:
+        reasons.append(
+            f"{len(named)} deliverables each name a PR/branch: "
+            + "; ".join(repr(d) for d in named)
+        )
+    if reasons:
+        raise ValueError(
+            f"entry #{index}: names more than one deliverable PR ("
+            + "; ".join(reasons)
+            + "). "
+            + one_job.SPLIT_HOWTO
+        )
 
 
 def _validate_manifest(raw: str) -> list[dict]:
