@@ -828,15 +828,20 @@ if [ "$ROUND" -gt 1 ]; then
   # round rule below points the reviewer at a file with no findings in it, and
   # the anti-re-litigation rule has nothing to apply to. The findings come from
   # the review files on this machine, through findings_block, the one reader.
+  # The header goes down only over at least one usable round (PR #557 round 1,
+  # minor): a header with nothing under it says earlier findings exist and then
+  # shows none.
   if [ "$(repo_visibility "$REVIEW_SLUG")" != "PRIVATE" ]; then
-    {
-      printf '\n\n--- Earlier rounds of this review, from the review files on this machine. The repository is public, so they are not in the PR comments above. ---\n'
-      for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
-        [ -f "$_f" ] && review_is_usable "$_f" || continue
-        printf '\n%s\n' "$(basename "$_f")"
-        findings_block "$_f"
-      done
-    } >> "$PR_CONTEXT_DIR/comments.txt"
+    _EARLIER=""
+    for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+      [ -f "$_f" ] && review_is_usable "$_f" || continue
+      _EARLIER="$_EARLIER
+$(basename "$_f")
+$(findings_block "$_f")
+"
+    done
+    [ -z "$_EARLIER" ] || printf '\n\n--- Earlier rounds of this review, from the review files on this machine. The repository is public, so they are not in the PR comments above. ---\n%s' \
+      "$_EARLIER" >> "$PR_CONTEXT_DIR/comments.txt"
   fi
 fi
 

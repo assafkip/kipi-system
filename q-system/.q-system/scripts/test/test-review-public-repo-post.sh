@@ -24,6 +24,8 @@
 #   6  round 2 on a public repo: the earlier round's findings reach the reviewer
 #      from disk, since they are no longer in the PR comments. Round 2 on a
 #      private repo gets no such section (unchanged).
+#   7  the counts-only floor still says DEGRADED on an Opus-fallback run.
+#   8  round 2 after an unusable round 1: no earlier-rounds header over nothing.
 #
 # Isolation: HOME, KIPI_STATE_DIR, the git repo, `gh`, the engines and the term
 # list are all fixtures under a mktemp dir. No live PR is read, no model runs,
@@ -274,6 +276,32 @@ if [ -f "$WORK/ctx-comments.txt" ] && ! grep -q 'Earlier rounds of this review' 
   ok "case 6b: a private round 2 gets the PR comments only (unchanged)"
 else
   bad "case 6b: the private round-2 context changed or is missing"
+fi
+
+# ===========================================================================
+echo "== 7. the counts-only floor keeps the DEGRADED words (PR #557 round 1) =="
+L7="$( . "$SRC_DIR/pr-verdict-lib.sh"; review_public_counts_line "$REVIEW_TERM" "APPROVE" 1 )"
+case "$L7" in DEGRADED*"Verdict: APPROVE. Findings: 2."*) ok "case 7: a degraded counts-only line says DEGRADED" ;;
+  *) bad "case 7: the degraded counts-only line does not say DEGRADED" ;; esac
+L7B="$( . "$SRC_DIR/pr-verdict-lib.sh"; review_public_counts_line "$REVIEW_TERM" "APPROVE" 0 )"
+case "$L7B" in DEGRADED*) bad "case 7: a normal counts-only line claims DEGRADED" ;;
+  *) ok "case 7: a normal counts-only line does not say DEGRADED" ;; esac
+
+# ===========================================================================
+echo "== 8. round 2 after an UNUSABLE round 1: no empty earlier-rounds header (PR #557 round 1) =="
+REVIEW_CUT="$WORK/review-cut.txt"
+printf 'VERDICT: APPROVE\nFINDINGS:\nmajor|cut off mid|FILE.txt:1\n' > "$REVIEW_CUT"
+run_post cut PUBLIC "$REVIEW_CUT"       # round 1: truncated block, unusable, verdict UNSTATED
+assert_public_safe "case 8 round 1" failure
+case "$(body_of)" in *"Verdict: unstated"*"Findings: not parsed"*) ok "case 8: an unusable round says unstated / not parsed" ;;
+  *) bad "case 8: an unusable round's summary does not say unstated / not parsed" ;; esac
+run_post cut PUBLIC "$REVIEW_OK"        # round 2 on the same HOME
+grep -q 'round: 2' "$WORK/run-cut.out" || fail "case 8 is not a round-2 run:
+$(grep 'round' "$WORK/run-cut.out" | head -3)"
+if [ -f "$WORK/ctx-comments.txt" ] && ! grep -q 'Earlier rounds of this review' "$WORK/ctx-comments.txt"; then
+  ok "case 8: no earlier-rounds header when no earlier round is usable"
+else
+  bad "case 8: the round-2 context carries an earlier-rounds header over no usable round"
 fi
 
 echo

@@ -1022,15 +1022,19 @@ _public_finding_counts() {
     END { printf "%d %d %d %d %d", t, n["blocker"], n["major"], n["minor"], n["nit"] }'
 }
 
-# review_public_counts_line <review-file> <verdict>
+# review_public_counts_line <review-file> <verdict> [degraded]
 # The floor: a closed-set verdict, one integer and fixed words. Nothing from the
 # review text and no path, so there is nothing in it for the guard to find.
+# The DEGRADED words stay even here (PR #557 round 1, minor): an Opus-fallback
+# verdict that reads as an independent second opinion is a false claim, and the
+# floor is no place to start making one.
 review_public_counts_line() {
-  local counts total
+  local counts total deg=""
   counts="$(_public_finding_counts "$1")"
   total="${counts%% *}"
-  printf 'Verdict: %s. Findings: %s. Review withheld: this repository is public.\n' \
-    "$(_public_verdict "${2:-}")" "${total:-not parsed}"
+  [ "${3:-0}" = "1" ] && deg="DEGRADED (Opus fallback, not an independent second opinion). "
+  printf '%sVerdict: %s. Findings: %s. Review withheld: this repository is public.\n' \
+    "$deg" "$(_public_verdict "${2:-}")" "${total:-not parsed}"
 }
 
 # review_public_body <review-file> <verdict> <engine> <degraded> <guard.py>
@@ -1068,7 +1072,7 @@ review_public_body() {
     printf '%s\n' "$body"
   else
     echo "  public repo: the summary did not clear the private-terms guard (rc=$rc; 1 = term hit, 2 = could not check). Posting the counts-only line." >&2
-    review_public_counts_line "$f" "$verdict"
+    review_public_counts_line "$f" "$verdict" "$degraded"
   fi
 }
 
