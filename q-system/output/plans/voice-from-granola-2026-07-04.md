@@ -30,16 +30,16 @@ separate `durable` (belongs in skill) from `spoken-only` (quarantined).
 ## Corpus scope (curated high-talk, ~10 meetings)
 Opinion / strategy / personal / relationship conversations (where Assaf expresses
 himself), not pure tool-demos:
-- Laid off from Meta (personal)
+- A personal career conversation
 - AI autonomy and accountability
-- Personal check-in — product / consulting / family
-- Operations, investigations, part-time role with Chris
+- Personal check-in: product / consulting
+- Operations, investigations, part-time role with a contact
 - Agent authority and liability framework
-- AI decision engine and pipeline monitoring with Blake
-- Threat intelligence tools and agent-driven investigations with Jay
-- Catalyst security platform — market fit / design partner with Duffy
+- AI decision engine and pipeline monitoring with a contact
+- Threat intelligence tools and agent-driven investigations with a contact
+- Catalyst security platform: market fit / design partner, with a contact
 - Teach skill — stateful learning, ZPD
-- Account fraud investigation with Nigel
+- Account fraud investigation with a contact
 
 ## Files to touch
 - READ/MERGE (source of truth): `plugins/kipi-core/skills/founder-voice/references/voice-dna.md`

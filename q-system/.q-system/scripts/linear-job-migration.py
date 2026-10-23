@@ -40,6 +40,24 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+# The job families this scan owns. Client families are client names, and this
+# file ships in a public repo, so they are read from a private file outside it
+# (ASK-2058), one prefix per line, '#' comments allowed: the same shape as
+# launchd-health-check.py's EXTRA_PREFIXES_FILE. Missing file = base families.
+_BASE_JOB_PREFIXES = ("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
+                      "com.claudedaddy.", "com.personal.")
+PRIVATE_JOB_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "fleet-job-prefixes.txt"
+
+
+def job_prefixes() -> tuple:
+    try:
+        lines = PRIVATE_JOB_PREFIXES_FILE.read_text().splitlines()
+    except OSError:
+        return _BASE_JOB_PREFIXES
+    extra = [e for e in (l.split("#", 1)[0].strip() for l in lines)
+             if e and e not in _BASE_JOB_PREFIXES]
+    return _BASE_JOB_PREFIXES + tuple(extra)
 TEAM_KEY = "ASK"
 PROJECT = "kipi-system"
 
@@ -88,8 +106,7 @@ def inventory() -> list:
     jobs = []
     for plist in sorted(LAUNCH_AGENTS.glob("*.plist")):
         label = plist.stem
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+        if not label.startswith(job_prefixes()):
             continue
         try:
             info = plistlib.loads(plist.read_bytes())

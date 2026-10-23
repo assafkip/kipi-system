@@ -368,6 +368,36 @@ def _extract_marker_fields(text: str) -> dict[str, str] | None:
     return None
 
 
+def _closed_finding_class(paths: "Paths", prd_id: str, finding_id: str) -> str | None:
+    """The `finding_class` of the PRD finding this close settles, or None.
+
+    ASK-1968: a receipt read alone could not say what kind of problem its work
+    fixed (81 of 100 abstained). Only a value on findings_writer's closed list
+    is returned, because the receipt lands in a public ledger and its gate
+    refuses anything else. The list is imported, not restated. A missing
+    findings file (Linear-split issues, a worktree without .prd-os/findings)
+    means no class, never a refused close: the field is optional.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
+        from findings_writer import FINDING_CLASSES
+    except ImportError:
+        return None
+    cfg = Paths._load_config(paths.repo_root)
+    path = paths.repo_root / cfg.get("findings_dir", ".prd-os/findings") / f"{prd_id}-findings.jsonl"
+    if not path.is_file():
+        return None
+    for raw in path.read_text().splitlines():
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and rec.get("id") == finding_id:
+            value = rec.get("finding_class")
+            return value if value in FINDING_CLASSES else None
+    return None
+
+
 def _append_receipt(path: Path, entry: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
@@ -877,6 +907,122 @@ def _defined_vs_ran(paths: Paths, command: str, stdout: str, stderr: str) -> dic
     return row
 
 
+# ---------------------------------------------------------------------------
+# Mutant runs (ASK-2768): a mutant counts only from its own runner output
+# ---------------------------------------------------------------------------
+#
+# Founder test budget, 2026-09-19: one mutant per new decision point. Nothing checked it, so
+# every closeout's "N of N mutants killed" was a typed number, the class ASK-1810 removed for
+# test counts. The idea, not the code, is ported from the canary check in Anthropic's
+# code-modernization plugin (proof_pack.py check_canary, commit c1785e2e).
+#
+# THE RULE: where mutant runs live and how verify finds them.
+#   `issue_runner.py mutant <name>` is the only writer. With the mutant applied to the tracked
+#   file, it runs every check in the spec snapshot and stores the raw runner output at
+#   <state_dir>/mutants/<issue_id>/<name>.json. verify reads every *.json in that directory
+#   and nothing else. The state dir is gitignored, and it is outside allowed_files, so the
+#   scope hook refuses an Edit or Write there while the issue is loaded.
+#
+# Each file becomes one row:
+#   caught     a run shows a test failing that verify's clean run of the SAME check did not
+#              fail. A test failing in both runs is not the mutant's doing and is not counted.
+#   silent     the runner printed a count this could read and no new failure: the tests were
+#              shown unable to fail. verify refuses, naming the mutant.
+#   not shown  not a run this verb wrote, or no run pairs with a current check that printed a
+#              readable count. A typed tally lands here: a claim, never evidence.
+# No caught row and no silent row is a GAP, recorded and sealed but not refused. Measured
+# 2026-10-21 before choosing: refusing would have turned 221 of 221 open specs red
+# (kipi-system 78, consulting 143), and a gate red on its own population gets switched off.
+#
+# Limits, said plainly: a file forged in this shape is a deliberate act, the same bar the
+# review seal clears. A runner that names no failing test (pytest -rN) reads as silent and is
+# refused loudly, which is the safe direction.
+
+MUTANT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_UNITTEST_FAIL = re.compile(r"^(?:FAIL|ERROR): (.+)$", re.M)
+_PYTEST_FAIL = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+
+
+def _mutant_dir(paths: Paths, issue_id: str) -> Path:
+    return paths.state_path.parent / "mutants" / issue_id
+
+
+def _rel(paths: Paths, p: Path) -> str:
+    try:
+        return p.relative_to(paths.repo_root).as_posix()
+    except ValueError:
+        return str(p)
+
+
+def _failing_tests(stdout: str, stderr: str) -> set[str] | None:
+    """The tests a run shows failing, by name, or None when it printed no count to read.
+
+    Same stream split as `_count_ran`: unittest names a failure on STDERR, pytest on stdout,
+    so a test's own print() cannot plant a failure name in the stream that is read."""
+    if _count_ran(stdout, stderr) is None:
+        return None
+    if _UNITTEST_RAN.search(stderr):
+        return set(_UNITTEST_FAIL.findall(stderr))
+    return set(_PYTEST_FAIL.findall(stdout))
+
+
+def _mutant_rows(paths: Paths, issue_id: str, clean: dict) -> dict:
+    """One row per recorded mutant run, judged against verify's own clean outputs."""
+    d = _mutant_dir(paths, issue_id)
+    clean_fail = {c: _failing_tests(*o) for c, o in clean.items()}
+    rows = []
+    for f in sorted(d.glob("*.json")) if d.is_dir() else []:
+        raw = f.read_bytes()
+        row = {"name": f.stem, "file": _rel(paths, f),
+               "file_sha256": hashlib.sha256(raw).hexdigest()}
+        try:
+            runs = json.loads(raw)["runs"]
+            if not isinstance(runs, list):
+                raise TypeError
+        except (ValueError, KeyError, TypeError):
+            row.update(status="not shown", reason="not a run recorded by `issue_runner.py mutant`")
+            rows.append(row)
+            continue
+        new, readable = set(), False
+        for run in runs:
+            cmd = run.get("command") if isinstance(run, dict) else None
+            if clean_fail.get(cmd) is None:
+                continue
+            got = _failing_tests(str(run.get("stdout", "")), str(run.get("stderr", "")))
+            if got is None:
+                continue
+            readable = True
+            new |= got - clean_fail[cmd]
+        if new:
+            row.update(status="caught", new_failures=sorted(new))
+        elif readable:
+            row.update(status="silent", new_failures=[])
+        else:
+            row.update(status="not shown",
+                       reason="no recorded run pairs with a current check that printed a readable count")
+        rows.append(row)
+    caught = [r["name"] for r in rows if r["status"] == "caught"]
+    silent = [r["name"] for r in rows if r["status"] == "silent"]
+    if silent:
+        status, reason = "refused", f"no new failure from {', '.join(silent)}"
+    elif caught:
+        status, reason = "ok", f"{len(caught)} mutant run(s) caught: {', '.join(caught)}"
+    elif rows:
+        # PR #542 review, minor 1: a break that crashes the import stops the runner before it
+        # prints a count. Telling that engineer "no mutant run, record one" sent them to redo
+        # the step they had just done, so a recorded-but-unshown run is named instead.
+        status, reason = "gap", (f"{len(rows)} mutant record(s), none shown by its own runner "
+                                 f"output: {', '.join(r['name'] for r in rows)}. A run is shown only "
+                                 "when a current check printed a count this can read; a break that "
+                                 "stops the runner first (an import crash) shows no failing test. "
+                                 "Break a line the tests call, record it, put the code back, verify")
+    else:
+        status, reason = "gap", ("no mutant run recorded, so the tests were never shown able to "
+                                 "fail. Record one: apply a one-line break, run `issue_runner.py "
+                                 "mutant <name>`, put the code back, verify again")
+    return {"dir": _rel(paths, d), "status": status, "reason": reason, "rows": rows}
+
+
 def _run_observed(paths: Paths, command: str) -> tuple[subprocess.CompletedProcess, float, set[str]]:
     import tempfile
     import time
@@ -988,6 +1134,13 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
     for row in counts:
         if row["status"] == "refused":
             refusals.append(f"{row['command']}: {row['reason']} ({', '.join(row.get('files', []))})")
+    mutants = _mutant_rows(paths, issue_id, outputs)
+    for row in mutants["rows"]:
+        if row["status"] == "silent":
+            refusals.append(
+                f"mutant {row['name']!r} ({row['file']}): its run shows no test failing that the "
+                "clean run did not, so the tests were shown unable to fail. Strengthen the test "
+                "until this mutant fails it, then record the mutant again.")
 
     first = sum(seconds.values())
     n = min(REPEAT_MAX, int(budget // first)) if first > 0 else REPEAT_MAX
@@ -1010,6 +1163,7 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
     result_green = {
         "real_path": real,
         "defined_vs_ran": counts,
+        "mutants": mutants,
         "repeats": {"green": green, "n": n, "first_pass_seconds": round(first, 2),
                     "budget_seconds": budget},
     }
@@ -1027,6 +1181,7 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
                       "not_observed": real["not_observed"],
                       "defined_vs_ran": [{k: r[k] for k in ("command", "defined", "ran", "skipped", "status")
                                           if k in r} for r in counts],
+                      "mutants": {k: mutants[k] for k in ("status", "reason", "rows")},
                       "repeats": f"{green} of {n}"}))
     return 0
 
@@ -1107,6 +1262,38 @@ def cmd_verify(paths: Paths, args: argparse.Namespace) -> int:
                       # ran. It could not: only a count was emitted (Codex r7,
                       # minor). The doc and the output are now one fact.
                       "checks": [e["command"] for e in evidence]}))
+    return 0
+
+
+def cmd_mutant(paths: Paths, args: argparse.Namespace) -> int:
+    """Record one mutant run. The ONLY writer of <state_dir>/mutants/<issue_id>/<name>.json.
+
+    Run it with the mutant applied to the tracked file; put the code back before verify,
+    which judges the record against its own clean run. This verb records, never judges, so
+    a count can only reach the receipt through verify (ASK-2768)."""
+    state = _read_state(paths)
+    issue_id = state.get("issue_id")
+    if not issue_id:
+        sys.stderr.write("no active issue\n")
+        return 2
+    d = _mutant_dir(paths, issue_id)
+    if not MUTANT_NAME.match(args.name):
+        sys.stderr.write(f"refusing mutant name {args.name!r}: lowercase letters, digits and "
+                         f"dashes only, so the record stays inside {_rel(paths, d)}.\n")
+        return 2
+    runs = []
+    for command in state.get("required_checks_snapshot") or []:
+        r = subprocess.run(command, shell=True, cwd=paths.repo_root, capture_output=True, text=True)
+        runs.append({"command": command, "returncode": r.returncode,
+                     "stdout": r.stdout or "", "stderr": r.stderr or ""})
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{args.name}.json"
+    path.write_text(json.dumps({"name": args.name, "issue_id": issue_id,
+                                "head_sha": _git_head_sha(paths.repo_root),
+                                "ran_at": _now_iso(), "runs": runs}, indent=2))
+    print(json.dumps({"mutant": args.name, "recorded": _rel(paths, path),
+                      "returncodes": [r["returncode"] for r in runs],
+                      "next": "put the code back, then run `issue_runner.py verify`"}))
     return 0
 
 
@@ -1413,6 +1600,9 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "findings_triaged_at": state["receipts"].get("findings_triaged"),
         "commit_sha": sha,
     }
+    finding_class = _closed_finding_class(paths, marker["prd_id"], marker["finding_id"])
+    if finding_class is not None:
+        receipt["finding_class"] = finding_class
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
@@ -1781,6 +1971,9 @@ def main(argv: list[str] | None = None) -> int:
     p_mark.set_defaults(func=cmd_mark)
 
     sub.add_parser("verify").set_defaults(func=cmd_verify)
+    p_mutant = sub.add_parser("mutant", help="record one mutant run for verify to judge")
+    p_mutant.add_argument("name")
+    p_mutant.set_defaults(func=cmd_mutant)
     sub.add_parser("triage").set_defaults(func=cmd_triage)
 
     sub.add_parser("approve").set_defaults(func=cmd_approve)

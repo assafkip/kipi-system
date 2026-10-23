@@ -65,6 +65,21 @@ from config import Config, ConfigError, load as load_config  # noqa: E402
 
 
 SEVERITIES = ("blocker", "major", "minor", "nit")
+# ASK-1968: what KIND of problem a finding is. Optional, and a closed list
+# because issue_runner copies it onto the receipt at close, and the receipts
+# ledger is committed to a PUBLIC repo where free text is what leaks. A receipt
+# read alone abstained 81 of 100 on "what did this fix"; severity says how bad,
+# never what kind. receipts-ledger-check.py holds the same list (it cannot
+# import this file at commit time); test_receipt_finding_class.py pins the two.
+FINDING_CLASSES = (
+    "correctness",
+    "security",
+    "wiring",
+    "test-gap",
+    "data-integrity",
+    "docs",
+    "other",
+)
 SOURCES = (
     "codex-review",
     "codex-adversarial",
@@ -248,6 +263,11 @@ def _validate_record(rec: dict, where: str) -> None:
         )
     if not isinstance(rec["body"], str) or not rec["body"].strip():
         raise ValueError(f"{where}: body must be a non-empty string")
+    if "finding_class" in rec and rec["finding_class"] not in FINDING_CLASSES:
+        raise ValueError(
+            f"{where}: finding_class must be one of {FINDING_CLASSES}; "
+            f"got {rec['finding_class']!r}"
+        )
     if rec["disposition"] in REQUIRES_RATIONALE:
         rationale = rec.get("rationale")
         if not isinstance(rationale, str) or not rationale.strip():
@@ -306,11 +326,12 @@ def cmd_add(cfg: Config, args: argparse.Namespace) -> int:
         body = item.get("body")
         # Only accept the narrow input shape. Reject unknown keys so drifted
         # Codex output that happens to parse as JSON can't sneak fields in.
-        unknown = set(item) - {"severity", "body"}
+        unknown = set(item) - {"severity", "body", "finding_class"}
         if unknown:
             sys.stderr.write(
                 f"input #{i}: unexpected keys {sorted(unknown)}; "
-                "writer input must be exactly {severity, body}\n"
+                "writer input must be {severity, body} plus an optional "
+                "finding_class\n"
             )
             return 2
         if severity not in SEVERITIES:
@@ -330,6 +351,8 @@ def cmd_add(cfg: Config, args: argparse.Namespace) -> int:
             "body": body.strip(),
             "created_at": _now_iso(),
         }
+        if "finding_class" in item:
+            rec["finding_class"] = item["finding_class"]
         try:
             _validate_record(rec, f"input #{i}")
         except ValueError as exc:

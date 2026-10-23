@@ -3,12 +3,12 @@
 - **Date:** 2026-07-04
 - **Severity:** high (the feature was live-but-inert on the design partner)
 - **Detected by:** post-merge wiring audit (founder asked to confirm nothing was disconnected)
-- **Status:** fixed (PR #8, merged, propagated to fleet, verified on 4_points)
+- **Status:** fixed (PR #8, merged, propagated to fleet, verified on client_a)
 
 ## What happened
 
 The memory auto-capture "referee" shipped through the full gated flow (PR #7),
-merged to main, and propagated to 4_points_consulting with `is_enabled() = True`.
+merged to main, and propagated to client_a with `is_enabled() = True`.
 Every gate was green. But it recorded zero outcomes: the SessionStart producer
 and the Stop-hook consumer keyed the shared `.session-recall.json` artifact by
 DIFFERENT session identifiers, so the consumer's `read_and_clear` always returned
@@ -47,7 +47,7 @@ in a real session. Green tests + green gates gave false confidence.
 - Before fix: `resolve_session_id()` returned `no-session-98061`; consumer id was
   `e1081454-...`; `MATCH: False`.
 - After fix (`CLAUDE_CODE_SESSION_ID` read first): `MATCH: True`, proven on both
-  the skeleton and inside the 4_points install.
+  the skeleton and inside the client_a install.
 - Regression test `test_resolve_reads_claude_code_session_id` fails on the old
   code, passes on the new.
 
@@ -63,7 +63,7 @@ in a real session. Green tests + green gates gave false confidence.
 
 - [x] Fix the env var name and prove producer==consumer. (owner: agent, PR #8)
 - [x] Add the regression test that exercises env resolution. (owner: agent)
-- [x] Re-propagate to the fleet and verify on 4_points. (owner: agent)
+- [x] Re-propagate to the fleet and verify on client_a. (owner: agent)
 - [ ] Add a first-real-session smoke on the design partner: after one real
       session, assert `outcomes.jsonl` gained at least one line. A cross-process
       wiring bug like this only shows in a live session, not in unit tests.

@@ -23,6 +23,24 @@ imports cleanly, so a deletion, a syntax error, a circular import or a missing
 dependency is RED here rather than at some instance's next sync. It is NOT a
 behaviour suite and does not pretend to be. Behaviour lives instance-side.
 
+THE MANIFEST PINS PRESENCE ONLY, AND PRESENCE IS A LOW BAR. An EMPTY file imports
+cleanly, so every check in THIS file stays green against one. Measured 2026-09-26
+on this branch (ASK-1941): `critic.py` truncated to zero bytes left every check
+here passing, and the only RED anywhere in the package came from the behaviour
+file named below. Do not read this file's green as evidence that any module named
+in the manifest works.
+
+WHERE BEHAVIOUR COVERAGE LIVES. In-repo, per module, in its own file:
+
+  critic   `test_critic_behaviour.py`  drives `critic.run` against a stubbed model
+
+That is one module of the manifest below. No count is written here on purpose: a
+restated count goes stale the day a module is added and the stale copy still
+reads as true. Every OTHER module in the manifest is presence-only today, which
+is the declared scope of ASK-1941 rather than an oversight: one module proves the
+shape and a full sweep is its own issue. A module with no row here has no
+behaviour coverage in this repo, whatever the suite total says.
+
 THE ONE THING IT MUST NOT BECOME. An earlier draft walked the directory and
 imported whatever it found. That version passes happily after a deletion,
 because a deleted file is simply not enumerated, so the very mutation this gate
@@ -35,18 +53,73 @@ LITERAL manifest, and the check runs in BOTH directions:
 Adding a module to the package means adding one line here. That cost is the
 point: it is the same declared-vs-actual shape the capability gate uses.
 """
+import functools
 import importlib
 import os
 
 import pytest
 
-PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The 33 shipped modules, excluding __init__. Keep sorted; one line per module.
+@functools.lru_cache(maxsize=1)
+def _package_dir():
+    """Where the package this manifest grades actually lives (ASK-2145).
+
+    Derived from the IMPORT, never from this file's depth on disk. The previous
+    expression was `dirname(dirname(__file__))`, which is the package only
+    while `tests/` sits inside it; where `tests/` is a SIBLING of the package
+    that lands on the parent directory, and the two-way manifest check then
+    grades a directory that is not the package. Measured 2026-09-06 in the
+    public mirror, where that layout holds: 1 failed / 234 passed against an
+    empty right-hand side.
+
+    REFUSES rather than falling back. A manifest gate quietly measuring the
+    wrong directory reads exactly like one that works, which is the whole
+    defect; a gate that cannot find its subject has to say so.
+    """
+    try:
+        pkg = importlib.import_module("voiceloop")
+    except Exception as exc:               # ImportError, or anything __init__ raises
+        raise RuntimeError(
+            "the `voiceloop` package could not be imported, so this file "
+            "cannot tell which directory it is supposed to grade. Refusing "
+            "rather than grading the directory this test file happens to sit "
+            f"under: {exc!r}") from exc
+    path = getattr(pkg, "__file__", None)
+    if not path:
+        # A namespace package has no __file__ and may span several directories,
+        # so there is no single directory to grade.
+        raise RuntimeError(
+            "the imported `voiceloop` has no __file__ (a namespace package, or "
+            "a loader that provides none), so it names no single directory for "
+            "the manifest to grade. Refusing rather than guessing one.")
+    return os.path.dirname(os.path.abspath(path))
+
+
+def _engine_module():
+    """The engine file the AST checks below read.
+
+    Same derived value and same owner as `_package_dir`: these used to walk
+    `__file__.parent.parent`, so they carried the identical layout dependency
+    and raised FileNotFoundError on the repo root in a sibling layout.
+    """
+    return os.path.join(_package_dir(), "gate_and_judge.py")
+
+
+# RESOLVED LAZILY, not at module scope. `voiceloop` is not importable while
+# this file is being COLLECTED -- the path that makes it importable is in place
+# by the time a test body runs, which is why every other test here imports
+# inside the function. A module-level `PKG_DIR = _package_dir()` therefore
+# turned the whole file into a collection error. Measured on this branch:
+# `1 error in 0.07s`, zero tests run.
+
+# The shipped modules, excluding __init__. Keep sorted; one line per module.
+# No count in this comment: the previous one said 33 against a tuple of 35, which
+# is the exact stale-restatement the docstring above warns a reader about.
 EXPECTED_MODULES = (
     "archetype",
     "assemble",
     "assistant_gate",
+    "call_sites",
     "channel_registry",
     "content_key",
     "corpus",
@@ -62,6 +135,7 @@ EXPECTED_MODULES = (
     "gate_walk",
     "luar_env_backend",
     "luar_scorer",
+    "model_gate",
     "opener_gate",
     "placeholder_gate",
     "post_repair",
@@ -84,7 +158,7 @@ EXPECTED_MODULES = (
 def _modules_on_disk():
     return {
         f[:-3]
-        for f in os.listdir(PKG_DIR)
+        for f in os.listdir(_package_dir())
         if f.endswith(".py") and f != "__init__.py"
     }
 
@@ -352,9 +426,9 @@ def test_every_decide_call_site_is_guarded():
     here without anyone remembering to update a list.
     """
     import ast
-    import pathlib
 
-    src = (pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py").read_text()
+    with open(_engine_module(), encoding="utf-8") as h:
+        src = h.read()
     sites = [
         n for n in ast.walk(ast.parse(src))
         if isinstance(n, ast.Call)
@@ -395,10 +469,9 @@ def test_no_optional_kwarg_reaches_an_INJECTED_callable_unguarded():
     directly, and this fails without anyone remembering to update a list.
     """
     import ast
-    import pathlib
 
-    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
-    tree = ast.parse(mod.read_text())
+    with open(_engine_module(), encoding="utf-8") as h:
+        tree = ast.parse(h.read())
     # Find the entry point by what it TAKES, not by its name. Guessing the name
     # was this test's own first bug, which is the mistake it exists to prevent.
     run = next(n for n in ast.walk(tree)
@@ -481,7 +554,12 @@ def test_an_OLD_injected_provenance_writer_does_not_take_the_lane_down():
             decide=decide, revise=revise, voicefp_gate=voicefp,
             prompt_carried_for=lambda _p: [],
             _append_voice_provenance=old_append_voice_provenance,
-            provenance_path="/tmp/ignored")
+            # None ON PURPOSE since ASK-1938. A non-None `provenance_path` that
+            # `_gated` has to drop is now a REFUSAL, so this drive would never
+            # reach the writer and would stop testing what it is here for. None
+            # is the tolerable case: the writer runs on the older contract, and
+            # any kwarg the engine sends it unguarded still raises below.
+            provenance_path=None)
     except TypeError as exc:
         if "unexpected keyword argument" in str(exc):
             raise AssertionError(
@@ -564,10 +642,10 @@ def _engine_boundary():
     which kwargs reach it DIRECTLY, and which ride through `_gated`.
     """
     import ast
-    import pathlib
 
-    mod = pathlib.Path(__file__).resolve().parent.parent / "gate_and_judge.py"
-    run = next(n for n in ast.walk(ast.parse(mod.read_text()))
+    with open(_engine_module(), encoding="utf-8") as h:
+        engine_src = h.read()
+    run = next(n for n in ast.walk(ast.parse(engine_src))
                if isinstance(n, ast.FunctionDef)
                and "_append_voice_provenance" in
                {a.arg for a in n.args.args + n.args.kwonlyargs})
@@ -691,8 +769,13 @@ def _fixture(key, accepted, omit, calls, state):
     return fn
 
 
-def _drive(omit_key=None, omit_kwarg=None):
-    """Run the real `gate_and_judge` end to end against pinned-older callees."""
+def _drive(omit_key=None, omit_kwarg=None, want_trail=False):
+    """Run the real `gate_and_judge` end to end against pinned-older callees.
+
+    `want_trail` widens the return to `(calls, sites, trail)`. The trail is how
+    a degraded lane reports itself (ASK-1938), so a caller asserting on the
+    record needs the object the engine wrote, not a second one built here.
+    """
     import types
     from voiceloop import gate_and_judge as gj
 
@@ -724,7 +807,7 @@ def _drive(omit_key=None, omit_kwarg=None):
         _append_voice_provenance=ns["_append_voice_provenance"],
         claude_bin="/bin/true", model="a-model", author="an author",
         recent_openers=["an opener"], provenance_path="/dev/null")
-    return calls, sites
+    return (calls, sites, trail) if want_trail else (calls, sites)
 
 
 def test_every_injected_callee_is_driven_and_every_call_site_is_reached():
@@ -775,6 +858,64 @@ def test_no_engine_added_kwarg_reaches_an_INJECTED_callable_unguarded():
           "_BASE_CONTRACT if every instance provably already takes it.")
 
 
+def test_the_boundary_guard_is_a_PUBLIC_symbol_a_binder_can_import():
+    """ASK-1937. The OTHER half of the injection boundary is the binder's.
+
+    PR #386 put one chokepoint in this module and mutation-verified the ENGINE
+    half at 6 of 6 call sites. The half it did not reach is the deployment's
+    `cycle._gate_and_judge`, which binds the five injected dependencies and calls
+    through from a repo this package cannot see or commit to. An underscored name
+    is what makes that binder write its own copy of the guard, and a second copy
+    is where the two halves drift -- the same class the chokepoint replaced five
+    per-kwarg blocks to close.
+
+    So the guard carries a public name, and THIS IMPORT is the assertion that
+    fails when the name is renamed or removed. Nothing here reads the instance or
+    tests the binder; that is ASK-1937's 'Not doing' and belongs to an issue
+    filed against the instance, which can then import what this exports.
+    """
+    from voiceloop import gate_and_judge as gj
+    from voiceloop.gate_and_judge import gated_kwargs
+
+    assert gj._gated is gated_kwargs, (
+        "the back-compat alias no longer points at the public guard, so the six "
+        "call sites in this module and an instance binder on the public name are "
+        "running two different functions.")
+
+    # The older contract, truthfully: takes `channel`, has never heard of
+    # `recent_openers`. A permissive `**kwargs` signature would make `_accepts`
+    # answer True for everything and this would prove nothing.
+    def older_callee(text, channel=None):
+        return "reached"
+
+    assert not gj._accepts(older_callee, "recent_openers"), (
+        "the fixture advertises the kwarg it is pinned NOT to take, so the drive "
+        "below is vacuous.")
+
+    # Both read out of the module that owns them. A literal here would be a
+    # second source of truth that agrees on the day it is written.
+    label, kwarg = "decide.decide_candidate", "recent_openers"
+    assert gj._DROP_DISPOSITION[(label, kwarg)] != "fatal", (
+        "this pair became fatal, so the guard now REFUSES instead of degrading "
+        "and this drive is asserting the wrong half of the contract.")
+
+    trail = {}
+    kept = gated_kwargs(older_callee, label, trail,
+                        channel="linkedin", **{kwarg: ["an opener"]})
+
+    assert kept == {"channel": "linkedin"}, (
+        f"the public guard returned {kept}, so a kwarg the injected callee does "
+        f"not take reached it. On an instance still on that contract this is a "
+        f"TypeError and the whole lane down.")
+    assert trail.get("dropped_kwargs") == [
+        {"callee": label, "kwarg": kwarg,
+         "disposition": gj._DROP_DISPOSITION[(label, kwarg)],
+         "value_was_none": False, "refused": False}], (
+        f"the public guard dropped the kwarg without NAMING the callee and the "
+        f"kwarg: {trail.get('dropped_kwargs')}. That is the ASK-1938 defect "
+        f"arriving through the exported name.")
+
+
 def test_each_gated_kwarg_really_degrades_on_an_older_callee():
     """LEAVE ONE OUT, then RUN. The proof that `_gated` does its job.
 
@@ -787,13 +928,24 @@ def test_each_gated_kwarg_really_degrades_on_an_older_callee():
     assert gated, (
         "no gated kwarg was discovered. Either the engine stopped using `_gated` "
         "or this reader has gone blind; both make the drives below vacuous.")
+    from voiceloop import gate_and_judge as gj
+
     for key, kwargs in sorted(gated.items()):
         for kwarg in sorted(kwargs):
+            label = f"{key[0]}.{key[1]}" if key[1] else key[0]
+            # A FATAL PAIR IS NOT A DEGRADATION (ASK-1938). Its whole point is
+            # that the lane must stop rather than let the callee reach a
+            # fallback the caller asked it not to use, so a silent degrade here
+            # would be the defect, not the proof.
+            if gj._DROP_DISPOSITION.get((label, kwarg)) == "fatal":
+                with pytest.raises(gj.FatalKwargDropped):
+                    _drive(omit_key=key, omit_kwarg=kwarg)
+                continue
             try:
                 calls, _ = _drive(omit_key=key, omit_kwarg=kwarg)
             except TypeError as exc:
                 raise AssertionError(
-                    f"{key[0]}.{key[1] or ''} was handed `{kwarg}=` by the "
+                    f"{label} was handed `{kwarg}=` by the "
                     f"engine although its signature does not take it: {exc}. "
                     f"On a real instance still on that contract this is the "
                     f"whole lane down, not a degraded feature.") from None
@@ -851,3 +1003,271 @@ def test_the_fail_open_branch_is_recorded_as_unmeasured():
     assert gj._accepts(min, "recent_openers"), (
         "the fail-open branch changed behaviour. It is unexercised by the "
         "leave-one-out drives, so this is the only check on it.")
+
+
+# ---------------------------------------------------------------------------
+# A DROPPED KWARG IS NOT UNIFORMLY SAFE TO DROP (ASK-1938)
+#
+# `_gated` degrading quietly is right for `recent_openers`: the lane loses a
+# do-not-repeat check and keeps running. It is wrong for `path`, because the
+# instance writer's fallback is the PRODUCTION provenance corpus, so a caller
+# that explicitly asked for isolation appends fixture rows to the file the
+# operator's style-drift analysis is measured from -- the exact defect the r5
+# `path=` work existed to close, reintroduced through the degradation path
+# instead of the call path. Before r5 an older writer raised TypeError: loud,
+# and the lane stopped. Trading a crash for silent corruption of the
+# measurement corpus is a bad trade in this one case.
+# ---------------------------------------------------------------------------
+
+
+def _older_writer_drive(provenance_path, writer):
+    """Drive the real lane against a provenance writer whose signature lacks
+    `path`, which is the shape of any instance whose copy predates r5."""
+    import types
+
+    from voiceloop import gate_and_judge as gj
+
+    class _V:
+        status = "SHIPPABLE"
+        text = "the drafted post"
+        reasons = []
+
+    decide = types.SimpleNamespace(
+        decide_candidate=lambda *a, **k: _V(), SHIPPABLE="SHIPPABLE")
+    revise = types.SimpleNamespace(reviser=lambda **_k: None,
+                                   revise=lambda *a, **k: None)
+    voicefp = types.SimpleNamespace(
+        style_review=lambda *a, **k: {"level": "watch", "distance": 1.0},
+        style_feedback=lambda *a, **k: "",
+        drift_report=lambda *a, **k: {})
+    trail = {"stages": []}
+    gj.gate_and_judge(
+        "the drafted post", channel="linkedin", idea_text="an idea",
+        voice_prov={}, arch_id=None, arch_entry=None, runner=None,
+        trail=trail, at=None,
+        decide=decide, revise=revise, voicefp_gate=voicefp,
+        prompt_carried_for=lambda _p: [],
+        _append_voice_provenance=writer,
+        provenance_path=provenance_path)
+    return trail
+
+
+def test_a_fatal_drop_refuses_instead_of_writing_the_production_corpus():
+    """THE REPRODUCER (ASK-1938). RED before the disposition table existed.
+
+    The writer below is on the older contract: three positional parameters and
+    no `path`. `_gated` drops `path`, the writer falls back to its production
+    default, and the caller that asked for isolation never learns. So the
+    assertion is not "did it crash" but "was the production default reached at
+    all": the writer must NOT be called.
+    """
+    import pytest
+
+    from voiceloop import gate_and_judge as gj
+
+    seen = {}
+
+    def old_append_voice_provenance(channel, at, row):
+        # THE OLDER CONTRACT, verbatim. No `path`, and no `**kwargs` -- a
+        # permissive signature would make `_accepts` answer True and the drive
+        # would prove nothing.
+        seen["wrote"] = row
+
+    with pytest.raises(gj.FatalKwargDropped) as exc:
+        _older_writer_drive("/tmp/an-isolated-sidecar.jsonl",
+                            old_append_voice_provenance)
+
+    assert "path" in str(exc.value) and "_append_voice_provenance" in str(exc.value), (
+        "the refusal must name the callee and the kwarg, otherwise the operator "
+        f"cannot tell which boundary lagged: {exc.value}")
+    assert "wrote" not in seen, (
+        "the writer ran without `path`, so it fell back to the PRODUCTION "
+        "provenance corpus while the caller had asked for isolation. That is "
+        "the r5 defect arriving through the degradation path.")
+
+
+def test_a_fatal_kwarg_that_was_None_still_degrades():
+    """The refusal is about LOSING an explicit value, not about the kwarg.
+
+    `provenance_path=None` means the caller never asked for isolation, so the
+    writer's production default is what it wanted anyway. Refusing there would
+    take the lane down on every non-isolating caller with an older writer and
+    buy no safety at all, which is a worse trade than the one being fixed.
+    """
+    seen = {}
+
+    def old_append_voice_provenance(channel, at, row):
+        seen["wrote"] = row
+
+    trail = _older_writer_drive(None, old_append_voice_provenance)
+    assert seen.get("wrote") is not None, (
+        "a None-valued fatal kwarg must still degrade to the older contract")
+    rows = trail.get("dropped_kwargs") or []
+    assert any(r.get("kwarg") == "path" for r in rows), (
+        "the drop is still a drop and still belongs in the trail, even when "
+        f"tolerating it was correct: {rows}")
+
+
+def test_the_trail_names_every_dropped_kwarg():
+    """THE OBSERVABILITY HALF (ASK-1938). A degraded lane must not be invisible.
+
+    Driven leave-one-out through the same fixtures as the drives above, so this
+    covers whatever the engine gates next rather than the two kwargs known
+    today. Fatal drops refuse and are asserted by the reproducer above; every
+    tolerable one must leave a row naming the callee and the kwarg.
+    """
+    from voiceloop import gate_and_judge as gj
+
+    _sites, _direct, gated, _unpacks = _engine_boundary()
+    assert gated, "no gated kwarg was discovered, so this drive is vacuous"
+    for key, kwargs in sorted(gated.items()):
+        for kwarg in sorted(kwargs):
+            label = f"{key[0]}.{key[1]}" if key[1] else key[0]
+            if gj._DROP_DISPOSITION.get((label, kwarg)) == "fatal":
+                continue
+            _calls, _sites2, trail = _drive(omit_key=key, omit_kwarg=kwarg,
+                                            want_trail=True)
+            rows = trail.get("dropped_kwargs") or []
+            assert any(r.get("callee") == label and r.get("kwarg") == kwarg
+                       for r in rows), (
+                f"{label} was handed no `{kwarg}` and the trail does not say "
+                f"so, so the lane degraded invisibly: {rows}")
+
+
+def test_every_gated_kwarg_has_a_declared_disposition():
+    """FAILS CLOSED at build time so the runtime never has to (ASK-1938).
+
+    The pairs are read out of the engine, so a NEW gated kwarg lands here with
+    no row and this goes red. That is the layer that can afford to fail closed:
+    making the runtime raise on an undeclared pair would take a live lane down
+    for a table row somebody forgot.
+    """
+    from voiceloop import gate_and_judge as gj
+
+    _sites, _direct, gated, _unpacks = _engine_boundary()
+    undeclared = []
+    for key, kwargs in sorted(gated.items()):
+        label = f"{key[0]}.{key[1]}" if key[1] else key[0]
+        for kwarg in sorted(kwargs):
+            if (label, kwarg) not in gj._DROP_DISPOSITION:
+                undeclared.append(f"{label}: {kwarg}")
+    assert not undeclared, (
+        "these kwargs cross the injection boundary with no declared "
+        "disposition. Decide whether losing each one is TOLERABLE (the lane "
+        "degrades and the trail records it) or FATAL (the lane refuses, "
+        "because the callee's fallback does something the caller did not ask "
+        "for):\n  " + "\n  ".join(undeclared))
+
+
+def test_the_disposition_table_does_not_name_a_kwarg_the_engine_stopped_sending():
+    """The mirror of the check above, and it is not symmetry for its own sake.
+
+    A stale row is how the table starts describing an older engine: the pair is
+    declared FATAL, nothing sends it any more, and the declaration reads as
+    protection that is no longer wired to anything.
+    """
+    from voiceloop import gate_and_judge as gj
+
+    _sites, _direct, gated, _unpacks = _engine_boundary()
+    live = {(f"{k[0]}.{k[1]}" if k[1] else k[0], kw)
+            for k, kws in gated.items() for kw in kws}
+    stale = sorted(set(gj._DROP_DISPOSITION) - live)
+    assert not stale, (
+        f"the disposition table names pairs the engine no longer gates: {stale}")
+
+
+# ---------------------------------------------------------------------------
+# THE MANIFEST GATE MUST GRADE THE PACKAGE, NOT WHATEVER DIRECTORY IT LANDED IN
+# (ASK-2145, promoted from sp-4c490607)
+#
+# `PKG_DIR` used to be `dirname(dirname(__file__))`, a value derived from this
+# FILE'S DEPTH rather than from the package it grades. In this repo `tests/`
+# sits inside the package, so two levels up is `voiceloop/` and the two-way
+# manifest check grades the right directory. In a layout where `tests/` is a
+# SIBLING of the package, the same expression lands on the repo root: direction
+# 2 then compares the manifest against root-level `.py` files instead of the
+# package's, and the deletion/drift gate reports on a directory that is not the
+# package. Measured 2026-09-06 in the public mirror: 1 failed / 234 passed, on
+# an empty right-hand side.
+#
+# Same class as `test_every_decide_call_site_is_guarded` (read the value out of
+# its owner, never restate it): the owner of "where is the package" is the
+# IMPORT, so `_package_dir()` asks the imported module and refuses when it
+# cannot. The three AST reads of `gate_and_judge.py` were the same derivation
+# and are routed through it too.
+#
+# The check below is end to end on purpose. Asserting `_package_dir()` from
+# inside this layout only re-states the fix; the honest version builds the
+# sibling layout and RUNS this file there.
+# ---------------------------------------------------------------------------
+
+# Set in the child run below, so the sibling-layout copy does not recurse.
+_SIBLING_CHILD_ENV = "VOICELOOP_SIBLING_LAYOUT_CHILD"
+
+
+@pytest.mark.skipif(os.environ.get(_SIBLING_CHILD_ENV) == "1",
+                    reason="this IS the sibling-layout child run")
+def test_this_file_gives_the_same_verdict_in_a_sibling_tests_layout(tmp_path):
+    """THE REPRODUCER (ASK-2145). RED while PKG_DIR came from file depth.
+
+    Builds `<root>/voiceloop/` next to `<root>/tests/`, drops a decoy `.py` at
+    the root so a gate grading the wrong directory has something wrong to see,
+    and runs this very file there in a subprocess. The verdict must match the
+    in-package run.
+
+    The decoy is what makes this able to fail. Without it the wrong directory
+    happens to hold no modules, direction 2 subtracts an empty set and passes,
+    and the reproducer would agree with the defect.
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    root = tmp_path / "siblingroot"
+    (root).mkdir()
+    shutil.copytree(_package_dir(), root / "voiceloop",
+                    ignore=shutil.ignore_patterns("__pycache__", "tests"))
+    (root / "tests").mkdir()
+    shutil.copy2(__file__, root / "tests" / os.path.basename(__file__))
+    # The wrong directory, made visible. `dirname(dirname(testfile))` is `root`.
+    (root / "decoy_module.py").write_text("# not part of the package\n")
+
+    env = dict(os.environ)
+    env[_SIBLING_CHILD_ENV] = "1"
+    env["PYTHONPATH"] = str(root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest",
+         str(root / "tests" / os.path.basename(__file__)),
+         "-q", "--capture=sys", "-p", "no:cacheprovider"],
+        cwd=str(root), env=env, capture_output=True, text=True)
+
+    assert proc.returncode == 0, (
+        "this file does not hold up when `tests/` is a SIBLING of the package, "
+        "so its manifest gate is grading whatever directory the test file's "
+        "depth lands on rather than the package:\n"
+        + proc.stdout[-4000:] + proc.stderr[-2000:])
+
+
+def test_the_sibling_layout_reproducer_can_actually_fail(tmp_path):
+    """THE NEGATIVE SELF-TEST. The reproducer above must be able to go red.
+
+    It pins the OLD expression against the sibling layout and asserts it lands
+    on the parent rather than on the package. If this ever stops holding, the
+    layout being built is not the one the defect needs and the green above
+    means nothing.
+    """
+    root = tmp_path / "siblingroot"
+    (root / "voiceloop").mkdir(parents=True)
+    (root / "tests").mkdir()
+    testfile = root / "tests" / "test_copy.py"
+    testfile.write_text("# a copy of this file\n")
+
+    from_depth = os.path.dirname(os.path.dirname(os.path.abspath(str(testfile))))
+    assert from_depth == str(root), (
+        "the sibling layout does not reproduce the wrong derivation, so the "
+        f"reproducer cannot fail: {from_depth}")
+    assert from_depth != str(root / "voiceloop"), (
+        "depth-derived PKG_DIR would coincide with the package here, which is "
+        "the in-package layout, not the sibling one")
+

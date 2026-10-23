@@ -70,6 +70,30 @@ LEGACY_PAUSED_FILES = (
 ENABLED = "enabled"
 DISABLED = "disabled"
 
+# RETIREMENT, DECLARED IN THE COMMITTED TEMPLATE. The fleet's older signal was a
+# renamed plist in ~/Library/LaunchAgents (`<label>.plist.retired-<date>`), which is
+# untracked machine-local state: real on the founder's laptop, absent on a second
+# machine, a restored HOME and every instance checkout. On any of those the four
+# RULE-2026-09-11-A posters read as brand-new jobs. The marker below travels with
+# the repo instead, and this module owns the string because more than one consumer
+# has to agree on it: install-plist.sh's bulk modes skip a template that carries it
+# (the literal there is bound to this constant by test-updater-arms-new-jobs.py
+# case 11b, since bash cannot import it) and fleet-health-daily's
+# never_installed_findings must not file a "never installed" issue for a job that
+# was deliberately stopped -- its remediation line is the SINGLE-label installer,
+# which skips the retirement guard on purpose, so that issue asked a human to undo
+# a founder directive, every day, forever (ASK-1130 round 4).
+RETIRED_MARKER = "kipi-retired:"
+
+
+def declares_retirement(text) -> bool:
+    """True when a committed launchd template declares its own retirement.
+
+    Takes the template TEXT rather than a path so a caller that has already read
+    the bytes does not read them twice, and so the check is trivially testable.
+    """
+    return RETIRED_MARKER in (text or "")
+
 # `launchctl print-disabled` vocabulary. Measured on Darwin 25.3.0 (2026-08-06) as
 # `"<label>" => disabled` / `=> enabled`; older macOS prints `=> true` / `=> false`.
 # Both are accepted. An UNRECOGNISED token is refused rather than guessed -- see

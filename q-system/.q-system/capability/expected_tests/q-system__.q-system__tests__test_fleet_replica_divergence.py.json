@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_fleet_replica_divergence.py",
+ "runner": "pytest"
+}

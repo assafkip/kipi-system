@@ -84,6 +84,41 @@ How to move through complex work without shipping a confident wrong answer.
    (a regenerable fixture or sandbox environment). Then corrupt a valid input and
    prove the check FAILS on the violation, so a green result is not a rubber stamp.
 
+   **A mutation result is THREE claims, and usually only one gets checked.** "The
+   mutant was KILLED" is meaningless until "the mutant was APPLIED" and "the check
+   was GREEN first" are both proven. An unapplied mutant and a well-defended one
+   are identical bytes on the terminal, and so are a killed mutant and a command
+   that was already red. Every mutation run therefore:
+   - matches its anchor **exactly once** before writing, and proves the bytes on
+     disk moved (digest, not length: a length-preserving mutant is legitimate);
+   - exits non-zero as a **FAILED EXPERIMENT** on an anchor miss or an ambiguous
+     anchor, and never falls through to the run. Override: re-derive the anchor
+     from the file as it is now and re-run once it matches exactly one site.
+     Loosening the anchor to make it match is not the hatch, it is the scar;
+   - pins `PYTHONDONTWRITEBYTECODE=1` AND a bytecode-cache path outside the source
+     tree. The first stops the run LEAVING a cache; only the second stops it
+     READING a stale one, and the stale read is what measures the unmutated module;
+   - starts from a **green baseline**, measured per experiment against the
+     unmutated file rather than trusted once at the top of a table. A mutation run
+     against an already-red check kills every mutant trivially and prints a
+     perfect score;
+   - holds the subject **one run at a time**. Two concurrent runs each read the
+     other's mutant as "the original" and each restore it, so the mutant stays on
+     disk while both report a clean tree.
+
+   Scar 2026-09-20 (rca-injection-boundary, PR #386): five bad instruments across
+   six review rounds by two independent sessions, every one failing in the
+   reassuring direction. A stale `__pycache__` made mutants read KILLED; an anchor
+   that no longer matched printed a clean 248 green, which is exactly what a
+   defended site looks like. Both produced a wrong DIAGNOSIS, not a wrong number.
+<!-- kipi-only:start -->
+   In this fleet that protocol is a script, not a habit:
+   `python3 plugins/prd-os/scripts/mutate.py --file F --anchor A --replacement R -- <check>`
+   (exit 0 KILLED, 1 SURVIVED, 2 FAILED EXPERIMENT; always restores and verifies
+   the restore). Its own decision points are mutation-proven by
+   `plugins/prd-os/tests/mutants_of_mutate.py`.
+<!-- kipi-only:end -->
+
 3. **Single-writer chokepoint, guarded by a CENSUS TAKEN BY CODE.** Route every
    mutation of a shared resource through one helper, and make a gate enumerate the
    consumers from the source, never from your recollection of them. Migrate existing

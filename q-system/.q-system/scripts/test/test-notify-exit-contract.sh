@@ -118,7 +118,10 @@ write() {
     *) echo "ABORT: write() called with a non-loopback Linear URL (${url:-unset}). \
 This suite must never be able to file a real ticket."; exit 1 ;;
   esac
-  env -i PATH="$PATH" HOME="$TMP/home" "$@" python3 "$WRITER" "test message" 2>"$TMP/err"
+  # A failed create is queued for retry. Its queue is a tmp file: a fixture
+  # message on the real queue would be filed for real by the next good run.
+  env -i PATH="$PATH" HOME="$TMP/home" KIPI_LINEAR_QUEUE="$TMP/queue.jsonl" \
+    "$@" python3 "$WRITER" "test message" 2>"$TMP/err"
 }
 
 # === the shim: guards and exit codes =========================================
@@ -173,6 +176,12 @@ write KIPI_LINEAR_API_KEY=stub KIPI_LINEAR_API_URL="http://127.0.0.1:1/graphql"
 rc=$?
 check_rc 1 "$rc" "an unreachable Linear is a FAILURE"
 grep -q "NOT filed" "$TMP/err" || bad "unreachable host did not name the unfiled message"
+# The same failure over real HTTP lands in the retry queue (ASK-2848 sweep:
+# 401s and timeouts were printed and dropped, never retried).
+grep -q '"source": "alert-to-linear"' "$TMP/queue.jsonl" 2>/dev/null \
+  && grep -q "test message" "$TMP/queue.jsonl" \
+  && ok "a failed create is queued for retry, not dropped" \
+  || bad "the failed create never reached the retry queue"
 
 # --- 9. the unfiled TEXT survives to stderr, so the alert is still readable ---
 write KIPI_LINEAR_API_KEY=stub KIPI_LINEAR_API_URL="http://127.0.0.1:1/graphql"
@@ -185,6 +194,10 @@ grep -q "test message" "$TMP/err" \
 #         Prove the /ok path and the /errors path actually differ.
 write KIPI_LINEAR_API_KEY=stub KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/ok"
 a=$?
+# That good run also retried what case 8 queued, over the same real HTTP.
+grep -q '"op": "drain"' "$TMP/queue.jsonl" 2>/dev/null \
+  && ok "the next good run drained the queued alert" \
+  || bad "the queued alert was never drained by a good run"
 write KIPI_LINEAR_API_KEY=stub KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/errors"
 b=$?
 [ "$a" != "$b" ] \

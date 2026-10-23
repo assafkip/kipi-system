@@ -44,7 +44,7 @@ def _qroot(tmp, rel=None, payload=None):
     return root
 
 
-LOOP = {"id": "L-2026-06-08-001", "target": "James (Portant.co)",
+LOOP = {"id": "L-2026-06-08-001", "target": "Sam (client-h)",
         "status": "open", "opened": "2026-06-08"}
 
 
@@ -78,7 +78,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (inst / "open-loops.json").write_text(json.dumps({"loops": [LOOP]}))
     loops, status = lp.open_loops(root)
     ok("finds the instance-content ledger, the one that was orphaned",
-       status == lp.FOUND and loops and loops[0]["target"] == "James (Portant.co)")
+       status == lp.FOUND and loops and loops[0]["target"] == "Sam (client-h)")
 
 with tempfile.TemporaryDirectory() as tmp:
     # ── a corrupt ledger tells you nothing, so it must not claim emptiness ──

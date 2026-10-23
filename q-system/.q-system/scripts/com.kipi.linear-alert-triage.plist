@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly promote-or-hold pass over the fleet-alert bucket (ASK-1133).
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh, the convention com.kipi.linear-dor uses (ASK-113 / ASK-191).
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-alert-triage
+
+     WHY IT EXISTS (PR #268 R1). The lane without a scheduled caller is the defect
+     the script was written to fix: a consumer nothing invokes.
+
+     COMMITTED IS NOT INSTALLED. `kipi install-jobs` picks this up with no
+     registration, from the PRIMARY checkout only, and nothing runs install-jobs
+     automatically yet. ASK-1130 owns that gap for every kipi job.
+
+     FLEET-WIDE ON PURPOSE (R5): no project flag. The script refuses one on `run`.
+
+     02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00: a promoted ticket
+     already carries a DoR, so the drafter skips it instead of spending a slot.
+
+     stdout goes to .log, not .out: .out is the run-evidence file the script itself
+     appends one line to per pass, and pointing stdout there would double it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-alert-triage</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 8 --apply</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/linear-alert-triage.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/linear-alert-triage.err</string>
+</dict>
+</plist>

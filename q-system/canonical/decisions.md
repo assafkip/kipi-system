@@ -58,7 +58,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   that sees every system IS fleet coverage. The tracks-not-ancestor check exists because
   `personal/.gitignore` line 1 is `projects/`, so nested work looked covered and was invisible.
 - **Note:** Diverges from the literal instruction ("push this to all of the systems").
-  Probe: `kipi check` run from inside instance `thaena` fires the gate. Not yet founder-ratified.
+  Probe: `kipi check` run from inside instance `client_e` fires the gate. Not yet founder-ratified.
 - **Date:** 2026-07-29
 - **Revisit:** If an instance ever needs a coverage answer scoped to itself
 
@@ -67,17 +67,17 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Decision:** An entry in `remote-coverage-allow.json` states the CLASS of sensitive
   content and the path carrying it. Never the content itself.
 - **Reason:** That file is committed to a PUBLIC repo. The first draft explained why the
-  family repos stay local by quoting a minor's diagnosis and school materials into
+  family repos stay local by quoting a family member's private records into
   kipi-system. gitleaks, blocked-paths, and large-files all passed it. Caught by re-reading,
   not by a gate. A reason that quotes the private data defeats the gate it documents.
 - **Date:** 2026-07-29
 - **Revisit:** Permanent
 
-### RULE-007: Family-Medical Repos Are Never Pushed, Private Included
+### RULE-007: Family Repos Are Never Pushed, Private Included
 - **Origin:** [SYSTEM-INFERRED]
-- **Decision:** `AUDHD_KIDS` and `travel-agent` stay local-only until their carrier files
+- **Decision:** `family_repo` and `travel-agent` stay local-only until their carrier files
   move to gitignored paths.
-- **Reason:** Health and education records about a specific minor, re-identifying against
+- **Reason:** Private records about a family member, re-identifying against
   the owner's public identity. Private on someone else's servers is still off-disk.
 - **Probe:** `git remote` returns 0 remotes for both, and `gh repo view` returns not-found,
   re-run after the private-by-default flip.
@@ -293,7 +293,7 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 ### RULE-2026-08-30-B: The morning brief lands in #general, not a DM or a new webhook
 - **Origin:** [SYSTEM-INFERRED]
 - **Decision:** The brief and the 4pm Linear digest both deliver to #general in
-  assafspace (C04Q71LA283) via the `colenotify` bot token, through
+  assafspace (<channel-id>) via the `colenotify` bot token, through
   `q-system/.q-system/scripts/slack_founder.py`. That module tries an incoming
   webhook FIRST and falls back to the bot token, so nothing changes the day a
   webhook exists again.
@@ -399,3 +399,45 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   is applied with `apply-claude-changes.sh --root $HOME`; until then the drift
   test in `test_destructive_op_deny_anchor.py` is red on any machine with the
   live hook, which is the signal that it has not been applied.
+
+## PRs and pushes run the owning tests; the full suite runs only nightly (ASK-2316, 2026-10-01)
+
+### RULE-2026-10-01-A: No whole-suite run on a PR or a push; one full run, nightly
+- **Origin:** [SYSTEM-INFERRED] (Sana, on the founder's bar "no 6000-test runs on small changes")
+- **Decision:** A PR and a push to main run only the tests their change owns, in
+  every workflow. validate.yml passes the capability gate a diff base on both
+  events; verify.yml runs `verify.sh --changed --base <PR base, or the push's
+  before sha, else HEAD^>`; the unscoped prd-os pytest step is gone (verify grades
+  that suite scoped). A CI workflow, lefthook.yml or verify.sh change runs the
+  tests that name it. Still a full run: the gate, change-size.py, the manifest
+  assembler, verify_select.py, any conftest or pytest config, a dependency
+  manifest, a capability declaration, a new third-party import, a selection over
+  60. The full declared suite runs only in the nightly gates.yml.
+- **Reason:** The full suite kept returning through doors nobody listed (the
+  validate push, verify --full at 12.5 min on run 36820282302, the prd-os step).
+  A workflow edit changes what runs, and the tests that pin each workflow
+  (test_ci_workflows.py, test_validate_workflow.py, the verify harnesses) grade
+  that; a full run adds no coverage of the edit. A selector or test-config change
+  is different: it can make every other selection wrong, and it is rare, so it
+  pays the full run. test_ci_workflows.py reads every workflow and fails on any
+  whole-suite door outside gates.yml.
+- **Date:** 2026-10-01
+- **Revisit:** When gates.yml is re-enabled after the freeze. Until then no job
+  runs the full declared suite and a too-narrow selection is caught by nothing.
+
+## The Linear worker runs on the Mac again (2026-10-20)
+
+### RULE-2026-10-20-A: com.kipi.dispatch is the Linear worker; the cloud routine stays disabled
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "Move the worker back to the Mac.
+  I don't want it in the cloud.")
+- **Decision:** `com.kipi.dispatch` is loaded again, rendered from
+  `q-system/.q-system/scripts/com.kipi.dispatch.plist` the way `install-plist.sh`
+  renders it (KIPI_REPO = ~/projects/kipi-system): every 15 minutes, at most 3
+  tickets a day. The cloud routine `<trigger-id>` ("Linear worker
+  (weekdays x3)") is disabled, not deleted. This reverses the ASK-2176 Phase 5 move
+  of 2026-09-30.
+- **Reason:** The founder's call. Seen the same day: the cloud routine sat at its
+  cap of 5 open own PRs per repo and picked no new ticket.
+- **Date:** 2026-10-20
+- **Revisit:** Only on a founder order. Turning the routine back on while the Mac
+  job runs puts two workers on one queue.

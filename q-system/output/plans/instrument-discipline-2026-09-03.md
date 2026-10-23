@@ -11,35 +11,35 @@ candidates (A ledger field, B findings lint, C generalized rule) fits kipi.
 
 ## Diagnosis (measured 2026-09-03, read-only)
 
-**Arrival is broken in Alice, concretely, and it is a sync gap, not a design gap.**
+**Arrival is broken in client-d, concretely, and it is a sync gap, not a design gap.**
 
 - The lesson body delivery mechanism is `lessons-inject.py` (UserPromptSubmit,
   shipped to skeleton 2026-08-29, commit 229a5fc9, on origin/main).
-- Alice has NEITHER the script nor the wiring: `lessons-inject` appears 0 times in
-  Alice's `.claude/settings.json`; the script is absent from
-  `q-system/.q-system/scripts/`. Alice's scripts dir last synced 2026-08-30 19:00,
+- client-d has NEITHER the script nor the wiring: `lessons-inject` appears 0 times in
+  client-d's `.claude/settings.json`; the script is absent from
+  `q-system/.q-system/scripts/`. client-d's scripts dir last synced 2026-08-30 19:00,
   yet the file is missing, so the sync that ran did not carry it.
-- What Alice DOES get is SessionStart titles only. The lessons-inject docstring
-  records that title-only injection was measured as non-delivery. So in Alice the
+- What client-d DOES get is SessionStart titles only. The lessons-inject docstring
+  records that title-only injection was measured as non-delivery. So in client-d the
   lesson is on disk, listed by title, and never read. That is the arrival defect,
   and it is the same defect the skeleton already fixed six days ago.
 
 **Enforcement has a real hole, but not where candidate A aims.**
 
-- Alice's evidence ledger has 6 rows, all case-002, dated 2026-08-26/27.
+- client-d's evidence ledger has 6 rows, all case-002, dated 2026-08-26/27.
   Case-004 (2026-09-03, the day of the five defects) wrote ZERO ledger rows.
   The ledger was not in the loop. A gate on the ledger gates an empty pipe.
 - The five defects all live in findings and analysis prose
   (`FINDING-commerce-corpus-2026-09-03.md` holds the cash.app/cal.com
   misclassification). The prose is the artifact; no findings-level gate reads a
   null-shaped claim.
-- Alice already has an instance-local findings hook,
+- client-d already has an instance-local findings hook,
   `q-investigate/skills/osint/scripts/findings-verify-hook.py`, and it is wired
   0 times in settings.json. Its own header says settings.json is "safe" from
   sync, which is exactly why it arrived dead. Second arrival scar, same shape.
 
 **Stated so it is not smuggled:** 19-vs-2 in rule prose is true, but prose count
-is not the lever. The lever is (1) a body-delivery hook Alice does not have and
+is not the lever. The lever is (1) a body-delivery hook client-d does not have and
 (2) a findings gate nobody has.
 
 ## Approach: candidate verdicts
@@ -67,7 +67,7 @@ filename grandfathering with precedent.
   the word "control" in a sentence cannot satisfy it.
 - Grandfather: a date anywhere in the PATH before 2026-09-04, else git first-seen
   date. Measured over instance-registry.json: 246 in-scope, 36 uncontrolled,
-  0 still red. CORRECTION: the first measurement here ("10 of 55 in Alice") ran
+  0 still red. CORRECTION: the first measurement here ("10 of 55 in client-d") ran
   the other instances over a path that does not exist and read the zero as
   clean. Scar shape 5, by me, while building the gate for it.
 - Bypass: `instrument-lint-skip` in the file.
@@ -81,7 +81,7 @@ filename grandfathering with precedent.
   `settings-template.json` (settings-template-sync-check holds this).
 
 **C. Generalized rule plus trigger-eval fixture. BUILD, as a NEW skeleton rule.**
-`evidence-capture-protocol.md` is Alice-local (one of 3 rules Alice has that the
+`evidence-capture-protocol.md` is client-d-local (one of 3 rules client-d has that the
 skeleton does not); editing it reaches one instance. So: new
 `.claude/rules/instrument-discipline.md` in the skeleton (propagates), stating
 the principle once, listing the five case-004 shapes and the pdftotext ASK-270
@@ -101,8 +101,8 @@ measured, and the rule says so.
 - `.claude/settings.json` and `settings-template.json` (one PostToolUse entry each)
 - `.claude/rules/instrument-discipline.md` (new)
 - `q-system/.q-system/skill-evals/instrument-discipline.json` (built, then removed in round 1; see C)
-- `.prd-os/spillover.jsonl` via `prd_runner.py spillover add` for: (1) Alice missing
-  lessons-inject, (2) investigation flow writes no ledger rows, (3) Alice's
+- `.prd-os/spillover.jsonl` via `prd_runner.py spillover add` for: (1) client-d missing
+  lessons-inject, (2) investigation flow writes no ledger rows, (3) client-d's
   findings-verify-hook.py wired nowhere
 
 ## Acceptance criteria
@@ -112,7 +112,7 @@ measured, and the rule says so.
       post-cutoff filename exits 2; under its real filename exits 0 (grandfather)
 - [x] `grep -c instrument-lint .claude/settings.json settings-template.json` = 1 each
 - [x] settings-template-sync-check passes; enforced-claim-lint PASS
-- [ ] the skeleton dry-run from main shows the script + rule reaching Alice.
+- [ ] the skeleton dry-run from main shows the script + rule reaching client-d.
       Today it ABORTS: skeleton HEAD is on fix/candidate-draft-one-definition,
       so nothing propagates until this lands on main. PR to main first, then
       dry, then apply.
@@ -128,6 +128,6 @@ measured, and the rule says so.
 
 - No Stop hook scanning chat for null claims: same cheapest-compliance failure
   lessons-inject's docstring measured (the model stops writing the sentence).
-- No ledger field. No edit to Alice-local rules from the skeleton.
+- No ledger field. No edit to client-d-local rules from the skeleton.
 - Shapes 1, 3, 4 get no hook and, after round 1, no fixture either. Nothing
   measures them until sp-c4817fa9 gives the harness a way to load a paths-scoped rule.

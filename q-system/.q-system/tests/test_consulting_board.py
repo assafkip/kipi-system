@@ -122,15 +122,15 @@ class TestIdentityIsTheTHING_NotItsRendering:
         the thread's, so ANY rendering change is now irrelevant by construction rather
         than by a regex that has to have anticipated it."""
         brief = _brief()
-        a = cb.buckets(NOW, {"mail": ([brief.Row("Portant: 2h ago", "mail:t1")], None)},
+        a = cb.buckets(NOW, {"mail": ([brief.Row("client-h: 2h ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": ([brief.Row("Portant: 5h ago", "mail:t1")], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("client-h: 5h ago", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a == b, "an age change minted a new id and would orphan his row"
 
     def test_but_a_different_thread_is_a_different_row(self, tmp_path):
         brief = _brief()
-        a = cb.buckets(NOW, {"mail": ([brief.Row("Portant: docs", "mail:t1")], None)},
+        a = cb.buckets(NOW, {"mail": ([brief.Row("client-h: docs", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         b = cb.buckets(NOW, {"mail": ([brief.Row("Harbor: invoice", "mail:t2")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
@@ -576,7 +576,7 @@ class TestRound4:
 
         def runner(since, subject):
             return lambda argv, t: (json.dumps([
-                {"thread_id": "t-alice", "last_from": "Alice", "subject": subject,
+                {"thread_id": "t-sam", "last_from": "Sam", "subject": subject,
                  "needs_reply_since": since}]), None)
 
         a_rows, _ = brief.collect_mail(None, runner("2026-09-01", "Docs"))
@@ -588,9 +588,9 @@ class TestRound4:
 
     def test_but_a_bracketed_number_that_is_not_an_age_stays(self, tmp_path):
         brief = _brief()
-        a = cb.buckets(NOW, {"mail": ([brief.Row("Alice ticket [4021]", "mail:t1")], None)},
+        a = cb.buckets(NOW, {"mail": ([brief.Row("Sam ticket [4021]", "mail:t1")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
-        b = cb.buckets(NOW, {"mail": ([brief.Row("Alice ticket [4022]", "mail:t2")], None)},
+        b = cb.buckets(NOW, {"mail": ([brief.Row("Sam ticket [4022]", "mail:t2")], None)},
                        _tree(tmp_path))["inbox"][0]["key"]
         assert a != b
 
@@ -681,7 +681,7 @@ class TestTheBoardLooksLikeTheOneHeAsked_For:
         """Bloom's board is scanned by P0-P3. A board that writes no Priority renders
         an empty column, which is worse than no column: it looks like a field he
         forgot to fill."""
-        b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("client-h: docs", "mail:t1")], None)},
                        _tree(tmp_path))
         rows = b["top_of_mind"] + b["this_week"] + b["inbox"]
         assert rows, "fixture produced no rows, so this proves nothing"
@@ -701,7 +701,7 @@ class TestTheBoardLooksLikeTheOneHeAsked_For:
                 "the state card owns that verdict")
 
     def test_every_row_carries_a_done_signal(self, tmp_path):
-        b = cb.buckets(NOW, {"mail": ([_brief().Row("Portant: docs", "mail:t1")], None)},
+        b = cb.buckets(NOW, {"mail": ([_brief().Row("client-h: docs", "mail:t1")], None)},
                        _tree(tmp_path))
         rows = b["top_of_mind"] + b["this_week"] + b["inbox"]
         missing = [r["title"] for r in rows if not (r.get("done") or "").strip()]
@@ -739,8 +739,8 @@ class TestTwoThreadsAreTwoRows:
     def test_two_ledger_rows_reach_the_board_as_two_keys(self, tmp_path):
         brief = _ledger_brief(tmp_path)
         runner = lambda argv, t: (json.dumps([
-            {"thread_id": "t1", "last_from": "Alice", "subject": "Re: invoice"},
-            {"thread_id": "t2", "last_from": "Alice", "subject": "Re: invoice"}]), None)
+            {"thread_id": "t1", "last_from": "Sam", "subject": "Re: invoice"},
+            {"thread_id": "t2", "last_from": "Sam", "subject": "Re: invoice"}]), None)
         rows, err = brief.collect_mail(None, runner)
         assert err is None
         assert [r.key for r in rows] == ["mail:t1", "mail:t2"]
@@ -1581,16 +1581,16 @@ class TestRound13:
         one thread, so the day the model stops returning ids the painter would archive
         the row he pinned and recreate it at "Not started". The rows still paint."""
         brief = _brief()
-        rows = [brief.Row("Alice  Re: invoice", "mail:Alice|Re: invoice")]
+        rows = [brief.Row("Sam  Re: invoice", "mail:Sam|Re: invoice")]
         b = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))
-        assert [r["key"] for r in b["inbox"]] == ["mail:Alice|Re: invoice"]
+        assert [r["key"] for r in b["inbox"]] == ["mail:Sam|Re: invoice"]
         assert "inbox:Gmail" not in b["healthy_scopes"]
 
     def test_but_real_thread_ids_still_authorise_it(self, tmp_path):
         """The negative control: withholding it always would mean answered mail never
         leaves the board."""
         brief = _brief()
-        rows = [brief.Row("Alice  Re: invoice", "mail:19ff4af34dbc0f56")]
+        rows = [brief.Row("Sam  Re: invoice", "mail:1a2b3c4d5e6f7a8b")]
         b = cb.buckets(NOW, {"mail": (rows, None)}, _tree(tmp_path))
         assert "inbox:Gmail" in b["healthy_scopes"]
 

@@ -26,7 +26,7 @@ reproducer, exits 1 today) measures the fallout:
 - **41 stale references in 17 executable/config files** (the gating set — code
   that breaks at runtime). Concrete failures:
   - `cole-gtm/.mcp.json:27-28` — an MCP server command points at
-    `4_points_consulting/.../osint-infra-mcp/` (moved to consulting). The MCP
+    `client_a/.../osint-infra-mcp/` (moved to consulting). The MCP
     will not launch.
   - `kipi-system/lefthook.yml:78` — a git hook runs
     `$HOME/projects/cheapcheck/q-design/sync-from-kipi.sh` (moved to micro-saas).
@@ -46,7 +46,7 @@ Root cause is `scripts/persona-reorg.py`'s self-ref rewriter, three coverage gap
 2. `SELFREF_EXTS` (line ~542) omits `.mjs`/`.cjs`, so those files are skipped.
 3. There is no cross-project pass: the tool only rewrites a moved dir's refs to
    its OWN old path, never a reference FROM another project TO a moved sibling
-   (reddit-build-radar -> product repos; cole-gtm -> 4_points MCP).
+   (reddit-build-radar -> product repos; cole-gtm -> client_a MCP).
 
 Left unfixed, gap 1+2 recur on the final persona (ktlyst-hub, Tier-2).
 
@@ -63,7 +63,7 @@ Left unfixed, gap 1+2 recur on the final persona (ktlyst-hub, Tier-2).
 
 - Rewriting dated point-in-time records (podcast `distribution/` logs), session
   cache, rollback manifests, or `.bak` files — those are correct as history.
-- The pre-existing wrong-user ref (`/Users/assafkip/...` in `4_points/.codex/`)
+- The pre-existing wrong-user ref (`/Users/assafkip/...` in `client_a/.codex/`)
   — predates the reorg; out of scope, captured separately if real.
 - Fixing prose docs is in scope but NON-gating (a stale `cd` line in an operator
   guide is not a runtime break).

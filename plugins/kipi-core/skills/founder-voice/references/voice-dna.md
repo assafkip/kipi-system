@@ -244,7 +244,7 @@ Do NOT import the spoken disfluency (like, you know, false starts, repetition-as
 
 ## Spoken-Derived Patterns, Batch 2 (clean expansion, pitch register, 2026-07)
 
-> From the Catalyst investor conversation plus re-analysis of the clean corpus. This is his PITCH voice, distinct from the personal and casual registers above.
+> From an investor conversation plus re-analysis of the clean corpus. This is his PITCH voice, distinct from the personal and casual registers above.
 
 - Silos to shared nervous system. Frames the product not as another tool but as connective tissue between teams that do not talk. "It's not a monitoring layer. It's a shared nervous system." [SPOKEN-ONLY: pitch-register transcript quote; in WRITING, state the thing directly -- see the negation note below]
 - The LLM as an eager-to-please liar. Anthropomorphizes the model as something that wants to fool you and must be caught. "they really wanna please you and say, yes I did this. No you didn't" / "it tries so hard to hallucinate."

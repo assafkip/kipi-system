@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_fleet_full_suite_scan.py",
+ "runner": "python3",
+ "timeout_s": 60
+}

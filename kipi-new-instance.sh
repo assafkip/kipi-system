@@ -87,7 +87,8 @@ fi
 #
 # Opting out is deliberate and self-documenting:
 #   KIPI_LOCAL_ONLY=1 KIPI_LOCAL_ONLY_REASON="..." kipi new <path> <name>
-# The reason is written to remote-coverage-allow.json AT CREATION TIME, so a
+# The reason is written to the private ~/.config/kipi/remote-coverage-allow.json
+# (never the public tracked copy, ASK-2058) AT CREATION TIME, so a
 # local-only instance is a recorded decision on day one rather than an audit
 # finding a year later. Some instances genuinely must stay local (family
 # health data), which is exactly why the escape hatch exists and is loud.

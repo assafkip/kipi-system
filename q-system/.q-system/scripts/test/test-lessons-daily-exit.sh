@@ -40,6 +40,13 @@ build_fixture() {
 
   printf '#!/bin/bash\nexit %s\n' "$update_rc" > "$skel/kipi-update.sh"
 
+  # A RECORDING install-plist stub (ASK-1130). The real one refuses outside the
+  # registry skeleton, which this fixture is not, so the stub is what makes the
+  # call observable instead of just refused. It records the args and nothing else.
+  printf '#!/bin/bash\necho "$*" >> "%s/install-plist.calls"\nexit 0\n' "$tmp" \
+    > "$skel/q-system/.q-system/scripts/install-plist.sh"
+  chmod +x "$skel/q-system/.q-system/scripts/install-plist.sh"
+
   # A real (empty) git repo: the job commits new lessons before propagating.
   git -C "$skel" init --quiet
   git -C "$skel" config user.email "test@example.com"
@@ -90,6 +97,28 @@ run_case "distill non-JSON exits non-zero"    0 "Traceback"  0 nonzero
 # Guards against a fix that just always fails.
 run_case "clean publish+propagate exits zero" 0 "$PUBLISHED" 0 zero
 run_case "nothing new exits zero"             0 "$EMPTY"     0 zero
+
+# ASK-1130: a merged launchd plist must get armed on a QUIET day too. Before this,
+# arming lived only inside kipi-update.sh and that call sits behind `PUB > 0`, so a
+# nothing-new run (which exits at the "nothing new" line, above the propagation
+# block entirely) armed nothing. Codex minor, PR #363 round 1.
+arm_case() {
+  local name="$1" distill_out="$2" tmp calls
+  tmp="$(build_fixture 0 "$distill_out" 0)"
+  PATH="$tmp/bin:$PATH" \
+    bash "$tmp/skel/q-system/.q-system/scripts/lessons-daily.sh" >/dev/null 2>&1
+  calls="$(cat "$tmp/install-plist.calls" 2>/dev/null)"
+  if [ "$calls" = "--missing" ]; then
+    echo "PASS  $name (install-plist called: '$calls')"
+    PASS=$((PASS + 1))
+  else
+    echo "FAIL  $name (install-plist calls: '$calls', expected '--missing')"
+    FAIL=$((FAIL + 1))
+  fi
+  rm -rf "$tmp"
+}
+arm_case "nothing-new run still arms new jobs" "$EMPTY"
+arm_case "publish run arms new jobs"           "$PUBLISHED"
 
 echo "---"
 echo "passed=$PASS failed=$FAIL"

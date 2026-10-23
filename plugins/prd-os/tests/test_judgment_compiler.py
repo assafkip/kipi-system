@@ -3104,3 +3104,217 @@ class TestCrossCheckRunsByDefault:
         repo = _repo_with_two_receipts(tmp_path)
         assert "cross-checked" in _run_verify(repo)[1]
         assert "cross-check skipped" in _run_verify(repo, "--no-cross-check")[1]
+
+
+# ---------------------------------------------------------------------------
+# ASK-1886: the blind judge saw hashes, not content, so it abstained
+#
+# Measured 2026-09-19 over all 128 receipts in `.prd-os/judgments.jsonl`: the
+# recorded claude-opus-5 judge answered `needs-human` on 31 of its 40 cases and
+# Jev on 126 of 128, both naming the same thing in their own `missing_context`
+# ("issue body and acceptance criteria", "PRD text at revision", "scope"). Two
+# unrelated models abstaining on one input is evidence about the input.
+#
+# The text is DERIVED into the view, never stored: `judge_view` is not hashed
+# into anything, so the packet, the receipt shape and the hash chain stay
+# untouched and the 128 stored receipts keep validating. It is re-read at the
+# revision the packet froze and refused when its hash does not match.
+# ---------------------------------------------------------------------------
+
+# The REAL prd-os template headings. Counted in this repo 2026-09-29: 1 of 45
+# PRD specs carries `## Scope`, while 45 carry `## Goals` and 45 `## Non-goals`
+# -- which is why `scope.sha256` is `unknown` on 128 of 128 receipts. The old
+# fixture used `## Scope` and so could never have caught this.
+GOALS_TEXT = "Ship the accept-rate metric so a PRD without receipts is visible."
+NONGOALS_TEXT = "Not changing the receipt schema. Not touching the hash chain."
+ACCEPTANCE_TEXT = "selftest passes positive and negative; --gate exits 2 on alert"
+
+
+def _derived_cap() -> int:
+    """Read the cap from the module that owns it, never restate it."""
+    return _load_module("jc_cap", "judgment_compiler.py").DERIVED_TEXT_MAX_CHARS
+
+
+def _write_template_shaped_prd(repo: Path, prd_id: str = PRD_ID) -> Path:
+    """A PRD in the shape `plugins/prd-os/templates/prd.md` actually emits."""
+    issues = [
+        {"id": "fixture-issue-a", "finding_id": "finding-1",
+         "title": "accept-rate.py disposition/receipt-coverage metric",
+         "allowed_files": ["q-system/.q-system/scripts/accept-rate.py"],
+         "required_checks": ["python3 accept-rate.py --selftest"],
+         "acceptance": ACCEPTANCE_TEXT},
+        {"id": "fixture-issue-b", "finding_id": "finding-2",
+         "title": "unrelated issue that must NOT reach the judge",
+         "allowed_files": ["b.py"], "required_checks": [],
+         "acceptance": "WRONG-ISSUE-ACCEPTANCE"},
+    ]
+    body = (
+        "---\n"
+        f"id: {prd_id}\n"
+        "title: Fixture PRD\n"
+        "status: in-review\n"
+        "created_at: 2026-08-04T00:00:00Z\n"
+        "---\n\n"
+        "# Fixture PRD\n\n"
+        "## Problem\n\nFixture.\n\n"
+        f"## Goals\n\n{GOALS_TEXT}\n\n"
+        f"## Non-goals\n\n{NONGOALS_TEXT}\n\n"
+        "## Issues\n\n"
+        "```json\n" + json.dumps(issues, indent=2) + "\n```\n"
+    )
+    path = repo / ".prd-os" / "prds" / f"{prd_id}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
+
+
+@pytest.fixture
+def template_shaped_repo(judgment_repo: Path) -> Path:
+    """`judgment_repo` with its PRD replaced by one in the template's shape."""
+    _write_template_shaped_prd(judgment_repo)
+    return judgment_repo
+
+
+def _view_with_text(repo: Path, finding_id: str = "finding-1"):
+    jc = _load_module(f"jc_text_{finding_id}_{id(repo)}", "judgment_compiler.py")
+    cfg = _cfg_for(repo)
+    packet = jc.assemble_packet(cfg, PRD_ID, finding_id)
+    view, citable = jc.judge_view(packet, cfg=cfg)
+    return jc, cfg, packet, view, citable
+
+
+class TestTheJudgeViewCarriesReadableContext:
+    """THE reproducer for ASK-1886. Red before the fix on every case here."""
+
+    def test_scope_is_found_in_a_template_shaped_prd(self, template_shaped_repo):
+        """RED before the fix: `_assemble_scope` looked for `## Scope`, a
+        heading the prd-os template never emits, so `scope.sha256` was
+        `unknown` and `missing_context` carried "scope" on every real PRD."""
+        _, _, packet, _, _ = _view_with_text(template_shaped_repo)
+        assert packet["scope"]["sha256"] != "unknown", packet["scope"]
+        assert "scope" not in packet["missing_context"], packet["missing_context"]
+
+    def test_the_view_carries_the_scope_text(self, template_shaped_repo):
+        """RED before the fix: the view carried `scope.sha256` and no text."""
+        _, _, _, view, _ = _view_with_text(template_shaped_repo)
+        rendered = json.dumps(view, sort_keys=True)
+        assert GOALS_TEXT in rendered, "goals text never reached the judge"
+        assert NONGOALS_TEXT in rendered, "non-goals text never reached the judge"
+
+    def test_the_view_carries_the_issue_for_THIS_finding_only(
+            self, template_shaped_repo):
+        """The manifest entry is finding-dependent: it carries `finding_id`, so
+        the relevant issue is derivable rather than ambient. The OTHER entry
+        must not come along -- that would be the whole manifest, which is the
+        "unrelated detail" Jev's docs say costs accuracy."""
+        _, _, _, view, _ = _view_with_text(template_shaped_repo)
+        rendered = json.dumps(view, sort_keys=True)
+        assert ACCEPTANCE_TEXT in rendered, "acceptance criteria never arrived"
+        assert "accept-rate.py disposition" in rendered, "issue title missing"
+        assert "WRONG-ISSUE-ACCEPTANCE" not in rendered, rendered
+
+    def test_text_that_does_not_match_the_frozen_hash_is_refused(
+            self, template_shaped_repo):
+        """The negative self-test. A receipt freezes decision-time state, so
+        text re-read from a MOVED file is not that state. Refuse it and name the
+        refusal in the view rather than showing the judge another revision."""
+        jc, cfg, packet, _, _ = _view_with_text(template_shaped_repo)
+        prd = template_shaped_repo / packet["prd_state"]["path"]
+        prd.write_text(prd.read_text().replace(GOALS_TEXT, "REWRITTEN-GOALS"))
+        view, _ = jc.judge_view(packet, cfg=cfg)
+        rendered = json.dumps(view, sort_keys=True)
+        assert "REWRITTEN-GOALS" not in rendered, "stale text reached the judge"
+        assert view["derived_text"]["scope_text"] is None
+        # The exact reason, not merely "something about scope". A mismatch and
+        # an unreadable file are different facts and the judge is told which.
+        assert "scope: text does not match the frozen scope.sha256" in \
+            view["derived_text"]["unavailable"], view["derived_text"]
+
+    def test_cfg_is_optional_so_the_view_is_unchanged_without_it(
+            self, template_shaped_repo):
+        """Every existing caller passes no cfg. Without one the view carries no
+        derived text at all rather than silently reading the working tree."""
+        jc, _, packet, _, _ = _view_with_text(template_shaped_repo)
+        view, _ = jc.judge_view(packet)
+        assert view["derived_text"]["scope_text"] is None
+        assert view["derived_text"]["relevant_issue"] is None
+
+    # --- blindness, extended over the DERIVED block --------------------------
+
+    @pytest.mark.parametrize("field", LABEL_BEARING_FIELDS)
+    def test_no_label_bearing_field_survives_into_the_derived_block(
+            self, template_shaped_repo, field):
+        """The derived text never passed through the packet's allowlist, so it
+        gets its own. Splice the label into the manifest entry and prove
+        `JUDGE_DERIVED_SPEC` drops it."""
+        prd = template_shaped_repo / ".prd-os" / "prds" / f"{PRD_ID}.md"
+        marker = f"LEAKED-{field.upper()}"
+        prd.write_text(prd.read_text().replace(
+            '"finding_id": "finding-1",',
+            f'"finding_id": "finding-1", "{field}": "{marker}",'))
+        _, _, _, view, _ = _view_with_text(template_shaped_repo)
+        rendered = json.dumps(view, sort_keys=True)
+        assert marker not in rendered, f"{field!r} reached the judge"
+        assert f'"{field}"' not in rendered, f"key {field!r} reached the judge"
+
+    def test_the_derived_block_is_not_in_the_packet_and_not_hashed(
+            self, template_shaped_repo):
+        """The whole point of deriving rather than storing: the packet keeps its
+        exact field set, so the 128 stored receipts keep validating and neither
+        `verify` nor the hash chain is touched (the DoR's Not-doing line)."""
+        jc, _, packet, _, _ = _view_with_text(template_shaped_repo)
+        assert "derived_text" not in packet
+        assert set(jc.JUDGE_VIEW_SPEC) == set(packet)
+        assert jc.packet_hash(packet) == packet["packet_sha256"]
+        jc.validate_packet(packet)
+
+    def test_the_derived_text_is_bounded(self, template_shaped_repo):
+        """Jev's docs say accuracy falls as state grows with unrelated detail,
+        so the block is capped and says when it truncated."""
+        prd = template_shaped_repo / ".prd-os" / "prds" / f"{PRD_ID}.md"
+        prd.write_text(prd.read_text().replace(
+            GOALS_TEXT, GOALS_TEXT + "\n" + ("padding line. " * 4000)))
+        _, _, _, view, _ = _view_with_text(template_shaped_repo)
+        text = view["derived_text"]["scope_text"]
+        assert len(text) <= _derived_cap(), len(text)
+        assert text.endswith("[truncated]")
+
+
+# A judge that records the prompt it was actually handed, then answers validly.
+# `_judge_prompt_text` returning the text proves the FUNCTION; only the real
+# `judge` subcommand proves the RUNNING path, which is the load-path rule in
+# wiring-check.md (a view nothing shows the judge is dead text).
+_RECORDING_JUDGE_STUB = '''
+import json, os, sys
+open(os.environ["KIPI_PROMPT_SINK"], "w").write(sys.stdin.read())
+print(json.dumps({
+    "technical_validity": "valid",
+    "technical_reason": "the fixture gate can be bypassed",
+    "workflow_disposition": "fix-now",
+    "workflow_reason_code": "valid-fix-now",
+    "evidence_refs": [],
+    "missing_context": [],
+    "confidence": 0.9,
+}))
+'''
+
+
+class TestTheRunningJudgePathShowsTheText:
+    """Load-path proof for ASK-1886, not a second unit test of the same call."""
+
+    def test_the_real_judge_subcommand_hands_over_scope_and_issue_text(
+            self, template_shaped_repo, tmp_path):
+        stub = tmp_path / "recording_judge.py"
+        stub.write_text(_RECORDING_JUDGE_STUB)
+        sink = tmp_path / "prompt.txt"
+        proc = run_judgment(
+            template_shaped_repo, "judge", "--prd", PRD_ID,
+            "--finding", "finding-1", "--output", str(tmp_path / "run.json"),
+            env_extra={"KIPI_JUDGE_CMD": f"{sys.executable} {stub}",
+                       "KIPI_PROMPT_SINK": str(sink)})
+        assert proc.returncode == 0, proc.stderr
+        prompt = sink.read_text()
+        assert GOALS_TEXT in prompt, "the running judge still sees no scope"
+        assert NONGOALS_TEXT in prompt, "the running judge still sees no scope"
+        assert ACCEPTANCE_TEXT in prompt, "no acceptance criteria in the prompt"
+        assert "WRONG-ISSUE-ACCEPTANCE" not in prompt, "whole manifest leaked"

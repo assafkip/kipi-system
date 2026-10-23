@@ -24,6 +24,7 @@ fact per line:
 CLI:
   python3 evidence_ledger.py add --claim C --source S --command CMD --result R
   python3 evidence_ledger.py list [--json]
+  python3 evidence_ledger.py show ID [ID ...]   # print just those rows (ASK-438)
   python3 evidence_ledger.py check          # exit 2 if any row is malformed
   python3 evidence_ledger.py resolve FILE   # exit 2 if a number/quote does not trace
 
@@ -511,6 +512,13 @@ def main(argv=None) -> int:
 
     sub.add_parser("check", help="validate every row; exit 2 on any problem")
 
+    # WHY a per-row read verb (ASK-438): evidence-read-log-lint.py refuses an ev- id
+    # written into canonical/, output/ or a PRD unless this session's transcript shows
+    # the row being opened. `list` opens EVERY row at once, so the refusal needs a
+    # command that opens exactly the row being cited, and nothing else.
+    sh = sub.add_parser("show", help="print the named rows; exit 2 if an id is unknown")
+    sh.add_argument("ids", nargs="+")
+
     r = sub.add_parser("resolve", help="check a file's numbers and quotes trace to rows")
     r.add_argument("path")
 
@@ -538,6 +546,17 @@ def main(argv=None) -> int:
                       f"    command: {row.get('command')}\n"
                       f"    result : {row.get('result')}\n"
                       f"    at     : {row.get('verified_at')}")
+        return 0
+
+    if args.cmd == "show":
+        by_id = {row.get("claim_id"): row for row in read(repo)}
+        missing = [i for i in args.ids if i not in by_id]
+        for i in args.ids:
+            if i in by_id:
+                print(json.dumps(by_id[i], ensure_ascii=False))
+        if missing:
+            sys.stderr.write("evidence_ledger show: no such row: " + ", ".join(missing) + "\n")
+            return 2
         return 0
 
     if args.cmd == "check":

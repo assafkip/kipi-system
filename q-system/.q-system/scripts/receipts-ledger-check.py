@@ -61,6 +61,21 @@ ALLOWED_KEYS = {
     # no free text.
     "reopened_at",
     "receipts",
+    # ASK-1968: what KIND of problem the closed finding was. Allowed only with a
+    # value from FINDING_CLASSES below, never free text.
+    "finding_class",
+}
+# Same list as findings_writer.py FINDING_CLASSES. Restated, not imported: this
+# gate runs at commit time and must not crash when a plugin is absent.
+# test_receipt_finding_class.py fails when the two drift.
+FINDING_CLASSES = {
+    "correctness",
+    "security",
+    "wiring",
+    "test-gap",
+    "data-integrity",
+    "docs",
+    "other",
 }
 NESTED_RECEIPT_KEYS = {"findings_triaged", "reviewed", "verified"}
 
@@ -110,6 +125,10 @@ def check_value(where: str, key: str, value) -> list[str]:
         problems.append(
             f"{where}: `{key}` looks like a path or address ({value!r}); the ledger "
             "carries ids and timestamps only"
+        )
+    if key == "finding_class" and value not in FINDING_CLASSES:
+        problems.append(
+            f"{where}: `finding_class`={value!r} is not one of {sorted(FINDING_CLASSES)}"
         )
     if key.endswith("_at") and not ISO_RE.match(value):
         problems.append(f"{where}: `{key}`={value!r} is not an ISO-8601 timestamp")

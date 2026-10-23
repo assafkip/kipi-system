@@ -22,7 +22,7 @@ scored store is empty of memories regardless of how broadly we surface.
 ### #1 session_id disconnect — FIXED, shipped
 `resolve_session_id()` read `CLAUDE_SESSION_ID`; the real hook var is
 `CLAUDE_CODE_SESSION_ID`. Producer/consumer never agreed -> capture recorded
-nothing. Fixed (PR #8), regression-tested, propagated, verified on 4_points
+nothing. Fixed (PR #8), regression-tested, propagated, verified on client_a
 (`MATCH: True`). RCA: `output/rca/rca-autocapture-session-id-disconnect-2026-07-04.md`.
 
 ### #3 recall breadth / proxy semantics / v2 scope — DECIDED: no bolt-on

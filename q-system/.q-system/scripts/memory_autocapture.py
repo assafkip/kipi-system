@@ -44,6 +44,11 @@ import session_recall as sr  # noqa: E402
 # QROOT = q-system/ (this script is at q-system/.q-system/scripts/).
 QROOT = Path(os.path.join(str(HERE), "..", "..")).resolve()
 DEFAULT_CONFIG = HERE / "autocapture_config.json"
+# The design partner's instance name is a CLIENT name, and this file ships in a
+# public repo. So the partner is listed in a private file outside the repo, one
+# instance per line, and unioned with the public config's list (ASK-2058). The
+# public config lists nobody, which keeps the skeleton itself provably inert.
+PRIVATE_ALLOWLIST = Path.home() / ".config" / "kipi" / "autocapture-instances.txt"
 
 # Tool calls that count as touching a file, and the subset that counts as reading.
 _READ_TOOLS = {"Read"}
@@ -52,7 +57,7 @@ _TOUCH_TOOLS = {"Read", "Edit", "Write", "NotebookEdit"}
 
 def _current_instance(instance_id: str | None = None) -> str:
     """The instance this session runs in: the project directory name (q-system/..'s
-    parent), e.g. `4_points_consulting` or `kipi-system`.
+    parent), e.g. `client_a` or `kipi-system`.
 
     Identity comes ONLY from the durable repo path, never from a mutable env var:
     a design-partner gate that trusted $KIPI_INSTANCE could be spoofed by any
@@ -64,11 +69,24 @@ def _current_instance(instance_id: str | None = None) -> str:
     return QROOT.parent.name
 
 
-def is_enabled(*, config_path: Path | None = None, instance_id: str | None = None) -> bool:
+def _private_allowlist(path: Path) -> list[str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [e for e in (l.split("#", 1)[0].strip() for l in lines) if e]
+
+
+def is_enabled(*, config_path: Path | None = None, instance_id: str | None = None,
+               private_path: Path | None = None) -> bool:
     """True only when the current instance is in the allowlist. DEFAULT OFF: a
     missing/malformed config, or an instance not listed, disables capture. This is
     the design-partner-first gate, so shipping the script fleet-wide via the
-    skeleton leaves it inert everywhere except the allowlisted instance(s)."""
+    skeleton leaves it inert everywhere except the allowlisted instance(s).
+
+    The allowlist is the public config's list plus PRIVATE_ALLOWLIST. A malformed
+    public config still disables capture: the private file widens a valid gate,
+    it never stands in for a broken one."""
     path = Path(config_path) if config_path is not None else DEFAULT_CONFIG
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -77,6 +95,8 @@ def is_enabled(*, config_path: Path | None = None, instance_id: str | None = Non
     allow = cfg.get("enabled_instances") if isinstance(cfg, dict) else None
     if not isinstance(allow, list):
         return False
+    allow = allow + _private_allowlist(
+        Path(private_path) if private_path is not None else PRIVATE_ALLOWLIST)
     return _current_instance(instance_id) in allow
 
 
