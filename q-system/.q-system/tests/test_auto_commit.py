@@ -818,7 +818,8 @@ class TestRcasReachGit:
         class R:
             def __init__(self, out):
                 self.stdout, self.returncode = out, 0
-        outs = {"diff": "", "ls-files": "q-system/output/rca/rca-x-2026-10-03.md\nq-system/output/report.md\n"}
+        # NUL-separated: get_changed_files reads git with -z (PR #547 review).
+        outs = {"diff": "", "ls-files": "q-system/output/rca/rca-x-2026-10-03.md\0q-system/output/report.md\0"}
         monkeypatch.setattr(mod, "run", lambda cmd, **k: R(outs.get(cmd[1], "")))
         files = mod.get_changed_files()
         assert "q-system/output/rca/rca-x-2026-10-03.md" in files

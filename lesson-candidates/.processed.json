@@ -593,5 +593,179 @@
     "instance": "ASK_AI_consultant",
     "status": "published",
     "date": "2026-08-31"
+  },
+  "df326171f0ac2954": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "a-constraint-recorded-at-one-call-site-protects-only-that-ca"
+  },
+  "f48bc08a08080b3d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "verify-the-rendered-surface-not-the-pipeline-that-feeds-it"
+  },
+  "d3da7693616aa6dd": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "the-most-used-path-is-usually-the-least-judged-one"
+  },
+  "7c6ce0959b0df05d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "enumerate-every-variant-a-router-can-be-asked-for"
+  },
+  "fdbb8f07c41fbf6b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "reconcile-a-count-you-can-compute-never-narrate-the-gap"
+  },
+  "d5c2cb5c43e7ab6f": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "an-empty-result-must-say-what-it-was-empty-of"
+  },
+  "170e60fdf472e498": {
+    "instance": "client-unlisted",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "derived-numbers-need-their-own-source-of-truth"
+  },
+  "e15c0bea3c5bb218": {
+    "instance": "client_d",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "two-dead-components-one-symptom-two-unrelated-causes"
+  },
+  "95f6080424235fe7": {
+    "instance": "client_c",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "a-registry-driven-guard-cannot-see-an-unregistered-actor"
+  },
+  "e023065cac60d381": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "a-default-that-every-test-overrides-is-untested"
+  },
+  "09b4230a8afb4f0e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-07",
+    "lesson_id": "separate-the-measured-half-from-the-guessed-half"
+  },
+  "7fb4ccbd14ab06db": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "bind-a-check-to-the-property-not-the-nearest-proxy"
+  },
+  "d19442fce6410340": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "grade-each-output-check-by-what-it-protects-not-by-whether-i"
+  },
+  "649c032ad535ae53": {
+    "instance": "client_b",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "when-the-outbound-report-is-the-only-place-a-result-gets-com"
+  },
+  "f5614503caf93ec1": {
+    "instance": "client_b",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "a-verifier-that-rejects-every-finding-reads-as-a-clean-repor"
+  },
+  "87c87ea7e168eb94": {
+    "instance": "client_b",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "a-source-attribution-gate-must-never-read-the-model-s-own-an"
+  },
+  "106a3241e65212bc": {
+    "instance": "client_b",
+    "status": "published",
+    "date": "2026-09-14",
+    "lesson_id": "a-fail-safe-halt-should-not-fire-where-there-is-nothing-left"
+  },
+  "bf437caf6ec704ba": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-09-21",
+    "lesson_id": "a-belief-about-what-a-guard-blocks-is-not-evidence-until-the"
+  },
+  "731a0a36864a1c79": {
+    "instance": "client_b",
+    "status": "published",
+    "date": "2026-09-21",
+    "lesson_id": "test-against-the-shape-production-actually-has-not-the-shape"
+  },
+  "87bc65afff94d00d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "a-retired-component-is-a-decision-not-a-spare-part"
+  },
+  "d16d4a285a08044e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-05",
+    "lesson_id": "cap-the-shared-resource-not-the-paths-that-call-it"
+  },
+  "05c68bd790aaaf9e": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "gate-the-unit-the-contract-names-and-prove-it-on-live-output"
+  },
+  "c13041d78d9ad6e1": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "when-a-fan-out-push-fails-at-exactly-one-target"
+  },
+  "7981cddaedc4df6d": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "when-the-goal-becomes-match-this-reference-measure-the-shape"
+  },
+  "4bc83a9b80bf3145": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "prove-a-guard-with-one-real-call-not-by-reading-the-code"
+  },
+  "dbfcd4180011a90b": {
+    "instance": "ASK_AI_consultant",
+    "status": "published",
+    "date": "2026-10-12",
+    "lesson_id": "measure-against-the-target-before-you-build"
+  },
+  "24c46bde3d31a602": {
+    "instance": "client-unlisted",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "launch-a-long-pass-only-after-a-control-that-can-fail"
+  },
+  "7b82c37123a3de2d": {
+    "instance": "client-unlisted",
+    "status": "published",
+    "date": "2026-10-19",
+    "lesson_id": "pin-a-constraint-to-the-operation-it-forbids"
+  },
+  "hand-timestamps-from-different-writers-compare-as-instants-never-as-strings": {
+    "instance": "skeleton",
+    "status": "hand-authored",
+    "date": "2026-09-10",
+    "lesson_id": "timestamps-from-different-writers-compare-as-instants-never-as-strings"
   }
 }

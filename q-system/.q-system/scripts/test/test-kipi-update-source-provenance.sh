@@ -24,6 +24,10 @@
 # The dirty half runs unconditionally, because staleness against HEAD needs no
 # remote to be wrong.
 set -euo pipefail
+# The override arms the provenance half on its own (ASK-2935). A fork maintainer who
+# exports it would otherwise turn the no-origin case below into a real fetch, and the
+# origin cases into a comparison against their fork. Each case sets it on purpose.
+unset KIPI_SKELETON_REMOTE
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 G() { git -c user.email=t@t.t -c user.name=test -c commit.gpgsign=false "$@"; }
@@ -43,6 +47,9 @@ build_skeleton() {
   cp "$ROOT/kipi-update-deletion-guard.py" "$sk/kipi-update-deletion-guard.py"
   cp "$ROOT/q-system/.q-system/scripts/propagation-leak-gate.py" \
      "$sk/q-system/.q-system/scripts/propagation-leak-gate.py"
+  # the branch half of the preflight is its own script since issue #2 PR A
+  cp "$ROOT/q-system/.q-system/scripts/skeleton-provenance.sh" \
+     "$sk/q-system/.q-system/scripts/skeleton-provenance.sh"
   cp "$ROOT/q-system/.q-system/scripts/containment-targets.py" \
      "$sk/q-system/.q-system/scripts/containment-targets.py"
   cp "$ROOT/validate-separation.py" "$sk/validate-separation.py"
@@ -326,10 +333,54 @@ assert_no_origin_disarms_the_branch_half_loudly() {
   echo "PASS: no origin disarms the branch half and says so"
 }
 
+# ------------------------------------------------- override with no origin
+# KIPI_SKELETON_REMOTE names a remote to prove against even when `origin` does not
+# exist. The guard used to ask only `remote get-url origin`, so this checkout printed
+# DISARMED and fanned an unproven HEAD to every instance while the override sat unread
+# (Codex P1 on PR #555, ASK-2935). Ahead, behind and off-branch must all abort, and the
+# clean case must show the proof ran, not merely that nothing aborted.
+assert_override_without_origin_still_proves_provenance() {
+  local work sk inst fork out
+  work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"; fork="$work/fork.git"
+  build_skeleton "$work"
+  G init -q --bare "$fork"
+  ( cd "$sk" && G checkout -q -B main && G push -q "$fork" HEAD:refs/heads/main )
+  git -C "$sk" remote get-url origin >/dev/null 2>&1 && fail "fixture has an origin"
+
+  out="$(KIPI_SKELETON_REMOTE="$fork" bash "$sk/kipi-update.sh" 2>&1)" || true
+  if echo "$out" | grep -q "ABORT: the skeleton"; then
+    fail "the override fired on a main that IS at the override's main: $out"
+  fi
+  echo "$out" | grep -q "provenance: OK" || \
+    fail "override set, no origin: provenance never ran: $out"
+
+  printf 'never pushed\n' >> "$sk/plugins/demo/README.md"
+  ( cd "$sk" && G add plugins/demo/README.md && G commit -qm "local only" )
+  ( export KIPI_SKELETON_REMOTE="$fork"
+    assert_aborts_untouched "$sk" "$inst" "override, no origin, main ahead" "ahead/behind" ) \
+    || fail "override, no origin: a main ahead of the override was not refused"
+  ( cd "$sk" && G reset -q --hard HEAD~1 )
+
+  G clone -q -b main "$fork" "$work/other"
+  printf 'landed on the fork after this checkout\n' > "$work/other/plugins/demo/LATER.md"
+  ( cd "$work/other" && G add -A && G commit -qm "moved on" && G push -q origin HEAD:main )
+  ( export KIPI_SKELETON_REMOTE="$fork"
+    assert_aborts_untouched "$sk" "$inst" "override, no origin, main behind" "ahead/behind" ) \
+    || fail "override, no origin: a main behind the override was not refused"
+
+  ( cd "$sk" && G checkout -q -b sana/some-feature )
+  ( export KIPI_SKELETON_REMOTE="$fork"
+    assert_aborts_untouched "$sk" "$inst" "override, no origin, off main" "sana/some-feature" ) \
+    || fail "override, no origin: a feature branch was not refused"
+
+  echo "PASS: with KIPI_SKELETON_REMOTE set and no origin, provenance runs and refuses drift"
+}
+
 assert_dirty_sync_scope_aborts
 assert_unsynced_claude_paths_do_not_abort
 assert_ignored_plugin_files_abort_but_pruned_ones_do_not
 assert_off_branch_aborts
 assert_main_that_is_not_at_origin_aborts
 assert_no_origin_disarms_the_branch_half_loudly
+assert_override_without_origin_still_proves_provenance
 echo "PASS: kipi update refuses to fan bytes that were never reviewed"

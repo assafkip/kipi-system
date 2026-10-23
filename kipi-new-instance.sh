@@ -40,7 +40,10 @@ if ! git -C "$SCRIPT_DIR" diff --cached --quiet HEAD -- q-system/ 2>/dev/null; t
   echo "The gate scanned the index and the seed copies HEAD; they must agree."
   exit 1
 fi
-SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
+# No SKELETON_REMOTE here: this creator SEEDS from the local checkout ($SCRIPT_DIR) via
+# `git archive HEAD -- q-system/`, it never fetches or pushes a skeleton remote. A
+# KIPI_SKELETON_REMOTE read here was a dead write that made the override test claim five
+# honoured sites when only three consume it (GitHub issue #2 PR A, review round 2).
 SKELETON_BRANCH="main"
 PREFIX="q-system"
 
@@ -166,7 +169,8 @@ if [ ! -f CLAUDE.md ]; then
 - Never produce fluff - every sentence must carry information or enable action
 - Mark unvalidated claims with `{{UNVALIDATED}}` or `{{NEEDS_PROOF}}`
 CLAUDE_EOF
-  sed -i '' "s/{{INSTANCE_NAME}}/$INST_NAME/g" CLAUDE.md 2>/dev/null || true
+  # no sed -i: its in-place flag differs between BSD and GNU sed (GitHub issue #1)
+  sed "s/{{INSTANCE_NAME}}/$INST_NAME/g" CLAUDE.md > CLAUDE.md.tmp && mv CLAUDE.md.tmp CLAUDE.md
   echo "  Created template CLAUDE.md"
 fi
 
