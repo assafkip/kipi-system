@@ -41,6 +41,11 @@
 #      early `fail` that skipped the fan-out; this case enumerates the class.
 #  14. negative control: a non-lesson path on the lessons branch is refused by
 #      lessons-push-guard.py and never pushed to this public repo.
+#  15. the merged check is one gh call for any number of lessons branches, and
+#      its match is exact (a merged wk10 does not clear an unmerged wk1).
+#
+# Case 10 also pins that a clean publish removes its worktree even though the
+# reviewer dirtied a tracked file in it.
 #
 # Cases 5 to 9 run on the healthy main state, so each non-zero exit comes from
 # the failure under test and not from a refused fan-out.
@@ -98,6 +103,10 @@ build_fixture() {
   mkdir -p "$tmp/bin" "$tmp/seed/q-system/lessons" "$tmp/seed/lesson-candidates"
   printf 'keep\n' > "$tmp/seed/q-system/lessons/existing-lesson.md"
   printf '{"seenkey": {"status": "published"}}\n' > "$tmp/seed/lesson-candidates/.processed.json"
+  # Tracked in the real repo, and rewritten by a SessionStart hook whenever claude
+  # starts in a checkout. The reviewer starts claude inside the lessons worktree.
+  mkdir -p "$tmp/seed/q-system/memory"
+  printf 'seed\n' > "$tmp/seed/q-system/memory/.sycophancy-monthly-stamp"
   seed_updater "$tmp/seed" "$tmp"
   g init -q -b main "$tmp/seed"
   g -C "$tmp/seed" add -A && g -C "$tmp/seed" commit -qm "seed [no-issue: fixture]"
@@ -134,8 +143,13 @@ build_fixture() {
   cp "$SCRIPTS/lessons-push-guard.py" "$tmp/skel/q-system/.q-system/scripts/lessons-push-guard.py"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/skel/q-system/.q-system/scripts/install-plist.sh"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/bin/claude"
-  # gh: records argv. `pr create` prints a PR URL unless gh.mode says fail;
-  # `pr list --state merged --head B` answers 1 when B is in merged.txt, else 0.
+  # gh: records argv. `pr create` prints a PR URL unless gh.mode says fail.
+  # `pr list --state merged --search head:P` prints the merged.txt names that
+  # start with P, one per line, which is what gh's --jq '.[].headRefName' gives
+  # (GitHub's head: qualifier is a prefix match, measured 2026-10-23). Without
+  # --state merged it prints nothing, so a wrong query reads as "nothing merged"
+  # and holds the run. `pr list --head B` (one call per branch, the old shape)
+  # answers 1 when B is in merged.txt, else 0.
   # gh.mode is a file so one fixture can change behaviour between two runs.
   cat > "$tmp/bin/gh" <<GH
 #!/bin/bash
@@ -145,8 +159,19 @@ case "\$1 \$2" in
   "pr create") [ "\$mode" = "fail-create" ] && { echo "gh: create refused" >&2; exit 1; }
                echo "https://github.com/fixture/repo/pull/77" ;;
   "pr list")   [ "\$mode" = "fail-list" ] && { echo "gh: auth expired" >&2; exit 1; }
-               head=""; while [ \$# -gt 0 ]; do [ "\$1" = "--head" ] && head="\$2"; shift; done
-               grep -qx "\$head" "$tmp/merged.txt" 2>/dev/null && echo 1 || echo 0 ;;
+               head=""; search=""; merged=""
+               while [ \$# -gt 0 ]; do
+                 case "\$1" in --head) head="\$2" ;; --search) search="\$2" ;; esac
+                 [ "\$1" = "--state" ] && [ "\$2" = "merged" ] && merged=1
+                 shift
+               done
+               if [ -n "\$search" ]; then
+                 case "\$search" in head:*)
+                   [ -n "\$merged" ] && awk -v p="\${search#head:}" 'index(\$0, p) == 1' "$tmp/merged.txt" 2>/dev/null ;;
+                 esac
+               else
+                 grep -qx "\$head" "$tmp/merged.txt" 2>/dev/null && echo 1 || echo 0
+               fi ;;
 esac
 exit 0
 GH
@@ -168,6 +193,10 @@ QUIET_RUN='{"scanned": 0, "published": [], "held": []}'
 # Fault switches, all files in <tmp> so a case sets one without a new runner:
 # distill.fail (the distiller exits 3), stray.on (it also writes a non-lesson
 # file into lesson-candidates/), claude.bin (the CLI path the job checks).
+# The review stub rewrites a tracked file inside the worktree, as the real
+# reviewer's SessionStart hook does. It used to write only outside it, so the
+# suite stayed green while every clean publish leaked its worktree (PR #551
+# round 4).
 run_job() {
   local tmp="$1" summary="${2:-$PUBLISHED}"
   printf '%s' "$summary" > "$tmp/summary.json"
@@ -175,7 +204,7 @@ run_job() {
   PATH="$tmp/bin:$PATH" \
   KIPI_CLAUDE_BIN="$(cat "$tmp/claude.bin" 2>/dev/null || echo claude)" \
   KIPI_DISTILL_CMD="[ -e '$tmp/distill.fail' ] && exit 3; if [ -e '$tmp/stray.on' ]; then printf 'not a lesson\n' > \"\${LESSONS_DIR%/q-system/lessons}/lesson-candidates/stray.txt\"; fi; if grep -q 'a fixture lesson' '$tmp/summary.json'; then printf '# a fixture lesson\n' > \"\${LESSONS_DIR:-$tmp/skel/q-system/lessons}/fixture-lesson.md\"; fi; cat '$tmp/summary.json'" \
-  KIPI_REVIEW_CMD="echo \"\$PR_NUMBER\" >> '$tmp/review.calls'" \
+  KIPI_REVIEW_CMD="echo \"\$PR_NUMBER\" >> '$tmp/review.calls'; mkdir -p q-system/memory && date > q-system/memory/.sycophancy-monthly-stamp" \
   KIPI_PROPAGATE_CMD="cd '$tmp/skel' && TMPDIR='$tmp' KIPI_FLEET_SWEEP_HISTORY='$tmp/sweep.jsonl' bash kipi-update.sh --dry-run" \
   KIPI_NOTION_SYNC_CMD="true" \
   KIPI_NOTIFY_CMD="printf '%s\\n' \"\$1\" >> '$tmp/notify.txt'" \
@@ -328,6 +357,13 @@ echo "      fixture (main-behind): $T (exit=$JOB_RC)"
 ! grep -q 'ABORT' "$T/lessons-daily.log" 2>/dev/null && [ "$JOB_RC" -eq 0 ] \
   && ok "main-behind: the real updater passed and the run exits 0" \
   || bad "main-behind: exit=$JOB_RC; $(grep -m2 ABORT "$T/lessons-daily.log")"
+# Exit 0 and a clean alert must mean the worktree is gone, from disk and from the
+# skeleton's worktree registry. The reviewer dirties a tracked file in it, and a
+# plain `worktree remove` refused that every week (PR #551 round 4).
+[ "$(worktrees_left "$T")" = "0" ] \
+  && [ "$(g -C "$T/skel" worktree list --porcelain | grep -c '^worktree ')" = "1" ] \
+  && ok "main-behind: a clean publish leaves no worktree on disk or registered" \
+  || bad "main-behind: a clean publish leaked a worktree (on disk: $(worktrees_left "$T"), exit=$JOB_RC)"
 if grep -q 'fleet updated from main' "$T/notify.txt" 2>/dev/null \
    && ! grep -q 'propagated to fleet' "$T/notify.txt" 2>/dev/null; then
   ok "main-behind: the alert says main went out, not this run's lessons"
@@ -432,7 +468,7 @@ check_fleet_ran "worktree-fails" "$T" "could not open a worktree"; rm -rf "$T"
 T="$(build_fixture ok)"; fail_git "$T" ls-remote; run_job "$T"
 check_fleet_ran "ls-remote-fails" "$T" "could not list lessons branches"; rm -rf "$T"
 T="$(build_fixture fail-list)"; run_job "$T"
-check_fleet_ran "gh-list-fails" "$T" "could not ask GitHub whether auto/lessons-old merged"; rm -rf "$T"
+check_fleet_ran "gh-list-fails" "$T" "could not ask GitHub which lessons branches merged"; rm -rf "$T"
 T="$(build_fixture ok)"; touch "$T/distill.fail"; run_job "$T"
 check_fleet_ran "distill-fails" "$T" "lessons-distill.py exited non-zero"; rm -rf "$T"
 T="$(build_fixture ok)"; run_job "$T" "not json"
@@ -459,6 +495,39 @@ grep -q 'lessons-push-guard refused' "$T/notify.txt" 2>/dev/null \
   || bad "stray-path: the alert does not name the guard: $(cat "$T/notify.txt" 2>/dev/null)"
 [ "$(worktrees_left "$T")" = "1" ] && ok "stray-path: the worktree is kept for recovery" \
                                    || bad "stray-path: the worktree was removed"
+rm -rf "$T"
+
+# --- 15. the merged check is one GitHub call, however many branches exist ----
+# The repo keeps merged branches, so one auto/lessons-* branch is added every
+# week and never removed. One `gh pr list` per branch grew by a call a week, and
+# any one failing cost that week's distilling (PR #551 round 4: 53 calls in one
+# run after a year).
+T="$(build_fixture merged-branch)"
+for i in 1 2 3 4 5; do
+  g -C "$T/seed" push -q "$T/origin.git" "main:refs/heads/auto/lessons-wk$i"
+  echo "auto/lessons-wk$i" >> "$T/merged.txt"
+done
+run_job "$T"
+CALLS="$(grep -c '^pr list' "$T/gh.calls" 2>/dev/null | head -1)"
+echo "      fixture (six-merged): $T (exit=$JOB_RC, pr list calls=$CALLS)"
+[ "$JOB_RC" -eq 0 ] && grep -q 'lessons published' "$T/lessons-daily.log" 2>/dev/null \
+  && ok "six-merged: six merged branches do not hold the run" \
+  || bad "six-merged: merged branches held the run (exit=$JOB_RC)"
+[ "$CALLS" = "1" ] && ok "six-merged: one gh pr list call for six branches" \
+                   || bad "six-merged: $CALLS gh pr list calls for six branches"
+rm -rf "$T"
+# 15b. The local match is exact: wk1 is not merged just because wk10 is. A
+# substring match reads the merged name "auto/lessons-wk10" as containing wk1.
+T="$(build_fixture merged-branch)"
+g -C "$T/seed" push -q "$T/origin.git" "main:refs/heads/auto/lessons-wk1"
+g -C "$T/seed" push -q "$T/origin.git" "main:refs/heads/auto/lessons-wk10"
+echo "auto/lessons-wk10" >> "$T/merged.txt"
+run_job "$T"
+echo "      fixture (prefix-unmerged): $T (exit=$JOB_RC)"
+[ "$JOB_RC" -ne 0 ] && ! find "$T" -name fixture-lesson.md | grep -q . \
+  && grep -q 'not merged yet: auto/lessons-wk1\.' "$T/notify.txt" 2>/dev/null \
+  && ok "prefix-unmerged: only the unmerged wk1 holds the run, and the alert names it" \
+  || bad "prefix-unmerged: exit=$JOB_RC, alert: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 echo "---"

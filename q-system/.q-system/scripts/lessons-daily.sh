@@ -117,7 +117,13 @@ cleanup_wt() {
   [ "$PUBLISH_MODE" = pr ] && [ -d "$LREPO" ] || return 0
   if [ "$KEEP_WT" = 1 ]; then
     echo "$(TS) lessons worktree KEPT at $LREPO" >> "$LOG"
-  elif ! git -C "$SKEL" worktree remove "$LREPO" >> "$LOG" 2>&1; then
+  # --force because KEEP_WT=0 already means nothing in here is worth keeping:
+  # the lessons are pushed, or nothing was committed and the ledger rows go with
+  # the lessons. The reviewer runs claude inside this worktree and its
+  # SessionStart hook rewrites the tracked q-system/memory/.sycophancy-monthly-stamp,
+  # so a plain remove refused every clean publish and leaked one registered
+  # worktree a week while the run exited 0 (PR #551 round 4).
+  elif ! git -C "$SKEL" worktree remove --force "$LREPO" >> "$LOG" 2>&1; then
     echo "$(TS) lessons worktree left at $LREPO (not clean, see above)" >> "$LOG"
   fi
 }
@@ -162,7 +168,7 @@ lessons_half() {
     # PR counts: an open PR, and also a branch whose PR never opened. Checking
     # open PRs alone missed that second case (PR #551 review round 1). The repo
     # keeps merged branches (delete_branch_on_merge is off), so "merged" is asked
-    # per branch rather than read from the branch list. The alert is how a stuck
+    # of GitHub rather than read from the branch list. The alert is how a stuck
     # lessons PR or an orphan branch reaches the board.
     # The listing is captured on its own line so its exit status is checked. Piped
     # straight into the loop, a failed ls-remote produced no refs and read as "no
@@ -171,11 +177,21 @@ lessons_half() {
     REMOTE_BR="$(git -C "$SKEL" ls-remote --heads origin 'refs/heads/auto/lessons-*' 2>>"$LOG")" \
       || { lessons_fail "could not list lessons branches on origin; nothing distilled"; return 1; }
     PENDING_BR=""
-    for ref in $(printf '%s\n' "$REMOTE_BR" | awk 'NF {sub("refs/heads/", "", $2); print $2}'); do
-      MERGED="$(cd "$LREPO" && gh pr list --state merged --head "$ref" --json number --jq 'length' 2>>"$LOG")" \
-        || { lessons_fail "could not ask GitHub whether $ref merged; nothing distilled"; return 1; }
-      [ "$MERGED" = "0" ] && PENDING_BR="$PENDING_BR $ref"
-    done
+    REFS="$(printf '%s\n' "$REMOTE_BR" | awk 'NF {sub("refs/heads/", "", $2); print $2}')"
+    # ONE CALL FOR EVERY BRANCH. Asking per branch grew by one call a week, since
+    # merged branches are never deleted, and any one failing cost that week's
+    # distilling (PR #551 round 4: 53 calls in one run after a year). GitHub's
+    # head: qualifier is a prefix match (measured 2026-10-23). 1000 is the search
+    # API's own result cap; a merged branch past it reads as unmerged, which
+    # holds distilling and names the branch, the loud direction.
+    if [ -n "$REFS" ]; then
+      MERGED_BR="$(cd "$LREPO" && gh pr list --state merged --search "head:auto/lessons-" \
+                   --limit 1000 --json headRefName --jq '.[].headRefName' 2>>"$LOG")" \
+        || { lessons_fail "could not ask GitHub which lessons branches merged; nothing distilled"; return 1; }
+      for ref in $REFS; do
+        printf '%s\n' "$MERGED_BR" | grep -qxF -- "$ref" || PENDING_BR="$PENDING_BR $ref"
+      done
+    fi
     # The guard holds back DISTILLING, not the fan-out. A stuck lessons PR is
     # named in the alert and the run exits 1, but main still goes to the fleet
     # (review of PR #551, round 3).
