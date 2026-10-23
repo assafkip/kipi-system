@@ -1,4 +1,30 @@
-# Session handoff, Sep 1-2 (morning-brief Phases 2-4 as two prd-os PRDs) [verified: git log]. READ THIS FIRST.
+# Session handoff, Oct 23 (brag review, claudemy launch video) [verified: date]. READ THIS FIRST.
+
+No code in this repo changed this session except the memory files below; git is untouched [provenance: observed].
+
+## Done
+
+- Reviewed github.com/latent-spaces/brag (skill + code) for dev-tools. Verdict given: do not install. Its first draft read generic and the look the founder wanted was beyond it [provenance: observed]. Founder then moved the work to a separate Sonos-style video.
+- Claudemy launch video APPROVED by the founder ("keep this is good") [provenance: explicit_statement]: `~/projects/claudemy-video/sonos-cut/claudemy-sonos-cut-v3.mp4`, 28.1s [verified: ffprobe format=duration], copy in ~/Downloads.
+- Rebuild with no API spend: `bash ~/projects/claudemy-video/sonos-cut/rebuild.sh`. Proven from the new folder: stills matched the delivered video at mean pixel diff 1.42 to 1.53, soundtrack byte-identical [verified: capture.py stills + numpy diff, cmp sonos.wav].
+- Every founder ruling and measurement for the video is in `~/projects/claudemy-video/sonos-cut/plan.md` [provenance: observed].
+- Spend: 8 Kling/Hailuo clips through the Apify MCP plus 6 gpt-image-2 stills; roughly $23 to $26 from the per-second and per-image list prices {{UNVERIFIED}} (billed totals not checked in the Apify or OpenAI consoles).
+- Memories written: project_claudemy_sonos_cut, feedback_video_generic_is_structure, feedback_cut_speech_on_transcript [provenance: observed].
+
+## Open, all in files
+
+- Two founder-only loops added to `q-system/memory/open-loops.json`: `gemini-prepaid-credits-depleted`, `apify-claudemy-stills-store` [verified: open-loops.py --report lists 4 open].
+- ASK-2937 (sp-f47d424b, owner Sana): kipi-design dogfood gate blocks any .html in a Claude Code scratchpad; repro exits 2 [verified: plugins/kipi-design/hooks/dogfood_gate.py on a scratch copy].
+- MEMORY.md index is near its read limit, 22.9KB of 24.4KB per the hook's own report [provenance: observed]; not compacted this session.
+
+## Dead ends, do not retry
+
+- Gemini image models: HTTP 402 "prepayment credits are depleted" on gemini-3-pro-image, gemini-3.1-flash-image, gemini-2.5-flash-image [verified: generateContent calls].
+- Sora 2 API: model record shows shutdown_date 2026-09-24 and /v1/videos returns 404 [verified: curl /v1/models/sora-2 and /v1/videos].
+
+---
+
+# Session handoff, Sep 1-2 (morning-brief Phases 2-4 as two prd-os PRDs) [verified: git log]. (previous)
 
 Branch `prd/morning-brief-learns` in worktree `~/projects/kipi-wt-prd-mbl`, base `ddad93b1`, 61 commits [verified: git log --oneline ddad93b1..HEAD | wc -l]. Nothing pushed, nothing merged: git is Sana's.
 
