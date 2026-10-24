@@ -1,0 +1,88 @@
+# THE BACKSTOP FOR PRIVATE TERMS (ASK-2058, founder ruling 2026-10-22: "this
+# repo should not have any private info").
+#
+# The commit-msg guard runs on a laptop that holds the private registries. It
+# never sees three paths, and each one has put a client name into this repo:
+#   * a squash merge, whose commit message GitHub writes from the PR title and
+#     the PR's commit messages, never the body, under this repo's
+#     COMMIT_MESSAGES setting (both client names found in 2026-08 sat in
+#     commit SUBJECTS);
+#   * a commit made with --no-verify, or from a machine without the list;
+#   * a hook that is not installed in the clone that made the commit.
+# So this job scans the PR title, the PR body, every commit message and author
+# in the range, every added line, every added path name and the content of
+# every added binary (zip containers inflated), against PRIVATE_TERMS.
+#
+# WHERE THE SECRET LIVES, AND WHY (review of PR #548, round 2). It is an
+# ENVIRONMENT secret in `private-terms`, whose deployment policy admits only
+# main. Under `pull_request` a same-repo PR runs its OWN copy of this workflow
+# and of the guard with the secret in reach, so it could print the list encoded
+# past GitHub's masking. Under `pull_request_target` the workflow and the guard
+# both come from the BASE branch; the PR head is fetched as git DATA and never
+# executed. A PR branch that adds its own workflow cannot reach the secret
+# either: its ref is not main, and the environment refuses it.
+#
+# FORK PRs ARE NOT SCANNED HERE. Pass or fail on a fork PR would be an oracle:
+# anyone could open PRs naming guesses and learn which names are on the list.
+# The push to main after a merge scans the same change with the secret.
+#
+# THE LOG IS PUBLIC. --ci prints the file, the line and the KIND of term, never
+# the term, and masks a path that itself carries one. Do not add a step that
+# echoes the secret or the matched text.
+name: private-terms
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  scan:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: private-terms
+    steps:
+      # The BASE branch on pull_request_target, the pushed main on push. Full
+      # history: the scan diffs from the merge base and reads every message in
+      # the range, and a depth-1 clone has neither.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Data, not code: the PR head becomes a ref the guard reads with git
+      # diff, log and cat-file. Nothing from it is checked out or run.
+      - name: Fetch the PR head as data
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+      # Title and body arrive through env, never interpolated into the script:
+      # a PR title is attacker-controlled text on a public repo.
+      - name: Scan the change for private terms
+        env:
+          PRIVATE_TERMS: ${{ secrets.PRIVATE_TERMS }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_COMMITS: ${{ toJSON(github.event.commits.*.id) }}
+        run: |
+          guard=q-system/.q-system/scripts/client-name-guard.py
+          if [ "$EVENT" = "pull_request_target" ]; then
+            exec python3 "$guard" --ci --base "$PR_BASE" --head "$PR_HEAD"
+          fi
+          # A first push carries an all-zero `before`, and a force-push leaves
+          # one this clone does not have. HEAD^..HEAD here let a term from an
+          # EARLIER commit of the push pass (review round 1), so without a base
+          # the whole tree is scanned, plus every message the push lists.
+          if ! git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            echo "base '${PUSH_BEFORE}' is not a commit in this clone; scanning the full tree at HEAD"
+            exec python3 "$guard" --ci --tree --head HEAD
+          fi
+          exec python3 "$guard" --ci --base "$PUSH_BEFORE" --head HEAD
