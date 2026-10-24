@@ -187,6 +187,20 @@
       "instance_q_dir": null,
       "type": "subtree",
       "has_git": true
+    },
+    {
+      "name": "brag",
+      "linear_project": "brag",
+      "path": "/Users/assafkipnis/projects/brag-fork",
+      "subtree_prefix": "q-system",
+      "instance_q_dir": null,
+      "type": "subtree",
+      "has_git": true,
+      "note": "Founder 2026-10-24: the brag video skill gets a place in Sana's queue, by dispatching this repo (picked over moving the skill into kipi-system). Public fork of latent-spaces/brag; ~/.claude/skills/brag links to skills/brag here. First issue ASK-3036.",
+      "dispatch": {
+        "enabled": true,
+        "expected_remote": "https://github.com/assafkip/brag.git"
+      }
     }
   ],
   "standalone": [
