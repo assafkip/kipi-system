@@ -352,3 +352,15 @@ def test_plist_template_is_wired_to_the_script_with_apply():
     assert re.search(r"<key>StartInterval</key>\s*<integer>900</integer>", plist)
     assert "__KIPI_REPO__" in plist and "__HOME__" in plist
     assert (SCRIPT).exists()
+
+
+def test_now_flag_hides_turns_from_the_future(tmp_path):
+    # The real log has the 23:03 recovery after the stall. "As of 15:00" must
+    # still see the stall; a dry run that read ahead said "no stall".
+    p = tmp_path / "d.log"
+    p.write_text("\n".join(flat(*STALL, BRAG_TURN, RECOVERY_TURN)) + "\n")
+    out = subprocess.run([sys.executable, str(SCRIPT), "--log", str(p),
+                          "--now", "2026-10-24T15:00:00Z"], capture_output=True, text=True)
+    assert "STALL ASK-2058 repo=home class=branch-guard turns=3" in out.stdout
+    assert "DRY: would kickstart com.kipi.dispatch" in out.stdout
+    assert "DRY: would push PR #554 head to refs/heads/sana/ask-2058" in out.stdout

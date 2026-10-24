@@ -368,7 +368,9 @@ def main(argv=None):
     except OSError as exc:
         print("cannot read %s: %s" % (a.log, exc), file=sys.stderr)
         return 1
-    turns = parse_turns(lines)
+    # --now is a time machine: a turn after `now` has not happened yet. Without
+    # this, a dry run "as of 15:00" read the 23:03 recovery and reported no stall.
+    turns = [t for t in parse_turns(lines) if parse_ts(t["ts"]) <= now]
     if a.replay:
         fires, _ = scan(turns, a.k)
         fires = [f for f in fires if f["ts"] >= a.since]
