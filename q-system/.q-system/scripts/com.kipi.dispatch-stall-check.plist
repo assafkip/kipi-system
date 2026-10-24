@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Dispatch stall checker (ASK-3064).
+
+     Founder, 2026-10-24: "Make a checker that if this happened again it restarts
+     the dispatcher." The dispatcher stayed alive for 8.5 hours and dispatched
+     nothing. This job reads dispatch.log every 15 minutes, repairs the known
+     branch-guard cause, kickstarts com.kipi.dispatch, and files ONE ticket for
+     Sana if that does not clear it. Why a separate job and not a step in
+     kipi-dispatch.sh: see the header of dispatch-stall-check.py.
+
+     RUNS FROM THE PINNED DISPATCH CHECKOUT, not the shared checkout humans park
+     on: that checkout is advanced to origin/main every dispatcher turn, so a
+     merged fix to the checker reaches the job without anyone syncing it (the
+     shared checkout was 9 ahead and 3 behind on 2026-10-24).
+
+     Offset: StartInterval 900 like the dispatcher. It does not need to be in
+     phase; it reads whatever turns have landed.
+
+     TEMPLATE: __KIPI_REPO__ and __HOME__ are materialized by install-plist.sh.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.dispatch-stall-check -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.dispatch-stall-check</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- gh must resolve: the repair is gh calls. Same PATH as com.kipi.dispatch. -->
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>KIPI_REPO_MAIN</key><string>__KIPI_REPO__</string>
+  </dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>exec python3 __HOME__/.local/state/kipi/dispatch/kipi-system/q-system/.q-system/scripts/dispatch-stall-check.py --apply</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/dispatch-stall-check.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/dispatch-stall-check.err.log</string>
+</dict>
+</plist>

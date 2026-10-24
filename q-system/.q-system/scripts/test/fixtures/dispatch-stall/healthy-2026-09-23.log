@@ -1,0 +1,10 @@
+2026-09-23T03:09:36Z dispatch: 2 of 25 registered repo(s) opted in for cross-repo dispatch
+ci-redrive: ASK-1923 PR #390 -- converge already gave up on this issue (hit the 3-round cap still at 'REQUEST CHANGES' on PR #390). Not re-entering it until a human clears the cap-out: python3 q-system/.q-system/scripts/attempts-ledger.py /Users/assafkipnis/.config/kipi/linear-worker-attempts.json clear-capout ASK-1923
+review-redrive: ASK-1959 PR #409 -> rework (reviewer said REQUEST CHANGES at the current head)
+2026-09-23T03:09:56Z reviewer redrive: ASK-1959 PR #409 needs rework (ASK-2036 waits)
+2026-09-23T03:09:56Z dispatching ASK-1959 (live=0 cap=3 rounds=3 budget=4/10 lane=production)
+2026-09-23T03:10:07Z dispatched ASK-1959 (confirmed running)
+2026-09-23T03:25:11Z preflight REFUSED ktlyst (/Users/assafkipnis/projects/ktlyst-saas/projects/product); not entering it -- FAIL dirty: working tree has 1 uncommitted change(s); an agent branch would capture them
+2026-09-23T03:25:13Z dispatch: 2 of 25 registered repo(s) opted in for cross-repo dispatch
+2026-09-23T03:25:13Z entering interview-coach (/Users/assafkipnis/projects/micro-saas/projects/interview-coach) -- cleared preflight, gh scoped to its own remote
+2026-09-23T03:25:22Z nothing ready (2 ready issue)
