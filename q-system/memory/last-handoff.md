@@ -19,6 +19,10 @@
 - Open loops: Gemini and Apify closed 2026-10-24, nothing waited on them. 2 left, claude-guardrails #14 and i-have-adhd #124, both waiting on outside maintainers [verified: open-loops.py --report lists 2].
 - The shared kipi-system checkout's main is 9 ahead and 3 behind origin/main from auto-commits; Sana's ASK-1881 covers the drift [verified: git rev-list --left-right --count].
 - Calendar: this session's connector token expired; the headless route read Oct 24 and Oct 25 as "(no events)" [verified: collect_calendar output].
+- Morning brief: Chief's Telegram brief replaced kipi's Slack one. ASK-3056 (project Chief: port or drop "your book" and "terms I do not know"), ASK-3057 (retire morning-brief.py and /q-morning, blocked by 3056), ASK-3058 (nothing works project-Chief issues) [verified: brief-last.json receipts, both repos].
+- Dispatch budget for 2026-10-24 reset 3 to 0 on the founder's order; logged in dispatch.log 22:49Z [verified: dispatch.log].
+- ASK-2058 wedge cleared by Sana: branch renamed to sana/ask-2058, PR #554 closed by GitHub, replacement PR #559 dispatched 23:03Z [verified: dispatch.log "dispatched ASK-2058 (confirmed running)"].
+- ASK-3064 stall checker: PR #560 reviewer-approved, auto-merge on, validate pending. Back in Backlog, founder unassigned. The install and live proof are ASK-3069, separate so a Done-on-merge cannot orphan them [verified: gh pr view 560].
 
 ## Dead ends, do not retry
 
