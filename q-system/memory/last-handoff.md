@@ -12,14 +12,13 @@
 
 ## Open, all in files
 
-- Founder: openwitness separation key. Command in memory project_openwitness; CI `separation` stays red until it runs [provenance: observed].
-- Founder, optional: the scoped skeleton sync into brag waits on `kipi-approve 9d2d466710bf9ca3e172eb062ad411d3faf39e8ebe10a33fa4c973636ac47160`. The next fleet sync applies the same 2 changes (.gitignore managed block, settings.json rewrite) [verified: dry run, Updated 1 Failed 0].
-- Founder: 4 open loops (claude-guardrails #14, i-have-adhd #124, Gemini credits, Apify stills store) [verified: open-loops.py --report lists 4].
-- Ask before switching /say to Kokoro (feedback_voice_is_kokoro).
-- Sana: ASK-3036, ASK-3042, openwitness ASK-2953 to ASK-2957.
-- The shared kipi-system checkout's main is 8 ahead and 2 behind origin/main from other sessions' auto-commits, so kipi-update.sh aborts from it [verified: git rev-list --left-right]. Not touched.
-- MEMORY.md is at 24KB of the 24.4KB read limit [provenance: observed, hook report]. Not compacted.
-- Google Calendar MCP session expired at wrap; tomorrow (Sunday Oct 25) not checked [verified: list_events error].
+- Nothing here is the founder's. Founder 2026-10-24: "why are you giving me all these tasks. Sana is the human." The wrap's first version of this list put 4 lines on him; none was publish, spend or delete [provenance: explicit_statement].
+- Sana: ASK-3036, ASK-3042, ASK-3053 (open-loops tags "[needs you]" with no reason), openwitness ASK-2953 to ASK-2957.
+- openwitness separation key: comes up only when the founder says "public". It reads the prior-client archive, which only his shell can open. Not a task before then [provenance: observed].
+- brag skeleton sync: no action. The next fleet sync applies the same 2 changes (.gitignore managed block, settings.json rewrite) [verified: dry run, Updated 1 Failed 0].
+- Open loops: Gemini and Apify closed 2026-10-24, nothing waited on them. 2 left, claude-guardrails #14 and i-have-adhd #124, both waiting on outside maintainers [verified: open-loops.py --report lists 2].
+- The shared kipi-system checkout's main is 9 ahead and 3 behind origin/main from auto-commits; Sana's ASK-1881 covers the drift [verified: git rev-list --left-right --count].
+- Calendar: this session's connector token expired; the headless route read Oct 24 and Oct 25 as "(no events)" [verified: collect_calendar output].
 
 ## Dead ends, do not retry
 

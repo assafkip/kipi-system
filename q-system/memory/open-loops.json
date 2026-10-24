@@ -40,17 +40,17 @@
   {
    "id": "gemini-prepaid-credits-depleted",
    "title": "Gemini API prepaid credits are empty (402 on every image model)",
-   "next_action": "Founder spend: top up at https://ai.studio/projects. Checked 2026-10-24 (heartbeat): gemini-2.5-flash-image returned HTTP 402 'Your prepayment credits are depleted'; identical on 2026-10-23 across gemini-3-pro-image, gemini-3.1-flash-image and gemini-2.5-flash-image. Anything else on GEMINI_API_KEY fails the same way until then. Re-check: curl -s -o /dev/null -w '%{http_code}' -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent' -H \"x-goog-api-key: $GEMINI_API_KEY\" -H 'Content-Type: application/json' -d '{\"contents\":[{\"parts\":[{\"text\":\"ping\"}]}]}' (402 = still empty, 200 = fixed). Then close this loop.",
+   "next_action": "CLOSED 2026-10-24: nothing waits on Gemini (no launchd plist names it; the claudemy video shipped without it). Not a founder task. Reopen only when a job needs GEMINI_API_KEY, filed to Sana with what it blocks. Prior: Founder spend: top up at https://ai.studio/projects. Checked 2026-10-24 (heartbeat): gemini-2.5-flash-image returned HTTP 402 'Your prepayment credits are depleted'; identical on 2026-10-23 across gemini-3-pro-image, gemini-3.1-flash-image and gemini-2.5-flash-image. Anything else on GEMINI_API_KEY fails the same way until then. Re-check: curl -s -o /dev/null -w '%{http_code}' -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent' -H \"x-goog-api-key: $GEMINI_API_KEY\" -H 'Content-Type: application/json' -d '{\"contents\":[{\"parts\":[{\"text\":\"ping\"}]}]}' (402 = still empty, 200 = fixed). Then close this loop.",
    "needs_founder": true,
-   "status": "open",
+   "status": "closed",
    "added": "2026-10-23"
   },
   {
    "id": "apify-claudemy-stills-store",
    "title": "Apify key-value store claudemy-video-stills: keep or delete (optional)",
-   "next_action": "Store id 9QANcJVhB4wlSfvuF holds the 7 generated stills uploaded for Kling on 2026-10-23; records are readable by anyone with the link; nothing sensitive in them; the source files also live in ~/projects/claudemy-video/sonos-cut/. Deleting is founder-only. To delete: curl -X DELETE https://api.apify.com/v2/key-value-stores/9QANcJVhB4wlSfvuF -H \"Authorization: Bearer $APIFY_TOKEN\". To keep: just close this loop.",
+   "next_action": "CLOSED 2026-10-24 as KEPT: nothing sensitive, source files are local, keeping is the default and needs no one. Founder 2026-10-24: 'why are you giving me all these tasks.' Prior: Store id 9QANcJVhB4wlSfvuF holds the 7 generated stills uploaded for Kling on 2026-10-23; records are readable by anyone with the link; nothing sensitive in them; the source files also live in ~/projects/claudemy-video/sonos-cut/. Deleting is founder-only. To delete: curl -X DELETE https://api.apify.com/v2/key-value-stores/9QANcJVhB4wlSfvuF -H \"Authorization: Bearer $APIFY_TOKEN\". To keep: just close this loop.",
    "needs_founder": true,
-   "status": "open",
+   "status": "closed",
    "added": "2026-10-23"
   }
  ]
