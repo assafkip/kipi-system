@@ -1,4 +1,37 @@
-# Session handoff, Oct 23 (brag review, claudemy launch video) [verified: date]. READ THIS FIRST.
+# Session handoff, Oct 23 to 24 (openwitness video, brag repo in Sana's queue) [verified: date]. READ THIS FIRST.
+
+## Done
+
+- openwitness product video v7 APPROVED ("this works") [provenance: explicit_statement]. File `~/Downloads/openwitness-v7-will.mp4`; project `~/projects/openwitness/video` (own git), ruling 42. Voice ElevenLabs "Will" on eleven_v4; 2,320 characters used [provenance: observed, plan.md spend log].
+- The brag skill repo is a dispatch-enabled instance. kipi-system#558 (registry row) merged after the fleet reviewer's APPROVE WITH NITS; assafkip/brag#1 (fleet layer seed) merged by the founder's one-time --admin merge; brag main protected, kipi/reviewer-approved required, admins included [verified: gh pr view 1 and 558 MERGED, gh api protection admins=true].
+- `repo-preflight.sh ~/projects/brag-fork https://github.com/assafkip/brag.git` prints OK, exit 0 [verified: ran it 20:31Z].
+- ASK-3036 (brag pace and readers checks) is in Sana's queue: label owner:sana, Linear project brag (P-ASK-78), Definition of Ready, Backlog, no assignee [verified: worker dry run printed "[dry] would work ASK-3036 (attempt 1/3)"].
+- Filed ASK-3042 for Sana: pr-review-agent.sh exits 9 on a PR over 300 files [verified: brag PR 1 review log, HTTP 406].
+- Memories: reference_sana_in_linear, project_brag_dispatch (new); project_openwitness, feedback_voice_is_kokoro, feedback_reference_is_vocabulary [provenance: observed].
+- Plan with outcomes: `q-system/output/plans/brag-dispatch-onboarding-2026-10-24.md` [provenance: observed].
+
+## Open, all in files
+
+- Founder: openwitness separation key. Command in memory project_openwitness; CI `separation` stays red until it runs [provenance: observed].
+- Founder, optional: the scoped skeleton sync into brag waits on `kipi-approve 9d2d466710bf9ca3e172eb062ad411d3faf39e8ebe10a33fa4c973636ac47160`. The next fleet sync applies the same 2 changes (.gitignore managed block, settings.json rewrite) [verified: dry run, Updated 1 Failed 0].
+- Founder: 4 open loops (claude-guardrails #14, i-have-adhd #124, Gemini credits, Apify stills store) [verified: open-loops.py --report lists 4].
+- Ask before switching /say to Kokoro (feedback_voice_is_kokoro).
+- Sana: ASK-3036, ASK-3042, openwitness ASK-2953 to ASK-2957.
+- The shared kipi-system checkout's main is 8 ahead and 2 behind origin/main from other sessions' auto-commits, so kipi-update.sh aborts from it [verified: git rev-list --left-right]. Not touched.
+- MEMORY.md is at 24KB of the 24.4KB read limit [provenance: observed, hook report]. Not compacted.
+- Google Calendar MCP session expired at wrap; tomorrow (Sunday Oct 25) not checked [verified: list_events error].
+
+## Dead ends, do not retry
+
+- Setting Sana as assignee or delegate through the Linear MCP: "One or more app users lack the required capability" [verified: save_issue, 3 attempts]. The label owner:sana is the route.
+- kipi-update.sh on a repo with no q-system/: "instance prefix is missing". Seed with kipi-new-instance.sh [verified: dry run].
+- ElevenLabs eleven_v4 ignores voice_settings.speed; slow lines with ffmpeg atempo [provenance: observed].
+- `timeout` is not installed on this Mac [verified: which timeout gtimeout].
+- `gh` in a fork checkout resolves PR numbers against the upstream repo; `gh repo set-default` first [verified: "Could not resolve to a PullRequest" before, merge queued after].
+
+---
+
+# Session handoff, Oct 23 (brag review, claudemy launch video) [verified: date]. (previous)
 
 No code in this repo changed this session except the memory files below; git is untouched [provenance: observed].
 
