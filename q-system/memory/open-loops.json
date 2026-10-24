@@ -1,57 +1,57 @@
 {
-  "_doc": "Open loops = anything parked, waiting, or ready-but-not-applied. The single source of truth so nothing falls on the ground. open-loops.py surfaces every open entry at SessionStart. To close one, set status to 'closed' (or delete it). NEVER prose-defer in a ledger; add it here instead.",
-  "loops": [
-    {
-      "id": "cc-spex-pr",
-      "title": "cc-spex closeout-gate PR",
-      "next_action": "CLOSED (idea landed upstream): maintainer rhuss (OWNER) shipped the deterministic closeout gate himself in v5.9.0 on 2026-07-04 -- spex/scripts/spex-closeout-gate.sh wired into verify as Step 0, reads REVIEW-CODE.md severity table, exits non-zero on unresolved Critical/Important, fail-open by default with SPEX_CLOSEOUT_STRICT=1 for fail-closed. Issue #9 now CLOSED. No PR needed; the contribution converged with the shipped feature.",
-      "needs_founder": true,
-      "status": "closed",
-      "added": "2026-06-20",
-      "github": "https://github.com/rhuss/cc-spex/issues/9"
-    },
-    {
-      "id": "captoken-pr",
-      "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
-      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Checked 2026-10-23 (heartbeat): still OPEN, ZERO comments, NO maintainer reply, upstream issue untouched since 2026-08-28 (updatedAt 2026-08-28T15:21:52Z). Prior identical check 2026-10-22. Prior check 2026-09-19 (ASK-536) identical (the 2026-08-28 third-party comment from benrrr56-wq is deleted). Patch still applies on upstream main b3c3e15 and tests/test-capability-approval.sh gives 12 passed, 0 failed. Check: gh issue view 14 --repo dwarvesf/claude-guardrails --json state,comments. Only a comment from a MAINTAINER that approves or invites the PR counts. Then: gh repo clone dwarvesf/claude-guardrails, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval to a fork, gh pr create with --body-file q-system/output/captoken-pr-body.md (title in captoken-pr-drafts-2026-06-16.md STEP 2). Then close this loop.",
-      "needs_founder": true,
-      "status": "open",
-      "added": "2026-06-20",
-      "github": "https://github.com/dwarvesf/claude-guardrails/issues/14"
-    },
-    {
-      "id": "inv-h14h15-branch",
-      "title": "kipi-investigations H14/H15 lives on branch feat/skill-hook-enforcement",
-      "next_action": "CLOSED (false alarm): feat/skill-hook-enforcement is the de-facto trunk (1288 commits ahead of main, which is stale), not a disposable feature branch. H14/H15 (387f3643) is on the live trunk and ships normally. No cherry-pick needed. Closed after correcting the misread.",
-      "needs_founder": true,
-      "status": "closed",
-      "added": "2026-06-20"
-    },
-    {
-      "id": "i-have-adhd-pr-124",
-      "title": "i-have-adhd rule-8 RSD PR (upstream)",
-      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Checked 2026-10-23 (heartbeat): OPEN, no reviews, no comments, untouched since 2026-08-19 (updatedAt 2026-08-19T21:40:58Z). Prior identical check 2026-10-22. Then wait on maintainer review; close this loop when merged or closed.",
-      "needs_founder": true,
-      "status": "open",
-      "added": "2026-08-19",
-      "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
-      "linear": "ASK-924"
-    },
-    {
-      "id": "gemini-prepaid-credits-depleted",
-      "title": "Gemini API prepaid credits are empty (402 on every image model)",
-      "next_action": "Founder spend: top up at https://ai.studio/projects. Checked 2026-10-23: gemini-3-pro-image, gemini-3.1-flash-image and gemini-2.5-flash-image all returned HTTP 402 'Your prepayment credits are depleted'. Anything else on GEMINI_API_KEY fails the same way until then. Re-check: curl -s -o /dev/null -w '%{http_code}' -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent' -H \"x-goog-api-key: $GEMINI_API_KEY\" -H 'Content-Type: application/json' -d '{\"contents\":[{\"parts\":[{\"text\":\"ping\"}]}]}' (402 = still empty, 200 = fixed). Then close this loop.",
-      "needs_founder": true,
-      "status": "open",
-      "added": "2026-10-23"
-    },
-    {
-      "id": "apify-claudemy-stills-store",
-      "title": "Apify key-value store claudemy-video-stills: keep or delete (optional)",
-      "next_action": "Store id 9QANcJVhB4wlSfvuF holds the 7 generated stills uploaded for Kling on 2026-10-23; records are readable by anyone with the link; nothing sensitive in them; the source files also live in ~/projects/claudemy-video/sonos-cut/. Deleting is founder-only. To delete: curl -X DELETE https://api.apify.com/v2/key-value-stores/9QANcJVhB4wlSfvuF -H \"Authorization: Bearer $APIFY_TOKEN\". To keep: just close this loop.",
-      "needs_founder": true,
-      "status": "open",
-      "added": "2026-10-23"
-    }
-  ]
+ "_doc": "Open loops = anything parked, waiting, or ready-but-not-applied. The single source of truth so nothing falls on the ground. open-loops.py surfaces every open entry at SessionStart. To close one, set status to 'closed' (or delete it). NEVER prose-defer in a ledger; add it here instead.",
+ "loops": [
+  {
+   "id": "cc-spex-pr",
+   "title": "cc-spex closeout-gate PR",
+   "next_action": "CLOSED (idea landed upstream): maintainer rhuss (OWNER) shipped the deterministic closeout gate himself in v5.9.0 on 2026-07-04 -- spex/scripts/spex-closeout-gate.sh wired into verify as Step 0, reads REVIEW-CODE.md severity table, exits non-zero on unresolved Critical/Important, fail-open by default with SPEX_CLOSEOUT_STRICT=1 for fail-closed. Issue #9 now CLOSED. No PR needed; the contribution converged with the shipped feature.",
+   "needs_founder": true,
+   "status": "closed",
+   "added": "2026-06-20",
+   "github": "https://github.com/rhuss/cc-spex/issues/9"
+  },
+  {
+   "id": "captoken-pr",
+   "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
+   "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Checked 2026-10-24 (heartbeat): still OPEN, ZERO comments, NO maintainer reply, upstream issue untouched since 2026-08-28 (updatedAt 2026-08-28T15:21:52Z). Prior identical checks 2026-10-23 and 2026-10-22. Prior check 2026-09-19 (ASK-536) identical (the 2026-08-28 third-party comment from benrrr56-wq is deleted). Patch still applies on upstream main b3c3e15 and tests/test-capability-approval.sh gives 12 passed, 0 failed. Check: gh issue view 14 --repo dwarvesf/claude-guardrails --json state,comments. Only a comment from a MAINTAINER that approves or invites the PR counts. Then: gh repo clone dwarvesf/claude-guardrails, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval to a fork, gh pr create with --body-file q-system/output/captoken-pr-body.md (title in captoken-pr-drafts-2026-06-16.md STEP 2). Then close this loop.",
+   "needs_founder": true,
+   "status": "open",
+   "added": "2026-06-20",
+   "github": "https://github.com/dwarvesf/claude-guardrails/issues/14"
+  },
+  {
+   "id": "inv-h14h15-branch",
+   "title": "kipi-investigations H14/H15 lives on branch feat/skill-hook-enforcement",
+   "next_action": "CLOSED (false alarm): feat/skill-hook-enforcement is the de-facto trunk (1288 commits ahead of main, which is stale), not a disposable feature branch. H14/H15 (387f3643) is on the live trunk and ships normally. No cherry-pick needed. Closed after correcting the misread.",
+   "needs_founder": true,
+   "status": "closed",
+   "added": "2026-06-20"
+  },
+  {
+   "id": "i-have-adhd-pr-124",
+   "title": "i-have-adhd rule-8 RSD PR (upstream)",
+   "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Checked 2026-10-24 (heartbeat): OPEN, no reviews, no comments, untouched since 2026-08-19 (updatedAt 2026-08-19T21:40:58Z). Prior identical checks 2026-10-23 and 2026-10-22. Then wait on maintainer review; close this loop when merged or closed.",
+   "needs_founder": true,
+   "status": "open",
+   "added": "2026-08-19",
+   "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
+   "linear": "ASK-924"
+  },
+  {
+   "id": "gemini-prepaid-credits-depleted",
+   "title": "Gemini API prepaid credits are empty (402 on every image model)",
+   "next_action": "Founder spend: top up at https://ai.studio/projects. Checked 2026-10-24 (heartbeat): gemini-2.5-flash-image returned HTTP 402 'Your prepayment credits are depleted'; identical on 2026-10-23 across gemini-3-pro-image, gemini-3.1-flash-image and gemini-2.5-flash-image. Anything else on GEMINI_API_KEY fails the same way until then. Re-check: curl -s -o /dev/null -w '%{http_code}' -X POST 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent' -H \"x-goog-api-key: $GEMINI_API_KEY\" -H 'Content-Type: application/json' -d '{\"contents\":[{\"parts\":[{\"text\":\"ping\"}]}]}' (402 = still empty, 200 = fixed). Then close this loop.",
+   "needs_founder": true,
+   "status": "open",
+   "added": "2026-10-23"
+  },
+  {
+   "id": "apify-claudemy-stills-store",
+   "title": "Apify key-value store claudemy-video-stills: keep or delete (optional)",
+   "next_action": "Store id 9QANcJVhB4wlSfvuF holds the 7 generated stills uploaded for Kling on 2026-10-23; records are readable by anyone with the link; nothing sensitive in them; the source files also live in ~/projects/claudemy-video/sonos-cut/. Deleting is founder-only. To delete: curl -X DELETE https://api.apify.com/v2/key-value-stores/9QANcJVhB4wlSfvuF -H \"Authorization: Bearer $APIFY_TOKEN\". To keep: just close this loop.",
+   "needs_founder": true,
+   "status": "open",
+   "added": "2026-10-23"
+  }
+ ]
 }
