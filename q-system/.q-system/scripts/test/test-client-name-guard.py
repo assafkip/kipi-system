@@ -459,8 +459,12 @@ def main(guard):
         secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
         rc, out = run_ci(guard, repo, "HEAD^", "HEAD", {"PRIVATE_TERMS": secret})
         missed_by_range = rc == 0
-        env = {k: v for k, v in os.environ.items() if k != "PRIVATE_TERMS"}
-        env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PRIVATE_TERMS", "PUSH_COMMITS", "PUSH_SIZE")}
+        # This block is about CONTENT, so the push declares the smallest honest
+        # payload: no listed commits and a size that matches (case 30 is where
+        # the payload-vs-size cross-check itself is exercised).
+        env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret, PUSH_SIZE="0")
         t = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
                            cwd=repo, capture_output=True, text=True, env=env)
         record("CI --tree catches a name the HEAD^..HEAD range misses",
@@ -498,10 +502,15 @@ def main(guard):
         head = git(repo, "rev-parse", "HEAD").stdout.strip()
         secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
 
-        def tree(pushed):
-            env = {k: v for k, v in os.environ.items() if k not in ("PRIVATE_TERMS", "PUSH_COMMITS")}
+        def tree(pushed, size=None):
+            # PUSH_SIZE is the push's own commit count (github.event.size). The
+            # payload lists at most 20, so the count is what proves the list is
+            # complete (case 30); these cases declare a size that matches.
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("PRIVATE_TERMS", "PUSH_COMMITS", "PUSH_SIZE")}
             env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret,
-                       PUSH_COMMITS=json.dumps(pushed))
+                       PUSH_COMMITS=json.dumps(pushed),
+                       PUSH_SIZE=str(len(pushed) if size is None else size))
             return subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", "HEAD"],
                                   cwd=repo, capture_output=True, text=True, env=env)
         t1, t2 = tree([early, head]), tree([head])
@@ -574,6 +583,11 @@ def main(guard):
                "refs/pull/" in code and "ref: ${{ github.event.pull_request.head" not in code)
         record("workflow: no-base fallback is --tree, never HEAD^..HEAD",
                "--tree" in code and 'base="HEAD^"' not in code)
+        # The tree scan refuses without it, so a workflow that stopped passing
+        # PUSH_SIZE would turn every force-push scan red. The pairing is the
+        # wiring, and nothing else in the repo passes that variable.
+        record("workflow: the push's own commit count reaches the guard",
+               "PUSH_SIZE: ${{ github.event.size }}" in code)
 
     # --- 22. REGRESSION (review round 3, blocker 1): `people` takes a list ----
     # The live registry holds a list under `contacts` on some clients and ONE
@@ -833,6 +847,196 @@ def main(guard):
         rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
         record("bypass: one commit's trailer does not authorise a sibling commit (control)",
                rc != 0 and "notes.md" in out, f"rc={rc}")
+
+    # --- 30. REGRESSION (PR #559 review, major 1): the payload is not the
+    # authority on what the push carried. GitHub's push event lists AT MOST 20
+    # commits in `commits` and reports the real count in `size`, so the 2048-entry
+    # cap could never fire: a 21-commit push left unlisted messages unscanned and
+    # reported clean. The listed count is now cross-checked against the push's own
+    # size, and every listed sha against git's reachable history.
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        commit(repo, home, f"notes from the {CLIENT} call", {"a.md": "clean\n"})
+        named = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit(repo, home, "tidy", {"b.md": "clean\n"})
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        # A commit that EXISTS in the clone but is not reachable from the pushed
+        # head: `git log -1 <sha>` alone cannot tell the two apart.
+        git(repo, "checkout", "-q", "-b", "side", named)
+        commit(repo, home, "side work", {"c.md": "clean\n"})
+        side = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "checkout", "-q", head)
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+
+        def tree30(pushed, size="match"):
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("PRIVATE_TERMS", "PUSH_COMMITS", "PUSH_SIZE")}
+            env.update(HOME=str(Path(tmp) / "ci-home"), PRIVATE_TERMS=secret,
+                       PUSH_COMMITS=json.dumps(pushed))
+            if size is not None:
+                env["PUSH_SIZE"] = str(len(pushed) if size == "match" else size)
+            p = subprocess.run([sys.executable, str(guard), "--ci", "--tree", "--head", head],
+                               cwd=repo, capture_output=True, text=True, env=env)
+            return p.returncode, p.stdout + p.stderr
+
+        rc, out = tree30([head], size=3)
+        record("CI --tree: a payload shorter than the push's own size fails closed",
+               rc != 0 and "3" in out and "Traceback" not in out, f"rc={rc}")
+        rc, out = tree30([named, head])
+        record("CI --tree: a complete payload still catches the named message (control)",
+               rc != 0 and named[:10] in out, f"rc={rc}")
+        rc, out = tree30([head], size=1)
+        record("CI --tree: a complete payload of clean messages passes (control)",
+               rc == 0, f"rc={rc}")
+        rc, out = tree30([side, head])
+        record("CI --tree: a listed commit not reachable from the pushed head fails closed",
+               rc != 0 and "Traceback" not in out, f"rc={rc}")
+        rc, out = tree30([head], size=None)
+        record("CI --tree: a payload with no declared push size fails closed",
+               rc != 0 and "Traceback" not in out, f"rc={rc}")
+
+    # --- 31. REGRESSION (PR #559 review, major 2): an EMPTY list is not a
+    # MISSING secret. `not terms` covered both, so a payload whose sources
+    # expanded to zero terms printed "the secret is missing or empty" and sent
+    # the operator to --sync-ci-secret, which refused for the same reason while
+    # reporting "no private sources on this machine".
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        rc_missing, out_missing = run_ci(guard, repo, base, base, {})
+        record("CI: a missing secret still fails, and still says missing or empty",
+               rc_missing != 0 and "missing or empty" in out_missing, f"rc={rc_missing}")
+        rc_empty, out_empty = run_ci(guard, repo, base, base,
+                                     {"PRIVATE_TERMS": json.dumps({"terms": {"org": []}})})
+        record("CI: a secret that expands to ZERO terms fails with its own diagnosis",
+               rc_empty != 0 and "zero terms" in out_empty
+               and "missing or empty" not in out_empty, f"rc={rc_empty}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)   # sources exist, yield nothing
+        git(repo, "remote", "add", "origin",
+            "https://github.com/example-owner/example-public.git")
+        kipi = home / ".config" / "kipi"
+        (kipi / "empty-tokens").write_text("# no tokens at all\n")
+        (kipi / "private-terms.json").write_text(json.dumps(
+            {"token_files": [str(kipi / "empty-tokens")]}))
+        fakebin = Path(tmp) / "bin"
+        fakebin.mkdir()
+        log = Path(tmp) / "gh.log"
+        gh = fakebin / "gh"
+        gh.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n'
+                      'case "$*" in *"repo view"*) echo PUBLIC;; esac\nexit 0\n')
+        gh.chmod(0o755)
+        env = dict(os.environ, HOME=str(home),
+                   PATH=f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}")
+        env.pop("PRIVATE_TERMS", None)
+        p = subprocess.run([sys.executable, str(guard), "--sync-ci-secret"], cwd=repo,
+                           capture_output=True, text=True, env=env)
+        out = p.stdout + p.stderr
+        pushed = log.exists() and "secret set" in log.read_text()
+        record("sync: sources that yield zero terms refuse the push and name that state",
+               p.returncode == 0 and not pushed and "zero terms" in out
+               and "no private sources" not in out, f"rc={p.returncode}, pushed={pushed}")
+
+    # --- 32. REGRESSION (PR #559 Codex P2): a RECOGNISED zip that cannot be read
+    # through is unscannable, never clean. A CRC-corrupt first member raised
+    # BadZipFile out of z.read(); the outer handler read that as "not a zip after
+    # all" and fell back to raw bytes, where the LATER deflated member holding the
+    # name is invisible. The guard reported clean.
+    def crc_corrupt_zip():
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("first.txt", "A" * 2000)
+            z.writestr("second.txt", f"prepared for {CLIENT}\n" * 50)
+        raw = bytearray(buf.getvalue())
+        i = raw.find(b"PK\x01\x02")             # first central-directory record
+        raw[i + 16:i + 20] = b"\x00\x00\x00\x00"   # its stored CRC-32
+        return bytes(raw)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        rc, out = commit_bytes(repo, home, "add an archive", "bad.zip", crc_corrupt_zip())
+        record("local: a zip with an unreadable member BLOCKS (unscannable, not clean)",
+               rc != 0 and head_count(repo) == 0 and "Traceback" not in out, f"rc={rc}")
+        git(repo, "reset", "-q", "--mixed", check=False)
+        (repo / "bad.zip").unlink()
+        # Controls: a sound zip still passes, and a file that only LOOKS like a
+        # zip still falls back to its raw bytes rather than refusing.
+        rc, out = commit_bytes(repo, home, "add an archive", "ok.zip",
+                               zip_bytes("nothing private in here"))
+        record("local: a sound zip still passes (control)", rc == 0, f"rc={rc}")
+        rc, out = commit_bytes(repo, home, "add a blob", "fake.zip",
+                               b"PK\x03\x04" + f" prepared for {CLIENT}\n".encode())
+        record("local: PK magic with no zip behind it still scans its raw bytes (control)",
+               rc != 0 and "Traceback" not in out, f"rc={rc}")
+        git(repo, "reset", "-q", "--mixed", check=False)
+        (repo / "fake.zip").unlink()
+        rc, out = commit_bytes(repo, home, "add a blob", "fake2.zip",
+                               b"PK\x03\x04" + b"\x00 nothing private in here\n")
+        record("local: PK magic with no zip behind it and nothing private passes (control)",
+               rc == 0, f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard, armed=False)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        base = git(repo, "rev-parse", "HEAD").stdout.strip()
+        commit_bytes(repo, home, "add an archive", "bad.zip", crc_corrupt_zip())
+        head = git(repo, "rev-parse", "HEAD").stdout.strip()
+        secret = json.dumps({"terms": {"org": [CLIENT.lower()]}})
+        rc, out = run_ci(guard, repo, base, head, {"PRIVATE_TERMS": secret})
+        record("CI: a zip with an unreadable member FAILS as not fully scanned",
+               rc != 0 and "not fully scanned" in out
+               and CLIENT.lower() not in out.lower(), f"rc={rc}")
+
+    # --- 33. REGRESSION (PR #559 Codex P2): the pre-push sync never blocks a
+    # push. An unwritable ~/.config/kipi raised OSError out of the digest stamp
+    # AFTER gh had already refreshed the secret, so lefthook refused the push and
+    # the "never blocks" promise in the docstring was false.
+    def sync_with_gh(tmp, home, repo, prepare=None):
+        fakebin = Path(tmp) / "bin"
+        fakebin.mkdir(exist_ok=True)
+        log = Path(tmp) / "gh.log"
+        gh = fakebin / "gh"
+        gh.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n'
+                      'case "$*" in *"repo view"*) echo PUBLIC;; esac\nexit 0\n')
+        gh.chmod(0o755)
+        if prepare:
+            prepare()
+        env = dict(os.environ, HOME=str(home),
+                   PATH=f"{fakebin}{os.pathsep}{os.environ.get('PATH', '')}")
+        env.pop("PRIVATE_TERMS", None)
+        p = subprocess.run([sys.executable, str(guard), "--sync-ci-secret"], cwd=repo,
+                           capture_output=True, text=True, env=env)
+        return p.returncode, p.stdout + p.stderr, (log.exists()
+                                                   and "secret set" in log.read_text())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        git(repo, "remote", "add", "origin",
+            "https://github.com/example-owner/example-public.git")
+        kipi = home / ".config" / "kipi"
+        try:
+            rc, out, pushed = sync_with_gh(tmp, home, repo,
+                                           prepare=lambda: kipi.chmod(0o500))
+        finally:
+            kipi.chmod(0o700)
+        record("sync: an unwritable digest stamp warns and exits 0, never blocks the push",
+               rc == 0 and pushed and "Traceback" not in out and "stamp" in out, f"rc={rc}")
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = make_repo(tmp, guard)
+        git(repo, "remote", "add", "origin",
+            "https://github.com/example-owner/example-public.git")
+        stamp = home / ".config" / "kipi" / "private-terms.ci-digest.example-owner_example-public"
+        def unreadable():
+            stamp.write_text("whatever\n")
+            stamp.chmod(0o000)
+        try:
+            rc, out, pushed = sync_with_gh(tmp, home, repo, prepare=unreadable)
+        finally:
+            stamp.chmod(0o600)
+        record("sync: an unreadable digest stamp warns, re-pushes and exits 0",
+               rc == 0 and pushed and "Traceback" not in out and "stamp" in out, f"rc={rc}")
 
     failed = [n for n, ok in results if not ok]
     print()

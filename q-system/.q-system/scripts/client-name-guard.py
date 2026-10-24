@@ -117,6 +117,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 KIPI_CONFIG = Path.home() / ".config" / "kipi"
@@ -368,7 +369,12 @@ def base_payload(warn=lambda m: print(f"client-name-guard: WARN {m}", file=sys.s
     exclusions, so an excluded spelling cannot regrow there.
     """
     terms = load_terms(warn=warn)
-    if not terms:
+    # None means NO SOURCE EXISTS; {} means sources exist and yielded nothing.
+    # Collapsing them (`if not terms`) made --sync-ci-secret report "no private
+    # sources on this machine" for a machine that has them, which is the sync
+    # half of PR #559 review major 2. The caller decides what to do with a
+    # zero-term payload; this function no longer hides which state it is.
+    if terms is None:
         return None
     by_kind = {}
     for t, k in terms.items():
@@ -512,7 +518,16 @@ def binary_text(data):
     chunks = [data]
     if data[:4] == b"PK\x03\x04":
         try:
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
+            archive = zipfile.ZipFile(io.BytesIO(data))
+        except (zipfile.BadZipFile, OSError, EOFError):
+            archive = None   # PK magic, no zip behind it: the raw bytes above are the scan
+        if archive is not None:
+            # ONCE THE ARCHIVE OPENS, A MEMBER THAT WILL NOT READ IS UNSCANNABLE
+            # (PR #559 Codex P2). A CRC-corrupt FIRST member raised BadZipFile
+            # into the outer handler, which read it as "not a zip after all": no
+            # later member was inflated, and a name inside a deflated one is not
+            # in the raw bytes, so the guard reported clean.
+            with archive as z:
                 infos = z.infolist()
                 if len(infos) > _ZIP_MAX_MEMBERS:
                     raise Unscannable(f"zip has {len(infos)} members, cap {_ZIP_MAX_MEMBERS}")
@@ -528,11 +543,10 @@ def binary_text(data):
                         raise Unscannable("an encrypted zip member cannot be read")
                     try:
                         chunks.append(z.read(info))
-                    except (RuntimeError, NotImplementedError) as exc:
+                    except (RuntimeError, NotImplementedError, zipfile.BadZipFile,
+                            zlib.error, ValueError, EOFError, OSError) as exc:
                         raise Unscannable(f"a zip member cannot be inflated "
                                           f"({exc.__class__.__name__})") from None
-        except (zipfile.BadZipFile, OSError, EOFError):
-            pass   # not a readable zip after all: its raw bytes above are the scan
     texts = [c.decode("utf-8", errors="replace") for c in chunks]
     for c in chunks:
         texts.extend(_utf16_text(c))
@@ -724,11 +738,23 @@ def _ci_terms():
     # nothing set FORK_PR, so a "fork passes with a notice" path was unreachable
     # code whose only test tested itself.
     terms = load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}"))
-    if not terms or not os.environ.get(CI_SECRET):
+    if terms is None or not os.environ.get(CI_SECRET):
         print(f"::error::client-name-guard: the {CI_SECRET} secret (environment {CI_ENV}) is "
               "missing or empty, so the backstop is off. Run `python3 "
               "q-system/.q-system/scripts/client-name-guard.py --sync-ci-secret` from a "
               "machine with the private sources.")
+        return None, 1
+    # AN EMPTY LIST IS NOT A MISSING SECRET (PR #559 review major 2). Both read
+    # as `not terms`, so a secret that parsed but expanded to nothing reported
+    # "missing or empty" and pointed at --sync-ci-secret, which refused with its
+    # own wrong reason ("no private sources on this machine"). Both halves now
+    # name the real state. It still fails closed: scanning against zero terms
+    # finds nothing by construction, so a clean result would mean nothing.
+    if not terms:
+        print(f"::error::client-name-guard: the {CI_SECRET} secret (environment {CI_ENV}) parsed "
+              "but holds zero terms, so a clean result here would mean nothing. Every private "
+              "source expanded to nothing, or every spelling it holds is excluded. Fix the "
+              "sources on a machine that has them, then re-run --sync-ci-secret.")
         return None, 1
     return terms, None
 
@@ -900,9 +926,69 @@ def _tree_blobs(head):
     proc.wait()
 
 
-# A push payload lists at most this many commits; at the cap the list may be
-# truncated, and a truncated list cannot vouch for every message.
+# A second floor only. GitHub's push event lists AT MOST 20 commits in
+# `commits` and carries the real count in `size`, so this cap could never be the
+# truncation detector; PUSH_SIZE is (PR #559 review major 1).
 _PUSH_COMMITS_CAP = 2048
+
+
+def _pushed_messages(head, terms, problems):
+    """Scan the message and identity of every commit the push carried.
+
+    Returns the number scanned, or None when the push cannot be vouched for.
+
+    THE PAYLOAD IS NOT THE AUTHORITY (PR #559 review major 1). It lists at most
+    20 commits while `size` carries the real count, so a 21-commit push left the
+    unlisted messages unscanned and the scan reported clean. Two cross-checks,
+    both fail closed:
+
+      * the listed count against the push's own size (PUSH_SIZE);
+      * every listed sha against git's REACHABLE history from the pushed head. A
+        sha that merely exists in the clone can belong to another branch, so
+        `git log -1 <sha>` succeeding proves the object, not the push.
+    """
+    try:
+        shas = json.loads(os.environ.get("PUSH_COMMITS") or "[]") or []
+    except ValueError:
+        shas = []
+    listed = list(dict.fromkeys(str(s) for s in shas))
+    declared = (os.environ.get("PUSH_SIZE") or "").strip()
+    if not re.fullmatch(r"\d+", declared):
+        print("::error::client-name-guard: the push did not declare how many commits it "
+              "carried (PUSH_SIZE), and the payload lists at most 20, so the messages cannot "
+              "be verified: refusing to report clean")
+        return None
+    if int(declared) > len(listed):
+        print(f"::error::client-name-guard: the push carried {int(declared)} commit(s) and its "
+              f"payload lists {len(listed)}; the messages past the payload cannot be verified, "
+              f"so this refuses to report clean. This path runs only when the push's base is "
+              f"missing from the clone (a first or a force push); an ordinary push scans the "
+              f"whole range instead. Verify the unlisted messages on a machine that holds the "
+              f"private list.")
+        return None
+    if len(listed) >= _PUSH_COMMITS_CAP:
+        print(f"::error::client-name-guard: the push lists {len(listed)} commits, the payload "
+              f"cap; messages past it cannot be verified, refusing to report clean")
+        return None
+    seen = 0
+    for sha in list(dict.fromkeys([*listed, head])):
+        r = _git("log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", sha)
+        if r.returncode != 0:
+            print(f"::error::client-name-guard: pushed commit {str(sha)[:10]} is not in this clone; "
+                  f"refusing to report clean")
+            return None
+        if sha != head and _git("merge-base", "--is-ancestor", sha, head).returncode != 0:
+            print(f"::error::client-name-guard: pushed commit {str(sha)[:10]} is not reachable "
+                  f"from the pushed head, so the payload does not describe this history; "
+                  f"refusing to report clean")
+            return None
+        seen += 1
+        if bypass_reason(r.stdout):
+            continue
+        found = hits(r.stdout, terms)
+        if found:
+            problems.append(f"commit {str(sha)[:10]} message: {_kinds(found)}")
+    return seen
 
 
 def run_ci_tree(head):
@@ -915,35 +1001,19 @@ def run_ci_tree(head):
     commit's CONTENT. Messages are not in the tree, so every commit the push
     payload lists (PUSH_COMMITS, a JSON array of SHAs) has its message and
     identity scanned too (review round 2: HEAD's message alone missed the
-    earlier ones). A list at the payload cap may be truncated, so it fails
-    closed rather than vouching for messages it never saw.
+    earlier ones). The payload is cross-checked against the push's declared
+    commit count and against git's reachable history before it is believed; see
+    _pushed_messages, which fails closed rather than vouching for what it never
+    saw.
     """
     terms, rc = _ci_terms()
     if terms is None:
         return rc
     pins = load_exempt()
     problems = []
-    try:
-        shas = json.loads(os.environ.get("PUSH_COMMITS") or "[]") or []
-    except ValueError:
-        shas = []
-    if len(shas) >= _PUSH_COMMITS_CAP:
-        print(f"::error::client-name-guard: the push lists {len(shas)} commits, the payload cap; "
-              f"messages past it cannot be verified, refusing to report clean")
+    seen = _pushed_messages(head, terms, problems)
+    if seen is None:
         return 1
-    seen = 0
-    for sha in list(dict.fromkeys([*shas, head])):
-        r = _git("log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", sha)
-        if r.returncode != 0:
-            print(f"::error::client-name-guard: pushed commit {str(sha)[:10]} is not in this clone; "
-                  f"refusing to report clean")
-            return 1
-        seen += 1
-        if bypass_reason(r.stdout):
-            continue
-        found = hits(r.stdout, terms)
-        if found:
-            problems.append(f"commit {str(sha)[:10]} message: {_kinds(found)}")
     scanned = skipped = 0
     for path, sha, data in _tree_blobs(head):
         if pins.get(path) == sha:
@@ -983,6 +1053,11 @@ def sync_ci_secret():
     if payload is None:
         print("client-name-guard: no private sources on this machine; CI secret not synced")
         return 0
+    if not payload["terms"]:
+        print("client-name-guard: the private sources on this machine expand to zero terms; "
+              "CI secret NOT synced, because CI refuses a zero-term list rather than scanning "
+              "against nothing. Fix the sources, then push again.")
+        return 0
     blob = export_payload(payload)
     digest = hashlib.sha256(blob.encode()).hexdigest()
     url = _git("remote", "get-url", "origin").stdout.strip()
@@ -991,8 +1066,15 @@ def sync_ci_secret():
         return 0
     repo = m.group(1)
     stamp = KIPI_CONFIG / f"private-terms.ci-digest.{repo.replace('/', '_')}"
-    if stamp.exists() and stamp.read_text().strip() == digest:
-        return 0
+    # A STAMP IS A CACHE, NEVER A GATE (PR #559 Codex P2). An unreadable stamp
+    # means "digest unknown", so the secret is pushed again with the same bytes:
+    # one wasted gh call, not a refused push.
+    try:
+        if stamp.exists() and stamp.read_text().strip() == digest:
+            return 0
+    except OSError as exc:
+        print(f"client-name-guard: WARN the digest stamp could not be read "
+              f"({exc.__class__.__name__}); re-syncing the CI secret")
     # NO gh, NO BLOCKED PUSH (PR #554 review round 1, major). subprocess raised
     # FileNotFoundError on a machine without gh, the hook exited 1, and lefthook
     # refused the push: the "never blocks" promise above was false.
@@ -1018,8 +1100,15 @@ def sync_ci_secret():
     if r.returncode != 0:
         print(f"client-name-guard: WARN gh secret set failed for {repo}: {r.stderr.strip()}")
         return 0
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(digest + "\n")
+    # The secret is already refreshed at this point, so a stamp failure must not
+    # reach lefthook as a non-zero exit: that refused the push for a cache write
+    # (PR #559 Codex P2). Unstamped means the next push re-syncs the same bytes.
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(digest + "\n")
+    except OSError as exc:
+        print(f"client-name-guard: WARN the CI secret was refreshed but its digest stamp "
+              f"could not be written ({exc.__class__.__name__}); the next push re-syncs it")
     print(f"client-name-guard: CI secret {CI_SECRET} refreshed in {repo} environment {CI_ENV} "
           f"({sum(len(v) for v in payload['terms'].values())} terms)")
     return 0

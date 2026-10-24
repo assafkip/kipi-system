@@ -71,7 +71,11 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
+          # `commits` holds AT MOST 20 entries while `size` is the real count,
+          # so the guard needs both to tell a complete list from a truncated one
+          # (PR #559 review major 1). Without PUSH_SIZE the tree scan refuses.
           PUSH_COMMITS: ${{ toJSON(github.event.commits.*.id) }}
+          PUSH_SIZE: ${{ github.event.size }}
         run: |
           guard=q-system/.q-system/scripts/client-name-guard.py
           if [ "$EVENT" = "pull_request_target" ]; then
