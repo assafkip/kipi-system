@@ -108,10 +108,21 @@ def add_public_remote(tmp, repo):
     bare remote is the real mechanism, not a stand-in: push writes the same
     remote-tracking ref it writes against GitHub.
     """
-    bare = Path(tmp) / "remote.git"
+    add_remote(tmp, repo, "origin")
+
+
+def add_remote(tmp, repo, name):
+    """A bare repo configured as remote `name`, with its real fetch refspec.
+
+    `git remote add` writes `remote.<name>.fetch`, which is the config the guard
+    DERIVES its public ref patterns from (PR #559 review round 6). Hand-writing
+    the ref instead of configuring the remote is the untrusted case, and it has
+    its own case below.
+    """
+    bare = Path(tmp) / f"{name}.git"
     subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True,
                    capture_output=True)
-    git(repo, "remote", "add", "origin", str(bare))
+    git(repo, "remote", "add", name, str(bare))
 
 
 def merge(repo, home, branches, message, resolve=None):
@@ -1121,6 +1132,125 @@ def main(guard):
                f"{floor - 1} is reported not silently dropped",
                rc_at != 0 and rc_under == 0 and "NOT protected" in out_under,
                f"rc_at={rc_at}, rc_under={rc_under}")
+
+    # --- 35. REGRESSION (PR #559 review round 6, major): "already public" means
+    # a PUBLIC REMOTE's ref, not any ref under refs/remotes -------------------
+    # `git branch -r --contains` lists every ref under refs/remotes, and writing
+    # one needs no network and no remote at all. Measured in this repo
+    # 2026-10-24: 1110 remote-tracking refs, of which 550 sit in 51 namespaces
+    # that NO configured remote fetches into. So a merge parent that was never
+    # pushed anywhere could excuse its own content, on all three surfaces.
+    def local_name_branch(repo, home, branch, files):
+        """A branch carrying a private term, admitted under its own bypass."""
+        git(repo, "checkout", "-q", "-b", branch)
+        rc, _ = commit(repo, home, f"draft\n\n{SKIP_TOKEN}: on a side branch\n", files)
+        sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "main work", {"other.md": "other\n"})
+        return rc, sha
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # THE LIVE SHAPE: a hand-written ref in a namespace no remote owns.
+        home, repo = make_repo(tmp, guard)
+        add_public_remote(tmp, repo)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        rc0, sha = local_name_branch(repo, home, "side",
+                                     {"notes.md": f"notes on {CLIENT}\n"})
+        git(repo, "update-ref", "refs/remotes/pr/1", sha)
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["side"], "Merge branch 'side'")
+        record("a ref in a namespace NO remote fetches into excuses nothing",
+               rc0 == 0 and rc != 0 and head_count(repo) == before,
+               f"branch rc={rc0}, merge rc={rc}")
+        record("...and the refusal NAMES the namespace instead of staying silent",
+               "pr" in out and "not a public remote" in out,
+               f"namespace line present={('not a public remote' in out)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # THE REVIEWER'S FRAMING: a real, configured, pushed-to remote that is
+        # not the public one. A private backup remote is never declared public.
+        home, repo = make_repo(tmp, guard)
+        add_public_remote(tmp, repo)
+        add_remote(tmp, repo, "backup")
+        commit(repo, home, "base", {"base.md": "base\n"})
+        rc0, _ = local_name_branch(repo, home, "side",
+                                   {"notes.md": f"notes on {CLIENT}\n"})
+        git(repo, "push", "-q", "backup", "side")
+        git(repo, "fetch", "-q", "backup")
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["side"], "Merge branch 'side'")
+        record("a parent pushed only to a NON-PUBLIC remote excuses nothing",
+               rc0 == 0 and rc != 0 and head_count(repo) == before,
+               f"branch rc={rc0}, merge rc={rc}")
+
+    def stage_path_surface(repo):
+        (repo / CLIENT.lower()).mkdir()
+        (repo / CLIENT.lower() / "readme.md").write_text("nothing private\n")
+        git(repo, "add", f"{CLIENT.lower()}/readme.md")
+
+    def stage_binary_surface(repo):
+        (repo / "blob.bin").write_bytes(b"\x00\x01" + CLIENT.encode() + b"\x00")
+        git(repo, "add", "blob.bin")
+
+    for surface, stage in (("a file PATH", stage_path_surface),
+                           ("a BINARY blob", stage_binary_surface)):
+        with tempfile.TemporaryDirectory() as tmp:
+            # ALL THREE SURFACES, not just lines. staged_paths_and_binaries asked
+            # the same question separately, so a fix on the line scan alone would
+            # have left these two excused.
+            home, repo = make_repo(tmp, guard)
+            add_public_remote(tmp, repo)
+            commit(repo, home, "base", {"base.md": "base\n"})
+            git(repo, "checkout", "-q", "-b", "side")
+            stage(repo)
+            rc0, _ = commit(repo, home,
+                            f"side\n\n{SKIP_TOKEN}: on a side branch\n")
+            sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+            git(repo, "checkout", "-q", "-")
+            commit(repo, home, "main work", {"other.md": "other\n"})
+            git(repo, "update-ref", "refs/remotes/pr/1", sha)
+            before = head_count(repo)
+            rc, out = merge(repo, home, ["side"], "Merge branch 'side'")
+            record(f"an unowned ref does not excuse {surface} either",
+                   rc0 == 0 and rc != 0 and head_count(repo) == before,
+                   f"branch rc={rc0}, merge rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # THE KNOB IS NOT DEAD CODE. Round 5's finding was a documented value no
+        # code path could reach; shipping kipi.publicRemote untested would be the
+        # same defect one round later. A remote NOT named origin, declared
+        # public, excuses exactly what origin would.
+        home, repo = make_repo(tmp, guard)
+        add_remote(tmp, repo, "upstream")
+        git(repo, "config", "--add", "kipi.publicRemote", "upstream")
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "pub")
+        rc0, _ = commit(repo, home,
+                        f"Publish the case study\n\n{SKIP_TOKEN}: permission on file\n",
+                        {"study.md": f"# Case study\n\n{CLIENT} shipped it.\n"})
+        git(repo, "push", "-q", "upstream", "pub")
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "diverge", {"other.md": "other\n"})
+        before = head_count(repo)
+        rc, out = merge(repo, home, ["pub"], "Merge branch 'pub'")
+        record("a DECLARED public remote that is not origin still excuses its content",
+               rc0 == 0 and rc == 0 and head_count(repo) == before + 2,
+               f"branch rc={rc0}, merge rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # CONTROL: quiet on an ordinary merge. The namespace line prints only
+        # when the verdict actually changed; a line on every merge is noise.
+        home, repo = make_repo(tmp, guard)
+        add_public_remote(tmp, repo)
+        commit(repo, home, "base", {"base.md": "base\n"})
+        git(repo, "checkout", "-q", "-b", "pub")
+        commit(repo, home, "clean work", {"p.md": "clean\n"})
+        git(repo, "push", "-q", "origin", "pub")
+        git(repo, "checkout", "-q", "-")
+        commit(repo, home, "main work", {"other.md": "other\n"})
+        rc, out = merge(repo, home, ["pub"], "Merge branch 'pub'")
+        record("an ordinary public merge prints no namespace line (control)",
+               rc == 0 and "not a public remote" not in out, f"rc={rc}")
 
     failed = [n for n, ok in results if not ok]
     print()

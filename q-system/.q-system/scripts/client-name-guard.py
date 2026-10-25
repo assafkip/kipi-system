@@ -99,8 +99,15 @@ refused EVERY merge of origin/main into a branch, and the only way through was
 lines already on ANY parent, and review blocked it: a local, never-pushed branch
 is not public, so merging it is exactly the step that makes its content
 publishable. The rule here: a line is excused only when a merge parent that is
-ALREADY PUBLIC (contained in a remote-tracking branch) carries it. Every SHA in
-MERGE_HEAD counts, so an octopus merge cannot flip the verdict on parent order.
+ALREADY PUBLIC carries it. Every SHA in MERGE_HEAD counts, so an octopus merge
+cannot flip the verdict on parent order.
+
+"Already public" means a ref that a remote DECLARED PUBLIC fetches into, not
+any ref under refs/remotes (PR #559 review round 6). Writing such a ref needs
+no network and no remote, and this repo holds 550 refs in 51 namespaces no
+remote fetches into, so the old reading let a never-pushed commit excuse
+itself. Declared with `git config --add kipi.publicRemote <name>`, defaulting
+to `origin`; a private backup remote is simply never declared.
 
 Usage:
     client-name-guard.py --message <file>    # commit-msg: the one local scan
@@ -109,6 +116,7 @@ Usage:
 """
 
 import argparse
+import fnmatch
 import hashlib
 import io
 import json
@@ -633,19 +641,111 @@ def merge_parents():
     return [l.strip() for l in p.read_text().splitlines() if re.fullmatch(r"[0-9a-f]{40,64}", l.strip())]
 
 
-def is_public(sha):
-    """True when a remote-tracking branch already contains this commit.
+PUBLIC_REMOTE_CONFIG = "kipi.publicremote"
+DEFAULT_PUBLIC_REMOTE = "origin"
 
-    This repo is public, so anything on any pushed branch is already out. A
-    commit that only exists locally is not, however it got there. A stale
-    remote-tracking ref can only make this answer False more often, which makes
-    the scan stricter, never looser.
+
+def _public_ref_patterns():
+    """The refs/remotes/* patterns a remote DECLARED PUBLIC actually fetches into.
+
+    DERIVED FROM THE CONFIG THAT OWNS IT, never restated here (PR #559 review
+    round 6). The question "which refs/remotes namespace belongs to which
+    remote" is answered by that remote's own fetch refspec, so this reads
+    `remote.<name>.fetch` and takes each destination pattern. A namespace no
+    remote fetches into belongs to no remote at all, and is therefore not
+    evidence that anything was pushed anywhere.
+
+    Measured in this repo on 2026-10-24, which is why the derivation and not a
+    name prefix: 1110 refs under refs/remotes, and 550 of them sit in 51
+    namespaces with NO configured remote behind them (`pr/*` from an ad-hoc
+    history audit, plus 50 one-off probe namespaces). `git update-ref
+    refs/remotes/anything/x <sha>` needs no network, so the old rule let a
+    purely local commit declare itself already-published.
+
+    Which remotes count as PUBLIC cannot be derived offline: visibility lives on
+    the host. So it is DECLARED, defaulting to `origin` (git's own convention
+    for the publish target), and extended per clone with
+    `git config --add kipi.publicRemote <name>`. A private backup remote is
+    simply never declared, so its refs never excuse anything.
+    """
+    names = [n for n in _git("remote").stdout.split() if n]
+    declared = [v for v in _git("config", "--get-all", PUBLIC_REMOTE_CONFIG).stdout.split() if v]
+    trusted = [n for n in (declared or [DEFAULT_PUBLIC_REMOTE]) if n in names]
+    out = []
+    for remote in trusted:
+        for spec in _git("config", "--get-all", f"remote.{remote}.fetch").stdout.splitlines():
+            spec = spec.strip().lstrip("+")
+            if ":" not in spec:
+                continue
+            dest = spec.split(":", 1)[1].strip()
+            if dest.startswith("refs/remotes/"):
+                out.append(dest)
+    return trusted, out
+
+
+def public_containment(sha):
+    """(this commit is on a PUBLIC remote, the refs that did NOT prove it).
+
+    This repo is public, so anything on a PUBLIC remote's branch is already out.
+    A commit that only exists locally is not, however it got there -- including
+    when it got there by someone writing a ref under refs/remotes by hand.
+
+    FAILS CLOSED, in both directions that matter: a git error, no declared
+    public remote, or a public remote with no refs/remotes refspec all answer
+    False, which scans more rather than less.
     """
     r = _git("branch", "-r", "--contains", sha, "--format=%(refname)")
-    return r.returncode == 0 and bool(r.stdout.strip())
+    if r.returncode != 0:
+        return False, []
+    refs = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    _, patterns = _public_ref_patterns()
+    proof = [x for x in refs if any(fnmatch.fnmatchcase(x, p) for p in patterns)]
+    return bool(proof), [x for x in refs if x not in proof]
 
 
-def staged_added_lines():
+def merge_exemption():
+    """(every merge parent, the PUBLIC ones, the namespaces that proved nothing).
+
+    ONE READER of "is this parent already public" (PR #559 review round 6). The
+    line scan and the path/binary scan each used to ask separately, which is two
+    readers of one question and the shape that lets them drift apart; they are
+    now handed one answer.
+
+    The third element exists because the old rule excused these silently. A
+    parent that is NOT public, but is carried by some non-public
+    refs/remotes namespace, is exactly the case whose verdict just changed, and
+    the operator is told rather than left to wonder why a merge started
+    blocking.
+    """
+    parents = merge_parents()
+    public, unproven = [], set()
+    for parent in parents:
+        ok, others = public_containment(parent)
+        if ok:
+            public.append(parent)
+        else:
+            unproven.update(r.split("/")[2] for r in others if r.count("/") >= 2)
+    return parents, public, sorted(unproven)
+
+
+def report_unproven_namespaces(unproven):
+    """One line when a namespace carried a merge parent and proved nothing.
+
+    LOCAL PATH ONLY, which is what makes printing a ref namespace safe: this
+    runs in commit-msg, where the guard already prints matched terms in full.
+    The CI mode never reaches here and still never prints anything but a kind.
+    """
+    if not unproven:
+        return
+    trusted, _ = _public_ref_patterns()
+    print(f"client-name-guard: {len(unproven)} remote-tracking namespace(s) carry a merge "
+          f"parent but are not a public remote, so that parent excuses nothing: "
+          f"{', '.join(unproven)}")
+    print(f"  public remote(s): {', '.join(trusted) if trusted else '(none configured)'}")
+    print(f"  to add one      : git config --add kipi.publicRemote <name>")
+
+
+def staged_added_lines(parents, public):
     """The lines this commit adds that are not already public.
 
     An ordinary commit: added lines vs HEAD. A merge: of those, drop each line a
@@ -653,17 +753,15 @@ def staged_added_lines():
     on a git error: we only get here with an armed list.
     """
     added = _staged_added()
-    parents = merge_parents()
     if not parents:
         return "\n".join(t for _, _, t in added)
     keep = {t for _, _, t in added}
-    for parent in parents:
-        if is_public(parent):
-            keep &= {t for _, _, t in _staged_added(parent)}
+    for parent in public:
+        keep &= {t for _, _, t in _staged_added(parent)}
     return "\n".join(t for _, _, t in added if t in keep)
 
 
-def staged_paths_and_binaries():
+def staged_paths_and_binaries(public):
     """(path names, [(path, binary text)]) this commit adds that are not public.
 
     The ASK-2058 review found both holes with one reproducer each: a name in a
@@ -672,7 +770,6 @@ def staged_paths_and_binaries():
     has, or a binary whose exact blob a public parent already has, is excused
     for the same reason an already-public line is.
     """
-    public = [p for p in merge_parents() if is_public(p)]
     names, blobs = [], []
     for path, is_bin in _changed_files("--cached"):
         if any(_blob_id(f"{p}:{path}") for p in public):
@@ -718,8 +815,10 @@ def run_message(message_path):
         print(f"client-name-guard: bypassed via trailer {reason!r}")
         return 0
     try:
-        content = staged_added_lines()
-        names, blobs = staged_paths_and_binaries()
+        parents, public, unproven = merge_exemption()
+        report_unproven_namespaces(unproven)
+        content = staged_added_lines(parents, public)
+        names, blobs = staged_paths_and_binaries(public)
     except Unscannable as exc:
         print(f"BLOCK: a staged binary could not be fully scanned ({exc}).")
         print("Refusing rather than reporting all clear: its compressed bytes hide text.")
