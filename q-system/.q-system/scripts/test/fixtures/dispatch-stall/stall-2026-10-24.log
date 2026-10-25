@@ -1,0 +1,22 @@
+2026-10-24T14:22:29Z preflight REFUSED ktlyst (/Users/assafkipnis/projects/ktlyst-saas/projects/product); not entering it -- FAIL hooks: hook parity with the skeleton is incomplete: guards=worktree-disk-floor.py;absent=worktree-disk-floor.py;FAIL dirty: working tree has 2 uncommitted change(s); an agent branch would capture them
+2026-10-24T14:22:29Z dispatch: 1 of 20 registered repo(s) opted in for cross-repo dispatch
+review-redrive: ASK-2058 PR #554 -> rework (reviewer said BLOCK at the current head)
+2026-10-24T14:22:44Z reviewer redrive: ASK-2058 PR #554 needs rework (ASK-2937 waits)
+2026-10-24T14:22:44Z skip ASK-2058: its open PR #554 is on sana/ask-2058-guard, but converge would commit onto sana/ask-2058 -- work there reaches no PR and no reviewer. Rename the branch to sana/ask-2058, or reopen the PR on it.
+2026-10-24T14:37:49Z preflight REFUSED ktlyst (/Users/assafkipnis/projects/ktlyst-saas/projects/product); not entering it -- FAIL hooks: hook parity with the skeleton is incomplete: guards=worktree-disk-floor.py;absent=worktree-disk-floor.py;FAIL dirty: working tree has 2 uncommitted change(s); an agent branch would capture them
+2026-10-24T14:37:49Z dispatch: 1 of 20 registered repo(s) opted in for cross-repo dispatch
+review-redrive: ASK-2058 PR #554 -> rework (reviewer said BLOCK at the current head)
+2026-10-24T14:38:02Z reviewer redrive: ASK-2058 PR #554 needs rework (ASK-2937 waits)
+2026-10-24T14:38:02Z skip ASK-2058: its open PR #554 is on sana/ask-2058-guard, but converge would commit onto sana/ask-2058 -- work there reaches no PR and no reviewer. Rename the branch to sana/ask-2058, or reopen the PR on it.
+2026-10-24T14:38:02Z page suppressed (branch-guard-ASK-2058 unchanged for 15m; re-pings after 24h)
+2026-10-24T14:53:07Z preflight REFUSED ktlyst (/Users/assafkipnis/projects/ktlyst-saas/projects/product); not entering it -- FAIL hooks: hook parity with the skeleton is incomplete: guards=worktree-disk-floor.py;absent=worktree-disk-floor.py;FAIL dirty: working tree has 2 uncommitted change(s); an agent branch would capture them
+2026-10-24T14:53:07Z dispatch: 1 of 20 registered repo(s) opted in for cross-repo dispatch
+review-redrive: ASK-2058 PR #554 -> rework (reviewer said BLOCK at the current head)
+2026-10-24T14:53:22Z reviewer redrive: ASK-2058 PR #554 needs rework (ASK-2937 waits)
+2026-10-24T14:53:22Z skip ASK-2058: its open PR #554 is on sana/ask-2058-guard, but converge would commit onto sana/ask-2058 -- work there reaches no PR and no reviewer. Rename the branch to sana/ask-2058, or reopen the PR on it.
+2026-10-24T14:53:22Z page suppressed (branch-guard-ASK-2058 unchanged for 30m; re-pings after 24h)
+2026-10-24T15:08:26Z preflight REFUSED ktlyst (/Users/assafkipnis/projects/ktlyst-saas/projects/product); not entering it -- FAIL hooks: hook parity with the skeleton is incomplete: guards=worktree-disk-floor.py;absent=worktree-disk-floor.py;FAIL dirty: working tree has 2 uncommitted change(s); an agent branch would capture them
+2026-10-24T15:08:26Z dispatch: 1 of 20 registered repo(s) opted in for cross-repo dispatch
+review-redrive: ASK-2058 PR #554 -> rework (reviewer said BLOCK at the current head)
+2026-10-24T15:08:42Z reviewer redrive: ASK-2058 PR #554 needs rework (ASK-2937 waits)
+2026-10-24T15:08:42Z skip ASK-2058: its open PR #554 is on sana/ask-2058-guard, but converge would commit onto sana/ask-2058 -- work there reaches no PR and no reviewer. Rename the branch to sana/ask-2058, or reopen the PR on it.
