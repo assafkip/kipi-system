@@ -27,6 +27,7 @@ not measuring this fix.
 """
 
 import argparse
+import importlib.util
 import io
 import json
 import os
@@ -1037,6 +1038,89 @@ def main(guard):
             stamp.chmod(0o600)
         record("sync: an unreadable digest stamp warns, re-pushes and exits 0",
                rc == 0 and pushed and "Traceback" not in out and "stamp" in out, f"rc={rc}")
+
+    # --- 34. REGRESSION (PR #559 review round 5, major): the length floor is ONE
+    # value, and a term the floor swallows WHOLE is reported rather than dropped
+    # in silence. `short_names_ok` documented a 3-character floor while add()
+    # enforced MIN_LEN=4, so every 3-character name the registry approved was
+    # discarded with nothing printed. Measured against the live registry
+    # 2026-10-24: 1088 terms offered, 1 of them (a contact recorded as initials)
+    # protected by no spelling at all, and the guard said `clean`.
+    spec = importlib.util.spec_from_file_location("guard_under_test", guard)
+    mod = importlib.util.module_from_spec(spec)
+    # NO BYTECODE BESIDE THE GUARD UNDER TEST: --against points at a path this
+    # suite does not own (a `git show` export, a read-only checkout), and a
+    # .pyc written next to it is a side effect a test has no business having.
+    was_quiet = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.dont_write_bytecode = was_quiet
+    # DERIVED FROM THE GUARD UNDER TEST, never restated here: a copied 4 agrees
+    # on the day it is written and keeps agreeing after the floor moves.
+    floor = mod.MIN_LEN
+    at_floor = "Q" + "z" * (floor - 1)        # exactly MIN_LEN: protected
+    under_floor = "Q" + "z" * (floor - 2)     # one short: cannot be protected
+
+    def registry_home(tmp, people, short_ok=True):
+        home, repo = make_repo(tmp, guard, armed=False)
+        reg = Path(tmp) / "clients.json"
+        reg.write_text(json.dumps({"clients": [
+            {"name": "Quexwell Labs", "slug": "quexwell-labs",
+             "contacts": [{"name": p} for p in people]}]}))
+        (home / ".config" / "kipi" / "private-terms.json").write_text(json.dumps({
+            "json_sources": [{"path": str(reg), "records": "clients",
+                              "keys": ["name", "slug"], "people": "contacts",
+                              "short_names_ok": short_ok}]}))
+        return home, repo
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home, repo = registry_home(tmp, [under_floor])
+        rc, out = commit(repo, home, "ordinary", {"f.md": "nothing private\n"})
+        record("registry: a one-word name under the floor is REPORTED as unprotected",
+               rc == 0 and "NOT protected" in out and "person" in out
+               and under_floor.lower() not in out.lower(), f"rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # The LIVE shape, and the half a fix aimed only at short_names_ok misses:
+        # initials pass the multi-word branch, so `short_names_ok` is never
+        # consulted, and every separator spelling is still under the floor.
+        home, repo = registry_home(tmp, ["A B"], short_ok=False)
+        rc, out = commit(repo, home, "ordinary", {"f.md": "nothing private\n"})
+        record("registry: initials whose EVERY spelling is under the floor are REPORTED",
+               rc == 0 and "NOT protected" in out and "person" in out, f"rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # CONTROL: quiet when there is nothing to say. A line that prints on
+        # every run is noise, and noise gets filtered instead of fixed.
+        home, repo = registry_home(tmp, ["Morwen Tallis"])
+        rc, out = commit(repo, home, "ordinary", {"f.md": "nothing private\n"})
+        record("registry: nothing under the floor prints no unprotected line (control)",
+               rc == 0 and "NOT protected" not in out, f"rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # CONTROL: the report is a WARN, never a refusal. The live registry holds
+        # one such entry, so failing closed here would be red on its own
+        # population from the first run, and a gate that is always red gets
+        # switched off.
+        home, repo = registry_home(tmp, [under_floor])
+        rc, _ = commit(repo, home, "ordinary", {"f.md": f"met {under_floor} today\n"})
+        record("registry: an unprotected short name does not block the commit (control)",
+               rc == 0, f"rc={rc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # ONE floor, and it is add()'s. A one-word name of exactly MIN_LEN is
+        # protected; one character shorter is reported instead of vanishing.
+        home, repo = registry_home(tmp, [at_floor, under_floor])
+        rc_at, _ = commit(repo, home, "ordinary", {"a.md": f"met {at_floor} today\n"})
+        git(repo, "reset", "-q", "--mixed", check=False)
+        rc_under, out_under = commit(repo, home, "ordinary",
+                                     {"b.md": f"met {under_floor} today\n"})
+        record(f"short_names_ok: a one-word name of exactly {floor} chars BLOCKS, "
+               f"{floor - 1} is reported not silently dropped",
+               rc_at != 0 and rc_under == 0 and "NOT protected" in out_under,
+               f"rc_at={rc_at}, rc_under={rc_under}")
 
     failed = [n for n, ok in results if not ok]
     print()

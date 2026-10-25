@@ -222,6 +222,12 @@ def _json_source(src, add, warn):
     person's name), skip_when / only_when ({field: [values]}), multiword_only
     (drop one-word org names: a scraped company list is mostly ordinary words),
     short_names_ok (keep one-word person names, for recorded relationships).
+
+    NO LENGTH FLOOR LIVES HERE (PR #559 review round 5). This function decides
+    whether a one-word person name is ACCEPTABLE from this source; `add` owns
+    the only length floor and is the only place that reports what it swallows. A
+    second floor here read `len(name) >= 3` against add's MIN_LEN=4, so every
+    3-character name this function approved was dropped with nothing printed.
     """
     path = Path(os.path.expanduser(src.get("path", "")))
     try:
@@ -270,7 +276,7 @@ def _json_source(src, add, warn):
             people.extend(_strings(rec.get(field)))
         for name in people:
             name = name.split("(", 1)[0].strip()
-            if len(name.split()) >= 2 or (short_ok and len(name) >= 3):
+            if len(name.split()) >= 2 or short_ok:
                 add(name, "person")
         for email in _emails(rec):
             add(email, "email")
@@ -294,10 +300,21 @@ def load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}")):
     terms = {}
     exclude = set()
     found_source = False
+    # A TERM THE FLOOR SWALLOWS WHOLE IS REPORTED, NEVER DROPPED IN SILENCE
+    # (PR #559 review round 5). This is the ONLY length floor in the loader, so
+    # it is also the only place that can see a term it protects by no spelling
+    # at all. Measured on the live registry 2026-10-24: 1088 terms offered, 1
+    # (a contact recorded as initials) protected by nothing, and the guard
+    # printed `clean` without mentioning it.
+    unprotected = {}
 
     def add(term, kind):
-        for v in variants(term):
-            if len(v) >= MIN_LEN and v not in terms:
+        kept = [v for v in variants(term) if len(v) >= MIN_LEN]
+        if not kept:
+            unprotected[" ".join(term.lower().split())] = kind
+            return
+        for v in kept:
+            if v not in terms:
                 terms[v] = kind
 
     env = os.environ.get(CI_SECRET)
@@ -346,6 +363,25 @@ def load_terms(warn=lambda m: print(f"client-name-guard: WARN {m}")):
 
     if not found_source:
         return None
+    # A WARN, NOT A REFUSAL, and that choice is measured rather than preferred:
+    # the live registry holds one sub-floor entry, so failing closed here would
+    # be red on its own population from the first run, and a gate that is always
+    # red gets switched off. Count and KIND only, never the spelling: this
+    # function's warn reaches a public CI log through _ci_terms.
+    #
+    # It does not reach that log by the ordinary route, because base_payload
+    # ships surviving spellings only -- a sub-floor term is absent from the
+    # secret. It prints on the machine that HOLDS the sources, which is the only
+    # machine that can fix one.
+    if unprotected:
+        counts = {}
+        for kind in unprotected.values():
+            counts[kind] = counts.get(kind, 0) + 1
+        detail = ", ".join(f"{n} {k}" for k, n in sorted(counts.items()))
+        warn(f"{len(unprotected)} private term(s) are shorter than the {MIN_LEN}-character "
+             f"floor and are NOT protected ({detail}); the spelling is not printed here. "
+             "Record a fuller spelling in the source, or accept that the guard cannot "
+             "see that one.")
     # An exclusion drops EXACTLY the spelling listed. A two-word client name can
     # also be an ordinary phrase ("the lab") while its folder spelling
     # ("the_lab") is not, so expanding an exclusion to every separator spelling
