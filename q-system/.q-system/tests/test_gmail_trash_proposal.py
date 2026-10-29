@@ -101,6 +101,37 @@ def test_applying_every_proposal_the_check_names_clears_the_check(tmp_path):
     assert after.returncode == 0, after.stdout + after.stderr
 
 
+def test_the_check_prints_the_working_command_before_the_refusing_one(tmp_path):
+    """PR #562 round 3: the installer line came first and the first action
+    dead-ended. The proposal's apply now leads."""
+    home, _ = _home(tmp_path)
+    out = subprocess.run([sys.executable, str(INSTALLER), "--check", "--home", str(home)],
+                         capture_output=True, text=True, timeout=300).stdout
+    assert out.index("apply-claude-changes.sh") < out.index("run: python3"), out
+
+
+def test_a_proposal_whose_anchor_the_installed_hook_lacks_is_not_named(tmp_path):
+    """PR #562 round 3: if the installed hook was reworded at the anchor, the
+    apply refuses too, so the check must not send him there."""
+    home, installed = _home(tmp_path)
+    anchor = _edit()["anchor"]
+    installed.write_text(installed.read_text(encoding="utf-8").replace(anchor, "  # reworded here\n"),
+                         encoding="utf-8")
+    out = subprocess.run([sys.executable, str(INSTALLER), "--check", "--home", str(home)],
+                         capture_output=True, text=True, timeout=300).stdout
+    assert "destructive-op-allow-gmail-trash.json" not in out, out
+
+
+def test_the_installer_refusal_names_the_proposal(tmp_path):
+    """PR #562 round 3: the refusal is the first message he reads."""
+    home, _ = _home(tmp_path)
+    out = subprocess.run([sys.executable, str(INSTALLER), "--dry-run", "--home", str(home)],
+                         capture_output=True, text=True, timeout=300).stdout
+    assert "REFUSED destructive-op-deny.sh" in out, out
+    assert "apply it with: bash q-system/.q-system/scripts/apply-claude-changes.sh " \
+           "q-system/.q-system/proposals/destructive-op-allow-gmail-trash.json --root $HOME" in out, out
+
+
 def test_after_the_apply_the_drift_check_is_clean(tmp_path):
     home, _ = _home(tmp_path)
     subprocess.run([sys.executable, str(ENGINE), str(PROPOSAL), "--root", str(home)],
