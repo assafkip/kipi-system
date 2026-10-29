@@ -247,6 +247,40 @@ def is_registered(home, dst):
                for spelling in spellings)
 
 
+PROPOSALS_DIR = os.path.join(REPO, "q-system", ".q-system", "proposals")
+
+
+def pending_proposals(dest_dir, names):
+    """Repo-relative proposals that insert into an installed hook in `names`
+    a block that hook does not carry yet. Read-only; an unreadable or
+    unrelated proposal is skipped, never fatal to --check."""
+    out = []
+    try:
+        files = sorted(f for f in os.listdir(PROPOSALS_DIR) if f.endswith(".json"))
+    except OSError:
+        return out
+    for f in files:
+        path = os.path.join(PROPOSALS_DIR, f)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                edits = json.load(fh).get("edits") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for e in edits:
+            name = os.path.basename(str(e.get("file", "")))
+            if not (str(e.get("file", "")).startswith(".claude/hooks/") and name in names and e.get("insert")):
+                continue
+            try:
+                with open(os.path.join(dest_dir, name), encoding="utf-8") as fh:
+                    installed = fh.read()
+            except OSError:
+                continue
+            if e["insert"] not in installed:
+                out.append(os.path.relpath(path, REPO))
+                break
+    return out
+
+
 def sources():
     """Every `<repo>/q-system/.q-system/hooks/*.sh`, one level deep."""
     if not os.path.isdir(SOURCE_DIR):
@@ -669,6 +703,13 @@ def main(argv=None):
             print("  " + line)
         if drift:
             print("\nrun: python3 %s" % os.path.relpath(__file__, REPO))
+            # PR #562 review (major): a founder-ruled lift is weaker than the
+            # installed hook, so the line above refuses it by design and the
+            # drift would be reported forever with no command that can succeed.
+            # Such a change lands through its proposal; name it.
+            for prop in pending_proposals(dest_dir, names):
+                print("or, if this installer refuses a founder-ruled change, apply its proposal:\n"
+                      "  bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop)
             return 1
         print("all %d vendored hook(s) match the installed copy" % len(names))
         return 0

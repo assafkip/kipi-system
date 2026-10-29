@@ -936,7 +936,8 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
   # GMAIL TRASH IS ALLOWED, BY THE FOUNDER (2026-10-29, ASK-3361).
   #
   # He asked for bots that clean his inbox, and was shown that this hook denies
-  # the connector's trash in every bot run (chief/agent.py wires it on "*"). Of
+  # the connector's trash in every bot run: the chief bot engine, a separate
+  # repo, wires this file on every tool (its chief/agent.py, deny_hook). Of
   # the three ways offered (engine code, lift the hook, no trash) he picked "b",
   # lifting it here. Trash is not deletion: Gmail keeps it 30 days and
   # untrash_thread / untrash_message, allowed below by the `un` guard, bring it
