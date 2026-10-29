@@ -14,6 +14,7 @@ installer's drift check clean. Every write is under tmp_path.
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -78,8 +79,26 @@ def test_before_the_apply_the_drift_check_names_a_command_that_can_succeed(tmp_p
     proc = subprocess.run([sys.executable, str(INSTALLER), "--check", "--home", str(home)],
                           capture_output=True, text=True, timeout=300)
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    want = "apply-claude-changes.sh q-system/.q-system/proposals/destructive-op-allow-gmail-trash.json --root $HOME"
-    assert want in proc.stdout, proc.stdout
+    named = re.findall(r"apply-claude-changes\.sh (\S+\.json) --root \$HOME", proc.stdout)
+    assert named == ["q-system/.q-system/proposals/destructive-op-allow-gmail-trash.json"], proc.stdout
+
+
+def test_applying_every_proposal_the_check_names_clears_the_check(tmp_path):
+    """PR #562 round 2: the hint once named a stale sibling proposal whose block
+    the repo source lacks, so following every printed line left --check red.
+    The only proof the hint is right: do everything it says, then --check is 0."""
+    home, _ = _home(tmp_path)
+    proc = subprocess.run([sys.executable, str(INSTALLER), "--check", "--home", str(home)],
+                          capture_output=True, text=True, timeout=300)
+    named = re.findall(r"apply-claude-changes\.sh (\S+\.json) --root \$HOME", proc.stdout)
+    assert named, "the check named nothing to apply: " + proc.stdout
+    repo = QSYS.parents[1]
+    for rel in named:
+        subprocess.run([sys.executable, str(ENGINE), str(repo / rel), "--root", str(home)],
+                       capture_output=True, text=True, timeout=300, check=True)
+    after = subprocess.run([sys.executable, str(INSTALLER), "--check", "--home", str(home)],
+                           capture_output=True, text=True, timeout=300)
+    assert after.returncode == 0, after.stdout + after.stderr
 
 
 def test_after_the_apply_the_drift_check_is_clean(tmp_path):

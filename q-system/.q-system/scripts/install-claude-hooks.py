@@ -252,8 +252,12 @@ PROPOSALS_DIR = os.path.join(REPO, "q-system", ".q-system", "proposals")
 
 def pending_proposals(dest_dir, names):
     """Repo-relative proposals that insert into an installed hook in `names`
-    a block that hook does not carry yet. Read-only; an unreadable or
-    unrelated proposal is skipped, never fatal to --check."""
+    a block that hook does not carry yet AND the repo's vendored copy does.
+    The second half is the one that matters (PR #562 round 2, major): a
+    proposal whose block the repo source lacks cannot clear the drift, so
+    naming it sends him round a loop that ends at the refusing installer.
+    Read-only; an unreadable or unrelated proposal is skipped, never fatal
+    to --check."""
     out = []
     try:
         files = sorted(f for f in os.listdir(PROPOSALS_DIR) if f.endswith(".json"))
@@ -273,9 +277,11 @@ def pending_proposals(dest_dir, names):
             try:
                 with open(os.path.join(dest_dir, name), encoding="utf-8") as fh:
                     installed = fh.read()
+                with open(os.path.join(SOURCE_DIR, name), encoding="utf-8") as fh:
+                    source = fh.read()
             except OSError:
                 continue
-            if e["insert"] not in installed:
+            if e["insert"] in source and e["insert"] not in installed:
                 out.append(os.path.relpath(path, REPO))
                 break
     return out
@@ -707,9 +713,11 @@ def main(argv=None):
             # installed hook, so the line above refuses it by design and the
             # drift would be reported forever with no command that can succeed.
             # Such a change lands through its proposal; name it.
-            for prop in pending_proposals(dest_dir, names):
-                print("or, if this installer refuses a founder-ruled change, apply its proposal:\n"
-                      "  bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop)
+            pending = pending_proposals(dest_dir, names)
+            if pending:
+                print("or, if this installer refuses a founder-ruled change, apply its proposal:")
+            for prop in pending:
+                print("  bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop)
             return 1
         print("all %d vendored hook(s) match the installed copy" % len(names))
         return 0
