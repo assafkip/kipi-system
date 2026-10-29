@@ -250,6 +250,10 @@ def is_registered(home, dst):
 PROPOSALS_DIR = os.path.join(REPO, "q-system", ".q-system", "proposals")
 
 
+def _apply_command(prop):
+    return "bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop
+
+
 def pending_proposals(dest_dir, names):
     """Repo-relative proposals that insert into an installed hook in `names`
     a block that hook does not carry yet AND the repo's vendored copy does.
@@ -281,7 +285,11 @@ def pending_proposals(dest_dir, names):
                     source = fh.read()
             except OSError:
                 continue
-            if e["insert"] in source and e["insert"] not in installed:
+            # PR #562 round 3 (minor): an anchor the installed hook lacks makes
+            # the apply refuse too, so naming it would be a second dead end.
+            anchored = e.get("op") not in ("insert_after", "insert_before", "replace") \
+                or str(e.get("anchor") or "") in installed
+            if e["insert"] in source and e["insert"] not in installed and anchored:
                 out.append(os.path.relpath(path, REPO))
                 break
     return out
@@ -592,6 +600,11 @@ def install_one(name, dest_dir, dry_run, home):
 
     refusal = refuse_if_weaker(name, source_text, installed_text)
     if refusal:
+        # PR #562 round 3 (minor): the refusal is the first thing he sees, so
+        # it names the proposal that lands a founder-ruled change, if any.
+        props = pending_proposals(dest_dir, [name])
+        if props:
+            refusal += " If this is a founder-ruled change, apply it with: " + _apply_command(props[0])
         return "REFUSED " + refusal, False
 
     ok, why = parses_as_bash(src)
@@ -708,16 +721,17 @@ def main(argv=None):
         for line in drift:
             print("  " + line)
         if drift:
-            print("\nrun: python3 %s" % os.path.relpath(__file__, REPO))
             # PR #562 review (major): a founder-ruled lift is weaker than the
-            # installed hook, so the line above refuses it by design and the
+            # installed hook, so the installer refuses it by design and the
             # drift would be reported forever with no command that can succeed.
-            # Such a change lands through its proposal; name it.
+            # Such a change lands through its proposal; name it. Round 3
+            # (minor): FIRST, so the first command he runs is one that works.
             pending = pending_proposals(dest_dir, names)
             if pending:
-                print("or, if this installer refuses a founder-ruled change, apply its proposal:")
+                print("\napply the founder-ruled change (the installer refuses it by design):")
             for prop in pending:
-                print("  bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop)
+                print("  " + _apply_command(prop))
+            print("\n%srun: python3 %s" % ("then " if pending else "", os.path.relpath(__file__, REPO)))
             return 1
         print("all %d vendored hook(s) match the installed copy" % len(names))
         return 0
