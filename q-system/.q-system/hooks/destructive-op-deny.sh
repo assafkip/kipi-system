@@ -933,6 +933,29 @@ if [ "${TOOL_NAME:0:5}" = "mcp__" ]; then
     | tr '[:upper:]' '[:lower:]' \
     | sed 's/^un_/un/')"
 
+  # GMAIL TRASH IS ALLOWED, BY THE FOUNDER (2026-10-29, ASK-3361).
+  #
+  # He asked for bots that clean his inbox, and was shown that this hook denies
+  # the connector's trash in every bot run: the chief bot engine, a separate
+  # repo, wires this file on every tool (its chief/agent.py, deny_hook). Of
+  # the three ways offered (engine code, lift the hook, no trash) he picked "b",
+  # lifting it here. Trash is not deletion: Gmail keeps it 30 days and
+  # untrash_thread / untrash_message, allowed below by the `un` guard, bring it
+  # back. Permanent delete has no tool on this server and stays out of reach.
+  #
+  # EXACT TOOL NAMES, ONE SERVER. Matched on the full name, not the operation,
+  # because the operation half is shared: Drive's trash_file, any other
+  # server's trash_thread and a longer trash_* op keep the verb rule's deny.
+  # This also means the installer's differential gate refuses this file while
+  # the old hook is installed (it may not be weaker than what runs). That is
+  # the gate working; the founder installs this copy himself.
+  case "$TOOL_NAME" in
+    mcp__claude_ai_Gmail__trash_thread|mcp__claude_ai_Gmail__trash_message)
+      log_decision "allow" "gmail trash, founder ruling 2026-10-29 (ASK-3361); untrash restores for 30 days"
+      exit 0
+      ;;
+  esac
+
   # Read-only auth handshakes, exempt on every server. Checked FIRST so no verb
   # rule below can ever deny the call that makes a server usable.
   # EXACT names, not substrings (PR #338 review minor): `*authenticate*` was

@@ -1,0 +1,14 @@
+{
+ "schema_version": 1,
+ "slug": "destructive-op-allow-gmail-trash",
+ "reason": "ASK-3361, founder ruling 2026-10-29 (option \"b\"): allow exactly mcp__claude_ai_Gmail__trash_thread and trash_message so chief bots can clean his inbox; recoverable 30 days via untrash_*. install-claude-hooks.py refuses this by design (the installed hook may not be made weaker), so it lands through this proposal. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/destructive-op-allow-gmail-trash.json --root $HOME",
+ "edits": [
+  {
+   "file": ".claude/hooks/destructive-op-deny.sh",
+   "op": "insert_before",
+   "anchor": "  # Read-only auth handshakes, exempt on every server. Checked FIRST so no verb\n",
+   "insert": "  # GMAIL TRASH IS ALLOWED, BY THE FOUNDER (2026-10-29, ASK-3361).\n  #\n  # He asked for bots that clean his inbox, and was shown that this hook denies\n  # the connector's trash in every bot run: the chief bot engine, a separate\n  # repo, wires this file on every tool (its chief/agent.py, deny_hook). Of\n  # the three ways offered (engine code, lift the hook, no trash) he picked \"b\",\n  # lifting it here. Trash is not deletion: Gmail keeps it 30 days and\n  # untrash_thread / untrash_message, allowed below by the `un` guard, bring it\n  # back. Permanent delete has no tool on this server and stays out of reach.\n  #\n  # EXACT TOOL NAMES, ONE SERVER. Matched on the full name, not the operation,\n  # because the operation half is shared: Drive's trash_file, any other\n  # server's trash_thread and a longer trash_* op keep the verb rule's deny.\n  # This also means the installer's differential gate refuses this file while\n  # the old hook is installed (it may not be weaker than what runs). That is\n  # the gate working; the founder installs this copy himself.\n  case \"$TOOL_NAME\" in\n    mcp__claude_ai_Gmail__trash_thread|mcp__claude_ai_Gmail__trash_message)\n      log_decision \"allow\" \"gmail trash, founder ruling 2026-10-29 (ASK-3361); untrash restores for 30 days\"\n      exit 0\n      ;;\n  esac\n\n",
+   "reason": "Allow exactly Gmail trash_thread and trash_message (founder ruling 2026-10-29, ASK-3361); inserted before the auth exemption so it runs ahead of the verb rule that denies trash."
+  }
+ ]
+}
