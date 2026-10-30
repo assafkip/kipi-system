@@ -49,11 +49,15 @@ a path whose whole value is that it has none.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REQUIREMENTS = os.path.join(HERE, "requirements-authorship.txt")
@@ -75,6 +79,134 @@ PYTHON_PIN = "3.12"
 # slowness, and a cap that fires on an ordinary cold start would make the metric
 # look broken on exactly the machine that needed it most.
 TIMEOUT_SECONDS = 900
+
+#: Bound on BUILDING the env once (resolve + wheels), and on waiting for the one
+#: process that is building it. Measured 2026-10-30: a cold build was 66s, exit 0.
+#: 300s is 4x that; past it the build is hung, not slow.
+BUILD_TIMEOUT_SECONDS = int(os.environ.get("KIPI_LUAR_ENV_BUILD_TIMEOUT", "300"))
+
+#: Set by verify.sh to a per-run directory. Its presence means "share the build
+#: verdict (ok or failed) across every pytest worker of this run".
+STATE_DIR_ENV = "KIPI_LUAR_ENV_STATE_DIR"
+
+#: Every failure of the env step carries this name, so a red test names its cause
+#: instead of reading as a model or scorer defect.
+ENV_ERROR_NAME = "LUAR_ENV_UNAVAILABLE"
+
+_IN_PROCESS_OK = set()
+
+
+def _env_key():
+    h = hashlib.sha256()
+    h.update(PYTHON_PIN.encode())
+    try:
+        with open(REQUIREMENTS, "rb") as fh:
+            h.update(fh.read())
+    except OSError:
+        pass
+    return h.hexdigest()[:16]
+
+
+def _run_bounded(cmd, cwd, env, timeout):
+    """Run `cmd`; on timeout kill its whole process group and return (None, "").
+
+    Scar (ASK-3515, 2026-10-30): `subprocess.run(timeout=)` kills only the direct
+    child. `uv run` spawns python under it, so a timed-out run left descendants
+    holding the uv cache lock at 0% CPU. A new session lets killpg take the lot.
+    """
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        _, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        return None, ""
+    return proc.returncode, err or ""
+
+
+def ensure_declared_env():
+    """Build (or verify) the uv env ONCE, bounded, and fail fast when it cannot be.
+
+    ASK-3515 scar, 2026-10-30: after a disk-full event every xdist worker ran its
+    own `uv run --with-requirements ...`; 30 workers sat at 0% CPU, wrote 81 empty
+    luar-vectors files, and two commits hung 54 and 77 minutes. One builder under
+    a lock, a bounded build, and a shared verdict make the other workers either
+    reuse the env or fail at once with a NAMED error. Never a silent skip.
+    """
+    from .luar_scorer import ScorerUnavailable
+    key = _env_key()
+    if key in _IN_PROCESS_OK:
+        return
+    state_dir = os.environ.get(STATE_DIR_ENV)
+    lock_dir = state_dir or os.path.join(
+        os.environ.get("TMPDIR") or "/tmp", f"kipi-luar-env-{os.getuid()}")
+    os.makedirs(lock_dir, exist_ok=True)
+    marker = os.path.join(lock_dir, f"verdict-{key}.json") if state_dir else None
+
+    def verdict():
+        if not marker:
+            return None
+        try:
+            with open(marker) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    def fail(detail):
+        raise ScorerUnavailable(f"{ENV_ERROR_NAME}: {detail}")
+
+    deadline = time.monotonic() + BUILD_TIMEOUT_SECONDS
+    lock_fh = open(os.path.join(lock_dir, f"build-{key}.lock"), "w")
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                v = verdict()
+                if v and v.get("status") == "failed":
+                    fail(v.get("detail", "an earlier build in this run failed"))
+                if time.monotonic() >= deadline:
+                    fail(f"waited {BUILD_TIMEOUT_SECONDS}s for another process "
+                         "to build the env")
+                time.sleep(0.2)
+        v = verdict()
+        if v and v.get("status") == "ok":
+            _IN_PROCESS_OK.add(key)
+            return
+        if v and v.get("status") == "failed":
+            fail(v.get("detail", "an earlier build in this run failed"))
+        cwd = os.path.dirname(HERE)
+        cmd = ["uv", "run", "--python", PYTHON_PIN,
+               "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
+        try:
+            rc, err = _run_bounded(cmd, cwd, _child_env(cwd), BUILD_TIMEOUT_SECONDS)
+        except OSError as exc:
+            rc, err = -1, str(exc)
+        if rc == 0:
+            result = {"status": "ok"}
+        elif rc is None:
+            result = {"status": "failed",
+                      "detail": f"env build timed out after {BUILD_TIMEOUT_SECONDS}s"}
+        else:
+            tail = " | ".join(err.strip().splitlines()[-3:]) or "no stderr"
+            result = {"status": "failed",
+                      "detail": f"env build failed (exit {rc}): {tail}"}
+        if marker:
+            tmp = marker + f".{os.getpid()}"
+            with open(tmp, "w") as fh:
+                json.dump(result, fh)
+            os.replace(tmp, marker)
+        if result["status"] != "ok":
+            fail(result["detail"])
+        _IN_PROCESS_OK.add(key)
+    finally:
+        lock_fh.close()
 
 
 def _uv_available():
@@ -123,6 +255,8 @@ def encode_via_declared_env(documents):
             f"({os.path.basename(REQUIREMENTS)}) cannot be built")
     if not os.path.isfile(REQUIREMENTS):
         raise ScorerUnavailable(f"missing requirements file: {REQUIREMENTS}")
+
+    ensure_declared_env()
 
     # `-m <this module>`, NOT a path to this file. Handing python3 a script path
     # puts that script's OWN directory on sys.path[0] -- the package dir -- so
@@ -256,6 +390,14 @@ def _worker_main(argv):
         json.dump(payload, fh)
     return code
 
+
+if __name__ == "__main__" and "--ensure" in sys.argv[1:]:
+    try:
+        ensure_declared_env()
+        sys.exit(0)
+    except Exception as _exc:                             # noqa: BLE001
+        print(_exc, file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     sys.exit(_worker_main(sys.argv[1:]) if "--worker" in sys.argv[1:] else 2)
