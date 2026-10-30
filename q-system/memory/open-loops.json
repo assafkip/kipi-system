@@ -13,11 +13,12 @@
     {
       "id": "captoken-pr",
       "title": "capability-token PR to dwarvesf/claude-guardrails (issue #14 filed)",
-      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Checked 2026-10-29 (heartbeat, x2): unchanged. still OPEN, ZERO comments, NO maintainer reply, upstream issue untouched since 2026-08-28 (updatedAt 2026-08-28T15:21:52Z). Prior identical checks 2026-10-28 (x2), 2026-10-27 (x2), 2026-10-26 (x2), 2026-10-25 (x2), 2026-10-24, 2026-10-23 and 2026-10-22. Prior check 2026-09-19 (ASK-536) identical (the 2026-08-28 third-party comment from benrrr56-wq is deleted). Patch still applies on upstream main b3c3e15 and tests/test-capability-approval.sh gives 12 passed, 0 failed. Check: gh issue view 14 --repo dwarvesf/claude-guardrails --json state,comments. Only a comment from a MAINTAINER that approves or invites the PR counts. Then: gh repo clone dwarvesf/claude-guardrails, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval to a fork, gh pr create with --body-file q-system/output/captoken-pr-body.md (title in captoken-pr-drafts-2026-06-16.md STEP 2). Then close this loop.",
+      "next_action": "Issue FILED: github.com/dwarvesf/claude-guardrails/issues/14 (2026-06-20). Checked 2026-10-30 (heartbeat): unchanged. still OPEN, ZERO comments, NO maintainer reply, upstream issue untouched since 2026-08-28 (updatedAt 2026-08-28T15:21:52Z). Prior identical checks 2026-10-29 (x2), 2026-10-28 (x2), 2026-10-27 (x2), 2026-10-26 (x2), 2026-10-25 (x2), 2026-10-24, 2026-10-23 and 2026-10-22. Prior check 2026-09-19 (ASK-536) identical (the 2026-08-28 third-party comment from benrrr56-wq is deleted). Patch still applies on upstream main b3c3e15 and tests/test-capability-approval.sh gives 12 passed, 0 failed. Check: gh issue view 14 --repo dwarvesf/claude-guardrails --json state,comments. Only a comment from a MAINTAINER that approves or invites the PR counts. Then: gh repo clone dwarvesf/claude-guardrails, git apply q-system/output/captoken-claude-guardrails.patch, push branch chore/capability-approval to a fork, gh pr create with --body-file q-system/output/captoken-pr-body.md (title in captoken-pr-drafts-2026-06-16.md STEP 2). Then close this loop.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-06-20",
-      "github": "https://github.com/dwarvesf/claude-guardrails/issues/14"
+      "github": "https://github.com/dwarvesf/claude-guardrails/issues/14",
+      "last_checked": "2026-10-30"
     },
     {
       "id": "inv-h14h15-branch",
@@ -30,12 +31,13 @@
     {
       "id": "i-have-adhd-pr-124",
       "title": "i-have-adhd rule-8 RSD PR (upstream)",
-      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Checked 2026-10-29 (heartbeat, x2): unchanged. OPEN, no reviews, no comments, untouched since 2026-08-19 (updatedAt 2026-08-19T21:40:58Z). Prior identical checks 2026-10-28 (x2), 2026-10-27 (x2), 2026-10-26 (x2), 2026-10-25 (x2), 2026-10-24, 2026-10-23 and 2026-10-22. Then wait on maintainer review; close this loop when merged or closed.",
+      "next_action": "PR github.com/ayghri/i-have-adhd/pull/124 is OPEN (rule 8 extended to feedback on the reader's own work, Author:AI disclosed). Founder action: review the diff and tick the final-accountability checkbox in the PR body (2 min). Checked 2026-10-30 (heartbeat): unchanged. OPEN, no reviews, no comments, untouched since 2026-08-19 (updatedAt 2026-08-19T21:40:58Z). Prior identical checks 2026-10-29 (x2), 2026-10-28 (x2), 2026-10-27 (x2), 2026-10-26 (x2), 2026-10-25 (x2), 2026-10-24, 2026-10-23 and 2026-10-22. Then wait on maintainer review; close this loop when merged or closed.",
       "needs_founder": true,
       "status": "open",
       "added": "2026-08-19",
       "github_url": "https://github.com/ayghri/i-have-adhd/pull/124",
-      "linear": "ASK-924"
+      "linear": "ASK-924",
+      "last_checked": "2026-10-30"
     },
     {
       "id": "gemini-prepaid-credits-depleted",
