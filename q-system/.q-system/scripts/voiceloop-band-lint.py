@@ -74,9 +74,12 @@ _CHANNEL_END = r"([-_./]|$)"
 CHANNEL_BY_PATH = tuple(
     (re.compile(pattern + _CHANNEL_END, re.IGNORECASE), channel)
     for pattern, channel in (
-        (r"(^|/)(linkedin|x|twitter)[-_](reply|comment)", "comment"),
+        (r"(^|/)(linkedin|x|twitter|threads)[-_](reply|comment)", "comment"),
         (r"(^|/)linkedin", "linkedin"),
         (r"(^|/)(x|twitter)", "x"),
+        # The short-form lane moved from X to Threads in one instance (2026-10-29); the
+        # engine accepts threads beside x, so a threads draft must reach `review`.
+        (r"(^|/)threads", "threads"),
         (r"(^|/)substack", "substack"),
         (r"(^|/)medium", "medium"),
         (r"(^|/)email", "email"),
