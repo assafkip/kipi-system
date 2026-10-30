@@ -73,7 +73,7 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 if [ ! -f "$PREFLIGHT" ]; then
   echo "  FAIL: THE DEFECT: no repo-preflight.sh exists, so a dispatcher that iterates"
   echo "        the registry would enter client-d / client-c / client-b with no"
-  echo "        check on control-code version, hooks, remote, branch protection,"
+  echo "        check on hooks, remote, branch protection,"
   echo "        credentials, dirty state or a kill switch."
   echo "-------- 0 passed, 1 failed --------"
   exit 1
@@ -133,7 +133,7 @@ chmod +x "$STUBBIN/gh"
 export PATH="$STUBBIN:$PATH"
 
 # --- fixture builder ---------------------------------------------------------
-# A repo that passes ALL SEVEN items. Every failing fixture below is this one with
+# A repo that passes EVERY item. Every failing fixture below is this one with
 # exactly one thing broken, so a failure names one cause and not a pile.
 SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
 # THE FIXTURE MODELS AN INSTANCE, SO IT IS BUILT FROM settings-template.json
@@ -258,7 +258,7 @@ make_good_repo() {
 run_preflight() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" 2>&1; }
 pf_rc() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" >/dev/null 2>&1; echo $?; }
 
-echo "== 1. the control: a repo that passes all seven items is ACCEPTED =="
+echo "== 1. the control: a repo that passes every item is ACCEPTED =="
 # THIS CASE IS THE POINT OF THE WHOLE STUB DESIGN. If it fails, every "refused"
 # assertion below is green for the wrong reason and proves nothing.
 GOOD="$(make_good_repo good)"
@@ -270,7 +270,7 @@ else
 fi
 
 echo
-echo "== 2. each of the seven items refuses ON ITS OWN, and names itself =="
+echo "== 2. each item refuses ON ITS OWN, and names itself =="
 # One fixture per item. The assertion is not just "refused" but "refused NAMING
 # this check" -- a preflight that refuses everything with one generic message is
 # useless to whoever has to fix the repo.
@@ -659,7 +659,9 @@ grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
 # copy: stale in an instance, absent in a repo with no q-system. That was the one
 # place a target copy of control code really executed, and it is what made
 # preflight's control-code hash look necessary.
-REL_CTRL="$(grep -nE '^[[:space:]]*(python3|bash) q-system/' "$WORKER")"
+# Matched anywhere on a line, not only at its start, so a backticked or chained
+# form (`cd x && python3 q-system/...`) is caught too (review of PR #574).
+REL_CTRL="$(grep -nE '(python3|bash)[[:space:]]+(\./)?(q-system/|plugins/|kipi[[:space:]])' "$WORKER")"
 [ -z "$REL_CTRL" ] \
   && ok "no agent-prompt command runs a control script relative to the target worktree" \
   || bad "the prompt runs a control script from the target worktree, not the skeleton: $REL_CTRL"
@@ -877,7 +879,7 @@ echo "== 19. a CLIENT ENGAGEMENT repo is refused even when opted in (ASK-741) ==
 #
 # The property under test is NOT "client repos are off by default" -- case 5 already
 # covers default-off, and a default is not a refusal. It is that an engagement repo
-# carrying dispatch.enabled: true, and passing all seven other items, is STILL
+# carrying dispatch.enabled: true, and passing every other item, is STILL
 # absent from the pick list. Opt-in is what this has to survive.
 #
 # EVERY NAME HERE IS INVENTED. This repo is public (102 stars, 23 forks) and
@@ -1088,4 +1090,4 @@ esac
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"
+echo "PASS: no repo is entered until every named preflight check passes, and selection rotates"

@@ -16,7 +16,7 @@
 # inadequate protection. That is the correct call and it is worth stating why,
 # because the two look similar: opt-in records which repos a human MEANT to allow,
 # once, at registry-edit time. It says nothing about whether entering one is safe
-# NOW -- whether the control code there is current, whether main is protected,
+# NOW -- whether the hooks there are current, whether main is protected,
 # whether somebody has uncommitted work in the tree this minute. Consent is not a
 # safety check. This script is the safety check.
 #
