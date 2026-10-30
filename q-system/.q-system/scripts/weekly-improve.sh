@@ -10,7 +10,7 @@
 # (2026-10-26) reported "nothing this week" while starved. The consulting voice
 # loop already learns from what he actually sent.
 #
-# STARVATION ALARM (ASK-3402): after the pass, its input count goes to
+# STARVATION ALARM (ASK-3402; lessons-daily is NOT wired, see its note): after the pass, its input count goes to
 # loop_starvation.py, which files ONE ticket for Sana after 3 consecutive
 # zero-input runs. The pass exits 0 when starved, so no failure detector would
 # ever see it. This file does not name the notifier; the helper owns it

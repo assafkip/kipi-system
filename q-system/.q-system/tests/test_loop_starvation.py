@@ -111,15 +111,17 @@ def test_ledger_rows_are_append_only_records(tmp_path):
     assert [r["inputs"] for r in rows] == [0, 3] and all({"loop", "at", "inputs", "alerted"} <= set(r) for r in rows)
 
 
-def test_lessons_daily_records_scanned_after_the_summary_and_skips_a_hold_run():
-    """Wiring pin (source level; the hermetic lessons-daily shell fixture copies
-    only the script, so the end-to-end run is covered by the helper tests above).
-    The record call sits after the JSON parse check and before the counts, and a
-    HOLD run (scanned 0 is a stub there) is not recorded."""
+def test_lessons_daily_is_not_wired_to_the_alarm_and_says_why():
+    """PR #572 review: `scanned` is zero on a quiet night by design, so wiring it
+    would file a ticket for routine operation. Pin the absence and the reason."""
     text = (HERE.parent / "scripts" / "lessons-daily.sh").read_text(encoding="utf-8")
-    i_parse = text.index("emitted no parseable JSON summary")
-    i_rec = text.index("record lessons-daily")
-    i_pub = text.index("PUB=$(field")
-    assert i_parse < i_rec < i_pub
-    assert 'if [ -z "${HOLD:-}" ]' in text[i_rec - 1200:i_rec]
-    assert "record lessons-daily" in text
+    assert "loop_starvation.py" not in text and "record lessons-daily" not in text
+    assert "zero on a normal quiet night" in text
+
+
+def test_a_corrupt_friction_ledger_is_not_counted_as_zero(tmp_path):
+    bad = tmp_path / "f.jsonl"
+    bad.write_text("{not json\n")
+    r = subprocess.run([sys.executable, str(HERE.parent / "scripts" / "weekly-improve.py"), "--count-inputs", "--friction", str(bad)],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and r.stdout.strip() == ""

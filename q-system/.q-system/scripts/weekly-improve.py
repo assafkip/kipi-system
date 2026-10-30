@@ -206,6 +206,13 @@ def main(argv=None) -> int:
     ap.add_argument("--count-inputs", action="store_true", help="print the run's input count, send nothing")
     args = ap.parse_args(argv)
     if args.count_inputs:
+        # An unreadable input is not starvation: exit 1 with no number so the
+        # caller records nothing (PR #572 review, minor).
+        _, ferr = read_friction(args.friction)
+        _, ierr = read_inbox(args.inbox)
+        if ferr or ierr:
+            print(ferr or ierr, file=sys.stderr)
+            return 1
         print(input_count(args.friction, args.inbox))
         return 0
     message, degraded = build(args.friction, args.inbox)

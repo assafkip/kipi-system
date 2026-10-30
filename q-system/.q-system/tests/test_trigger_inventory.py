@@ -211,7 +211,7 @@ def test_surfaces_the_known_dead_stages_on_a_copy_of_this_repo(tmp_path):
     p = _run(r, empty, "--json")
     assert p.returncode == 0, p.stderr[-800:]
     j = json.loads(p.stdout)
-    assert "q-system/.q-system/scripts/weekly-improve.py" in j["dead"], "the stage that was built and never ran"
+    assert "q-system/.q-system/scripts/weekly-improve.py" in j["dead"], "the weekly pass, dead once its runner and plist are gone"
     assert j["stages"]["kipi-push-upstream.sh"]["status"] == "manual-only", "the upstream push has no scheduled trigger"
     assert j["stages"]["q-system/.q-system/scripts/lessons-daily.sh"]["status"] == "triggered", "the template from issue 5 counts as a trigger"
 

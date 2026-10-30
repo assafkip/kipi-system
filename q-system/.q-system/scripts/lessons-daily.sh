@@ -218,17 +218,10 @@ lessons_half() {
   printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
     || { lessons_fail "lessons-distill.py emitted no parseable JSON summary"; return 1; }
 
-  # ASK-3402: a distiller that scans 0 files exits 0 and reads as a quiet night.
-  # loop_starvation.py alarms (one ticket, state change only) after 3 zero runs.
-  # A HOLD run is skipped: its scanned 0 is a stub, not an empty input.
-  if [ -z "${HOLD:-}" ]; then
-    SCANNED=$(field "int(d.get('scanned',0))")
-    # The ledger follows $LOG's directory (same q-system/output in production) so
-    # a test with a temp log never writes the live ledger or files a real ticket.
-    [ -n "$SCANNED" ] && KIPI_STARVATION_LEDGER="${KIPI_STARVATION_LEDGER:-$(dirname "$LOG")/loop-starvation.jsonl}" \
-      KIPI_STARVATION_NOTIFY="${KIPI_STARVATION_NOTIFY:-${KIPI_NOTIFY_CMD:+true}}" \
-      python3 "$(dirname "${BASH_SOURCE[0]}")/loop_starvation.py" record lessons-daily "$SCANNED" >> "$LOG" 2>&1
-  fi
+  # ASK-3402 NOTE: no starvation record here on purpose. `scanned` counts NEW
+  # un-ledgered sources, which is zero on a normal quiet night, so alarming on
+  # it filed a permanent ticket for routine operation (PR #572 review, major).
+  # A real input metric for this loop is tracked as its own issue.
 
   PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
   HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
