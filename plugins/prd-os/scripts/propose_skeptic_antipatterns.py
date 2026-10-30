@@ -363,9 +363,17 @@ def file_review_issue(
 ) -> dict | None:
     """File ONE Linear issue for Sana per proposal that has something to merge.
 
-    Never raises. The proposal file is already on disk before this runs, and
-    archive is the load-bearing step (`_propose_skeptic_antipatterns_best_effort`),
-    so a filing failure is recorded as a receipt row and loses nothing.
+    Never raises, and that is a contract two callers depend on: archive is the
+    load-bearing step (`_propose_skeptic_antipatterns_best_effort`) and `main()`
+    documents exit 0 / `{"proposal_written": ...}`. The proposal file is already
+    on disk before this runs, so a filing failure is recorded as a receipt row
+    and loses nothing.
+
+    Returns the filer's answer plus a `receipt` key: `"written"` when the row
+    landed, `"failed"` (with `receipt_detail`) when the receipt IO itself blew
+    up. That second case is the one failure this function can hit AFTER the
+    work succeeded, so it degrades to a stderr line rather than a raise -- the
+    receipt cannot be the one record whose loss destroys the round it records.
 
     An empty proposal files nothing on purpose: "the reviewer flagged no accepted
     findings" is a signal about the round, not a queue item. Volume from one
@@ -381,8 +389,27 @@ def file_review_issue(
                 "detail": f"no {FLEET_FILER_RELPATH} in {cfg.repo_root}"}
     else:
         link = _run_fleet_filer(shared, cfg, prd_id, proposal_path, findings)
-    _append_filing_receipt(cfg, prd_id, proposal_path, findings, link)
-    return link
+    # The receipt is the LAST thing that happens, and the only one whose failure
+    # can cost nothing: the proposal is on disk and the Linear issue may already
+    # exist. Letting its IO escape made `main()` exit nonzero with a traceback
+    # against its documented exit-0 contract, reporting a round that in fact
+    # succeeded as a total failure (PR #566 minor).
+    try:
+        _append_filing_receipt(cfg, prd_id, proposal_path, findings, link)
+    except Exception as exc:  # noqa: BLE001 -- the docstring's contract above
+        # Reported, never swallowed: stderr is the one channel BOTH callers
+        # already surface (`_propose_skeptic_antipatterns_best_effort` writes
+        # its own line there), so a lost receipt is not silence bought by a fix.
+        link = dict(link, receipt="failed", receipt_detail=repr(exc)[:300])
+        sys.stderr.write(
+            f"skeptic proposal filing receipt NOT written for {prd_id}: {exc!r}\n"
+            f"  the proposal IS at {proposal_path} and the filer said "
+            f"{link.get('state')}/{link.get('identifier')}\n"
+        )
+        return link
+    # Stated on success too. A key present only on failure makes a missing key
+    # mean both "receipt landed" and "an older caller never set it".
+    return dict(link, receipt="written")
 
 
 def _run_fleet_filer(

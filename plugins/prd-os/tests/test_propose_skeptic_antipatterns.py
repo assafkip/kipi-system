@@ -251,7 +251,12 @@ def test_propose_raises_for_missing_spec(fake_repo, write_config, import_config)
 
 
 FLEET_SCRIPTS = Path("q-system") / ".q-system" / "scripts"
-REAL_SCRIPTS = Path("/Users/assafkipnis/.config/kipi/worktrees/ask-3406") / FLEET_SCRIPTS
+# Derived from this file, never typed: tests/ -> prd-os/ -> plugins/ -> repo root,
+# the same `parents[3]` the rest of this suite's siblings use. A literal absolute
+# path pinned the suite to one machine's worktree, so CI and every other checkout
+# either read a tree they do not own or found nothing at all (PR #566, major).
+REPO_ROOT = Path(__file__).resolve().parents[3]
+REAL_SCRIPTS = REPO_ROOT / FLEET_SCRIPTS
 
 # VERBATIM from alert-to-linear.py:1440 (`alert-to-linear: {line}` on stdout) and
 # the `filed <IDENT>` form spillover-linear-check.py:76 matches. Taken from the
@@ -370,3 +375,120 @@ def test_real_fleet_sink_exists_and_refuses_under_pytest():
     )
     assert res.returncode == 4, (res.returncode, res.stdout, res.stderr)
     assert "REFUSED under pytest" in res.stderr
+
+
+def test_fleet_scripts_resolve_from_this_repo_not_a_machine_path():
+    """RED before this commit: REAL_SCRIPTS was a literal worktree path.
+
+    Two halves, because each catches a different thing. The equality is the
+    BOUND check -- move this file and the constant moves with it -- and
+    `.is_file()` is the derivation's floor, so a wrong parents[] depth fails
+    loudly instead of making every check above a silent no-op
+    (`derive-a-value-from-its-owner-never-restate-it-in-a-test`). The source
+    scan is the tripwire against re-introducing one anywhere else in the file.
+    """
+    assert REAL_SCRIPTS == REPO_ROOT / FLEET_SCRIPTS
+    assert (REAL_SCRIPTS / "alert-to-linear.py").is_file(), REAL_SCRIPTS
+    assert (REAL_SCRIPTS / "spillover-linear-check.py").is_file(), REAL_SCRIPTS
+    # Split so this assertion is not itself the hit, the way
+    # test_promotion_receipt.py writes `"As" + "saf"` for the same reason.
+    needle = "/Use" + "rs/"
+    assert needle not in Path(__file__).read_text(), (
+        "a literal home path pins this suite to one machine"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR #566 minor: file_review_issue's "never raises" is the CLI's exit contract
+# ---------------------------------------------------------------------------
+
+
+def _break_the_receipt_path(cfg) -> Path:
+    """Make the receipt append fail the way a real filesystem does.
+
+    `filings.jsonl` as a directory raises IsADirectoryError from `open("a")`,
+    which is an OSError reached through the same code path a read-only volume
+    or a full disk would take. Produced from the writer's own call, not
+    monkeypatched, per `feedback_fixtures_from_producers`.
+    """
+    cfg.skeptic_proposals_dir.mkdir(parents=True, exist_ok=True)
+    blocker = cfg.skeptic_proposals_dir / "filings.jsonl"
+    blocker.mkdir()
+    return blocker
+
+
+def test_receipt_io_failure_does_not_raise_through_propose(
+    fake_repo, write_config, import_config, capsys
+):
+    """RED before this commit: IsADirectoryError escaped propose().
+
+    The proposal was already on disk and the Linear issue may already exist, so
+    a lost receipt turned a successful round into a traceback and `main()`
+    exited nonzero against its documented `{"proposal_written": ...}` / exit-0
+    contract.
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _write_findings(
+        fake_repo / ".prd-os" / "findings",
+        "fixture",
+        [_finding("finding-1", "the success metric is too vague", severity="blocker")],
+    )
+    _break_the_receipt_path(cfg)
+
+    _text, out_path = propose(cfg, "prd-fixture")
+
+    assert out_path.is_file()
+    # Not silent: the one channel both callers already surface says what was
+    # lost, so a receipt hole is never bought with silence
+    # (coding-standards.md forbids the quiet swallow).
+    assert "receipt NOT written" in capsys.readouterr().err
+
+
+def test_receipt_io_failure_is_recorded_on_the_returned_link(
+    fake_repo, write_config, import_config
+):
+    """The caller can tell receipt-landed from receipt-lost, not just no-raise."""
+    from propose_skeptic_antipatterns import file_review_issue
+
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _break_the_receipt_path(cfg)
+    findings = [_finding("finding-1", "the success metric is too vague",
+                         severity="blocker")]
+
+    link = file_review_issue(
+        cfg, "prd-fixture", cfg.skeptic_proposals_dir / "prd-fixture-proposal.md",
+        findings,
+    )
+
+    assert link is not None
+    assert link["state"] == "filed", link
+    assert link["receipt"] == "failed", link
+    assert "IsADirectoryError" in link["receipt_detail"]
+
+
+def test_receipt_success_is_stated_not_inferred_from_absence(
+    fake_repo, write_config, import_config
+):
+    """A key present only on failure makes `None` mean two things at once."""
+    from propose_skeptic_antipatterns import file_review_issue
+
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    findings = [_finding("finding-1", "the success metric is too vague",
+                         severity="blocker")]
+
+    link = file_review_issue(
+        cfg, "prd-fixture", cfg.skeptic_proposals_dir / "prd-fixture-proposal.md",
+        findings,
+    )
+
+    assert link["receipt"] == "written"
+    # The on-disk row keeps the filer's answer only: the receipt's own state is
+    # not a fact the receipt can report about itself.
+    rows = [json.loads(line)
+            for line in (cfg.skeptic_proposals_dir / "filings.jsonl").read_text().splitlines()
+            if line.strip()]
+    assert "receipt" not in rows[-1]["linear"]
