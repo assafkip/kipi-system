@@ -1,6 +1,6 @@
 ---
 description: Run the full voice review on one draft by hand (bands, shapes, echo, gate roster, channel rules).
-argument-hint: <file> [--channel linkedin|x|substack|medium|email|dm|comment]
+argument-hint: <file> [--channel linkedin|x|threads|substack|medium|email|dm|comment]
 allowed-tools: Bash
 ---
 

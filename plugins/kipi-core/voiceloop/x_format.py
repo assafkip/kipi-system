@@ -217,6 +217,20 @@ def length_violations(text, channel):
         return []
     body = text or ""
     weighted = weighted_length(body)
+    if channel != "x":
+        # The thresholds are the x ones by founder ruling (2026-10-29); the WORDS are
+        # not, because "X truncates" and "X shows about 280" are false on another
+        # platform. The x branch below keeps its text byte for byte.
+        if weighted > X_MAX_CHARS:
+            return [{"rule": "x-too-long", "line": 1,
+                     "detail": (f"this is {weighted} units, past the {X_MAX_CHARS}-unit "
+                                f"short-form ceiling. Cut it. Do not summarise the long "
+                                f"version.")}]
+        if weighted > X_FOLD_CHARS:
+            return [{"rule": "x-past-the-fold", "warn_only": True, "line": 1,
+                     "detail": (f"this is {weighted} units, past the {X_FOLD_CHARS}-unit "
+                                f"short-form fold. Nothing is blocked here.")}]
+        return []
     if weighted > X_MAX_CHARS:
         return [{
             "rule": "x-too-long",
