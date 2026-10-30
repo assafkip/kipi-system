@@ -206,22 +206,22 @@ def test_surfaces_the_known_dead_stages_on_a_copy_of_this_repo(tmp_path):
     r = _live_copy(tmp_path)
     empty = tmp_path / "no-installed-plists"
     empty.mkdir()
-    (r / "q-system" / ".q-system" / "scripts" / "weekly-improve.sh").unlink()  # the pre-fix state: nothing named route-overrides-to-learn.py
+    (r / "q-system" / ".q-system" / "scripts" / "weekly-improve.sh").unlink()  # the pre-fix state: nothing named weekly-improve.py
     (r / "q-system" / ".q-system" / "scripts" / "com.kipi.weekly-improve.plist").unlink()
     p = _run(r, empty, "--json")
     assert p.returncode == 0, p.stderr[-800:]
     j = json.loads(p.stdout)
-    assert "q-system/.q-system/scripts/route-overrides-to-learn.py" in j["dead"], "the stage that was built and never ran"
+    assert "q-system/.q-system/scripts/weekly-improve.py" in j["dead"], "the stage that was built and never ran"
     assert j["stages"]["kipi-push-upstream.sh"]["status"] == "manual-only", "the upstream push has no scheduled trigger"
     assert j["stages"]["q-system/.q-system/scripts/lessons-daily.sh"]["status"] == "triggered", "the template from issue 5 counts as a trigger"
 
 
-def test_after_the_fix_route_overrides_is_triggered_through_weekly_improve(tmp_path):
+def test_after_the_fix_the_weekly_pass_is_triggered_through_weekly_improve_sh(tmp_path):
     r = _live_copy(tmp_path)
     empty = tmp_path / "no-installed-plists"
     empty.mkdir()
     j = json.loads(_run(r, empty, "--json").stdout)
-    st = j["stages"]["q-system/.q-system/scripts/route-overrides-to-learn.py"]
+    st = j["stages"]["q-system/.q-system/scripts/weekly-improve.py"]
     assert st["status"] == "triggered" and "q-system/.q-system/scripts/weekly-improve.sh" in st["via"], st
 
 

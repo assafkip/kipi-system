@@ -46,3 +46,5 @@ For each `edited` action, insert into `copy_edits` table in `{{QROOT}}/.q-system
 If Chrome fails after 2 attempts, write minimal output and exit. Do NOT block.
 
 ## Token budget: <3K output
+
+> RETIRED 2026-10-30 (ASK-3402): route-overrides-to-learn.py and draft-vs-sent.py, named above, were removed. copy_edits rows are still written but nothing consumes them; the consulting voice loop learns from sent mail.

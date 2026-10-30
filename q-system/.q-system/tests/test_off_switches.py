@@ -60,7 +60,7 @@ def test_weekly_runner_dry_run_writes_nothing(tmp_path):
     (tmp_path / "tmp").mkdir()
     r = subprocess.run(["/bin/bash", str(SCRIPTS / "weekly-improve.sh"), "--dry-run"], capture_output=True, text=True,
                        env=env, cwd=home)
-    assert r.returncode == 0 and r.stdout.count("would run: ") == 3, r.stderr[-300:]
+    assert r.returncode == 0 and r.stdout.count("would run: ") == 1, r.stderr[-300:]
     assert _tree(home) == set(), f"dry-run wrote into HOME (plist or log): {_tree(home)}"
     assert _tree(tmp_path / "tmp") == set(), "dry-run left a temp marker"
     after = _tree(output_dir) if output_dir.exists() else set()
@@ -71,32 +71,10 @@ def test_weekly_pass_with_no_friction_file_sends_nothing(tmp_path, capsys):
     weekly = _load("weekly_improve_off", SCRIPTS / "weekly-improve.py")
     rc = weekly.main(["--friction", str(tmp_path / "absent.jsonl"), "--inbox", str(tmp_path / "no-inbox")])
     out = capsys.readouterr().out
-    assert "nothing this week" in out
+    assert "input missing" in out
     assert '"refused": true' in out and '"delivered": false' in out, "under pytest a send must be refused, and refused is not delivered"
     assert rc == 1, "a refused send is not a success exit"
     assert not (tmp_path / "absent.jsonl").exists(), "the consumer must not create the ledger"
-
-
-def test_producer_import_creates_no_salt_and_no_ledger(tmp_path):
-    """Codex adversarial finding: redirecting SALT_FILE after import could not
-    see an import-time write. The import runs in a subprocess whose HOME and
-    KIPI_STATE_DIR are tmp_path, with the module's default paths left alone,
-    and both the temp home and the repo's output tree are snapshotted."""
-    home = tmp_path / "home"
-    home.mkdir()
-    output_dir = ROOT / "q-system" / "output"
-    before = _tree(output_dir) if output_dir.exists() else set()
-    code = ("import importlib.util, pathlib\n"
-            f"p = pathlib.Path({str(SCRIPTS / 'draft-vs-sent.py')!r})\n"
-            "s = importlib.util.spec_from_file_location('dvs', p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
-            "print(len(m.read_ledger(pathlib.Path('absent.jsonl'))))\n")
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=home,
-                       env={"PATH": os.environ.get("PATH", ""), "HOME": str(home), "KIPI_STATE_DIR": str(home / "state"),
-                            "PYTEST_CURRENT_TEST": "1"})
-    assert r.returncode == 0 and r.stdout.strip() == "0", r.stderr[-300:]
-    assert _tree(home) == set(), f"import wrote into HOME/state: {_tree(home)}"
-    after = _tree(output_dir) if output_dir.exists() else set()
-    assert after == before, f"import wrote into q-system/output: {after ^ before}"
 
 
 def _tree(root: Path) -> set:
@@ -193,8 +171,6 @@ def test_every_new_script_declares_its_off_switch_in_its_docstring():
         "unknown_terms.py": "never pulls anything",
         "weekly-improve.py": "trigger is weekly-improve.sh",
         "friction-note.sh": "instance-owned",
-        "draft-vs-sent.py": "runner is refused",
-        "route-overrides-to-learn.py": "learn-from-correction",
         "weekly-improve.sh": "--dry-run",
     }
     uncovered = {s for s in registered if (SCRIPTS / s).exists()} - set(expectations)
