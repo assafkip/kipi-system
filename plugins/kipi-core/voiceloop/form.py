@@ -43,6 +43,8 @@ import os
 import re
 import statistics as st
 
+from .x_format import SHORT_FORM_CHANNELS
+
 # The module takes a path; the INSTANCE supplies it. Same split `voice_ref.py` uses
 # and for the same recorded reason: a founder-specific corpus directory hardcoded in a
 # shared module is what `test_no_founder_data.py` caught the last time one moved. The
@@ -175,7 +177,7 @@ def report(text, channel, path):
     if ref is None:
         out["flags"].append("no-reference: fewer than 8 posts on this channel")
         return out
-    if channel == "x":
+    if channel in SHORT_FORM_CHANNELS:
         out["char_rule"] = {"kind": "dwell-floor", "floor": X_DWELL_FLOOR_CHARS}
         if got["chars"] < X_DWELL_FLOOR_CHARS:
             out["flags"].append(
@@ -240,7 +242,7 @@ def writer_guidance(channel, path):
     his history. So this returns the LINKEDIN sentence only, and `format_rules`
     keeps owning the X copy it already had.
     """
-    if channel == "x":
+    if channel in SHORT_FORM_CHANNELS:
         return None
     ref = bands(channel, path=path)
     if ref is None:
