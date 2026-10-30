@@ -284,10 +284,10 @@ OUT="$(run_preflight "$KS")"
 
 # 2b. control-code is RETIRED (ASK-3526), so the target's worker copy is never a
 # reason to refuse. The dispatcher runs the pinned skeleton's worker against
-# --repo; the target's copy never executes. Hashing it refused brag from
-# 2026-10-25 (one worker change, #544) and ktlyst with it, a fleet gone dark for a
-# file nobody runs. Both shapes must be ACCEPTED: a copy that drifted, and a repo
-# that carries no copy at all.
+# --repo; the target's copy never executes. Hashing it refused both opted-in
+# repos from 2026-10-25 (one worker change, #544), a fleet gone dark for a file
+# nobody runs. Both shapes must be ACCEPTED: a copy that drifted, and a repo that
+# carries no copy at all. No repo names here: this file ships to every instance.
 CC="$(make_good_repo controlcode)"
 echo '# drifted' >> "$CC/q-system/.q-system/scripts/linear-worker.sh"
 fixture_git "$CC" commit -qam drift >/dev/null 2>&1
