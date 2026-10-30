@@ -441,3 +441,18 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-10-20
 - **Revisit:** Only on a founder order. Turning the routine back on while the Mac
   job runs puts two workers on one queue.
+
+## The founder does not review PRs (2026-10-23)
+
+### RULE-2026-10-23-A: PR review is Sana's job, never the founder's
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "I dont review prs. that is sanas job")
+- **Decision:** No PR is routed to the founder for review, and no plan step asks
+  him to run the reviewer. The independent review is done by the fleet reviewer
+  (`pr-review-agent.sh`) run by Sana, with an agent that did not write the PR.
+  When the review path is stuck (cap, queue, a missing verdict), the fix is
+  Sana's machinery, not a founder step. This extends "I do not want to be the
+  merge step - ever" (merge-bypass-gate.py).
+- **Reason:** On 2026-10-23 the main session handed PR #557 to the founder to
+  review after an author agent self-approved it. He corrected it.
+- **Date:** 2026-10-23
+- **Revisit:** permanent
