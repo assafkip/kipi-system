@@ -9,10 +9,34 @@ import json
 import os
 import tempfile
 
+import pytest
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("voice_refresh", os.path.join(_HERE, "voice_refresh.py"))
 vr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vr)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_files(tmp_path, monkeypatch):
+    """Point every repo-root state file at a temp dir, for EVERY test here.
+
+    Per-test discipline is what failed (review round 2, ASK-3405):
+    test_idempotent_noop called refresh() without setting VOICE_REFRESH_STAMP and
+    stamped this checkout's live .voice-refresh-last while the suite reported 24
+    passed. Measured 2026-10-30, the stamp moved 15:36:11Z -> 15:48:58Z with no
+    real refresh behind it, and /voice-refresh step 1 reads that file as its
+    lookback bound. Module-wide isolation is the fix; the fail-closed branch in
+    vr._state() is the backstop, so a future test that escapes this fixture
+    raises instead of writing real state.
+
+    Derived from vr.STATE_FILES rather than a local copy of the env names: a new
+    state file is isolated by its registry row, not by editing this fixture. The
+    floor matters -- an empty registry would make this a no-op that reads green.
+    """
+    assert vr.STATE_FILES, "state-file registry is empty: isolation would be a no-op"
+    for env in vr.STATE_FILES.values():
+        monkeypatch.setenv(env, str(tmp_path / env.lower()))
 
 
 def _corpus(tmp, flagged=False):
@@ -428,3 +452,105 @@ def test_command_doc_no_longer_tells_the_agent_to_stamp_by_hand():
     assert "Do not stamp by hand" in body, "step 6 must stop instructing a manual stamp"
     assert ".voice-delta-answered" in body, "the doc must say what clears the 7-day alert"
     assert "Routine" in body and "Personal" in body, "step 5 must ship the two halves apart"
+
+
+# --- ASK-3405 review round 2: the suite must not touch live founder state ----
+# Codex/claude review of PR #567, major: "test_idempotent_noop silently
+# overwrites the real automation/.voice-refresh-last because it doesn't stub
+# VOICE_REFRESH_STAMP". Confirmed on disk before the fix -- the two leaked files
+# were sitting untracked in this worktree, and a suite run advanced the stamp
+# from 15:36:11Z to 15:48:58Z while reporting 24 passed.
+
+def _live_state_snapshot():
+    """Contents of this checkout's real state files, keyed by path."""
+    snap = {}
+    for name in vr.STATE_FILES:
+        p = os.path.join(_HERE, name)
+        snap[p] = open(p).read() if os.path.exists(p) else None
+    return snap
+
+
+def test_refresh_without_an_override_refuses_instead_of_writing_live_state(monkeypatch):
+    """The mistake test_idempotent_noop made, now asserted on.
+
+    RED before the fix: refresh() returned "refreshed", stamped the real
+    automation/.voice-refresh-last and rewrote the real .voice-delta-pending.
+    The second assertion is the property that actually protects him -- not that a
+    particular test stubs a particular var, but that running this suite leaves
+    the lookback bound exactly as it found it.
+    """
+    before = _live_state_snapshot()
+    for env in vr.STATE_FILES.values():
+        monkeypatch.delenv(env, raising=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        _corpus(tmp, flagged=False)
+        _kept(tmp, _finding("colon-ending setup line"))
+        monkeypatch.setattr(vr, "_run", lambda *a, **k: None)
+        monkeypatch.setattr(vr, "claude_available", lambda: True)
+        with pytest.raises(RuntimeError) as e:
+            vr.refresh(tmp)
+        assert "VOICE_" in str(e.value), f"the refusal must name the var to set: {e.value}"
+    assert _live_state_snapshot() == before, "the suite must not touch live state files"
+
+
+def test_every_registered_state_file_is_fail_closed_under_pytest(monkeypatch):
+    """Derived from the registry: a new state file added without an isolation
+    story goes red here instead of writing to the real automation/ dir."""
+    assert vr.STATE_FILES, "empty registry would make this loop a no-op"
+    for name, env in vr.STATE_FILES.items():
+        monkeypatch.delenv(env, raising=False)
+        with pytest.raises(RuntimeError):
+            vr._state(name)
+        monkeypatch.setenv(env, "/tmp/x")
+        assert vr._state(name) == "/tmp/x", f"{env} must still override"
+
+
+# --- ASK-3405 review round 2: hyphenated personal phrasing -------------------
+# Review major: classify_finding missed "mental-health leave" and "laid-off",
+# routing a real disclosure to the half that merges WITHOUT his yes/no. The
+# spaced spelling was in the list; the hyphenated one matched nothing.
+
+def test_hyphenated_personal_phrasing_is_personal():
+    for text in ("how he paces a mental-health leave",
+                 "the laid-off framing",
+                 "burned-out register",
+                 "a nervous-breakdown story",
+                 "writes about a leave-of-absence"):
+        assert vr.classify_finding(_finding(text)) == "personal", f"{text!r} must be personal"
+
+
+def test_both_spellings_of_every_multi_word_term_are_personal():
+    """Derived from the module's own tuples, so a term added to either list is
+    covered without editing this test, and a boundary or separator change that
+    stops matching one spelling goes red here."""
+    assert vr.PERSONAL_STEMS and vr.PERSONAL_WORDS, "empty tuples would read green"
+    for term in vr.PERSONAL_STEMS + vr.PERSONAL_WORDS:
+        for spelling in (term.replace("-", " "), term.replace(" ", "-")):
+            f = _finding(f"how he frames the {spelling} in a long turn")
+            assert vr.classify_finding(f) == "personal", f"{spelling!r} (from {term!r})"
+
+
+# --- ASK-3405 review round 2: the trailing boundary --------------------------
+# Review minor: _PERSONAL_RE had no trailing boundary, so "chronic" matched
+# inside "chronicle" and "debt" inside "debtor" while the comment claimed
+# word-boundary matching. These four now route ROUTINE, which means they merge
+# without his yes/no -- justified because each is ordinary English in a style
+# description and none of them was ever a disclosure.
+
+def test_an_ordinary_word_is_not_a_disclosure():
+    for text in ("a chronicle of a long explanation",
+                 "a sobering number in the opener",
+                 "speaks like a debtor to the reader",
+                 "builds a visage of authority"):
+        assert vr.classify_finding(_finding(text)) == "routine", f"{text!r} over-matched"
+
+
+def test_closing_the_boundary_did_not_break_the_inflections():
+    """The expensive direction. All nine classified personal BEFORE the boundary
+    fix (measured 2026-10-30) and a blanket trailing \\b would have silently
+    stopped every one of them: a false routine fans a disclosure fleet-wide,
+    which is the asymmetry the term list is built around."""
+    for text in ("alcoholics anonymous", "two lawsuits", "chronically ill",
+                 "his debts", "antidepressants", "a note from his psychiatrist",
+                 "suicidal ideation", "the pregnancy", "foreclosure"):
+        assert vr.classify_finding(_finding(text)) == "personal", f"{text!r} regressed to routine"

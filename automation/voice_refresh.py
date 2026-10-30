@@ -53,46 +53,124 @@ STALE_DAYS = 7
 
 # Terms that make a mined pattern HIS CALL rather than a style change. The list
 # is deliberately broad: a false "personal" costs one yes/no, a false "routine"
-# fans a personal disclosure to every instance in the fleet. Word-boundary
-# matched and multi-word where the bare stem would misfire -- bare "leave" hits
-# "leaves slight ESL flow unpolished", and bare "breakdown" hits "a breakdown of
-# the argument", which are both ordinary style patterns.
-PERSONAL_TERMS = (
-    "layoff", "layoffs", "laid off", "let go", "fired", "severance", "redundancy",
+# fans a personal disclosure to every instance in the fleet. Multi-word where the
+# bare stem would misfire -- bare "leave" hits "leaves slight ESL flow
+# unpolished", and bare "breakdown" hits "a breakdown of the argument", which are
+# both ordinary style patterns.
+#
+# TWO groups, because one boundary rule gets one of them wrong (review round 2,
+# ASK-3405). The earlier single tuple matched a LEADING boundary only while its
+# comment claimed both, so it over-matched; adding a trailing \b to all of it
+# would have been the expensive repair in the other direction.
+#
+# PERSONAL_STEMS: leading boundary, any continuation. One entry covers the
+#   inflections -- "alcoholic" catches "alcoholics", "lawsuit" catches
+#   "lawsuits", "psychiatr" catches psychiatrist/psychiatric/psychiatry. All four
+#   of those classified personal before this change and a blanket trailing \b
+#   would have silently stopped them (measured 2026-10-30), which is the
+#   under-matching direction the asymmetry above says to avoid.
+# PERSONAL_WORDS: BOTH boundaries. Only the entries whose open continuation
+#   swallows an unrelated ordinary word live here: "chronic" inside "chronicle",
+#   "debt" inside "debtor", "sober" inside "sobering", "visa" inside "visage".
+#   Each of those four is ordinary English in a style description ("a sobering
+#   number in the opener") and each classified personal before this change. The
+#   real inflections that matter are listed explicitly beside them, so closing
+#   the boundary does not cost "chronically" or "debts".
+#
+# An intra-term space or hyphen matches either spelling, so "mental-health leave"
+# and "laid-off" classify the same as the spaced form. Hyphenated is the common
+# spelling in writing and it matched nothing at all before this change.
+PERSONAL_STEMS = (
+    "layoff", "laid off", "let go", "fired", "severance", "redundancy",
     "mental health", "therapy", "therapist", "psychiatr", "antidepress",
     "depression", "depressed", "anxiety", "panic attack", "burnout", "burned out",
     "nervous breakdown", "suicid", "self-harm",
     "leave of absence", "medical leave", "sick leave", "stress leave", "fmla",
     "diagnosis", "diagnosed", "illness", "hospital", "surgery", "medication",
-    "chronic", "disability", "disabled", "adhd", "audhd", "autism", "autistic",
+    "disability", "disabled", "adhd", "audhd", "autism", "autistic",
     "neurodivergent",
     "divorce", "custody", "separated", "breakup", "marriage counsel",
     "miscarriage", "pregnan", "fertility", "ivf",
     "died", "death", "passed away", "funeral", "grief", "bereave",
-    "addiction", "sober", "sobriety", "rehab", "alcoholic", "drinking problem",
-    "visa", "immigration", "green card", "deportation",
-    "salary", "compensation package", "equity grant", "net worth", "debt",
+    "addiction", "sobriety", "rehab", "alcoholic", "drinking problem",
+    "immigration", "green card", "deportation",
+    "salary", "compensation package", "equity grant", "net worth",
     "bankrupt", "foreclos", "eviction",
     "lawsuit", "litigation", "settlement", "harassment", "discrimination",
     "retaliation",
 )
-_PERSONAL_RE = re.compile(
-    "|".join(r"\b" + re.escape(t) for t in PERSONAL_TERMS), re.IGNORECASE
+PERSONAL_WORDS = (
+    "chronic", "chronically", "debt", "debts", "sober", "visa", "visas",
 )
+
+_WORD_SEP = re.compile(r"[\s\-]+")
+
+
+def _term_pattern(term):
+    """Term as a regex whose internal separators match a space OR a hyphen."""
+    return r"[\s\-]+".join(re.escape(w) for w in _WORD_SEP.split(term) if w)
+
+
+_PERSONAL_RE = re.compile(
+    "|".join(
+        [r"\b" + _term_pattern(t) for t in PERSONAL_STEMS]
+        + [r"\b" + _term_pattern(t) + r"\b" for t in PERSONAL_WORDS]
+    ),
+    re.IGNORECASE,
+)
+
+# name -> env override. The single registry of repo-root state files: _state()
+# resolves through it and the suite derives its isolation from it, so a new state
+# file is isolated by adding one row here rather than by every future test
+# remembering to patch a fixture.
+STATE_FILES = {
+    ".voice-refresh-last": "VOICE_REFRESH_STAMP",
+    ".voice-delta-pending": "VOICE_DELTA_PENDING",
+    ".voice-delta-answered": "VOICE_DELTA_ANSWERED",
+    ".voice-delta-alerted": "VOICE_DELTA_ALERTED",
+}
 
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _state(name, env):
+def _state(name):
     """Resolve a repo-root automation state file, env-overridable for tests.
 
     Read at CALL time, never at import: the suite sets these after importing the
     module, and a module-level default would pin the real founder's state files
     into a test run (fable-discipline: verify against a copy, never live state).
+
+    FAIL-CLOSED under pytest (review round 2, ASK-3405). Reading at call time was
+    not enough, because a test that simply never set the override still resolved
+    to the real automation/ dir. test_idempotent_noop did exactly that: it ran
+    refresh() on a temp corpus and stamped THIS checkout's live
+    .voice-refresh-last while the suite reported 24 passed. Measured 2026-10-30,
+    the stamp advanced 15:36:11Z -> 15:48:58Z on a run with no real refresh
+    behind it. Step 1 of /voice-refresh reads that stamp as its lookback bound
+    (plugins/kipi-core/commands/voice-refresh.md:14), so a fabricated stamp
+    silently skips every meeting since the last real run -- the exact data loss
+    this issue exists to prevent, caused by the issue's own tests. The same run
+    rewrote .voice-delta-pending, which is what the 7-day nudge reads, so it also
+    armed an alert about a delta that never existed.
+
+    Raising beats quietly redirecting to a temp path: a redirect would let a test
+    assert on a state file it never named, and the next reader of that test could
+    not tell which file it meant.
     """
-    return os.environ.get(env) or os.path.join(_HERE, name)
+    env = STATE_FILES[name]
+    override = os.environ.get(env)
+    if override:
+        return override
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        raise RuntimeError(
+            f"refusing to resolve {name} to the live automation/ dir under pytest. "
+            f"Set {env} to a temp path. Every test in "
+            f"automation/test_voice_refresh.py gets this from the autouse "
+            f"_isolate_state_files fixture; a test outside it must set it itself."
+        )
+    return os.path.join(_HERE, name)
 
 
 class RefreshError(Exception):
@@ -197,7 +275,7 @@ def _write_pending(generated_at, routine, personal):
     nobody, so marking it pending would raise an alert about work that is already
     moving through a PR.
     """
-    pending = _state(".voice-delta-pending", "VOICE_DELTA_PENDING")
+    pending = _state(".voice-delta-pending")
     if not personal:
         if os.path.exists(pending):
             os.remove(pending)
@@ -222,9 +300,9 @@ def stale_delta_line(pending=None, answered=None, alerted=None):
     generation: a monitor that repeats on every run teaches people to ignore it
     (founder-notifications: alert on state change, once).
     """
-    pending = pending or _state(".voice-delta-pending", "VOICE_DELTA_PENDING")
-    answered = answered or _state(".voice-delta-answered", "VOICE_DELTA_ANSWERED")
-    alerted = alerted or _state(".voice-delta-alerted", "VOICE_DELTA_ALERTED")
+    pending = pending or _state(".voice-delta-pending")
+    answered = answered or _state(".voice-delta-answered")
+    alerted = alerted or _state(".voice-delta-alerted")
     if not os.path.exists(pending):
         return ""
     try:
@@ -294,7 +372,7 @@ def _stamp_run():
     command: making the merge write it is the ASK-3405 defect, because the merge
     is founder-gated and a delta can sit for weeks.
     """
-    path = _state(".voice-refresh-last", "VOICE_REFRESH_STAMP")
+    path = _state(".voice-refresh-last")
     open(path, "w").write(_now_iso() + "\n")
     log("stamp", path)
 
