@@ -15,12 +15,25 @@ Enforced contract:
 - Headless dependency: stop with an environmental-trigger diagnosis if `claude`
   is not on PATH (Stage 2 synthesize needs it). Never emit a stale merge silently.
 - Idempotent: a second run on an unchanged corpus is a no-op.
-- Logs each step. Emits voice-delta.md (a founder-gated proposal); NEVER writes
-  voice-dna.md.
+- Every run that processes the corpus ENDS STAMPED (ASK-3405). The stamp used to
+  be step 6 of the founder-gated /voice-refresh command, so it waited on his
+  merge and never landed: measured 2026-10-29, .voice-refresh-last did not exist,
+  the corpus hash was dated Jul 23, and the 2026-10-22 delta sat unreviewed. With
+  no stamp the lookback falls back to "last 30 days" every run and the same
+  meetings are re-harvested forever. A REFUSED run does not stamp: advancing the
+  lookback past meetings that were never processed loses them silently.
+- Splits the delta (ASK-3405): routine patterns merge through a reviewed PR,
+  personal ones (layoffs, a mental-health leave) get one founder yes/no, because
+  voice-dna.md fans out to every instance.
+- Logs each step. Emits voice-delta.md (a proposal); NEVER writes voice-dna.md.
+
+Usage: voice_refresh.py <corpus_dir>   |   voice_refresh.py --stale-check
 """
+import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +47,52 @@ SCRIPTS = os.environ.get(
 # A configurable preflight binary could pass here and then fail inside Stage 2,
 # defeating the promised environmental-trigger stop.
 CLAUDE = "claude"
+
+# An unanswered personal half becomes visible after this many days (ASK-3405).
+STALE_DAYS = 7
+
+# Terms that make a mined pattern HIS CALL rather than a style change. The list
+# is deliberately broad: a false "personal" costs one yes/no, a false "routine"
+# fans a personal disclosure to every instance in the fleet. Word-boundary
+# matched and multi-word where the bare stem would misfire -- bare "leave" hits
+# "leaves slight ESL flow unpolished", and bare "breakdown" hits "a breakdown of
+# the argument", which are both ordinary style patterns.
+PERSONAL_TERMS = (
+    "layoff", "layoffs", "laid off", "let go", "fired", "severance", "redundancy",
+    "mental health", "therapy", "therapist", "psychiatr", "antidepress",
+    "depression", "depressed", "anxiety", "panic attack", "burnout", "burned out",
+    "nervous breakdown", "suicid", "self-harm",
+    "leave of absence", "medical leave", "sick leave", "stress leave", "fmla",
+    "diagnosis", "diagnosed", "illness", "hospital", "surgery", "medication",
+    "chronic", "disability", "disabled", "adhd", "audhd", "autism", "autistic",
+    "neurodivergent",
+    "divorce", "custody", "separated", "breakup", "marriage counsel",
+    "miscarriage", "pregnan", "fertility", "ivf",
+    "died", "death", "passed away", "funeral", "grief", "bereave",
+    "addiction", "sober", "sobriety", "rehab", "alcoholic", "drinking problem",
+    "visa", "immigration", "green card", "deportation",
+    "salary", "compensation package", "equity grant", "net worth", "debt",
+    "bankrupt", "foreclos", "eviction",
+    "lawsuit", "litigation", "settlement", "harassment", "discrimination",
+    "retaliation",
+)
+_PERSONAL_RE = re.compile(
+    "|".join(r"\b" + re.escape(t) for t in PERSONAL_TERMS), re.IGNORECASE
+)
+
+
+def _now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _state(name, env):
+    """Resolve a repo-root automation state file, env-overridable for tests.
+
+    Read at CALL time, never at import: the suite sets these after importing the
+    module, and a module-level default would pin the real founder's state files
+    into a test run (fable-discipline: verify against a copy, never live state).
+    """
+    return os.environ.get(env) or os.path.join(_HERE, name)
 
 
 class RefreshError(Exception):
@@ -78,22 +137,118 @@ def _run(script, corpus_dir):
     subprocess.run(["python3", os.path.join(SCRIPTS, script), corpus_dir], check=True)
 
 
-def emit_delta(corpus_dir):
-    """Write voice-delta.md: kept patterns proposed for merge. Never touches voice-dna.md."""
+def classify_finding(finding):
+    """"personal" if the pattern is his call, else "routine" (ASK-3405).
+
+    Reads the quotes and the rationale, not only the one-line pattern text: the
+    extractor writes that line itself and it can be neutral ("rhythm of a long
+    explanation") while the cited speech carries the disclosure. Measured shape
+    from granola-voice-synthesize.py: category, pattern, evidence_quotes,
+    why_distinctive.
+    """
+    haystack = " ".join([
+        str(finding.get("category", "")),
+        str(finding.get("pattern", "")),
+        str(finding.get("why_distinctive", "")),
+        " ".join(str(q) for q in finding.get("evidence_quotes") or []),
+    ])
+    return "personal" if _PERSONAL_RE.search(haystack) else "routine"
+
+
+def _split_kept(corpus_dir):
     fp = os.path.join(corpus_dir, "voice-findings.json")
-    kept = []
-    if os.path.exists(fp):
-        kept = [f.get("pattern", "") for f in json.load(open(fp)).get("durable_kept", [])]
+    kept = json.load(open(fp)).get("durable_kept", []) if os.path.exists(fp) else []
+    buckets = {"routine": [], "personal": []}
+    for f in kept:
+        buckets[classify_finding(f)].append(f.get("pattern", ""))
+    return buckets
+
+
+def emit_delta(corpus_dir):
+    """Write voice-delta.md, split routine vs personal. Never touches voice-dna.md."""
+    buckets = _split_kept(corpus_dir)
+    routine, personal = buckets["routine"], buckets["personal"]
+    generated_at = _now_iso()
     lines = [
-        "# Voice delta proposal (founder-gated; NOT auto-merged)\n",
-        f"\n{len(kept)} durable pattern(s) proposed for voice-dna.md:\n",
+        "# Voice delta proposal\n",
+        f"\nGenerated: {generated_at}\n",
+        f"\n## Routine ({len(routine)})\n",
+        "\nStyle patterns. These merge through a reviewed PR and do not wait on him.\n\n",
     ]
-    lines += [f"- {p}\n" for p in kept]
+    lines += [f"- {p}\n" for p in routine] or ["- (none)\n"]
+    lines += [
+        f"\n## Personal ({len(personal)})\n",
+        "\nOne yes/no from the founder for the whole block. voice-dna.md fans out to\n"
+        "every instance, so a pattern mined from a personal disclosure is his call.\n\n",
+    ]
+    lines += [f"- {p}\n" for p in personal] or ["- (none)\n"]
     lines.append(
-        "\nReview, then merge via the commit + plugin-version-bump + marketplace-pull flow. "
-        "This file never writes voice-dna.md itself.\n"
+        "\nMerge an approved pattern via the commit + plugin-version-bump + "
+        "marketplace-pull flow. This file never writes voice-dna.md itself.\n"
     )
     open(os.path.join(corpus_dir, "voice-delta.md"), "w").write("".join(lines))
+    _write_pending(generated_at, routine, personal)
+
+
+def _write_pending(generated_at, routine, personal):
+    """Record that a personal block is waiting on him, so a 7-day silence is visible.
+
+    Only the personal half can go unanswered. A routine-only delta waits on
+    nobody, so marking it pending would raise an alert about work that is already
+    moving through a PR.
+    """
+    pending = _state(".voice-delta-pending", "VOICE_DELTA_PENDING")
+    if not personal:
+        if os.path.exists(pending):
+            os.remove(pending)
+        return
+    json.dump({"generated_at": generated_at, "personal": len(personal),
+               "routine": len(routine)}, open(pending, "w"), indent=2)
+
+
+def _parse_iso(text):
+    try:
+        return datetime.datetime.strptime(text.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+    except (ValueError, AttributeError):
+        return None
+
+
+def stale_delta_line(pending=None, answered=None, alerted=None):
+    """One alert line when a personal block has gone STALE_DAYS unanswered, else "".
+
+    Answered is a marker the merge flow writes; an answer older than the current
+    delta belongs to the previous one and does not count. Fires once per
+    generation: a monitor that repeats on every run teaches people to ignore it
+    (founder-notifications: alert on state change, once).
+    """
+    pending = pending or _state(".voice-delta-pending", "VOICE_DELTA_PENDING")
+    answered = answered or _state(".voice-delta-answered", "VOICE_DELTA_ANSWERED")
+    alerted = alerted or _state(".voice-delta-alerted", "VOICE_DELTA_ALERTED")
+    if not os.path.exists(pending):
+        return ""
+    try:
+        rec = json.load(open(pending))
+    except (ValueError, OSError):
+        return ""
+    born = _parse_iso(rec.get("generated_at", ""))
+    if born is None:
+        return ""
+    if os.path.exists(answered):
+        ans = _parse_iso(open(answered).read())
+        if ans is not None and ans >= born:
+            return ""
+    age = (datetime.datetime.now(datetime.timezone.utc) - born).days
+    if age < STALE_DAYS:
+        return ""
+    if os.path.exists(alerted) and open(alerted).read().strip() == rec.get("generated_at"):
+        return ""
+    open(alerted, "w").write(rec.get("generated_at", ""))
+    return (
+        f"Voice delta unanswered for {age} days: {rec.get('personal', 0)} personal "
+        f"pattern(s) need one yes/no before they can reach voice-dna.md. "
+        f"See q-system/output/voice-corpus/voice-delta.md"
+    )
 
 
 def refresh(corpus_dir):
@@ -110,6 +265,7 @@ def refresh(corpus_dir):
     outputs_present = all(os.path.exists(os.path.join(corpus_dir, f)) for f in outputs)
     if h and outputs_present and os.path.exists(stamp) and open(stamp).read().strip() == h:
         log("idempotent", "corpus unchanged and all outputs present; no-op")
+        _stamp_run()
         return "noop"
 
     if not claude_available():
@@ -125,13 +281,32 @@ def refresh(corpus_dir):
     emit_delta(corpus_dir)
     if h:
         open(stamp, "w").write(h)
+    _stamp_run()
     log("done", "delta emitted")
     return "refreshed"
 
 
+def _stamp_run():
+    """Write .voice-refresh-last. The SINGLE writer of the lookback bound.
+
+    Reached only from the two completed-run paths in refresh(). It is deliberately
+    NOT reached from the RefreshError paths, and never from the /voice-refresh
+    command: making the merge write it is the ASK-3405 defect, because the merge
+    is founder-gated and a delta can sit for weeks.
+    """
+    path = _state(".voice-refresh-last", "VOICE_REFRESH_STAMP")
+    open(path, "w").write(_now_iso() + "\n")
+    log("stamp", path)
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--stale-check":
+        line = stale_delta_line()
+        if line:
+            print(line)
+        return
     if len(sys.argv) != 2:
-        sys.exit("usage: voice_refresh.py <corpus_dir>")
+        sys.exit("usage: voice_refresh.py <corpus_dir> | voice_refresh.py --stale-check")
     try:
         print(json.dumps({"result": refresh(sys.argv[1])}))
     except RefreshError as e:
