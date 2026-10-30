@@ -77,7 +77,9 @@ from .x_format import SHORT_FORM_CHANNELS
 #: This is a FLOOR derived from a platform mechanic, not a length invented to hit a
 #: number. The research gives a direction and no figure, so nothing here pretends to
 #: one. His X corpus median is 133, so this deliberately departs from his corpus on
-#: this channel and only this channel, on his explicit instruction.
+#: this channel and only this channel, on his explicit instruction. The channel is the
+#: short-form lane (SHORT_FORM_CHANNELS): when that lane moved from X to Threads the
+#: founder ruled the rule unchanged ("it didn't need to change", 2026-10-29).
 X_DWELL_FLOOR_CHARS = 280
 
 
@@ -181,7 +183,7 @@ def report(text, channel, path):
         out["char_rule"] = {"kind": "dwell-floor", "floor": X_DWELL_FLOOR_CHARS}
         if got["chars"] < X_DWELL_FLOOR_CHARS:
             out["flags"].append(
-                f"below the X dwell floor: {got['chars']} chars, under {X_DWELL_FLOOR_CHARS}. "
+                f"below the short-form dwell floor: {got['chars']} chars, under {X_DWELL_FLOOR_CHARS}. "
                 f"It will not earn an expand, so it cannot collect the dwell or reply "
                 f"signals the channel pays for.")
     else:

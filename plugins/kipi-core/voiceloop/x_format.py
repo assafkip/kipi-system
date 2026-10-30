@@ -193,7 +193,10 @@ def _weigh_run(run):
 def length_violations(text, channel):
     """Violations in the gates' shape, so callers merge reports without special-casing.
 
-    Channel-scoped and SILENT on every channel but x -- `figure_gate`'s posture, and
+    Channel-scoped and SILENT on every channel outside SHORT_FORM_CHANNELS (x, and
+    threads since the short-form lane moved there; the founder ruled the thresholds
+    unchanged, 2026-10-29, and the network's own 500 cap is checked at the instance's
+    send seam) -- `figure_gate`'s posture, and
     for the same reason: a gate that fires where it does not apply gets switched off,
     and this one would fire on every LinkedIn post ever written.
 
