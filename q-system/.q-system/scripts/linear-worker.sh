@@ -944,7 +944,7 @@ while IFS=$'\037' read -r _proj _path _remote _cnt; do
     # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
     # command long enough to bury the line it is on, and this is read in a daily
     # digest. The class of refusal is what tells a permanent one (client-repo)
-    # from a curable one (control-code), which is the decision being supported.
+    # from a curable one (hooks, dirty), which is the decision being supported.
     _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
     REFUSED_IN="${REFUSED_IN:+$REFUSED_IN; }$_proj (${_why:-refused})"
   fi
@@ -964,7 +964,7 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
-# this one needs either a cure (control-code drift) or nothing at all ever
+# this one needs either a cure (hooks drift, a dirty tree) or nothing at all ever
 # (client-repo, which no rotation and no cure will change). Collapsing it into the
 # skip line promises the operator a turn that is never coming.
 [ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
@@ -2175,7 +2175,7 @@ because you and the code share one mental model and it does not.
 Read the review before touching anything. It is in two places:
 
   gh pr view $EXISTING_PR --comments
-  python3 q-system/.q-system/scripts/linear-sync.py comments $ISSUE
+  python3 $SKEL/q-system/.q-system/scripts/linear-sync.py comments $ISSUE
 
 THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
 re-litigate the design. For EACH finding, either:
@@ -2188,7 +2188,7 @@ The review conversation lives on $ISSUE, because that is the one surface both yo
 and the reviewer read (and the founder reads it too). When you have worked the
 findings, post ONE reply there:
 
-  python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
+  python3 $SKEL/q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
     \"<one line per finding: fixed + the test that now covers it, or answered + the file:line>\" \\
     --agent sana --evidence \"<the command you ran and its real output>\"
 

@@ -40,9 +40,9 @@ REPO_PATH="${1:-}"
 EXPECTED_REMOTE="${2:-}"
 
 # The skeleton this script SHIPPED FROM, derived from the script's own location
-# rather than from $PWD or an env var. The control-code check compares an
-# instance's copy against this one, so the reference has to follow the code; a
-# $PWD-derived root would compare a repo against itself whenever the caller
+# rather than from $PWD or an env var. The hooks check compares a target's
+# settings against this one's template, so the reference has to follow the code;
+# a $PWD-derived root would compare a repo against itself whenever the caller
 # happened to be standing in it.
 SKELETON="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
@@ -158,35 +158,34 @@ if [ -f "$REPO_PATH/.kipi-no-dispatch" ]; then
   exit 1
 fi
 
-# --- 2. control-code ------------------------------------------------------
-# The dispatcher would run the WORKER COPY THAT LIVES IN THE TARGET REPO, and
-# `kipi update` is manual, so an instance can be arbitrarily far behind. Running a
-# stale copy means running control code nobody reviewed, on a loop that merges its
-# own PRs -- an instance frozen before the stale-checkout refusal or the
-# sensitive-path guard has neither. Byte equality against the skeleton is a blunt
-# rule on purpose: "close enough" has no meaning for code that self-merges.
-WORKER_REL="q-system/.q-system/scripts/linear-worker.sh"
-if [ ! -f "$REPO_PATH/$WORKER_REL" ]; then
-  refuse "control-code" "$REPO_PATH/$WORKER_REL is missing, the repo carries no worker to run"
-elif [ ! -f "$SKELETON/$WORKER_REL" ]; then
-  refuse "control-code" "the skeleton reference $SKELETON/$WORKER_REL is missing, so drift cannot be judged"
-else
-  have="$(shasum -a 256 "$REPO_PATH/$WORKER_REL" 2>/dev/null | awk '{print $1}')"
-  want="$(shasum -a 256 "$SKELETON/$WORKER_REL"  2>/dev/null | awk '{print $1}')"
-  if [ -z "$have" ] || [ -z "$want" ]; then
-    refuse "control-code" "could not hash the worker on both sides, so drift is unknown"
-  elif [ "$have" != "$want" ]; then
-    # THE REMEDY NAMED HERE USED TO BE THE FLEET UPDATER, AND THAT WAS WRONG
-    # (ASK-755). The updater is a fleet-wide rsync WITH a delete flag: to fix one
-    # file in one repo it walks every registered instance and can remove anything
-    # on the way (2026-08-07: voiceloop deleted from 19 instances). A refusal that
-    # names a tool with a blast radius three orders of magnitude wider than the
-    # defect is an invitation to overcorrect at 2am. control-file-propagate.py
-    # does the same hash classification for ONE file in ONE repo, copy only, and
-    # refuses anything it cannot prove came from this skeleton.
-    refuse "control-code" "linear-worker.sh differs from the skeleton (${have:0:12} vs ${want:0:12}); fix with: python3 $SKELETON/q-system/.q-system/scripts/control-file-propagate.py --target $REPO_PATH --file $WORKER_REL --apply"
-  fi
-fi
+# --- 2. control-code: RETIRED (ASK-3526) ---------------------------------
+# This check hashed the TARGET's copy of linear-worker.sh against the skeleton's
+# and refused on any difference. Its premise was "the dispatcher would run the
+# worker copy that lives in the target repo". That premise is false, measured
+# 2026-10-30:
+#   - kipi-dispatch.sh passes `--repo $TARGET_PATH` and runs `./kipi work` from
+#     the PINNED skeleton checkout, and kipi's `work` verb runs the skeleton's own
+#     linear-worker.sh. converge.sh calls the skeleton's copy too.
+#   - No LaunchAgent runs an instance's copy; com.kipi.dispatch is the only one.
+#   - The worker only fetches and cuts a worktree in the target. Its control code
+#     stays on $SKEL (see the TARGET_REPO / SKEL split in linear-worker.sh).
+# So the check hashed a file that never executes. Every skeleton worker change
+# then darkened every dispatched repo until someone hand-propagated a copy: one
+# repo went dark the same hour a worker change merged (2026-10-25) and stayed
+# dark, another had been refused on it for weeks. That is a gate refusing on a
+# fact that cannot hurt anyone.
+#
+# NOT A WEAKENING. What this check claimed to protect, "only reviewed control code
+# runs here", now holds by construction: the only worker that runs is the pinned
+# skeleton, which tracks the reviewed main branch. The one place the agent did run
+# a target copy (the rework prompt calling linear-sync.py by a cwd-relative path)
+# is anchored on $SKEL in the same change, and test-repo-preflight.sh case 12
+# fails if a cwd-relative control script comes back. If a future change makes
+# the dispatcher execute anything FROM the target repo, the right gate is on that
+# file, at that call site, not this hash.
+#
+# The number 2 stays unused so "check 3", "check 5" in comments and logs across
+# the tree keep meaning what they meant.
 
 # --- 3. hooks -------------------------------------------------------------
 # The enforcement layer is hooks, not prose (the repo's own rule: a prompt cannot

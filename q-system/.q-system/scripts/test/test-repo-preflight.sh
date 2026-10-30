@@ -282,16 +282,26 @@ OUT="$(run_preflight "$KS")"
   && ok "kill-switch: a .kipi-no-dispatch file refuses the repo by name" \
   || bad "kill-switch did not refuse or did not name itself: $OUT"
 
-# 2b. control-code version: the repo's worker copy has drifted from the skeleton's.
-# kipi update is manual, so an instance can be months behind -- running THAT copy
-# is running control code nobody reviewed, on a loop that merges its own PRs.
+# 2b. control-code is RETIRED (ASK-3526), so the target's worker copy is never a
+# reason to refuse. The dispatcher runs the pinned skeleton's worker against
+# --repo; the target's copy never executes. Hashing it refused brag from
+# 2026-10-25 (one worker change, #544) and ktlyst with it, a fleet gone dark for a
+# file nobody runs. Both shapes must be ACCEPTED: a copy that drifted, and a repo
+# that carries no copy at all.
 CC="$(make_good_repo controlcode)"
 echo '# drifted' >> "$CC/q-system/.q-system/scripts/linear-worker.sh"
 fixture_git "$CC" commit -qam drift >/dev/null 2>&1
 OUT="$(run_preflight "$CC")"
-{ [ "$(pf_rc "$CC")" != "0" ] && echo "$OUT" | grep -q 'control-code'; } \
-  && ok "control-code: a worker copy that drifted from the skeleton refuses by name" \
-  || bad "control-code drift did not refuse or did not name itself: $OUT"
+{ [ "$(pf_rc "$CC")" = "0" ] && ! echo "$OUT" | grep -q 'control-code'; } \
+  && ok "control-code retired: a drifted worker copy in the target is ACCEPTED" \
+  || bad "a drifted worker copy, which never executes, still refuses the repo: $OUT"
+CN="$(make_good_repo noworker)"
+fixture_git "$CN" rm -q q-system/.q-system/scripts/linear-worker.sh >/dev/null 2>&1
+fixture_git "$CN" commit -qm noworker >/dev/null 2>&1
+OUT="$(run_preflight "$CN")"
+{ [ "$(pf_rc "$CN")" = "0" ] && ! echo "$OUT" | grep -q 'control-code'; } \
+  && ok "control-code retired: a target with NO worker copy is ACCEPTED" \
+  || bad "a target without a worker copy still refuses, so a repo outside the fleet layer can never be entered: $OUT"
 
 # 2c. hook presence
 HK="$(make_good_repo hooks)"
@@ -644,6 +654,15 @@ grep -qE 'git -C "\$TARGET_REPO" (fetch|worktree|rev-parse)' "$WORKER" \
 grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
   && ok "control-code references still point at the skeleton" \
   || bad "the agent's kipi/prd-os references were repointed at a repo that has neither"
+# NO CWD-RELATIVE CONTROL SCRIPT IN THE AGENT PROMPT (ASK-3526). The agent runs
+# with cwd = the target worktree, so `python3 q-system/...` runs the TARGET's
+# copy: stale in an instance, absent in a repo with no q-system. That was the one
+# place a target copy of control code really executed, and it is what made
+# preflight's control-code hash look necessary.
+REL_CTRL="$(grep -nE '^[[:space:]]*(python3|bash) q-system/' "$WORKER")"
+[ -z "$REL_CTRL" ] \
+  && ok "no agent-prompt command runs a control script relative to the target worktree" \
+  || bad "the prompt runs a control script from the target worktree, not the skeleton: $REL_CTRL"
 # The registry itself lives in the skeleton; only the path being looked UP is the target.
 grep -qE 'REG="\$SKEL/instance-registry.json"' "$WORKER" \
   && ok "identity is resolved from the SKELETON's registry, keyed on the target path" \
