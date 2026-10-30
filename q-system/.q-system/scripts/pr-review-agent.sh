@@ -1108,6 +1108,24 @@ reap_finished_review_trees() {
         state="$(gh pr view "$n" $KIPI_GH_REPO_ARGS --json state -q .state 2>/dev/null || true)"
         case "$state" in
           MERGED|CLOSED)
+            # ASK-3508: `--force` below discards untracked files and removes the
+            # tree under any process standing in it (PR 568 shipped without
+            # either check). A merged PR is not proof the tree is idle: skip a
+            # dirty tree and a tree that is a live process's cwd, say why, and
+            # FAIL CLOSED when lsof is missing or the status read fails.
+            if [ -n "$(git -C "$path" status --porcelain 2>/dev/null || echo unreadable)" ]; then
+              echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
+              kept=$((kept+1)); continue
+            fi
+            if ! command -v lsof >/dev/null 2>&1; then
+              echo "  review-tree skip: PR $n tree kept, lsof missing so live processes cannot be ruled out"
+              kept=$((kept+1)); continue
+            fi
+            cwds="$(lsof -d cwd -Fn 2>/dev/null || true)"
+            if printf '%s\n' "$cwds" | grep -qxF "n$path" || printf '%s\n' "$cwds" | grep -qF "n$path/"; then
+              echo "  review-tree skip: PR $n tree is the cwd of a live process"
+              kept=$((kept+1)); continue
+            fi
             if git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null; then
               gone=$((gone+1)); command rm -f "$lock" 2>/dev/null || true
             else kept=$((kept+1)); fi ;;

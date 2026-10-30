@@ -33,8 +33,13 @@ tree 13   # open: the negative control
 tree 14   # the PR under review
 tree 15   # merged but a live run holds its lock
 tree 16   # state unreadable (gh fails)
+tree 17   # merged but DIRTY: an untracked file (ASK-3508 negative control)
+tree 18   # merged but a live process stands in it (ASK-3508 negative control)
+tree 19   # merged and clean and idle: positive control for the new checks
 git -C "$T/repo" worktree add -q --detach "$RT/other_repo__pr-11" HEAD   # another repo's key
 git -C "$T/repo" worktree add -q --detach "$T/bystander" HEAD           # not a review tree
+printf 'unsaved' > "$(path_of 17)/untracked.txt"
+(cd "$(path_of 18)" && exec sleep 300) & CWDPROC=$!
 sleep 300 & LIVE=$!
 printf '%s' "$LIVE" > "$(path_of 15).lock"
 
@@ -42,11 +47,11 @@ cat > "$T/bin/gh" <<'EOF'
 #!/bin/bash
 n="$3"
 case "$n" in
-  11|15|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
+  11|15|17|18|19|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
 esac
 EOF
 chmod +x "$T/bin/gh"
-for tool in bash env git cat awk cut grep rm kill printf tr sed dirname; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
 
 cat > "$T/drive.sh" <<EOF
 REVIEW_REPO="$T/repo"; REVIEW_SLUG="$SLUG"; PR=14; KIPI_GH_REPO_ARGS=""
@@ -68,8 +73,13 @@ check "a merged PR with a live lock holder keeps its tree" '[ -d "$(path_of 15)"
 check "an unreadable PR state keeps the tree" '[ -d "$(path_of 16)" ]'
 check "another repo's key is never touched" '[ -d "$RT/other_repo__pr-11" ]'
 check "a non-review worktree is never touched" '[ -d "$T/bystander" ]'
+check "ASK-3508 a merged tree with an untracked file stays" '[ -f "$(path_of 17)/untracked.txt" ]'
+check "ASK-3508 the dirty skip is named" 'grep -q "skip: PR 17 tree has uncommitted" "$T/out"'
+check "ASK-3508 a merged tree that is a live process cwd stays" '[ -d "$(path_of 18)" ]'
+check "ASK-3508 the live-cwd skip is named" 'grep -q "skip: PR 18 tree is the cwd" "$T/out"'
+check "ASK-3508 a clean idle merged tree is still removed" '[ ! -e "$(path_of 19)" ]'
 check "one cleanup line is printed" '[ "$(grep -c "review-tree cleanup:" "$T/out")" = 1 ]'
-check "the line counts 2 removed" 'grep -q "removed 2 finished" "$T/out"'
+check "the line counts 3 removed" 'grep -q "removed 3 finished" "$T/out"'
 
-kill "$LIVE" 2>/dev/null
+kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"
