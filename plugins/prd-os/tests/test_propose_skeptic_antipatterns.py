@@ -15,6 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -241,3 +243,130 @@ def test_propose_raises_for_missing_spec(fake_repo, write_config, import_config)
     # No PRD spec written.
     with pytest.raises(FileNotFoundError):
         propose(cfg, "prd-does-not-exist")
+
+
+# ---------------------------------------------------------------------------
+# ASK-3406: an accepted proposal reaches a queue, not a founder's reading pile
+# ---------------------------------------------------------------------------
+
+
+FLEET_SCRIPTS = Path("q-system") / ".q-system" / "scripts"
+REAL_SCRIPTS = Path("/Users/assafkipnis/.config/kipi/worktrees/ask-3406") / FLEET_SCRIPTS
+
+# VERBATIM from alert-to-linear.py:1440 (`alert-to-linear: {line}` on stdout) and
+# the `filed <IDENT>` form spillover-linear-check.py:76 matches. Taken from the
+# producer rather than imagined, per feedback_fixtures_from_producers.
+STUB_FILER = '''#!/usr/bin/env python3
+import sys, pathlib
+pathlib.Path(__file__).with_name("filer-argv.txt").write_text("\\n".join(sys.argv[1:]))
+print("alert-to-linear: filed ASK-9999 (owner:sana, needs-triage)")
+sys.exit(0)
+'''
+
+
+def _plant_fleet_filer(repo: Path) -> Path:
+    """Give the fake repo the real shared reader plus a STUB sink.
+
+    The reader (spillover-linear-check.py) is COPIED, not re-implemented: it owns
+    how alert-to-linear's answer is parsed fleet-wide and resolves its sink as a
+    sibling file, so a stub sibling is the whole seam needed. Only the sink is
+    fake, and its stdout is copied from the real one.
+    """
+    scripts = repo / FLEET_SCRIPTS
+    scripts.mkdir(parents=True, exist_ok=True)
+    shutil.copy(REAL_SCRIPTS / "spillover-linear-check.py",
+                scripts / "spillover-linear-check.py")
+    sink = scripts / "alert-to-linear.py"
+    sink.write_text(STUB_FILER)
+    return sink
+
+
+def test_proposal_with_findings_files_one_issue_for_sana(
+    fake_repo, write_config, import_config
+):
+    """The DoR check: archive a PRD with one missed blocker -> an issue appears.
+
+    RED before ASK-3406: propose() wrote a markdown file and stopped, so the only
+    artifact was a proposal nobody was asked to read (3 unmerged since Aug-Sep).
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _write_findings(
+        fake_repo / ".prd-os" / "findings",
+        "fixture",
+        [_finding("finding-1", "the success metric is too vague, not operationalized",
+                  severity="blocker")],
+    )
+
+    _text, out_path = propose(cfg, "prd-fixture")
+
+    receipts = cfg.skeptic_proposals_dir / "filings.jsonl"
+    assert receipts.is_file(), "no filing receipt: the proposal reached no queue"
+    rows = [json.loads(line) for line in receipts.read_text().splitlines() if line.strip()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["prd_id"] == "prd-fixture"
+    assert row["findings"] == 1
+    assert row["linear"]["state"] == "filed"
+    assert row["linear"]["identifier"] == "ASK-9999"
+
+    argv = (fake_repo / FLEET_SCRIPTS / "filer-argv.txt").read_text()
+    assert "prd-fixture" in argv
+    assert out_path.name in argv
+
+
+def test_proposal_with_no_findings_files_nothing(
+    fake_repo, write_config, import_config
+):
+    """A round that learned nothing is not a queue item. Volume from one detector
+    is a signal about the detector (automated-filer-marking.md)."""
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _write_findings(fake_repo / ".prd-os" / "findings", "fixture", [])
+
+    propose(cfg, "prd-fixture")
+
+    assert not (cfg.skeptic_proposals_dir / "filings.jsonl").exists()
+    assert not (fake_repo / FLEET_SCRIPTS / "filer-argv.txt").exists()
+
+
+def test_missing_fleet_filer_still_writes_the_proposal(
+    fake_repo, write_config, import_config
+):
+    """prd-os ships to repos with no q-system tree. Archive is load-bearing; the
+    filing is not. No filer -> proposal written, receipt says so, no raise."""
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _write_findings(
+        fake_repo / ".prd-os" / "findings",
+        "fixture",
+        [_finding("finding-2", "the success metric is too vague", severity="blocker")],
+    )
+
+    _text, out_path = propose(cfg, "prd-fixture")
+
+    assert out_path.is_file()
+    rows = [
+        json.loads(line)
+        for line in (cfg.skeptic_proposals_dir / "filings.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert rows[-1]["linear"]["state"] == "no-filer"
+
+
+def test_real_fleet_sink_exists_and_refuses_under_pytest():
+    """Negative self-test on the chain itself: the sink this wiring reaches is the
+    REAL alert-to-linear.py, and it cannot open a live ticket from a suite.
+
+    Without this, the three tests above prove only that a stub was called.
+    """
+    sink = REAL_SCRIPTS / "alert-to-linear.py"
+    assert sink.is_file()
+    res = subprocess.run(
+        [sys.executable, str(sink), "ASK-3406 self-test, must not file"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 4, (res.returncode, res.stdout, res.stderr)
+    assert "REFUSED under pytest" in res.stderr

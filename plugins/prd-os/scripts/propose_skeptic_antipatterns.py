@@ -11,9 +11,16 @@ reads those findings + the Skeptic Q-A pairs the founder recorded during
  - A templated anti-pattern phrasing the founder can edit + merge into
     `plugins/prd-os/personas/skeptic.md`
 
-The script never auto-edits skeptic.md. It writes a proposal file the
-founder reviews, edits, and commits through normal git flow so Codex review
-fires on the diff (same gate as any other code change).
+The script never auto-edits skeptic.md. It writes a proposal file, then files
+ONE Linear issue for Sana naming that file, so the proposal enters the normal
+triage path and the persona edit ships through a reviewed PR like any other
+code change.
+
+ASK-3406: the proposal used to end at "the founder reviews, edits, and
+commits". Measured 2026-10-29: three proposals written Aug-Sep were still
+unmerged, and skeptic.md had not changed since 2026-05-14. The writer worked;
+the merge step was a person nobody reminded. Editing a persona file is a
+technical call, so it does not wait on the founder.
 
 CLI:
 
@@ -34,8 +41,11 @@ raises, the archive still succeeds; only the proposal generation fails.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -294,14 +304,129 @@ def _render_skeptic_answers_section(answers: dict[str, str]) -> str:
 
 def _render_merge_guidance() -> str:
     return (
-        "## How to merge\n\n"
+        "## How to merge (Sana, through the normal issue flow)\n\n"
         "1. Read each finding above. The 'routed to Qx' label tells you which "
         "Skeptic question should have surfaced it.\n"
-        "2. Edit the proposed anti-pattern phrasing to match your voice.\n"
+        "2. Rewrite the proposed phrasing so it reads as a watched-for pattern, "
+        "not as a template.\n"
         "3. Append accepted anti-patterns to `plugins/prd-os/personas/skeptic.md` "
         "under '## Anti-patterns the Skeptic watches for'.\n"
-        "4. Commit through normal git flow so Codex review fires on the diff.\n"
+        "4. Open a PR so Codex review fires on the diff, then merge it. Reject a "
+        "finding here by saying why in the PR; a rejection is an outcome, an "
+        "unread proposal is not.\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# Filing (ASK-3406)
+# ---------------------------------------------------------------------------
+
+FLEET_FILER_RELPATH = Path("q-system") / ".q-system" / "scripts" / "spillover-linear-check.py"
+FILER_TIMEOUT_SECONDS = 60
+
+
+def _fleet_filer_module(cfg: Config):
+    """The fleet's shared reader of alert-to-linear's answer, or None.
+
+    Same loader shape as `prd_runner._spillover_linear_filer`, and for the same
+    reason: how an alert-to-linear reply becomes a link is defined ONCE, in
+    `spillover-linear-check.py`, and every producer reads it from there rather
+    than re-deriving the regex. prd-os ships into repos with no q-system tree,
+    so absence is an ordinary state, never an error.
+    """
+    path = Path(cfg.repo_root) / FLEET_FILER_RELPATH
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("skeptic_fleet_filer", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def message_for_proposal(prd_id: str, proposal_path: Path, findings: list[dict]) -> str:
+    """The alert text. The title is its first ~110 chars, so the PRD id leads."""
+    severities = ", ".join(
+        sorted({str(r.get("severity") or "?") for r in findings})
+    )
+    return (
+        f"skeptic proposal {prd_id}: {len(findings)} finding(s) ({severities}) the "
+        f"Skeptic did not catch. Review {proposal_path}, then open a PR editing "
+        f"plugins/prd-os/personas/skeptic.md, or reject with a reason."
+    )
+
+
+def file_review_issue(
+    cfg: Config, prd_id: str, proposal_path: Path, findings: list[dict]
+) -> dict | None:
+    """File ONE Linear issue for Sana per proposal that has something to merge.
+
+    Never raises. The proposal file is already on disk before this runs, and
+    archive is the load-bearing step (`_propose_skeptic_antipatterns_best_effort`),
+    so a filing failure is recorded as a receipt row and loses nothing.
+
+    An empty proposal files nothing on purpose: "the reviewer flagged no accepted
+    findings" is a signal about the round, not a queue item. Volume from one
+    detector is a signal about the detector (`automated-filer-marking.md`).
+    """
+    if not findings:
+        return None
+    link: dict
+    shared = _fleet_filer_module(cfg)
+    if shared is None:
+        link = {"state": "no-filer", "exit": None, "identifier": None,
+                "at": _now_iso(),
+                "detail": f"no {FLEET_FILER_RELPATH} in {cfg.repo_root}"}
+    else:
+        link = _run_fleet_filer(shared, cfg, prd_id, proposal_path, findings)
+    _append_filing_receipt(cfg, prd_id, proposal_path, findings, link)
+    return link
+
+
+def _run_fleet_filer(
+    shared, cfg: Config, prd_id: str, proposal_path: Path, findings: list[dict]
+) -> dict:
+    """Run alert-to-linear.py and read its answer through the shared parser."""
+    env = dict(os.environ)
+    # Route the ticket to THIS repo's Linear project, same as file_record does.
+    env.setdefault("KIPI_ALERT_REPO_PATH", str(cfg.repo_root))
+    try:
+        res = subprocess.run(
+            [sys.executable, str(shared.FILER),
+             message_for_proposal(prd_id, proposal_path, findings)],
+            capture_output=True, text=True, env=env,
+            timeout=FILER_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"state": "failed", "exit": None, "identifier": None,
+                "at": _now_iso(), "detail": repr(exc)[:300]}
+    return shared.parse_filer_output(res.returncode, res.stdout, res.stderr)
+
+
+def _append_filing_receipt(
+    cfg: Config, prd_id: str, proposal_path: Path, findings: list[dict], link: dict
+) -> Path:
+    """Append one row per filing attempt beside the proposals.
+
+    Why a receipt and not just the issue: before ASK-3406 nothing in this repo
+    could answer "which proposals were ever routed anywhere". Three sat unmerged
+    for five months and the only way to notice was to read the directory.
+    """
+    out_dir = cfg.skeptic_proposals_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "filings.jsonl"
+    row = {
+        "prd_id": prd_id,
+        "proposal": str(proposal_path),
+        "findings": len(findings),
+        "at": _now_iso(),
+        "linear": link,
+    }
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +449,10 @@ def propose(cfg: Config, prd_id: str) -> tuple[str, Path | None]:
 
     text = render_proposal(prd_id, skeptic_answers, selected)
     output_path = write_proposal(cfg, prd_id, text)
+    # THE SINGLE FILING CHOKEPOINT. Both callers (prd_runner.cmd_archive and
+    # main() below) reach Linear through here, so there is no path that writes a
+    # proposal without routing it (ASK-3406).
+    file_review_issue(cfg, prd_id, output_path, selected)
     return text, output_path
 
 
@@ -358,18 +487,18 @@ def main() -> int:
         sys.stderr.write(f"{exc}\n")
         return 2
 
-    spec_text = spec_path.read_text()
-    skeptic_answers = parse_skeptic_answers(spec_text)
-    findings_path = find_findings_path(cfg, args.prd_id)
-    records = load_findings(findings_path)
-    selected = select_findings_for_review(records)
-    text = render_proposal(args.prd_id, skeptic_answers, selected)
-
     if args.dry_run:
-        sys.stdout.write(text)
+        spec_text = spec_path.read_text()
+        skeptic_answers = parse_skeptic_answers(spec_text)
+        records = load_findings(find_findings_path(cfg, args.prd_id))
+        selected = select_findings_for_review(records)
+        sys.stdout.write(render_proposal(args.prd_id, skeptic_answers, selected))
         return 0
 
-    out_path = write_proposal(cfg, args.prd_id, text)
+    # Through propose(), not a second copy of its body: the filing chokepoint
+    # lives there, and a CLI path that wrote a proposal without routing it is the
+    # exact gap ASK-3406 closed.
+    _text, out_path = propose(cfg, args.prd_id)
     print(json.dumps({"proposal_written": str(out_path)}))
     return 0
 
