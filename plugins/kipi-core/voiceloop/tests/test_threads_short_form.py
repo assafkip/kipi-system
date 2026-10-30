@@ -8,11 +8,16 @@ version of this change proved by reverting all five and watching the suite stay 
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 
 import pytest
 
-from voiceloop import channel_registry, corpus, form, reply_format, voice_ref, x_format
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+from voiceloop import channel_registry, corpus, form, reply_format, voice_ref, x_format  # noqa: E402
 
 
 def test_threads_is_a_short_form_channel_and_x_still_is():
@@ -51,10 +56,13 @@ def test_the_dwell_floor_reaches_threads_and_names_no_platform(tmp_path):
 
 
 def test_a_threads_length_finding_names_no_platform_and_x_keeps_its_words():
-    threads = x_format.length_violations("a" * 600, "threads")[0]["detail"]
-    x = x_format.length_violations("a" * 600, "x")[0]["detail"]
-    assert "X " not in threads and "short-form" in threads
-    assert "X shows about" in x
+    # Both branches (the fold warn and the ceiling block), and X as a whole word in any
+    # position ("X.", "X's"), per the #565 review.
+    for body in ("a" * 600, "a" * 30000):
+        threads = x_format.length_violations(body, "threads")[0]["detail"]
+        assert not re.search(r"\bX\b", threads) and "short-form" in threads, threads
+    assert "X shows about" in x_format.length_violations("a" * 600, "x")[0]["detail"]
+    assert "X truncates" in x_format.length_violations("a" * 30000, "x")[0]["detail"]
 
 
 def test_voice_ref_takes_threads_and_still_refuses_an_unknown_channel(monkeypatch, tmp_path):
