@@ -264,9 +264,30 @@ REAL_SCRIPTS = REPO_ROOT / FLEET_SCRIPTS
 STUB_FILER = '''#!/usr/bin/env python3
 import sys, pathlib
 pathlib.Path(__file__).with_name("filer-argv.txt").write_text("\\n".join(sys.argv[1:]))
+# One line per invocation. A duplicate ticket is a COUNT question, and the only
+# honest place to count is the sink itself: the receipt is written by the caller
+# whose dedupe is under test, so asserting on rows alone would let a broken
+# check certify itself (PR #566 round 2, major).
+with pathlib.Path(__file__).with_name("filer-calls.txt").open("a") as fh:
+    fh.write("called\\n")
 print("alert-to-linear: filed ASK-9999 (owner:sana, needs-triage)")
 sys.exit(0)
 '''
+
+
+def _filer_calls(repo: Path) -> int:
+    """How many times the sink was actually executed."""
+    path = repo / FLEET_SCRIPTS / "filer-calls.txt"
+    if not path.is_file():
+        return 0
+    return len([ln for ln in path.read_text().splitlines() if ln.strip()])
+
+
+def _receipt_rows(cfg) -> list[dict]:
+    path = cfg.skeptic_proposals_dir / "filings.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
 def _plant_fleet_filer(repo: Path) -> Path:
@@ -396,6 +417,131 @@ def test_fleet_scripts_resolve_from_this_repo_not_a_machine_path():
     assert needle not in Path(__file__).read_text(), (
         "a literal home path pins this suite to one machine"
     )
+
+
+# ---------------------------------------------------------------------------
+# PR #566 round 2, major: a re-run must not open a second permanent ticket
+# ---------------------------------------------------------------------------
+
+
+def _one_blocker(repo: Path, bodies: list[str]) -> None:
+    _write_findings(
+        repo / ".prd-os" / "findings",
+        "fixture",
+        [_finding(f"finding-{i}", body, severity="blocker")
+         for i, body in enumerate(bodies, start=1)],
+    )
+
+
+def test_identical_proposal_does_not_open_a_second_ticket(
+    fake_repo, write_config, import_config
+):
+    """RED before this commit: two sink calls, two `filed` rows, two tickets.
+
+    The shared sink DOES fingerprint-dedupe an identical message, measured on
+    the real `alert-to-linear.fingerprint` -- but it deliberately opens a NEW
+    ticket once the prior one is closed, because for an ALERT a recurrence after
+    a close is the signal worth having. A proposal does not recur: Sana merges
+    the anti-patterns and closes it, and a later archive of the same PRD then
+    asks for work already merged. The semantics difference belongs to this
+    caller, not to a sink every other producer shares.
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _one_blocker(fake_repo, ["the success metric is too vague"])
+
+    propose(cfg, "prd-fixture")
+    propose(cfg, "prd-fixture")
+
+    assert _filer_calls(fake_repo) == 1, "the sink ran twice: two permanent tickets"
+    rows = _receipt_rows(cfg)
+    assert [r["linear"]["state"] for r in rows] == ["filed", "already-filed"]
+    # The skip names the ticket that already exists, so the row is still an
+    # answer to "where did this proposal go" and not just an absence.
+    assert rows[1]["linear"]["identifier"] == "ASK-9999"
+    assert "ASK-9999" in rows[1]["linear"]["detail"]
+
+
+def test_changed_findings_do_open_a_second_ticket(
+    fake_repo, write_config, import_config
+):
+    """The dedupe must not make the detector dark on NEW content.
+
+    RED against a prd_id-only key (measured: 1 sink call, states
+    `filed, already-filed`). A proposal whose finding set grew is different
+    information, and suppressing it would reproduce ASK-3406 inside its own fix.
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _one_blocker(fake_repo, ["the success metric is too vague"])
+    propose(cfg, "prd-fixture")
+
+    _one_blocker(fake_repo, ["the success metric is too vague", "non-goals are empty"])
+    propose(cfg, "prd-fixture")
+
+    assert _filer_calls(fake_repo) == 2
+    assert [r["linear"]["state"] for r in _receipt_rows(cfg)] == ["filed", "filed"]
+
+
+def test_refile_reopens_the_queue_for_an_identical_proposal(
+    fake_repo, write_config, import_config
+):
+    """The escape hatch is a flag, never a person remembering.
+
+    Without one, an identical proposal whose ticket was closed WITHOUT the merge
+    can never reach a queue again -- the ASK-113 round-2 shape, where a fix made
+    a detector permanently dark after the operator did the right thing.
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    _plant_fleet_filer(fake_repo)
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _one_blocker(fake_repo, ["the success metric is too vague"])
+
+    propose(cfg, "prd-fixture")
+    propose(cfg, "prd-fixture", refile=True)
+
+    assert _filer_calls(fake_repo) == 2
+    rows = _receipt_rows(cfg)
+    assert [r["linear"]["state"] for r in rows] == ["filed", "filed"]
+    assert rows[1]["refile"] is True, "a deliberate re-file is marked as one"
+
+
+# ---------------------------------------------------------------------------
+# PR #566 round 2, minor: absent filer and broken filer are different states
+# ---------------------------------------------------------------------------
+
+
+def test_broken_fleet_filer_is_not_reported_as_absent(
+    fake_repo, write_config, import_config, capsys
+):
+    """RED before this commit: state `no-filer`, detail "no <path> in <root>".
+
+    That detail is a false claim about a file that is sitting right there. In a
+    kipi instance -- where the q-system tree ALWAYS exists -- it reads as "this
+    repo has no fleet tree", which is the one state that is an ordinary no-op,
+    so a broken shared reader hid inside the quiet path.
+    """
+    cfg = _load_cfg(fake_repo, write_config, import_config)
+    scripts = fake_repo / FLEET_SCRIPTS
+    scripts.mkdir(parents=True, exist_ok=True)
+    # Produced by the loader's own failure, not monkeypatched: exec_module on
+    # this raises SyntaxError the same way a half-synced file would.
+    (scripts / "spillover-linear-check.py").write_text("def (:\n")
+    _write_prd(fake_repo / ".prd-os" / "prds", "fixture", CANONICAL_SKEPTIC_BLOCK)
+    _one_blocker(fake_repo, ["the success metric is too vague"])
+
+    _text, out_path = propose(cfg, "prd-fixture")
+
+    assert out_path.is_file()
+    link = _receipt_rows(cfg)[-1]["linear"]
+    assert link["state"] == "filer-broken", link
+    assert "failed to import" in link["detail"], link
+    assert "SyntaxError" in link["detail"], link
+    # Louder than absence on purpose: a broken fleet reader is an engineering
+    # signal, and it used to be indistinguishable from the ordinary no-op.
+    assert "filer-broken" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
