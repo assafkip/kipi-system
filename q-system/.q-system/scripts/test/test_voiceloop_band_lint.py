@@ -332,6 +332,9 @@ def _run_recording(tmp_path, rel_path, *, rc=0, stdout="0 finding(s) against 5 e
     ("outreach/dm.md", "dm"),
     ("outreach/LinkedIn-post.md", "linkedin"),            # nit 3: capitalised was None
     ("outreach/Email-to-dana.md", "email"),
+    # kipi-system#564 review round 2: the threads rows were unpinned.
+    ("drafts/threads-post-2026-10-29.md", "threads"),
+    ("drafts/threads-reply-to-dana.md", "comment"),
 ])
 def test_a_draft_with_a_known_channel_gets_the_full_review(tmp_path, rel_path, channel):
     """Founder 2026-09-29: the voice loop runs IN FULL on its own.
