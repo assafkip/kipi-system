@@ -52,6 +52,18 @@ check("reads the skeleton, the learning_sources repo and the instance (scanned 3
 check("counts the dead paths it skipped (2)", out.get("skipped_dead") == 2)
 check("logs the dead-path count on stderr", "skipped 2 dead" in r.stderr)
 
+# PR #570 review: a nameless live entry must not crash the run, and a learning_sources
+# codename must reach the scrub roster exactly like an instances[] one.
+(T / "noname.json").write_text(json.dumps({"instances": [], "learning_sources": [
+    {"path": str(side)}, {"name": "Acme_PI", "path": str(T / "x")}]}))
+r2 = subprocess.run(cmd[:3] + [str(T / "noname.json")] + cmd[4:], capture_output=True, text=True)
+check("a live entry with no name does not crash the distiller", r2.returncode == 0 and json.loads(r2.stdout)["scanned"] == 1)
+sys.path.insert(0, str(Path(DISTILL).parent))
+import importlib.util
+sp = importlib.util.spec_from_file_location("ls", Path(DISTILL).parent / "lessons_scrub.py")
+sc = importlib.util.module_from_spec(sp); sp.loader.exec_module(sc)
+check("learning_sources codename enters the scrub roster", "Acme_PI" in sc.codenames_from_registry(str(T / "noname.json")))
+
 print("ALL PASS" if not fails else f"SOME FAILED: {fails}")
 sys.exit(1 if fails else 0)
 PY

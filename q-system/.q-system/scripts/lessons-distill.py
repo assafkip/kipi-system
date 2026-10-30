@@ -66,7 +66,7 @@ def load_intake(registry_path):
             continue
         seen.add(path)
         if Path(path).is_dir():
-            live.append((e["name"], path))
+            live.append((e.get("name") or Path(path).name, path))
         else:
             dead += 1
     if dead:
