@@ -35,7 +35,9 @@ def codenames_from_registry(registry_path):
     except Exception:
         return []
     names = []
-    for entry in data.get("instances", []):
+    # learning_sources[] feeds lessons-distill as an intake (ASK-3403), so its names
+    # must reach the same fail-closed roster as instances[] (PR #570 review).
+    for entry in list(data.get("instances", [])) + list(data.get("learning_sources", [])):
         name = entry.get("name", "")
         if re.search(r"[A-Z]|\d|_", name):
             names.append(name)

@@ -229,5 +229,12 @@
       "has_git": true,
       "note": "directory gone from disk (searched projects/ + _archive, 2026-07-23); moved to eliminated during silent-absence fleet grounding"
     }
+  ],
+  "learning_sources": [
+    {
+      "name": "chief",
+      "path": "/Users/assafkipnis/projects/chief",
+      "note": "not an instance; its q-system/output/learnings/*.md feed lessons-distill (ASK-3403)"
+    }
   ]
 }

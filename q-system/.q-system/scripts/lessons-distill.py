@@ -44,10 +44,38 @@ _spec = importlib.util.spec_from_file_location("lessons_scrub", SCRIPTS / "lesso
 scrub_mod = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(scrub_mod)
 
 
-def load_instances(registry_path):
+def load_intake(registry_path):
+    """(live (name, path) pairs, count of dead paths skipped).
+
+    THE INTAKE LIST (ASK-3403). It read only `instances[]`, so the skeleton's own RCAs and
+    learnings (the `skeleton` key) and any repo outside the registry (chief) were never
+    distilled, and 8 of 20 registered paths did not exist and vanished without a count.
+    Sources: `instances[]`, the `skeleton` entry, and `learning_sources[]` for live repos
+    that are not instances. A path that is not a directory is skipped and counted.
+    """
     data = json.loads(Path(registry_path).read_text())
-    return [(e["name"], e["path"]) for e in data.get("instances", [])
-            if not str(e.get("status", "")).startswith("merged")]
+    entries = [e for e in data.get("instances", [])
+               if not str(e.get("status", "")).startswith("merged")]
+    if isinstance(data.get("skeleton"), dict):
+        entries.append({"name": "skeleton", **data["skeleton"]})
+    entries += data.get("learning_sources", [])
+    live, dead, seen = [], 0, set()
+    for e in entries:
+        path = str(e.get("path", ""))
+        if path in seen:
+            continue
+        seen.add(path)
+        if Path(path).is_dir():
+            live.append((e.get("name") or Path(path).name, path))
+        else:
+            dead += 1
+    if dead:
+        print(f"lessons-distill: skipped {dead} dead intake path(s)", file=sys.stderr)
+    return live, dead
+
+
+def load_instances(registry_path):
+    return load_intake(registry_path)[0]
 
 
 def new_rcas(instances, ledger):
@@ -259,7 +287,8 @@ def main():
     used_ids = set()
     published, held, scanned = [], [], 0
 
-    for name, path, h, text in new_sources(load_instances(args.registry), ledger):
+    intake, skipped_dead = load_intake(args.registry)
+    for name, path, h, text in new_sources(intake, ledger):
         if args.limit and scanned >= args.limit:
             break
         scanned += 1
@@ -297,7 +326,8 @@ def main():
         # first run on a fresh checkout leaves the file the daily job commits.
         flush_ledger(ledger_path, ledger)
 
-    print(json.dumps({"scanned": scanned, "published": published, "held": held}, indent=2))
+    print(json.dumps({"scanned": scanned, "published": published, "held": held,
+                      "skipped_dead": skipped_dead}, indent=2))
     return 0
 
 
