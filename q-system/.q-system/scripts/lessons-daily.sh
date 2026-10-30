@@ -369,6 +369,27 @@ sync_skel_to_main() {
     return 0
   fi
   if ! git -C "$SKEL" merge-base --is-ancestor HEAD origin/main 2>>"$LOG"; then
+    # SESSION-MEMORY COMMITS ARE NOT WORK (ASK-3525). auto-commit.py commits
+    # q-system/memory/ on whatever branch is checked out, on every Stop, and never
+    # pushes it. That made the skeleton's main 20 commits ahead of origin, so this
+    # function left it alone and the fan-out refused on 2026-10-05, 10-12 and 10-19.
+    # When EVERY file the local-only commits touch is under q-system/memory/ (and
+    # there is at least one), keep the old tip on a backup/ branch and move main to
+    # origin/main. Anything else, including an empty commit, is left alone as before.
+    # `switch -C` and a new branch, never a reset: it refuses if a dirty file is in
+    # the way, and the old tip stays reachable.
+    local touched
+    touched="$(git -C "$SKEL" diff --name-only origin/main...HEAD 2>>"$LOG")"
+    if [ -n "$touched" ] && ! printf '%s\n' "$touched" | grep -qv '^q-system/memory/'; then
+      local bk="backup/skeleton-memory-$(date +%Y%m%d-%H%M%S)-$$"
+      if git -C "$SKEL" branch "$bk" HEAD >> "$LOG" 2>&1 \
+         && git -C "$SKEL" switch -q -C main origin/main >> "$LOG" 2>&1; then
+        echo "$(TS) skeleton main carried only session-memory commits: kept on $bk, main moved to origin/main" >> "$LOG"
+      else
+        echo "$(TS) could not move skeleton main off its session-memory commits (see above): left alone" >> "$LOG"
+      fi
+      return 0
+    fi
     echo "$(TS) skeleton main has commits origin/main lacks: left alone" >> "$LOG"
     return 0
   fi

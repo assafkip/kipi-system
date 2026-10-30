@@ -123,6 +123,17 @@ build_fixture() {
       g -C "$tmp/skel" add wip.txt && g -C "$tmp/skel" commit -qm "wip [no-issue: fixture]" ;;
     main-ahead)   # on main, with a commit origin never saw
       g -C "$tmp/skel" commit -q --allow-empty -m "local only [no-issue: fixture]" ;;
+    main-memory-ahead)   # the Stop-hook auto-commit: session memory only (ASK-3525)
+      mkdir -p "$tmp/skel/q-system/memory"
+      printf 'notes\n' > "$tmp/skel/q-system/memory/last-handoff.md"
+      g -C "$tmp/skel" add q-system/memory/last-handoff.md
+      g -C "$tmp/skel" commit -qm "chore: update session memory [no-issue: fixture]" ;;
+    main-mixed-ahead)    # session memory AND real work: must never be touched
+      mkdir -p "$tmp/skel/q-system/memory"
+      printf 'notes\n' > "$tmp/skel/q-system/memory/last-handoff.md"
+      printf 'real work\n' > "$tmp/skel/real-work.txt"
+      g -C "$tmp/skel" add q-system/memory/last-handoff.md real-work.txt
+      g -C "$tmp/skel" commit -qm "wip: real work [no-issue: fixture]" ;;
   esac
   # main moves on after the checkout last pulled, in every state.
   g -C "$tmp/seed" commit -q --allow-empty -m "someone else's merge [no-issue: fixture]"
@@ -532,6 +543,39 @@ echo "      fixture (prefix-unmerged): $T (exit=$JOB_RC)"
   && grep -q 'not merged yet: auto/lessons-wk1\.' "$T/notify.txt" 2>/dev/null \
   && ok "prefix-unmerged: only the unmerged wk1 holds the run, and the alert names it" \
   || bad "prefix-unmerged: exit=$JOB_RC, alert: $(cat "$T/notify.txt" 2>/dev/null)"
+rm -rf "$T"
+
+# --- 16. on main, ahead only by session-memory auto-commits (ASK-3525) ------
+# auto-commit.py commits q-system/memory/ on whatever branch is checked out, so the
+# skeleton's main was ahead of origin by 20 such commits and the fan-out refused three
+# weeks running (2026-10-05, 10-12, 10-19). Memory-only local commits are backed up to
+# a branch and main moves to origin/main; the fan-out then passes.
+T="$(build_fixture ok main-memory-ahead)"
+SKEL_HEAD_BEFORE="$(g -C "$T/skel" rev-parse HEAD)"
+run_job "$T"
+echo "      fixture (main-memory-ahead): $T (exit=$JOB_RC)"
+[ "$(g -C "$T/skel" rev-parse HEAD)" = "$(origin_main "$T")" ] \
+  && ok "memory-ahead: main was moved to origin/main" \
+  || bad "memory-ahead: main is still off origin/main"
+[ "$(g -C "$T/skel" for-each-ref --format='%(objectname)' 'refs/heads/backup/*' | head -1)" = "$SKEL_HEAD_BEFORE" ] \
+  && ok "memory-ahead: the old tip is kept on a backup/ branch" \
+  || bad "memory-ahead: no backup/ branch holds the old tip"
+[ "$JOB_RC" -eq 0 ] \
+  && ok "memory-ahead: the real updater passed and the run exits 0" \
+  || bad "memory-ahead: exit=$JOB_RC; $(grep -m2 ABORT "$T/lessons-daily.log")"
+rm -rf "$T"
+
+# --- 17. negative control: real work among the local commits is never touched ---
+T="$(build_fixture ok main-mixed-ahead)"
+SKEL_HEAD_BEFORE="$(g -C "$T/skel" rev-parse HEAD)"
+run_job "$T"
+echo "      fixture (main-mixed-ahead): $T (exit=$JOB_RC)"
+[ "$(g -C "$T/skel" rev-parse HEAD)" = "$SKEL_HEAD_BEFORE" ] \
+  && ok "mixed-ahead: a commit with real work was left alone" \
+  || bad "mixed-ahead: the checkout was moved off a commit carrying real work"
+[ -z "$(g -C "$T/skel" for-each-ref 'refs/heads/backup/*')" ] \
+  && ok "mixed-ahead: no backup branch was made" \
+  || bad "mixed-ahead: a backup branch appeared"
 rm -rf "$T"
 
 echo "---"
