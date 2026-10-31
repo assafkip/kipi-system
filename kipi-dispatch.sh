@@ -42,6 +42,27 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # log line still read normally. The tests drive the real script and stub `gh` by
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
+# THE PRIVATE DISPATCH OVERLAY (ASK-3526). Client repos are dispatchable under
+# RULE-2026-10-30-A, and preflight check 4 enters no repo whose row does not pin
+# its remote. A client repo's remote carries the client's name, and this repo is
+# public: client-name-guard.py blocked the first cut, which put four such pins in
+# instance-registry.json. Same answer as that guard's own token list: the data
+# lives outside the repo, here, in rows with the registry's shape. Read by
+# fleet_candidates, slug_for_repo (repo-slug-lib.sh) and registry_facts
+# (linear_registry.py), all through this one exported variable.
+# DEFAULTED ONLY WHEN THE REGISTRY IS NOT OVERRIDDEN, so a test that points
+# KIPI_DISPATCH_REGISTRY at a fixture never reads the founder's live overlay.
+# A FUNCTION, SO THE SUITE CAN DRIVE IT (review of PR #577): inline, the
+# hermeticity rule had no test, and inverting it passed every case.
+dispatch_targets_default() {
+  if [ -n "${KIPI_DISPATCH_TARGETS+x}" ]; then
+    printf '%s' "$KIPI_DISPATCH_TARGETS"
+  elif [ -z "${KIPI_DISPATCH_REGISTRY:-}" ]; then
+    printf '%s' "$HOME/.config/kipi/dispatch-targets.json"
+  fi
+}
+KIPI_DISPATCH_TARGETS="$(dispatch_targets_default)"
+export KIPI_DISPATCH_TARGETS
 LOG="$HOME/.config/kipi/dispatch.log"
 # THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
 # One-run-per-repo is enforced structurally in the selection loop below, so this
@@ -585,21 +606,52 @@ fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
   [ -f "$registry" ] || { say "fleet: no registry at $registry, home repo only"; return 0; }
-  python3 - "$registry" "$REPO" <<'PY'
+  python3 - "$registry" "$REPO" "${KIPI_DISPATCH_TARGETS:-}" <<'PY'
 import json, sys
-reg, home = sys.argv[1], sys.argv[2]
+reg, home, overlay = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(reg))
 except Exception:
     sys.exit(0)          # an unreadable registry means home only, never "everything"
-for e in data.get("instances", []):
+# The private overlay (KIPI_DISPATCH_TARGETS, see the top of this file) has the
+# registry's shape. An unreadable overlay adds nothing. A path the PUBLIC registry
+# records as explicitly off (enabled: false, a decision with a reason) is never
+# switched on from the overlay: a recorded decision is not overridden silently.
+# Paths compare by realpath, as slug_for_repo and registry_facts do: the first
+# cut compared strings, so a trailing slash in the overlay undid a recorded OFF.
+import os
+def real(p):
+    try:
+        return os.path.realpath(p)
+    except Exception:
+        return p
+def opted(e):
     d = e.get("dispatch")
-    if not isinstance(d, dict) or d.get("enabled") is not True:
+    return isinstance(d, dict) and d.get("enabled") is True and bool(e.get("path"))
+rows = list(data.get("instances", []))
+off = {real(e["path"]) for e in rows if e.get("path")
+       and isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
+extra = []
+if overlay:
+    try:
+        extra = [e for e in json.load(open(overlay)).get("instances", [])
+                 if isinstance(e, dict) and opted(e) and real(e["path"]) not in off]
+    except Exception:
+        extra = []
+# An opted-in registry row with no pin takes the overlay's pin for the same path,
+# so the three readers agree on the remote preflight is handed.
+pins = {real(e["path"]): e["dispatch"].get("expected_remote", "") for e in extra}
+seen = set()
+for e in rows + extra:
+    if not isinstance(e, dict) or not opted(e):
         continue
-    p = e.get("path", "")
-    if not p or p == home:
+    p = e["path"]
+    r = real(p)
+    if p == home or r in seen:
         continue
-    print("%s\t%s\t%s" % (e.get("name", ""), p, d.get("expected_remote", "")))
+    seen.add(r)
+    remote = e["dispatch"].get("expected_remote") or pins.get(r, "")
+    print("%s\t%s\t%s" % (e.get("name", ""), p, remote))
 PY
 }
 
