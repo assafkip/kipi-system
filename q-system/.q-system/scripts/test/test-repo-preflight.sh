@@ -344,13 +344,47 @@ RC=$(STUB_GH_AUTH=broken bash "$PREFLIGHT" "$GOOD" "https://github.com/assafkip/
   && ok "credentials: a broken gh auth refuses by name" \
   || bad "broken credentials were accepted: $OUT"
 
-# 2h. dirty working tree: uncommitted work in a CLIENT repo belongs to a human, and
-# an agent that branches and commits there captures it into its own PR.
-DT="$(make_good_repo dirty)"; echo "someones work in progress" > "$DT/notes.txt"
+# 2h. dirty working tree: RETIRED as a refusal (ASK-3526). Uncommitted work in the
+# main checkout belongs to a human, and it still cannot reach an agent: the worker
+# cuts every issue tree from origin with `git worktree add` and never checks out,
+# merges, resets, stashes or commits in the target's main checkout. The guarantee
+# moved from a refusal to the structural assertion below, which fails if any
+# mutating git verb is ever aimed at $TARGET_REPO. The founder's live repos always
+# carry uncommitted output, so the refusal kept them out permanently.
+DT="$(make_good_repo wipwork)"; echo "someones work in progress" > "$DT/notes.txt"
 OUT="$(run_preflight "$DT")"
-{ [ "$(pf_rc "$DT")" != "0" ] && echo "$OUT" | grep -q 'dirty'; } \
-  && ok "dirty: an uncommitted working tree refuses by name" \
-  || bad "a dirty tree was accepted, so a human's WIP can be swept into an agent PR: $OUT"
+{ [ "$(pf_rc "$DT")" = "0" ] && [ -f "$DT/notes.txt" ]; } \
+  && ok "an uncommitted working tree no longer refuses, and the human's file is untouched" \
+  || bad "a working tree with uncommitted work is still refused: $OUT"
+NG="$WORK/not-a-repo"; mkdir -p "$NG"
+OUT="$(run_preflight "$NG")"
+{ [ "$(pf_rc "$NG")" != "0" ] && echo "$OUT" | grep -q '^FAIL git:'; } \
+  && ok "a path that is not a git repository still refuses, by name" \
+  || bad "a non-repo path was not refused as git: $OUT"
+
+# THE GUARANTEE THAT REPLACED THE DIRTY REFUSAL. Every git command the worker and
+# converge aim at the target repo must be one that cannot touch its working tree.
+# Allowlist, not denylist: a verb nobody thought of is refused by default.
+target_git_verbs() {
+  grep -hoE 'git -C "\$TARGET_REPO" [a-z-]+' "$@" | awk '{print $4}' | sort -u
+}
+# Spelled out, not $WORKER: that variable is set further down, in case 11.
+W2H="$REPO/q-system/.q-system/scripts/linear-worker.sh"
+BADVERBS="$(target_git_verbs "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" | grep -vxE 'fetch|worktree|rev-parse' || true)"
+[ -z "$BADVERBS" ] \
+  && ok "the worker and converge only fetch, add worktrees and read refs in the target repo" \
+  || bad "a mutating git verb is aimed at the target's main checkout: $BADVERBS"
+# Negative self-test: the same scan over a copy carrying one checkout line must fire.
+MUTW="$WORK/worker-mutant.sh"; cp "$W2H" "$MUTW"
+echo 'git -C "$TARGET_REPO" checkout -q main' >> "$MUTW"
+target_git_verbs "$MUTW" | grep -qx checkout \
+  && ok "negative self-test: the scan catches a checkout aimed at the target" \
+  || bad "the scan missed a planted checkout, so the guarantee above proves nothing"
+# The one allowed form is the path canonicalizer, a subshell that only runs pwd.
+grep -nE '^[^#]*\bcd "?\$TARGET_REPO' "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" \
+    | grep -vF '$(cd "$TARGET_REPO" && pwd)' \
+  && bad "a cd into the target's main checkout exists" \
+  || ok "nothing cds into the target's main checkout"
 
 echo
 echo "== 3. the preflight FAILS CLOSED, which is the opposite of stale_check =="
@@ -929,10 +963,10 @@ OUT="$(run_preflight "$CLIENTKS" "https://github.com/assafkip/clientks.git")"
 CLIENTDIRTY="$(make_good_repo_at clientwip consulting/projects/zzz-wip-client)"
 echo "human work in progress" > "$CLIENTDIRTY/wip.txt"
 OUT="$(run_preflight "$CLIENTDIRTY" "https://github.com/assafkip/clientwip.git")"
-{ [ "$(pf_rc "$CLIENTDIRTY" "https://github.com/assafkip/clientwip.git")" != "0" ] \
-    && printf '%s' "$OUT" | grep -q '^FAIL dirty:'; } \
-  && ok "a client repo with uncommitted human work still refuses, by name" \
-  || bad "a dirty client tree is accepted, so an agent could sweep in a human's work: $OUT"
+{ [ "$(pf_rc "$CLIENTDIRTY" "https://github.com/assafkip/clientwip.git")" = "0" ] \
+    && [ -f "$CLIENTDIRTY/wip.txt" ]; } \
+  && ok "a client repo with uncommitted human work is entered, and the work is untouched" \
+  || bad "a client repo with uncommitted work is still refused (check 5 retired, ASK-3526): $OUT"
 
 echo
 echo "== 20. an opted-in client repo REACHES the pick list (RULE-2026-10-30-A) =="
