@@ -63,7 +63,14 @@ TMP=""
 #
 # Caught 2026-08-27 by the adversarial suite asserting the exit code of a CLEAN
 # repo. No test of the failure cases could have found it: they all expect 1.
+# ASK-3515: one per-run dir where pytest workers share the LUAR env build verdict
+# (see voiceloop/luar_env_backend.ensure_declared_env). Per RUN on purpose: a
+# verdict must not outlive the run, or a machine that was fixed stays red.
+LUAR_STATE="$(mktemp -d "${TMPDIR:-/tmp}/kipi-luar-env.XXXXXX" 2>/dev/null || true)"
+[ -n "$LUAR_STATE" ] && export KIPI_LUAR_ENV_STATE_DIR="$LUAR_STATE"
+
 cleanup() {
+  if [ -n "$LUAR_STATE" ] && [ -d "$LUAR_STATE" ]; then rm -rf "$LUAR_STATE"; fi
   if [ -n "$TMP" ] && [ -d "$TMP" ]; then rm -rf "$TMP"; fi
   # The staged worktree lived under $TMP, so removing $TMP orphans its
   # registration in .git/worktrees. prune is the sanctioned cleanup, is a no-op
