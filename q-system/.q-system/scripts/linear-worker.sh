@@ -547,12 +547,12 @@ fi
 # close by hand. Exactly one worker has to own it, and the registry already
 # DECLARES which one: `skeleton.linear_project`, returned as skeleton_project.
 REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" \
-  MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
+  OVERLAY="${KIPI_DISPATCH_TARGETS:-}" MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
 import json, os, sys
 sys.path.insert(0, os.environ["MOD_DIR"])
 import linear_registry
 print(json.dumps(linear_registry.registry_facts(
-    os.environ["REG"], os.environ["SKEL_PATH"])))
+    os.environ["REG"], os.environ["SKEL_PATH"], os.environ.get("OVERLAY") or None)))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }

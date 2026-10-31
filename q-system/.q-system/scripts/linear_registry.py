@@ -69,7 +69,8 @@ def _rows(reg):
                 yield e
 
 
-def registry_facts(registry_path: str, target_repo: str | None = None) -> dict:
+def registry_facts(registry_path: str, target_repo: str | None = None,
+                   overlay_path: str | None = None) -> dict:
     """Read the registry once and answer both reachability questions.
 
     Returns ``{"name", "local_repos", "ok", "skeleton_project"}``.
@@ -106,6 +107,33 @@ def registry_facts(registry_path: str, target_repo: str | None = None) -> dict:
             dispatch = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
             local.append({"project": proj, "path": path,
                           "remote": dispatch.get("expected_remote") or ""})
+    # THE PRIVATE OVERLAY (ASK-3526, KIPI_DISPATCH_TARGETS in kipi-dispatch.sh)
+    # pins the remotes of client repos outside this public repo. An opted-in
+    # overlay row supplies the remote for a checkout the registry already lists,
+    # or adds a checkout the registry does not carry. Without this, the worker
+    # would preflight a client repo with no pin and report it refused on
+    # "remote" while the dispatcher enters it. Unreadable adds nothing.
+    if ok and overlay_path:
+        try:
+            with open(overlay_path) as fh:
+                ov = json.load(fh)
+        except Exception:
+            ov = {}
+        by_real = {os.path.realpath(r["path"]): r for r in local}
+        for e in _rows({"instances": ov.get("instances", [])} if isinstance(ov, dict) else []):
+            d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
+            path = e.get("path")
+            if not path or d.get("enabled") is not True or not d.get("expected_remote"):
+                continue
+            real = os.path.realpath(path)
+            if skel and not name and real == skel:
+                name = linear_project(e)
+            row = by_real.get(real)
+            if row is not None:
+                row["remote"] = row["remote"] or d["expected_remote"]
+            elif linear_project(e) and os.path.isdir(path):
+                local.append({"project": linear_project(e), "path": path,
+                              "remote": d["expected_remote"]})
     local.sort(key=lambda r: r["project"])
 
     skel_row = reg.get("skeleton") if isinstance(reg, dict) else None

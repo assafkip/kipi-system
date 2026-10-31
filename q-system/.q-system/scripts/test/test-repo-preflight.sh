@@ -1067,6 +1067,61 @@ esac
   || bad "a genuinely gated branch is now refused -- $(run_preflight "$BP")"
 
 echo
+echo "== 23. the PRIVATE overlay opts a repo in without its remote in the public registry (ASK-3526) =="
+# Client repos are dispatchable under RULE-2026-10-30-A, but their pinned remotes
+# carry client names and client-name-guard.py keeps those out of this public repo.
+# The overlay (KIPI_DISPATCH_TARGETS) holds the rows instead. Four readers must
+# agree on it: fleet_candidates, slug_for_repo, registry_facts, and the absence
+# rule (unset reads nothing, so every other case in this file stays hermetic).
+OVR="$(make_good_repo ovrrepo)"
+OFFR="$(make_good_repo ovroff)"
+REG23="$WORK/reg23.json"
+# Both rows are in the public registry WITHOUT an opt-in, like the client rows;
+# ovroff carries an explicit recorded OFF.
+mk_registry "$REG23" "ovrrepo|$OVR|absent" "ovroff|$OFFR|false"
+OVL="$WORK/overlay23.json"
+python3 - "$OVL" "$OVR" "$OFFR" <<'PY'
+import json, sys
+out, ovr, offr = sys.argv[1:4]
+json.dump({"instances": [
+    {"name": "ovrrepo", "path": ovr,
+     "dispatch": {"enabled": True, "expected_remote": "https://github.com/assafkip/ovrrepo.git"}},
+    {"name": "ovroff", "path": offr,
+     "dispatch": {"enabled": True, "expected_remote": "https://github.com/assafkip/ovroff.git"}},
+]}, open(out, "w"))
+PY
+P23="$(KIPI_DISPATCH_REGISTRY="$REG23" KIPI_DISPATCH_TARGETS="$OVL" KIPI_DISPATCH_CURSOR="$WORK/cursor23" bash "$HARNESS" 2>"$WORK/say23.log")"
+printf '%s' "$P23" | grep -q 'ovrrepo' \
+  && ok "an overlay opt-in reaches the pick list" \
+  || bad "the overlay row never reached the pick list: $P23 / $(cat "$WORK/say23.log")"
+printf '%s' "$P23" | grep -q 'ovroff' \
+  && bad "the overlay switched on a repo the public registry records as explicitly OFF" \
+  || ok "an explicit OFF in the public registry is not overridden by the overlay"
+P23B="$(KIPI_DISPATCH_REGISTRY="$REG23" KIPI_DISPATCH_CURSOR="$WORK/cursor23b" bash "$HARNESS" 2>/dev/null)"
+printf '%s' "$P23B" | grep -q 'ovrrepo' \
+  && bad "with no overlay set, the repo was still selected, so the overlay is not what opted it in" \
+  || ok "with KIPI_DISPATCH_TARGETS unset, no overlay row is read"
+# slug_for_repo takes the overlay PIN over the repo's own origin.
+fixture_git "$OVR" remote set-url origin "https://github.com/assafkip/not-the-pin.git" >/dev/null 2>&1
+SLUG23="$(KIPI_DISPATCH_TARGETS="$OVL" bash -c '. "$1"; slug_for_repo "$2" "$3"' _ \
+  "$REPO/q-system/.q-system/scripts/repo-slug-lib.sh" "$OVR" "$REG23")"
+[ "$SLUG23" = "assafkip/ovrrepo" ] \
+  && ok "slug_for_repo answers from the overlay pin, not the repo's origin" \
+  || bad "slug_for_repo ignored the overlay pin (got '$SLUG23')"
+# registry_facts carries the overlay remote, so the worker preflights with the pin.
+RF23="$(OVL="$OVL" REG="$REG23" MOD="$REPO/q-system/.q-system/scripts" python3 - <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["MOD"])
+import linear_registry
+f = linear_registry.registry_facts(os.environ["REG"], None, os.environ["OVL"])
+print(json.dumps({r["project"]: r["remote"] for r in f["local_repos"]}))
+PY
+)"
+printf '%s' "$RF23" | grep -q '"ovrrepo": "https://github.com/assafkip/ovrrepo.git"' \
+  && ok "registry_facts carries the overlay pin for the worker's preflight" \
+  || bad "registry_facts dropped the overlay pin: $RF23"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"

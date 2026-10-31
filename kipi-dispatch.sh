@@ -42,6 +42,20 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # log line still read normally. The tests drive the real script and stub `gh` by
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
+# THE PRIVATE DISPATCH OVERLAY (ASK-3526). Client repos are dispatchable under
+# RULE-2026-10-30-A, and preflight check 4 enters no repo whose row does not pin
+# its remote. A client repo's remote carries the client's name, and this repo is
+# public: client-name-guard.py blocked the first cut, which put four such pins in
+# instance-registry.json. Same answer as that guard's own token list: the data
+# lives outside the repo, here, in rows with the registry's shape. Read by
+# fleet_candidates, slug_for_repo (repo-slug-lib.sh) and registry_facts
+# (linear_registry.py), all through this one exported variable.
+# DEFAULTED ONLY WHEN THE REGISTRY IS NOT OVERRIDDEN, so a test that points
+# KIPI_DISPATCH_REGISTRY at a fixture never reads the founder's live overlay.
+if [ -z "${KIPI_DISPATCH_TARGETS+x}" ] && [ -z "${KIPI_DISPATCH_REGISTRY:-}" ]; then
+  KIPI_DISPATCH_TARGETS="$HOME/.config/kipi/dispatch-targets.json"
+fi
+export KIPI_DISPATCH_TARGETS="${KIPI_DISPATCH_TARGETS:-}"
 LOG="$HOME/.config/kipi/dispatch.log"
 # THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
 # One-run-per-repo is enforced structurally in the selection loop below, so this
@@ -584,20 +598,35 @@ fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
   [ -f "$registry" ] || { say "fleet: no registry at $registry, home repo only"; return 0; }
-  python3 - "$registry" "$REPO" <<'PY'
+  python3 - "$registry" "$REPO" "${KIPI_DISPATCH_TARGETS:-}" <<'PY'
 import json, sys
-reg, home = sys.argv[1], sys.argv[2]
+reg, home, overlay = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(reg))
 except Exception:
     sys.exit(0)          # an unreadable registry means home only, never "everything"
-for e in data.get("instances", []):
+# The private overlay (KIPI_DISPATCH_TARGETS, see the top of this file) has the
+# registry's shape. An unreadable overlay adds nothing. A path the PUBLIC registry
+# records as explicitly off (enabled: false, a decision with a reason) is never
+# switched on from the overlay: a recorded decision is not overridden silently.
+rows = list(data.get("instances", []))
+off = {e.get("path") for e in rows
+       if isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
+if overlay:
+    try:
+        rows += [e for e in json.load(open(overlay)).get("instances", [])
+                 if e.get("path") not in off]
+    except Exception:
+        pass
+seen = set()
+for e in rows:
     d = e.get("dispatch")
     if not isinstance(d, dict) or d.get("enabled") is not True:
         continue
     p = e.get("path", "")
-    if not p or p == home:
+    if not p or p == home or p in seen:
         continue
+    seen.add(p)
     print("%s\t%s\t%s" % (e.get("name", ""), p, d.get("expected_remote", "")))
 PY
 }

@@ -166,6 +166,12 @@ q-system/output/.update-check-*
 # dirty-tree guard refused all three on every run (ASK-605). kipi-update.sh
 # untracks whatever this stanza ignores; the managed block keeps it untracked.
 .claude/state/
+# prd-os flock targets beside its ledgers. Ignored at the skeleton root since
+# sp-a21cb27c, but never shipped, so instances carry them untracked. Measured
+# 2026-10-30: two dispatch-enabled repos were refused by preflight's dirty check
+# with a stray .prd-os/spillover.jsonl.lock among the changes (ASK-3526).
+.prd-os/*.lock
+.prd-os/.judgments.lock
 # <<< kipi-instance-local-stanza <<<
 
 # PR-review scratch trees. 537 of these files were swept into the repo by an
