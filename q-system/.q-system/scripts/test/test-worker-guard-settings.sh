@@ -148,16 +148,33 @@ grep -q 'not counted against the issue' "$WORK/run-G.out" || fail "G: the refusa
 $(tail -8 "$WORK/run-G.out")"
 ok "G: no guard set means no agent, a stated reason, and no attempt charged"
 
-# --- H. census by code: every agent session in the tree carries the set ------
-# Two call sites start an agent session in \$TREE today: Sana's run and the Opus
-# stand-in for Codex. Enumerated from the source, never from this comment, so a
-# third call site added later fails here until it passes the set too.
-SITES="$(grep -nE 'claude -p|\$SECOND_RUNNER_FALLBACK \\"' "$WORKER" | grep -vE '^[0-9]+:[[:space:]]*#' | grep 'run_bounded')"
-[ "$(printf '%s\n' "$SITES" | grep -c .)" -ge 2 ] || fail "H: found fewer than 2 agent call sites; the census pattern is stale:
-$SITES"
-UNGUARDED="$(printf '%s\n' "$SITES" | grep -v -- '--settings')"
-[ -z "$UNGUARDED" ] || fail "H: an agent session in the tree starts without the guard set:
-$UNGUARDED"
-ok "H: every agent session the worker starts in a tree passes the guard set ($(printf '%s\n' "$SITES" | grep -c .) call sites)"
+# --- H. census by code: every agent launch carries the set, or is a named gap -
+# Enumerated from the source, never from this comment. Every non-comment line
+# naming an agent launcher (a literal `claude -p`, the stand-in variable, the
+# reviewer variable) is classified: a definition or a presence test is skipped,
+# and every LAUNCH must pass --settings unless KNOWN names it with a ticket.
+# PR #583 review (minor): the first cut matched only `run_bounded` lines, so a
+# launch shaped like the reviewer call was invisible and the census passed.
+# Residual, said out loud: a launcher behind a brand-new variable name is still
+# invisible until its name is added to LAUNCHERS.
+LAUNCHERS='claude -p|\$\{?SECOND_RUNNER_FALLBACK|\$\{?REVIEWER_CMD'
+KNOWN_REVIEWER='$REVIEWER_CMD "$PR_NUM"'   # pr-review-agent.sh runs its own review tree: ASK-3571
+# A definition is a line that IS an assignment of a quoted string (NAME="...").
+# Anchored, so an env-prefixed launch (NAME=value $LAUNCHER ...) still counts.
+DEF_RX='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="'
+LAUNCHES=""; KNOWN_HIT=0; N_LAUNCH=0
+while IFS= read -r ln; do
+  code="${ln#*:}"
+  [[ $code =~ $DEF_RX ]] && continue                                # a definition, not a launch
+  case "$code" in *'[ -n "$SECOND_RUNNER_FALLBACK" ]'*) continue ;; esac   # a presence test
+  N_LAUNCH=$((N_LAUNCH + 1))
+  case "$code" in *"$KNOWN_REVIEWER"*) KNOWN_HIT=1; continue ;; esac
+  printf '%s' "$code" | grep -q -- '--settings' || LAUNCHES="$LAUNCHES
+$ln"
+done < <(grep -nE "$LAUNCHERS" "$WORKER" | grep -vE '^[0-9]+:[[:space:]]*#')
+[ "$N_LAUNCH" -ge 3 ] || fail "H: found $N_LAUNCH agent launches, expected at least 3 (Sana, the stand-in, the reviewer); the census pattern is stale"
+[ "$KNOWN_HIT" = "1" ] || fail "H: the reviewer launch tracked as ASK-3571 is gone or reshaped; re-check whether it now needs the set"
+[ -z "$LAUNCHES" ] || fail "H: an agent launch starts without the guard set and is not a named gap:$LAUNCHES"
+ok "H: $N_LAUNCH agent launches found; each passes the guard set, except the reviewer (ASK-3571)"
 
 echo "PASS ($PASS checks) test-worker-guard-settings.sh"
