@@ -1086,7 +1086,9 @@ out, ovr, offr = sys.argv[1:4]
 json.dump({"instances": [
     {"name": "ovrrepo", "path": ovr,
      "dispatch": {"enabled": True, "expected_remote": "https://github.com/assafkip/ovrrepo.git"}},
-    {"name": "ovroff", "path": offr,
+    # A TRAILING SLASH, deliberately: the first cut compared path strings, so
+    # another spelling of the same directory undid a recorded OFF (PR #577 review).
+    {"name": "ovroff", "path": offr + "/",
      "dispatch": {"enabled": True, "expected_remote": "https://github.com/assafkip/ovroff.git"}},
 ]}, open(out, "w"))
 PY
@@ -1097,6 +1099,24 @@ printf '%s' "$P23" | grep -q 'ovrrepo' \
 printf '%s' "$P23" | grep -q 'ovroff' \
   && bad "the overlay switched on a repo the public registry records as explicitly OFF" \
   || ok "an explicit OFF in the public registry is not overridden by the overlay"
+# THE DEFAULT IS WHAT KEEPS EVERY OTHER TEST HERMETIC, so it is driven, not read.
+# A fixture HOME holds a planted overlay; with the registry overridden it must not
+# be named, with the registry not overridden it must be, and an explicit value wins.
+DTD="$WORK/dtd.sh"
+{ awk '/^dispatch_targets_default\(\) \{/,/^\}/' "$DISPATCH"; echo 'dispatch_targets_default'; } > "$DTD"
+mkdir -p "$WORK/home23/.config/kipi"; : > "$WORK/home23/.config/kipi/dispatch-targets.json"
+D1="$(env -u KIPI_DISPATCH_TARGETS HOME="$WORK/home23" KIPI_DISPATCH_REGISTRY="$REG23" bash "$DTD")"
+D2="$(env -u KIPI_DISPATCH_TARGETS -u KIPI_DISPATCH_REGISTRY HOME="$WORK/home23" bash "$DTD")"
+D3="$(HOME="$WORK/home23" KIPI_DISPATCH_TARGETS="$OVL" KIPI_DISPATCH_REGISTRY="$REG23" bash "$DTD")"
+[ -z "$D1" ] \
+  && ok "with the registry overridden (a test), the live overlay is not read" \
+  || bad "a fixture-driven run names the founder's overlay ($D1), so tests are not hermetic"
+[ "$D2" = "$WORK/home23/.config/kipi/dispatch-targets.json" ] \
+  && ok "in production (registry not overridden) the overlay defaults under HOME" \
+  || bad "the production default is wrong (got '$D2')"
+[ "$D3" = "$OVL" ] \
+  && ok "an explicit KIPI_DISPATCH_TARGETS wins" \
+  || bad "an explicit overlay path was ignored (got '$D3')"
 P23B="$(KIPI_DISPATCH_REGISTRY="$REG23" KIPI_DISPATCH_CURSOR="$WORK/cursor23b" bash "$HARNESS" 2>/dev/null)"
 printf '%s' "$P23B" | grep -q 'ovrrepo' \
   && bad "with no overlay set, the repo was still selected, so the overlay is not what opted it in" \

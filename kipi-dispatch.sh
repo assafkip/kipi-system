@@ -52,10 +52,17 @@ PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
 # (linear_registry.py), all through this one exported variable.
 # DEFAULTED ONLY WHEN THE REGISTRY IS NOT OVERRIDDEN, so a test that points
 # KIPI_DISPATCH_REGISTRY at a fixture never reads the founder's live overlay.
-if [ -z "${KIPI_DISPATCH_TARGETS+x}" ] && [ -z "${KIPI_DISPATCH_REGISTRY:-}" ]; then
-  KIPI_DISPATCH_TARGETS="$HOME/.config/kipi/dispatch-targets.json"
-fi
-export KIPI_DISPATCH_TARGETS="${KIPI_DISPATCH_TARGETS:-}"
+# A FUNCTION, SO THE SUITE CAN DRIVE IT (review of PR #577): inline, the
+# hermeticity rule had no test, and inverting it passed every case.
+dispatch_targets_default() {
+  if [ -n "${KIPI_DISPATCH_TARGETS+x}" ]; then
+    printf '%s' "$KIPI_DISPATCH_TARGETS"
+  elif [ -z "${KIPI_DISPATCH_REGISTRY:-}" ]; then
+    printf '%s' "$HOME/.config/kipi/dispatch-targets.json"
+  fi
+}
+KIPI_DISPATCH_TARGETS="$(dispatch_targets_default)"
+export KIPI_DISPATCH_TARGETS
 LOG="$HOME/.config/kipi/dispatch.log"
 # THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
 # One-run-per-repo is enforced structurally in the selection loop below, so this
@@ -609,25 +616,41 @@ except Exception:
 # registry's shape. An unreadable overlay adds nothing. A path the PUBLIC registry
 # records as explicitly off (enabled: false, a decision with a reason) is never
 # switched on from the overlay: a recorded decision is not overridden silently.
+# Paths compare by realpath, as slug_for_repo and registry_facts do: the first
+# cut compared strings, so a trailing slash in the overlay undid a recorded OFF.
+import os
+def real(p):
+    try:
+        return os.path.realpath(p)
+    except Exception:
+        return p
+def opted(e):
+    d = e.get("dispatch")
+    return isinstance(d, dict) and d.get("enabled") is True and bool(e.get("path"))
 rows = list(data.get("instances", []))
-off = {e.get("path") for e in rows
-       if isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
+off = {real(e["path"]) for e in rows if e.get("path")
+       and isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
+extra = []
 if overlay:
     try:
-        rows += [e for e in json.load(open(overlay)).get("instances", [])
-                 if e.get("path") not in off]
+        extra = [e for e in json.load(open(overlay)).get("instances", [])
+                 if isinstance(e, dict) and opted(e) and real(e["path"]) not in off]
     except Exception:
-        pass
+        extra = []
+# An opted-in registry row with no pin takes the overlay's pin for the same path,
+# so the three readers agree on the remote preflight is handed.
+pins = {real(e["path"]): e["dispatch"].get("expected_remote", "") for e in extra}
 seen = set()
-for e in rows:
-    d = e.get("dispatch")
-    if not isinstance(d, dict) or d.get("enabled") is not True:
+for e in rows + extra:
+    if not isinstance(e, dict) or not opted(e):
         continue
-    p = e.get("path", "")
-    if not p or p == home or p in seen:
+    p = e["path"]
+    r = real(p)
+    if p == home or r in seen:
         continue
-    seen.add(p)
-    print("%s\t%s\t%s" % (e.get("name", ""), p, d.get("expected_remote", "")))
+    seen.add(r)
+    remote = e["dispatch"].get("expected_remote") or pins.get(r, "")
+    print("%s\t%s\t%s" % (e.get("name", ""), p, remote))
 PY
 }
 

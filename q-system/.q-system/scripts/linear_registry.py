@@ -120,12 +120,18 @@ def registry_facts(registry_path: str, target_repo: str | None = None,
         except Exception:
             ov = {}
         by_real = {os.path.realpath(r["path"]): r for r in local}
+        # Same rule as fleet_candidates: a recorded OFF in the public registry
+        # is not switched on from the overlay, compared by realpath.
+        off = {os.path.realpath(e["path"]) for e in _rows(reg) if e.get("path")
+               and isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
         for e in _rows({"instances": ov.get("instances", [])} if isinstance(ov, dict) else []):
             d = e.get("dispatch") if isinstance(e.get("dispatch"), dict) else {}
             path = e.get("path")
             if not path or d.get("enabled") is not True or not d.get("expected_remote"):
                 continue
             real = os.path.realpath(path)
+            if real in off:
+                continue
             if skel and not name and real == skel:
                 name = linear_project(e)
             row = by_real.get(real)
