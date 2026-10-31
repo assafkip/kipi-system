@@ -965,9 +965,10 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
-# this one needs a cure (hooks drift, a dirty tree) or a decision (the kill
-# switch). Collapsing it into the skip line promises the operator a turn that is
-# not coming until someone acts.
+# this one needs a cure (hooks drift, a dirty tree), a decision (the kill
+# switch), or a change outside the repo (branch protection on a GitHub plan that
+# has no protection toggle, which no script can cure). Collapsing it into the
+# skip line promises the operator a turn that is not coming until someone acts.
 [ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
 # UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
 # resolves itself on a later rotation turn; this does not resolve at all until a

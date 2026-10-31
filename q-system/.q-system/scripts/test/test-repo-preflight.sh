@@ -661,7 +661,9 @@ grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
 # preflight's control-code hash look necessary.
 # Matched anywhere on a line, not only at its start, so a backticked or chained
 # form (`cd x && python3 q-system/...`) is caught too (review of PR #574).
-REL_CTRL="$(grep -nE '(python3|bash)[[:space:]]+(\./)?(q-system/|plugins/|kipi[[:space:]])' "$WORKER")"
+# Quoted and .claude-relative forms too (PR #574 round 3): a control script
+# reached as "q-system/..." or .claude/... runs from the target just the same.
+REL_CTRL="$(grep -nE '(python3|bash)[[:space:]]+["'"'"']?(\./)?(q-system/|plugins/|\.claude/|kipi[[:space:]])' "$WORKER")"
 [ -z "$REL_CTRL" ] \
   && ok "no agent-prompt command runs a control script relative to the target worktree" \
   || bad "the prompt runs a control script from the target worktree, not the skeleton: $REL_CTRL"
