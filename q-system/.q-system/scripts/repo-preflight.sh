@@ -106,9 +106,13 @@ fi
 # dark, another had been refused on it for weeks. That is a gate refusing on a
 # fact that cannot hurt anyone.
 #
-# NOT A WEAKENING. What this check claimed to protect, "only reviewed control code
-# runs here", now holds by construction: the only worker that runs is the pinned
-# skeleton, which tracks the reviewed main branch. The one place the agent did run
+# WHAT HOLDS AND WHAT DOES NOT. The LOOP's control code (worker, converge,
+# review, the scripts the prompt names) is the pinned skeleton, which tracks the
+# reviewed main branch. The HOOK scripts an agent session fires are a different
+# matter: they resolve from $CLAUDE_PROJECT_DIR, the target's own tree, and check
+# 3 proves they are present, not current. This hash never covered them either
+# (it read one file), so retiring it loses nothing there; content parity for
+# hook scripts is tracked as ASK-3539 (PR #574 review). The one place the agent did run
 # a target copy (the rework prompt calling linear-sync.py by a cwd-relative path)
 # is anchored on $SKEL in the same change, and test-repo-preflight.sh case 12
 # fails if a cwd-relative control script comes back. If a future change makes

@@ -943,8 +943,9 @@ while IFS=$'\037' read -r _proj _path _remote _cnt; do
     REFUSED_N=$((REFUSED_N + _cnt))
     # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
     # command long enough to bury the line it is on, and this is read in a daily
-    # digest. The class of refusal is what tells a permanent one (client-repo)
-    # from a curable one (hooks, dirty), which is the decision being supported.
+    # digest. The class of refusal is what tells a curable one (hooks, dirty)
+    # from one that needs a person's decision (kill-switch), which is the
+    # decision being supported.
     _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
     REFUSED_IN="${REFUSED_IN:+$REFUSED_IN; }$_proj (${_why:-refused})"
   fi
@@ -964,9 +965,9 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
-# this one needs either a cure (hooks drift, a dirty tree) or nothing at all ever
-# (client-repo, which no rotation and no cure will change). Collapsing it into the
-# skip line promises the operator a turn that is never coming.
+# this one needs a cure (hooks drift, a dirty tree) or a decision (the kill
+# switch). Collapsing it into the skip line promises the operator a turn that is
+# not coming until someone acts.
 [ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
 # UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
 # resolves itself on a later rotation turn; this does not resolve at all until a

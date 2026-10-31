@@ -99,10 +99,10 @@ chmod +x "$HOMEREPO/kipi"
 : > "$WORK/kipi-calls.txt"
 
 # The dispatcher resolves the preflight off $REPO, so the fixture home repo has
-# to carry the REAL one -- a stub here would test nothing. PLAIN must then CLEAR
-# all seven checks, which means it needs byte-identical control code and the same
-# wired hook scripts. Copying the same tree into both is the only way to satisfy
-# a check whose whole point is byte equality.
+# to carry the REAL one -- a stub here would test nothing. PLAIN and CLIENT must
+# then clear every check, which means the same wired hook scripts as the home
+# fixture. Copying the same tree into all three is the simplest way to get there.
+# (The worker copy is still copied; since check 2 was retired it is not needed.)
 seed_control_code() {  # seed_control_code <repo>
   mkdir -p "$1/q-system/.q-system/scripts" "$1/.claude"
   cp "$ROOT/q-system/.q-system/scripts/repo-preflight.sh" \

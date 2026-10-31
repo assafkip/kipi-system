@@ -301,7 +301,7 @@ fixture_git "$CN" commit -qm noworker >/dev/null 2>&1
 OUT="$(run_preflight "$CN")"
 { [ "$(pf_rc "$CN")" = "0" ] && ! echo "$OUT" | grep -q 'control-code'; } \
   && ok "control-code retired: a target with NO worker copy is ACCEPTED" \
-  || bad "a target without a worker copy still refuses, so a repo outside the fleet layer can never be entered: $OUT"
+  || bad "a target without a worker copy still refuses, on a file the dispatcher never runs: $OUT"
 
 # 2c. hook presence
 HK="$(make_good_repo hooks)"
