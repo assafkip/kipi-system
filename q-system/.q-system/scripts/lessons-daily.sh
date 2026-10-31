@@ -436,12 +436,21 @@ fi
 
 # Put the live memory state back after the fan-out (PR #573 review): the fan-out needed a
 # clean origin/main tree, and the heartbeat/handoff files must not stay rolled back.
+# Restored into the index AND committed onto main, never left as a dirty tracked file
+# (PR #573 round 2, major): a dirty q-system/memory/ makes the next run's
+# `merge --ff-only` and the updater's "AT main" check refuse, every run, with no alert
+# naming the cause. As a commit it is the memory-ahead main this function already heals.
+# The commit runs the repo's hooks (no --no-verify) with the same [no-issue:] marker the
+# lessons commit uses.
+SKEL_MEMORY_RESTORE=""
 if [ -n "${SKEL_MEMORY_BK:-}" ]; then
-  if git -C "$SKEL" restore --source="$SKEL_MEMORY_BK" --worktree -- q-system/memory >> "$LOG" 2>&1; then
-    echo "$(TS) restored q-system/memory/ from $SKEL_MEMORY_BK into the working tree" >> "$LOG"
+  if git -C "$SKEL" restore --source="$SKEL_MEMORY_BK" --staged --worktree -- q-system/memory >> "$LOG" 2>&1 \
+     && { git -C "$SKEL" diff --cached --quiet -- q-system/memory \
+          || git -C "$SKEL" commit --no-gpg-sign -m "chore: update session memory (carried over the main reset) [no-issue: automated memory carry-over, ASK-3525]" -- q-system/memory >> "$LOG" 2>&1; }; then
+    echo "$(TS) restored q-system/memory/ from $SKEL_MEMORY_BK and committed it onto main" >> "$LOG"
   else
     echo "$(TS) could not restore q-system/memory/ from $SKEL_MEMORY_BK: the live state is on that branch" >> "$LOG"
-    SKEL_MEMORY_BK="${SKEL_MEMORY_BK} (restore FAILED)"
+    SKEL_MEMORY_RESTORE="FAILED"
   fi
 fi
 
@@ -489,7 +498,13 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP_TXT}"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"
-[ -n "${SKEL_MEMORY_BK:-}" ] && MSG="$MSG · skeleton main carried unpushed session-memory commits: kept on ${SKEL_MEMORY_BK}, live memory state put back in the working tree"
+if [ -n "${SKEL_MEMORY_BK:-}" ]; then
+  if [ "$SKEL_MEMORY_RESTORE" = FAILED ]; then
+    MSG="$MSG · skeleton main carried unpushed session-memory commits and the live memory state was NOT put back: it is on ${SKEL_MEMORY_BK}, restore it by hand"
+  else
+    MSG="$MSG · skeleton main carried unpushed session-memory commits: kept on ${SKEL_MEMORY_BK}, live memory state committed back onto main"
+  fi
+fi
 [ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · this run's lessons are in $PR_URL, not in that update; they go out with the first weekly update after it merges"
 [ -n "${PUBLISH:-}" ] && MSG="$MSG · lessons publish $PUBLISH, lessons are in $LREPO"
 # The reason the alert never gave for six weeks (ASK-2736): name the branch.
@@ -519,4 +534,6 @@ if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit
 if [ -n "${PUBLISH:-}" ]; then echo "$(TS) lessons publish failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${HOLD:-}" ]; then echo "$(TS) distilling held by an unmerged lessons branch -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "$LESSONS_FAIL" ]; then echo "$(TS) lessons half failed -> exit 1" >> "$LOG"; exit 1; fi
+# A failed memory restore is not a clean night: exit 0 would hide it from launchd and Linear.
+if [ "${SKEL_MEMORY_RESTORE:-}" = FAILED ]; then echo "$(TS) memory restore failed -> exit 1" >> "$LOG"; exit 1; fi
 exit 0

@@ -111,6 +111,9 @@ build_fixture() {
   # starts in a checkout. The reviewer starts claude inside the lessons worktree.
   mkdir -p "$tmp/seed/q-system/memory"
   printf 'seed\n' > "$tmp/seed/q-system/memory/.sycophancy-monthly-stamp"
+  # Tracked upstream in the real repo too. Without it a restored copy is UNTRACKED in the
+  # fixture and DIRTY in production, and `merge --ff-only` only refuses the second (PR #573).
+  printf 'seed notes\n' > "$tmp/seed/q-system/memory/last-handoff.md"
   seed_updater "$tmp/seed" "$tmp"
   g init -q -b main "$tmp/seed"
   g -C "$tmp/seed" add -A && g -C "$tmp/seed" commit -qm "seed [no-issue: fixture]"
@@ -457,6 +460,7 @@ fail_git() {
   local tmp="$1" what="$2" pat
   case "$what" in
     ls-remote)    pat='*" ls-remote "*) echo "fatal: unable to access origin" >&2; exit 128 ;;' ;;
+    restore)      pat='*" restore "*) echo "fatal: restore refused" >&2; exit 1 ;;' ;;
     worktree-add) pat='*" worktree add "*) echo "fatal: could not create work tree" >&2; exit 128 ;;' ;;
     first-fetch)  pat="*\" fetch \"*) [ -e \"$tmp/fetch.failed\" ] || { touch \"$tmp/fetch.failed\"; echo \"fatal: unable to access origin\" >&2; exit 128; } ;;" ;;
   esac
@@ -559,9 +563,10 @@ T="$(build_fixture ok main-memory-ahead)"
 SKEL_HEAD_BEFORE="$(g -C "$T/skel" rev-parse HEAD)"
 run_job "$T"
 echo "      fixture (main-memory-ahead): $T (exit=$JOB_RC)"
-[ "$(g -C "$T/skel" rev-parse HEAD)" = "$(origin_main "$T")" ] \
-  && ok "memory-ahead: main was moved to origin/main" \
-  || bad "memory-ahead: main is still off origin/main"
+[ "$(g -C "$T/skel" rev-parse HEAD~1)" = "$(origin_main "$T")" ] \
+  && [ "$(g -C "$T/skel" diff --name-only HEAD~1 HEAD)" = "q-system/memory/last-handoff.md" ] \
+  && ok "memory-ahead: main is origin/main plus one memory-only commit" \
+  || bad "memory-ahead: main is not origin/main + the memory carry-over commit"
 [ "$(g -C "$T/skel" for-each-ref --format='%(objectname)' 'refs/heads/backup/*' | head -1)" = "$SKEL_HEAD_BEFORE" ] \
   && ok "memory-ahead: the old tip is kept on a backup/ branch" \
   || bad "memory-ahead: no backup/ branch holds the old tip"
@@ -575,6 +580,33 @@ echo "      fixture (main-memory-ahead): $T (exit=$JOB_RC)"
 grep -q 'backup/skeleton-memory' "$T/notify.txt" 2>/dev/null \
   && ok "memory-ahead: the alert names the backup branch" \
   || bad "memory-ahead: the alert is silent about the move: $(cat "$T/notify.txt" 2>/dev/null)"
+# The restored file must be COMMITTED, not left as a dirty tracked file: a dirty one makes
+# the next run's fast-forward and the updater's "AT main" check refuse, every run (PR #573
+# round 2). So: no tracked modification, and the next run exits 0 as well.
+[ -z "$(g -C "$T/skel" status --porcelain --untracked-files=no)" ] \
+  && ok "memory-ahead: the restore left no dirty tracked file" \
+  || bad "memory-ahead: dirty after the run: $(g -C "$T/skel" status --porcelain --untracked-files=no)"
+# Second run: its own exit is 1 here because run 1's lessons PR branch is still unmerged
+# (the "do not distill twice" hold), which is not what this case owns. What it owns: the
+# fast-forward and the updater's "AT main" check do not refuse on a dirty tree.
+run_job "$T"
+! grep -q -E 'is on main but not AT |fast-forward of skeleton main refused|could not restore' "$T/lessons-daily.log" \
+  && [ -z "$(g -C "$T/skel" status --porcelain --untracked-files=no)" ] \
+  && ok "memory-ahead: the NEXT run does not freeze on a dirty tree" \
+  || bad "memory-ahead: second run froze: $(tail -6 "$T/lessons-daily.log" | tr '\n' '|')"
+rm -rf "$T"
+
+# --- 18. negative control: a failed restore is loud, not "put back" and not exit 0 ----
+T="$(build_fixture ok main-memory-ahead)"
+fail_git "$T" restore
+run_job "$T"
+echo "      fixture (restore-fails): $T (exit=$JOB_RC)"
+[ "$JOB_RC" -ne 0 ] \
+  && ok "restore-fails: the run exits non-zero" \
+  || bad "restore-fails: exits 0, invisible to launchd and Linear"
+grep -q 'NOT put back' "$T/notify.txt" 2>/dev/null && ! grep -q 'committed back onto main' "$T/notify.txt" 2>/dev/null \
+  && ok "restore-fails: the alert says the state was NOT put back, and where it is" \
+  || bad "restore-fails: the alert is wrong: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 # --- 17. negative control: real work among the local commits is never touched ---
