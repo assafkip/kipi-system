@@ -466,6 +466,42 @@ if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   exit 9
 fi
 
+# --- THE TARGET'S DEFAULT BRANCH, DERIVED ONCE (ASK-3550) ---------------------
+# This worker said "origin/main" in seven places. Two client repos opted in under
+# RULE-2026-10-30-A default to `master` and have no origin/main at all, so every
+# issue there died at `git worktree add` with "INFRA: could not create worktree"
+# (measured 2026-10-31, test-worker-default-branch.sh case A). Every base, PR
+# target and freshness check below reads $DEFAULT_BRANCH instead.
+#
+# Three sources, cheapest first, all read-only (test-repo-preflight case 2h
+# allowlists the git verbs aimed at the target): origin/HEAD, which a clone
+# records but a fetch never creates; the remote's own HEAD via ls-remote, which
+# the fetch above just proved reachable; then GitHub's answer, scoped by the
+# pinned slug like every other gh call here.
+#
+# FAIL CLOSED. Guessing "main" is the defect being removed; with no answer the
+# run stops before any tree is cut, says why and pages, same as a failed fetch.
+DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+[ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
+if [ -z "$DEFAULT_BRANCH" ] \
+   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
+    | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+fi
+if { [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
+   && [ -n "${TARGET_SLUG:-}" ]; then
+  DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
+fi
+if [ -z "$DEFAULT_BRANCH" ] \
+   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
+  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
+  exit 9
+fi
+export DEFAULT_BRANCH
+
 # --- repo identity, for the project-scope filter -----------------------------
 # The worker cuts EVERY worktree from $TARGET_REPO (which defaults to $SKEL). An issue filed against
 # another repo can therefore never reach a terminal state here: the agent lands
@@ -1608,7 +1644,7 @@ position_tree_on_pr_head() {
     POSITION_REFUSAL="the tree has uncommitted changes"
     return 1
   fi
-  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)"
+  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null)"
   if [ -n "$extra" ]; then
     POSITION_REFUSAL="the tree holds $(printf '%s\n' "$extra" | grep -c .) commit(s) that exist nowhere else"
     return 1
@@ -1945,7 +1981,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # refreshed origin/$BRANCH, so the lease sees no surprise and allows the
   # push. The PR's head is origin/$BRANCH; when there is a PR, that is the
   # only defensible start point.
-  BASE="origin/main"
+  BASE="origin/$DEFAULT_BRANCH"
   if [ -n "$EXISTING_PR" ]; then
     if git -C "$TARGET_REPO" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
       BASE="origin/$BRANCH"
@@ -1957,7 +1993,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # origin/main is the exact behaviour this block exists to stop -- and
       # refusing instead would stall the issue every cycle with one INFRA line
       # nobody reads.
-      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/main (nothing on the remote to overwrite)"
+      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/$DEFAULT_BRANCH (nothing on the remote to overwrite)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
@@ -2096,15 +2132,15 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
 ## THIS IS A REBASE ROUND. THE CONFLICT IS THE ONLY TASK.
 
 PR #$EXISTING_PR on this branch was already REVIEWED AND APPROVED ('$PR_VERDICT').
-GitHub now reports its merge state as $MERGE_STATE: main moved underneath it and
+GitHub now reports its merge state as $MERGE_STATE: $DEFAULT_BRANCH moved underneath it and
 it no longer merges. This is round $CONFLICT_ROUND of $MAX_CONFLICT_ROUNDS; at the cap the
 worker stops and pages a human, so do not spend this round on anything else.
 
 Do exactly this:
 
   git fetch origin
-  git rebase origin/main        # or merge origin/main, whichever this repo prefers
-  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on main
+  git rebase origin/$DEFAULT_BRANCH        # or merge origin/$DEFAULT_BRANCH, whichever this repo prefers
+  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on $DEFAULT_BRANCH
   bash <the tests this PR already ships>   # they must still pass after the rebase
   git push --force-with-lease origin $BRANCH
 
@@ -2237,7 +2273,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
 
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
-You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
+You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/$DEFAULT_BRANCH.
 Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
@@ -2803,7 +2839,7 @@ $SCOPE_WHY
   # Only fires when there is something to open a PR FOR: commits ahead of
   # origin/main. A branch with no commits still yields no PR, which is a real
   # failure the driver should still see.
-  AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+  AHEAD="$(cd "$TREE" && git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo 0)"
 
   # PUSH BEFORE THE REVIEW, ON BOTH PATHS -- not only when this worker opens the
   # PR. The push used to live inside the `[ -z "$PR_NUM" ]` branch below, so it
@@ -2840,12 +2876,12 @@ $SCOPE_WHY
   if [ -z "$PR_NUM" ]; then
     if [ "${AHEAD:-0}" -gt 0 ]; then
       say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
-      (cd "$TREE" && gh pr create --head "$BRANCH" --base main \
+      (cd "$TREE" && gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
          --title "$(git log -1 --pretty=%s)" \
          --body "Autonomous worker (Sana) on $ISSUE. Opened by the worker because the run ended without opening it.
 
 Commits on this branch:
-$(git log --oneline origin/main..HEAD)
+$(git log --oneline "origin/$DEFAULT_BRANCH..HEAD")
 
 Review runs next. Do not merge without it." >/dev/null 2>&1) || true
       PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
