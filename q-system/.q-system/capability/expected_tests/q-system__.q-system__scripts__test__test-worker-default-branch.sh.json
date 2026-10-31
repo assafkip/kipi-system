@@ -1,8 +1,4 @@
 {
  "path": "q-system/.q-system/scripts/test/test-worker-default-branch.sh",
- "runner": "bash",
- "timeout_s": 300,
- "covers": [
-  "q-system/.q-system/scripts/linear-worker.sh"
- ]
+ "runner": "bash"
 }

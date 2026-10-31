@@ -496,8 +496,8 @@ if { [ -z "$DEFAULT_BRANCH" ] \
 fi
 if [ -z "$DEFAULT_BRANCH" ] \
    || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
-  say "INFRA: cannot determine the default branch of $TARGET_REPO (origin/HEAD unset, GitHub gave '${DEFAULT_BRANCH:-nothing}'). Stopping before any worktree is cut from a guessed base."
-  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: in that repo, run git remote set-head origin --auto" 2>/dev/null || true
+  say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
+  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
   exit 9
 fi
 export DEFAULT_BRANCH

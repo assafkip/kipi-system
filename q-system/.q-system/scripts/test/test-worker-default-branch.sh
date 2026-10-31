@@ -153,8 +153,11 @@ ok "C: with no local answer, the default branch comes from GitHub"
 run_case D dangle ""
 grep -q 'pr create' "$GH_LOG" \
   && fail "D: the worker opened a PR although it could not determine the default branch"
-[ ! -d "$WORK/state-D/worktrees/ASK-MMM" ] \
-  || fail "D: the worker cut an issue tree with no known base branch"
+# Any tree at all, not one spelled path: the worker lowercases tree names, and
+# the first cut checked ASK-MMM, which a case-sensitive filesystem never has
+# (PR #581 review). git's own list is the authority on what was cut.
+[ "$(git -C "$WORK/target-D" worktree list | grep -c .)" = "1" ] && [ -z "$(ls -A "$WORK/state-D/worktrees" 2>/dev/null)" ] \
+  || fail "D: the worker cut an issue tree with no known base branch: $(git -C "$WORK/target-D" worktree list)"
 grep -q 'default branch' "$WORK/run-D.out" \
   || fail "D: the refusal does not say why. Output:
 $(tail -8 "$WORK/run-D.out")"
