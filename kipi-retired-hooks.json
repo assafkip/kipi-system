@@ -1,0 +1,7 @@
+{
+  "_why": "kipi-settings-merge.py UNIONS hooks, so a hook removed from settings-template.json survives in every instance forever. Each script basename listed here is DROPPED from the instance side of the merge. Add a basename when a hook script is retired; never remove one (an instance that skipped a sync still carries the entry).",
+  "scripts": [
+    {"script": "memory_autocapture.py", "retired": "2026-10-30", "ref": "ASK-3400 PR #571"},
+    {"script": "memory-scores-surface.py", "retired": "2026-10-30", "ref": "ASK-3400 PR #571"}
+  ]
+}
