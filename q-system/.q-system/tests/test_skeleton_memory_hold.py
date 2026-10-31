@@ -64,5 +64,13 @@ class Hold(unittest.TestCase):
         self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
 
 
+class CallSite(unittest.TestCase):
+    def test_lessons_daily_calls_the_hold_before_the_fast_forward_and_notifies(self):
+        sh = open(os.path.join(os.path.dirname(HOLD), "lessons-daily.sh")).read()
+        fn = sh[sh.index("sync_skel_to_main() {"):]
+        self.assertLess(fn.index("skeleton-memory-hold.py"), fn.index("merge --ff-only"))
+        self.assertIn("slack-notify.sh", fn[:fn.index("merge --ff-only")])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,8 @@ out and never pushed it. On the skeleton that branch is main, so local main drif
 ahead of origin/main, lessons-daily's sync_skel_to_main left it alone and
 kipi-update.sh refused ("Check out main and pull"): `propagate FAILED` on 2026-10-05,
 10-12 and 10-19. PR #573 tried to undo the drift after the fact and stopped at its
-3-round cap; this is the structural pick: never create the drift.
+3-round cap; this is the structural pick: stop the memory half of the drift
+(other auto-commit areas are unchanged).
 
 Skeleton = instance-registry.json at the repo root (the self-detection notes-publish
 and instance-automation-guard use). Instances and non-default branches keep the old
