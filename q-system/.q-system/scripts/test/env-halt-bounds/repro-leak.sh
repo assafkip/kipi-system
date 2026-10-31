@@ -42,7 +42,7 @@ STATE="$WORK/state"; mkdir -p "$STATE"
 : > "$STATE/linear-worker-runout.99002"
 echo "before: $(ls "$STATE" | grep -c 'env-halt\.\|runout\.') orphan file(s)"
 
-mkdir -p "$WORK/p"; git init --quiet --bare "$WORK/p/origin.git"; git init --quiet "$WORK/p/kipi-system"
+mkdir -p "$WORK/p"; git init --quiet --bare "$WORK/p/origin.git" && git -C "$WORK/p/origin.git" symbolic-ref HEAD refs/heads/main; git init --quiet "$WORK/p/kipi-system"
 git -C "$WORK/p/kipi-system" config user.email t@t; git -C "$WORK/p/kipi-system" config user.name t
 : > "$WORK/p/kipi-system/seed"; git -C "$WORK/p/kipi-system" add seed
 git -C "$WORK/p/kipi-system" commit --quiet -m seed

@@ -133,7 +133,7 @@ render() {
   (
     set -u
     cd "$WORK/cwd" || exit 97
-    ISSUE=ASK-TEST BRANCH=sana/ask-test TREE=/tmp/tree TARGET_REPO=/tmp/repo
+    ISSUE=ASK-TEST BRANCH=sana/ask-test TREE=/tmp/tree TARGET_REPO=/tmp/repo DEFAULT_BRANCH=main
     SYNC=/tmp/sync.py SKEL=/tmp/skel PR_VERDICT=REQUEST_CHANGES MERGE_STATE=DIRTY
     EXISTING_PR= CONFLICT_ROUND= DRIFT_ROUND= MAX_CONFLICT_ROUNDS=3 MAX_DRIFT_ROUNDS=3
     REVIEWED_SHA=aaaaaaa CURRENT_SHA=bbbbbbb SCOPE_WHY="stub reason" REWORK=""

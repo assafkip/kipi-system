@@ -1116,7 +1116,9 @@ fi
 # stale_check applies to a failed fetch. linear-worker.sh:251 exits BEFORE any
 # Linear call and already pages the founder itself, so this must not double-page;
 # it must only refrain from clearing.
-if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed'; then
+# The default-branch stop (ASK-3550) sits where the fetch halt does: after the
+# fetch, before Linear, self-paged by the worker. Same branch, same reason.
+if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed|INFRA: cannot determine the default branch'; then
   say "worker stopped on an environment failure before reaching Linear; leaving linear-down state untouched (the worker pages this one itself)"
   exit 1
 fi
