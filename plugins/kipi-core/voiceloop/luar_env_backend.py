@@ -53,6 +53,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -94,6 +95,46 @@ STATE_DIR_ENV = "KIPI_LUAR_ENV_STATE_DIR"
 ENV_ERROR_NAME = "LUAR_ENV_UNAVAILABLE"
 
 _IN_PROCESS_OK = set()
+
+#: LUAR gets its OWN caches on the internal disk (ASK-3515, measured 2026-10-30).
+#: The fleet-wide UV_CACHE_DIR / HF_HOME point at /Volumes/Storage, where a file
+#: open costs about 160 ms against 0.75 ms on the internal disk (20 opens: 3.28s
+#: vs 0.015s). Importing torch + transformers touches thousands of small files, so
+#: one worker took 80s to 300s+ and 10 to 25 concurrent workers thrashed the volume
+#: until nothing finished. Scoped to this child only: the fleet env is untouched.
+MIN_FREE_BYTES = int(float(os.environ.get("KIPI_LUAR_MIN_FREE_GB", "5")) * 1024 ** 3)
+MODEL_DIR = "models--rrivera1849--LUAR-MUD"
+
+
+def _cache_root():
+    return os.environ.get("KIPI_LUAR_CACHE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".cache", "kipi-luar")
+
+
+def _local_cache_env():
+    root = _cache_root()
+    return {"UV_CACHE_DIR": os.path.join(root, "uv"),
+            "HF_HOME": os.path.join(root, "hf")}
+
+
+def _seed_hf_model(dest_hf):
+    """Copy the LUAR-MUD snapshot from the fleet HF cache once; never re-download.
+
+    A missing source is not an error here: the worker then downloads as it did
+    before, and the build/worker bounds still apply.
+    """
+    dst = os.path.join(dest_hf, "hub", MODEL_DIR)
+    if os.path.isdir(dst):
+        return
+    src_home = os.environ.get("KIPI_LUAR_SEED_HF") or os.environ.get("HF_HOME") or \
+        os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    src = os.path.join(src_home, "hub", MODEL_DIR)
+    if not os.path.isdir(src) or os.path.realpath(src_home) == os.path.realpath(dest_hf):
+        return
+    os.makedirs(os.path.join(dest_hf, "hub"), exist_ok=True)
+    tmp = dst + f".part{os.getpid()}"
+    shutil.copytree(src, tmp, symlinks=True)
+    os.replace(tmp, dst)
 
 
 def _env_key():
@@ -181,6 +222,18 @@ def ensure_declared_env():
             return
         if v and v.get("status") == "failed":
             fail(v.get("detail", "an earlier build in this run failed"))
+        cache = _local_cache_env()
+        os.makedirs(cache["UV_CACHE_DIR"], exist_ok=True)
+        free = shutil.disk_usage(cache["UV_CACHE_DIR"]).free
+        if free < MIN_FREE_BYTES:
+            # Never build or seed into a nearly full disk: it hit 313 MiB free on
+            # 2026-10-30 and the half-written torch install is what followed.
+            fail(f"internal disk has {free // 2**20} MiB free, need "
+                 f"{MIN_FREE_BYTES // 2**20} MiB before building the LUAR env")
+        try:
+            _seed_hf_model(cache["HF_HOME"])
+        except OSError as exc:
+            fail(f"could not seed the LUAR model into {cache['HF_HOME']}: {exc}")
         cwd = os.path.dirname(HERE)
         cmd = ["uv", "run", "--python", PYTHON_PIN,
                "--with-requirements", REQUIREMENTS, "python3", "-c", "pass"]
@@ -230,6 +283,7 @@ def _child_env(package_parent):
     test and refuse the real work.
     """
     env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    env.update(_local_cache_env())
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (f"{package_parent}{os.pathsep}{existing}"
                          if existing else package_parent)

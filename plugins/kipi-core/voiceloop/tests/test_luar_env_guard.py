@@ -39,12 +39,14 @@ def _fake_uv(dirpath, body):
     os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
 
 
-def _drive(bin_dir, state_dir, budget=3, wall=60):
+def _drive(bin_dir, state_dir, budget=3, wall=60, extra=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("KIPI_LUAR")}
     env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     env["PYTHONPATH"] = PLUGIN_ROOT
     env["KIPI_LUAR_ENV_BUILD_TIMEOUT"] = str(budget)
     env["TMPDIR"] = state_dir
+    env["KIPI_LUAR_CACHE_DIR"] = os.path.join(state_dir, "cache")   # never the live cache
+    env.update(extra or {})
     if state_dir:
         env["KIPI_LUAR_ENV_STATE_DIR"] = state_dir
     t = time.monotonic()
@@ -84,6 +86,29 @@ class LuarEnvGuard(unittest.TestCase):
             _fake_uv(d, "exit 0")
             out, _ = _drive(d, d, budget=5)
         self.assertNotIn("LUAR_ENV_UNAVAILABLE", out)
+
+    def test_low_disk_refuses_with_the_named_error_and_never_runs_uv(self):
+        with tempfile.TemporaryDirectory() as d:
+            _fake_uv(d, "touch %s/uv-ran; exit 0" % d)
+            out, _ = _drive(d, d, budget=5, extra={"KIPI_LUAR_MIN_FREE_GB": "99999999"})
+            ran = os.path.exists(os.path.join(d, "uv-ran"))
+        self.assertIn("LUAR_ENV_UNAVAILABLE", out)
+        self.assertIn("MiB free", out)
+        self.assertFalse(ran)
+
+    def test_model_is_seeded_by_copy_and_child_gets_local_caches(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "srchf", "hub", "models--rrivera1849--LUAR-MUD")
+            os.makedirs(src)
+            open(os.path.join(src, "weights.bin"), "w").write("w")
+            _fake_uv(d, 'echo "$UV_CACHE_DIR|$HF_HOME" > %s/seen; exit 0' % d)
+            _drive(d, d, budget=5, extra={"KIPI_LUAR_SEED_HF": os.path.join(d, "srchf")})
+            seen = open(os.path.join(d, "seen")).read().strip()
+            copied = os.path.isfile(os.path.join(
+                d, "cache", "hf", "hub", "models--rrivera1849--LUAR-MUD", "weights.bin"))
+        self.assertEqual(seen, "%s|%s" % (os.path.join(d, "cache", "uv"),
+                                          os.path.join(d, "cache", "hf")))
+        self.assertTrue(copied)
 
 
 if __name__ == "__main__":
