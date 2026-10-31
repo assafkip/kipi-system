@@ -182,6 +182,26 @@
       }
     },
     {
+      "id": "guard-set-unbuildable",
+      "source": "linear-worker",
+      "class": "infra-retry",
+      "marker": "skeleton guard set could not be built",
+      "sites": 1,
+      "what": "The issue tree has no .claude/settings.json and skeleton-guard-settings.py could not build the guard set, so the worker refuses to start an unguarded agent and releases the claim. Explicitly not counted against the issue (ASK-3529).",
+      "consumer": "com.kipi.dispatch: the next run rebuilds the set from the pinned skeleton, which advances to origin/main on each tick; nothing about the issue changed",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "DISPATCH_ARGV=(./kipi converge --issue",
+        "why": "The issue stays backlog/unstarted and ready, so the next dispatch launch re-selects it."
+      }
+    },
+    {
       "id": "claim-contended",
       "source": "linear-worker",
       "class": "infra-retry",
