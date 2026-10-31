@@ -59,7 +59,7 @@ printf '%s\n' "You've hit your weekly limit · resets Sep 22 at 2pm (America/Los
 exit 0
 SH
 
-mk() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git"; git init --quiet "$1/kipi-system"
+mk() { mkdir -p "$1"; git init --quiet --bare "$1/origin.git" && git -C "$1/origin.git" symbolic-ref HEAD refs/heads/main; git init --quiet "$1/kipi-system"
   git -C "$1/kipi-system" config user.email t@t; git -C "$1/kipi-system" config user.name t
   : > "$1/kipi-system/seed"; git -C "$1/kipi-system" add seed
   git -C "$1/kipi-system" commit --quiet -m seed

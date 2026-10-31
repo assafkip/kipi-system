@@ -373,9 +373,9 @@ target_git_verbs() {
 }
 # Spelled out, not $WORKER: that variable is set further down, in case 11.
 W2H="$REPO/q-system/.q-system/scripts/linear-worker.sh"
-BADVERBS="$(target_git_verbs "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" | grep -vxE 'fetch|worktree|rev-parse' || true)"
+BADVERBS="$(target_git_verbs "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" | grep -vxE 'fetch|worktree|rev-parse|ls-remote' || true)"
 [ -z "$BADVERBS" ] \
-  && ok "the worker and converge only fetch, add worktrees and read refs in the target repo" \
+  && ok "the worker and converge only fetch, add worktrees and read refs in the target repo (ls-remote reads the remote's HEAD, ASK-3550)" \
   || bad "a mutating git verb is aimed at the target's main checkout: $BADVERBS"
 # POSITIVE CONTROL (PR #579 review): an empty scan also comes from a wrong path or
 # a missing file, which would read as "no mutating verb". The real files must show

@@ -350,6 +350,17 @@ echo "$G" | grep -q '^CLEAR ' \
   && bad "THE DEFECT: a run that never reached Linear cleared the outage state" \
   || ok "a run that never reached Linear does not count as recovery"
 
+# ASK-3550: the default-branch stop sits in the same position as the fetch halt
+# (after the fetch, before Linear) and self-pages the same way. Falling through to
+# page_clear would erase a real outage page on a run that never reached Linear.
+G="$(guard 'INFRA: cannot determine the default branch of /Users/x/repo (origin/HEAD unset, GitHub gave nothing). Stopping before any worktree is cut from a guessed base.')"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a run stopped on an unknown default branch cleared the outage state" \
+  || ok "a run stopped on an unknown default branch does not count as recovery"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: the worker already notifies about an unknown default branch" \
+  || ok "an unknown default branch does not double-page"
+
 # linear-worker.sh:989 / :1049 -- these print INFRA: and then `continue`. The worker
 # is still working, so paging "the loop is stopped" would be a false alarm. This is
 # why the matcher is not a bare `INFRA:` prefix.
@@ -394,6 +405,9 @@ if [ -f "$WORKER" ]; then
   grep -q 'INFRA: git fetch failed' "$WORKER" \
     && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
     || bad "the producer was reworded: the pre-Linear guard now matches nothing"
+  grep -q 'INFRA: cannot determine the default branch' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: cannot determine the default branch'" \
+    || bad "the producer was reworded: the default-branch guard now matches nothing"
   # The braked guard reads an exit CODE, so the claim to re-derive is the code
   # the worker ACTUALLY RETURNS -- and that is what this runs. Grepping the line
   # of documentation that promises exit 3 passed happily on a worker that had

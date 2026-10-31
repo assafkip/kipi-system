@@ -87,6 +87,11 @@ def _build(tmp_path, registry_rows, board, preflight_stub=None):
     # git fetch runs before any of the reporting under test, so origin has to be
     # real or the run exits 9 and this test measures the guard instead.
     subprocess.run(["git", "init", "-q", "--bare", str(tmp_path / "origin.git")], check=True)
+    # The remote's HEAD names main, as a real GitHub repo's does. The worker reads
+    # the default branch from it (ASK-3550); a bare repo's own default HEAD would
+    # dangle at a branch nobody pushed and the run would stop before reporting.
+    subprocess.run(["git", "-C", str(tmp_path / "origin.git"), "symbolic-ref", "HEAD",
+                    "refs/heads/main"], check=True)
     target = tmp_path / "target"
     subprocess.run(["git", "init", "-q", str(target)], check=True)
     for k, v in (("user.email", "t@t"), ("user.name", "t")):
