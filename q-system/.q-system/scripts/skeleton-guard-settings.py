@@ -95,6 +95,13 @@ class Unresolved(Exception):
 
 
 def render(root=ROOT):
+    """The set the agent gets: exactly hooks and permissions, nothing else."""
+    return build(root)[0]
+
+
+def build(root=ROOT):
+    """(set, dropped): dropped counts template hook ROWS removed, which is not the
+    number of EXCLUDED names, because one row can name two scripts (PR #583 review)."""
     if not SAFE_ROOT.match(root):
         raise Unresolved("skeleton root %r holds characters a hook command cannot carry unquoted" % root)
     try:
@@ -104,6 +111,7 @@ def render(root=ROOT):
         raise Unresolved("settings-template.json is unreadable: %s" % e)
     excluded = set(EXCLUDED)
     hooks = {}
+    dropped = 0
     for event, groups in (tpl.get("hooks") or {}).items():
         kept_groups = []
         for group in groups or []:
@@ -111,6 +119,7 @@ def render(root=ROOT):
             for hook in group.get("hooks") or []:
                 cmd = hook.get("command") or ""
                 if set(SCRIPT_NAME.findall(cmd)) & excluded:
+                    dropped += 1
                     continue
                 kept.append(dict(hook, command=cmd.replace(PREFIX, root + "/")))
             if kept:
@@ -129,7 +138,7 @@ def render(root=ROOT):
     if absent:
         raise Unresolved("guards the template wires are absent from the skeleton: " + ", ".join(absent))
     deny = (tpl.get("permissions") or {}).get("deny") or []
-    return {"hooks": hooks, "permissions": {"deny": list(deny)}}
+    return {"hooks": hooks, "permissions": {"deny": list(deny)}}, dropped
 
 
 def main(argv):
@@ -139,14 +148,17 @@ def main(argv):
         return 2
     check = args == ["--check"]
     try:
-        s = render()
+        s, dropped = build()
     except Unresolved as e:
         print("skeleton guard set does not resolve: %s" % e, file=sys.stdout if check else sys.stderr)
         return 1
     if check:
+        # This line is what repo-preflight.sh shows the operator, so each number
+        # says exactly what it counts: rows kept, rows dropped, names that drop them.
         n = sum(len(g["hooks"]) for groups in s["hooks"].values() for g in groups)
-        print("skeleton guard set resolves: %d hook commands across %d events, %d deny rules, "
-              "%d hooks excluded by name" % (n, len(s["hooks"]), len(s["permissions"]["deny"]), len(EXCLUDED)))
+        print("skeleton guard set resolves: %d hook commands across %d events, %d deny rules; "
+              "%d template hooks dropped, naming %d excluded scripts"
+              % (n, len(s["hooks"]), len(s["permissions"]["deny"]), dropped, len(EXCLUDED)))
         return 0
     json.dump(s, sys.stdout, separators=(",", ":"))
     return 0

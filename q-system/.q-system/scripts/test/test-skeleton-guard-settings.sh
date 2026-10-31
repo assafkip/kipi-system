@@ -80,9 +80,25 @@ PY
 [ $? = 0 ] && PASS=$((PASS+1)) || FAIL=$((FAIL+1))
 
 echo
-echo "== 2. --check passes on the real skeleton =="
+echo "== 2. --check passes on the real skeleton, and its numbers are true =="
 OUT="$(python3 "$GEN" --check 2>&1)"; RC=$?
 [ "$RC" = "0" ] && ok "--check exits 0 on the real skeleton: $OUT" || bad "--check refused the real skeleton (rc=$RC): $OUT"
+# The line is what repo-preflight.sh shows the operator. PR #583 review: it once
+# reported the number of excluded NAMES as the number of dropped hooks (9 vs 10),
+# because one template row names two scripts. Counted here from the template.
+WANT="$(python3 - "$TPL" "$GEN" <<'PY'
+import importlib.util, json, re, sys
+t = json.load(open(sys.argv[1]))
+spec = importlib.util.spec_from_file_location("g", sys.argv[2]); g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+rows = [h["command"] for arr in t["hooks"].values() for m in arr for h in m["hooks"]]
+drop = sum(1 for c in rows if set(re.findall(r"[\w.-]+\.(?:py|sh)", c)) & set(g.EXCLUDED))
+print("%d hook commands across" % (len(rows) - drop), "%d template hooks dropped, naming %d excluded scripts" % (drop, len(g.EXCLUDED)))
+PY
+)"
+KEPT_PART="${WANT%% across*} across"; DROP_PART="${WANT#* across }"
+{ echo "$OUT" | grep -qF "$KEPT_PART" && echo "$OUT" | grep -qF "$DROP_PART"; } \
+  && ok "--check counts what it names: '$KEPT_PART', '$DROP_PART'" \
+  || bad "--check numbers disagree with the template (want '$WANT'): $OUT"
 
 echo
 echo "== 3. refusals, against a fake skeleton COPY =="
