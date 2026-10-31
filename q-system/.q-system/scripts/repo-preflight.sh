@@ -16,7 +16,7 @@
 # inadequate protection. That is the correct call and it is worth stating why,
 # because the two look similar: opt-in records which repos a human MEANT to allow,
 # once, at registry-edit time. It says nothing about whether entering one is safe
-# NOW -- whether the control code there is current, whether main is protected,
+# NOW -- whether the hooks there are current, whether main is protected,
 # whether somebody has uncommitted work in the tree this minute. Consent is not a
 # safety check. This script is the safety check.
 #
@@ -40,9 +40,9 @@ REPO_PATH="${1:-}"
 EXPECTED_REMOTE="${2:-}"
 
 # The skeleton this script SHIPPED FROM, derived from the script's own location
-# rather than from $PWD or an env var. The control-code check compares an
-# instance's copy against this one, so the reference has to follow the code; a
-# $PWD-derived root would compare a repo against itself whenever the caller
+# rather than from $PWD or an env var. The hooks check compares a target's
+# settings against this one's template, so the reference has to follow the code;
+# a $PWD-derived root would compare a repo against itself whenever the caller
 # happened to be standing in it.
 SKELETON="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
@@ -52,100 +52,31 @@ refuse() { FAILED=1; printf 'FAIL %s: %s\n' "$1" "$2"; }
 [ -n "$REPO_PATH" ] || { printf 'FAIL usage: repo-preflight.sh <repo-path> <expected-remote>\n'; exit 2; }
 [ -d "$REPO_PATH" ] || { printf 'FAIL repo-path: %s is not a directory\n' "$REPO_PATH"; exit 1; }
 
-# --- 0. client engagement repo -------------------------------------------
-# Founder decision 2026-08-13, verbatim: "no. unattended agents should not reach
-# a client repo."
+# --- 0. client engagement repo: REVERSED (RULE-2026-10-30-A) --------------
+# This check used to refuse any path under an engagement root, and the root
+# itself, even when the registry row said dispatch.enabled: true. It enforced
+# the founder decision of 2026-08-13, verbatim: "no. unattended agents should
+# not reach a client repo."
 #
-# THIS REFUSES EVEN WHEN THE ROW IS OPTED IN, WHICH IS THE WHOLE POINT.
-# `dispatch.enabled` defaulting to absent is a DEFAULT, and a default is not a
-# refusal: it records that nobody has switched a repo on yet, and it evaporates
-# the moment anyone -- a person editing the registry, or some later script that
-# opts rows in automatically -- writes `true`. What is on the other side of that
-# edit is a self-merging loop (converge, code, PR, review rounds, auto-merge) with
-# no human in the path, pointed at work the founder is accountable to a CLIENT
-# for, where there is a person on the other end and no undo. So this is checked
-# ahead of the kill-switch and ahead of every network call: it is the one refusal
-# that no state of the target repo, and no registry field, can argue with.
+# SUPERSEDED. Founder, 2026-10-30, verbatim (RULE-2026-10-30-A, recorded in
+# q-system/canonical/decisions.md): "If consulting tickets and client project
+# tickets are not in the worker, they will never get done. I want to change the
+# ruling that they stay out. The unattended agent should and can reach client
+# repos to work on the tickets. That's the ruling from now on."
 #
-# DERIVED FROM PATH SHAPE, NEVER FROM A LIST OF CLIENTS. Measured 2026-08-13
-# against instance-registry.json: 12 of 25 rows sit under an engagement root.
-# Naming those twelve here would be a list that goes stale the day the thirteenth
-# client is onboarded -- and the failure mode of a stale allowlist is that the new
-# client is the one that gets dispatched into. The shape is the fact: the founder's
-# own systems live at <root>/projects/<thing> under roots he owns, and client
-# engagements live under exactly these two. A repo added under one of them next
-# month is refused with no code change, which is the only property that makes this
-# hold over time.
+# Why it was reversed: the refusal held, and the tickets in those projects then
+# sat with nobody to work them. A gate that guarantees work never gets done is
+# not protecting the client, it is the reason the client work is late.
 #
-# NOT AN ENV VAR, NOT A REGISTRY FIELD. Same reason `gh` is taken from PATH and the
-# dispatcher hardcodes $PREFLIGHT off $REPO: a knob here would be a documented way
-# to aim the client-repo gate at nothing while every log line still read normally.
-ENGAGEMENT_ROOTS="consulting intel"
-
-# BOTH THE REGISTRY'S PATH AND ITS RESOLVED TARGET ARE TESTED, AND EITHER ONE
-# MATCHING REFUSES. A symlink is the obvious way this check gets walked around by
-# accident: a row pointing at an innocent-looking path that resolves into an
-# engagement dir, or an engagement-shaped path that resolves elsewhere. Refusing on
-# either side means the answer does not depend on which of the two a later reader
-# happens to think is "the" path. Fail closed, like every other item in this file.
-RESOLVED_PATH="$(cd "$REPO_PATH" 2>/dev/null && pwd -P)" || RESOLVED_PATH=""
-for _root in $ENGAGEMENT_ROOTS; do
-  for _cand in "$REPO_PATH" "$RESOLVED_PATH"; do
-    [ -n "$_cand" ] || continue
-    case "$_cand" in
-      # THE ROOT ITSELF, NOT ONLY WHAT IS NESTED UNDER IT (ASK-754).
-      # This case previously PASSED, and the test suite asserted that it should:
-      # the earlier reading of the founder's wording was "the engagement instances
-      # NESTED UNDER consulting/projects/*", so <root>/projects/<x> refused and
-      # <root> did not. Measured 2026-08-14 against the repo that reading lets in,
-      # the ASK_AI_consultant row, whose path IS the consulting engagement root:
-      #   - `git ls-files clients/` -> 12 TRACKED files under clients/client_l,
-      #     clients/client_h, clients/client_k. Client material is in this repo's
-      #     own history, so an agent-authored PR here is a client-facing diff.
-      #   - projects/ holds all 11 engagement repos as nested SEPARATE git repos,
-      #     and the root tracks 0 files under projects/ -- so check 5 (dirty) is
-      #     structurally blind to them while the agent still has filesystem reach.
-      #   - q-consult/ is 998 tracked files: the LIVE social publishing engine.
-      # The root is not a neutral parent, it is the container of every engagement
-      # plus a live outbound path. Refusing the nested repos while admitting the
-      # directory that holds them is a gate with a door beside it.
-      #
-      # WHY THIS WAS ONLY LATENT: preflight already refused this repo today, but on
-      # control-code/hooks/dirty/branch-protection -- every one of them curable by a
-      # `kipi update`, a commit, and a protection toggle. An incidental refusal is
-      # not a rule, and it evaporates the day somebody tidies the repo.
-      #
-      # STILL DERIVED FROM SHAPE, STILL NO LIST. Same ENGAGEMENT_ROOTS constant,
-      # one extra glob. It discriminates: only a path whose LAST component is an
-      # engagement root matches, so the founder's own persona and product roots are
-      # untouched -- which the OWNPROJ and NEARMISS cases both assert.
-      #
-      # NO ABSOLUTE HOME PATHS AND NO INSTANCE NAMES IN THIS COMMENT. The skeleton
-      # sweep in validate-separation.py greps every q-system/ file for an absolute
-      # home-directory prefix and for a fleet instance name, and this file ships to
-      # every instance. The first draft of this comment spelled out both and turned
-      # CI red; the second spelled them out again while explaining not to, because a
-      # text check cannot tell a rule from a mention of the rule. Describe, do not
-      # quote.
-      # TWO SHAPES, TWO REASONS, BECAUSE THE REASON IS READ BY A HUMAN. The root and
-      # the repos nested under it are both refused, but they are refused for
-      # different facts, and one message cannot state both without lying about one
-      # of them. Codex round 2 caught the first cut telling the founder that
-      # <root> is "under <root>/projects/", which is false and unfalsifiable-looking
-      # in a log. This line is what he reads in the daily digest's "tried, could not
-      # be worked" section, so a refusal he cannot tell from an empty queue -- or one
-      # that misdescribes itself -- is the defect this whole change is about.
-      */"$_root")
-        printf 'FAIL client-repo: %s IS the %s engagement root; it holds the client engagement repos plus client material of its own, so unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
-        printf 'REFUSED %s\n' "$REPO_PATH"
-        exit 1 ;;
-      */"$_root"/projects/*)
-        printf 'FAIL client-repo: %s is a client engagement repo (under %s/projects/); unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
-        printf 'REFUSED %s\n' "$REPO_PATH"
-        exit 1 ;;
-    esac
-  done
-done
+# WHAT STILL PROTECTS CLIENT WORK is every check below, and none of them is part
+# of the reversal: the kill switch, hook parity, the pinned remote, a dirty tree,
+# credentials and branch protection. A client repo enters only when it passes all
+# of them, the same bar as any other repo. Opt-in is still per row
+# (dispatch.enabled, read by kipi-dispatch.sh), so no repo is reached that nobody
+# switched on.
+#
+# NOT AN ENV VAR, NOT A REGISTRY FIELD, in either direction. Restoring the
+# refusal is a founder ruling and a code change in the open, never a knob.
 
 # --- 1. kill-switch -------------------------------------------------------
 # Checked FIRST and short-circuits everything, including the network calls. A
@@ -158,35 +89,38 @@ if [ -f "$REPO_PATH/.kipi-no-dispatch" ]; then
   exit 1
 fi
 
-# --- 2. control-code ------------------------------------------------------
-# The dispatcher would run the WORKER COPY THAT LIVES IN THE TARGET REPO, and
-# `kipi update` is manual, so an instance can be arbitrarily far behind. Running a
-# stale copy means running control code nobody reviewed, on a loop that merges its
-# own PRs -- an instance frozen before the stale-checkout refusal or the
-# sensitive-path guard has neither. Byte equality against the skeleton is a blunt
-# rule on purpose: "close enough" has no meaning for code that self-merges.
-WORKER_REL="q-system/.q-system/scripts/linear-worker.sh"
-if [ ! -f "$REPO_PATH/$WORKER_REL" ]; then
-  refuse "control-code" "$REPO_PATH/$WORKER_REL is missing, the repo carries no worker to run"
-elif [ ! -f "$SKELETON/$WORKER_REL" ]; then
-  refuse "control-code" "the skeleton reference $SKELETON/$WORKER_REL is missing, so drift cannot be judged"
-else
-  have="$(shasum -a 256 "$REPO_PATH/$WORKER_REL" 2>/dev/null | awk '{print $1}')"
-  want="$(shasum -a 256 "$SKELETON/$WORKER_REL"  2>/dev/null | awk '{print $1}')"
-  if [ -z "$have" ] || [ -z "$want" ]; then
-    refuse "control-code" "could not hash the worker on both sides, so drift is unknown"
-  elif [ "$have" != "$want" ]; then
-    # THE REMEDY NAMED HERE USED TO BE THE FLEET UPDATER, AND THAT WAS WRONG
-    # (ASK-755). The updater is a fleet-wide rsync WITH a delete flag: to fix one
-    # file in one repo it walks every registered instance and can remove anything
-    # on the way (2026-08-07: voiceloop deleted from 19 instances). A refusal that
-    # names a tool with a blast radius three orders of magnitude wider than the
-    # defect is an invitation to overcorrect at 2am. control-file-propagate.py
-    # does the same hash classification for ONE file in ONE repo, copy only, and
-    # refuses anything it cannot prove came from this skeleton.
-    refuse "control-code" "linear-worker.sh differs from the skeleton (${have:0:12} vs ${want:0:12}); fix with: python3 $SKELETON/q-system/.q-system/scripts/control-file-propagate.py --target $REPO_PATH --file $WORKER_REL --apply"
-  fi
-fi
+# --- 2. control-code: RETIRED (ASK-3526) ---------------------------------
+# This check hashed the TARGET's copy of linear-worker.sh against the skeleton's
+# and refused on any difference. Its premise was "the dispatcher would run the
+# worker copy that lives in the target repo". That premise is false, measured
+# 2026-10-30:
+#   - kipi-dispatch.sh passes `--repo $TARGET_PATH` and runs `./kipi work` from
+#     the PINNED skeleton checkout, and kipi's `work` verb runs the skeleton's own
+#     linear-worker.sh. converge.sh calls the skeleton's copy too.
+#   - No LaunchAgent runs an instance's copy; com.kipi.dispatch is the only one.
+#   - The worker only fetches and cuts a worktree in the target. Its control code
+#     stays on $SKEL (see the TARGET_REPO / SKEL split in linear-worker.sh).
+# So the check hashed a file that never executes. Every skeleton worker change
+# then darkened every dispatched repo until someone hand-propagated a copy: one
+# repo went dark the same hour a worker change merged (2026-10-25) and stayed
+# dark, another had been refused on it for weeks. That is a gate refusing on a
+# fact that cannot hurt anyone.
+#
+# WHAT HOLDS AND WHAT DOES NOT. The LOOP's control code (worker, converge,
+# review, the scripts the prompt names) is the pinned skeleton, which tracks the
+# reviewed main branch. The HOOK scripts an agent session fires are a different
+# matter: they resolve from $CLAUDE_PROJECT_DIR, the target's own tree, and check
+# 3 proves they are present, not current. This hash never covered them either
+# (it read one file), so retiring it loses nothing there; content parity for
+# hook scripts is tracked as ASK-3539 (PR #574 review). The one place the agent did run
+# a target copy (the rework prompt calling linear-sync.py by a cwd-relative path)
+# is anchored on $SKEL in the same change, and test-repo-preflight.sh case 12
+# fails if a cwd-relative control script comes back. If a future change makes
+# the dispatcher execute anything FROM the target repo, the right gate is on that
+# file, at that call site, not this hash.
+#
+# The number 2 stays unused so "check 3", "check 5" in comments and logs across
+# the tree keep meaning what they meant.
 
 # --- 3. hooks -------------------------------------------------------------
 # The enforcement layer is hooks, not prose (the repo's own rule: a prompt cannot
