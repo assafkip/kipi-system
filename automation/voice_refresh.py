@@ -86,13 +86,13 @@ PERSONAL_STEMS = (
     "depression", "depressed", "anxiety", "panic attack", "burnout", "burned out",
     "nervous breakdown", "suicid", "self-harm",
     "leave of absence", "medical leave", "sick leave", "stress leave", "fmla",
-    "diagnosis", "diagnosed", "illness", "hospital", "surgery", "medication",
+    "diagnosis", "diagnosed", "illness", "surgery", "medication",
     "disability", "disabled", "adhd", "audhd", "autism", "autistic",
     "neurodivergent",
     "divorce", "custody", "separated", "breakup", "marriage counsel",
     "miscarriage", "pregnan", "fertility", "ivf",
     "died", "death", "passed away", "funeral", "grief", "bereave",
-    "addiction", "sobriety", "rehab", "alcoholic", "drinking problem",
+    "addiction", "sobriety", "alcoholic", "drinking problem",
     "immigration", "green card", "deportation",
     "salary", "compensation package", "equity grant", "net worth",
     "bankrupt", "foreclos", "eviction",
@@ -101,6 +101,9 @@ PERSONAL_STEMS = (
 )
 PERSONAL_WORDS = (
     "chronic", "chronically", "debt", "debts", "sober", "visa", "visas",
+    # review round 3: "hospital" swallowed "hospitality", "rehab" "rehabilitation".
+    "hospital", "hospitals", "hospitalized", "hospitalised", "hospitalization",
+    "rehab", "rehabs",
 )
 
 _WORD_SEP = re.compile(r"[\s\-]+")

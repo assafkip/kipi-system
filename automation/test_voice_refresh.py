@@ -541,7 +541,9 @@ def test_an_ordinary_word_is_not_a_disclosure():
     for text in ("a chronicle of a long explanation",
                  "a sobering number in the opener",
                  "speaks like a debtor to the reader",
-                 "builds a visage of authority"):
+                 "builds a visage of authority",
+                 "a hospitality-industry anecdote",
+                 "rehabilitation of a stale draft"):
         assert vr.classify_finding(_finding(text)) == "routine", f"{text!r} over-matched"
 
 
@@ -552,5 +554,6 @@ def test_closing_the_boundary_did_not_break_the_inflections():
     which is the asymmetry the term list is built around."""
     for text in ("alcoholics anonymous", "two lawsuits", "chronically ill",
                  "his debts", "antidepressants", "a note from his psychiatrist",
-                 "suicidal ideation", "the pregnancy", "foreclosure"):
+                 "suicidal ideation", "the pregnancy", "foreclosure",
+                 "after the hospital stay", "he was hospitalized", "in rehab"):
         assert vr.classify_finding(_finding(text)) == "personal", f"{text!r} regressed to routine"
