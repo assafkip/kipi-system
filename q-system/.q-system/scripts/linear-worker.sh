@@ -1601,6 +1601,17 @@ disarm_automerge() {
   return 0
 }
 
+# --- the skeleton's guard set for a tree that carries none (ASK-3529) --------
+# guard_settings_now: the JSON to pass as `claude -p --settings` for $TREE at
+# THIS moment, or nothing when the tree has its own .claude/settings.json.
+# Read at each call site, not once per issue: the first agent session can add
+# or remove the tree's settings before the stand-in session starts, and a stale
+# answer either double-fires every guard or runs the stand-in unguarded.
+# Measured 2026-10-31: --settings ADDS to project settings, so a tree with
+# settings must get nothing (skeleton-guard-settings.py header has the table).
+GUARD_JSON=""
+guard_settings_now() { [ -f "$TREE/.claude/settings.json" ] || printf '%s' "$GUARD_JSON"; }
+
 # --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
 # tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
 # already reachable from the tree's HEAD -- i.e. a push from this tree destroys
@@ -2086,6 +2097,26 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     fi
   fi
 
+  # 3b. THE GUARD SET, decided on the tree the agent will actually run in
+  # (ASK-3529). A target that is not an instance carries no .claude/settings.json,
+  # so its agent used to run with none of the skeleton's guards. The set comes
+  # from the renderer beside this script, so it is the pinned skeleton's, and
+  # repo-preflight.sh check 3 approved the same renderer's output.
+  #
+  # Built here, after the tree is positioned and before anything is spent, so a
+  # failure declines the round with the budget intact. FAIL CLOSED: a tree with
+  # no settings and no buildable set gets no agent. "Run it unguarded this once"
+  # is the hole this exists to close.
+  GUARD_JSON="$(python3 "$SCRIPT_DIR/skeleton-guard-settings.py" 2>>"$LOG")" || GUARD_JSON=""
+  if [ ! -f "$TREE/.claude/settings.json" ]; then
+    if [ -z "$GUARD_JSON" ]; then
+      say "INFRA: $ISSUE: $TREE has no .claude/settings.json and the skeleton guard set could not be built; not starting an unguarded agent (not counted against the issue)"
+      ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      continue
+    fi
+    say "$ISSUE: $TREE has no .claude/settings.json; the agent runs with the skeleton guard set"
+  fi
+
   # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every
   # decline above this line left the budget intact (PR #25 review, finding 2),
   # so the counter and the log line below both describe rounds that really ran.
@@ -2354,7 +2385,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
   : > "$RUN_OUT_FILE" 2>/dev/null || true
   # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
   # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
+  # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
+  # argument at all. Positional, never spliced into this string: the JSON holds
+  # quotes and globs that would break the quoting here.
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -2570,7 +2604,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
         : > "$RUN_OUT_FILE" 2>/dev/null || true
-        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+        # The stand-in is a second agent session in the same tree, so it gets
+        # the same guard set as Sana's run, read again for this moment (ASK-3529).
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
           crc=0
         else
           crc=$?
