@@ -218,6 +218,11 @@ lessons_half() {
   printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
     || { lessons_fail "lessons-distill.py emitted no parseable JSON summary"; return 1; }
 
+  # ASK-3402 NOTE: no starvation record here on purpose. `scanned` counts NEW
+  # un-ledgered sources, which is zero on a normal quiet night, so alarming on
+  # it filed a permanent ticket for routine operation (PR #572 review, major).
+  # A real input metric for this loop is tracked as its own issue.
+
   PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
   HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
   TITLES=$(field "'; '.join(d.get('published',[])[:5])")
