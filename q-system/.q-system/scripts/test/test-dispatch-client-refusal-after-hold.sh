@@ -9,19 +9,23 @@
 # check 0 alone (ASK-741, PR #144).
 #
 # Founder decision 2026-08-13, verbatim: "no. unattended agents should not reach
-# a client repo."
+# a client repo." This file asserted that refusal until 2026-10-30.
 #
-# So this test asserts BOTH directions through the REAL dispatcher, because
-# either one alone is worthless:
+# REVERSED. Founder, 2026-10-30, verbatim (RULE-2026-10-30-A): "If consulting
+# tickets and client project tickets are not in the worker, they will never get
+# done. I want to change the ruling that they stay out. The unattended agent
+# should and can reach client repos to work on the tickets. That's the ruling
+# from now on."
 #
-#   1. a client-shaped repo, OPTED IN with dispatch.enabled: true, is refused and
-#      never reaches `kipi work`;
-#   2. an ordinary opted-in repo IS entered, with --repo pointing at it.
+# So the property flipped and the file name is kept only so the capability
+# manifest still finds it. Through the REAL dispatcher:
 #
-# Without (2) this suite would pass on a dispatcher that refuses everything --
-# which is exactly what the HOLD did, and it would report "client repos are
-# protected" while the whole feature was dead. Without (1) the founder's
-# constraint is unenforced. The pair is the test.
+#   1. a client-shaped repo, OPTED IN, clears preflight and IS entered, with
+#      --repo pointing at it;
+#   2. an ordinary opted-in repo IS entered too.
+#
+# (2) keeps its old job: without it a dispatcher that entered only one repo, or
+# that did nothing, could still look healthy.
 #
 # THE ASSERTION IS ON WHAT `kipi work` WAS CALLED WITH, not on a log line. A log
 # line is what the dispatcher SAYS; argv is what it DID. The fixture's `kipi` is a
@@ -142,23 +146,16 @@ cat > "$REG" <<JSON
 ]}
 JSON
 
-# --- CASE 0, NEGATIVE SELF-TEST: check 0 fires on the fixture's own shape -----
-# If the client path does not trip the preflight directly, nothing below means
-# anything -- the dispatcher would be refusing it for some unrelated reason.
-PF_OUT="$(bash "$ROOT/q-system/.q-system/scripts/repo-preflight.sh" "$CLIENT" "https://github.com/assafkip/client_d.git" 2>&1)"
+# --- CASE 0: the client-shaped fixture CLEARS preflight on its own ------------
+# If it did not, case 1 below could fail for an unrelated reason and read as the
+# old refusal coming back. It runs the HOME fixture's copy, the same one the
+# dispatcher runs, because preflight judges hooks against the skeleton it ships in.
+PF_OUT="$(bash "$HOMEREPO/q-system/.q-system/scripts/repo-preflight.sh" "$CLIENT" "https://github.com/assafkip/client_d.git" 2>&1)"
 PF_RC=$?
-printf '%s' "$PF_OUT" | grep -q '^FAIL client-repo:' \
-  || fail "negative self-test: repo-preflight.sh did not refuse the client-shaped fixture $CLIENT as a client repo (rc=$PF_RC). It said:
+[ "$PF_RC" -eq 0 ] && ! printf '%s' "$PF_OUT" | grep -q 'client-repo' \
+  || fail "the client-shaped fixture $CLIENT does not clear preflight (rc=$PF_RC), against RULE-2026-10-30-A. It said:
 $(printf '%s' "$PF_OUT" | sed 's/^/        /')"
-[ "$PF_RC" -ne 0 ] || fail "negative self-test: the client refusal printed but exited 0"
-ok "negative self-test: check 0 refuses $CLIENT by path shape (rc=$PF_RC)"
-
-# --- CASE 0b: and it does NOT refuse the ordinary repo as a client -----------
-# A check that refused everything would satisfy case 1 while being useless.
-PF_PLAIN="$(bash "$ROOT/q-system/.q-system/scripts/repo-preflight.sh" "$PLAIN" "https://github.com/assafkip/plainrepo.git" 2>&1)"
-printf '%s' "$PF_PLAIN" | grep -q '^FAIL client-repo:' \
-  && fail "check 0 called the ORDINARY repo $PLAIN a client engagement repo; the shape rule is over-broad"
-ok "negative self-test: check 0 does not fire on the ordinary repo"
+ok "the client-shaped fixture clears preflight, with no client-repo refusal (rc=$PF_RC)"
 
 # --- the dispatcher run -----------------------------------------------------
 # HOME, registry, cursor and turn lock all redirected into the temp dir so this
@@ -184,20 +181,19 @@ sed 's/^/        /' "$WORK/kipi-calls.txt" 2>/dev/null | head -10
 echo "  [ctx] dispatcher said:"
 grep -E 'REFUSED|entering|HOLD|client engagement' "$DLOG" 2>/dev/null | sed 's/^/        /' | head -8
 
-# --- 1. THE CLIENT REPO NEVER REACHED THE WORKER ----------------------------
-if grep -q -- "$CLIENT" "$WORK/kipi-calls.txt" 2>/dev/null; then
-  fail "CLIENT REPO ENTERED: \`kipi work\` was invoked with the client engagement repo $CLIENT.
-      Founder decision 2026-08-13: unattended agents must not reach a client repo.
-      calls: $(tr '\n' ' ' < "$WORK/kipi-calls.txt")"
-fi
-ok "the opted-in CLIENT repo never reached kipi work"
+# --- 1. THE CLIENT REPO IS ENTERED (RULE-2026-10-30-A) ----------------------
+grep -q -- "--repo $CLIENT" "$WORK/kipi-calls.txt" 2>/dev/null \
+  || fail "the opted-in client repo $CLIENT was never dispatched with --repo; RULE-2026-10-30-A says the worker reaches client repos.
+      calls: $(tr '\n' ' ' < "$WORK/kipi-calls.txt")
+      log:
+$(tail -20 "$DLOG" | sed 's/^/        /')"
+ok "the opted-in CLIENT repo IS entered, with --repo pointing at it"
 
-# --- 2. and the dispatcher said why, in the digest's shape ------------------
-# A silent refusal is indistinguishable from an empty queue (ASK-741).
-grep -q 'client engagement repos' "$DLOG" \
-  || fail "the dispatcher refused the client repo without saying so; the daily digest scrapes this line, so the refusal is invisible to the founder.
+# --- 2. and no client-refusal line survives ---------------------------------
+grep -q 'REFUSED as client engagement repos' "$DLOG" \
+  && fail "the dispatcher still emits the retired client-refusal count.
 $(tail -15 "$DLOG" | sed 's/^/        /')"
-ok "the refusal is stated in the log in the digest's own shape"
+ok "no client-refusal line is emitted"
 
 # --- 3. THE ORDINARY REPO IS ACTUALLY ENTERED -------------------------------
 # Without this the suite would pass on a dispatcher that refuses everything --

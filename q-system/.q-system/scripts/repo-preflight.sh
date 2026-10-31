@@ -52,100 +52,31 @@ refuse() { FAILED=1; printf 'FAIL %s: %s\n' "$1" "$2"; }
 [ -n "$REPO_PATH" ] || { printf 'FAIL usage: repo-preflight.sh <repo-path> <expected-remote>\n'; exit 2; }
 [ -d "$REPO_PATH" ] || { printf 'FAIL repo-path: %s is not a directory\n' "$REPO_PATH"; exit 1; }
 
-# --- 0. client engagement repo -------------------------------------------
-# Founder decision 2026-08-13, verbatim: "no. unattended agents should not reach
-# a client repo."
+# --- 0. client engagement repo: REVERSED (RULE-2026-10-30-A) --------------
+# This check used to refuse any path under an engagement root, and the root
+# itself, even when the registry row said dispatch.enabled: true. It enforced
+# the founder decision of 2026-08-13, verbatim: "no. unattended agents should
+# not reach a client repo."
 #
-# THIS REFUSES EVEN WHEN THE ROW IS OPTED IN, WHICH IS THE WHOLE POINT.
-# `dispatch.enabled` defaulting to absent is a DEFAULT, and a default is not a
-# refusal: it records that nobody has switched a repo on yet, and it evaporates
-# the moment anyone -- a person editing the registry, or some later script that
-# opts rows in automatically -- writes `true`. What is on the other side of that
-# edit is a self-merging loop (converge, code, PR, review rounds, auto-merge) with
-# no human in the path, pointed at work the founder is accountable to a CLIENT
-# for, where there is a person on the other end and no undo. So this is checked
-# ahead of the kill-switch and ahead of every network call: it is the one refusal
-# that no state of the target repo, and no registry field, can argue with.
+# SUPERSEDED. Founder, 2026-10-30, verbatim (RULE-2026-10-30-A, recorded in
+# q-system/canonical/decisions.md): "If consulting tickets and client project
+# tickets are not in the worker, they will never get done. I want to change the
+# ruling that they stay out. The unattended agent should and can reach client
+# repos to work on the tickets. That's the ruling from now on."
 #
-# DERIVED FROM PATH SHAPE, NEVER FROM A LIST OF CLIENTS. Measured 2026-08-13
-# against instance-registry.json: 12 of 25 rows sit under an engagement root.
-# Naming those twelve here would be a list that goes stale the day the thirteenth
-# client is onboarded -- and the failure mode of a stale allowlist is that the new
-# client is the one that gets dispatched into. The shape is the fact: the founder's
-# own systems live at <root>/projects/<thing> under roots he owns, and client
-# engagements live under exactly these two. A repo added under one of them next
-# month is refused with no code change, which is the only property that makes this
-# hold over time.
+# Why it was reversed: the refusal held, and the tickets in those projects then
+# sat with nobody to work them. A gate that guarantees work never gets done is
+# not protecting the client, it is the reason the client work is late.
 #
-# NOT AN ENV VAR, NOT A REGISTRY FIELD. Same reason `gh` is taken from PATH and the
-# dispatcher hardcodes $PREFLIGHT off $REPO: a knob here would be a documented way
-# to aim the client-repo gate at nothing while every log line still read normally.
-ENGAGEMENT_ROOTS="consulting intel"
-
-# BOTH THE REGISTRY'S PATH AND ITS RESOLVED TARGET ARE TESTED, AND EITHER ONE
-# MATCHING REFUSES. A symlink is the obvious way this check gets walked around by
-# accident: a row pointing at an innocent-looking path that resolves into an
-# engagement dir, or an engagement-shaped path that resolves elsewhere. Refusing on
-# either side means the answer does not depend on which of the two a later reader
-# happens to think is "the" path. Fail closed, like every other item in this file.
-RESOLVED_PATH="$(cd "$REPO_PATH" 2>/dev/null && pwd -P)" || RESOLVED_PATH=""
-for _root in $ENGAGEMENT_ROOTS; do
-  for _cand in "$REPO_PATH" "$RESOLVED_PATH"; do
-    [ -n "$_cand" ] || continue
-    case "$_cand" in
-      # THE ROOT ITSELF, NOT ONLY WHAT IS NESTED UNDER IT (ASK-754).
-      # This case previously PASSED, and the test suite asserted that it should:
-      # the earlier reading of the founder's wording was "the engagement instances
-      # NESTED UNDER consulting/projects/*", so <root>/projects/<x> refused and
-      # <root> did not. Measured 2026-08-14 against the repo that reading lets in,
-      # the ASK_AI_consultant row, whose path IS the consulting engagement root:
-      #   - `git ls-files clients/` -> 12 TRACKED files under clients/client_l,
-      #     clients/client_h, clients/client_k. Client material is in this repo's
-      #     own history, so an agent-authored PR here is a client-facing diff.
-      #   - projects/ holds all 11 engagement repos as nested SEPARATE git repos,
-      #     and the root tracks 0 files under projects/ -- so check 5 (dirty) is
-      #     structurally blind to them while the agent still has filesystem reach.
-      #   - q-consult/ is 998 tracked files: the LIVE social publishing engine.
-      # The root is not a neutral parent, it is the container of every engagement
-      # plus a live outbound path. Refusing the nested repos while admitting the
-      # directory that holds them is a gate with a door beside it.
-      #
-      # WHY THIS WAS ONLY LATENT: preflight already refused this repo today, but on
-      # control-code/hooks/dirty/branch-protection -- every one of them curable by a
-      # `kipi update`, a commit, and a protection toggle. An incidental refusal is
-      # not a rule, and it evaporates the day somebody tidies the repo.
-      #
-      # STILL DERIVED FROM SHAPE, STILL NO LIST. Same ENGAGEMENT_ROOTS constant,
-      # one extra glob. It discriminates: only a path whose LAST component is an
-      # engagement root matches, so the founder's own persona and product roots are
-      # untouched -- which the OWNPROJ and NEARMISS cases both assert.
-      #
-      # NO ABSOLUTE HOME PATHS AND NO INSTANCE NAMES IN THIS COMMENT. The skeleton
-      # sweep in validate-separation.py greps every q-system/ file for an absolute
-      # home-directory prefix and for a fleet instance name, and this file ships to
-      # every instance. The first draft of this comment spelled out both and turned
-      # CI red; the second spelled them out again while explaining not to, because a
-      # text check cannot tell a rule from a mention of the rule. Describe, do not
-      # quote.
-      # TWO SHAPES, TWO REASONS, BECAUSE THE REASON IS READ BY A HUMAN. The root and
-      # the repos nested under it are both refused, but they are refused for
-      # different facts, and one message cannot state both without lying about one
-      # of them. Codex round 2 caught the first cut telling the founder that
-      # <root> is "under <root>/projects/", which is false and unfalsifiable-looking
-      # in a log. This line is what he reads in the daily digest's "tried, could not
-      # be worked" section, so a refusal he cannot tell from an empty queue -- or one
-      # that misdescribes itself -- is the defect this whole change is about.
-      */"$_root")
-        printf 'FAIL client-repo: %s IS the %s engagement root; it holds the client engagement repos plus client material of its own, so unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
-        printf 'REFUSED %s\n' "$REPO_PATH"
-        exit 1 ;;
-      */"$_root"/projects/*)
-        printf 'FAIL client-repo: %s is a client engagement repo (under %s/projects/); unattended dispatch is not allowed there, even when dispatch.enabled is true -- a supervised founder-initiated run is the way in\n' "$REPO_PATH" "$_root"
-        printf 'REFUSED %s\n' "$REPO_PATH"
-        exit 1 ;;
-    esac
-  done
-done
+# WHAT STILL PROTECTS CLIENT WORK is every check below, and none of them is part
+# of the reversal: the kill switch, hook parity, the pinned remote, a dirty tree,
+# credentials and branch protection. A client repo enters only when it passes all
+# of them, the same bar as any other repo. Opt-in is still per row
+# (dispatch.enabled, read by kipi-dispatch.sh), so no repo is reached that nobody
+# switched on.
+#
+# NOT AN ENV VAR, NOT A REGISTRY FIELD, in either direction. Restoring the
+# refusal is a founder ruling and a code change in the open, never a knob.
 
 # --- 1. kill-switch -------------------------------------------------------
 # Checked FIRST and short-circuits everything, including the network calls. A

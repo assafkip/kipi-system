@@ -726,9 +726,10 @@ dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i
 # A THIRD BUCKET, BECAUSE TWO OF THEM WERE BOTH WRONG FOR THE SAME REPOS
 # (ASK-840). Resolving the alias moves 17 issues out of UNREACHABLE, and the
 # tempting next step -- drop them in with the routine skips -- swaps one false
-# sentence for another. "The rotation reaches it on a later turn" is false
-# FOREVER for a client engagement repo: repo-preflight check 0 refuses it whether
-# or not its name resolves, and no waiting changes that. So reachability answers
+# sentence for another. "The rotation reaches it on a later turn" is false for a
+# repo preflight refuses, and no waiting changes that until its failure is cured.
+# (Client repos were refused forever here until RULE-2026-10-30-A reversed the
+# 2026-08-13 ruling; they now face the same checks as any repo.) So reachability answers
 # only "is there a checkout", and the preflight verdict (taken from the REAL
 # script, in the shell, never re-implemented here) splits what is left.
 def has_local_checkout(i):
@@ -909,13 +910,12 @@ fi
 # THE REACHABLE HALF IS SPLIT BY THE REAL GATE, NOT BY A COPY OF ITS RULES
 # (ASK-840). A project with a checkout is not therefore dispatchable, and the
 # difference is exactly what repo-preflight.sh already decides. Re-implementing
-# its client-repo test here would be a second copy of the one refusal the founder
-# said must hold everywhere -- and the copy is what goes stale. So preflight is
-# executed, once per distinct project, and its own words become the reason.
+# any of its checks here would be a second copy, and the copy is what goes stale
+# (the client-repo refusal was reversed by RULE-2026-10-30-A in preflight alone,
+# which is the proof). So preflight is executed, once per distinct project, and
+# its own words become the reason.
 #
-# CHEAP FOR THE CASE THAT MATTERS: check 0 is decided on path shape and exits
-# before any network call, so every client repo costs a fork and nothing else.
-# The handful that get past it pay a few gh calls once per run, not per issue.
+# A few gh calls per distinct project, once per run, not per issue.
 PREFLIGHT="$SCRIPT_DIR/repo-preflight.sh"
 # UNIT SEPARATOR, NOT TAB. Tab is an IFS WHITESPACE character, so bash collapses
 # runs of it however IFS is set -- and an unpinned row has an EMPTY remote, which

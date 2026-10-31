@@ -456,3 +456,12 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
   review after an author agent self-approved it. He corrected it.
 - **Date:** 2026-10-23
 - **Revisit:** permanent
+
+## Unattended agents work client repos (2026-10-30)
+
+### RULE-2026-10-30-A: The worker reaches client repos; the 2026-08-13 refusal is superseded
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "If consulting tickets and client project tickets are not in the worker, they will never get done. I want to change the ruling that they stay out. The unattended agent should and can reach client repos to work on the tickets. That's the ruling from now on." Then: "I need this ruling to propagate and now be a rule that over supersedes the other one.")
+- **Decision:** Supersedes the 2026-08-13 decision (no unattended agents in client repos: "no. unattended agents should not reach a client repo"). repo-preflight.sh check 0 no longer refuses a repo under an engagement root or the root itself. Client repos are opted in per registry row and pass the same remaining checks as every repo: kill switch, hook parity, pinned remote, dirty tree, credentials, branch protection. The archived engagement under RULE-2026-10-23-B stays off limits; that rule is unchanged.
+- **Reason:** With the refusal in place, owner:sana tickets in the consulting root and the engagement repos had no worker, so they never got done.
+- **Date:** 2026-10-30
+- **Revisit:** Only on a founder order. Restoring a refusal is a code change in the open (ASK-3526), never a flag.
