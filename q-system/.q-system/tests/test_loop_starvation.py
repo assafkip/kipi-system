@@ -111,12 +111,12 @@ def test_ledger_rows_are_append_only_records(tmp_path):
     assert [r["inputs"] for r in rows] == [0, 3] and all({"loop", "at", "inputs", "alerted"} <= set(r) for r in rows)
 
 
-def test_lessons_daily_is_not_wired_to_the_alarm_and_says_why():
+def test_lessons_daily_is_wired_to_candidates_never_to_scanned():
     """PR #572 review: `scanned` is zero on a quiet night by design, so wiring it
-    would file a ticket for routine operation. Pin the absence and the reason."""
+    files a ticket for routine operation. ASK-3516 wires the intake count instead."""
     text = (HERE.parent / "scripts" / "lessons-daily.sh").read_text(encoding="utf-8")
-    assert "loop_starvation.py" not in text and "record lessons-daily" not in text
-    assert "zero on a normal quiet night" in text
+    assert 'record lessons-daily "$CAND"' in text and "d.get('candidates')" in text
+    assert "record lessons-daily \"$SCANNED" not in text and "normal quiet night" in text
 
 
 def test_a_corrupt_friction_ledger_is_not_counted_as_zero(tmp_path):

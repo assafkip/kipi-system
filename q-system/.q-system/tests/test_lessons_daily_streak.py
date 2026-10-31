@@ -289,3 +289,50 @@ def test_escalated_notify_line_carries_the_summary(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
+
+
+def _starve_run(tmp_path, candidates):
+    """ASK-3516: one nightly pass whose distiller reports `candidates`. The starvation
+    ledger and the notifier are tmp_path files, never the live ones."""
+    calls = tmp_path / "starve-calls.txt"
+    stub = tmp_path / "starve-notify.sh"
+    stub.write_text(f'#!/bin/bash\necho "$1" >> "{calls}"\n')
+    summary = json.dumps({"scanned": 0, "published": [], "held": [], "candidates": candidates})
+    env = dict(os.environ, KIPI_CLAUDE_BIN="/usr/bin/true",
+               KIPI_DISTILL_CMD=f"printf '%s' '{summary}'",
+               KIPI_LESSONS_LOG=str(tmp_path / "l.log"), KIPI_STREAK_FILE=str(tmp_path / "streak.json"),
+               KIPI_STARVATION_LEDGER=str(tmp_path / "starve.jsonl"),
+               KIPI_STARVATION_NOTIFY=f"bash {stub}")
+    r = subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
+    return r, calls
+
+
+def _n(calls):
+    return len(calls.read_text().splitlines()) if calls.exists() else 0
+
+
+def test_three_zero_intake_runs_alert_once_and_intake_resets(tmp_path):
+    for _ in range(2):
+        r, calls = _starve_run(tmp_path, 0)
+        assert r.returncode == 0
+    assert _n(calls) == 0, "two zero-intake runs are below the threshold"
+    _starve_run(tmp_path, 0)
+    assert _n(calls) == 1 and "lessons-daily" in calls.read_text()
+    _starve_run(tmp_path, 0)
+    assert _n(calls) == 1, "still starved: no second alert"
+    _starve_run(tmp_path, 7)
+    for _ in range(3):
+        _starve_run(tmp_path, 0)
+    assert _n(calls) == 2, "intake reset the run, so the next starvation alerts again"
+
+
+def test_quiet_night_with_intake_never_alerts_and_missing_key_records_nothing(tmp_path):
+    for _ in range(5):
+        _, calls = _starve_run(tmp_path, 30)  # scanned 0, candidates 30: the normal quiet night
+    assert _n(calls) == 0
+    env = dict(os.environ, KIPI_CLAUDE_BIN="/usr/bin/true",
+               KIPI_DISTILL_CMD="printf '%s' '{\"published\": [], \"held\": []}'",
+               KIPI_LESSONS_LOG=str(tmp_path / "l2.log"), KIPI_STREAK_FILE=str(tmp_path / "s2.json"),
+               KIPI_STARVATION_LEDGER=str(tmp_path / "starve2.jsonl"))
+    subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
+    assert not (tmp_path / "starve2.jsonl").exists(), "a summary without candidates must not record a false zero"
