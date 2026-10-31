@@ -578,8 +578,9 @@ cursor_get() {
 # the count here was a comment that had to be edited the first time anyone used the
 # feature it describes, so it names the opted-in rows instead -- and the authority is
 # the registry, not this line. Opt-in is still consent and never safety:
-# repo-preflight.sh is what decides whether entering one is safe NOW, and it refuses
-# a client engagement repo and the engagement root even when the row says true.
+# repo-preflight.sh is what decides whether entering one is safe NOW. Client
+# engagement repos are entered like any other repo since RULE-2026-10-30-A, which
+# superseded the 2026-08-13 refusal; they pass the same preflight checks or stay out.
 fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
@@ -637,7 +638,7 @@ rotation() {
 # carries on past it; a repo that is permanently unsafe must not stall the repos
 # behind it forever.
 pick_list() {
-  local name path remote out client_n=0 client_names=""
+  local name path remote out
   while IFS=$'\t' read -r name path remote; do
     [ -n "$name" ] || continue
     if [ "$path" = "$REPO" ]; then
@@ -655,20 +656,11 @@ pick_list() {
       printf '%s\t%s\n' "$name" "$path"
     else
       say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
-      case "$out" in
-        *"FAIL client-repo:"*)
-          client_n=$((client_n + 1))
-          client_names="${client_names:+$client_names, }$name" ;;
-      esac
     fi
   done < <(rotation)
-  # COUNTED, AND IN THE DIGEST'S OWN SHAPE. daily-linear-digest.py's third section
-  # ("tried, could not be worked") scrapes this log for `N thing(s) <what>` lines,
-  # so a refusal phrased any other way is invisible in the one surface the founder
-  # actually reads once a day. Emitted only when it happened: a client repo being
-  # refused is a real event, and a "0 refused" line every 15 minutes is the
-  # cry-wolf noise that gets a channel muted.
-  [ "$client_n" -gt 0 ] && say "$client_n repo(s) REFUSED as client engagement repos (unattended dispatch is not allowed there, even when opted in): $client_names"
+  # The counted "REFUSED as client engagement repos" line that used to follow is
+  # gone with the refusal it counted (RULE-2026-10-30-A). A client repo that fails
+  # a remaining check is named by the REFUSED line above, like any other repo.
   return 0
 }
 
@@ -989,15 +981,14 @@ if [ "$TARGET_PATH" != "$REPO" ]; then
   # (repo-slug-lib.sh), and review artifacts are keyed by repo AND PR so two
   # repos' PR #42 cannot consume each other's records.
   #
-  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. Founder,
-  # 2026-08-13: "no. unattended agents should not reach a client repo." That is
-  # enforced by repo-preflight.sh check 0, which #144 landed and which pick_list
-  # above runs BEFORE any repo reaches this point -- a client-shaped path is
-  # refused there even when its registry row says dispatch.enabled: true. This
-  # HOLD was a blunt stand-in for a gate that did not exist yet. It exists now,
-  # upstream, and it fails closed. Removing a stand-in is only safe because the
-  # real thing landed first; if check 0 is ever weakened, that is the line that
-  # matters, not this one.
+  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. The HOLD was a
+  # stand-in for repo-preflight.sh, which pick_list above runs BEFORE any repo
+  # reaches this point. Its check 0 refused client engagement repos under the
+  # founder decision of 2026-08-13 ("no. unattended agents should not reach a
+  # client repo"). That decision is SUPERSEDED by RULE-2026-10-30-A: "The
+  # unattended agent should and can reach client repos to work on the tickets."
+  # Client repos now pass or fail the same remaining checks as every repo (kill
+  # switch, hooks, pinned remote, dirty, credentials, branch protection).
   #
   # TWO CARRIERS FOR ONE FACT, as the comment above says: --repo is the explicit
   # argument the worker parses, and KIPI_TARGET_REPO crosses the converge.sh

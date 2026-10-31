@@ -129,8 +129,8 @@ BLOCKED_PATTERNS = (
     # ASK-840. The third bucket: the checkout exists, and repo-preflight refuses
     # entry anyway. It needs its own line here because the response differs from
     # both neighbours -- a routine skip resolves on a later rotation turn, an
-    # unreachable repo needs a clone, and this one needs a cure or is permanent
-    # (a client engagement repo is refused forever, whatever its name resolves to).
+    # unreachable repo needs a clone, and this one needs a cure. (Client repos
+    # used to be refused here forever; RULE-2026-10-30-A reversed that.)
     re.compile(r"\d+ ready-shaped issue\(s\) REFUSED by preflight[^\n]*"),
     re.compile(r"\d+ repo\(s\) HELD \(cross-repo gh scoping[^\n]*"),
 )
