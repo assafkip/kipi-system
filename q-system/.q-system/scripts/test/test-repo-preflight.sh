@@ -365,8 +365,11 @@ OUT="$(run_preflight "$NG")"
 # THE GUARANTEE THAT REPLACED THE DIRTY REFUSAL. Every git command the worker and
 # converge aim at the target repo must be one that cannot touch its working tree.
 # Allowlist, not denylist: a verb nobody thought of is refused by default.
+# Comment lines are dropped first, so a comment naming a forbidden verb does not
+# fail the scan; quoted, unquoted and braced spellings all count (PR #579 review).
 target_git_verbs() {
-  grep -hoE 'git -C "\$TARGET_REPO" [a-z-]+' "$@" | awk '{print $4}' | sort -u
+  grep -hvE '^[[:space:]]*#' "$@" \
+    | grep -oE 'git -C "?\$\{?TARGET_REPO\}?"? [a-z-]+' | awk '{print $NF}' | sort -u
 }
 # Spelled out, not $WORKER: that variable is set further down, in case 11.
 W2H="$REPO/q-system/.q-system/scripts/linear-worker.sh"
@@ -401,9 +404,12 @@ esac
 # Negative self-test: the same scan over a copy carrying one checkout line must fire.
 MUTW="$WORK/worker-mutant.sh"; cp "$W2H" "$MUTW"
 echo 'git -C "$TARGET_REPO" checkout -q main' >> "$MUTW"
-target_git_verbs "$MUTW" | grep -qx checkout \
-  && ok "negative self-test: the scan catches a checkout aimed at the target" \
-  || bad "the scan missed a planted checkout, so the guarantee above proves nothing"
+echo 'git -C "${TARGET_REPO}" stash' >> "$MUTW"
+echo '# git -C "$TARGET_REPO" reset is only a comment' >> "$MUTW"
+MV="$(target_git_verbs "$MUTW" | tr '\n' ' ')"
+case "$MV" in *checkout*stash*) true ;; *) false ;; esac && ! printf '%s' "$MV" | grep -qw reset \
+  && ok "negative self-test: the scan catches a planted checkout and a braced stash, and skips a comment" \
+  || bad "the scan missed a planted mutation or read a comment (saw: $MV), so the guarantee above proves nothing"
 # The one allowed form is the path canonicalizer, a subshell that only runs pwd.
 grep -nE '^[^#]*\bcd "?\$TARGET_REPO' "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" \
     | grep -vF '$(cd "$TARGET_REPO" && pwd)' \

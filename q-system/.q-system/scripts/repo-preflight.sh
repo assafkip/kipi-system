@@ -292,8 +292,11 @@ fi
 # repo was refused on every tick and RULE-2026-10-30-A ("The unattended agent
 # should and can reach client repos to work on the tickets") could never take
 # effect. The human-work protection is now a structural assertion in
-# test-repo-preflight.sh case 2h: it fails if any git verb other than fetch,
-# worktree or rev-parse is aimed at $TARGET_REPO, or if anything cds into it.
+# test-repo-preflight.sh case 2h: it fails if linear-worker.sh or converge.sh aim
+# any git verb other than fetch, worktree or rev-parse at $TARGET_REPO, or cd into
+# it, and converge's receipt_tree() skips the main checkout. pr-review-agent.sh
+# also deletes refs in the same repository (update-ref -d), which touches refs,
+# never a working tree.
 #
 # Never commit, stash or discard in a main checkout to make a repo enterable.
 if ! git -C "$REPO_PATH" rev-parse --git-dir >/dev/null 2>&1; then
