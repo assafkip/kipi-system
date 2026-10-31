@@ -218,10 +218,17 @@ lessons_half() {
   printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
     || { lessons_fail "lessons-distill.py emitted no parseable JSON summary"; return 1; }
 
-  # ASK-3402 NOTE: no starvation record here on purpose. `scanned` counts NEW
-  # un-ledgered sources, which is zero on a normal quiet night, so alarming on
-  # it filed a permanent ticket for routine operation (PR #572 review, major).
-  # A real input metric for this loop is tracked as its own issue.
+  # STARVATION INPUT (ASK-3516). `scanned` counts NEW un-ledgered sources and is zero
+  # on a normal quiet night, so alarming on it filed a permanent ticket for routine
+  # operation (PR #572 review). `candidates` counts every source at intake, ledgered
+  # or not: zero only when the intake itself is empty or its dirs are gone. Recorded
+  # only when the distiller reported an integer, so a HELD run (stub summary, no key)
+  # or a stubbed distiller never writes a false zero. loop_starvation.py owns the
+  # ledger and the alert text (emitter named there); it always exits 0.
+  CAND=$(field "d['candidates'] if isinstance(d.get('candidates'), int) and not isinstance(d.get('candidates'), bool) else ''")
+  if [ -n "$CAND" ]; then
+    python3 "$SKEL/q-system/.q-system/scripts/loop_starvation.py" record lessons-daily "$CAND" >> "$LOG" 2>&1 || true
+  fi
 
   PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
   HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}

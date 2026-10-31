@@ -64,6 +64,17 @@ sp = importlib.util.spec_from_file_location("ls", Path(DISTILL).parent / "lesson
 sc = importlib.util.module_from_spec(sp); sp.loader.exec_module(sc)
 check("learning_sources codename enters the scrub roster", "Acme_PI" in sc.codenames_from_registry(str(T / "noname.json")))
 
+# ASK-3516: `candidates` counts every source at intake, ledgered or not, so it is
+# nonzero on a quiet night; it is zero only when the intake itself is empty.
+check("candidates counts all 3 sources", out.get("candidates") == 3)
+(T / "ledger.json").write_text(json.dumps({h_skel: {}, h_side: {}, h_inst: {}}))
+r3 = subprocess.run(cmd, capture_output=True, text=True)
+o3 = json.loads(r3.stdout)
+check("a fully ledgered quiet night scans 0 but still reports candidates 3", o3["scanned"] == 0 and o3["candidates"] == 3)
+(T / "empty.json").write_text(json.dumps({"instances": [{"name": "e", "path": str(T / "nope")}], "learning_sources": []}))
+r4 = subprocess.run(cmd[:3] + [str(T / "empty.json")] + cmd[4:], capture_output=True, text=True)
+check("an intake with no live dir reports candidates 0", json.loads(r4.stdout)["candidates"] == 0)
+
 print("ALL PASS" if not fails else f"SOME FAILED: {fails}")
 sys.exit(1 if fails else 0)
 PY
