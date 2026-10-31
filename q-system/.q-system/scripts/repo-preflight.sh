@@ -69,7 +69,7 @@ refuse() { FAILED=1; printf 'FAIL %s: %s\n' "$1" "$2"; }
 # not protecting the client, it is the reason the client work is late.
 #
 # WHAT STILL PROTECTS CLIENT WORK is every check below, and none of them is part
-# of the reversal: the kill switch, hook parity, the pinned remote, a dirty tree,
+# of the reversal: the kill switch, hook parity, the pinned remote, a git repo,
 # credentials and branch protection. A client repo enters only when it passes all
 # of them, the same bar as any other repo. Opt-in is still per row
 # (dispatch.enabled, read by kipi-dispatch.sh), so no repo is reached that nobody

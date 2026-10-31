@@ -269,10 +269,17 @@ trap 'on_interrupt HUP  129' HUP
 # TARGET_REPO is already derived at the top of this file from KIPI_TARGET_REPO,
 # the carrier kipi-dispatch.sh sets. The information was here; this line was
 # reading the wrong variable.
+# NEVER THE MAIN CHECKOUT (ASK-3526, PR #579 review). The callers add, commit
+# and reset in the tree this returns. `worktree list` puts the main checkout
+# first, so a human with this branch checked out there would have had a receipt
+# commit and a reset land in their working tree. preflight check 5 no longer
+# refuses a dirty main checkout, so this line is part of what keeps human work
+# out of reach. The main checkout is skipped by position, the one fact git
+# guarantees about it.
 receipt_tree() {
   git -C "$TARGET_REPO" worktree list --porcelain 2>/dev/null \
     | awk -v want="branch refs/heads/$1" \
-        '/^worktree /{p=substr($0,10)} $0==want{print p; exit}'
+        '/^worktree /{n++; p=substr($0,10)} n>1 && $0==want{print p; exit}'
 }
 
 # receipt_append <ledger> <issue> <sha> <verdict-record> <tree-head>

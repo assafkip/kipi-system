@@ -374,6 +374,30 @@ BADVERBS="$(target_git_verbs "$W2H" "$REPO/q-system/.q-system/scripts/converge.s
 [ -z "$BADVERBS" ] \
   && ok "the worker and converge only fetch, add worktrees and read refs in the target repo" \
   || bad "a mutating git verb is aimed at the target's main checkout: $BADVERBS"
+# POSITIVE CONTROL (PR #579 review): an empty scan also comes from a wrong path or
+# a missing file, which would read as "no mutating verb". The real files must show
+# the verbs they are known to use.
+KNOWN="$(target_git_verbs "$W2H" "$REPO/q-system/.q-system/scripts/converge.sh" | tr '\n' ' ')"
+case "$KNOWN" in
+  *fetch*worktree*) ok "positive control: the scan reads the real files (verbs seen: $KNOWN)" ;;
+  *) bad "the scan found no known verbs, so it is not reading the worker and converge: '$KNOWN'" ;;
+esac
+# receipt_tree (converge.sh) feeds add/commit/reset, so it must never return the
+# MAIN checkout, even when a human has the issue branch checked out there.
+RT="$WORK/rt-main"; git init -q -b sana/ASK-1 "$RT"
+( cd "$RT" && git -c user.email=t@e -c user.name=t commit -q --allow-empty -m init \
+  && git branch -q other && git worktree add -q "$WORK/rt-wt" other ) >/dev/null 2>&1
+RTH="$WORK/rt.sh"
+{ awk '/^receipt_tree\(\) \{/,/^\}/' "$REPO/q-system/.q-system/scripts/converge.sh"; } > "$RTH"
+R_MAIN="$(TARGET_REPO="$RT" bash -c '. "$1"; receipt_tree sana/ASK-1' _ "$RTH")"
+R_WT="$(TARGET_REPO="$RT" bash -c '. "$1"; receipt_tree other' _ "$RTH")"
+[ -z "$R_MAIN" ] \
+  && ok "receipt_tree never returns the main checkout, even on the issue branch" \
+  || bad "receipt_tree returned the main checkout ($R_MAIN), so converge could commit and reset in a human's tree"
+case "$R_WT" in
+  *rt-wt) ok "receipt_tree still finds a real issue worktree" ;;
+  *) bad "receipt_tree no longer finds the issue worktree (got '$R_WT')" ;;
+esac
 # Negative self-test: the same scan over a copy carrying one checkout line must fire.
 MUTW="$WORK/worker-mutant.sh"; cp "$W2H" "$MUTW"
 echo 'git -C "$TARGET_REPO" checkout -q main' >> "$MUTW"
