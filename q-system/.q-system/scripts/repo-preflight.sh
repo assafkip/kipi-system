@@ -158,7 +158,37 @@ SETTINGS_REL=".claude/settings.json"
 SKEL_SETTINGS="$SKELETON/settings-template.json"
 [ -f "$SKEL_SETTINGS" ] || SKEL_SETTINGS="$SKELETON/$SETTINGS_REL"
 if [ ! -f "$REPO_PATH/$SETTINGS_REL" ]; then
-  refuse "hooks" "$REPO_PATH/$SETTINGS_REL is missing, so no hook fires in this repo"
+  # NO PROJECT SETTINGS: JUDGE THE SET THE WORKER SUPPLIES (ASK-3529). This used
+  # to refuse outright, and the only cure it knew was seeding the template's 66
+  # hook commands into the target, which for a live non-instance repo means
+  # auto-commit and the updater firing in every session there. So a repo that is
+  # not an instance could never be entered. Now linear-worker.sh starts the agent
+  # with `claude -p --settings <skeleton guard set>` whenever the issue tree has
+  # no .claude/settings.json, and this branch proves that set resolves. The set
+  # and this check come from ONE renderer, so what is approved here is what the
+  # agent gets.
+  #
+  # Supplied ONLY when the target has none, because --settings ADDS to project
+  # settings (measured 2026-10-31, see the renderer's header): supplying it to a
+  # repo that has settings fires every guard twice. A repo WITH settings stays on
+  # the parity branch below, unchanged.
+  #
+  # FAIL CLOSED, both ways: no renderer in this skeleton refuses, and a set that
+  # names a guard the skeleton lacks refuses, naming it.
+  #
+  # KNOWN GAP, NOT THIS CHANGE'S: this judges $REPO_PATH, the main checkout,
+  # while the agent runs in a tree cut from origin's default branch, and the
+  # worker decides on THAT tree. If the two disagree about .claude/settings.json
+  # the agent can run under settings this check never read. That is ASK-3528.
+  GUARD_GEN="$SKELETON/q-system/.q-system/scripts/skeleton-guard-settings.py"
+  if [ ! -f "$GUARD_GEN" ]; then
+    refuse "hooks" "$REPO_PATH/$SETTINGS_REL is missing and this skeleton has no skeleton-guard-settings.py to supply the guard set"
+  elif GUARD_SET="$(python3 "$GUARD_GEN" --check 2>&1)"; then
+    printf 'NOTE hooks: %s has no %s; the worker supplies the skeleton guard set (%s)\n' \
+      "$REPO_PATH" "$SETTINGS_REL" "${GUARD_SET#skeleton guard set resolves: }"
+  else
+    refuse "hooks" "$REPO_PATH/$SETTINGS_REL is missing and the skeleton-supplied guard set does not resolve: ${GUARD_SET#skeleton guard set does not resolve: }"
+  fi
 else
   MISSING="$(python3 - "$SKEL_SETTINGS" "$REPO_PATH/$SETTINGS_REL" "$SKELETON" "$REPO_PATH" <<'PY' 2>/dev/null
 import json, sys

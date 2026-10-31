@@ -1133,6 +1133,49 @@ printf '%s' "$RF23" | grep -q '"ovrrepo": "https://github.com/assafkip/ovrrepo.g
   || bad "registry_facts dropped the overlay pin: $RF23"
 
 echo
+echo "== 24. a target with NO project settings passes check 3 only through the skeleton-supplied set (ASK-3529) =="
+# The worker supplies the skeleton's guard set with `claude -p --settings` when
+# the issue tree has no .claude/settings.json, so check 3 must judge THAT set
+# for such a target, not demand a file the target never carries. Measured
+# 2026-10-31: --settings ADDS to project settings, so the set is supplied only
+# when there are none; a target WITH settings keeps the parity branch (2c, 14, 17).
+NOSET="$(make_good_repo noset)"
+fixture_git "$NOSET" rm -q .claude/settings.json >/dev/null 2>&1
+fixture_git "$NOSET" commit -qm nosettings >/dev/null 2>&1
+OUT="$(run_preflight "$NOSET")"
+{ [ "$(pf_rc "$NOSET")" = "0" ] && echo "$OUT" | grep -q '^NOTE hooks:' && ! echo "$OUT" | grep -q '^FAIL hooks'; } \
+  && ok "no .claude/settings.json: accepted through the skeleton-supplied guard set, and says so" \
+  || bad "a target without project settings is still refused on hooks: $OUT"
+OUT="$(run_preflight "$GOOD")"
+echo "$OUT" | grep -q '^NOTE hooks:' \
+  && bad "a target WITH project settings took the supplied-set branch; it would double-fire every guard: $OUT" \
+  || ok "a target with project settings is still judged by parity, never by the supplied set"
+
+# The negative self-test runs against a COPY of the skeleton, because the
+# preflight derives its skeleton from its own location and no knob may aim it
+# elsewhere. Same layout, every guard copied, then exactly one removed.
+FAKESK="$WORK/fakeskel24"
+mkdir -p "$FAKESK/q-system/.q-system/scripts"
+cp "$PREFLIGHT" "$REPO/q-system/.q-system/scripts/skeleton-guard-settings.py" "$FAKESK/q-system/.q-system/scripts/"
+cp "$SKEL_SETTINGS" "$FAKESK/settings-template.json"
+copy_guards "$FAKESK"
+FAKEPF="$FAKESK/q-system/.q-system/scripts/repo-preflight.sh"
+OUT="$(bash "$FAKEPF" "$NOSET" "https://github.com/assafkip/noset.git" 2>&1)"
+[ $? = 0 ] \
+  && ok "control: the intact skeleton copy accepts the no-settings target (so the refusal below means something)" \
+  || bad "control: the intact skeleton copy refused, so the refusal below is unproven: $OUT"
+rm -f "$FAKESK/q-system/.q-system/scripts/merge-bypass-gate.py"
+OUT="$(bash "$FAKEPF" "$NOSET" "https://github.com/assafkip/noset.git" 2>&1)"; RC=$?
+{ [ "$RC" != "0" ] && echo "$OUT" | grep -q '^FAIL hooks:.*merge-bypass-gate.py'; } \
+  && ok "the supplied set does not resolve (a guard is missing from the skeleton): refused, naming the guard" \
+  || bad "an unresolvable supplied set did not refuse, or did not name the guard (rc=$RC): $OUT"
+rm -f "$FAKESK/q-system/.q-system/scripts/skeleton-guard-settings.py"
+OUT="$(bash "$FAKEPF" "$NOSET" "https://github.com/assafkip/noset.git" 2>&1)"; RC=$?
+{ [ "$RC" != "0" ] && echo "$OUT" | grep -q '^FAIL hooks:'; } \
+  && ok "no generator in the skeleton: refused (fail closed), never waved through" \
+  || bad "a skeleton with no generator let a no-settings target through (rc=$RC): $OUT"
+
+echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "PASS: no repo is entered until every named preflight check passes, and selection rotates"
