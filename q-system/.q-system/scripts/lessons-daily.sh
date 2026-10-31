@@ -384,6 +384,16 @@ sync_skel_to_main() {
     echo "$(TS) skeleton main has commits origin/main lacks: left alone" >> "$LOG"
     return 0
   fi
+  # auto-commit.py leaves session memory uncommitted on the skeleton's main (ASK-3525);
+  # a dirty memory file origin also changed would refuse the fast-forward, so it is
+  # copied aside and restored to HEAD first. Never fatal: a failure only logs.
+  HOLD_OUT="$(python3 "$SKEL/q-system/.q-system/scripts/skeleton-memory-hold.py" --repo "$SKEL" 2>&1 || true)"
+  if [ -n "$HOLD_OUT" ]; then
+    printf '%s\n' "$HOLD_OUT" >> "$LOG"
+    # A reverted live memory file must reach Sana's queue, not only this log.
+    bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
+      "lessons-daily: skeleton memory held before fast-forward, copies in .git/kipi-memory-held: $(printf '%s' "$HOLD_OUT" | tr '\n' ' ' | cut -c1-300)" >> "$LOG" 2>&1 || true
+  fi
   git -C "$SKEL" merge --ff-only -q origin/main >> "$LOG" 2>&1 \
     || echo "$(TS) fast-forward of skeleton main refused (see above)" >> "$LOG"
 }
