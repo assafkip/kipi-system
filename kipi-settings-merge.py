@@ -21,12 +21,17 @@ Usage: kipi-settings-merge.py <template.json> <instance-settings.json>
 Writes the merged result back to <instance-settings.json>.
 """
 import json
+import os
 import re
 import sys
 
 # A "script" is any .py/.sh path in the command; basenames identify the hook
 # across path layouts (flattened vs pre-flattening) and wrapper forms.
 SCRIPT_NAME_RE = re.compile(r"([A-Za-z0-9_\-]+\.(?:py|sh))")
+
+
+def hook_script_names(command):
+    return frozenset(SCRIPT_NAME_RE.findall(command))
 
 
 def hook_key(command):
@@ -36,7 +41,33 @@ def hook_key(command):
     return names if names else command
 
 
-def merge_settings(template, existing):
+RETIRED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "kipi-retired-hooks.json")
+
+
+def load_retired(path=None):
+    """Script basenames whose hooks were retired from the template. Missing
+    file means none retired; a present-but-unreadable file raises, because a
+    silent empty list would resurrect every dead hook (ASK-3512)."""
+    path = path or RETIRED_PATH
+    if not os.path.exists(path):
+        return frozenset()
+    with open(path) as f:
+        return frozenset(e["script"] for e in json.load(f).get("scripts", []))
+
+
+def merge_settings(template, existing, retired=None):
+    # Scar ASK-3512: the union below keeps every instance-only hook, so the two
+    # hooks #571 removed from the template survived in every instance as inert
+    # `test -f` wiring that no check could tell from live wiring. Drop retired
+    # scripts from the INSTANCE side only, before the union.
+    retired = load_retired() if retired is None else frozenset(retired)
+    existing = json.loads(json.dumps(existing))
+    for event, groups in existing.get("hooks", {}).items():
+        for grp in groups:
+            grp["hooks"] = [h for h in grp.get("hooks", [])
+                            if not (hook_script_names(h.get("command", "")) & retired)]
+        existing["hooks"][event] = [g for g in groups if g.get("hooks")]
     merged = dict(template)
 
     # Preserve instance MCP servers (all, including disabled _prefixed)

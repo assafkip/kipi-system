@@ -12,10 +12,11 @@ The MISSING ARTIFACT the referee needs: which memories were actually surfaced
 (recalled) this session. Capture can only score a memory that was recalled, and
 nothing recorded that until now.
 
-- Producer: the SessionStart surface scripts (memory-scores-surface.py,
-  memory-confidence-surface.py) call `record_surfaced` with the ids they printed.
-- Consumer: the Stop-hook capture (memory_autocapture.py) calls `read_recall` for
-  the candidate set, then `clear_session` to rotate.
+- Producer (RETIRED): memory-scores-surface.py and knowledge_supply were the
+  callers of `record_surfaced`; both are gone. memory-confidence-surface.py never
+  called it (zero non-test callers as of 2026-10-30).
+- Consumer (RETIRED): memory_autocapture.py is deleted. Only correction_outcome.py
+  still calls `read_recall`.
 
 Why a session-keyed MAP and not a flat single-session file (Codex finding-5):
 overlapping Claude sessions share this one path. A flat `{session_id, surfaced}`
