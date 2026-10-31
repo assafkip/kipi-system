@@ -34,6 +34,14 @@ def hook_script_names(command):
     return frozenset(SCRIPT_NAME_RE.findall(command))
 
 
+def _only_retired(command, retired):
+    """True only when EVERY script the command invokes is retired. A chained
+    command (live guard && retired script) must survive: dropping it would
+    silently unwire the live script too (review of #576)."""
+    names = hook_script_names(command)
+    return bool(names) and names <= retired
+
+
 def hook_key(command):
     """Identity of a hook command for dedup: the set of script basenames it
     invokes, or the raw string when no script is recognizable."""
@@ -51,6 +59,7 @@ def load_retired(path=None):
     silent empty list would resurrect every dead hook (ASK-3512)."""
     path = path or RETIRED_PATH
     if not os.path.exists(path):
+        sys.stderr.write("    WARNING: kipi-retired-hooks.json missing; retired hooks will NOT be dropped\n")
         return frozenset()
     with open(path) as f:
         return frozenset(e["script"] for e in json.load(f).get("scripts", []))
@@ -66,7 +75,7 @@ def merge_settings(template, existing, retired=None):
     for event, groups in existing.get("hooks", {}).items():
         for grp in groups:
             grp["hooks"] = [h for h in grp.get("hooks", [])
-                            if not (hook_script_names(h.get("command", "")) & retired)]
+                            if not _only_retired(h.get("command", ""), retired)]
         existing["hooks"][event] = [g for g in groups if g.get("hooks")]
     merged = dict(template)
 
