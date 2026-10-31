@@ -35,6 +35,18 @@ STREAK_ESCALATE="${KIPI_STREAK_ESCALATE:-3}"
 TS() { date '+%Y-%m-%dT%H:%M:%S%z'; }
 mkdir -p "$(dirname "$LOG")"
 
+# ONE run-start marker per run, written before every early exit, so a reader can
+# split this log into runs (ASK-3574, PR #584 review finding 1). The previous
+# reader split on "lessons publish:", a string this script writes ONLY in the
+# no-origin DISARMED branch -- so against a real PR-mode log the split
+# degenerated to a whole-file search and a three-week-old "propagate FAILED"
+# read as the current run forever. lessons-fanout-check.py DERIVES this string
+# from the assignment below rather than restating it, so renaming it here cannot
+# silently un-split the log; its derivation has a floor and reports COULD NOT
+# READ when the assignment is gone.
+KIPI_FANOUT_RUN_MARKER="=== lessons-daily run ==="
+echo "$(TS) $KIPI_FANOUT_RUN_MARKER" >> "$LOG"
+
 notify() { if [ -n "${KIPI_NOTIFY_CMD:-}" ]; then bash -c "$KIPI_NOTIFY_CMD" "_" "$1"; else bash "$NOTIFY" "$1" 2>/dev/null; fi; }
 
 # The exit code IS this job's wire to Linear (ASK-182). fleet-health-daily.py's
@@ -452,6 +464,53 @@ elif [ "$PROP" = "propagated to fleet" ]; then
   esac
 fi
 
+# THE FAN-OUT'S EXIT CODE IS NOT EVIDENCE THAT EVERY INSTANCE GOT THE CORPUS
+# (ASK-3574, PR #584 review finding 2). 2026-10-22: kipi-update.sh exited 0, this
+# job said "propagated to fleet", and one instance stayed 29 lessons short. The
+# gap was found by counting files by hand nine days later, because nothing in the
+# fleet compared a count. So the run counts, every run, and the count is part of
+# the same one alert rather than a new object: a short instance appends its
+# reason to MSG below and makes the run exit 1, which is this job's wire to
+# Linear (ASK-182).
+#
+# --counts-only on purpose: this run owns the log and the streak file, so the
+# checker's log and streak halves would be a second reader of one input with
+# different semantics. Those halves belong to the post-run hand check.
+#
+# DISARMED unless this checkout IS the registered skeleton, the same convention
+# install-lessons-daily.sh uses. "Did the fleet get the corpus" is a question
+# only the fleet's skeleton can answer; a hermetic test tree or a clone would
+# otherwise answer it about a registry that is not its own.
+FANOUT_SHORT=""
+FANOUT_CHECK="${KIPI_FANOUT_CHECK_CMD:-}"
+if [ "$PROP" = "propagated to fleet" ]; then
+  REG_SKEL="$(python3 - "$SKEL" <<'PY' 2>/dev/null || true
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+try:
+    reg = json.loads((root / "instance-registry.json").read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+declared = ((reg.get("skeleton") or {}).get("path") or "")
+if declared and pathlib.Path(declared).expanduser().resolve() == root:
+    print("yes")
+PY
+)"
+  if [ "$REG_SKEL" != "yes" ]; then
+    echo "$(TS) fan-out counts: DISARMED (this checkout is not the registered skeleton)" >> "$LOG"
+  else
+    [ -z "$FANOUT_CHECK" ] && FANOUT_CHECK="python3 $SKEL/q-system/.q-system/scripts/lessons-fanout-check.py --skeleton $SKEL --counts-only"
+    FANOUT_OUT="$(bash -c "$FANOUT_CHECK" 2>&1)"; FANOUT_RC=$?
+    printf '%s\n' "$FANOUT_OUT" >> "$LOG"
+    case "$FANOUT_RC" in
+      0) echo "$(TS) fan-out counts: every live instance is level with the skeleton" >> "$LOG" ;;
+      2) FANOUT_SHORT="$(printf '%s' "$FANOUT_OUT" | sed -n 's/^RED: //p' | tail -1)"
+         [ -z "$FANOUT_SHORT" ] && FANOUT_SHORT="the fan-out count check went red (see log)" ;;
+      *) FANOUT_SHORT="the fan-out count check could not run (rc=$FANOUT_RC, see log)" ;;
+    esac
+  fi
+fi
+
 # In PR mode the fan-out ships MAIN, and this run's lessons are not on main yet.
 # Saying "propagated to fleet" beside "they reach the fleet after it merges" was
 # one alert contradicting itself (PR #551 review round 1), so the words say
@@ -471,11 +530,14 @@ case "$PROP" in "propagate FAILED"*)
   SKEL_BRANCH="$(git -C "$SKEL" symbolic-ref --short -q HEAD 2>/dev/null || echo detached)"
   [ "$SKEL_BRANCH" != "main" ] && MSG="$MSG · the skeleton checkout is on $SKEL_BRANCH, not main" ;;
 esac
+[ -n "$FANOUT_SHORT" ] && MSG="$MSG · fan-out counts DISAGREE: $FANOUT_SHORT"
 [ -n "${HOLD:-}" ] && MSG="$MSG · $HOLD"
 [ -n "$LESSONS_FAIL" ] && MSG="$MSG · lessons FAILED: $LESSONS_FAIL"
 # Silent when nothing new and the weekly update went out: the header contract.
 # A held run is never silent: nothing was distilled and someone has to act.
-if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ] && [ -z "${HOLD:-}" ]; then
+# A count disagreement is never quiet: that silence is the 2026-10-22 miss.
+if [ "${QUIET:-0}" = 1 ] && [ "$PROP" = "propagated to fleet" ] && [ -z "${HOLD:-}" ] \
+   && [ -z "$FANOUT_SHORT" ]; then
   echo "$(TS) quiet week: fleet updated from main, nothing new, not slacked" >> "$LOG"
 else
   notify "$MSG"
@@ -489,6 +551,7 @@ fi
 case "$PROP" in
   "propagate FAILED"*) echo "$(TS) propagation failed -> exit 1" >> "$LOG"; exit 1 ;;
 esac
+if [ -n "$FANOUT_SHORT" ]; then echo "$(TS) fan-out counts disagree -> exit 1" >> "$LOG"; exit 1; fi
 if [ "${PERSIST:-}" = "FAILED" ]; then echo "$(TS) lessons commit failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${PUBLISH:-}" ]; then echo "$(TS) lessons publish failed -> exit 1" >> "$LOG"; exit 1; fi
 if [ -n "${HOLD:-}" ]; then echo "$(TS) distilling held by an unmerged lessons branch -> exit 1" >> "$LOG"; exit 1; fi

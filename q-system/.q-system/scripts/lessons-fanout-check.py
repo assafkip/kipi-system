@@ -23,10 +23,39 @@ a log or streak file that could not be read. A check whose inputs are absent
 reports COULD NOT READ, never "green": the 2026-10-22 miss below was invisible
 for nine days precisely because nothing counted.
 
+HOW THE NEWEST RUN BLOCK IS FOUND
+---------------------------------
+By a marker DERIVED from the producer, never restated here. `lessons-daily.sh`
+assigns `KIPI_FANOUT_RUN_MARKER=` and echoes it once per run before any early
+exit; `producer_run_marker()` reads that assignment out of the script at run
+time. Two floors, because a derivation that silently returns nothing turns every
+check built on it into a no-op that reads as green:
+
+  * no producer script, or no assignment in it -> COULD NOT READ, red.
+  * the marker appears NOWHERE in the log      -> the newest run cannot be
+    identified, red, and NO whole-file fallback.
+
+Scar (PR #584 review finding 1, 2026-10-31): the marker used to be the literal
+`"lessons publish:"`, which the producer writes ONLY in its no-origin DISARMED
+branch. Against a real PR-mode log the split therefore returned one block -- the
+whole file -- so a `propagate FAILED` from 2026-10-01 was reported as "in the
+newest run block" while the newest run said `propagated to fleet`. A stale
+failure that reads as current forever is the same defect as a miss nothing
+counts, pointing the other way.
+
 DEAD REGISTRY PATHS ARE REPORTED, NOT RED. Measured 2026-10-31: 8 of 21
 registry rows point at directories that no longer exist. They belong to
 ASK-3404; failing this check on them would bury the fan-out signal under a
 registry-hygiene problem that is somebody else's issue.
+
+WHO RUNS IT
+-----------
+`lessons-daily.sh` itself, every run that reports a fan-out, through
+`--counts-only` (the corpus comparison alone: that run OWNS the log and the
+streak, so re-reading both there would be a second reader of one input with
+different semantics). A short instance appends its reason to the run's one Slack
+line and makes the run exit 1, which is this job's wire to Linear (ASK-182).
+The default mode -- all four inputs -- is the post-run hand check.
 
 THE SCAR
 --------
@@ -43,14 +72,30 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 LESSONS_REL = pathlib.Path("q-system") / "lessons"
-# The newest run block in the log is what a post-run verification is asking
-# about; an older failure already had its own alert and its own streak row.
-RUN_MARKER = "lessons publish:"
+PRODUCER_REL = (pathlib.Path("q-system") / ".q-system" / "scripts"
+                / "lessons-daily.sh")
+# The producer's own assignment is the source of truth for the run marker. This
+# pattern is the ONLY thing restated here, and a miss is red rather than green.
+MARKER_ASSIGN = re.compile(r'^KIPI_FANOUT_RUN_MARKER="([^"]+)"', re.MULTILINE)
 FAIL_MARKER = "propagate FAILED"
+
+
+def producer_run_marker(producer: pathlib.Path) -> tuple[str | None, str]:
+    """(marker, why) read out of lessons-daily.sh. marker None = cannot split."""
+    try:
+        text = producer.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return None, f"COULD NOT READ the producer {producer}: {exc}"
+    hit = MARKER_ASSIGN.search(text)
+    if not hit:
+        return None, (f"COULD NOT READ a KIPI_FANOUT_RUN_MARKER assignment in "
+                      f"{producer}: the log cannot be split into runs")
+    return hit.group(1), f"run marker derived from {producer.name}"
 
 
 def count_lessons(root: pathlib.Path) -> int:
@@ -74,10 +119,22 @@ def load_registry(path: pathlib.Path) -> list[dict]:
 
 def classify(skeleton_count: int, rows: list[dict]) -> dict:
     """Split the registry into short / surplus / level / dead / no-corpus."""
-    out = {"short": [], "surplus": [], "level": [], "dead": [], "no_corpus": []}
+    out = {"short": [], "surplus": [], "level": [], "dead": [], "no_corpus": [],
+           "malformed": []}
     for row in rows:
         name = row.get("name") or "<unnamed>"
-        path = pathlib.Path(str(row.get("path") or "")).expanduser()
+        raw = str(row.get("path") or "").strip()
+        # A row with no path is NOT the dead-directory class ASK-3404 owns, and
+        # it is not level either. Path("") resolves to the cwd, so the old code
+        # counted whatever corpus the caller happened to be standing in and
+        # classified the row from that -- measured 2026-10-31 from the repo root
+        # it read "surplus nopath: 205 lessons" (PR #584 review finding 3). The
+        # check cannot answer for an instance the registry does not locate, so
+        # it says so and goes red instead of inventing an answer.
+        if not raw:
+            out["malformed"].append((name, "registry row declares no 'path'"))
+            continue
+        path = pathlib.Path(raw).expanduser()
         if not path.is_dir():
             out["dead"].append((name, str(path)))
             continue
@@ -93,15 +150,24 @@ def classify(skeleton_count: int, rows: list[dict]) -> dict:
     return out
 
 
-def read_log_verdict(log: pathlib.Path) -> tuple[bool, str]:
+def read_log_verdict(log: pathlib.Path, marker: str | None,
+                     marker_why: str) -> tuple[bool, str]:
     """(ok, line) for the newest run block of lessons-daily.log."""
+    if marker is None:
+        return False, marker_why
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, f"COULD NOT READ {log}: {exc}"
     if not text.strip():
         return False, f"COULD NOT READ {log}: file is empty"
-    blocks = text.split(RUN_MARKER)
+    if marker not in text:
+        return False, (
+            f"no run marker '{marker}' anywhere in {log}: the newest run cannot "
+            f"be identified, so this check will not judge it. One "
+            f"lessons-daily.sh run writes it."
+        )
+    blocks = text.split(marker)
     newest = blocks[-1]
     hits = [ln for ln in newest.splitlines() if FAIL_MARKER in ln]
     if hits:
@@ -128,8 +194,12 @@ def print_report(skeleton_count: int, groups: dict, log_msg: str, streak_msg: st
         print(f"  NO CORPUS {name}: no q-system/lessons dir at {path}")
     for name, path in groups["dead"]:
         print(f"  dead path (ASK-3404, not red) {name}: {path}")
-    print(f"log:    {log_msg}")
-    print(f"streak: {streak_msg}")
+    for name, why in groups["malformed"]:
+        print(f"  MALFORMED ROW {name}: {why}")
+    if log_msg is not None:
+        print(f"log:    {log_msg}")
+    if streak_msg is not None:
+        print(f"streak: {streak_msg}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="streak json (default: <skeleton>/q-system/output/lessons-propagation-streak.json)")
     ap.add_argument("--strict", action="store_true",
                     help="a surplus is red too (the DoR's literal 'red if they differ')")
+    ap.add_argument("--producer", default=None,
+                    help="lessons-daily.sh, which owns the run marker "
+                         "(default: <skeleton>/q-system/.q-system/scripts/lessons-daily.sh)")
+    ap.add_argument("--counts-only", action="store_true",
+                    help="compare corpora and skip the log and streak reads; for "
+                         "lessons-daily.sh itself, which owns both")
     return ap
 
 
@@ -167,11 +243,21 @@ def main() -> int:
         return 1
 
     groups = classify(skeleton_count, load_registry(registry))
-    log_ok, log_msg = read_log_verdict(log)
-    streak_ok, streak_msg = read_streak(streak)
+    if args.counts_only:
+        log_ok, log_msg = True, None
+        streak_ok, streak_msg = True, None
+    else:
+        producer = (pathlib.Path(args.producer) if args.producer
+                    else skel / PRODUCER_REL)
+        marker, marker_why = producer_run_marker(producer)
+        log_ok, log_msg = read_log_verdict(log, marker, marker_why)
+        streak_ok, streak_msg = read_streak(streak)
     print_report(skeleton_count, groups, log_msg, streak_msg)
 
     reasons = []
+    if groups["malformed"]:
+        reasons.append(f"{len(groups['malformed'])} registry row(s) this check "
+                       f"cannot locate")
     if groups["short"]:
         reasons.append(f"{len(groups['short'])} instance(s) short of the skeleton")
     if groups["no_corpus"]:
