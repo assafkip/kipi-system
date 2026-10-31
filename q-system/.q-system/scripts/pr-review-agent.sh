@@ -1080,6 +1080,48 @@ for _old in "$SCRATCH_BASE"/run.* "$SCRATCH_BASE"/ctx.*; do
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
+# reap-merged-trees-begin
+# REVIEW TREES OF MERGED OR CLOSED PRs ARE REMOVED AT THE START OF EVERY RUN (ASK-3506).
+# review_worktree keeps one detached tree per (repo, PR) and nothing ever removed
+# one. Measured 2026-10-30: 22 merged consulting PRs each held a 450-500 MB tree
+# (12 GB) and the disk fell to 313 MiB free, which is also how a review dies
+# mid-run with an empty verdict. Only trees whose key this repo's own
+# review_tree_path would produce are candidates, so another repo's tree is never
+# named. FAIL CLOSED: a gh error, an OPEN state, the PR under review, or a live
+# lock holder all leave the tree alone, because a wrongly kept tree costs disk
+# and a wrongly removed one costs a live review its evidence.
+# Temp worktrees under $TMPDIR/tmp.*/wt are only REPORTED: no marker proves which
+# run made them (the PR #495 lesson recorded in review_scratch_cleanup above).
+reap_finished_review_trees() {
+  local path sha det n state lock holder expect kept=0 gone=0 unk=0
+  while read -r path sha det; do
+    case "$path" in
+      */review-trees/*__pr-*)
+        n="${path##*__pr-}"
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        expect="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$n")"
+        # basename compare: git lists PHYSICAL paths (macOS /var is /private/var).
+        [ "${path##*/}" = "${expect##*/}" ] || continue
+        [ "$n" = "$PR" ] && { kept=$((kept+1)); continue; }
+        lock="$path.lock"; holder="$(cat "$lock" 2>/dev/null || true)"
+        if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then kept=$((kept+1)); continue; fi
+        state="$(gh pr view "$n" $KIPI_GH_REPO_ARGS --json state -q .state 2>/dev/null || true)"
+        case "$state" in
+          MERGED|CLOSED)
+            if git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null; then
+              gone=$((gone+1)); command rm -f "$lock" 2>/dev/null || true
+            else kept=$((kept+1)); fi ;;
+          *) kept=$((kept+1)) ;;
+        esac ;;
+      /tmp/*/wt|/private/tmp/*/wt|/var/folders/*/tmp.*/wt|/private/var/folders/*/tmp.*/wt) unk=$((unk+1)) ;;
+    esac
+  done < <(_wt_rows)
+  git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
+  echo "  review-tree cleanup: removed $gone finished, kept $kept; $unk temp tree(s) of unproven owner left alone"
+}
+# reap-merged-trees-end
+reap_finished_review_trees
+
 # codex-sandbox-begin
 # THE SCRIPT READS GITHUB FOR THE REVIEWER. A reviewer with network AND a
 # logged-in gh, reading a PR author's diff, can be talked into posting
