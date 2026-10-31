@@ -376,15 +376,25 @@ sync_skel_to_main() {
     # When EVERY file the local-only commits touch is under q-system/memory/ (and
     # there is at least one), keep the old tip on a backup/ branch and move main to
     # origin/main. Anything else, including an empty commit, is left alone as before.
-    # `switch -C` and a new branch, never a reset: it refuses if a dirty file is in
+    # `switch -C` and a branch, never a reset: it refuses if a dirty file is in
     # the way, and the old tip stays reachable.
+    #
+    # THE FILES UNDER q-system/memory/ ARE NOT ALL CHURN (PR #573 review, major).
+    # open-loops.json and last-handoff.md are live state a heartbeat and the next session
+    # read, so moving main alone rolled them back silently. The updater refuses a dirty
+    # tracked file, so the fan-out has to run on a clean origin/main tree; the run
+    # therefore puts those files back from the backup AFTER the fan-out
+    # (restore_skel_memory), and says so in the alert (SKEL_MEMORY_BK).
+    # One rolling backup branch, not one per run: a daily job must not grow refs forever.
     local touched
     touched="$(git -C "$SKEL" diff --name-only origin/main...HEAD 2>>"$LOG")"
     if [ -n "$touched" ] && ! printf '%s\n' "$touched" | grep -qv '^q-system/memory/'; then
-      local bk="backup/skeleton-memory-$(date +%Y%m%d-%H%M%S)-$$"
-      if git -C "$SKEL" branch "$bk" HEAD >> "$LOG" 2>&1 \
+      local bk="backup/skeleton-memory" prev
+      prev="$(git -C "$SKEL" rev-parse -q --verify "refs/heads/$bk" 2>/dev/null || true)"
+      if git -C "$SKEL" branch -f "$bk" HEAD >> "$LOG" 2>&1 \
          && git -C "$SKEL" switch -q -C main origin/main >> "$LOG" 2>&1; then
-        echo "$(TS) skeleton main carried only session-memory commits: kept on $bk, main moved to origin/main" >> "$LOG"
+        SKEL_MEMORY_BK="$bk"
+        echo "$(TS) skeleton main carried only session-memory commits: kept on $bk${prev:+ (previous tip $prev)}, main moved to origin/main" >> "$LOG"
       else
         echo "$(TS) could not move skeleton main off its session-memory commits (see above): left alone" >> "$LOG"
       fi
@@ -417,6 +427,17 @@ elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main
   fi
 else
   PROP="no propagation (nothing published)"
+fi
+
+# Put the live memory state back after the fan-out (PR #573 review): the fan-out needed a
+# clean origin/main tree, and the heartbeat/handoff files must not stay rolled back.
+if [ -n "${SKEL_MEMORY_BK:-}" ]; then
+  if git -C "$SKEL" restore --source="$SKEL_MEMORY_BK" --worktree -- q-system/memory >> "$LOG" 2>&1; then
+    echo "$(TS) restored q-system/memory/ from $SKEL_MEMORY_BK into the working tree" >> "$LOG"
+  else
+    echo "$(TS) could not restore q-system/memory/ from $SKEL_MEMORY_BK: the live state is on that branch" >> "$LOG"
+    SKEL_MEMORY_BK="${SKEL_MEMORY_BK} (restore FAILED)"
+  fi
 fi
 
 # bump prints "<new>\t<previous>" from ONE locked operation; a separate read
@@ -463,6 +484,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP_TXT}"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"
+[ -n "${SKEL_MEMORY_BK:-}" ] && MSG="$MSG · skeleton main carried unpushed session-memory commits: kept on ${SKEL_MEMORY_BK}, live memory state put back in the working tree"
 [ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · this run's lessons are in $PR_URL, not in that update; they go out with the first weekly update after it merges"
 [ -n "${PUBLISH:-}" ] && MSG="$MSG · lessons publish $PUBLISH, lessons are in $LREPO"
 # The reason the alert never gave for six weeks (ASK-2736): name the branch.

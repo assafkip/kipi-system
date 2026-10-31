@@ -136,7 +136,12 @@ build_fixture() {
       g -C "$tmp/skel" commit -qm "wip: real work [no-issue: fixture]" ;;
   esac
   # main moves on after the checkout last pulled, in every state.
-  g -C "$tmp/seed" commit -q --allow-empty -m "someone else's merge [no-issue: fixture]"
+  # A REAL file change, not an empty commit: with an empty one origin/main never differs
+  # from the merge base, so a two-dot diff passes the same tests as the three-dot one the
+  # memory self-heal depends on (PR #573 review).
+  printf 'upstream\n' > "$tmp/seed/upstream-change.txt"
+  g -C "$tmp/seed" add upstream-change.txt
+  g -C "$tmp/seed" commit -q -m "someone else's merge [no-issue: fixture]"
   g -C "$tmp/seed" push -q "$tmp/origin.git" main
   g -C "$tmp/skel" config user.email t@example.com
   g -C "$tmp/skel" config user.name t
@@ -563,6 +568,13 @@ echo "      fixture (main-memory-ahead): $T (exit=$JOB_RC)"
 [ "$JOB_RC" -eq 0 ] \
   && ok "memory-ahead: the real updater passed and the run exits 0" \
   || bad "memory-ahead: exit=$JOB_RC; $(grep -m2 ABORT "$T/lessons-daily.log")"
+# Live state is put back AFTER the fan-out, never silently rolled back (PR #573 review).
+[ "$(cat "$T/skel/q-system/memory/last-handoff.md" 2>/dev/null)" = "notes" ] \
+  && ok "memory-ahead: the live memory file is back in the working tree" \
+  || bad "memory-ahead: last-handoff.md was rolled back and not restored"
+grep -q 'backup/skeleton-memory' "$T/notify.txt" 2>/dev/null \
+  && ok "memory-ahead: the alert names the backup branch" \
+  || bad "memory-ahead: the alert is silent about the move: $(cat "$T/notify.txt" 2>/dev/null)"
 rm -rf "$T"
 
 # --- 17. negative control: real work among the local commits is never touched ---
