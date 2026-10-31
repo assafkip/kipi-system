@@ -211,3 +211,9 @@ q-system/output/.update-check-*
 /q-system/my-project/relationships.md
 /scripts/persona-reorg-manifest-consulting.json
 /instance-registry.json.persona-reorg.bak
+
+# ASK-3405/3483: per-machine voice-refresh state (lookback stamp, delta markers). A tracked copy would ship one machine's bound to the fleet.
+automation/.voice-refresh-last
+automation/.voice-delta-pending
+automation/.voice-delta-answered
+automation/.voice-delta-alerted

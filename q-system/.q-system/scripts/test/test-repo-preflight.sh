@@ -73,7 +73,7 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 if [ ! -f "$PREFLIGHT" ]; then
   echo "  FAIL: THE DEFECT: no repo-preflight.sh exists, so a dispatcher that iterates"
   echo "        the registry would enter client-d / client-c / client-b with no"
-  echo "        check on control-code version, hooks, remote, branch protection,"
+  echo "        check on hooks, remote, branch protection,"
   echo "        credentials, dirty state or a kill switch."
   echo "-------- 0 passed, 1 failed --------"
   exit 1
@@ -133,7 +133,7 @@ chmod +x "$STUBBIN/gh"
 export PATH="$STUBBIN:$PATH"
 
 # --- fixture builder ---------------------------------------------------------
-# A repo that passes ALL SEVEN items. Every failing fixture below is this one with
+# A repo that passes EVERY item. Every failing fixture below is this one with
 # exactly one thing broken, so a failure names one cause and not a pile.
 SKEL_WORKER="$REPO/q-system/.q-system/scripts/linear-worker.sh"
 # THE FIXTURE MODELS AN INSTANCE, SO IT IS BUILT FROM settings-template.json
@@ -258,7 +258,7 @@ make_good_repo() {
 run_preflight() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" 2>&1; }
 pf_rc() { bash "$PREFLIGHT" "$1" "${2:-https://github.com/assafkip/$(basename "$1").git}" >/dev/null 2>&1; echo $?; }
 
-echo "== 1. the control: a repo that passes all seven items is ACCEPTED =="
+echo "== 1. the control: a repo that passes every item is ACCEPTED =="
 # THIS CASE IS THE POINT OF THE WHOLE STUB DESIGN. If it fails, every "refused"
 # assertion below is green for the wrong reason and proves nothing.
 GOOD="$(make_good_repo good)"
@@ -270,7 +270,7 @@ else
 fi
 
 echo
-echo "== 2. each of the seven items refuses ON ITS OWN, and names itself =="
+echo "== 2. each item refuses ON ITS OWN, and names itself =="
 # One fixture per item. The assertion is not just "refused" but "refused NAMING
 # this check" -- a preflight that refuses everything with one generic message is
 # useless to whoever has to fix the repo.
@@ -282,16 +282,26 @@ OUT="$(run_preflight "$KS")"
   && ok "kill-switch: a .kipi-no-dispatch file refuses the repo by name" \
   || bad "kill-switch did not refuse or did not name itself: $OUT"
 
-# 2b. control-code version: the repo's worker copy has drifted from the skeleton's.
-# kipi update is manual, so an instance can be months behind -- running THAT copy
-# is running control code nobody reviewed, on a loop that merges its own PRs.
+# 2b. control-code is RETIRED (ASK-3526), so the target's worker copy is never a
+# reason to refuse. The dispatcher runs the pinned skeleton's worker against
+# --repo; the target's copy never executes. Hashing it refused both opted-in
+# repos from 2026-10-25 (one worker change, #544), a fleet gone dark for a file
+# nobody runs. Both shapes must be ACCEPTED: a copy that drifted, and a repo that
+# carries no copy at all. No repo names here: this file ships to every instance.
 CC="$(make_good_repo controlcode)"
 echo '# drifted' >> "$CC/q-system/.q-system/scripts/linear-worker.sh"
 fixture_git "$CC" commit -qam drift >/dev/null 2>&1
 OUT="$(run_preflight "$CC")"
-{ [ "$(pf_rc "$CC")" != "0" ] && echo "$OUT" | grep -q 'control-code'; } \
-  && ok "control-code: a worker copy that drifted from the skeleton refuses by name" \
-  || bad "control-code drift did not refuse or did not name itself: $OUT"
+{ [ "$(pf_rc "$CC")" = "0" ] && ! echo "$OUT" | grep -q 'control-code'; } \
+  && ok "control-code retired: a drifted worker copy in the target is ACCEPTED" \
+  || bad "a drifted worker copy, which never executes, still refuses the repo: $OUT"
+CN="$(make_good_repo noworker)"
+fixture_git "$CN" rm -q q-system/.q-system/scripts/linear-worker.sh >/dev/null 2>&1
+fixture_git "$CN" commit -qm noworker >/dev/null 2>&1
+OUT="$(run_preflight "$CN")"
+{ [ "$(pf_rc "$CN")" = "0" ] && ! echo "$OUT" | grep -q 'control-code'; } \
+  && ok "control-code retired: a target with NO worker copy is ACCEPTED" \
+  || bad "a target without a worker copy still refuses, on a file the dispatcher never runs: $OUT"
 
 # 2c. hook presence
 HK="$(make_good_repo hooks)"
@@ -644,6 +654,17 @@ grep -qE 'git -C "\$TARGET_REPO" (fetch|worktree|rev-parse)' "$WORKER" \
 grep -qE '\$SKEL/kipi|\$SKEL/plugins' "$WORKER" \
   && ok "control-code references still point at the skeleton" \
   || bad "the agent's kipi/prd-os references were repointed at a repo that has neither"
+# NO CWD-RELATIVE CONTROL SCRIPT IN THE AGENT PROMPT (ASK-3526). The agent runs
+# with cwd = the target worktree, so `python3 q-system/...` runs the TARGET's
+# copy: stale in an instance, absent in a repo with no q-system. That was the one
+# place a target copy of control code really executed, and it is what made
+# preflight's control-code hash look necessary.
+# Matched anywhere on a line, not only at its start, so a backticked or chained
+# form (`cd x && python3 q-system/...`) is caught too (review of PR #574).
+REL_CTRL="$(grep -nE '(python3|bash)[[:space:]]+(\./)?(q-system/|plugins/|kipi[[:space:]])' "$WORKER")"
+[ -z "$REL_CTRL" ] \
+  && ok "no agent-prompt command runs a control script relative to the target worktree" \
+  || bad "the prompt runs a control script from the target worktree, not the skeleton: $REL_CTRL"
 # The registry itself lives in the skeleton; only the path being looked UP is the target.
 grep -qE 'REG="\$SKEL/instance-registry.json"' "$WORKER" \
   && ok "identity is resolved from the SKELETON's registry, keyed on the target path" \
@@ -853,23 +874,20 @@ WORKLINE="$(grep -n 'bash ./kipi work' "$DISPATCH" | head -1 | cut -d: -f1)"
   && ok "the preflight is reached BEFORE any worker is invoked" \
   || bad "the preflight does not precede the worker call, so an agent could start in an unvetted repo"
 
-echo "== 19. a CLIENT ENGAGEMENT repo is refused even when opted in (ASK-741) =="
-# Founder decision 2026-08-13: "no. unattended agents should not reach a client repo."
+echo "== 19. a CLIENT ENGAGEMENT repo is ENTERED like any repo (RULE-2026-10-30-A) =="
+# Founder, 2026-10-30, verbatim: "If consulting tickets and client project tickets
+# are not in the worker, they will never get done. I want to change the ruling that
+# they stay out. The unattended agent should and can reach client repos to work on
+# the tickets. That's the ruling from now on." It supersedes the 2026-08-13
+# decision ("no. unattended agents should not reach a client repo") that this case
+# used to assert, with the opposite expectation.
 #
-# The property under test is NOT "client repos are off by default" -- case 5 already
-# covers default-off, and a default is not a refusal. It is that an engagement repo
-# carrying dispatch.enabled: true, and passing all seven other items, is STILL
-# absent from the pick list. Opt-in is what this has to survive.
-#
-# EVERY NAME HERE IS INVENTED. This repo is public (102 stars, 23 forks) and
-# client-name-guard.py blocks client names reaching it; a fixture named after a real
-# engagement would be the leak the guard exists to stop. The test is about the PATH
-# SHAPE, so invented names test it exactly as well as real ones would -- which is
-# itself the evidence that the derivation is not a name list.
+# EVERY NAME HERE IS INVENTED. This repo is public and client-name-guard.py blocks
+# client names reaching it. The property is about PATH SHAPE: a repo under an
+# engagement root, and the root itself, get no refusal for being there.
 
 # make_good_repo builds at $WORK/$name and pins origin to that same name, so it
-# cannot build a NESTED path whose registry row name differs. Engagement-ness is a
-# property of the path and nothing else, so the two have to be separable here.
+# cannot build a NESTED path whose registry row name differs.
 make_good_repo_at() {
   local rowname="$1"
   local sub="$2"
@@ -879,150 +897,57 @@ make_good_repo_at() {
   printf '%s' "$dir"
 }
 
-# A client that DOES NOT EXIST TODAY. If this is refused, the refusal cannot be
-# coming from a list of the twelve engagements currently in the registry -- which is
-# the only durable proof that onboarding client thirteen needs no code change.
 NEWCLIENT="$(make_good_repo_at newclient consulting/projects/zzz-new-client)"
-# The negative control, built by the SAME builder, differing ONLY in path shape.
-# Without this the section could pass by refusing everything.
-OWNPROJ="$(make_good_repo_at ownproj cole-gtm/projects/own-thing)"
 INTELCLIENT="$(make_good_repo_at intelclient intel/projects/zzz-other-client)"
-
-OUT="$(run_preflight "$NEWCLIENT" "https://github.com/assafkip/newclient.git")"
-{ [ "$(pf_rc "$NEWCLIENT" "https://github.com/assafkip/newclient.git")" != "0" ] \
-    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
-  && ok "an engagement repo that does not exist today is refused, and names client-repo" \
-  || bad "THE DEFECT: a not-yet-existing client repo was accepted: $OUT"
-
-printf '%s' "$OUT" | grep -q 'even when dispatch.enabled is true' \
-  && ok "the refusal states WHY, naming opt-in explicitly" \
-  || bad "the refusal does not say why, so it reads like any other skip: $OUT"
-
-OUT="$(run_preflight "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")"
-{ [ "$(pf_rc "$INTELCLIENT" "https://github.com/assafkip/intelclient.git")" != "0" ] \
-    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
-  && ok "the second engagement root is refused too, not just the first" \
-  || bad "an engagement root was not covered: $OUT"
-
-# THE OTHER DIRECTION. A check that refuses everything is not a check, and the
-# founder's own projects/ dirs are the same SHAPE one level up -- so this is the
-# case that proves the derivation discriminates rather than pattern-matching
-# "/projects/".
-[ "$(pf_rc "$OWNPROJ" "https://github.com/assafkip/ownproj.git")" = "0" ] \
-  && ok "a NON-engagement repo under the founder's own root still passes" \
-  || bad "the guard over-matched and refused one of the founder's own repos: $(run_preflight "$OWNPROJ" "https://github.com/assafkip/ownproj.git")"
-
-# THE ENGAGEMENT ROOT ITSELF IS REFUSED (ASK-754). THIS ASSERTION IS INVERTED.
-#
-# It used to assert the opposite -- "the engagement ROOT itself is not treated as a
-# client engagement" -- on the reading that the founder meant only "the engagement
-# instances NESTED UNDER consulting/projects/*". Inverting it is part of the fix, not
-# collateral: while the suite pinned the old behaviour, the hole could not be closed
-# without a red test, and a green suite read as proof the root was safe on purpose.
-#
-# What changed is evidence, not taste. Measured 2026-08-14 on the one repo that
-# reading admits -- the ASK_AI_consultant row, whose path IS the consulting
-# engagement root: 12 TRACKED files under clients/, all 11 engagement repos nested
-# beneath it, and q-consult/ (998 files) is the live publishing engine.
-# (No absolute home path here on purpose: the skeleton sweep greps this tree for
-# an absolute home-directory prefix, and this test ships to every instance.)
-# The founder's condition for this call was "if it holds client material, it should
-# be refused" -- it holds client material in its own git history.
 ROOTREPO="$(make_good_repo_at rootrepo consulting)"
-OUT="$(run_preflight "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")"
-{ [ "$(pf_rc "$ROOTREPO" "https://github.com/assafkip/rootrepo.git")" != "0" ] \
-    && printf '%s' "$OUT" | grep -q 'client-repo'; } \
-  && ok "the engagement ROOT itself is refused, and names client-repo" \
-  || bad "THE DEFECT: the engagement root -- which holds tracked client material and every nested engagement -- was accepted: $OUT"
+OWNPROJ="$(make_good_repo_at ownproj cole-gtm/projects/own-thing)"
 
-# THE DISCRIMINATION CASE FOR THE NEW GLOB, kept adjacent to it. */<root> must match
-# only when <root> is the LAST component. A founder root that merely CONTAINS an
-# engagement root name as a prefix or suffix is not an engagement root, and a rule
-# that refused those would be the over-match that gets a gate switched off.
-NEARMISS="$(make_good_repo_at nearmiss consulting-notes)"
-[ "$(pf_rc "$NEARMISS" "https://github.com/assafkip/nearmiss.git")" = "0" ] \
-  && ok "a path whose last component merely CONTAINS an engagement root name still passes" \
-  || bad "the new root glob over-matched on a substring: $(run_preflight "$NEARMISS" "https://github.com/assafkip/nearmiss.git")"
+for CASE in "newclient:$NEWCLIENT" "intelclient:$INTELCLIENT" "rootrepo:$ROOTREPO"; do
+  _n="${CASE%%:*}"; _p="${CASE#*:}"
+  OUT="$(run_preflight "$_p" "https://github.com/assafkip/$_n.git")"
+  { [ "$(pf_rc "$_p" "https://github.com/assafkip/$_n.git")" = "0" ] \
+      && ! printf '%s' "$OUT" | grep -q 'client-repo'; } \
+    && ok "client-shaped repo $_n passes preflight with no client-repo refusal" \
+    || bad "client-shaped repo $_n is still refused, against RULE-2026-10-30-A: $OUT"
+done
 
-# NO BYPASS SURFACE, same rule the dispatcher is held to by case 8.
-grep -qE '^ENGAGEMENT_ROOTS="[a-z ]+"$' "$PREFLIGHT" \
-  && ok "the engagement roots are a literal in the script, not an override" \
-  || bad "the engagement roots are not a plain literal, so they may be overridable"
-grep -nE 'ENGAGEMENT_ROOTS="?\$\{|KIPI_[A-Z_]*ENGAGEMENT|KIPI_[A-Z_]*CLIENT' "$PREFLIGHT" \
-  && bad "an env var can redefine what counts as a client repo" \
-  || ok "no env var can redefine what counts as a client repo"
+# THE REMAINING CHECKS STILL PROTECT CLIENT WORK. The reversal removed one refusal,
+# not the gate: a client repo with the kill switch dropped, or with a human's
+# uncommitted work in it, must still refuse. Without this the section would pass
+# on a preflight that waves every client repo through.
+CLIENTKS="$(make_good_repo_at clientks consulting/projects/zzz-ks-client)"
+: > "$CLIENTKS/.kipi-no-dispatch"
+OUT="$(run_preflight "$CLIENTKS" "https://github.com/assafkip/clientks.git")"
+{ [ "$(pf_rc "$CLIENTKS" "https://github.com/assafkip/clientks.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q '^FAIL kill-switch:'; } \
+  && ok "a client repo with .kipi-no-dispatch still refuses, by name" \
+  || bad "the kill switch no longer protects a client repo: $OUT"
+# The fixture path must not contain the word the assertion greps for, or the
+# check passes on the path. The first cut named this dir zzz-dirty-client.
+CLIENTDIRTY="$(make_good_repo_at clientwip consulting/projects/zzz-wip-client)"
+echo "human work in progress" > "$CLIENTDIRTY/wip.txt"
+OUT="$(run_preflight "$CLIENTDIRTY" "https://github.com/assafkip/clientwip.git")"
+{ [ "$(pf_rc "$CLIENTDIRTY" "https://github.com/assafkip/clientwip.git")" != "0" ] \
+    && printf '%s' "$OUT" | grep -q '^FAIL dirty:'; } \
+  && ok "a client repo with uncommitted human work still refuses, by name" \
+  || bad "a dirty client tree is accepted, so an agent could sweep in a human's work: $OUT"
 
 echo
-echo "== 20. the client-repo refusal is ABSENT from the pick list, and SAID (ASK-741) =="
-# End to end through the dispatcher's own selection, not the preflight in isolation.
-# Both rows are opted in; only the shape differs.
+echo "== 20. an opted-in client repo REACHES the pick list (RULE-2026-10-30-A) =="
+# End to end through the dispatcher's own selection, not the preflight alone.
 REG5="$WORK/reg5.json"
 mk_registry "$REG5" "newclient|$NEWCLIENT|true" "ownproj|$OWNPROJ|true"
-# stdout is the SELECTION; stderr carries say(). Merging them makes `grep newclient`
-# match the refusal REASON, which reports a correctly-refused repo as selected.
+# stdout is the SELECTION; stderr carries say().
 PICKS5="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursor5" bash "$HARNESS" 2>"$WORK/say5.log")"
 printf '%s' "$PICKS5" | grep -q 'ownproj' \
-  && ok "the opted-in NON-client repo IS selected (so the absence below means something)" \
+  && ok "the opted-in non-client repo IS selected" \
   || bad "the non-client control never reached the pick list, so this section proves nothing"
 printf '%s' "$PICKS5" | grep -q 'newclient' \
-  && bad "THE DEFECT: an opted-in client engagement repo is SELECTED for unattended dispatch" \
-  || ok "an opted-in client engagement repo is ABSENT from the pick list"
-
-# A SILENT REFUSAL IS THE DEFECT, NOT THE FIX. The founder has to be able to tell a
-# refusal from an empty queue, so the reason is asserted, not just the absence.
-grep -q 'FAIL client-repo' "$WORK/say5.log" \
-  && ok "the run output states WHY the repo was refused" \
-  || bad "the refusal is silent in the run output: $(cat "$WORK/say5.log")"
-# The counted shape daily-linear-digest.py's third section scrapes.
-grep -qE '[0-9]+ repo\(s\) REFUSED as client engagement repos' "$WORK/say5.log" \
-  && ok "the run output carries the counted line the daily digest reads" \
-  || bad "no counted line, so the digest's third section cannot show this: $(cat "$WORK/say5.log")"
-
-echo
-echo "== 21. MUTATION: break the derivation and case 20 must go RED (ASK-741) =="
-# A guard whose test stays green with the guard removed is decoration.
-# THE MUTANT MUST SIT AT THE SAME DEPTH AS THE REAL SCRIPT. repo-preflight.sh
-# derives SKELETON from its own ${BASH_SOURCE[0]} as "../../.." -- deliberately, so
-# the control-code reference follows the code rather than $PWD. A mutant dropped at
-# $WORK/mutant-preflight.sh therefore resolves SKELETON to a directory three levels
-# above mktemp, finds no linear-worker.sh there, and refuses on CONTROL-CODE. It was
-# measured doing exactly that: the mutant "still refused the client repo" and the
-# case read SURVIVED, when in truth the derivation under test had never run. A false
-# SURVIVED is worse than a false KILL -- it reports a load-bearing guard as
-# decorative. So the mutant gets a skeleton of its own, at the right depth.
-MUTSKEL="$WORK/mutskel"
-mkdir -p "$MUTSKEL/q-system/.q-system/scripts" "$MUTSKEL/.claude"
-cp "$SKEL_WORKER" "$MUTSKEL/q-system/.q-system/scripts/linear-worker.sh"
-cp "$SKEL_SETTINGS" "$MUTSKEL/.claude/settings.json"
-copy_guards "$MUTSKEL"
-MUTPF="$MUTSKEL/q-system/.q-system/scripts/repo-preflight.sh"
-sed 's|^ENGAGEMENT_ROOTS=.*|ENGAGEMENT_ROOTS="zzzz-no-such-root"|' "$PREFLIGHT" > "$MUTPF"
-# VALIDATE THE MUTANT APPLIED. A sed that matched nothing produces a byte-identical
-# file and a "SURVIVED" that means the edit never happened, not that the guard is weak.
-if cmp -s "$MUTPF" "$PREFLIGHT"; then
-  bad "the mutation changed nothing -- the mutant is not a mutant, so this proves nothing"
-elif grep -q '^ENGAGEMENT_ROOTS="zzzz-no-such-root"$' "$MUTPF"; then
-  ok "the mutant applied (the engagement roots were replaced with a root nothing is under)"
-  MUTH2="$WORK/select-mutant-pf.sh"
-  {
-    echo 'set -uo pipefail'
-    echo 'say() { printf "SAY %s\n" "$*" >&2; }'
-    echo "REPO=\"$REPO\""
-    echo "PREFLIGHT=\"$MUTPF\""
-    awk '/^cursor_get\(\) \{/,/^\}/'       "$DISPATCH"
-    awk '/^cursor_set\(\) \{/,/^\}/'       "$DISPATCH"
-    awk '/^fleet_candidates\(\) \{/,/^\}/' "$DISPATCH"
-    awk '/^rotation\(\) \{/,/^\}/'         "$DISPATCH"
-    awk '/^pick_list\(\) \{/,/^\}/'        "$DISPATCH"
-    echo 'pick_list'
-  } > "$MUTH2"
-  MP="$(KIPI_DISPATCH_REGISTRY="$REG5" KIPI_DISPATCH_CURSOR="$WORK/cursorM2" bash "$MUTH2" 2>/dev/null)"
-  printf '%s' "$MP" | grep -q 'newclient' \
-    && ok "with the derivation broken the client repo REAPPEARS -- case 20 is load-bearing" \
-    || bad "the mutant still refused the client repo, so case 20 is not driven by the derivation"
-else
-  bad "the mutant was written but does not carry the expected replacement"
-fi
+  && ok "the opted-in client engagement repo IS selected" \
+  || bad "an opted-in client repo is still kept out of the pick list: $(cat "$WORK/say5.log")"
+grep -q 'REFUSED as client engagement repos' "$WORK/say5.log" \
+  && bad "the dispatcher still emits the retired client-refusal count: $(cat "$WORK/say5.log")" \
+  || ok "no client-refusal count is emitted"
 
 echo
 echo "== 22. an API REFUSAL and a TOOTHLESS branch are different refusals (ASK-755) =="
@@ -1144,4 +1069,4 @@ printf '%s' "$RF23" | grep -q '"ovrrepo": "https://github.com/assafkip/ovrrepo.g
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" -eq 0 ] || exit 1
-echo "PASS: no repo is entered until seven named preflight checks pass, and selection rotates"
+echo "PASS: no repo is entered until every named preflight check passes, and selection rotates"
