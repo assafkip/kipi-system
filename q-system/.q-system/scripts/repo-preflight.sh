@@ -69,7 +69,7 @@ refuse() { FAILED=1; printf 'FAIL %s: %s\n' "$1" "$2"; }
 # not protecting the client, it is the reason the client work is late.
 #
 # WHAT STILL PROTECTS CLIENT WORK is every check below, and none of them is part
-# of the reversal: the kill switch, hook parity, the pinned remote, a dirty tree,
+# of the reversal: the kill switch, hook parity, the pinned remote, a git repo,
 # credentials and branch protection. A client repo enters only when it passes all
 # of them, the same bar as any other repo. Opt-in is still per row
 # (dispatch.enabled, read by kipi-dispatch.sh), so no repo is reached that nobody
@@ -277,17 +277,30 @@ else
   fi
 fi
 
-# --- 5. dirty -------------------------------------------------------------
-# Uncommitted work in a client repo belongs to a human. An agent that branches,
-# commits and opens a PR from that tree sweeps their work-in-progress into its own
-# diff, and the first anyone hears about it is a client-facing PR.
+# --- 5. dirty: RETIRED as a refusal (ASK-3526); only "is it a git repo" stays --
+# This refused any repo whose main checkout had uncommitted changes, on the
+# premise "an agent that branches, commits and opens a PR from that tree sweeps
+# their work-in-progress into its own diff". Same false premise as check 2,
+# measured 2026-10-30: the worker never uses that tree. linear-worker.sh cuts
+# every issue tree with `git -C "$TARGET_REPO" worktree add -B <branch> <tree>
+# origin/...` and otherwise only fetches and reads refs there; nothing runs
+# checkout, merge, reset, stash or commit in the main checkout. A human's
+# uncommitted work cannot reach an agent's diff with this refusal or without it.
+#
+# What it did do: the founder's live repos always carry uncommitted output (the
+# consulting root had 623 changes, one engagement repo 2338), so every client
+# repo was refused on every tick and RULE-2026-10-30-A ("The unattended agent
+# should and can reach client repos to work on the tickets") could never take
+# effect. The human-work protection is now a structural assertion in
+# test-repo-preflight.sh case 2h: it fails if linear-worker.sh or converge.sh aim
+# any git verb other than fetch, worktree or rev-parse at $TARGET_REPO, or cd into
+# it, and converge's receipt_tree() skips the main checkout. pr-review-agent.sh
+# also deletes refs in the same repository (update-ref -d), which touches refs,
+# never a working tree.
+#
+# Never commit, stash or discard in a main checkout to make a repo enterable.
 if ! git -C "$REPO_PATH" rev-parse --git-dir >/dev/null 2>&1; then
-  refuse "dirty" "$REPO_PATH is not a git repository"
-else
-  PORCELAIN="$(git -C "$REPO_PATH" status --porcelain 2>/dev/null)"
-  if [ -n "$PORCELAIN" ]; then
-    refuse "dirty" "working tree has $(printf '%s\n' "$PORCELAIN" | grep -c .) uncommitted change(s); an agent branch would capture them"
-  fi
+  refuse "git" "$REPO_PATH is not a git repository"
 fi
 
 # --- slug, for the two GitHub-side checks ---------------------------------

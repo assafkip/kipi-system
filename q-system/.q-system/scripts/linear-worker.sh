@@ -943,7 +943,7 @@ while IFS=$'\037' read -r _proj _path _remote _cnt; do
     REFUSED_N=$((REFUSED_N + _cnt))
     # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
     # command long enough to bury the line it is on, and this is read in a daily
-    # digest. The class of refusal is what tells a curable one (hooks, dirty)
+    # digest. The class of refusal is what tells a curable one (hooks)
     # from one that needs a person's decision (kill-switch), which is the
     # decision being supported.
     _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
@@ -965,7 +965,7 @@ say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
-# this one needs a cure (hooks drift, a dirty tree), a decision (the kill
+# this one needs a cure (hooks drift), a decision (the kill
 # switch), or a change outside the repo (branch protection on a GitHub plan that
 # has no protection toggle, which no script can cure). Collapsing it into the
 # skip line promises the operator a turn that is not coming until someone acts.

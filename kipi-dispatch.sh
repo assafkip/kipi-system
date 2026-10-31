@@ -1040,7 +1040,8 @@ if [ "$TARGET_PATH" != "$REPO" ]; then
   # client repo"). That decision is SUPERSEDED by RULE-2026-10-30-A: "The
   # unattended agent should and can reach client repos to work on the tickets."
   # Client repos now pass or fail the same remaining checks as every repo (kill
-  # switch, hooks, pinned remote, dirty, credentials, branch protection).
+  # switch, hooks, pinned remote, credentials, branch protection; the dirty-tree
+  # refusal was retired in ASK-3526 because the worker never uses the main checkout).
   #
   # TWO CARRIERS FOR ONE FACT, as the comment above says: --repo is the explicit
   # argument the worker parses, and KIPI_TARGET_REPO crosses the converge.sh
