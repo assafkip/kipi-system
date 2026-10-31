@@ -131,6 +131,24 @@ def public_instance_label(name):
     return "redacted"
 
 
+def count_candidates(instances):
+    """How many source notes (RCAs + learnings) exist at intake, ledgered or not.
+
+    ASK-3516. `scanned` counts only NEW un-ledgered sources, which is zero on a
+    normal quiet night, so it cannot feed the starvation alarm (PR #572 review).
+    This counts what the distiller COULD read, so it is zero only when the intake
+    itself is empty or its dirs are gone. File names only, no reads: it runs on
+    every nightly pass and the same two globs as new_rcas/new_learnings.
+    """
+    n = 0
+    for _name, path in instances:
+        for sub in ("rca", "learnings"):
+            d = Path(path) / "q-system" / "output" / sub
+            if d.is_dir():
+                n += sum(1 for f in d.glob("*.md") if f.name.lower() != "readme.md")
+    return n
+
+
 def new_sources(instances, ledger):
     """Every un-ledgered learning: documented failures (RCAs) + non-failure notes."""
     yield from new_rcas(instances, ledger)
@@ -327,7 +345,8 @@ def main():
         flush_ledger(ledger_path, ledger)
 
     print(json.dumps({"scanned": scanned, "published": published, "held": held,
-                      "skipped_dead": skipped_dead}, indent=2))
+                      "skipped_dead": skipped_dead,
+                      "candidates": count_candidates(intake)}, indent=2))
     return 0
 
 
