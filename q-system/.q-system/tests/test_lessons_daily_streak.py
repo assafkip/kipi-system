@@ -336,3 +336,16 @@ def test_quiet_night_with_intake_never_alerts_and_missing_key_records_nothing(tm
                KIPI_STARVATION_LEDGER=str(tmp_path / "starve2.jsonl"))
     subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
     assert not (tmp_path / "starve2.jsonl").exists(), "a summary without candidates must not record a false zero"
+
+
+@pytest.mark.parametrize("raw", ['null', '"7"', 'true', '[]'])
+def test_a_non_integer_candidates_value_records_nothing(tmp_path, raw):
+    """PR #578 review minor: the integer guard was pinned only by a grep. A string,
+    null, bool or list must not become a recorded zero (int(\"7\") or bool True would)."""
+    env = dict(os.environ, KIPI_CLAUDE_BIN="/usr/bin/true",
+               KIPI_DISTILL_CMD=f"printf '%s' '{{\"published\": [], \"held\": [], \"candidates\": {raw}}}'",
+               KIPI_LESSONS_LOG=str(tmp_path / "l.log"), KIPI_STREAK_FILE=str(tmp_path / "s.json"),
+               KIPI_STARVATION_LEDGER=str(tmp_path / "starve.jsonl"))
+    r = subprocess.run(["/bin/bash", str(JOB)], capture_output=True, text=True, env=env)
+    assert r.returncode == 0
+    assert not (tmp_path / "starve.jsonl").exists()
