@@ -27,14 +27,6 @@ sys.path.insert(0, str(HERE))
 import session_recall as sr  # noqa: E402
 
 
-def _load_hyphenated(module_name: str, filename: str):
-    """Import a hyphenated script (memory-scores-surface.py) by path."""
-    spec = importlib.util.spec_from_file_location(module_name, HERE / filename)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 _failures: list[str] = []
 
 
@@ -153,23 +145,6 @@ def test_resolve_reads_claude_code_session_id() -> None:
                 os.environ[k] = v
 
 
-def test_surface_producer_emits() -> None:
-    # The surface script, given surfaced scores, records their ids into the
-    # session-recall file via the single-writer helper (producer wiring).
-    surface = _load_hyphenated("memory_scores_surface", "memory-scores-surface.py")
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / ".session-recall.json"
-        scores = {
-            "feedback_rate_floor_250": {"status": "preferred"},
-            "project_chris_pi_deal": {"status": "contested"},
-        }
-        surface.record_surfaced_from_scores(scores, session_id="sess-X", recall_path=p)
-        got = {e["memory_id"] for e in sr.read_recall("sess-X", path=p)}
-        _check("surface_producer_emits",
-               got == {"feedback_rate_floor_250", "project_chris_pi_deal"},
-               f"got={got}")
-
-
 def main() -> int:
     test_records_exact_ids()
     test_two_sessions_do_not_mix()
@@ -180,7 +155,6 @@ def main() -> int:
     test_read_and_clear_is_atomic_snapshot()
     test_read_and_clear_missing_is_empty()
     test_resolve_reads_claude_code_session_id()
-    test_surface_producer_emits()
     if _failures:
         print(f"\n{len(_failures)} FAILURES: {_failures}")
         return 1

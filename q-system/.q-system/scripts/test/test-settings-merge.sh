@@ -42,6 +42,18 @@ cat > "$FIXTURE/instance.json" <<'EOF'
         {"type": "command", "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/token-guard.py\" || true", "timeout": 5},
         {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-custom-gate.py\"", "timeout": 5}
       ]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" 2>/dev/null || true"},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-live-surface.py\" 2>/dev/null || true"},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/chained-live-guard.py\"; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" || true"}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" 2>/dev/null || true", "async": true}
+      ]}
     ]
   }
 }
@@ -49,7 +61,7 @@ EOF
 
 python3 "$MERGE" "$FIXTURE/template.json" "$FIXTURE/instance.json" >/dev/null
 
-python3 - "$FIXTURE/instance.json" <<'EOF'
+python3 - "$FIXTURE/instance.json" "$REPO_ROOT/settings-template.json" "$REPO_ROOT/kipi-retired-hooks.json" <<'EOF'
 import json, sys
 merged = json.load(open(sys.argv[1]))
 cmds = [h["command"]
@@ -63,6 +75,24 @@ assert "|| true" not in tg[0], "stale swallow form survived the merge"
 
 assert any("instance-custom-gate.py" in c for c in cmds), \
     "instance-added hook for a script the template does not know must survive"
+
+# ASK-3512: the union keeps every instance-only hook, so hooks RETIRED from the
+# template (#571: memory_autocapture, memory-scores-surface) lived on in every
+# instance as inert test -f wiring no check could tell from live wiring. The
+# retired list is data (kipi-retired-hooks.json), dropped from the INSTANCE side
+# only. Negative control: an unlisted live hook must stay.
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+for dead in ("memory_autocapture.py", "memory-scores-surface.py"):
+    assert not any(dead in c and "chained-live-guard.py" not in c for c in all_cmds), f"retired hook {dead} survived the merge"
+assert any("chained-live-guard.py" in c for c in all_cmds), "a live script chained with a retired one was dropped"
+# Review minor: a retired script still wired in the template makes the list a silent no-op.
+tpl = open(sys.argv[2]).read()
+for e in json.load(open(sys.argv[3]))["scripts"]:
+    assert e["script"] not in tpl, f"{e['script']} is on the retired list but still wired in settings-template.json"
+assert any("instance-live-surface.py" in c for c in all_cmds), \
+    "live instance hook not on the retired list was dropped"
+assert all(g["hooks"] for ev in merged["hooks"].values() for g in ev), \
+    "empty hook group left behind after retiring its only hook"
 
 assert "custom-server" in merged.get("mcpServers", {}), "instance mcpServers dropped"
 assert "Bash(instance-only:*)" in merged["permissions"]["allow"], "instance permission dropped"

@@ -102,6 +102,10 @@ slug_for_repo() {
   [ -n "$repo" ] || return 0
   [ -d "$repo" ] || return 0
   remote="$(_registry_remote_for "$repo" "$reg")"
+  # The private overlay pins client remotes outside this public repo (ASK-3526,
+  # see KIPI_DISPATCH_TARGETS in kipi-dispatch.sh). Still a PIN, still ahead of
+  # the origin fallback. Unset means no overlay, which keeps tests hermetic.
+  [ -n "$remote" ] || remote="$(_registry_remote_for "$repo" "${KIPI_DISPATCH_TARGETS:-}")"
   slug="$(slug_from_remote "$remote")"
   # FALL BACK ON A PIN THAT YIELDS NO SLUG, not merely on an absent pin. A row
   # whose expected_remote is malformed -- or a registry read that returned

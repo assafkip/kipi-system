@@ -423,7 +423,7 @@ echo "== the requeue tool reads a large merged worker without SIGPIPE"
 # large. Both directions, on a throwaway repo whose main holds the real worker:
 RQ="$(mktemp -d)"; RQS="$HERE/../redrive-unattempted.sh"
 rq_repo() {  # rq_repo <dir> <worker-file>
-  git init -q --bare "$1/origin.git"; git init -q "$1/skel"
+  git init -q --bare "$1/origin.git" && git -C "$1/origin.git" symbolic-ref HEAD refs/heads/main; git init -q "$1/skel"
   git -C "$1/skel" config user.email t@t; git -C "$1/skel" config user.name t
   mkdir -p "$1/skel/q-system/.q-system/scripts"; cp "$2" "$1/skel/q-system/.q-system/scripts/linear-worker.sh"
   git -C "$1/skel" add -A; git -C "$1/skel" commit -qm seed

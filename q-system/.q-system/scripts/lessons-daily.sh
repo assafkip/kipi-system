@@ -218,6 +218,18 @@ lessons_half() {
   printf '%s' "$SUMMARY" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null \
     || { lessons_fail "lessons-distill.py emitted no parseable JSON summary"; return 1; }
 
+  # STARVATION INPUT (ASK-3516). `scanned` counts NEW un-ledgered sources and is zero
+  # on a normal quiet night, so alarming on it filed a permanent ticket for routine
+  # operation (PR #572 review). `candidates` counts every source at intake, ledgered
+  # or not: zero only when the intake itself is empty or its dirs are gone. Recorded
+  # only when the distiller reported an integer, so a HELD run (stub summary, no key)
+  # or a stubbed distiller never writes a false zero. loop_starvation.py owns the
+  # ledger and the alert text (emitter named there); it always exits 0.
+  CAND=$(field "d['candidates'] if isinstance(d.get('candidates'), int) and not isinstance(d.get('candidates'), bool) else ''")
+  if [ -n "$CAND" ]; then
+    python3 "$SKEL/q-system/.q-system/scripts/loop_starvation.py" record lessons-daily "$CAND" >> "$LOG" 2>&1 || true
+  fi
+
   PUB=$(field "len(d.get('published',[]))");  PUB=${PUB:-0}
   HELD=$(field "len(d.get('held',[]))");      HELD=${HELD:-0}
   TITLES=$(field "'; '.join(d.get('published',[])[:5])")
@@ -371,6 +383,16 @@ sync_skel_to_main() {
   if ! git -C "$SKEL" merge-base --is-ancestor HEAD origin/main 2>>"$LOG"; then
     echo "$(TS) skeleton main has commits origin/main lacks: left alone" >> "$LOG"
     return 0
+  fi
+  # auto-commit.py leaves session memory uncommitted on the skeleton's main (ASK-3525);
+  # a dirty memory file origin also changed would refuse the fast-forward, so it is
+  # copied aside and restored to HEAD first. Never fatal: a failure only logs.
+  HOLD_OUT="$(python3 "$SKEL/q-system/.q-system/scripts/skeleton-memory-hold.py" --repo "$SKEL" 2>&1 || true)"
+  if [ -n "$HOLD_OUT" ]; then
+    printf '%s\n' "$HOLD_OUT" >> "$LOG"
+    # A reverted live memory file must reach Sana's queue, not only this log.
+    bash "$SKEL/q-system/.q-system/scripts/slack-notify.sh" \
+      "lessons-daily: skeleton memory held before fast-forward, copies in .git/kipi-memory-held: $(printf '%s' "$HOLD_OUT" | tr '\n' ' ' | cut -c1-300)" >> "$LOG" 2>&1 || true
   fi
   git -C "$SKEL" merge --ff-only -q origin/main >> "$LOG" 2>&1 \
     || echo "$(TS) fast-forward of skeleton main refused (see above)" >> "$LOG"

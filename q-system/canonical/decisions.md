@@ -441,3 +441,27 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-10-20
 - **Revisit:** Only on a founder order. Turning the routine back on while the Mac
   job runs puts two workers on one queue.
+
+## The founder does not review PRs (2026-10-23)
+
+### RULE-2026-10-23-A: PR review is Sana's job, never the founder's
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "I dont review prs. that is sanas job")
+- **Decision:** No PR is routed to the founder for review, and no plan step asks
+  him to run the reviewer. The independent review is done by the fleet reviewer
+  (`pr-review-agent.sh`) run by Sana, with an agent that did not write the PR.
+  When the review path is stuck (cap, queue, a missing verdict), the fix is
+  Sana's machinery, not a founder step. This extends "I do not want to be the
+  merge step - ever" (merge-bypass-gate.py).
+- **Reason:** On 2026-10-23 the main session handed PR #557 to the founder to
+  review after an author agent self-approved it. He corrected it.
+- **Date:** 2026-10-23
+- **Revisit:** permanent
+
+## Unattended agents work client repos (2026-10-30)
+
+### RULE-2026-10-30-A: The worker reaches client repos; the 2026-08-13 refusal is superseded
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "If consulting tickets and client project tickets are not in the worker, they will never get done. I want to change the ruling that they stay out. The unattended agent should and can reach client repos to work on the tickets. That's the ruling from now on." Then: "I need this ruling to propagate and now be a rule that over supersedes the other one.")
+- **Decision:** Supersedes the 2026-08-13 decision (no unattended agents in client repos: "no. unattended agents should not reach a client repo"). repo-preflight.sh check 0 no longer refuses a repo under an engagement root or the root itself. Client repos are opted in per registry row and pass the same remaining checks as every repo: kill switch, hook parity, pinned remote, credentials, branch protection. (The dirty-tree refusal was retired later the same night, ASK-3526 PR #579: the worker cuts every issue tree from origin and never touches the main checkout, so human work is protected structurally.) The archived engagement under RULE-2026-10-23-B stays off limits; that rule lives in the founder's global rules outside this repo, is enforced by its own hook, and is unchanged.
+- **Reason:** With the refusal in place, owner:sana tickets in the consulting root and the engagement repos had no worker, so they never got done.
+- **Date:** 2026-10-30
+- **Revisit:** Only on a founder order. Restoring a refusal is a code change in the open (ASK-3526), never a flag.
