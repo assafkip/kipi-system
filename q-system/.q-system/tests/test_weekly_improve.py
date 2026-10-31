@@ -84,6 +84,29 @@ def test_writer_refuses_roadmap_and_unknown(tmp_path):
     assert not (tmp_path / "friction.jsonl").exists()
 
 
+def test_cli_names_each_missing_input_and_since_when(tmp_path):
+    """ASK-3402 check that can fail. RED before the fix: this printed "nothing
+    this week" for both sections. No drafts ledger and no friction file."""
+    inbox = tmp_path / "inbox"
+    env = dict(os.environ, KIPI_FRICTION_FILE=str(tmp_path / "friction.jsonl"),
+               KIPI_PROPOSALS_INBOX=str(inbox), KIPI_DRAFTS_LEDGER=str(tmp_path / "drafts.jsonl"))
+    r = subprocess.run([sys.executable, str(WEEKLY), "--dry-run"], capture_output=True, text=True, env=env)
+    assert "nothing this week" not in r.stdout, r.stdout
+    assert "Friction: input missing, no friction.jsonl exists" in r.stdout, r.stdout
+    assert "Skill proposals inbox: input missing, no inbox directory exists" in r.stdout, r.stdout
+    # since when: an existing inbox holding no proposal names its newest file's date
+    inbox.mkdir()
+    old = inbox / "engagement-2026-09-01.md.done"
+    old.write_text("x")
+    os.utime(old, (1788000000, 1788000000))  # 2026-08-29 UTC
+    (tmp_path / "friction.jsonl").write_text("")
+    r2 = subprocess.run([sys.executable, str(WEEKLY), "--dry-run"], capture_output=True, text=True, env=env)
+    assert "Friction: input empty, friction.jsonl has no rows" in r2.stdout, r2.stdout
+    assert "Skill proposals inbox: input empty, last file 2026-08-" in r2.stdout, r2.stdout
+    r3 = subprocess.run([sys.executable, str(WEEKLY), "--dry-run", "--count-inputs"], capture_output=True, text=True, env=env)
+    assert r3.stdout.strip() == "0", r3.stdout
+
+
 # --- the reader: empty is not broken ------------------------------------------
 
 def test_empty_and_unreadable_render_differently(weekly, tmp_path):
@@ -91,7 +114,8 @@ def test_empty_and_unreadable_render_differently(weekly, tmp_path):
     bad = tmp_path / "bad.jsonl"
     bad.write_text("{not json\n")
     bad_msg, bad_degraded = weekly.build(bad, tmp_path / "no-inbox")
-    assert "nothing this week" in empty_msg and not empty_degraded
+    assert "input missing" in empty_msg and "no absent.jsonl exists" in empty_msg and not empty_degraded
+    assert "nothing this week" not in empty_msg, "ASK-3402: a starved input is not a quiet week"
     assert "COULD NOT READ" in bad_msg and bad_degraded
     assert empty_msg != bad_msg
 
@@ -131,7 +155,7 @@ def test_old_rows_are_not_resent_and_only_old_rows_render_nothing_this_week(week
     ledger.write_text(json.dumps({"id": "fr-2026-08-09-01", "at": old, "target": "rule",
                                   "text": "old: change the owner rule"}) + "\n")
     msg, degraded = weekly.build(ledger, tmp_path / "no-inbox", now=now)
-    assert "nothing this week" in msg and "1 older line(s) not re-sent" in msg and not degraded
+    assert "last row 2026-08-09" in msg and "1 older line(s) not re-sent" in msg and not degraded
     assert "fr-2026-08-09-01" not in msg
     ledger.write_text(ledger.read_text() + json.dumps(
         {"id": "fr-2026-09-07-01", "at": fresh, "target": "rule", "text": "new: change the owner rule"}) + "\n")
