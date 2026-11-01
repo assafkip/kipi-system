@@ -929,5 +929,41 @@
     "status": "published",
     "date": "2026-10-31",
     "lesson_id": "make-sync-operations-idempotent-and-honest"
+  },
+  "cf68ce393fa92fa4": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "when-every-candidate-fails-a-multi-reason-gate"
+  },
+  "08f2c9108912936a": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "sizing-timeouts-per-workload-class"
+  },
+  "901f4b3e8fdf6c7e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "attributing-failures-in-staged-generation-pipelines"
+  },
+  "4f6b7827bf5627c0": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "pin-shared-identifiers-to-one-source-across-process-boundari"
+  },
+  "37d6a8b9533ea461": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "writing-safe-automated-rename-migrations"
+  },
+  "416e679c11a5ff9d": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-01",
+    "lesson_id": "block-automated-re-evaluation-at-human-action-boundaries"
   }
 }
