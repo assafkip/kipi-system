@@ -52,6 +52,27 @@ ONLY=""
 # consulting run script passes it, because there "ahead" has meant real work
 # every time (2026-09-06, three times in one day).
 REFUSE_INSTANCE_AHEAD=0
+# --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
+# checked-out branch still holds updater commits origin does not have (ASK-3655,
+# ASK-3633). Scar: the updater commits to the LOCAL branch and nothing pushes it.
+# consulting stacked 12 unpushed commits, ktlyst 88; the next origin edit to the
+# same file (ASK-3528 on .claude/settings.json) then conflicted follow_main.sh and
+# every later sync built on a base origin never saw. Reported always; refused only
+# with the flag, because fleet-wide most instances are ahead on purpose (measured
+# 2026-11-01: 12 of 13 with commits ahead) and a gate red on its population gets
+# switched off. Only updater-authored commits count, so a human's own branch work
+# is never judged. Reads the LAST FETCHED origin ref and never fetches.
+REFUSE_UNLANDED_SYNC=0
+UNLANDED_SYNC_COUNT=0
+unlanded_sync_scan() {
+  local path="$1" up
+  UNLANDED_SYNC_COUNT=0
+  up="$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
+  UNLANDED_SYNC_COUNT="$(git -C "$path" log --format=%s "$up..HEAD" 2>/dev/null \
+    | grep -c '\[no-issue: fleet updater' || true)"
+  [ "$UNLANDED_SYNC_COUNT" -gt 0 ] && echo "  unlanded sync: $UNLANDED_SYNC_COUNT updater commit(s) on HEAD are not on $up"
+  return 0
+}
 # --skip-reach-preflight: run without first asking fleet-reach-audit.py which
 # instances would refuse. See reach_preflight. The hatch exists so a genuinely
 # unblockable instance cannot wedge the whole fleet, and it says so out loud.
@@ -66,6 +87,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --refuse-instance-ahead) REFUSE_INSTANCE_AHEAD=1; shift ;;
+    --refuse-unlanded-sync) REFUSE_UNLANDED_SYNC=1; shift ;;
     --skip-reach-preflight) SKIP_REACH_PREFLIGHT=1; shift ;;
     --only)
       ONLY="${2:-}"
@@ -77,7 +99,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: unknown argument: $1" >&2
-      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--skip-reach-preflight]" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--refuse-unlanded-sync] [--skip-reach-preflight]" >&2
       exit 1
       ;;
   esac
@@ -2605,6 +2627,11 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     instance_ahead_preflight "$path" "$prefix" "$name"
     if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    fi
+
+    unlanded_sync_scan "$path"
+    if [ "$REFUSE_UNLANDED_SYNC" = "1" ] && [ "$UNLANDED_SYNC_COUNT" -gt 0 ]; then
+      abandon_instance "  ERROR: $UNLANDED_SYNC_COUNT earlier updater commit(s) never reached origin; refusing (--refuse-unlanded-sync), nothing staged, nothing written. Land them first: a worktree off origin, merge, PR (ASK-3655)" && continue
     fi
 
     # ASK-605. The list above is hand-maintained and names 3 paths. auto-commit.py's
