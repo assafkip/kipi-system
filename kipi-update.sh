@@ -1864,6 +1864,37 @@ trap cleanup_updater_temps EXIT
 # KIPI_BUSY_POLL_SECS (default 15). The sleep is the updater's own wait loop, run
 # as the founder's launchd/shell job, never inside an agent tool call.
 KIPI_BUSY_GUARDS_DEFAULT='ASK_AI_consultant=follow_main\.sh|content-engine-runner\.sh|pipeline\.daily|problems-run\.sh'
+# The processes that ARE the job, not processes that merely mention it. `pgrep -f`
+# matched the whole command line, so a wait loop whose text contains
+# "pipeline.daily" (consulting-72's heartbeat wait, pid 28423, 2026-11-01) held the
+# approved consulting apply at "busy, nothing written" forever. A process counts
+# only when its argv0 or its first non-flag argument has a basename equal to a
+# guard name (with an optional .py/.sh), so `bash job.sh` and `python3 -u job.py`
+# match and `bash -c 'until ...; # job.sh'` does not (argv1 is -c, and its text
+# is not an argument we read). The updater's own pid and its ancestors are
+# excluded: they carry this script's name and arguments.
+busy_processes() {
+  local re="$1" skip=" $$ " p
+  p=$$
+  while [ "${p:-0}" -gt 1 ] 2>/dev/null; do
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    [ -n "$p" ] && skip="$skip$p "
+  done
+  ps -axo pid=,command= | awk -v re="^(${re})(\\.py|\\.sh)?$" -v skip="$skip" '
+    function base(s,   n, a) { n = split(s, a, "/"); return a[n] }
+    {
+      pid = $1
+      if (index(skip, " " pid " ")) next
+      hit = (base($2) ~ re)
+      for (i = 3; i <= NF && !hit; i++) {
+        if ($i ~ /^-/) continue
+        hit = (base($i) ~ re)
+        break
+      }
+      if (hit) print pid ":" base($2)
+    }'
+}
+
 wait_for_quiet_target() {
   local target="$1" guards="${KIPI_BUSY_GUARDS-$KIPI_BUSY_GUARDS_DEFAULT}" g re waited=0
   re=""
@@ -1871,9 +1902,12 @@ wait_for_quiet_target() {
     [ "${g%%=*}" = "$target" ] && re="${g#*=}"
   done <<< "$(printf '%s\n' "$guards" | tr ';' '\n')"
   [ -n "$re" ] || return 0
-  while pgrep -f "$re" >/dev/null 2>&1; do
-    [ "$waited" -ge "${KIPI_BUSY_WAIT_SECS:-600}" ] && return 1
-    [ "$waited" -eq 0 ] && echo "  $target is busy; waiting for: $(pgrep -fl "$re" | head -3 | tr '\n' ' ')"
+  while [ -n "$(busy_processes "$re")" ]; do
+    if [ "$waited" -ge "${KIPI_BUSY_WAIT_SECS:-600}" ]; then
+      echo "  $target busy after ${waited}s; still running: $(busy_processes "$re" | head -3 | tr '\n' ' ')"
+      return 1
+    fi
+    [ "$waited" -eq 0 ] && echo "  $target is busy; waiting for: $(busy_processes "$re" | head -3 | tr '\n' ' ')"
     sleep "${KIPI_BUSY_POLL_SECS:-15}"
     waited=$((waited + ${KIPI_BUSY_POLL_SECS:-15}))
   done
