@@ -148,8 +148,17 @@ def test_only_lessons_streak_writes_the_streak_file():
     assert 'lessons_streak.py' in src
     for bad in ('> "$STREAK_FILE"', '>> "$STREAK_FILE"', '>> "$ESCALATIONS"', '> "$ESCALATIONS"', "streak_write"):
         assert bad not in src, bad
-    writers = subprocess.run(["grep", "-rl", "lessons-propagation-streak", str(SCRIPTS)], capture_output=True, text=True).stdout.split()
-    assert sorted(Path(w).name for w in writers) == ["lessons-daily.sh", "lessons_streak.py"], writers
+    writers = subprocess.run(["grep", "-rl", "--include=*.py", "--include=*.sh", "lessons-propagation-streak", str(SCRIPTS)], capture_output=True, text=True).stdout.split()
+    # ASK-3574: lessons-fanout-check.py names the streak file because it READS it.
+    # Naming a file is not writing it, so a read-only consumer is allowed, but only
+    # while its source holds no write call. Scar: this assert once pinned "who
+    # mentions the file" and went red the moment a reader was added.
+    readers = {"lessons-fanout-check.py"}
+    for r in readers:
+        rsrc = (SCRIPTS / r).read_text(encoding="utf-8")
+        for call in ("write_text(", ".write(", "os.replace(", "open(", "shutil."):
+            assert call not in rsrc, f"{r} is a reader of the streak file but calls {call}"
+    assert sorted(Path(w).name for w in writers if Path(w).name not in readers) == ["lessons-daily.sh", "lessons_streak.py"], writers
 
 
 def test_this_file_runs_its_own_tests_under_python3():
