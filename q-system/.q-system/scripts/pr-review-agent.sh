@@ -1093,7 +1093,7 @@ done
 # Temp worktrees under $TMPDIR/tmp.*/wt are only REPORTED: no marker proves which
 # run made them (the PR #495 lesson recorded in review_scratch_cleanup above).
 reap_finished_review_trees() {
-  local path sha det n state lock holder expect kept=0 gone=0 unk=0
+  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0
   while read -r path sha det; do
     case "$path" in
       */review-trees/*__pr-*)
@@ -1148,7 +1148,7 @@ reap_finished_review_trees() {
               kept=$((kept+1)); continue
             fi
             if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
-              gone=$((gone+1)); command rm -f "$lock" 2>/dev/null || true
+              gone=$((gone+1)); [ -n "$force" ] && forced=$((forced+1)); command rm -f "$lock" 2>/dev/null || true
             else kept=$((kept+1)); fi ;;
           *) kept=$((kept+1)) ;;
         esac ;;
@@ -1156,7 +1156,8 @@ reap_finished_review_trees() {
     esac
   done < <(_wt_rows)
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
-  echo "  review-tree cleanup: removed $gone finished, kept $kept; $unk temp tree(s) of unproven owner left alone"
+  # ASK-3630 minor: a force-removed tree deleted untracked files for good; say how many.
+  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed: untracked files identical to the main checkout), kept $kept; $unk temp tree(s) of unproven owner left alone"
 }
 # reap-merged-trees-end
 reap_finished_review_trees
