@@ -18,6 +18,13 @@ hand-transcribed copy is how the audit and the guard would come to disagree
 about what is blocking.
 
 Writes nothing anywhere. Every git call is a read.
+
+THE ONE EXCEPTION, and it is opt-in: `--gates` (ASK-3621). It runs each
+target's OWN pre-commit gates (lefthook.yml) in a scratch worktree of its HEAD
+and reports a red gate by NAME as verdict BLOCKED-GATE, so the updater can
+refuse the target before it writes a byte. The scratch worktree is created under
+the system temp dir and removed in a `finally`; nothing in the target's working
+tree or index is touched.
 """
 
 import argparse
@@ -242,7 +249,69 @@ def classify(repo, path, staged, skel_blobs, never_commit=frozenset()):
     return "founder"
 
 
-def audit_instance(entry, owned, skel_blobs, cleared=(), skeleton=SKELETON):
+# A failing gate prints "<boxing glove> name: fail_text" or, with no fail_text,
+# "<boxing glove> name (0.1 seconds)". The banner "<glove> lefthook v2..." is not a gate.
+GATE_LINE = re.compile(r"^\U0001F94A\s+([\w.-]+)(?::|\s+\()")
+
+
+def gate_probe(path, prefix=""):
+    """Run the target's pre-commit gates in a scratch worktree; return red gate names.
+
+    WHY: 2026-10-31 the consulting root refused a full sync on its
+    `linear-identity` pre-commit gate (red under launchd's empty env). The
+    updater had already written files, the commit was refused, and the unwind
+    ran. Every earlier consulting failure (voice-loop-mirror, caller-classifier,
+    capability manifest) had the same shape: a gate only this checkout runs,
+    found AFTER the write. Asking first costs ~0.3s per target (measured).
+
+    NOT `--force`. Measured 2026-10-31: --force ran ktlyst's `advisory-promote`
+    gate (7 overdue kinds, red on HEAD) that its glob keeps out of every updater
+    commit, so the probe refused a target the real sync lands in, a gate red on
+    its own population. The probe instead STAGES a marker under each path class
+    the updater commits (<prefix>/, .claude/, plugins/) and runs the hook as a
+    commit would, so a gate fires exactly when its globs match that payload.
+    Returns (names, note). note is "" when the probe ran, else why it did not.
+    A probe that cannot run is a note, never a pass printed as green.
+    """
+    import shutil
+    if not (pathlib.Path(path) / "lefthook.yml").exists():
+        return [], "no lefthook.yml"
+    if shutil.which("lefthook") is None:
+        return [], "lefthook not installed: gates NOT probed"
+    scratch = pathlib.Path(tempfile.mkdtemp(prefix="kipi-gate-probe-")) / "wt"
+    added = False
+    try:
+        r = subprocess.run(["git", "-C", str(path), "worktree", "add", "-q", "--detach",
+                            str(scratch), "HEAD"], capture_output=True, text=True)
+        if r.returncode != 0:
+            return [], f"scratch worktree failed: {r.stderr.strip()[:120]}"
+        added = True
+        for rel in [f"{prefix}/.kipi-gate-probe" if prefix else ".kipi-gate-probe",
+                    ".claude/.kipi-gate-probe", "plugins/.kipi-gate-probe"]:
+            (scratch / rel).parent.mkdir(parents=True, exist_ok=True)
+            (scratch / rel).write_text("probe\n")
+            subprocess.run(["git", "-C", str(scratch), "add", "-f", rel], capture_output=True)
+        out = subprocess.run(["lefthook", "run", "pre-commit"], cwd=scratch,
+                             capture_output=True, text=True, timeout=300)
+        text = out.stdout + out.stderr
+        names = []
+        for line in text.splitlines():
+            m = GATE_LINE.match(line)
+            if m and m.group(1) not in names:
+                names.append(m.group(1))
+        if out.returncode != 0 and not names:
+            return ["(unnamed gate, lefthook exit %d)" % out.returncode], ""
+        return names, ""
+    except subprocess.TimeoutExpired:
+        return ["(gate probe timed out)"], ""
+    finally:
+        if added:
+            subprocess.run(["git", "-C", str(path), "worktree", "remove", "--force",
+                            str(scratch)], capture_output=True)
+        shutil.rmtree(scratch.parent, ignore_errors=True)
+
+
+def audit_instance(entry, owned, skel_blobs, cleared=(), skeleton=SKELETON, gates=False):
     path = pathlib.Path(entry["path"])
     prefix = entry.get("subtree_prefix") or ""
     result = {
@@ -258,6 +327,14 @@ def audit_instance(entry, owned, skel_blobs, cleared=(), skeleton=SKELETON):
     if not (path / ".git").exists():
         result["verdict"] = "NOT-A-REPO"
         return result
+
+    if gates:
+        red, note = gate_probe(path, prefix)
+        result["gate_note"] = note
+        if red:
+            result["gates_red"] = red
+            result["verdict"] = "BLOCKED-GATE"
+            return result
 
     spec = guard_pathspec(prefix, owned, cleared)
     rows = ([(s, p, True) for s, p in name_status(path, spec, cached=True)] +
@@ -285,6 +362,10 @@ def audit_instance(entry, owned, skel_blobs, cleared=(), skeleton=SKELETON):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable")
+    parser.add_argument("--gates", action="store_true",
+                        help="also run each target's own pre-commit gates in a scratch "
+                             "worktree (ASK-3621); a red gate is BLOCKED-GATE")
+    parser.add_argument("--only", default="", help="audit only this instance name")
     parser.add_argument("--skeleton", default=str(SKELETON))
     parser.add_argument(
         "--after", action="store_true",
@@ -303,19 +384,21 @@ def main():
         if not str(i.get("status", "")).startswith("merged")
         and i.get("skeleton_managed") is not False
     ]
+    if args.only:
+        entries = [e for e in entries if e["name"] == args.only]
     cleared = never_commit_paths(updater) if args.after else ()
     if cleared:
         print("MODE: --after, modelling the untrack migration for:")
         for path in cleared:
             print(f"  {path}")
         print()
-    results = [audit_instance(e, owned, skel_blobs, cleared, skeleton) for e in entries]
+    results = [audit_instance(e, owned, skel_blobs, cleared, skeleton, args.gates) for e in entries]
 
     if args.json:
         print(json.dumps(results, indent=2))
         return 0
 
-    order = {"WOULD-SYNC": 0, "BLOCKED-FLEET": 1, "BLOCKED-FOUNDER": 2}
+    order = {"WOULD-SYNC": 0, "BLOCKED-FLEET": 1, "BLOCKED-FOUNDER": 2, "BLOCKED-GATE": 3}
     counts = {}
     for row in results:
         counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
@@ -331,6 +414,8 @@ def main():
         if row["verdict"] == "WOULD-SYNC":
             continue
         print(f"{row['name']}  [{row['verdict']}]")
+        for g in row.get("gates_red", []):
+            print(f"    gate red: {g}")
         for item in row["blocked_by"]:
             where = "index " if item["staged"] else "wtree "
             print(f"    {item['status']:2s} {where} {item['kind']:14s} {item['path']}")

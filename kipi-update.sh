@@ -5,6 +5,20 @@ trap "" PIPE
 # still run the instance's active hooks and fail closed when a hook rejects them.
 export GIT_TERMINAL_PROMPT=0
 
+# ASK-3621. The updater's commits run each TARGET's own pre-commit gates, and the
+# consulting root's `linear-identity` gate goes red when KIPI_LINEAR_API_KEY is
+# empty. launchd runs /bin/bash and never reads ~/.zshenv, so the weekly
+# lessons-daily fan-out always had an empty one: measured 2026-10-31 16:13, the
+# gate printed "Linear writes would be recorded as the founder" and the consulting
+# config commit was refused and rolled back. This is the same declaration
+# ~/.zshenv makes for interactive shells, not a bypass: it makes the gate TRUE
+# (the Sana token is the identity) instead of switching it off. Never overrides a
+# value already set, and never reaches for the founder key.
+if [ -z "${KIPI_LINEAR_API_KEY:-}" ] && [ -s "$HOME/.config/kipi/linear-sana-token" ]; then
+  KIPI_LINEAR_API_KEY="$(cat "$HOME/.config/kipi/linear-sana-token")"
+  export KIPI_LINEAR_API_KEY
+fi
+
 # kipi-update.sh - Sync latest kipi-system skeleton into all registered instances
 # Usage: ./kipi-update.sh [--dry-run]
 #
@@ -1845,6 +1859,27 @@ trap cleanup_updater_temps EXIT
 #   and the disarm is announced rather than silent.
 #
 # Pinned by test-kipi-update-reach-preflight.sh.
+# Busy guard. Returns 0 when no process matching the target's guard regex is
+# running (or it has none), 1 after KIPI_BUSY_WAIT_SECS (default 600). Polls every
+# KIPI_BUSY_POLL_SECS (default 15). The sleep is the updater's own wait loop, run
+# as the founder's launchd/shell job, never inside an agent tool call.
+KIPI_BUSY_GUARDS_DEFAULT='ASK_AI_consultant=follow_main\.sh|content-engine-runner\.sh|pipeline\.daily|problems-run\.sh'
+wait_for_quiet_target() {
+  local target="$1" guards="${KIPI_BUSY_GUARDS-$KIPI_BUSY_GUARDS_DEFAULT}" g re waited=0
+  re=""
+  while IFS= read -r g; do
+    [ "${g%%=*}" = "$target" ] && re="${g#*=}"
+  done <<< "$(printf '%s\n' "$guards" | tr ';' '\n')"
+  [ -n "$re" ] || return 0
+  while pgrep -f "$re" >/dev/null 2>&1; do
+    [ "$waited" -ge "${KIPI_BUSY_WAIT_SECS:-600}" ] && return 1
+    [ "$waited" -eq 0 ] && echo "  $target is busy; waiting for: $(pgrep -fl "$re" | head -3 | tr '\n' ' ')"
+    sleep "${KIPI_BUSY_POLL_SECS:-15}"
+    waited=$((waited + ${KIPI_BUSY_POLL_SECS:-15}))
+  done
+  return 0
+}
+
 reach_preflight() {
   local audit="$SCRIPT_DIR/fleet-reach-audit.py" out rc
   if [ "$SKIP_REACH_PREFLIGHT" = "1" ]; then
@@ -1870,7 +1905,12 @@ reach_preflight() {
   # for exactly the case where it cannot build the guard's pathspec; the old
   # 2>/dev/null deleted it and left an ABORT naming only an exit code.
   # A non-zero exit aborts even with stdout present: a raising audit is no verdict.
-  out="$(python3 "$audit" --json)" && rc=0 || rc=$?
+  # --gates: run each target's own pre-commit gates in a scratch worktree BEFORE
+  # any write (ASK-3621). Scoped to --only so a red gate in one instance cannot
+  # stop a run aimed at another. A dry run probes too: the probe is read-only.
+  local audit_args=(--json --gates)
+  [ -n "${ONLY:-}" ] && audit_args+=(--only "$ONLY")
+  out="$(python3 "$audit" "${audit_args[@]}")" && rc=0 || rc=$?
   if [ -z "$out" ] || [ "$rc" -ne 0 ]; then
     echo ""
     echo "ABORT: the reach preflight produced no verdict (exit $rc)."
@@ -1900,7 +1940,8 @@ reach_preflight() {
   #     skipped entirely, which let the run ENTER a blocked instance.
   # Only `|| rc=$?` both suppresses set -e and preserves python's real status.
   rc=0
-  python3 - "$out" "${ONLY:-}" <<'PYEOF' || rc=$?
+  GATED_FILE="$(mktemp)"
+  python3 - "$out" "${ONLY:-}" "$GATED_FILE" <<'PYEOF' || rc=$?
 import json, sys
 rows = json.loads(sys.argv[1])
 only = sys.argv[2]
@@ -1918,12 +1959,13 @@ def _in_loop_only(r):
 in_loop = [r for r in fleet if _in_loop_only(r)]
 fleet = [r for r in fleet if not _in_loop_only(r)]
 founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
+gated = [r for r in rows if r.get("verdict") == "BLOCKED-GATE"]
 ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 # MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
 # Unnamed, they read as an unexplained shortfall -- "23 of 24" with nothing
 # accounting for the 24th (PR #396 review round 2, minor).
 other = [r for r in rows
-         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
+         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER", "BLOCKED-GATE")]
 scope = f" (scoped to --only {only})" if only else ""
 # The headline says what the audit MEASURED (a dirty tree inside the synced
 # pathspec), never "would sync now": a stale skeleton or a dangling symlink
@@ -1951,8 +1993,23 @@ for r in fleet:
     print(f"  {r['name']}: BLOCKED by updater exhaust")
     for b in (r.get("blocked_by") or [])[:5]:
         print(f"      {b.get('status','?')}  {b.get('path')}")
-sys.exit(2 if fleet else 0)
+for r in gated:
+    print(f"  {r['name']}: BLOCKED by its own pre-commit gate(s): "
+          f"{', '.join(r.get('gates_red') or [])}")
+# Scoped to ONE instance (--only), a red gate aborts: there is nothing else to
+# run. In a fleet run it must NOT abort the others -- PR #396's lesson, one
+# instance's refusal stopping every sync. The names go to a file the loop reads,
+# and each is skipped UNWRITTEN there.
+open(sys.argv[3], "w").write("".join(r["name"] + "\n" for r in gated))
+sys.exit(3 if (gated and only) else (2 if fleet else 0))
 PYEOF
+  if [ "$rc" -eq 3 ]; then
+    echo ""
+    echo "ABORT: the target's own pre-commit gate is red on its current HEAD."
+    echo "Nothing was written to it. The gate is named above; fix the"
+    echo "cause (environment or the target), do not skip the gate."
+    exit 1
+  fi
   if [ "$rc" -eq 2 ]; then
     echo ""
     echo "ABORT: instance(s) named above carry the updater's own exhaust."
@@ -1987,6 +2044,23 @@ while IFS='|' read -r name path prefix itype declared; do
     continue
   fi
   echo "--- $name ($itype) ---"
+  if [ -n "${GATED_FILE:-}" ] && grep -qxF -- "$name" "$GATED_FILE" 2>/dev/null; then
+    echo "  SKIPPED UNWRITTEN: its own pre-commit gate is red (named in the reach preflight above)"
+    count_instance_failure
+    echo ""
+    continue
+  fi
+  # ASK-3621 / consulting-72 ruling 2026-10-31: the consulting root runs launchd
+  # jobs that write into the same tree the rsync rewrites. Wait while one is up,
+  # then abandon the target UNWRITTEN rather than race it. The pattern list is
+  # data (KIPI_BUSY_GUARDS, "name=regex"), and the updater does the check itself
+  # so no operator has to remember to run pgrep first.
+  if [ "$DRY_RUN" != "--dry-run" ] && ! wait_for_quiet_target "$name"; then
+    echo "  ERROR: $name is busy (jobs matching its busy guard still running); nothing written"
+    count_instance_failure
+    echo ""
+    continue
+  fi
 
   if [ ! -d "$path" ]; then
     echo "  SKIP: path $path does not exist"
