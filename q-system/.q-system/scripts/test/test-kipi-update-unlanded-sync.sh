@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # unlanded_sync_scan counts updater commits on HEAD that origin lacks. ASK-3655 /
-# ASK-3633: consulting held 12 unpushed, ktlyst 88.
+# ASK-3633: consulting held 12 unpushed, another instance 88.
 # Tests the FUNCTION extracted from the updater (never runs the updater, which
 # rsyncs the whole fleet), plus pins that the flag is parsed and the scan is
 # called before the refusal. Negative self-test: pushed, human-only and

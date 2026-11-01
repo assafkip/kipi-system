@@ -55,7 +55,7 @@ REFUSE_INSTANCE_AHEAD=0
 # --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
 # checked-out branch still holds updater commits origin does not have (ASK-3655,
 # ASK-3633). Scar: the updater commits to the LOCAL branch and nothing pushes it.
-# consulting stacked 12 unpushed commits, ktlyst 88; the next origin edit to the
+# consulting stacked 12 unpushed commits, another instance 88; the next origin edit to the
 # same file (ASK-3528 on .claude/settings.json) then conflicted follow_main.sh and
 # every later sync built on a base origin never saw. Reported always; refused only
 # with the flag, because fleet-wide most instances are ahead on purpose (measured
