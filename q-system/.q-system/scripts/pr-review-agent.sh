@@ -1113,9 +1113,30 @@ reap_finished_review_trees() {
             # either check). A merged PR is not proof the tree is idle: skip a
             # dirty tree and a tree that is a live process's cwd, say why, and
             # FAIL CLOSED when lsof is missing or the status read fails.
-            if [ -n "$(git -C "$path" status --porcelain 2>/dev/null || echo unreadable)" ]; then
-              echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
-              kept=$((kept+1)); continue
+            # ASK-3621 (disk 98%, 2026-10-31): 22 of 36 finished consulting trees
+            # (11 GB) were skipped HERE for one reason: untracked q-consult/output/rca
+            # files, byte-identical to files in the repo's own main checkout, appear in
+            # every tree seconds after it is created. So the dirty skip kept every
+            # tree for good and the reaper above freed nothing. A tree is still dirty
+            # when ANY entry is not a plain untracked file, or when an untracked file
+            # is absent from or differs from the main checkout copy: that is work
+            # nobody else holds. Only a provable duplicate may be removed with --force.
+            # NUL records must never pass through $(...), which drops them: the
+            # first cut did, saw one fused record, and removed every dirty tree.
+            # The sentinel makes a failed status read count as NOT a duplicate.
+            force=""; any=0; dup=1
+            while IFS= read -r -d '' rec; do
+              [ -n "$rec" ] || continue
+              any=1; code="${rec:0:2}"; rel="${rec:3}"
+              if [ "$code" != '??' ] || [ ! -f "$path/$rel" ] || [ -L "$path/$rel" ] \
+                 || [ ! -f "$REVIEW_REPO/$rel" ] || ! cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then dup=0; fi
+            done < <(git -C "$path" status --porcelain=v1 -z -uall 2>/dev/null || printf '!!unreadable\0')
+            if [ "$any" = 1 ]; then
+              if [ "$dup" != 1 ]; then
+                echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
+                kept=$((kept+1)); continue
+              fi
+              force="--force"
             fi
             if ! command -v lsof >/dev/null 2>&1; then
               echo "  review-tree skip: PR $n tree kept, lsof missing so live processes cannot be ruled out"
@@ -1126,7 +1147,7 @@ reap_finished_review_trees() {
               echo "  review-tree skip: PR $n tree is the cwd of a live process"
               kept=$((kept+1)); continue
             fi
-            if git -C "$REVIEW_REPO" worktree remove --force "$path" 2>/dev/null; then
+            if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
               gone=$((gone+1)); command rm -f "$lock" 2>/dev/null || true
             else kept=$((kept+1)); fi ;;
           *) kept=$((kept+1)) ;;
