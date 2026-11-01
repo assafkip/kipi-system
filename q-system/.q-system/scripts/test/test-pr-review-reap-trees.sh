@@ -20,7 +20,8 @@ check "slices hold the function and _wt_rows" \
 
 mkdir -p "$T/bin" "$T/home/.config/kipi/review-trees" "$T/repo"
 git -C "$T/repo" init -q
-git -C "$T/repo" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
+printf base > "$T/repo/tracked.txt"; git -C "$T/repo" add tracked.txt
+git -C "$T/repo" -c user.name=t -c user.email=t@example.invalid commit -q -m init
 RT="$T/home/.config/kipi/review-trees"
 # Keys come from the real path builder, so the fixture cannot drift from it.
 source "$LIB"
@@ -36,9 +37,18 @@ tree 16   # state unreadable (gh fails)
 tree 17   # merged but DIRTY: an untracked file (ASK-3508 negative control)
 tree 18   # merged but a live process stands in it (ASK-3508 negative control)
 tree 19   # merged and clean and idle: positive control for the new checks
+tree 20   # merged, untracked file byte-identical to the main checkout copy (ASK-3621)
+tree 22   # merged, a TRACKED file modified (ASK-3630 minor 1: pins the ?? guard)
+tree 23   # merged, git status unreadable (ASK-3630 minor 2: pins the sentinel)
+tree 21   # merged, untracked file DIFFERS from the main checkout copy (ASK-3621 negative control)
 git -C "$T/repo" worktree add -q --detach "$RT/other_repo__pr-11" HEAD   # another repo's key
 git -C "$T/repo" worktree add -q --detach "$T/bystander" HEAD           # not a review tree
 printf 'unsaved' > "$(path_of 17)/untracked.txt"
+printf edited > "$(path_of 22)/tracked.txt"; printf edited > "$T/repo/tracked.txt"
+printf garbage > "$(git -C "$(path_of 23)" rev-parse --absolute-git-dir)/index"
+mkdir -p "$T/repo/out" "$(path_of 20)/out" "$(path_of 21)/out"
+printf 'same' > "$T/repo/out/dup.md"; printf 'same' > "$(path_of 20)/out/dup.md"
+printf 'other' > "$(path_of 21)/out/dup.md"
 (cd "$(path_of 18)" && exec sleep 300) & CWDPROC=$!
 sleep 300 & LIVE=$!
 printf '%s' "$LIVE" > "$(path_of 15).lock"
@@ -47,11 +57,11 @@ cat > "$T/bin/gh" <<'EOF'
 #!/bin/bash
 n="$3"
 case "$n" in
-  11|15|17|18|19|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
+  11|15|17|18|19|20|21|22|23|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
 esac
 EOF
 chmod +x "$T/bin/gh"
-for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
 
 cat > "$T/drive.sh" <<EOF
 REVIEW_REPO="$T/repo"; REVIEW_SLUG="$SLUG"; PR=14; KIPI_GH_REPO_ARGS=""
@@ -78,8 +88,14 @@ check "ASK-3508 the dirty skip is named" 'grep -q "skip: PR 17 tree has uncommit
 check "ASK-3508 a merged tree that is a live process cwd stays" '[ -d "$(path_of 18)" ]'
 check "ASK-3508 the live-cwd skip is named" 'grep -q "skip: PR 18 tree is the cwd" "$T/out"'
 check "ASK-3508 a clean idle merged tree is still removed" '[ ! -e "$(path_of 19)" ]'
+check "ASK-3621 a merged tree whose only untracked file duplicates the main checkout is removed" '[ ! -e "$(path_of 20)" ]'
+check "ASK-3621 NEGATIVE CONTROL: an untracked file that differs from the main checkout stays" '[ -f "$(path_of 21)/out/dup.md" ]'
+check "ASK-3630 NEGATIVE CONTROL: a modified tracked file keeps the tree" '[ "$(cat "$(path_of 22)/tracked.txt")" = edited ]'
+check "ASK-3630 NEGATIVE CONTROL: an unreadable status keeps the tree" '[ -d "$(path_of 23)" ]'
+check "ASK-3630 the unreadable status is NAMED as a skip (git's own non-force refusal would also keep the tree, so the message is what pins the sentinel)" 'grep -q "skip: PR 23 tree has uncommitted" "$T/out"'
+check "ASK-3630 the cleanup line counts force-removed trees" 'grep -q "(1 of them force-removed" "$T/out"'
 check "one cleanup line is printed" '[ "$(grep -c "review-tree cleanup:" "$T/out")" = 1 ]'
-check "the line counts 3 removed" 'grep -q "removed 3 finished" "$T/out"'
+check "the line counts 4 removed" 'grep -q "removed 4 finished" "$T/out"'
 
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"
