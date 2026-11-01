@@ -98,12 +98,33 @@ has "$out" "--- ok (" && ok "G: the other target still ran" || bad "G: fleet abo
 has "$out" "ABORT: the target" && bad "G: fleet run aborted on one gate" || ok "G: no fleet-wide abort"
 [ "$before" = "$after" ] && ok "G: red target unchanged" || bad "G: red target changed"
 
-echo "E: busy guard"
+echo "E: busy guard matches the job, not text that mentions it"
+eval "$(awk '/^busy_processes\(\) \{/,/^}/' "$REAL/kipi-update.sh")"
 eval "$(awk '/^wait_for_quiet_target\(\) \{/,/^}/' "$REAL/kipi-update.sh")"
-bash -c 'exec -a kipi-busy-probe-987 sleep 60' & SLEEPER=$!
+KIPI_BUSY_GUARDS='inst=kipi-busy-job-987\.py|kipi-busy-job-987' KIPI_BUSY_WAIT_SECS=2 KIPI_BUSY_POLL_SECS=1
+# DECOY: consulting-72's wait loop. Its command line CONTAINS the job name as text.
+bash -c 'until false; do sleep 1; done # kipi-busy-job-987 pipeline.daily' & SLEEPER=$!
 sleep 0.5
-KIPI_BUSY_GUARDS='inst=kipi-busy-probe-987' KIPI_BUSY_WAIT_SECS=2 KIPI_BUSY_POLL_SECS=1
-if wait_for_quiet_target inst >/dev/null; then bad "E: did not give up while busy"; else ok "E: gives up while busy"; fi
+if wait_for_quiet_target inst >/dev/null; then ok "E: a wait loop that only mentions the job does not block"
+else bad "E: decoy blocked the apply"; fi
+kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null; SLEEPER=""
+# DECOY 2: a teammate's `git commit` whose message names the module (consulting-72).
+mkdir -p "$T/bin"; printf '#!/bin/bash\nsleep 60\n' > "$T/bin/git"; chmod +x "$T/bin/git"
+"$T/bin/git" commit -m "fix kipi-busy-job-987 pipeline.daily wiring" & SLEEPER=$!
+sleep 0.5
+if wait_for_quiet_target inst >/dev/null; then ok "E: a git command whose args name the job does not block"
+else bad "E: git decoy blocked the apply"; fi
+kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null; SLEEPER=""
+# REAL, as argv0 (exec -a), and as an interpreter running the script.
+bash -c 'exec -a kipi-busy-job-987 sleep 60' & SLEEPER=$!
+sleep 0.5
+tout="$(wait_for_quiet_target inst)" && bad "E: argv0 job did not block" || ok "E: a process named as the job blocks"
+has "$tout" "still running:" && ok "E: timeout names what is running" || bad "E: timeout reason missing: $tout"
+kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null; SLEEPER=""
+printf 'sleep 60\n' > "$T/kipi-busy-job-987.py"
+bash "$T/kipi-busy-job-987.py" & SLEEPER=$!
+sleep 0.5
+if wait_for_quiet_target inst >/dev/null; then bad "E: interpreter+script job did not block"; else ok "E: interpreter running the script blocks"; fi
 kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null; SLEEPER=""
 wait_for_quiet_target inst >/dev/null && ok "E: proceeds once quiet" || bad "E: still refusing when quiet"
 
