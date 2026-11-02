@@ -254,8 +254,8 @@ lessons_half() {
     # the Linear gate passes it legitimately and counts it in the bypass ledger.
     # A refused commit is a failed run, same wire as a failed propagation
     # (ASK-182, lines above): the alert says so and the job exits 1, so Linear
-    # sees it. The job is WEEKLY (plist Weekday 1), so a silent refusal would
-    # leave a week of lessons uncommitted with nobody told (PR review, ASK-2290).
+    # sees it. A silent refusal would leave lessons uncommitted with nobody told,
+    # run after run (PR review, ASK-2290; the job is daily since ASK-3574).
     # "Nothing staged" is not a failure: held lessons are gitignored (ASK-2278),
     # so a held-only run legitimately has nothing to commit.
     # Pinned by test/test-lessons-daily-commit-hooks.sh.
@@ -303,7 +303,7 @@ lessons_half() {
   if [ "$PUBLISH_MODE" = pr ] && [ "${COMMITTED:-0}" = 1 ]; then
     KEEP_WT=1
     BR="auto/lessons-$(date +%Y%m%d)-$(git -C "$LREPO" rev-parse --short HEAD)"
-    PR_BODY="Automated weekly lessons from lessons-daily.sh: ${PUB} published, ${HELD} held. Titles: ${TITLES:-none}"
+    PR_BODY="Automated lessons from lessons-daily.sh: ${PUB} published, ${HELD} held. Titles: ${TITLES:-none}"
     # THE PUSH GUARD (review of PR #551, round 4). This repo is public and a push is
     # permanent. On 2026-10-04 a Stop hook committed a non-lesson file onto the
     # cloud routine's lessons branch after its staged-set check, and it reached
