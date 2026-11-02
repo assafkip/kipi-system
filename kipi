@@ -267,13 +267,6 @@ PY
     if [ -f "$KIPI_HOME/remote-coverage-check.py" ]; then
       python3 "$KIPI_HOME/remote-coverage-check.py" || exit 1
     fi
-    # Instruction-char gate (ASK-3689), fleet-wide for the same reason: the total
-    # Claude Code limits is a property of the fleet LAYOUT. Claude Code loads every
-    # ancestor's CLAUDE.md and rules, so client repos nested in consulting/ carried
-    # 150k-210k (the largest measured 53 files / 209.8k vs the warning's 209.9k).
-    if [ -f "$KIPI_HOME/q-system/.q-system/scripts/instruction-chars-audit.py" ]; then
-      python3 "$KIPI_HOME/q-system/.q-system/scripts/instruction-chars-audit.py" || exit 1
-    fi
     # Capability gate runs against the repo you are STANDING in, so an
     # instance gets ITS tree gated. Without this, `kipi check` cd'd to
     # KIPI_HOME and only ever validated the skeleton — an instance-side

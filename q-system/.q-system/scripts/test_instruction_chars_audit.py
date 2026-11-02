@@ -2,8 +2,11 @@
 """Tests for instruction-chars-audit.py (ASK-3689).
 
 Pairs with `q-system/.q-system/scripts/instruction-chars-audit.py`. Every case
-builds its own parent/nested-child tree under a temp dir and passes --registry and
---user-dir, so no case reads or writes a real settings file or a real instance.
+builds its own parent/nested-child tree and passes --registry and --user-dir, so no
+case writes a real settings file. The loader walks EVERY ancestor of the launch
+folder, so the tree is built in a temp dir outside $HOME: under $HOME it picked up
+the real ~/.claude files and 2 cases failed by exactly their 16,535 chars (PR 599
+review, round 1, reproduced with TMPDIR under $HOME).
 """
 import json
 import os
@@ -27,9 +30,19 @@ def write(p, text):
     p.write_text(text, encoding="utf-8")
 
 
+def scratch_root():
+    """A fresh temp dir that has no home-folder instruction files above it."""
+    home = Path.home().resolve()
+    for base in (tempfile.gettempdir(), "/var/tmp", "/tmp"):
+        b = Path(base).resolve()
+        if b.is_dir() and b != home and home not in b.parents:
+            return Path(tempfile.mkdtemp(dir=str(b))).resolve()
+    raise unittest.SkipTest("no temp dir outside $HOME to build the fixture tree in")
+
+
 class AuditCase(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp()).resolve()
+        self.root = scratch_root()
         self.addCleanup(shutil.rmtree, self.root)
         self.user = self.root / "user"
         self.parent = self.root / "parent"

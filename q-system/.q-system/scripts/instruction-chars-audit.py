@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """instruction-chars-audit.py: fleet gate for Claude Code's instruction-file char limit (ASK-3689).
 
-Pairs with no skill. Called by `kipi check` (check mode, blocking) and by
-`kipi-update.sh` after a sync (--apply, reported, never folded into its exit code).
+Pairs with no skill. Called by `kipi-update.sh` after a sync (--apply, reported,
+never folded into its exit code). Check mode exits 2 and is runnable by hand; it
+is wired into `kipi check` only once the fleet reads green (ASK-3692), because a
+gate red on its own population gets switched off (PR 599 review, round 1).
 
 THE LIMIT
 Claude Code 2.1.316 prints "N instruction files add up to X chars, over the
@@ -45,8 +47,8 @@ excludes for an untrusted folder is not modelled; --apply writes user scope only
 Exit: 0 when every instance is under the limit and no owned exclude is stale,
 2 otherwise (and 2 when --apply refuses to touch an unreadable settings file).
 
-prompt-only-enforcement-skip: THIS FILE IS THE DETERMINISTIC BLOCKER (exit 2 in
-`kipi check`), pinned by test_instruction_chars_audit.py. The guard matched the
+prompt-only-enforcement-skip: THIS FILE IS THE DETERMINISTIC BLOCKER (exit 2;
+`kipi check` wiring tracked as ASK-3692), pinned by test_instruction_chars_audit.py. The guard matched the
 words above that describe the gate this file already is.
 """
 import argparse
