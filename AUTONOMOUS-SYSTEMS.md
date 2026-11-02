@@ -21,7 +21,7 @@ launchd jobs are:
 | `com.kipi.audit-rotate` | 23:55 | rotate audit logs |
 | `com.kipi.openloops-heartbeat` | 08:40, 20:40 | wake per-instance agents to advance open loops |
 | `com.kipi.launchd-health` | 09:30, 21:30 | **watchdog** — alert on any silent job death (families in 2.3) |
-| `com.kipi.lessons-daily` | Mon 06:00 (weekly, despite the name) | **auto-learn** — distill → publish → propagate → Slack |
+| `com.kipi.lessons-daily` | daily 08:00 | **auto-learn** — distill → publish → propagate → Slack |
 | `com.kipi.spillover-linear-check` | 08:10 (installed and loaded on the Mac 2026-09-30) | retry the Linear issue for new spillover rows (kipi-system, consulting, chief); one summary alert to Sana if any stay unlinked (ASK-1552) |
 
 Every job whose plist is INSTALLED in `~/Library/LaunchAgents` under a watched prefix is
@@ -37,8 +37,8 @@ ones we own are rebuildable from a committed installer, so the layer survives a 
 `~/Library/LaunchAgents`.
 
 Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
-- `com.kipi.lessons-daily` is WEEKLY: its plist sets `StartCalendarInterval` Weekday 1, Hour 6
-  (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:39`); the old row said "06:00" daily.
+- `com.kipi.lessons-daily` runs DAILY at 08:00 (founder, 2026-11-02). Until then its plist set
+  Weekday 1, Hour 6, which made it weekly (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:39`).
 - `com.kipi.fractional-cxo.opp-scan` and `com.kipi.fractional-cxo.bolt-on-discovery` are RETIRED,
   not running: `launchd-intent-verify.py` (comment at :277-285) records that the 2026-08-01 jobs
   audit retired both by renaming their plists. Their rows are removed above. Exact retirement date
@@ -74,7 +74,7 @@ list itself was not re-read from the routines API for this change.
 
 | Job | When | Cloud prompt | Waiting on |
 |-----|------|--------------|------------|
-| `com.kipi.lessons-daily` | Mon 06:00 (weekly) | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
+| `com.kipi.lessons-daily` | daily 08:00 | chief `cloud/lessons-weekly.md` (distill + publish half only) | `notes-publish` reaching the fleet (ASK-2190) |
 
 **Staying on the Mac** (they read the Mac)
 
@@ -165,7 +165,7 @@ write-back into the same store**; that loop is what compounds. kipi had the rail
 - **Fully autonomous** — no candidate queue, no human promotion on the happy path.
 - **Daily heartbeat + Slack on change.**
 
-### 3.3 The pipeline (`lessons-daily.sh`, launchd Mon 06:00, weekly)
+### 3.3 The pipeline (`lessons-daily.sh`, launchd daily 08:00)
 ```
 read every instance's new RCAs (source-hash ledger => each processed once)
   → DISTILL each into a HOW-only lesson via `claude -p` (drop all WHAT/specifics)
