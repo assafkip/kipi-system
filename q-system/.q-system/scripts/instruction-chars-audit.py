@@ -199,19 +199,37 @@ def collect(launch, user_dir, compiled):
     return files
 
 
-def duplicate_copies(inst):
-    """Rules files in `inst` byte-identical to the same relative file under an ancestor's rules."""
+def duplicate_copies(inst, hand_excludes=()):
+    """Always-on rules files in `inst` byte-identical to an ancestor copy that still loads.
+
+    Path-scoped files are skipped: they cost nothing at session start, and excluding
+    the nested copy can suppress its on-demand load, because the parent copy's globs
+    need not match files in the nested repo (PR 599 review, round 2: 25 of 41 were
+    path-scoped, security.md among them). An ancestor copy that a hand-written
+    exclude already drops does not count as loading, or --apply would remove the
+    last copy.
+    """
     out = []
     base = inst / ".claude" / "rules"
     for f in rules_files(inst):
-        rel = f.relative_to(base)
-        data = f.read_bytes()
-        for a in inst.parents:
-            twin = a / ".claude" / "rules" / rel
-            if twin.is_file() and twin.read_bytes() == data:
-                out.append(f)
-                break
+        if is_path_scoped(f):
+            continue
+        if loading_twin(inst, f.relative_to(base), f.read_bytes(), hand_excludes):
+            out.append(f)
     return out
+
+
+def loading_twin(inst, rel, data, hand_excludes):
+    for a in inst.parents:
+        twin = a / ".claude" / "rules" / rel
+        if twin.is_file() and not excluded(twin, hand_excludes) and twin.read_bytes() == data:
+            return twin
+    return None
+
+
+def hand_written(entries, roots):
+    """Compiled user excludes this script does not own."""
+    return compile_patterns([e for e in entries if isinstance(e, str) and not owned(e, roots)])
 
 
 def load_registry(path):
@@ -229,6 +247,16 @@ def owned(entry, roots):
     return any(entry.startswith(str(r) + "/.claude/rules/") for r in roots)
 
 
+def nested_roots(roots):
+    """Registered instances inside another registered instance: the only ones --apply writes for.
+
+    Ownership is limited to these. Owning every registered instance's rules path
+    would let --apply delete a hand-written exclude of a PARENT's rule (found by
+    test_parent_copy_dropped_by_hand_keeps_the_child_copy, round 2).
+    """
+    return [r for r in roots if any(o != r and o in r.parents for o in roots)]
+
+
 def measure(inst, user_dir):
     files = collect(inst, user_dir, compile_patterns(exclude_patterns(user_dir, inst)))
     return files, sum(counted_chars(read(f)) for f in files)
@@ -238,15 +266,17 @@ def do_check(registry, user_dir, limit, as_json):
     rc, rows = 0, []
     user_excl = load_json_dict(user_dir / "settings.json").get("claudeMdExcludes")
     user_excl = [e for e in user_excl if isinstance(e, str)] if isinstance(user_excl, list) else []
-    roots = [p for _, p in registry]
+    nested = nested_roots([p for _, p in registry])
+    hand = hand_written(user_excl, nested)
     for name, inst in registry:
         if not inst.is_dir():
             rows.append({"name": name, "status": "SKIP", "reason": "path missing", "path": str(inst)})
             continue
         files, total = measure(inst, user_dir)
         status = "OVER" if total > limit else ("WARN" if total > WARN_AT else "OK")
-        dupes = {str(f) for f in duplicate_copies(inst)}
-        mine = [e for e in user_excl if owned(e, [inst]) and Path(e).is_file()]
+        is_nested = inst in nested
+        dupes = {str(f) for f in duplicate_copies(inst, hand)} if is_nested else set()
+        mine = [e for e in user_excl if is_nested and owned(e, [inst]) and Path(e).is_file()]
         stale = sorted(e for e in mine if e not in dupes)
         unexcluded = sorted(d for d in dupes if d not in set(mine))
         if status == "OVER" or stale:
@@ -262,7 +292,8 @@ def do_check(registry, user_dir, limit, as_json):
             continue
         print(f"{r['status']:5} {r['chars'] / 1000:6.1f}k {r['files']:3d} files  {r['name']}")
         for e in r["stale_excludes"]:
-            print(f"      STALE EXCLUDE: {e} no longer matches its parent copy; the parent's version loads instead")
+            print(f"      STALE EXCLUDE: {e} has no identical, always-on parent copy that loads; "
+                  "this rule may not load at all. Rerun --apply")
         if r["duplicates_not_excluded"]:
             print(f"      note: {r['duplicates_not_excluded']} rules file(s) also load from a parent folder")
     measured = [r for r in rows if r["status"] != "SKIP"]
@@ -294,29 +325,40 @@ def do_apply(registry, user_dir):
     if not isinstance(current, list):
         print(f"REFUSED: claudeMdExcludes in {settings} is not a list; left untouched", file=sys.stderr)
         return 2
-    roots = [p for _, p in registry]
+    roots = nested_roots([p for _, p in registry])
     keep = [e for e in current if not (isinstance(e, str) and owned(e, roots))]
-    want = sorted({str(f) for _, inst in registry if inst.is_dir() for f in duplicate_copies(inst)})
+    hand = hand_written(keep, roots)
+    want = sorted({str(f) for inst in roots if inst.is_dir() for f in duplicate_copies(inst, hand)})
+    # Entries under a registered instance's .claude/rules/ are owned and rewritten,
+    # so every one that goes is named: a hand-written one must not vanish silently.
+    dropped = [e for e in current if isinstance(e, str) and owned(e, roots) and e not in want]
+    for e in dropped:
+        print(f"removed exclude: {e}")
     new = keep + want
     if new == current:
         print(f"claudeMdExcludes unchanged: {len(want)} nested duplicate(s) excluded")
         return 0
     data["claudeMdExcludes"] = new
-    mode = settings.stat().st_mode & 0o777 if settings.exists() else 0o644
-    user_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(user_dir), prefix=".settings.", suffix=".tmp")
+    write_settings(settings, data)
+    print(f"claudeMdExcludes updated: {len(want)} nested duplicate(s) excluded, {len(dropped)} removed")
+    return 0
+
+
+def write_settings(settings, data):
+    """Atomic write that keeps a symlinked settings file a symlink (dotfiles repos)."""
+    target = settings.resolve() if settings.is_symlink() else settings
+    mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".settings.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         os.chmod(tmp, mode)
-        os.replace(tmp, settings)
+        os.replace(tmp, target)
     except OSError:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-    was = len([e for e in current if isinstance(e, str) and owned(e, roots)])
-    print(f"claudeMdExcludes updated: {len(want)} nested duplicate(s) excluded (was {was})")
-    return 0
 
 
 def main(argv=None):

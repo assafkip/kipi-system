@@ -65,6 +65,9 @@ class AuditCase(unittest.TestCase):
               "---\ndescription: x\n---\n" + "K" * 200 + "<!-- hidden -->")
         write(self.child / ".claude/rules/scoped.md",
               "---\npaths:\n  - '**/*.py'\n---\n" + "Z" * 5000)
+        scoped_dup = "---\npaths:\n  - 'q-system/**'\n---\n" + "R" * 800
+        write(self.parent / ".claude/rules/scoped_dup.md", scoped_dup)
+        write(self.child / ".claude/rules/scoped_dup.md", scoped_dup)
         self.registry = self.root / "instance-registry.json"
         write(self.registry, json.dumps({"instances": [
             {"name": "parent", "path": str(self.parent)},
@@ -146,6 +149,42 @@ class AuditCase(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("REFUSED", out)
         self.assertEqual(self.settings.read_text(), "{not json")
+
+    def excludes(self):
+        return json.loads(self.settings.read_text())["claudeMdExcludes"]
+
+    def test_path_scoped_duplicate_is_never_excluded(self):
+        # review round 2 major: excluding an on-demand rule saves 0 chars at start
+        # and can stop it loading in the nested repo at all
+        self.run_audit("--apply")
+        self.assertNotIn(str(self.child / ".claude/rules/scoped_dup.md"), self.excludes())
+
+    def test_parent_copy_dropped_by_hand_keeps_the_child_copy(self):
+        data = json.loads(self.settings.read_text())
+        data["claudeMdExcludes"].append(str(self.parent / ".claude/rules/shared.md"))
+        write(self.settings, json.dumps(data))
+        self.run_audit("--apply")
+        self.assertNotIn(str(self.child / ".claude/rules/shared.md"), self.excludes())
+
+    def test_apply_names_every_owned_entry_it_removes(self):
+        mine = str(self.child / ".claude/rules/child_only.md")
+        data = json.loads(self.settings.read_text())
+        data["claudeMdExcludes"].append(mine)
+        write(self.settings, json.dumps(data))
+        rc, out = self.run_audit("--apply")
+        self.assertEqual(rc, 0)
+        self.assertIn(f"removed exclude: {mine}", out)
+        self.assertIn("1 removed", out.strip().splitlines()[-1])
+
+    def test_symlinked_settings_stays_a_symlink(self):
+        real = self.root / "dotfiles" / "settings.json"
+        write(real, self.settings.read_text())
+        self.settings.unlink()
+        self.settings.symlink_to(real)
+        self.run_audit("--apply")
+        self.assertTrue(self.settings.is_symlink())
+        self.assertIn(str(self.child / ".claude/rules/shared.md"),
+                      json.loads(real.read_text())["claudeMdExcludes"])
 
     def test_missing_registry_is_a_loud_skip(self):
         r = subprocess.run([sys.executable, str(SCRIPT), "--registry", str(self.root / "none.json"),
