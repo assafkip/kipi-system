@@ -38,7 +38,7 @@ ones we own are rebuildable from a committed installer, so the layer survives a 
 
 Corrected 2026-09-28 (ASK-2193), from the source files rather than the 2026-06-30 list:
 - `com.kipi.lessons-daily` runs DAILY at 08:00 (founder, 2026-11-02). Until then its plist set
-  Weekday 1, Hour 6, which made it weekly (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:39`).
+  Weekday 1, Hour 6, which made it weekly (`q-system/.q-system/scripts/com.kipi.lessons-daily.plist:41`).
 - `com.kipi.fractional-cxo.opp-scan` and `com.kipi.fractional-cxo.bolt-on-discovery` are RETIRED,
   not running: `launchd-intent-verify.py` (comment at :277-285) records that the 2026-08-01 jobs
   audit retired both by renaming their plists. Their rows are removed above. Exact retirement date
