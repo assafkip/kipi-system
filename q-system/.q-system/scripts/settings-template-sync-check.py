@@ -71,6 +71,9 @@ FLEET_ONLY = {
     "instance-automation-guard.py",
     "miyo-session-pull.py",
     "miyo-research-gate.py",
+    # Dispatches to an instance's own automation/<name>.py; the skeleton has no automation/
+    # dir, so wiring it in the skeleton's settings.json would only ever no-op (ASK-3685).
+    "instance-hook-dispatch.py",
 }
 
 # A hook "propagates" when it invokes a script under a directory kipi update

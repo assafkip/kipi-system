@@ -307,6 +307,11 @@
           },
           {
             "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-hook-dispatch.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/instance-hook-dispatch.py\" gate_draft_hook; fi",
+            "timeout": 150
+          },
+          {
+            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-confidence-validator.py\""
           },
           {
