@@ -965,5 +965,17 @@
     "status": "published",
     "date": "2026-11-01",
     "lesson_id": "block-automated-re-evaluation-at-human-action-boundaries"
+  },
+  "762fabb67b058153": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-02",
+    "lesson_id": "instrument-filter-stages-before-tuning-them"
+  },
+  "f96e80f723750b78": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-02",
+    "lesson_id": "mobile-tap-to-capture-for-away-from-desk-classification"
   }
 }
