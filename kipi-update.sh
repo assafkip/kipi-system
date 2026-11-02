@@ -3551,7 +3551,21 @@ PYEOF
 }
 record_sweep_history
 
+# ASK-3689: Claude Code loads every ancestor's rules, so a client repo nested in
+# another instance loaded the parent's rules AND its own byte-identical copy. A
+# sync is exactly when rules files change, so the user-scope excludes that keep
+# one copy are recomputed here, after every instance synced. A copy that differs
+# from its parent is never excluded, so a failed parent sync cannot leave a stale
+# rule as the only one loaded. Reported, never folded into the exit code: this
+# script's exit is the PROPAGATION verdict (see JOBS_NOT_ARMED below).
+CHARS_AUDIT="$SCRIPT_DIR/q-system/.q-system/scripts/instruction-chars-audit.py"
+CHARS_LINE=""
+if [ -z "$DRY_RUN" ] && [ -f "$CHARS_AUDIT" ]; then
+  CHARS_LINE="$(python3 "$CHARS_AUDIT" --apply 2>&1 | tail -1)" || true
+fi
+
 echo "=== Summary ==="
+[ -n "$CHARS_LINE" ] && echo "  Instruction excludes: $CHARS_LINE"
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
 if [ -n "$FAILED_NAMES" ]; then
