@@ -464,7 +464,7 @@ MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP_TXT}"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"
-[ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · this run's lessons are in $PR_URL, not in that update; they go out with the first weekly update after it merges"
+[ -n "${PR_URL:-}" ] && [ -z "${PUBLISH:-}" ] && MSG="$MSG · this run's lessons are in $PR_URL, not in that update; they go out with the first daily run after it merges"
 [ -n "${PUBLISH:-}" ] && MSG="$MSG · lessons publish $PUBLISH, lessons are in $LREPO"
 # The reason the alert never gave for six weeks (ASK-2736): name the branch.
 case "$PROP" in "propagate FAILED"*)
