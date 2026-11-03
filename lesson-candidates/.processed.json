@@ -977,5 +977,29 @@
     "status": "published",
     "date": "2026-11-02",
     "lesson_id": "mobile-tap-to-capture-for-away-from-desk-classification"
+  },
+  "27321937fe760a0d": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "monitor-data-freshness-not-just-job-success"
+  },
+  "0a301f4c21d3e937": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "offload-mechanical-tail-work-to-a-fresh-cheap-agent"
+  },
+  "35f88ac366cbc98c": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "restart-the-process-after-changing-environment-variables"
+  },
+  "6f7ad14ee72ceca4": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "frame-sensitive-requests-by-purpose-method-and-output"
   }
 }
