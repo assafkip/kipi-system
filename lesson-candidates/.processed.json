@@ -1001,5 +1001,35 @@
     "status": "published",
     "date": "2026-11-03",
     "lesson_id": "frame-sensitive-requests-by-purpose-method-and-output"
+  },
+  "07aaa773f0aab0df": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "gating-documents-built-for-external-release"
+  },
+  "72b26bb4e2ca7024": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "measure-tool-usage-from-system-logs-not-conversation-records"
+  },
+  "4da3c8a05cd170da": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "query-threat-intel-by-hash-before-touching-suspect-infrastru"
+  },
+  "d1ab98825d94fddd": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "answer-ordered-briefs-with-a-quarantined-technical-appendix"
+  },
+  "43c1d089218507f1": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "read-artifacts-before-running-them"
   }
 }
