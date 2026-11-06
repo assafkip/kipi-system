@@ -819,7 +819,7 @@ def lane_pool(ls) -> tuple[list, list]:
 #
 # A PR COUNTS ONLY THROUGH AN EXPLICIT URL. The "[kipi-system]" tag names the
 # checkout that FILED the alert, not the PR's repo: review-redrive filed
-# "[kipi-system] ... ASK-3633 PR #10" about assafkip/ktlyst-saas-product#10, and
+# "[kipi-system] ... ASK-3633 PR #10" about PR #10 in another repo, and
 # looking up PR #10 in kipi-system reads some other PR. So a PR subject is used
 # only when the message carries github.com/<owner>/<repo>/pull/<n> for that same
 # n. Otherwise the issue decides, or the model does.
