@@ -180,13 +180,22 @@ class GuardTests(unittest.TestCase):
         self.assertIn("no @@end", res.stdout)
 
     def test_a_recent_shell_function_is_protected_too(self):
-        inst, skel = self.root / "inst", self.root / "skel"
-        for repo in (inst, skel):
+        self._shell_case(self.root / "inst", self.root / "inst")
+
+    def test_an_instance_inside_a_larger_repo_is_still_protected(self):
+        # The instance root is a SUBDIRECTORY of its git repo. A `<rev>:path`
+        # lookup resolved from the repo root made every def read as absent here,
+        # so nothing could be refused.
+        self._shell_case(self.root / "mono/projects/inst", self.root / "mono")
+
+    def _shell_case(self, inst: Path, inst_repo: Path):
+        skel = self.root / "skel"
+        for repo, top in ((inst, inst_repo), (skel, skel)):
             (repo / "hooks").mkdir(parents=True)
             (repo / "hooks/guard.sh").write_text("#!/bin/bash\nold_fn() {\n  :\n}\n")
-            g(repo, "init", "-q", "-b", "main")
-            g(repo, "add", "-A")
-            g(repo, "commit", "-qm", "base")
+            g(top, "init", "-q", "-b", "main")
+            g(top, "add", "-A")
+            g(top, "commit", "-qm", "base")
         (inst / "hooks/guard.sh").write_text(
             "#!/bin/bash\nold_fn() {\n  :\n}\nfunction new_fn {\n  :\n}\n")
         g(inst, "commit", "-qam", "add new_fn")

@@ -170,8 +170,13 @@ class History:
     def names_at(self, commit: str, path: str) -> dict | None:
         key = (commit, path)
         if key not in self._names:
+            # `./` makes the path relative to -C's directory. A bare `<rev>:path`
+            # resolves from the REPO ROOT, so for an instance that is a subdir
+            # of a larger repo every lookup came back "absent", which reads as
+            # "never added" and the guard could never refuse (measured
+            # 2026-11-06 with `git -C q-system show HEAD:.q-system/...`).
             proc = subprocess.run(
-                ["git", "-C", self.repo, "show", f"{commit}:{path}"], capture_output=True
+                ["git", "-C", self.repo, "show", f"{commit}:./{path}"], capture_output=True
             )
             if proc.returncode != 0:
                 self._names[key] = None  # path absent at that commit
