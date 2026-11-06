@@ -631,19 +631,18 @@ def started_abandoned_ids(ls, issues: list, now=None) -> frozenset:
     """Started issues this job would draft, that ls.started_hold_reason releases.
 
     Only issues that pass every OTHER selection rule are asked, because the rule
-    may read Linear once per issue. Worktrees come from KIPI_STATE_DIR, the same
-    seam the worker uses, so a suite never reads the live claims.
+    may read Linear once per issue. The claims and the attempts ledger come from
+    KIPI_STATE_DIR, the same seam the worker uses, so a suite never reads live state.
     """
     now = now or datetime.now(timezone.utc)
     state_dir = os.environ.get("KIPI_STATE_DIR") or str(Path.home() / ".config" / "kipi")
-    worktrees = os.path.join(state_dir, "worktrees")
     out = set()
     for i in issues:
         if (i.get("state") or {}).get("type") != "started":
             continue
         if selection_mode(i, admitted_started(i)) is None:
             continue
-        if ls.started_hold_reason(i, now, worktrees) == "":
+        if ls.started_hold_reason(i, now, state_dir) == "":
             out.add(i.get("identifier"))
     return frozenset(out)
 

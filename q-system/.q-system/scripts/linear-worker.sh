@@ -610,14 +610,14 @@ SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
-PICKED="$(python3 - "$ONLY_ISSUE" "$STATE_DIR/worktrees" <<'PY'
+PICKED="$(python3 - "$ONLY_ISSUE" "$STATE_DIR" <<'PY'
 import importlib.util, json, os, sys, pathlib
 from datetime import datetime, timezone
 here = pathlib.Path(os.environ["SCRIPT_DIR"])
 spec = importlib.util.spec_from_file_location("ls", here / "linear-sync.py")
 ls = importlib.util.module_from_spec(spec); spec.loader.exec_module(ls)
 only = (sys.argv[1] or "").strip()
-worktrees = sys.argv[2] if len(sys.argv) > 2 else ""
+state_dir = sys.argv[2] if len(sys.argv) > 2 else ""
 now = datetime.now(timezone.utc)
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
@@ -707,8 +707,9 @@ def in_this_repo(i):
 # and then failed, capped or parked was invisible here for good: 15 owner:sana
 # tickets on 2026-11-06, the oldest 43 days. ls.started_hold_reason is the ONE
 # rule (the DoR drafter and linear-triage-health.py ask it too): started over 24
-# hours ago, no live claim on its worker tree, no open PR on any branch (an open
-# PR has the PR pipeline as its consumer). It runs LAST in ready(), because it may
+# hours ago, a row in this worker attempts ledger (the fleet ran it, so a lane
+# ticket moved by hand is never released by a clock), no live claim on its
+# worker tree, no open PR on any branch. It runs LAST in ready(), because it may
 # read Linear once per candidate. Memoised: ready() and ready_ignoring_project()
 # both ask about the same ticket.
 QUEUE_STATES = ("backlog", "unstarted")
@@ -718,7 +719,7 @@ _started_memo = {}
 def started_hold(i):
     key = i["identifier"]
     if key not in _started_memo:
-        _started_memo[key] = ls.started_hold_reason(i, now, worktrees)
+        _started_memo[key] = ls.started_hold_reason(i, now, state_dir)
     return _started_memo[key]
 
 def started_open(i, d):
@@ -748,8 +749,12 @@ def ready(i):
     d = i.get("description") or ""
     # ONE state exit, carrying its own marker, because terminal-states.json row
     # state-not-open counts exactly one site here. A started ticket passes only
-    # when started_open releases it, asked after the free checks above.
-    if i["state"]["type"] not in QUEUE_STATES and not started_open(i, d): return False
+    # when started_open releases it, asked after the free checks above. The
+    # tuple is written out, not QUEUE_STATES: test_linear_alert_triage.py runs
+    # this function verbatim with only the names it used before ASK-3825, and a
+    # module name here broke it (validate on PR #611, NameError). started_open
+    # is reached only for a ticket outside the two queue states.
+    if i["state"]["type"] not in ("backlog", "unstarted") and not started_open(i, d): return False
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
 # Everything the project filter is ABOUT to drop, counted before it drops it, so

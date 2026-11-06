@@ -167,7 +167,13 @@ def started(hours, ident="ASK-1"):
             "state": {"name": "In Progress", "type": "started"}, "startedAt": stamp}
 
 
+# The worker's state dir: worktrees/ for claims, the attempts ledger beside it.
+# ASK-1 has a ledger row, so the fleet has run it (PR #611 review, finding 1).
 trees = tempfile.mkdtemp()
+os.makedirs(os.path.join(trees, "worktrees"))
+LEDGER = os.path.join(trees, "linear-worker-attempts.json")
+with open(LEDGER, "w") as fh:
+    json.dump({"ASK-1": {"rounds": 1}}, fh)
 mod = with_recorder(Recorder())
 cases = [
     ("abandoned 30 days, no claim, no PR", started(24 * 30), ""),
@@ -219,7 +225,7 @@ check("could not be read" in got, "an unreadable PR list holds it", got)
 
 # Claims, in the shape linear-claim.py writes, at the path the worker claims in.
 mod = with_recorder(Recorder())
-claim_dir = os.path.join(trees, "ask-1")
+claim_dir = os.path.join(trees, "worktrees", "ask-1")
 os.makedirs(claim_dir)
 claim = os.path.join(claim_dir, ".linear-claims.json")
 dead = subprocess.Popen(["true"])
@@ -246,6 +252,28 @@ with open(claim, "w") as fh:
     fh.write("")
 got = mod.started_hold_reason(started(24 * 30), NOW, trees)
 check(got == "", "an empty claim file (a released claim) does not", got)
+
+print("== worker history (the positive release signal)")
+mod = with_recorder(Recorder())
+os.remove(claim)
+got = mod.started_hold_reason(started(24 * 30, ident="ASK-2"), NOW, trees)
+check("no worker history" in got,
+      "a month-old started ticket the fleet never ran is held (a lane or a person started it)", got)
+empty_state = tempfile.mkdtemp()
+got = mod.started_hold_reason(started(24 * 30), NOW, empty_state)
+check("no attempts ledger here" in got, "no ledger file proves nothing, so it holds", got)
+with open(LEDGER, "w") as fh:
+    fh.write("{torn")
+got = mod.started_hold_reason(started(24 * 30), NOW, trees)
+check("unreadable" in got, "a corrupt ledger holds it (fail closed)", got)
+with open(LEDGER, "w") as fh:
+    json.dump({"ASK-1": {}}, fh)
+got = mod.started_hold_reason(started(24 * 30), NOW, trees)
+check("no worker history" in got, "an empty row is no history", got)
+with open(LEDGER, "w") as fh:
+    json.dump({"ASK-1": {"rounds": 1}}, fh)
+got = mod.started_hold_reason(started(24 * 30), NOW, trees)
+check(got == "", "with a row back, the same ticket is released", got)
 
 print("== negative self-test")
 src = open(SYNC).read()

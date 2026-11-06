@@ -39,8 +39,9 @@ A dormant issue gets ONE COMMENT. Closing stays a judgment call.
 
 A DORMANT STARTED TICKET IS ROUTED (ASK-3825, RULE-2026-11-06-B). An owner:sana
 ticket left In Progress with no activity for 7 days goes back to Backlog through
-linear-sync.py requeue, unless a live worker claim or an open PR says someone
-is on it. Backlog is the column the worker picker, the DoR
+linear-sync.py requeue, unless something says someone is on it: no row in the
+worker's attempts ledger (a lane or a person started it), a live worker claim,
+or an open PR. Backlog is the column the worker picker, the DoR
 drafter and linear-route.py read, so the ticket is visible to a consumer again.
 That is a state move, not a close: Done and Canceled are never touched.
 
@@ -384,10 +385,9 @@ def find_dormant_started(issues: list, now: datetime, threshold_days: int) -> li
     return out
 
 
-def worktrees_dir() -> str:
-    """The worker's tree root, through the same KIPI_STATE_DIR seam the worker reads."""
-    state = os.environ.get("KIPI_STATE_DIR") or os.path.expanduser("~/.config/kipi")
-    return os.path.join(state, "worktrees")
+def worker_state_dir() -> str:
+    """The worker's state dir (claims, attempts ledger), through the same KIPI_STATE_DIR seam."""
+    return os.environ.get("KIPI_STATE_DIR") or os.path.expanduser("~/.config/kipi")
 
 
 def route_dormant(ln, started: list, now: datetime, apply_writes: bool,
@@ -395,8 +395,9 @@ def route_dormant(ln, started: list, now: datetime, apply_writes: bool,
     """Route each dormant started ticket back to Backlog, or say why it is held.
 
     The hold rule is linear-sync.py started_hold_reason, the SAME one the worker
-    picker and the DoR drafter ask: a live claim on its worker tree or an open
-    PR means someone, or the PR pipeline, is on it. The write is
+    picker and the DoR drafter ask: no row in the worker attempts ledger (the
+    fleet never ran it, so a lane or a person started it), a live claim on its
+    worker tree, or an open PR means someone, or the PR pipeline, is on it. The write is
     linear-sync.py requeue_issue, the one state writer, which moves only a
     started ticket and posts one line naming the exit. Report-only runs read and
     write nothing beyond the hold check, and say what they WOULD route.
@@ -404,7 +405,7 @@ def route_dormant(ln, started: list, now: datetime, apply_writes: bool,
     out = {"started": [i["identifier"] for i, _ in started], "routed": [],
            "would_route": [], "held": {}, "failed": {}, "over_limit": []}
     budget = limit
-    where = worktrees_dir()
+    where = worker_state_dir()
     for issue, days in started:
         ident = issue["identifier"]
         why = ln.started_hold_reason(issue, now, where)

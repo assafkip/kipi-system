@@ -83,6 +83,8 @@ BOARD = {i["identifier"]: i for i in [
     issue("ASK-959", "completed", 24 * 30), # control: done is never work
     issue("ASK-960", "started", 24 * 30),   # 8: its PRs cannot be read
     issue("ASK-961", "started", None),      # 8b: no startedAt at all
+    issue("ASK-962", "started", 24 * 30),   # 10: hand-moved 30 days ago, never run by the fleet
+    issue("ASK-963", "started", 1),         # 11: run by the fleet, started an hour ago
     issue("ASK-971", "started", 24 * 30),   # apply: run fails rc=1
     issue("ASK-972", "started", 24 * 30),   # apply: run exits 0 with no PR
     issue("ASK-973", "started", 24 * 30),   # apply: run refuses, parked needs-scope
@@ -216,6 +218,18 @@ for pair in "ASK-955:$SRV_PID" "ASK-956:$DEAD_PID"; do
     "$id" "$id" "$pid" > "$dir/.linear-claims.json"
 done
 
+# --- the worker's attempts ledger: who the fleet has run -----------------------
+# PR #611 review, finding 1 (major): a clock cannot tell a slow lane from an
+# abandoned run, so a started ticket is released only when this ledger proves
+# the fleet ran it. Rows here for every fleet-owned fixture; NONE for ASK-952
+# (the hour-old lane trap) and ASK-962 (a lane ticket moved by hand a month ago).
+python3 - "$STATE/linear-worker-attempts.json" <<'LEDGER'
+import json, sys
+owned = ["ASK-951", "ASK-953", "ASK-954", "ASK-955", "ASK-956", "ASK-957", "ASK-960",
+         "ASK-961", "ASK-963", "ASK-971", "ASK-972", "ASK-973"]
+json.dump({i: {"rounds": 1} for i in owned}, open(sys.argv[1], "w"), indent=2)
+LEDGER
+
 STUBS="$WORK/bin"; mkdir -p "$STUBS"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUBS/gh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/fake-reviewer.sh"
@@ -321,6 +335,24 @@ else
 fi
 picked ASK-959 && bad "control: a completed ticket is never picked" "ASK-959 picked" \
                || ok "control: a completed ticket is never picked"
+
+# 10. THE REVIEWER'S CASE (PR #611 round 1, finding 1). Started a month ago, no
+# claim, no PR, and no row in the attempts ledger: a lane or a person started
+# it, and the clock alone must not hand it to the fleet.
+if picked ASK-962; then
+  bad "case 10: a ticket the fleet never ran is not released by age alone" \
+      "THE DEFECT: ASK-962 (hand-moved 30 days ago, no worker history) was picked"
+else
+  ok "case 10: a ticket the fleet never ran is not released by age alone"
+fi
+grep -q 'ASK-962 (no worker history: started outside the fleet worker' <<<"$held_line" \
+  && ok "case 10b: the held line says there is no worker history" \
+  || bad "case 10b: the held line names the missing history" "held line: $held_line"
+if picked ASK-963; then
+  bad "case 11: a fleet ticket started an hour ago waits out the window" "ASK-963 picked"
+else
+  ok "case 11: a fleet ticket started an hour ago waits out the window"
+fi
 
 grep -q 'started, no live claim (In Progress with nobody on it, back in the pool):.*ASK-951' <<<"$DRY" \
   && ok "the run reports the re-picked started tickets on their own line" \
@@ -428,9 +460,28 @@ assert "STARTED_STALE_HOURS = 24" in s, "mutation anchor missing"
 open(p, "w").write(s.replace("STARTED_STALE_HOURS = 24", "STARTED_STALE_HOURS = 0"))
 PY
 M="$(dry_with "$MUT")"
-grep -q '\[dry\] would work ASK-952 ' <<<"$M" \
-  && ok "mutant killed: with no window the hour-old lane ticket ASK-952 is picked, so case 2 can go red" \
-  || bad "mutant 9b survived" "case 2 cannot tell a window from none"
+grep -q '\[dry\] would work ASK-963 ' <<<"$M" \
+  && ok "mutant killed: with no window the hour-old fleet ticket ASK-963 is picked, so case 11 can go red" \
+  || bad "mutant 9b survived" "case 11 cannot tell a window from none"
+if grep -q '\[dry\] would work ASK-952 ' <<<"$M"; then
+  bad "with no window, the hour-old lane ticket ASK-952 is still held" "the history rule did not hold it"
+else
+  ok "with no window, the hour-old lane ticket ASK-952 is still held: no worker history"
+fi
+cp "$REPO_SCRIPTS/linear-sync.py" "$MUT/linear-sync.py"
+
+# 9c. the history rule removed: the reviewer's case must go red.
+python3 - "$MUT/linear-sync.py" <<'MUTC'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '    history = worker_history(state_dir, issue.get("identifier") or "")'
+assert old in s, "mutation anchor missing"
+open(p, "w").write(s.replace(old, '    history = ""'))
+MUTC
+M="$(dry_with "$MUT")"
+grep -q '\[dry\] would work ASK-962 ' <<<"$M" \
+  && ok "mutant killed: without the history rule the month-old lane ticket ASK-962 is picked, so case 10 can go red" \
+  || bad "mutant 9c survived" "case 10 cannot tell the history rule from none"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

@@ -1681,6 +1681,9 @@ def _routing_board():
         _started("ASK-32", days_quiet=1, now=now),    # active: not dormant
         _started("ASK-33", days_quiet=30, labels=("owner:other",), now=now),  # not ours
         _started("ASK-34", days_quiet=30, state_type="backlog", now=now),     # queued, under the flag line
+        # PR #611 review, finding 1: a lane ticket the orchestrator moved by
+        # hand, 10 days quiet, no claim, no PR, and no row in the ledger.
+        _started("ASK-35", days_quiet=10, now=now),
     ]
 
 
@@ -1702,6 +1705,9 @@ def _stage_routing_copy(tmp_path, mutate=None):
     notify.write_text(FAKE_NOTIFY)
     notify.chmod(0o755)
     (tmp_path / "state" / "worktrees").mkdir(parents=True)
+    # The fleet ran ASK-30 and ASK-31; nobody in the fleet ever ran ASK-35.
+    (tmp_path / "state" / "linear-worker-attempts.json").write_text(
+        json.dumps({"ASK-30": {"rounds": 1}, "ASK-31": {"rounds": 1}}))
     return tmp_path / "linear-triage-health.py"
 
 
@@ -1726,8 +1732,9 @@ def test_apply_routes_a_dormant_in_progress_ticket_back_to_backlog(tmp_path):
     assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
     m = json.loads(res.stdout)
     assert m["dormant_threshold_days"] == 7
-    assert m["dormant_started"] == ["ASK-30", "ASK-31"], m
+    assert m["dormant_started"] == ["ASK-30", "ASK-31", "ASK-35"], m
     assert m["dormant_routed"] == ["ASK-30"], m
+    assert "no worker history" in m["dormant_route_held"]["ASK-35"], m
     assert "ASK-31" in m["dormant_route_held"], m
     assert "sana/ask-31-lane" in m["dormant_route_held"]["ASK-31"], m
     assert m["started_owner_sana"] and "ASK-32" in m["started_owner_sana"], m
@@ -1766,7 +1773,7 @@ def test_a_routed_ticket_is_not_routed_twice(tmp_path):
         fx.close()
     assert first.returncode == health.EXIT_OK and second.returncode == health.EXIT_OK
     assert before == 2 and len(fx.writes) == 2, fx.writes
-    assert json.loads(second.stdout)["dormant_started"] == ["ASK-31"]
+    assert json.loads(second.stdout)["dormant_started"] == ["ASK-31", "ASK-35"]
 
 
 def test_mutant_that_skips_the_hold_rule_is_caught(tmp_path):

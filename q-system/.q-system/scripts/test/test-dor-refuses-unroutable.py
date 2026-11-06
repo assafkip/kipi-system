@@ -186,6 +186,7 @@ def run_started(mod, label):
         started("ASK-821", 1, desc="a lane moved this to In Progress an hour ago"),
         started("ASK-822", 24 * 30, desc="## Definition of Ready\nOutcome: x",
                 labels=(mod.NEEDS_SCOPE_LABEL,)),
+        started("ASK-823", 24 * 30, desc="a lane moved this by hand a month ago"),
     ]
 
     def fake_graphql(query, variables):
@@ -195,7 +196,12 @@ def run_started(mod, label):
 
     ls.graphql = fake_graphql
     old_state = os.environ.get("KIPI_STATE_DIR")
-    os.environ["KIPI_STATE_DIR"] = tempfile.mkdtemp()
+    state = tempfile.mkdtemp()
+    os.environ["KIPI_STATE_DIR"] = state
+    # The fleet ran ASK-820, ASK-821 and ASK-822; nobody in it ran ASK-823.
+    with open(os.path.join(state, "linear-worker-attempts.json"), "w") as fh:
+        fh.write('{"ASK-820": {"rounds": 1}, "ASK-821": {"rounds": 1}, '
+                 '"ASK-822": {"rounds": 1}}')
     try:
         got = {i["identifier"] for i in mod.fetch_draftable(ls, "team-fixture")}
         ranked = {i["identifier"]: m for m, i in mod.prioritise(
@@ -216,6 +222,11 @@ def run_started(mod, label):
     else:
         bad("leaves an hour-old started ticket alone (ASK-821)",
             "the drafter would rewrite a live lane ticket")
+    if "ASK-823" not in got:
+        ok("leaves alone a month-old started ticket the fleet never ran (ASK-823, no worker history)")
+    else:
+        bad("leaves a ticket with no worker history alone (ASK-823)",
+            "the drafter would rewrite a ticket a lane or a person started")
     if ranked.get("ASK-822") == "redraft":
         ok("a started needs-scope refusal is ranked a redraft, not a first draft (ASK-822)")
     else:

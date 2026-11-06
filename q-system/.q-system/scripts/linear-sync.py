@@ -781,13 +781,50 @@ def open_prs(issue_id: str) -> list:
     return out
 
 
-def started_hold_reason(issue: dict, now=None, worktrees_dir: str = "") -> str:
+# The worker's own record of every issue the fleet has run: linear-worker.sh
+# ATTEMPTS, written only by attempts-ledger.py. Read here, never written.
+ATTEMPTS_LEDGER_NAME = "linear-worker-attempts.json"
+
+
+def worker_history(state_dir: str, identifier: str) -> str:
+    """"" when the fleet has run this issue before, else why that is not proven.
+
+    THE POSITIVE RELEASE SIGNAL (PR #611 review, finding 1, major). A clock
+    alone cannot tell a slow lane from an abandoned run: the orchestrator moves
+    a lane's tickets to In Progress by hand, with no claim and often no PR, and
+    a person working in their own checkout updates nothing on the ticket. A row
+    in the attempts ledger is proof the fleet worker, the redrives or converge
+    took the issue, so a started ticket WITHOUT one was started by someone the
+    fleet cannot see, and nothing here may release it. Measured 2026-11-06: none
+    of the 19 lane tickets ASK-3815 to ASK-3833 has a row; every started ticket
+    the fleet worked (ASK-2058, ASK-1876, ASK-2810, ASK-3036, ASK-142, ASK-767)
+    has one. FAIL CLOSED: an unreadable ledger proves nothing.
+    """
+    path = os.path.join(state_dir, ATTEMPTS_LEDGER_NAME)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return "no attempts ledger here, so no proof the fleet ever ran it"
+    except (OSError, ValueError) as exc:
+        return f"the attempts ledger is unreadable ({str(exc)[:80]})"
+    if not isinstance(data, dict):
+        return "the attempts ledger is not a JSON object"
+    if isinstance(data.get(identifier), dict) and data.get(identifier):
+        return ""
+    return ("no worker history: started outside the fleet worker, so nothing "
+            "proves nobody is on it")
+
+
+def started_hold_reason(issue: dict, now=None, state_dir: str = "") -> str:
     """"" when a STARTED issue is abandoned and a drain may take it; else why not.
 
-    Abandoned means ALL of: started longer than STARTED_STALE_HOURS ago, no live
-    worker claim on its tree, and no open PR. Cheap checks first; the Linear
-    read runs only for a ticket that passed the other two. Any doubt holds the
-    ticket (fail closed).
+    Abandoned means ALL of: started longer than STARTED_STALE_HOURS ago, the
+    fleet has run it before (worker_history), no live worker claim on its tree,
+    and no open PR. `state_dir` is the worker's KIPI_STATE_DIR: its worktrees/
+    and its attempts ledger are both read from there. Cheap checks first; the
+    Linear read runs only for a ticket that passed every local one. Any doubt
+    holds the ticket (fail closed).
     """
     if ((issue.get("state") or {}).get("type") or "") != "started":
         return "not in a started state"
@@ -799,7 +836,10 @@ def started_hold_reason(issue: dict, now=None, worktrees_dir: str = "") -> str:
     if hours < STARTED_STALE_HOURS:
         return (f"started {hours:.1f}h ago, inside the {STARTED_STALE_HOURS}h window "
                 f"a lane gets before the worker may take it")
-    claim = live_claim(worktrees_dir, issue.get("identifier") or "")
+    history = worker_history(state_dir, issue.get("identifier") or "")
+    if history:
+        return history
+    claim = live_claim(os.path.join(state_dir, "worktrees"), issue.get("identifier") or "")
     if claim:
         return claim
     try:
