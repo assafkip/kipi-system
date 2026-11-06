@@ -609,6 +609,24 @@ REGISTRY_OK="$(_facts_get ok)"
 SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
+# --- the open PRs, for the WIP ceiling (ASK-3826) ---------------------------
+# Counted BEFORE the pick because the picker below holds the board, and the
+# ceiling needs the board to judge each PR's ticket. One gh call, -q so an
+# empty answer means no open PRs (real gh prints nothing for an empty list
+# under -q, and so does every fixture stub that models no PRs). A non-zero
+# exit means the pile was NOT counted, and the block before the issue loop
+# then starts nothing. Not asked under --issue: an explicit issue is a driver
+# override (converge, the redrives), the same rule the picker keeps.
+WIP_OWN_RC=""; WIP_OWN_PRS=""
+if [ -z "$ONLY_ISSUE" ]; then
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  WIP_OWN_PRS="$(gh pr list $KIPI_GH_REPO_ARGS --state open --limit 200 \
+    --json number,headRefName,createdAt,url \
+    -q '.[] | [.number, .headRefName, .createdAt, .url] | @tsv' 2>/dev/null)"
+  WIP_OWN_RC=$?
+fi
+export WIP_OWN_RC WIP_OWN_PRS
+
 # --- pick ready issues ------------------------------------------------------
 PICKED="$(python3 - "$ONLY_ISSUE" "$STATE_DIR" <<'PY'
 import importlib.util, json, os, sys, pathlib
@@ -938,6 +956,130 @@ def pick_why(i):
         return STARTED_WHY
     return "started, named by --issue"
 
+# THE WIP CEILING (ASK-3826, RULE-2026-11-06-B). No WIP limit existed here:
+# 8 open sana/* PRs in kipi-system on 2026-11-06 while each tick started a new
+# issue. The rule is ported from chief/cloud_worker.py:66 to :75 (WIP_CAP 5,
+# added after 82 open sana/* PRs where no fire went back to one): at 5 open
+# fleet-own PRs in a repo, rework the oldest one that can move instead.
+# This half judges each PR by its TICKET, because only the picker holds the
+# board; the shell block before the issue loop judges the PR itself.
+#
+# FLEET-OWN IS THE sana/ HEAD BRANCH. Every PR is authored by the same GitHub
+# account, so the author cannot tell fleet from human. The worker and converge
+# open sana/<id> (linear-worker.sh BRANCH, converge.sh:123) and the lanes open
+# sana/<id>-<slug>; lessons/weekly-* and human branches are not fleet WIP.
+WIP_CEILING = 5
+OWN_PREFIX = "sana/"
+# A walk bound, as in chief (MAX_WALK): each candidate may cost two Linear reads.
+WIP_WALK = 10
+by_ident = {i["identifier"]: i for i in issues}
+
+
+def worker_branch_issue(branch):
+    # sana/ask-901 -> ASK-901. A lane branch (sana/ask-901-slug) gives "": the
+    # worker and converge commit only onto sana/<id>, so work for a lane PR
+    # would land on a branch no open PR is on (the kipi-dispatch.sh
+    # branch_guard refusal, ASK-358).
+    tail = branch[len(OWN_PREFIX):] if branch.startswith(OWN_PREFIX) else ""
+    head, _sep, num = tail.partition("-")
+    return (head.upper() + "-" + num) if head.isalpha() and num.isdigit() else ""
+
+
+def held_only_by(i, url):
+    # True when the ONE thing the ASK-3825 rule holds this started ticket for
+    # is this PR. started_hold_reason checks age, worker history and the live
+    # claim before it reads PRs, and returns the first open PR line, so a hold
+    # equal to that line means every earlier check passed. Every rework
+    # candidate has an open PR by definition, so the no-open-PR check is the
+    # one clause excused, and only when no OTHER open PR (a lane beside it)
+    # holds the ticket too. Any read failure keeps the hold (fail closed).
+    why = started_hold(i)
+    if not why:
+        return False
+    try:
+        prs = ls.open_prs(i.get("id") or i["identifier"])
+    except Exception:
+        return False
+    return bool(prs) and why == prs[0] and all(p.startswith("open PR " + url + " ") for p in prs)
+
+
+def refusal_why(i):
+    # Names the refusal for the run log. It never decides: ready() does.
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    for held in ("owner:assaf", "needs-scope", "blocked:capability"):
+        if held in labels:
+            return "ticket labelled " + held
+    if "owner:sana" not in labels:
+        return "ticket is not owner:sana"
+    if is_fleet_alert(i):
+        return "ticket is a fleet alert, not dispatch work (ASK-839)"
+    if not in_this_repo(i):
+        return "ticket is on project " + str(project_of(i)) + ", not this repo"
+    if "Definition of Ready" not in (i.get("description") or ""):
+        return "ticket has no Definition of Ready"
+    if i["state"]["type"] == "started":
+        return "ticket held: " + (started_hold(i) or "not released")
+    return "ticket is " + (i["state"].get("name") or i["state"]["type"])
+
+
+def rework_hold(ident, url):
+    # "" when the worker may rework this PR for its ticket, else why not.
+    # ONE ELIGIBILITY RULE, NOT TWO: the ticket must pass ready(), the same
+    # predicate that picks fresh work, with the ASK-3825 started rule inside
+    # it. For a started ticket held only by this PR, ready() is asked again
+    # with that one hold lifted in the memo, then the memo is put back so the
+    # started_held report above is untouched. Trap 1 of the ticket: a lane
+    # ticket moved by hand an hour ago, with no ledger row, stays held.
+    i = by_ident.get(ident)
+    if i is None:
+        return "ticket " + ident + " is not on the board"
+    if ready(i):
+        return ""
+    if i["state"]["type"] == "started" and held_only_by(i, url):
+        saved = _started_memo[ident]
+        _started_memo[ident] = ""
+        try:
+            if ready(i):
+                return ""
+        finally:
+            _started_memo[ident] = saved
+    return refusal_why(i)
+
+
+wip = {"asked": False}
+if os.environ.get("WIP_OWN_RC", "") != "":
+    wip = {"asked": True, "ceiling": WIP_CEILING, "known": True, "error": ""}
+    rows = []
+    if os.environ.get("WIP_OWN_RC") != "0":
+        wip["error"] = "gh pr list exited " + os.environ.get("WIP_OWN_RC", "?")
+    for line in (os.environ.get("WIP_OWN_PRS") or "").splitlines():
+        if wip["error"] or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 4 or not parts[0].isdigit():
+            wip["error"] = "gh pr list gave a line that is not number, branch, created, url: " + line[:80]
+            continue
+        rows.append({"pr": int(parts[0]), "branch": parts[1], "created_at": parts[2], "url": parts[3]})
+    own = sorted([r for r in rows if r["branch"].startswith(OWN_PREFIX)],
+                 key=lambda r: (r["created_at"], r["pr"]))
+    wip["known"] = not wip["error"]
+    wip["count"] = len(own)
+    wip["at_ceiling"] = wip["known"] and len(own) >= WIP_CEILING
+    walked = 0
+    for r in own:
+        r["issue"] = worker_branch_issue(r["branch"])
+        if not wip["at_ceiling"]:
+            r["hold"] = ""
+        elif not r["issue"]:
+            r["hold"] = "lane branch, the worker commits only onto sana/<id>, so it cannot rework this one"
+        elif walked >= WIP_WALK:
+            r["hold"] = "not checked, past the first " + str(WIP_WALK) + " candidates"
+        else:
+            walked += 1
+            r["hold"] = rework_hold(r["issue"], r["url"])
+        r["state"] = ((by_ident.get(r["issue"]) or {}).get("state") or {}).get("type") or "-"
+    wip["own"] = own
+
 print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
                "state": i["state"]["type"],
@@ -969,6 +1111,8 @@ print(json.dumps({
     # rather than allowed to look like a finished board.
     "project_known": any(project_of(i) == repo_project for i in issues),
     "repo_project": repo_project,
+    # ASK-3826: the open fleet-own PRs, oldest first, each with its ticket hold.
+    "wip": wip,
 }))
 PY
 )"
@@ -1726,6 +1870,142 @@ for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-r
   case "$_pid" in ''|*[!0-9]*) continue ;; esac
   kill -0 "$_pid" 2>/dev/null || rm -f "$_stale" 2>/dev/null || true
 done
+
+# --- THE WIP CEILING, PR HALF (ASK-3826, RULE-2026-11-06-B) -----------------
+# The picker judged each open fleet-own PR by its TICKET (the ASK-3825 rule,
+# inside ready()). This judges the PR: would one worker round on it change
+# anything? Each check is a decision the issue loop below already makes about
+# an existing PR, asked through the same functions, so the pick never lands on
+# a PR the loop would then skip on every tick:
+#   attempts    attempts_for >= MAX_ATTEMPTS, the loop's first skip
+#   codex hold  codex_outage_noted under a live outage claim, its second skip
+#   round cap   the reviewer's OWN count (pr-review-agent.sh, PRIOR_ROUNDS):
+#               usable rounds at --engine claude, the engine this worker always
+#               reviews with (its reviewer call passes it), against
+#               KIPI_REVIEW_MAX_ROUNDS. A push to a capped PR gets no review,
+#               so its gate never turns: reworking it moves nothing. ASK-3824
+#               is the consumer that ends a cap; until it lands, a capped PR is
+#               passed over and named, never reworked. Measured 2026-11-06:
+#               #543, #559, #584, #606, #609 at 3 of 3.
+#   the gate    rework_gate: 10 approved at its head and 20 never reviewed have
+#               nothing to rework; 30 and 40 are rounds until their caps spend.
+# WHEN NOTHING CAN MOVE, NOTHING STARTS. The ceiling means stop starting new
+# work, so falling back to a fresh issue would be the defect this ports out of
+# chief. The run names the count and the consumer instead.
+REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
+case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
+
+wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, else "<kind>|<why>"
+  local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
+  n="$(attempts_for "$issue")"
+  if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
+    printf 'held|%s/%s attempts spent, terminal' "$n" "$MAX_ATTEMPTS"; return 0
+  fi
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$issue" codex_outage_noted "" 2>/dev/null)" = "True" ] \
+     && env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+    printf 'held|held while the second runner (Codex) is unavailable'; return 0
+  fi
+  # find -name, the quote-safe form review_round uses; the reviewer counts the
+  # same <key>-*.md set with the same review_is_usable predicate.
+  while IFS= read -r f; do
+    [ -n "$f" ] && review_is_usable "$f" && rounds=$((rounds + 1))
+  done < <(find "$REVIEWS_DIR" -maxdepth 1 -type f -name "$(review_md_name_glob "$TARGET_SLUG" "$pr")" 2>/dev/null)
+  if [ "$rounds" -ge "$REVIEW_MAX_ROUNDS" ]; then
+    printf 'cap|at the review round cap (%s of %s usable rounds), so a push gets no new review' "$rounds" "$REVIEW_MAX_ROUNDS"; return 0
+  fi
+  # The gate's inputs, read the way the issue loop reads them for EXISTING_PR.
+  rec="$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$pr")"
+  verdict="$(verdict_from_record "$rec")"
+  if [ -z "$verdict" ]; then
+    latest="$(ls -t "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr")-"*.md "$REVIEWS_DIR/pr-$pr-"*.md 2>/dev/null | head -1)"
+    [ -n "$latest" ] && verdict="$(extract_verdict "$latest")"
+  fi
+  merge="$(pr_merge_state "$pr")"
+  reviewed="$(head_sha_from_record "$rec")"
+  current="$(pr_head_sha "$pr")"
+  rework_gate "$verdict" "$merge" "$reviewed" "$current" >/dev/null; gate=$?
+  case "$gate" in
+    10) printf 'wait|approved at its head (%s), nothing to rework' "$verdict" ;;
+    20) printf 'wait|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
+    30) [ "$(conflict_rounds_for "$issue")" -ge "$MAX_CONFLICT_ROUNDS" ] \
+          && printf 'held|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
+    40) [ "$(drift_rounds_for "$issue")" -ge "$MAX_DRIFT_ROUNDS" ] \
+          && printf 'held|head still unreviewed after %s drift rounds' "$MAX_DRIFT_ROUNDS" ;;
+  esac
+  return 0
+}
+
+# Tabs and newlines folded so every field survives the tab split below.
+WIP_ROWS="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+w = json.load(sys.stdin).get("wip") or {}
+if not w.get("asked"):
+    raise SystemExit(0)
+clean = lambda v: " ".join(str(v).split()) or "-"
+print("\t".join(["meta", clean(w.get("known")), clean(w.get("at_ceiling")),
+                 clean(w.get("count", 0)), clean(w.get("ceiling", 5)), clean(w.get("error") or "-")]))
+for r in w.get("own") or []:
+    print("\t".join(["pr", clean(r["pr"]), clean(r.get("issue") or "-"), clean(r.get("state") or "-"),
+                     clean(r["branch"]), clean(r.get("hold") or "-")]))
+' 2>/dev/null)"
+WIP_REPLACE=0; WIP_FEED=""
+if [ -n "$WIP_ROWS" ]; then
+  IFS=$'\t' read -r _wk WIP_KNOWN WIP_AT WIP_COUNT WIP_CEIL WIP_ERR <<<"$(printf '%s\n' "$WIP_ROWS" | head -1)"
+  WIP_WHERE="${TARGET_SLUG:-$REPO_PROJECT}"
+  if [ "$WIP_KNOWN" != "True" ]; then
+    say "WIP ceiling: could not count the open own PRs in $WIP_WHERE ($WIP_ERR). Starting nothing this run: an uncounted pile is not a pile under the ceiling."
+    WIP_REPLACE=1
+  elif [ "$WIP_AT" != "True" ]; then
+    say "WIP: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL)"
+  else
+    WIP_REPLACE=1
+    WIP_PICKED=0; WIP_FIRST=""; WIP_PASSED=""
+    WIP_CAPPED=0; WIP_LANE=0; WIP_HELD=0; WIP_WAIT=0
+    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_hold; do
+      [ "$_wk" = "pr" ] || continue
+      [ "$WIP_PICKED" -ge "$LIMIT" ] && break
+      if [ "$w_issue" = "-" ]; then w_label="#$w_pr ($w_branch)"; else w_label="#$w_pr ($w_issue)"; fi
+      if [ "$w_hold" != "-" ]; then
+        case "$w_hold" in "lane branch"*) WIP_LANE=$((WIP_LANE + 1)) ;; *) WIP_HELD=$((WIP_HELD + 1)) ;; esac
+        WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: $w_hold"
+        continue
+      fi
+      w_why="$(wip_move_why "$w_issue" "$w_pr")"
+      if [ -n "$w_why" ]; then
+        case "${w_why%%|*}" in
+          cap)  WIP_CAPPED=$((WIP_CAPPED + 1)) ;;
+          wait) WIP_WAIT=$((WIP_WAIT + 1)) ;;
+          *)    WIP_HELD=$((WIP_HELD + 1)) ;;
+        esac
+        WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: ${w_why#*|}"
+        continue
+      fi
+      if [ -z "$WIP_FIRST" ]; then
+        WIP_FIRST="PR #$w_pr ($w_issue)"
+        w_pick_why="WIP ceiling: rework PR #$w_pr, the oldest movable of $WIP_COUNT open own PRs (ceiling $WIP_CEIL)"
+      else
+        w_pick_why="WIP ceiling: rework PR #$w_pr, the next movable of $WIP_COUNT open own PRs (ceiling $WIP_CEIL)"
+      fi
+      WIP_PICKED=$((WIP_PICKED + 1))
+      WIP_FEED="$WIP_FEED$(python3 -c 'import json,sys;print(json.dumps({"id": sys.argv[1], "state": sys.argv[2], "why": sys.argv[3]}))' "$w_issue" "$w_state" "$w_pick_why")"$'\n'
+    done <<<"$WIP_ROWS"
+    if [ "$WIP_PICKED" -gt 0 ]; then
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST."
+    else
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). Starting nothing: the ceiling stops new issues, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_CAPPED at the review round cap, whose consumer is ASK-3824; $WIP_LANE on lane branches; $WIP_HELD held; $WIP_WAIT waiting on a review or a merge)."
+    fi
+    [ -n "$WIP_PASSED" ] && say "WIP ceiling: passed over, oldest first: $WIP_PASSED"
+  fi
+fi
+# ONE REWRITE OF THE LOOP FEED, and the halt report after the loop reads the
+# same list, so what the loop was handed and what it reports cannot disagree.
+if [ "$WIP_REPLACE" = "1" ]; then
+  PICKED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+d["ready"] = [json.loads(l) for l in sys.argv[1].splitlines() if l.strip()]
+print(json.dumps(d))' "$WIP_FEED")"
+fi
+
 # One line per issue: id, the state the picker saw, and why a started one is in
 # the pool (ASK-3825). The loop header stays `while IFS= read -r ISSUE; do`
 # byte for byte, because test-terminal-states.sh finds the issue loop by that
