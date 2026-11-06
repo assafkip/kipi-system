@@ -286,6 +286,101 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn("old_fn", res.stdout)
 
 
+KEPT = "q-system/.q-system/scripts/test/test-instance-thing.py"
+
+
+class RestoreTests(unittest.TestCase):
+    """Through the REAL updater, on a fixture where the sync lands. The q-system
+    sync snapshots a list of files before its rsync --delete and restores every
+    one the rsync removed. Review round 2 of #609: the guard re-derived "lost"
+    from the raw rsync preview, never saw that list, and refused the whole
+    instance over a test file the sync puts back. Each run here pairs that file
+    with work the sync really loses, so a pass cannot come from the guard going
+    quiet on the q-system scope."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.skel, self.inst = self.root / "skel", self.root / "inst"
+        sk, inst = self.skel, self.inst
+        for rel in upm.UPDATER_FILES + upm.OPTIONAL_FILES:
+            if (REPO_ROOT / rel).is_file():
+                (sk / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO_ROOT / rel, sk / rel)
+        state = sk / "q-system/.q-system/state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "propagation-leak-baseline.json").write_text(json.dumps(upm.LEAK_BASELINE))
+        for root in (sk, inst):
+            (root / ".claude/rules").mkdir(parents=True, exist_ok=True)
+            (root / ".claude/rules/demo.md").write_text("# demo rule\n")
+            (root / "q-system").mkdir(parents=True, exist_ok=True)
+            (root / "q-system/lib.py").write_text("def keep():\n    return 1\n")
+        g(sk, "init", "-q", "-b", "main")
+        # The skeleton shipped old_tool.py, then deleted it on purpose, so
+        # preserve-scan lets that deletion propagate and nothing restores it.
+        (sk / "q-system/old_tool.py").write_text("def a():\n    return 1\n")
+        g(sk, "add", "-A", "-f")
+        g(sk, "commit", "-qm", "skeleton ships old_tool.py")
+        (sk / "q-system/old_tool.py").unlink()
+        g(sk, "add", "-A", "-f")
+        g(sk, "commit", "-qm", "skeleton drops old_tool.py")
+        (sk / "instance-registry.json").write_text(json.dumps({"instances": [{
+            "name": "restore", "path": str(inst), "subtree_prefix": "q-system",
+            "type": "subtree"}]}))
+        # The instance still carries old_tool.py from before that deletion.
+        (inst / "q-system/old_tool.py").write_text("def a():\n    return 1\n")
+        old = {**os.environ, "GIT_AUTHOR_DATE": stamp(40), "GIT_COMMITTER_DATE": stamp(40)}
+        g(inst, "init", "-q", "-b", "main")
+        g(inst, "add", "-A", env=old)
+        g(inst, "commit", "-qm", "instance base", env=old)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def commit_recent(self, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            (self.inst / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.inst / rel).write_text(text)
+        g(self.inst, "add", "-A")
+        g(self.inst, "commit", "-qm", "instance work",
+          env={**os.environ, "GIT_AUTHOR_DATE": stamp(1), "GIT_COMMITTER_DATE": stamp(1)})
+
+    def update(self) -> str:
+        home = self.root / "home"
+        home.mkdir(exist_ok=True)
+        env = {**os.environ, "HOME": str(home),
+               "KIPI_FLEET_SWEEP_HISTORY": str(self.root / "sweep-history.jsonl")}
+        proc = subprocess.run(["bash", str(self.skel / "kipi-update.sh")], capture_output=True,
+                              text=True, cwd=str(self.root), env=env)
+        return proc.stdout + proc.stderr
+
+    def test_a_q_system_file_the_sync_restores_is_not_refused(self):
+        self.commit_recent({KEPT: "def test_thing():\n    assert True\n"})
+        out = self.update()
+        self.assertNotIn("REFUSING SYNC", out)
+        self.assertNotIn("SYNC GUARD REFUSED", out)
+        # The guard saw the deletion and matched it to the updater's list. A
+        # q-system scope missing from the stream would pass the lines above.
+        self.assertIn("1 deletion(s) skipped, the sync restores them", out)
+        self.assertIn(f"restored untracked: {KEPT}", out)
+        self.assertTrue((self.inst / KEPT).is_file(), out)
+
+    def test_q_system_work_the_sync_does_not_restore_is_still_refused(self):
+        self.commit_recent({
+            KEPT: "def test_thing():\n    assert True\n",
+            "q-system/old_tool.py": "def a():\n    return 1\n\ndef b():\n    return 2\n",
+            "q-system/lib.py": "def keep():\n    return 1\n\ndef extra():\n    return 2\n",
+        })
+        out = self.update()
+        self.assertIn("REFUSING SYNC", out)
+        # Deleted, and not on the restore list: the skeleton once tracked the path.
+        self.assertIn("q-system/old_tool.py: def b", out)
+        # Overwritten: a restore never covers a file the rsync rewrote.
+        self.assertIn("q-system/lib.py: def extra", out)
+        self.assertNotIn(KEPT, out)
+        self.assertTrue((self.inst / KEPT).is_file(), out)
+
+
 def mutant_home(dst: Path) -> Path:
     """A kipi home holding exactly what the probe copies, so one file can be broken."""
     for rel in upm.UPDATER_FILES + upm.OPTIONAL_FILES:

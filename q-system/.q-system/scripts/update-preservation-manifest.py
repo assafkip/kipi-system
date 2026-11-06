@@ -38,11 +38,15 @@ Subcommands:
           per synced scope, each the itemized `rsync -ain --delete` preview the
           real run would execute, with the real run's flags:
               @@scope<TAB>src_dir<TAB>dest_dir<TAB>instance_rel<TAB>skeleton_rel
+              @@restore<TAB>instance-relative path      (zero or more)
               <itemized rsync lines>
               ...
               @@end
           The candidate set therefore comes from rsync itself, so it cannot
-          drift from what the sync would change.
+          drift from what the sync would change. The @@restore lines are the
+          list the real q-system sync snapshots and puts back after its rsync
+          (q_system_restore_list in kipi-update.sh); a deletion on it loses
+          nothing, so it is not judged.
           Exit 0: nothing protected would be removed (or every hit has an
                   override). Exit 2: refuse. Exit 1: the guard could not decide
                   (bad stream, bad override file, git failure). The caller treats
@@ -315,7 +319,12 @@ def parse_stream(stream: str) -> list[dict]:
             if len(parts) != 5:
                 raise GuardError(f"malformed scope header: {raw!r}")
             scopes.append({"src": parts[1], "dest": parts[2], "inst_rel": parts[3],
-                           "skel_rel": parts[4], "items": []})
+                           "skel_rel": parts[4], "items": [], "restore": set()})
+            continue
+        if raw.startswith("@@restore\t"):
+            if ended or not scopes:
+                raise GuardError(f"restore line outside a scope block: {raw!r}")
+            scopes[-1]["restore"].add(raw[len("@@restore\t"):])
             continue
         if raw == "@@end":
             ended = True
@@ -337,6 +346,17 @@ def parse_stream(stream: str) -> list[dict]:
     # of a short, clean-looking list.
     if not ended:
         raise GuardError("stream has no @@end: the rsync preview did not finish")
+    # A deletion on the updater's own restore list comes back after the rsync,
+    # file and defs, so it is not lost work. An overwrite never does: the sync
+    # restores only a path the rsync left missing. #609 review round 2: judging
+    # the raw preview without this list refused a whole instance over a test
+    # file the sync puts back.
+    for scope in scopes:
+        scope["items"] = [
+            ("restored" if action == "delete" and _join(scope["inst_rel"], rel) in scope["restore"]
+             else action, rel)
+            for action, rel in scope["items"]
+        ]
     return scopes
 
 
@@ -345,11 +365,13 @@ def _join(prefix: str, rel: str) -> str:
 
 
 def removals(scope: dict) -> list[tuple[str, str, str, str, bool]]:
-    """(instance_path, skeleton_path, symbol, kind) for everything this scope
-    would remove. A deleted test file is one item; its defs are checked too, so
-    a test added to an OLD file is still caught."""
+    """(instance_path, skeleton_path, symbol, kind, qualified) for everything
+    this scope would remove and not put back. A deleted test file is one item;
+    its defs are checked too, so a test added to an OLD file is still caught."""
     out = []
     for action, rel in scope["items"]:
+        if action == "restored":
+            continue
         inst_path = _join(scope["inst_rel"], rel)
         skel_path = _join(scope["skel_rel"], rel)
         dest_file = Path(scope["dest"]) / rel
@@ -385,6 +407,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     git(args.skeleton_root, "rev-parse", "--verify", args.skeleton_ref)
 
     refused, allowed, checked = [], [], 0
+    restored = sum(action == "restored" for scope in scopes for action, _ in scope["items"])
     settled_files: set[str] = set()
     for scope in scopes:
         for inst_path, skel_path, symbol, kind, qualified in removals(scope):
@@ -415,7 +438,9 @@ def cmd_check(args: argparse.Namespace) -> int:
               f"(added by {commit[:12]}): {reason}")
     if not refused:
         print(f"  sync guard: 0 refusals ({checked} removal(s) checked against the last "
-              f"{args.window_days} days of instance commits)")
+              f"{args.window_days} days of instance commits"
+              + (f"; {restored} deletion(s) skipped, the sync restores them" if restored else "")
+              + ")")
         return 0
 
     print(f"  REFUSING SYNC: it would remove {len(refused)} item(s) that an instance commit "

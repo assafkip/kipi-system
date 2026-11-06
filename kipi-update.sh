@@ -504,6 +504,91 @@ instance_ahead_preflight() {
   done
 }
 
+# WHAT THE Q-SYSTEM SYNC PUTS BACK, IN ONE PLACE (ASK-3821).
+# $1 instance path, $2 subtree prefix, $3 dir holding the extracted
+# `git archive HEAD -- q-system/`, $4 snapshot dir. Writes, NUL-separated and
+# instance-relative: $4/untracked (untracked files under the prefix), and $4/list
+# (those plus the tracked instance-only files preserve-scan proves the skeleton
+# never had). $4/warn holds preserve-scan's warning for the caller to print.
+# The q-system sync snapshots $4/list before its rsync --delete and restores
+# every entry the rsync removed, and sync_guard_stream sends the guard this same
+# list. Scar: #609 review round 2. The guard re-derived "lost" from the raw rsync
+# preview, never saw this list, and refused a whole instance over a test file
+# the sync puts back. Non-zero = no list; the rsync --delete must not start.
+q_system_restore_list() {
+  local path="$1" prefix="$2" archive="$3" snap="$4" preserve_scan tf
+  # Excluded from preservation: bytecode junk (regenerable) and the forbidden
+  # nested $prefix/q-system/ shadow tree (a stale skeleton copy from the old
+  # `git subtree add` creation path -- folder-structure.md bans it; restoring
+  # it made the shadow tree immortal across updates).
+  if ! ( cd "$path" && git ls-files -z --others -- "$prefix/" \
+      $(pathspec_owned_excludes "$prefix") \
+      ":(exclude)$prefix/q-system/" \
+      ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$snap/untracked"; then
+    echo "  ERROR: preservation snapshot inventory failed; rsync not started"
+    return 1
+  fi
+  cp "$snap/untracked" "$snap/list" || return 1
+  # Also preserve TRACKED instance-only files the --delete would remove. The
+  # ls-files --others snapshot above only covers UNTRACKED files; a script the
+  # instance COMMITTED inside the synced tree was deleted with no protection
+  # (scar 2026-06-24: fractional-cxo income scanners died this way for 6 days).
+  # The helper flags only files the skeleton NEVER tracked (genuinely instance-
+  # added), so skeleton-intended deletions still propagate. It is a hard
+  # precondition: missing or incomplete proof stops before rsync --delete.
+  preserve_scan="$SCRIPT_DIR/kipi-update-preserve-scan.py"
+  if [ ! -f "$preserve_scan" ]; then
+    echo "  ERROR: preservation helper missing; rsync not started"
+    return 1
+  fi
+  if ! python3 "$preserve_scan" --skeleton-archive "$archive" \
+      --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
+      --receipt "$snap/preservation-receipt.json" \
+      > "$snap/tracked" 2>"$snap/warn"; then
+    [ -s "$snap/warn" ] && cat "$snap/warn"
+    echo "  ERROR: preservation helper failed; rsync not started"
+    return 1
+  fi
+  if ! python3 - "$snap/preservation-receipt.json" "$snap/tracked" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+receipt_path = pathlib.Path(sys.argv[1])
+output_path = pathlib.Path(sys.argv[2])
+try:
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    output = output_path.read_bytes()
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+expected_keys = {
+    "candidate_count",
+    "complete",
+    "schema_version",
+    "stdout_sha256",
+}
+if set(receipt) != expected_keys:
+    raise SystemExit(1)
+if receipt["schema_version"] != 1 or receipt["complete"] is not True:
+    raise SystemExit(1)
+if output and not output.endswith(b"\n"):
+    raise SystemExit(1)
+if receipt["candidate_count"] != len(output.splitlines()):
+    raise SystemExit(1)
+if receipt["stdout_sha256"] != hashlib.sha256(output).hexdigest():
+    raise SystemExit(1)
+PY
+  then
+    echo "  ERROR: preservation receipt incomplete or invalid; rsync not started"
+    return 1
+  fi
+  if [ -s "$snap/tracked" ]; then
+    while IFS= read -r tf; do [ -n "$tf" ] && printf '%s\0' "$tf"; done \
+      < "$snap/tracked" >> "$snap/list"
+  fi
+}
+
 # RECENT INSTANCE WORK THE SYNC WOULD DELETE (ASK-3821). Refuses on every run,
 # no flag. The scar: kipi-investigations f00ee9d7 added _deferral_tracking_gate
 # and 5 tests; the next morning the plugin sync (1d2568c5) wrote the skeleton's
@@ -516,9 +601,11 @@ instance_ahead_preflight() {
 # def, class or test file that an instance commit in the last 30 days added, at a
 # path the skeleton never had it? Answered by update-preservation-manifest.py
 # from rsync's own itemized preview with the REAL run's flags, so it cannot
-# drift from what the run writes. Only scopes this run rsyncs are streamed:
-# q-system/ is merged by git on a direct-clone, and plugins/ is synced only
-# where .claude/ exists (the config block below).
+# drift from what the run writes, plus the list q_system_restore_list gives the
+# real sync, so a deletion that sync puts back is not counted as lost. plugins/
+# has no restore, so all of it is judged. Only scopes this run rsyncs are
+# streamed: q-system/ is merged by git on a direct-clone, and plugins/ is synced
+# only where .claude/ exists (the config block below).
 #
 # The one way past it is a reviewed entry in kipi-update-preservation-overrides.json
 # naming the commit, path, symbol and reason.
@@ -528,10 +615,17 @@ SYNC_GUARD_REFUSED=""
 
 # $1 instance path, $2 subtree prefix, $3 instance type, $4 empty temp dir.
 sync_guard_stream() {
-  local path="$1" prefix="$2" itype="$3" src_tmp="$4" plugin_name
+  local path="$1" prefix="$2" itype="$3" src_tmp="$4" plugin_name kept
   if [ "$itype" != "direct-clone" ] && [ -d "$path/$prefix" ]; then
     git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ | tar -x -C "$src_tmp" || return 1
+    # Same function, same archive shape as the real sync, so the guard judges
+    # against the list that sync restores. stdout here is the guard's stdin.
+    mkdir -p "$src_tmp/.snap" &&
+      q_system_restore_list "$path" "$prefix" "$src_tmp" "$src_tmp/.snap" >&2 || return 1
     printf '@@scope\t%s\t%s\t%s\t%s\n' "$src_tmp/q-system" "$path/$prefix" "$prefix" "q-system"
+    while IFS= read -r -d '' kept; do
+      printf '@@restore\t%s\n' "$kept"
+    done < "$src_tmp/.snap/list"
     # shellcheck disable=SC2046
     rsync -ain --delete "$src_tmp/q-system/" "$path/$prefix/" $(rsync_owned_excludes) 2>/dev/null || return 1
   fi
@@ -3112,15 +3206,8 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
         # Lives inside ARCHIVE_TMP so the existing rm -rf cleans it -- no stash stack,
         # no extra cleanup, collision-safe.
         SNAP="$ARCHIVE_TMP/.snap"; mkdir -p "$SNAP/f"
-        # Excluded from preservation: bytecode junk (regenerable) and the forbidden
-        # nested $prefix/q-system/ shadow tree (a stale skeleton copy from the old
-        # `git subtree add` creation path -- folder-structure.md bans it; restoring
-        # it made the shadow tree immortal across updates).
-        if ! ( cd "$path" && git ls-files -z --others -- "$prefix/" \
-            $(pathspec_owned_excludes "$prefix") \
-            ":(exclude)$prefix/q-system/" \
-            ":(exclude)*.pyc" ":(exclude)*__pycache__*" 2>/dev/null ) > "$SNAP/list"; then
-          abandon_instance "  ERROR: preservation snapshot inventory failed; rsync not started" && continue
+        if ! q_system_restore_list "$path" "$prefix" "$ARCHIVE_TMP" "$SNAP"; then
+          abandon_instance && continue
         fi
         COLLISION=0
         while IFS= read -r -d '' uf; do
@@ -3141,66 +3228,11 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
             echo "  ERROR: untracked WIP collides with skeleton path: $uf"
             COLLISION=1
           fi
-        done < "$SNAP/list"
+        done < "$SNAP/untracked"
         if [ "$COLLISION" != "0" ]; then
           abandon_instance && continue
         fi
-        # Also preserve TRACKED instance-only files the --delete would remove. The
-        # ls-files --others snapshot above only covers UNTRACKED files; a script the
-        # instance COMMITTED inside the synced tree was deleted with no protection
-        # (scar 2026-06-24: fractional-cxo income scanners died this way for 6 days).
-        # The helper flags only files the skeleton NEVER tracked (genuinely instance-
-        # added), so skeleton-intended deletions still propagate. It is a hard
-        # precondition: missing or incomplete proof stops before rsync --delete.
-        PRESERVE_SCAN="$SCRIPT_DIR/kipi-update-preserve-scan.py"
-        if [ ! -f "$PRESERVE_SCAN" ]; then
-          abandon_instance "  ERROR: preservation helper missing; rsync not started" && continue
-        fi
-        if ! python3 "$PRESERVE_SCAN" --skeleton-archive "$ARCHIVE_TMP" \
-            --instance "$path" --prefix "$prefix" --skeleton-git "$SCRIPT_DIR" \
-            --receipt "$SNAP/preservation-receipt.json" \
-            > "$SNAP/tracked" 2>"$SNAP/warn"; then
-          [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
-          abandon_instance "  ERROR: preservation helper failed; rsync not started" && continue
-        fi
-        if ! python3 - "$SNAP/preservation-receipt.json" "$SNAP/tracked" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-receipt_path = pathlib.Path(sys.argv[1])
-output_path = pathlib.Path(sys.argv[2])
-try:
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    output = output_path.read_bytes()
-except (OSError, UnicodeError, json.JSONDecodeError):
-    raise SystemExit(1)
-expected_keys = {
-    "candidate_count",
-    "complete",
-    "schema_version",
-    "stdout_sha256",
-}
-if set(receipt) != expected_keys:
-    raise SystemExit(1)
-if receipt["schema_version"] != 1 or receipt["complete"] is not True:
-    raise SystemExit(1)
-if output and not output.endswith(b"\n"):
-    raise SystemExit(1)
-if receipt["candidate_count"] != len(output.splitlines()):
-    raise SystemExit(1)
-if receipt["stdout_sha256"] != hashlib.sha256(output).hexdigest():
-    raise SystemExit(1)
-PY
-        then
-          abandon_instance "  ERROR: preservation receipt incomplete or invalid; rsync not started" && continue
-        fi
         [ -s "$SNAP/warn" ] && cat "$SNAP/warn"
-        if [ -s "$SNAP/tracked" ]; then
-          while IFS= read -r tf; do [ -n "$tf" ] && printf '%s\0' "$tf"; done \
-            < "$SNAP/tracked" >> "$SNAP/list"
-        fi
         if ! ( cd "$path" && while IFS= read -r -d '' uf; do
             mkdir -p "$SNAP/f/$(dirname "$uf")" &&
               cp -a "$uf" "$SNAP/f/$uf" 2>/dev/null || exit 1
