@@ -131,8 +131,13 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-
 [ -n "${PORT:-}" ] || { echo "fixture server did not start: $(cat "$WORK/server.err")"; exit 1; }
 
 # --- a real git skeleton, named for its project ----------------------------------
+# Its origin reads as https://github.com/x/kipi-system.git, so the worker derives
+# the slug x/kipi-system and asks for the open PRs scoped to it, the way every
+# dispatch target is asked. insteadOf points that URL at a local bare repo, so
+# the worker fetch never leaves the machine. make_skel <parent> local keeps the
+# local-path origin: a repo with no GitHub slug (case 5b).
 make_skel() {
-  local parent="$1" skel="$1/kipi-system"
+  local parent="$1" skel="$1/kipi-system" mode="${2:-github}"
   mkdir -p "$parent"
   git init --quiet --bare "$parent/origin.git" && git -C "$parent/origin.git" symbolic-ref HEAD refs/heads/main
   git init --quiet "$skel"
@@ -141,6 +146,10 @@ make_skel() {
   : > "$skel/seed"; git -C "$skel" add seed .claude/settings.json; git -C "$skel" commit --quiet -m seed
   git -C "$skel" remote add origin "$parent/origin.git"
   git -C "$skel" push --quiet -u origin HEAD:main 2>/dev/null
+  if [ "$mode" = "github" ]; then
+    git -C "$skel" config url."$parent/origin.git".insteadOf "https://github.com/x/kipi-system.git"
+    git -C "$skel" remote set-url origin "https://github.com/x/kipi-system.git"
+  fi
   printf '%s' "$skel"
 }
 SKEL="$(make_skel "$WORK/run")"
@@ -163,6 +172,9 @@ LEDGER
 # shellcheck disable=SC1091
 . "$REPO_SCRIPTS/pr-verdict-lib.sh"
 SLUG="$(slug_for_repo "$SKEL" "$SKEL/instance-registry.json")"
+[ "$SLUG" = "x/kipi-system" ] \
+  && ok "fixture self-test: the skeleton reads as GitHub repo x/kipi-system, so the PR count is scoped" \
+  || bad "fixture self-test: the skeleton has a GitHub slug" "slug_for_repo gave '$SLUG'"
 GHDIR="$WORK/gh"; mkdir -p "$GHDIR"
 review() {  # review <pr> <verdict> <usable-rounds>
   local pr="$1" verdict="$2" rounds="$3" key sha r
@@ -232,7 +244,7 @@ run_worker() {  # run_worker <worker-script> <prs-file> <out-file> [worker args.
   local w="$1" prsf="$2" out="$3"; shift 3
   : > "$GHDIR/calls.log"
   PATH="$STUBS:$PATH" \
-    KIPI_SKEL="$SKEL" KIPI_STATE_DIR="$STATE" \
+    KIPI_SKEL="${WIP_SKEL:-$SKEL}" KIPI_STATE_DIR="${WIP_STATE:-$STATE}" \
     KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
@@ -339,6 +351,20 @@ fi
 [ ! -s "$FIXLOG" ] && ok "case 3f: the --apply stop wrote nothing to Linear" \
                    || bad "case 3f: no Linear writes" "$(cat "$FIXLOG")"
 
+# 3g. THE FIRST LIVE DRY RUN'S SCAR. Its state dir linked pr-reviews as a
+# symlink, plain BSD find did not descend it, #543 read as 0 rounds instead of
+# 3, and the capped PR was picked. The reviewer counts with a glob, which
+# follows the link, so the worker must count the same set either way.
+LSTATE="$WORK/state-linked"; mkdir -p "$LSTATE"
+cp "$STATE/linear-worker-attempts.json" "$LSTATE/"
+ln -s "$STATE/worktrees" "$LSTATE/worktrees"; ln -s "$STATE/pr-reviews" "$LSTATE/pr-reviews"
+WIP_STATE="$LSTATE" run_worker "$WORKER" "$WORK/s3.prs" "$WORK/s3g.out" --limit 1
+if ! grep -q '\[dry\] would work' "$WORK/s3g.out" && grep -q '3 at the review round cap' "$WORK/s3g.out"; then
+  ok "case 3g: a symlinked reviews dir still reads the capped PRs as capped"
+else
+  bad "case 3g: a symlinked reviews dir reads the cap" "picks: $(picks "$WORK/s3g.out"). Output: $(flat "$WORK/s3g.out")"
+fi
+
 # ============================================================================
 # 4. TRAP 3: only fleet-own PRs count
 # ============================================================================
@@ -367,6 +393,18 @@ if ! grep -q '\[dry\] would work' "$WORK/s5.out" \
   ok "case 5: when gh cannot list PRs, nothing starts and the run says why"
 else
   bad "case 5: a failed PR count starts nothing" "picks: $(picks "$WORK/s5.out"). Output: $(flat "$WORK/s5.out")"
+fi
+
+# 5b. A repo with no GitHub slug: an unscoped gh call would bind to the cwd and
+# count SOME OTHER repo (the first run of test-worker-project-scope.sh counted
+# the real kipi-system PRs for a fixture). Not asked, and the run says so.
+NOSLUG_SKEL="$(make_skel "$WORK/noslug" local)"
+WIP_SKEL="$NOSLUG_SKEL" run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5b.out" --limit 1
+if grep -q '\[dry\] would work ASK-900 ' "$WORK/s5b.out" && ! grep -q -- '--state open' "$GHDIR/calls.log" \
+   && grep -q 'has no GitHub slug, so its open PRs are not counted' "$WORK/s5b.out"; then
+  ok "case 5b: a repo with no GitHub slug takes no unscoped PR count and says why"
+else
+  bad "case 5b: no slug, no unscoped count" "picks: $(picks "$WORK/s5b.out"); gh calls: $(tr '\n' '|' < "$GHDIR/calls.log"). Output: $(flat "$WORK/s5b.out")"
 fi
 
 # ============================================================================
@@ -457,6 +495,28 @@ if mutate 'r["branch"].startswith(OWN_PREFIX)' 'True'; then
     || ok "mutant killed: counting lessons and human PRs puts 6 at the ceiling, so case 4 can go red"
 else
   bad "mutant 9d: anchor" "the own-branch filter moved"
+fi
+restore
+
+# 9e. plain find on the reviews dir: case 3g must go red.
+if mutate 'find -H "$REVIEWS_DIR"' 'find "$REVIEWS_DIR"'; then
+  WIP_STATE="$LSTATE" run_worker "$MUT/linear-worker.sh" "$WORK/s3.prs" "$WORK/m.out" --limit 1
+  grep -q '\[dry\] would work ASK-931 ' "$WORK/m.out" \
+    && ok "mutant killed: without find -H a symlinked reviews dir hides the cap and #931 is picked, so case 3g can go red" \
+    || bad "mutant 9e survived" "picks: $(picks "$WORK/m.out")"
+else
+  bad "mutant 9e: anchor" "the reviews-dir find moved"
+fi
+restore
+
+# 9f. no slug guard: case 5b must go red (the unscoped count reads the stub pile).
+if mutate 'if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then' 'if false; then'; then
+  WIP_SKEL="$NOSLUG_SKEL" run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  grep -q '\[dry\] would work ASK-900 ' "$WORK/m.out" \
+    && bad "mutant 9f survived" "without the slug guard the slug-less repo still picked ASK-900" \
+    || ok "mutant killed: without the slug guard an unscoped count reads another pile, so case 5b can go red"
+else
+  bad "mutant 9f: anchor" "the slug guard moved"
 fi
 restore
 

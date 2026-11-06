@@ -617,8 +617,17 @@ export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 # exit means the pile was NOT counted, and the block before the issue loop
 # then starts nothing. Not asked under --issue: an explicit issue is a driver
 # override (converge, the redrives), the same rule the picker keeps.
+# NOT ASKED WITHOUT A SLUG EITHER. An empty $KIPI_GH_REPO_ARGS binds gh to the
+# process cwd, so the list would describe whatever checkout the caller stood
+# in, not the target: the first run of test-worker-project-scope.sh (a fixture
+# with a local-path origin, run from a kipi-system checkout) counted the REAL
+# 8 open kipi-system PRs as the fixture repo pile and started nothing. A target
+# with no GitHub slug has no PRs gh can name; every dispatch target carries a
+# pinned remote (kipi-dispatch.sh fleet_candidates).
 WIP_OWN_RC=""; WIP_OWN_PRS=""
-if [ -z "$ONLY_ISSUE" ]; then
+if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then
+  say "WIP: $TARGET_REPO has no GitHub slug, so its open PRs are not counted and the ceiling does not apply"
+elif [ -z "$ONLY_ISSUE" ]; then
   # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
   WIP_OWN_PRS="$(gh pr list $KIPI_GH_REPO_ARGS --state open --limit 200 \
     --json number,headRefName,createdAt,url \
@@ -1906,10 +1915,13 @@ wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, 
     printf 'held|held while the second runner (Codex) is unavailable'; return 0
   fi
   # find -name, the quote-safe form review_round uses; the reviewer counts the
-  # same <key>-*.md set with the same review_is_usable predicate.
+  # same <key>-*.md set with the same review_is_usable predicate. -H because the
+  # reviewer counts with a glob, which follows a symlinked reviews dir, and plain
+  # BSD find does not descend one: the first live dry run (state dir linking
+  # pr-reviews) read #543 as 0 rounds instead of 3 and picked a capped PR.
   while IFS= read -r f; do
     [ -n "$f" ] && review_is_usable "$f" && rounds=$((rounds + 1))
-  done < <(find "$REVIEWS_DIR" -maxdepth 1 -type f -name "$(review_md_name_glob "$TARGET_SLUG" "$pr")" 2>/dev/null)
+  done < <(find -H "$REVIEWS_DIR" -maxdepth 1 -type f -name "$(review_md_name_glob "$TARGET_SLUG" "$pr")" 2>/dev/null)
   if [ "$rounds" -ge "$REVIEW_MAX_ROUNDS" ]; then
     printf 'cap|at the review round cap (%s of %s usable rounds), so a push gets no new review' "$rounds" "$REVIEW_MAX_ROUNDS"; return 0
   fi
