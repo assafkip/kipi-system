@@ -90,9 +90,22 @@ MUTANTS = [
      [('        if url:\n            subject["pr"], subject["repo"] = int(pr), url.group(1)',
        '        if pr:\n            subject["pr"], subject["repo"] = int(pr), "o/r"')],
      {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "the pre-pass ignores its read bound",
+     [("        if subject and (tally[\"attempted\"] >= cap or len(cache) >= max_lookups",
+       "        if subject and (tally[\"attempted\"] >= cap or False")],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "converge is listed as its bare prefix again",
+     [('    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",\n'
+       '     "converge $ISSUE: stopped, no PR after round",\n'
+       '     re.compile(rf"^converge {_SUBJECT_ISSUE}: stopped, no PR after round \\d+")),',
+       '    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",\n'
+       '     "converge $ISSUE: stopped, no PR after round",\n'
+       '     re.compile(rf"^converge {_SUBJECT_ISSUE}: ")),')],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
     ("B2", "the converge shape matches anywhere in the message, not at its start",
      [("        m = pattern.match(msg)", "        m = pattern.search(msg)"),
-      ('re.compile(rf"^converge {_SUBJECT_ISSUE}: ")', 're.compile(rf"converge {_SUBJECT_ISSUE}: ")')],
+      ('re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \\d+-round cap")',
+       're.compile(rf"converge {_SUBJECT_ISSUE}: hit \\d+-round cap")')],
      {}, "TestB2PrepassClosesOnlyEndedSubjects"),
 ]
 

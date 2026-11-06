@@ -2086,14 +2086,29 @@ def detect_sweep_degraded(_ctx) -> list:
 # hand-run dry pass prints "DRY RUN, nothing sent: triage pass: ..." to a terminal,
 # and the anchor below would skip it even if it landed here.
 #
-# ONE P0 A DAY. The subject carries the date: a stall is a fresh page each morning
-# it persists, and a second run on the same day dedups onto the same issue.
+# ONE P0 PER STALLED PASS DAY, AND NONE FOR A FROZEN TAIL (PR #606 review r1,
+# major 2). The first cut keyed the subject on TODAY, so a log that stopped
+# growing on a stall-shaped tail (job unloaded, Mac off) filed a new permanent P0
+# owner:sana issue every morning: 336 over 336 days in the reviewer's reproducer.
+# The subject now carries the day of the LAST PASS, read from the log's mtime
+# (launchd appends to it during every pass), so one pass is at most one issue,
+# and a tail older than TRIAGE_STALE_AFTER_S is not paged at all. A job that
+# stopped running is launchd-dark's and launchd-failing's to report.
 # The finding carries only the parsed counts, never a log line (ASK-204).
 TRIAGE_LOG = Path(os.environ.get("KIPI_ALERT_TRIAGE_LOG")
                   or STATE.parent / "linear-alert-triage.log")
 TRIAGE_PASS_RE = re.compile(
     r"^triage pass: (?P<written>\d+) written, .*?; (?P<queued>\d+) still queued;")
 TRIAGE_OWNER_LABEL = "owner:sana"
+TRIAGE_STALE_AFTER_S = 2 * 86400
+
+
+def triage_log_mtime(path=None):
+    """When the last pass wrote to the log, as epoch seconds, or None."""
+    try:
+        return (Path(path) if path else TRIAGE_LOG).stat().st_mtime
+    except OSError:
+        return None
 
 
 def read_triage_passes(path=None) -> list:
@@ -2111,12 +2126,13 @@ def read_triage_passes(path=None) -> list:
     return passes
 
 
-def triage_stall_findings(passes, today: str) -> list:
-    if len(passes) < 2:
+def triage_stall_findings(passes, last_pass_at, now: float) -> list:
+    if len(passes) < 2 or last_pass_at is None or now - last_pass_at > TRIAGE_STALE_AFTER_S:
         return []
     prev, last = passes[-2], passes[-1]
     if last["written"] or last["queued"] <= prev["queued"]:
         return []
+    today = datetime.fromtimestamp(last_pass_at, timezone.utc).strftime("%Y-%m-%d")
     return [{
         "subject": f"alert-triage-stalled-{today}",
         "title": (f"needs-triage promoter wrote 0 decisions while its queue grew "
@@ -2141,8 +2157,8 @@ def triage_stall_findings(passes, today: str) -> list:
 
 
 def detect_alert_triage_stalled(_ctx) -> list:
-    return triage_stall_findings(read_triage_passes(),
-                                 datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    return triage_stall_findings(read_triage_passes(), triage_log_mtime(),
+                                 datetime.now(timezone.utc).timestamp())
 
 
 DETECTORS = [

@@ -703,7 +703,9 @@ check("gates-red's lesson slug is a real file",
 # ===========================================================================
 # The fixture is the last two lines of ~/.config/kipi/linear-alert-triage.log on
 # 2026-11-06, verbatim, written to a temp dir. The test never reads the live log.
+import os
 import tempfile as _tempfile
+from datetime import datetime, timezone
 
 _TRIAGE_TAIL = (
     "triage pass: 0 written, 0 skipped, 8 failed; 1211 still queued; 31 refused (24 no project, 4 state type 'started' is not one of ('backlog', 'unstarted'), 2 state type 'duplicate' is not one of ('backlog', 'unstarted'), 1 owner:assaf) fleet-wide\n"
@@ -712,11 +714,17 @@ _TRIAGE_TAIL = (
 )
 
 
-def _triage(text):
+# The 2026-11-06 pass ran at 02:30 PST, 10:30 UTC.
+_PASS_AT = datetime(2026, 11, 6, 10, 30, tzinfo=timezone.utc).timestamp()
+
+
+def _triage(text, now=_PASS_AT + 6 * 3600):
     with _tempfile.TemporaryDirectory(prefix="fh-triage-") as d:
         log = Path(d) / "linear-alert-triage.log"
         log.write_text(text, encoding="utf-8")
-        return fh.triage_stall_findings(fh.read_triage_passes(log), "2026-11-06")
+        os.utime(log, (_PASS_AT, _PASS_AT))
+        return fh.triage_stall_findings(fh.read_triage_passes(log),
+                                        fh.triage_log_mtime(log), now)
 
 
 _red = _triage(_TRIAGE_TAIL)
@@ -752,6 +760,15 @@ with _tempfile.TemporaryDirectory(prefix="fh-triage-") as _d:
     (Path(_d) / "l").write_text(_with_prepass, encoding="utf-8")
     check("the line with the pre-pass suffix still parses",
           fh.read_triage_passes(Path(_d) / "l"), [{"written": 3, "queued": 1200}])
+# Review r1 major 2: a log that stops growing must not page every day forever.
+_days = {(_triage(_TRIAGE_TAIL, now=_PASS_AT + d * 86400) or [{}])[0].get("subject")
+         for d in range(0, 336)} - {None}
+check("a frozen stall-shaped tail is at most ONE issue over 336 days",
+      _days, {"alert-triage-stalled-2026-11-06"})
+check("and a tail older than two days pages nothing",
+      _triage(_TRIAGE_TAIL, now=_PASS_AT + 3 * 86400), [])
+check("a missing log has no pass time",
+      fh.triage_log_mtime(Path("/nonexistent/linear-alert-triage.log")), None)
 check("the default log is the launchd stdout path",
       fh.TRIAGE_LOG.name, "linear-alert-triage.log")
 

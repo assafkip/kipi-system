@@ -836,22 +836,45 @@ SUBJECT_SHAPES = (
      re.compile(rf"^worker: {_SUBJECT_ISSUE} stuck after \d+ attempts")),
     ("worker-not-armed", "q-system/.q-system/scripts/linear-worker.sh", "is NOT armed",
      re.compile(rf"^worker: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is NOT armed")),
-    ("worker-unreviewed-head", "q-system/.q-system/scripts/linear-worker.sh",
-     "but its head $CURRENT_SHA is still unreviewed",
-     re.compile(rf"^worker: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is approved at \S+ but its head")),
     ("worker-worktree", "q-system/.q-system/scripts/linear-worker.sh",
      "worktree does not hold PR",
      re.compile(rf"^worker: {_SUBJECT_ISSUE} worktree does not hold PR #(?P<pr>\d+)")),
     ("dispatch-died", "kipi-dispatch.sh", "was launched but died immediately",
      re.compile(rf"^kipi dispatch: {_SUBJECT_ISSUE} was launched but died immediately")),
-    ("converge", "q-system/.q-system/scripts/converge.sh", 'bash "$NOTIFY" "converge $ISSUE: ',
-     re.compile(rf"^converge {_SUBJECT_ISSUE}: ")),
+    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stopped, no PR after round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stopped, no PR after round \d+")),
+    ("converge-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: $VERDICT after $ROUND round(s), ",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: [A-Z][A-Z ]* after \d+ round\(s\), ")),
+    ("converge-no-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: review produced no verdict on round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: review produced no verdict on round \d+")),
+    ("converge-stalled", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stalled at '$VERDICT', no code change",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stalled at '[^']*', no code change")),
+    ("converge-cap", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: hit $MAX_ROUNDS-round cap",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \d+-round cap")),
     ("review-redrive", "q-system/.q-system/scripts/review-redrive.py",
      "review-redrive: %s PR #%s still has ",
      re.compile(rf"^review-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) still has ")),
     ("ci-redrive", "q-system/.q-system/scripts/ci-redrive.py",
      "ci-redrive: %s PR #%s is still red on ",
      re.compile(rf"^ci-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is still red on ")),
+)
+# SAME PREFIX, NOT THE SAME SUBJECT (PR #606 review r1, major 1). The first cut
+# listed converge as the bare prefix "converge ASK-N: ", and converge.sh writes
+# eight pages behind it. These three do not end when ASK-N ends, so closing them
+# on "ASK-N is Done" cancelled the only ticket for a machine-wide fault or for
+# unreviewed code. linear-worker.sh's "approved at X but its head Y is still
+# unreviewed" is the same class and is not listed either. The test classifies
+# every converge page into SUBJECT_SHAPES or this list, so a new page cannot
+# arrive unclassified.
+CONVERGE_NOT_SUBJECT = (
+    ("attempts ledger unwritable", "a machine-wide fault, first seen on this issue"),
+    ("only the degraded Opus fallback reviewed it", "unreviewed code at the head"),
+    ("was never reviewed", "unreviewed code at the head"),
 )
 # "duplicate" is its own state type on this team: the lane's refusal line counts
 # two of them, and fetch_open does not filter it out.
@@ -860,6 +883,16 @@ SUBJECT_CLOSED_TYPES = ("completed", "canceled", "duplicate")
 # A pattern that someday matches too much cancels at most this many a night, each
 # with its reason on the ticket, each undone by reopening it.
 PREPASS_MAX_CLOSES = 40
+# READS ARE BOUNDED TOO (PR #606 review r1, major 3). An alert whose subject is
+# still open costs a Linear read, plus a `gh pr view` when it carries a PR URL,
+# every night, and the close cap never counts them. A slow gh would then hold the
+# model batch behind it, which is the stall this file exists to end. So the pass
+# stops looking after PREPASS_MAX_LOOKUPS distinct subjects or PREPASS_DEADLINE_S
+# seconds, and whatever it did not look at goes to the model exactly as it did
+# before the pre-pass existed. 37 alerts matched a shape on 2026-11-06.
+PREPASS_MAX_LOOKUPS = 80
+PREPASS_DEADLINE_S = 300
+GH_TIMEOUT_S = 20
 GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
 
 
@@ -897,7 +930,7 @@ def gh_pr_state(repo: str, number: int) -> str | None:
     try:
         res = subprocess.run([gh, "pr", "view", str(number), "-R", repo,
                               "--json", "state", "-q", ".state"],
-                             capture_output=True, text=True, timeout=30,
+                             capture_output=True, text=True, timeout=GH_TIMEOUT_S,
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -923,7 +956,9 @@ def subject_ended(ls, subject: dict, cache: dict, pr_state) -> str | None:
 
 
 def run_prepass(ls, pool: list, apply: bool, pr_state=None,
-                cap: int = PREPASS_MAX_CLOSES) -> tuple[list, Counter]:
+                cap: int = PREPASS_MAX_CLOSES, max_lookups: int = PREPASS_MAX_LOOKUPS,
+                deadline_s: float = PREPASS_DEADLINE_S,
+                clock=time.monotonic) -> tuple[list, Counter]:
     """(the alerts left for the model, tally). No model is called in here.
 
     An alert whose close was attempted is never handed to the model in the same
@@ -931,8 +966,13 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
     retried tomorrow rather than also promoted or held tonight."""
     pr_state = pr_state or gh_pr_state
     cache, left, tally = {}, [], Counter()
+    stop_at = clock() + deadline_s
     for issue in pool:
-        subject = alert_subject(issue) if tally["attempted"] < cap else None
+        subject = alert_subject(issue)
+        if subject and (tally["attempted"] >= cap or len(cache) >= max_lookups
+                        or clock() >= stop_at):
+            tally["unchecked"] += 1
+            subject = None
         why = subject and subject_ended(ls, subject, cache, pr_state)
         if not why:
             left.append(issue)
@@ -956,10 +996,11 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
 
 
 def _prepass_part(pre: Counter, apply: bool) -> str:
+    bound = (f", {pre['unchecked']} unchecked (read bound)" if pre["unchecked"] else "")
     if not apply:
-        return f"; pre-pass (no model): {pre['would_close']} would close"
+        return f"; pre-pass (no model): {pre['would_close']} would close{bound}"
     return (f"; pre-pass (no model): {pre['closed']} closed, {pre['skipped']} skipped, "
-            f"{pre['failed']} failed")
+            f"{pre['failed']} failed{bound}")
 
 
 def _triage_one(ls, issue: dict, decider, apply: bool) -> str:

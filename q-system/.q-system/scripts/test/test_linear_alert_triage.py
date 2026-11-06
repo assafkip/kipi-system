@@ -1443,6 +1443,71 @@ class TestB2PrepassClosesOnlyEndedSubjects(unittest.TestCase):
         self.assertEqual(tally["closed"], 2)
         self.assertEqual([i["identifier"] for i in left], ["ASK-3"])
 
+    def test_converge_pages_that_outlive_the_issue_are_not_closed(self):
+        """Review r1 major 1: a bare "converge ASK-N: " prefix closed a machine-wide
+        fault and unreviewed-code pages on "ASK-N is Done"."""
+        pages = [
+            "converge ASK-50: attempts ledger unwritable -- the retry cap is not "
+            "enforceable until it is fixed",
+            "converge ASK-50: PR #7 is 'APPROVE' but only the degraded Opus fallback "
+            "reviewed it (codex was down) - held, armed. Needs a real review",
+            "converge ASK-50: PR #7 is 'APPROVE' at abc but its head def was never "
+            "reviewed, and round 2 changed nothing",
+            "worker: ASK-50 PR #7 is approved at abc but its head def is still "
+            "unreviewed after 2 re-review rounds",
+        ]
+        b = Board([work("ASK-50", "completed", "Done")]
+                  + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4"])
+
+    def test_converge_pages_about_the_run_still_close(self):
+        """Negative control for the narrowing."""
+        pages = ["converge ASK-50: stopped, no PR after round 1",
+                 "converge ASK-50: APPROVE WITH NITS after 1 round(s), PR #7 approved",
+                 "converge ASK-50: review produced no verdict on round 2",
+                 "converge ASK-50: stalled at 'REQUEST CHANGES', no code change in round 2",
+                 "converge ASK-50: hit 3-round cap, still REQUEST CHANGES. Parked"]
+        b = Board([work("ASK-50", "completed", "Done")]
+                  + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
+        lane(b)
+        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
+
+    def test_every_converge_page_is_classified(self):
+        src = (REPO / "q-system/.q-system/scripts/converge.sh").read_text(encoding="utf-8")
+        pages = [l for l in src.splitlines()
+                 if '"converge $ISSUE: ' in l and not l.lstrip().startswith("#")]
+        listed = [text for _, producer, text, _ in triage.SUBJECT_SHAPES
+                  if producer.endswith("converge.sh")]
+        listed += [text for text, _ in triage.CONVERGE_NOT_SUBJECT]
+        self.assertGreaterEqual(len(pages), 8, "converge.sh pages were not found")
+        for line in pages:
+            hits = [text for text in listed if text in line]
+            self.assertEqual(len(hits), 1, f"unclassified or doubly classified: {line.strip()}")
+
+    def test_reads_are_bounded_even_when_nothing_closes(self):
+        """Review r1 major 3: open subjects cost a read each and never hit the close cap."""
+        b = Board([work(f"ASK-{50 + n}", "backlog") for n in range(5)]
+                  + [state_alert(f"ASK-{n + 1}", STUCK.replace("ASK-50", f"ASK-{50 + n}"),
+                                 created=f"2026-08-0{n + 1}") for n in range(5)])
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, max_lookups=2)
+        subject_reads = [v for q, v in b.calls if q == triage.ISSUE_Q
+                         and v["id"] in {f"ASK-{50 + n}" for n in range(5)}]
+        self.assertEqual(len(subject_reads), 2)
+        self.assertEqual(tally["unchecked"], 3)
+        self.assertEqual(len(left), 5, "an unchecked alert must still reach the model")
+
+    def test_the_deadline_hands_the_rest_to_the_model(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)])
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, deadline_s=0)
+        self.assertEqual(([i["identifier"] for i in left], tally["unchecked"]), (["ASK-1"], 1))
+        self.assertEqual(closes(b), [])
+
     def test_every_shape_still_matches_what_its_producer_writes(self):
         """A filer reworded is a shape that silently stops matching."""
         for shape, producer, text, _ in triage.SUBJECT_SHAPES:
