@@ -1031,5 +1031,77 @@
     "status": "published",
     "date": "2026-11-04",
     "lesson_id": "read-artifacts-before-running-them"
+  },
+  "c360b9eb59e9a897": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "auditing-generators-against-the-outcome-they-re-judged-on"
+  },
+  "0548bfbd11cded76": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "gating-derived-documents-for-release"
+  },
+  "ff63a8984a2e40d5": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "validate-cross-cutting-text-changes-against-the-full-suite"
+  },
+  "6ee245227066f753": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "binary-gates-only-for-binary-rules"
+  },
+  "f1f03e10b7138465": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "re-audit-ported-rules-against-their-source-decisions"
+  },
+  "a26be7daeb7e4672": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "rewrite-rule-sets-whole-don-t-stack-patches"
+  },
+  "d917c93934bee588": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "scope-approval-to-the-artifact-not-the-plan"
+  },
+  "d098d4bd04af8b1e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "calibrate-automated-rules-against-labeled-examples"
+  },
+  "5f7206b3e306aa8c": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "author-per-constraint-variants-from-the-source-idea"
+  },
+  "c1d72e46d2b2661e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "move-the-container-not-the-values-to-preserve-embedded-objec"
+  },
+  "c15dbfae43d92139": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "verify-each-item-at-the-source-not-the-list-that-names-it"
+  },
+  "f5e0237073877996": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "research-tool-usage-across-all-community-surfaces-not-just-c"
   }
 }
