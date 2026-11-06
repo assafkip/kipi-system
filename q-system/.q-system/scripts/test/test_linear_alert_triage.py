@@ -1192,5 +1192,263 @@ class TestLaneBookkeeping(unittest.TestCase):
         self.assertNotIn(triage.HELD_LABEL, b.labels_of("ASK-1"))
 
 
+# ---------------------------------------------------------------------------
+# ASK-3823: the lane finds claude under launchd, and a no-model pre-pass closes
+# alerts whose subject already ended. alert_triage_mutants.py reverts each fix.
+# ---------------------------------------------------------------------------
+import stat
+import tempfile
+
+REPO = SCRIPTS.parent.parent.parent
+
+
+def _fake_claude(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return str(path)
+
+
+class TestB1ClaudeIsFoundUnderLaunchd(unittest.TestCase):
+    """15 passes logged "no working claude binary": launchd had no PATH, and the
+    real binary at ~/.local/bin/claude was not a candidate."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="alert-triage-b1-")
+        self.home = Path(self.tmp.name) / "home"
+        self.empty = Path(self.tmp.name) / "empty-path"
+        self.empty.mkdir(parents=True)
+        self.home.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _resolve(self, extra_env=None, login=None):
+        env = {"HOME": str(self.home), "PATH": str(self.empty)}
+        env.update(extra_env or {})
+        with patch.dict(triage.os.environ, env, clear=True), \
+             patch.object(triage, "login_shell_claude", lambda: login):
+            return triage.claude_binary()
+
+    def test_local_bin_is_found_with_no_path_at_all(self):
+        want = _fake_claude(self.home / ".local" / "bin" / "claude")
+        self.assertEqual(self._resolve(), want)
+
+    def test_negative_control_nothing_installed_is_none(self):
+        self.assertIsNone(self._resolve())
+
+    def test_kipi_claude_bin_still_wins(self):
+        _fake_claude(self.home / ".local" / "bin" / "claude")
+        pinned = _fake_claude(Path(self.tmp.name) / "pinned" / "claude")
+        self.assertEqual(self._resolve({"KIPI_CLAUDE_BIN": pinned}), pinned)
+
+    def test_the_login_shell_is_the_last_resort(self):
+        found = _fake_claude(Path(self.tmp.name) / "elsewhere" / "claude")
+        self.assertEqual(self._resolve(login=found), found)
+
+    def _probe(self, stdout):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = list(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+        with patch.object(triage.subprocess, "run", fake_run):
+            return triage.login_shell_claude(), seen.get("argv")
+
+    def test_the_login_shell_answer_survives_escape_codes(self):
+        """Measured: iTerm's shell integration prints escape codes, BEL-ended,
+        in front of `command -v claude`'s answer."""
+        exe = _fake_claude(Path(self.tmp.name) / "zsh-found" / "claude")
+        out = ("\x1b]1337;RemoteHost=me@mac\x07\x1b]1337;CurrentDir=/Users/me/p\x07"
+               "\x1b]1337;ShellIntegrationVersion=14;shell=zsh\x07" + exe + "\n")
+        self.assertEqual(self._probe(out)[0], exe)
+
+    def test_an_alias_or_a_missing_file_is_not_a_binary(self):
+        self.assertIsNone(self._probe("alias claude='npx claude'\n")[0])
+        self.assertIsNone(self._probe(str(Path(self.tmp.name) / "gone" / "claude") + "\n")[0])
+
+    def test_the_login_shell_is_interactive(self):
+        """zsh -lc does not read ~/.zshrc, where ~/.local/bin joins PATH."""
+        argv = self._probe("")[1]
+        self.assertIn("-ilc", argv)
+
+    def test_the_template_sets_path_with_local_bin_first(self):
+        _, d, _ = lane_plists()[0]
+        path = (d.get("EnvironmentVariables") or {}).get("PATH") or ""
+        dirs = path.split(":")
+        self.assertEqual(dirs[0], "__HOME__/.local/bin", path)
+        self.assertIn("/opt/homebrew/bin", dirs, "gh resolves from here for the pre-pass")
+
+    def test_the_pass_names_the_binary_it_will_use(self):
+        b = Board([alert("ASK-1")])
+        out = io.StringIO()
+        with patch.object(triage, "claude_binary", lambda: "/x/bin/claude"), \
+             patch.object(triage, "decide", lambda issue: None), \
+             patch.object(triage, "write_run_evidence", lambda line: None), \
+             redirect_stdout(out), redirect_stderr(io.StringIO()):
+            triage.run_triage(b, limit=8, apply=False)
+        self.assertIn("claude binary: /x/bin/claude", out.getvalue())
+
+
+def state_alert(ident, msg, created="2026-08-01T00:00:00Z"):
+    """An alert the way alert-to-linear.py writes one: the message in a fence,
+    behind the filing checkout's tag."""
+    return alert(ident, created=created, desc=(
+        "Filed automatically by the fleet alert path.\n\n"
+        f"```\n[kipi-system] {msg}\n```\n\n"
+        f"<!-- kipi-alert-fingerprint: fp-{ident} -->"))
+
+
+def work(ident, state_type, name=None):
+    """An ordinary, non-alert issue: the SUBJECT an alert can be about."""
+    return {"id": f"uuid-{ident}", "identifier": ident, "title": f"work {ident}",
+            "url": "", "createdAt": "2026-07-01T00:00:00Z", "description": "real work",
+            "state": {"name": name or state_type.title(), "type": state_type},
+            "project": {"name": "kipi-system"},
+            "labels": {"nodes": [{"id": "lid-owner:sana", "name": "owner:sana"}]}}
+
+
+def closes(board):
+    return [v["id"] for q, v in board.mutations()
+            if "issueUpdate" in q and v["input"].get("stateId") == "c"]
+
+
+def lane(board, apply=True, pr_state=None):
+    seen = []
+    out, err = io.StringIO(), io.StringIO()
+    with patch.object(triage, "write_run_evidence", lambda line: None), \
+         redirect_stdout(out), redirect_stderr(err):
+        rc = triage.run_triage(board, limit=8, apply=apply,
+                               decider=lambda i: (seen.append(i["identifier"]), None)[1],
+                               pr_state=pr_state or (lambda repo, n: None))
+    return rc, seen, out.getvalue(), err.getvalue()
+
+
+STUCK = "kipi worker: ASK-50 is STUCK after 3 attempts and the loop has stopped picking it up."
+
+
+class TestB2PrepassClosesOnlyEndedSubjects(unittest.TestCase):
+
+    def test_a_stuck_alert_whose_issue_is_done_is_closed_without_the_model(self):
+        b = Board([work("ASK-50", "completed", "Done"), state_alert("ASK-1", STUCK)])
+        rc, seen, out, err = lane(b)
+        self.assertEqual(closes(b), ["ASK-1"], out + err)
+        self.assertEqual(seen, [], "the model was asked about an alert the pre-pass owns")
+        note = b.comments["uuid-ASK-1"][0]
+        self.assertIn("ASK-50 is Done", note)
+        self.assertIn("no model", note)
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn("pre-pass (no model): 1 closed", out)
+        self.assertEqual(rc, 0, err)
+
+    def test_negative_control_an_open_subject_goes_to_the_model(self):
+        b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", STUCK)])
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_canceled_or_duplicate_subject_counts_as_ended(self):
+        for state_type in ("canceled", "duplicate"):
+            b = Board([work("ASK-50", state_type), state_alert("ASK-1", STUCK)])
+            lane(b)
+            self.assertEqual(closes(b), ["ASK-1"], state_type)
+
+    def test_spillover_is_never_closed_even_when_its_pr_merged(self):
+        """Merging is how a spillover finding comes to exist. The second message
+        quotes a converge page mid-text: only an ANCHORED pattern skips it."""
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", "spillover sp-1a2b (major) from ASK-50: PR #7 "
+                               "review, nonblocking major: x https://github.com/o/r/pull/7"),
+                   state_alert("ASK-2", "spillover sp-3c4d (major) from ASK-50: PR #7 "
+                               "review, nonblocking major: converge ASK-50: hit 3-round cap")])
+        _, seen, _, _ = lane(b, pr_state=lambda repo, n: "MERGED")
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2"])
+
+    def test_naming_a_closed_issue_is_not_being_about_it(self):
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", "ASK-50 recurred on consulting PR #7: codex again"),
+                   state_alert("ASK-2", "Follow-up for consulting PR #7 (merged on APPROVE "
+                               "WITH NITS): ASK-50")])
+        _, seen, _, _ = lane(b, pr_state=lambda repo, n: "MERGED")
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2"])
+
+    def test_a_pr_counts_only_through_an_explicit_url(self):
+        asked = []
+
+        def pr_state(repo, n):
+            asked.append((repo, n))
+            return "MERGED"
+        msg = "review-redrive: ASK-50 PR #10 still has kipi/reviewer-approved failing"
+        b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", msg)])
+        lane(b, pr_state=pr_state)
+        self.assertEqual((closes(b), asked), ([], []),
+                         "a PR number with no repo was looked up somewhere")
+        b = Board([work("ASK-50", "backlog"), state_alert(
+            "ASK-1", msg + " https://github.com/o/other/pull/10")])
+        lane(b, pr_state=pr_state)
+        self.assertEqual(closes(b), ["ASK-1"])
+        self.assertEqual(asked, [("o/other", 10)])
+
+    def test_an_open_pr_or_an_unreadable_one_does_not_close(self):
+        msg = ("ci-redrive: ASK-50 PR #10 is still red on validate "
+               "https://github.com/o/r/pull/10")
+        for state in ("OPEN", "CLOSED", None):
+            b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", msg)])
+            lane(b, pr_state=lambda repo, n, s=state: s)
+            self.assertEqual(closes(b), [], state)
+
+    def test_an_unreadable_subject_never_closes(self):
+        b = Board([state_alert("ASK-1", STUCK)])        # ASK-50 is not on the board
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_dry_run_writes_nothing_and_says_would_close(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)])
+        rc, seen, out, _ = lane(b, apply=False)
+        self.assertEqual(b.mutations(), [])
+        self.assertEqual(seen, [], "a dry run must preview the pass the real one runs")
+        self.assertIn("WOULD CLOSE", out)
+        self.assertIn("pre-pass (no model): 1 would close", out)
+
+    def test_a_failed_close_is_counted_and_fails_the_pass(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)],
+                  comment_ok=False)
+        rc, seen, out, err = lane(b)
+        self.assertEqual(closes(b), [], "closed with no recorded reason")
+        self.assertIn("1 failed", out.split("pre-pass")[1])
+        self.assertNotEqual(rc, 0, err)
+        self.assertEqual(seen, [])
+
+    def test_one_read_per_subject_for_a_cluster(self):
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", STUCK, created="2026-08-01"),
+                   state_alert("ASK-2", "kipi dispatch: ASK-50 was launched but died "
+                               "immediately -- the loop is spending budget",
+                               created="2026-08-02")])
+        lane(b)
+        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2"])
+        reads = [v for q, v in b.calls if q == triage.ISSUE_Q and v == {"id": "ASK-50"}]
+        self.assertEqual(len(reads), 1)
+
+    def test_the_cap_bounds_the_closes(self):
+        issues = [work("ASK-50", "completed")] + [
+            state_alert(f"ASK-{n}", STUCK, created=f"2026-08-0{n}") for n in (1, 2, 3)]
+        b = Board(issues)
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, cap=2)
+        self.assertEqual(tally["closed"], 2)
+        self.assertEqual([i["identifier"] for i in left], ["ASK-3"])
+
+    def test_every_shape_still_matches_what_its_producer_writes(self):
+        """A filer reworded is a shape that silently stops matching."""
+        for shape, producer, text, _ in triage.SUBJECT_SHAPES:
+            src = (REPO / producer).read_text(encoding="utf-8")
+            self.assertIn(text, src, f"{shape}: {producer} no longer writes {text!r}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

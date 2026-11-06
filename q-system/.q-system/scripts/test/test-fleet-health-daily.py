@@ -698,6 +698,115 @@ check("gates-red files an issue", _by_id.get("gates-red", {}).get("action"), "fi
 check("gates-red's lesson slug is a real file",
       (_LESSONS / f"{_by_id.get('gates-red', {}).get('lesson', 'missing')}.md").is_file(), True)
 
+# ===========================================================================
+# alert-triage-stalled: the promoter is compared against its own queue (ASK-3823)
+# ===========================================================================
+# The fixture is the last two lines of ~/.config/kipi/linear-alert-triage.log on
+# 2026-11-06, verbatim, written to a temp dir. The test never reads the live log.
+import tempfile as _tempfile
+
+_TRIAGE_TAIL = (
+    "triage pass: 0 written, 0 skipped, 8 failed; 1211 still queued; 31 refused (24 no project, 4 state type 'started' is not one of ('backlog', 'unstarted'), 2 state type 'duplicate' is not one of ('backlog', 'unstarted'), 1 owner:assaf) fleet-wide\n"
+    "  ASK-640: no working claude binary\n"
+    "triage pass: 0 written, 0 skipped, 8 failed; 1225 still queued; 31 refused (24 no project, 4 state type 'started' is not one of ('backlog', 'unstarted'), 2 state type 'duplicate' is not one of ('backlog', 'unstarted'), 1 owner:assaf) fleet-wide\n"
+)
+
+
+def _triage(text):
+    with _tempfile.TemporaryDirectory(prefix="fh-triage-") as d:
+        log = Path(d) / "linear-alert-triage.log"
+        log.write_text(text, encoding="utf-8")
+        return fh.triage_stall_findings(fh.read_triage_passes(log), "2026-11-06")
+
+
+_red = _triage(_TRIAGE_TAIL)
+check("today's log goes red: 0 written while the queue grew 1211 to 1225", len(_red), 1)
+_f = _red[0] if _red else {}
+check("the subject carries the day (one P0 a day)",
+      _f.get("subject"), "alert-triage-stalled-2026-11-06")
+check("it is a P0", _f.get("priority"), 1)
+check("it routes to the fleet worker", "owner:sana" in (_f.get("labels") or ()), True)
+check("the title names both queue sizes",
+      ("1211" in _f.get("title", ""), "1225" in _f.get("title", "")), (True, True))
+check("the body carries a DoR the worker can select on",
+      "## Definition of Ready" in _f.get("body", ""), True)
+check("the body carries counts, never a log line (ASK-204)",
+      "refused" in _f.get("body", "") or "owner:assaf" in _f.get("body", ""), False)
+
+_OK = "triage pass: {w} written, 0 skipped, 0 failed; {q} still queued; 0 refused fleet-wide\n"
+check("negative control: decisions written while the queue grew is not a stall",
+      _triage(_OK.format(w=0, q=10) + _OK.format(w=3, q=12)), [])
+check("0 written while the queue FELL is not a stall",
+      _triage(_OK.format(w=0, q=10) + _OK.format(w=0, q=9)), [])
+check("0 written on a flat queue is not a stall",
+      _triage(_OK.format(w=0, q=10) + _OK.format(w=0, q=10)), [])
+check("one pass cannot be compared", _triage(_OK.format(w=0, q=10)), [])
+check("a missing log reads as no passes",
+      fh.read_triage_passes(Path("/nonexistent/linear-alert-triage.log")), [])
+check("a dry run line is not a scheduled pass",
+      len(_triage(_OK.format(w=0, q=10)
+                  + "DRY RUN, nothing sent: " + _OK.format(w=0, q=50))), 0)
+_with_prepass = ("triage pass: 3 written, 0 skipped, 0 failed; 1200 still queued; 31 refused "
+                 "fleet-wide; pre-pass (no model): 13 closed, 0 skipped, 0 failed\n")
+with _tempfile.TemporaryDirectory(prefix="fh-triage-") as _d:
+    (Path(_d) / "l").write_text(_with_prepass, encoding="utf-8")
+    check("the line with the pre-pass suffix still parses",
+          fh.read_triage_passes(Path(_d) / "l"), [{"written": 3, "queued": 1200}])
+check("the default log is the launchd stdout path",
+      fh.TRIAGE_LOG.name, "linear-alert-triage.log")
+
+_by_id_triage = {d["id"]: d for d in fh.DETECTORS}
+check("alert-triage-stalled is registered and files an issue",
+      _by_id_triage.get("alert-triage-stalled", {}).get("action"), "file_issue")
+check("alert-triage-stalled's lesson slug is a real file",
+      (Path(__file__).resolve().parents[3] / "lessons"
+       / f"{_by_id_triage.get('alert-triage-stalled', {}).get('lesson', 'missing')}.md").is_file(),
+      True)
+
+
+class _CreateLinear:
+    """A fresh key: file_findings goes down the create path. Records the payload."""
+    ISSUE_CREATE = "create"
+    ISSUE_UPDATE = "update"
+
+    def __init__(self, labels):
+        self.labels, self.sent = labels, []
+
+    def fetch_remote_state(self, *_a, **_k):
+        return "team-1", {"id": "proj-1"}, {}
+
+    def read_ledger(self):
+        return {}
+
+    def append_ledger(self, records):
+        return len(records)
+
+    def graphql(self, query, variables):
+        self.sent.append((query, variables))
+        if "issueLabels(" in query:
+            return {"issueLabels": {"nodes": self.labels.get(variables["n"], [])}}
+        return {"issueCreate": {"issue": {"id": "id-9", "identifier": "ASK-9"}}}
+
+
+def _created_payload(finding, labels):
+    fake = _CreateLinear(labels)
+    with _tempfile.TemporaryDirectory():
+        fh.file_findings([dict(finding, key=fh.finding_key("alert-triage-stalled",
+                                                           finding["subject"]))],
+                         apply=True, linear=fake)
+    return [v for q, v in fake.sent if q == "create"][0]["input"]
+
+
+_payload = _created_payload(_f, {"owner:sana": [{"id": "lid-sana", "team": {"key": "ASK"}}]})
+check("the P0 is created with priority 1", _payload.get("priority"), 1)
+check("and with the owner:sana label", _payload.get("labelIds"), ["lid-sana"])
+_other_team = _created_payload(_f, {"owner:sana": [{"id": "lid-x", "team": {"key": "OTHER"}}]})
+check("a same-named label on another team is not applied", "labelIds" in _other_team, False)
+_plain = _created_payload({"subject": "s", "title": "t", "body": "b"}, {})
+check("a finding without priority or labels files exactly as before",
+      ("priority" in _plain, "labelIds" in _plain), (False, False))
+
+
 if failures:
     print("FAIL:")
     for line in failures:
