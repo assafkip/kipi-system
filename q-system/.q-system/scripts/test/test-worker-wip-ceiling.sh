@@ -51,6 +51,8 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 LOG = os.environ["FIXTURE_LOG"]
+# While this file exists the board has no queue-state ticket: the empty-queue world.
+NO_FRESH = os.environ["NO_FRESH_FLAG"]
 NOW = datetime.now(timezone.utc)
 NAMES = {"backlog": "Backlog", "started": "In Progress"}
 
@@ -115,7 +117,9 @@ class H(BaseHTTPRequestHandler):
         if "attachments(" in q:
             return self.reply({"data": {"issue": {"attachments": {"nodes": ATTACH.get(v.get("id"), [])}}}})
         if "issues(filter" in q:
-            return self.reply({"data": {"issues": {"nodes": list(BOARD.values()),
+            nodes = [i for i in BOARD.values()
+                     if not (i["identifier"] == "ASK-900" and os.path.exists(NO_FRESH))]
+            return self.reply({"data": {"issues": {"nodes": nodes,
                                "pageInfo": {"hasNextPage": False, "endCursor": None}}}})
         return self.reply({"errors": [{"message": "fixture: unknown query"}]})
 
@@ -125,7 +129,8 @@ print(srv.server_port, flush=True)
 srv.serve_forever()
 PY
 FIXLOG="$WORK/linear-writes.jsonl"; : > "$FIXLOG"
-FIXTURE_LOG="$FIXLOG" python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
+NO_FRESH="$WORK/no-fresh-issue"
+FIXTURE_LOG="$FIXLOG" NO_FRESH_FLAG="$NO_FRESH" python3 "$WORK/fixture-server.py" > "$WORK/port" 2> "$WORK/server.err" &
 SRV_PID=$!
 for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-}" ] && break; sleep 0.1; done
 [ -n "${PORT:-}" ] || { echo "fixture server did not start: $(cat "$WORK/server.err")"; exit 1; }
@@ -295,6 +300,19 @@ grep -q 'WIP ceiling: 5 open own PRs in .* (ceiling 5). No new issue starts' "$W
   && ok "case 1d: the run says the ceiling is why no new issue starts" \
   || bad "case 1d: the ceiling line" "$(grep -i 'wip' "$WORK/s1.out" | head -3 | tr '\n' '|')"
 
+# 1e. THE EMPTY QUEUE (PR #613 review round 1, major 2). With nothing ready the
+# run used to end at "nothing ready" above the WIP block, so a pile at the
+# ceiling waited on DoR inflow and no fire went back to one.
+: > "$NO_FRESH"
+run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s1e.out" --limit 1
+rm -f "$NO_FRESH"
+if grep -q 'worker: 0 ready issue' "$WORK/s1e.out" \
+   && grep -q '\[dry\] would work ASK-901 .*-- WIP ceiling: rework PR #901' "$WORK/s1e.out"; then
+  ok "case 1e: with an empty queue, a pile at the ceiling still drains: the oldest own PR #901 is the pick"
+else
+  bad "case 1e: an empty queue still drains the pile" "picks: $(picks "$WORK/s1e.out"). Output: $(flat "$WORK/s1e.out")"
+fi
+
 # ============================================================================
 # 2. TRAP 1, THE LANE RACE: the oldest own PR's ticket was started an hour ago
 # ============================================================================
@@ -394,6 +412,42 @@ if ! grep -q '\[dry\] would work' "$WORK/s5.out" \
 else
   bad "case 5: a failed PR count starts nothing" "picks: $(picks "$WORK/s5.out"). Output: $(flat "$WORK/s5.out")"
 fi
+
+# 5c. A STOP NOBODY IS TOLD ABOUT IS A SILENT HALT (PR #613 review round 1,
+# major 1). The failed count pages ONCE per outage, carries gh's own words,
+# keeps them off stdout (kipi-dispatch.sh greps it for "authentication"), and a
+# good count re-arms the page for the next outage.
+GSTATE="$WORK/state-gh"; mkdir -p "$GSTATE"
+cp "$STATE/linear-worker-attempts.json" "$GSTATE/"
+ln -s "$STATE/worktrees" "$GSTATE/worktrees"; ln -s "$STATE/pr-reviews" "$GSTATE/pr-reviews"
+: > "$WORK/pages.log"
+WIP_STATE="$GSTATE" WIP_GH_FAIL=1 run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5c-1.out" --limit 1
+WIP_STATE="$GSTATE" WIP_GH_FAIL=1 run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5c-2.out" --limit 1
+P1="$(grep -c 'could not count the open PRs' "$WORK/pages.log")"
+if [ "$P1" = "1" ] && grep -q 'gh said: gh: HTTP 502: Bad Gateway' "$WORK/pages.log"; then
+  ok "case 5c: two failed counts in one outage page once, and the page carries gh's own words"
+else
+  bad "case 5c: one page per outage, with gh's words" "pages: $P1. Log: $(tr '\n' '|' < "$WORK/pages.log" | cut -c1-500)"
+fi
+if grep -q 'HTTP 502' "$WORK/s5c-1.out"; then
+  bad "case 5c-b: gh's words stay off stdout" "stdout carried them: $(grep 'HTTP 502' "$WORK/s5c-1.out")"
+else
+  ok "case 5c-b: gh's words stay off stdout, where kipi-dispatch.sh greps for a Linear outage"
+fi
+WIP_STATE="$GSTATE" run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5c-3.out" --limit 1
+WIP_STATE="$GSTATE" WIP_GH_FAIL=1 run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5c-4.out" --limit 1
+P2="$(grep -c 'could not count the open PRs' "$WORK/pages.log")"
+[ "$P2" = "2" ] \
+  && ok "case 5c-c: a good count ends the outage, so the next failure pages again" \
+  || bad "case 5c-c: a good count re-arms the page" "pages after outage, recovery, outage: $P2"
+# The empty queue too: the uncounted pile still pages with nothing ready.
+GSTATE2="$WORK/state-gh2"; mkdir -p "$GSTATE2"; cp "$STATE/linear-worker-attempts.json" "$GSTATE2/"
+: > "$WORK/pages.log"; : > "$NO_FRESH"
+WIP_STATE="$GSTATE2" WIP_GH_FAIL=1 run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s5c-5.out" --limit 1
+rm -f "$NO_FRESH"
+[ "$(grep -c 'could not count the open PRs' "$WORK/pages.log")" = "1" ] \
+  && ok "case 5c-d: with an empty queue a failed count still pages" \
+  || bad "case 5c-d: empty queue, failed count, page" "$(flat "$WORK/s5c-5.out")"
 
 # 5b. A repo with no GitHub slug: an unscoped gh call would bind to the cwd and
 # count SOME OTHER repo (the first run of test-worker-project-scope.sh counted
@@ -517,6 +571,45 @@ if mutate 'if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then' 'if false; th
     || ok "mutant killed: without the slug guard an unscoped count reads another pile, so case 5b can go red"
 else
   bad "mutant 9f: anchor" "the slug guard moved"
+fi
+restore
+
+# 9g. no page on a failed count: case 5c must go red.
+if mutate 'if env_alert_claim "$WIP_COUNT_CLAIM" "$ENV_OUTAGE_MAX_AGE"; then' 'if false; then'; then
+  MG="$WORK/state-m9g"; mkdir -p "$MG"; cp "$STATE/linear-worker-attempts.json" "$MG/"; : > "$WORK/pages.log"
+  WIP_STATE="$MG" WIP_GH_FAIL=1 run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  grep -q 'could not count the open PRs' "$WORK/pages.log" \
+    && bad "mutant 9g survived" "a page was sent with the page call cut out" \
+    || ok "mutant killed: without the page a failed count is a silent halt, so case 5c can go red"
+else
+  bad "mutant 9g: anchor" "the page call moved"
+fi
+restore
+
+# 9h. the early exit back above the ceiling: case 1e must go red.
+if mutate 'if [ "$READY_COUNT" = "0" ] && [ "${WIP_HOLDS:-0}" != "1" ]; then' 'if [ "$READY_COUNT" = "0" ]; then'; then
+  : > "$NO_FRESH"
+  run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  rm -f "$NO_FRESH"
+  grep -q '\[dry\] would work ASK-901 ' "$WORK/m.out" \
+    && bad "mutant 9h survived" "the empty queue still drained with the old early exit" \
+    || ok "mutant killed: with the old early exit an empty queue never drains, so case 1e can go red"
+else
+  bad "mutant 9h: anchor" "the early exit moved"
+fi
+restore
+
+# 9i. no release on a good count: case 5c-c must go red.
+if mutate '[ "${WIP_COUNTED:-0}" = "1" ] && env_alert_release "$WIP_COUNT_CLAIM"' 'true'; then
+  MI="$WORK/state-m9i"; mkdir -p "$MI"; cp "$STATE/linear-worker-attempts.json" "$MI/"; : > "$WORK/pages.log"
+  WIP_STATE="$MI" WIP_GH_FAIL=1 run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  WIP_STATE="$MI" run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  WIP_STATE="$MI" WIP_GH_FAIL=1 run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  [ "$(grep -c 'could not count the open PRs' "$WORK/pages.log")" = "2" ] \
+    && bad "mutant 9i survived" "the second outage paged with the release cut out" \
+    || ok "mutant killed: without the release the next outage pages nobody, so case 5c-c can go red"
+else
+  bad "mutant 9i: anchor" "the release moved"
 fi
 restore
 

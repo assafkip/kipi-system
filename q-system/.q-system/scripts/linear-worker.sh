@@ -624,15 +624,20 @@ export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 # 8 open kipi-system PRs as the fixture repo pile and started nothing. A target
 # with no GitHub slug has no PRs gh can name; every dispatch target carries a
 # pinned remote (kipi-dispatch.sh fleet_candidates).
-WIP_OWN_RC=""; WIP_OWN_PRS=""
+WIP_OWN_RC=""; WIP_OWN_PRS=""; WIP_GH_ERRLINE=""
 if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then
   say "WIP: $TARGET_REPO has no GitHub slug, so its open PRs are not counted and the ceiling does not apply"
 elif [ -z "$ONLY_ISSUE" ]; then
+  # gh's own words are kept for the page (PR #613 review round 1, major 1:
+  # 2>/dev/null left the operator "exited 1" and nothing else).
+  WIP_GH_ERRF="$(mktemp "${TMPDIR:-/tmp}/kipi-wip-gh.XXXXXX" 2>/dev/null)" || WIP_GH_ERRF="/dev/null"
   # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
   WIP_OWN_PRS="$(gh pr list $KIPI_GH_REPO_ARGS --state open --limit 200 \
     --json number,headRefName,createdAt,url \
-    -q '.[] | [.number, .headRefName, .createdAt, .url] | @tsv' 2>/dev/null)"
+    -q '.[] | [.number, .headRefName, .createdAt, .url] | @tsv' 2>"$WIP_GH_ERRF")"
   WIP_OWN_RC=$?
+  WIP_GH_ERRLINE="$(head -1 "$WIP_GH_ERRF" 2>/dev/null | tr -d '\r' | cut -c1-200)"
+  [ "$WIP_GH_ERRF" = "/dev/null" ] || rm -f "$WIP_GH_ERRF"
 fi
 export WIP_OWN_RC WIP_OWN_PRS
 
@@ -1464,7 +1469,21 @@ if [ "${BLOCKED_CAP:-0}" != "0" ]; then
   say "worker: $BLOCKED_CAP issue(s) held at blocked:capability -- the specs are sound, the runner is missing something it cannot grant itself ($BLOCKED_IDS)"
 fi
 
-if [ "$READY_COUNT" = "0" ]; then
+# AN EMPTY QUEUE DOES NOT END THE RUN WHILE THE CEILING HOLDS (PR #613 review
+# round 1, major 2). The WIP block sits below this line, so with nothing ready
+# it never ran: the oldest movable own PR waited on DoR inflow and the log said
+# "nothing ready" over a pile at the ceiling, which is "no fire went back to
+# one" again. An uncounted pile gets through for its page too.
+read -r WIP_HOLDS WIP_COUNTED <<<"$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+w = json.load(sys.stdin).get("wip") or {}
+holds = w.get("asked") and (w.get("at_ceiling") or not w.get("known"))
+print("1" if holds else "0", "1" if w.get("asked") and w.get("known") else "0")' 2>/dev/null)"
+# A COUNTED PILE ENDS A COUNT OUTAGE. Released here, above the early exit, so
+# a good count re-arms the page whether or not anything is ready; the page
+# itself is in the WIP block below.
+WIP_COUNT_CLAIM="$STATE_DIR/wip-count-outage"
+[ "${WIP_COUNTED:-0}" = "1" ] && env_alert_release "$WIP_COUNT_CLAIM"
+if [ "$READY_COUNT" = "0" ] && [ "${WIP_HOLDS:-0}" != "1" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
   exit 0
 fi
@@ -1966,6 +1985,17 @@ if [ -n "$WIP_ROWS" ]; then
   WIP_WHERE="${TARGET_SLUG:-$REPO_PROJECT}"
   if [ "$WIP_KNOWN" != "True" ]; then
     say "WIP ceiling: could not count the open own PRs in $WIP_WHERE ($WIP_ERR). Starting nothing this run: an uncounted pile is not a pile under the ceiling."
+    # A STOP NOBODY IS TOLD ABOUT IS A SILENT HALT (PR #613 review round 1,
+    # major 1). This branch starts nothing in this repo on every tick while gh
+    # cannot answer, so it pages, ONCE per outage: the same claim the runner
+    # outages use, taken over after a day so a long outage is re-announced
+    # daily, released above by the first good count. gh's own line goes to the
+    # page and the log, never to stdout: kipi-dispatch.sh greps this run's
+    # stdout for "authentication" to call LINEAR down, and gh says that word.
+    [ -n "$WIP_GH_ERRLINE" ] && echo "$(TS) WIP ceiling: gh said: $WIP_GH_ERRLINE" >> "$LOG"
+    if env_alert_claim "$WIP_COUNT_CLAIM" "$ENV_OUTAGE_MAX_AGE"; then
+      bash "$NOTIFY" "kipi worker: could not count the open PRs in $WIP_WHERE ($WIP_ERR${WIP_GH_ERRLINE:+; gh said: $WIP_GH_ERRLINE}), so the WIP ceiling cannot be checked and the worker starts no new issue there until it can. Do: run gh pr list -R $WIP_WHERE --state open by hand and fix the gh login or wait out the GitHub outage. One page per outage." 2>/dev/null || true
+    fi
     WIP_REPLACE=1
   elif [ "$WIP_AT" != "True" ]; then
     say "WIP: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL)"
