@@ -2712,7 +2712,8 @@ def cmd_spillover(cfg: Config, args) -> int:
         with _spillover_lock(cfg):
             # Same chokepoint as reclassify: this read-modify-append was already
             # unlocked before PR #112: reclassify only added a third writer to it.
-            rec = _read_spillover(cfg).get(args.id)
+            ledger = _read_spillover(cfg)
+            rec = ledger.get(args.id)
             if not rec:
                 sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
@@ -2744,9 +2745,17 @@ def cmd_spillover(cfg: Config, args) -> int:
             if not args.void:
                 terms = runtime_receipt.claims_runtime_control(rec.get("description"))
                 if terms:
+                    # Bound to THIS row: it names repo code, postdates the row,
+                    # and no other row holds it (PR #610 review, major 1).
+                    used = {o["runtime_receipt"]["sha256"]: oid
+                            for oid, o in ledger.items()
+                            if oid != args.id and isinstance(o.get("runtime_receipt"), dict)
+                            and o["runtime_receipt"].get("sha256")}
                     try:
                         new["runtime_receipt"] = runtime_receipt.load_receipt(
-                            getattr(args, "runtime_receipt", None), terms)
+                            getattr(args, "runtime_receipt", None), terms,
+                            repo_root=cfg.repo_root, not_before=rec.get("created_at"),
+                            used=used)
                     except runtime_receipt.ReceiptError as exc:
                         sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
                         return 2

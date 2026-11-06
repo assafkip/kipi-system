@@ -5,6 +5,7 @@ caller. An issue whose title claims a gate / cap / meter / budget / ledger /
 guard / limit / rate / quota fix closes only with a receipt of a real call.
 Fixtures come from producers: the repo is built by prd_split + issue_runner.
 """
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -27,6 +28,18 @@ def _ready(tmp_path: Path, title: str) -> Path:
                       "--evidence-file", _review_artifact(repo, kind)).returncode == 0
     _check_off_deliverables(repo)
     return repo
+
+
+# The fixture's one allowed file is README.md, so a real call names it.
+NAMES_ALLOWED = "import pathlib; pathlib.Path('README.md').read_text(); print('rounds used: 2 of 2')"
+
+
+def _capture(repo: Path, tmp_path: Path, name: str, script: str) -> Path:
+    out = tmp_path / name
+    cap = _run(repo, DSSE / "runtime_receipt.py", "capture", "--out", str(out), "--",
+               sys.executable, "-c", script)
+    assert cap.returncode == 0, cap.stderr
+    return out
 
 
 def _rows(repo: Path) -> list:
@@ -53,10 +66,7 @@ def test_a_source_only_receipt_does_not_close_it(tmp_path):
 
 def test_a_real_receipt_closes_and_lands_on_the_receipt_row(tmp_path):
     repo = _ready(tmp_path, "Cap the reviewer rounds")
-    out = tmp_path / "real.json"
-    cap = _run(repo, DSSE / "runtime_receipt.py", "capture", "--out", str(out), "--",
-               sys.executable, "-c", "print('rounds used: 2 of 2')")
-    assert cap.returncode == 0, cap.stderr
+    out = _capture(repo, tmp_path, "real.json", NAMES_ALLOWED)
     proc = _issue(repo, "close", "--runtime-receipt", str(out))
     assert proc.returncode == 0, proc.stderr
     (row,) = _rows(repo)
@@ -68,3 +78,35 @@ def test_an_ordinary_issue_closes_without_one(tmp_path):
     proc = _issue(repo, "close")
     assert proc.returncode == 0, proc.stderr
     assert "runtime_receipt" not in _rows(repo)[0]
+
+
+# PR #610 review, major 1: the receipt must belong to THIS issue.
+
+def test_a_receipt_that_names_no_allowed_file_does_not_close_it(tmp_path):
+    repo = _ready(tmp_path, "Cap the reviewer rounds")
+    out = _capture(repo, tmp_path, "unrelated.json", "print('rounds used: 2 of 2')")
+    proc = _issue(repo, "close", "--runtime-receipt", str(out))
+    assert proc.returncode == 2 and "allowed files" in proc.stderr, proc.stderr
+    assert _rows(repo) == []
+
+
+def test_a_receipt_from_before_the_issue_started_does_not_close_it(tmp_path):
+    repo = _ready(tmp_path, "Cap the reviewer rounds")
+    r = tmp_path / "old.json"
+    r.write_text(json.dumps({"command": f"{sys.executable} -c \"{NAMES_ALLOWED}\"",
+                             "output": "rounds used: 2 of 2", "exit_code": 0,
+                             "ran_at": "2020-01-01T00:00:00Z"}))
+    proc = _issue(repo, "close", "--runtime-receipt", str(r))
+    assert proc.returncode == 2 and "before this item existed" in proc.stderr, proc.stderr
+    assert _rows(repo) == []
+
+
+def test_a_receipt_already_on_another_issue_does_not_close_it(tmp_path):
+    repo = _ready(tmp_path, "Cap the reviewer rounds")
+    out = _capture(repo, tmp_path, "reused.json", NAMES_ALLOWED)
+    sha = hashlib.sha256(out.read_bytes()).hexdigest()
+    # The shape cmd_close appends: issue_id plus runtime_receipt.sha256.
+    with (repo / ".prd-os/receipts.jsonl").open("a") as fh:
+        fh.write(json.dumps({"issue_id": "other-1", "runtime_receipt": {"sha256": sha}}) + "\n")
+    proc = _issue(repo, "close", "--runtime-receipt", str(out))
+    assert proc.returncode == 2 and "already used to close other-1" in proc.stderr, proc.stderr

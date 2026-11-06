@@ -71,6 +71,9 @@ Close the active DSSE issue. Execute in order:
    quota fix, `close` refuses without `--runtime-receipt <file>`: a receipt of one REAL
    call through the real caller, made with `scripts/runtime_receipt.py capture --out <file>
    -- <cmd>`. A grep or read of the source is refused as the only proof (RCA 2026-10-02).
+   The receipt must belong to this issue: its command names one of the issue's
+   `allowed_files`, it ran after the issue was loaded, and no other issue's close row
+   already holds it. A missing `exit_code` does not skip the crash check.
 
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 

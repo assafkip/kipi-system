@@ -1458,9 +1458,25 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     except FileNotFoundError:
         terms = []
     if terms:
+        # Bound to THIS issue: it names one of the issue's allowed files, it ran
+        # after the issue was loaded, and no other issue's close row holds it
+        # (PR #610 review, major 1: one `date` capture closed any issue).
+        used: dict[str, str] = {}
+        if paths.receipts_path.is_file():
+            for line in paths.receipts_path.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                ref = row.get("runtime_receipt") if isinstance(row, dict) else None
+                if isinstance(ref, dict) and ref.get("sha256") and row.get("issue_id") != issue_id:
+                    used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
         try:
             runtime_ref = runtime_receipt.load_receipt(
-                getattr(args, "runtime_receipt", None), terms)
+                getattr(args, "runtime_receipt", None), terms,
+                repo_root=paths.repo_root,
+                bind_to=list(state.get("allowed_files_snapshot") or _fm.get("allowed_files") or []),
+                not_before=state.get("loaded_at"), used=used)
         except runtime_receipt.ReceiptError as exc:
             sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
             return 2

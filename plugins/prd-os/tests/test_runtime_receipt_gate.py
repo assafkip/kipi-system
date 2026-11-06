@@ -140,6 +140,27 @@ def _row(repo: Path, sid: str) -> dict:
     return [r for r in rows if r["id"] == sid][-1]
 
 
+def _job(repo: Path, name: str = "reviewer.py",
+         body: str = "print('rounds used: 2 of 2')") -> Path:
+    """A real caller that lives in the repo, so a receipt can name it."""
+    p = repo / "jobs" / name
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(body + "\n")
+    return p
+
+
+def _capture(tmp_path: Path, name: str, *argv: str) -> Path:
+    out = tmp_path / name
+    subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out), "--", *argv],
+                   capture_output=True, text=True)
+    return out
+
+
+def _resolve(repo: Path, sid: str, receipt: Path) -> subprocess.CompletedProcess:
+    return _cli(repo, "spillover", "resolve", sid, "--resolution-ref", "iss-1",
+                "--runtime-receipt", str(receipt))
+
+
 def _receipt(tmp_path: Path, command: str, output: str = "row written: 1",
              ran_at: str | None = None, name: str = "r.json") -> Path:
     p = tmp_path / name
@@ -202,7 +223,7 @@ def test_a_real_receipt_resolves_and_is_stored_on_the_row(repo, tmp_path):
     _add(repo, "sp-cap", "cap the reviewer at two rounds")
     out = tmp_path / "real.json"
     cap = subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out),
-                          "--", sys.executable, "-c", "print('rounds used: 2 of 2')"],
+                          "--", sys.executable, str(_job(repo))],
                          capture_output=True, text=True)
     assert cap.returncode == 0, cap.stderr
     r = _cli(repo, "spillover", "resolve", "sp-cap", "--resolution-ref", "iss-1",
@@ -277,9 +298,9 @@ def test_a_gate_that_refuses_with_nonzero_is_still_proof(repo, tmp_path):
     """Negative-fire for the crash check: a refusal is the control acting."""
     _add(repo, "sp-cap", "cap the reviewer at two rounds")
     out = tmp_path / "refused.json"
+    job = _job(repo, "gate.py", "import sys; print('refused: cap reached'); sys.exit(2)")
     subprocess.run([sys.executable, str(RECEIPT_MOD), "capture", "--out", str(out), "--",
-                    sys.executable, "-c", "import sys; print('refused: cap reached'); sys.exit(2)"],
-                   capture_output=True, text=True)
+                    sys.executable, str(job)], capture_output=True, text=True)
     r = _cli(repo, "spillover", "resolve", "sp-cap", "--resolution-ref", "iss-1",
              "--runtime-receipt", str(out))
     assert r.returncode == 0, r.stderr
@@ -299,3 +320,49 @@ def test_capture_of_a_missing_command_writes_a_refusable_receipt(tmp_path):
     assert proc.returncode == 127 and "Traceback" not in proc.stderr
     with pytest.raises(rr.ReceiptError, match="crashed"):
         rr.load_receipt(str(out), ["cap"])
+
+
+# ---------------------------------------------------------------------------
+# PR #610 review, major 1: a receipt must belong to THIS item. It was bound to
+# nothing: `date` resolved a token-quota row, one file resolved two unrelated
+# rows, and a receipt dated 2020 passed.
+# ---------------------------------------------------------------------------
+
+def test_a_receipt_that_runs_no_repo_file_is_refused(repo, tmp_path):
+    """It really ran, but nothing it ran is this repo's code."""
+    _add(repo, "sp-cap", "cap the reviewer at two rounds")
+    out = _capture(tmp_path, "oneliner.json", sys.executable, "-c", "print('rounds used: 2 of 2')")
+    r = _resolve(repo, "sp-cap", out)
+    assert r.returncode == 2 and "names no file in this repo" in r.stderr, r.stderr
+    assert _row(repo, "sp-cap")["status"] == "open"
+
+
+def test_a_receipt_older_than_the_item_is_refused(repo, tmp_path):
+    _add(repo, "sp-cap", "cap the reviewer at two rounds")
+    rec = _receipt(tmp_path, f"{sys.executable} {_job(repo)}",
+                   ran_at="2020-01-01T00:00:00+00:00")
+    r = _resolve(repo, "sp-cap", rec)
+    assert r.returncode == 2 and "before this item existed" in r.stderr, r.stderr
+    assert _row(repo, "sp-cap")["status"] == "open"
+
+
+def test_one_receipt_cannot_resolve_two_items(repo, tmp_path):
+    _add(repo, "sp-cap", "cap the reviewer at two rounds")
+    _add(repo, "sp-quota", "per-call token quota is never read")
+    out = _capture(tmp_path, "one.json", sys.executable, str(_job(repo)))
+    assert _resolve(repo, "sp-cap", out).returncode == 0
+    r = _resolve(repo, "sp-quota", out)
+    assert r.returncode == 2 and "already used to close sp-cap" in r.stderr, r.stderr
+    assert _row(repo, "sp-quota")["status"] == "open"
+
+
+def test_a_hand_receipt_with_no_exit_code_is_still_crash_checked(tmp_path):
+    """PR #610 review, major 2: exit_code is optional, and a missing one switched
+    the crash check off for exactly the receipts nobody captured."""
+    p = tmp_path / "hand.json"
+    p.write_text(json.dumps({
+        "command": "python3 jobs/the-real-gate.py --live",
+        "output": "Traceback (most recent call last):\nModuleNotFoundError: No module named 'x'",
+        "ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}))
+    with pytest.raises(rr.ReceiptError, match="A crash is not runtime proof"):
+        rr.load_receipt(str(p), ["cap"])

@@ -11,7 +11,10 @@ kipi-dsse `issue_runner.py close`) ask this module two questions:
 
   1. `claims_runtime_control(text)`: does the item claim such a fix?
   2. `load_receipt(path)`: is there a receipt of a REAL call, and not a read of
-     the source dressed up as one?
+     the source dressed up as one? Given the item's context it also checks the
+     receipt BELONGS to the item: it names a file in the repo (one of the issue's
+     allowed files when there are any), it ran after the item existed, and no
+     other row already holds it.
 
 This file is mirrored byte-for-byte into plugins/kipi-dsse/scripts/: that plugin
 stays import-independent of prd-os (the same contract as
@@ -31,6 +34,7 @@ import shlex
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 
 # THE one list. Whole words only, with the inflections people actually write
@@ -75,7 +79,7 @@ _WRAPPERS = frozenset({"env", "time", "command", "nice", "nohup", "timeout",
 
 # Built from this file's own location, so the kipi-dsse mirror names its own copy.
 EXAMPLE = (f"python3 {Path(__file__).resolve()} capture "
-           "--out receipt.json -- <the real caller, e.g. the job's own entry point>")
+           "--out receipt.json -- <the real caller, e.g. python3 path/to/the/changed/job.py>")
 # git global options that take a VALUE: `git -C <path> grep` read the path as the
 # subcommand and walked a pure source read through (PR #529 review, major 2).
 _GIT_VALUE_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace",
@@ -188,6 +192,32 @@ def _segments(command: str) -> list[list[str]]:
     return [s for s in segs if s]
 
 
+# Anything that could be a path. Quotes, `=` and `:` split tokens, so
+# `--repo-root=/x`, `'README.md'` inside a `python3 -c` script and `x.py:12` all
+# yield the bare path.
+_PATHISH_RE = re.compile(r"[A-Za-z0-9_.~/+@-]+")
+
+
+def _repo_files_named(command: str, repo_root: Path) -> list[str]:
+    """Repo-relative posix paths of the existing files INSIDE repo_root that the
+    command names. The interpreter (/usr/bin/python3) sits outside the repo, so
+    it never counts; only the code under the repo does."""
+    root = repo_root.resolve()
+    found: list[str] = []
+    for tok in _PATHISH_RE.findall(command or ""):
+        if tok in (".", ".."):
+            continue
+        p = Path(tok).expanduser()
+        try:
+            rp = (p if p.is_absolute() else root / p).resolve()
+            rel = rp.relative_to(root).as_posix()
+        except (ValueError, OSError):
+            continue
+        if rel not in found and rp.is_file():
+            found.append(rel)
+    return found
+
+
 def _parse_ts(raw: str) -> datetime:
     ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     if ts.tzinfo is None:
@@ -195,8 +225,18 @@ def _parse_ts(raw: str) -> datetime:
     return ts
 
 
-def load_receipt(path: str | None, terms: list[str]) -> dict:
+def load_receipt(path: str | None, terms: list[str], *,
+                 repo_root: str | Path | None = None,
+                 bind_to: list[str] | None = None,
+                 not_before: str | None = None,
+                 used: dict[str, str] | None = None) -> dict:
     """Validate a receipt file and return the reference to store on the row.
+
+    The keyword arguments bind the receipt to the item, and both runners always
+    pass them. repo_root: the command must name a file in that repo; bind_to:
+    and that file must be one of these (the issue's allowed files, globs
+    allowed); not_before: the receipt must not predate the item; used: sha256 ->
+    id of every OTHER row already holding a receipt.
 
     Raises ReceiptError with a message naming what is missing and an example."""
     claim = ", ".join(terms)
@@ -231,7 +271,10 @@ def load_receipt(path: str | None, terms: list[str]) -> dict:
     if ran_at > datetime.now(timezone.utc) + timedelta(minutes=5):
         raise ReceiptError(f"runtime receipt {path}: ran_at is in the future")
     code = data.get("exit_code")
-    if code in (126, 127) or (code not in (0, None) and _CRASH_RE.search(str(data["output"]))):
+    # `!= 0`, not `not in (0, None)`: exit_code is optional, and a missing one
+    # switched this check off for exactly the receipts nobody captured, so a
+    # hand-written traceback passed as proof (PR #610 review, major 2).
+    if code in (126, 127) or (code != 0 and _CRASH_RE.search(str(data["output"]))):
         raise ReceiptError(
             f"runtime receipt {path}: the caller crashed before it could exercise the "
             f"control (exit {code}). A crash is not runtime proof. Fix the run, then "
@@ -242,9 +285,43 @@ def load_receipt(path: str | None, terms: list[str]) -> dict:
             "rg, cat, sed, an ast parse, git show/diff, or a test run that only "
             "imports cannot prove a runtime control fires. Run the real caller "
             f"and record what it did:\n  {EXAMPLE}")
+    # BINDING (PR #610 review, major 1). Everything above checks the receipt's
+    # shape; nothing tied it to the item. `date` resolved a token-quota row, one
+    # file resolved two unrelated rows, and a receipt dated 2020 passed. The bar
+    # is ASK-1810's: this makes a junk receipt a deliberate act, not impossible.
+    command = str(data["command"])
+    if repo_root is not None:
+        named = _repo_files_named(command, Path(repo_root))
+        if bind_to:
+            if not any(f == b or fnmatch(f, b) for f in named for b in bind_to):
+                raise ReceiptError(
+                    f"runtime receipt {path}: its command names none of this issue's "
+                    f"allowed files ({', '.join(bind_to)}), so it cannot show the "
+                    f"changed code ran ({command!r}). Run the real caller by its "
+                    f"path:\n  {EXAMPLE}")
+        elif not named:
+            raise ReceiptError(
+                f"runtime receipt {path}: its command names no file in this repo "
+                f"({command!r}), so nothing it ran is the code the fix changed. "
+                f"Run the real caller by its path:\n  {EXAMPLE}")
+    if not_before:
+        try:
+            floor = _parse_ts(not_before)
+        except ValueError:
+            floor = None  # a malformed legacy timestamp must not wedge the close
+        if floor is not None and ran_at < floor:
+            raise ReceiptError(
+                f"runtime receipt {path} ran at {data['ran_at']}, before this item "
+                f"existed ({not_before}). It cannot prove a fix made since. Capture "
+                f"a fresh run:\n  {EXAMPLE}")
+    sha = hashlib.sha256(blob).hexdigest()
+    if used and sha in used:
+        raise ReceiptError(
+            f"runtime receipt {path} was already used to close {used[sha]}. One "
+            f"receipt proves one item. Capture a fresh run for this one:\n  {EXAMPLE}")
     return {
         "path": str(p),
-        "sha256": hashlib.sha256(blob).hexdigest(),
+        "sha256": sha,
         "command": str(data["command"]),
         "ran_at": str(data["ran_at"]),
         "exit_code": data.get("exit_code"),
