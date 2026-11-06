@@ -863,12 +863,66 @@ def sec_scan_scope():
                   rc == 1 and want in out and "unknown top-level keys" not in out)
 
 
+def _git(root, *a):
+    env = {"PATH": __import__("os").environ["PATH"], "HOME": str(root.parent), "LC_ALL": "C"}
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", *a],
+                          cwd=root, env=env, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def sec_diff_scope():
+    """ASK-3828: --diff-base fails only what the change introduced; --only runs
+    one declared test (the nightly filer's probe); a failing test's tail sits
+    behind a `|` gutter so a nested gate's RED line is never read as ours."""
+    # Skeleton mode, so the inert-engine check (the cross-file one) is in play.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(pathlib.Path(tmp) / "r")
+        engine(root, "q-system/.q-system/scripts/old-dead-engine.py")
+        _git(root, "init", "-q", "-b", "main")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "base carries an inert engine")
+        base = _git(root, "rev-parse", "HEAD")
+        (root / "notes.txt").write_text("unrelated\n")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "unrelated change")
+        rc, out = run_gate(root, "--check-only", "--diff-base", base)
+        check("diff-scope: a finding the base has is a note, not red",
+              rc == 0 and "ON THE BASE ALREADY" in out and "old-dead-engine.py" in out)
+        rc, full = run_gate(root, "--check-only")
+        check("diff-scope: without --diff-base the same tree is red", rc == 1 and "inert-engine" in full)
+        engine(root, "q-system/.q-system/scripts/new-dead-engine.py")
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "-m", "the change adds one")
+        rc, out = run_gate(root, "--check-only", "--diff-base", base)
+        check("diff-scope: a finding the change adds is red, and only that one",
+              rc == 1 and "RED: inert-engine: q-system/.q-system/scripts/new-dead-engine.py" in out
+              and "RED: inert-engine: q-system/.q-system/scripts/old-dead-engine.py" not in out)
+        rc, out = run_gate(root, "--check-only", "--diff-base", "no-such-ref")
+        check("diff-scope: an unreadable base demotes nothing (fail closed)",
+              rc == 1 and "old-dead-engine.py" in out and "counts as this change's" in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp, skeleton=False)
+        ok = add_test(root, "q-system/.q-system/scripts/test_ok.py")
+        bad = add_test(root, "q-system/.q-system/scripts/test_bad.py",
+                       'print("  RED: present-but-undeclared: nested"); raise SystemExit(1)')
+        write_manifest(root, base_manifest(expected_tests=[entry(ok), entry(bad)]))
+        rc, out = run_gate(root, "--only", ok)
+        check("only: runs just the named test", rc == 0 and "ran=1" in out)
+        rc, out = run_gate(root, "--only", bad)
+        red = [l for l in out.splitlines() if l.startswith("  RED: ")]
+        check("only: the named failure is red", rc == 1 and red == [f"  RED: test-failed rc=1: {bad}"])
+        check("gutter: a nested RED line in a tail is behind the gutter",
+              "      |   RED: present-but-undeclared: nested" in out)
+        rc, out = run_gate(root, "--only", ok, "--diff-base", "HEAD")
+        check("only: refuses --diff-base alongside", rc == 2 and "pass one" in out)
+
+
 SECTIONS = {
     "schema": sec_schema, "overlay": sec_overlay, "replay": sec_replay, "quarantine": sec_quarantine,
     "wiring": sec_wiring, "runner": sec_runner, "mode": sec_mode,
     "negative-proof": sec_negative_proof,
     "skeleton_only_absent": sec_skeleton_only_absent,
     "scan-scope": sec_scan_scope,
+    "diff-scope": sec_diff_scope,
 }
 
 
