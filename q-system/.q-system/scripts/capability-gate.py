@@ -1033,7 +1033,10 @@ def export_base(root, base, notes):
     instance overlay, the spillover ledger) are copied across, so both sides are
     judged against the same environment."""
     try:
-        listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=str(root),
+        # -z: without it git C-quotes any path with a non-ASCII byte, and one
+        # accented filename on the base read as "missing" and turned every
+        # demotion off (#608 review).
+        listed = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", base], cwd=str(root),
                                 capture_output=True, text=True, timeout=60)
         arch = subprocess.run(["git", "archive", "--format=tar", base], cwd=str(root),
                               capture_output=True, timeout=120)
@@ -1051,7 +1054,7 @@ def export_base(root, base, notes):
             tf.extractall(dest, filter="tar")
         except TypeError:  # a Python without extraction filters
             tf.extractall(dest)
-    want = set(listed.stdout.splitlines())
+    want = {p for p in listed.stdout.split("\0") if p}
     have = {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file() or p.is_symlink()}
     if want - have:
         notes.append(f"base {base}: the export is missing {len(want - have)} tracked path(s) "

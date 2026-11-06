@@ -191,6 +191,32 @@ def test_a_finding_main_already_has_does_not_fail_the_pr(gate_repo):
     assert "test_on_main.py" in out, "the base's finding must still be printed, not hidden"
 
 
+def test_an_accented_filename_on_main_does_not_turn_the_scoping_off(tmp_path):
+    """#608 review: `git ls-tree` C-quotes a non-ASCII path, so one accented file on
+    the base read as missing from the export and nothing was demoted."""
+    import capability_manifest  # noqa: E402
+    r = tmp_path / "repo"
+    (r / "q-system/.q-system/scripts").mkdir(parents=True)
+    capability_manifest.explode(r, {"schema_version": 1, "expected_tests": [], "required_data": [],
+                                    "skeleton_only": [], "declared_inert": [], "uncovered_known": []})
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "LC_ALL": "C"}
+
+    def git(*a):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", *a],
+                              cwd=r, env=env, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q", "-b", "main")
+    (r / "q-system/.q-system/scripts/test_on_main.py").write_text("import sys; sys.exit(0)\n")
+    (r / "caf\u00e9.md").write_text("accented\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "main")
+    base = git("rev-parse", "HEAD")
+    (r / "README.md").write_text("an unrelated change\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "the PR")
+    rc, out = _gate(r, base)
+    assert rc == 0, f"one accented filename on main reddened an unrelated PR:\n{out}"
+
+
 def test_a_finding_the_pr_adds_still_fails_it(gate_repo):
     r, base, git = gate_repo
     (r / "q-system/.q-system/scripts/test_from_pr.py").write_text("import sys; sys.exit(0)\n")

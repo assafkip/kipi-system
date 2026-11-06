@@ -220,6 +220,57 @@ def test_an_issue_extended_tonight_is_not_closed_for_what_it_lost(tmp_path, main
     assert f"present-but-undeclared: {INJECTED}" in five["body"] and gone in five["body"]
 
 
+TWO_RED_LOG = RED_LOG.replace(
+    "2026-11-07T10:06:11.1Z capability-gate: RED (1)\n",
+    "2026-11-07T10:06:11.1Z   RED: test-failed rc=1: q/s/test-slow.sh\n"
+    "2026-11-07T10:06:11.2Z capability-gate: RED (2)\n")
+
+
+def test_a_cancelled_bisect_keeps_what_was_already_attributed(tmp_path, main_branch, monkeypatch):
+    """#608 review, major: every create ran after every bisect, so a job cancelled
+    at its cap during finding two filed nothing, finding one included."""
+    r, sha = main_branch
+    d = tmp_path / "gh"
+    d.mkdir()
+    (d / "green_sha.txt").write_text(sha["A"])
+    calls = []
+
+    def attribute(prober, f, commits, base, head):
+        calls.append(f["key"])
+        if len(calls) == 2:
+            raise KeyboardInterrupt("job cancelled at its cap")
+        return {"sha": sha["C"], "found": True, "why": "bisected"}
+    monkeypatch.setattr(F, "attribute", attribute)
+    with pytest.raises(KeyboardInterrupt):
+        _night(tmp_path, r, "401", CAP_RED, TWO_RED_LOG)
+    issues = json.loads((d / "issues.json").read_text())
+    assert len(_per_check(issues)) == 1 and sha["C"][:7] in issues[0]["title"], issues
+    assert _git(r, "worktree", "list").count("\n") == 0, "the cancelled run leaked a probe worktree"
+
+
+def test_a_commit_that_cannot_be_checked_out_is_not_a_crash(tmp_path, main_branch):
+    r, sha = main_branch
+    pr = F.Prober(r)
+    try:
+        a = F.attribute(pr, FIND, ["0" * 40], sha["A"], "0" * 40)   # head probed first
+    finally:
+        pr.close()
+    assert a["found"] is False and "not bisected" in a["why"], a
+
+
+def test_a_spent_probe_budget_files_against_head_unbisected(tmp_path, main_branch):
+    r, sha = main_branch
+    pr = F.Prober(r, budget_s=0)
+    try:
+        a = F.attribute(pr, {"step": CAP, "kind": "present-but-undeclared", "path": INJECTED,
+                             "key": f"present-but-undeclared: {INJECTED}"},
+                        [sha["B"], sha["C"], sha["D"]], sha["A"], sha["D"])
+    finally:
+        pr.close()
+    assert a == {"sha": sha["D"], "found": False,
+                 "why": f"not bisected: this run's {F.PROBE_BUDGET_S // 60}-minute probe budget is spent"}
+
+
 def test_the_one_issue_count_can_fail(tmp_path, main_branch):
     """Negative self-test: with the dedup markers stripped between nights, the
     same red files a second issue, and the count above would catch it."""

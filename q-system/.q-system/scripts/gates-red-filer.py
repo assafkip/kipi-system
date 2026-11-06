@@ -44,6 +44,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 LABEL = "gates-red"
@@ -68,6 +69,11 @@ STRUCTURE_KINDS = {"present-but-undeclared", "declared-but-missing",
 TEST_KINDS = {"test-failed", "test-timeout", "zero-execution test"}
 MAX_BISECTED = 10          # new findings bisected per run; the rest name the head
 PROBE_TIMEOUT_S = 1200
+# All probes of one run share this budget, well inside report-red's 60-minute
+# cap (#608 review, major: 6 probes of a 600 s test is the whole hour, and a
+# job cancelled mid-bisect filed nothing). Past it a finding is filed against
+# head, unbisected, rather than lost with the job.
+PROBE_BUDGET_S = 35 * 60
 TS_PREFIX = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ")
 GROUP_RE = re.compile(r"<!-- gates-red-group: (.+?)@([0-9a-f]{7,40}) -->")
 FIND_RE = re.compile(r"<!-- gates-red-finding: ([0-9a-f]{16}) -->")
@@ -149,8 +155,9 @@ class Prober:
     must not leave that commit's tree (or a test's leftovers) under the next
     probe, and the clone stays at the head the gates job graded."""
 
-    def __init__(self, repo: Path):
+    def __init__(self, repo: Path, budget_s: float = PROBE_BUDGET_S):
         self.repo, self.trees, self.cache = repo, {}, {}
+        self.deadline = time.monotonic() + budget_s
         self.tmp = Path(tempfile.mkdtemp(prefix="gates-red-probe-"))
         self.count = 0
         # THIS run's gate, for a test probe at a commit whose own gate predates
@@ -168,19 +175,26 @@ class Prober:
     def tree(self, sha: str) -> Path:
         if sha not in self.trees:
             path = self.tmp / sha[:12]
-            git(self.repo, "worktree", "add", "--detach", "-q", str(path), sha)
+            try:
+                git(self.repo, "worktree", "add", "--detach", "-q", str(path), sha)
+            except RuntimeError as exc:   # a commit that cannot answer, not a crash
+                raise ProbeError(f"no worktree at {sha[:7]}: {exc}")
             self.trees[sha] = path
         return self.trees[sha]
 
     def run(self, sha: str, argv: list[str], env: dict) -> tuple[int, str]:
         k = (sha, tuple(argv), tuple(sorted(env.items())))
         if k not in self.cache:
+            left = self.deadline - time.monotonic()
+            if left < 60:
+                raise ProbeError(f"this run's {PROBE_BUDGET_S // 60}-minute probe budget is spent")
+            limit = int(min(PROBE_TIMEOUT_S, left))
             self.count += 1
             try:
                 p = subprocess.run(argv, cwd=str(self.tree(sha)), env=dict(os.environ, **env),
-                                   capture_output=True, text=True, timeout=PROBE_TIMEOUT_S)
+                                   capture_output=True, text=True, timeout=limit)
             except subprocess.TimeoutExpired:
-                raise ProbeError(f"timed out after {PROBE_TIMEOUT_S}s at {sha[:7]}")
+                raise ProbeError(f"timed out after {limit}s at {sha[:7]}")
             except OSError as exc:
                 raise ProbeError(f"could not run {argv[0]} at {sha[:7]}: {exc}")
             self.cache[k] = (p.returncode, p.stdout + p.stderr)
@@ -247,6 +261,8 @@ def attribute(prober, finding: dict, commits: list[str] | None, base: str | None
                 lo = mid
     except ProbeError as exc:
         return out(head, False, f"not bisected: {exc}")
+    except Exception as exc:  # noqa: BLE001 -- a bisect bug must not lose the finding
+        return out(head, False, f"not bisected: {type(exc).__name__}: {str(exc)[:160]}")
     return out(commits[hi], True, "bisected" if len(commits) > 1 else
                "the only commit since the last green nightly")
 
@@ -296,8 +312,9 @@ class GitHub:
         return self._api(*args)
 
     def create(self, title: str, body: str):
-        self._write(f"create issue: {title}", "-X", "POST", f"repos/{self.repo}/issues",
-                    "-f", f"title={title}", "-f", f"body={body}", "-f", f"labels[]={LABEL}")
+        out = self._write(f"create issue: {title}", "-X", "POST", f"repos/{self.repo}/issues",
+                          "-f", f"title={title}", "-f", f"body={body}", "-f", f"labels[]={LABEL}")
+        return json.loads(out)["number"] if out else None
 
     def comment(self, number: int, body: str):
         self._write(f"comment on #{number}: {body.splitlines()[0]}", "-X", "POST",
@@ -347,6 +364,7 @@ class FixtureGitHub:
         n = max([i["number"] for i in self.issues] + [0]) + 1
         self.issues.append({"number": n, "title": title, "body": body, "state": "open", "comments": []})
         self._save()
+        return n
 
     def comment(self, number, body):
         self._get(number)["comments"].append(body)
@@ -423,38 +441,41 @@ def run(gh, repo: Path, run_id: str, run_url: str, workflow: str) -> list[str]:
     head = git(repo, "rev-parse", "HEAD")
     base = gh.last_green_sha(workflow) if new else None
     commits = first_parent_range(repo, base, head) if new else None
+    # ATTRIBUTE ONE, FILE ONE (#608 review, major). Bisecting every finding
+    # before filing any meant one cancelled job or one crash filed nothing for a
+    # red nightly, and this filer is that red's only route to the queue. Each
+    # finding is filed the moment it is attributed; a later one joins the issue
+    # an earlier one opened for the same (step, commit).
     prober = Prober(repo)
     try:
-        by_group = {}
         for k, f in enumerate(new):
             if k < MAX_BISECTED:
                 a = attribute(prober, f, commits, base, head)
             else:
                 a = {"sha": head, "found": False,
                      "why": f"not bisected: more than {MAX_BISECTED} new findings in one run"}
-            by_group.setdefault((f["step"], a["sha"], a["found"], a["why"]), []).append(f)
-        for (step, sha, ok, why), fs in by_group.items():
-            group = {"step": step, "sha": sha, "found": ok, "why": why}
-            old = groups.get((step, sha))
+            step = f["step"]
+            line = f"- `{f['key']}` <!-- gates-red-finding: {finding_id(step, f['key'])} -->"
+            old = groups.get((step, a["sha"]))
             if old:
-                extra = "\n".join(f"- `{f['key']}` <!-- gates-red-finding: {finding_id(step, f['key'])} -->"
-                                  for f in fs)
                 # The snapshot is updated too: the close pass below reads it, and
                 # an issue extended tonight must not close for the findings it lost.
-                old["body"] = old["body"].replace("\nFindings:\n", f"\nFindings:\n{extra}\n", 1)
+                old["body"] = old["body"].replace("\nFindings:\n", f"\nFindings:\n{line}\n", 1)
                 gh.set_body(old["number"], old["body"])
-                gh.comment(old["number"], f"Also red since this commit: {run_url}\n{extra}")
-                actions.append(f"extended #{old['number']} +{len(fs)}")
+                gh.comment(old["number"], f"Also red since this commit: {run_url}\n{line}")
+                actions.append(f"extended #{old['number']} +1")
                 continue
-            title, body = issue_text(group, fs, run_url, repo, base, head, prober.count)
-            gh.create(title, body)
+            group = {"step": step, "sha": a["sha"], "found": a["found"], "why": a["why"]}
+            title, body = issue_text(group, [f], run_url, repo, base, head, prober.count)
+            number = gh.create(title, body)
+            groups[(step, a["sha"])] = {"number": number, "body": body, "fresh": True}
             actions.append(f"created: {title}")
     finally:
         prober.close()
 
     for (step, _sha), i in groups.items():
         fids = set(FIND_RE.findall(i["body"]))
-        if step in ran and not (fids & tonight):
+        if not i.get("fresh") and step in ran and not (fids & tonight):
             gh.close(i["number"], f"Green for this check in {run_url}")
             actions.append(f"closed #{i['number']}")
     if found:
