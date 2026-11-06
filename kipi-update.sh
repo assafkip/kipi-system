@@ -504,6 +504,76 @@ instance_ahead_preflight() {
   done
 }
 
+# RECENT INSTANCE WORK THE SYNC WOULD DELETE (ASK-3821). Refuses on every run,
+# no flag. The scar: kipi-investigations f00ee9d7 added _deferral_tracking_gate
+# and 5 tests; the next morning the plugin sync (1d2568c5) wrote the skeleton's
+# older prd_runner.py back byte for byte and deleted the test file. consulting
+# lost the ASK-1040 guard and 7 tests the same way (restored by #333).
+#
+# instance_ahead_scan above sees that file but only reports it, because "differs
+# from the skeleton" is true of hook churn on most of the fleet. This asks the
+# narrow question that has meant lost work every time: would the sync remove a
+# def, class or test file that an instance commit in the last 30 days added, at a
+# path the skeleton never had it? Answered by update-preservation-manifest.py
+# from rsync's own itemized preview with the REAL run's flags, so it cannot
+# drift from what the run writes. Only scopes this run rsyncs are streamed:
+# q-system/ is merged by git on a direct-clone, and plugins/ is synced only
+# where .claude/ exists (the config block below).
+#
+# The one way past it is a reviewed entry in kipi-update-preservation-overrides.json
+# naming the commit, path, symbol and reason.
+SYNC_GUARD="$SCRIPT_DIR/q-system/.q-system/scripts/update-preservation-manifest.py"
+SYNC_GUARD_OVERRIDES="$SCRIPT_DIR/kipi-update-preservation-overrides.json"
+SYNC_GUARD_REFUSED=""
+
+# $1 instance path, $2 subtree prefix, $3 instance type, $4 empty temp dir.
+sync_guard_stream() {
+  local path="$1" prefix="$2" itype="$3" src_tmp="$4" plugin_name
+  if [ "$itype" != "direct-clone" ] && [ -d "$path/$prefix" ]; then
+    git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ | tar -x -C "$src_tmp" || return 1
+    printf '@@scope\t%s\t%s\t%s\t%s\n' "$src_tmp/q-system" "$path/$prefix" "$prefix" "q-system"
+    # shellcheck disable=SC2046
+    rsync -ain --delete "$src_tmp/q-system/" "$path/$prefix/" $(rsync_owned_excludes) 2>/dev/null || return 1
+  fi
+  if [ -d "$path/.claude" ] && [ -d "$SKELETON_PLUGIN_ROOT" ]; then
+    while IFS= read -r -d '' plugin_name; do
+      [ -d "$path/plugins/$plugin_name" ] || continue
+      printf '@@scope\t%s\t%s\t%s\t%s\n' "$SKELETON_PLUGIN_ROOT/$plugin_name" \
+        "$path/plugins/$plugin_name" "plugins/$plugin_name" "plugins/$plugin_name"
+      # shellcheck disable=SC2046
+      rsync -ain --delete --delete-excluded $(plugin_copy_rsync_flags) \
+        "$SKELETON_PLUGIN_ROOT/$plugin_name/" "$path/plugins/$plugin_name/" 2>/dev/null || return 1
+    done < <(managed_plugin_names)
+  fi
+  # The guard requires this line, so a producer that died halfway is a refusal,
+  # not a short list that reads as clean.
+  printf '@@end\n'
+}
+
+# $1 instance path, $2 subtree prefix, $3 instance type. Non-zero = do not sync.
+sync_guard_preflight() {
+  local path="$1" prefix="$2" itype="$3" src_tmp ship_ref rc=0
+  # DISARMED only where this skeleton never shipped the guard: the partial
+  # skeletons the kipi-update fixtures build. Measured 2026-11-06: 13 of 30
+  # fixture tests went red when a guard missing from their copy list read as a
+  # refusal, which is a gate red on its own population. A skeleton whose HEAD
+  # tracks the guard but whose working tree lost it is a damaged checkout, and
+  # that still refuses (python3 cannot open the file). kipi check's probe is the
+  # second account: it reads NOT WIRED for a home without the guard.
+  if [ ! -f "$SYNC_GUARD" ] &&
+      ! git -C "$SCRIPT_DIR" cat-file -e "HEAD:q-system/.q-system/scripts/update-preservation-manifest.py" 2>/dev/null; then
+    echo "  sync guard: DISARMED (this skeleton never shipped update-preservation-manifest.py)"
+    return 0
+  fi
+  src_tmp="$(mktemp -d)" || return 1
+  ship_ref="$(fleet_ship_ref)" || ship_ref="HEAD"
+  sync_guard_stream "$path" "$prefix" "$itype" "$src_tmp" \
+    | python3 "$SYNC_GUARD" check --instance-root "$path" --skeleton-root "$SCRIPT_DIR" \
+        --skeleton-ref "$ship_ref" --overrides "$SYNC_GUARD_OVERRIDES" || rc=$?
+  rm -r -- "$src_tmp"
+  return "$rc"
+}
+
 plugin_copy_filter_regex() {
   local entry out=""
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -2629,6 +2699,13 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
     fi
 
+    # Same point, same reason: before anything is committed or written, in every
+    # mode. Unlike the report above this one has no flag (ASK-3821).
+    if ! sync_guard_preflight "$path" "$prefix" "$itype"; then
+      SYNC_GUARD_REFUSED="$SYNC_GUARD_REFUSED $name"
+      abandon_instance "  ERROR: the sync would delete recent instance work, or the guard could not prove it would not (named above); refusing, nothing staged, nothing written" && continue
+    fi
+
     unlanded_sync_scan "$path"
     if [ "$REFUSE_UNLANDED_SYNC" = "1" ] && [ "$UNLANDED_SYNC_COUNT" -gt 0 ]; then
       abandon_instance "  ERROR: $UNLANDED_SYNC_COUNT earlier updater commit(s) never reached origin; refusing (--refuse-unlanded-sync), nothing staged, nothing written. Land them first: a worktree off origin, merge, PR (ASK-3655)" && continue
@@ -3579,6 +3656,9 @@ fi
 # reader scrolls past, and the summary is what gets read.
 if [ "$INSTANCE_AHEAD_TOTAL" -gt 0 ]; then
   echo "  INSTANCE AHEAD OF SKELETON ($INSTANCE_AHEAD_TOTAL file(s) whose instance content the skeleton never shipped; a sync overwrites them):$INSTANCE_AHEAD_REPORT"
+fi
+if [ -n "$SYNC_GUARD_REFUSED" ]; then
+  echo "  SYNC GUARD REFUSED (recent instance work the sync would delete):$SYNC_GUARD_REFUSED"
 fi
 # In the summary, not only inline: a real run prints ~40 lines per instance and
 # the summary is what gets read. An ungoverned instance that only appears on

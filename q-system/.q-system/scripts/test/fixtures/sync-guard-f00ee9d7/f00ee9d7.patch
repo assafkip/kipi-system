@@ -1,0 +1,205 @@
+From f00ee9d7ebda74f46a335f4bb69950c9378985a2 Mon Sep 17 00:00:00 2001
+From: Assaf Kipnis <1494043+assafkip@users.noreply.github.com>
+Date: Sun, 14 Jun 2026 18:02:33 -0700
+Subject: [PATCH] prd-os: gate archive on deferral prose without a tracked
+ issue
+
+RCA built-not-wired root cause #3: PRD deferrals ("v2/follow-up/deferred")
+lived as prose and evaporated on archive (PRD-08 box-select, one-hop I6
+set-expand). _deferral_tracking_gate (wired into cmd_archive) blocks archive
+when deferral prose has zero backtick tokens resolving to an existing issue
+spec. Comments/headings/empty-bullets excluded so template boilerplate and
+the "## Open questions" section don't false-positive. 5 unit tests + the 29
+existing prd_runner tests green.
+
+dsse issue: prd-archive-deferral-gate (finding-4)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ plugins/prd-os/scripts/prd_runner.py          | 65 ++++++++++++++
+ .../tests/test_archive_deferral_gate.py       | 90 +++++++++++++++++++
+ 2 files changed, 155 insertions(+)
+ create mode 100644 plugins/prd-os/tests/test_archive_deferral_gate.py
+
+diff --git a/plugins/prd-os/scripts/prd_runner.py b/plugins/prd-os/scripts/prd_runner.py
+index 67fc9808..ee64a404 100644
+--- a/plugins/prd-os/scripts/prd_runner.py
++++ b/plugins/prd-os/scripts/prd_runner.py
+@@ -329,6 +329,10 @@ def cmd_archive(cfg: Config, args: argparse.Namespace) -> int:
+         sys.stderr.write(err)
+         return rc
+     rc, err = _manifest_status_gate(cfg, state)
++    if rc != 0:
++        sys.stderr.write(err)
++        return rc
++    rc, err = _deferral_tracking_gate(cfg, state)
+     if rc != 0:
+         sys.stderr.write(err)
+         return rc
+@@ -895,6 +899,67 @@ def _archive_coverage_gate(cfg: Config, state: dict) -> tuple[int, str]:
+     return 0, ""
+ 
+ 
++# Deferral-tracking gate (RCA built-not-wired 2026-06-14): a PRD that defers
++# feature work in prose ("v2", "follow-up", "deferred", "punt", "open question")
++# must tie that deferral to a tracked issue spec — otherwise the deferred work
++# evaporates the moment the PRD archives. That is the exact failure the RCA
++# named: PRD-08 box-select and one-hop-ux I6 set-expand were "open for v2" prose
++# that never became issues. Deterministic: deferral prose with zero resolvable
++# tracked-issue references blocks archive. Runs only at archive (by which time
++# prd_split has created the backlog issue specs the prose can point to).
++_DEFERRAL_RE = re.compile(
++    r"\b(v2|follow[- ]?ups?|deferr(?:ed|al)|punt(?:ed|ing)?|"
++    r"open questions?|out of scope for now|left for (?:later|v2))\b",
++    re.IGNORECASE,
++)
++_BACKTICK_TOKEN_RE = re.compile(r"`([a-z0-9][a-z0-9-]+)`")
++
++
++def _deferral_tracking_gate(cfg: Config, state: dict) -> tuple[int, str]:
++    spec_path = cfg.repo_root / state["spec_path"]
++    try:
++        text = spec_path.read_text()
++    except OSError as exc:
++        return 2, f"{spec_path}: {exc}\n"
++
++    body = text
++    if text.startswith("---"):
++        fm_end = text.find("\n---", 3)
++        if fm_end != -1:
++            body = text[fm_end + len("\n---"):]
++    # Template boilerplate that names deferral words lives entirely in HTML
++    # comments; strip them so only authored prose is scanned.
++    body_no_comments = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
++
++    deferral_hits = []
++    for raw in body_no_comments.splitlines():
++        line = raw.strip()
++        if not line or line.startswith("#"):
++            continue  # headings (incl. the "## Open questions" template section)
++        if line in ("-", "- "):
++            continue  # empty template bullets
++        if _DEFERRAL_RE.search(line):
++            deferral_hits.append(line[:120])
++    if not deferral_hits:
++        return 0, ""
++
++    # A backtick token resolving to an existing issue spec is a tracked-issue
++    # reference (the deferral is owned by real work, not lost in prose).
++    tracked = [tok for tok in set(_BACKTICK_TOKEN_RE.findall(body))
++               if (cfg.issues_dir / f"{tok}.md").is_file()]
++    if tracked:
++        return 0, ""
++
++    lines = [
++        "archive blocked: PRD defers feature work in prose but references no "
++        "tracked issue. Add a `## Deferred` section linking each deferral to an "
++        "existing issue spec (.prd-os/issues/<id>.md), or remove the prose:",
++    ]
++    for hit in deferral_hits[:8]:
++        lines.append(f"  - {hit}")
++    return 2, "\n".join(lines) + "\n"
++
++
+ # ---------------------------------------------------------------------------
+ # Entry
+ # ---------------------------------------------------------------------------
+diff --git a/plugins/prd-os/tests/test_archive_deferral_gate.py b/plugins/prd-os/tests/test_archive_deferral_gate.py
+new file mode 100644
+index 00000000..6a91b952
+--- /dev/null
++++ b/plugins/prd-os/tests/test_archive_deferral_gate.py
+@@ -0,0 +1,90 @@
++"""Archive deferral-tracking gate (RCA built-not-wired 2026-06-14).
++
++`_deferral_tracking_gate` blocks `archive` when a PRD defers feature work in
++prose but ties it to no tracked issue spec — the exact way PRD-08 box-select and
++one-hop-ux I6 set-expand evaporated. Unit-tests the gate directly.
++"""
++
++from __future__ import annotations
++
++import importlib.util
++import sys
++from pathlib import Path
++
++import pytest
++
++PLUGIN_ROOT = Path(__file__).resolve().parents[1]
++SCRIPTS_DIR = PLUGIN_ROOT / "scripts"
++
++
++def _load(name: str):
++    if str(SCRIPTS_DIR) not in sys.path:
++        sys.path.insert(0, str(SCRIPTS_DIR))
++    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / f"{name}.py")
++    module = importlib.util.module_from_spec(spec)
++    sys.modules[name] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++@pytest.fixture
++def cfg_and_runner(tmp_path: Path):
++    config = _load("config")  # registered as "config" so prd_runner's import resolves
++    prd_runner = _load("prd_runner")
++    repo = tmp_path / "repo"
++    (repo / ".prd-os").mkdir(parents=True)
++    (repo / ".prd-os" / "config.json").write_text('{"config_schema_version": 1}')
++    (repo / ".prd-os" / "issues").mkdir()
++    (repo / ".prd-os" / "prds").mkdir()
++    cfg = config.load(repo)
++    return cfg, prd_runner, repo
++
++
++def _write_spec(repo: Path, body: str) -> dict:
++    spec = repo / ".prd-os" / "prds" / "prd-x.md"
++    spec.write_text("---\nid: prd-x\nstatus: approved\n---\n" + body)
++    return {"spec_path": ".prd-os/prds/prd-x.md"}
++
++
++def test_clean_prd_passes(cfg_and_runner):
++    cfg, prd_runner, repo = cfg_and_runner
++    state = _write_spec(repo, "# X\n\n## Goals\n- ship the thing\n")
++    rc, _ = prd_runner._deferral_tracking_gate(cfg, state)
++    assert rc == 0
++
++
++def test_deferral_words_only_in_comments_or_headings_pass(cfg_and_runner):
++    cfg, prd_runner, repo = cfg_and_runner
++    body = "# X\n\n## Open questions\n\n<!-- punt this to v2 as a follow-up -->\n"
++    state = _write_spec(repo, body)
++    rc, _ = prd_runner._deferral_tracking_gate(cfg, state)
++    assert rc == 0
++
++
++def test_prose_deferral_without_tracked_issue_blocks(cfg_and_runner):
++    cfg, prd_runner, repo = cfg_and_runner
++    body = "# X\n\n## Approach\n\nBox-select is deferred to v2 for now.\n"
++    state = _write_spec(repo, body)
++    rc, msg = prd_runner._deferral_tracking_gate(cfg, state)
++    assert rc == 2
++    assert "tracked issue" in msg
++
++
++def test_prose_deferral_with_tracked_issue_passes(cfg_and_runner):
++    cfg, prd_runner, repo = cfg_and_runner
++    (repo / ".prd-os" / "issues" / "box-select-v2.md").write_text("---\nid: box-select-v2\n---\n")
++    body = ("# X\n\n## Approach\n\nBox-select is deferred to v2.\n\n"
++            "## Deferred\n- box-select: tracked as `box-select-v2`\n")
++    state = _write_spec(repo, body)
++    rc, _ = prd_runner._deferral_tracking_gate(cfg, state)
++    assert rc == 0
++
++
++def test_backtick_token_must_resolve_to_a_real_issue(cfg_and_runner):
++    cfg, prd_runner, repo = cfg_and_runner
++    # references `nonexistent-issue` which has no spec file -> still blocked
++    body = ("# X\n\n## Approach\n\nThis is a follow-up.\n\n"
++            "## Deferred\n- see `nonexistent-issue`\n")
++    state = _write_spec(repo, body)
++    rc, _ = prd_runner._deferral_tracking_gate(cfg, state)
++    assert rc == 2
+-- 
+2.54.0
+
