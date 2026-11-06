@@ -156,6 +156,12 @@ commit-msg:
     # list is LOCAL (~/.config/kipi/client-tokens), never ships, and an absent
     # list warns and passes so a fresh clone is never blocked.
     #
+    # ASK-2058 (2026-10-22): the list now also comes from the private registries
+    # named in ~/.config/kipi/private-terms.json, read at commit time, because
+    # ten hand-typed tokens missed every client, contact and email the
+    # registries held. A merge scans only what no PUBLIC parent already carries,
+    # which ends the side effect where every merge of origin/main was refused.
+    #
     # THE ONE client-name scan (ASK-747). It lives here, not at pre-commit,
     # because this is the only stage that sees the real message for THIS commit
     # AND can still read `git diff --cached` (the commit object does not exist
@@ -165,6 +171,16 @@ commit-msg:
     # file containing the token went unscanned.
     client-names-msg:
       run: python3 q-system/.q-system/scripts/client-name-guard.py --message {1}
+
+pre-push:
+  commands:
+    # The CI backstop (.github/workflows/private-terms.yml) reads the private
+    # list from the PRIVATE_TERMS repo secret, and a secret nobody refreshes
+    # goes stale the day a new client is onboarded. This pushes the list only
+    # when its digest changed, only for a PUBLIC repo, and it never blocks a
+    # push: it is freshness for the backstop, not the gate (ASK-2058).
+    private-terms-ci-sync:
+      run: python3 q-system/.q-system/scripts/client-name-guard.py --sync-ci-secret
 
 post-commit:
   commands:
