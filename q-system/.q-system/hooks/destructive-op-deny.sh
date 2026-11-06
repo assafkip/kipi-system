@@ -762,6 +762,116 @@ if [ "$TOOL_NAME" = "Bash" ] && [ -n "$COMMAND" ]; then
   done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
   fi  # _argv_skip
 
+  # ASK-3661: STARTING A FLEET-SYNC JOB IS RUNNING THE FLEET SYNC.
+  #
+  # THE SCAR (2026-10-31, ASK-3574). com.kipi.lessons-daily runs lessons-daily.sh,
+  # which runs `bash kipi-update.sh` with no --only: a fleet-wide rsync of every
+  # instance. FLEET_DENY above is anchored on the updater's own spelling, so
+  # `launchctl start com.kipi.lessons-daily` matched nothing, and a builder used
+  # it to trigger the same sync this hook exists to gate, with no kipi-approve.
+  # The founder's approval had covered a single-instance apply only.
+  #
+  # THE LABEL LIST IS DERIVED FROM THE PLISTS, NEVER HARDCODED. A list of labels
+  # in this file is a second copy of "which jobs sync the fleet" and goes stale
+  # the day a job is added: the same dead-entry shape ASK-1144 found in the MCP
+  # list. So the check reads the plist the label names, takes each path in its
+  # ProgramArguments, and asks whether that command line (or the script it
+  # points at) INVOKES the updater.
+  #
+  # INVOKES, NOT MENTIONS. launchd-health-check.py names `kipi update` in a
+  # docstring and lessons-daily.sh names kipi-update.sh in an echo; a mention
+  # match would deny `launchctl start` of both for no reason, and a gate that
+  # over-blocks is a gate someone switches off. An invocation is the updater as
+  # the program word after bash/sh/zsh/source/exec, at command position, or in a
+  # subprocess argv list. Comment lines are skipped.
+  #
+  # WHAT IT DOES NOT SEE, stated so it is not read as wider: a job two scripts
+  # away from the updater (one hop is followed), an invocation assembled from
+  # variables, a plist that does not exist on disk. A label this check cannot
+  # resolve is ALLOWED when the argument is a literal; an argument that carries a
+  # shell expansion ($ or a backtick) is DENIED, because the label it names is
+  # unknowable here and "could not tell" is not permission. Only verbs that RUN
+  # the job are matched: list, print, stop, unload, bootout and enable stay open.
+  _launchd_text_invokes_updater() {  # _launchd_text_invokes_updater <text-on-stdin>
+    grep -v '^[[:space:]]*#' | grep -Eq \
+      -e '(^|[^[:alnum:]_./-])(bash|sh|zsh|source|exec)[[:space:]]+[^[:space:]]*kipi-update\.sh' \
+      -e '^[[:space:]]*[./~"$][^[:space:]]*kipi-update\.sh' \
+      -e '["'"'"']bash["'"'"'][[:space:]]*,[^#]*kipi-update\.sh' \
+      -e 'kipi[[:space:]]+update'
+  }
+  _launchd_plist_runs_updater() {  # _launchd_plist_runs_updater <plist-path>
+    local _pf="$1" _xml _s
+    [ -f "$_pf" ] || return 1
+    if command -v plutil >/dev/null 2>&1; then
+      _xml="$(plutil -convert xml1 -o - "$_pf" 2>/dev/null)" || _xml="$(cat "$_pf" 2>/dev/null)"  # portability-lint-skip
+    else
+      _xml="$(cat "$_pf" 2>/dev/null)"
+    fi
+    while IFS= read -r _s; do
+      [ -n "$_s" ] || continue
+      # The inline form: bash -c "... kipi-update.sh ..." carried in the plist.
+      printf '%s\n' "$_s" | _launchd_text_invokes_updater && return 0
+      case "$_s" in
+        /*.sh|/*.bash|/*.zsh|/*.py)
+          # A script's docstring may say `kipi update`; only the shell-invocation
+          # shapes count for a file, so the bare-words alternative is dropped.
+          [ -f "$_s" ] && grep -v '^[[:space:]]*#' "$_s" 2>/dev/null | grep -Eq \
+            -e '(^|[^[:alnum:]_./-])(bash|sh|zsh|source|exec)[[:space:]]+[^[:space:]]*kipi-update\.sh' \
+            -e '^[[:space:]]*[./~"$][^[:space:]]*kipi-update\.sh' \
+            -e '["'"'"']bash["'"'"'][[:space:]]*,[^#]*kipi-update\.sh' && return 0 ;;
+      esac
+    done < <(printf '%s\n' "$_xml" | grep -Eo '<string>[^<]*</string>' | sed -e 's/^<string>//' -e 's/<\/string>$//')
+    return 1
+  }
+  case "$COMMAND" in
+  *launchctl*)
+    while IFS= read -r _lstage; do
+      [ -n "$_lstage" ] || continue
+      # Quotes stripped first: the shell removes them before exec, so
+      # `launchctl start "com.kipi.lessons-"daily` is the same word.
+      _lclean="${_lstage//[\"\']/}"
+      read -ra _lw <<<"$_lclean"
+      _lverb=""; _lseen=0; _largs=()
+      for _lt in ${_lw[@]+"${_lw[@]}"}; do
+        if [ "$_lseen" = "0" ]; then
+          case "${_lt##*/}" in launchctl) _lseen=1 ;; esac
+          continue
+        fi
+        if [ -z "$_lverb" ]; then
+          case "$_lt" in -*) continue ;; esac
+          _lverb="$_lt"; continue
+        fi
+        _largs+=("$_lt")
+      done
+      case "$_lverb" in
+        start|kickstart|load|bootstrap) ;;
+        *) continue ;;
+      esac
+      for _la in ${_largs[@]+"${_largs[@]}"}; do
+        case "$_la" in
+          *'$'*|*'`'*)
+            emit_deny "launchctl $_lverb with a shell expansion in its arguments ($_la): the label it starts cannot be read here, and a job that runs the fleet sync is the same fleet-wide rsync this hook gates (ASK-3661). Write the literal label." ;;
+        esac
+        # Parameter expansion, not [[ =~ ]]: the installer reads BASH_REMATCH as a
+        # new environment variable and refuses the whole source.
+        case "$_la" in *com.kipi.*)
+          _llabel="com.kipi.${_la#*com.kipi.}"
+          _llabel="${_llabel%%/*}"
+          _llabel="${_llabel%.plist}"
+          _lplist="$HOME/Library/LaunchAgents/$_llabel.plist"
+          # load/bootstrap name a plist PATH, and that file is what would run,
+          # so it is read in preference to the installed copy of the same label.
+          case "$_la" in *.plist) [ -f "$_la" ] && _lplist="$_la" ;; esac
+          if _launchd_plist_runs_updater "$_lplist"; then
+            emit_deny "fleet-wide delete: launchctl $_lverb $_llabel starts a job whose plist ($_lplist) runs the fleet updater, which rsyncs the skeleton into EVERY registered instance with a delete flag (ASK-3661, 2026-10-31: a builder started com.kipi.lessons-daily with an approval that covered one instance). Same gate as running the updater by hand; list, print, stop and bootout are not blocked."
+          fi
+          ;;
+        esac
+      done
+    done < <(printf '%s\n' "$COMMAND" | tr ';|&' '\n\n\n')
+    ;;
+  esac
+
   # ASK-1118: the fleet exemption is decided per STAGE, not over the whole string.
   #
   # THE SCAR, both directions, each measured before this was written. The block

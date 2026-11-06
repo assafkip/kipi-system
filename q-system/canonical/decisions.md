@@ -465,3 +465,29 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Reason:** With the refusal in place, owner:sana tickets in the consulting root and the engagement repos had no worker, so they never got done.
 - **Date:** 2026-10-30
 - **Revisit:** Only on a founder order. Restoring a refusal is a code change in the open (ASK-3526), never a flag.
+
+## The three structural defects to fix before any further build (2026-11-06)
+
+### RULE-2026-11-06-A: An enforcement claim with no wired executable is a defect, not a rule
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "the most important thing I get here is that we say everyitng is bounded by code but nothing actually is.")
+- **Decision:** Any rule, memory note, canonical line, RCA action item or terminal-state row that says must, never, always, blocks, refuses or "bounded by code" names the executable that holds it and the settings entry that wires it, or carries a ticket id and an expiry. A claim with neither is lint-red. Hooks that `test -f && ... || true` are advisory and must say so. Every row in `q-system/.q-system/terminal-states.json` names a consumer that exists on main.
+- **Reason:** Measured 2026-11-06: 32 of 54 terminal-state rows name no consumer; 69 of consulting's 70 hook entries pass silently when their script is missing; the 3-attempt, 3-round and "Fable RCA at the cap" rulings exist only in memory notes; `no-orphan-findings.md` claims a gate the code does not run. Source: `q-system/output/rca/rca-prd-os-issues-end-half-done-2026-11-06.md`, root causes #1, #7; consulting `rca-enforce-in-code-ends-as-prose-2026-11-06.md`.
+- **Date:** 2026-11-06
+- **Held by:** not yet wired. Ticket: ASK-3815 (lint ASK-3818). Expires: 2026-12-06.
+- **Revisit:** Only on a founder order.
+
+### RULE-2026-11-06-B: No Linear ticket or PR may reach a state with no machine consumer
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "we open linear tickets and prs tht just hang there and die.")
+- **Decision:** Every cap in the pipeline (worker attempts, converge rounds, reviewer rounds, rebase rounds, auto-merge not armed, review cap on a PR) ends in a coded next action: a Fable RCA of the whole packet, then one attempt by a different runner carrying that RCA, then and only then one page. A ticket the worker picks up returns to Backlog when its run fails, caps or parks. The `needs-triage` promoter is health-checked against its own queue size. Work-item age is measured and a new issue is refused while the oldest open item from the same PRD is past the merged-cycle-time tail. "Needs a human decision" is forbidden output at a cap (restates RULE-015).
+- **Reason:** Measured 2026-11-06: the `needs-triage` promoter wrote 0 decisions in 15 passes (queue 701 to 1225); 24 "review round cap" tickets, 9 "stuck after 3 attempts" tickets and 15 In Progress owner:sana tickets (oldest 43 days) with no consumer; 17 open kipi-system PRs including the three that fix this (#529, #530, #532, parked since 2026-10-07). Source: same RCA, root causes #2, #3, #4, #5, #6, #8.
+- **Date:** 2026-11-06
+- **Held by:** not yet wired. Ticket: ASK-3816. Expires: 2026-12-06.
+- **Revisit:** Only on a founder order.
+
+### RULE-2026-11-06-C: A reviewer outage never stalls the fleet and never fails silently
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "When codex is out of credits it doenst try the other account or move to opus evertyehre and just dies silently.")
+- **Decision:** One reviewer resolver, used by every review call site (pr-review-agent, converge, issue-review, prd-review, the worker's second runner): Codex on the primary account, then Codex on the other account, then Opus stamped `claude-review` / `claude-adversarial`. A degraded (Opus) approval is an approval: `linear-worker.sh` gate 50 (ASK-2036), which disarms auto-merge on it, is removed. A reviewer outage files one health event per day, never one ticket per PR, and is visible in the morning brief. Restates the 2026-09-23 ruling ("you dont need codex credits, you can use opus as a fallback").
+- **Reason:** Measured 2026-11-06 over verdict records since 2026-09-16: 486 Claude (not degraded), 22 Codex clean, 39 Codex degraded (newest 2026-10-23). Gate 50 parked those 39 while the memory note said the fallback works; nothing compared the two. Separately, #319 (77cb3a7e, 2026-09-07) set both reviewer defaults to claude, and nothing tests whether Codex is back: on 2026-11-06 `codex exec --model gpt-5.6-sol` on the existing login returned OK, so the fleet still reviews Claude with Claude. Source: same RCA, root cause #9 (corrected 2026-11-06).
+- **Date:** 2026-11-06
+- **Held by:** not yet wired. Ticket: ASK-3817. Expires: 2026-12-06.
+- **Revisit:** Only on a founder order.

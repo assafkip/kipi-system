@@ -977,5 +977,131 @@
     "status": "published",
     "date": "2026-11-02",
     "lesson_id": "mobile-tap-to-capture-for-away-from-desk-classification"
+  },
+  "27321937fe760a0d": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "monitor-data-freshness-not-just-job-success"
+  },
+  "0a301f4c21d3e937": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "offload-mechanical-tail-work-to-a-fresh-cheap-agent"
+  },
+  "35f88ac366cbc98c": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "restart-the-process-after-changing-environment-variables"
+  },
+  "6f7ad14ee72ceca4": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-03",
+    "lesson_id": "frame-sensitive-requests-by-purpose-method-and-output"
+  },
+  "07aaa773f0aab0df": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "gating-documents-built-for-external-release"
+  },
+  "72b26bb4e2ca7024": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "measure-tool-usage-from-system-logs-not-conversation-records"
+  },
+  "4da3c8a05cd170da": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "query-threat-intel-by-hash-before-touching-suspect-infrastru"
+  },
+  "d1ab98825d94fddd": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "answer-ordered-briefs-with-a-quarantined-technical-appendix"
+  },
+  "43c1d089218507f1": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-04",
+    "lesson_id": "read-artifacts-before-running-them"
+  },
+  "c360b9eb59e9a897": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "auditing-generators-against-the-outcome-they-re-judged-on"
+  },
+  "0548bfbd11cded76": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "gating-derived-documents-for-release"
+  },
+  "ff63a8984a2e40d5": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "validate-cross-cutting-text-changes-against-the-full-suite"
+  },
+  "6ee245227066f753": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "binary-gates-only-for-binary-rules"
+  },
+  "f1f03e10b7138465": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "re-audit-ported-rules-against-their-source-decisions"
+  },
+  "a26be7daeb7e4672": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "rewrite-rule-sets-whole-don-t-stack-patches"
+  },
+  "d917c93934bee588": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "scope-approval-to-the-artifact-not-the-plan"
+  },
+  "d098d4bd04af8b1e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "calibrate-automated-rules-against-labeled-examples"
+  },
+  "5f7206b3e306aa8c": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "author-per-constraint-variants-from-the-source-idea"
+  },
+  "c1d72e46d2b2661e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "move-the-container-not-the-values-to-preserve-embedded-objec"
+  },
+  "c15dbfae43d92139": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "verify-each-item-at-the-source-not-the-list-that-names-it"
+  },
+  "f5e0237073877996": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-06",
+    "lesson_id": "research-tool-usage-across-all-community-surfaces-not-just-c"
   }
 }
