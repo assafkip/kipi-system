@@ -610,15 +610,18 @@ SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
 # --- pick ready issues ------------------------------------------------------
-PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
+PICKED="$(python3 - "$ONLY_ISSUE" "$STATE_DIR" <<'PY'
 import importlib.util, json, os, sys, pathlib
+from datetime import datetime, timezone
 here = pathlib.Path(os.environ["SCRIPT_DIR"])
 spec = importlib.util.spec_from_file_location("ls", here / "linear-sync.py")
 ls = importlib.util.module_from_spec(spec); spec.loader.exec_module(ls)
 only = (sys.argv[1] or "").strip()
+state_dir = sys.argv[2] if len(sys.argv) > 2 else ""
+now = datetime.now(timezone.utc)
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
- nodes{id identifier title description state{name type} project{name}
+ nodes{id identifier title description state{name type} startedAt project{name}
        labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}"""
 try:
     tid = ls.graphql('query{teams(filter:{key:{eq:"ASK"}}){nodes{id}}}',{})["teams"]["nodes"][0]["id"]
@@ -699,6 +702,29 @@ def in_this_repo(i):
     # issues got into this queue in the first place.
     return project_of(i) == repo_project
 
+# A STARTED TICKET NOBODY IS WORKING IS WORK AGAIN (ASK-3825, RULE-2026-11-06-B).
+# This picker read backlog and unstarted only, so a ticket that went In Progress
+# and then failed, capped or parked was invisible here for good: 15 owner:sana
+# tickets on 2026-11-06, the oldest 43 days. ls.started_hold_reason is the ONE
+# rule (the DoR drafter and linear-triage-health.py ask it too): started over 24
+# hours ago, a row in this worker attempts ledger (the fleet ran it, so a lane
+# ticket moved by hand is never released by a clock), no live claim on its
+# worker tree, no open PR on any branch. It runs LAST in ready(), because it may
+# read Linear once per candidate. Memoised: ready() and ready_ignoring_project()
+# both ask about the same ticket.
+QUEUE_STATES = ("backlog", "unstarted")
+STARTED_WHY = "started, no live claim"
+_started_memo = {}
+
+def started_hold(i):
+    key = i["identifier"]
+    if key not in _started_memo:
+        _started_memo[key] = ls.started_hold_reason(i, now, state_dir)
+    return _started_memo[key]
+
+def started_open(i, d):
+    return i["state"]["type"] == "started" and "Definition of Ready" in d and started_hold(i) == ""
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
@@ -718,10 +744,17 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
-    if i["state"]["type"] not in ("backlog", "unstarted"): return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
+    # ONE state exit, carrying its own marker, because terminal-states.json row
+    # state-not-open counts exactly one site here. A started ticket passes only
+    # when started_open releases it, asked after the free checks above. The
+    # tuple is written out, not QUEUE_STATES: test_linear_alert_triage.py runs
+    # this function verbatim with only the names it used before ASK-3825, and a
+    # module name here broke it (validate on PR #611, NameError). started_open
+    # is reached only for a ticket outside the two queue states.
+    if i["state"]["type"] not in ("backlog", "unstarted") and not started_open(i, d): return False
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
 # Everything the project filter is ABOUT to drop, counted before it drops it, so
@@ -733,8 +766,9 @@ def ready_ignoring_project(i):
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
             and not is_fleet_alert(i)
-            and i["state"]["type"] in ("backlog", "unstarted")
-            and "Definition of Ready" in (i.get("description") or ""))
+            and "Definition of Ready" in (i.get("description") or "")
+            and (i["state"]["type"] in QUEUE_STATES
+                 or started_open(i, i.get("description") or "")))
 
 # BOTH SELECTORS, OR THE FIX IS HALF DONE. ready() alone would stop an alert
 # ticket being WORKED while leaving it in `dropped`, so it would keep being
@@ -887,9 +921,29 @@ pool = [i for i in issues if ready(i)]
 if only:
     pool = [i for i in issues if i["identifier"] == only]
 
+# The started tickets this repo would take but for the hold rule, with the
+# reason, so a held lane ticket reads as held and not as a missing one. Only
+# tickets ready() already asked about: everything else is still in the memo.
+started_held = [{"id": i["identifier"], "why": _started_memo[i["identifier"]]}
+                for i in issues
+                if i["state"]["type"] == "started" and i["identifier"] in _started_memo
+                and _started_memo[i["identifier"]] and in_this_repo(i)]
+
+# Why a started ticket is in the pool. An explicit --issue skips the filter, so
+# a started ticket named that way is said to be named, never called abandoned.
+def pick_why(i):
+    if i["state"]["type"] != "started":
+        return ""
+    if _started_memo.get(i["identifier"]) == "":
+        return STARTED_WHY
+    return "started, named by --issue"
+
 print(json.dumps({
-    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i)}
+    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
+               "state": i["state"]["type"],
+               "why": pick_why(i)}
               for i in pool],
+    "started_held": started_held,
     "total_open": len(issues),
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
@@ -995,6 +1049,16 @@ REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sy
 DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
 
 say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
+# THE STARTED HALF OF THE POOL, SAID OUT LOUD (ASK-3825). Two lines, because the
+# two answers need different readers: re-picked tickets are work this loop now
+# owns again, held ones are someone live (a lane, a claim, a PR on another
+# branch) and must read as held, not as missing.
+STARTED_PICKED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(" ".join(i["id"] for i in json.load(sys.stdin)["ready"] if i.get("why") == "started, no live claim"))' 2>/dev/null)"
+[ -n "$STARTED_PICKED" ] && say "worker: $(printf '%s\n' $STARTED_PICKED | grep -c .) of them started, no live claim (In Progress with nobody on it, back in the pool): $STARTED_PICKED"
+STARTED_HELD="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print("; ".join(h["id"] + " (" + h["why"] + ")" for h in json.load(sys.stdin).get("started_held", [])))' 2>/dev/null)"
+[ -n "$STARTED_HELD" ] && say "worker: started ticket(s) held, not re-picked: $STARTED_HELD"
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
@@ -1621,6 +1685,28 @@ position_tree_on_pr_head() {
   fi
 }
 
+# --- BACK TO BACKLOG ON A NON-SUCCESS EXIT (ASK-3825, RULE-2026-11-06-B) -----
+# A ticket that went In Progress (Linear moves it there when the branch or PR
+# appears) stayed there after its run failed, capped or parked, and every drain
+# reads Backlog only. So each such exit below hands it back, through the ONE
+# state writer, linear-sync.py requeue, which moves only a started ticket and is
+# a no-op on anything else. That no-op is what keeps a skip that fires every
+# tick from writing a comment every tick.
+#
+# --apply only: a dry run changes nothing (the same rule the codex hold above
+# keeps). </dev/null: this runs inside the `while read` loop, whose stdin is the
+# list of issues still to visit.
+requeue_issue() {  # requeue_issue <issue> <exit> <why>
+  [ "$APPLY" = "1" ] || return 0
+  local out rc=0
+  out="$(python3 "$SYNC" requeue "$1" --exit "$2" --why "$3" --agent "$AGENT" 2>&1 </dev/null)" || rc=$?
+  if [ "$rc" = "0" ]; then
+    say "$1: ${out:-requeue printed nothing}"
+  else
+    say "WARN: $1 did not go back to Backlog after exit '$2' (rc=$rc): $(printf '%s\n' "$out" | tail -1)"
+  fi
+}
+
 DONE=0
 # CLEARED BEFORE THE LOOP, so presence after it means exactly one thing: THIS
 # run halted. A marker left by a previous run would otherwise alert every 15
@@ -1640,8 +1726,19 @@ for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-r
   case "$_pid" in ''|*[!0-9]*) continue ;; esac
   kill -0 "$_pid" 2>/dev/null || rm -f "$_stale" 2>/dev/null || true
 done
-printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
+# One line per issue: id, the state the picker saw, and why a started one is in
+# the pool (ASK-3825). The loop header stays `while IFS= read -r ISSUE; do`
+# byte for byte, because test-terminal-states.sh finds the issue loop by that
+# exact shape, and the fields are split inside it. Ids and state types carry no
+# spaces, so the reason is everything after the second one.
+printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"], i.get("state") or "-", i.get("why") or "") for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
+  PICK_STATE=""; PICK_WHY=""
+  case "$ISSUE" in
+    *" "*) PICK_REST="${ISSUE#* }"; ISSUE="${ISSUE%% *}"
+           PICK_STATE="${PICK_REST%% *}"
+           case "$PICK_REST" in *" "*) PICK_WHY="${PICK_REST#* }" ;; esac ;;
+  esac
   [ "$DONE" -ge "$LIMIT" ] && break
 
   N="$(attempts_for "$ISSUE")"
@@ -1691,6 +1788,9 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # pages nobody, which is the exact defect this block fixes.
       bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
+    # Only when the picker saw it started: this skip fires on every tick, and a
+    # Backlog ticket needs no Linear read to stay where it is.
+    [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "$N of $MAX_ATTEMPTS attempts spent; last reason: $STUCK_WHY"
     continue
   fi
 
@@ -1720,7 +1820,9 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   fi
 
   if [ "$APPLY" = "0" ]; then
-    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
+    # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
+    # issue; the reason rides AFTER that shape, never inside it.
+    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
     DONE=$((DONE+1)); continue
   fi
 
@@ -1855,6 +1957,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" drift_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
+        [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR head still unreviewed after $DR of $MAX_DRIFT_ROUNDS drift rounds"
         continue
       fi
       # PLANNED, NOT SPENT (same discipline as CONFLICT_ROUND below). Everything
@@ -1877,6 +1980,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" conflict_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
+        [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR still $MERGE_STATE after $CR of $MAX_CONFLICT_ROUNDS rebase rounds"
         continue
       fi
       # THE ROUND IS NOT SPENT HERE, only planned (PR #25 review, finding 2).
@@ -2014,6 +2118,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # this issue for every later run, which is the failure this refusal exists
       # to avoid, one layer out.
       ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      requeue_issue "$ISSUE" park "its worktree cannot be moved onto PR #$EXISTING_PR: $POSITION_REFUSAL"
       continue
     fi
   fi
@@ -2049,7 +2154,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     bump_drift_round "$ISSUE"
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' at $REVIEWED_SHA but the head is $CURRENT_SHA -- dispatching re-review round $DRIFT_ROUND/$MAX_DRIFT_ROUNDS"
   fi
-  say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
+  say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
   # ONE PICKUP NOTE PER ATTEMPT THAT RUNS, not one per tick of an outage (PR #421
   # round 6, major). The note goes out BEFORE the runner is reached, so while the
   # account is dead every tick picked the same issue up and posted another
@@ -2349,6 +2454,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      requeue_issue "$ISSUE" cap "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
+    else
+      requeue_issue "$ISSUE" fail "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
     fi
     fi
   fi
@@ -2679,6 +2787,10 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # clean refusal: a silent failure here is an infinite redispatch loop.
       say "$ISSUE REFUSED but the $REFUSE_LABEL label did NOT apply (see $LOG) -- it will be offered again"
     fi
+    # A PARK IS A NON-SUCCESS EXIT TOO (ASK-3825): the label says who acts next,
+    # Backlog says nobody is on it now. Not when Codex continued the work or was
+    # down: REFUSE_LABEL is empty there and the issue stays as it is.
+    [ -n "$REFUSE_LABEL" ] && requeue_issue "$ISSUE" park "refused on $REFUSE_KIND, labelled $REFUSE_LABEL"
     # Different next action per class. A capability block that says "re-scope this"
     # sends the drafter to rewrite a spec that was already right.
     if [ -n "$CODEX_CONTINUED" ]; then
@@ -3027,6 +3139,12 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" refused_no_pr >/dev/null 2>&1 || true
     else
       bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
+      N3="$(attempts_for "$ISSUE")"
+      if [ "${N3:-0}" -ge "$MAX_ATTEMPTS" ]; then
+        requeue_issue "$ISSUE" cap "run exited 0 and opened no PR, attempt $N3 of $MAX_ATTEMPTS"
+      else
+        requeue_issue "$ISSUE" fail "run exited 0 and opened no PR, attempt $N3 of $MAX_ATTEMPTS"
+      fi
     fi
   fi
 
