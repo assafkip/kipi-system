@@ -67,6 +67,11 @@ Close the active DSSE issue. Execute in order:
    disagree. If `triage` exits 2 it names what is still pending -- go back to
    step 3 and disposition those findings.
 
+   If the issue title claims a gate, cap, meter, budget, ledger, guard, limit, rate or
+   quota fix, `close` refuses without `--runtime-receipt <file>`: a receipt of one REAL
+   call through the real caller, made with `scripts/runtime_receipt.py capture --out <file>
+   -- <cmd>`. A grep or read of the source is refused as the only proof (RCA 2026-10-02).
+
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 
 6. Produce a final report for the founder:
