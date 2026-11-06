@@ -5,6 +5,8 @@
 **Surface-fix commit:** pending
 **Structural-fix commit:** pending
 
+<!-- rca-recurrence-skip: the three matches rca-lint names (claude-tampering 2026-08-16, design-chain 2026-09-18, derived-copy-drift 2026-06-30) share vocabulary, not a root cause. The one real overlap, a fleet sync deleting a landed guard (root cause #7), is tracked as ASK-3821. -->
+
 Scope: the whole issue path, not the plugin alone. `prd-os` splits the PRD, `kipi-dsse` runs the issue, `linear-worker.sh` dispatches it, `converge.sh` drives review rounds, `pr-review-agent.sh` reviews the PR, `ci-redrive.py` and `review-redrive.py` re-enter it, and `linear-alert-triage.py` is the consumer for every "needs a human" ticket the others file. The founder calls all of this "the prd-os system", so this RCA does too.
 
 Inputs: this session's own measurements (commands in Verification), two peer sessions (chief and consulting, both answered 2026-11-06 with their own RCAs), and five read-only agents over chief, consulting, ktlyst product, kipi-scheduled, intel and kipi-system. Prior RCAs that already name part of this: `~/projects/consulting/q-consult/output/rca/rca-bot-send-trash-roadblocks-2026-10-29.md`, `~/projects/chief/canonical/grokbot/rca-parity-shipped-not-used-2026-11-06.md`, `rca-specification-reported-as-state-2026-08-02.md` (this directory).
@@ -88,7 +90,7 @@ The two rulings this RCA was asked about: "fewer and shorter checks" is half in 
 
 Fixes that did land have been deleted by the fleet sync. kipi-investigations' `rca-built-not-wired-2026-06-14.md` found that "Open for v2 / follow-up" written in PRD prose is converted to nothing at split and evaporates at archive; its fix, `_deferral_tracking_gate` (commit f00ee9d7), was removed one day later by the plugin-sync commit 1d2568c5 and is in no `prd_runner.py` today. kipi-system #333 (2026-09-08) is the same event on a different guard: "restore the ASK-1040 guard and the 7 tests a fleet sync deleted". Measured in kipi-investigations' `.prd-os` today: 36 PRDs at `approved` never archived, 162 of 428 issue specs with no close receipt.
 
-### Root cause #9: the worker parks every PR whose only review came from the Opus fallback, and Codex has been out of credits since 2026-09-16
+### Root cause #9: the fleet reviews Claude with Claude by default, nothing tests whether Codex is back, and gate 50 parked the 39 degraded approvals
 
 type: config
 
