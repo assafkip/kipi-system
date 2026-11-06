@@ -242,9 +242,15 @@ def test_dormancy_default_can_actually_fire_on_this_board():
 
     The board was created 2026-07-25. A 90-day default could not fire until late
     October; 75 is inside the researched 60-90 band and reachable.
+
+    ASK-3825 (RULE-2026-11-06-B) moved the DORMANT line to 7 days, because at 75
+    a ticket left In Progress was invisible to every drain for 75 days. The
+    human-facing FLAG keeps the researched band: at 7 days it would land on 1544
+    Backlog tickets (measured 2026-11-06), the stale-bot failure.
     """
-    assert health.DEFAULT_DORMANT_DAYS == 75
-    assert 60 <= health.DEFAULT_DORMANT_DAYS <= 90
+    assert health.DEFAULT_DORMANT_DAYS == 7
+    assert health.DORMANT_FLAG_DAYS == 75
+    assert 60 <= health.DORMANT_FLAG_DAYS <= 90
 
 
 # --- the fixture guard -------------------------------------------------------
@@ -1556,3 +1562,223 @@ def test_the_human_report_is_unchanged_line_for_line(tmp_path):
     got = [re.sub(r"(?<!>=)\b\d+d\b", "<N>d", ln) for ln in res.stdout.split("\n")]
     assert got == HUMAN_REPORT, "\n".join(got)
     assert res.stderr == "", res.stderr
+
+
+# --- ASK-3825: a dormant In Progress ticket is ROUTED back to Backlog ----------
+#
+# RULE-2026-11-06-B: "A ticket the worker picks up returns to Backlog when its
+# run fails, caps or parks." This job is the backstop for the ones no run sent
+# back: an owner:sana ticket left In Progress with no activity for 7 days. It
+# runs the REAL linear-sync.py (started_hold_reason, requeue_issue) against a
+# fixture Linear server, so the hold rule and the writer under test are the
+# ones the worker uses, not a fake that agrees with this file.
+
+def _started(ident, *, days_quiet, labels=("owner:sana",), state_type="started",
+             project="kipi-system", now=NOW):
+    """`now` is the suite's fixed NOW for the pure functions, and the REAL clock
+    for the subprocess runs, which read the time themselves."""
+    node = issue(ident, project=project, labels=labels, days_old=0,
+                 state="In Progress" if state_type == "started" else "Backlog",
+                 state_type=state_type)
+    stamp = (now - timedelta(days=days_quiet)).isoformat().replace("+00:00", "Z")
+    node["createdAt"] = node["updatedAt"] = node["startedAt"] = stamp
+    return node
+
+
+def test_find_dormant_started_is_owner_sana_and_started_only():
+    issues = [
+        _started("ASK-1", days_quiet=30),                         # in
+        _started("ASK-2", days_quiet=30, project=None),           # in: unrouted still counts
+        _started("ASK-3", days_quiet=3),                          # under the line
+        _started("ASK-4", days_quiet=30, labels=("owner:other",)),  # not ours to move
+        _started("ASK-5", days_quiet=30, labels=("owner:sana", "dormant")),  # human override
+        _started("ASK-6", days_quiet=30, state_type="backlog"),   # already in the queue
+        _started("ASK-7", days_quiet=60),                         # oldest sorts first
+    ]
+    got = [i["identifier"] for i, _ in health.find_dormant_started(issues, NOW, 7)]
+    assert got == ["ASK-7", "ASK-1", "ASK-2"], got
+
+
+class _FixtureLinear:
+    """A tiny stateful Linear for the routing run. Every mutation is recorded."""
+
+    def __init__(self, board, attachments=None):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        self.board = {i["identifier"]: i for i in board}
+        self.attachments = attachments or {}
+        self.writes = []
+        fixture = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                out = json.dumps(fixture.answer(req.get("query", ""),
+                                                req.get("variables") or {})).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+        self.srv = HTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/graphql"
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def find(self, ref):
+        for i in self.board.values():
+            if ref in (i["id"], i["identifier"]):
+                return i
+        return None
+
+    def answer(self, q, v):
+        if q.lstrip().startswith("mutation"):
+            inp = v.get("input") or {}
+            if "issueUpdate" in q:
+                i = self.find(v.get("id"))
+                to = {"st-backlog": "backlog", "st-todo": "unstarted"}[inp["stateId"]]
+                i["state"] = {"name": "Backlog", "type": to}
+                self.writes.append(("state", i["identifier"], to))
+                return {"data": {"issueUpdate": {"success": True,
+                                                 "issue": {"id": "x", "identifier": "x"}}}}
+            if "commentCreate" in q:
+                i = self.find(inp["issueId"])
+                self.writes.append(("comment", i["identifier"], inp["body"]))
+                return {"data": {"commentCreate": {"success": True, "comment": {"id": "c"}}}}
+            return {"errors": [{"message": "unknown mutation"}]}
+        if "teams(" in q:
+            return {"data": {"teams": {"nodes": [{"id": "team-1", "key": "ASK"}]}}}
+        if "attachments(" in q:
+            return {"data": {"issue": {"attachments": {
+                "nodes": self.attachments.get(v.get("id"), [])}}}}
+        if "issues(filter" in q:
+            return {"data": {"issues": {"nodes": list(self.board.values()),
+                                        "pageInfo": {"hasNextPage": False}}}}
+        if "states(first" in q:
+            return {"data": {"team": {"states": {"nodes": [
+                {"id": "st-todo", "name": "Todo", "type": "unstarted", "position": 1},
+                {"id": "st-backlog", "name": "Backlog", "type": "backlog", "position": 0}]}}}}
+        if "comments(first" in q:
+            return {"data": {"issue": {"comments": {"nodes": [],
+                                                    "pageInfo": {"hasNextPage": False}}}}}
+        if "issue(id" in q:
+            i = self.find(v.get("id"))
+            return {"data": {"issue": dict(i, team={"id": "team-1"})}}
+        return {"errors": [{"message": "unknown query"}]}
+
+    def close(self):
+        self.srv.shutdown()
+
+
+def _routing_board():
+    now = datetime.now(timezone.utc)
+    return [
+        _started("ASK-30", days_quiet=30, now=now),   # abandoned: routed
+        _started("ASK-31", days_quiet=30, now=now),   # a lane PR is open on it: held
+        _started("ASK-32", days_quiet=1, now=now),    # active: not dormant
+        _started("ASK-33", days_quiet=30, labels=("owner:other",), now=now),  # not ours
+        _started("ASK-34", days_quiet=30, state_type="backlog", now=now),     # queued, under the flag line
+    ]
+
+
+_LANE_PR = {"uuid-ASK-31": [{"url": "https://github.com/x/kipi-system/pull/31",
+                             "metadata": {"status": "open", "branch": "sana/ask-31-lane"}}]}
+
+
+def _stage_routing_copy(tmp_path, mutate=None):
+    """The script beside the REAL linear-sync.py and linear-claim.py."""
+    for name in ("linear-triage-health.py", "linear-sync.py", "linear-claim.py"):
+        shutil.copy(os.path.join(SCRIPTS, name), tmp_path / name)
+    if mutate:
+        p = tmp_path / "linear-triage-health.py"
+        src = p.read_text()
+        old, new = mutate
+        assert old in src, "mutation anchor missing"
+        p.write_text(src.replace(old, new))
+    notify = tmp_path / "slack-notify.sh"
+    notify.write_text(FAKE_NOTIFY)
+    notify.chmod(0o755)
+    (tmp_path / "state" / "worktrees").mkdir(parents=True)
+    return tmp_path / "linear-triage-health.py"
+
+
+def _run_routing(tmp_path, fixture, *args, mutate=None):
+    script = _stage_routing_copy(tmp_path, mutate)
+    return subprocess.run(
+        [sys.executable, str(script), "--no-notify", "--json", *args],
+        capture_output=True, text=True, timeout=120,
+        env=_health_env(KIPI_LINEAR_API_URL=fixture.url,
+                        KIPI_LINEAR_API_KEY="fixture-key-not-a-secret",
+                        KIPI_STATE_DIR=str(tmp_path / "state")))
+
+
+def test_apply_routes_a_dormant_in_progress_ticket_back_to_backlog(tmp_path):
+    """THE ROUTE. One state write, one one-line comment naming the exit, and the
+    held, active, foreign and queued tickets untouched."""
+    fx = _FixtureLinear(_routing_board(), _LANE_PR)
+    try:
+        res = _run_routing(tmp_path, fx, "--apply")
+    finally:
+        fx.close()
+    assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
+    m = json.loads(res.stdout)
+    assert m["dormant_threshold_days"] == 7
+    assert m["dormant_started"] == ["ASK-30", "ASK-31"], m
+    assert m["dormant_routed"] == ["ASK-30"], m
+    assert "ASK-31" in m["dormant_route_held"], m
+    assert "sana/ask-31-lane" in m["dormant_route_held"]["ASK-31"], m
+    assert m["started_owner_sana"] and "ASK-32" in m["started_owner_sana"], m
+    states = [w for w in fx.writes if w[0] == "state"]
+    assert states == [("state", "ASK-30", "backlog")], fx.writes
+    comments = [w for w in fx.writes if w[0] == "comment"]
+    assert len(comments) == 1 and comments[0][1] == "ASK-30", fx.writes
+    body = comments[0][2]
+    assert "\n" not in body, body
+    assert "Back to Backlog from In Progress. Exit: dormant (no activity in 30 days" in body, body
+
+
+def test_report_only_routes_nothing_and_says_what_it_would(tmp_path):
+    fx = _FixtureLinear(_routing_board(), _LANE_PR)
+    try:
+        res = _run_routing(tmp_path, fx)
+    finally:
+        fx.close()
+    assert res.returncode == health.EXIT_OK, res.stdout + res.stderr
+    m = json.loads(res.stdout)
+    assert m["dormant_would_route"] == ["ASK-30"], m
+    assert m["dormant_routed"] == [], m
+    assert fx.writes == [], fx.writes
+
+
+def test_a_routed_ticket_is_not_routed_twice(tmp_path):
+    """The second sweep finds it in Backlog: requeue is a no-op, no comment."""
+    fx = _FixtureLinear(_routing_board(), _LANE_PR)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    try:
+        first = _run_routing(tmp_path / "a", fx, "--apply")
+        before = len(fx.writes)
+        second = _run_routing(tmp_path / "b", fx, "--apply")
+    finally:
+        fx.close()
+    assert first.returncode == health.EXIT_OK and second.returncode == health.EXIT_OK
+    assert before == 2 and len(fx.writes) == 2, fx.writes
+    assert json.loads(second.stdout)["dormant_started"] == ["ASK-31"]
+
+
+def test_mutant_that_skips_the_hold_rule_is_caught(tmp_path):
+    """NEGATIVE SELF-TEST. Drop the hold check and the lane ticket ASK-31 is moved
+    out from under its open PR. The route test above must be able to see that."""
+    fx = _FixtureLinear(_routing_board(), _LANE_PR)
+    try:
+        res = _run_routing(tmp_path, fx, "--apply", mutate=(
+            "why = ln.started_hold_reason(issue, now, where)", 'why = ""'))
+    finally:
+        fx.close()
+    states = [w for w in fx.writes if w[0] == "state"]
+    assert ("state", "ASK-31", "backlog") in states, (
+        "the mutant did not move ASK-31, so the hold assertion proves nothing: "
+        f"{fx.writes} {res.stderr}")

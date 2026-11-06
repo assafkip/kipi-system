@@ -646,6 +646,249 @@ query($id: String!) {
 """
 
 
+# ---------------------------------------------------------------------------
+# A started ticket nobody is working, and the one way back to Backlog (ASK-3825)
+#
+# RULE-2026-11-06-B: "A ticket the worker picks up returns to Backlog when its
+# run fails, caps or parks." Measured 2026-11-06: 15 owner:sana tickets sat In
+# Progress, the oldest 43 days, because every drain (the worker picker, the DoR
+# drafter, linear-route.py) reads only backlog and unstarted. Nothing moved a
+# ticket back, so a failed run made it invisible to every consumer at once.
+#
+# BOTH HALVES LIVE HERE, in the module every reader already imports, so the
+# worker picker, the DoR drafter and linear-triage-health.py ask ONE predicate
+# whether a started ticket is abandoned. Three copies of "abandoned" would drift
+# the way ASK-839's alert test did across three readers.
+
+# How long a ticket must sit in a started state before an unclaimed one counts
+# as abandoned. 24 hours, because the orchestrator moves a lane's tickets to In
+# Progress BY HAND when the lane starts, precisely so the fleet worker leaves
+# them alone, and those tickets carry no worker claim and often no PR yet. A
+# lane that runs inside a day is never raced; at end of day the orchestrator
+# moves unfinished ones back itself. A worker run is bounded at 1800s, so no
+# legitimate worker-owned started state outlives this window without a claim.
+# The measured abandoned population is 7 to 43 days old, far past it.
+STARTED_STALE_HOURS = 24
+
+# ANY OPEN PR HOLDS A STARTED TICKET, whatever branch it is on. A PR on a lane's
+# branch is someone's live work the worker cannot see as EXISTING_PR, so picking
+# the ticket would open a duplicate beside it. A PR on the worker's own branch
+# already has consumers (ci-redrive, review-redrive, converge, auto-merge), and
+# one that is approved and waiting on CI would otherwise be the dispatcher's
+# next issue on every tick, spending the daily cap on a skip.
+
+# Linear's GitHub integration attaches every PR to its issue across repos, with
+# the PR status and head branch in the metadata (read live 2026-11-06 on
+# ASK-2058 and ASK-3685). One small query per candidate, never a field on the
+# 250-issue board page, so the board walk keeps its complexity.
+ISSUE_PRS_Q = """query($id:String!){issue(id:$id){attachments(first:50){nodes{url metadata}}}}"""
+PR_DONE_STATUSES = ("merged", "closed")
+
+ISSUE_FOR_REQUEUE_Q = """
+query($id: String!) { issue(id: $id) { id identifier state { name type } team { id } } }
+"""
+
+# Where a requeue lands, best first. Backlog, not Todo: the ticket did not
+# finish, and Backlog is the column every drain in this repo reads.
+REQUEUE_TARGET_TYPES = ("backlog", "unstarted")
+
+_REQUEUE_STATE_CACHE: dict = {}
+_CLAIM_MODULE = None
+
+
+def _parse_stamp(stamp):
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _claim_module():
+    """linear-claim.py, loaded once. Its holder_death_reason is THE liveness rule.
+
+    Reused rather than re-implemented: that function carries the one-way doubt
+    rule (only positive proof of death releases a claim) and the zombie and
+    recycled-pid cases. A second copy here is how the two would disagree about
+    whether a run is still alive.
+    """
+    global _CLAIM_MODULE
+    if _CLAIM_MODULE is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "linear-claim.py")
+        spec = importlib.util.spec_from_file_location("linear_claim_for_sync", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _CLAIM_MODULE = mod
+    return _CLAIM_MODULE
+
+
+def live_claim(worktrees_dir: str, identifier: str) -> str:
+    """Why this issue's worker tree is claimed by a live run, or "" when it is not.
+
+    The worker takes its claim with linear-claim.py inside
+    <worktrees>/<id-lowercase>, the tree it will work in, with --holder-pid set
+    to its own pid. That lock is the live claim: it exists for exactly as long
+    as a run holds the tree, and a killed run leaves a holder that reads dead.
+    FAIL CLOSED on anything unreadable: a claim nobody can read is respected.
+    """
+    path = os.path.join(worktrees_dir, (identifier or "").lower(), ".linear-claims.json")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read().strip()
+    except OSError as exc:
+        return f"its worker tree claim is unreadable ({exc})"
+    if not text:
+        return ""
+    try:
+        record = json.loads(text)
+    except ValueError:
+        return "its worker tree claim is not valid JSON"
+    if not isinstance(record, dict) or not record.get("agent"):
+        return "its worker tree claim holds no claim record"
+    try:
+        gone = _claim_module().holder_death_reason(record)
+    except Exception as exc:  # the liveness rule could not run: respect the claim
+        return f"its worker tree claim could not be checked ({exc})"
+    if gone is not None:
+        return ""
+    return f"a live claim by {record.get('agent')} (session {record.get('session')})"
+
+
+def open_prs(issue_id: str) -> list:
+    """Open PRs attached to the issue, on any branch, as one line each.
+
+    Raises LinearAPIError when Linear cannot answer; the caller must then hold
+    the ticket, because "could not look" is not "there is none".
+    """
+    data = graphql(ISSUE_PRS_Q, {"id": issue_id}) or {}
+    nodes = (((data.get("issue") or {}).get("attachments") or {}).get("nodes")) or []
+    out = []
+    for node in nodes:
+        url = node.get("url") or ""
+        if "/pull/" not in url:
+            continue
+        meta = node.get("metadata") or {}
+        # Any status that is not a stated end counts as open. An unknown status
+        # holds the ticket; a wrong pick opens a duplicate PR beside live work.
+        if str(meta.get("status") or "").lower() in PR_DONE_STATUSES:
+            continue
+        branch = str(meta.get("branch") or "")
+        out.append(f"open PR {url} on {branch or 'an unknown branch'}")
+    return out
+
+
+def started_hold_reason(issue: dict, now=None, worktrees_dir: str = "") -> str:
+    """"" when a STARTED issue is abandoned and a drain may take it; else why not.
+
+    Abandoned means ALL of: started longer than STARTED_STALE_HOURS ago, no live
+    worker claim on its tree, and no open PR. Cheap checks first; the Linear
+    read runs only for a ticket that passed the other two. Any doubt holds the
+    ticket (fail closed).
+    """
+    if ((issue.get("state") or {}).get("type") or "") != "started":
+        return "not in a started state"
+    now = now or datetime.now(timezone.utc)
+    started = _parse_stamp(issue.get("startedAt"))
+    if started is None:
+        return "Linear gave no startedAt, so its age is unknown"
+    hours = (now - started).total_seconds() / 3600.0
+    if hours < STARTED_STALE_HOURS:
+        return (f"started {hours:.1f}h ago, inside the {STARTED_STALE_HOURS}h window "
+                f"a lane gets before the worker may take it")
+    claim = live_claim(worktrees_dir, issue.get("identifier") or "")
+    if claim:
+        return claim
+    try:
+        prs = open_prs(issue.get("id") or issue.get("identifier") or "")
+    except Exception as exc:
+        return f"its PRs could not be read ({str(exc)[:120]})"
+    if prs:
+        return prs[0]
+    return ""
+
+
+def requeue_state_id(team_id: str) -> str:
+    """The team's Backlog state (else Todo), or "" when it has neither."""
+    if team_id in _REQUEUE_STATE_CACHE:
+        return _REQUEUE_STATE_CACHE[team_id]
+    nodes = (
+        ((graphql(TEAM_STATES_QUERY, {"teamId": team_id}).get("team") or {}).get("states") or {})
+        .get("nodes")
+        or []
+    )
+    chosen = ""
+    for wanted in REQUEUE_TARGET_TYPES:
+        matches = [n for n in nodes if n.get("type") == wanted]
+        if matches:
+            chosen = sorted(matches, key=lambda n: n.get("position") or 0)[0]["id"]
+            break
+    _REQUEUE_STATE_CACHE[team_id] = chosen
+    return chosen
+
+
+def requeue_issue(ref: str, exit_name: str, why: str = "", agent: str = "") -> tuple:
+    """Move a STARTED issue back to Backlog and say why in one line.
+
+    Returns (outcome, message), outcome one of:
+      moved      the state moved and the comment posted
+      unchanged  the issue is not in a started state; nothing was written. This
+                 is what makes a repeat call free of comments: once it is in
+                 Backlog, every later call on the same exit is a no-op.
+      failed     nothing moved, or the state moved and the comment did not.
+    Raises LinearAPIError only on a transport failure of the first read.
+
+    This is not a close. Done and Canceled are never touched: moving state
+    FORWARD stays with the closeout gates (see cmd_progress). Moving a ticket
+    BACK says "nobody is working this", which is the honest state after a run
+    that failed, capped or parked.
+    """
+    issue = (graphql(ISSUE_FOR_REQUEUE_Q, {"id": ref}) or {}).get("issue")
+    if not issue:
+        return "failed", f"no issue {ref}"
+    state = issue.get("state") or {}
+    ident = issue.get("identifier") or ref
+    if (state.get("type") or "") != "started":
+        return "unchanged", f"{ident}: already {state.get('name') or state.get('type') or '?'}, nothing to move"
+    target = requeue_state_id((issue.get("team") or {}).get("id") or "")
+    if not target:
+        return "failed", f"{ident}: the team has no Backlog or Todo state to return it to"
+    res = (graphql(ISSUE_UPDATE, {"id": issue["id"], "input": {"stateId": target}}) or {})
+    if not (res.get("issueUpdate") or {}).get("success"):
+        return "failed", f"{ident}: Linear did not move it to Backlog. Raw: {res}"
+    who = agent or os.environ.get("KIPI_AGENT") or "sana"
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    # ONE LINE, by contract: the exit is the fact a reader needs, and a
+    # multi-paragraph note per failed run is how an issue's thread becomes
+    # unreadable. Newlines in the reason are folded so a caller cannot break it.
+    reason = " ".join(str(why or "").split())[:300]
+    line = (f"**{who}** · {stamp} · Back to Backlog from {state.get('name') or 'started'}. "
+            f"Exit: {exit_name}" + (f" ({reason})" if reason else "") + ".")
+    made = (graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"], "body": line}}) or {})
+    created = made.get("commentCreate") or {}
+    if not created.get("success"):
+        return "failed", (f"{ident}: moved to Backlog, but the comment naming the exit "
+                          f"did not post. Raw: {created}")
+    return "moved", f"{ident}: {state.get('name') or 'started'} -> Backlog (exit: {exit_name})"
+
+
+def cmd_requeue(args) -> int:
+    """CLI face of requeue_issue: exit 0 moved or nothing to move, 1 otherwise."""
+    try:
+        outcome, message = requeue_issue(args.issue, args.exit, args.why or "", args.agent or "")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if outcome == "failed":
+        print(f"BLOCK: {message}", file=sys.stderr)
+        return EXIT_USAGE
+    print(message)
+    return EXIT_OK
+
+
 def cmd_progress(args) -> int:
     """Post a progress note onto an issue, and optionally move its state.
 
@@ -1184,6 +1427,15 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-148")
     p.add_argument("name", help="label to add, e.g. needs-scope")
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("requeue",
+                       help="move a started issue back to Backlog with a one-line comment")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-2058")
+    p.add_argument("--exit", required=True,
+                   help="the run exit that sent it back: fail, cap, park or dormant")
+    p.add_argument("--why", default="", help="one line of detail, e.g. rc=1, attempt 2 of 3")
+    p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
+    p.set_defaults(func=cmd_requeue)
 
     p = sub.add_parser("comments", help="read an issue's comment thread")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
