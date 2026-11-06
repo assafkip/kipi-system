@@ -11,6 +11,11 @@ name: Nightly gates
 # prints an all-clear (PR #478 review, reproduced: "0 open total", exit 0).
 # A step that reports zero because it never saw the data is worse than no step.
 # Pinned by q-system/.q-system/tests/test_gates_workflow.py.
+#
+# THE HOME OF EVERY TREE-WIDE CHECK (ASK-3828). The required PR check
+# (validate.yml) is red only for what a change introduced; the unscoped
+# versions run here, on main, where a red is nobody's PR. report-red gives it an
+# owner instead: one issue per (check, the commit that broke it).
 
 on:
   schedule:
@@ -78,46 +83,61 @@ jobs:
       - name: prd-os tests
         run: pytest plugins/prd-os/tests/ -q
 
-  # A RED RUN MUST REACH A QUEUE (ASK-2262). Before this a failed nightly only
-  # emailed the account that owns the cron, and the founder is not the queue. The
+  # A RED RUN MUST REACH A QUEUE (ASK-2262), AND NAME ITS CAUSE (ASK-3828). The
   # repo holds no Linear secret on purpose, so the route is the built-in token:
-  # open ONE issue labelled gates-red, or comment on the one already open (the
-  # title is the dedup key, so a week of red is one issue, not seven). The
-  # consumer is the `gates-red` detector in fleet-health-daily.py, which files
-  # each open gates-red issue into Sana's Linear triage; report-green closes it.
-  # Both reporters are main-only: workflow_dispatch runs on any ref, and a red
-  # branch must not file "nightly is red", nor a green branch close a real one.
+  # GitHub issues labelled gates-red, read by the `gates-red` detector in
+  # fleet-health-daily.py, which files each open one into Sana's Linear triage
+  # keyed by issue number. Until ASK-3828 this job kept ONE issue per red streak,
+  # titled "gates-red: nightly gates failed": it named no check and no commit.
+  # gates-red-filer.py reads this run's failed step, bisects each new finding
+  # over main's commits since the last green nightly (one test or one structure
+  # pass per probe, never the whole suite), and opens one issue per (check,
+  # breaking commit). The same red on the next night comments on that issue; it
+  # never opens a second. Both reporters are main-only: workflow_dispatch runs on
+  # any ref, and a red branch must not file "nightly is red", nor a green branch
+  # close a real one. The probes need what the gates job needed, hence the
+  # same checkout depth, identity, Python and browser.
   report-red:
     needs: gates
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 60
     permissions:
+      contents: read
+      actions: read
       issues: write
     steps:
-      - name: Open or update the one gates-red issue
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for the probes
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install probe dependencies
+        run: pip install pytest playwright pillow && python -m playwright install --with-deps chromium
+
+      - name: File one issue per red check, against the commit that broke it
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI: true
+          DC_REQUIRE_REAL_PRODUCERS: "1"
         run: |
           set -euo pipefail
-          title="gates-red: nightly gates failed"
           gh label create gates-red --color B60205 \
             --description "A nightly gates.yml run failed" --force
-          # --jq picks the first exact-title match itself. No `| head -1`: under
-          # pipefail a closed pipe is exit 141 and the job dies with no issue.
-          num="$(gh issue list --label gates-red --state open --limit 100 \
-            --json number,title \
-            --jq "[.[] | select(.title == \"$title\")] | first | .number // empty")"
-          if [ -n "$num" ]; then
-            gh issue comment "$num" --body "Still red: $RUN_URL"
-          else
-            gh issue create --title "$title" --label gates-red \
-              --body "The nightly gates workflow failed: $RUN_URL
-
-          Read by the gates-red detector in fleet-health-daily.py, which files it to Linear triage. Close this issue once the nightly is green again."
-          fi
+          python3 q-system/.q-system/scripts/gates-red-filer.py --repo-root . \
+            --repo "$GH_REPO" --run-id "$RUN_ID" --run-url "$RUN_URL"
 
   # THE CLOSER (#484 review). Without it the open issue outlives the fix, and the
   # gates-red detector refiles its Linear issue every morning over a green
