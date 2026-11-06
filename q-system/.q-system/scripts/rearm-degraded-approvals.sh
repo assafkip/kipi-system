@@ -17,9 +17,13 @@
 # A PR IS SELECTED ONLY WHEN ALL FOUR HOLD, each read through the reader the
 # worker uses, so this sweep and the worker cannot disagree about a PR:
 #   1. its verdict record says degraded (degraded_from_record = 1)
-#   2. rework_gate answers 10 with BOTH shas present: an approving verdict
-#      pinned to the commit that is the PR's head right now. A moved head is a
-#      re-review, never an arm (ASK-216).
+#   2. rework_gate answers 10 with BOTH shas present AND GitHub's
+#      mergeStateStatus as argument 2, exactly the inputs linear-worker.sh
+#      passes: an approving verdict, pinned to the PR's head right now, on a
+#      PR that is not DIRTY or BEHIND. A moved head is a re-review (40) and a
+#      PR behind its base is a rebase round (30), never an arm. PR #607 review
+#      round 1 (major): the first cut passed an empty merge state, so a PR six
+#      weeks behind main read 10 here while the worker read 30.
 #   3. GitHub says mergeable == MERGEABLE, and it is not a draft
 #   4. the checkout gh binds to from cwd (automerge_arm cds there) resolves PR
 #      N to the same head. gh can pick an `upstream` remote over `origin`; a
@@ -135,14 +139,14 @@ while IFS=$'\t' read -r -u 3 name path remote; do
     continue
   fi
   if ! gh pr list -R "$slug" --state open --limit 200 \
-        --json number,headRefOid,mergeable,isDraft \
-        -q '.[] | [.number, .headRefOid, .mergeable, (.isDraft|tostring)] | @tsv' \
+        --json number,headRefOid,mergeable,mergeStateStatus,isDraft \
+        -q '.[] | [.number, .headRefOid, .mergeable, .mergeStateStatus, (.isDraft|tostring)] | @tsv' \
         > "$TMP/prs" 2> "$TMP/err"; then
     N_UNREADABLE=$((N_UNREADABLE+1))
     echo "UNREADABLE $name ($slug): gh pr list failed: $(tr '\n' ' ' < "$TMP/err" | cut -c1-200)"
     continue
   fi
-  while IFS=$'\t' read -r -u 4 num head mergeable draft; do
+  while IFS=$'\t' read -r -u 4 num head mergeable mstate draft; do
     [ -n "$num" ] || continue
     N_PRS=$((N_PRS+1))
     rec="$(verdict_record_path "$REVIEWS_DIR" "$slug" "$num")"
@@ -150,7 +154,7 @@ while IFS=$'\t' read -r -u 3 name path remote; do
     N_DEGRADED=$((N_DEGRADED+1))
     verdict="$(verdict_from_record "$rec")"
     rsha="$(head_sha_from_record "$rec")"
-    rework_gate "$verdict" "" "$rsha" "$head" >/dev/null 2>&1; gate=$?
+    rework_gate "$verdict" "$mstate" "$rsha" "$head" >/dev/null 2>&1; gate=$?
     tag="$slug#$num ($name)"
     if [ -z "$rsha" ] || [ -z "$head" ]; then
       echo "skip $tag: the approval cannot be pinned to the head (record sha '${rsha:-none}', head '${head:-unreadable}')"
@@ -159,6 +163,7 @@ while IFS=$'\t' read -r -u 3 name path remote; do
     case "$gate" in
       10) : ;;
       40) echo "skip $tag: the degraded approval is for $(short "$rsha"), the head is now $(short "$head"); that needs a fresh review, not an arm"; continue ;;
+      30) echo "skip $tag: degraded approval at the head, but GitHub says mergeStateStatus=$mstate; the worker gives that a rebase round (gate 30), not an arm"; continue ;;
       *)  echo "skip $tag: the degraded record reads '${verdict:-no verdict}', not an approval"; continue ;;
     esac
     if [ "$draft" = "true" ]; then

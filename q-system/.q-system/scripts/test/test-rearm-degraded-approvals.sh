@@ -82,11 +82,12 @@ JSON
 }
 rec fix/home     11 "APPROVE"            true  "$SHA_A"   # selected
 rec fix/home     12 "APPROVE"            true  "$SHA_A"   # head moved to SHA_B
-rec fix/home     13 "APPROVE WITH NITS"  true  "$SHA_A"   # CONFLICTING
+rec fix/home     13 "APPROVE WITH NITS"  true  "$SHA_A"   # mergeable UNKNOWN (GitHub still computing)
 rec fix/home     14 "APPROVE"            false "$SHA_A"   # not degraded: not this sweep's
 rec fix/home     15 "REQUEST CHANGES"    true  "$SHA_A"   # not an approval
 rec fix/home     16 "APPROVE"            true  "$SHA_A"   # already armed
 rec fix/home     17 "APPROVE"            true  "$SHA_A"   # draft
+rec fix/home     19 "APPROVE"            true  "$SHA_A"   # BEHIND: the worker's gate says 30
 rec fix/client   21 "APPROVE WITH NITS"  true  "$SHA_A"   # selected (client repo)
 rec fix/overlay  31 "APPROVE"            true  "$SHA_A"   # selected (overlay-only repo)
 rec fix/off      41 "APPROVE"            true  "$SHA_A"   # repo is off: never seen
@@ -94,22 +95,33 @@ rec fix/archived 51 "APPROVE"            true  "$SHA_A"   # archived: never read
 rec fix/drifted  61 "APPROVE"            true  "$SHA_A"   # cwd binds elsewhere
 
 # --- gh ----------------------------------------------------------------------
-# `pr list -R <slug>` answers in the TSV the sweep's -q asks for. `pr view` and
-# `pr merge` have no -R (automerge_arm binds by cwd), so they answer by $PWD.
+# `pr list -R <slug>` answers in the TSV the sweep's -q asks for: number, head,
+# mergeable, then mergeStateStatus ONLY when the --json list asks for it, then
+# isDraft. Answering only what was asked is what lets the BEHIND case go red on
+# a sweep that never reads the merge state, instead of breaking every row.
+# `pr view` and `pr merge` have no -R (automerge_arm binds by cwd), so they
+# answer by $PWD.
 cat > "$WORK/bin/gh" <<SH
 #!/usr/bin/env bash
 printf '%s\t%s\n' "\$PWD" "\$*" >> "$WORK/gh-calls"
 T=\$'\t'
+row() {   # row <num> <head> <mergeable> <mergeStateStatus> <draft>
+  if [ "\$WANT_MS" = 1 ]; then printf '%s\t%s\t%s\t%s\t%s\n' "\$1" "\$2" "\$3" "\$4" "\$5"
+  else printf '%s\t%s\t%s\t%s\n' "\$1" "\$2" "\$3" "\$5"; fi
+}
+WANT_MS=0; case "\$*" in *mergeStateStatus*) WANT_MS=1 ;; esac
 case "\$*" in
   "pr list -R fix/home "*)
-    printf '11\t$SHA_A\tMERGEABLE\tfalse\n12\t$SHA_B\tMERGEABLE\tfalse\n13\t$SHA_A\tCONFLICTING\tfalse\n'
-    printf '14\t$SHA_A\tMERGEABLE\tfalse\n15\t$SHA_A\tMERGEABLE\tfalse\n16\t$SHA_A\tMERGEABLE\tfalse\n'
-    printf '17\t$SHA_A\tMERGEABLE\ttrue\n18\t$SHA_A\tMERGEABLE\tfalse\n' ;;
-  "pr list -R fix/client "*)   printf '21\t$SHA_A\tMERGEABLE\tfalse\n' ;;
-  "pr list -R fix/overlay "*)  printf '31\t$SHA_A\tMERGEABLE\tfalse\n' ;;
-  "pr list -R fix/off "*)      printf '41\t$SHA_A\tMERGEABLE\tfalse\n' ;;
-  "pr list -R fix/archived "*) printf '51\t$SHA_A\tMERGEABLE\tfalse\n' ;;
-  "pr list -R fix/drifted "*)  printf '61\t$SHA_A\tMERGEABLE\tfalse\n' ;;
+    row 11 $SHA_A MERGEABLE CLEAN false; row 12 $SHA_B MERGEABLE CLEAN false
+    row 13 $SHA_A UNKNOWN UNKNOWN false; row 14 $SHA_A MERGEABLE CLEAN false
+    row 15 $SHA_A MERGEABLE CLEAN false; row 16 $SHA_A MERGEABLE CLEAN false
+    row 17 $SHA_A MERGEABLE DRAFT true; row 18 $SHA_A MERGEABLE CLEAN false
+    row 19 $SHA_A MERGEABLE BEHIND false ;;
+  "pr list -R fix/client "*)   row 21 $SHA_A MERGEABLE BLOCKED false ;;
+  "pr list -R fix/overlay "*)  row 31 $SHA_A MERGEABLE CLEAN false ;;
+  "pr list -R fix/off "*)      row 41 $SHA_A MERGEABLE CLEAN false ;;
+  "pr list -R fix/archived "*) row 51 $SHA_A MERGEABLE CLEAN false ;;
+  "pr list -R fix/drifted "*)  row 61 $SHA_A MERGEABLE CLEAN false ;;
   "pr view "*"--json headRefOid"*)
     case "\$PWD" in */drifted) echo $SHA_X ;; *) echo $SHA_A ;; esac ;;
   "pr view 16 --json autoMergeRequest"*) echo true ;;
@@ -153,9 +165,9 @@ has "$WORK/dry.out" "[dry] would arm fix/overlay#31" \
 has "$WORK/dry.out" "skip fix/home#12 (home): the degraded approval is for aaaaaaa, the head is now bbbbbbb" \
   && ok "a moved head is a re-review, not an arm" \
   || bad "fix/home#12 (head moved) was not skipped for the drift"
-has "$WORK/dry.out" "skip fix/home#13 (home): degraded approval at the head, but GitHub says mergeable=CONFLICTING" \
-  && ok "a CONFLICTING PR is not armed" \
-  || bad "fix/home#13 (conflicting) was not skipped on mergeable"
+has "$WORK/dry.out" "skip fix/home#13 (home): degraded approval at the head, but GitHub says mergeable=UNKNOWN" \
+  && ok "a PR whose mergeability GitHub has not computed is not armed" \
+  || bad "fix/home#13 (mergeable UNKNOWN) was not skipped on mergeable"
 has "$WORK/dry.out" "fix/home#14" \
   && bad "a NON-degraded PR showed up; this sweep only owns what gate 50 parked" \
   || ok "a non-degraded approval is left alone"
@@ -168,6 +180,12 @@ has "$WORK/dry.out" "ok fix/home#16 (home): already armed" \
 has "$WORK/dry.out" "skip fix/home#17 (home): degraded approval at the head, but it is a draft" \
   && ok "a draft is not armed" \
   || bad "fix/home#17 (draft) was not skipped"
+has "$WORK/dry.out" "skip fix/home#19 (home): degraded approval at the head, but GitHub says mergeStateStatus=BEHIND; the worker gives that a rebase round (gate 30)" \
+  && ok "a PR BEHIND its base is not armed: the worker's gate gives it a rebase round (30), and so does the sweep" \
+  || bad "THE DEFECT: fix/home#19 is BEHIND its base and was not skipped (the worker gates it at 30)"
+has "$WORK/dry.out" "[dry] would arm fix/client#21" \
+  && ok "BLOCKED (waiting on required checks) still arms: auto-merge exists to wait on those" \
+  || bad "a BLOCKED PR was not armed"
 has "$WORK/dry.out" "fix/home#18" \
   && bad "a PR with no record showed up" \
   || ok "a PR with no verdict record is left alone"
@@ -175,11 +193,11 @@ grep -q 'pr merge' "$WORK/gh-calls" \
   && bad "THE DEFECT: --dry called gh pr merge: $(grep 'pr merge' "$WORK/gh-calls" | head -2 | tr '\n' ' ')" \
   || ok "--dry never calls gh pr merge"
 # 5 repos: home, client, overlay, archive, drifted (off is never a candidate).
-# 11 PRs: home 8, client 1, overlay 1, drifted 1 (the archive is never listed).
-# 9 degraded: home 11-13 and 15-17, client 21, overlay 31, drifted 61.
+# 12 PRs: home 9, client 1, overlay 1, drifted 1 (the archive is never listed).
+# 10 degraded: home 11-13, 15-17 and 19, client 21, overlay 31, drifted 61.
 # 4 selected: 11, 16 (already armed), 21, 31. drifted 61 fails before selection.
-has "$WORK/dry.out" "-- dry: 5 dispatch-enabled repo(s), 1 excluded as archived, 0 unreadable; 11 open PR(s), 9 with a degraded record; 4 selected (1 already armed, 3 would arm); 1 failed" \
-  && ok "the summary counts add up (5 repos, 11 PRs, 9 degraded, 4 selected, 3 would arm, 1 failed)" \
+has "$WORK/dry.out" "-- dry: 5 dispatch-enabled repo(s), 1 excluded as archived, 0 unreadable; 12 open PR(s), 10 with a degraded record; 4 selected (1 already armed, 3 would arm); 1 failed" \
+  && ok "the summary counts add up (5 repos, 12 PRs, 10 degraded, 4 selected, 3 would arm, 1 failed)" \
   || bad "the summary line is wrong: $(grep '^-- ' "$WORK/dry.out")"
 [ "$(cat "$WORK/dry.out.rc")" = "2" ] \
   && ok "a failed PR (the drifted checkout) makes the run exit 2, not a clean 0" \
