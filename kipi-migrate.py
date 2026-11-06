@@ -30,7 +30,10 @@ from pathlib import Path
 # --- Constants ---
 
 SKELETON_DIR = os.path.dirname(os.path.abspath(__file__))
-SKELETON_REMOTE = "https://github.com/assafkip/kipi-system.git"
+# No SKELETON_REMOTE constant here: the subtree add at add_subtree() pulls from SKELETON_DIR
+# (the local checkout), not a remote URL, on purpose -- the leak gate scans the local tree, so
+# pulling from GitHub changed the verdict (see the comment at add_subtree). A KIPI_SKELETON_REMOTE
+# read here was a dead write (GitHub issue #2 PR A, review round 2).
 
 REQUIRED_CLAUDE_DIRS = [
     ".claude/agents",

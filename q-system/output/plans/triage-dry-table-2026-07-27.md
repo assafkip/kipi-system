@@ -33,7 +33,7 @@ The only destructive bucket is `not-planned`. Reopening restores it, and the rea
 |---|---|---|
 | ASK-149 | Its own Definition of Ready makes the outcome contingent on the founder explicitly choosing 'radar runs daily again' vs 'stays off until the Linear mi | Put one question to the founder: resume com.cole.reddit-radar-daily now, or leav |
 | ASK-91 | The body states the blocker itself: open-loops-heartbeat.sh (q-system/.q-system/scripts/) merges its own PRs under the autonomy contract, so there is  | Put three options to the founder: (a) founder-approves-merge on a sampled slice  |
-| ASK-77 | Code is merged (PR #7, 5-issue gated flow, 3 tests) and the only remaining step is releasing the deliberately HELD kipi update on 4_points, which arms | Ask the founder one question: release the held kipi update on 4_points now, or k |
+| ASK-77 | Code is merged (PR #7, 5-issue gated flow, 3 tests) and the only remaining step is releasing the deliberately HELD kipi update on client_a, which arms | Ask the founder one question: release the held kipi update on client_a now, or k |
 | ASK-59 | The blocker is a risk and cost call, not a scoping one: 11684 Gate 1.3b findings can only be cleared by narrowing the classifier or target list (accep | Sample 100 random findings, report the leak-vs-noise rate and the cost of each p |
 
 ## do-now (7)
@@ -46,7 +46,7 @@ The only destructive bucket is `not-planned`. Reopening restores it, and the rea
 | ASK-187 | Both target files exist and the issue already proves the change is safe: every Write() deny pattern has an identical working Edit() twin in both .clau | Delete the 5 Write() entries from permissions.deny in .claude/settings.json and  |
 | ASK-150 | Implementation is done and PR #11 has validate=SUCCESS; the only remaining work is one named merge conflict in q-system/.q-system/scripts/fleet-health | In the sana/ask-150 worktree: git merge origin/main, keep both detect_cron_shell |
 | ASK-117 | Real and confirmed on disk but half-stale: instance-registry.json lines 157 to 164 already record reddit-build-radar as type standalone with subtree_p | Add a registered-instance-zero-propagation check to the kipi-update.sh preflight |
-| ASK-116 | Three divergent hashes (79aec127bf30 / e9f11c1fb928 / 1a1b1e2674b2) were verified by direct hashing across 4_points_consulting, investigations, and Al | Diff the three evidence-capture-protocol.md versions, reconcile into one file at |
+| ASK-116 | Three divergent hashes (79aec127bf30 / e9f11c1fb928 / 1a1b1e2674b2) were verified by direct hashing across client_a, investigations, and client_d | Diff the three evidence-capture-protocol.md versions, reconcile into one file at |
 
 ## needs-scope (9)
 

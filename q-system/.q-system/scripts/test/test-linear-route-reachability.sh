@@ -314,7 +314,7 @@ esac
 # breaks this equality.
 setup_skel() {
   local root="$WORK/repos/kipi-system"
-  git init --quiet --bare "$WORK/origin.git"
+  git init --quiet --bare "$WORK/origin.git" && git -C "$WORK/origin.git" symbolic-ref HEAD refs/heads/main
   git init --quiet "$root" 2>/dev/null
   git -C "$root" config user.email t@t; git -C "$root" config user.name t
   : > "$root/seed"; git -C "$root" add seed

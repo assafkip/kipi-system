@@ -141,7 +141,7 @@ review, and the same-checkout case the Linear label cannot see.
 - One team: `ASK_Consulting`, key `ASK`, id `a75b9b87-bfdf-4fb7-bff3-a5a1a2a6946f`.
 - **25 of 25 fleet repos now have a Linear project** (24 instances + the skeleton).
   Goal 1 of the rollout is complete. A fleet-wide re-plan creates zero projects.
-- Issues filed this session: **ASK-114**, **ASK-115** (4_points_consulting),
+- Issues filed this session: **ASK-114**, **ASK-115** (client_a),
   **ASK-116** (evidence-capture-protocol divergence), **ASK-117**
   (reddit-build-radar receives zero skeleton propagation).
 - Labels that exist: `kind:capability`, `needs-evidence`, `unwired`,

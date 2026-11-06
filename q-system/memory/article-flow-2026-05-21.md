@@ -6,7 +6,7 @@ Record of how article 1 ("1 year of prompts. A 21-byte file fixed it.") got buil
 
 1. **Research first.** Pulled Reddit (r/ChatGPT, r/ClaudeAI, r/OpenAI, r/singularity, r/LocalLLaMA, r/ChatGPTPro, r/productivity), plus WebSearch on AI fatigue and enterprise rollout failure data. Perplexity was 401 on first try; founder ran it manually with a vendor-blocker prompt.
 2. **Vendor audit.** Killed v1 of the brief because it was anchored on HCLTech / McKinsey / Temporal stats. Rebuilt v2 with Reddit + peer-reviewed + Pew + SHRM + Stack Overflow Developer Survey as primary anchors. Vendor stats demoted to strawmen only.
-3. **Cross-instance reality check.** Spawned four parallel agents to map the actual running systems at kipi-system, KTLYST strategy, Pure Spectrum, 4 Points Consulting. Discovered the killer fact: the 21-byte `.active-case` file orchestrating 24 commands at 4 Points. Same skeleton, four topologies. This became the article spine.
+3. **Cross-instance reality check.** Spawned four parallel agents to map the actual running systems at kipi-system, KTLYST strategy, client-b, client-a. Discovered the killer fact: the 21-byte `.active-case` file orchestrating 24 commands at client-a. Same skeleton, four topologies. This became the article spine.
 4. **Headline research.** Pulled top text-driven Reddit posts from last 30 days across 6 AI subs. Distilled 6 viral patterns (absurd object, confession + reversal, PSA / admits, specific number + feat, naive question, "I asked X to..."). Char count sweet spots: X 71-100, Reddit 30-66, LinkedIn 60-100, Medium 50-90.
 5. **Voice skill loaded.** Pulled full assaf-voice writing-samples + voice-dna + gotchas before drafting.
 6. **First draft.** ~1,250 words. Founder caught seven voice misses in one read: percentages from Stack Overflow stat, slash-command references, rule-of-three patterns, "I almost cried" too vulnerable, "four businesses" too loud, "fixed it" too marketing.
@@ -53,7 +53,7 @@ A close-up photograph of a hand-drawn diagram on lined notebook paper, shot unde
 ### Alternative (artifact-focused)
 
 ```
-A photograph, slight overhead angle. A black mechanical keyboard fills most of the frame. Centered on the spacebar, a single small white index card sits flat. The card has ".active-case" typed in monospace on the top line and "case-014-trump-coin" on the line below. A desk lamp casts amber light from the upper-right corner. Slight texture on the keys, slight grain on the card. The composition makes the small card feel like it is running the whole machine. Aspect ratio 16:9.
+A photograph, slight overhead angle. A black mechanical keyboard fills most of the frame. Centered on the spacebar, a single small white index card sits flat. The card has ".active-case" typed in monospace on the top line and "case-014-example" on the line below. A desk lamp casts amber light from the upper-right corner. Slight texture on the keys, slight grain on the card. The composition makes the small card feel like it is running the whole machine. Aspect ratio 16:9.
 ```
 
 ## Hooks built this session

@@ -238,7 +238,7 @@ reset
 # written BELOW the DoR vanished on every redraft (codex-review finding-1).
 TRAILING_SECTION='## Notes
 
-Chris asked for this before the Friday call. Do not drop that.'
+Sam asked for this before the Friday call. Do not drop that.'
 python3 - "$WORK/board.json" "$FOUNDER_TEXT" "$BAD_DOR" "$TRAILING_SECTION" <<'PY'
 import json, sys
 path, founder, dor, trailing = sys.argv[1:5]
@@ -263,7 +263,7 @@ inp = ups[-1]["input"]
 desc = inp["description"]
 print("update")
 print("prefix-kept" if founder in desc else "prefix-LOST")
-print("trailing-kept" if "Chris asked for this" in desc else "trailing-DELETED")
+print("trailing-kept" if "Sam asked for this" in desc else "trailing-DELETED")
 print("one-dor" if desc.count("## Definition of Ready") == 1 else
       "dor-count-%d" % desc.count("## Definition of Ready"))
 print("rewritten" if "304 spillover" not in desc else "stale-dor-still-there")
@@ -622,7 +622,7 @@ reset
 # that predates it. Same class as case 3, except the edit lands mid-run.
 LATE_NOTE='## Notes
 
-Chris added this while the drafter was still thinking. Do not drop it.'
+Sam added this while the drafter was still thinking. Do not drop it.'
 python3 - "$WORK/board.json" "$WORK/live.json" "$FOUNDER_TEXT" "$BAD_DOR" "$LATE_NOTE" <<'PY'
 import json, sys
 board, live, founder, dor, note = sys.argv[1:6]
@@ -639,7 +639,7 @@ json.dump([dict(issue, description=issue["description"] + "\n\n" + note)],
 PY
 run_drafter --limit 5 --apply
 DESC12="$(written_desc)"
-if [ -n "$DESC12" ] && printf '%s' "$DESC12" | grep -q 'Chris added this while the drafter'; then
+if [ -n "$DESC12" ] && printf '%s' "$DESC12" | grep -q 'Sam added this while the drafter'; then
   ok "a note added mid-run survives the redraft that lands after it"
 else
   bad "a note added mid-run survives the redraft that lands after it" \
@@ -707,7 +707,7 @@ reset
 # and it requires a heading at line start.
 MENTION_TEXT='I have not had time to write the ## Definition of Ready for this yet.
 
-Some context that must survive: the Friday call with Chris is the deadline.'
+Some context that must survive: the Friday call with Sam is the deadline.'
 python3 - "$WORK/board.json" "$MENTION_TEXT" "$BAD_DOR" <<'PY'
 import json, sys
 path, mention, dor = sys.argv[1:4]

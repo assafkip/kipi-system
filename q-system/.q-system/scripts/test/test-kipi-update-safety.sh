@@ -472,7 +472,7 @@ echo "PASS: an instance-ignored skeleton file is skipped, not fatal, and leaves 
 # it DELETED, the dirty-tree guard refuses, and the instance never updates.
 #
 # Scar 2026-07-25: introduced by the exclusion in commit cbd405a and caught on
-# Alice, which carries three submodules under q-investigate/tools/. cole-gtm's
+# client-d, which carries three submodules under q-investigate/tools/. cole-gtm's
 # nested instances are UNTRACKED, which is why the same exclusion is correct
 # there. Tracked-ness is the line, not nested-ness.
 WORK10="$(mktemp -d)"; SK10="$WORK10/skel"; I10="$WORK10/inst"

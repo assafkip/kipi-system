@@ -27,7 +27,7 @@ earned-trust surface stays silent forever unless a human hand-feeds it, which
 will not happen at the cadence needed to earn signal.
 
 Measurable done: the outcomes log fills itself from real sessions on the
-design-partner instance (`4_points_consulting`), with signal good enough that
+design-partner instance (`client_a`), with signal good enough that
 `memory_reflect` promotes genuinely-useful memories to `preferred` and demotes
 contradicted ones to `dead_end` / `contested` without a human typing a CLI command.
 
@@ -40,7 +40,7 @@ contradicted ones to `dead_end` / `contested` without a human typing a CLI comma
 - Deterministic-first: LLM judgment used only where structurally required (the
   `corrected` path), everything else is unit-testable proxy logic.
 - Silent-safe: a capture bug or a missing artifact never blocks a session close.
-- Design-partner rollout on `4_points_consulting` only.
+- Design-partner rollout on `client_a` only.
 
 ## Non-goals
 
@@ -134,7 +134,7 @@ Components:
 - **Surfaced set is a new session-scoped artifact.** Decided: `.session-recall.json`
   with a producer (surface scripts) and consumer (capture). Rationale: capture can
   only score a memory that was actually recalled; nothing records that today.
-- **Rollout: design-partner first.** Decided: enable on `4_points_consulting` only;
+- **Rollout: design-partner first.** Decided: enable on `client_a` only;
   fleet propagation deferred. Rationale: 27 live cases = highest memory reuse and
   highest cost of a stale memory; tune proxy thresholds against real signal before
   the fleet pays for them.
@@ -176,7 +176,7 @@ a single spurious `useful` cannot mint trust, and any contradicting `dead_end`/
 design-partner-only rollout catches it before the fleet pays.
 
 Q2: What is the smallest experiment that would disprove the thesis?
-A2: Run capture over one week of real `4_points_consulting` case work and check
+A2: Run capture over one week of real `client_a` case work and check
 whether `memory_reflect`'s `preferred`/`dead_end` verdicts match founder
 intuition. A mismatch (memories the founder knows are stale scored `preferred`)
 disproves "proxies are approximately-unbiased."
@@ -247,7 +247,7 @@ needed, which is the whole reason the surface is inert today.
     ],
     "required_checks": ["python3 q-system/.q-system/scripts/test_autocapture_wiring.py"],
     "bypass_check": "python3 q-system/.q-system/scripts/test_autocapture_wiring.py",
-    "acceptance": "autocapture_config.json is the allowlist (enabled_instances: [4_points_consulting]); the Stop-hook capture no-ops on any instance not listed (default off) so wiring the guarded advisory entry (test -f && python3 ... 2>/dev/null || true) into BOTH .claude/settings.json and settings-template.json cannot enable capture beyond the design partner. Test proves: the hook writes nothing when the current-instance identity is not in the allowlist, and the settings-template-sync invariant holds (entry present in both files). Wiring is advisory, never exit-2."
+    "acceptance": "autocapture_config.json is the allowlist (enabled_instances: [client_a]); the Stop-hook capture no-ops on any instance not listed (default off) so wiring the guarded advisory entry (test -f && python3 ... 2>/dev/null || true) into BOTH .claude/settings.json and settings-template.json cannot enable capture beyond the design partner. Test proves: the hook writes nothing when the current-instance identity is not in the allowlist, and the settings-template-sync invariant holds (entry present in both files). Wiring is advisory, never exit-2."
   },
   {
     "id": "autocapture-e2e-acceptance",

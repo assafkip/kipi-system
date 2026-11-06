@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/spillover-adjacency-classify.py",
+ "reason": "hand-run measurement tool (ASK-2014): replays the spillover ledger and prints how many rows would have been small adjacent fixes, so the founder decision on no-orphan-findings.md has a number under it. DELIBERATELY unwired: the DoR says nothing in the worker's behavior changes, and wiring it into linear-worker.sh is exactly that change. Cites sp-f6da2a32, the only open ledger item on this script (its basename-adjacency major from the PR #467 review). Resolving that item turns this pointer RED in the skeleton, which forces the wire-or-retire call on the next touch of the script instead of letting the declaration outlive it.",
+ "spillover_id": "sp-f6da2a32"
+}

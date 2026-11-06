@@ -128,9 +128,26 @@ class MCPNamespaceCase(unittest.TestCase):
         _, decision = drive(self.hook, "mcp__supabase__reset_branch")
         self.assertEqual(decision, "deny", "mcp__supabase__reset_branch was allowed")
 
-    def test_gmail_trash_thread_is_denied(self):
-        _, decision = drive(self.hook, "mcp__claude_ai_Gmail__trash_thread")
-        self.assertEqual(decision, "deny")
+    def test_gmail_trash_is_allowed_by_founder_ruling(self):
+        """Founder, 2026-10-29 (ASK-3361): bots clean his inbox, and he picked
+        "b", lifting this hook for Gmail trash. Trash is undone for 30 days
+        by untrash_*, which this hook already allows."""
+        for tool in ("mcp__claude_ai_Gmail__trash_thread", "mcp__claude_ai_Gmail__trash_message"):
+            _, decision = drive(self.hook, tool)
+            self.assertEqual(decision, "allow", "%s was denied" % tool)
+
+    def test_the_gmail_trash_allowance_is_exact_names_only(self):
+        """The lift names two tools on one server. Another server's trash, a
+        longer op that starts with the same word, and Gmail's other
+        destructive ops keep the verb rule's deny."""
+        for tool in ("mcp__claude_ai_Google_Drive__trash_file",
+                     "mcp__evil__trash_thread",
+                     "mcp__claude_ai_Gmail__trash_thread_permanently",
+                     "mcp__claude_ai_Gmail__trashThread",
+                     "mcp__claude_ai_Gmail__delete_label",
+                     "mcp__claude_ai_Gmail__delete_draft"):
+            _, decision = drive(self.hook, tool)
+            self.assertEqual(decision, "deny", "%s was allowed" % tool)
 
     def test_drive_trash_file_is_denied(self):
         _, decision = drive(self.hook, "mcp__claude_ai_Google_Drive__trash_file")

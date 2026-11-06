@@ -28,9 +28,9 @@ GOOD = {
             "name": "GroupMe order intake to Google Sheet",
             "aliases": ["the ingest chain", "sheet sync pipeline"],
             "members": [
-                {"ref": "Prodigy Gold - Postgres Ingest", "kind": "n8n-workflow"},
-                {"ref": "Prodigy Gold - Parse LLM", "kind": "n8n-workflow"},
-                {"ref": "Prodigy Gold - QA Validator", "kind": "n8n-workflow"},
+                {"ref": "client-c - Postgres Ingest", "kind": "n8n-workflow"},
+                {"ref": "client-c - Parse LLM", "kind": "n8n-workflow"},
+                {"ref": "client-c - QA Validator", "kind": "n8n-workflow"},
             ],
         }
     ],
@@ -67,7 +67,7 @@ def case_check_rejects_zero_members() -> bool:
 def case_check_rejects_duplicate_member_ref() -> bool:
     bad = json.loads(json.dumps(GOOD))
     bad["subsystems"][0]["members"].append(
-        {"ref": "Prodigy Gold - Parse LLM", "kind": "n8n-workflow"})
+        {"ref": "client-c - Parse LLM", "kind": "n8n-workflow"})
     return len(SM.check(_root(bad))) > 0
 
 
@@ -111,21 +111,21 @@ def case_mentions_ignores_unrelated_text() -> bool:
 def case_missing_members_reports_the_unread() -> bool:
     """THE reproducer. Two of three workflows read, a claim about the chain issued."""
     repo = _root(GOOD)
-    evidence = "I opened Prodigy Gold - Postgres Ingest and Prodigy Gold - Parse LLM."
+    evidence = "I opened client-c - Postgres Ingest and client-c - Parse LLM."
     return SM.missing_members(repo, "groupme-to-sheet", evidence) == [
-        "Prodigy Gold - QA Validator"]
+        "client-c - QA Validator"]
 
 
 def case_missing_members_empty_when_all_read() -> bool:
     repo = _root(GOOD)
-    evidence = ("Prodigy Gold - Postgres Ingest / Prodigy Gold - Parse LLM / "
-                "Prodigy Gold - QA Validator all opened.")
+    evidence = ("client-c - Postgres Ingest / client-c - Parse LLM / "
+                "client-c - QA Validator all opened.")
     return SM.missing_members(repo, "groupme-to-sheet", evidence) == []
 
 
 def case_missing_members_match_is_case_insensitive() -> bool:
     repo = _root(GOOD)
-    evidence = "prodigy gold - postgres ingest, PRODIGY GOLD - PARSE LLM, Prodigy Gold - QA Validator"
+    evidence = "client-c - postgres ingest, CLIENT-C - PARSE LLM, client-c - QA Validator"
     return SM.missing_members(repo, "groupme-to-sheet", evidence) == []
 
 

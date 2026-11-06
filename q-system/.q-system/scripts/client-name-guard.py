@@ -71,6 +71,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -78,6 +79,7 @@ import sys
 from pathlib import Path
 
 TOKENS_FILE = Path.home() / ".config" / "kipi" / "client-tokens"
+SOURCES_FILE = Path.home() / ".config" / "kipi" / "private-terms.json"
 SKIP = "client-name-guard-skip"
 
 # A BYPASS IS AN ACT, NOT A WORD (ASK-747).
@@ -137,13 +139,36 @@ def staged_added_lines():
                       if l.startswith("+") and not l.startswith("+++"))
 
 
+def load_exclusions():
+    """Exact spellings the private config records as NOT private (ASK-2058).
+
+    Scar, 2026-10-22: the scrub of this repo could not be committed. One token
+    in client-tokens is the founder's own PUBLIC repo name, left over from an
+    older layout, so any commit whose added lines mention that repo was refused.
+    The decision that it is not private was already recorded, with its reason,
+    in the `exclude` list of ~/.config/kipi/private-terms.json; this guard just
+    never read it. An exclusion drops EXACTLY the spelling listed, nothing
+    derived from it. A missing or unreadable config means no exclusions, so a
+    broken file can only make the gate stricter, never quieter.
+    """
+    try:
+        cfg = json.loads(SOURCES_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    items = cfg.get("exclude") if isinstance(cfg, dict) else None
+    if not isinstance(items, list):
+        return set()
+    return {" ".join(x.lower().split()) for x in items if isinstance(x, str)}
+
+
 def load_tokens():
     if not TOKENS_FILE.exists():
         return None
+    excluded = load_exclusions()
     out = []
     for line in TOKENS_FILE.read_text().splitlines():
         line = line.split("#", 1)[0].strip()
-        if len(line) > 3:
+        if len(line) > 3 and " ".join(line.lower().split()) not in excluded:
             out.append(line.lower())
     return out
 

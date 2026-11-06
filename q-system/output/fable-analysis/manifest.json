@@ -97,7 +97,7 @@
       "mcp__playwright__browser_wait_for": 1
     }
   },
-  "AUDHD-KIDS": {
+  "family-repo": {
     "text_blocks": 27,
     "tool_calls": 125,
     "code_edits": 30,

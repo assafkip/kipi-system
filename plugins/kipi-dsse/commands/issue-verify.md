@@ -33,14 +33,29 @@ Verify the active DSSE issue. Execute in order:
      AST, against the runner's own count; hidden tests are refused;
    - `repeats`: the checks rerun up to 10 times inside a 20-minute budget,
      refused below 5 runs or on any red run.
+   - `mutants` (ASK-2768): each mutant run recorded for this issue, judged
+     against verify's own clean run. `caught` names the tests that failed only
+     under the mutant; a test failing in both runs is not counted. A `silent`
+     mutant (the runner's output shows no new failure) is refused by name. No
+     caught mutant is recorded as `gap`, not refused. A typed tally is never
+     read: verify reads only `<state_dir>/mutants/<issue_id>/*.json`, and only
+     the `mutant` verb writes there.
+
+   To record a mutant (founder budget: one per new decision point): apply a
+   one-line break to the tracked file, run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" mutant <name>`
+   (lowercase letters, digits, dashes), put the code back, then run `verify`.
+   The `mutant` verb runs the snapshot's checks and stores their raw output;
+   it never judges. Only `verify` turns that output into a count.
 
 3. If `verify` exits 0:
    - Report: "verified receipt recorded at <timestamp>."
    - Read `checks` from its JSON output and list them, one per line
      (`checks_run` is the count).
-   - Under contract 2, also paste `real_path`, `defined_vs_ran` and `repeats`
-     from the same JSON. These are the closeout numbers; do not restate them
-     from memory.
+   - Under contract 2, also paste `real_path`, `defined_vs_ran`, `mutants` and
+     `repeats` from the same JSON. These are the closeout numbers; do not
+     restate them from memory. A mutant count that is not in `mutants` is a
+     claim, not a closeout number.
 
 4. If `verify` exits 2:
    - It already printed which check failed and its exit code. Report that.

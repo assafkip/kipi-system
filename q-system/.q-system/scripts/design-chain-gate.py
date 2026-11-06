@@ -139,7 +139,18 @@ BASH_SHOW_RE = re.compile(
     r"|rsync\b[^|;&\n]*\s[^|;&\n\s]+@[^|;&\n\s]+:)", re.I)
 SHOW_TOOLS_PREFIX = ("mcp__playwright__", "mcp__claude-in-chrome__", "mcp__plugin_chrome-devtools")
 PUBLISH_TOOLS = ("SendUserFile", "Artifact")
-STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", os.path.expanduser("~/.config/kipi/design-chain")))
+DEFAULT_STATE_DIR = os.path.expanduser("~/.config/kipi/design-chain")
+STATE_DIR = Path(os.environ.get("DESIGN_CHAIN_STATE", DEFAULT_STATE_DIR))
+# Stop may refuse this many times in a row before it stops spending the session (ASK-1876). The
+# harness sets stop_hook_active on a Stop that follows a refusal, and honoring it unconditionally
+# made the gate a one-shot nudge. A cap keeps it from looping forever on a page that cannot be sealed.
+STOP_BLOCK_CAP = 3
+# Absolute ceiling on gate invocations per episode, counted raw, no dedupe. The event key below can
+# fail to advance (a model turn that writes no transcript bytes, an unreadable transcript), and a
+# counter that cannot advance is a gate that can never release, which hangs the session instead of
+# refusing it. Sits above 2 x STOP_BLOCK_CAP so the normal path always releases first and this
+# number never preempts the cap (PR #486 review).
+STOP_CALL_CEILING = 2 * STOP_BLOCK_CAP + 2
 CONFIG_NAME = "design-chain.json"
 
 
@@ -1971,7 +1982,55 @@ def page_shape(text: str) -> list:
 
 
 def _git(page: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
+    """A missing or unrunnable git is a FAILED run, never a raised exception. Nothing wraps
+    `hook()`, so FileNotFoundError from an absent binary aborted the whole PostToolUse event
+    before its `save_ledger` -- the strict-by-default arm became no enrollment at all, which
+    is the one direction a gate must not fail (PR #456 review round 1, minor)."""
+    try:
+        return subprocess.run(["git", "-C", str(page.parent), *args], capture_output=True, text=True)
+    except OSError as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
+
+
+def _matches_committed(page: Path, since: float) -> bool:
+    """True only when the page's bytes are identical to a commit that PREDATES this command.
+
+    A first sighting is not authorship. `git worktree add` WRITES every tracked file it
+    checks out, so a new worktree gives every page in it a fresh mtime AND leaves it
+    absent from the Pre snapshot, which the content arm below reads as new. Stop then
+    refused the turn over q-system/marketing/brand-kit.html, tracked since 2026-04-06
+    and never touched by the branch (2026-09-23, sp-a4087ae8).
+
+    Equal bytes are only half the evidence, and the missing half is the commit's AGE.
+    `python3 build.py && git add -A && git commit` is one Bash call: by the time
+    PostToolUse reads a page the session genuinely wrote, its bytes ARE the blob at HEAD,
+    so bytes alone exempted an authored page and Stop passed (PR #456 review round 1,
+    major, found independently by both reviewers). A checkout's blob was committed before
+    the session; an author-then-commit blob was not. The age is asked per PATH, not of
+    HEAD: `git commit -m x && git worktree add ../wt` advances HEAD inside one call while
+    every checked-out page's own blob still predates it, so a "did HEAD move" test would
+    re-block the very scar above.
+
+    Fails OPEN (False, so the page is treated as authored) on anything it cannot read: no
+    git, no HEAD, an untracked file with no committed blob, or a commit date it cannot
+    parse. A gate that goes quiet on a repo it cannot read protects nothing
+    (design-auto-invoke.md).
+    """
+    blob = _git(page, "rev-parse", f"HEAD:./{page.name}")
+    if blob.returncode or not blob.stdout.strip():
+        return False
+    cur = _git(page, "hash-object", "--", page.name)
+    if cur.returncode or not cur.stdout.strip():
+        return False
+    if blob.stdout.strip() != cur.stdout.strip():
+        return False
+    # the third spawn is paid only by a page whose bytes already matched, so a page the
+    # session rewrote costs two calls and stops here
+    when = _git(page, "log", "-1", "--format=%ct", "HEAD", "--", page.name)
+    try:
+        return float(when.stdout.strip()) < since
+    except ValueError:
+        return False
 
 
 def _committed_text(page: Path, commit: str) -> str | None:
@@ -3047,6 +3106,27 @@ def _snapshot_key(payload: dict) -> str:
     return str(payload.get("tool_use_id") or "_last")
 
 
+def stop_event_key(payload: dict) -> str:
+    """One logical end-of-turn, the same value for both of the hook's wired invocations.
+
+    A Stop payload carries no tool_use_id, so the Bash branch's dedupe key is unavailable here. The
+    transcript is append-only and the harness writes it between two real Stop events (the model
+    answered in between) but not between the two sub-invocations of one, so its length and mtime are
+    the event cursor.
+
+    HONEST BOUNDARY: returns "" when there is no readable transcript, and "" means no dedupe at all
+    -- every invocation counts, which is the pre-fix behaviour. An unreadable transcript is not
+    treated as a match, because a key that collides across real events would refuse forever.
+    STOP_CALL_CEILING is the backstop for both cases.
+    """
+    tp = payload.get("transcript_path") or ""
+    try:
+        st = os.stat(tp)
+    except OSError:
+        return ""
+    return f"{st.st_size}:{st.st_mtime_ns}"
+
+
 def open_pages(led: dict) -> list[tuple[str, list[str]]]:
     out = []
     for p in list(led.get("pages", {})):
@@ -3056,6 +3136,21 @@ def open_pages(led: dict) -> list[tuple[str, list[str]]]:
         if probs:
             out.append((p, probs))
     return out
+
+
+def state_relocated() -> bool:
+    """True when DESIGN_CHAIN_STATE points the ledger away from the default. Pointing it at an
+    empty directory makes every ledger-backed branch pass silently, so it is an override with the
+    same weight as DESIGN_CHAIN_ALLOW (ASK-1876). Tests relocate it for isolation, which is why
+    this names the override instead of refusing: refusing would break every test that does."""
+    return os.path.abspath(str(STATE_DIR)) != os.path.abspath(DEFAULT_STATE_DIR)
+
+
+def relocation_notice() -> None:
+    if state_relocated():
+        print(f"DESIGN CHAIN GATE (notice): DESIGN_CHAIN_STATE={STATE_DIR} relocates the session "
+              f"ledger. Pages enrolled in the default ledger are not seen. That is an override, "
+              f"same weight as DESIGN_CHAIN_ALLOW=1.", file=sys.stderr)
 
 
 def block(msg_lines: list[str]) -> int:
@@ -3068,7 +3163,10 @@ def block(msg_lines: list[str]) -> int:
         print(f"  ... and {len(msg_lines) - 40} more line(s) not shown. All of them: "
               f"`design-chain-gate.py status <round>`.", file=sys.stderr)
     print("  Steps: brief.md (verbatim owner anchors) -> directions.md (3) -> design-standard-check.py -> critique.md (9 per direction) -> proof.md -> checks/ -> gate/ -> `design-chain-gate.py seal <round>`.", file=sys.stderr)
-    print("  Override is DESIGN_CHAIN_ALLOW=1 in the founder's shell only.", file=sys.stderr)
+    print("  Override is DESIGN_CHAIN_ALLOW=1 in the founder's shell only. "
+          "DESIGN_CHAIN_STATE=<other dir> relocates the ledger and disarms this gate the same way; "
+          "it is the same override.", file=sys.stderr)
+    relocation_notice()
     return 2
 
 
@@ -3559,6 +3657,15 @@ def _hook(payload: dict) -> int:
                 continue
             if retired_reason(here):
                 continue            # a retired round enrolls nothing (see retired_reason)
+            # the snapshot arm above only answers for a page that already existed when Pre ran.
+            # A checkout makes a page APPEAR, so it has no snapshot entry and reads as new; its
+            # bytes against a commit older than this call are the only evidence left (see
+            # _matches_committed, ASK-2147). Ordered BELOW the free retired check on purpose: a
+            # retired round paid git spawns per page only to be discarded, and a checkout is
+            # exactly the case that hands this arm every page of the tree at once (PR #456
+            # review round 1, minor).
+            if _matches_committed(here, since):
+                continue
             led["pages"].setdefault(str(here), {"first_seen": time.time(), "via": "Bash"})
         save_ledger(sid, led)
         return 0
@@ -3593,12 +3700,46 @@ def _hook(payload: dict) -> int:
     # SubagentStop is the same end of turn for a subagent, and dc-24 wired it in both settings files
     # while this branch read only "Stop", so the hook was inert (PR #374 review, major)
     if ev in ("Stop", "SubagentStop"):
-        if payload.get("stop_hook_active"):
-            return 0
         opens = open_pages(led)
-        if opens:
-            return block([f"{p}: {x}" for p, probs in opens for x in probs[:4]])
-        return 0
+        if not opens:
+            for k in ("stop_blocks", "stop_calls", "stop_event", "stop_pages"):
+                led.pop(k, None)
+            save_ledger(sid, led)
+            relocation_notice()
+            return 0
+        # An episode is one SET of unsealed pages, not one session. Keying the counter to the session
+        # meant that once the cap released for one page, a page opened afterwards inherited a spent
+        # counter and got almost no strikes (PR #486 review, minor). A changed set is a new episode.
+        pages = sorted(p for p, _ in opens)
+        if led.get("stop_pages") != pages:
+            led["stop_pages"] = pages
+            led["stop_blocks"] = 0
+            led["stop_calls"] = 0
+            led["stop_event"] = ""
+        # stop_hook_active is the harness's loop guard, not a pass: honoring it on the first repeat
+        # made the Stop wiring a one-shot nudge (ASK-1876). Keep refusing up to STOP_BLOCK_CAP.
+        #
+        # Counted per real end-of-turn, never per invocation: settings.json wires this hook as TWO
+        # Stop entries (the same double wiring ledger_lock exists for), so a bare increment spent
+        # two strikes on one event and released after ~1.5 of the 3 promised (PR #486 review, major).
+        key = stop_event_key(payload)
+        counted = bool(key) and led.get("stop_event") == key
+        n = int(led.get("stop_blocks", 0))
+        prior = (n - 1 if counted and n else n)     # refusals that happened BEFORE this event
+        calls = int(led.get("stop_calls", 0)) + 1
+        led["stop_calls"] = calls
+        if payload.get("stop_hook_active") and (prior >= STOP_BLOCK_CAP or calls > STOP_CALL_CEILING):
+            led["unsealed_at_stop"] = [p for p, _ in opens]
+            save_ledger(sid, led)
+            print(f"DESIGN CHAIN GATE (released): Stop refused {prior} times; the session ends with "
+                  f"{len(opens)} unsealed page(s), recorded in the ledger: "
+                  + ", ".join(p for p, _ in opens[:5]), file=sys.stderr)
+            return 0
+        if not counted:
+            led["stop_blocks"] = n + 1
+            led["stop_event"] = key
+        save_ledger(sid, led)
+        return block([f"{p}: {x}" for p, probs in opens for x in probs[:4]])
     return 0
 
 

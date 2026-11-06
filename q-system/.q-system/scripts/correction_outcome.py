@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Record a `corrected` memory outcome (issue autocapture-corrected-path,
+"""RETIRED 2026-10-30 (ASK-3400): the Stop-hook consumer and every recall writer
+are removed, so this can never record an outcome. Kept only with its test until
+the outcome files are retired together.
+
+Record a `corrected` memory outcome (issue autocapture-corrected-path,
 PRD prd-memory-autocapture-2026-07-04, finding-6).
 
 The deterministic half of the ONE semantic outcome. Choosing WHICH surfaced

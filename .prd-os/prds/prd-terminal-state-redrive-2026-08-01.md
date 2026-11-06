@@ -116,7 +116,7 @@ disk; finding 14). A row may instead declare `terminal: true` with a
 
 **Piece C — out-of-repo pickup, gated behind a client preflight.**
 Deferred until A and B are green. Finding 8 is accepted: opt-in plus a project
-filter does not protect Alice or Prodigy_Gold from a dispatcher that runs their
+filter does not protect client-d or client-c from a dispatcher that runs their
 local `./kipi`, pushes branches, and arms auto-merge. C does not start until a
 per-repo preflight exists covering control-code version, hook presence, remote
 identity, branch protection, dirty state, and a per-repo kill switch. Finding 9
@@ -304,7 +304,7 @@ duplicates whose remedy lives inside one of the entries below.
       "bash q-system/.q-system/scripts/test/test-repo-preflight.sh"
     ],
     "bypass_check": "The dispatcher REFUSES a registry repo whose preflight fails, proven by a fixture repo that fails one preflight item and is then absent from the dispatcher's dry-run pick list. There is no flag, env var, or registry field that skips the preflight.",
-    "acceptance": "STARTS ONLY after needs-scope-redrive and terminal-states-validator are green. Preflight covers control-code version, hook presence, remote identity, branch protection, credentials, dirty state, and a per-repo kill switch -- opt-in plus a project filter is NOT protection for Alice or Prodigy_Gold, which this dispatcher would otherwise push to and auto-merge in. Selection is round-robin with a recorded cursor, not registry order, so a nonempty early repo cannot starve later client repos -- finding-9. 'Lists ready issues from two repos' is explicitly NOT sufficient; the check must show eventual pickup of a repo that sorts last."
+    "acceptance": "STARTS ONLY after needs-scope-redrive and terminal-states-validator are green. Preflight covers control-code version, hook presence, remote identity, branch protection, credentials, dirty state, and a per-repo kill switch -- opt-in plus a project filter is NOT protection for client-d or client-c, which this dispatcher would otherwise push to and auto-merge in. Selection is round-robin with a recorded cursor, not registry order, so a nonempty early repo cannot starve later client repos -- finding-9. 'Lists ready issues from two repos' is explicitly NOT sufficient; the check must show eventual pickup of a repo that sorts last."
   },
   {
     "id": "commit-prd-review-chain",

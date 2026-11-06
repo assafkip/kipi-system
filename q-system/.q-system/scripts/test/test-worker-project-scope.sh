@@ -191,7 +191,7 @@ setup_skel() {
   local name="$1"
   local root="$WORK/$name"
   rm -rf "$root" "$WORK/origin-$name.git"
-  git init --quiet --bare "$WORK/origin-$name.git"
+  git init --quiet --bare "$WORK/origin-$name.git" && git -C "$WORK/origin-$name.git" symbolic-ref HEAD refs/heads/main
   git init --quiet "$root"
   git -C "$root" config user.email t@t; git -C "$root" config user.name t
   : > "$root/seed"; git -C "$root" add seed

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pairs with: instance-registry.json (the two rows ASK-842 decided) and
-# repo-preflight.sh check 0 (the constraint ASK-842 was forbidden to touch).
+# repo-preflight.sh check 0 (reversed by RULE-2026-10-30-A, see section 3).
 #
 # WHY A TEST FOR A DECISION
 # -------------------------
@@ -26,8 +26,8 @@
 #
 # NEVER A LIVE DATA PATH. This reads the registry and shells the preflight against
 # a mktemp fixture. It dispatches nothing, enters no repo, and makes no network
-# call: check 0 in repo-preflight.sh exits before every network-touching check, so
-# the constraint assertion below costs nothing and reaches nobody.
+# call: each fixture carries the .kipi-no-dispatch kill switch, which preflight
+# checks right after check 0 and before every network-touching check.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,23 +99,27 @@ case "$OUT" in
   *)  bad "a decided-off path is dispatchable ($OUT)" ;;
 esac
 
-# --- 3. the hard constraint: check 0 is untouched -------------------------------
-# ASK-842's DoR forbade softening the client-repo refusal to raise a throughput
-# number. The 17 out-of-repo issues stay refused, so the refusal is asserted here
-# rather than assumed -- a constraint nothing checks is a sentence, not a
-# constraint. Shape-derived, so a mktemp path is a faithful fixture.
+# --- 3. check 0 refuses NOTHING now (RULE-2026-10-30-A) -----------------------
+# ASK-842's DoR forbade softening the client-repo refusal, and this section
+# asserted it held. The founder reversed it, 2026-10-30, verbatim: "The unattended
+# agent should and can reach client repos to work on the tickets. That's the
+# ruling from now on." So no path shape earns a client-repo refusal, the
+# engagement root included. The two ASK-842 rows above stay off for a different,
+# measured reason: neither path exists on disk (checked 2026-10-30), so there is
+# no checkout to enter.
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/consulting/projects/some_client" "$TMP/consulting" "$TMP/persona/projects/own_thing"
+for SUB in consulting/projects/some_client consulting persona/projects/own_thing; do
+  mkdir -p "$TMP/$SUB"
+  : > "$TMP/$SUB/.kipi-no-dispatch"
+done
 
-for CASE in "consulting/projects/some_client:refuse" "consulting:refuse" "persona/projects/own_thing:pass0"; do
-  P="$TMP/${CASE%%:*}"; WANT="${CASE##*:}"
-  OUT="$(bash "$PREFLIGHT" "$P" "" 2>&1)"
-  case "$OUT:$WANT" in
-    *"FAIL client-repo:"*:refuse)  ok "check 0 still refuses $(basename "$P") as a client engagement path" ;;
-    *:refuse)                      bad "check 0 NO LONGER refuses $P -- the hard constraint is broken" ;;
-    *"FAIL client-repo:"*:pass0)   bad "check 0 over-refuses $P; the founder's own project roots must pass it" ;;
-    *:pass0)                       ok "check 0 does not touch the founder's own project roots" ;;
+for SUB in consulting/projects/some_client consulting persona/projects/own_thing; do
+  OUT="$(bash "$PREFLIGHT" "$TMP/$SUB" "" 2>&1)"
+  case "$OUT" in
+    *"FAIL client-repo:"*) bad "check 0 still refuses $SUB as a client path, against RULE-2026-10-30-A" ;;
+    *"FAIL kill-switch:"*) ok "no client-repo refusal for $SUB (it reached the kill switch)" ;;
+    *)                     bad "unexpected preflight output for $SUB: $OUT" ;;
   esac
 done
 

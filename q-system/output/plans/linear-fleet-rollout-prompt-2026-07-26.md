@@ -148,7 +148,7 @@ A sentence in chat is a silent drop.
    you adjusted their instruction toward best practice.**
 2. **Idempotency foundation + its test.** Prove double-run is a no-op. Nothing
    bulk happens before this is green.
-3. **One instance end to end** as the pattern (suggest `4_points_consulting` —
+3. **One instance end to end** as the pattern (suggest `client_a` —
    the production investigation OS, 22 commands, real complexity). Get the shape
    right on one before multiplying by 24.
 4. **The remaining instances**, resumable, committing per instance.

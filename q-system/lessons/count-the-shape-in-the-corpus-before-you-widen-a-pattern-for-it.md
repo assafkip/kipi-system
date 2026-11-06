@@ -7,7 +7,7 @@ date: 2026-08-11
 
 Widening a pattern to be "generous" feels free. It is not. Every alternative added to a pattern is a claim that the alternative occurs and that nothing else in the data looks like it, and both halves are checkable in seconds against the corpus you already have. Skipping that check is how a fix invents a defect while fixing one.
 
-Observed 2026-08-11, in a single change. A parser needed to strip a deal separator glued to a customer name, `3#Barb Donaldson`. The first version accepted `#`, `.`, `)` and `:` as separators, and shipped with a test case reading `#2 Ann Boyle`. Counting the shapes in the message history took one command:
+Observed 2026-08-11, in a single change. A parser needed to strip a deal separator glued to a customer name, `3#Pat Lee`. The first version accepted `#`, `.`, `)` and `:` as separators, and shipped with a test case reading `#2 Sam Casey`. Counting the shapes in the message history took one command:
 
 `N#Name` appeared 25 times. `#N Name` appeared ZERO times, so the test case had been invented rather than observed. `N) Name` and `N: Name` appeared zero times. `N. Name` appeared once, and the single occurrence was `1. Gig` — a PLAN line. Accepting the dot would have made "Gig" a customer name on the client's sheet, creating a new fabricated value while fixing fabricated values.
 

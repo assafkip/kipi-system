@@ -93,10 +93,10 @@ def test_phase5_hitlist_with_cards(verifier, init_log, dirs):
     _, bus_dir = dirs
     _write_bus(bus_dir, "hitlist.json", {
         "actions": [
-            {"rank": 1, "action_type": "comment", "contact_name": "Alice", "copy": "Great post!", "post_url": "https://li.com/1"}
+            {"rank": 1, "action_type": "comment", "contact_name": "Sam", "copy": "Great post!", "post_url": "https://li.com/1"}
         ]
     })
-    init_log.add_card(DATE, "C1", "comment", "Alice", "Great post!", "https://li.com/1")
+    init_log.add_card(DATE, "C1", "comment", "Sam", "Great post!", "https://li.com/1")
     init_log.gate_check(DATE, "phase_5", True)
     result = verifier.check_phase(DATE, 5)
     assert result["pass"] is True
@@ -106,7 +106,7 @@ def test_phase5_hitlist_no_cards(verifier, init_log, dirs):
     _, bus_dir = dirs
     _write_bus(bus_dir, "hitlist.json", {
         "actions": [
-            {"rank": 1, "action_type": "comment", "contact_name": "Alice", "copy": "Great post!", "post_url": "https://li.com/1"}
+            {"rank": 1, "action_type": "comment", "contact_name": "Sam", "copy": "Great post!", "post_url": "https://li.com/1"}
         ]
     })
     init_log.gate_check(DATE, "phase_5", True)
@@ -119,7 +119,7 @@ def test_phase5_fix_logs_cards(verifier, init_log, dirs):
     output_dir, bus_dir = dirs
     _write_bus(bus_dir, "hitlist.json", {
         "actions": [
-            {"rank": 1, "action_type": "comment", "contact_name": "Alice", "copy": "Great post!", "post_url": "https://li.com/1"},
+            {"rank": 1, "action_type": "comment", "contact_name": "Sam", "copy": "Great post!", "post_url": "https://li.com/1"},
             {"rank": 2, "action_type": "DM", "contact_name": "Bob", "copy": "Hey Bob", "profile_url": "https://li.com/bob"},
         ]
     })
@@ -137,7 +137,7 @@ def test_phase5_tier_a_no_connection_requests(verifier, init_log, dirs):
     _, bus_dir = dirs
     _write_bus(bus_dir, "hitlist.json", {
         "actions": [
-            {"rank": 1, "action_type": "comment", "contact_name": "Alice", "copy": "Great post!"}
+            {"rank": 1, "action_type": "comment", "contact_name": "Sam", "copy": "Great post!"}
         ]
     })
     _write_bus(bus_dir, "leads.json", {
@@ -145,7 +145,7 @@ def test_phase5_tier_a_no_connection_requests(verifier, init_log, dirs):
             {"name": "Carol", "tier": "A"}
         ]
     })
-    init_log.add_card(DATE, "C1", "comment", "Alice", "Great post!")
+    init_log.add_card(DATE, "C1", "comment", "Sam", "Great post!")
     init_log.gate_check(DATE, "phase_5", True)
     result = verifier.check_phase(DATE, 5)
     assert any("0 connection requests" in i for i in result["issues"])

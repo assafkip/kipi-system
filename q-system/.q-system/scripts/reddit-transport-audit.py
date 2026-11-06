@@ -135,7 +135,7 @@ _FRAGMENT_TOKENS = {".wt-", "-wt-", "review-trees", ".review-tmp"}
 #
 # `get` is NOT on this list unqualified, and that is the whole design note:
 # a first version included it and immediately condemned
-# `NOISE_HOSTS = {..., "reddit.com", ...}` in Alice's sweep, a CLASSIFICATION
+# `NOISE_HOSTS = {..., "reddit.com", ...}` in client_d's sweep, a CLASSIFICATION
 # set, because the name reaches some `.get(...)` somewhere. `dict.get` and
 # `os.environ.get` are not HTTP.
 _FETCH_CALLS = {

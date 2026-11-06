@@ -569,18 +569,35 @@ with _tempfile.TemporaryDirectory() as _tmp:
 import subprocess as _sp
 
 _repo = Path(__file__).resolve().parents[4]
-_tracked = sorted(
-    Path(p).stem for p in _sp.run(
-        ["git", "-C", str(_repo), "ls-files", "--", "*/com.kipi.*.plist", "com.kipi.*.plist"],
-        capture_output=True, text=True, check=True).stdout.split())
+_tracked_paths = _sp.run(
+    ["git", "-C", str(_repo), "ls-files", "--", "*/com.kipi.*.plist", "com.kipi.*.plist"],
+    capture_output=True, text=True, check=True).stdout.split()
+_tracked = sorted(Path(p).stem for p in _tracked_paths)
 check("git tracks templates outside scripts/ (the fixture can show the gap)",
       any(not (fh.PLIST_TEMPLATE_DIR / f"{l}.plist").is_file() for l in _tracked), True)
+# ASK-1130: a template that declares `kipi-retired:` files no never-installed
+# finding, so "every committed label" means every committed label NOT retired.
+# This assertion and that skip landed in parallel and went red on the merge
+# (validate run 39642449905). The retired set is read with the marker's owner,
+# and anchored to fixed labels both ways, so a reader that called EVERYTHING
+# retired cannot pass by emptying both sides of the comparison.
+_iv_spec = importlib.util.spec_from_file_location(
+    "iv_for_retired", HEALTH.parent / "launchd-intent-verify.py")
+_iv = importlib.util.module_from_spec(_iv_spec)
+_iv_spec.loader.exec_module(_iv)
+_retired = {Path(p).stem for p in _tracked_paths
+            if _iv.declares_retirement((_repo / p).read_text(errors="replace"))}
+check("the four RULE-2026-09-11-A posters are declared retired in the tree",
+      {"com.kipi.morning-brief", "com.kipi.morning-brief-deadman",
+       "com.kipi.morning-inbox", "com.kipi.linear-daily-digest"} <= _retired, True)
+check("the live dispatcher is not read as retired",
+      "com.kipi.dispatch" in _tracked and "com.kipi.dispatch" not in _retired, True)
 with _tempfile.TemporaryDirectory() as _tmp:
     _empty_agents = Path(_tmp)
-    check("the default enumeration reports every git-tracked template",
+    check("the default enumeration reports every git-tracked template not retired",
           sorted(f["subject"] for f in fh.never_installed_findings(
               launch_agents=_empty_agents, paused_labels=["com.kipi.none-paused"])),
-          _tracked)
+          [l for l in _tracked if l not in _retired])
 
 check("launchd-never-installed is registered", "launchd-never-installed" in _by_id, True)
 check("it declares an action",

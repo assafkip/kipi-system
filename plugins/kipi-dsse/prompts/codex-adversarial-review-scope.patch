@@ -1,4 +1,4 @@
-From: KTLYST Strategy <assafkip@gmail.com>
+From: KTLYST Strategy <author@example.com>
 Subject: [PATCH] adversarial-review: honor scope filter, calibrate approval, dampen post-round-1 churn
 
 The adversarial-review prompt currently optimizes for "find something." When a

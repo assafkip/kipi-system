@@ -83,11 +83,11 @@ def _paths(root: Path | None = None) -> dict:
 
 
 # A card line is one client's state, written by state_card.py in his own words, e.g.
-#   🔴 *Alice* · you said "..." — not sent
-#   📞 *2 to reach out* — 🔥 Portant (fire, ...)
+#   🔴 *client-d* · you said "..." — not sent
+#   📞 *2 to reach out* — 🔥 client-h (fire, ...)
 # The emoji is the health verdict and is NOT re-derived here: it is the card's.
 # The `*THE MOVE*` prefix on the top-ranked row is why this does not anchor the emoji
-# to line start. It cost the first smoke run its most important client: Alice was rank 1,
+# to line start. It cost the first smoke run its most important client: client-d was rank 1,
 # carried the prefix, and silently did not parse while six lesser rows did. A parser that
 # drops the FIRST row is worse than one that drops none, because the gap is invisible.
 _CLIENT_LINE = re.compile(
@@ -110,7 +110,7 @@ _THEN_LINE = re.compile(r"^\s+then:\s*(?P<rest>.+)$")
 _THEN_SEP = "·"
 #: The producer's own tail on that line: "+3 more, lowest-scoring, on the board".
 _MORE_SUMMARY = re.compile(r"^\+\s*\d+\s+more\b")
-#: "— 🔥 Portant (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
+#: "— 🔥 client-h (fire, v1 CRM: ...)" -- the person, out of the reach-out header's tail.
 #: A mail key built from sender+subject rather than a thread id. NO PRODUCER EMITS ONE
 #: TODAY: that shape came from the model-era `collect_mail`, and ASK-1323 replaced it
 #: with a read of the consulting ledger, whose every row carries a real thread id. The

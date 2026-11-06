@@ -29,6 +29,12 @@
 #                        next reader picks the wrong code.
 #   4 wall clock      -> inherited: each round is bounded inside the worker
 #                        (1800s work) and the reviewer (2400s review)
+#   3 budget cap      -> the worker exited 3: the usage breaker is holding this
+#                        bot, so the round did NO work by design. Charges no
+#                        attempt and pages nobody. NAMED here rather than left
+#                        to the branch, for the reason the exit-7 line above
+#                        already gives: a contract that lags its code is how the
+#                        next reader picks the wrong code (ASK-2010).
 #
 # Usage: converge.sh --issue ASK-150 [--max-rounds 4] [--dry]
 #
@@ -263,10 +269,17 @@ trap 'on_interrupt HUP  129' HUP
 # TARGET_REPO is already derived at the top of this file from KIPI_TARGET_REPO,
 # the carrier kipi-dispatch.sh sets. The information was here; this line was
 # reading the wrong variable.
+# NEVER THE MAIN CHECKOUT (ASK-3526, PR #579 review). The callers add, commit
+# and reset in the tree this returns. `worktree list` puts the main checkout
+# first, so a human with this branch checked out there would have had a receipt
+# commit and a reset land in their working tree. preflight check 5 no longer
+# refuses a dirty main checkout, so this line is part of what keeps human work
+# out of reach. The main checkout is skipped by position, the one fact git
+# guarantees about it.
 receipt_tree() {
   git -C "$TARGET_REPO" worktree list --porcelain 2>/dev/null \
     | awk -v want="branch refs/heads/$1" \
-        '/^worktree /{p=substr($0,10)} $0==want{print p; exit}'
+        '/^worktree /{n++; p=substr($0,10)} n>1 && $0==want{print p; exit}'
 }
 
 # receipt_append <ledger> <issue> <sha> <verdict-record> <tree-head>
@@ -939,6 +952,28 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     || say "note: could not clear the stale env-halt marker for $ISSUE; see $LOG"
   $WORKER_CMD --apply --limit 1 --issue "$ISSUE" >>"$LOG" 2>&1
   WRC=$?
+
+  # A BRAKED ROUND IS NOT A FAILED ONE (ASK-2010; claude review of PR #472,
+  # major 1). rc=3 is the usage breaker holding this bot: the worker exited
+  # before the fetch, the claim and the worktree, so the round did NO work and
+  # that is deliberate. WRC was read here and spent on two message strings, so a
+  # braked round fell through to the no-PR branch below -- it charged the issue
+  # an attempt and paged "Sana could not open a PR", blaming the agent for work
+  # the fleet's own budget refused. Three of those mark a healthy issue STUCK.
+  #
+  # Same reasoning as the env_halt branch just below, and deliberately a
+  # different code: an exhausted account is the machine being unavailable (9),
+  # an over-share is a budget the fleet chose to enforce (3). The worker,
+  # control.py and this driver all answer 3 for a pause, so no caller has to
+  # parse a message to tell a brake from a break.
+  #
+  # NO PAGE: the breaker files its own single Linear ticket on the way into the
+  # pause and stays quiet while it holds. A second page from here would be one
+  # ticket per round for a condition that is already on the board.
+  if [ "$WRC" -eq 3 ]; then
+    say "$ISSUE was NOT ATTEMPTED: the usage breaker is holding this bot, so the round did no work by design. No attempt is charged and nobody is paged (the breaker files its own ticket); the issue stays retryable and the brake grants a trial run 24h in."
+    exit 3
+  fi
 
   # AN UNATTEMPTED ISSUE IS NOT A FAILED ONE (ASK-873). The worker halts and
   # charges nothing when the RUNNER is unavailable -- an exhausted account is

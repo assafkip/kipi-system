@@ -83,6 +83,8 @@
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
 #                            [--engine claude|codex]
 #         --post also comments the review on the PR and the Linear issue.
+#         On a PUBLIC repo the PR comment is the verdict and finding counts
+#         only, never the review text or the diff (ASK-2893).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -805,13 +807,51 @@ echo "  round: $ROUND (engine: $ENGINE)"
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
 # with findings still arriving). So from round 2 on, the reviewer is told the
 # round and is required to re-prove any finding it wants to raise again.
+# FETCH THE PR FRESH, OUTSIDE THE SANDBOX (2026-10-13). The reviewer is offline
+# on purpose (CODEX_SANDBOX), so the script reads GitHub at review start and the
+# prompt points at these files. A failed fetch is the machine's failure, not a
+# review: exit 9, no status posted (absent is not approved).
+SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
+PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXXX")" || {
+  echo "REFUSING: cannot create a PR context dir under $SCRATCH_BASE. No review ran; no verdict posted." >&2
+  exit 4; }
+if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
+   || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
+  echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
+  command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
+  exit 9
+fi
+if [ "$ROUND" -gt 1 ]; then
+  gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
+  # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the
+  # earlier rounds' findings are not in its comments any more. Without this the
+  # round rule below points the reviewer at a file with no findings in it, and
+  # the anti-re-litigation rule has nothing to apply to. The findings come from
+  # the review files on this machine, through findings_block, the one reader.
+  # The header goes down only over at least one usable round (PR #557 round 1,
+  # minor): a header with nothing under it says earlier findings exist and then
+  # shows none.
+  if [ "$(repo_visibility "$REVIEW_SLUG")" != "PRIVATE" ]; then
+    _EARLIER=""
+    for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+      [ -f "$_f" ] && review_is_usable "$_f" || continue
+      _EARLIER="$_EARLIER
+$(basename "$_f")
+$(findings_block "$_f")
+"
+    done
+    [ -z "$_EARLIER" ] || printf '\n\n--- Earlier rounds of this review, from the review files on this machine. The repository is public, so they are not in the PR comments above. ---\n%s' \
+      "$_EARLIER" >> "$PR_CONTEXT_DIR/comments.txt"
+  fi
+fi
+
 ROUND_RULE=""
 if [ "$ROUND" -gt 1 ]; then
   ROUND_RULE="
 
 ## THIS IS REVIEW ROUND $ROUND OF THIS PR
 
-Earlier rounds are in the PR comments (\`gh ${GH_R_PROMPT}pr view $PR --comments\`). Read them
+Earlier rounds are in the PR comments, fetched for you: $PR_CONTEXT_DIR/comments.txt. Read them
 AFTER you have formed your own read of the code, never before -- your value is
 that you did not inherit anyone's frame.
 
@@ -856,8 +896,12 @@ fail safe for the author -- it just burns a round.
 
 ## Read the change
 
-  gh ${GH_R_PROMPT}pr view $PR
-  gh ${GH_R_PROMPT}pr diff $PR
+The PR was fetched from GitHub when this review started. Under codex the
+sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
+gh cannot reach GitHub there. The fetched copies:
+
+  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
+  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
 
 ## What your fresh eyes are FOR
 
@@ -943,15 +987,22 @@ Then:
 - **VERDICT:** decided by THIS RULE, not by feel:
     - any blocker or major finding      => REQUEST CHANGES (BLOCK only if merging
       as-is would cause permanent or unrecoverable damage)
-    - only minor/nit findings           => APPROVE WITH NITS
+    - EXCEPT a major you mark nonblocking (below): it does not gate, it is a
+      follow-up. Mark a major nonblocking when you would say it is not a blocker
+      for THIS merge, or when it only bites in code the PR states is report-only,
+      dry-run or not yet enforced. Never mark a blocker; a blocker always blocks.
+    - only minor/nit findings, or majors all marked nonblocking => APPROVE WITH NITS
     - no finding survived reproduction  => APPROVE
   A bar this high ALWAYS finds something; that is what APPROVE WITH NITS is for.
-  On APPROVE WITH NITS the pipeline captures every minor as a tracked follow-up,
-  so approving with nits does NOT lose them. Using REQUEST CHANGES to log minors
-  wedges the PR forever and is itself a review defect.
+  On APPROVE WITH NITS the pipeline names every minor in the run log and files
+  every nonblocking major to the spillover ledger as a tracked follow-up with a
+  Linear issue, so approving with nits does NOT lose them. Using REQUEST CHANGES
+  to log minors wedges the PR forever and is itself a review defect.
   State the verdict and the single most important thing to fix first.
 - **Last, a machine-readable findings block**, EXACTLY this shape, one line per
-  finding, empty block if none. The pipeline parses it; keep prose out of it:
+  finding, empty block if none. The pipeline parses it; keep prose out of it.
+  To mark a major nonblocking, end its line with the word nonblocking after
+  file:line (the mark is the trailing |nonblocking, nothing else):
 
 FINDINGS:
 severity|one-sentence claim|file:line
@@ -996,6 +1047,9 @@ review_scratch_cleanup() {
   case "$REVIEW_SCRATCH" in
     "$SCRATCH_BASE"/run.*) command rm -rf -- "$REVIEW_SCRATCH" 2>/dev/null || true ;;
   esac
+  case "${PR_CONTEXT_DIR:-}" in
+    "$SCRATCH_BASE"/ctx.*) command rm -rf -- "$PR_CONTEXT_DIR" 2>/dev/null || true ;;
+  esac
   REVIEW_SCRATCH=""
   # ONLY THIS RUN'S OWN DIR IS DELETED; everything else new is REPORTED.
   # PR #495 took four rounds to rule out each wrong owner of a worktree found by
@@ -1021,11 +1075,106 @@ trap 'release_wt_lock; review_scratch_cleanup' EXIT
 
 # Reap scratch a SIGKILLed run left behind: the EXIT trap does not fire on
 # SIGKILL, and nothing else deletes under SCRATCH_BASE (PR #495 review).
-for _old in "$SCRATCH_BASE"/run.*; do
+for _old in "$SCRATCH_BASE"/run.* "$SCRATCH_BASE"/ctx.*; do
   [ -d "$_old" ] || continue
   [ -n "$(find "$_old" -maxdepth 0 -mmin +720 2>/dev/null)" ] && command rm -rf -- "$_old"
 done
 
+# reap-merged-trees-begin
+# REVIEW TREES OF MERGED OR CLOSED PRs ARE REMOVED AT THE START OF EVERY RUN (ASK-3506).
+# review_worktree keeps one detached tree per (repo, PR) and nothing ever removed
+# one. Measured 2026-10-30: 22 merged consulting PRs each held a 450-500 MB tree
+# (12 GB) and the disk fell to 313 MiB free, which is also how a review dies
+# mid-run with an empty verdict. Only trees whose key this repo's own
+# review_tree_path would produce are candidates, so another repo's tree is never
+# named. FAIL CLOSED: a gh error, an OPEN state, the PR under review, or a live
+# lock holder all leave the tree alone, because a wrongly kept tree costs disk
+# and a wrongly removed one costs a live review its evidence.
+# Temp worktrees under $TMPDIR/tmp.*/wt are only REPORTED: no marker proves which
+# run made them (the PR #495 lesson recorded in review_scratch_cleanup above).
+reap_finished_review_trees() {
+  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0
+  while read -r path sha det; do
+    case "$path" in
+      */review-trees/*__pr-*)
+        n="${path##*__pr-}"
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        expect="$(review_tree_path "$HOME/.config/kipi" "$REVIEW_SLUG" "$n")"
+        # basename compare: git lists PHYSICAL paths (macOS /var is /private/var).
+        [ "${path##*/}" = "${expect##*/}" ] || continue
+        [ "$n" = "$PR" ] && { kept=$((kept+1)); continue; }
+        lock="$path.lock"; holder="$(cat "$lock" 2>/dev/null || true)"
+        if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then kept=$((kept+1)); continue; fi
+        state="$(gh pr view "$n" $KIPI_GH_REPO_ARGS --json state -q .state 2>/dev/null || true)"
+        case "$state" in
+          MERGED|CLOSED)
+            # ASK-3508: `--force` below discards untracked files and removes the
+            # tree under any process standing in it (PR 568 shipped without
+            # either check). A merged PR is not proof the tree is idle: skip a
+            # dirty tree and a tree that is a live process's cwd, say why, and
+            # FAIL CLOSED when lsof is missing or the status read fails.
+            # ASK-3621 (disk 98%, 2026-10-31): 22 of 36 finished consulting trees
+            # (11 GB) were skipped HERE for one reason: untracked q-consult/output/rca
+            # files, byte-identical to files in the repo's own main checkout, appear in
+            # every tree seconds after it is created. So the dirty skip kept every
+            # tree for good and the reaper above freed nothing. A tree is still dirty
+            # when ANY entry is not a plain untracked file, or when an untracked file
+            # is absent from or differs from the main checkout copy: that is work
+            # nobody else holds. Only a provable duplicate may be removed with --force.
+            # NUL records must never pass through $(...), which drops them: the
+            # first cut did, saw one fused record, and removed every dirty tree.
+            # The sentinel makes a failed status read count as NOT a duplicate.
+            force=""; any=0; dup=1
+            while IFS= read -r -d '' rec; do
+              [ -n "$rec" ] || continue
+              any=1; code="${rec:0:2}"; rel="${rec:3}"
+              if [ "$code" != '??' ] || [ ! -f "$path/$rel" ] || [ -L "$path/$rel" ] \
+                 || [ ! -f "$REVIEW_REPO/$rel" ] || ! cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then dup=0; fi
+            done < <(git -C "$path" status --porcelain=v1 -z -uall 2>/dev/null || printf '!!unreadable\0')
+            if [ "$any" = 1 ]; then
+              if [ "$dup" != 1 ]; then
+                echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
+                kept=$((kept+1)); continue
+              fi
+              force="--force"
+            fi
+            if ! command -v lsof >/dev/null 2>&1; then
+              echo "  review-tree skip: PR $n tree kept, lsof missing so live processes cannot be ruled out"
+              kept=$((kept+1)); continue
+            fi
+            cwds="$(lsof -d cwd -Fn 2>/dev/null || true)"
+            if printf '%s\n' "$cwds" | grep -qxF "n$path" || printf '%s\n' "$cwds" | grep -qF "n$path/"; then
+              echo "  review-tree skip: PR $n tree is the cwd of a live process"
+              kept=$((kept+1)); continue
+            fi
+            if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
+              gone=$((gone+1)); [ -n "$force" ] && forced=$((forced+1)); command rm -f "$lock" 2>/dev/null || true
+            else kept=$((kept+1)); fi ;;
+          *) kept=$((kept+1)) ;;
+        esac ;;
+      /tmp/*/wt|/private/tmp/*/wt|/var/folders/*/tmp.*/wt|/private/var/folders/*/tmp.*/wt) unk=$((unk+1)) ;;
+    esac
+  done < <(_wt_rows)
+  git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
+  # ASK-3630 minor: a force-removed tree deleted untracked files for good; say how many.
+  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed: untracked files identical to the main checkout), kept $kept; $unk temp tree(s) of unproven owner left alone"
+}
+# reap-merged-trees-end
+reap_finished_review_trees
+
+# codex-sandbox-begin
+# THE SCRIPT READS GITHUB FOR THE REVIEWER. A reviewer with network AND a
+# logged-in gh, reading a PR author's diff, can be talked into posting
+# kipi/reviewer-approved=success or running gh pr merge itself (independent
+# review of this change, 2026-10-13). The PR is fetched FRESH at review start
+# into PR_CONTEXT_DIR, which the prompt points at. codex runs read-only, which
+# also means offline. The claude engine keeps its network; run_engine blocks the
+# direct `gh` and `curl` Bash calls, which is NOT containment: python3 (allowed
+# in user settings) can still shell out to gh, WebFetch is open, and claude runs
+# inside the PR's worktree so it loads that PR's own .claude/settings.json.
+# Follow-up ASK-2648: no gh token in the claude engine's environment, or no Bash.
+CODEX_SANDBOX="-s read-only"
+# codex-sandbox-end
 run_engine() {   # run_engine <claude|codex> <destination-file>
   if [ -z "$REVIEW_SCRATCH" ]; then
     WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
@@ -1045,12 +1194,19 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
+# THE REVIEWER READS GITHUB THROUGH THE SCRIPT (founder-directed 2026-10-13:
+# "it should still read. That is the only way to stay updated"). With no -s flag
+# codex ran in its default read-only sandbox, which has NO NETWORK: every
+# `gh pr view/diff` it tried since the first codex review on 2026-07-29 failed.
+# The fix is not to give the reviewer the network (see CODEX_SANDBOX above); it
+# is fetch_pr_context, which reads the PR from GitHub when the review starts.
+#
 # --ignore-user-config KEEPS OUR OWN AGENT CONFIG OUT OF THE REVIEWER (sp-cc9955db).
 # Without it, `codex exec` loads THIS FLEET'S config into the reviewer's session.
 # The 2026-08-03 artifact shows it announcing "I'm using the assaf-voice,
@@ -1395,16 +1551,71 @@ PY
 # no-orphan-findings.md requires. Routing that is a change with real Linear inflow
 # and its own blast radius, so it is captured rather than bundled here: sp-74e671a4,
 # filed as ASK-1940.
+# A NONBLOCKING MAJOR IS NOT A MINOR, AND THE TWO ROUTE DIFFERENTLY (ASK-2422,
+# round 1 finding 2). The block above released a major from the gate and then
+# handed it to the minors path, which files nothing BY POLICY and said so in a
+# sentence about minors. So the one severity no-orphan-findings.md requires to be
+# captured -- medium and up -- was the one severity that reached nobody, under a
+# log line calling it a minor. The severity the reviewer chose decides the route:
+#   minor -> named here, not queued (policy: fixed in this change or rejected)
+#   major -> ledger row + Linear capture ticket for Sana, at its real severity
 if [ "$VERDICT" = "APPROVE WITH NITS" ] && [ -n "$ISSUE" ]; then
   MINOR_COUNT=0
-  while IFS='|' read -r _sev claim loc; do
+  NB_MAJOR_COUNT=0
+  NB_MAJOR_CAPTURED=0
+  # findings_row_parts, not `IFS='|' read`: a claim may contain a literal pipe,
+  # and the positional read puts its tail in $loc (pr-verdict-lib.sh row shape).
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    { read -r sev; read -r claim; read -r loc; } < <(findings_row_parts "$row")
     [ -n "$claim" ] || continue
-    MINOR_COUNT=$((MINOR_COUNT+1))
-    echo "  minor $MINOR_COUNT: $claim ($loc)" >&2
+    if [ "$sev" = "major" ]; then
+      NB_MAJOR_COUNT=$((NB_MAJOR_COUNT+1))
+      echo "  nonblocking major $NB_MAJOR_COUNT: $claim ($loc)" >&2
+      # --severity major is the WHOLE POINT of this call and the lesson of
+      # ASK-1921: the severity-less version defaulted to `minor`, which the
+      # runner refuses by policy, so it returned 2 every time and the capture
+      # count was zero by construction. `major` is accepted, so this call can
+      # actually succeed -- and its rc means something.
+      #
+      # NO DoR IS PASSED ON PURPOSE. prd_runner's own note: the DoR is written by
+      # the agent that CONFIRMED the finding, and a later one guesses. This
+      # reviewer did not author the finding, so it files the capture ticket and
+      # leaves the DoR to `spillover needs-dor`, which is Sana's drain.
+      #
+      # cd "$SKEL" because discover_repo_root() reads the CWD, and the reviewer's
+      # CWD is the REVIEWED repo, which need not have a .prd-os/ at all.
+      #
+      # BEHIND THE POST GUARD, unlike everything else in this block. This call
+      # files a real Linear issue, and a dry run that mutates the ledger is the
+      # defect sp-8424aa32 already names against this very file. A dry run says
+      # what it WOULD file and files nothing.
+      if [ "$POST" != "1" ]; then
+        echo "    WOULD CAPTURE (dry run): spillover add --severity major -- $claim ($loc)" >&2
+      elif CAP_OUT="$( (cd "$SKEL" && python3 "$SKEL/plugins/prd-os/scripts/prd_runner.py" \
+            spillover add --source "$ISSUE" --severity major \
+            --desc "PR #$PR review, nonblocking major: $claim ($loc)") 2>&1 )"; then
+        NB_MAJOR_CAPTURED=$((NB_MAJOR_CAPTURED+1))
+        echo "    captured: $CAP_OUT" >&2
+      else
+        # A FAILED capture IS a state change worth paging: a released major that
+        # reached no ledger and no issue is exactly the orphan the rule forbids.
+        # This is not the ASK-1921 cry-wolf shape -- that alarm fired on a 100%
+        # policy refusal with nothing down. This one fires only on a real failure.
+        echo "    UNCAPTURED major: $claim ($loc) -- rc nonzero${CAP_OUT:+: $CAP_OUT}" >&2
+        bash "$NOTIFY" "reviewer: PR #$PR released a nonblocking major on $ISSUE and the spillover capture FAILED${CAP_OUT:+ ($CAP_OUT)}. The finding is on the PR only; nothing queued it." 2>/dev/null || true
+      fi
+    else
+      MINOR_COUNT=$((MINOR_COUNT+1))
+      echo "  $sev $MINOR_COUNT: $claim ($loc)" >&2
+    fi
   done <<EOF
-$(extract_minor_findings "$REVIEW")
+$(extract_followup_findings "$REVIEW")
 EOF
   echo "  ${MINOR_TAG}review minors on a terminal verdict: $MINOR_COUNT"
+  if [ "$NB_MAJOR_COUNT" -gt 0 ]; then
+    echo "  ${MINOR_TAG}nonblocking majors on a terminal verdict: $NB_MAJOR_COUNT (captured: $NB_MAJOR_CAPTURED)"
+  fi
   if [ "$MINOR_COUNT" -gt 0 ]; then
     echo "  UNROUTED: the $MINOR_COUNT minor(s) above got a terminal APPROVE WITH NITS, so the rework loop stops here. The spillover ledger refuses a minor by policy -- it is fixed in this change or rejected with a reason (no-orphan-findings.md) -- so nothing files them. They are on PR #$PR and in the FINDINGS block on $ISSUE. Owner for the fix-or-reject routing: ASK-1940." >&2
   fi
@@ -1511,11 +1722,31 @@ if [ "$POST" = "1" ]; then
   # time, and post a self-copy of the wreckage. A degraded path may post something
   # worse; it may never eat the artifact.
   REVIEW_BODY="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment.XXXXXX" 2>/dev/null)" || REVIEW_BODY=""
+  # A PUBLIC REPO GETS COUNTS, NEVER THE REVIEW (ASK-2893). The rendered review
+  # below replays the diff, and on public kipi-system that put 188 term-carrying
+  # comments on public PRs; a scrub PR leaked the terms it was removing. Asked
+  # HERE, at post time, not once at the top of the run: a review takes minutes,
+  # and a stale PRIVATE is the one answer that leaks. repo_visibility fails
+  # closed, so a lookup that errors posts the summary. The commit status below
+  # is untouched either way: the gate must not depend on what the comment may say.
+  REPO_VISIBILITY="$(repo_visibility "$REVIEW_SLUG")"
   # POST_FILE is what gh sends; REVIEW_BODY is only ever a file WE created. Keeping
   # them separate is what makes the degraded path safe: with no temp file we post
   # the raw review unchanged and write nothing, instead of redirecting into the
   # artifact we are trying to read.
-  if [ -n "$REVIEW_BODY" ]; then
+  if [ "$REPO_VISIBILITY" != "PRIVATE" ]; then
+    # Never the raw-review fallback here: with no temp file a public repo gets no
+    # comment at all, and the status still lands.
+    POST_FILE=""
+    if [ -n "$REVIEW_BODY" ]; then
+      review_public_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" \
+        "$SCRIPT_DIR/client-name-guard.py" >"$REVIEW_BODY"
+      POST_FILE="$REVIEW_BODY"
+      echo "  public repo (${REVIEW_SLUG:-slug unresolved}): posting the verdict and finding counts only; the review stays at $REVIEW"
+    else
+      echo "  WARN: public repo and no temp file for the summary; posting NO comment (the raw review never goes on a public PR)" >&2
+    fi
+  elif [ -n "$REVIEW_BODY" ]; then
     review_comment_body "$REVIEW" "$VERDICT" "$ENGINE" "$DEGRADED" >"$REVIEW_BODY"
     POST_FILE="$REVIEW_BODY"
   else
@@ -1526,7 +1757,9 @@ if [ "$POST" = "1" ]; then
   # between a size rejection, an auth failure and a closed PR -- the same
   # discard-the-reason defect PR #46 fixed one call lower down.
   COMMENT_ERR="$(mktemp "${TMPDIR:-/tmp}/pr-review-comment-err.XXXXXX" 2>/dev/null)" || COMMENT_ERR=/dev/null
-  if COMMENT_URL="$(gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
+  if [ -z "$POST_FILE" ]; then
+    COMMENT_URL=""
+  elif COMMENT_URL="$(gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body-file "$POST_FILE" 2>"$COMMENT_ERR")"; then
     echo "  posted to PR #$PR ($(wc -c <"$POST_FILE" | tr -d ' ') bytes rendered from $(wc -c <"$REVIEW" | tr -d ' '))"
   else
     COMMENT_URL=""

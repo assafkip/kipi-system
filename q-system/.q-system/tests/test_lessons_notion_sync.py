@@ -239,7 +239,8 @@ def test_the_nightly_job_runs_the_sync_after_publish_and_it_is_non_fatal():
     job = (HERE.parent / "scripts" / "lessons-daily.sh").read_text()
     assert "lessons_notion_sync.py" in job
     assert job.index("lessons_notion_sync.py") > job.index("KIPI_PERSIST_CMD"), "after publish"
-    assert job.index("lessons_notion_sync.py") < job.index('if [ "$PUB" -gt 0 ]; then'), "before propagation"
+    # The propagation branch; its condition gained the PR-mode clause (ASK-2736).
+    assert job.index("lessons_notion_sync.py") < job.index('[ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then'), "before propagation"
     assert "notion sync failed" in job, "a Notion outage must not fail the lessons job"
 
 

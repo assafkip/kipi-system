@@ -46,9 +46,9 @@ class SentenceInitialCaps(unittest.TestCase):
         self.assertTrue(found, "a lowercase paragraph opener must be caught")
 
     def test_lowercase_after_period_is_flagged(self):
-        found = lint_text("The form runs on Railway. angus set it up.\n")
+        found = lint_text("The form runs on Railway. pat set it up.\n")
         self.assertEqual(len(found), 1)
-        self.assertIn("angus", found[0]["detail"])
+        self.assertIn("pat", found[0]["detail"])
 
     def test_correctly_capitalized_prose_is_clean(self):
         found = lint_text(
@@ -76,7 +76,7 @@ class BareI(unittest.TestCase):
 
 
 class ProperNouns(unittest.TestCase):
-    NOUNS = ["Blue Peak", "Brightspeed", "Railway", "Angus", "GroupMe"]
+    NOUNS = ["Red Cedar", "Brindlecove", "Railway", "Pat", "GroupMe"]
 
     def test_lowercase_proper_noun_is_flagged(self):
         found = lint_text(
@@ -86,13 +86,13 @@ class ProperNouns(unittest.TestCase):
 
     def test_multiword_proper_noun_is_flagged(self):
         found = lint_text(
-            "I need the blue peak message format.\n", proper_nouns=self.NOUNS
+            "I need the red cedar message format.\n", proper_nouns=self.NOUNS
         )
-        self.assertTrue(any("Blue Peak" in v["detail"] for v in found))
+        self.assertTrue(any("Red Cedar" in v["detail"] for v in found))
 
     def test_correct_casing_is_clean(self):
         found = lint_text(
-            "I need the Blue Peak message format from GroupMe.\n",
+            "I need the Red Cedar message format from GroupMe.\n",
             proper_nouns=self.NOUNS,
         )
         self.assertEqual(found, [])
@@ -139,7 +139,7 @@ class FalsePositivesFoundInTheFleetSweep(unittest.TestCase):
         self.assertEqual(found, [], "a ? inside a quoted span does not end a sentence")
 
     def test_b_line_numbers_are_reported_against_the_source_file(self):
-        text = "```\ncode\ncode\ncode\n```\n\nThe form is live.\n\nangus set it up.\n"
+        text = "```\ncode\ncode\ncode\n```\n\nThe form is live.\n\npat set it up.\n"
         found = lint_text(text)
         self.assertEqual(len(found), 1)
         self.assertEqual(
@@ -156,13 +156,13 @@ class FalsePositivesFoundInTheFleetSweep(unittest.TestCase):
     def test_c_a_real_new_sentence_after_a_wrap_is_still_caught(self):
         text = (
             "Recurring weekly mechanism to advertise the AI skill set. It runs\n"
-            "weekly. angus owns it.\n"
+            "weekly. pat owns it.\n"
         )
         found = lint_text(text)
-        self.assertTrue(any("angus" in v["detail"] for v in found))
+        self.assertTrue(any("pat" in v["detail"] for v in found))
 
     def test_c_paragraph_opener_after_a_blank_line_is_still_caught(self):
-        text = "The form is live.\n\nangus set it up.\n"
+        text = "The form is live.\n\npat set it up.\n"
         self.assertTrue(lint_text(text))
 
 

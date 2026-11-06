@@ -37,7 +37,7 @@ EXEMPLAR_KINDS = ("post", "article-excerpt", "article", "comment", "dm", "email"
 # opens as a result. `check_pools`, `CHECKED_SLOTS` and `check_budget` each
 # iterate ("linkedin", "x") by name, so a wider allowlist creates no additional
 # pool that has to meet MIN_ROWS_PER_POOL.
-EXEMPLAR_CHANNELS = ("linkedin", "x", "substack", "medium", "reddit", "any")
+EXEMPLAR_CHANNELS = ("linkedin", "x", "threads", "substack", "medium", "reddit", "any")
 
 
 def read_jsonl(path):

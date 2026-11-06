@@ -18,10 +18,10 @@ question "did I read the whole file, and is what I read real?":
 
 | Instance | Path | Coverage counting | Provenance integrity | Formats |
 |----------|------|-------------------|----------------------|---------|
-| QEP (`Pure_spectrum_Q`) | `.../qep_agent` | STRONG (attempted/captured/`truncated`, `UnreadFileError` reconciliation, fail-closed crediting) | none | csv/xlsx/docx/txt/zip |
+| the client-b tool (`client_b`) | `.../client_b` | STRONG (attempted/captured/`truncated`, `UnreadFileError` reconciliation, fail-closed crediting) | none | csv/xlsx/docx/txt/zip |
 | product (`ktlyst-hub/product`) | `ktlyst_v2/ingestion` | WEAK (no receipt, silent `max_pages` cap, empty-engine short-circuit) | STRONG (page-anchored `block_id` per unit, construction-site grounding gate, verbatim source-derivation) | pdf only |
 | kipi-investigations (`intel/...`) | `investigations/ingest` | none (8 silent-loss modes, audited) | none | pdf/docx/xlsx/csv/md/txt |
-| 4_points (`consulting/...`) | ad-hoc per-case + `pdf-extract.py` | half (PDF page-token manifest, buried) | none | pdf-ish, per-case |
+| client_a (`consulting/...`) | ad-hoc per-case + `pdf-extract.py` | half (PDF page-token manifest, buried) | none | pdf-ish, per-case |
 
 Two consequences the founder named (2026-07-06): (1) each tool loses evidence a
 different way, and (2) they DRIFT — a capability added to one never reaches the
@@ -29,7 +29,7 @@ others. For a fleet of investigation/extraction tools where the whole value is
 "we read everything and every claim traces to real evidence," divergent
 ingestion is a credibility hole that widens with every independent change.
 
-No single tool has the complete answer. QEP proves "we read every unit." The
+No single tool has the complete answer. The client-b tool proves "we read every unit." The
 product proves "every unit we kept is real and every citation traces to one."
 The complete receipt is BOTH, and today it lives in neither.
 
@@ -38,7 +38,7 @@ The complete receipt is BOTH, and today it lives in neither.
 - ONE canonical ingestion-coverage contract, defined once in the skeleton,
   imported by all four instances, so their capabilities are identical and cannot
   silently diverge.
-- The contract combines the two proven halves: QEP's attempted-vs-captured
+- The contract combines the two proven halves: the client-b tool's attempted-vs-captured
   counting + reconciliation-fails-loud, AND the product's per-unit addressable
   provenance + construction-site grounding gate.
 - Distribution rides the existing `kipi update` channel; a deterministic
@@ -65,7 +65,7 @@ The complete receipt is BOTH, and today it lives in neither.
 A single module (canonical in the skeleton). Two composable layers:
 
 ```
-# Layer 1 — COUNTING (from QEP): did we read every unit?
+# Layer 1 — COUNTING (from the client-b tool): did we read every unit?
 @dataclass ReadResult:
     unit: str            # "page" | "sheet" | "row" | "fenced_block" | "doc_part"
     attempted: int       # units the source actually contains (source-truth)
@@ -74,7 +74,7 @@ A single module (canonical in the skeleton). Two composable layers:
     dropped: list[Drop]  # one entry per dropped unit, WITH a reason
     def recall(self) -> float   # captured/attempted (1.0 if attempted == 0)
 
-# reconciliation gate (from QEP's UnreadFileError): every enumerated unit must
+# reconciliation gate (from the client-b tool's UnreadFileError): every enumerated unit must
 # have a result or reconcile() raises and names the miss. No silent skip.
 def reconcile(enumerated: list[UnitId], results: list[ReadResult]) -> None
 
@@ -93,7 +93,7 @@ def ground(reference_block_id: str, read_blocks: dict[str, Block]) -> Block
 
 The two layers are the complete receipt only together: Layer 1 counts what was
 read; Layer 2 proves each counted unit is real and every citation traces back to
-one. QEP contributes Layer 1, the product contributes Layer 2, and the shared
+one. the client-b tool contributes Layer 1, the product contributes Layer 2, and the shared
 contract is the first place both exist at once.
 
 ### Reader primitives
@@ -124,10 +124,10 @@ planted loss; each adopter re-runs it against its own wiring.
 
 ## Alternatives considered
 
-- **Let each tool port QEP independently** (the earlier plan) — Rejected: three
+- **Let each tool port the client-b tool independently** (the earlier plan) — Rejected: three
   copies diverge the first time one changes; that is the exact drift the founder
   called out. One canonical source is the only structural fix.
-- **Adopt QEP's contract as-is** — Rejected: QEP has no provenance layer. The
+- **Adopt the client-b tool's contract as-is** — Rejected: the client-b tool has no provenance layer. The
   product audit showed the receipt is incomplete without per-unit `block_id` +
   the grounding gate. Best-of-breed beats best-single.
 - **Publish a pip package instead of skeleton-sync** — Considered, not chosen
@@ -144,7 +144,7 @@ planted loss; each adopter re-runs it against its own wiring.
   every instance; the `--check` confirms each instance now matches canonical.
   No per-tool reimplementation, no drift.
 - **An instance hand-edits its copy.** An analyst tweaks the ingest module inside
-  4_points directly. The `--check` required_check fails on the next run/commit,
+  client_a directly. The `--check` required_check fails on the next run/commit,
   naming the drifted file, forcing the change back to canonical.
 - **The product gains docx/xlsx.** The product is PDF-only today. Adopting the
   shared readers gives it docx/xlsx/csv coverage with the receipt + provenance
@@ -161,10 +161,10 @@ planted loss; each adopter re-runs it against its own wiring.
   ... critical they are always on the same page with their capabilities").
 - **Distribution = skeleton module + kipi update + `--check` drift blocker.**
   `[USER-DIRECTED]` (2026-07-06, AskUserQuestion).
-- **Contract = QEP counting + product provenance (best-of-breed).** Rationale:
+- **Contract = the client-b tool counting + product provenance (best-of-breed).** Rationale:
   two audits proved neither tool has the complete receipt alone.
   `[CLAUDE-RECOMMENDED -> pending review]`.
-- **Four adopters.** kipi-investigations, QEP, 4_points, product. Product
+- **Four adopters.** kipi-investigations, the client-b tool, client_a, product. Product
   inspection cleared by founder (cluster preflight, 2026-07-06). `[USER-DIRECTED]`.
 
 ## Risks and rollback

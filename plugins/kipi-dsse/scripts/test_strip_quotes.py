@@ -3,7 +3,7 @@
 History: a `_strip_surrounding_quote_pair` helper once truncated bypass_check
 commands that legitimately end in a quote (e.g. `grep -rnE 'foo'`). The fix
 removed quote-stripping entirely, so the helper no longer exists; this test was
-recovered as a dead import during the qep-wiring-sweep and rewritten to guard
+recovered as a dead import during the client-b-wiring-sweep and rewritten to guard
 the SAME concern against current code: `_parse_yaml_block` must preserve a
 bypass_check value verbatim, including inner/trailing quotes, never truncating.
 """

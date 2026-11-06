@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily worktree reaper and disk-floor alarm (ASK-2882).
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. kipi update arms it (ASK-1130).
+     Install by hand: bash q-system/.q-system/scripts/install-plist.sh com.kipi.worktree-reaper
+
+     WHY. 2026-10-22 the disk reached 0 bytes free under 14 GB of finished agent
+     worktrees that nothing ever removed. This removes the clean, idle, merged
+     ones with `git worktree remove` (never rm), then files one Linear alert when
+     free space is still under the floor in worktree-reaper.json.
+
+     04:10, when no agent is normally working, so the "a process is in it" check
+     rarely has to keep a finished tree for another day. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kipi.worktree-reaper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>__KIPI_REPO__/q-system/.q-system/scripts/worktree-reaper.py</string>
+    <string>--apply</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>10</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.config/kipi/worktree-reaper.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.config/kipi/worktree-reaper.err</string>
+  <key>WorkingDirectory</key>
+  <string>__KIPI_REPO__</string>
+</dict>
+</plist>

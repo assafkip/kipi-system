@@ -109,7 +109,7 @@ plugins/*/dist/
 .playwright-mcp/
 q-system/output/.update-check-*
 
-# Codex CLI local config. Holds real credentials -- Pure_spectrum_Q's
+# Codex CLI local config. Holds real credentials -- client_b's
 # .codex/config.toml carries an apify-token, which gitleaks correctly refused
 # to let through on 2026-07-25. Machine-local tool config, never repo content.
 .codex/
@@ -166,6 +166,12 @@ q-system/output/.update-check-*
 # dirty-tree guard refused all three on every run (ASK-605). kipi-update.sh
 # untracks whatever this stanza ignores; the managed block keeps it untracked.
 .claude/state/
+# prd-os flock targets beside its ledgers. Ignored at the skeleton root since
+# sp-a21cb27c, but never shipped, so instances carry them untracked. Measured
+# 2026-10-30: two dispatch-enabled repos were refused by preflight's dirty check
+# with a stray .prd-os/spillover.jsonl.lock among the changes (ASK-3526).
+.prd-os/*.lock
+.prd-os/.judgments.lock
 # <<< kipi-instance-local-stanza <<<
 
 # PR-review scratch trees. 537 of these files were swept into the repo by an
@@ -196,3 +202,18 @@ q-system/output/.update-check-*
 # without this rule every held lesson was committed and pushed. They stay on
 # the machine that wrote them. The ledger (.processed.json) is still tracked.
 /lesson-candidates/held-*.md
+
+# Private data that sat in this PUBLIC repo until ASK-2058 (2026-10-22). Untracked,
+# kept on the machine that owns it, and ignored so an auto-commit cannot add it
+# back: a list of real people, and two rollback records of a finished reorg that
+# name client instance paths. (The voice corpus and client run files under
+# q-system/output/ were already covered by the output/** rule.)
+/q-system/my-project/relationships.md
+/scripts/persona-reorg-manifest-consulting.json
+/instance-registry.json.persona-reorg.bak
+
+# ASK-3405/3483: per-machine voice-refresh state (lookback stamp, delta markers). A tracked copy would ship one machine's bound to the fleet.
+automation/.voice-refresh-last
+automation/.voice-delta-pending
+automation/.voice-delta-answered
+automation/.voice-delta-alerted

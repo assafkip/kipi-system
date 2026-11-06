@@ -100,9 +100,13 @@ ok "a quoted, refuted prior-round block does not set the verdict"
 ok "a refuting round 2 still resolves to APPROVE under the fail-closed rule"
 
 # --- 3. the minors captured must be the minors the verdict came from ----------
-# extract_minor_findings feeds `spillover add`, which writes PERMANENT ledger
-# items. Reading a different block than the verdict came from files follow-ups
+# The follow-up extractors feed the terminal-verdict log, and -- for a nonblocking
+# major -- `spillover add`, which writes a PERMANENT ledger item and a Linear issue
+# (ASK-2422). Reading a different block than the verdict came from files follow-ups
 # for findings that were withdrawn, and the standing gate then stays red on them.
+# extract_minor_findings has no production caller since ASK-2422 replaced it with
+# extract_followup_findings at the one call site; its block-selection behaviour is
+# still the shared one, which is what these cases pin.
 cat > "$W/multi-minors.md" <<'EOF'
 Round 1 raised:
 

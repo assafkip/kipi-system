@@ -17,122 +17,122 @@ Same relative PATH, different file contents. `kipi update` rsyncs these, so they
 
 | Content hash | Repos |
 | -- | -- |
-| `095a93f0adac` | 23: `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `ktlyst`, `ktlyst-website`, `ktlyst_lawyer`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
+| `095a93f0adac` | 23: `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `ktlyst`, `ktlyst-website`, `ktlyst_lawyer`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
 | `df488d7eb5c0` | 1: `kipi-system` |
 
 ### `.claude/commands/q-begin.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `6050bdfd7c61` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `6050bdfd7c61` | 3: `client_a`, `client_d`, `investigations` |
 | `16c6483f9530` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-end.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `cf8429de1b84` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `cf8429de1b84` | 3: `client_a`, `client_d`, `investigations` |
 | `2fbde51f0f07` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-debrief.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `dbdbf5629e7c` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `dbdbf5629e7c` | 3: `client_a`, `client_d`, `investigations` |
 | `201d88ecdc49` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-checkpoint.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `3e801cb197d9` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `3e801cb197d9` | 3: `client_a`, `client_d`, `investigations` |
 | `0d6781b3be47` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-handoff.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `711c568eaaeb` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `711c568eaaeb` | 3: `client_a`, `client_d`, `investigations` |
 | `8ba5da79a8b1` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-status.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `68fa621c9bc6` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `68fa621c9bc6` | 3: `client_a`, `client_d`, `investigations` |
 | `0866933bb948` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-challenge.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `439b708943ba` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `439b708943ba` | 3: `client_a`, `client_d`, `investigations` |
 | `eb0541a3ff10` | 1: `ASK_AI_consultant` |
 
 ### `.claude/commands/q-reality-check.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `a222dcff55e3` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `a222dcff55e3` | 3: `client_a`, `client_d`, `investigations` |
 | `50994c84ac54` | 1: `KTLYST_strategy` |
 
 ### `.claude/commands/q-screenshots.md` in 4 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `f60ba441dde9` | 3: `4_points_consulting`, `Alice`, `investigations` |
+| `f60ba441dde9` | 3: `client_a`, `client_d`, `investigations` |
 | `36dc1c9e2787` | 1: `ASK_AI_consultant` |
 
 ### `.claude/rules/evidence-capture-protocol.md` in 3 repos, 3 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `79aec127bf30` | 1: `4_points_consulting` |
-| `1a1b1e2674b2` | 1: `Alice` |
+| `79aec127bf30` | 1: `client_a` |
+| `1a1b1e2674b2` | 1: `client_d` |
 | `e9f11c1fb928` | 1: `investigations` |
 
 ### `.claude/rules/q-investigation.md` in 3 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `5b0ae57180e0` | 2: `4_points_consulting`, `Alice` |
+| `5b0ae57180e0` | 2: `client_a`, `client_d` |
 | `5f3ccbf35a7e` | 1: `investigations` |
 
 ### `q-investigate/skills/osint/SKILL.md` in 3 repos, 3 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `6e1ea00c7d34` | 1: `4_points_consulting` |
-| `8ed8de7f98a4` | 1: `Alice` |
+| `6e1ea00c7d34` | 1: `client_a` |
+| `8ed8de7f98a4` | 1: `client_d` |
 | `e61c06433e4c` | 1: `investigations` |
 
 ### `.claude/agents/q-researcher.md` in 3 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `b31ae17fb66f` | 2: `4_points_consulting`, `Alice` |
+| `b31ae17fb66f` | 2: `client_a`, `client_d` |
 | `9040f47c52a5` | 1: `ASK_AI_consultant` |
 
 ### `q-investigate/skills/osint/scripts/render-report.py` in 3 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `c00f5446329a` | 2: `4_points_consulting`, `investigations` |
-| `6e5fcf5ad1f2` | 1: `Alice` |
+| `c00f5446329a` | 2: `client_a`, `investigations` |
+| `6e5fcf5ad1f2` | 1: `client_d` |
 
 ### `.claude/rules/instance-conventions.md` in 2 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `62acf4f232c1` | 1: `4_points_consulting` |
-| `91ddb4f6c037` | 1: `Alice` |
+| `62acf4f232c1` | 1: `client_a` |
+| `91ddb4f6c037` | 1: `client_d` |
 
 ### `q-investigate/skills/osint/scripts/extract-intake.py` in 2 repos, 2 distinct versions
 
 | Content hash | Repos |
 | -- | -- |
-| `e74bea77c70b` | 1: `4_points_consulting` |
-| `d19d680eff85` | 1: `Alice` |
+| `e74bea77c70b` | 1: `client_a` |
+| `d19d680eff85` | 1: `client_d` |
 
 ### `.claude/commands/q-morning.md` in 2 repos, 2 distinct versions
 
@@ -316,52 +316,52 @@ These have exactly one instance in the world. Two writers is a silent corruption
 | launchd | `com.kipi.lessons-daily.plist` | `ASK_AI_consultant`, `gtm-partner`, `kipi-system` |
 | launchd | `com.kipi.openloops-heartbeat` | `ASK_AI_consultant`, `gtm-partner`, `investigations`, `kipi-system` |
 | launchd | `com.kipi.openloops-heartbeat.plist` | `ASK_AI_consultant`, `gtm-partner`, `investigations`, `kipi-system` |
-| slack-webhook | `slack-webhook` | `ASK_AI_consultant`, `Pure_spectrum_Q`, `fractional-cxo`, `gtm-partner`, `investigations`, `kipi-system` |
+| slack-webhook | `slack-webhook` | `ASK_AI_consultant`, `client_b`, `fractional-cxo`, `gtm-partner`, `investigations`, `kipi-system` |
 
 ## DUPLICATE: same content, not a propagation
 
 | Capability | Repos |
 | -- | -- |
-| `engine-core` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `reddit-build-radar`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-anti-misclassification` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-audhd-interaction` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-auto-detection` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-coding-audhd` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-coding-standards` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-content-output` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-design-auto-invoke` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-dev-skills-auto-invoke` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-dogfood-gate` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-fable-discipline-auto-invoke` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-folder-structure` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-founder-notifications` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-loop-exits` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-marketing-system` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-md-hygiene` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-memory-confidence` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-memory-freshness` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-model-allocation` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-morning-pipeline` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-no-orphan-findings` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-quick-plan` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-rca-mode` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-security` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-self-healing-retry` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-skill-hook-pairing` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-social-reaction-gate` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-sycophancy-core` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-sycophancy` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-token-discipline` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-voice-enforcement` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `rule-wiring-check` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-amend` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-closeout` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-verify` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-approve` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-start` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-issue-review` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-rca-start` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
-| `command-voice-refresh` | `4_points_consulting`, `ASK_AI_consultant`, `AUDHD_KIDS`, `Alice`, `KTLYST_strategy`, `Prodigy_Gold`, `Pure_spectrum_Q`, `accountant`, `all_points_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `norri ai`, `personal-brand`, `school-negotiator`, `thaena`, `travel-agent` |
+| `engine-core` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `reddit-build-radar`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-anti-misclassification` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-audhd-interaction` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-auto-detection` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-coding-audhd` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-coding-standards` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-content-output` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-design-auto-invoke` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-dev-skills-auto-invoke` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-dogfood-gate` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-fable-discipline-auto-invoke` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-folder-structure` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-founder-notifications` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-loop-exits` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-marketing-system` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-md-hygiene` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-memory-confidence` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-memory-freshness` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-model-allocation` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-morning-pipeline` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-no-orphan-findings` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-quick-plan` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-rca-mode` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-security` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-self-healing-retry` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-skill-hook-pairing` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-social-reaction-gate` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-sycophancy-core` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-sycophancy` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-token-discipline` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-voice-enforcement` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `rule-wiring-check` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-amend` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-closeout` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-verify` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-approve` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-start` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-issue-review` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-rca-start` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
+| `command-voice-refresh` | `client_a`, `ASK_AI_consultant`, `family_repo`, `client_d`, `KTLYST_strategy`, `client_c`, `client_b`, `accountant`, `client_a_setup`, `event_coordinator`, `fractional-cxo`, `gtm-partner`, `interview-coach`, `investigations`, `kipi-system`, `ktlyst-website`, `ktlyst_lawyer`, `ktlyst`, `negotiator`, `client_f`, `personal-brand`, `school-negotiator`, `client_e`, `travel-agent` |
 
 ## ORPHAN: local-only, promotion candidates
 
@@ -375,12 +375,12 @@ These have exactly one instance in the world. Two writers is a silent corruption
 | `ASK_AI_consultant` | 109 |
 | `KTLYST_strategy` | 71 |
 | `kipi-system` | 27 |
-| `4_points_consulting` | 23 |
+| `client_a` | 23 |
 | `reddit-build-radar` | 20 |
-| `Alice` | 11 |
-| `Pure_spectrum_Q` | 7 |
+| `client_d` | 11 |
+| `client_b` | 7 |
 | `fractional-cxo` | 4 |
-| `AUDHD_KIDS` | 3 |
+| `family_repo` | 3 |
 | `interview-coach` | 2 |
 | `accountant` | 1 |
 | `negotiator` | 1 |

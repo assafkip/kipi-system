@@ -134,7 +134,7 @@ class TestValidateScheduleOrdering:
     def test_pipeline_before_leads_passes(self, linter):
         sections = [
             _make_section("pipeline-followups", "Follow-ups", [
-                _make_item("f1", "Call Alice", copy_text="Hey Alice"),
+                _make_item("f1", "Call Sam", copy_text="Hey Sam"),
                 _make_item("f2", "Call Bob", copy_text="Hey Bob"),
                 _make_item("f3", "Call Carol", copy_text="Hey Carol"),
             ]),

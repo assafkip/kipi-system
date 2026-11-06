@@ -78,7 +78,7 @@ def test_insert_content_metrics_unique_constraint(store):
 def test_insert_behavioral_signals(store):
     today = datetime.now().strftime("%Y-%m-%d")
     signals = [{
-        "contact_name": "Alice", "signal_type": "profile_view",
+        "contact_name": "Sam", "signal_type": "profile_view",
         "signal_date": today, "source": "linkedin", "weight": 3,
     }]
     result = store.insert_behavioral_signals(signals)
@@ -86,7 +86,7 @@ def test_insert_behavioral_signals(store):
 
     rows = store.query_behavioral_signals(days=1)
     assert len(rows) == 1
-    assert rows[0]["contact_name"] == "Alice"
+    assert rows[0]["contact_name"] == "Sam"
 
 
 def test_insert_outreach_log(store):
@@ -152,7 +152,7 @@ def test_query_content_performance_platform_filter(store):
 
 def test_query_outreach_stats(store):
     today = datetime.now().strftime("%Y-%m-%d")
-    store.insert_outreach_log("Alice", "email", "cold_email", "hi", today)
+    store.insert_outreach_log("Sam", "email", "cold_email", "hi", today)
     store.insert_outreach_log("Bob", "linkedin", "dm", "hey", today)
     store.insert_outreach_log("Carol", "email", "follow_up", "bump", today)
 

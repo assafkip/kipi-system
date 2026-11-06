@@ -105,7 +105,7 @@ class TestBootstrap:
     def test_recovers_action_cards(self, paths):
         log = {
             "action_cards": [
-                {"id": "c1", "confirmed": False, "text": "Follow up with Alice"},
+                {"id": "c1", "confirmed": False, "text": "Follow up with Sam"},
                 {"id": "c2", "confirmed": True, "text": "Done"},
             ]
         }
@@ -130,11 +130,11 @@ class TestBootstrap:
 
     def test_stall_detection(self, paths):
         old_date = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
-        content = f"## Alice\n- Company: Acme\n- Last contact: {old_date}\n"
+        content = f"## Sam\n- Company: Acme\n- Last contact: {old_date}\n"
         _create_file(paths.my_project_dir / "relationships.md", content)
         result = session_bootstrap(paths)
         assert len(result["stalls"]) == 1
-        assert result["stalls"][0]["contact"] == "Alice"
+        assert result["stalls"][0]["contact"] == "Sam"
         assert result["stalls"][0]["days_stale"] >= 20
 
     def test_canonical_checksums(self, paths):

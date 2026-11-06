@@ -17,7 +17,7 @@ Measured, not assumed:
                                        WAF-blocked and FORBIDDEN. That lane goes
                                        through the Chrome extension and this
                                        module must never be pointed at it.
-  Alice/harvest_discussions.py,        NodeSeek 403s a plain GET AND headless
+  client_d/harvest_discussions.py,     NodeSeek 403s a plain GET AND headless
   measured 2026-08-27                  Chrome, and loads fully in a real browser
                                        with no login at all.
 

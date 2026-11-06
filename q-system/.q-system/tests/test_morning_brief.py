@@ -302,11 +302,11 @@ def test_calendar_collector_reports_unparseable_output(brief):
 
 def test_calendar_collector_parses_events(brief):
     payload = json.dumps({"events": [
-        {"start": "09:00", "title": "Chris PI sync", "who": ["chris"]}]})
+        {"start": "09:00", "title": "Pat weekly sync", "who": ["pat"]}]})
     rows, error = brief.collect_calendar(NOW, runner=lambda p, t: (payload, None))
     assert error is None
     assert len(rows) == 1
-    assert "Chris PI sync" in rows[0]
+    assert "Pat weekly sync" in rows[0]
 
 
 def test_calendar_empty_is_empty_not_an_error(brief):
@@ -351,12 +351,12 @@ def test_mail_collector_reports_a_ledger_failure(brief, mail_instance):
 
 
 def test_mail_collector_paints_the_ledgers_rows(brief, mail_instance):
-    payload = json.dumps([{"thread_id": "t1", "client": "all-points",
-                           "last_from": "chris@pi.com", "subject": "SOW",
+    payload = json.dumps([{"thread_id": "t1", "client": "client_a",
+                           "last_from": "contact@client-a.example", "subject": "SOW",
                            "needs_reply_since": "2026-08-13"}])
     rows, error = brief.collect_mail(NOW, runner=lambda argv, t: (payload, None))
     assert error is None
-    assert any("all-points" in r and "SOW" in r for r in rows)
+    assert any("client_a" in r and "SOW" in r for r in rows)
 
 
 def test_owed_reports_a_linear_failure_without_hiding_the_loops(brief, tmp_path):
@@ -364,7 +364,7 @@ def test_owed_reports_a_linear_failure_without_hiding_the_loops(brief, tmp_path)
     loops = tmp_path / "memory"
     loops.mkdir()
     (loops / "open-loops.json").write_text(json.dumps({"loops": [
-        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+        {"id": "L1", "title": "reply to Lee", "status": "open", "needs_founder": True},
         {"id": "L2", "title": "not yours", "status": "open", "needs_founder": False},
         {"id": "L3", "title": "done", "status": "closed", "needs_founder": True},
     ]}))
@@ -374,7 +374,7 @@ def test_owed_reports_a_linear_failure_without_hiding_the_loops(brief, tmp_path)
 
     rows, error = brief.collect_owed(NOW, qroot=tmp_path, graphql=boom)
     assert error and "401" in error
-    assert any("reply to Ally" in r for r in rows), "the loops half was thrown away"
+    assert any("reply to Lee" in r for r in rows), "the loops half was thrown away"
     assert not any("not yours" in r for r in rows)
     assert not any("done" in r for r in rows)
 
@@ -390,7 +390,7 @@ def test_owed_reports_a_missing_loop_ledger_as_an_error(brief, tmp_path):
 def test_owed_lists_linear_and_loops_together(brief, tmp_path):
     (tmp_path / "memory").mkdir()
     (tmp_path / "memory" / "open-loops.json").write_text(json.dumps({"loops": [
-        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True}]}))
+        {"id": "L1", "title": "reply to Lee", "status": "open", "needs_founder": True}]}))
     # owner:assaf, because after the 2026-08-30 reshape an unlabelled issue is
     # counted in the tail rather than listed. What this case still proves is the
     # part that matters: BOTH producers reach the output in one call. The
@@ -403,7 +403,7 @@ def test_owed_lists_linear_and_loops_together(brief, tmp_path):
         graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": nodes}}})
     assert error is None
     assert any("ASK-9" in r for r in rows)
-    assert any("reply to Ally" in r for r in rows)
+    assert any("reply to Lee" in r for r in rows)
 
 
 def test_overnight_reports_a_launchctl_outage(brief):
@@ -602,14 +602,14 @@ def test_owed_leads_with_founder_owned_and_counts_the_rest(brief, tmp_path):
 
 def test_owed_needs_founder_loops_are_in_the_lead_tier(brief, tmp_path):
     _loops_at(tmp_path, [
-        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+        {"id": "L1", "title": "reply to Lee", "status": "open", "needs_founder": True},
         {"id": "L2", "title": "sana's", "status": "open", "needs_founder": False},
     ])
     rows, error = brief.collect_owed(
         NOW, qroot=tmp_path,
         graphql=lambda q, v: {"viewer": {"assignedIssues": {"nodes": []}}})
     assert error is None
-    assert any("reply to Ally" in r for r in rows)
+    assert any("reply to Lee" in r for r in rows)
     assert not any("sana's" in r for r in rows)
 
 
@@ -665,7 +665,7 @@ LEAD_FIXTURE = [
 
 def _five_leads(brief, tmp_path):
     _loops_at(tmp_path, [
-        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+        {"id": "L1", "title": "reply to Lee", "status": "open", "needs_founder": True},
     ])
     nodes = [_issue(i, t, labels=l, due=d) for i, t, l, d in LEAD_FIXTURE]
     nodes.append(_issue("ASK-9", "sana eng", labels=["owner:sana"]))
@@ -702,7 +702,7 @@ def test_owed_items_carry_provenance_tags(brief, tmp_path):
     """The split is DERIVED from tags on structured items, never guessed from
     the rendered strings (finding-15)."""
     _loops_at(tmp_path, [
-        {"id": "L1", "title": "reply to Ally", "status": "open", "needs_founder": True},
+        {"id": "L1", "title": "reply to Lee", "status": "open", "needs_founder": True},
     ])
     nodes = [_issue("ASK-1", "sign the SOW", labels=["owner:assaf"])]
     items, tail, errors = brief.owed_items(

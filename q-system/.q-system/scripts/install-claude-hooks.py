@@ -247,6 +247,54 @@ def is_registered(home, dst):
                for spelling in spellings)
 
 
+PROPOSALS_DIR = os.path.join(REPO, "q-system", ".q-system", "proposals")
+
+
+def _apply_command(prop):
+    return "bash q-system/.q-system/scripts/apply-claude-changes.sh %s --root $HOME" % prop
+
+
+def pending_proposals(dest_dir, names):
+    """Repo-relative proposals that insert into an installed hook in `names`
+    a block that hook does not carry yet AND the repo's vendored copy does.
+    The second half is the one that matters (PR #562 round 2, major): a
+    proposal whose block the repo source lacks cannot clear the drift, so
+    naming it sends him round a loop that ends at the refusing installer.
+    Read-only; an unreadable or unrelated proposal is skipped, never fatal
+    to --check."""
+    out = []
+    try:
+        files = sorted(f for f in os.listdir(PROPOSALS_DIR) if f.endswith(".json"))
+    except OSError:
+        return out
+    for f in files:
+        path = os.path.join(PROPOSALS_DIR, f)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                edits = json.load(fh).get("edits") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for e in edits:
+            name = os.path.basename(str(e.get("file", "")))
+            if not (str(e.get("file", "")).startswith(".claude/hooks/") and name in names and e.get("insert")):
+                continue
+            try:
+                with open(os.path.join(dest_dir, name), encoding="utf-8") as fh:
+                    installed = fh.read()
+                with open(os.path.join(SOURCE_DIR, name), encoding="utf-8") as fh:
+                    source = fh.read()
+            except OSError:
+                continue
+            # PR #562 round 3 (minor): an anchor the installed hook lacks makes
+            # the apply refuse too, so naming it would be a second dead end.
+            anchored = e.get("op") not in ("insert_after", "insert_before", "replace") \
+                or str(e.get("anchor") or "") in installed
+            if e["insert"] in source and e["insert"] not in installed and anchored:
+                out.append(os.path.relpath(path, REPO))
+                break
+    return out
+
+
 def sources():
     """Every `<repo>/q-system/.q-system/hooks/*.sh`, one level deep."""
     if not os.path.isdir(SOURCE_DIR):
@@ -552,6 +600,11 @@ def install_one(name, dest_dir, dry_run, home):
 
     refusal = refuse_if_weaker(name, source_text, installed_text)
     if refusal:
+        # PR #562 round 3 (minor): the refusal is the first thing he sees, so
+        # it names the proposal that lands a founder-ruled change, if any.
+        props = pending_proposals(dest_dir, [name])
+        if props:
+            refusal += " If this is a founder-ruled change, apply it with: " + _apply_command(props[0])
         return "REFUSED " + refusal, False
 
     ok, why = parses_as_bash(src)
@@ -668,7 +721,17 @@ def main(argv=None):
         for line in drift:
             print("  " + line)
         if drift:
-            print("\nrun: python3 %s" % os.path.relpath(__file__, REPO))
+            # PR #562 review (major): a founder-ruled lift is weaker than the
+            # installed hook, so the installer refuses it by design and the
+            # drift would be reported forever with no command that can succeed.
+            # Such a change lands through its proposal; name it. Round 3
+            # (minor): FIRST, so the first command he runs is one that works.
+            pending = pending_proposals(dest_dir, names)
+            if pending:
+                print("\napply the founder-ruled change (the installer refuses it by design):")
+            for prop in pending:
+                print("  " + _apply_command(prop))
+            print("\n%srun: python3 %s" % ("then " if pending else "", os.path.relpath(__file__, REPO)))
             return 1
         print("all %d vendored hook(s) match the installed copy" % len(names))
         return 0

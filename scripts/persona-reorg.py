@@ -78,11 +78,14 @@ PERSONAS = {
             "plists": [],
         },
         "projects": [
-            {"name": "Pure_spectrum_Q", "registry": "Pure_spectrum_Q",
+            # Client instance names replaced with placeholders (ASK-2058): this
+            # repo is public, and consulting is in MIGRATED, so these three
+            # entries are a finished record that run_apply never reads again.
+            {"name": "client_b", "registry": "client_b",
              "plists": ["com.ktlyst.ps-slack-sync.plist",
-                        "com.purespectrum.ti-weekly.plist"]},
-            {"name": "4_points_consulting", "registry": "4_points_consulting"},
-            {"name": "Alice", "registry": "Alice"},
+                        "com.client_b.ti-weekly.plist"]},
+            {"name": "client_a", "registry": "client_a"},
+            {"name": "client_d", "registry": "client_d"},
         ],
     },
     "micro-saas": {
@@ -689,7 +692,7 @@ SELFREF_SKIP_DIRS = {".venv", "venv", ".git", "node_modules", "__pycache__",
                      "_codex-worktrees", "worktrees", ".playwright-mcp"}
 # Path segments that hold DATA/EVIDENCE/HISTORY, never live execution paths.
 # Rewriting these is at best pointless churn and at worst corrupts forensic
-# investigation evidence (4_points holds chain-of-custody case captures). The
+# investigation evidence (a client investigations instance holds chain-of-custody case captures). The
 # rewriter only touches live code/config, never these.
 SELFREF_SKIP_PATHSEG = ("/investigations/", "/evidence/", "/output/", "/data/",
                         "/memory/", "/drafts/", "/sessions/", "/archived",
@@ -781,7 +784,7 @@ def remediate_cross_project(apply=False):
     code/config (finding-8). The reorg's self-ref rewriter only fixed a moved dir's
     refs to its OWN old path; a reference from project A to moved-project B was
     never touched (reddit-build-radar -> product repos, cole-gtm/.mcp.json ->
-    4_points). Because it also sees a moved project's own missed self-refs (in the
+    a client instance). Because it also sees a moved project's own missed self-refs (in the
     ~/$HOME/$PROJECTS forms finding-7 hardened), one pass clears both. Uses
     build_oldnew_map() (single source) + rewrite_all_forms (all four forms).
     .remediation.bak-backed (distinct from the reorg's .persona-reorg.bak so
@@ -789,7 +792,7 @@ def remediate_cross_project(apply=False):
     global _MANIFEST_FILE, _manifest
     _MANIFEST_FILE = manifest_path("remediation")
     _manifest = {"moves": [], "baks": []}
-    # longest old path first: a nested old (Pure_spectrum_Q/projects/x) rewrites
+    # longest old path first: a nested old (client_b/projects/x) rewrites
     # before its parent so the more-specific match wins.
     pairs = sorted(build_oldnew_map().items(), key=lambda kv: len(kv[0]), reverse=True)
     extra = [os.path.join(HOME, ".claude", "plugins", "installed_plugins.json")]

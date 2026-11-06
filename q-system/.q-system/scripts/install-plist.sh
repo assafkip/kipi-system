@@ -103,14 +103,27 @@ fi
 # laptop is not a mechanism. This is the caller, so a fresh checkout can arm the
 # fleet's jobs in one step, and each install still reports its own result rather
 # than the loop reporting a single aggregate success.
-if [ "$1" = "--all" ]; then
+#
+# --missing: the same walk, but it installs ONLY a template with no job in
+# ~/Library/LaunchAgents yet (ASK-1130). It is the mode the fleet updater calls
+# after every sync, so a merged com.kipi.*.plist gets armed without anyone typing
+# a command. An already-installed job is never touched, and that is the safety
+# argument, not a convenience:
+#   * its plist is not rewritten, so it keeps pointing where it points and a live
+#     value set during an incident survives (fleet-health's REPORT, NEVER REPAIR);
+#   * it is never booted out, so a job that is running right now (lessons-daily
+#     is the job that runs the updater) is not killed by its own update.
+# A label in the paused ledger is skipped too: paused is a decision somebody made,
+# and re-arming it on the next sync would overrule them silently.
+MODE="$1"
+if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
   # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
   # git worktree rewrote every live job to point at that worktree, including the
   # dispatcher, seconds before the directory was to be deleted. One label is a
   # deliberate act on one job; --all is a fleet-wide rewrite, and aiming that at a
   # temporary checkout silently disarms every scheduled job on the machine.
   if [ -f "$KIPI_REPO/.git" ] || [ ! -d "$KIPI_REPO/.git" ]; then
-    echo "REFUSED: --all only runs from the primary checkout, not a worktree." >&2
+    echo "REFUSED: $MODE only runs from the primary checkout, not a worktree." >&2
     echo "  resolved KIPI_REPO=$KIPI_REPO" >&2
     echo "  every installed job would point here and break when it is removed." >&2
     echo "  install a single label instead: install-plist.sh <label>" >&2
@@ -128,8 +141,45 @@ if [ "$1" = "--all" ]; then
   if [ -f "$KIPI_REPO/instance-registry.json" ]; then
     _skeleton="$(python3 -c 'import json,sys,os; print(os.path.realpath(json.load(open(sys.argv[1]))["skeleton"]["path"]))' "$KIPI_REPO/instance-registry.json" 2>/dev/null || true)"
   fi
+  # --missing RUNS ONLY FROM THE REGISTRY SKELETON, and the check lives here rather
+  # than only in kipi-update.sh's arm_new_jobs so that a SECOND caller cannot lose
+  # it by not knowing it existed. lessons-daily.sh is that second caller: it arms
+  # jobs on a nothing-published day, when it never reaches the updater at all. A
+  # guard that only one call site implements is a guard with an expiry date.
+  if [ "$MODE" = "--missing" ] && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then
+    echo "REFUSED: --missing only runs from the registry skeleton." >&2
+    echo "  resolved KIPI_REPO=$KIPI_REPO" >&2
+    echo "  registry skeleton=${_skeleton:-<none declared>}" >&2
+    echo "  install a single label instead: install-plist.sh <label>" >&2
+    exit 2
+  fi
+  # WHAT COUNTS AS DISABLED. One reader, launchd-intent-verify's `load_intent`,
+  # which is already the only thing that merges ~/.config/kipi/launchd-intent.json
+  # with BOTH pause ledgers and resolves the disagreements. This used to read
+  # launchd-health-check's `load_paused_labels` instead, which sees the two ledger
+  # files and not the manifest, so a label declared `intent: disabled` and absent
+  # from a ledger was armed.
+  # Fail CLOSED: if the set cannot be resolved, --missing arms nothing, because
+  # arming a job somebody stopped is the harm this mode must not do.
+  _disabled=""
+  if [ "$MODE" = "--missing" ]; then
+    if ! _disabled="$(python3 - "$SCRIPT_DIR/launchd-intent-verify.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("iv", sys.argv[1])
+iv = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(iv)
+texts = [t for t in (iv.read_text(p) for p in iv.LEGACY_PAUSED_FILES) if t]
+intent, _conflicts = iv.load_intent(iv.read_text(iv.INTENT_MANIFEST), texts)
+print("\n".join(sorted(k for k, v in intent.items() if v == iv.DISABLED)))
+PY
+    )"; then
+      echo "REFUSED: --missing could not resolve the disabled-label set; arming nothing." >&2
+      exit 2
+    fi
+  fi
   rc=0
   _n_installed=0
+  _n_present=0
   _n_skipped=0
   _n_failed=0
   _failed_labels=""
@@ -137,10 +187,54 @@ if [ "$1" = "--all" ]; then
   while IFS= read -r _p; do
     [ -e "$_p" ] || continue
     _label="$(basename "$_p" .plist)"
+    # RETIREMENT DECLARED IN THE TREE, and this is the signal that travels.
+    # The sidecar check further down (`<label>.plist.retired-<date>` in
+    # ~/Library/LaunchAgents) reads UNTRACKED machine-local state: it is real on
+    # the founder's laptop and absent on a second machine, a restored HOME, a
+    # fresh clone and every instance checkout. On any of those the four
+    # RULE-2026-09-11-A posters read as brand-new jobs again and an unattended
+    # sync re-arms and bootstraps the #general posting he asked to stop. So the
+    # committed template carries its own retirement, read the same way the
+    # `kipi-scope:` marker above it is, and both modes honour it: re-arming a
+    # retired job in bulk is the harm, and `--all` is as bulk as `--missing`.
+    # Bringing one back is a deliberate single-label act -- `install-plist.sh
+    # <label>` is unaffected, which is exactly the documented rollback.
+    if grep -q "kipi-retired:" "$_p"; then
+      echo "  skipped (retired, declared): $_label"
+      _n_skipped=$((_n_skipped + 1))
+      continue
+    fi
     if grep -q "kipi-scope: skeleton-only" "$_p" && [ "$(cd "$KIPI_REPO" && pwd -P)" != "$_skeleton" ]; then
       echo "  skipped (skeleton-only): $_label"
       _n_skipped=$((_n_skipped + 1))
       continue
+    fi
+    if [ "$MODE" = "--missing" ]; then
+      if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
+        _n_present=$((_n_present + 1))
+        continue
+      fi
+      # A MISSING PLIST IS NOT THE SAME AS A NEW JOB, and reading it that way is
+      # how this mode resurrects work the founder deliberately stopped. The fleet
+      # retires a job by renaming its plist to `<label>.plist.retired-<date>` and
+      # leaving the template committed -- the rollback note for RULE-2026-09-11-A
+      # is literally "rename plist back + bootstrap". Measured on the founder's
+      # machine 2026-09-23 before this skip existed: of the 7 committed templates
+      # with no installed plist, 4 were retired by founder directive on 2026-09-11
+      # (morning-brief, morning-brief-deadman, morning-inbox, linear-daily-digest)
+      # and 2 more carry .retired-2026-08-01 sidecars. An unattended sync would
+      # have re-armed and bootstrapped every one of them, and the founder's only
+      # signal would have been the #general posts he had asked to stop.
+      if compgen -G "$HOME/Library/LaunchAgents/$_label.plist.retired*" >/dev/null; then
+        echo "  skipped (retired): $_label"
+        _n_skipped=$((_n_skipped + 1))
+        continue
+      fi
+      if printf '%s\n' "$_disabled" | grep -qxF "$_label"; then
+        echo "  skipped (disabled): $_label"
+        _n_skipped=$((_n_skipped + 1))
+        continue
+      fi
     fi
     if bash "$0" "$_label"; then
       _n_installed=$((_n_installed + 1))
@@ -149,6 +243,17 @@ if [ "$1" = "--all" ]; then
       _n_failed=$((_n_failed + 1))
       _failed_labels="$_failed_labels $_label"
       echo "  FAILED: $_label" >&2
+      # ROLL BACK THE HALF-INSTALL so the next run retries and reports again.
+      # install-plist stages and validates before it moves, but the bootstrap is
+      # the LAST step and it can fail on its own (a bad interval, an I/O error)
+      # with the plist already in LaunchAgents. --missing would then count that
+      # label as already-installed-untouched from the second run on: the job never
+      # runs, the alarm fires exactly once, and the fleet looks healthy.
+      # Safe by the mode's own precondition -- every label reaching here had NO
+      # plist before this attempt, so this can never delete a working job's plist.
+      # An `&&` one-liner here would be a failing simple command under `set -e`
+      # on every --all run, so this stays a real if.
+      if [ "$MODE" = "--missing" ]; then rm -f "$HOME/Library/LaunchAgents/$_label.plist"; fi
     fi
   done <<EOF
 $(committed_templates)
@@ -160,7 +265,11 @@ EOF
   # 0. The founder's only signal was silence. Every committed label now lands in
   # exactly one of these three counts, and a template that could not be installed
   # is named and carries the exit code out.
-  echo "install-jobs: $_n_installed installed, $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_skipped + _n_failed)) committed)"
+  if [ "$MODE" = "--missing" ]; then
+    echo "install-jobs: $_n_installed newly installed, $_n_present already installed (untouched), $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_present + _n_skipped + _n_failed)) committed)"
+  else
+    echo "install-jobs: $_n_installed installed, $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_skipped + _n_failed)) committed)"
+  fi
   if [ "$_n_failed" -gt 0 ]; then
     echo "install-jobs: could not install:$_failed_labels" >&2
   fi
