@@ -115,6 +115,8 @@ SINGLE_PR_CONTROLS = {
     "fenced-sibling-label": {
         "acceptance": "Build exactly PR 2 of the plan, nothing from PR 3.",
     },
+    # PR #612 round 1 major: an entry that forbids the split must split.
+    "negated-split": {"acceptance": "One PR. Do not split this into two PRs."},
 }
 
 

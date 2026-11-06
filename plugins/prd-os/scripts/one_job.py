@@ -21,9 +21,11 @@ What it reads, and what it does not:
   - a counted plural ("three PRs", "two small PRs", "separate branches").
   - a per-item PR ("a PR each", "each fix in its own PR", "split it into PRs").
   - for a manifest entry, two or more deliverables that each name a PR/branch.
-It cannot tell a request from a quotation: a brief that DESCRIBES an old
-"three PRs" scar reads the same as one that asks for three. That is measured,
-not argued; see the guard's docstring for the hit rate on real briefs.
+The count and per-item rules skip a hit that sits in a negated clause ("do
+not split this into two PRs") or, for the count rule, right after a past-tense
+word ("happened in three PRs"). Past that, it cannot tell a request from a
+quotation: a present-tense description ("receipts ship as separate PRs") reads
+the same as an order. See the guard's docstring for the hit rate on real briefs.
 """
 from __future__ import annotations
 
@@ -38,10 +40,10 @@ _COUNT_WORDS = (
 # The lookahead refuses "PR 1234" (a real PR number) and "PR A." is fine.
 _LABEL_RE = re.compile(r"\bPR[ -]?([1-9]|[A-H])(?![\w#/])")
 
-# A count alone is usually a description ("three PRs merged green today",
-# "acted on only 9 PRs"). Measured on real briefs, the request shape always
-# had a verb or a preposition of making right before it: "split it into two
-# PRs", "ship as two separate PRs", "open three PRs".
+# A bare count is usually a description ("three PRs merged green today"), so
+# the count rule needs a verb or a preposition before it: "split it into two
+# PRs", "ship as two separate PRs", "open three PRs". The prepositions are
+# also how history is written, hence _NEGATION_RE and _PAST_BEFORE_RE below.
 _COUNTED_RE = re.compile(
     r"\b(?:open|ship|land|cut|raise|make|create|build|deliver|into|as|in)\s+"
     r"(?:the\s+|these\s+)?"
@@ -73,6 +75,43 @@ def _is_fenced(text: str, start: int, end: int) -> bool:
         _FENCE_RE.search(text[max(0, start - 100):start])
         or _FENCE_AFTER_RE.search(text[end:end + 60])
     )
+
+# why: PR #612 round 1 major. The count rule had no fence, so the brief that
+# OBEYS this rule ("do not split this into two PRs", "never open two PRs") was
+# blocked, and so was PR history pasted from a prompt file ("Happened in three
+# consecutive PRs"). A gate that fires on the opposite of what it detects
+# teaches the operator to paste the bypass by reflex. The negation is
+# clause-scoped (a comma, colon, semicolon, period or newline ends it) so
+# "Do not merge yet, and open two PRs" still blocks.
+_NEGATION_RE = re.compile(
+    r"(?:\bnot\b|\bnever\b|\bdon[\u2019']t\b|\bwon[\u2019']t\b|\bcannot\b|"
+    r"\binstead of\b|\brather than\b)[^.,;:\n]{0,60}$",
+    re.I,
+)
+# "landed in two PRs", "shipped as two separate PRs", "was split into two PRs".
+# The -ed word must sit right before the preposition and may not end in -eed,
+# so "Proceed in two PRs" and "the related work into two PRs" still block.
+_PAST_BEFORE_RE = re.compile(
+    r"(?:\b\w*[a-df-z]ed|\b(?:was|were|been|got)\s+\w+)\s+$", re.I
+)
+_PREPOSITIONS = {"in", "as", "into"}
+
+
+def _first_request(rx: re.Pattern, text: str, *, past_fence: bool = False):
+    """First hit of `rx` that reads as a request, not a negation or history."""
+    for m in rx.finditer(text):
+        before = text[max(0, m.start() - 80):m.start()]
+        if _NEGATION_RE.search(before):
+            continue
+        if (
+            past_fence
+            and m.group(0).split(None, 1)[0].lower() in _PREPOSITIONS
+            and _PAST_BEFORE_RE.search(before)
+        ):
+            continue
+        return m
+    return None
+
 
 _PER_ITEM_RES = (
     re.compile(r"\b(?:a|one)\s+(?:PR|pull request|branch)\s+each\b", re.I),
@@ -114,11 +153,11 @@ def multi_pr_reasons(text: str) -> list[str]:
             "names %d distinct PR labels (%s)"
             % (len(labels), ", ".join("PR " + x for x in labels))
         )
-    counted = _COUNTED_RE.search(text)
+    counted = _first_request(_COUNTED_RE, text, past_fence=True)
     if counted:
         reasons.append(f"asks for a counted plural: {counted.group(0)!r}")
     for rx in _PER_ITEM_RES:
-        m = rx.search(text)
+        m = _first_request(rx, text)
         if m:
             reasons.append(f"asks for a PR per item: {m.group(0)!r}")
             break

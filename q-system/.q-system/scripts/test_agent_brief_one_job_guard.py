@@ -44,6 +44,10 @@ MULTI_JOB = {
     "per-item": "Two fixes for the widget, one PR each. Test first.",
     "counted": "Land the work as two separate PRs and arm auto-merge.",
     "lettered": "Ship PR-A (the checker) then PR-B (the filter).",
+    # A negation in an EARLIER clause must not fence a real request: the
+    # fence is clause-scoped (PR #612 round 1 fix round).
+    "negation-in-earlier-clause": "Do not merge yet, and open two PRs for "
+                                  "the parser and the filter.",
 }
 
 
@@ -73,6 +77,16 @@ SINGLE_JOB = {
     "descriptive-count": "Context: three PRs merged green today and still "
                          "broke the mirror. Fix the mirror check, one PR.",
     "no-pr-at-all": "Research the vendor's API limits and report back.",
+    # PR #612 round 1 major: the count rule had no fence, so the brief that
+    # OBEYS the rule, and one quoting PR history, were blocked.
+    "forbids-split": "Fix the off-by-one in the parser. Keep it to one PR: "
+                     "do not split this into two PRs.",
+    "says-never": "One job only. Never open two PRs for this; the whole fix "
+                  "is one commit.",
+    "not-as-separate": "Ship it as one PR, not as two separate PRs.",
+    "past-tense-history": "Context: the scratch-file leak happened in three "
+                          "consecutive PRs, and the last fix landed in two "
+                          "PRs. Fix it at push time, one PR.",
 }
 
 
