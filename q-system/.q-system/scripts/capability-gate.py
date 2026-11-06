@@ -14,18 +14,32 @@ Manifest: q-system/.q-system/capability/ (canonical, synced) -- one JSON
           fragment per declaration, assembled by capability_manifest.py.
 Overlay:  <repo-root>/capability-manifest.local.json (instance-local, ADD-only).
 
+--diff-base <ref> scopes BOTH halves to the change (ASK-3828). Tests: the set
+change-size.py says the diff earns. Structure: the same checks run on <ref> as
+exported by `git archive`, and a finding <ref> already has is printed as a note,
+never failed. A required PR check that went red for a file the PR did not touch
+could not be made green by its author (RCA 2026-11-06 root cause #6). The full,
+unscoped structure check runs nightly in gates.yml, whose red files an issue
+against the commit that broke it (gates-red-filer.py).
+
+--only <path> runs just that declared test: the nightly filer's bisect probe.
+
 Exit codes: 0 green, 1 red, 3 refused (worktree copy).
 """
 
 import argparse
 import datetime
 import importlib.util
+import io
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 from pathlib import Path
 
@@ -710,8 +724,10 @@ def select_for_diff(root, base, notes):
 
     validate.yml passes --diff-base on pushes to main too (2026-09-30), so the
     only caller that runs the full suite is the nightly gates.yml, which passes
-    none. That workflow is disabled as of 2026-09-30: while it is off, a
-    selection that was too narrow is caught by no scheduled job at all.
+    none. The note below once said that workflow was disabled (2026-09-30). It
+    is not: `gh workflow list` shows it active and it ran nightly through
+    2026-11-06 (measured for ASK-3828), so a selection that was too narrow is
+    caught there, within a day, and filed against the commit that caused it.
     """
     try:
         path = Path(__file__).resolve().parent / "change-size.py"
@@ -745,8 +761,7 @@ def select_for_diff(root, base, notes):
         return None
     notes.append(f"change-size vs {base}: tier {verdict['tier']}, {verdict['app_lines']} app-code "
                  f"lines -- running {len(selected)} of {verdict['declared_tests']} declared tests; "
-                 "the full suite runs only in the nightly gates workflow, "
-                 "when that workflow is enabled")
+                 "the full suite runs only in the nightly gates workflow")
     return set(selected)
 
 
@@ -1006,6 +1021,95 @@ def check_inert_engines(root, manifest, errors, notes):
                      "reference on any wiring surface")
 
 
+def export_base(root, base, notes):
+    """<base> as a plain directory (no .git), or None when it cannot be trusted.
+
+    `git archive`, not a checkout: it touches neither the caller's working tree
+    nor its worktree list, and 2965 files export in under a second (measured
+    2026-11-06). It does honour export-ignore, which would drop files from the
+    copy and make the base look as if it had MORE declared-but-missing findings,
+    hiding the PR's own. So the copy is refused unless it holds every path
+    `git ls-tree` lists. The untracked inputs the structure pass reads (the
+    instance overlay, the spillover ledger) are copied across, so both sides are
+    judged against the same environment."""
+    try:
+        listed = subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=str(root),
+                                capture_output=True, text=True, timeout=60)
+        arch = subprocess.run(["git", "archive", "--format=tar", base], cwd=str(root),
+                              capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        notes.append(f"base {base}: could not export ({type(exc).__name__}); every structure "
+                     "finding counts as this change's")
+        return None
+    if listed.returncode or arch.returncode:
+        notes.append(f"base {base}: git could not export it; every structure finding counts "
+                     "as this change's")
+        return None
+    dest = Path(tempfile.mkdtemp(prefix="capability-gate-base-"))
+    with tarfile.open(fileobj=io.BytesIO(arch.stdout)) as tf:
+        try:
+            tf.extractall(dest, filter="tar")
+        except TypeError:  # a Python without extraction filters
+            tf.extractall(dest)
+    want = set(listed.stdout.splitlines())
+    have = {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file() or p.is_symlink()}
+    if want - have:
+        notes.append(f"base {base}: the export is missing {len(want - have)} tracked path(s) "
+                     "(export-ignore?); every structure finding counts as this change's")
+        shutil.rmtree(dest, ignore_errors=True)
+        return None
+    overlay = root / "capability-manifest.local.json"
+    if overlay.is_file():
+        shutil.copy2(overlay, dest / overlay.name)
+    ledger = spillover_ledger_path(root)
+    if ledger.is_file():
+        (dest / ".prd-os").mkdir(exist_ok=True)
+        shutil.copy2(ledger, dest / ".prd-os" / "spillover.jsonl")
+    return dest
+
+
+def base_structure_findings(root, base, mode, notes):
+    """Every structure finding <base> already has, root-normalised, or None.
+
+    The same checks main() runs before any test, in the same order, on the base
+    export. Equality is on the gate's own wording, so a finding counts as the
+    base's only when the base would have printed exactly that line."""
+    dest = export_base(root, base, notes)
+    if dest is None:
+        return None
+    try:
+        errors, scratch = [], []
+        detect_mode(dest, errors)
+        manifest = load_manifest(dest, errors)
+        if manifest is not None:
+            load_overlay(dest, manifest, errors)
+            check_inert_spillover_live(dest, manifest, errors, scratch, mode)
+            diff_declared_vs_actual(dest, manifest, errors, mode)
+            check_required_data(dest, manifest, mode, errors)
+            if mode == "skeleton":
+                check_inert_engines(dest, manifest, errors, scratch)
+        return {e.replace(str(dest), "<root>") for e in errors}
+    finally:
+        shutil.rmtree(dest, ignore_errors=True)
+
+
+def demote_base_findings(root, errors, on_base, base, notes):
+    """Move each error the base already has from `errors` to `notes`.
+
+    The note keeps it visible in every PR log; the nightly gates.yml runs this
+    check unscoped and files it against the commit that broke it. None means the
+    base could not be read, and then nothing is demoted: fail closed."""
+    if on_base is None:
+        return
+    keep = []
+    for e in errors:
+        if e.replace(str(root), "<root>") in on_base:
+            notes.append(f"ON THE BASE ALREADY ({base}), not this change's: {e.splitlines()[0]}")
+        else:
+            keep.append(e)
+    errors[:] = keep
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo-root", default=".", help="repo root (default: cwd)")
@@ -1013,8 +1117,14 @@ def main():
                     help="structure/diff/wiring/data checks only; skip test execution")
     ap.add_argument("--diff-base", default="",
                     help="run only the declared tests a diff against this ref earns "
-                         "(change-size.py decides; anything it cannot decide runs the full suite)")
+                         "(change-size.py decides; anything it cannot decide runs the full suite), "
+                         "and fail only the structure findings this ref does not already have")
+    ap.add_argument("--only", action="append", default=[], metavar="PATH",
+                    help="run only this declared test (repeatable). The nightly filer's "
+                         "bisect probe; the structure checks still run in full")
     args = ap.parse_args()
+    if args.only and args.diff_base:
+        ap.error("--only and --diff-base pick the tests two different ways; pass one")
     root = Path(args.repo_root).resolve()
     refuse_if_worktree(root)
 
@@ -1049,6 +1159,11 @@ def main():
     notes.append(f"scan scope: {len(expected) - n_exempt} declared entries inside "
                  f"the scan roots (checked BOTH directions), {n_exempt} exempt "
                  "from undeclared-artifact detection (existence-checked only)")
+    # Measured before anything is failed, so a manifest-level finding main
+    # already carries is demoted too. Under --diff-base only.
+    on_base = (base_structure_findings(root, args.diff_base, mode, notes)
+               if args.diff_base else None)
+    demote_base_findings(root, errors, on_base, args.diff_base, notes)
     if errors:  # fail closed on structural problems before trusting the sets
         report(mode, errors, notes)
         sys.exit(1)
@@ -1070,8 +1185,14 @@ def main():
     else:
         notes.append("inert-engine check: skeleton-only (instance wiring is "
                      "declared and gated in the skeleton)")
+    # Before run_tests, so a test failure is never compared with the base: the
+    # base pass runs no test, and a red test is always this run's to answer.
+    demote_base_findings(root, errors, on_base, args.diff_base, notes)
     if not args.check_only:
-        only = select_for_diff(root, args.diff_base, notes) if args.diff_base else None
+        if args.only:
+            only = set(args.only)
+        else:
+            only = select_for_diff(root, args.diff_base, notes) if args.diff_base else None
         run_tests(root, manifest, mode, errors, notes, only)
     report(mode, errors, notes)
     sys.exit(1 if errors else 0)
@@ -1081,8 +1202,15 @@ def report(mode, errors, notes):
     print(f"capability-gate mode={mode}")
     for n in notes:
         print(f"  {n}")
+    # A multi-line error (a failing test's tail) prints its tail behind a `|`
+    # gutter. A test that runs a gate of its own prints `  RED: ` lines in that
+    # tail, and gates-red-filer.py reads exactly two-space `  RED: ` lines as this
+    # run's findings; unguttered, a nested gate's line would be filed as ours.
     for e in errors:
-        print(f"  RED: {e}")
+        first, _, tail = e.partition("\n")
+        print(f"  RED: {first}")
+        for t in tail.splitlines():
+            print(f"      | {t}")
     print(f"capability-gate: {'RED (' + str(len(errors)) + ')' if errors else 'GREEN'}")
 
 
