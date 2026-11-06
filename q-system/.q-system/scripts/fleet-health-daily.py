@@ -2074,6 +2074,93 @@ def detect_sweep_degraded(_ctx) -> list:
     return sweep_findings(read_sweep_history())
 
 
+# THE NEEDS-TRIAGE PROMOTER IS WATCHED AGAINST ITS OWN QUEUE (ASK-3823,
+# RULE-2026-11-06-B). linear-alert-triage.py is the one reader of the label every
+# pipeline cap writes, and for 15 nights it logged "0 written, 8 failed" while its
+# queue grew from 701 to 1225. launchd-health-check saw a job that ran and exited;
+# the script's own stderr said "an outage is not a quiet night" into a file nobody
+# reads. Nothing compared the two numbers the job prints every pass, so they are
+# compared here: zero written AND a queue larger than the pass before is an outage.
+#
+# The .log is launchd's stdout for the job, so it holds scheduled passes only. A
+# hand-run dry pass prints "DRY RUN, nothing sent: triage pass: ..." to a terminal,
+# and the anchor below would skip it even if it landed here.
+#
+# ONE P0 PER STALLED PASS DAY, AND NONE FOR A FROZEN TAIL (PR #606 review r1,
+# major 2). The first cut keyed the subject on TODAY, so a log that stopped
+# growing on a stall-shaped tail (job unloaded, Mac off) filed a new permanent P0
+# owner:sana issue every morning: 336 over 336 days in the reviewer's reproducer.
+# The subject now carries the day of the LAST PASS, read from the log's mtime
+# (launchd appends to it during every pass), so one pass is at most one issue,
+# and a tail older than TRIAGE_STALE_AFTER_S is not paged at all. A job that
+# stopped running is launchd-dark's and launchd-failing's to report.
+# The finding carries only the parsed counts, never a log line (ASK-204).
+TRIAGE_LOG = Path(os.environ.get("KIPI_ALERT_TRIAGE_LOG")
+                  or STATE.parent / "linear-alert-triage.log")
+TRIAGE_PASS_RE = re.compile(
+    r"^triage pass: (?P<written>\d+) written, .*?; (?P<queued>\d+) still queued;")
+TRIAGE_OWNER_LABEL = "owner:sana"
+TRIAGE_STALE_AFTER_S = 2 * 86400
+
+
+def triage_log_mtime(path=None):
+    """When the last pass wrote to the log, as epoch seconds, or None."""
+    try:
+        return (Path(path) if path else TRIAGE_LOG).stat().st_mtime
+    except OSError:
+        return None
+
+
+def read_triage_passes(path=None) -> list:
+    """[{"written": int, "queued": int}] for every scheduled pass, in order."""
+    path = Path(path) if path else TRIAGE_LOG
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    passes = []
+    for line in text.splitlines():
+        m = TRIAGE_PASS_RE.match(line)
+        if m:
+            passes.append({"written": int(m["written"]), "queued": int(m["queued"])})
+    return passes
+
+
+def triage_stall_findings(passes, last_pass_at, now: float) -> list:
+    if len(passes) < 2 or last_pass_at is None or now - last_pass_at > TRIAGE_STALE_AFTER_S:
+        return []
+    prev, last = passes[-2], passes[-1]
+    if last["written"] or last["queued"] <= prev["queued"]:
+        return []
+    today = datetime.fromtimestamp(last_pass_at, timezone.utc).strftime("%Y-%m-%d")
+    return [{
+        "subject": f"alert-triage-stalled-{today}",
+        "title": (f"needs-triage promoter wrote 0 decisions while its queue grew "
+                  f"{prev['queued']} to {last['queued']} ({today})"),
+        "priority": 1,
+        "labels": (TRIAGE_OWNER_LABEL,),
+        "body": (
+            f"The last scheduled pass of `com.kipi.linear-alert-triage` wrote 0 "
+            f"decisions. The pass before it left {prev['queued']} alerts queued "
+            f"(written {prev['written']}); this one left {last['queued']}. A promoter "
+            "that writes nothing while its queue grows is an outage, not a quiet night.\n\n"
+            "## Definition of Ready\n\n"
+            "- **Files:** `q-system/.q-system/scripts/linear-alert-triage.py`, "
+            "`q-system/.q-system/scripts/com.kipi.linear-alert-triage.plist`\n"
+            "- **Check:** `env -i HOME=$HOME python3 "
+            "q-system/.q-system/scripts/linear-alert-triage.py run --limit 1` prints a "
+            "`claude binary:` path and a WOULD PROMOTE or WOULD HOLD line; "
+            "`tail -40 ~/.config/kipi/linear-alert-triage.err` names why each decision failed.\n"
+            "- **Done:** the next scheduled pass in `~/.config/kipi/linear-alert-triage.log` "
+            "shows written above 0."),
+    }]
+
+
+def detect_alert_triage_stalled(_ctx) -> list:
+    return triage_stall_findings(read_triage_passes(), triage_log_mtime(),
+                                 datetime.now(timezone.utc).timestamp())
+
+
 DETECTORS = [
     {
         "id": "gates-red",
@@ -2175,6 +2262,13 @@ DETECTORS = [
         "id": "sweep-degraded",
         "description": "the last fleet sweep failed too many instances, or newly failed one (ASK-776)",
         "detect": detect_sweep_degraded,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
+    {
+        "id": "alert-triage-stalled",
+        "description": "the needs-triage promoter wrote 0 decisions while its queue grew (ASK-3823)",
+        "detect": detect_alert_triage_stalled,
         "action": "file_issue",
         "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
     },
@@ -2454,6 +2548,14 @@ def _create_one(ls, finding: dict, apply: bool, team_id: str, project,
     }
     if project:
         payload["projectId"] = project["id"]
+    # Opt-in per finding. Only alert-triage-stalled sets these today: it is a P0
+    # and it must reach a machine reader (RULE-2026-11-06-B), and the fleet worker
+    # selects on owner:sana. Every other finding files exactly as it did before.
+    if finding.get("priority"):
+        payload["priority"] = int(finding["priority"])
+    label_ids = _finding_label_ids(ls, finding.get("labels") or ())
+    if label_ids:
+        payload["labelIds"] = label_ids
     data = ls.graphql(ls.ISSUE_CREATE, {"input": payload})
     # linear-filer-lint-skip: AUTOMATED and currently unmarked. A nightly launchd
     # detector sweep files one issue per finding, so this SHOULD attach
@@ -2473,6 +2575,33 @@ def _create_one(ls, finding: dict, apply: bool, team_id: str, project,
     }])
     print(f"  filed {node.get('identifier')}  {finding['title'][:70]}")
     return "created"
+
+
+LABEL_BY_NAME_Q = """query($n:String!){issueLabels(filter:{name:{eq:$n}}){
+  nodes{id name team{key}}}}"""
+
+
+def _finding_label_ids(ls, names) -> list:
+    """Label ids for `names`. A label that cannot be resolved is reported and
+    dropped: filing the finding without it beats not filing it at all."""
+    ids = []
+    for name in names:
+        try:
+            nodes = (((ls.graphql(LABEL_BY_NAME_Q, {"n": name}) or {}).get("issueLabels")
+                      or {}).get("nodes") or [])
+        except Exception as exc:  # noqa: BLE001 - see the docstring
+            print(f"  label {name!r} unresolved ({type(exc).__name__}); filing without it",
+                  file=sys.stderr)
+            continue
+        # A same-named label on another team cannot be applied to an ASK issue.
+        hit = next((n["id"] for n in nodes if n.get("id")
+                    and (n.get("team") or {}).get("key") in (None, TEAM_KEY)), None)
+        if hit:
+            ids.append(hit)
+        else:
+            print(f"  label {name!r} not found on {TEAM_KEY}; filing without it",
+                  file=sys.stderr)
+    return ids
 
 
 def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str,

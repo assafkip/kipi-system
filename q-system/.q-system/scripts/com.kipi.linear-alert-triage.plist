@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Nightly promote-or-hold pass over the fleet-alert bucket (ASK-1133).
+<!-- Nightly pass over the fleet-alert bucket: a no-model pre-pass closes alerts
+     whose subject already ended (ASK-3823), then promote-or-hold (ASK-1133).
      TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
      install-plist.sh, the convention com.kipi.linear-dor uses (ASK-113 / ASK-191).
      Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-alert-triage
@@ -18,7 +19,14 @@
      already carries a DoR, so the drafter skips it instead of spending a slot.
 
      stdout goes to .log, not .out: .out is the run-evidence file the script itself
-     appends one line to per pass, and pointing stdout there would double it. -->
+     appends one line to per pass, and pointing stdout there would double it.
+
+     PATH IS SET HERE BECAUSE `bash -lc` DID NOT SET IT (ASK-3823). A bash login
+     shell reads ~/.profile, and ~/.local/bin, where claude is installed, reaches
+     PATH only through ~/.zshrc. 15 passes logged "0 written, 8 failed" with
+     "no working claude binary" on every row. /etc/profile's path_helper puts
+     the system dirs first and keeps these entries after them (measured), so
+     claude, gh and python3 all resolve. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.kipi.linear-alert-triage</string>
@@ -28,6 +36,10 @@
     <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 8 --apply</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>__HOME__/.config/kipi/linear-alert-triage.log</string>
   <key>StandardErrorPath</key><string>__HOME__/.config/kipi/linear-alert-triage.err</string>

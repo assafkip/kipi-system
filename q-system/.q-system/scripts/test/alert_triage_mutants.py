@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show every ASK-1133 defect pin going RED against a build without its fix.
+"""Show every ASK-1133 and ASK-3823 defect pin going RED against a build without its fix.
 
 ASK-1133's first acceptance line: "Each of the 10 defects has a test that is
 shown RED against a build without its fix". A green suite proves only that the
@@ -77,6 +77,36 @@ MUTANTS = [
     ("D10", "promotion does not require owner:sana",
      [("    if OWNER_LABEL not in labels:", "    if False:")],
      {}, "TestD10TheLaneNeverPromotesAnUnroutableAlert"),
+    ("B1", "~/.local/bin/claude is not a candidate",
+     [('CLAUDE_CANDIDATES = ("claude", "~/.local/bin/claude", ', 'CLAUDE_CANDIDATES = ("claude", ')],
+     {}, "TestB1ClaudeIsFoundUnderLaunchd"),
+    ("B1", "the login shell is not interactive, so ~/.zshrc never runs",
+     [('[_login_shell(), "-ilc", LOGIN_SHELL_PROBE]', '[_login_shell(), "-lc", LOGIN_SHELL_PROBE]')],
+     {}, "TestB1ClaudeIsFoundUnderLaunchd"),
+    ("B2", "an open or unreadable subject counts as ended",
+     [('    if state.get("type") in SUBJECT_CLOSED_TYPES:', '    if True:')],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "a PR number is trusted without its URL",
+     [('        if url:\n            subject["pr"], subject["repo"] = int(pr), url.group(1)',
+       '        if pr:\n            subject["pr"], subject["repo"] = int(pr), "o/r"')],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "the pre-pass ignores its read bound",
+     [("        if subject and (tally[\"attempted\"] >= cap or len(cache) >= max_lookups",
+       "        if subject and (tally[\"attempted\"] >= cap or False")],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "converge is listed as its bare prefix again",
+     [('    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",\n'
+       '     "converge $ISSUE: stopped, no PR after round",\n'
+       '     re.compile(rf"^converge {_SUBJECT_ISSUE}: stopped, no PR after round \\d+")),',
+       '    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",\n'
+       '     "converge $ISSUE: stopped, no PR after round",\n'
+       '     re.compile(rf"^converge {_SUBJECT_ISSUE}: ")),')],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
+    ("B2", "the converge shape matches anywhere in the message, not at its start",
+     [("        m = pattern.match(msg)", "        m = pattern.search(msg)"),
+      ('re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \\d+-round cap")',
+       're.compile(rf"converge {_SUBJECT_ISSUE}: hit \\d+-round cap")')],
+     {}, "TestB2PrepassClosesOnlyEndedSubjects"),
 ]
 
 

@@ -56,10 +56,20 @@ in this script that removes an issue.
 
 TWO HALVES. The TRANSITION verbs (list, promote, close) are driven deliberately
 by a person or an agent (ASK-1127). The UNATTENDED lane (`run`, ASK-1133) decides
-promote-or-hold on its own, nightly, and NEVER closes. It was split out of PR
-#268 after nine review rounds put seven of that PR's eight majors inside it, and
-rebuilt against all ten recorded defects; test_linear_alert_triage.py pins each
-one (D1..D10) and alert_triage_mutants.py shows each pin going RED without its fix.
+promote-or-hold on its own, nightly, and never closes on a model's word. It was
+split out of PR #268 after nine review rounds put seven of that PR's eight majors
+inside it, and rebuilt against all ten recorded defects; test_linear_alert_triage.py
+pins each one (D1..D10) and alert_triage_mutants.py shows each pin going RED
+without its fix.
+
+THE NO-MODEL PRE-PASS (ASK-3823). For 15 nights the lane wrote nothing, because
+it could not find claude under launchd, while its queue grew from 701 to 1225. At
+8 model decisions a night it can never catch up on volume alone. Part of that
+queue reports the pipeline state of one subject that has since ended ("worker:
+ASK-N is STUCK", and ASK-N is Done). Whether ASK-N is Done is a fact Linear
+answers, not a judgment, so `run` first closes those alerts through do_close (the
+reason goes on the ticket first, cancel never delete) and spends the model only
+on what is left, at the same cap.
 """
 from __future__ import annotations
 
@@ -69,7 +79,9 @@ from collections import namedtuple
 import subprocess
 import json
 import os
+import pwd
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -471,9 +483,11 @@ def _reopen(ls, ident: str) -> bool:
 # ===========================================================================
 # THE UNATTENDED LANE (ASK-1133): one bounded nightly pass, promote-or-hold.
 #
-# NEVER CLOSES. A promotion is reversible and visible: the issue stays open and a
-# wrong one costs a dispatch. A close is the direction nobody sees afterwards, so
-# it stays the explicit `close` verb. There is no close arm below to reach.
+# THE MODEL NEVER CLOSES. A promotion is reversible and visible: the issue stays
+# open and a wrong one costs a dispatch. A close is the direction nobody sees
+# afterwards, so no verdict of the model reaches do_close. The one close arm in
+# the lane is the no-model pre-pass below (ASK-3823), which closes only on a
+# fact read from Linear or GitHub and writes that fact on the ticket first.
 #
 # THE RECURRING CLASS, stated once: every refuse path must be distinguishable
 # from a success where the count and the exit code are computed. Four of PR
@@ -566,20 +580,62 @@ def held_label_id(ls) -> str:
     return node["id"]
 
 
+# WHERE CLAUDE LIVES, MEASURED 2026-11-06 (ASK-3823). The installer puts it at
+# ~/.local/bin/claude, and ~/.local/bin reaches PATH only through ~/.zshrc, which
+# only an INTERACTIVE zsh reads. The plist ran `/bin/bash -lc`: a bash login shell
+# reads ~/.profile here (there is no ~/.bash_profile), and ~/.profile never adds
+# ~/.local/bin. So the login shell the plist asked for still had no claude, none
+# of the fixed paths below existed, and 15 nightly passes wrote 0 decisions.
+# `env -i zsh -lc 'command -v claude'` prints nothing; `zsh -ilc` prints the path.
+CLAUDE_CANDIDATES = ("claude", "~/.local/bin/claude", "~/.claude/local/claude",
+                     "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+LOGIN_SHELL_PROBE = "command -v claude"
+
+
+def _claude_works(cand: str) -> bool:
+    try:
+        return subprocess.run([cand, "--version"], capture_output=True, timeout=20,
+                              stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _login_shell() -> str:
+    try:
+        account_shell = pwd.getpwuid(os.getuid()).pw_shell
+    except (KeyError, OSError):
+        account_shell = ""
+    return os.environ.get("SHELL") or account_shell or "/bin/zsh"
+
+
+def login_shell_claude(timeout: int = 20) -> str | None:
+    """`command -v claude` as the user's interactive login shell answers it.
+
+    The LAST resort, because it runs the user's rc files. Interactive on purpose,
+    see CLAUDE_CANDIDATES. Those rc files may print terminal escape codes in front
+    of the answer (iTerm's shell integration does, measured), so the path is taken
+    from the end of the output, and it must be an absolute executable file before
+    it is trusted. An alias or a function prints no path and returns None.
+    """
+    try:
+        res = subprocess.run([_login_shell(), "-ilc", LOGIN_SHELL_PROBE],
+                             capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"(/[^\s\x07\x1b]*/claude)\s*$", res.stdout or "")
+    path = m.group(1) if m else ""
+    return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+
+
 def claude_binary() -> str | None:
     """First working claude on this machine. launchd's PATH is not a login PATH."""
-    for cand in (os.environ.get("KIPI_CLAUDE_BIN"), "claude",
-                 os.path.expanduser("~/.claude/local/claude"),
-                 "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        if not cand:
-            continue
-        try:
-            if subprocess.run([cand, "--version"], capture_output=True, timeout=20,
-                              stdin=subprocess.DEVNULL).returncode == 0:
-                return cand
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-    return None
+    for cand in (os.environ.get("KIPI_CLAUDE_BIN"),) + tuple(
+            os.path.expanduser(c) for c in CLAUDE_CANDIDATES):
+        if cand and _claude_works(cand):
+            return cand
+    found = login_shell_claude()
+    return found if found and _claude_works(found) else None
 
 
 def model_argv(binary: str, prompt: str) -> list:
@@ -741,6 +797,212 @@ def lane_pool(ls) -> tuple[list, list]:
     return [i for i, _ in eligible], refused
 
 
+# ===========================================================================
+# THE NO-MODEL PRE-PASS (ASK-3823): close alerts whose subject already ended.
+#
+# AN ALLOWLIST OF FILER SHAPES, NOT "ANY ALERT THAT NAMES A CLOSED ISSUE".
+# Measured on the live queue 2026-11-06: 609 of 1274 open alerts name some ASK id
+# or PR number, and most are not reports of that subject's state. "ASK-N recurred
+# on consulting PR #N", "Follow-up for consulting PR #N (merged on APPROVE WITH
+# NITS)" and "Land the site work to main (same lane as ASK-N / PR #N)" each name a
+# subject that is closed or merged and are still real work. A generic rule closes
+# them. So a shape is listed only when its producer pages about ONE subject's
+# pipeline state, and the test reads each producer to prove its text is still
+# there.
+#
+# SPILLOVER IS NOT A SUBJECT ALERT. 671 of the open alerts are "spillover sp-*
+# from ASK-N: PR #N review" findings. Their PR merging is how they came to exist,
+# not their resolution, so closing them on "PR merged" would discard review
+# findings in bulk. They resolve in the spillover ledger (`prd_runner spillover
+# resolve`) and the model still sees them one at a time. Every pattern is
+# anchored at the start of the filer's message, so none can match one.
+#
+# A PR COUNTS ONLY THROUGH AN EXPLICIT URL. The "[kipi-system]" tag names the
+# checkout that FILED the alert, not the PR's repo: review-redrive filed
+# "[kipi-system] ... ASK-3633 PR #10" about PR #10 in another repo, and
+# looking up PR #10 in kipi-system reads some other PR. So a PR subject is used
+# only when the message carries github.com/<owner>/<repo>/pull/<n> for that same
+# n. Otherwise the issue decides, or the model does.
+# ===========================================================================
+
+_SUBJECT_ISSUE = rf"(?P<issue>{TEAM_KEY}-\d+)"
+# (shape, producer file relative to the repo root, literal text the producer
+#  writes, pattern over the filer's message with the checkout tag removed)
+SUBJECT_SHAPES = (
+    ("worker-stuck", "q-system/.q-system/scripts/linear-worker.sh", "is STUCK after",
+     re.compile(rf"^kipi worker: {_SUBJECT_ISSUE} is STUCK after \d+ attempts")),
+    ("worker-stuck-legacy", "q-system/.q-system/scripts/linear-worker.sh",
+     "stuck after $MAX_ATTEMPTS attempts",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} stuck after \d+ attempts")),
+    ("worker-not-armed", "q-system/.q-system/scripts/linear-worker.sh", "is NOT armed",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is NOT armed")),
+    ("worker-worktree", "q-system/.q-system/scripts/linear-worker.sh",
+     "worktree does not hold PR",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} worktree does not hold PR #(?P<pr>\d+)")),
+    ("dispatch-died", "kipi-dispatch.sh", "was launched but died immediately",
+     re.compile(rf"^kipi dispatch: {_SUBJECT_ISSUE} was launched but died immediately")),
+    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stopped, no PR after round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stopped, no PR after round \d+")),
+    ("converge-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: $VERDICT after $ROUND round(s), ",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: [A-Z][A-Z ]* after \d+ round\(s\), ")),
+    ("converge-no-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: review produced no verdict on round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: review produced no verdict on round \d+")),
+    ("converge-stalled", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stalled at '$VERDICT', no code change",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stalled at '[^']*', no code change")),
+    ("converge-cap", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: hit $MAX_ROUNDS-round cap",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \d+-round cap")),
+    ("review-redrive", "q-system/.q-system/scripts/review-redrive.py",
+     "review-redrive: %s PR #%s still has ",
+     re.compile(rf"^review-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) still has ")),
+    ("ci-redrive", "q-system/.q-system/scripts/ci-redrive.py",
+     "ci-redrive: %s PR #%s is still red on ",
+     re.compile(rf"^ci-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is still red on ")),
+)
+# SAME PREFIX, NOT THE SAME SUBJECT (PR #606 review r1, major 1). The first cut
+# listed converge as the bare prefix "converge ASK-N: ", and converge.sh writes
+# eight pages behind it. These three do not end when ASK-N ends, so closing them
+# on "ASK-N is Done" cancelled the only ticket for a machine-wide fault or for
+# unreviewed code. linear-worker.sh's "approved at X but its head Y is still
+# unreviewed" is the same class and is not listed either. The test classifies
+# every converge page into SUBJECT_SHAPES or this list, so a new page cannot
+# arrive unclassified.
+CONVERGE_NOT_SUBJECT = (
+    ("attempts ledger unwritable", "a machine-wide fault, first seen on this issue"),
+    ("only the degraded Opus fallback reviewed it", "unreviewed code at the head"),
+    ("was never reviewed", "unreviewed code at the head"),
+)
+# "duplicate" is its own state type on this team: the lane's refusal line counts
+# two of them, and fetch_open does not filter it out.
+SUBJECT_CLOSED_TYPES = ("completed", "canceled", "duplicate")
+# A blast-radius bound, not a throughput knob. 13 alerts qualified on 2026-11-06.
+# A pattern that someday matches too much cancels at most this many a night, each
+# with its reason on the ticket, each undone by reopening it.
+PREPASS_MAX_CLOSES = 40
+# READS ARE BOUNDED TOO (PR #606 review r1, major 3). An alert whose subject is
+# still open costs a Linear read, plus a `gh pr view` when it carries a PR URL,
+# every night, and the close cap never counts them. A slow gh would then hold the
+# model batch behind it, which is the stall this file exists to end. So the pass
+# stops looking after PREPASS_MAX_LOOKUPS distinct subjects or PREPASS_DEADLINE_S
+# seconds, and whatever it did not look at goes to the model exactly as it did
+# before the pre-pass existed. 37 alerts matched a shape on 2026-11-06.
+PREPASS_MAX_LOOKUPS = 80
+PREPASS_DEADLINE_S = 300
+GH_TIMEOUT_S = 20
+GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
+
+
+def alert_message(issue: dict) -> str:
+    """The filer's message: the first fenced block of the body, else the title,
+    without the "[checkout]" tag alert-to-linear puts in front of it."""
+    m = re.search(r"```[^\n]*\n(.*?)\n```", issue.get("description") or "", re.S)
+    msg = m.group(1) if m else (issue.get("title") or "")
+    return re.sub(r"^\[[^\]\n]*\]\s*", "", msg.strip())
+
+
+def alert_subject(issue: dict) -> dict | None:
+    """The one subject this alert reports the state of, or None."""
+    msg = alert_message(issue)
+    for shape, producer, _text, pattern in SUBJECT_SHAPES:
+        m = pattern.match(msg)
+        if not m:
+            continue
+        subject = {"shape": shape, "producer": producer, "issue": m.group("issue"),
+                   "pr": None, "repo": None}
+        pr = m.groupdict().get("pr")
+        url = pr and re.search(rf"github\.com/([\w.-]+/[\w.-]+)/pull/{pr}\b", msg)
+        if url:
+            subject["pr"], subject["repo"] = int(pr), url.group(1)
+        return subject
+    return None
+
+
+def gh_pr_state(repo: str, number: int) -> str | None:
+    """MERGED, OPEN or CLOSED, or None when it could not be read. None never closes."""
+    gh = shutil.which("gh") or next(
+        (f"{d}/gh" for d in GH_DIRS if os.access(f"{d}/gh", os.X_OK)), None)
+    if not gh:
+        return None
+    try:
+        res = subprocess.run([gh, "pr", "view", str(number), "-R", repo,
+                              "--json", "state", "-q", ".state"],
+                             capture_output=True, text=True, timeout=GH_TIMEOUT_S,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (res.stdout or "").strip() or None if res.returncode == 0 else None
+
+
+def subject_ended(ls, subject: dict, cache: dict, pr_state) -> str | None:
+    """Why this subject is over, or None. An unreadable subject is None: a read
+    that failed is not permission to close (do_close's own rule, PR #275 r4)."""
+    ident = subject["issue"]
+    if ident not in cache:
+        cache[ident] = reread(ls, ident)
+    state = (cache[ident] or {}).get("state") or {}
+    if state.get("type") in SUBJECT_CLOSED_TYPES:
+        return f"{ident} is {state.get('name') or state['type']} (state type {state['type']})"
+    if subject["pr"] and subject["repo"]:
+        key = f"{subject['repo']}#{subject['pr']}"
+        if key not in cache:
+            cache[key] = pr_state(subject["repo"], subject["pr"])
+        if cache[key] == "MERGED":
+            return f"{key} is merged"
+    return None
+
+
+def run_prepass(ls, pool: list, apply: bool, pr_state=None,
+                cap: int = PREPASS_MAX_CLOSES, max_lookups: int = PREPASS_MAX_LOOKUPS,
+                deadline_s: float = PREPASS_DEADLINE_S,
+                clock=time.monotonic) -> tuple[list, Counter]:
+    """(the alerts left for the model, tally). No model is called in here.
+
+    An alert whose close was attempted is never handed to the model in the same
+    pass: closed is done, and a failed close stays open with its rationale and is
+    retried tomorrow rather than also promoted or held tonight."""
+    pr_state = pr_state or gh_pr_state
+    cache, left, tally = {}, [], Counter()
+    stop_at = clock() + deadline_s
+    for issue in pool:
+        subject = alert_subject(issue)
+        if subject and (tally["attempted"] >= cap or len(cache) >= max_lookups
+                        or clock() >= stop_at):
+            tally["unchecked"] += 1
+            subject = None
+        why = subject and subject_ended(ls, subject, cache, pr_state)
+        if not why:
+            left.append(issue)
+            continue
+        tally["attempted"] += 1
+        reason = (f"{why}. This alert reports the pipeline state of that subject "
+                  f"(shape {subject['shape']}, written by {subject['producer']}), so "
+                  "the condition it describes cannot still hold. Closed by the "
+                  "no-model pre-pass of the nightly triage lane (ASK-3823); no model "
+                  "was asked. Reopen this issue if that is wrong. Nothing was deleted.")
+        try:
+            out = do_close(ls, issue, reason, apply)
+        except Exception as exc:  # noqa: BLE001 - one bad close must not stop the pass
+            print(f"  {issue['identifier']}: pre-pass close FAILED {str(exc)[:160]}",
+                  file=sys.stderr)
+            tally["failed"] += 1
+            continue
+        print(out.line)
+        tally["closed" if out.wrote else ("skipped" if apply else "would_close")] += 1
+    return left, tally
+
+
+def _prepass_part(pre: Counter, apply: bool) -> str:
+    bound = (f", {pre['unchecked']} unchecked (read bound)" if pre["unchecked"] else "")
+    if not apply:
+        return f"; pre-pass (no model): {pre['would_close']} would close{bound}"
+    return (f"; pre-pass (no model): {pre['closed']} closed, {pre['skipped']} skipped, "
+            f"{pre['failed']} failed{bound}")
+
+
 def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
     """One issue through the lane. Returns the tally bucket it belongs in."""
     ident = issue["identifier"]
@@ -790,11 +1052,19 @@ def _pass_exit_code(tally: Counter, batch: int, apply: bool) -> int:
     return 0
 
 
-def run_triage(ls, limit: int, apply: bool, decider=None) -> int:
+def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None) -> int:
     """One bounded unattended pass. Returns the process exit code."""
+    real_model = decider is None
     decider = decider or decide
     pool, refused = lane_pool(ls)
+    pool, pre = run_prepass(ls, pool, apply, pr_state)
     batch = pool[:max(limit, 0)]
+    if real_model and batch:
+        # Which binary ran is the first thing to know when a pass writes nothing,
+        # and for 15 nights the log could not say (ASK-3823).
+        binary = claude_binary()
+        print("claude binary: " + (binary or "NONE FOUND; tried KIPI_CLAUDE_BIN, PATH, "
+                                   "~/.local/bin, the fixed paths and the login shell"))
     tally = Counter()
     for issue in batch:
         tally[_triage_one(ls, issue, decider, apply)] += 1
@@ -806,10 +1076,16 @@ def run_triage(ls, limit: int, apply: bool, decider=None) -> int:
             + f"{len(refused)} refused"
             + (" (" + ", ".join(f"{n} {r}" for r, n in reasons.most_common()) + ")"
                if refused else "")
-            + " fleet-wide")
+            + " fleet-wide"
+            + _prepass_part(pre, apply))
     print(line)
     write_run_evidence(line)
-    return _pass_exit_code(tally, len(batch), apply)
+    rc = _pass_exit_code(tally, len(batch), apply)
+    if pre["failed"]:
+        print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
+              "tomorrow", file=sys.stderr)
+        rc = rc or 1
+    return rc
 
 
 def write_run_evidence(line: str) -> None:
