@@ -30,9 +30,17 @@ WHAT COUNTS AS GATED:
        chokepoint unmetered (PR #506 review round 2). It earns the exclusion per
        run, like every other file, by calling model_gate.check.
 
-LINKED WORKTREES are skipped: a per-session worktree is a copy of a checkout
-already counted, and opening or removing one flipped the fingerprint and filed
-a ticket for no code change (PR #506 review, ASK-2400).
+LINKED WORKTREES in that population are skipped: a per-session worktree is a
+copy of a checkout already counted, and opening or removing one flipped the
+fingerprint and filed a ticket for no code change (PR #506 review, ASK-2400).
+
+EXCEPT THE TREES LAUNCHD RUNS FROM (ASK-2540, RCA token-burn-recurs-after-gate
+2026-10-06). The live runner trees are linked worktrees, so the skip above hid
+exactly the code that runs on a schedule: "357 ungated" never included it. The
+executing trees are read from the LOADED jobs (`launchctl list` labels, then
+each plist's WorkingDirectory and ProgramArguments paths, then git toplevel),
+never from a hardcoded runner path. A loaded job's tree is stable, so it does
+not reopen the per-session fingerprint flap.
 
 WHAT IT CANNOT SEE is printed in every report as `unscanned`, so its silence is
 never read as coverage (PRD review finding 6).
@@ -41,11 +49,25 @@ THE ALERT: one line to slack-notify.sh (Sana's queue) on a STATE CHANGE only.
 SINGLE WRITER of ~/.config/kipi/fleet-model-gate-scan/state.json, written only
 after the alert was delivered or none was due.
 
-EXIT: 0 a completed scan (ungated sites are the alert's job; with
---fail-on-ungated, 1 when any exist), 2 no checkout could be read (an empty
-population is a failure, never an all-clear), 3 an alert that was not delivered.
+THE DRAIN (ASK-2540). The count sat at 357 for four runs and nothing failed: a
+detector with no consumer reads as coverage. Once per ISO week the scan files
+ONE line through the same alert path with the count and the delta, and every
+run exits 4 while this week's count is not lower than last week's. The first
+week with no prior is recorded only. SINGLE WRITER of weekly.json beside
+state.json (write_weekly), written only after the weekly line was delivered.
 
-Test seams: KIPI_ALERT_CMD, --state-dir, --projects-root, --registry.
+EXIT: 0 a completed scan (ungated sites are the alert's job; with
+--fail-on-ungated, 1 when any exist), 2 the population could not be read (no
+checkout, launchctl unreadable, or weekly.json corrupt: a partial population is
+a failure, never an all-clear), 3 an alert that was not delivered, 4 the
+ungated count did not fall week over week (zero ungated is always green).
+
+Test seams: KIPI_ALERT_CMD, KIPI_LAUNCHCTL (the launchctl command),
+KIPI_LAUNCHAGENTS_DIR, KIPI_SCAN_TODAY (YYYY-MM-DD), --state-dir,
+--projects-root, --registry.
+
+STABLE NAMES for importers: loaded_launchd_labels, launchd_job_paths,
+executing_trees, checkouts_to_scan.
 """
 from __future__ import annotations
 
@@ -55,7 +77,11 @@ import hashlib
 import importlib.util
 import json
 import os
+import plistlib
+import shlex
+import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -95,9 +121,10 @@ UNSCANNED = [
 ]
 
 
-def ungated_in(top: Path) -> tuple[list[str], int]:
-    """(ungated sites, all detected sites) for one checkout, as repo-relative paths."""
-    sites = cs.call_sites(top)
+def ungated_in(top: Path, sites=None) -> tuple[list[str], int]:
+    """(ungated sites, all detected sites) for one checkout, as repo-relative paths.
+    Pass `sites` when already detected: call_sites is the dominant cost."""
+    sites = cs.call_sites(top) if sites is None else sites
     out = []
     for rel in sorted(sites):
         if rel.endswith(".py"):
@@ -117,16 +144,195 @@ def is_linked_worktree(top: Path) -> bool:
     return bool(git_dir and common) and Path(git_dir).resolve() != Path(common).resolve()
 
 
+def loaded_launchd_labels(launchctl_cmd: list[str] | None = None) -> set[str] | None:
+    """Labels of the jobs launchd has LOADED, or None when launchctl could not be
+    read (a host with no launchd). None is reported, never read as "no jobs"."""
+    cmd = launchctl_cmd or shlex.split(os.environ.get("KIPI_LAUNCHCTL", "launchctl"))
+    try:
+        p = subprocess.run(cmd + ["list"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode != 0:
+        return None
+    labels = set()
+    for line in p.stdout.splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[2].strip():
+            labels.add(parts[2].strip())
+    # Exit 0 with nothing parsed is a broken read, not a machine with no jobs.
+    return labels or None
+
+
+def _abs_paths(args: list) -> list[str]:
+    out = []
+    for a in args:
+        if not isinstance(a, str):
+            continue
+        # `bash -lc "python3 /x/y.py"`: the path lives inside one argument.
+        try:
+            toks = shlex.split(a)
+        except ValueError:
+            toks = a.split()
+        out += [t for t in toks if t.startswith("/")]
+    return out
+
+
+def launchd_job_paths(plist_dir: Path, labels: set[str]) -> list[tuple[str, str]]:
+    """(label, path) for every loaded job's WorkingDirectory and absolute
+    ProgramArguments paths. Keyed on the plist's Label, not its filename."""
+    out = []
+    if not plist_dir.is_dir():
+        return out
+    for f in sorted(plist_dir.glob("*.plist")):
+        try:
+            with open(f, "rb") as fh:
+                d = plistlib.load(fh)
+        except Exception:
+            continue  # an unreadable plist is not a job we can place
+        label = d.get("Label") if isinstance(d, dict) else None
+        if label not in labels:
+            continue
+        if isinstance(d.get("WorkingDirectory"), str):
+            out.append((label, d["WorkingDirectory"]))
+        out += [(label, p) for p in _abs_paths(d.get("ProgramArguments") or [])]
+    return out
+
+
+def executing_trees(plist_dir: Path | None = None,
+                    launchctl_cmd: list[str] | None = None) -> tuple[list[Path], bool]:
+    """(git toplevels a loaded launchd job runs from, launchd_readable).
+    Linked worktrees INCLUDED: that is the point (ASK-2540)."""
+    labels = loaded_launchd_labels(launchctl_cmd)
+    if labels is None:
+        return [], False
+    if plist_dir is None:
+        env_dir = os.environ.get("KIPI_LAUNCHAGENTS_DIR")
+        plist_dir = Path(env_dir) if env_dir else Path.home() / "Library" / "LaunchAgents"
+    home = Path.home().resolve()
+    seen, out = set(), []
+    for _label, raw in launchd_job_paths(plist_dir, labels):
+        p = Path(raw)
+        d = p if p.is_dir() else p.parent
+        if not d.is_dir():
+            continue
+        top = ffss._git(d, "rev-parse", "--show-toplevel")
+        # Fleet code lives under $HOME. A vendor prefix can itself be a git repo:
+        # the first live run counted /opt/homebrew, the WorkingDirectory of a
+        # Homebrew postgres agent, as a checkout.
+        if top and not Path(top).resolve().is_relative_to(home):
+            continue
+        if top and str(Path(top).resolve()) not in seen:
+            seen.add(str(Path(top).resolve()))
+            out.append(Path(top))
+    return out, True
+
+
+def checkouts_to_scan(registry: Path, projects: Path, plist_dir: Path | None = None,
+                      launchctl_cmd: list[str] | None = None) -> tuple[list[Path], int, bool]:
+    """(checkouts, how many came ONLY from launchd, launchd_readable). The
+    registry/projects population minus per-session worktrees, plus every tree a
+    loaded job runs from, deduped on the resolved path."""
+    base = [c for c in ffss.local_checkouts(registry, projects) if not is_linked_worktree(c)]
+    seen = {str(c.resolve()) for c in base}
+    runners, readable = executing_trees(plist_dir, launchctl_cmd)
+    added = [t for t in runners if str(t.resolve()) not in seen]
+    return base + added, len(added), readable
+
+
+def iso_week(d: date) -> str:
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def read_weekly(state_dir: Path) -> dict | None:
+    """The drain's history. A MISSING file is a first week; an unreadable one is
+    None, and the caller refuses: resetting it would turn a red job green with
+    no record (PR #526 review)."""
+    f = state_dir / "weekly.json"
+    if not f.exists():
+        return {"weeks": {}}
+    try:
+        data = json.loads(f.read_text())
+        weeks = data.get("weeks") if isinstance(data, dict) else None
+        ok = isinstance(weeks, dict) and all(
+            isinstance(v, dict) and isinstance(v.get("ungated"), int) for v in weeks.values())
+        return data if ok else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_weekly(state_dir: Path, data: dict) -> None:
+    """The ONE writer of weekly.json. Called only after the weekly line was
+    delivered or none was due, so a failed filing is retried next run."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    weeks = data["weeks"]
+    keep = dict(sorted(weeks.items())[-12:])  # a quarter of history is enough
+    f = state_dir / "weekly.json"
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"weeks": keep}, indent=1, sort_keys=True))
+    os.replace(tmp, f)
+
+
+def weekly_verdict(weekly: dict, week: str, count: int,
+                   by_checkout: dict | None = None) -> dict:
+    """What this run owes the drain: file this week's line or not, and whether
+    the count failed to fall against the latest EARLIER week on record.
+
+    THE COMPARISON IS OVER CHECKOUTS PRESENT BOTH WEEKS. Compared as totals, a
+    checkout dropping out of the population (a loaded job whose plist will not
+    parse, a repo that stopped reading) read as remediation and became the
+    baseline; when it came back the job went red for a regression nobody made
+    (PR #526 review round 2). A week recorded before per-checkout counts falls
+    back to totals."""
+    prior = sorted(k for k in weekly["weeks"] if k < week)
+    last = weekly["weeks"][prior[-1]] if prior else None
+    filed = bool(weekly["weeks"].get(week, {}).get("filed"))
+    cur, prev, dropped, added = count, None, [], []
+    if last is not None:
+        prev = last["ungated"]
+        before = last.get("by_checkout")
+        if isinstance(before, dict) and by_checkout is not None:
+            both = set(before) & set(by_checkout)
+            dropped = sorted(set(before) - both)
+            added = sorted(set(by_checkout) - both)
+            cur = sum(by_checkout[k] for k in both)
+            prev = sum(int(before[k]) for k in both)
+    return {"week": week, "ungated": count, "prev_week": prior[-1] if prior else None,
+            "compared": cur, "prev": prev, "delta": None if prev is None else cur - prev,
+            "dropped": dropped, "added": added,
+            # Zero is the terminal state, not a stall: a remediated fleet must be
+            # green, or launchd-health files a job-death issue daily forever.
+            "not_falling": prev is not None and cur > 0 and cur >= prev, "file": not filed}
+
+
+def _repo_key(top: Path) -> str:
+    common = ffss._git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return str(Path(common).resolve()) if common else str(top.resolve())
+
+
 def scan(checkouts: list[Path]) -> dict:
+    """Rows are deduped on (repository, repo-relative path), base checkouts first.
+    A runner worktree of a counted repo adds only the files whose verdict there
+    differs: added whole, it double-counted 35 of 377 rows on the first live run
+    and named a side-branch copy as the file to fix (PR #526 review)."""
     ungated, total, errors = [], 0, []
+    seen_sites, seen_ungated = set(), set()
     for top in checkouts:
         try:
-            sites, n = ungated_in(top)
+            sites = sorted(cs.call_sites(top))
+            bad, _n = ungated_in(top, sites)
         except RuntimeError as exc:
             errors.append({"checkout": str(top), "error": str(exc)[:200]})
             continue
-        total += n
-        ungated += [{"checkout": str(top), "path": p} for p in sites]
+        key = _repo_key(top)
+        for rel in sites:
+            if (key, rel) not in seen_sites:
+                seen_sites.add((key, rel))
+                total += 1
+        for rel in bad:
+            if (key, rel) not in seen_ungated:
+                seen_ungated.add((key, rel))
+                ungated.append({"checkout": str(top), "path": rel})
     return {"checkouts": len(checkouts), "sites": total, "ungated": ungated,
             "errors": errors, "unscanned": UNSCANNED}
 
@@ -153,20 +359,43 @@ def main(argv=None) -> int:
     registry = Path(a.registry) if a.registry else ROOT / "instance-registry.json"
     # Same default as the sibling scan, so the two read one population.
     projects = Path(a.projects_root) if a.projects_root else home / "projects"
-    checkouts = [c for c in ffss.local_checkouts(registry, projects) if not is_linked_worktree(c)]
+    checkouts, runner_trees, launchd_ok = checkouts_to_scan(registry, projects)
+    if not launchd_ok:
+        # A missing population piece reads as progress to the drain (the runner
+        # trees drop, the count falls, "delta -3" gets filed). Same rule as an
+        # empty population: refuse (PR #526 review).
+        print("fleet-model-gate-scan: launchctl list could not be read; refusing to report "
+              "a count without the runner trees", file=sys.stderr)
+        return 2
     if not checkouts:
         print("fleet-model-gate-scan: no checkout could be read; refusing to report zero", file=sys.stderr)
         return 2
     report = scan(checkouts)
     report["fingerprint"] = fingerprint(report)
+    report["runner_trees"] = runner_trees
+    report["launchd_readable"] = launchd_ok
+    today = date.fromisoformat(os.environ["KIPI_SCAN_TODAY"]) if os.environ.get("KIPI_SCAN_TODAY") else date.today()
+    weekly = read_weekly(state_dir)
+    if weekly is None:
+        print(f"fleet-model-gate-scan: {state_dir / 'weekly.json'} is unreadable; refusing to "
+              "reset the drain's history", file=sys.stderr)
+        return 2
+    unreadable = {e["checkout"] for e in report["errors"]}
+    by_checkout = {str(c): 0 for c in checkouts if str(c) not in unreadable}
+    for u in report["ungated"]:
+        by_checkout[u["checkout"]] = by_checkout.get(u["checkout"], 0) + 1
+    verdict = weekly_verdict(weekly, iso_week(today), len(report["ungated"]), by_checkout)
+    report["weekly"] = verdict
     if report["errors"] and len(report["errors"]) == len(checkouts):
         print("fleet-model-gate-scan: every checkout failed to read; refusing to report zero", file=sys.stderr)
         return 2
     if a.json:
         print(json.dumps(report, indent=1))
     else:
-        print(f"checkouts {report['checkouts']}  call sites {report['sites']}  "
-              f"ungated {len(report['ungated'])}  errors {len(report['errors'])}")
+        print(f"checkouts {report['checkouts']} (launchd runner trees {runner_trees}"
+              f"{'' if launchd_ok else ', launchd UNREADABLE'})  call sites {report['sites']}  "
+              f"ungated {len(report['ungated'])}  errors {len(report['errors'])}  "
+              f"week {verdict['week']} last week {verdict['prev'] if verdict['prev'] is not None else 'none'}")
         for u in report["ungated"]:
             print(f"  UNGATED {u['checkout']}  {u['path']}")
         for s in UNSCANNED:
@@ -183,6 +412,32 @@ def main(argv=None) -> int:
             return 3
     if not a.no_alert:
         ffss.write_state(state_dir, report)
+        if verdict["file"]:
+            delta = "first week, no prior" if verdict["delta"] is None else f"delta {verdict['delta']:+d}"
+            scope = "" if verdict["delta"] is None else " over checkouts present both weeks"
+            if verdict["dropped"]:
+                scope += f", {len(verdict['dropped'])} checkouts dropped out"
+            if verdict["added"]:
+                scope += f", {len(verdict['added'])} new"
+            line = (f"fleet-model-gate-scan weekly: {verdict['week']} {verdict['ungated']} ungated "
+                    f"model call sites across {report['checkouts']} checkouts "
+                    f"({runner_trees} launchd runner trees), last week "
+                    f"{verdict['prev'] if verdict['prev'] is not None else 'none'}, {delta}"
+                    f"{scope}"
+                    f"{'; NOT FALLING, the scan exits 4 until it does' if verdict['not_falling'] else ''}")
+            if not ffss.alert(line):
+                print("fleet-model-gate-scan: weekly filing not delivered; week left unfiled", file=sys.stderr)
+                return 3
+            # The baseline is the count Sana was told, written once per week.
+            # Overwritten per run, a same-week regression was never filed and
+            # became next week's target (PR #526 review).
+            weekly["weeks"][verdict["week"]] = {"ungated": verdict["ungated"], "filed": True,
+                                                "by_checkout": by_checkout}
+            write_weekly(state_dir, weekly)
+    if verdict["not_falling"]:
+        print(f"fleet-model-gate-scan: ungated {verdict['ungated']} is not lower than "
+              f"{verdict['prev_week']} ({verdict['prev']})", file=sys.stderr)
+        return 4
     return 1 if (a.fail_on_ungated and report["ungated"]) else 0
 
 
