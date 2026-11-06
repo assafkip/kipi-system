@@ -9,7 +9,7 @@ The compounding founder operating system. Lives in `~/projects/kipi-system/`.
 
 ### kipi-investigations (NEW — 2026-05-27)
 Productized version of the kipi-core investigation memory layer, for boutique intel / small T&S teams. Lives in `~/projects/kipi-investigations/`.
-- **Design partner:** Ally (see relationships.md)
+- **Design partner:** a boutique intel operator
 - **Wedge use case:** Ingest multiple intel reports; auto-build a compounding knowledge graph; visualize in Obsidian.
 - **ICP:** Boutique intel firms, resource-constrained T&S teams, PI shops, freelance OSINT investigators.
 
@@ -26,20 +26,20 @@ Productized version of the kipi-core investigation memory layer, for boutique in
 
 ## Planned / Vision
 - Obsidian vault export module {{IN_PROGRESS — kipi-investigations}}
-- Web UI v0 (Ally explicitly said graph in Obsidian is the visualization, defer custom UI)
+- Web UI v0 (the design partner explicitly said graph in Obsidian is the visualization, defer custom UI)
 - AWS-instance deployment for multi-user team access
 - SaaS pricing model {{UNVALIDATED}}
 
 ## Key Metrics
 - **Fundraise target:** N/A (bootstrapped)
 - **Team size:** 1 (founder)
-- **Active design partners:** 1 (Ally — kipi-investigations)
+- **Active design partners:** 1 (kipi-investigations)
 
 ## What We Are NOT <!-- pin -->
 - Not Palantir (enterprise pricing/complexity)
 - Not Maltego (graph-as-product, no compounding memory)
 - Not an OSINT aggregator (we don't pull data from external systems; user brings their own intel)
-- Not IOC3/Kaden's tool (username-to-graph aggregator — narrower scope)
+- Not a username-to-graph OSINT aggregator (narrower scope)
 - Not "another T&S dashboard"
 
 ## kipi-investigations Specific <!-- pin -->

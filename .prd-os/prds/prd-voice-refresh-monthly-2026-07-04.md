@@ -85,7 +85,7 @@ Decomposition (formalized into the Issues block at split time):
   the command surfaces the failure to the founder (self-healing-retry stops on
   environmental-trigger, attempt 1). No silent stale merge.
 - Corpus contamination (degraded diarization). Already mitigated: harvest ships the
-  >700-word warn-flag that caught the Chris transcript. Flagged meetings need a human
+  >700-word warn-flag that caught a client-call transcript. Flagged meetings need a human
   eyeball before Stage 2.
 - Critic non-determinism: the Stage 2 adversarial critic flip-flops run to run.
   Mitigation deferred: majority-vote (run 3x, keep survivors) is a v2 hardening,

@@ -142,9 +142,9 @@ KIPI_LINEAR_LEDGER="$TMP/ledger.jsonl" python3 "$SYNC" plan \
 assert_plan_count "title-only match does NOT dedup" 3 "$TMP/plan5.json"
 
 # -- Case 6: key derivation is stable and collision-free ----------------------
-k=$(python3 "$SYNC" key --repo "4_points_consulting" --capability "Case Intake" 2>/dev/null)
-[ "$k" = "4-points-consulting/case-intake" ] && ok "key slug is stable" || no "key slug is stable" "got '$k'"
-k2=$(python3 "$SYNC" key --repo "4_Points  Consulting" --capability "case   intake!" 2>/dev/null)
+k=$(python3 "$SYNC" key --repo "client_a" --capability "Case Intake" 2>/dev/null)
+[ "$k" = "client-a/case-intake" ] && ok "key slug is stable" || no "key slug is stable" "got '$k'"
+k2=$(python3 "$SYNC" key --repo "Client  A" --capability "case   intake!" 2>/dev/null)
 # -n guard: without it, two empty strings compare equal and this passes with no script.
 [ -n "$k2" ] && [ "$k2" = "$k" ] && ok "key normalizes case/punctuation/whitespace" \
   || no "key normalizes" "got '$k2' vs '$k'"

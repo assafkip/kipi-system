@@ -3,7 +3,7 @@
 # NOT block on dirt it cannot reach.
 #
 # THE SCAR. The guard was repo-wide. Measured 2026-08-10: 182 dirty files across
-# four blocked instances, ZERO of them in a path the sync writes (Alice's 162 are
+# four blocked instances, ZERO of them in a path the sync writes (client-d's 162 are
 # investigation evidence under q-investigate/). Four instances were locked out of
 # every fix -- including the ASK-607 fix written to unblock stuck instances --
 # by a guard protecting an empty set.

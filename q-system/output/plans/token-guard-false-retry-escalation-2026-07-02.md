@@ -1,6 +1,6 @@
 # Token-guard: blocked attempts falsely escalate to "attempted 3 times"
 
-**What/why:** Verified from Pure_spectrum_Q transcript (cd6f068f, 2026-07-02):
+**What/why:** Verified from client_b transcript (cd6f068f, 2026-07-02):
 at the 50-call volume ceiling, each guard-BLOCKED Edit still increments
 `repeat_map` (and `edit_targets`). The exact-retry check outranks the volume
 check, so the 3rd blocked retry reports "You've attempted this exact call 3
@@ -30,11 +30,11 @@ the commit escape hatch. No threshold changes.
 - [x] Exact-retry still fires for identical calls that pass the guard
 - [x] All existing token-guard tests still pass (behavior, wiring, runtime)
 - [x] `kipi update` propagates the script fleet-wide (commit 5f4d547; re-run
-      post-commit — the first run synced pre-commit HEAD). Pure_spectrum_Q is
+      post-commit — the first run synced pre-commit HEAD). client_b is
       standalone (skeleton-skipped): fixed by direct copy of token-guard.py +
       behavior test, test PASS in place.
 
 **Patterns to follow:** black-box stdin-event tests in
 `test-token-guard-hook-behavior.sh` (seed cache, run guard, assert cache +
 stderr); negative self-test before fix (fable-discipline); scar-anchored
-why-comment citing the 2026-07-02 qep_agent incident.
+why-comment citing the 2026-07-02 client_b agent incident.

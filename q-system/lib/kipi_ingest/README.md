@@ -1,7 +1,7 @@
 # kipi_ingest — fleet-canonical ingestion coverage contract
 
 One read-boundary contract shared by every document-ingesting instance
-(kipi-investigations, QEP, 4_points, product). Canonical source lives here in the
+(kipi-investigations, client-b, client-a, product). Canonical source lives here in the
 kipi-system skeleton and propagates unchanged to every instance via `kipi update`
 (git archive `q-system/` + rsync `--delete`). **Do not edit an instance's copy** —
 edit canonical here; the drift gate rejects a hand-edited instance copy.
@@ -10,7 +10,7 @@ PRD: `prd-fleet-ingestion-coverage-contract-2026-07-06`.
 
 ## The contract (two layers, best-of-breed from two audits)
 
-- **Counting (from QEP):** `ReadResult(attempted, captured, truncated, dropped)` +
+- **Counting (from client-b):** `ReadResult(attempted, captured, truncated, dropped)` +
   `reconcile()`. A cap or per-unit failure is counted, never silent; `reconcile()`
   raises and names any enumerated unit with no result.
 - **Provenance (from the product):** `Block(block_id, text-derived-from-source)` +

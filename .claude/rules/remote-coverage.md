@@ -21,9 +21,10 @@ never a default.
 - It lives in ONE place and audits `~/projects` as a whole, so it returns the
   same answer from any cwd. This rule propagates; the script does not.
 - Declare exceptions only via `remote-coverage-check.py --declare <path>
-  --reason "..."` (single writer; refuses a non-sentence reason).
-  `remote-coverage-allow.json` is in a PUBLIC repo: name the data CLASS and the
-  carrier path, never the content. Never delete anything to clear the gate.
+  --reason "..."` (single writer; refuses a non-sentence reason). It writes the
+  private `~/.config/kipi/remote-coverage-allow.json`; the tracked
+  `remote-coverage-allow.json` is public and read-only. Never delete anything
+  to clear the gate.
 
 Scar 2026-07-29: `kipi new` never created a remote. 12 remote-less repos (oldest
 219 commits, several client engagements) plus 475 client files in a directory

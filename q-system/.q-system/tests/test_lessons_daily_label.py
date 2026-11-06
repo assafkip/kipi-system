@@ -124,12 +124,14 @@ def test_install_all_skips_the_skeleton_only_template_outside_the_skeleton(tmp_p
     assert "kipi-scope: skeleton-only" in TEMPLATE.read_text()
 
 
-def test_template_has_the_placeholder_shape_and_the_weekly_schedule():
+def test_template_has_the_placeholder_shape_and_the_daily_schedule():
     src = TEMPLATE.read_text()
     for ph in ("__KIPI_REPO__", "__HOME__", "__USER__"):
         assert ph in src, ph
     assert "/Users/" not in src, "a literal home path would fan out to 25 instances"
-    assert re.search(r"<key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer>", src)
+    # Daily 08:00, founder ruling 2026-11-02. No Weekday key: a Weekday makes it weekly.
+    assert re.search(r"<key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>", src)
+    assert "<key>Weekday</key>" not in src
     assert "lessons-daily.sh</string>" in src
 
 

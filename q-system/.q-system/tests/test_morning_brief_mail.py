@@ -82,10 +82,10 @@ def instance(tmp_path, monkeypatch, brief):
 
 
 LEDGER_ROWS = [
-    {"thread_id": "19ff4af34dbc0f56", "client": "silicon-docks",
-     "last_from": "john@silicondocks.vc", "subject": "Re: Intro: John + Assaf",
+    {"thread_id": "1a2b3c4d5e6f7a8b", "client": "client_j",
+     "last_from": "contact@client-j.example", "subject": "Re: Intro: Sam + Assaf",
      "needs_reply_since": "2026-09-02T16:27:46+00:00"},
-    {"thread_id": "1a01ae47d7ac6241", "client": "", "last_from": "csalgado@allpointsinv.com",
+    {"thread_id": "2b3c4d5e6f7a8b9c", "client": "", "last_from": "contact@client-a.example",
      "subject": "Re: My one pager", "needs_reply_since": ""},
 ]
 
@@ -107,11 +107,11 @@ def _runner(stdout, error=None):
 def test_rows_are_the_ledgers_rows_keyed_by_thread_id(brief, instance):
     rows, error = brief.collect_mail(None, runner=_runner(json.dumps(LEDGER_ROWS)))
     assert error is None
-    assert [r.key for r in rows] == ["mail:19ff4af34dbc0f56", "mail:1a01ae47d7ac6241"]
-    assert "silicon-docks" in rows[0] and "Re: Intro: John + Assaf" in rows[0]
+    assert [r.key for r in rows] == ["mail:1a2b3c4d5e6f7a8b", "mail:2b3c4d5e6f7a8b9c"]
+    assert "client_j" in rows[0] and "Re: Intro: Sam + Assaf" in rows[0]
     assert "[since 2026-09-02]" in rows[0]
     # no client slug: the sender is the name; no since: no bracket at all
-    assert rows[1].startswith("csalgado@allpointsinv.com")
+    assert rows[1].startswith("contact@client-a.example")
     assert "[since" not in rows[1]
 
 

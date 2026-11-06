@@ -1,0 +1,5 @@
+{
+ "path": "plugins/kipi-core/skills/rca/scripts/test_rca_lint.py",
+ "runner": "pytest",
+ "timeout_s": 120
+}

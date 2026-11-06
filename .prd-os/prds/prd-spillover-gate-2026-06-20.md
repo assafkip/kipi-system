@@ -24,7 +24,7 @@ current issue, the issue is lost. Two leak paths, both observed repeatedly:
 
 The operator has ADHD and will not manually revisit a backlog that lives only in
 chat. "Tell the founder" is not tracking. The result: real defects (the Obsidian
-export + CLI digest archive-filter gaps flagged during the QEP build; others)
+export + CLI digest archive-filter gaps flagged during the client-b tool build; others)
 were named once and never resolved, with no durable record they existed.
 
 ## Goals

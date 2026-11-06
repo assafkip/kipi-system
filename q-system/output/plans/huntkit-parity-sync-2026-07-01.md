@@ -1,11 +1,11 @@
-# HuntKit ↔ 4_points parity + auto-sync
+# HuntKit ↔ client_a parity + auto-sync
 
 **Date:** 2026-07-01
-**What/why:** HuntKit (public plugin, github.com/assafkip/huntkit) is a frozen 2026-04-15 extraction of 4_points_consulting's investigation layer. 4_points kept evolving (content + kipi structural improvements). Bring HuntKit to parity and keep it there deterministically.
+**What/why:** HuntKit (public plugin, github.com/assafkip/huntkit) is a frozen 2026-04-15 extraction of client_a's investigation layer. client_a kept evolving (content + kipi structural improvements). Bring HuntKit to parity and keep it there deterministically.
 
 ## Audit findings (2026-07-01)
 
-| Layer | HuntKit (Apr 15) | 4_points (today) | Gap |
+| Layer | HuntKit (Apr 15) | client_a (today) | Gap |
 |-------|------------------|-------------------|-----|
 | Commands | 22 q-*.md | same 22, 19 drifted (10-24 lines each) | refresh |
 | Rules | 4 (evidence-capture, q-investigation, sycophancy, token-discipline) | same 4, all drifted (q-investigation +106 lines) | refresh |
@@ -17,23 +17,23 @@
 
 **Never sync (exclusion list):** face-env/ (full Python venv w/ tensorflow), skills/osint/config/, __pycache__, invoices, cases/investigations, anything matching client names. face-search-plan.md + security-tools.json: review content before first publish.
 
-**Parity scope decision:** parity = the investigation layer + plugin-native wiring. NOT making HuntKit a kipi instance (no founder OS, no voice/marketing/morning rules — those 26 extra rules in 4_points stay private).
+**Parity scope decision:** parity = the investigation layer + plugin-native wiring. NOT making HuntKit a kipi instance (no founder OS, no voice/marketing/morning rules — those 26 extra rules in client_a stay private).
 
 ## Approach (the pick)
 
-HuntKit becomes a **build artifact**: a manifest-driven build script assembles it from 4_points. Re-running the build = parity, forever. Options considered: (a) build script + manifest (pick), (b) rsync allowlist only (no path/wiring transforms), (c) git subtree/submodule (can't scrub or transform).
+HuntKit becomes a **build artifact**: a manifest-driven build script assembles it from client_a. Re-running the build = parity, forever. Options considered: (a) build script + manifest (pick), (b) rsync allowlist only (no path/wiring transforms), (c) git subtree/submodule (can't scrub or transform).
 
-1. `4_points_consulting/scripts/sync-huntkit.sh` (repo ROOT, not q-system/ — RULE-2026-06-30-A) + `sync-huntkit-manifest.json` (allowlist src→dest map + exclusions).
+1. `client_a/scripts/sync-huntkit.sh` (repo ROOT, not q-system/ — RULE-2026-06-30-A) + `sync-huntkit-manifest.json` (allowlist src→dest map + exclusions).
 2. Script: copy allowlisted paths → transform (q-investigate/.q-system → .q-system) → gitleaks scan on huntkit tree → git commit in huntkit (NO push).
 3. One-time structural fix in huntkit: `hooks/hooks.json` wiring token-guard.py (PreToolUse) + findings-verify-hook.py (PostToolUse) via ${CLAUDE_PLUGIN_ROOT}; bump plugin.json to 0.3.0.
-4. Trigger: lefthook post-commit in 4_points, filtered to investigation-layer paths.
+4. Trigger: lefthook post-commit in client_a, filtered to investigation-layer paths.
 5. Push: manual by founder (human gate between client casework and public GitHub).
 
 ## Files to touch
 
-- `~/projects/4_points_consulting/scripts/sync-huntkit.sh` (new)
-- `~/projects/4_points_consulting/scripts/sync-huntkit-manifest.json` (new)
-- `~/projects/4_points_consulting/lefthook.yml` (add post-commit hook)
+- `~/projects/client_a/scripts/sync-huntkit.sh` (new)
+- `~/projects/client_a/scripts/sync-huntkit-manifest.json` (new)
+- `~/projects/client_a/lefthook.yml` (add post-commit hook)
 - `~/projects/huntkit/hooks/hooks.json` (new), `.claude-plugin/plugin.json` (version), commands/, skills/, rules/, .q-system/ (refreshed by first build run)
 - `~/projects/huntkit/README.md` (note the sync provenance + new capabilities)
 
@@ -50,7 +50,7 @@ HuntKit becomes a **build artifact**: a manifest-driven build script assembles i
 ## Deviations from plan (flagged)
 
 - `sync-huntkit.sh` is a thin wrapper; logic + manifest live in `scripts/sync-huntkit.py` (transforms need real string handling)
-- Trigger is a direct `.git/hooks/post-commit` shim, NOT lefthook: 4_points' pre-commit is a custom gitleaks wrapper chain that `lefthook install` would clobber. Shim is local-only (not committed); re-wire after a reclone: `chmod +x .git/hooks/post-commit` pointing at scripts/sync-huntkit.py
+- Trigger is a direct `.git/hooks/post-commit` shim, NOT lefthook: client_a's pre-commit is a custom gitleaks wrapper chain that `lefthook install` would clobber. Shim is local-only (not committed); re-wire after a reclone: `chmod +x .git/hooks/post-commit` pointing at scripts/sync-huntkit.py
 - Spillover captured: sp-dd731488 — settings-template.json wires token-guard with `|| true`, swallowing exit-2 blocks fleet-wide
 
 ## Patterns to follow

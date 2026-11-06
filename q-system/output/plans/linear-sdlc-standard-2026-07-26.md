@@ -114,7 +114,7 @@ and re-litigating them costs more than it returns.
 
 Added during execution, after the planner produced its first real numbers.
 
-The first fleet-wide plan came to **347 issues**, and 25 of `4_points_consulting`'s
+The first fleet-wide plan came to **347 issues**, and 25 of `client_a`'s
 26 were the same sentence: "this engine has no test and no caller." That is not 25
 decisions. It is one decision for the repo, made once with the whole list in view.
 
@@ -196,17 +196,17 @@ key = <repo-slug>/<capability-slug>
 ```
 
 - `repo-slug`: the `name` field from `instance-registry.json`, lowercased,
-  non-alphanumerics collapsed to `-`. Example: `4_points_consulting` →
-  `4-points-consulting`.
+  non-alphanumerics collapsed to `-`. Example: `client_a` →
+  `client-a`.
 - `capability-slug`: the capability's `name`, same transform. Example:
   `kipi CLI` → `kipi-cli`.
-- Full example: `4-points-consulting/case-intake`.
+- Full example: `client-a/case-intake`.
 
 The key is written into the issue description as a fenced marker line so it
 survives title edits and is greppable from a Linear query:
 
 ```
-<!-- kipi-key: 4-points-consulting/case-intake -->
+<!-- kipi-key: client-a/case-intake -->
 ```
 
 **Two independent guards, because one is not enough:**

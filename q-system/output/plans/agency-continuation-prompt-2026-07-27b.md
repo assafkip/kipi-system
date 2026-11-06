@@ -152,7 +152,7 @@ launch mode differed.
 
 `sp-a04b5299` worktrees never refresh between rounds (ASK-150's tree ran 9
 commits behind main) · `sp-3477e5a9` worker cannot reach cross-repo issues
-(ASK-114's target was 4_points_consulting) · `sp-7078a307` the worker itself still
+(ASK-114's target was client_a) · `sp-7078a307` the worker itself still
 leaks a claim on a direct `kipi work` kill · `sp-dd31f93b` PR #14's own test
 leaked a real `sana/ask-aaa` branch + worktree into live state while passing 7/7
 · `sp-38d9d19d` `launchd-health-check.py` matches `--dry` exactly while every

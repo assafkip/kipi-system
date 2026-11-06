@@ -90,7 +90,7 @@ def case_check_flags_a_corrupt_row() -> bool:
 def case_resolve_matches_thousands_separator() -> bool:
     """A draft says "1,177 rows"; the ledger recorded 1177. Same number."""
     repo = _root()
-    EL.add(repo, claim="Brightspeed export has 1177 rows", source="xlsx",
+    EL.add(repo, claim="Brindlecove export has 1177 rows", source="xlsx",
            command="openpyxl len(rows)", result="1177")
     return EL.resolve_numbers(repo, "We found 1,177 rows in the export.") == []
 
@@ -98,7 +98,7 @@ def case_resolve_matches_thousands_separator() -> bool:
 def case_resolve_reports_an_invented_number() -> bool:
     """The whole point: a number nobody measured comes back unresolved."""
     repo = _root()
-    EL.add(repo, claim="Brightspeed export has 1177 rows", source="xlsx",
+    EL.add(repo, claim="Brindlecove export has 1177 rows", source="xlsx",
            command="openpyxl len(rows)", result="1177")
     return EL.resolve_numbers(repo, "About 4,200 records were affected.") == ["4200"]
 
@@ -112,7 +112,7 @@ def case_resolve_ignores_single_digits() -> bool:
 def case_resolve_spans_flags_an_unsourced_quote() -> bool:
     """A quoted span attributed to the client must trace to a recorded read."""
     repo = _root()
-    EL.add(repo, claim="Marilyn wrote about the shared sheet", source="email",
+    EL.add(repo, claim="Jordan wrote about the shared sheet", source="email",
            command="read email 2026-07-22",
            result='she wrote "we all work out of the same sheet"')
     grounded = EL.resolve_spans(repo, 'She said "we all work out of the same sheet".')

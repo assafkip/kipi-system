@@ -511,7 +511,7 @@ def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
     html = (
         '<div class=" thing id-t3_post link " data-fullname="t3_post" data-author="op_poster">'
         '<div class="md"><p>the post text</p></div></div>'
-        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="alice">'
+        '<div class=" thing id-t1_aaa comment " data-fullname="t1_aaa" data-author="sam">'
         '<div class="md"><p>first</p></div></div>'
         '<div class=" thing id-t1_bbb comment " data-fullname="t1_bbb" data-author="[deleted]"></div>'
         '<div class=" thing id-t1_ccc comment " data-fullname="t1_ccc" data-author="carol">'
@@ -519,7 +519,7 @@ def test_comments_bind_author_and_body_per_comment_not_by_position(rr):
     )
     got = rr.parse_comments(html)
     assert [c["id"] for c in got] == ["t1_aaa", "t1_bbb", "t1_ccc"]
-    assert [c["author"] for c in got] == ["alice", "[deleted]", "carol"], got
+    assert [c["author"] for c in got] == ["sam", "[deleted]", "carol"], got
     assert [c["body"] for c in got] == ["first", None, "third"], got
 
 

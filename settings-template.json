@@ -126,10 +126,6 @@
           },
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory-scores-surface.py\" 2>/dev/null || true"
-          },
-          {
-            "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/sycophancy-monthly-check.py\" 2>/dev/null || true",
             "timeout": 35
           },
@@ -218,6 +214,21 @@
           {
             "type": "command",
             "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/merge-bypass-gate.py\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/worktree-disk-floor.py\"",
             "timeout": 5
           }
         ]
@@ -448,17 +459,12 @@
           },
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" 2>/dev/null || true",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/hooks/auto-commit.py\" --detach 2>/dev/null || true",
             "async": true
           },
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/q-system/hooks/stop-logger.sh\" 2>/dev/null || true",
-            "async": true
-          },
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\" 2>/dev/null || true",
             "async": true
           },
           {

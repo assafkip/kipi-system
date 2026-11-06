@@ -1,0 +1,6 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-updater-arms-new-jobs.py",
+ "runner": "python3",
+ "timeout_s": 300,
+ "_why_timeout": "Measured 168s on a dev Mac (2026-10-22). The 60s default killed it in CI on every PR whose diff earns it (ASK-2058 #550, ASK-2824), so it could never pass."
+}

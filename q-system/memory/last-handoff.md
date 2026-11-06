@@ -11,10 +11,10 @@ Branch `prd/morning-brief-learns` in worktree `~/projects/kipi-wt-prd-mbl`, base
 ## Notion (founder-directed 2026-09-02, after the PRDs) [provenance: observed]
 
 - Integration `kipi`; token at `~/.config/kipi/notion-token`, board page id at `notion-board-page`, lessons database id at `notion-lessons-db`. Content access granted to the Morning board page and the three databases below.
-- Morning board page `3cfbf98c052981bd88e0dc27eaae166f`: four sections (Top of Mind gallery, This Week, Inbox, Lessons) as linked views, laid out like Bloom's task board. The 07:00 writer still writes bullets under headings there: sp-d351fa8c (redesign it to write Kipi backlog rows).
-- Databases: `Kipi build log` `7c012a0580554b4197407d0509fe7bbe` (one row per issue/PRD closed), `Kipi backlog` `0a09bd16b12e49bfa792fad15e008ed0` (Bucket/Priority/Size/Source), `Kipi lessons` `7a9d173f9fae442aba69238fa81acec4` (the corpus mirror).
+- Morning board page `<notion-page-id>`: four sections (Top of Mind gallery, This Week, Inbox, Lessons) as linked views, laid out like Bloom's task board. The 07:00 writer still writes bullets under headings there: sp-d351fa8c (redesign it to write Kipi backlog rows).
+- Databases: `Kipi build log` `<notion-db-id>` (one row per issue/PRD closed), `Kipi backlog` `<notion-db-id>` (Bucket/Priority/Size/Source), `Kipi lessons` `<notion-db-id>` (the corpus mirror).
 - `lessons_notion_sync.py` upserts every corpus lesson by id; wired into `lessons-daily.sh` after publish, non-fatal; first live run created every corpus row [verified: lessons_notion_sync.py output]. Status/Notes columns are the founder's and are never rewritten.
-- Stray Chrome-created "Morning board" page `3cfbf98c052980c6a30cf744535cb37c` is the founder's to trash (deletions are founder-only).
+- Stray Chrome-created "Morning board" page `<notion-page-id>` is the founder's to trash (deletions are founder-only).
 
 ## Landing steps (Sana, in this order)
 

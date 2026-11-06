@@ -53,7 +53,7 @@ def test_graph_valid():
 
 # Dirs kipi-update deliberately does NOT sync (kipi-update.sh rsync
 # --exclude list): instances OWN these and may trim or rename their canon
-# (q-pure keeps 3 canon files, not the skeleton's 14). The skeleton-authored
+# (q-client_b keeps 3 canon files, not the skeleton's 14). The skeleton-authored
 # ripple graph still ships via sync, so demanding skeleton canon exist in an
 # instance failed 6/22 instances on the capability gate's first full fleet
 # sweep (sp-07c9dad8, 2026-07-23). Skeleton stays strict; instances exempt
@@ -63,20 +63,54 @@ REPO_ROOT = os.path.normpath(os.path.join(QROOT, ".."))
 IS_SKELETON = os.path.isfile(os.path.join(REPO_ROOT, "instance-registry.json"))
 
 
+def _kept_out_of_repo(ref):
+    """True when .gitignore deliberately keeps this instance-owned file out of git.
+
+    ASK-2058 (2026-10-22): the scrub of this public skeleton untracks
+    my-project/relationships.md, a list of real people, and ignores it so an
+    auto-commit cannot add it back. Instances still own that file and the graph
+    edge from it, so the skeleton check skips it, but only when an explicit
+    ignore rule names it: a typo or a deleted file is not ignored and still fails.
+    While the file is still tracked, the existence check passes first and this
+    never runs.
+
+    A LITERAL RULE FOR THAT EXACT PATH, NOT ANY RULE (PR #552 review round 1).
+    A glob such as `output/**` also ignores a typo under output/, so "ignored"
+    alone would skip the very mistake this check exists to catch. The deciding
+    rule must be a non-negated pattern with no wildcard, in a .gitignore inside
+    this repo, that spells out this file's path.
+    """
+    full = os.path.join(QROOT, ref)
+    r = subprocess.run(["git", "-C", REPO_ROOT, "check-ignore", "-v", "--no-index", full],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or "\t" not in r.stdout:
+        return False
+    source, _, pattern = r.stdout.split("\t", 1)[0].split(":", 2)
+    if os.path.isabs(source) or pattern.startswith("!") or any(c in pattern for c in "*?[\\"):
+        return False
+    rule_dir = os.path.join(REPO_ROOT, os.path.dirname(source))
+    return pattern.strip("/") == os.path.relpath(full, rule_dir)
+
+
 def test_files_exist(graph):
-    missing, instance_owned_absent = [], []
+    missing, instance_owned_absent, kept_out = [], [], []
     for src, targets in graph.items():
         for ref in [src] + list(targets):
             if os.path.exists(os.path.join(QROOT, ref)):
                 continue
             if not IS_SKELETON and ref.startswith(INSTANCE_OWNED_PREFIXES):
                 instance_owned_absent.append(ref)
+            elif ref.startswith(INSTANCE_OWNED_PREFIXES) and _kept_out_of_repo(ref):
+                kept_out.append(ref)
             else:
                 missing.append(ref)
     if instance_owned_absent:
         skipped = sorted(set(instance_owned_absent))
         print(f"  SKIP: {len(skipped)} graph ref(s) under instance-owned dirs "
               f"absent here (canon is instance-owned, not synced): {skipped[:4]}...")
+    if kept_out:
+        print(f"  SKIP: {len(set(kept_out))} instance-owned graph ref(s) that "
+              f".gitignore keeps out of this public repo: {sorted(set(kept_out))}")
     test("all referenced files exist", len(missing) == 0, f"missing: {missing}")
 
 

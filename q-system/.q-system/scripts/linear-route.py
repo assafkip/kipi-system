@@ -57,7 +57,7 @@ THE OWNER LABEL, AND THE POPULATION IT SKIPS
 A DoR ticket with no owner label gets `owner:sana` -- but only once it has a
 project, and never when the ticket is machine-filed job inflow. ASK-1887's
 "Not doing" line is explicit: the launchd job tickets name `com.cole.*` and
-`com.alice.*` jobs that may be paused or retired, and they need a liveness check
+`com.client_d.*` jobs that may be paused or retired, and they need a liveness check
 before a worker run, not a label. That population is read from the marker its own
 filer stamps (`<!-- kipi-key: fleet-health/... -->`, `<!-- kipi-key:
 job-migration/... -->`), never from title prose a human can edit.

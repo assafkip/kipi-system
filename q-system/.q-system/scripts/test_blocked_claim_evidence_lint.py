@@ -51,8 +51,8 @@ CLAIMS = [
     ("gh pr merge denied",
      "- `gh pr merge` is denied to the tool layer, so I cannot merge.",
      "my-denial-as-object-property"),
-    ("Alice scripts live",
-     "- the 10 Alice scripts are LIVE.",
+    ("client-d scripts live",
+     "- the 10 client-d scripts are LIVE.",
      "lookup-as-runtime-fact"),
 ]
 
@@ -76,8 +76,8 @@ SETTLED = [
     "gh pr merge 74 --squash\n"
     "GraphQL: Pull request is not mergeable (try --admin)\n```\n",
     CLAIMS[5][1] + "\n\n```\n"
-    "bash alice/run.sh --list\n"
-    "alice/collect.sh: never invoked, no run-log entry\n```\n",
+    "bash client_d/run.sh --list\n"
+    "client_d/collect.sh: never invoked, no run-log entry\n```\n",
 ]
 
 
@@ -148,7 +148,7 @@ def main() -> int:
         mod.evaluate("- merge is blocked pending founder approval {{UNVERIFIED}}") == []))
     cases.append((
         "labelled inference passes (provenance: inferred)",
-        mod.evaluate("- the 10 Alice scripts are LIVE. provenance: inferred") == []))
+        mod.evaluate("- the 10 client-d scripts are LIVE. provenance: inferred") == []))
     cases.append((
         "an ev- claim id passes",
         mod.evaluate("- `degraded.state` does not exist (ev-a1b2c3d4e5)") == []))
@@ -196,10 +196,10 @@ def main() -> int:
     # === PR #79 review, minor 1: a fence binds to ONE claim, not to the window ===
     # Codex reproduced this: two claims inside one lookahead window, one fence that
     # answers only the SECOND. The window rule cleared both, so evidence for the
-    # Alice claim silently laundered the false merge claim next to it.
+    # client-d claim silently laundered the false merge claim next to it.
     launder = (CLAIMS[0][1] + "\n" + CLAIMS[5][1] + "\n\n```\n"
-               "bash alice/run.sh --list\n"
-               "alice/collect.sh: never invoked, no run-log entry\n```\n")
+               "bash client_d/run.sh --list\n"
+               "client_d/collect.sh: never invoked, no run-log entry\n```\n")
     found = mod.evaluate(launder)
     cases.append(("one fence settles its own claim, not the claim above it",
                   len(found) == 1 and found[0].pattern == "rollup-as-config"))
@@ -212,11 +212,11 @@ def main() -> int:
     # === PR #79 review round 2: the SAME-LINE residue of the minor-1 fix ===
     # Binding a fence to the nearest claim LINE still let one line hold two claims.
     # Codex's reproducer, verbatim: both claims on one line, one fence answering only
-    # the Alice half. The merge claim rode out on the Alice claim's evidence.
+    # the client-d half. The merge claim rode out on the client-d claim's evidence.
     same_line = ("- Merge is blocked pending founder approval. "
-                 "The 10 Alice scripts are LIVE.\n\n```\n"
-                 "bash alice/run.sh --list\n"
-                 "alice/collect.sh: never invoked, no run-log entry\n```\n")
+                 "The 10 client-d scripts are LIVE.\n\n```\n"
+                 "bash client_d/run.sh --list\n"
+                 "client_d/collect.sh: never invoked, no run-log entry\n```\n")
     found = mod.evaluate(same_line)
     cases.append(("one fence settles one claim on a two-claim LINE",
                   len(found) == 1 and found[0].pattern == "rollup-as-config"))

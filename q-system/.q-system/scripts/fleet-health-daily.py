@@ -71,6 +71,24 @@ QROOT = HERE.parent.parent
 REPO_ROOT = QROOT.parent
 NOTIFY = HERE / "slack-notify.sh"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
+
+# The job families this scan owns. Client families are client names, and this
+# file ships in a public repo, so they are read from a private file outside it
+# (ASK-2058), one prefix per line, '#' comments allowed: the same shape as
+# launchd-health-check.py's EXTRA_PREFIXES_FILE. Missing file = base families.
+_BASE_JOB_PREFIXES = ("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
+                      "com.claudedaddy.", "com.personal.")
+PRIVATE_JOB_PREFIXES_FILE = Path.home() / ".config" / "kipi" / "fleet-job-prefixes.txt"
+
+
+def job_prefixes() -> tuple:
+    try:
+        lines = PRIVATE_JOB_PREFIXES_FILE.read_text().splitlines()
+    except OSError:
+        return _BASE_JOB_PREFIXES
+    extra = [e for e in (l.split("#", 1)[0].strip() for l in lines)
+             if e and e not in _BASE_JOB_PREFIXES]
+    return _BASE_JOB_PREFIXES + tuple(extra)
 STATE = Path.home() / ".config" / "kipi" / "fleet-health-state.json"
 
 # Where fleet-wide findings are filed. Per-repo findings could route to their own
@@ -108,6 +126,21 @@ def _paused_labels() -> set:
     wd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(wd)
     return wd.load_paused_labels()
+
+
+def _declares_retirement(text: str) -> bool:
+    """Reuse launchd-intent-verify's reader so 'retired' has ONE definition.
+
+    Same shape as `_paused_labels` above and for the same reason: a second copy of
+    the marker string here would agree on the day it was written and silently stop
+    agreeing the day the marker changes.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("iv", HERE / "launchd-intent-verify.py")
+    iv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(iv)
+    return iv.declares_retirement(text)
 
 
 def _is_loaded(label: str) -> bool:
@@ -196,8 +229,7 @@ def detect_dark_jobs(_ctx) -> list:
     paused = _paused_labels()
     out = []
     for label in _launchd_labels():
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+        if not label.startswith(job_prefixes()):
             continue
         if label in paused or _is_loaded(label):
             continue
@@ -218,8 +250,7 @@ def detect_failing_jobs(_ctx) -> list:
         if len(parts) < 3:
             continue
         _pid, status, label = parts[0], parts[1], parts[2]
-        if not label.startswith(("com.kipi.", "com.cole.", "com.ask.", "com.assaf.",
-                                 "com.claudedaddy.", "com.purespectrum.", "com.personal.")):
+        if not label.startswith(job_prefixes()):
             continue
         if status in ("0", "-"):
             continue
@@ -1557,6 +1588,17 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     for template in template_paths:
         label = template.stem
         if label in paused:
+            continue
+        # A DECLARED-RETIRED TEMPLATE IS NOT AN UNINSTALLED ONE (ASK-1130 round 4).
+        # This detector's remediation line is `install-plist.sh <label>` -- the
+        # SINGLE-label mode, which deliberately skips the retirement guard because
+        # bringing one job back is an explicit act. So for a job the founder
+        # retired (the four RULE-2026-09-11-A posters) the finding was a permanent
+        # issue, reopened by every daily run, whose only instruction was to undo
+        # the directive. The bulk installer already honours the same marker; a
+        # declaration that one consumer reads and the other ignores is how the
+        # retirement gets re-litigated by whoever reads the ticket.
+        if _declares_retirement(template.read_text(errors="replace")):
             continue
         if (agents / f"{label}.plist").is_file():
             continue

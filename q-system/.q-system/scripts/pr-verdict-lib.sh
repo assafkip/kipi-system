@@ -176,7 +176,7 @@ extract_verdict() {
 # The reviewer prompt ends with a literal template -- `severity|one-sentence
 # claim|file:line` between the two markers -- and `codex exec` echoes the whole
 # prompt to stdout. When the model answers with a PLAN instead of a review, that
-# echo is the ONLY complete block in the stream. Measured 2026-08-03 on Alice PR
+# echo is the ONLY complete block in the stream. Measured 2026-08-03 on client_d PR
 # #1 round 2: the block was accepted, `severity|` matched no severity, no
 # severities derived APPROVE, and kipi/reviewer-approved -- a REQUIRED context on
 # main -- went green on code nobody had read, 12 seconds after dispatch.
@@ -270,7 +270,52 @@ review_declined_to_start() {
 review_is_usable() {
   local f="${1:-}"
   has_complete_findings_block "$f" || return 1
+  review_could_not_read "$f" && return 1
   ! review_declined_to_start "$f"
+}
+
+# review_could_not_read <review-file>
+# True when the findings block is EMPTY and the reviewer never stated a verdict
+# extract_verdict recognizes. Exit 0 = nobody can say this review happened.
+#
+# THE SCAR (two instance PRs, 2026-10-13). The codex sandbox had no network,
+# `gh pr diff` failed, and the reviewer stopped honestly ("VERDICT: REVIEW
+# BLOCKED" / "NOT ISSUED") over an EMPTY findings block. An empty block derives
+# APPROVE by contract (a round 2 that refutes everything must land), the stated
+# verdict parsed as nothing, and the PR got a green required check unread.
+#
+# WHY THIS SHAPE (after an independent review measured the earlier shapes over
+# all 711 saved reviews). Hunting for refusal PHRASES never closes ("Final
+# verdict: NOT ISSUED", a table row, no verdict line at all), and a label finder
+# that disagreed with extract_verdict on case refused 41 real reviews. So the
+# rule is stated as the contract itself: an empty block may only derive APPROVE
+# when the reviewer SAID a verdict. Rows present -> a review happened, not this
+# function's call. Empty and a stated verdict (any case) -> usable, and
+# resolve_verdict keeps the harsher of stated and derived. Empty and nothing
+# stated -> unusable, the status stays UNSTATED.
+# The reviewer's OWN words. Codex transcripts interleave `exec` blocks that echo
+# command output (the PR author's diff, fixtures, comments) between `codex`
+# messages, and the final answer follows the LAST line that is exactly `codex`.
+# Only that is read: an echoed "verdict: approve" in the author's text must not
+# turn a refusal into a stated verdict (independent review, 2026-10-13). A
+# transcript with no such marker (claude -p) is all final answer.
+_reviewer_final_answer() {
+  awk '{ lines[NR] = $0 } /^codex[[:space:]]*$/ { last = NR }
+       END { for (i = last + 1; i <= NR; i++) print lines[i] }' "${1:-}" 2>/dev/null
+}
+review_could_not_read() {
+  local f="${1:-}" block upper verdict
+  [ -s "$f" ] || return 1
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 1
+  grep -qE '^(blocker|major|minor|nit)\|' <<<"$block" && return 1
+  # extract_verdict matches upper-case labels and tokens; real reviews write
+  # "Verdict:" and "**Verdict: APPROVE WITH NITS.**", so read an upper-cased copy
+  upper="$(mktemp)"
+  _reviewer_final_answer "$f" | tr '[:lower:]' '[:upper:]' > "$upper"
+  verdict="$(extract_verdict "$upper")"
+  rm -f "$upper"
+  [ -z "$verdict" ]
 }
 
 # has_complete_findings_block <review-file>
@@ -309,6 +354,7 @@ has_complete_findings_block() {
 # function of them, so compute it instead of reading prose.
 #   any blocker -> BLOCK            (anchor: unrecoverable if merged)
 #   any major   -> REQUEST CHANGES  (recoverable, but a human must clean up)
+#     ...unless its 4th field is `nonblocking` (ASK-2422, see _blocking_majors)
 #   minors/nits -> APPROVE WITH NITS (captured as follow-ups, never wedges)
 #   none        -> APPROVE
 # Empty when there is no COMPLETE FINDINGS block, so the caller falls back to
@@ -320,8 +366,8 @@ verdict_from_findings() {
   block="$(findings_block "$f")"
   printf '%s' "$block" | grep -q '^FINDINGS:' || return 0
   if   printf '%s' "$block" | grep -qE '^blocker\|';    then printf 'BLOCK'
-  elif printf '%s' "$block" | grep -qE '^major\|';      then printf 'REQUEST CHANGES'
-  elif printf '%s' "$block" | grep -qE '^(minor|nit)\|'; then printf 'APPROVE WITH NITS'
+  elif printf '%s' "$block" | _blocking_majors | grep -q .; then printf 'REQUEST CHANGES'
+  elif printf '%s' "$block" | grep -qE '^(major|minor|nit)\|'; then printf 'APPROVE WITH NITS'
   # An empty block deriving APPROVE is a DELIBERATE contract, pinned by name in
   # test-severity-floor.sh: a round 2 that refutes everything must be able to land,
   # or approved PRs wedge forever. ASK-312 tried removing it and collided with that
@@ -504,6 +550,9 @@ automerge_arm() {
 # gate is not enough when something armed it before the gate could see the
 # verdict. The arm has to come back off.
 #
+# SINCE ASK-3832 rework_gate never returns 50, so the worker no longer calls
+# this. It stays for converge.sh, whose gate-50 branch is now unreachable.
+#
 # THE SAFE DIRECTION IS TO WRITE, NOT TO SKIP. gh is only skipped when the probe
 # says EXPLICITLY false: disabling auto-merge on a PR that does not have it is a
 # harmless no-op, while trusting an unreadable probe as "nothing to do" leaves an
@@ -564,7 +613,7 @@ automerge_disarm() {
 # commit" would be a guess in the never-merge direction's favour.
 _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'; }
 
-# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha] [degraded]
+# rework_gate <verdict> [merge-state] [reviewed-head-sha] [current-head-sha] [ignored]
 # The deterministic slice of the severity floor: whether another rework round
 # is allowed to start. Exit codes, not prose:
 #   0  = rework      (REQUEST CHANGES or BLOCK -- the review is the spec)
@@ -578,17 +627,10 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 #                     separately; see the caller-owned cap note below.)
 #   40 = stale       (approving, but at a sha that is no longer the PR's head --
 #                     re-review at the new sha. NEVER merge, never auto-approve.)
-#   50 = degraded    (approving, at the right sha, but the ONLY review on record
-#                     was written by the Opus fallback during a codex outage. Not
-#                     an independent second opinion, so it does not satisfy the
-#                     review precondition on its own. NEVER merge; re-review once
-#                     codex answers. See the degraded section below.
-#                     DORMANT WHILE THE FLEET IS CLAUDE-PRIMARY: the writer sets
-#                     the flag only on the codex-outage branch, so nothing on the
-#                     scheduled path produces a 50 today. Correct and waiting,
-#                     not passing -- the scope note on degraded_from_record says
-#                     what it takes to arm it and why that is not this gate's
-#                     call.)
+#   There is no 50 any more. It was "degraded" (ASK-2036) and ASK-3832 removed
+#   it: a degraded (Opus fallback) approval is an approval. The 5th argument is
+#   accepted and IGNORED, because converge.sh still passes the flag. See the
+#   degraded section below.
 #
 # WHY MERGEABILITY IS PART OF THE GATE (ASK-212, sp-71b63e62)
 # ----------------------------------------------------------
@@ -649,45 +691,30 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # caller that does not know 40 falls out of its if-chain into the rework path,
 # which is the safe direction: not terminal, never a merge.
 #
-# WHY DEGRADED IS PART OF THE GATE (ASK-2036, sp-e9284708)
-# --------------------------------------------------------
-# During a codex outage pr-review-agent.sh runs the Opus fallback so
-# `kipi/reviewer-approved` -- a REQUIRED context -- does not wedge every PR in
-# the repo. That status posts SUCCESS. The record it writes says
-# `degraded: true` and `reviewed_by: claude-opus-5`, and the human-facing
-# surfaces (the status description, the Linear comment) say DEGRADED out loud.
-# THIS function said nothing, because nothing read the flag: for three weeks the
-# only consumer of `degraded` was a python heredoc inside
-# test-review-degraded-provenance.sh. So a fallback APPROVE reached exit 10
-# exactly like an independent one, the worker ARMED auto-merge on it, and a PR
-# reviewed only by the same model family that wrote the code could land. The
-# whole reason this loop pays for a second engine is that the checker is not
-# Claude; a degraded approval is that property quietly switched off.
+# WHY DEGRADED IS NOT PART OF THE GATE (ASK-3832, RULE-2026-11-06-C)
+# -------------------------------------------------------------------
+# ASK-2036 made it part of the gate: a fallback APPROVE returned 50, and the
+# worker took auto-merge OFF and skipped the issue until "codex answers". It
+# named its own cost -- "during a long codex outage approved PRs accumulate
+# unmerged" -- and then nothing ever re-ran the review on a degraded record.
+# Codex ran out of credits on 2026-09-16, and gate 50 parked 39 degraded
+# approvals through 2026-10-23 while the memory note said the fallback works.
 #
-# 50 IS NOT 20, and the distinction is what a caller says to the operator.
-# 20 means nobody reviewed it and there is no spec. 50 means a review happened,
-# found nothing, and was written by the wrong reader -- the code may well be
-# fine, it has simply never been independently read. Both hold the PR; only one
-# of them is fixed by re-running the review once codex answers.
+# The founder ruled the other way, twice: 2026-09-23 "you dont need codex
+# credits, you can use opus as a fallback", and RULE-2026-11-06-C "A degraded
+# (Opus) approval is an approval: gate 50 is removed." The cost of that ruling,
+# stated: a fallback approval is Claude reviewing Claude's code. That is the
+# same posture as every scheduled review since #319 set both engine defaults to
+# claude (486 of 547 records since 2026-09-16), and picking a different
+# reviewer is the resolver's job (ASK-3831), not a merge gate's.
 #
-# DRIFT OUTRANKS DEGRADED, for the same reason drift outranks the merge state: a
-# moved head means nobody read the code at ALL, so the re-review has to happen
-# first and the record it writes then decides independence. DEGRADED OUTRANKS
-# THE CONFLICT, because rebasing code nobody independently read does not make it
-# read, and a rebase round would spend the conflict budget on the wrong problem.
-#
-# ABSENT IS NOT INDEPENDENT AND IT IS NOT DEGRADED. The 5th argument is empty for
-# every record written before ASK-445, for a corrupt record, and for every caller
-# that has not been taught to pass it -- all three keep today's behaviour exactly.
-# That is deliberate and it is the expensive half to get wrong: reading absent as
-# degraded would stop every open PR on the board at once the day this shipped.
-#
-# 50 IS NOT 10, 30 OR 40. A caller that does not know 50 falls out of its
-# if-chain into the rework path, which is the same safe direction 40 relies on:
-# not terminal, never a merge.
+# THE 5TH ARGUMENT STAYS ACCEPTED AND UNREAD. converge.sh passes it and is not
+# part of ASK-3832; a positional the function ignores costs nothing, while
+# dropping the slot would make that call site look like it still means
+# something. test-degraded-approval-gate.sh case 5 sweeps every input and
+# proves no call returns 50, which is what makes converge's old branch dead.
 rework_gate() {
   local verdict="${1:-}" merge_state="${2:-}" reviewed_sha="${3:-}" current_sha="${4:-}"
-  local degraded="${5:-}"
   case "$verdict" in
     "REQUEST CHANGES"|"BLOCK")            return 0 ;;
     "APPROVE"|"APPROVE WITH NITS")
@@ -702,11 +729,6 @@ rework_gate() {
           return 40
         fi
       fi
-      # THE ONE NEW READ (ASK-2036). One line on purpose: the mutation in
-      # test-degraded-approval-gate.sh deletes exactly this line and requires the
-      # degraded case to fall back to 10, which is only a real kill if removing
-      # it leaves the rest of the function intact.
-      case "$degraded" in 1) return 50 ;; esac
       case "$merge_state" in
         "DIRTY"|"BEHIND")                 return 30 ;;
         *)                                return 10 ;;
@@ -724,6 +746,75 @@ extract_minor_findings() {
   local f="$1"
   [ -s "$f" ] || return 0
   findings_block "$f" | grep -E '^minor\|' || true
+}
+
+# THE ROW SHAPE, and the one rule every reader below shares (ASK-2422).
+#
+# A findings row is `severity|claim|file:line` with an OPTIONAL trailing mark.
+# The claim is the only free-text field, so it is the only field that can hold a
+# literal `|` -- and when it does, every positional field shifts right.
+#
+# SCAR, round 1 of this very issue: the first version read the mark off field 4.
+# A reviewer writing `major|the fallback swallows rc=2 | rc=3|a.sh:40|nonblocking`
+# put the mark on $5, field 4 held the location, the row read as blocking, and the
+# PR the reviewer had explicitly released wedged anyway -- silently, because the
+# row still looked well-formed. The fix is to anchor on the END of the row, which
+# does not move: the mark is the LAST field, and only when the row has at least 4
+# of them, so a row whose LOCATION is the word `nonblocking` releases nothing.
+#
+# This awk fragment is the single owner of that rule. Every reader interpolates it
+# rather than restating the comparison, so the three call sites cannot drift.
+_NB_MARK_AWK='function nb(  m) { m = $NF; gsub(/[ \t\r]/, "", m); return (NF >= 4 && m == "nonblocking") }'
+
+# _blocking_majors (stdin: a findings block)
+# The major rows that gate: every `major|claim|loc` row EXCEPT one carrying the mark.
+#
+# WHY THE MARK EXISTS (ASK-2422). A report-only gate PR took 4 review rounds, and
+# round 4's only major was one the reviewer itself called "not a blocker"; the next
+# PR's round 3 said the same words about its major. The ladder read `^major|` and
+# nothing else, so a reviewer had no way to put that judgment in the block, and its
+# own prose could not move the verdict. The mark is for a major the reviewer judges
+# safe to merge and fix after, including one that only bites in code the PR states
+# is report-only or dry-run. A blocker never reads the mark: real blockers block.
+#
+# EXACT FIELD, NOT A SUBSTRING. A location like `nonblocking.py:3` or a claim that
+# mentions the word must not release a gate; only the trailing field does.
+_blocking_majors() {
+  awk -F'|' "$_NB_MARK_AWK"' /^major[|]/ { if (!nb()) print }'
+}
+
+# extract_followup_findings <review-file>
+# What a terminal APPROVE WITH NITS leaves behind to fix: the minors, plus every
+# major the reviewer marked `nonblocking`. A released major is still a real defect;
+# it is listed with the minors so it reaches the run log, never dropped (ASK-2422).
+extract_followup_findings() {
+  local f="$1" block
+  [ -s "$f" ] || return 0
+  block="$(findings_block "$f")"
+  [ -n "$block" ] || return 0
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
+    /^minor[|]/ { print; next }
+    /^major[|]/ { if (nb()) print }'
+}
+
+# findings_row_parts <row>
+# Splits ONE findings row into severity, claim and location, on three lines in
+# that order, with the optional trailing mark removed.
+#
+# WHY A FUNCTION AND NOT `IFS='|' read -r sev claim loc`. That read is the same
+# positional parse the scar above describes: a claim containing a pipe lands its
+# tail in `loc`, so the run log names a location the reviewer never wrote. Here
+# the location is the last field before the mark and the claim is everything
+# between, so an internal pipe is preserved rather than mistaken for a delimiter.
+findings_row_parts() {
+  printf '%s' "$1" | awk -F'|' "$_NB_MARK_AWK"'
+    {
+      last = nb() ? NF - 1 : NF
+      if (last < 3) { print $1; print $2; print ""; next }
+      claim = $2
+      for (i = 3; i < last; i++) claim = claim "|" $i
+      print $1; print claim; print $last
+    }'
 }
 
 # review_comment_body <review-file> <verdict> <engine> <degraded>
@@ -820,6 +911,153 @@ review_comment_body() {
 # narrative, while under-reserving overruns the limit and loses the whole comment.
 review_comment_body_header_size() { printf '%s' 5000; }
 
+# repo_visibility <slug>
+# Prints PRIVATE or PUBLIC. Only an exact PRIVATE answer from GitHub is private.
+#
+# WHY IT FAILS CLOSED (ASK-2893). review_comment_body above posts the review's
+# narrative, and on a codex or claude transcript that narrative REPLAYS THE DIFF.
+# On the public kipi-system repo that put 188 term-carrying comments on public
+# PRs (scan of 2026-10-22), each one up to 55 KB, and a scrub PR leaked the very
+# terms it was removing, because the removed lines are in its diff. So the
+# question "may the full review go on this PR" has one safe default: no. A failed
+# lookup, an empty answer, an unknown slug and INTERNAL (visible to a whole
+# enterprise) all read PUBLIC. A private repo that reads PUBLIC by mistake loses
+# a comment's narrative; a public repo that reads PRIVATE leaks.
+#
+# The visibility comes from the repo itself, never from a list of repo names:
+# the reviewer is skeleton code that runs on every fleet repo, and a hardcoded
+# list is stale the day a repo flips.
+repo_visibility() {
+  local slug="${1:-}" v=""
+  v="$(gh repo view ${slug:+"$slug"} --json visibility -q .visibility 2>/dev/null)" || v=""
+  case "$v" in
+    PRIVATE) printf 'PRIVATE' ;;
+    *)       printf 'PUBLIC' ;;
+  esac
+}
+
+# private_terms_check <guard.py>   (stdin: the text that would be posted)
+# Exit 0: the guard loaded a term list and found no term. 1: a term hit.
+# 2: could not check (no guard file, import failure, or no term source on this
+# machine). The caller treats anything but 0 as a hit. It never prints a term:
+# this runs inside a review log, and a hit printed there is a second leak.
+#
+# Loads the guard by path, the same module the commit hook runs, so the reviewer
+# and the commit gate can never disagree about what a private term is. Both guard
+# APIs are accepted: load_tokens() on main as of 2026-10-23, and load_terms() from
+# the ASK-2058 guard rewrite (PR #554). hits() returns a list in one and a dict in
+# the other; both are empty when clean.
+private_terms_check() {
+  local guard="${1:-}"
+  [ -n "$guard" ] && [ -f "$guard" ] || return 2
+  python3 -I -c '
+import importlib.util, sys
+try:
+    spec = importlib.util.spec_from_file_location("kipi_client_name_guard", sys.argv[1])
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "load_terms"):
+        terms = mod.load_terms(warn=lambda _msg: None)
+    else:
+        terms = mod.load_tokens()
+    if terms is None:
+        sys.exit(2)
+    found = mod.hits(sys.stdin.read(), terms)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+sys.exit(1 if found else 0)
+' "$guard" 2>/dev/null
+}
+
+# _public_verdict <verdict> / _public_engine <engine>
+# Only a value from a closed set may reach a public PR. The verdict is already
+# one of the four tokens extract_verdict knows or empty, but this function is the
+# public gate, so it does not lean on a property of a reader 900 lines away.
+_public_verdict() {
+  case "${1:-}" in
+    "APPROVE"|"APPROVE WITH NITS"|"REQUEST CHANGES"|"BLOCK") printf '%s' "$1" ;;
+    *) printf 'unstated' ;;
+  esac
+}
+_public_engine() {
+  case "${1:-}" in claude|codex) printf '%s' "$1" ;; *) printf 'unknown' ;; esac
+}
+
+# _public_finding_counts <review-file>
+# Prints "total blocker major minor nit nonblocking-majors", or nothing when no
+# complete findings block was parsed. Through findings_block, the one reader, so
+# the counts on the PR are the counts the verdict was derived from. The last
+# field uses _NB_MARK_AWK, the one owner of the nonblocking rule (PR #557 round
+# 2, minor): "major 1" beside an approving verdict reads as a contradiction
+# unless the summary says the reviewer released it.
+_public_finding_counts() {
+  local block
+  block="$(findings_block "$1")"
+  [ -n "$block" ] || return 0
+  printf '%s\n' "$block" | awk -F'|' "$_NB_MARK_AWK"'
+    /^(blocker|major|minor|nit)[|]/ { n[$1]++; t++ }
+    /^major[|]/ { if (nb()) nbm++ }
+    END { printf "%d %d %d %d %d %d", t, n["blocker"], n["major"], n["minor"], n["nit"], nbm }'
+}
+
+# review_public_counts_line <review-file> <verdict> [degraded]
+# The floor: a closed-set verdict, one integer and fixed words. Nothing from the
+# review text and no path, so there is nothing in it for the guard to find.
+# The DEGRADED words stay even here (PR #557 round 1, minor): an Opus-fallback
+# verdict that reads as an independent second opinion is a false claim, and the
+# floor is no place to start making one.
+review_public_counts_line() {
+  local counts total deg=""
+  counts="$(_public_finding_counts "$1")"
+  total="${counts%% *}"
+  [ "${3:-0}" = "1" ] && deg="DEGRADED (Opus fallback, not an independent second opinion). "
+  printf '%sVerdict: %s. Findings: %s. Review withheld: this repository is public.\n' \
+    "$deg" "$(_public_verdict "${2:-}")" "${total:-not parsed}"
+}
+
+# review_public_body <review-file> <verdict> <engine> <degraded> <guard.py>
+# What the reviewer may post on a PUBLIC repo (ASK-2893): the verdict, the finding
+# counts by severity, the engine, and where the full review sits on the
+# reviewer's machine. No review text, no finding text, no diff. The findings
+# still reach the linked Linear issue, which is private.
+#
+# THEN THE GUARD, on exactly these bytes. The path carries the repo slug, and a
+# slug can collide with a private term (the 2026-10-22 scrub hit one: a token in
+# client-tokens was the founder's own public repo name). On a hit, or when the
+# guard cannot vouch, the body drops to review_public_counts_line.
+review_public_body() {
+  local f="$1" verdict="${2:-}" engine="${3:-}" degraded="${4:-0}" guard="${5:-}"
+  local counts total b m mi n nbm mdesc shown body rc=0
+  counts="$(_public_finding_counts "$f")"
+  shown="$f"
+  case "$f" in "$HOME"/*) shown="~${f#"$HOME"}" ;; esac
+  body="$(
+    printf '## Verdict: %s\n\n' "$(_public_verdict "$verdict")"
+    [ "$degraded" = "1" ] \
+      && printf '**DEGRADED**: codex was down, this is the Opus fallback. Not an independent second opinion.\n\n'
+    if [ -n "$counts" ]; then
+      read -r total b m mi n nbm <<<"$counts"
+      mdesc="$m"
+      [ "${nbm:-0}" -gt 0 ] && mdesc="$m, $nbm of them marked nonblocking by the reviewer"
+      printf 'Findings: %s (blocker %s, major %s, minor %s, nit %s). Reviewer engine: `%s`.\n\n' \
+        "$total" "$b" "$mdesc" "$mi" "$n" "$(_public_engine "$engine")"
+    else
+      printf 'Findings: not parsed (no complete findings block in the review). Reviewer engine: `%s`.\n\n' \
+        "$(_public_engine "$engine")"
+    fi
+    printf 'This repository is public, so the review text, the finding details and the diff are not posted here. Full review on the reviewer machine: `%s`.\n' "$shown"
+  )"
+  printf '%s' "$body" | private_terms_check "$guard" || rc=$?
+  if [ "$rc" = 0 ]; then
+    printf '%s\n' "$body"
+  else
+    echo "  public repo: the summary did not clear the private-terms guard (rc=$rc; 1 = term hit, 2 = could not check). Posting the counts-only line." >&2
+    review_public_counts_line "$f" "$verdict" "$degraded"
+  fi
+}
+
 # review_round <reviews-dir> <pr-number> [repo-slug]
 # Which round the NEXT review of this PR will be: existing review files + 1.
 # Derived from disk, not from the worker's attempts json, because the reviewer
@@ -898,16 +1136,13 @@ except Exception: pass' "$f" 2>/dev/null || true
 # record carries `degraded: false` -- and under the old wording that sentence
 # certified Claude reviewing Claude as the independent second opinion.
 #
-# The consequence for gate 50, stated rather than left to be discovered: it is
-# CORRECT AND DORMANT while the fleet is claude-primary. It fires on the codex
-# outage path, which is reachable today only via an `--engine codex` run.
-# Arming it on the scheduled path is `KIPI_REVIEW_ENGINE=codex
-# KIPI_REVIEW_PRIMARY_ENGINE=codex` (both together, or the two defaults flipped
-# back) -- the founder's 2026-09-06 call, not this reader's to make. The other
-# route, marking a claude-primary review non-independent in the writer, is what
-# ASK-2036's DoR excludes in its own words: "Not changing what the writer
-# records." Tracked separately; case 9 of test-degraded-approval-gate.sh pins
-# this contract so the overclaim cannot come back quietly.
+# WHO READS IT NOW (ASK-3832). Not rework_gate: a degraded approval is an
+# approval (RULE-2026-11-06-C). converge.sh still passes it to the gate, where
+# it is ignored, and linear-worker.sh reads it to say in its run log that an
+# approval it is arming came from the fallback. Both engine defaults have read
+# `claude` since #319, so `1` appears only on an `--engine codex` run that hit
+# an outage. case 9 of test-degraded-approval-gate.sh pins this contract so the
+# overclaim on `0` cannot come back quietly.
 #
 # WHY IT EXISTS (ASK-2036, sp-e9284708). `degraded` shipped in ASK-445 and for
 # three weeks NOTHING in production read it. The only consumer was a python

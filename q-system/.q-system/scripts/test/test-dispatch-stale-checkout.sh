@@ -326,6 +326,10 @@ GUARD="$WORK/guard.sh"
 grep -q 'page_clear linear-down' "$GUARD" \
   || bad "the outage guard block is missing its BEGIN/END markers or its page_clear"
 guard() { bash "$GUARD" "$1" 2>&1; }
+# Same slice, driven with the worker's EXIT CODE as well as its output. The
+# braked case below is keyed on rc, not on text: `linear-worker.sh`'s own header
+# says a caller must not have to parse a message to tell a brake from a break.
+guard_rc() { WORK_RC="$1" bash "$GUARD" "$2" 2>&1; }
 
 # The exact line linear-worker.sh:417 emits, and the one that was missed.
 G="$(guard 'INFRA: linear unreachable (HTTPSConnectionPool: Max retries exceeded). Not counted against any issue.')"
@@ -346,6 +350,17 @@ echo "$G" | grep -q '^CLEAR ' \
   && bad "THE DEFECT: a run that never reached Linear cleared the outage state" \
   || ok "a run that never reached Linear does not count as recovery"
 
+# ASK-3550: the default-branch stop sits in the same position as the fetch halt
+# (after the fetch, before Linear) and self-pages the same way. Falling through to
+# page_clear would erase a real outage page on a run that never reached Linear.
+G="$(guard 'INFRA: cannot determine the default branch of /Users/x/repo (origin/HEAD unset, GitHub gave nothing). Stopping before any worktree is cut from a guessed base.')"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a run stopped on an unknown default branch cleared the outage state" \
+  || ok "a run stopped on an unknown default branch does not count as recovery"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: the worker already notifies about an unknown default branch" \
+  || ok "an unknown default branch does not double-page"
+
 # linear-worker.sh:989 / :1049 -- these print INFRA: and then `continue`. The worker
 # is still working, so paging "the loop is stopped" would be a false alarm. This is
 # why the matcher is not a bare `INFRA:` prefix.
@@ -356,6 +371,20 @@ for line in 'INFRA: could not create worktree for ASK-1 (not counted against the
     && bad "false alarm: '${line:0:34}...' does not stop the worker but paged an outage" \
     || ok "a non-stopping INFRA line does not page an outage (${line:0:28}...)"
 done
+
+# ASK-2010: the usage brake exits 3 from the FIRST thing after the worker's
+# argument parse -- before the fetch, before the claim, before any Linear call.
+# Exactly the position the git-fetch halt above sits in, and it fell through to
+# page_clear (claude review of PR #472, major 2). A run that never reached Linear
+# is not evidence Linear recovered; clearing on it ERASES a real outage page and
+# the loop goes quiet on an outage nobody is told about any more.
+G="$(guard_rc 3 "PAUSED: usage breaker holds 'worker' (see /tmp/x.log). No work this run.")"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a braked run cleared the outage state -- it never reached Linear" \
+  || ok "a braked run does not count as evidence Linear recovered"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: the breaker files its own single ticket on the way into the pause" \
+  || ok "a braked run does not page an outage that is not happening"
 
 # A healthy run must still clear.
 G="$(guard '3 ready issues; dispatching ASK-9')"
@@ -376,6 +405,29 @@ if [ -f "$WORKER" ]; then
   grep -q 'INFRA: git fetch failed' "$WORKER" \
     && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
     || bad "the producer was reworded: the pre-Linear guard now matches nothing"
+  grep -q 'INFRA: cannot determine the default branch' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: cannot determine the default branch'" \
+    || bad "the producer was reworded: the default-branch guard now matches nothing"
+  # The braked guard reads an exit CODE, so the claim to re-derive is the code
+  # the worker ACTUALLY RETURNS -- and that is what this runs. Grepping the line
+  # of documentation that promises exit 3 passed happily on a worker that had
+  # stopped returning it (claude review of PR #472, minor): a comment is not a
+  # producer, and deleting the brake while leaving its comment kept this green.
+  # So: inject a breaker that orders a pause and read the worker's own code.
+  BRAKE_STUB="$WORK/breaker-pause.sh"
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$BRAKE_STUB"
+  chmod +x "$BRAKE_STUB"
+  # KIPI_NOTIFY is /usr/bin/true: this drives the REAL worker, whose failure
+  # paths page. Same reason test-worker-usage-brake.sh pins it.
+  KIPI_STATE_DIR="$WORK/brake-state" \
+  KIPI_USAGE_BREAKER_CMD="bash $BRAKE_STUB" \
+  KIPI_USAGE_BREAKER_BOT="worker-test" \
+  KIPI_NOTIFY=/usr/bin/true \
+  bash "$WORKER" >/dev/null 2>&1
+  brake_rc=$?
+  [ "$brake_rc" = "3" ] \
+    && ok "linear-worker.sh answers 3 for a usage pause (ran it; rc=3)" \
+    || bad "the producer's exit contract moved: a paused breaker made the worker exit $brake_rc, not 3"
   # say() must reach stdout, or none of this text ever arrives in WORK_OUT.
   grep -qE '^say\(\).*tee' "$WORKER" \
     && ok "the worker's say() still tees to stdout, so the dispatcher can see it" \

@@ -1017,7 +1017,7 @@ def block(message, cache=None, hook_input=None, trigger=None, actor=None,
 
 def uncount_blocked_attempt(cache, tool_name, tool_input):
     """A guard-BLOCKED call never executed, so it must not count toward the
-    escalation counters. Scar (2026-07-02, Pure_spectrum_Q/qep_agent): at the
+    escalation counters. Scar (2026-07-02, client_b agent repo): at the
     volume ceiling each blocked Edit still incremented repeat_map; the 3rd
     blocked retry was reported as 'attempted this exact call 3 times' for a
     call that ran ZERO times (exact-retry outranks volume), hijacking the true

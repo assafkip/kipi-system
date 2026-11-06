@@ -39,7 +39,7 @@ def _repo_with_ledger() -> Path:
         {"name": "tmp-instance", "path": str(tmp), "instance_q_dir": "q-thing"}]}),
         encoding="utf-8")
     os.environ["KIPI_EVIDENCE_REGISTRY"] = str(_registry)
-    EL.add(tmp, claim="Brightspeed export has 1177 rows", source="xlsx",
+    EL.add(tmp, claim="Brindlecove export has 1177 rows", source="xlsx",
            command="openpyxl len(rows)", result="1177 rows, 332 hand-typed dates")
     return tmp
 
@@ -63,12 +63,12 @@ OUTREACH = "q-thing/output/outreach/draft-email.md"
 def case_unsourced_number_blocks() -> bool:
     """THE reproducer: a count nobody measured, in a client-facing draft."""
     return run(_repo_with_ledger(), OUTREACH,
-               "Hi Zach,\n\nWe found 4,200 duplicate rows this week.\n") == 2
+               "Hi Jordan,\n\nWe found 4,200 duplicate rows this week.\n") == 2
 
 
 def case_ledger_backed_number_passes() -> bool:
     return run(_repo_with_ledger(), OUTREACH,
-               "Hi Zach,\n\nThe export holds 1,177 rows.\n") == 0
+               "Hi Jordan,\n\nThe export holds 1,177 rows.\n") == 0
 
 
 def case_non_outreach_file_is_out_of_scope() -> bool:

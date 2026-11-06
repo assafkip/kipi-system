@@ -74,8 +74,8 @@ python3 "$Q" pending --json >/dev/null 2>&1
 # -- Case 9: the key is the same one linear-sync.py computes ------------------
 # If these two disagree, the drain creates duplicates of things the sync already
 # knows about. One shared derivation, pinned at both ends.
-qk=$(python3 "$Q" key --repo "4_points_consulting" --title "Case Intake" 2>/dev/null)
-sk=$(python3 "$SCRIPT_DIR/../linear-sync.py" key --repo "4_points_consulting" --capability "Case Intake" 2>/dev/null)
+qk=$(python3 "$Q" key --repo "client_a" --title "Case Intake" 2>/dev/null)
+sk=$(python3 "$SCRIPT_DIR/../linear-sync.py" key --repo "client_a" --capability "Case Intake" 2>/dev/null)
 [ -n "$qk" ] && [ "$qk" = "$sk" ] && ok "queue and sync agree on the key ($qk)" \
   || no "queue and sync agree on the key" "queue='$qk' sync='$sk'"
 

@@ -51,16 +51,16 @@ Every instance operates independently with the same skeleton structure, rules, a
 - **Daily:** Ad-hoc research sessions
 - **Note:** Direct clone, updates via `git pull` not subtree
 
-### 4_points_consulting
-- **Purpose:** Threat intelligence investigation for 4 Points Consulting client
+### client_a
+- **Purpose:** Threat intelligence investigation for client-a
 - **Plugins:** core (custom OSINT skill at `q-investigate/`)
 - **Skeleton:** NOT connected (custom architecture)
 - **Daily:** Investigation-driven, not routine-driven
 - **Note:** Has its own OSINT pipeline with 55+ Apify actors
 - **Action needed:** Register in instance-registry.json
 
-### Pure_spectrum_Q
-- **Purpose:** Strategic advisory engagement hub for PureSpectrum (fraud/threat intel)
+### client_b
+- **Purpose:** Strategic advisory engagement hub for client-b (fraud/threat intel)
 - **Plugins:** core (custom `.q-system/`)
 - **Skeleton:** NOT connected (custom architecture, predates skeleton)
 - **Daily:** Client project management, 5 consulting workstreams
@@ -79,8 +79,8 @@ Every instance operates independently with the same skeleton structure, rules, a
 |-----------|---------------|--------|
 | ktlyst + ktlyst-website | Keep separate | Different concerns (product code vs marketing site) |
 | KTLYST_strategy + ktlyst | Keep separate | Strategy/GTM is distinct from product dev |
-| 4_points_consulting | Register, don't merge | Custom OSINT architecture, no skeleton overlap |
-| Pure_spectrum_Q | Register, don't merge | Custom architecture, active client engagement |
+| client_a | Register, don't merge | Custom OSINT architecture, no skeleton overlap |
+| client_b | Register, don't merge | Custom architecture, active client engagement |
 | car-research | Keep as-is | Lightweight personal use, minimal overhead |
 
 No instances should be combined or retired without your explicit approval.
@@ -122,12 +122,12 @@ No routine. Ad-hoc sessions.
 /q-research [topic] for citation-verified research
 ```
 
-### Client instances (4_points_consulting, Pure_spectrum_Q)
+### Client instances (client_a, client_b)
 
 ```
 These have custom workflows, not skeleton commands.
-4_points: /q-osint, /q-collect (OSINT pipeline)
-Pure_spectrum: custom .q-system/commands.md
+client_a: /q-osint, /q-collect (OSINT pipeline)
+client_b: custom .q-system/commands.md
 ```
 
 ## Plugin Assignments
@@ -140,8 +140,8 @@ Pure_spectrum: custom .q-system/commands.md
 | q-education | yes | no | no |
 | ktlyst-website | yes | no | yes |
 | car-research | yes | no | no |
-| 4_points_consulting | yes | no | no |
-| Pure_spectrum_Q | yes | no | no |
+| client_a | yes | no | no |
+| client_b | yes | no | no |
 
 To enable plugins in an instance, add to `.claude/settings.json`:
 ```json
@@ -156,7 +156,7 @@ To enable plugins in an instance, add to `.claude/settings.json`:
 
 ## Registering Unregistered Instances
 
-4_points_consulting and Pure_spectrum_Q exist on disk but are not in `instance-registry.json`. To register them (without connecting to skeleton):
+client_a and client_b exist on disk but are not in `instance-registry.json`. To register them (without connecting to skeleton):
 
 ```bash
 # From kipi-system directory, add to instance-registry.json:

@@ -68,7 +68,7 @@ RELATIONSHIPS = """# Relationships
 ### Mark Chen — Engineer — Acme
 - **Type:** Practitioner
 
-### Ally — Founder — Intel Shop
+### Casey — Founder — Intel Shop
 - **Type:** Design Partner
 """
 
@@ -714,23 +714,45 @@ def test_entities_capped_and_dropped_names_in_receipt(tmp_path):
     assert "ENTITIES DROPPED" in ks.render(b) and b["receipt"]["entities_dropped"][0] in ks.render(b)
 
 
-# ---------------------------------------------------------------- Phase 2: recall producer
+# ---------------------------------------------------------------- ASK-3400: recall producer RETIRED
 
-def test_recall_records_each_surfaced_source_once(tmp_path):
-    """Every distinct source file the pass surfaced lands in the session recall
-    artifact under this session, so memory_autocapture can score it at Stop
-    (useful if opened, dead_end if never touched). record=False writes nothing."""
+def test_supply_never_writes_session_recall(tmp_path):
+    """ASK-3400/3401 (2026-10-30): the earned-trust loop is retired. supply() with
+    record on must not create or grow the session-recall file. Scar: the old
+    writer ran on every prompt fleet-wide, its only consumer was gated to one
+    instance and wrote 0 outcomes, and consulting's file reached 2.28 MB /
+    608 sessions, rewritten whole on each prompt. The prior test here pinned the
+    defect (asserted the write happened)."""
     root, q = make_instance(tmp_path)
     recall = tmp_path / "recall.json"
     b = run(root, "what do we know about Dana Okafor", recall_path=recall)
-    entries = json.loads(recall.read_text())["test-session"]["surfaced"]
-    srcs = {e["source_file"] for e in entries}
-    assert srcs == {i["abs_src"] for i in b["items"]} and len(srcs) > 1
-    assert len(entries) == len(srcs), "one entry per source file"
-    assert all(e["memory_id"].startswith("knowledge-supply:") for e in entries)
-    recall.unlink()
-    run(root, "what do we know about Dana Okafor", record=False, recall_path=recall)
+    assert b is not None and len(b["items"]) > 1, "fixture must surface items, or the assert below is vacuous"
     assert not recall.exists()
+    recall.write_text("{}")
+    before = recall.read_bytes()
+    run(root, "what do we know about Dana Okafor", recall_path=recall)
+    assert recall.read_bytes() == before, "a pre-existing recall file must not grow"
+
+
+def test_supply_never_writes_default_session_recall(tmp_path):
+    """ASK-3512: the test above only aims at an explicit recall_path, so a
+    re-added writer that passes path=None (the old _record_recall did) would
+    write DEFAULT_PATH and stay green. Run a COPY of the engine in a fake
+    q-system tree so DEFAULT_PATH resolves under tmp_path, never the live
+    memory dir, and assert nothing lands there."""
+    scripts = tmp_path / "fake" / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("knowledge_supply.py", "session_recall.py"):
+        shutil.copy(HERE / name, scripts / name)
+    s = importlib.util.spec_from_file_location("knowledge_supply_copy", scripts / "knowledge_supply.py")
+    ks_copy = importlib.util.module_from_spec(s)
+    s.loader.exec_module(ks_copy)
+    default = tmp_path / "fake" / "q-system" / "memory" / ".session-recall.json"
+    root, _ = make_instance(tmp_path)
+    b = ks_copy.supply(root, "what do we know about Dana Okafor", now=NOW, session_id="test-session")
+    assert b is not None and len(b["items"]) > 1, "fixture must surface items, or the assert below is vacuous"
+    assert not default.exists(), "supply() wrote the default session-recall path"
+    assert not list(default.parent.glob(".session-recall*")), "supply() left a recall file or lock"
 
 
 # ---------------------------------------------------------------- ASK-1261: one chokepoint + captured minors
@@ -739,11 +761,11 @@ def test_single_token_chokepoint_all_paths(tmp_path):
     """Contact heading, uppercase alias, first-name expansion: none fires at the
     start of a sentence, a line or a bullet; each fires mid-sentence."""
     root, _ = make_instance(tmp_path)
-    for path, tok in (("contact", "Ally"), ("alias", "DO"), ("first_name", "Dana")):
+    for path, tok in (("contact", "Casey"), ("alias", "DO"), ("first_name", "Dana")):
         for prompt in (f"{tok} said hi", f"Fix it\n{tok} said hi", f"- {tok} said hi", f"1. {tok} said hi"):
             assert run(root, prompt) is None, (path, prompt)
         assert run(root, f"please ask {tok} about it") is not None, path
-    assert "Ally" in {e["name"] for e in run(root, "please ask Ally about it")["entities"]}
+    assert "Casey" in {e["name"] for e in run(root, "please ask Casey about it")["entities"]}
     assert "Dana Okafor" in {e["name"] for e in run(root, "please ask DO about it")["entities"]}
 
 
@@ -906,8 +928,8 @@ def test_missing_manifest_is_observable_not_silent(tmp_path):
 
 # ---------------------------------------------------------------- project folders
 # Founder-directed 2026-09-05 (plan knowledge-supply-project-folders-2026-09-05):
-# every project reads its OWN folder, and each 4_points investigation is its own
-# knowledge base. Reproducer: 4_points had 1,475 case files and an index of 40;
+# every project reads its OWN folder, and each client_a investigation is its own
+# knowledge base. Reproducer: client_a had 1,475 case files and an index of 40;
 # a consulting instance had 83 files and an index of 0, so the reader never woke up.
 
 INVESTIGATION_MANIFEST = HERE.parent / "knowledge-sources.investigation.json"
@@ -935,7 +957,7 @@ def make_bare_instance(tmp: Path) -> tuple[Path, Path]:
     shutil.copy(MANIFEST, q / ".q-system" / "knowledge-sources.json")
     (q / "canonical" / "client-profile.md").write_text("# Client\n\nThe client sells gold coins.\n")
     (q / "output" / "brief-2026-08-14.md").write_text(
-        "# Brief\n\nBluepeak asked for a name column on the intake form.\n\n## Next Steps\n\n- reply to the carrier\n")
+        "# Brief\n\nRedcedar asked for a name column on the intake form.\n\n## Next Steps\n\n- reply to the carrier\n")
     return root, q
 
 
@@ -994,15 +1016,15 @@ def test_target_file_stem_fires_alone_but_a_finding_stem_does_not(tmp_path):
 
 def test_proper_nouns_file_indexes_curated_names_only(tmp_path):
     root, q = make_instance(tmp_path)
-    (q / "canonical" / "proper-nouns.txt").write_text("# names kept OUT of common words\n\nMarilyn\nBlue Peak\n")
-    (q / "output" / "call-2026-09-01.md").write_text("# Call\n\nMarilyn asked for the pay sheet by Friday.\n")
-    b = run(root, "what did Marilyn ask for")
-    assert b is not None and any(e["kind"] == "noun" and e["name"] == "Marilyn" for e in b["entities"])
-    docs = items_of(b, kind="doc", entity="Marilyn")
-    assert docs and docs[0]["text"] == "Marilyn asked for the pay sheet by Friday."
+    (q / "canonical" / "proper-nouns.txt").write_text("# names kept OUT of common words\n\nJordan\nRed Cedar\n")
+    (q / "output" / "call-2026-09-01.md").write_text("# Call\n\nJordan asked for the pay sheet by Friday.\n")
+    b = run(root, "what did Jordan ask for")
+    assert b is not None and any(e["kind"] == "noun" and e["name"] == "Jordan" for e in b["entities"])
+    docs = items_of(b, kind="doc", entity="Jordan")
+    assert docs and docs[0]["text"] == "Jordan asked for the pay sheet by Friday."
     assert docs[0]["src"].endswith("output/call-2026-09-01.md:3")
     manifest, _ = ks.load_manifest(q, root)
-    assert ks.load_stores(q, root, manifest)[0]["noun_names"] == ["Marilyn", "Blue Peak"], "comment and blank lines never index"
+    assert ks.load_stores(q, root, manifest)[0]["noun_names"] == ["Jordan", "Red Cedar"], "comment and blank lines never index"
 
 
 def test_docs_class_returns_verbatim_line_after_graph_and_canonical(tmp_path):
@@ -1062,20 +1084,20 @@ def test_docs_engines_agree_on_the_per_file_cap_and_both_report_it(tmp_path, mon
 
 def test_prompt_proper_noun_with_doc_hits_becomes_entity(tmp_path):
     root, q = make_bare_instance(tmp_path)
-    b = run(root, "what did Bluepeak ask for")
+    b = run(root, "what did Redcedar ask for")
     assert b is not None, "an index of 0 must not mean the reader never wakes up"
     e = b["entities"][0]
-    assert e["name"] == "Bluepeak" and e["resolved_from"] == "docs" and e["kind"] == "docs_hit"
-    assert any(i["text"] == "Bluepeak asked for a name column on the intake form." for i in items_of(b, kind="doc"))
+    assert e["name"] == "Redcedar" and e["resolved_from"] == "docs" and e["kind"] == "docs_hit"
+    assert any(i["text"] == "Redcedar asked for a name column on the intake form." for i in items_of(b, kind="doc"))
     assert b["coverage"]["verdict"] in ("FULL", "PARTIAL")
 
 
 def test_prompt_proper_noun_without_hits_lowercase_or_initial_never_fires(tmp_path):
     root, q = make_bare_instance(tmp_path)
     assert run(root, "what did Nobody ask for") is None
-    assert run(root, "what did bluepeak ask for") is None
-    assert run(root, "Bluepeak asked for what") is None
-    assert run(root, "- Bluepeak asked for what") is None
+    assert run(root, "what did redcedar ask for") is None
+    assert run(root, "Redcedar asked for what") is None
+    assert run(root, "- Redcedar asked for what") is None
 
 
 def test_headings_never_become_entities(tmp_path):
@@ -1238,8 +1260,8 @@ def test_deadline_on_the_first_required_class_is_not_full(tmp_path):
 def test_receipt_says_when_the_corpus_common_rule_cannot_run(tmp_path):
     root, q = make_bare_instance(tmp_path)
     for i in range(8):
-        (q / "output" / f"r{i}.md").write_text("Bluepeak again.\n")
-    b = run(root, "what did Bluepeak ask for")
+        (q / "output" / f"r{i}.md").write_text("Redcedar again.\n")
+    b = run(root, "what did Redcedar ask for")
     assert b["receipt"]["candidate_rule"] == {"max_stores": 4, "applicable": False, "note": "single store: rule cannot run"}
     root2, q2 = make_instance(tmp_path)
     add_store(q2, "case-001-foo-bar", "scope", "x")
@@ -1381,27 +1403,27 @@ def test_unreadable_copy_in_one_store_is_never_full(tmp_path):
 
 def test_docs_candidate_stays_case_sensitive_in_every_resolver(tmp_path):
     root, q = make_bare_instance(tmp_path)
-    (q / "canonical" / "client-profile.md").write_text("# Client\n\nthe bluepeak channel is closed for now.\n")
-    b = run(root, "what did Bluepeak ask for")
-    ent = next(e for e in b["entities"] if e["name"] == "Bluepeak")
+    (q / "canonical" / "client-profile.md").write_text("# Client\n\nthe redcedar channel is closed for now.\n")
+    b = run(root, "what did Redcedar ask for")
+    ent = next(e for e in b["entities"] if e["name"] == "Redcedar")
     assert ent["case_sensitive"] is True
     texts = [i["text"] for i in b["items"]]
-    assert "Bluepeak asked for a name column on the intake form." in texts
-    assert not any("bluepeak channel" in t for t in texts), texts
+    assert "Redcedar asked for a name column on the intake form." in texts
+    assert not any("redcedar channel" in t for t in texts), texts
 
 
 # PR #308 review round 6: the stop reason is a field; dedupe keeps stores apart; a store name survives.
 
 def test_candidate_pass_truncation_is_partial_without_monkeypatch(tmp_path):
     """The reviewer's fixture: the index pass (Dana Okafor) finishes clean, the
-    candidate pass (Bluepeak, 300 lines) hits grep -m. No monkeypatch, so a
+    candidate pass (Redcedar, 300 lines) hits grep -m. No monkeypatch, so a
     composed engine string cannot hide the stop the way it did in round 6."""
     root, q = make_instance(tmp_path)
     (q / ".q-system" / "data").mkdir()
     shutil.copy(INVESTIGATION_MANIFEST, q / ".q-system" / "data" / "knowledge-sources.json")
-    (q / "output" / "flood.md").write_text("".join(f"Bluepeak asked line {i}\n" for i in range(300)))
-    b = run(root, "what did Bluepeak ask Dana Okafor about")
-    assert any(e["name"] == "Bluepeak" and e["kind"] == "docs_hit" for e in b["entities"])
+    (q / "output" / "flood.md").write_text("".join(f"Redcedar asked line {i}\n" for i in range(300)))
+    b = run(root, "what did Redcedar ask Dana Okafor about")
+    assert any(e["name"] == "Redcedar" and e["kind"] == "docs_hit" for e in b["entities"])
     row = receipt_row(b, "docs")
     assert row["searched"] == "partial", row
     assert "file cap" in row["problem"] and "candidates" in row["engine"], row
@@ -1657,7 +1679,7 @@ def test_scope_note_is_bounded(tmp_path):
 
 def test_absent_class_is_never_searched_in_the_receipt(tmp_path):
     root, q = make_bare_instance(tmp_path)
-    b = run(root, "what did Bluepeak ask for")
+    b = run(root, "what did Redcedar ask for")
     for cls in ("graph", "commitments", "meetings", "loops"):
         row = receipt_row(b, cls)
         assert row["present"] is False and row["searched"] is False and row["stores_searched"] == 0, row
@@ -1669,11 +1691,11 @@ def test_unreadable_store_is_seen_with_an_index_of_zero(tmp_path):
     root, q = make_bare_instance(tmp_path)
     (q / ".q-system" / "data").mkdir()
     shutil.copy(INVESTIGATION_MANIFEST, q / ".q-system" / "data" / "knowledge-sources.json")
-    s = add_store(q, "case-001-alpha", "scope", "Bluepeak asked here too.")
+    s = add_store(q, "case-001-alpha", "scope", "Redcedar asked here too.")
     only = s / "investigation" / "findings" / "finding-001.md"
     only.chmod(0)
     try:
-        b = run(root, "what did Bluepeak ask for")
+        b = run(root, "what did Redcedar ask for")
     finally:
         only.chmod(0o644)
     assert b is not None and any(e["kind"] == "docs_hit" for e in b["entities"])

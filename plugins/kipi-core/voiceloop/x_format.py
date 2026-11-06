@@ -86,6 +86,11 @@ X_TARGET_CHARS = 100
 # never blocking.
 X_FOLD_CHARS = 280
 
+# The channels these short-form rules apply to. "x" is the original; "threads" is listed
+# beside it for an instance whose short-form lane moved from X to Threads, so the rules
+# follow the lane rather than the old name. Additive: x keeps working.
+SHORT_FORM_CHANNELS = ("x", "threads")
+
 # X does NOT count characters, and `len()` was wrong in BOTH directions (adversarial
 # review, 4b). It counts WEIGHTED units after NFC normalisation: the ranges below weigh
 # 1, everything else weighs 2, and every URL counts a flat 23 whatever its real length.
@@ -188,7 +193,10 @@ def _weigh_run(run):
 def length_violations(text, channel):
     """Violations in the gates' shape, so callers merge reports without special-casing.
 
-    Channel-scoped and SILENT on every channel but x -- `figure_gate`'s posture, and
+    Channel-scoped and SILENT on every channel outside SHORT_FORM_CHANNELS (x, and
+    threads since the short-form lane moved there; the founder ruled the thresholds
+    unchanged, 2026-10-29, and the network's own 500 cap is checked at the instance's
+    send seam) -- `figure_gate`'s posture, and
     for the same reason: a gate that fires where it does not apply gets switched off,
     and this one would fire on every LinkedIn post ever written.
 
@@ -205,10 +213,24 @@ def length_violations(text, channel):
     of the 29 measurable published bodies, which is not a platform rule being enforced;
     it is an editorial preference being imposed under a platform rule's name.
     """
-    if channel != "x":
+    if channel not in SHORT_FORM_CHANNELS:
         return []
     body = text or ""
     weighted = weighted_length(body)
+    if channel != "x":
+        # The thresholds are the x ones by founder ruling (2026-10-29); the WORDS are
+        # not, because "X truncates" and "X shows about 280" are false on another
+        # platform. The x branch below keeps its text byte for byte.
+        if weighted > X_MAX_CHARS:
+            return [{"rule": "x-too-long", "line": 1,
+                     "detail": (f"this is {weighted} units, past the {X_MAX_CHARS}-unit "
+                                f"short-form ceiling. Cut it. Do not summarise the long "
+                                f"version.")}]
+        if weighted > X_FOLD_CHARS:
+            return [{"rule": "x-past-the-fold", "warn_only": True, "line": 1,
+                     "detail": (f"this is {weighted} units, past the {X_FOLD_CHARS}-unit "
+                                f"short-form fold. Nothing is blocked here.")}]
+        return []
     if weighted > X_MAX_CHARS:
         return [{
             "rule": "x-too-long",

@@ -49,8 +49,8 @@ def test_log_step_overwrites(logger):
 
 def test_add_card(logger):
     logger.init(DATE)
-    result = logger.add_card(DATE, "c1", "email", "alice", "Hi Alice")
-    assert result == {"card_id": "c1", "target": "alice"}
+    result = logger.add_card(DATE, "c1", "email", "sam", "Hi Sam")
+    assert result == {"card_id": "c1", "target": "sam"}
     data = _read_log(logger)
     assert len(data["action_cards"]) == 1
     card = data["action_cards"][0]
@@ -68,7 +68,7 @@ def test_add_card_truncates_draft(logger):
 
 def test_deliver_cards(logger):
     logger.init(DATE)
-    logger.add_card(DATE, "c1", "email", "alice", "Hi")
+    logger.add_card(DATE, "c1", "email", "sam", "Hi")
     logger.add_card(DATE, "c2", "email", "bob", "Hey")
     result = logger.deliver_cards(DATE)
     assert result == {"delivered": 2}

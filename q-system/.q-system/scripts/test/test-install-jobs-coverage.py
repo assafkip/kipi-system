@@ -8,6 +8,13 @@ arbitrary path, with a stub launchctl and a throwaway HOME:
     committed com.kipi.*.plist ......... 15   (git ls-files)
     installed by `--all` ............... 12
     announced as skipped ............... 2    (skeleton-only, by design)
+
+That block is the 2026-09-07 measurement and is left at its own numbers. TODAY's
+skip set is larger and has two reasons, neither of them a defect: 3 templates are
+`kipi-scope: skeleton-only` and 4 declare `kipi-retired:` (the RULE-2026-09-11-A
+posters, ASK-1130). The test asserts NONE of these counts -- it derives promised,
+installed and skipped from the run it just made, so adding or retiring a template
+never needs an edit here.
     NEVER MENTIONED AT ALL ............. 1    (automation/com.kipi.voice-refresh.plist)
     exit code .......................... 0
 

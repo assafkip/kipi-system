@@ -238,7 +238,7 @@ def test_classify_covers_skeleton_and_instance_alike():
     mod = _hook_module()
     assert mod.classify("q-system/canonical/x.md") == ("content", "update canonical files")
     assert mod.classify("q-consult/canonical/x.md") == ("content", "update canonical files")
-    assert mod.classify("q-thaena/my-project/x.json") == ("content", "update project state")
+    assert mod.classify("q-client_e/my-project/x.json") == ("content", "update project state")
     assert mod.classify("q-consult/output/x.json") == mod.SKIP_DECLARED
     assert mod.classify("q-consult/pipeline/x.py") == mod.SKIP_UNCLASSIFIED
 
@@ -324,12 +324,12 @@ class TestTheFleetSyncSharesThisClassifier:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_work_product_is_never_system_state(self):
-        """The 162 files the old sweeper took from Alice."""
+        """The 162 files the old sweeper took from client-d."""
         for p in ["q-investigate/investigations/case-001/evidence/capture.pdf",
                   "q-investigate/.../generators/fill_sheet.py",
                   "output/opportunities/opps-2026-08-01.md",
-                  "q-pure/output/drafts/2026-08-10-sushma.md",
-                  "projects/2026_QEP_Agent_Automation/progress.md"]:
+                  "q-client_b/output/drafts/2026-08-10-sam.md",
+                  "projects/2026_client_b_automation/progress.md"]:
             assert auto_commit.system_state_paths([p]) == [], p
 
     def test_it_filters_a_mixed_list_rather_than_all_or_nothing(self):
@@ -818,7 +818,8 @@ class TestRcasReachGit:
         class R:
             def __init__(self, out):
                 self.stdout, self.returncode = out, 0
-        outs = {"diff": "", "ls-files": "q-system/output/rca/rca-x-2026-10-03.md\nq-system/output/report.md\n"}
+        # NUL-separated: get_changed_files reads git with -z (PR #547 review).
+        outs = {"diff": "", "ls-files": "q-system/output/rca/rca-x-2026-10-03.md\0q-system/output/report.md\0"}
         monkeypatch.setattr(mod, "run", lambda cmd, **k: R(outs.get(cmd[1], "")))
         files = mod.get_changed_files()
         assert "q-system/output/rca/rca-x-2026-10-03.md" in files

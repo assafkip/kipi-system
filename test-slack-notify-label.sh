@@ -1,7 +1,7 @@
 #!/bin/bash
 # ASK-604: the Slack label prefix and the message body must name the SAME project.
 #
-# THE SCAR. One digest read "[qep_agent]" while its body named consulting's
+# THE SCAR. One digest read "[client_b]" while its body named consulting's
 # files; another posted as "[/]". Two independent derivations of one fact:
 # auto-commit.py built the body from basename(CLAUDE_PROJECT_DIR), while
 # slack-notify.sh re-derived the prefix from ambient state -- and auto-commit
@@ -47,20 +47,20 @@ run_case() {
 
 echo "=== an explicit label from the caller wins ==="
 run_case "consulting" "kipi-system" "explicit" \
-  env KIPI_NOTIFY_LABEL=consulting KIPI_INSTANCE_NAME=qep_agent
+  env KIPI_NOTIFY_LABEL=consulting KIPI_INSTANCE_NAME=client_b
 
 echo ""
-echo "=== the qep_agent/consulting mismatch, reproduced and fixed ==="
+echo "=== the client_b/consulting mismatch, reproduced and fixed ==="
 # Before ASK-604 the caller could not state the project, so an inherited
 # KIPI_INSTANCE_NAME from an unrelated context won and mislabelled the message.
-run_case "consulting" "qep_agent" "inherited-name-loses-to-explicit" \
-  env KIPI_NOTIFY_LABEL=consulting KIPI_INSTANCE_NAME=qep_agent
+run_case "consulting" "client_b" "inherited-name-loses-to-explicit" \
+  env KIPI_NOTIFY_LABEL=consulting KIPI_INSTANCE_NAME=client_b
 
 echo ""
 echo "=== with no explicit label, the registry name is still honoured ==="
 # Control: the fix must not break the fleet heartbeat's authoritative naming.
-run_case "Pure_spectrum_Q" "unknown-project" "registry-name" \
-  env KIPI_INSTANCE_NAME=Pure_spectrum_Q
+run_case "client_b" "unknown-project" "registry-name" \
+  env KIPI_INSTANCE_NAME=client_b
 
 echo ""
 echo "=== a degenerate label never ships as [/] ==="

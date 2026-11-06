@@ -1,8 +1,8 @@
 # Plan: evidence ledger + system manifest + the four gates that read them
 
 **Date:** 2026-07-28
-**Source:** `projects/Prodigy_Gold/q-system/output/rca/rca-conclusions-before-evidence-2026-07-28.md`
-**Where it ships:** kipi-system skeleton (fleet-wide), NOT the Prodigy_Gold instance.
+**Source:** `projects/client_c/q-system/output/rca/rca-conclusions-before-evidence-2026-07-28.md`
+**Where it ships:** kipi-system skeleton (fleet-wide), NOT the client_c instance.
 **Founder directive:** build the structural fixes from the RCA action items. Evidence
 ledger and manifest first, since the gates depend on both. Reproducer first: the
 failing check is written before the fix.
@@ -44,7 +44,7 @@ membership, or file inspection.
 
 ## Instance path resolution
 
-Instances name their content dir differently (`q-consult/`, `q-prodigy/`, and the
+Instances name their content dir differently (`q-consult/`, `q-client-c/`, and the
 skeleton's own `q-system/`). `evidence_ledger.instance_root()` is the single resolver:
 glob `q-*` for a dir containing `canonical/`, prefer a non-`q-system` one, fall back to
 `q-system`. Precedent: `capability-map-gen.py:390`. Every new script imports it rather

@@ -143,6 +143,11 @@ Write the refusal as a short proposal file (1-2 paragraphs) so the founder can s
 
 ## Memory correction: record a `corrected` outcome
 
+> RETIRED 2026-10-30 (ASK-3400): nothing writes `.session-recall.json` any more
+> (memory_autocapture, memory-scores-surface and knowledge-supply's recall write
+> are removed), so no memory is ever "surfaced" for this step to match. Skip it.
+> The script stays on disk only until the outcome files are retired too.
+
 Separate from the principle-proposal flow above, one narrow case also feeds the
 memory earned-trust log. When the correction is the founder contradicting a
 **surfaced memory** (one recalled this session, listed in

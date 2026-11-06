@@ -34,6 +34,19 @@ REPO_ROOT = SCRIPTS.parents[2]  # scripts/ -> .q-system/ -> q-system/ -> repo ro
 CHECK = SCRIPTS / "consumer-parity-check.py"
 LIVE_MODULE = SCRIPTS / "capability-map-gen.py"
 FIXTURE = HERE / "fixtures" / "capability-map-gen.d20f412.py"
+
+
+def _code_only(src):
+    """The module's AST with every docstring blanked: code, minus prose."""
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and body and isinstance(body[0], ast.Expr)
+                and isinstance(getattr(body[0], "value", None), ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body[0].value.value = ""
+    return ast.dump(tree)
 PREFIX_COMMIT = "d20f412"
 MODULE_PATH_IN_REPO = "q-system/.q-system/scripts/capability-map-gen.py"
 
@@ -73,10 +86,19 @@ class TestReproducerAgainstThePreFixCommit(unittest.TestCase):
             self.skipTest(f"git unavailable: {exc}")
         if blob.returncode != 0:  # pragma: no cover - instance checkouts
             self.skipTest(f"{PREFIX_COMMIT} not in this checkout's history")
+        # CODE, not bytes (ASK-2058). The commit's comments and docstrings name
+        # client instances, and this repo is public, so the fixture carries them
+        # with placeholders on the same lines. The AST with docstrings blanked
+        # still pins every statement, name and literal the check reads, and line
+        # numbers stay identical because each placeholder stays on its line.
         self.assertEqual(
-            blob.stdout.decode("utf-8", "replace"),
-            FIXTURE.read_text(encoding="utf-8"),
-            "the fixture has drifted from the commit it claims to reproduce")
+            _code_only(blob.stdout.decode("utf-8", "replace")),
+            _code_only(FIXTURE.read_text(encoding="utf-8")),
+            "the fixture's code has drifted from the commit it claims to reproduce")
+        self.assertEqual(
+            blob.stdout.decode("utf-8", "replace").count("\n"),
+            FIXTURE.read_text(encoding="utf-8").count("\n"),
+            "the fixture's line count drifted, so finding line numbers would too")
 
     def test_finds_the_unfiltered_walkers(self):
         self.assertTrue(

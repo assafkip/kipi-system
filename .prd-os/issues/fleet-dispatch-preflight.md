@@ -29,7 +29,7 @@ Parent PRD: `.prd-os/prds/prd-terminal-state-redrive-2026-08-01.md`
 
 ## Acceptance
 
-STARTS ONLY after needs-scope-redrive and terminal-states-validator are green. Preflight covers control-code version, hook presence, remote identity, branch protection, credentials, dirty state, and a per-repo kill switch -- opt-in plus a project filter is NOT protection for Alice or Prodigy_Gold, which this dispatcher would otherwise push to and auto-merge in. Selection is round-robin with a recorded cursor, not registry order, so a nonempty early repo cannot starve later client repos -- finding-9. 'Lists ready issues from two repos' is explicitly NOT sufficient; the check must show eventual pickup of a repo that sorts last.
+STARTS ONLY after needs-scope-redrive and terminal-states-validator are green. Preflight covers control-code version, hook presence, remote identity, branch protection, credentials, dirty state, and a per-repo kill switch -- opt-in plus a project filter is NOT protection for client-d or client-c, which this dispatcher would otherwise push to and auto-merge in. Selection is round-robin with a recorded cursor, not registry order, so a nonempty early repo cannot starve later client repos -- finding-9. 'Lists ready issues from two repos' is explicitly NOT sufficient; the check must show eventual pickup of a repo that sorts last.
 
 ## Deliverables
 

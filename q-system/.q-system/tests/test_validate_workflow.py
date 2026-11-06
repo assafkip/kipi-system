@@ -82,6 +82,9 @@ def repo(tmp_path):
     (r / "b.txt").write_text("two\n")
     git("add", "b.txt")
     git("commit", "-q", "-m", "second commit")
+    # The PR's target as the runner's fetch-depth-0 clone has it. The step now
+    # refuses a base that does not resolve (ASK-3828), so the fixture needs one.
+    git("update-ref", "refs/remotes/origin/main", first)
     return r, first
 
 
@@ -102,8 +105,12 @@ def _sealed_bin(tmp_path) -> Path:
     assert real_git, "git is required"
     (b / "git").symlink_to(real_git)
     rec = tmp_path / "argv.txt"
+    calls = tmp_path / "calls.txt"
     stub = b / "python3"
-    stub.write_text(f"#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{rec}'\n")
+    # argv.txt holds the LAST call (the gate); calls.txt one line per call, so a
+    # covers-lint call before the gate is visible too.
+    stub.write_text(f"#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{rec}'\n"
+                    f"echo \"$*\" >> '{calls}'\n")
     stub.chmod(0o755)
     return b
 
@@ -148,6 +155,43 @@ def test_pull_request_diffs_against_the_target_branch(tmp_path, repo):
     r, _ = repo
     argv, _ = _drive(tmp_path, r, "pull_request", base_ref="main")
     assert _diff_base(argv) == "origin/main"
+
+
+def test_an_unresolvable_base_stops_the_step_red(tmp_path, repo):
+    """Nothing to scope against is not a reason to grade the whole tree, nor to
+    grade nothing: the step says so and fails (ASK-3828)."""
+    r, _ = repo
+    b = _sealed_bin(tmp_path)
+    env = _clean_env(tmp_path, str(b))
+    env.update({"EVENT": "pull_request", "BASE_REF": "no-such-branch", "PUSH_BEFORE": ""})
+    p = subprocess.run([shutil.which("bash"), "-e", "-c", _run_script(_block())], cwd=r, env=env,
+                       capture_output=True, text=True)
+    assert p.returncode != 0 and "is not a commit in this clone" in p.stdout, p.stdout + p.stderr
+    assert not (tmp_path / "argv.txt").exists(), "the gate ran with no base to scope against"
+
+
+def test_covers_lint_sees_only_the_declarations_the_change_touched(tmp_path, repo):
+    r, first = repo
+    env = _clean_env(tmp_path, os.environ["PATH"])
+    frag_dir = r / "q-system/.q-system/capability/expected_tests"
+    frag_dir.mkdir(parents=True)
+    (frag_dir / "touched.json").write_text("{}\n")
+    for a in (["add", "-A"], ["commit", "-q", "-m", "a declaration"]):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid", *a],
+                       cwd=r, env=env, check=True, capture_output=True)
+    _drive(tmp_path, r, "push", before=first)
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+    lint = [c for c in calls if "covers-lint.py" in c]
+    assert lint == ["q-system/.q-system/scripts/covers-lint.py --repo-root . "
+                    "q-system/.q-system/capability/expected_tests/touched.json"], calls
+    assert calls[-1].startswith("q-system/.q-system/scripts/capability-gate.py"), calls
+
+
+def test_no_covers_lint_call_when_no_declaration_changed(tmp_path, repo):
+    r, first = repo
+    _drive(tmp_path, r, "push", before=first)
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+    assert not [c for c in calls if "covers-lint.py" in c], f"an empty list means a sweep: {calls}"
 
 
 def test_no_event_reaches_a_bare_gate_invocation():
