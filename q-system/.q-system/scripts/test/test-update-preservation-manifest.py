@@ -188,6 +188,80 @@ class GuardTests(unittest.TestCase):
         # so nothing could be refused.
         self._shell_case(self.root / "mono/projects/inst", self.root / "mono")
 
+    def _plugin_case(self, inst_text: str, skel_text: str, recent_msg: str,
+                     recent_text: str, skel_tracked: bool = True):
+        """Instance plugins/demo/mod.py: inst_text 40 days old, then recent_text
+        committed today with recent_msg. Skeleton ships skel_text, committed or
+        (skel_tracked=False) only on disk, as an untracked or symlinked plugin
+        is: plugins/ syncs from the skeleton's working tree."""
+        inst, skel = self.root / "inst", self.root / "skel"
+        rel = "plugins/demo/mod.py"
+        old = {**os.environ, "GIT_AUTHOR_DATE": stamp(40), "GIT_COMMITTER_DATE": stamp(40)}
+        (inst / rel).parent.mkdir(parents=True)
+        (inst / rel).write_text(inst_text)
+        g(inst, "init", "-q", "-b", "main")
+        g(inst, "add", "-A")
+        g(inst, "commit", "-qm", "instance base", env=old)
+        (inst / rel).write_text(recent_text)
+        g(inst, "commit", "-qam", recent_msg)
+        (skel / "README.md").parent.mkdir(parents=True)
+        (skel / "README.md").write_text("skeleton\n")
+        g(skel, "init", "-q", "-b", "main")
+        g(skel, "add", "-A")
+        g(skel, "commit", "-qm", "skeleton base")
+        (skel / rel).parent.mkdir(parents=True)
+        (skel / rel).write_text(skel_text)
+        if skel_tracked:
+            g(skel, "add", "-A")
+            g(skel, "commit", "-qm", "skeleton ships mod.py")
+        items = subprocess.run(["rsync", "-ain", "--delete", f"{skel}/plugins/demo/",
+                                f"{inst}/plugins/demo/"], capture_output=True, text=True,
+                               check=True).stdout
+        stream = (f"@@scope\t{skel}/plugins/demo\t{inst}/plugins/demo\tplugins/demo\t"
+                  f"plugins/demo\n{items}@@end\n")
+        ov = self.root / "ov.json"
+        ov.write_text('{"schema_version": 1, "overrides": []}')
+        return subprocess.run(["python3", str(SCRIPT), "check", "--instance-root", str(inst),
+                               "--skeleton-root", str(skel), "--overrides", str(ov)],
+                              input=stream, capture_output=True, text=True)
+
+    def test_a_method_is_protected_when_the_incoming_file_does_not_parse(self):
+        # Review of #609, finding 1. When either side failed ast, the removal was
+        # named `m` while history was read qualified (`C.m`): no match, no adder,
+        # "0 refusals" from a check that could not see.
+        base = "class C:\n    def keep(self):\n        return 1\n"
+        res = self._plugin_case(
+            inst_text=base, skel_text=base + "\ndef oops(:\n", recent_msg="add C.m",
+            recent_text=base + "\n    def m(self):\n        return 2\n")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("plugins/demo/mod.py: def m", res.stdout)
+        self.assertIn("add C.m", res.stdout)
+
+    def test_content_the_updater_synced_in_is_the_skeletons_to_remove(self):
+        # Review of #609, finding 2. Skeleton content with no skeleton git history
+        # (untracked or symlinked plugin files) reached the instance in the
+        # updater's own sync commit; the guard blamed that commit and refused.
+        base = "def keep():\n    return 1\n"
+        added = base + "\ndef bar():\n    return 2\n"
+        sync_msg = "chore: sync .claude config + plugins from skeleton 2026-11-05 [no-issue: fleet updater skeleton sync]"
+        res = self._plugin_case(base, base, sync_msg, added, skel_tracked=False)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("0 refusals", res.stdout)
+
+    def test_the_same_change_by_an_ordinary_commit_is_refused(self):
+        # The control for the case above: only the commit's author differs.
+        base = "def keep():\n    return 1\n"
+        added = base + "\ndef bar():\n    return 2\n"
+        res = self._plugin_case(base, base, "local fix: add bar", added, skel_tracked=False)
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("plugins/demo/mod.py: def bar", res.stdout)
+
+    def test_the_updater_still_writes_the_sync_marker_the_guard_trusts(self):
+        # The marker is a contract between two files. If kipi-update.sh's sync
+        # commits stop carrying it, the case above silently turns into refusals.
+        text = (REPO_ROOT / "kipi-update.sh").read_text()
+        self.assertEqual(text.count(f'from skeleton $(date +%Y-%m-%d) {upm.SYNC_MARKER}"'), 2)
+
     def _shell_case(self, inst: Path, inst_repo: Path):
         skel = self.root / "skel"
         for repo, top in ((inst, inst_repo), (skel, skel)):

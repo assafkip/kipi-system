@@ -76,13 +76,7 @@ JSON
   printf 'plugin v2 with a local fix\n' > "$inst/plugins/demo/content.txt"
   # Ahead: a rule edited in the instance.
   printf '# demo rule v2, tuned here\n' > "$inst/.claude/rules/demo.md"
-  # Dated long ago on purpose (ASK-3821). This test is about content that is
-  # ahead of the skeleton but is NOT recent instance work: that is what the flag
-  # still only reports. A def an instance commit added in the last 30 days is
-  # refused with no flag, and test-update-preservation-manifest.py owns that.
-  ( cd "$inst" && G init -q -b main && G add -A -f &&
-    GIT_AUTHOR_DATE=2020-01-01T00:00:00+0000 GIT_COMMITTER_DATE=2020-01-01T00:00:00+0000 \
-      G commit -qm inst )
+  ( cd "$inst" && G init -q -b main && G add -A -f && G commit -qm inst )
 }
 
 expect_report() {

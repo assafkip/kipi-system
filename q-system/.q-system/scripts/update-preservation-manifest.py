@@ -74,6 +74,15 @@ WINDOW_DAYS = 30
 OVERRIDES_NAME = "kipi-update-preservation-overrides.json"
 FILE_SYMBOL = "<file>"
 CODE_SUFFIXES = (".py", ".sh", ".bash")
+# kipi-update.sh writes this on its two skeleton-sync commits and nowhere else,
+# and those commits stage only the synced scopes of a tree the dirty guard just
+# proved clean. So whatever such a commit added came FROM the skeleton, and the
+# skeleton owns removing it even where it has no git history for the path:
+# plugins/ syncs from the skeleton's working tree, so untracked or symlinked
+# plugin content has none (review of #609, finding 2: the guard refused and
+# named the updater's own commit as the work to keep). Pinned by
+# test_the_updater_still_writes_the_sync_marker_the_guard_trusts.
+SYNC_MARKER = "[no-issue: fleet updater skeleton sync]"
 
 
 class GuardError(Exception):
@@ -114,28 +123,32 @@ def _py_ast_names(text: str) -> dict[str, str]:
     return names
 
 
-def code_names(path: str, old_text: str, new_text: str | None) -> tuple[dict, dict]:
-    """(names in old_text, names in new_text) with the SAME naming scheme.
+def _regex_names(path: str, text: str) -> dict[str, str]:
+    """Unqualified names by regex: the scheme for shell, and for Python that
+    does not parse."""
+    if path.endswith(".py"):
+        return {m.group(2): m.group(1) for m in _PY_DEF_RE.finditer(text)}
+    return {(m.group(1) or m.group(2)): "def" for m in _SH_DEF_RE.finditer(text)}
+
+
+def code_names(path: str, old_text: str, new_text: str | None) -> tuple[dict, dict, bool]:
+    """(names in old_text, names in new_text, qualified) in ONE naming scheme.
 
     Python is read with ast, so methods are qualified (`Cls.method`) and a
     method that moved between classes counts as removed. If EITHER side does
-    not parse, both fall back to one regex, unqualified: mixing a qualified set
-    with an unqualified one would report every method as removed."""
+    not parse, both fall back to the regex, unqualified, and `qualified` says
+    so: every history lookup for these names must use the same scheme, or a
+    removal named `m` is looked up as `C.m` and never matches (review of #609,
+    finding 1: "0 refusals" from a check that could not see)."""
     if path.endswith(".py"):
         try:
             old = _py_ast_names(old_text)
             new = _py_ast_names(new_text) if new_text is not None else {}
-            return old, new
+            return old, new, True
         except SyntaxError:
             pass
-        regex = _PY_DEF_RE
-
-        def scan(text: str) -> dict:
-            return {m.group(2): m.group(1) for m in regex.finditer(text)}
-    else:
-        def scan(text: str) -> dict:
-            return {(m.group(1) or m.group(2)): "def" for m in _SH_DEF_RE.finditer(text)}
-    return scan(old_text), (scan(new_text) if new_text is not None else {})
+    new = _regex_names(path, new_text) if new_text is not None else {}
+    return _regex_names(path, old_text), new, False
 
 
 def is_code(path: str) -> bool:
@@ -167,7 +180,9 @@ class History:
         self.repo = repo
         self._names: dict[tuple[str, str], dict | None] = {}
 
-    def names_at(self, commit: str, path: str) -> dict | None:
+    def _parsed(self, commit: str, path: str) -> tuple[dict | None, dict] | None:
+        """(ast names, or None when the blob does not parse; regex names), or
+        None when the path is absent at that commit."""
         key = (commit, path)
         if key not in self._names:
             # `./` makes the path relative to -C's directory. A bare `<rev>:path`
@@ -182,14 +197,33 @@ class History:
                 self._names[key] = None  # path absent at that commit
             else:
                 text = proc.stdout.decode("utf-8", errors="replace")
-                self._names[key] = code_names(path, text, None)[0]
+                tree = None
+                if path.endswith(".py"):
+                    try:
+                        tree = _py_ast_names(text)
+                    except SyntaxError:
+                        tree = None
+                self._names[key] = (tree, _regex_names(path, text))
         return self._names[key]
+
+    def has(self, commit: str, path: str, symbol: str, qualified: bool) -> bool:
+        """Is `symbol` defined at `path` in `commit`, read in the removal's
+        scheme. A qualified name at a blob that does not parse falls back to
+        its leaf, so a broken historical blob cannot hide an add either."""
+        got = self._parsed(commit, path)
+        if got is None:
+            return False
+        tree, flat = got
+        if qualified and tree is not None:
+            return symbol in tree
+        return symbol.rsplit(".", 1)[-1] in flat
 
     def has_parent(self, commit: str) -> bool:
         return bool(git(self.repo, "rev-parse", "--verify", "-q", f"{commit}^", check=False).strip())
 
 
-def instance_adder(hist: History, path: str, symbol: str, since: str) -> str | None:
+def instance_adder(hist: History, path: str, symbol: str, qualified: bool,
+                   since: str) -> str | None:
     """Newest instance commit since `since` that ADDED `symbol` to `path`.
 
     Commits that touched the path in the window, newest first; the adder is the
@@ -203,16 +237,15 @@ def instance_adder(hist: History, path: str, symbol: str, since: str) -> str | N
         return commits[0] if commits else None
     out = git(hist.repo, "log", f"--since={since}", "--format=%H", "HEAD", "--", path)
     for commit in out.split():
-        now = hist.names_at(commit, path) or {}
-        if symbol not in now:
+        if not hist.has(commit, path, symbol, qualified):
             continue
-        before = hist.names_at(f"{commit}^", path) if hist.has_parent(commit) else None
-        if symbol not in (before or {}):
+        if not (hist.has_parent(commit) and hist.has(f"{commit}^", path, symbol, qualified)):
             return commit
     return None
 
 
-def skeleton_ever_had(hist: History, ref: str, path: str, symbol: str) -> bool:
+def skeleton_ever_had(hist: History, ref: str, path: str, symbol: str,
+                      qualified: bool) -> bool:
     """True when the skeleton defined `symbol` at `path` at any commit up to `ref`.
 
     Narrowed by pickaxe on the bare name, then confirmed by parsing the commit
@@ -223,9 +256,9 @@ def skeleton_ever_had(hist: History, ref: str, path: str, symbol: str) -> bool:
     leaf = symbol.rsplit(".", 1)[-1]
     out = git(hist.repo, "log", "--format=%H", f"-S{leaf}", ref, "--", path, check=False)
     for commit in out.split():
-        if symbol in (hist.names_at(commit, path) or {}):
+        if hist.has(commit, path, symbol, qualified):
             return True
-        if hist.has_parent(commit) and symbol in (hist.names_at(f"{commit}^", path) or {}):
+        if hist.has_parent(commit) and hist.has(f"{commit}^", path, symbol, qualified):
             return True
     return False
 
@@ -311,7 +344,7 @@ def _join(prefix: str, rel: str) -> str:
     return f"{prefix}/{rel}" if prefix else rel
 
 
-def removals(scope: dict) -> list[tuple[str, str, str, str]]:
+def removals(scope: dict) -> list[tuple[str, str, str, str, bool]]:
     """(instance_path, skeleton_path, symbol, kind) for everything this scope
     would remove. A deleted test file is one item; its defs are checked too, so
     a test added to an OLD file is still caught."""
@@ -321,7 +354,7 @@ def removals(scope: dict) -> list[tuple[str, str, str, str]]:
         skel_path = _join(scope["skel_rel"], rel)
         dest_file = Path(scope["dest"]) / rel
         if action == "delete" and is_test_file(rel):
-            out.append((inst_path, skel_path, FILE_SYMBOL, "test file"))
+            out.append((inst_path, skel_path, FILE_SYMBOL, "test file", True))
         if not is_code(rel) or not dest_file.is_file():
             continue
         old_text = dest_file.read_text(errors="replace")
@@ -333,9 +366,9 @@ def removals(scope: dict) -> list[tuple[str, str, str, str]]:
             # the 50 lines in the real 1d2568c5 preview). Same bytes, same defs.
             if new_text == old_text:
                 continue
-        old, new = code_names(rel, old_text, new_text)
+        old, new, qualified = code_names(rel, old_text, new_text)
         for symbol in sorted(set(old) - set(new)):
-            out.append((inst_path, skel_path, symbol, old[symbol]))
+            out.append((inst_path, skel_path, symbol, old[symbol], qualified))
     return out
 
 
@@ -354,7 +387,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     refused, allowed, checked = [], [], 0
     settled_files: set[str] = set()
     for scope in scopes:
-        for inst_path, skel_path, symbol, kind in removals(scope):
+        for inst_path, skel_path, symbol, kind, qualified in removals(scope):
             # A test file already refused, or let through by its own override,
             # settles every def in it. Judging the defs again turned one finding
             # into ten lines (first measured run), and made a `<file>` override
@@ -362,10 +395,12 @@ def cmd_check(args: argparse.Namespace) -> int:
             if inst_path in settled_files:
                 continue
             checked += 1
-            commit = instance_adder(inst, inst_path, symbol, since)
+            commit = instance_adder(inst, inst_path, symbol, qualified, since)
             if commit is None:
                 continue
-            if skeleton_ever_had(skel, args.skeleton_ref, skel_path, symbol):
+            if SYNC_MARKER in git(args.instance_root, "log", "-1", "--format=%B", commit):
+                continue
+            if skeleton_ever_had(skel, args.skeleton_ref, skel_path, symbol, qualified):
                 continue
             entry = override_for(overrides, commit, inst_path, symbol)
             if entry is not None:
