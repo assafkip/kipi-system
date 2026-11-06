@@ -55,6 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
 from concurrency import ConcurrencyError, assert_no_active_issue  # noqa: E402
+import runtime_receipt  # noqa: E402
 
 
 PRD_STATES = ("idea", "draft", "in-review", "approved", "archived")
@@ -2393,8 +2394,16 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
     dry = getattr(args, "dry_run", False)
     closed, still_open, unreadable = [], [], []
     transport_failures = 0
+    needs_receipt = []
     for rec in sorted(rows, key=lambda r: r.get("id", "")):
         ref = rec.get("linear_ref")
+        # A tracker "Done" is the purest source-only closure there is. A row that
+        # claims a runtime control stays promoted until someone resolves it by
+        # hand with `--runtime-receipt` (RCA 2026-10-02).
+        terms = runtime_receipt.claims_runtime_control(rec.get("description"))
+        if terms:
+            needs_receipt.append((rec.get("id"), ref, "claims " + ",".join(terms)))
+            continue
         if not ref:
             unreadable.append((rec.get("id"), None, "no linear_ref recorded"))
             continue
@@ -2440,7 +2449,8 @@ def _spillover_promoted_audit(cfg: Config, args) -> int:
                        **evidence)
             _spillover_append(cfg, new)
     for label, items in (("RESOLVED" if not dry else "WOULD RESOLVE", closed),
-                         ("STILL OPEN", still_open), ("UNVERIFIABLE", unreadable)):
+                         ("STILL OPEN", still_open), ("UNVERIFIABLE", unreadable),
+                         ("NEEDS RUNTIME RECEIPT", needs_receipt)):
         print(f"{label}: {len(items)}")
         for row in items:
             print("  " + "  ".join(str(x) for x in row if x))
@@ -2702,7 +2712,8 @@ def cmd_spillover(cfg: Config, args) -> int:
         with _spillover_lock(cfg):
             # Same chokepoint as reclassify: this read-modify-append was already
             # unlocked before PR #112: reclassify only added a third writer to it.
-            rec = _read_spillover(cfg).get(args.id)
+            ledger = _read_spillover(cfg)
+            rec = ledger.get(args.id)
             if not rec:
                 sys.stderr.write(f"unknown spillover id: {args.id}\n")
                 return 2
@@ -2726,6 +2737,28 @@ def cmd_spillover(cfg: Config, args) -> int:
                     f"resolve takes exactly one exit, got {', '.join(chosen)}\n")
                 return 2
             new = dict(rec)
+            # RUNTIME RECEIPT (RCA 2026-10-02 / 2026-10-06). A gate, cap, meter or
+            # ledger item was closed because its source READ correctly; it had
+            # never fired on the real caller and the burn came back. So an item
+            # that claims a runtime control needs a receipt of a real call on
+            # every FIX exit. A void claims no fix and is exempt.
+            if not args.void:
+                terms = runtime_receipt.claims_runtime_control(rec.get("description"))
+                if terms:
+                    # Bound to THIS row: it names repo code, postdates the row,
+                    # and no other row holds it (PR #610 review, major 1).
+                    used = {o["runtime_receipt"]["sha256"]: oid
+                            for oid, o in ledger.items()
+                            if oid != args.id and isinstance(o.get("runtime_receipt"), dict)
+                            and o["runtime_receipt"].get("sha256")}
+                    try:
+                        new["runtime_receipt"] = runtime_receipt.load_receipt(
+                            getattr(args, "runtime_receipt", None), terms,
+                            repo_root=cfg.repo_root, not_before=rec.get("created_at"),
+                            used=used)
+                    except runtime_receipt.ReceiptError as exc:
+                        sys.stderr.write(f"cannot resolve {args.id}: {exc}\n")
+                        return 2
             if getattr(args, "resolution_proof", None):
                 if not getattr(args, "broken_at", None):
                     sys.stderr.write(
@@ -3298,6 +3331,11 @@ def main(argv: list[str] | None = None) -> int:
     sp_res.add_argument("--broken-at", dest="broken_at",
                         help="pre-fix sha the proof command must FAIL at")
     sp_res.add_argument("--void", help="record a non-item (with reason) instead of fixing")
+    sp_res.add_argument("--runtime-receipt", dest="runtime_receipt",
+                        help="JSON receipt of a REAL call (command, output, ran_at); "
+                             "required when the item claims a gate/cap/meter/budget/"
+                             "ledger/guard/limit/rate/quota fix. Make one with "
+                             "runtime_receipt.py capture --out <file> -- <cmd>")
     p_spill.set_defaults(func=cmd_spillover)
 
     args = parser.parse_args(argv)
