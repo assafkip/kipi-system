@@ -646,6 +646,33 @@ def sec_runner():
         rc, out = run_gate(root)
         check("runner: exactly last-20-line tail (line30 in, line5 out)",
               rc == 1 and "line30" in out and "line5\n" not in out and "line10\n" not in out)
+    # ASK-3797: the stale-checkout test went red as "69 passed, 1 failed" with
+    # its FAIL line 50 lines above the tail, so the cause was never in the log.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        body = ['print("  PASS: early-pass-xyz")', 'print("  FAIL: buried-cause-xyz")']
+        body += [f'print("  PASS: filler{i}")' for i in range(1, 31)]
+        rel = add_test(root, "q-system/.q-system/scripts/test_buried.py",
+                       "\n".join(body) + "\nimport sys; sys.exit(1)")
+        m = base_manifest(expected_tests=[entry(rel)])
+        write_manifest(root, m)
+        rc, out = run_gate(root)
+        check("runner: a FAIL line above the 20-line tail is still printed",
+              rc == 1 and "FAIL: buried-cause-xyz" in out and "filler30" in out)
+        check("runner: only FAIL lines are lifted, not the PASS lines around them",
+              "early-pass-xyz" not in out and "filler5\n" not in out)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_repo(tmp)
+        body = [f'print("  FAIL: flood{i}")' for i in range(1, 101)]
+        body += [f'print("  PASS: after{i}")' for i in range(1, 21)]
+        rel = add_test(root, "q-system/.q-system/scripts/test_flood.py",
+                       "\n".join(body) + "\nimport sys; sys.exit(1)")
+        m = base_manifest(expected_tests=[entry(rel)])
+        write_manifest(root, m)
+        rc, out = run_gate(root)
+        check("runner: lifted FAIL lines are capped at 40 and the rest counted",
+              rc == 1 and "flood40\n" in out and "flood41\n" not in out
+              and "60 more FAIL lines not shown" in out)
 
 
 def sec_mode():
