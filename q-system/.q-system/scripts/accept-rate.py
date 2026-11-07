@@ -12,8 +12,10 @@ For every PRD in `.prd-os/findings/*.jsonl` this reports:
   - deferred-major rate    -> "the gate objected and we waved it"
   - accepted-without-receipt -> "we said we'd fix it; no receipt it happened"
 
-A finding counts as receipted when (prd_id, finding_id) appears in
-`.prd-os/receipts.jsonl`. That file is the closeout trail the issue runner writes.
+A finding counts as receipted when (prd_id, finding_id) appears in the receipt
+ledger: `.prd-os/receipts.jsonl` plus its one-row fragments in `.prd-os/receipts.d/`,
+read through prd-os's `ledger_fragments` fold. That is the closeout trail the issue
+runner writes.
 
 Scar (2026-06-15): built because the build-craft PRD sat in-review with 8 accepted
 findings and zero receipts - the exact "done was a sentence, not a receipt" gap
@@ -33,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -89,6 +92,42 @@ def load_findings(prd_os_dir: str) -> tuple[dict[str, list[dict]], list[str]]:
     return findings, errors
 
 
+# Where the fold lives, relative to the repo this file ships in. prd-os first; the
+# kipi-dsse copy is byte-identical (test_ledger_fragments_close.py pins that).
+FOLD_HOMES = ("plugins/prd-os/scripts", "plugins/kipi-dsse/scripts")
+
+
+def load_fold(repo_root: str | None = None):
+    """The `ledger_fragments` module: the one reader of the receipt ledger's layout.
+
+    WHY IMPORT, NOT A COPY (PR #621 round 2, finding 2). This opened receipts.jsonl
+    directly. After ASK-3829 a close writes its receipt as a fragment under
+    receipts.d/, so every finding closed after the switch counted as
+    accepted-without-receipt and `--gate` exited 2 on work that had its receipt.
+    A second reader of the layout is how that happened, so this asks the fold.
+    Every instance that ships this script also ships plugins/prd-os/scripts
+    (measured 2026-11-07 over instance-registry.json: 14 of 14).
+
+    Not found is a hard stop, never a legacy-only read: a report that cannot see
+    fragments reports receipted work as unreceipted, which is the false alarm this
+    replaces.
+    """
+    root = repo_root or _repo_root_default()
+    for home in FOLD_HOMES:
+        path = os.path.join(root, home, "ledger_fragments.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("ledger_fragments", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    raise SystemExit(
+        "accept-rate: ledger_fragments.py is not under "
+        + " or ".join(os.path.join(root, h) for h in FOLD_HOMES)
+        + ", so receipts in .prd-os/receipts.d/ cannot be read and every one would "
+        "count as missing. Restore the prd-os plugin in this repo, then re-run."
+    )
+
+
 def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
     """Return {(prd_id, finding_id), ...} for every closed-out finding.
 
@@ -100,44 +139,42 @@ def load_receipts(prd_os_dir: str) -> set[tuple[str, str]]:
     sort wrongly as text.
     """
     latest: dict[tuple[str, str], tuple[str, bool]] = {}
+    fold = load_fold()
     path = os.path.join(prd_os_dir, "receipts.jsonl")
-    if not os.path.isfile(path):
-        return closed_pairs(latest)
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                # A malformed receipt means we cannot prove that closeout, so the
-                # finding stays counted as unreceipted. Skipping is the safe side.
-                continue
-            if not isinstance(obj, dict):
-                continue
-            prd_id = obj.get("prd_id")
-            finding_id = obj.get("finding_id")
-            if not (prd_id and finding_id):
-                continue
-            pair = (prd_id, finding_id)
-            if obj.get("reopened_at"):
-                event = (parse_event_time(obj["reopened_at"]), False)
-            elif obj.get("closed_at"):
-                event = (parse_event_time(obj["closed_at"]), True)
-            else:
-                continue
-            if event[0] is None:
-                # An unparseable timestamp proves nothing either way; skip is the
-                # safe side, same as a malformed row.
-                continue
-            prev = latest.get(pair)
-            # Round 6 (codex): identical timestamps must not fall back to
-            # physical order. Tie goes to REOPEN: reporting finished work as
-            # open is recoverable, reporting unfinished work as closed is not.
-            if (prev is None or prev[0] is None or event[0] > prev[0]
-                    or (event[0] == prev[0] and event[1] is False)):
-                latest[pair] = event
+    for _source, _number, line in fold.iter_lines(path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            # A malformed receipt means we cannot prove that closeout, so the
+            # finding stays counted as unreceipted. Skipping is the safe side.
+            continue
+        if not isinstance(obj, dict):
+            continue
+        prd_id = obj.get("prd_id")
+        finding_id = obj.get("finding_id")
+        if not (prd_id and finding_id):
+            continue
+        pair = (prd_id, finding_id)
+        if obj.get("reopened_at"):
+            event = (parse_event_time(obj["reopened_at"]), False)
+        elif obj.get("closed_at"):
+            event = (parse_event_time(obj["closed_at"]), True)
+        else:
+            continue
+        if event[0] is None:
+            # An unparseable timestamp proves nothing either way; skip is the
+            # safe side, same as a malformed row.
+            continue
+        prev = latest.get(pair)
+        # Round 6 (codex): identical timestamps must not fall back to
+        # physical order. Tie goes to REOPEN: reporting finished work as
+        # open is recoverable, reporting unfinished work as closed is not.
+        if (prev is None or prev[0] is None or event[0] > prev[0]
+                or (event[0] == prev[0] and event[1] is False)):
+            latest[pair] = event
     return closed_pairs(latest)
 
 

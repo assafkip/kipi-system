@@ -16,10 +16,11 @@
 #   1. the live reviewer verdict at <reviewed-sha> is `success`, read from GitHub,
 #      never from the local verdict record. This script cannot approve anything
 #      the reviewer did not; it has no verdict of its own to give.
-#   2. <head-sha> descends from <reviewed-sha> and the ONLY path that differs is
-#      .prd-os/receipts.jsonl. Same rule as converge's receipt_only_ahead and the
-#      receipt gate's own ledger allowance: the one file converge may add to a
-#      reviewed head. Any other path is code no reviewer read, and stays red.
+#   2. <head-sha> descends from <reviewed-sha> and every path that differs is a
+#      receipt: .prd-os/receipts.jsonl, or a receipt fragment ADDED under
+#      .prd-os/receipts.d/ (see receipt_paths_only). converge's receipt_only_ahead
+#      asks this file rather than keeping its own copy of the rule. Any other path
+#      is code no reviewer read, and stays red.
 #   3. no real verdict exists at <head-sha> yet. A head the reviewer already
 #      judged is never overwritten, in either direction.
 #
@@ -53,6 +54,7 @@
 # running.
 #
 # `--head-state <owner/repo> <sha>` is a READ-ONLY mode; see head_state.
+# `--delta-kind <tree> <reviewed-sha> <head-sha>` is another; see delta_kind.
 #
 # EXIT: 0 carried, 10 declined (a guard said no), 1 could not read or post,
 # 2 usage. The caller tells "did nothing, by design" from "tried and failed".
@@ -68,6 +70,11 @@ set -uo pipefail
 
 REVIEWER_CONTEXT="kipi/reviewer-approved"
 RECEIPT_LEDGER=".prd-os/receipts.jsonl"
+# The exact name ledger_fragments.append_line gives a receipt (ASK-3829). Same regex
+# as lefthook.yml's blocked-paths exception and receipts-ledger-check.py, so the one
+# path a commit may add is the one path a push or a carry may add.
+# test-receipt-carry-approval.sh pins the three copies equal.
+RECEIPT_FRAGMENT_RE='^\.prd-os/receipts\.d/[0-9]{8}T[0-9]{12}Z-receipt-[0-9a-f]{16}\.jsonl$'
 # The floor's literal, restated because the two files must agree on what "the
 # floor wrote this" means. test-receipt-carry-approval.sh feeds a real floor row
 # through live_verdict, so a drift between the two strings turns that test red.
@@ -96,14 +103,37 @@ live_verdict() {
     || echo "none"
 }
 
+# receipt_paths_only: stdin is `git diff --name-status --no-renames` output. 0 when it
+# names at least one path and every one is the ledger or an ADDED receipt fragment.
+#
+# WHY FRAGMENTS, AND WHY ONLY ADDED ONES (PR #621 round 2, finding 1). Since ASK-3829
+# a close writes its receipt as a new file under .prd-os/receipts.d/, and this rule
+# accepted the ledger file only, so a head carrying a fragment read as unreviewed
+# code: converge refused to push the receipt and dropped the approval carry. A
+# fragment is written once and never edited (receipts-ledger-check.py refuses any
+# status but A), so a modified, deleted or renamed fragment is not a receipt being
+# delivered, and stays `other`. --no-renames: with rename detection on, a source
+# file renamed onto a receipt name would show only its new, harmless-looking path.
+receipt_paths_only() {
+  local status path n=0
+  while IFS=$'\t' read -r status path; do
+    [ -n "$status" ] || continue
+    n=$((n + 1))
+    [ "$path" = "$RECEIPT_LEDGER" ] && continue
+    [ "$status" = "A" ] || return 1
+    printf '%s\n' "$path" | grep -Eq "$RECEIPT_FRAGMENT_RE" || return 1
+  done
+  [ "$n" -gt 0 ]
+}
+
 # delta_kind <tree> <reviewed-sha> <head-sha>  ->  same | receipt-only | other
 # Every failure to answer is `other`: unknown is not carriable.
 delta_kind() {
-  local tree="$1" reviewed="$2" head="$3" gained
+  local tree="$1" reviewed="$2" head="$3" changes
   [ "$reviewed" = "$head" ] && { echo same; return 0; }
   git -C "$tree" merge-base --is-ancestor "$reviewed" "$head" 2>/dev/null || { echo other; return 0; }
-  gained="$(git -C "$tree" diff --name-only "$reviewed" "$head" 2>/dev/null)" || { echo other; return 0; }
-  if [ "$gained" = "$RECEIPT_LEDGER" ]; then echo receipt-only; else echo other; fi
+  changes="$(git -C "$tree" diff --name-status --no-renames "$reviewed" "$head" 2>/dev/null)" || { echo other; return 0; }
+  if printf '%s\n' "$changes" | receipt_paths_only; then echo receipt-only; else echo other; fi
 }
 
 read_statuses() {  # read_statuses <repo-path> <sha>
@@ -139,6 +169,12 @@ main() {
   if [ "${1:-}" = "--head-state" ]; then
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: receipt-carry-approval.sh --head-state <owner/repo> <sha>" >&2; exit 2; }
     head_state "$2" "$3"; exit $?
+  fi
+  # READ ONLY, for converge's receipt_only_ahead: one rule for "this head adds only
+  # a receipt", so the push guard and the carry cannot disagree about a path.
+  if [ "${1:-}" = "--delta-kind" ]; then
+    [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || { echo "usage: receipt-carry-approval.sh --delta-kind <tree> <reviewed-sha> <head-sha>" >&2; exit 2; }
+    delta_kind "$2" "$3" "$4"; exit 0
   fi
   local tree="${1:-}" reviewed="${2:-}" head="${3:-}" repo="${4:-}"
   if [ -z "$tree" ] || [ -z "$reviewed" ] || [ -z "$head" ] || [ -z "$repo" ]; then
