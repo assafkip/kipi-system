@@ -1203,29 +1203,41 @@ done
 
 # ASK-3930: keep a finished review tree's unique files before the tree goes.
 # Args: tree path, PR number, list file (NUL-separated untracked paths that are NOT
-# byte-identical to the main checkout copy), 1 when tracked files differ from HEAD.
-# Prints the archive path and returns 0 only when the archive lists back every
-# member. Returns 2 (printing the payload in KB) over KIPI_REVIEW_ARCHIVE_MAX_KB,
+# byte-identical to the main checkout copy), 1 when tracked files differ from HEAD,
+# and the number of list records the caller counted on its own: a list cut short
+# (a full TMPDIR mid-append drops the last record) is caught by that count, not
+# trusted. Tracked changes go in as TWO binary patches, the index against HEAD and
+# the worktree against the index, so a staged version that differs from both ends
+# survives; textconv and external diff drivers are off, because their output need
+# not restore the bytes. Prints the archive path and returns 0 only when the
+# archive lists back every member. Returns 2 (printing the payload in KB) over KIPI_REVIEW_ARCHIVE_MAX_KB,
 # and 1 on any other failure, leaving no archive behind: the caller then KEEPS the
 # tree. An untracked directory (a nested repo) is not copied, so it fails closed
 # here instead of being measured as zero bytes and copied whole.
 _archive_review_tree() {
-  local path="$1" n="$2" list="$3" tracked="$4" name dir stage arch rel bytes=0 kb want=1 got
+  local path="$1" n="$2" list="$3" tracked="$4" expect_n="$5" name dir stage arch rel
+  local bytes=0 kb want=1 got seen=0 side
   local cap="${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}"
   [ -n "$list" ] && [ -f "$list" ] || return 1
   name="${path##*/}"; dir="$HOME/.config/kipi/review-tree-archive"
   while IFS= read -r -d '' rel; do
+    seen=$((seen+1))
     [ -L "$path/$rel" ] && continue
     [ -f "$path/$rel" ] || return 1
     bytes=$(( bytes + $(wc -c < "$path/$rel") )) || return 1
   done < "$list"
+  [ "$seen" = "$expect_n" ] || return 1
   stage="$(mktemp -d "${TMPDIR:-/tmp}/review-archive.XXXXXX")" || return 1
   if ! mkdir -p "$stage/$name/untracked"; then command rm -rf -- "$stage"; return 1; fi
   if [ "$tracked" = 1 ]; then
-    if ! git -C "$path" diff HEAD --binary > "$stage/$name/tracked.patch" 2>/dev/null; then
-      command rm -rf -- "$stage"; return 1
-    fi
-    want=$((want+1)); bytes=$(( bytes + $(wc -c < "$stage/$name/tracked.patch") ))
+    for side in staged unstaged; do
+      if [ "$side" = staged ]; then set -- --cached; else set --; fi
+      if ! git -C "$path" diff "$@" --binary --no-textconv --no-ext-diff --no-color \
+           > "$stage/$name/$side.patch" 2>/dev/null; then
+        command rm -rf -- "$stage"; return 1
+      fi
+      want=$((want+1)); bytes=$(( bytes + $(wc -c < "$stage/$name/$side.patch") ))
+    done
   fi
   kb=$(( (bytes + 1023) / 1024 ))
   if [ "$kb" -gt "$cap" ]; then command rm -rf -- "$stage"; echo "$kb"; return 2; fi
@@ -1251,11 +1263,34 @@ _archive_review_tree() {
   echo "$arch"
 }
 
+# ASK-3930 round 1: the reaper HOLDS a finished tree's lock from inventory to
+# removal, so a review that starts after the holder check cannot write into a tree
+# that is being archived and removed. Same noclobber protocol as acquire_wt_lock,
+# kept separate so the review's own _wt_lock_path is never touched.
+# 0 = held by this process, 1 = another live run holds it or it could not be taken.
+_reap_take_lock() {
+  local lock="$1" holder
+  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then return 0; fi
+  holder="$(cat "$lock" 2>/dev/null || true)"
+  [ "$holder" = "$$" ] && return 0
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 1; fi
+  command rm -f "$lock" 2>/dev/null || true
+  ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null
+}
+_reap_release_lock() {
+  if [ -n "$1" ] && [ "$(cat "$1" 2>/dev/null || true)" = "$$" ]; then
+    command rm -f "$1" 2>/dev/null || true
+  fi
+  return 0
+}
+
 reap_finished_review_trees() {
   local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0 archived=0
-  local list arch arc any unreadable tracked nondup code rel rec cwds force
+  local list arch arc any unreadable tracked nondup code rel rec cwds force held="" listbad
   list="$(mktemp "${TMPDIR:-/tmp}/review-archive.list.XXXXXX" 2>/dev/null)" || list=""
   while read -r path sha det; do
+    # Every `continue` below lands here, so a held lock is always given back.
+    _reap_release_lock "$held"; held=""
     case "$path" in
       */review-trees/*__pr-*)
         n="${path##*__pr-}"
@@ -1293,8 +1328,13 @@ reap_finished_review_trees() {
             # every untracked file that is not a main-checkout duplicate) are ARCHIVED
             # and verified first, and the tree goes only when that archive lists back.
             # --no-renames keeps every record a single path.
-            force=""; any=0; unreadable=0; tracked=0; nondup=0
-            [ -n "$list" ] && : > "$list"
+            if ! _reap_take_lock "$lock"; then
+              echo "  review-tree skip: PR $n tree lock is held by another run"
+              kept=$((kept+1)); continue
+            fi
+            held="$lock"
+            force=""; any=0; unreadable=0; tracked=0; nondup=0; listbad=0
+            if [ -z "$list" ] || ! : > "$list"; then listbad=1; fi
             while IFS= read -r -d '' rec; do
               [ -n "$rec" ] || continue
               any=1; code="${rec:0:2}"; rel="${rec:3}"
@@ -1302,7 +1342,10 @@ reap_finished_review_trees() {
               elif [ "$code" != '??' ]; then tracked=1
               elif [ -f "$path/$rel" ] && [ ! -L "$path/$rel" ] && [ -f "$REVIEW_REPO/$rel" ] \
                    && cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then :
-              else printf '%s\0' "$rel" >> "${list:-/dev/null}"; nondup=$((nondup+1)); fi
+              else
+                nondup=$((nondup+1))
+                if [ "$listbad" = 0 ] && ! printf '%s\0' "$rel" >> "$list" 2>/dev/null; then listbad=1; fi
+              fi
             done < <(git -C "$path" status --porcelain=v1 -z -uall --no-renames 2>/dev/null || printf '!!unreadable\0')
             if [ "$unreadable" = 1 ]; then
               echo "  review-tree skip: PR $n tree status is unreadable"
@@ -1318,7 +1361,8 @@ reap_finished_review_trees() {
               kept=$((kept+1)); continue
             fi
             if [ "$tracked" = 1 ] || [ "$nondup" -gt 0 ]; then
-              arch="$(_archive_review_tree "$path" "$n" "$list" "$tracked")"; arc=$?
+              if [ "$listbad" = 1 ]; then arc=1; arch=""
+              else arch="$(_archive_review_tree "$path" "$n" "$list" "$tracked" "$nondup")"; arc=$?; fi
               case "$arc" in
                 0) archived=$((archived+1)) ;;
                 2) echo "  review-tree skip: PR $n tree holds ${arch}K unique, over the ${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}K archive cap"
@@ -1330,12 +1374,14 @@ reap_finished_review_trees() {
             [ "$any" = 1 ] && force="--force"
             if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
               gone=$((gone+1)); [ -n "$force" ] && forced=$((forced+1)); command rm -f "$lock" 2>/dev/null || true
+              held=""
             else kept=$((kept+1)); fi ;;
           *) kept=$((kept+1)) ;;
         esac ;;
       /tmp/*/wt|/private/tmp/*/wt|/var/folders/*/tmp.*/wt|/private/var/folders/*/tmp.*/wt) unk=$((unk+1)) ;;
     esac
   done < <(_wt_rows)
+  _reap_release_lock "$held"; held=""
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
   [ -n "$list" ] && command rm -f -- "$list"
   # ASK-3630 minor: say how many trees were force-removed. ASK-3930: and how many had

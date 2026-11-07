@@ -19,11 +19,12 @@ T="$(mktemp -d)"
 fail=0
 check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
 
-awk '/^reap_finished_review_trees\(\)/{f=1} f{print} f&&/^}$/{exit}' "$AGENT" > "$T/reap.sh"
+# The whole reap-merged-trees block, so every helper the reaper calls comes along.
+awk '/^# reap-merged-trees-begin/{f=1;next} /^# reap-merged-trees-end/{exit} f' "$AGENT" > "$T/reap.sh"
 awk '/^_wt_rows\(\)/{on=1} on{print} on&&/^}$/{exit}' "$AGENT" > "$T/rows.sh"
-awk '/^_archive_review_tree\(\)/{on=1} on{print} on&&/^}$/{exit}' "$AGENT" > "$T/arch.sh"
-check "slices hold the function, _wt_rows and _archive_review_tree" \
-  'grep -q "^reap_finished_review_trees()" "$T/reap.sh" && grep -q "^_wt_rows()" "$T/rows.sh" && grep -q "^_archive_review_tree()" "$T/arch.sh"'
+check "slices hold the reaper, its helpers and _wt_rows" \
+  'grep -q "^reap_finished_review_trees()" "$T/reap.sh" && grep -q "^_archive_review_tree()" "$T/reap.sh" && grep -q "^_reap_take_lock()" "$T/reap.sh" && grep -q "^_reap_release_lock()" "$T/reap.sh" && grep -q "^_wt_rows()" "$T/rows.sh"'
+check "the slice does not call the reaper itself" '! grep -qx "reap_finished_review_trees" "$T/reap.sh"'
 
 mkdir -p "$T/bin" "$T/home/.config/kipi/review-trees" "$T/repo"
 git -C "$T/repo" init -q
@@ -50,6 +51,7 @@ tree 23   # merged, git status unreadable (ASK-3630 minor 2: pins the sentinel)
 tree 21   # merged, untracked file DIFFERS from the main checkout copy (ASK-3621 negative control)
 tree 24   # merged, unique untracked file OVER the archive size cap (ASK-3930 negative control)
 tree 25   # merged, an untracked NESTED repo: cannot be archived file by file (ASK-3930 negative control)
+tree 26   # merged, a STAGED version that differs from both HEAD and the worktree (ASK-3930 round 1)
 git -C "$T/repo" worktree add -q --detach "$RT/other_repo__pr-11" HEAD   # another repo's key
 git -C "$T/repo" worktree add -q --detach "$T/bystander" HEAD           # not a review tree
 printf 'unsaved' > "$(path_of 17)/untracked.txt"
@@ -60,6 +62,13 @@ printf 'same' > "$T/repo/out/dup.md"; printf 'same' > "$(path_of 20)/out/dup.md"
 printf 'other' > "$(path_of 21)/out/dup.md"
 head -c 4096 /dev/zero | tr '\0' x > "$(path_of 24)/big.txt"
 git init -q "$(path_of 25)/nested"; printf 'inner' > "$(path_of 25)/nested/inner.txt"
+printf staged > "$(path_of 26)/tracked.txt"; git -C "$(path_of 26)" add tracked.txt; printf base > "$(path_of 26)/tracked.txt"
+# A textconv driver on *.txt: a recovery patch must carry the bytes, not its rendering.
+git -C "$T/repo" config diff.noisy.textconv "sed s/^/CONV/"
+printf '*.txt diff=noisy\n' > "$T/repo/.git/info/attributes"
+# Stale locks (dead holders) on a tree that goes and on one that stays.
+( exit 0 ) & DEAD=$!; wait "$DEAD"
+printf '%s' "$DEAD" > "$(path_of 17).lock"; printf '%s' "$DEAD" > "$(path_of 23).lock"
 (cd "$(path_of 18)" && exec sleep 300) & CWDPROC=$!
 sleep 300 & LIVE=$!
 printf '%s' "$LIVE" > "$(path_of 15).lock"
@@ -68,23 +77,45 @@ cat > "$T/bin/gh" <<'EOF'
 #!/bin/bash
 n="$3"
 case "$n" in
-  11|15|17|18|19|20|21|22|23|24|25|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
+  11|15|17|18|19|20|21|22|23|24|25|26|99) echo MERGED ;; 12) echo CLOSED ;; 13|14) echo OPEN ;; *) exit 1 ;;
 esac
 EOF
 chmod +x "$T/bin/gh"
-for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp tar gzip mkdir mktemp date cp wc head; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp gzip mkdir mktemp date cp wc head; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+# tar is a WRAPPER, never a symlink (writing through a symlink would edit the real
+# binary). While the archive of PR 17 is being written, a competitor tries to take
+# that tree's lock with the same noclobber protocol a starting review uses.
+REALTAR="$(command -v tar)"
+cat > "$T/bin/tar" <<EOF
+#!$(command -v bash)
+case " \$* " in
+  *" -czf "*"__pr-17-"*)
+    # acquire_wt_lock's whole protocol, stale reclaim included: PR 17's lock was
+    # seeded with a DEAD holder, so a reaper that does not hold it loses it here.
+    L="$(path_of 17).lock"
+    if ( set -o noclobber; printf competitor > "\$L" ) 2>/dev/null; then echo took > "$T/race.out"
+    else
+      h="\$(cat "\$L" 2>/dev/null)"
+      if [ -n "\$h" ] && kill -0 "\$h" 2>/dev/null; then echo refused > "$T/race.out"
+      else rm -f "\$L"; ( set -o noclobber; printf competitor > "\$L" ) 2>/dev/null && echo took > "$T/race.out"; fi
+    fi ;;
+esac
+exec "$REALTAR" "\$@"
+EOF
+chmod +x "$T/bin/tar"
 
 cat > "$T/drive.sh" <<EOF
+set -uo pipefail   # what pr-review-agent.sh runs under (line 94)
 REVIEW_REPO="$T/repo"; REVIEW_SLUG="$SLUG"; PR=14; KIPI_GH_REPO_ARGS=""; KIPI_REVIEW_ARCHIVE_MAX_KB=2
 source "$LIB"
 source "$T/rows.sh"
-source "$T/arch.sh"
 source "$T/reap.sh"
 reap_finished_review_trees
 EOF
 mkdir -p "$T/tmp"
 HOME="$T/home" TMPDIR="$T/tmp" PATH="$T/bin" "$T/bin/bash" "$T/drive.sh" > "$T/out" 2>"$T/err"
-echo "drive rc=$?"; cat "$T/out"
+drive_rc=$?; echo "drive rc=$drive_rc"; cat "$T/out"
+check "the reaper exits 0 under set -u and pipefail, with nothing on stderr" '[ "$drive_rc" = 0 ] && [ ! -s "$T/err" ]'
 
 check "merged PR tree is removed (red before the fix: nothing removed it)" '[ ! -e "$(path_of 11)" ]'
 check "closed PR tree is removed" '[ ! -e "$(path_of 12)" ]'
@@ -105,7 +136,14 @@ check "ASK-3930 its unique file is in the archive, byte for byte" '[ "$(member 1
 check "ASK-3930 a merged tree whose untracked file differs from main is removed" '[ ! -e "$(path_of 21)" ]'
 check "ASK-3930 the differing copy is archived, not the main checkout copy" '[ "$(member 21 untracked/out/dup.md)" = other ]'
 check "ASK-3930 a merged tree with a modified TRACKED file is removed" '[ ! -e "$(path_of 22)" ]'
-check "ASK-3930 the tracked edit is archived as a patch" 'member 22 tracked.patch | grep -q "^+edited"'
+check "ASK-3930 the tracked edit is archived as a patch" 'member 22 unstaged.patch | grep -q "^+edited"'
+check "ASK-3930 round 1: the patch is raw bytes, not the textconv rendering" '! member 22 unstaged.patch | grep -q CONV'
+check "ASK-3930 round 1: a staged version unlike HEAD and the worktree is removed" '[ ! -e "$(path_of 26)" ]'
+check "ASK-3930 round 1: that staged version is in staged.patch" 'member 26 staged.patch | grep -q "^+staged"'
+check "ASK-3930 round 1: a competitor could NOT take the lock while the tree was archived" '[ "$(cat "$T/race.out" 2>/dev/null)" = refused ]'
+check "ASK-3930 round 1: a removed tree's stale lock is gone" '[ ! -e "$(path_of 17).lock" ]'
+check "ASK-3930 round 1: a kept tree's lock is given back, not left holding this run's PID" '[ ! -e "$(path_of 23).lock" ]'
+check "ASK-3930 round 1: a live holder's lock is untouched" '[ "$(cat "$(path_of 15).lock")" = "$LIVE" ]'
 check "ASK-3930 the archive carries a manifest naming the PR" 'member 22 MANIFEST.txt | grep -q "^pr: 22$"'
 check "ASK-3930 a duplicate-only tree gets no archive (nothing unique to keep)" '[ -z "$(arch_of 20)" ]'
 check "ASK-3930 a clean tree gets no archive" '[ -z "$(arch_of 19)" ]'
@@ -121,11 +159,30 @@ check "ASK-3508 a clean idle merged tree is still removed" '[ ! -e "$(path_of 19
 check "ASK-3621 a merged tree whose only untracked file duplicates the main checkout is removed" '[ ! -e "$(path_of 20)" ]'
 check "ASK-3630 NEGATIVE CONTROL: an unreadable status keeps the tree" '[ -d "$(path_of 23)" ]'
 check "ASK-3630 the unreadable status is NAMED as a skip" 'grep -q "skip: PR 23 tree status is unreadable" "$T/out"'
-check "ASK-3630 the cleanup line counts force-removed trees" 'grep -q "(4 of them force-removed" "$T/out"'
-check "ASK-3930 the cleanup line counts archived trees" 'grep -q "3 archived to " "$T/out"'
+check "ASK-3630 the cleanup line counts force-removed trees" 'grep -q "(5 of them force-removed" "$T/out"'
+check "ASK-3930 the cleanup line counts archived trees" 'grep -q "4 archived to " "$T/out"'
 check "one cleanup line is printed" '[ "$(grep -c "review-tree cleanup:" "$T/out")" = 1 ]'
-check "the line counts 7 removed" 'grep -q "removed 7 finished" "$T/out"'
+check "the line counts 8 removed" 'grep -q "removed 8 finished" "$T/out"'
 check "no staging directory is left in TMPDIR" '[ -z "$(ls -d "$T/tmp"/review-archive.* 2>/dev/null)" ]'
+
+# ASK-3930 round 1: a list cut short (a full TMPDIR mid-append drops the last NUL)
+# is refused against the caller's own count, never archived as if complete. The
+# helper is driven directly with the same list twice: once whole, once truncated.
+mkdir -p "$T/cut" "$T/home2" "$T/tmp2"
+printf one > "$T/cut/a.txt"; printf two > "$T/cut/b.txt"
+printf 'a.txt\0b.txt\0' > "$T/cut-whole.list"; printf 'a.txt\0b.txt' > "$T/cut-short.list"
+cat > "$T/drive2.sh" <<EOF
+set -uo pipefail
+REVIEW_REPO="$T/repo"
+source "$T/reap.sh"
+_archive_review_tree "$T/cut" 30 "$T/cut-short.list" 0 2 >/dev/null; echo "short=\$?"
+_archive_review_tree "$T/cut" 31 "$T/cut-whole.list" 0 2 >/dev/null; echo "whole=\$?"
+EOF
+HOME="$T/home2" TMPDIR="$T/tmp2" PATH="$T/bin" "$T/bin/bash" "$T/drive2.sh" > "$T/out2" 2>&1
+AR2="$T/home2/.config/kipi/review-tree-archive"
+check "ASK-3930 round 1: a truncated list is refused (rc 1)" 'grep -qx "short=1" "$T/out2"'
+check "ASK-3930 round 1: POSITIVE CONTROL, the same list whole is archived (rc 0)" 'grep -qx "whole=0" "$T/out2"'
+check "ASK-3930 round 1: exactly one archive exists, the whole one" '[ "$(ls "$AR2" 2>/dev/null | wc -l | tr -d " ")" = 1 ]'
 
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"
