@@ -54,6 +54,7 @@ The merge had no test of instance-owned hooks at all before this PR. Its tests o
 
 - Surface fix (fc10fb6c): the round-3 spelling now dedupes, because a relative path never earns path identity.
 - Structural fix (fc10fb6c): the parser accepts one spelling and refuses the rest. Path identity needs a token that starts with `$CLAUDE_PROJECT_DIR/` or `${CLAUDE_PROJECT_DIR}/` and goes on in plain path characters. It also needs a command that never moves the working directory (cd, pushd, popd), never runs text as code in the shell (source, ., eval), and only reads CLAUDE_PROJECT_DIR. Anything else keeps basename identity and fails toward dedup. This is narrower than the handoff's recommendation, which restricted only the anchor and `cd`.
+- Correction (8f5415a7, fleet review 2): the `cd`/`pushd`/`popd` refusal is gone. An anchored path is absolute, so the working directory cannot change what it names. The refusal protected nothing and deleted real instance hooks: `cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py"` was retired as the skeleton script. The state words are now `source`, `.` and `eval`. Round 3's input stays fixed, because its path was relative. Red on b549a545, green on 8f5415a7; apply suite 151 passed, 0 failed; 10 of 10 mutants KILLED; fleet 0 of 14 differ.
 - Accept-side fix (a0c4fddc): dots are part of a file name, and a state word counts only as a command name (the first word after the POSIX command prefix, an opening reserved word, or the builtin/command wrapper), so a builtin's name used as an argument no longer refuses a canonical hook.
 
 ## Recurrence
@@ -65,10 +66,11 @@ No earlier RCA in this directory covers hook identity in kipi-settings-merge.py.
 
 - [x] Add the round-3 `cd` input to test-settings-merge.sh, show it red; owner: Sana (handoff agent); type: test
 - [x] Narrow path identity to the canonical `$CLAUDE_PROJECT_DIR/<rel>` form with no `cd`; drop the bare-relative branch; owner: Sana (handoff agent); type: code
-- [ ] Run Codex round 4 on PR #615 from a fresh agent; merge only on a clean verdict; owner: Sana (handoff agent); type: process
+- [x] Run Codex round 4 on PR #615 from a fresh agent; merge only on a clean verdict; owner: Sana (handoff agent); type: process. Done: Codex round 4 needs-attention, both findings fixed in a0c4fddc. Codex round 5 could not run (both accounts at their usage limit), so per the founder's 2026-09-06 fallback ruling the claude fleet reviewer was the review: APPROVE WITH NITS twice, every finding fixed or dispositioned in the PR body.
 
 ## Lessons
 
 - When a parser of free-form text loses a review round to a new spelling, shrink the accepted grammar; do not add the next spelling.
 - A premise a feature rests on ("the merge keeps instance hooks") needs its own test before the feature ships.
 - A narrowed grammar has two edges. Test the accepted side as hard as the refused side, with inputs the live data does not happen to contain.
+- A KILLED mutant proves nothing when the test only restates the implementation. The `cd` rows asserted basename identity for inputs whose true identity was the path, so removing the `cd` check "failed" a test that was itself wrong. The oracle has to be the outcome: does the hook survive, does the skeleton script run once.
