@@ -66,6 +66,30 @@ not get re-litigated later.
 
 - 
 
+## Acceptance
+
+<!--
+What "shipped" means, as the running system will show it. Name every step the
+founder takes himself on its own line, with the founder as the subject:
+
+- Founder sends one voice note to the bot.
+- After `issue-id`, the founder taps allow once.
+
+prd-split turns each such line into its own activation issue (one PR, a "Live:"
+deliverable, blocked by the issues the line names, else by every issue in the
+manifest). `issue_runner load` refuses it until those close, and `close` needs
+its live_receipt. A manifest entry's acceptance may name a hand the same way,
+or as "Founder hands: <the step>" ("Founder hands: none" names none).
+
+Deferrals: any prose that defers work ("open for v2", "a follow-up", "deferred
+to a later PR") must name what tracks it in the same paragraph or list item: a
+manifest entry id, an issue spec id, an ASK-n ticket or an sp- spillover id.
+prd-split refuses the PRD and names the line otherwise, because deferred prose
+is converted to nothing at split and is gone at archive. Lines under
+## Non-goals are not deferrals. Work tracked where the check cannot see goes in
+the frontmatter as `untracked_deferrals_ok: <where it is tracked>`.
+-->
+
 <!--
 ## Persona Review (optional, fill in before /prd-review)
 

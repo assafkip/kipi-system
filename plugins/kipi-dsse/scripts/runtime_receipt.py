@@ -24,11 +24,21 @@ equal, so the term list below is still ONE list.
 Producing a receipt: `python3 runtime_receipt.py capture --out r.json -- <cmd...>`
 runs the command and records what it printed, so the output is observed rather
 than typed.
+
+LIVE receipts (ASK-3830) are the same file and the same loader with `live=True`.
+A spec's checked "Live:" deliverable names a record the RUNNING system writes
+(a ledger row, a status line, a delivered message). 15 of the 23 closed chief gp-* specs
+(measured 2026-11-06) closed with that box checked and "PENDING" in its text; none got its
+record afterwards. A live receipt may READ (tail, grep) because reading the
+running system's own record is the observation. The record has to be the one
+the checked Live line names (a path, or a status command in backticks), and a
+test run or the issue's own required check is never the record.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -218,6 +228,127 @@ def _repo_files_named(command: str, repo_root: Path) -> list[str]:
     return found
 
 
+def _records_named(command: str, repo_root: Path) -> list[str]:
+    """Existing paths OUTSIDE repo_root that the command names past each
+    segment's program word: the running system's records (~/.config/x/log.jsonl).
+    The program itself (/usr/bin/python3, /bin/cat) is skipped, so an absolute
+    interpreter path is never mistaken for a record."""
+    root = repo_root.resolve()
+    found: list[str] = []
+    for seg in _segments(command or ""):
+        for arg in seg[1:]:
+            for tok in _PATHISH_RE.findall(arg):
+                if not tok.startswith(("/", "~")) or tok in ("/", "~", "~/"):
+                    continue
+                try:
+                    rp = Path(tok).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    continue
+                try:
+                    rp.relative_to(root)
+                    continue  # inside the repo: source, not a record
+                except ValueError:
+                    pass
+                if rp.exists() and str(rp) not in found:
+                    found.append(str(rp))
+    return found
+
+
+def _live_named_paths(live_text: str) -> list[Path]:
+    """The record paths a Live deliverable names (~/.config/chief/out.jsonl).
+    A path with fewer than two parts below home or root ("~/.config/", "/etc")
+    names a whole tree, not a record, so it binds nothing."""
+    home = Path.home()
+    out: list[Path] = []
+    for tok in _PATHISH_RE.findall(live_text or ""):
+        tok = tok.rstrip(".,;:")
+        if not tok.startswith(("/", "~")):
+            continue
+        p = Path(os.path.normpath(Path(tok).expanduser()))
+        try:
+            depth = len(p.relative_to(home).parts)
+        except ValueError:
+            depth = len(p.parts) - 1
+        if depth >= 2 and p not in out:
+            out.append(p)
+    return out
+
+
+def _all_segments(command: str) -> list[list[str]]:
+    """Every segment, descending into `sh -c '<script>'`."""
+    out: list[list[str]] = []
+    for seg in _segments(command or ""):
+        out.append(seg)
+        name = Path(seg[0]).name if seg else ""
+        if name in ("bash", "sh", "zsh"):
+            for i, a in enumerate(seg[1:-1], start=1):
+                if re.fullmatch(r"-[a-z]*c[a-z]*", a):
+                    out.extend(_all_segments(seg[i + 1]))
+                    break
+    return out
+
+
+def _runs_a_test(command: str) -> bool:
+    """pytest, unittest or a --selftest anywhere in the command."""
+    for seg in _all_segments(command):
+        while seg and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", seg[0]) or
+                       Path(seg[0]).name in _WRAPPERS):
+            seg = seg[1:]
+        if not seg:
+            continue
+        name = Path(seg[0]).name
+        if name in ("pytest", "py.test", "nosetests", "tox"):
+            return True
+        if re.match(r"^python[0-9.]*$", name) and "-m" in seg:
+            mod = seg[seg.index("-m") + 1: seg.index("-m") + 2]
+            if mod and mod[0] in ("pytest", "unittest", "nose2"):
+                return True
+        if any(a in ("--selftest", "--self-test") for a in seg[1:]):
+            return True
+    return False
+
+
+def _bind_live(path, command: str, records: list[str], live_text: str,
+               forbid: list[str]) -> None:
+    """A live receipt reads the record THIS spec's Live box names (PR #618
+    review, major 1). Before this, any existing path outside the repo counted:
+    `tail -1 /etc/hosts`, a green pytest and the activation spec's own
+    required check all closed a Live box."""
+    if _runs_a_test(command):
+        raise ReceiptError(
+            f"live receipt {path} runs a test ({command!r}). A Live box is checked "
+            "from the running system's own record, never a green test. Read the "
+            f"record the Live line names:\n  {EXAMPLE}")
+    segs = [tuple(s) for s in _all_segments(command)]
+    for check in forbid or []:
+        for cseg in _all_segments(check):
+            if cseg and Path(cseg[0]).name not in ("cd", "true", "export") \
+                    and tuple(cseg) in segs:
+                raise ReceiptError(
+                    f"live receipt {path} runs this issue's own required check "
+                    f"({check!r}). That is the test, not the running system's "
+                    f"record. Read the record the Live line names:\n  {EXAMPLE}")
+    named = _live_named_paths(live_text)
+    for rec in records:
+        rp = Path(rec)
+        for n in named:
+            try:
+                n = n.resolve()
+            except (OSError, RuntimeError):
+                pass
+            if rp == n or n in rp.parents:
+                return
+    for quoted in re.findall(r"`([^`\n]{6,})`", live_text or ""):
+        if " ".join(quoted.split()) in " ".join(command.split()):
+            return
+    raise ReceiptError(
+        f"live receipt {path}: its command names no record the Live deliverable "
+        f"names ({command!r}; the Live line names "
+        f"{', '.join(str(n) for n in named) or 'no record path'}). Name the record "
+        "in the Live line (a path such as ~/.config/<app>/<ledger>.jsonl, or the "
+        f"status command in backticks), then read that record:\n  {EXAMPLE}")
+
+
 def _parse_ts(raw: str) -> datetime:
     ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     if ts.tzinfo is None:
@@ -229,14 +360,21 @@ def load_receipt(path: str | None, terms: list[str], *,
                  repo_root: str | Path | None = None,
                  bind_to: list[str] | None = None,
                  not_before: str | None = None,
-                 used: dict[str, str] | None = None) -> dict:
+                 used: dict[str, str] | None = None,
+                 live: bool = False,
+                 live_text: str = "",
+                 forbid_commands: list[str] | None = None) -> dict:
     """Validate a receipt file and return the reference to store on the row.
 
     The keyword arguments bind the receipt to the item, and both runners always
     pass them. repo_root: the command must name a file in that repo; bind_to:
     and that file must be one of these (the issue's allowed files, globs
     allowed); not_before: the receipt must not predate the item; used: sha256 ->
-    id of every OTHER row already holding a receipt.
+    id of every OTHER row already holding a receipt. live: a Live-deliverable
+    receipt (see the module docstring): bind_to is not applied, a read is
+    accepted when it reads a record outside the repo, and that record must be
+    one live_text (the checked Live lines) names; forbid_commands (the issue's
+    required checks) and test runners are refused.
 
     Raises ReceiptError with a message naming what is missing and an example."""
     claim = ", ".join(terms)
@@ -279,7 +417,9 @@ def load_receipt(path: str | None, terms: list[str], *,
             f"runtime receipt {path}: the caller crashed before it could exercise the "
             f"control (exit {code}). A crash is not runtime proof. Fix the run, then "
             f"capture again:\n  {EXAMPLE}")
-    if command_is_source_only(str(data["command"])):
+    command = str(data["command"])
+    records = _records_named(command, Path(repo_root)) if live and repo_root is not None else []
+    if command_is_source_only(command) and not records:
         raise ReceiptError(
             f"runtime receipt {path} only reads source ({data['command']!r}). grep, "
             "rg, cat, sed, an ast parse, git show/diff, or a test run that only "
@@ -289,8 +429,11 @@ def load_receipt(path: str | None, terms: list[str], *,
     # shape; nothing tied it to the item. `date` resolved a token-quota row, one
     # file resolved two unrelated rows, and a receipt dated 2020 passed. The bar
     # is ASK-1810's: this makes a junk receipt a deliberate act, not impossible.
-    command = str(data["command"])
-    if repo_root is not None:
+    # A live receipt reads a record, not the changed code, so the allowed-files
+    # binding does not apply to it; the Live line's own record stands in for it.
+    if live:
+        _bind_live(path, command, records, live_text, forbid_commands or [])
+    if repo_root is not None and not live:
         named = _repo_files_named(command, Path(repo_root))
         if bind_to:
             if not any(f == b or fnmatch(f, b) for f in named for b in bind_to):

@@ -7,7 +7,7 @@ parent_prd: {{parent_prd}}
 allowed_files:{{allowed_files_yaml}}
 disallowed_files:{{disallowed_files_yaml}}
 required_checks:{{required_checks_yaml}}
-required_reviews:{{required_reviews_yaml}}
+required_reviews:{{required_reviews_yaml}}{{live_receipt_yaml}}
 ---
 
 # {{title}}

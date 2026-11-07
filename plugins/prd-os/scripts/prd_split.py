@@ -399,6 +399,12 @@ def _render_spec(
     marker: str,
 ) -> str:
     template = TEMPLATE_RELPATH.read_text()
+    live = any(_LIVE_DELIVERABLE_RE.match(d) for d in entry.get("deliverables") or [])
+    live_note = (
+        "<!-- A checked \"Live:\" box also needs live_receipt: in the frontmatter:"
+        " a runtime_receipt.py capture that reads the record this line names (a"
+        " path, or a status command in backticks). It may not say PENDING. -->\n"
+        if live else "")
     rendered = (
         template.replace("{{id}}", entry["id"])
         .replace("{{title}}", entry["title"])
@@ -409,6 +415,10 @@ def _render_spec(
         .replace("{{disallowed_files_yaml}}", _yaml_list(entry["disallowed_files"]))
         .replace("{{required_checks_yaml}}", _yaml_list(entry["required_checks"]))
         .replace("{{required_reviews_yaml}}", _yaml_list(entry["required_reviews"]))
+        # ASK-3830: the field is rendered only on a spec that has a "Live:"
+        # deliverable, so every other spec stays byte-identical and a rerun of
+        # an older split is still idempotent.
+        .replace("{{live_receipt_yaml}}", "\nlive_receipt:" if live else "")
         .replace("{{acceptance}}", entry["acceptance"] or "<!-- fill in -->")
     )
     # Spine contract fields: append to frontmatter (template-independent so
@@ -423,6 +433,10 @@ def _render_spec(
         extra.append("deletes:" + _yaml_list(entry["deletes"]))
     if entry.get("bypass_exempt"):
         extra.append(f"bypass_exempt: {json.dumps(entry['bypass_exempt'])}")
+    if entry.get("blocked_by"):
+        # ASK-3830: an activation issue; issue_runner load refuses it while any
+        # of these specs is not closed.
+        extra.append("blocked_by:" + _yaml_list(entry["blocked_by"]))
     deliverables = entry.get("deliverables") or [entry["title"]]
     extra.append(f"deliverables_count: {len(deliverables)}")
     if extra:
@@ -433,7 +447,8 @@ def _render_spec(
         "\n\n## Deliverables\n\n"
         "<!-- Check each box when it ships; close refuses until checked count"
         " equals deliverables_count (locked at issue-start). -->\n"
-        f"{boxes}\n"
+        + live_note
+        + f"{boxes}\n"
     )
     return _inject_marker(rendered, marker)
 
@@ -767,6 +782,317 @@ def _split_from_linear(cfg: Config, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Closed means shipped (ASK-3830): activation issues and tracked deferrals
+# ---------------------------------------------------------------------------
+#
+# Both detectors read the PRD's authored prose only: frontmatter, fenced code
+# (the manifest is one), HTML comments (the template's guidance), headings and
+# blockquotes (a quoted founder sentence is his, not the PRD's) are skipped.
+
+ACTIVATION_FINDING_ID = "activation"
+# The same label kipi-dsse issue_runner's _LIVE_RE reads at close.
+_LIVE_DELIVERABLE_RE = re.compile(r"^\W*live\b(?:\s+deliverable)?\W*:", re.IGNORECASE)
+_LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
+_ACCEPTANCE_HEADING_RE = re.compile(r"^#{2,3}\s+Acceptance\b", re.IGNORECASE)
+# A non-goal is declared out of scope, not deferred (PR #618 review round 1,
+# major 2: prd-model-gate-2026-10-02's Non-goals lines were refused while the
+# message told the author to write a dropped item as a non-goal).
+_NON_GOALS_HEADING_RE = re.compile(r"^#{2,3}\s+Non[- ]?goals?\b", re.IGNORECASE)
+
+
+def _prose_lines(text: str):
+    """Yield (lineno, line, heading) for each authored prose line, where
+    heading is the nearest ## or ### above it. A blank line yields ""
+    so callers can see paragraph breaks; a heading yields None."""
+    lines = text.splitlines()
+    start = 0
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            start = text[: end + 4].count("\n") + 1
+    in_fence = in_comment = False
+    heading = ""
+    for i in range(start, len(lines)):
+        s = lines[i].strip()
+        if in_comment:
+            if "-->" not in s:
+                continue
+            in_comment = False
+            s = s.split("-->", 1)[1].strip()
+        if s.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            yield i + 1, "", heading
+            continue
+        if in_fence:
+            continue
+        s = re.sub(r"<!--.*?-->", " ", s)
+        if "<!--" in s:
+            s, in_comment = s.split("<!--", 1)[0], True
+        s = s.strip()
+        if s.startswith("#"):
+            if re.match(r"^#{2,3}\s", s):
+                heading = s
+            yield i + 1, None, heading
+            continue
+        if s.startswith(">"):
+            yield i + 1, "", heading
+            continue
+        yield i + 1, s, heading
+
+
+def _prose_units(text: str) -> list[list[tuple[int, str, str]]]:
+    """Paragraphs and list items: a unit ends at a blank line, a heading, a
+    fence, or the start of the next list item or table row. A hard-wrapped
+    paragraph is one unit, so a tracking id on its next line still counts."""
+    units: list[list[tuple[int, str, str]]] = []
+    cur: list[tuple[int, str, str]] = []
+    for lineno, s, heading in _prose_lines(text):
+        if not s:
+            if cur:
+                units.append(cur)
+            cur = []
+            continue
+        if (_LIST_ITEM_RE.match(s) or s.startswith("|")) and cur:
+            units.append(cur)
+            cur = []
+        if s in ("-", "*", "+"):
+            continue
+        cur.append((lineno, s, heading))
+    if cur:
+        units.append(cur)
+    return units
+
+
+# --- 3. deferrals ---------------------------------------------------------
+#
+# Measured read-only 2026-11-06 over 217 real PRDs (kipi-system 47,
+# kipi-investigations 170) before wiring: the f00ee9d7 word list flagged 90
+# PRDs on 208 lines, mostly prd-os vocabulary ("a `deferred` finding",
+# "deferred-major rate"), revision history ("v1 and v2 proposed") and URLs
+# (api/v2). Phrase-shaped patterns, negation, code spans and quoted words cut
+# that to 63 PRDs; a hand read of kipi-system's 35 flagged lines found 30 real
+# untracked deferrals. A gate that blocked every PRD would get bypassed.
+_V_NEXT = r"v[2-9]\d*"
+_DEFERRAL_RES = (
+    re.compile(
+        rf"\b(?:open|left|parked|punted|deferred|saved|kept)\s+(?:for|to|until|till)\s+(?:a\s+)?{_V_NEXT}\b"
+        rf"|\b(?:for|until|till)\s+(?:a\s+)?{_V_NEXT}\b(?![-./'’])"
+        rf"|\((?:non-blocking,\s*)?{_V_NEXT}[;)]"
+        rf"|\bOUT/{_V_NEXT}\b"
+        rf"|\bis\s+(?:a\s+)?(?:named\s+)?{_V_NEXT}\b(?![-./'’])"
+        rf"|:\s*{_V_NEXT}\.",
+        re.IGNORECASE),
+    # follow-up work, not a follow-up message, lookup or review round
+    re.compile(
+        r"\bfollow[- ]?ups?\b(?!\s+(?:lookups?|questions?|reviews?|messages?|emails?|"
+        r"calls?|turns?|rounds?|quer(?:y|ies)|pass(?:es)?|prompts?|repl(?:y|ies)|dms?|"
+        r"touch(?:es)?|sequences?|cadences?|nudges?|tools?|reads?|search(?:es)?|"
+        r"commands?)\b)",
+        re.IGNORECASE),
+    # deferred as a verb or adjective; never a hyphenated term (deferred-major)
+    re.compile(
+        r"(?<![-\w])(?:deferred(?![-\w])|defers?\s+(?:to|until)\b|"
+        r"punt(?:ed|ing|s)?\s+(?:to|on)\b|parked\s+(?:to|for|until|as)\b)",
+        re.IGNORECASE),
+    re.compile(
+        r"\b(?:out of scope for now|left for later|future work|"
+        r"in a later (?:pr|phase|issue|increment|prd)|"
+        r"a (?:later|separate|next) (?:pr|issue|ticket|increment|prd)|"
+        r"a future (?:issue|ticket|increment|prd))\b",
+        re.IGNORECASE),
+)
+_NEGATED_BEFORE_RE = re.compile(
+    r"\b(?:not|never|nothing(?:\s+is)?|no\s+longer|un)[\s-]+$", re.IGNORECASE)
+_LINEAR_REF_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")
+_SPILLOVER_REF_RE = re.compile(r"\bsp-[0-9a-f]{6,}\b")
+_ID_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9-]*[a-z0-9]")
+
+
+def _mask_mentions(line: str) -> str:
+    """Blank out code spans, quoted words and URLs: there a deferral word is
+    mentioned (`deferred` as a disposition value), not used."""
+    line = re.sub(r"`[^`]*`", " ", line)
+    line = re.sub(r"\"[^\"\n]{0,80}\"|“[^”\n]{0,80}”", " ", line)
+    return re.sub(r"https?://\S+", " ", line)
+
+
+def _deferral_phrase(line: str) -> Optional[str]:
+    masked = _mask_mentions(line)
+    for rx in _DEFERRAL_RES:
+        for m in rx.finditer(masked):
+            if _NEGATED_BEFORE_RE.search(masked[max(0, m.start() - 20): m.start()]):
+                continue
+            return m.group(0)
+    return None
+
+
+def _tracked_ids(cfg: Config, prd_id: str, entry_ids: set[str]) -> set[str]:
+    """Ids a deferral may name to count as tracked: this split's entries, any
+    issue spec or other PRD on disk, and this PRD's accepted or deferred
+    findings (a deferred finding opens a spillover item on its own)."""
+    ids = set(entry_ids)
+    for d in (cfg.issues_dir, cfg.prds_dir):
+        if d.is_dir():
+            ids.update(p.stem for p in d.glob("*.md"))
+    ids.discard(prd_id)
+    findings = cfg.findings_dir / f"{prd_id}-findings.jsonl"
+    if findings.is_file():
+        for raw in findings.read_text(errors="replace").splitlines():
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("disposition") in ("accepted", "deferred"):
+                if isinstance(rec.get("id"), str):
+                    ids.add(rec["id"])
+    return ids
+
+
+def _untracked_deferrals(text: str, tracked: set[str]) -> list[tuple[int, str, str]]:
+    """(lineno, phrase, line) for each prose unit that defers work and names
+    no tracked item. Per unit, unlike f00ee9d7, which passed the whole PRD as
+    soon as ANY one backtick token anywhere resolved."""
+    out = []
+    for unit in _prose_units(text):
+        if _NON_GOALS_HEADING_RE.match(unit[0][2] or ""):
+            continue
+        hit = next(((ln, ph, s) for ln, s, _ in unit
+                    for ph in [_deferral_phrase(s)] if ph), None)
+        if not hit:
+            continue
+        joined = " ".join(s for _, s, _ in unit)
+        if (_LINEAR_REF_RE.search(joined) or _SPILLOVER_REF_RE.search(joined)
+                or set(_ID_TOKEN_RE.findall(joined)) & tracked):
+            continue
+        out.append(hit)
+    return out
+
+
+# --- 2. founder hands -----------------------------------------------------
+#
+# A hand is the founder as the subject of a present-tense action ("founder
+# sends one voice note", "the founder runs the fleet sync", "until the founder
+# places the token") or chief's "Founder hands: <value>" convention. Nouns
+# ("founder-facing", "founder decision"), past tense ("founder approved") and
+# negated or conditional clauses ("does not", "if the founder") are not hands.
+# Measured read-only 2026-11-06: see the PR body for the counts on real PRDs.
+_HAND_BASE_VERBS = (
+    "add", "answer", "approve", "authorize", "buy", "call", "check", "choose",
+    "click", "confirm", "connect", "create", "decide", "download", "email",
+    "enable", "fill", "flip", "give", "grant", "install", "invite", "join", "log",
+    "merge", "message", "open", "paste", "pay", "pick", "place", "post", "press",
+    "provide", "push", "read", "record", "reply", "restart", "review", "rule",
+    "run", "say", "send", "set", "share", "sign", "speak", "start", "tap", "teach",
+    "test", "text", "toggle", "type", "upload", "use", "verify", "write",
+)
+
+
+def _third_person(verb: str) -> str:
+    if verb.endswith(("s", "sh", "ch", "x")):
+        return verb + "es"
+    if verb.endswith("y") and verb[-2:-1] not in "aeiou":
+        return verb[:-1] + "ies"
+    return verb + "s"
+
+
+_HAND_RE = re.compile(
+    r"\b(?:the\s+)?(?:founder|assaf)\s+(?:"
+    + "|".join(_third_person(v) for v in _HAND_BASE_VERBS)
+    + r"|(?:must|needs?\s+to|has\s+to|will|should|then|to|can)\s+(?:"
+    + "|".join(_HAND_BASE_VERBS) + r"))\b",
+    re.IGNORECASE)
+_HANDS_FIELD_RE = re.compile(r"\bfounder\s+hands?\s*:\s*(.+)", re.IGNORECASE)
+_NOT_A_HAND_RE = re.compile(
+    r"\b(?:no|not|never|without|nor|if|unless|whether)\b|n't\b", re.IGNORECASE)
+
+
+def _clean_hand(text: str) -> str:
+    text = _LIST_ITEM_RE.sub("", text.strip())
+    text = re.sub(r"\s+", " ", text).strip().rstrip(".;,").strip()
+    return text[:140].rstrip()
+
+
+def _founder_hands(text: str) -> list[str]:
+    """Each hand a piece of prose names, as a single line of text."""
+    hands: list[str] = []
+    for sentence in re.split(r"(?<=[.;!?])\s+", text or ""):
+        field = _HANDS_FIELD_RE.search(sentence)
+        if field:
+            value = _clean_hand(field.group(1))
+            if value and not re.match(r"(?i)(?:none|no|n/a|nothing)\b", value) \
+                    and not re.search(r"(?i)\balready\b", value):
+                hands.append(value)
+            continue
+        m = _HAND_RE.search(sentence)
+        if not m:
+            continue
+        clause = re.split(r"[,:()]", sentence[: m.start()])[-1]
+        if _NOT_A_HAND_RE.search(clause) or _NOT_A_HAND_RE.search(
+                sentence[m.start(): m.end() + 12]):
+            continue
+        hand = _clean_hand(sentence[m.start():])
+        if hand:
+            hands.append(hand)
+    return hands
+
+
+def _activation_entries(prd_id: str, text: str, entries: list[dict]) -> list[dict]:
+    """One validated activation entry per distinct founder hand.
+
+    Hands in a manifest entry's acceptance are blocked by that entry. Hands in
+    the PRD's `## Acceptance` section are blocked by the entries the line
+    names, else by every entry. Each one is its own spec and its own PR: it
+    goes through _validate_entry, so #612's one-PR guard sees it."""
+    by_id = {e["id"]: e for e in entries}
+    found: dict[str, tuple[str, list[str]]] = {}
+
+    def _add(hand: str, blockers: list[str]) -> None:
+        key = re.sub(r"\W+", " ", hand.lower()).strip()
+        first, prev = found.get(key, (hand, []))
+        found[key] = (first, prev + [b for b in blockers if b not in prev])
+
+    for e in entries:
+        for hand in _founder_hands(e["acceptance"]):
+            _add(hand, [e["id"]])
+    for unit in _prose_units(text):
+        if not _ACCEPTANCE_HEADING_RE.match(unit[0][2] or ""):
+            continue
+        joined = " ".join(s for _, s, _ in unit)
+        named = [i for i in by_id if re.search(rf"(?<![\w-]){re.escape(i)}(?![\w-])", joined)]
+        for hand in _founder_hands(joined):
+            _add(hand, named or list(by_id))
+
+    slug = re.sub(r"[^a-z0-9-]+", "-", prd_id.lower()).strip("-")
+    out: list[dict] = []
+    for n, (hand, blockers) in enumerate(found.values(), start=1):
+        blockers = [b for b in by_id if b in blockers]  # manifest order
+        allowed: list[str] = []
+        checks: list[str] = []
+        for b in blockers:
+            allowed += [f for f in by_id[b]["allowed_files"] if f not in allowed]
+            checks += [c for c in by_id[b]["required_checks"] if c not in checks]
+        raw = {
+            "id": f"{slug}-activate-{n}",
+            "title": f"Activate: {hand}",
+            "finding_id": ACTIVATION_FINDING_ID,
+            "allowed_files": allowed,
+            "required_checks": checks,
+            "deliverables": [f"Live: {hand}"],
+            "acceptance": (
+                f"Activation issue for a founder hand in {prd_id}: {hand}. "
+                f"Blocked by {', '.join(blockers)}; issue_runner load refuses it "
+                "until they close. It closes on the running system's own record "
+                "of the hand: name that record in the Live line (its path, or "
+                "the status command in backticks), capture a read of it with "
+                "runtime_receipt.py capture, and put the file in live_receipt."),
+        }
+        entry = _validate_entry(raw, len(entries) + n - 1)
+        entry["blocked_by"] = blockers
+        out.append(entry)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # PRD resolution
 # ---------------------------------------------------------------------------
 
@@ -875,6 +1201,44 @@ def main(argv: list[str] | None = None) -> int:
     if not entries:
         sys.stderr.write(f"{prd_path}: issues manifest is empty; nothing to split\n")
         return 2
+
+    # ASK-3830. A founder hand becomes its own activation spec, and a deferral
+    # in prose must name what tracks it, or it evaporates at archive.
+    try:
+        activations = _activation_entries(parent_prd_id, text, entries)
+    except ValueError as exc:
+        sys.stderr.write(f"{prd_path}: activation issue: {exc}\n")
+        return 2
+    clash = sorted({a["id"] for a in activations} & {e["id"] for e in entries})
+    if clash:
+        sys.stderr.write(f"{prd_path}: manifest id(s) {', '.join(clash)} collide with "
+                         "generated activation issue ids; rename the entries\n")
+        return 2
+    untracked = _untracked_deferrals(text, _tracked_ids(
+        cfg, parent_prd_id, {e["id"] for e in entries + activations}))
+    # The one bypass, with its reason in the PRD file where review sees it.
+    # A detector with no hatch gets switched off the first time it is wrong.
+    bypass = str(fm.get("untracked_deferrals_ok") or "").strip().strip("\"'").strip()
+    if untracked and bypass:
+        sys.stderr.write(
+            f"{prd_path}: WARN: {len(untracked)} untracked deferral(s) allowed by "
+            f"untracked_deferrals_ok: {bypass}\n"
+            + "".join(f"  line {ln} [{ph}]: {line[:160]}\n" for ln, ph, line in untracked))
+        untracked = []
+    if untracked:
+        sys.stderr.write(
+            f"{prd_path}: refusing to split: {len(untracked)} deferral(s) in the PRD "
+            "prose name no tracked item. Work deferred in prose is converted to "
+            "nothing at split and is gone at archive (kipi-investigations "
+            "rca-built-not-wired-2026-06-14, root cause #3):\n"
+            + "".join(f"  line {ln} [{ph}]: {line[:160]}\n" for ln, ph, line in untracked)
+            + "Name what tracks it in the same paragraph or list item: a manifest "
+            "entry id, an issue spec id, an ASK-n ticket or an sp- spillover id. "
+            "If the work is dropped rather than deferred, move it under "
+            "## Non-goals. If it is tracked somewhere this check cannot see, set "
+            "untracked_deferrals_ok: <where> in the PRD frontmatter.\n")
+        return 2
+    entries = entries + activations
 
     try:
         parent_prd_relpath = str(prd_path.resolve().relative_to(cfg.repo_root))

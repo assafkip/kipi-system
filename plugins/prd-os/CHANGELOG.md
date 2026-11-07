@@ -2,6 +2,47 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.32.0] - 2026-11-06
+
+### Added - closed means shipped, the prd-split half (ASK-3830)
+
+- **Founder hands become activation issues.** A hand named in the PRD's
+  `## Acceptance` section ("Founder sends one voice note") or in a manifest
+  entry's acceptance ("Founder hands: H1 ...") becomes its own spec,
+  `<prd-id>-activate-<n>`: one "Live:" deliverable, `blocked_by` the mechanism
+  issues (the ones the line names, else all of them), their allowed files and
+  checks. It goes through `_validate_entry`, so the one-PR guard (ASK-3827)
+  covers it. Before this, a split made mechanism issues and nothing for the
+  founder's own step, so the step had no trigger.
+- **Prose deferrals must be tracked.** `prd_split` exits 2 when a paragraph or
+  list item defers work ("open for v2", "a follow-up", "deferred to a later PR")
+  and names no manifest id, issue spec id, PRD id, ASK-n ticket, sp- spillover id
+  or accepted/deferred finding id. It prints each line number. Lines under
+  `## Non-goals` are exempt; `untracked_deferrals_ok: <where>` in the PRD
+  frontmatter is the one bypass, printed as a WARN with every line. This ports
+  `_deferral_tracking_gate` (kipi-investigations f00ee9d7, deleted by a fleet
+  sync a day later) from archive to split, per paragraph instead of "any one
+  token anywhere passes the whole PRD".
+- `templates/prd.md` gains an `## Acceptance` section that teaches both rules.
+  `templates/issue.md` gains the `live_receipt` field, rendered only on a spec
+  with a "Live:" deliverable so every other spec stays byte-identical and older
+  splits still rerun cleanly.
+- `runtime_receipt.py` (mirrored in kipi-dsse) gains `live=True` for Live
+  receipts: the allowed-files binding does not apply, and a read is accepted
+  when it reads a record outside the repo that the checked Live line names (a
+  path, a directory holding it, or a status command in backticks). A test run,
+  a `--selftest`, the issue's own required check, a read of only repo source and
+  an unnamed path are refused.
+
+Measured read-only before wiring, 2026-11-06: the deferral rule would refuse 19
+of 47 kipi-system PRDs (35 lines; a hand read found 30 real untracked
+deferrals) and 44 of 170 kipi-investigations PRDs (71 lines). The original word
+list flagged 90 PRDs on 208 lines. The hand rule finds 4 hands in kipi-system,
+all real, and 0 in kipi-investigations.
+
+Repo action on upgrade: re-splitting a PRD with an untracked deferral now exits
+2. Minor bump for that contract change.
+
 ## [0.31.0] - 2026-11-06
 
 ### Fixed - `gates run` exited 0 when registered gates existed and none ran (ASK-3822)
