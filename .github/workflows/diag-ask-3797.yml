@@ -21,8 +21,10 @@ jobs:
       - run: |
           git config --global user.name "kipi-ci"
           git config --global user.email "ci@kipi.invalid"
-      - name: Case 11 alone, traced
-        run: bash .github/diag-ask-3797-race.sh kipi-dispatch.sh 400; nproc; df -T /tmp; uname -r; bash --version | head -1
+      - name: Case 11 alone, traced (fixed code)
+        run: bash .github/diag-ask-3797-race.sh kipi-dispatch.sh 400; grep -E '^(PRETTY_NAME)=' /etc/os-release; mkdir --version | head -1
+      - name: Whole test, 15 runs (fixed code)
+        run: bash .github/diag-ask-3797-loop.sh 15
       - uses: actions/upload-artifact@v4
         if: always()
         with:
