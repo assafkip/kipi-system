@@ -1200,8 +1200,61 @@ done
 # and a wrongly removed one costs a live review its evidence.
 # Temp worktrees under $TMPDIR/tmp.*/wt are only REPORTED: no marker proves which
 # run made them (the PR #495 lesson recorded in review_scratch_cleanup above).
+
+# ASK-3930: keep a finished review tree's unique files before the tree goes.
+# Args: tree path, PR number, list file (NUL-separated untracked paths that are NOT
+# byte-identical to the main checkout copy), 1 when tracked files differ from HEAD.
+# Prints the archive path and returns 0 only when the archive lists back every
+# member. Returns 2 (printing the payload in KB) over KIPI_REVIEW_ARCHIVE_MAX_KB,
+# and 1 on any other failure, leaving no archive behind: the caller then KEEPS the
+# tree. An untracked directory (a nested repo) is not copied, so it fails closed
+# here instead of being measured as zero bytes and copied whole.
+_archive_review_tree() {
+  local path="$1" n="$2" list="$3" tracked="$4" name dir stage arch rel bytes=0 kb want=1 got
+  local cap="${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}"
+  [ -n "$list" ] && [ -f "$list" ] || return 1
+  name="${path##*/}"; dir="$HOME/.config/kipi/review-tree-archive"
+  while IFS= read -r -d '' rel; do
+    [ -L "$path/$rel" ] && continue
+    [ -f "$path/$rel" ] || return 1
+    bytes=$(( bytes + $(wc -c < "$path/$rel") )) || return 1
+  done < "$list"
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/review-archive.XXXXXX")" || return 1
+  if ! mkdir -p "$stage/$name/untracked"; then command rm -rf -- "$stage"; return 1; fi
+  if [ "$tracked" = 1 ]; then
+    if ! git -C "$path" diff HEAD --binary > "$stage/$name/tracked.patch" 2>/dev/null; then
+      command rm -rf -- "$stage"; return 1
+    fi
+    want=$((want+1)); bytes=$(( bytes + $(wc -c < "$stage/$name/tracked.patch") ))
+  fi
+  kb=$(( (bytes + 1023) / 1024 ))
+  if [ "$kb" -gt "$cap" ]; then command rm -rf -- "$stage"; echo "$kb"; return 2; fi
+  while IFS= read -r -d '' rel; do
+    if ! { mkdir -p "$stage/$name/untracked/$(dirname "$rel")" && cp -pP "$path/$rel" "$stage/$name/untracked/$rel"; }; then
+      command rm -rf -- "$stage"; return 1
+    fi
+    want=$((want+1))
+  done < "$list"
+  {
+    printf 'tree: %s\npr: %s\nhead: %s\nmain_checkout: %s\narchived_utc: %s\nstatus:\n' \
+      "$name" "$n" "$(git -C "$path" rev-parse HEAD 2>/dev/null)" "$REVIEW_REPO" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    git -C "$path" status --porcelain=v1 -uall --no-renames 2>/dev/null | sed 's/^/  /'
+  } > "$stage/$name/MANIFEST.txt"
+  mkdir -p "$dir" || { command rm -rf -- "$stage"; return 1; }
+  arch="$dir/$name-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar.gz"
+  if ! tar -czf "$arch" -C "$stage" "$name" 2>/dev/null; then
+    command rm -f -- "$arch"; command rm -rf -- "$stage"; return 1
+  fi
+  command rm -rf -- "$stage"
+  got="$(tar -tzf "$arch" 2>/dev/null </dev/null | grep -vc '/$')" || got=0
+  if [ "$got" != "$want" ]; then command rm -f -- "$arch"; return 1; fi
+  echo "$arch"
+}
+
 reap_finished_review_trees() {
-  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0
+  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0 archived=0
+  local list arch arc any unreadable tracked nondup code rel rec cwds force
+  list="$(mktemp "${TMPDIR:-/tmp}/review-archive.list.XXXXXX" 2>/dev/null)" || list=""
   while read -r path sha det; do
     case "$path" in
       */review-trees/*__pr-*)
@@ -1231,20 +1284,29 @@ reap_finished_review_trees() {
             # nobody else holds. Only a provable duplicate may be removed with --force.
             # NUL records must never pass through $(...), which drops them: the
             # first cut did, saw one fused record, and removed every dirty tree.
-            # The sentinel makes a failed status read count as NOT a duplicate.
-            force=""; any=0; dup=1
+            # The sentinel makes a failed status read keep the tree.
+            # ASK-3930 (disk 99%, 2026-11-07): the dirty skip still kept 22 finished
+            # trees (3.4 GB) for good, because review sessions write into their own
+            # trees (.active-case, the sycophancy stamp, last-handoff.md, reproducer
+            # scratch). Nothing in a review tree is anyone's only copy for long, but
+            # "for long" is not proof, so a tree's unique files (the tracked diff and
+            # every untracked file that is not a main-checkout duplicate) are ARCHIVED
+            # and verified first, and the tree goes only when that archive lists back.
+            # --no-renames keeps every record a single path.
+            force=""; any=0; unreadable=0; tracked=0; nondup=0
+            [ -n "$list" ] && : > "$list"
             while IFS= read -r -d '' rec; do
               [ -n "$rec" ] || continue
               any=1; code="${rec:0:2}"; rel="${rec:3}"
-              if [ "$code" != '??' ] || [ ! -f "$path/$rel" ] || [ -L "$path/$rel" ] \
-                 || [ ! -f "$REVIEW_REPO/$rel" ] || ! cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then dup=0; fi
-            done < <(git -C "$path" status --porcelain=v1 -z -uall 2>/dev/null || printf '!!unreadable\0')
-            if [ "$any" = 1 ]; then
-              if [ "$dup" != 1 ]; then
-                echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
-                kept=$((kept+1)); continue
-              fi
-              force="--force"
+              if [ "$code" = '!!' ]; then unreadable=1
+              elif [ "$code" != '??' ]; then tracked=1
+              elif [ -f "$path/$rel" ] && [ ! -L "$path/$rel" ] && [ -f "$REVIEW_REPO/$rel" ] \
+                   && cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then :
+              else printf '%s\0' "$rel" >> "${list:-/dev/null}"; nondup=$((nondup+1)); fi
+            done < <(git -C "$path" status --porcelain=v1 -z -uall --no-renames 2>/dev/null || printf '!!unreadable\0')
+            if [ "$unreadable" = 1 ]; then
+              echo "  review-tree skip: PR $n tree status is unreadable"
+              kept=$((kept+1)); continue
             fi
             if ! command -v lsof >/dev/null 2>&1; then
               echo "  review-tree skip: PR $n tree kept, lsof missing so live processes cannot be ruled out"
@@ -1255,6 +1317,17 @@ reap_finished_review_trees() {
               echo "  review-tree skip: PR $n tree is the cwd of a live process"
               kept=$((kept+1)); continue
             fi
+            if [ "$tracked" = 1 ] || [ "$nondup" -gt 0 ]; then
+              arch="$(_archive_review_tree "$path" "$n" "$list" "$tracked")"; arc=$?
+              case "$arc" in
+                0) archived=$((archived+1)) ;;
+                2) echo "  review-tree skip: PR $n tree holds ${arch}K unique, over the ${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}K archive cap"
+                   kept=$((kept+1)); continue ;;
+                *) echo "  review-tree skip: PR $n tree kept, its unique files could not be archived and verified"
+                   kept=$((kept+1)); continue ;;
+              esac
+            fi
+            [ "$any" = 1 ] && force="--force"
             if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
               gone=$((gone+1)); [ -n "$force" ] && forced=$((forced+1)); command rm -f "$lock" 2>/dev/null || true
             else kept=$((kept+1)); fi ;;
@@ -1264,8 +1337,10 @@ reap_finished_review_trees() {
     esac
   done < <(_wt_rows)
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
-  # ASK-3630 minor: a force-removed tree deleted untracked files for good; say how many.
-  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed: untracked files identical to the main checkout), kept $kept; $unk temp tree(s) of unproven owner left alone"
+  [ -n "$list" ] && command rm -f -- "$list"
+  # ASK-3630 minor: say how many trees were force-removed. ASK-3930: and how many had
+  # their unique files archived first, and where.
+  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed; $archived archived to $HOME/.config/kipi/review-tree-archive first), kept $kept; $unk temp tree(s) of unproven owner left alone"
 }
 # reap-merged-trees-end
 reap_finished_review_trees
