@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show every ASK-1133 defect pin going RED against a build without its fix.
+"""Show every ASK-1133 and ASK-3823 defect pin going RED against a build without its fix.
 
 ASK-1133's first acceptance line: "Each of the 10 defects has a test that is
 shown RED against a build without its fix". A green suite proves only that the
@@ -77,6 +77,12 @@ MUTANTS = [
     ("D10", "promotion does not require owner:sana",
      [("    if OWNER_LABEL not in labels:", "    if False:")],
      {}, "TestD10TheLaneNeverPromotesAnUnroutableAlert"),
+    ("B1", "~/.local/bin/claude is not a candidate",
+     [('CLAUDE_CANDIDATES = ("claude", "~/.local/bin/claude", ', 'CLAUDE_CANDIDATES = ("claude", ')],
+     {}, "TestB1ClaudeIsFoundUnderLaunchd"),
+    ("B1", "the login shell is not interactive, so ~/.zshrc never runs",
+     [('[_login_shell(), "-ilc", LOGIN_SHELL_PROBE]', '[_login_shell(), "-lc", LOGIN_SHELL_PROBE]')],
+     {}, "TestB1ClaudeIsFoundUnderLaunchd"),
 ]
 
 

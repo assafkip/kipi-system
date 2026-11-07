@@ -69,6 +69,7 @@ from collections import namedtuple
 import subprocess
 import json
 import os
+import pwd
 import re
 import sys
 import tempfile
@@ -566,20 +567,62 @@ def held_label_id(ls) -> str:
     return node["id"]
 
 
+# WHERE CLAUDE LIVES, MEASURED 2026-11-06 (ASK-3823). The installer puts it at
+# ~/.local/bin/claude, and ~/.local/bin reaches PATH only through ~/.zshrc, which
+# only an INTERACTIVE zsh reads. The plist ran `/bin/bash -lc`: a bash login shell
+# reads ~/.profile here (there is no ~/.bash_profile), and ~/.profile never adds
+# ~/.local/bin. So the login shell the plist asked for still had no claude, none
+# of the fixed paths below existed, and 15 nightly passes wrote 0 decisions.
+# `env -i zsh -lc 'command -v claude'` prints nothing; `zsh -ilc` prints the path.
+CLAUDE_CANDIDATES = ("claude", "~/.local/bin/claude", "~/.claude/local/claude",
+                     "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+LOGIN_SHELL_PROBE = "command -v claude"
+
+
+def _claude_works(cand: str) -> bool:
+    try:
+        return subprocess.run([cand, "--version"], capture_output=True, timeout=20,
+                              stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _login_shell() -> str:
+    try:
+        account_shell = pwd.getpwuid(os.getuid()).pw_shell
+    except (KeyError, OSError):
+        account_shell = ""
+    return os.environ.get("SHELL") or account_shell or "/bin/zsh"
+
+
+def login_shell_claude(timeout: int = 20) -> str | None:
+    """`command -v claude` as the user's interactive login shell answers it.
+
+    The LAST resort, because it runs the user's rc files. Interactive on purpose,
+    see CLAUDE_CANDIDATES. Those rc files may print terminal escape codes in front
+    of the answer (iTerm's shell integration does, measured), so the path is taken
+    from the end of the output, and it must be an absolute executable file before
+    it is trusted. An alias or a function prints no path and returns None.
+    """
+    try:
+        res = subprocess.run([_login_shell(), "-ilc", LOGIN_SHELL_PROBE],
+                             capture_output=True, text=True, timeout=timeout,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"(/[^\s\x07\x1b]*/claude)\s*$", res.stdout or "")
+    path = m.group(1) if m else ""
+    return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
+
+
 def claude_binary() -> str | None:
     """First working claude on this machine. launchd's PATH is not a login PATH."""
-    for cand in (os.environ.get("KIPI_CLAUDE_BIN"), "claude",
-                 os.path.expanduser("~/.claude/local/claude"),
-                 "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        if not cand:
-            continue
-        try:
-            if subprocess.run([cand, "--version"], capture_output=True, timeout=20,
-                              stdin=subprocess.DEVNULL).returncode == 0:
-                return cand
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-    return None
+    for cand in (os.environ.get("KIPI_CLAUDE_BIN"),) + tuple(
+            os.path.expanduser(c) for c in CLAUDE_CANDIDATES):
+        if cand and _claude_works(cand):
+            return cand
+    found = login_shell_claude()
+    return found if found and _claude_works(found) else None
 
 
 def model_argv(binary: str, prompt: str) -> list:
