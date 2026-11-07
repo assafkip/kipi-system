@@ -418,7 +418,14 @@ fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "\$CLEAR_MUTEX" 2>/dev/null; the
 esac
 exec "$REALGIT" "\$@"
 EOF
-chmod +x "$RW/shim/python3" "$RW/gitshim/git"
+# mkdir that fails while the tree exists and is owned: Codex round 6's EACCES on a
+# parent. Round 6 first read a failed mkdir as "no directory, so no owner".
+mkdir -p "$RW/mkdirfail"
+cat > "$RW/mkdirfail/mkdir" <<EOF
+#!$RBASH
+echo mkdir >> "\$FAULT_LOG"; echo "mkdir: Permission denied" >&2; exit 1
+EOF
+chmod +x "$RW/shim/python3" "$RW/gitshim/git" "$RW/mkdirfail/mkdir"
 cat > "$RW/drive.sh" <<EOF
 set -uo pipefail
 HOME="$RW/home"; REVIEW_REPO="$RW/repo"; REVIEW_SLUG=acme/widgets; PR=77
@@ -436,6 +443,7 @@ rw_case() {  # <name> <holder pid> <fault> [nopy|mutexdir]
   local c="$RW/case-$1" p="$RW/gitshim:$RW/shim:$T/bin"
   mkdir -p "$c/trees"; printf '%s' "$2" > "$c/trees/acme_widgets__pr-77.lock"; : > "$c/fault.log"; : > "$c/clear.log"
   [ "${4:-}" = nopy ] && p="$RW/gitshim:$RW/nopy"
+  [ "${4:-}" = mkdirfail ] && p="$RW/gitshim:$RW/mkdirfail:$RW/shim:$T/bin"
   [ "${4:-}" = mutexdir ] && mkdir "$c/trees/.tree-lock.mutex"
   git -C "$RW/repo" update-ref refs/remotes/pr/77 "$RW1"
   CASE="$c" FAULT="$3" FAULT_LOG="$c/fault.log" CLEAR_LOG="$c/clear.log" CLEAR_MUTEX="$c/trees/.tree-lock.mutex" \
@@ -445,7 +453,7 @@ rw_case() {  # <name> <holder pid> <fault> [nopy|mutexdir]
 }
 rw() { cat "$RW/case-$1/$2" 2>/dev/null; }
 # Ownership unknown, with a LIVE owner of the tree: the ref and the lock must survive.
-for spec in "nopy::nopy" "mutexdir::mutexdir" "flock:flock:" "sigkill:sigkill:" "read:read:" "kill:kill:" "noop:noop:"; do
+for spec in "nopy::nopy" "mutexdir::mutexdir" "mkdirfail::mkdirfail" "flock:flock:" "sigkill:sigkill:" "read:read:" "kill:kill:" "noop:noop:"; do
   name="${spec%%:*}"; rest="${spec#*:}"; fault="${rest%%:*}"; mode="${rest#*:}"
   rw_case "$name" "$LIVE" "$fault" "$mode"
   check "ASK-3930 round 6: $name: ownership unknown is rc 3, never 1" '[ "$(rw "$name" rc)" = 3 ]'
@@ -456,6 +464,8 @@ for spec in "nopy::nopy" "mutexdir::mutexdir" "flock:flock:" "sigkill:sigkill:" 
 done
 check "ASK-3930 round 6: nopy: python3 really was absent from that PATH" '[ ! -e "$RW/nopy/python3" ] && [ -e "$RW/nopy/git" ]'
 check "ASK-3930 round 6: mutexdir: the mutex path really is a directory" '[ -d "$RW/case-mutexdir/trees/.tree-lock.mutex" ]'
+check "ASK-3930 round 6: mkdirfail: the failing mkdir ran, with the owned tree's directory present" 'grep -qx mkdir "$RW/case-mkdirfail/fault.log" && [ -d "$RW/case-mkdirfail/trees" ]'
+check "ASK-3930 round 6: mkdirfail: no ref delete was even attempted" '[ ! -s "$RW/case-mkdirfail/clear.log" ]'
 # Proven unowned (a DEAD holder, read inside the mutex), and the claim cannot be
 # written: rc 1, the ref is cleared, and it is cleared while the mutex is held.
 rw_case claimfail "$DEAD" link

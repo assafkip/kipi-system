@@ -115,7 +115,7 @@ Built by a fresh agent from the plan above. One change to the contract instead o
 
 | Path | 96e2d311 | Now | Proof behind the code | Test (case in test-pr-review-reap-trees.sh) |
 |---|---|---|---|---|
-| `mkdir -p` of the parent fails | 1 | 1, clears via `_wt_bail` | no directory, so no tree and no lock file | early-bail "a mkdir bail" |
+| `mkdir -p` of the parent fails | 1 | 3 (8bedf0ef had 1 and cleared; Codex round 6) | none: EACCES on a parent fails mkdir while the tree exists | round 6 mkdirfail, early-bail "a mkdir bail" |
 | mutex cannot be opened | 1 | 3 | none | round 6 mutexdir |
 | python3 cannot launch (126, 127) | 1 | 3 | none | round 6 nopy |
 | python3 killed by a signal (128+n) | 1 | 3 | none | round 6 sigkill |
@@ -140,7 +140,7 @@ Python's only deliberate exits are 0, 20 (busy), 21 (unowned, written in one pla
 |---|---|---|---|---|
 | `review_worktree` | proceeds as the owner; its later bails run `_wt_bail` on a tree it owns | returns 1; the ref was already cleared inside the mutex | returns 1, ref left | returns 1, ref left |
 | `_reap_take_lock` (reaper, no clear flag) | archives and removes | skips, keeps the tree | skips | skips |
-| main flow, after an empty `review_worktree` | | `assert_pr_ref_not_stale`: absent or current goes on to the fallback search | same | same; a stale ref makes this run refuse with FATAL |
+| main flow, after an empty `review_worktree` | | `assert_pr_ref_not_stale`: absent or current goes on to the fallback search | same; a stale ref makes this run refuse with FATAL | same; a stale ref makes this run refuse with FATAL |
 
 The reaper never touches a ref, so it needed no change. Its skip line still says "held by another run" for rc 1 and 3; it carries no decision, so it was left.
 
@@ -151,9 +151,18 @@ The reaper never touches a ref, so it needed no change. Its skip line still says
 - Mutation: 22 mutants through `plugins/prd-os/scripts/mutate.py`, driven by the session scratchpad's `mutate5.sh` (it carries the round 1 to 4 rows forward with anchors re-cut for this code), each on a fresh copy and checked against one named test. All 22 KILLED, 789 seconds. The 12 new rows: an unexpected exit mapped to 1, the 96e2d311 helper restored, rc 0 trusted without reading the lock, an unopenable mutex returning 1, any kill() error read as dead, the clear run after the mutex is let go, a failed tmp tidy overturning a linked claim, the mutex never given back, review_worktree not asking for the clear, review_worktree clearing on unknown, and a timeout mapped back to busy or to unowned. One row first SURVIVED because the instrument named the ref check: with only the old helper swapped in, the new review_worktree no longer calls `_wt_bail` on rc 1, so the ref survives anyway. Renamed to the rc check, it was KILLED.
 - Medium closed: `hold_mutex` no longer expires on its own (a 300 second hang guard only). The round 4 check asserts rc 3, which a contender that got inside the mutex could not return (it would read the live PID and return 2), and asserts the holder was still alive when the contender returned. No elapsed-time check remains.
 
+### Codex round 6 (51aede08..8bedf0ef), verbatim, and the fix
+
+- high, pr-review-agent.sh:617: "A failed `mkdir -p` does not prove the directory or live owner is absent, yet this branch calls `_wt_bail` outside the mutex. If A owns the tree and B encounters EACCES traversing its parent, B deletes A's shared ref through the still-accessible REVIEW_REPO. Fault injection confirmed rc 1 and both deletion calls. Return rc 3 without cleanup on mkdir failure, add a live-owner regression test, and correct the RCA table."
+
+8bedf0ef had kept that one exception on reasoning ("no directory, so no owner") and listed it as a residual. That repeated this RCA's own lesson: a residual named in the fix is the next finding. The fix removes the exception, so rc 1 now has exactly one source, python's 21 after proof inside the mutex. This reverses a PR #265 round 2 ruling on purpose: `test-review-early-bail-ref.sh` used to assert that a mkdir bail clears the ref. It now asserts that the ref stays and that `assert_pr_ref_not_stale` then refuses the run with FATAL, a refusal and never a review of the wrong commit.
+
+- Red on 8bedf0ef: the new mkdirfail case printed `rc=1 ref= clears=free free` (3 FAIL), and the early-bail suite failed 2 checks.
+- Green: test-pr-review-reap-trees.sh 116 PASS on both shells; root-and-lock, early-bail and scratch rc 0 on both.
+- Mutation: two more rows, the 8bedf0ef mkdir branch restored and a mkdir failure returning 1, both KILLED by the mkdirfail checks.
+
 ### Residuals stated
 
-- The `mkdir -p` bail is decided outside a mutex, because there is no directory to keep one in. `mkdir -p` treats a concurrent create as success, so its failure means the path cannot be a directory for any run.
 - Children started inside the fd 8 window inherit it, and bash 3.2 cannot set close-on-exec (measured: `func 8>&-` moves the fd to 10 and children still get it). Only `cat` and `git update-ref -d` run there. A git hook that outlived the window would hold the mutex, and later claims would time out as rc 3, which keeps refs, so that leak fails closed.
 - A run that started on the pre-round-6 script still maps its own failures to rc 1 until it finishes.
 

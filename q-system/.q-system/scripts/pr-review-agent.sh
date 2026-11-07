@@ -587,9 +587,9 @@ _wt_lock_path=""
 # ASK-3930 found two of those, one per round. So 1 is now earned, never defaulted:
 # it is returned only on proof, and every outcome nobody planned for is 3.
 #   0 = held by us: the helper said so AND the lock file names this run
-#   1 = nobody owns it and the claim could not be written: no parent directory, or
-#       an absent or dead holder read inside the mutex. With clear-stale-ref,
-#       _wt_bail has already run, inside the mutex.
+#   1 = nobody owns it and the claim could not be written: an absent or dead
+#       holder read inside the mutex. With clear-stale-ref, _wt_bail has already
+#       run, inside the mutex. No other path returns 1.
 #   2 = busy: a live holder that is not this run, read inside the mutex
 #   3 = ownership unknown: anything else. Nothing may clear a ref on it.
 acquire_wt_lock() {  # acquire_wt_lock <worktree-path> [clear-stale-ref]
@@ -611,13 +611,11 @@ acquire_wt_lock() {  # acquire_wt_lock <worktree-path> [clear-stale-ref]
   # RE-ENTRANT for this run: review_worktree is called more than once per review.
   local wt="$1" lock="$1.lock" clear="${2:-}" dir mutex rc
   dir="$(dirname "$wt")"; mutex="$dir/.tree-lock.mutex"
-  # No parent directory means no tree and no lock file in it, so nobody owns one.
-  # It is the one verdict reached outside the mutex, because there is no directory
-  # to keep a mutex in.
-  if ! mkdir -p "$dir" 2>/dev/null; then
-    [ "$clear" = clear-stale-ref ] && _wt_bail "$wt"
-    return 1
-  fi
+  # A failed mkdir proves nothing about the tree, so it is unknown (3) and clears
+  # nothing. Round 6 first called it "no directory, so no owner" and cleared the
+  # ref outside any mutex; Codex showed EACCES on a parent fails mkdir while the
+  # tree exists and a live run owns it, and that run's ref was deleted.
+  mkdir -p "$dir" 2>/dev/null || return 3
   # THIS SHELL HOLDS THE MUTEX, on fd 8, until the verdict AND any ref cleanup are
   # done. python3 flocks the inherited fd (the kipi-promote.sh take_lock idiom),
   # and an flock lives on the open file description, so it outlasts the python
@@ -759,7 +757,7 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
     0) : ;;
     2) echo "  WARN: another review holds $wt; leaving its ref alone and falling back." >&2
        return 1 ;;
-    1) echo "  WARN: could not lock $wt, which nobody owns; its stale ref is cleared." >&2
+    1) echo "  WARN: could not lock $wt, which nobody owns; its stale ref was cleared under the claim mutex." >&2
        return 1 ;;
     *) echo "  WARN: could not tell who owns $wt; leaving its ref alone and falling back." >&2
        return 1 ;;

@@ -79,10 +79,14 @@ else
   ok "an early bail clears the stale ref, so the next round self-heals"
 fi
 
-# THE EARLIEST BAIL OF ALL: mkdir (PR #265 codex major, round 2). When mkdir
-# fails there is no review tree to clear the ref THROUGH, so a fix that only
-# cleared $wt left the previous round's ref exactly where it was. This is the
-# case neither suite covered, and it is the one a real run hits on a full disk.
+# THE EARLIEST BAIL OF ALL: mkdir. PR #265 round 2 had this CLEAR the ref, so a
+# full disk would not wedge every later round. ASK-3930 round 6 reverses that on
+# purpose: a failed mkdir happens before the tree lock, so it proves nothing about
+# who owns the tree (EACCES on a parent fails mkdir while a live run owns the tree,
+# Codex PR #627), and a clear there deletes that run's ref. So the ref stays, and
+# the run REFUSES through assert_pr_ref_not_stale with the fix command printed. A
+# loud refusal, never a review of the wrong commit, and the next run that can take
+# the lock refreshes the ref. Both halves are asserted below.
 git -C "$WT" update-ref "refs/remotes/pr/$PR" "$SHA1"
 mkdir() { return 1; }
 review_tree_path() { echo "$TMP/never-created/wt"; }
@@ -94,11 +98,17 @@ review_tree_path() { echo "$WT"; }
 [ "$RC" -ne 0 ] && ok "a mkdir bail returns nonzero" \
                 || bad "a mkdir bail returns nonzero (got $RC)"
 
-if command git -C "$REPO" rev-parse "refs/remotes/pr/$PR" >/dev/null 2>&1; then
-  LEFT="$(command git -C "$REPO" rev-parse --short=8 "refs/remotes/pr/$PR")"
-  bad "a mkdir bail leaves the ref in REVIEW_REPO (still at $LEFT)"
+NOW="$(command git -C "$REPO" rev-parse --verify --quiet "refs/remotes/pr/$PR" || true)"
+[ "$NOW" = "$SHA1" ] && ok "a mkdir bail leaves the ref alone: it cannot prove nobody owns the tree" \
+                     || bad "a mkdir bail touched the ref (now '${NOW:0:8}'), which may belong to a live owner"
+
+eval "$(sed -n '/^assert_pr_ref_not_stale() {/,/^}/p' "$AGENT")"
+declare -f assert_pr_ref_not_stale >/dev/null 2>&1 || { echo "FAIL: could not extract assert_pr_ref_not_stale" >&2; exit 1; }
+REFUSAL="$( (assert_pr_ref_not_stale "$REPO" "$SHA2") 2>&1 )"; ARC=$?
+if [ "$ARC" -ne 0 ] && printf '%s' "$REFUSAL" | grep -q "FATAL: refs/remotes/pr/$PR is stale"; then
+  ok "that run then refuses loudly instead of reviewing the wrong commit"
 else
-  ok "a mkdir bail clears the ref through REVIEW_REPO too"
+  bad "a stale ref after a mkdir bail did not refuse the run (rc $ARC)"
 fi
 
 # THE CALL SITE IS THE WIRING (PR #265 codex minor). The stale-ref suite stayed
