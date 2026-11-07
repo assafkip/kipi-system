@@ -2111,13 +2111,17 @@ tail, _count = wia.tail_seconds(items, receipts)
 print(max(floor, int(10 * tail)) if tail else floor)
 PY
 }
+# The timestamp goes in through the environment, not argv: with `pass' "$1"` on
+# the line after `except Exception:`, validate-separation.py read the pair as a
+# label and a dollar amount, and the propagation leak gate aborted the fleet
+# updater on a "pricing" fact (test-updater-arms-new-jobs.py, PR #629 validate).
 iso_age_s() {  # iso_age_s <2026-11-07T12:00:00Z> -> seconds since then, or "" when unreadable
-  python3 -c 'import sys,datetime as d
+  WIP_ISO="$1" python3 -c 'import os,datetime as d
 try:
-    t = d.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc)
+    t = d.datetime.strptime(os.environ["WIP_ISO"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc)
     print(int((d.datetime.now(d.timezone.utc) - t).total_seconds()))
 except Exception:
-    pass' "$1" 2>/dev/null
+    pass' 2>/dev/null
 }
 
 wip_release() {  # wip_release <pr> <ticket> <kind> <exit> <branch> <state> <why> <created> [backstop]

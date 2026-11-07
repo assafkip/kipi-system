@@ -191,9 +191,14 @@ review() {  # review <pr> <verdict> <usable-rounds> <merge-state> [head-moved]
   sha="$(printf '%040d' "$pr")"
   printf '{"verdict": "%s", "head_sha": "%s", "degraded": false}\n' "$verdict" "$sha" \
     > "$STATE/pr-reviews/$key.verdict.json"
+  # One mtime per round, as real rounds are written minutes apart. Written in
+  # one clock tick, CI's filesystem gave the three files one mtime, `ls -t`
+  # broke the tie by name, and the release read round 1's findings (L7b red on
+  # PR #629 validate; green on macOS, whose mtimes differed by nanoseconds).
   for r in $(seq 1 "$rounds"); do
     printf 'VERDICT: %s\n\nFINDINGS:\nmajor|fixture finding %s on PR %s|x.sh:%s\nEND FINDINGS\n' \
       "$verdict" "$r" "$pr" "$r" > "$STATE/pr-reviews/$key-2026100${r}-000000.md"
+    touch -t "2026100${r}0000" "$STATE/pr-reviews/$key-2026100${r}-000000.md"
   done
   printf '%s\n' "$merge" > "$GHDIR/merge-$pr"
   if [ -n "$moved" ]; then printf '%040d\n' "$((pr + 1))" > "$GHDIR/head-$pr"
@@ -216,6 +221,11 @@ done
 [ "$CAPPED" = "3" ] \
   && ok "fixture self-test: PR #543 holds 3 rounds the reviewer counts as usable" \
   || bad "fixture self-test: PR #543 holds 3 usable rounds" "review_is_usable counted $CAPPED"
+NEWEST="$(ls -t "$STATE/pr-reviews/$(artifact_key "$SLUG" 543)-"*.md | head -1)"
+case "$NEWEST" in
+  *-20261003-000000.md) ok "fixture self-test: by mtime the newest review of PR #543 is round 3" ;;
+  *) bad "fixture self-test: the newest review of PR #543 is round 3" "ls -t gave $(basename "$NEWEST")" ;;
+esac
 
 # --- gh: fixture answers, every call logged ----------------------------------------
 STUBS="$WORK/bin"; mkdir -p "$STUBS"
