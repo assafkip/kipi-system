@@ -84,6 +84,26 @@ Evidence that the diagnosis is real, gathered before the fix:
 - During rollout, a run that started on the old script still uses the mkdir mutex, which the new flock does not exclude. This lasts only while reviews started before the update are in flight, and clears on its own.
 - PID reuse and the never-released review lock: sp-fac84397 and sp-08d14f6b above. Both fail closed (the tree reads busy), so neither produces a second owner.
 
+## Rounds 4 and 5: the same failure twice, so the handoff agent stopped
+
+Round 4 (Codex on 344b340f..c2fce41a, high): the kernel mutex closes the double-owner race, but a contender that timed out on it returned rc 1, so `review_worktree` called `_wt_bail` and deleted refs/remotes/pr/<N> under the live owner. 51aede08 moved that one path to rc 2 (red on c2fce41a, green after, mutant KILLED).
+
+Round 5 (Codex on c2fce41a..51aede08), verbatim:
+
+- high, pr-review-agent.sh:644: "A caller-local failure does not prove the tree is unowned. If A owns the tree and B cannot launch Python or open the mutex, B returns rc 1 and review_worktree deletes A's ref through _wt_bail. Preserve refs when ownership is unknown; perform stale-ref cleanup only after acquiring the mutex and establishing exclusive tree ownership."
+- medium, test-pr-review-reap-trees.sh:333: "Elapsed time does not prove mutex timeout. Pause the contender after recording `s` for over 20 seconds: hold_mutex expires, the contender acquires the mutex immediately and returns rc 2 for LIVE, and all three assertions pass even with the old timeout bug. Hold the mutex until explicit release and assert the holder remained locked throughout the contender's execution, or instrument the timeout branch directly."
+
+Rounds 4 and 5 are one failure: rc 1, the destructive branch, returned while ownership is unknown. Round 4's fix moved one path instead of the class, which is root cause #2 above repeating. The class: the caller's contract treats "I could not lock" as proof that "nobody has a tree", and only the inside of the mutex, after reading a dead or absent holder, can prove that.
+
+What the next round builds (one change, not another path):
+
+- Destructive cleanup needs proof. The helper returns a distinct code only when, under the mutex, the holder was proven dead or absent and taking the lock then failed (an unlink, tmp write or link OSError). Bash maps that code alone to rc 1, so `_wt_bail` runs.
+- Every other failure (python3 cannot launch, so 126 or 127; an uncaught exception, which exits 1; the mutex cannot be opened; a non-EWOULDBLOCK flock error) maps to a new rc 3, "ownership unknown". `review_worktree` warns and returns 1 without `_wt_bail`. `_reap_take_lock` already skips on any nonzero. Keep the `    2) echo "  WARN: another review holds` line byte-identical, because `test-review-root-and-lock.sh` greps it, and add a `3)` arm next to it.
+- The `mkdir -p` parent failure may stay rc 1: with no parent directory there is no tree and no owner.
+- The cost is accepted: a ref left in place makes `assert_pr_ref_not_stale` refuse that run with FATAL, a refusal and never a wrong answer. A persistent rc 3 (no python3) is already a broken agent, since the verdict write at line 1742 is python3.
+- Tests: a LIVE owner holds the tree, python3 is absent from PATH, and `review_worktree` must return without deleting the ref (drive it the way `test-review-early-bail-ref.sh` does). A mutant that maps "unknown" back to rc 1 must be KILLED.
+- Medium: the round 4 test asserts `kill -0 "$H6"` (the holder still holds) after the contender returns and before `let-go`, instead of elapsed time, and `hold_mutex` waits for its release file with no 20 second expiry.
+
 ## Lessons
 
 - A userspace lock that must survive a crashed holder cannot be made exclusive by adding another userspace lock. The crash case always needs a reclaim, and a pathname reclaim is a race. Use a lock the kernel releases.
