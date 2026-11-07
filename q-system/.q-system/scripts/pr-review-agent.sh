@@ -946,18 +946,30 @@ fi
 # A fix-only review gets the diff since the recorded full-review sha PASTED IN,
 # and is told the rest of the PR is out of scope: telling it to run `gh pr diff`
 # hands it the whole PR again, which is the full re-review this budget removes.
-# On the git path it is limited to the PR's own files when gh can name them, so
-# main brought into the branch does not turn the fix review into a review of
-# main. GitHub's compare (the fallback a hosted runner takes: it fetches the
-# head at depth 1, so the old sha may be absent) is NOT filtered and can carry
-# main's code; the model is still told only the PR is in scope.
+#
+# THE SINCE-DIFF IS THE PR'S OWN FILES, ON BOTH PATHS (PR #614 round 2, major).
+# git takes the file list as a pathspec. GitHub's compare answers for the whole
+# range, and it is the path a hosted runner always takes: it fetches the head at
+# depth 1, so the full-review sha is never local. Unfiltered, a push that merged
+# main put main's code in the block the prompt calls "ONLY the change since
+# then", spent the slot and gated on it. Round 1 read these same lines as a
+# stated limitation; the round 2 repro showed it gates.
+#
+# NOTHING TO PASTE IS ONE FULL REVIEW IN THE FIX SLOT, NEVER EXIT 1 (PR #614
+# round 2). Limited to the PR's files, a reword, an amend, an empty commit or a
+# merge of main is an empty since-diff, and so is a compare that did not answer.
+# Those exited 1 with no status, and the floor's red stood on a PR nobody read.
+# An empty diff must not derive APPROVE on code nobody was shown either, so the
+# model reads the whole PR and the run spends the fix slot: still two reviews
+# per PR. A diff too big to paste whole goes the same way. Its old "read the
+# rest with git diff" note could not run on the compare path, the one path that
+# grew that big.
 #
 # SCOPE IS NEW FINDINGS, NOT THE GATE (PR #532 review, major). A fix-only verdict
 # still writes kipi/reviewer-approved, so an earlier blocker or major in a file
 # the fix never touched must not fall out of scope and go green. Those findings
 # are pasted in from the last usable review and each must be re-checked on the
-# current head, wherever it lives. Neither answering means no review: an empty
-# since-diff would derive APPROVE on code nobody was shown.
+# current head, wherever it lives.
 READ_CHANGE="## Read the change
 
 The PR was fetched from GitHub when this review started. Under codex the
@@ -966,34 +978,86 @@ gh cannot reach GitHub there. The fetched copies:
 
   $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
   $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)"
+# _pr_files_only <paths>: a git diff on stdin, only the sections of the PR's
+# files out. A section is named by its ---, +++, rename and copy lines, never by
+# splitting the `diff --git` header on " b/": a path can hold that text (case 7
+# of test-review-on-ready.sh). Every section with content has --- and +++ lines,
+# so the header is read only for a mode-only or binary change, and a section it
+# still cannot name is kept: it carries no code.
+_pr_files_only() {
+  python3 -c '
+import sys
+keep = {p for p in sys.argv[1].split("\n") if p}
+def unq(v):
+    v = v.rstrip("\t")  # git appends a TAB to a path that holds a space
+    if len(v) > 1 and v[0] == "\"" and v[-1] == "\"":
+        try:
+            return v[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except Exception:
+            return v
+    return v
+TAGS = (("--- ", "a/"), ("+++ ", "b/"), ("rename from ", ""), ("rename to ", ""),
+        ("copy from ", ""), ("copy to ", ""))
+def names(sec):
+    got = set()
+    for line in sec[1:]:
+        if line.startswith("@@"):
+            break
+        for tag, pre in TAGS:
+            if line.startswith(tag):
+                v = unq(line[len(tag):])
+                if v.startswith(pre):
+                    got.add(v[len(pre):])
+    if not got:
+        h = sec[0][len("diff --git "):]
+        n = (len(h) - 5) // 2
+        if n > 0 and h == "a/" + h[2:2 + n] + " b/" + h[2:2 + n]:
+            got.add(h[2:2 + n])
+    return got
+data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+if data.endswith("\n"):
+    data = data[:-1]
+out, sec = [], []
+for line in (data.split("\n") if data else []) + ["diff --git END"]:
+    if line.startswith("diff --git "):
+        if sec:
+            got = names(sec)
+            if not got or got & keep:
+                out.extend(sec)
+        sec = [line]
+    elif sec:
+        sec.append(line)
+if out:
+    sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8", "surrogateescape"))
+' "$1"
+}
+SINCE_DIFF=""
 if [ "$REVIEW_MODE" = "fix" ]; then
   SINCE_FILES="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json files -q '.files[].path' 2>/dev/null || true)"
-  SINCE_DIFF=""
-  if git -C "$REVIEW_ROOT" cat-file -e "$SINCE_SHA^{commit}" 2>/dev/null; then
-    if [ -n "$SINCE_FILES" ]; then
-      SINCE_DIFF="$(printf '%s\n' "$SINCE_FILES" | tr '\n' '\0' | xargs -0 git -C "$REVIEW_ROOT" diff "$SINCE_SHA" "$HEAD_SHA" -- 2>/dev/null || true)"
-    else
-      SINCE_DIFF="$(git -C "$REVIEW_ROOT" diff "$SINCE_SHA" "$HEAD_SHA" 2>/dev/null || true)"
-    fi
-  fi
-  if [ -z "$SINCE_DIFF" ]; then
+  SINCE_FROM="GitHub's compare"
+  if [ -z "$SINCE_FILES" ]; then
+    SINCE_FROM="nowhere, gh named none of the PR's files"
+  elif git -C "$REVIEW_ROOT" cat-file -e "$SINCE_SHA^{commit}" 2>/dev/null; then
+    SINCE_FROM="git"
+    SINCE_DIFF="$(printf '%s\n' "$SINCE_FILES" | tr '\n' '\0' | xargs -0 git -C "$REVIEW_ROOT" diff "$SINCE_SHA" "$HEAD_SHA" -- 2>/dev/null || true)"
+  else
     SINCE_DIFF="$(gh api -H 'Accept: application/vnd.github.v3.diff' \
-      "repos/$STATUS_REPO_PATH/compare/$SINCE_SHA...$HEAD_SHA" 2>/dev/null || true)"
+      "repos/$STATUS_REPO_PATH/compare/$SINCE_SHA...$HEAD_SHA" 2>/dev/null \
+      | _pr_files_only "$SINCE_FILES" || true)"
   fi
-  if [ -z "$SINCE_DIFF" ]; then
-    echo "REFUSING: could not compute the diff since ${SINCE_SHA:0:12} for the fix-only review of PR #$PR." >&2
-    echo "  Neither git nor GitHub's compare answered. No review was dispatched, NO status was posted, the budget is unspent." >&2
-    exit 1
-  fi
-  # argv carries the prompt; macOS ARG_MAX is about 1MB. A fix bigger than this
-  # is not a fix, and the model is told the diff was cut and how to read the rest.
+  # argv carries the prompt; macOS ARG_MAX is about 1MB.
   SINCE_CAP=200000
-  SINCE_NOTE=""
-  if [ "${#SINCE_DIFF}" -gt "$SINCE_CAP" ]; then
-    SINCE_DIFF="${SINCE_DIFF:0:$SINCE_CAP}"
-    SINCE_NOTE="
-(TRUNCATED at $SINCE_CAP characters. Read the rest with: git diff $SINCE_SHA $HEAD_SHA)"
+  if [ -z "$SINCE_DIFF" ] || [ "${#SINCE_DIFF}" -gt "$SINCE_CAP" ]; then
+    if [ -z "$SINCE_DIFF" ]; then
+      _why="no change to the PR's own files since ${SINCE_SHA:0:12} (diff from $SINCE_FROM): a reword, amend, empty commit or merge of main, or a fetch that answered nothing"
+    else
+      _why="the PR's change since ${SINCE_SHA:0:12} is ${#SINCE_DIFF} characters, more than the $SINCE_CAP a prompt carries"
+    fi
+    echo "  fix-only scope: $_why. One FULL review instead; it spends the fix-only slot."
+    unset _why; SINCE_DIFF=""
   fi
+fi
+if [ "$REVIEW_MODE" = "fix" ] && [ -n "$SINCE_DIFF" ]; then
   # Only rows that GATE are re-checked. A major the reviewer marked nonblocking
   # is a follow-up (ASK-2422); asked to re-raise it "at its original severity",
   # the fix round drops the mark and the released major gates again. The mark
@@ -1025,8 +1089,8 @@ $PRIOR_GATING
 
 \`\`\`diff
 $SINCE_DIFF
-\`\`\`$SINCE_NOTE"
-  echo "  fix-only scope: ${#SINCE_DIFF} characters of diff since ${SINCE_SHA:0:12}"
+\`\`\`"
+  echo "  fix-only scope: ${#SINCE_DIFF} characters of diff since ${SINCE_SHA:0:12}, the PR's files only (from $SINCE_FROM)"
   # The whole-PR diff was fetched above as the liveness check (ASK-2648) and
   # sits next to comments.txt, which the round rule points the model at. Left
   # there, the fix round can read the whole PR again, the re-review this budget

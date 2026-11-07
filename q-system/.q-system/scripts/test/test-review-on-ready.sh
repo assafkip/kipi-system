@@ -12,6 +12,14 @@
 # second run on the same head calls the model again, the fix round carries no
 # since-diff, and a third run on a new head calls the model again.
 #
+# THE FIX ROUND'S DIFF (PR #614 round 2). Cases 7 to 9. On 6ba06690: GitHub's
+# compare body reached the fix-only prompt unfiltered, so main's file rode
+# along (7); a compare body holding only main's code was dispatched as a
+# fix-only review of main (8); and a same-tree push (reword, amend, empty
+# commit) exited 1 with no review and no status (9). The stub's compare answer
+# is a body real git produced, never `{}`: `{}` is 2 bytes of "diff" and made
+# the empty-diff branch unreachable.
+#
 # Isolation: HOME, the repo, `gh` and `claude` are fixtures in a mktemp dir. No
 # live PR is read and no model is spent. PATH is sealed: only the stub dir and
 # the system dirs, so a real `claude` or `gh` elsewhere cannot answer.
@@ -54,6 +62,9 @@ AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
 sha() { git -C "$WORK/skel" rev-parse HEAD; }
 
 echo false > "$WORK/draft"
+# GitHub's compare answers NOTHING for two identical trees. Cases 7 and 8 write
+# a real git diff here; the default is that empty answer.
+: > "$WORK/compare-body"
 GH_LOG="$WORK/gh-calls.txt"; : > "$GH_LOG"
 cat > "$STUB/gh" <<EOF
 #!/bin/bash
@@ -65,6 +76,7 @@ case "\$*" in
   *"pr diff"*)              echo "diff --git a/FILE.txt b/FILE.txt" ;;
   *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
   *"commits/"*"/statuses"*) echo "" ;;
+  *"compare/"*)             cat "$WORK/compare-body" ;;
   *"api"*)                  echo '{}' ;;
 esac
 exit 0
@@ -94,11 +106,11 @@ printf '#!/bin/bash\nexit 0\n' > "$STUB/notify"; chmod +x "$STUB/notify"
 SEALED_PATH="$STUB:/usr/bin:/bin:/usr/sbin:/sbin"
 
 calls() { wc -l <"$CLAUDE_LOG" | tr -d ' '; }
-run_reviewer() {  # run_reviewer <out-file> [extra args...]
+run_reviewer() {  # [RPR=<pr>] run_reviewer <out-file> [extra args...]
   local out="$1"; shift
   ( cd "$WORK/skel" \
     && PATH="$SEALED_PATH" HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="$STUB/notify" \
-       bash "$AGENT" 1 --engine claude "$@" ) >"$out" 2>&1
+       bash "$AGENT" "${RPR:-1}" --engine claude "$@" ) >"$out" 2>&1
   echo $? > "$out.rc"
 }
 new_commit() {  # new_commit <marker>
@@ -198,5 +210,104 @@ grep -q 'human re-request' "$WORK/r5.out" || fail "the override was not logged i
 grep -q '^overrides=1$' "$STATE" || fail "the override was not counted in state:
 $(cat "$STATE")"
 ok "override: 1 call, logged, counted (overrides=1)"
+
+# FULL REVIEW IN THE FIX SLOT: what cases 8 and 9 expect. One model call, a
+# prompt that reads the whole PR (not FIX-ONLY), exit 0, the fix slot spent at
+# the head, and a commit status POSTED there. Exit 1 with nothing posted is the
+# wedge round 2 found: the floor's red stands and nobody reads the PR.
+expect_full_in_fix_slot() {  # expect_full_in_fix_slot <case> <pr> <out> <calls-before> <state-file>
+  local c="$1" pr="$2" out="$3" before="$4" st="$5" head; head="$(sha)"
+  [ "$(cat "$out.rc")" = "0" ] || fail "$c: exited $(cat "$out.rc"), expected 0 (statuses posted on the head: $(grep -c "statuses/$head" "$GH_LOG")):
+$(tail -6 "$out")"
+  [ "$(calls)" = "$((before + 1))" ] || fail "$c: made $(( $(calls) - before )) model calls, expected 1:
+$(tail -8 "$out")"
+  local p="$WORK/prompt-$(calls).txt"
+  grep -q 'FIX-ONLY' "$p" && fail "$c: dispatched as a FIX-ONLY review; with no change to the PR's files to show it must be one full review:
+$(grep -n -A3 '^## The change since' "$p" | head -8)"
+  grep -q "pr diff $pr" "$p" || fail "$c: the prompt does not point the model at the whole-PR diff"
+  grep -qF 'pr.diff' "$WORK/ctx-$(calls).txt" || fail "$c: the whole-PR diff (pr.diff) was removed from a FULL review's context"
+  grep -q "^fix_sha=$head$" "$st" || fail "$c: the full review did not spend the fix-only slot at the head:
+$(cat "$st")"
+  grep -q -- "-X POST repos/example-owner/example-repo/statuses/$head" "$GH_LOG" \
+    || fail "$c: no commit status was posted on the head"
+  grep -q 'One FULL review instead' "$out" || fail "$c: the run does not say why the fix round became a full review"
+}
+
+# 7. The old sha is not in the review tree (the hosted runner fetches the head
+# at depth 1), so the since-diff comes from GitHub's compare, and that body is
+# NOT limited to the PR: this push also merged main. The side repo stands in for
+# GitHub: it holds the old sha, the review tree does not, and real git writes
+# the compare body. main's path has a space and a " b/" in it, so a header
+# split on " b/" would mis-name it.
+ENGINE_DIR_T="$(dirname "$STATE")"
+SIDE="$WORK/side"; git init -q "$SIDE"; mkdir -p "$SIDE/docs/main notes b"
+GD() { G -C "$SIDE" -c diff.noprefix=false -c diff.mnemonicPrefix=false -c color.ui=never "$@"; }
+printf 'line one\n' > "$SIDE/FILE.txt"
+G -C "$SIDE" add -A; G -C "$SIDE" commit -q -m "the full-review head"
+OLD7="$(git -C "$SIDE" rev-parse HEAD)"
+git -C "$WORK/skel" cat-file -e "$OLD7^{commit}" 2>/dev/null && fail "fixture: the old sha must be absent from the review tree"
+printf 'line one\nPR_FIX_MARKER\n' > "$SIDE/FILE.txt"
+printf 'MAIN_ONLY_MARKER\n' > "$SIDE/docs/main notes b/x.txt"
+G -C "$SIDE" add -A; G -C "$SIDE" commit -q -m "the fix, plus a merge of main"
+GD diff "$OLD7" HEAD > "$WORK/compare-body"
+grep -q '+PR_FIX_MARKER' "$WORK/compare-body" && grep -q '+MAIN_ONLY_MARKER' "$WORK/compare-body" \
+  || fail "fixture: the compare body must carry the PR's file AND main's"
+ST7="$ENGINE_DIR_T/.ready-review-example-owner_example-repo__pr-7"
+printf 'full_sha=%s\n' "$OLD7" > "$ST7"
+: > "$GH_LOG"; B7="$(calls)"
+RPR=7 run_reviewer "$WORK/r7.out" --post
+grep -q "compare/$OLD7" "$GH_LOG" || fail "7: positive control: GitHub's compare was never asked (the git path answered?)"
+[ "$(calls)" = "$((B7 + 1))" ] || fail "7: made $(( $(calls) - B7 )) model calls, expected 1:
+$(tail -8 "$WORK/r7.out")"
+P7="$WORK/prompt-$(calls).txt"
+grep -q 'FIX-ONLY' "$P7" || fail "7: not scoped as a fix-only review"
+grep -q '+PR_FIX_MARKER' "$P7" || fail "7: the PR's own change is missing from the fix-only diff"
+grep -q 'MAIN_ONLY_MARKER' "$P7" && fail "7: the fix-only prompt carries code that is NOT in this PR (main's file from GitHub's compare):
+$(grep -n 'main notes\|MAIN_ONLY' "$P7" | head -4)"
+ok "7: GitHub's compare is limited to the PR's files (main's file dropped, the fix kept)"
+
+# 8. A push that ONLY merged main, on the same compare path. Limited to the
+# PR's files, the since-diff is empty: one full review in the fix slot, never a
+# fix-only review of main and never exit 1.
+OLD8="$(git -C "$SIDE" rev-parse HEAD)"
+printf 'MAIN_ONLY_MARKER_2\n' >> "$SIDE/docs/main notes b/x.txt"
+G -C "$SIDE" add -A; G -C "$SIDE" commit -q -m "merge main only"
+GD diff "$OLD8" HEAD > "$WORK/compare-body"
+grep -q '+MAIN_ONLY_MARKER_2' "$WORK/compare-body" || fail "fixture: case 8's compare body is empty"
+ST8="$ENGINE_DIR_T/.ready-review-example-owner_example-repo__pr-8"
+printf 'full_sha=%s\n' "$OLD8" > "$ST8"
+: > "$GH_LOG"; B8="$(calls)"
+RPR=8 run_reviewer "$WORK/r8.out" --post
+grep -q 'MAIN_ONLY_MARKER_2' "$WORK/prompt-$(calls).txt" && fail "8: main's code reached the prompt of a push that only merged main:
+$(grep -n 'FIX-ONLY\|MAIN_ONLY' "$WORK/prompt-$(calls).txt" | head -4)"
+expect_full_in_fix_slot 8 8 "$WORK/r8.out" "$B8" "$ST8"
+ok "8: a merge-main-only push is one full review in the fix slot, status posted"
+
+# 9. A same-tree push (reword, amend, empty commit) on the git path. Both git
+# and GitHub's compare correctly answer an empty diff. That is "nothing in the
+# PR changed", not an outage: one full review in the fix slot, status posted.
+ST9="$ENGINE_DIR_T/.ready-review-example-owner_example-repo__pr-9"
+printf 'full_sha=%s\n' "$(sha)" > "$ST9"
+G -C "$WORK/skel" commit -q --allow-empty -m "reword only"
+[ "$(git -C "$WORK/skel" rev-parse 'HEAD^{tree}')" = "$(git -C "$WORK/skel" rev-parse 'HEAD~1^{tree}')" ] \
+  || fail "fixture: case 9's push must keep the tree identical"
+: > "$WORK/compare-body"
+: > "$GH_LOG"; B9="$(calls)"
+RPR=9 run_reviewer "$WORK/r9.out" --post
+expect_full_in_fix_slot 9 9 "$WORK/r9.out" "$B9" "$ST9"
+ok "9: a same-tree push is one full review in the fix slot, exit 0, status posted"
+
+# 10. A fix too big to paste whole. The old shape cut it at 200000 characters
+# and told the model to "read the rest with git diff", which cannot run on the
+# compare path. Now it is one full review in the fix slot, read from pr.diff.
+ST10="$ENGINE_DIR_T/.ready-review-example-owner_example-repo__pr-10"
+printf 'full_sha=%s\n' "$(sha)" > "$ST10"
+"$REAL_PY" -c 'print("BIG_FIX_MARKER " * 14000)' >> "$WORK/skel/FILE.txt"
+G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "a fix bigger than the prompt carries"
+: > "$GH_LOG"; B10="$(calls)"
+RPR=10 run_reviewer "$WORK/r10.out" --post
+grep -q 'BIG_FIX_MARKER' "$WORK/prompt-$(calls).txt" && fail "10: a since-diff over the cap was pasted (cut) into the prompt"
+expect_full_in_fix_slot 10 10 "$WORK/r10.out" "$B10" "$ST10"
+ok "10: a since-diff over the cap is one full review in the fix slot, nothing cut"
 
 echo "PASS ($PASS checks) test-review-on-ready.sh"
