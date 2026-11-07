@@ -89,7 +89,7 @@ run_agent() {  # run_agent <out> [VAR=value ...]
   local out="$1"; shift
   : > "$GH_LOG"
   ( cd "$WORK/skel" \
-    && env HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="/usr/bin/true" KIPI_REVIEW_MAX_ROUNDS=99 \
+    && env HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="/usr/bin/true" KIPI_REVIEW_MAX_ROUNDS=99 KIPI_REVIEW_HUMAN_REREQUEST=1 \
        "$@" bash "$AGENT" 42 --issue ASK-AAA --post ) >"$out" 2>&1
   RC=$?
 }

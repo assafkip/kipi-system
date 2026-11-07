@@ -337,6 +337,18 @@ PR_META="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json headRefOid,title -q '.head
 HEAD_SHA="${PR_META%%$'\t'*}"
 PR_TITLE="${PR_META#*$'\t'}"
 
+# A DRAFT IS NEVER REVIEWED (ASK-2542). Review happens on ready, not per push:
+# 35 full reviews ran on 2026-10-06, 7 on one PR, and a draft is by definition
+# code the author is still changing. Its own read, never folded into the
+# headRefOid query above: the settle check below compares two reads of that
+# query byte for byte. Only a literal `true` skips, so a gh that cannot answer
+# falls through to the budget below, which still bounds the spend.
+PR_DRAFT="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json isDraft -q .isDraft 2>/dev/null || true)"
+if [ "$PR_DRAFT" = "true" ]; then
+  echo "$(TS) PR #$PR is a draft, skipped. No model call made."
+  exit 0
+fi
+
 # CONFIRM THE HEAD HAS SETTLED (sp-f8edcdeb). The comment above reasons that
 # pinning an OLDER sha is the safe direction because it reads as drift and routes
 # to a re-review. That is true of the GATE, and it was still wrong in practice:
@@ -402,9 +414,69 @@ PRIOR_ROUNDS=0
 for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
   [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
 done
-if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
-  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
-  echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
+
+# THE READY BUDGET: ONE FULL REVIEW, THEN ONE FIX-ONLY REVIEW (ASK-2542). The
+# round cap above bounds ROUNDS, but each round was a full review of the whole
+# PR and three could land on the same head: 35 reviews on 2026-10-06, 7 on one
+# PR, none of them reading only what changed. So the budget lives HERE, in the
+# one script every caller passes (worker, dispatcher re-review, hosted gate,
+# `kipi review`), not in any one caller.
+#
+# Keyed on repo#PR, never on sha: a sha key resets on every push, which is the
+# per-push review this replaces. A PR reviewed before this state existed is
+# seeded from its usable verdict record, or deploying this would buy every
+# open PR one more full review. KIPI_REVIEW_HUMAN_REREQUEST=1 is the explicit
+# human door: logged, counted in the state file, still under the round cap.
+READY_STATE="$ENGINE_DIR/.ready-review-$(artifact_key "$REVIEW_SLUG" "$PR")"
+_ready_get() { [ -f "$READY_STATE" ] && sed -n "s/^$1=//p" "$READY_STATE" | tail -1; }
+_ready_set() {  # _ready_set <key> <value>: rewrite one key, keep the others
+  local tmp="$READY_STATE.tmp.$$"
+  { [ -f "$READY_STATE" ] && grep -v "^$1=" "$READY_STATE"; printf '%s=%s\n' "$1" "$2"; } > "$tmp" \
+    && mv "$tmp" "$READY_STATE"
+}
+if [ ! -f "$READY_STATE" ]; then
+  # The REPO-KEYED record only (PR #614 review, major). verdict_record_path falls
+  # back to the un-keyed pr-<N>.verdict.json, which belongs to the home repo, so
+  # a client repo's PR #1 seeded from the home repo's PR #1: a fix-only round
+  # against a foreign sha, exit 1, no review and no status. A home PR whose only
+  # record predates ASK-738 gets one full review instead, the cheap direction.
+  _seed_rec="$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")"
+  _seed_sha="$(python3 -c 'import json,sys
+try:
+  r = json.load(open(sys.argv[1]))
+  print(r.get("head_sha") or "" if r.get("usable") is True else "")
+except Exception: pass' "$_seed_rec" 2>/dev/null || true)"
+  [ -n "$_seed_sha" ] && _ready_set full_sha "$_seed_sha" \
+    && echo "  ready budget: seeded full review at ${_seed_sha:0:12} from $(basename "$_seed_rec")"
+  unset _seed_rec _seed_sha
+fi
+REVIEW_MODE=full; SINCE_SHA=""; BUDGET_MSG=""
+FULL_SHA_DONE="$(_ready_get full_sha)"; FIX_SHA_DONE="$(_ready_get fix_sha)"
+if [ "${KIPI_REVIEW_HUMAN_REREQUEST:-}" = "1" ]; then
+  _ov=$(( $(_ready_get overrides || true) + 0 + 1 ))
+  _ready_set overrides "$_ov"
+  echo "$(TS) human re-request override: PR #$PR head ${HEAD_SHA:0:12} invoker=$INVOKER count=$_ov" >> "$ENGINE_DIR/ready-review-overrides.log"
+  echo "  human re-request (KIPI_REVIEW_HUMAN_REREQUEST=1): override #$_ov for this PR, full review, logged."
+  REVIEW_MODE=override
+elif [ -z "$FULL_SHA_DONE" ]; then
+  echo "  ready budget: first review of this PR, full."
+elif [ "$HEAD_SHA" = "$FULL_SHA_DONE" ] || [ "$HEAD_SHA" = "$FIX_SHA_DONE" ]; then
+  echo "  PR #$PR already reviewed at ${HEAD_SHA:0:12}; nothing new to review. No model call made."
+  exit 0
+elif [ -z "$FIX_SHA_DONE" ]; then
+  REVIEW_MODE=fix; SINCE_SHA="$FULL_SHA_DONE"
+  echo "  ready budget: fix-only review of the diff since ${SINCE_SHA:0:12}."
+else
+  BUDGET_MSG="review budget spent (full at ${FULL_SHA_DONE:0:12}, fix-only at ${FIX_SHA_DONE:0:12}); needs a human decision"
+fi
+
+if [ -n "$BUDGET_MSG" ] || [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
+  if [ -n "$BUDGET_MSG" ]; then
+    CAP_MSG="$BUDGET_MSG"; CAP_WHAT="spent its review budget (one full, one fix-only; $ENGINE)"
+  else
+    CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"; CAP_WHAT="hit the review round cap ($MAX_ROUNDS, $ENGINE)"
+  fi
+  echo "  REFUSING: PR #$PR has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
     # One comment and one alert per PR, not one per refused call: the loop may
     # keep calling, and repeating them is the same waste moved elsewhere. The
@@ -423,7 +495,7 @@ if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
       # The PR number again, as LETTERS: alert-to-linear's dedup strips every
       # digit, so "PR #501" and "PR #502" were one ticket and the second capped
       # PR only bumped a counter on the first (PR #501 review).
-      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
+      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) $CAP_WHAT. No more model reviews; decide merge, rework or close."
       bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
         || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
         || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
@@ -870,6 +942,162 @@ Then apply this rule, which is binding:
   a finding about the review process, and it is worth more than another nit."
 fi
 
+# WHAT THE MODEL READS (ASK-2542). A full review reads the whole PR through gh.
+# A fix-only review gets the diff since the recorded full-review sha PASTED IN,
+# and is told the rest of the PR is out of scope: telling it to run `gh pr diff`
+# hands it the whole PR again, which is the full re-review this budget removes.
+#
+# THE SINCE-DIFF IS THE PR'S OWN FILES, ON BOTH PATHS (PR #614 round 2, major).
+# git takes the file list as a pathspec. GitHub's compare answers for the whole
+# range, and it is the path a hosted runner always takes: it fetches the head at
+# depth 1, so the full-review sha is never local. Unfiltered, a push that merged
+# main put main's code in the block the prompt calls "ONLY the change since
+# then", spent the slot and gated on it. Round 1 read these same lines as a
+# stated limitation; the round 2 repro showed it gates.
+#
+# NOTHING TO PASTE IS ONE FULL REVIEW IN THE FIX SLOT, NEVER EXIT 1 (PR #614
+# round 2). Limited to the PR's files, a reword, an amend, an empty commit or a
+# merge of main is an empty since-diff, and so is a compare that did not answer.
+# Those exited 1 with no status, and the floor's red stood on a PR nobody read.
+# An empty diff must not derive APPROVE on code nobody was shown either, so the
+# model reads the whole PR and the run spends the fix slot: still two reviews
+# per PR. A diff too big to paste whole goes the same way. Its old "read the
+# rest with git diff" note could not run on the compare path, the one path that
+# grew that big.
+#
+# SCOPE IS NEW FINDINGS, NOT THE GATE (PR #532 review, major). A fix-only verdict
+# still writes kipi/reviewer-approved, so an earlier blocker or major in a file
+# the fix never touched must not fall out of scope and go green. Those findings
+# are pasted in from the last usable review and each must be re-checked on the
+# current head, wherever it lives.
+READ_CHANGE="## Read the change
+
+The PR was fetched from GitHub when this review started. Under codex the
+sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
+gh cannot reach GitHub there. The fetched copies:
+
+  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
+  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)"
+# _pr_files_only <paths>: a git diff on stdin, only the sections of the PR's
+# files out. A section is named by its ---, +++, rename and copy lines, never by
+# splitting the `diff --git` header on " b/": a path can hold that text (case 7
+# of test-review-on-ready.sh). Every section with content has --- and +++ lines,
+# so the header is read only for a mode-only or binary change, and a section it
+# still cannot name is kept: it carries no code.
+_pr_files_only() {
+  python3 -c '
+import sys
+keep = {p for p in sys.argv[1].split("\n") if p}
+def unq(v):
+    v = v.rstrip("\t")  # git appends a TAB to a path that holds a space
+    if len(v) > 1 and v[0] == "\"" and v[-1] == "\"":
+        try:
+            return v[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1").decode("utf-8")
+        except Exception:
+            return v
+    return v
+TAGS = (("--- ", "a/"), ("+++ ", "b/"), ("rename from ", ""), ("rename to ", ""),
+        ("copy from ", ""), ("copy to ", ""))
+def names(sec):
+    got = set()
+    for line in sec[1:]:
+        if line.startswith("@@"):
+            break
+        for tag, pre in TAGS:
+            if line.startswith(tag):
+                v = unq(line[len(tag):])
+                if v.startswith(pre):
+                    got.add(v[len(pre):])
+    if not got:
+        h = sec[0][len("diff --git "):]
+        n = (len(h) - 5) // 2
+        if n > 0 and h == "a/" + h[2:2 + n] + " b/" + h[2:2 + n]:
+            got.add(h[2:2 + n])
+    return got
+data = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+if data.endswith("\n"):
+    data = data[:-1]
+out, sec = [], []
+for line in (data.split("\n") if data else []) + ["diff --git END"]:
+    if line.startswith("diff --git "):
+        if sec:
+            got = names(sec)
+            if not got or got & keep:
+                out.extend(sec)
+        sec = [line]
+    elif sec:
+        sec.append(line)
+if out:
+    sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8", "surrogateescape"))
+' "$1"
+}
+SINCE_DIFF=""
+if [ "$REVIEW_MODE" = "fix" ]; then
+  SINCE_FILES="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json files -q '.files[].path' 2>/dev/null || true)"
+  SINCE_FROM="GitHub's compare"
+  if [ -z "$SINCE_FILES" ]; then
+    SINCE_FROM="nowhere, gh named none of the PR's files"
+  elif git -C "$REVIEW_ROOT" cat-file -e "$SINCE_SHA^{commit}" 2>/dev/null; then
+    SINCE_FROM="git"
+    SINCE_DIFF="$(printf '%s\n' "$SINCE_FILES" | tr '\n' '\0' | xargs -0 git -C "$REVIEW_ROOT" diff "$SINCE_SHA" "$HEAD_SHA" -- 2>/dev/null || true)"
+  else
+    SINCE_DIFF="$(gh api -H 'Accept: application/vnd.github.v3.diff' \
+      "repos/$STATUS_REPO_PATH/compare/$SINCE_SHA...$HEAD_SHA" 2>/dev/null \
+      | _pr_files_only "$SINCE_FILES" || true)"
+  fi
+  # argv carries the prompt; macOS ARG_MAX is about 1MB.
+  SINCE_CAP=200000
+  if [ -z "$SINCE_DIFF" ] || [ "${#SINCE_DIFF}" -gt "$SINCE_CAP" ]; then
+    if [ -z "$SINCE_DIFF" ]; then
+      _why="no change to the PR's own files since ${SINCE_SHA:0:12} (diff from $SINCE_FROM): a reword, amend, empty commit or merge of main, or a fetch that answered nothing"
+    else
+      _why="the PR's change since ${SINCE_SHA:0:12} is ${#SINCE_DIFF} characters, more than the $SINCE_CAP a prompt carries"
+    fi
+    echo "  fix-only scope: $_why. One FULL review instead; it spends the fix-only slot."
+    unset _why; SINCE_DIFF=""
+  fi
+fi
+if [ "$REVIEW_MODE" = "fix" ] && [ -n "$SINCE_DIFF" ]; then
+  # Only rows that GATE are re-checked. A major the reviewer marked nonblocking
+  # is a follow-up (ASK-2422); asked to re-raise it "at its original severity",
+  # the fix round drops the mark and the released major gates again. The mark
+  # is read through _NB_MARK_AWK, the lib's one owner of that rule.
+  PRIOR_GATING=""
+  for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
+    [ -f "$_f" ] && review_is_usable "$_f" \
+      && PRIOR_GATING="$(findings_block "$_f" | awk -F'|' "$_NB_MARK_AWK"' /^blocker[|]/ { print; next } /^major[|]/ { if (!nb()) print }' || true)"
+  done
+  [ -n "$PRIOR_GATING" ] || PRIOR_GATING="(none recorded)"
+  READ_CHANGE="## THIS IS A FIX-ONLY REVIEW
+
+The whole PR was already reviewed in full at commit $SINCE_SHA. For NEW findings
+your scope is ONLY the change since then, pasted below. Do NOT re-review the rest
+of the PR and do NOT run \`gh pr diff\`: a NEW finding on code outside this diff
+is dropped. You may read any file in the tree for context. The PR's title and
+description were fetched to $PR_CONTEXT_DIR/pr.txt.
+
+## EARLIER BLOCKER AND MAJOR FINDINGS: re-check EVERY one on the current head
+
+These are in scope WHEREVER they live, including files this diff does not touch.
+Your verdict sets the PR's gate, so an earlier blocker or major that is still
+live must be raised again at its original severity, with an executed repro on
+the current head. One that is fixed: say so and how you checked.
+
+$PRIOR_GATING
+
+## The change since $SINCE_SHA (head $HEAD_SHA)
+
+\`\`\`diff
+$SINCE_DIFF
+\`\`\`"
+  echo "  fix-only scope: ${#SINCE_DIFF} characters of diff since ${SINCE_SHA:0:12}, the PR's files only (from $SINCE_FROM)"
+  # The whole-PR diff was fetched above as the liveness check (ASK-2648) and
+  # sits next to comments.txt, which the round rule points the model at. Left
+  # there, the fix round can read the whole PR again, the re-review this budget
+  # removes. pr.txt (title and body) stays for context.
+  command rm -f -- "$PR_CONTEXT_DIR/pr.diff"
+fi
+
 PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
 You were asked to review pull request #$PR in $REVIEW_ROOT, and you are ADVERSARIAL by default:
 your job is to find what is wrong, not to be agreeable.$ROUND_RULE
@@ -894,14 +1122,7 @@ producing nothing.
 An empty or truncated review never derives APPROVE, so stopping to ask does not
 fail safe for the author -- it just burns a round.
 
-## Read the change
-
-The PR was fetched from GitHub when this review started. Under codex the
-sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
-gh cannot reach GitHub there. The fetched copies:
-
-  $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
-  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
+$READ_CHANGE
 
 ## What your fresh eyes are FOR
 
@@ -1515,6 +1736,16 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            "round": int(rnd), "review": review, "head_sha": head_sha,
            "ts": ts}, open(out, "w"), indent=2)
 PY
+
+# SPEND THE READY BUDGET ONLY ON A REVIEW THAT HAPPENED (ASK-2542). A provider
+# blip leaves an unusable file and must not burn the full or the fix-only slot,
+# the same rule the round cap counts by. An override never moves the slots.
+if [ "$REVIEW_USABLE" = "1" ]; then
+  case "$REVIEW_MODE" in
+    full) _ready_set full_sha "$HEAD_SHA" ;;
+    fix)  _ready_set fix_sha "$HEAD_SHA" ;;
+  esac
+fi
 
 # Severity floor, minors half: APPROVE WITH NITS is a TERMINAL state -- the loop
 # stops reworking -- so a minor found here gets no second pass. On REQUEST CHANGES
