@@ -153,4 +153,44 @@ assert not any("q-system/.q-system/scripts/memory_autocapture.py" in c for c in 
 EOF
 echo "ok: instance-owned scripts keep their hooks even when a basename collides"
 
+# Codex round 2 on PR #615, two spellings that defeated a substring test:
+#  - "q-system/" deeper in an INSTANCE path still made it skeleton-owned;
+#  - a quote between directory and file name hid the q-system/ prefix, so a
+#    template script read as an instance path and ran twice (the doubled
+#    token-guard scar) or escaped retirement.
+# Ownership is now the leading component of the project-relative path, read
+# after shell quotes are removed. Anything not provably project-relative keeps
+# the old basename identity, so an unknown spelling fails toward dedup.
+cat > "$FIXTURE/instance3.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system\"/token-guard.py"},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/Q-SYSTEM/.q-system/token-guard.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/not-q-system/token-guard.py\""}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts\"/memory_autocapture.py"}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance3.json" >/dev/null
+python3 - "$FIXTURE/instance3.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/not-q-system/token-guard.py" in c for c in all_cmds), \
+    "an instance path containing q-system/ deeper down was deduped away"
+skel = [c for c in all_cmds if "token-guard.py" in c and "q-inst/" not in c]
+assert len(skel) == 1, f"template token-guard must run once, got {len(skel)}: {skel}"
+assert not any("memory_autocapture.py" in c for c in all_cmds), \
+    "a quoted spelling of a retired skeleton script escaped retirement"
+EOF
+echo "ok: ownership reads the leading path component, after shell quotes"
+
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"

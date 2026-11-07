@@ -27,8 +27,33 @@ import sys
 
 # A "script" is any .py/.sh path in the command, read with the directory in front
 # of it so ownership can be told (see hook_script_names).
-SCRIPT_PATH_RE = re.compile(r"((?:[^\s\"'/;|&()]*/)*)([A-Za-z0-9_\-]+\.(?:py|sh))")
-_PROJECT_PREFIXES = ("$CLAUDE_PROJECT_DIR/", "${CLAUDE_PROJECT_DIR}/", "./")
+SCRIPT_PATH_RE = re.compile(r"((?:[^\s;|&()]*/)*)([A-Za-z0-9_\-]+\.(?:py|sh))")
+_PROJECT_VARS = ("${CLAUDE_PROJECT_DIR}/", "$CLAUDE_PROJECT_DIR/")
+
+
+def _script_identity(prefix, name):
+    """Basename for a skeleton script, "path:<rel>" for an instance-owned one.
+
+    Instance-owned means PROVABLY project-relative (after $CLAUDE_PROJECT_DIR/,
+    or a bare relative path) with a leading component other than q-system.
+    Everything else keeps the old basename identity, so a spelling this cannot
+    read fails toward dedup, the direction the token-guard scar was about.
+    """
+    full = prefix + name
+    rel = None
+    for var in _PROJECT_VARS:
+        at = full.rfind(var)
+        if at != -1:
+            rel = full[at + len(var):]
+            break
+    if rel is None:
+        rel = full[2:] if full.startswith("./") else full
+        if "/" not in rel or rel.startswith(("/", "~", "$")):
+            return name
+    rel = os.path.normpath(rel).lower()
+    if rel.startswith("..") or rel.split("/", 1)[0] == "q-system":
+        return name
+    return "path:" + rel
 
 
 def hook_script_names(command):
@@ -37,24 +62,22 @@ def hook_script_names(command):
     A script under the q-system/ subtree is the skeleton's, and is identified by
     basename so every path layout of it dedupes (the token-guard fossil scar in
     the module docstring). Every template hook lives there (measured 2026-11-06).
-    Any other path is the instance's own script and is identified by its path:
-    keyed by basename alone, an instance's q-inst/token-guard.py was deduped
-    against the template's token-guard, and an instance script that shared a
-    retired name was retired with it (codex review of kipi-system PR #615,
-    ASK-3685). apply-claude-changes lets an instance wire its own hooks on the
-    premise that this merge keeps them; this is what makes that true.
+    An instance's own script is identified by its path: keyed by basename alone,
+    an instance's q-inst/token-guard.py was deduped against the template's
+    token-guard, and an instance script that shared a retired name was retired
+    with it (codex review of kipi-system PR #615, ASK-3685). apply-claude-changes
+    lets an instance wire its own hooks on the premise that this merge keeps
+    them; this is what makes that true.
+
+    Ownership is the LEADING path component, read after shell quotes are
+    removed. Codex round 2 broke both shortcuts: a substring test made
+    q-inst/not-q-system/x.py skeleton-owned, and a quote between directory and
+    name ("$D/q-system/.q-system"/token-guard.py) hid the prefix so a template
+    script read as an instance one and ran twice.
     """
-    out = set()
-    for prefix, name in SCRIPT_PATH_RE.findall(command):
-        if not prefix or "q-system/" in prefix:
-            out.add(name)
-            continue
-        rel = prefix + name
-        for lead in _PROJECT_PREFIXES:
-            if rel.startswith(lead):
-                rel = rel[len(lead):]
-        out.add("path:" + rel)
-    return frozenset(out)
+    unquoted = command.replace('"', "").replace("'", "")
+    return frozenset(_script_identity(prefix, name)
+                     for prefix, name in SCRIPT_PATH_RE.findall(unquoted))
 
 
 def _only_retired(command, retired):
