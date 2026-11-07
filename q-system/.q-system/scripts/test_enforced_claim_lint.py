@@ -1677,6 +1677,44 @@ def test_event_enforced_on_a_non_blocking_event_fails(tmp_path):
     assert 8 in _codes(v), [str(x) for x in v]
 
 
+def _compact_tree(tmp_path, event):
+    """One blocking script wired under a single compaction event, one ENFORCED
+    clause naming that event."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(BLOCKER_SRC)
+    (tmp_path / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {
+        event: [{"matcher": "auto", "hooks": [
+            {"type": "command",
+             "command": 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel}]}]}}))
+    entry = dict(_GATE_BLOCKS, event=event)
+    text = ("---\ndescription: fixture\n---\n\n# Gate One (ENFORCED)\n\n"
+            "Some directive text.\n\n<!-- enforcement -->\n```json\n%s\n```\n"
+            % json.dumps([entry]))
+    rule = rules / "fixture.md"
+    rule.write_text(text)
+    return rule
+
+
+def test_event_enforced_on_postcompact_fails(tmp_path):
+    """C8 for PostCompact (PR #619 last review round). PostCompact runs after
+    compaction finished, and per the Claude Code hooks reference its exit 2 only
+    shows stderr to the user. It was missing from NON_BLOCKING_EVENTS, so an
+    ENFORCED clause resting on it passed."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, "PostCompact"))
+    assert 8 in _codes(v), [str(x) for x in v]
+
+
+def test_event_enforced_on_precompact_passes(tmp_path):
+    """CONTROL, and the half of that review finding that was rejected: PreCompact
+    exit 2 blocks compaction, so ENFORCED there is honest and must pass."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, "PreCompact"))
+    assert v == [], [str(x) for x in v]
+
+
 def test_event_enforced_on_the_blocking_event_passes(tmp_path):
     """CONTROL for C8 above: the same ENFORCED entry naming the event that can
     deny is honest and passes."""

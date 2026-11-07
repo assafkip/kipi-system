@@ -135,7 +135,7 @@ KNOWN_KEYS = {"clause", "status", "exec", "config", "test", "directives",
 REQUIRED_KEYS = {"clause", "status"}
 
 # Hook events whose exit status refuses nothing: Claude Code shows a SessionStart,
-# SessionEnd or Notification hook's stderr to the user and carries on. An entry
+# SessionEnd, Notification or PostCompact hook's stderr to the user and carries on. An entry
 # that names one of these as its `event` is therefore report-only by construction.
 #
 # Why `event` exists (ASK-3872, sp-0319b513): posture used to be judged per
@@ -145,10 +145,15 @@ REQUIRED_KEYS = {"clause", "status"}
 # the event lets each clause state the invocation that carries it.
 #
 # An event NOT listed here is treated as able to block, which is the old judgment.
-# Getting this wrong by omission only keeps an honest DETECTED red (visible);
-# listing an event that can block would let an understated gate pass, so the set
-# holds only events the platform documents as non-blocking.
-NON_BLOCKING_EVENTS = frozenset({"SessionStart", "SessionEnd", "Notification"})
+# Omission fails BOTH ways, not only toward a visible red: it keeps an honest
+# DETECTED red (C10), and it also lets an ENFORCED claim on that event pass (C8).
+# PostCompact was missing, so ENFORCED on it passed (PR #619 last review round).
+# Listing an event that CAN block would let an understated gate pass, so the set
+# holds only events the Claude Code hooks reference documents as non-blocking
+# (code.claude.com/docs/en/hooks). PreCompact is NOT one: its exit 2 blocks
+# compaction. Re-check that page when Claude Code adds a hook event.
+NON_BLOCKING_EVENTS = frozenset({"SessionStart", "SessionEnd", "Notification",
+                                 "PostCompact"})
 
 # The block is introduced by an HTML comment so the fence itself stays ordinary
 # ```json -- markdown renderers, and the rules' own readers, treat it as a normal
