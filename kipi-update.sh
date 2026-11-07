@@ -2217,9 +2217,11 @@ while IFS='|' read -r name path prefix itype declared; do
     if [ "${#MODEL_SKIPPED_PATHS[@]}" -gt 0 ]; then
       echo "  dry-run model: skipped ${#MODEL_SKIPPED_PATHS[@]} nested repositories (separate repos, not synced)"
     fi
-    if ! python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
+    if ! MODEL_IGNORED_LINKS_FILE="$DRY_MODEL_ROOT/ignored-links" \
+        python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
 import os
 import pathlib
+import subprocess
 import sys
 
 # An escaping symlink is allowed ONLY when it resolves to an existing regular
@@ -2246,6 +2248,36 @@ root = pathlib.Path(sys.argv[1]).resolve()
 # canonical links refused cole-gtm, its parent, for a sync that never touches
 # personal-brand at all.
 skipped = {(root / arg).resolve(strict=False) for arg in sys.argv[2:]}
+# Links the model leaves out, one relative path per line, for the rsync excludes.
+ignored_out = open(os.environ["MODEL_IGNORED_LINKS_FILE"], "w")
+
+
+def left_out(candidate):
+    """True for a link git IGNORES and does not track, which the model can leave
+    out: a path the model does not contain cannot be written through.
+
+    Scar ASK-3887 (measured 2026-11-06): a client instance carries a
+    gitignored link from one of its folders to another repo on purpose, and this
+    walk refused every dry run of it. `git check-ignore` exits 0 only for an ignored path that
+    is not tracked; a tracked link (even one a .gitignore line names) and a path
+    under .git/ exit 1 and keep the refusal, as does any git error. A name that
+    rsync would read as a pattern is not left out, so the exclude cannot match
+    more than this one path.
+    """
+    rel = str(candidate.relative_to(root))
+    if any(ch in rel for ch in "*?[\\\n"):
+        return False
+    try:
+        result = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--", rel],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    ignored_out.write(rel + "\n")
+    return True
+
+
 for current, directories, files in os.walk(root, followlinks=False):
     directories[:] = [
         name for name in directories
@@ -2284,7 +2316,7 @@ for current, directories, files in os.walk(root, followlinks=False):
                 break
         else:
             internal = False
-        if internal:
+        if internal or left_out(candidate):
             continue
         reason = "directory" if candidate.is_dir() else "dangling"
         print(f"unsafe {reason} symlink escapes the disposable model: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
@@ -2292,6 +2324,18 @@ for current, directories, files in os.walk(root, followlinks=False):
 PY
     then
       abandon_instance "  ERROR: unsafe symlink prevents isolated dry-run modeling" && continue
+    fi
+    # The walk's left-out links become rsync excludes, so the model never holds
+    # them (ASK-3887). Anchored with a leading slash: the walk refused any name
+    # rsync would read as a pattern.
+    MODEL_IGNORED_LINKS=0
+    if [ -s "$DRY_MODEL_ROOT/ignored-links" ]; then
+      while IFS= read -r ignored_rel; do
+        [ -n "$ignored_rel" ] || continue
+        MODEL_EXCLUDES+=(--exclude="/$ignored_rel")
+        MODEL_IGNORED_LINKS=$((MODEL_IGNORED_LINKS + 1))
+      done < "$DRY_MODEL_ROOT/ignored-links"
+      echo "  dry-run model: left out $MODEL_IGNORED_LINKS gitignored symlink(s) that leave the instance (not modeled)"
     fi
     SOURCE_GIT_DIR="$(
       git -C "$path" rev-parse --path-format=absolute --git-common-dir \
