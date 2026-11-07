@@ -276,8 +276,9 @@ PH="$WORK/prim.sh"
   echo 'page_once "$@"'
 } > "$PH"
 grep -q '^page_lock() {' "$PH" && grep -q '^page_once() {' "$PH" || { echo "primitive harness did not extract page_once"; exit 1; }
-# A FRESH lock is respected (the duplicate-page fix must still hold).
-mkdir -p "$PL/paged-korph.lock"
+# A FRESH lock is respected (the duplicate-page fix must still hold). The lock is
+# held the way page_lock holds it since ASK-3797: a plain file, not a directory.
+: > "$PL/paged-korph.lock"
 FRESH="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
 [ "${FRESH:-0}" -eq 0 ] \
   && ok "a FRESH lock is respected, so concurrent dispatchers still do not duplicate" \
@@ -288,6 +289,18 @@ AGED="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep
 [ "${AGED:-0}" -ge 1 ] \
   && ok "an ORPHANED lock is reaped and the alert gets through ($AGED page)" \
   || bad "THE DEFECT: an orphaned lock mutes this key forever -- a dedupe that became a permanent silence"
+[ -e "$PL/paged-korph.lock" ] \
+  && bad "the reaping page_once left its own lock behind, so the next beat is muted for 300s" \
+  || ok "the page that reaped the orphan released its own lock"
+# A lock DIRECTORY left by the pre-ASK-3797 mkdir claim on a live machine must
+# still count as held while fresh and still age out, or the upgrade mutes a key.
+mkdir -p "$PL/paged-klegacy.lock"
+LFRESH="$( LOG="$PL/dispatch.log" bash "$PH" klegacy "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+touch -t 202501010000 "$PL/paged-klegacy.lock" 2>/dev/null
+LAGED="$( LOG="$PL/dispatch.log" bash "$PH" klegacy "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+[ "${LFRESH:-0}" -eq 0 ] && [ "${LAGED:-0}" -ge 1 ] && [ ! -e "$PL/paged-klegacy.lock" ] \
+  && ok "a legacy lock directory is held while fresh and reaped once old ($LFRESH then $LAGED)" \
+  || bad "THE DEFECT: a lock directory from the old mkdir claim is mishandled ($LFRESH then $LAGED; still there: $([ -e "$PL/paged-klegacy.lock" ] && echo yes || echo no))"
 
 echo
 echo "== 11. concurrent page_once must not duplicate the same alert =="
@@ -299,6 +312,45 @@ TOTAL=$(( $(grep -c '^PAGE ' "$WORK/c1.out" || true) + $(grep -c '^PAGE ' "$WORK
 [ "$TOTAL" -le 1 ] \
   && ok "two dispatchers deciding the same key produced $TOTAL page(s), not 2" \
   || bad "THE DEFECT: unlocked marker check let concurrent dispatchers send $TOTAL duplicate pages"
+
+echo
+echo "== 11b. ASK-3797: the page lock must not trust the mkdir BINARY to be exclusive =="
+# MEASURED, NOT GUESSED. Case 11 went red on 22 of 60 GitHub runs (2026-11-07,
+# idle runners, load 0.2) and on main's nightly since 2026-11-05. A traced run
+# showed BOTH racers' `mkdir "$lock"` exit 0 on the same path, then the first
+# racer's rmdir fail because the second had already removed the one directory.
+# ubuntu-latest is now Ubuntu 26.04, whose mkdir is uutils coreutils 0.10.0. It
+# checks for the directory, then creates it and tolerates "already exists", so a
+# directory that appears between the two reads as success. Two concurrent
+# `mkdir P` both exit 0 there in 480 of 500 rounds; GNU mkdir 9.4, os.mkdir and a
+# bash O_EXCL redirect all 0 of 500. Case 11 is a coin toss on that window; this
+# shim makes the lost race happen every time: it exits 0 for a path that exists.
+REAL_MKDIR="$(command -v mkdir)"
+LIAR="$WORK/liar-bin"; mkdir -p "$LIAR"
+printf '#!/bin/sh\n"%s" "$@" 2>/dev/null\nexit 0\n' "$REAL_MKDIR" > "$LIAR/mkdir"
+chmod +x "$LIAR/mkdir"
+# The shim must actually lie, or the next check passes on an honest mkdir.
+mkdir -p "$WORK/liar-probe"
+PATH="$LIAR:$PATH" mkdir "$WORK/liar-probe" 2>/dev/null \
+  && ok "the shim behaves like uutils' lost race: mkdir of an existing dir exits 0" \
+  || bad "the mkdir shim is not in effect, so the lock check below proves nothing"
+LK="$WORK/plock-liar"; mkdir -p "$LK"
+LH="$WORK/lockpair.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'page_lock "$1" && echo FIRST=TAKEN || echo FIRST=REFUSED'
+  echo 'page_lock "$1" && echo SECOND=TAKEN || echo SECOND=REFUSED'
+} > "$LH"
+grep -q '^page_lock() {' "$LH" || { echo "lock-pair harness did not extract page_lock"; exit 1; }
+LP="$(PATH="$LIAR:$PATH" bash "$LH" "$LK/paged-kliar.lock" 2>/dev/null | tr '\n' ' ')"
+case "$LP" in
+  *FIRST=TAKEN*SECOND=REFUSED*)
+    ok "a held page lock refuses a second taker even when mkdir is not exclusive ($LP)" ;;
+  *)
+    bad "THE DEFECT (ASK-3797): two takers both hold the page lock when mkdir is not exclusive ($LP), which is case 11's duplicate page on Ubuntu 26.04" ;;
+esac
 
 echo
 echo "== 12. the Linear outage guard vs the PRODUCER'S REAL OUTPUT =="
@@ -442,8 +494,9 @@ echo "== 14. MINOR: a clear cannot interleave with an in-flight page decision ==
 # marker, page_once wrote one a moment later, and that marker then described an
 # already-recovered condition -- muting the next real episode for up to 24h.
 PR="$WORK/prace"; mkdir -p "$PR"
-# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand.
-mkdir -p "$PR/paged-krace.lock"
+# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand,
+# in the shape page_lock takes it (a file, since ASK-3797).
+: > "$PR/paged-krace.lock"
 printf 'oldhash\n1\n' > "$PR/paged-krace"
 CL="$( LOG="$PR/dispatch.log" bash -c '
   set -uo pipefail

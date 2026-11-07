@@ -261,7 +261,7 @@ _ROOT = None
 
 
 def acquire_lock(root):
-    """Serialise the whole read-decide-write. Returns the held file object.
+    """Serialise the whole read-decide-write. Returns what must stay held.
 
     Without this, two concurrent applies each read the same base content, each
     stage against it, and the second write silently discards the first
@@ -276,17 +276,32 @@ def acquire_lock(root):
     re-runs. The lock is released when the process exits, so a crashed run does
     not wedge the tool (flock is bound to the fd, not to a file that must be
     cleaned up).
+
+    Two locks. The .apply.lock file excludes another apply. A flock on the
+    .claude/ directory itself excludes kipi-settings-merge.py, which rebuilds an
+    instance's settings.json on the fleet update path and takes that same
+    directory lock (ASK-3880: an apply landing inside the merge's read-modify-
+    write was erased by it, after printing "OK applied"). The merge locks the
+    directory and not this file because creating the file left an untracked
+    path in every instance that does not ignore q-system/output/ (8 of 14,
+    measured 2026-11-07), and the updater leaves a clean tree.
     """
     import fcntl
     lock_dir = os.path.join(root, "q-system", "output", "claude-changes")
     os.makedirs(lock_dir, exist_ok=True)
     handle = open(os.path.join(lock_dir, ".apply.lock"), "w")
+    claude_fd = None
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        claude_fd = os.open(os.path.join(root, ".claude"), os.O_RDONLY)
+        fcntl.flock(claude_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (OSError, IOError):
         handle.close()
-        raise Refusal("another apply is already running (lock held); nothing was read or written")
-    return handle
+        if claude_fd is not None:
+            os.close(claude_fd)
+        raise Refusal("another apply or the fleet settings merge is running (lock held); "
+                      "nothing was read or written")
+    return handle, claude_fd
 
 
 def repo_root_from_script():
@@ -1173,15 +1188,18 @@ def main(argv):
                               "fleet hooks are wired in the kipi-system skeleton")
         if touches_settings:
             # The fleet merge keys an instance script by its path only in the
-            # canonical spelling; any other spelling is keyed by basename and can
-            # be deduped or retired away (fleet reviewer, PR #615; ASK-3876 is
-            # the refusal at this point). Say so where the operator reads it.
+            # canonical spelling; any other spelling is keyed by basename and is
+            # dropped, with a line on the merge's output, when an earlier hook in
+            # the same event and matcher runs a script of that name (fleet
+            # reviewer, PR #615). It is no longer retired by name alone
+            # (ASK-3876). Say so where the operator reads it.
             log.append("instance mode: no settings-template.json and no "
                        "instance-registry.json; the fleet merge keys a hook by its "
                        "path only when written as \"$CLAUDE_PROJECT_DIR/<path>\" "
                        "with <path> outside q-system/ and no source, . or eval in "
                        "the command; it keys anything else, including any script "
-                       "under q-system/, by its basename")
+                       "under q-system/, by its basename, and names on its output "
+                       "any such hook it drops as a duplicate")
     elif touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
         raise Refusal(".claude/settings.json edited without the settings-template.json pair")
 

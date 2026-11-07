@@ -1,0 +1,11 @@
+{
+  "_comment": "GENERATED in the skeleton by enforced-claim-lint.py --sync-marker-refs and shipped to every instance with q-system/. Statuses of the skeleton's own spillover ids, and which skeleton rule names each, so an instance judges those refs by the ledger that owns them. Ids and statuses only, no descriptions.",
+  "refs": {
+    "sp-45473673": "open"
+  },
+  "rules": {
+    ".claude/rules/token-discipline.md": [
+      "sp-45473673"
+    ]
+  }
+}
