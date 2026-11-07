@@ -16,6 +16,7 @@ Codex verdicts, in order (logs under the session scratchpad, codex-engine-r1/r2/
 - r1 high: `q-inst/memory_autocapture.py` retired with the skeleton script of the same basename.
 - r2 high: `q-inst/not-q-system/token-guard.py` read as skeleton-owned (substring test); `"$D/q-system/.q-system"/token-guard.py` read as instance-owned (quote split).
 - r3 high: `cd "$CLAUDE_PROJECT_DIR/q-system" && python3 .q-system/token-guard.py` reads as instance path `.q-system/token-guard.py`, so the skeleton guard is kept twice.
+- r4 (handoff agent, on fc10fb6c, the opposite direction): high, `$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py` read as the retired `memory_autocapture.py` (no dots in the file-name pattern), so a canonical instance hook was dropped; medium, the `.` in `python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py" .` read as the source builtin (position-blind word check), so the hook deduped away.
 
 ## Surface root cause
 
@@ -40,16 +41,19 @@ The merge had no test of instance-owned hooks at all before this PR. Its tests o
 - Round 4 (handoff agent, fc10fb6c): the round-3 input and a 20-row grammar table were added to test-settings-merge.sh. Red on 0f1f7536: the merge kept 2 token-guards, and 12 of 14 out-of-grammar spellings got path identity. Two of those were doubling routes no review had named: `$CLAUDE_PROJECT_DIR//q-system/...` and `$CLAUDE_PROJECT_DIR/$SUB/...`. Green on fc10fb6c, 6 of 6 blocks; test-apply-claude-changes.sh 146 passed, 0 failed.
 - mutate.py, 5 of 5 KILLED, each applied once with a moved digest and restored: the `cd` check off, `cd` dropped from the word set, the anchor-write check off, a leading slash allowed, the path charset opened.
 - Fleet re-measure on fc10fb6c, in memory only: 14 registered instances have a settings.json (13 when the RCA was opened). Old vs new merge differ in 0 of them. All 17 live path-identity hooks keep it, and every one uses the canonical spelling.
+- Round 5 (a0c4fddc): both round-4 inputs added as a merge block that requires both hooks to survive, plus 8 grammar rows. Red on fc10fb6c, green on a0c4fddc, 7 of 7 blocks; apply suite 146 passed, 0 failed. mutate.py on a green baseline: 11 of 11 KILLED, each applied once. Fleet: 0 of 14 differ, 17 of 17 path-identity hooks kept.
 
 ## Contributing factors
 
 - The bare-relative-path branch was added for completeness, not because any real hook used it. The case gate and gate-draft hooks both use the `$CLAUDE_PROJECT_DIR/<rel>` form.
 - Each round fixed exactly the reported spelling instead of shrinking the accepted grammar.
+- The first narrowing (fc10fb6c) tested the refused side with 14 rows and the accepted side with 6 live spellings. Its tokenizer did not implement its own grammar: dots were legal in the path charset but not in the file-name pattern, and a builtin's name was refused even as an argument.
 
 ## Fixes shipped
 
 - Surface fix (fc10fb6c): the round-3 spelling now dedupes, because a relative path never earns path identity.
 - Structural fix (fc10fb6c): the parser accepts one spelling and refuses the rest. Path identity needs a token that starts with `$CLAUDE_PROJECT_DIR/` or `${CLAUDE_PROJECT_DIR}/` and goes on in plain path characters. It also needs a command that never moves the working directory (cd, pushd, popd), never runs text as code in the shell (source, ., eval), and only reads CLAUDE_PROJECT_DIR. Anything else keeps basename identity and fails toward dedup. This is narrower than the handoff's recommendation, which restricted only the anchor and `cd`.
+- Accept-side fix (a0c4fddc): dots are part of a file name, and a state word counts only as a command name (the first word after the POSIX command prefix, an opening reserved word, or the builtin/command wrapper), so a builtin's name used as an argument no longer refuses a canonical hook.
 
 ## Recurrence
 
@@ -66,3 +70,4 @@ No earlier RCA in this directory covers hook identity in kipi-settings-merge.py.
 
 - When a parser of free-form text loses a review round to a new spelling, shrink the accepted grammar; do not add the next spelling.
 - A premise a feature rests on ("the merge keeps instance hooks") needs its own test before the feature ships.
+- A narrowed grammar has two edges. Test the accepted side as hard as the refused side, with inputs the live data does not happen to contain.
