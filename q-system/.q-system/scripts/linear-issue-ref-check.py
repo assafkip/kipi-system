@@ -24,9 +24,42 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Linear issue ids are uppercase team key + dash + number (ASK-51, CAP-45, LIN-7).
-# Uppercase-only on purpose: lowercase "ask-61" in prose is not a reference.
-ISSUE_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
+def team_keys() -> list:
+    """The team keys that count as a Linear reference, from ONE place.
+
+    That place is `KIPI_LINEAR_TEAM`, already the fleet's single convention for
+    "which Linear team is this instance" -- alert-to-linear.py,
+    spillover-promote.py, linear-triage-health.py and linear-route.py all read
+    it with the same "ASK" default. Deriving the gate's prefix scope from it
+    means the keys are never retyped here: an instance on another workspace is
+    configured, not stranded, and a comma-separated value covers a repo that
+    legitimately cites more than one team.
+    """
+    raw = os.environ.get("KIPI_LINEAR_TEAM", "ASK")
+    keys = [k.strip().upper() for k in raw.split(",") if k.strip()]
+    return keys or ["ASK"]
+
+
+def issue_re(keys: list) -> "re.Pattern":
+    """Match a declared team key + dash + number, and nothing else.
+
+    Uppercase-only on purpose: lowercase "ask-61" in prose is not a reference.
+
+    Scoped to declared keys because the old pattern was `[A-Z][A-Z0-9]{1,9}-\\d+`,
+    which accepts ANY uppercase token followed by a dash and a number. Measured
+    on this repo's history 2026-10-22: 16 commits cleared the gate citing no real
+    issue, HEAD among them (`RULE-2026` out of `RULE-2026-10-20-A`), plus
+    `UTF-8`, `SHA-256`, `DEC-30`, `PRD-2`, `PHASE-0`, `CRITICAL-1`. A denylist of
+    those prefixes would have been the same bug pointed the other way: the next
+    noise prefix passes silently. The live workspace has exactly one team, key
+    ASK (teams query, 2026-10-22), so an undeclared prefix is noise by
+    definition (ASK-2810).
+    """
+    alternation = "|".join(re.escape(k) for k in keys)
+    return re.compile(r"\b(?:" + alternation + r")-\d+\b")
+
+
+ISSUE_RE = issue_re(team_keys())
 
 # [no-issue: reason] with a non-empty reason. An empty reason is not an escape.
 BYPASS_RE = re.compile(r"\[no-issue:\s*(?P<reason>[^\]]*?)\s*\]", re.IGNORECASE)
@@ -92,10 +125,16 @@ def record_bypass(reason: str, subject: str) -> None:
 
 
 def refuse(subject: str) -> int:
+    keys = team_keys()
     print(
         "\nBLOCK: this commit names no Linear issue.\n"
         "\n"
         f"  subject: {subject or '(empty)'}\n"
+        f"  team keys accepted: {', '.join(keys)}\n"
+        "\n"
+        "A token like RULE-2026-10-20-A, UTF-8 or PHASE-0 is NOT an issue id.\n"
+        "On another Linear workspace, declare its key:\n"
+        "  export KIPI_LINEAR_TEAM=ASK,<YOUR-KEY>\n"
         "\n"
         "Every commit records the work it belongs to. Pick one:\n"
         "\n"
