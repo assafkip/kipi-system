@@ -50,7 +50,9 @@ Close the active DSSE issue. Execute in order:
 
    Must print `0`. If non-zero, the gate will block close. Re-triage the remaining findings.
 
-5. Record triage, then close. Run these as two separate steps and STOP if the
+5. Commit the patches applied above first: `close` re-reads the size class
+   from committed HEAD, and uncommitted code counts as L. Record triage, then
+   close. Run these as two separate steps and STOP if the
    first one exits non-zero -- there is no `set -e` here, so a failed `triage`
    would otherwise fall through into `close` and produce a confusing second
    failure at the receipt gate:
