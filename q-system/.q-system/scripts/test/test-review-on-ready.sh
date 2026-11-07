@@ -119,8 +119,18 @@ ok "draft: 0 model calls, exit 0, logged 'draft, skipped'"
 echo false > "$WORK/draft"
 
 # 2. First run on a ready PR: ONE full review (positive control for the stub).
+# A legacy un-keyed record (pr-1.verdict.json) belongs to the HOME repo's PR #1,
+# not to example-owner/example-repo's. The seed must not read it, or this PR's
+# first review becomes a fix-only round against a foreign sha (PR #614 review,
+# major: exit 1, no model call, no status).
+mkdir -p "$WORK/home/.config/kipi/pr-reviews"
+printf '{"pr": 1, "usable": true, "head_sha": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}\n' \
+  > "$WORK/home/.config/kipi/pr-reviews/pr-1.verdict.json"
 FULL_SHA="$(sha)"
 run_reviewer "$WORK/r1.out" --post
+grep -q 'seeded full review at deadbeef' "$WORK/r1.out" \
+  && fail "the ready budget was seeded from another repo's legacy verdict record (pr-1.verdict.json):
+$(grep 'ready budget' "$WORK/r1.out")"
 [ "$(calls)" = "1" ] || fail "first ready run made $(calls) model calls, expected 1 (stub is not the dispatched engine?):
 $(tail -20 "$WORK/r1.out")"
 grep -q 'FIX-ONLY' "$WORK/prompt-1.txt" && fail "the first review was scoped as fix-only; it must be a full review"

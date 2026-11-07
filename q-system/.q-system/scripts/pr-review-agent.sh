@@ -435,7 +435,12 @@ _ready_set() {  # _ready_set <key> <value>: rewrite one key, keep the others
     && mv "$tmp" "$READY_STATE"
 }
 if [ ! -f "$READY_STATE" ]; then
-  _seed_rec="$(verdict_record_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")"
+  # The REPO-KEYED record only (PR #614 review, major). verdict_record_path falls
+  # back to the un-keyed pr-<N>.verdict.json, which belongs to the home repo, so
+  # a client repo's PR #1 seeded from the home repo's PR #1: a fix-only round
+  # against a foreign sha, exit 1, no review and no status. A home PR whose only
+  # record predates ASK-738 gets one full review instead, the cheap direction.
+  _seed_rec="$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")"
   _seed_sha="$(python3 -c 'import json,sys
 try:
   r = json.load(open(sys.argv[1]))

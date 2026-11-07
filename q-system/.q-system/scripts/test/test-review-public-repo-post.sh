@@ -144,9 +144,13 @@ run_post() {  # run_post <tag> <visibility> <review-file>
   local tag="$1"; echo "$2" > "$WORK/visibility"; cp "$3" "$WORK/review.txt"
   [ -d "$WORK/home-$tag" ] || mkhome "$tag"
   rm -f "$POSTED"/*.txt "$WORK/ctx-comments.txt"; : > "$GH_LOG"
+  # Cases 6 and 8 run round 2 on the SAME head, which the ready budget
+  # (ASK-2542) refuses as already reviewed. They test what round 2 is GIVEN,
+  # not the budget, so they take the human re-request door (still under the
+  # round cap). test-review-on-ready.sh owns the budget branches.
   ( cd "$WORK/skel" \
     && HOME="$WORK/home-$tag" KIPI_STATE_DIR="$WORK/state-$tag" KIPI_NOTIFY="/usr/bin/true" \
-       KIPI_REVIEW_SCRATCH_BASE="$WORK/scratch-$tag" \
+       KIPI_REVIEW_SCRATCH_BASE="$WORK/scratch-$tag" KIPI_REVIEW_HUMAN_REREQUEST=1 \
        bash "$AGENT" 1 --engine claude --post ) >"$WORK/run-$tag.out" 2>&1
 }
 
