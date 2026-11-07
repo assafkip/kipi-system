@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-07
 **Trigger:** the 3-round Codex cap (iteration-speed rule 6) on kipi-system PR #627, ASK-3930
-**Surface-fix commit:** pending
-**Structural-fix commit:** pending
+**Surface-fix commit:** 265f668b
+**Structural-fix commit:** 265f668b
 
 ## What happened
 
@@ -48,7 +48,9 @@ Evidence that the diagnosis is real, gathered before the fix:
 
 - Ran `grep -n "lock.claim\|mmin +2" q-system/.q-system/scripts/pr-review-agent.sh` at 344b340f, got line 588 (`m="$1.lock.claim"`) and line 614 (the age check and `rmdir` by pathname): the reclaim of the mutex is itself a pathname reclaim.
 - Ran `grep -rn "LOCK_EX" --include='*.sh' .` in the worktree, got `kipi-promote.sh:119`, the inherited-fd `fcntl.flock` idiom: the kernel-lock primitive existed in the repo before round 1.
-- The reproducer and its red run on 344b340f, the green run after the fix, and the mutation result are recorded below once the fix lands.
+- Red: ran `bash q-system/.q-system/scripts/test/test-pr-review-reap-trees.sh` with the new tests against the 344b340f `acquire_wt_lock`, got rc 1, 6 FAIL. The forced round 3 schedule printed `round 3 contenders (pid rc): A 37040 0, B 37041 0; the lock holds 37041`: both contenders took the tree and B overwrote A's live lock, which is Codex's interleave exactly.
+- Green: the same test after the fix, under macOS bash 3.2 with BSD tools (`PATH=/bin:/usr/bin:/usr/sbin:/sbin:/opt/homebrew/bin /bin/bash ...`), got rc 0, 58 PASS, 0 FAIL, and `A 40875 2, B 40876 0; the lock holds 40876`: one owner, the other busy. The neighbors that extract `acquire_wt_lock` (`test-review-root-and-lock.sh`, `test-review-early-bail-ref.sh`, `test-pr-review-scratch.sh`) are rc 0.
+- Mutation: ten mutants through `plugins/prd-os/scripts/mutate.py` (exact-once anchor, green baseline, digest-verified restore), each on a fresh copy, each checked against the one named test that should catch it. All ten KILLED, including the 344b340f `acquire_wt_lock` restored (killed by the round 3 one-owner check), the flock call removed and a per-process mutex file (both killed by the round 2 "A really waited" check), and the live-holder check skipped (killed by "A backs off as busy").
 
 ## Contributing factors
 
@@ -58,8 +60,8 @@ Evidence that the diagnosis is real, gathered before the fix:
 
 ## Fixes shipped
 
-- Surface fix: no age-based mutex stealing remains. Pending commit.
-- Structural fix: `acquire_wt_lock` becomes one kernel `flock` critical section (python3 `fcntl.flock`, the `kipi-promote.sh` idiom) over the whole acquire: fast path, re-entry, stale reclaim and the reaper's claim. The mutex is one file per review-trees directory that is never unlinked, so no path can be removed out from under a holder. The PID lock file stays as the long-lived ownership record that every reader already uses. A deterministic two-contender test forces the round 3 schedule with PATH shims and asserts exactly one owner. Pending commit.
+- Surface fix: no age-based mutex stealing remains. 265f668b.
+- Structural fix: `acquire_wt_lock` becomes one kernel `flock` critical section (python3 `fcntl.flock`, the `kipi-promote.sh` idiom) over the whole acquire: fast path, re-entry, stale reclaim and the reaper's claim. The mutex is one file per review-trees directory that is never unlinked, so no path can be removed out from under a holder. The PID lock file stays as the long-lived ownership record that every reader already uses. A deterministic two-contender test forces the round 3 schedule with PATH shims and asserts exactly one owner. 265f668b.
 
 ## Next round, done differently
 
@@ -70,10 +72,17 @@ Evidence that the diagnosis is real, gathered before the fix:
 
 ## Action items
 
-- [ ] Replace the mkdir mutex with one kernel flock critical section in acquire_wt_lock, shared by reviews and the reaper. owner: sana. type: code
-- [ ] Add the forced two-contender regression test for the round 3 schedule and show it red on 344b340f. owner: sana. type: test
-- [ ] Extend the scratchpad mutation script with a "no flock" mutant and record it CAUGHT. owner: sana. type: test
-- [ ] Capture PID reuse on the long-lived PID lock (a dead holder's PID reused by an unrelated process reads as live, so the tree is kept) as spillover. owner: sana. type: process
+- [x] Replace the mkdir mutex with one kernel flock critical section in acquire_wt_lock, shared by reviews and the reaper. owner: sana. type: code
+- [x] Add the forced two-contender regression test for the round 3 schedule and show it red on 344b340f. owner: sana. type: test
+- [x] Extend the scratchpad mutation script with a "no flock" mutant and record it CAUGHT. owner: sana. type: test
+- [x] Capture PID reuse on the long-lived PID lock (a dead holder's PID reused by an unrelated process reads as live, so the tree is kept) as spillover: sp-fac84397, ASK-3933. owner: sana. type: process
+- [x] Capture that a review never releases its own tree lock (review_worktree runs in a command substitution, so the EXIT trap sees an empty lock path), which widens sp-fac84397: sp-08d14f6b, ASK-3934. owner: sana. type: process
+- [ ] Fix sp-fac84397 and sp-08d14f6b through their own issues. owner: sana. type: code
+
+## Residuals stated, not shipped as acceptable
+
+- During rollout, a run that started on the old script still uses the mkdir mutex, which the new flock does not exclude. This lasts only while reviews started before the update are in flight, and clears on its own.
+- PID reuse and the never-released review lock: sp-fac84397 and sp-08d14f6b above. Both fail closed (the tree reads busy), so neither produces a second owner.
 
 ## Lessons
 
