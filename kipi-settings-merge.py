@@ -25,13 +25,123 @@ import os
 import re
 import sys
 
-# A "script" is any .py/.sh path in the command; basenames identify the hook
-# across path layouts (flattened vs pre-flattening) and wrapper forms.
-SCRIPT_NAME_RE = re.compile(r"([A-Za-z0-9_\-]+\.(?:py|sh))")
+# A "script" is any .py/.sh path in the command, read with the directory in front
+# of it so ownership can be told (see hook_script_names). Dots are part of the
+# file name: without them custom.memory_autocapture.py read as the retired
+# memory_autocapture.py and an instance hook was dropped (codex round 4, #615).
+SCRIPT_PATH_RE = re.compile(r"((?:[^\s;|&()]*/)*)([A-Za-z0-9_.\-]+\.(?:py|sh))")
+# The one spelling that earns path identity: the anchor, then plain path
+# characters only, so no variable, glob, brace, tilde or escape can sit in it.
+_ANCHORED_RE = re.compile(
+    r"(?:\$CLAUDE_PROJECT_DIR|\$\{CLAUDE_PROJECT_DIR\})/([A-Za-z0-9._/\-]+)")
+# A plain READ of the anchor. Any other mention (an assignment, an export,
+# ${CLAUDE_PROJECT_DIR:=x}) can repoint every anchored path after it.
+_ANCHOR_READ_RE = re.compile(
+    r"\$\{CLAUDE_PROJECT_DIR\}|\$CLAUDE_PROJECT_DIR(?![A-Za-z0-9_])")
+# Builtins that run text as code in this shell, which can repoint the anchor out
+# of the merge's sight. Not cd, pushd or popd: an anchored path is absolute, so
+# the working directory cannot change what it names, and refusing them only
+# deleted real instance hooks (fleet review 2 on PR #615).
+_STATE_WORDS = frozenset(("source", ".", "eval"))
+# What separates one simple command from the next, and what may stand in front
+# of a command's NAME: the POSIX command prefix (assignments, redirections),
+# the reserved words that open a compound command, and the two wrappers that
+# run a builtin by name.
+_SIMPLE_COMMAND_SPLIT_RE = re.compile(r"[;&|(){}`\n]+")
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_REDIRECT_RE = re.compile(r"[0-9]*[<>]+")
+_BEFORE_NAME = frozenset(("if", "then", "else", "elif", "do", "while", "until",
+                          "!", "time", "builtin", "command"))
+# The shell removes these before a path reaches the file system, so they are
+# removed before the path is read.
+_SHELL_QUOTING = str.maketrans("", "", "\"'\\")
+
+
+def _command_names(unquoted):
+    """The NAME of each simple command: its first word after the prefix.
+
+    Codex round 4 on PR #615: a position-blind word check read the `.` in
+    `python3 "$CLAUDE_PROJECT_DIR/q-inst/x.py" .` as the source builtin, so a
+    canonical instance hook lost its identity and was deduped away. A builtin
+    only acts when it is the command name; as an argument it is data.
+    """
+    for part in _SIMPLE_COMMAND_SPLIT_RE.split(unquoted):
+        words = iter(part.split())
+        for word in words:
+            if _REDIRECT_RE.fullmatch(word):
+                next(words, None)  # a bare operator: its target is the next word
+            elif not (word in _BEFORE_NAME or _ASSIGNMENT_RE.match(word)
+                      or _REDIRECT_RE.match(word)):
+                yield word
+                break
+
+
+def _plain_command(unquoted):
+    """True when nothing in the command can change what an anchored path means.
+
+    Only the anchor matters, because only an anchored path earns path identity.
+    It can be repointed by a write to CLAUDE_PROJECT_DIR in the command, or by
+    code the merge cannot read (a sourced file, an eval). A command that does
+    either gets no path identity at all. Codex round 3's `cd` input needed no
+    rule here: its path was relative, and relative paths no longer earn path
+    identity.
+    """
+    if _STATE_WORDS & set(_command_names(unquoted)):
+        return False
+    return "CLAUDE_PROJECT_DIR" not in _ANCHOR_READ_RE.sub("", unquoted)
+
+
+def _script_identity(prefix, name, plain):
+    """Basename for a skeleton script, "path:<rel>" for an instance-owned one.
+
+    Instance-owned means the canonical spelling (see hook_script_names) with a
+    leading component other than q-system. Everything else keeps the old
+    basename identity. That is a trade, not a free default: such a hook is
+    deduped against a template script of the same name AND dropped when that
+    name is retired, so a non-canonical instance hook can be lost (fleet
+    reviewer, PR #615; ASK-3876 tracks refusing it at apply time). It is taken
+    because the other failure, a skeleton script read as an instance one, runs
+    that script twice: the token-guard scar.
+    """
+    hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
+    if hit is None:
+        return name
+    rel = os.path.normpath(hit.group(1)).lower()
+    if rel.startswith(("/", "..")) or rel.split("/", 1)[0] == "q-system":
+        return name
+    return "path:" + rel
 
 
 def hook_script_names(command):
-    return frozenset(SCRIPT_NAME_RE.findall(command))
+    """Script identities a command invokes.
+
+    A script under the q-system/ subtree is the skeleton's, and is identified by
+    basename so every path layout of it dedupes (the token-guard fossil scar in
+    the module docstring). Every template hook lives there (measured 2026-11-06).
+    An instance's own script is identified by its path: keyed by basename alone,
+    an instance's q-inst/token-guard.py was deduped against the template's
+    token-guard, and an instance script that shared a retired name was retired
+    with it (codex review of kipi-system PR #615, ASK-3685). apply-claude-changes
+    lets an instance wire its own hooks on the premise that this merge keeps
+    them; this is what makes that true.
+
+    Path identity is granted to ONE spelling, the one all 17 live
+    path-identity hooks across 14 instances use (measured 2026-11-06): a token
+    that starts with $CLAUDE_PROJECT_DIR/ or ${CLAUDE_PROJECT_DIR}/ and goes on
+    in plain path characters, in a command that cannot change what that anchor
+    means (_plain_command). Ownership is then the LEADING path component, read
+    after shell quoting is removed. Scar: three Codex rounds on PR #615 each
+    found a spelling that broke the fix before it (a substring test, a quote
+    between directory and name, a `cd` before a relative path), because the
+    parser tried to READ every spelling. It now accepts one and refuses the
+    rest (RCA rca-settings-merge-identity-three-rounds-2026-11-06). Limit: this
+    reads text, not the disk, so an instance directory that is a symlink into
+    q-system/ is not seen.
+    """
+    unquoted = command.translate(_SHELL_QUOTING)
+    plain = _plain_command(unquoted)
+    return frozenset(_script_identity(prefix, name, plain)
+                     for prefix, name in SCRIPT_PATH_RE.findall(unquoted))
 
 
 def _only_retired(command, retired):
@@ -43,9 +153,9 @@ def _only_retired(command, retired):
 
 
 def hook_key(command):
-    """Identity of a hook command for dedup: the set of script basenames it
-    invokes, or the raw string when no script is recognizable."""
-    names = frozenset(SCRIPT_NAME_RE.findall(command))
+    """Identity of a hook command for dedup: the set of script identities it
+    invokes (see hook_script_names), or the raw string when none is recognizable."""
+    names = hook_script_names(command)
     return names if names else command
 
 

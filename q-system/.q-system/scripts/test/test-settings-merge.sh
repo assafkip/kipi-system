@@ -100,4 +100,245 @@ assert "Bash(ls:*)" in merged["permissions"]["allow"], "template permission drop
 EOF
 echo "ok: stale token-guard variants retired, template form wins, instance hooks/MCP/permissions survive"
 
+# ASK-3685: apply-claude-changes now lets an instance wire its OWN hooks in
+# .claude/settings.json, on the premise that this merge keeps them. Codex review
+# of PR #615 showed the premise held only by luck: identity was the BASENAME
+# alone, so an instance script that happened to share a name with a template
+# script (or with a retired one) was deduped or retired away on the next update.
+# A script outside the q-system/ subtree is the instance's own, so it is keyed
+# by its path instead. Template hooks all live under q-system/ and keep their
+# basename identity, so the token-guard fossil dedup above is unchanged.
+cat > "$FIXTURE/template2.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+cat > "$FIXTURE/instance2.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""},
+        {"type": "command", "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\"; fi"}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/memory_autocapture.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance2.json" >/dev/null
+python3 - "$FIXTURE/instance2.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/token-guard.py" in c for c in all_cmds), \
+    "an instance-owned script sharing a template basename was deduped away"
+assert sum("q-system/.q-system/token-guard.py" in c for c in all_cmds) == 1, \
+    "the template token-guard must stay exactly once"
+assert any("q-inst/memory_autocapture.py" in c for c in all_cmds), \
+    "an instance-owned script sharing a retired basename was retired away"
+assert not any("q-system/.q-system/scripts/memory_autocapture.py" in c for c in all_cmds), \
+    "the retired skeleton script must still be dropped"
+EOF
+echo "ok: instance-owned scripts keep their hooks even when a basename collides"
+
+# Codex round 2 on PR #615, two spellings that defeated a substring test:
+#  - "q-system/" deeper in an INSTANCE path still made it skeleton-owned;
+#  - a quote between directory and file name hid the q-system/ prefix, so a
+#    template script read as an instance path and ran twice (the doubled
+#    token-guard scar) or escaped retirement.
+# Ownership is now the leading component of the project-relative path, read
+# after shell quotes are removed. Anything not provably project-relative keeps
+# the old basename identity, so an unknown spelling fails toward dedup.
+cat > "$FIXTURE/instance3.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system\"/token-guard.py"},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/Q-SYSTEM/.q-system/token-guard.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/not-q-system/token-guard.py\""}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts\"/memory_autocapture.py"}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance3.json" >/dev/null
+python3 - "$FIXTURE/instance3.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/not-q-system/token-guard.py" in c for c in all_cmds), \
+    "an instance path containing q-system/ deeper down was deduped away"
+skel = [c for c in all_cmds if "token-guard.py" in c and "q-inst/" not in c]
+assert len(skel) == 1, f"template token-guard must run once, got {len(skel)}: {skel}"
+assert not any("memory_autocapture.py" in c for c in all_cmds), \
+    "a quoted spelling of a retired skeleton script escaped retirement"
+EOF
+echo "ok: ownership reads the leading path component, after shell quotes"
+
+# Codex round 3 on PR #615: `cd "$CLAUDE_PROJECT_DIR/q-system" && python3
+# .q-system/token-guard.py` read as the instance path .q-system/token-guard.py,
+# so the template guard ran twice. Rounds 1 to 3 each closed one shell spelling
+# and the next review found another (RCA
+# rca-settings-merge-identity-three-rounds-2026-11-06), so this pins a NARROWER
+# grammar, not a fourth spelling: path identity only for the one form all 17
+# live path-identity hooks in the fleet use (measured over 14 instances,
+# 2026-11-06). Every other spelling keeps basename identity: fails toward dedup.
+cat > "$FIXTURE/instance4.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR/q-system\" && python3 .q-system/token-guard.py"}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance4.json" >/dev/null
+python3 - "$FIXTURE/instance4.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+tg = [c for c in all_cmds if "token-guard.py" in c]
+assert len(tg) == 1, f"a cd-relative spelling of the template token-guard ran as a second guard: {tg}"
+EOF
+echo "ok: a cd-relative spelling of a template script dedupes (codex round 3)"
+
+# Codex round 4 on PR #615, the other direction: a CANONICAL instance hook lost
+# its path identity and was dropped. The file-name pattern had no dots, so
+# custom.memory_autocapture.py read as the retired memory_autocapture.py; and a
+# `.` ARGUMENT read as the source builtin, so the hook deduped against the
+# template's token-guard.
+cat > "$FIXTURE/instance5.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\" ."}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py\""},
+        {"type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && python3 \"$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance5.json" >/dev/null
+python3 - "$FIXTURE/instance5.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/token-guard.py" in c for c in all_cmds), \
+    "a canonical instance hook with a '.' argument was deduped away"
+assert sum("q-system/.q-system/token-guard.py" in c for c in all_cmds) == 1, \
+    "the template token-guard must stay exactly once"
+assert any("q-inst/custom.memory_autocapture.py" in c for c in all_cmds), \
+    "a dotted instance file name was read as a retired basename and dropped"
+# Fleet review 2 on PR #615: a `cd` cannot change what an ANCHORED path names
+# (it is absolute), so refusing cd protected nothing and deleted this instance
+# hook as the retired memory_autocapture.py.
+assert any(c.startswith("cd ") and "automation/memory_autocapture.py" in c for c in all_cmds), \
+    "a cd in front of an anchored instance path dropped the hook as a retired basename"
+EOF
+echo "ok: canonical instance hooks keep identity with a dotted name, a '.' argument or a cd (codex round 4, fleet review 2)"
+
+python3 - "$MERGE" <<'EOF'
+import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("kipi_settings_merge", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# The canonical form keeps path identity. The first three are the hooks this PR
+# exists to protect (case gate, gate-draft), the rest are live fleet spellings.
+keeps_path = {
+    'python3 "$CLAUDE_PROJECT_DIR/q-investigate/skills/osint/scripts/case-gate.py"':
+        {"path:q-investigate/skills/osint/scripts/case-gate.py"},
+    'test -f "${CLAUDE_PROJECT_DIR}/automation/gate_draft_hook.py" && python3 "${CLAUDE_PROJECT_DIR}/automation/gate_draft_hook.py"':
+        {"path:automation/gate_draft_hook.py"},
+    'if test -f "$CLAUDE_PROJECT_DIR/automation/gate_draft_hook.py"; then python3 "$CLAUDE_PROJECT_DIR/automation/gate_draft_hook.py"; fi':
+        {"path:automation/gate_draft_hook.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/autonomous_mode_detector.py" 2>/dev/null || true':
+        {"path:.claude/hooks/autonomous_mode_detector.py"},
+    'bash "$CLAUDE_PROJECT_DIR/.claude/hooks/run-lint.sh" "$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/audhd-lint.py"':
+        {"path:.claude/hooks/run-lint.sh", "audhd-lint.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py"':
+        {"token-guard.py"},
+    # codex round 4: a builtin's name as an ARGUMENT is not the builtin, and a
+    # dotted file name is one name
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py" .':
+        {"path:q-inst/token-guard.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/run.py" eval --mode source --dir cd':
+        {"path:q-inst/run.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py"':
+        {"path:q-inst/custom.memory_autocapture.py"},
+    # fleet review 2: an anchored path is absolute, so moving the working
+    # directory does not change what it names
+    'cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"':
+        {"path:q-inst/token-guard.py"},
+    'pushd "$CLAUDE_PROJECT_DIR" >/dev/null; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"':
+        {"path:q-inst/token-guard.py"},
+    'if cd "$CLAUDE_PROJECT_DIR"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi':
+        {"path:q-inst/token-guard.py"},
+}
+# Outside the grammar: basename identity, whatever the path seems to say.
+basename_only = [
+    # round 3 itself, and the bare-relative branch it exposed (dropped)
+    'cd "$CLAUDE_PROJECT_DIR/q-system" && python3 .q-system/token-guard.py',
+    'python3 q-inst/token-guard.py',
+    'python3 ./q-inst/token-guard.py',
+    # code the merge cannot read (a sourced file, an eval) can repoint the
+    # anchor, wherever the builtin is the command name: after a reserved word,
+    # an assignment, a redirection, or the builtin/command wrappers
+    'if . "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi',
+    'X=1 builtin source "$CLAUDE_PROJECT_DIR/q-inst/env.sh" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    '> /dev/null eval "python3 $CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    '2>/dev/null command . "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    'true && { source "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; } && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    # a command that rewrites the anchor, or runs text as code in this shell
+    'CLAUDE_PROJECT_DIR="$CLAUDE_PROJECT_DIR/q-system"; python3 "$CLAUDE_PROJECT_DIR/.q-system/token-guard.py"',
+    'python3 "${CLAUDE_PROJECT_DIR:=/x}/q-inst/token-guard.py"',
+    '. "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    'eval "python3 $CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    # the path itself is not plain: a variable, a glob, a doubled slash, an escape
+    'python3 "$CLAUDE_PROJECT_DIR/$SUB/token-guard.py"',
+    'python3 $CLAUDE_PROJECT_DIR/q-sys*/.q-system/token-guard.py',
+    'python3 $CLAUDE_PROJECT_DIR//q-system/.q-system/token-guard.py',
+    'python3 "$CLAUDE_PROJECT_DIR/../q-system/.q-system/token-guard.py"',
+    r'python3 $CLAUDE_PROJECT_DIR/q-sys\tem/.q-system/token-guard.py',
+]
+bad = []
+for cmd, want in keeps_path.items():
+    got = set(m.hook_script_names(cmd))
+    if got != want:
+        bad.append(f"KEEP {cmd!r}: got {sorted(got)}, want {sorted(want)}")
+for cmd in basename_only:
+    got = set(m.hook_script_names(cmd))
+    if any(i.startswith("path:") for i in got):
+        bad.append(f"BASENAME {cmd!r}: got {sorted(got)}")
+assert not bad, "hook identity grammar:\n  " + "\n  ".join(bad)
+EOF
+echo "ok: path identity only for the canonical \$CLAUDE_PROJECT_DIR/<plain path> form"
+
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"
