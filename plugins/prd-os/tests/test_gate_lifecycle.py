@@ -250,6 +250,95 @@ def test_a_registry_with_nothing_executable_is_not_reported_as_green(repo):
     assert "1 registered" in out, out
 
 
+# ---------------------------------------------------------------------------
+# ASK-3822: the WARN above still exited 0, so every caller read it as green
+# ---------------------------------------------------------------------------
+
+
+def test_registered_gates_with_none_executed_exit_2_and_name_the_count(repo):
+    """THE DoR CHECK. Three registered gates, all historical-receipt, exit 2.
+
+    The test above pins the WARN line. It never pinned the exit code, and the
+    exit code is the only thing a caller reads: the WARN printed and the run
+    still returned 0, so wiring-check's "gates run exits 0" bullet, the archive
+    step and every `!= 0` check kept reading green. Measured 2026-11-06,
+    kipi-system's own registry: 112 rows, 0 regression, so `gates run` there
+    had executed nothing while exiting 0 (ASK-1038's shape, still live).
+
+    The commands are `true` on purpose. If the run executed them it would pass,
+    so a green here could only mean "selected nothing and called it a pass".
+    """
+    write_gates(repo, [
+        {"gate_id": f"receipt-{i}", "command": "true",
+         "lifecycle": "historical-receipt"}
+        for i in range(3)
+    ])
+    result = run(repo, "gates", "run")
+    out = result.stdout + result.stderr
+    assert result.returncode == 2, f"rc={result.returncode}\n{out}"
+    assert "3 registered, 0 executed" in out, out
+    assert "historical-receipt=3" in out, out
+    assert "regression gates green" not in out, out
+
+
+def test_regression_gates_that_all_skip_as_self_referential_executed_none(repo):
+    """Counted by what RAN, not by what was selected.
+
+    A `regression` gate whose command is `gates run` is skipped (the fork-bomb
+    guard, scar 2026-06-24). A registry of only those has a non-empty selected
+    set and an empty executed set. A check on the selected set would call this
+    green, which is the same lie one filter further down.
+    """
+    write_gates(repo, [{
+        "gate_id": "loop",
+        "command": "python3 plugins/prd-os/scripts/prd_runner.py gates run",
+        "lifecycle": "regression",
+    }])
+    result = run(repo, "gates", "run")
+    out = result.stdout + result.stderr
+    assert result.returncode == 2, f"rc={result.returncode}\n{out}"
+    assert "1 registered, 0 executed" in out, out
+    assert "self-referential skipped=1" in out, out
+
+
+@pytest.mark.parametrize("contents", [None, "", "\n\n"])
+def test_an_empty_registry_is_a_fresh_repo_and_exits_0(repo, contents):
+    """ZERO REGISTERED is not ZERO EXECUTED, and it stays exit 0.
+
+    A repo that just ran /prd-os-init has no gate yet. Nothing was promised, so
+    nothing failed to run, and the spillover verdict is the whole answer. Making
+    this red would fail every fresh repo and every spillover-only fixture for no
+    defect. It must still SAY it ran nothing, in words that cannot be read as
+    "all green".
+    """
+    if contents is not None:
+        (repo / ".prd-os" / "gates.jsonl").write_text(contents)
+    result = run(repo, "gates", "run")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, f"rc={result.returncode}\n{out}"
+    assert "0 gates registered" in out, out
+    assert "regression gates green" not in out, out
+
+
+def test_a_red_spillover_verdict_outranks_nothing_executed(repo):
+    """Both at once: exit 1, and the nothing-ran line still prints.
+
+    Exit 1 means something is red and names it; exit 2 means nothing ran that
+    could be red. When both hold, the red is the actionable one, so it owns the
+    exit code. The not-run line must not be dropped to make room for it.
+    """
+    write_gates(repo, [{"gate_id": "receipt", "command": "true",
+                        "lifecycle": "historical-receipt"}])
+    add = run(repo, "spillover", "add", "--source", "s", "--desc", "leak",
+              "--id", "sp1", "--severity", "major")
+    assert add.returncode == 0, add.stderr
+    result = run(repo, "gates", "run")
+    out = result.stdout + result.stderr
+    assert result.returncode == 1, f"rc={result.returncode}\n{out}"
+    assert "sp1" in out, out
+    assert "1 registered, 0 executed" in out, out
+
+
 def test_the_closeout_registrar_asks_for_regression_at_the_call_site(repo):
     """Pinned at the CALL SITE, not at gate_register's default.
 

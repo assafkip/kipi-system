@@ -3025,7 +3025,13 @@ def cmd_gates(cfg: Config, args) -> int:
     inherited from other work are printed in the census on every run but do not
     block, so the red light means "this work left something behind" instead of
     "a backlog exists". See the block above the census for the measurement that
-    forced the split and for the age-cutoff design that was rejected."""
+    forced the split and for the age-cutoff design that was rejected.
+
+    Exit contract of `run` (ASK-3822): 0 = every executed gate green and no
+    blocking spillover, or the registry is empty (a fresh repo promised
+    nothing); 1 = a gate or the spillover verdict is RED; 2 = gates are
+    registered but none executed, or the registry is unreadable. Red outranks
+    not-run: when both hold the exit is 1 and both lines print."""
     import subprocess as _subprocess
     import re as _re
     path = _gates_path(cfg)
@@ -3061,6 +3067,9 @@ def cmd_gates(cfg: Config, args) -> int:
         )
         return 2
     registered_total = len(records)
+    lifecycle_counts = {}
+    for record in records:
+        lifecycle_counts[record["lifecycle"]] = lifecycle_counts.get(record["lifecycle"], 0) + 1
     records = [
         record for record in records
         if record["lifecycle"] == "regression"
@@ -3205,20 +3214,45 @@ def cmd_gates(cfg: Config, args) -> int:
             census += (f", of which {len(sev)} at blocking severity still open "
                        f"and now non-blocking here")
     print(census)
+    # AN EMPTY EXECUTED SET OVER A NON-EMPTY REGISTRY IS EXIT 2, NOT A PASS.
+    # Scar 2026-08-24 (ASK-1038): this said "all 0 regression gates green"
+    # against a 47-gate registry. TRUE, vacuously: the closeout registrar wrote
+    # every gate as historical-receipt, the one lifecycle filtered out above, and
+    # exit 0 read as "the gates are green" for 29 days while nothing ran. The
+    # first fix added a WARN line and KEPT exit 0, and no caller reads a line:
+    # on 2026-11-06 kipi-system's registry held 112 rows, 0 regression, and
+    # `gates run` there still exited 0 (ASK-3822). Counted by what RAN, so a
+    # registry of only self-referential regression gates is caught too.
+    #
+    # ZERO REGISTERED stays exit 0. A fresh repo promised nothing, so nothing
+    # failed to run; the spillover verdict is the whole answer. It says so in
+    # words that cannot be read as "all green".
+    executed = len(records) - skipped_self_ref
+    nothing_ran = registered_total > 0 and executed == 0
+    if nothing_ran:
+        mix = ", ".join(f"{k}={v}" for k, v in sorted(lifecycle_counts.items()))
+        if skipped_self_ref:
+            mix += f", self-referential skipped={skipped_self_ref}"
+        migrate = Path(__file__).resolve().parent / "migrate_gate_lifecycle.py"
+        print(f"[NOT RUN] gates: {registered_total} registered, 0 executed. "
+              f"NONE executable ({mix}). No regression check ran, so this run "
+              f"cannot vouch for any gate. Mark the gates that still protect "
+              f"something: python3 {migrate} --registry {path} "
+              f"--regression <gate_id> [--regression <gate_id> ...] --apply")
     if failures:
         for gid, tail in failures:
             sys.stderr.write(f"GATE RED: {gid}\n{tail}\n")
         return 1
-    if not records and registered_total:
-        # AN EMPTY EXECUTED SET IS NOT A PASS. Scar 2026-08-24 (ASK-1038): this line
-        # said "all 0 regression gates green" against a 47-gate registry, and the
-        # sentence was TRUE -- vacuously, because the closeout registrar wrote every
-        # gate as historical-receipt, the one lifecycle filtered out just above.
-        # Exit 0 was read as "the gates are green" for 29 days while nothing ran.
-        print(f"[WARN] gates: {registered_total} gate(s) registered, NONE "
-              f"executable -- 0 have lifecycle 'regression', so no regression "
-              f"check ran. Exit 0 below covers the spillover verdict ONLY.")
-    print(f"all {len(records)} regression gates green "
+    if nothing_ran:
+        sys.stderr.write(f"GATES NOT RUN: {registered_total} registered, "
+                         f"0 executed; exit 2\n")
+        return 2
+    if not registered_total:
+        print(f"0 gates registered ({path} empty or absent): nothing to "
+              f"execute; exit 0 is the spillover verdict only; "
+              f"{len(blocking)} blocking spillover item(s)")
+        return 0
+    print(f"all {executed} executed regression gates green "
           f"({registered_total} registered); "
           f"{len(blocking)} blocking spillover item(s)")
     return 0
