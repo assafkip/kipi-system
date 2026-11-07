@@ -222,6 +222,42 @@ assert len(tg) == 1, f"a cd-relative spelling of the template token-guard ran as
 EOF
 echo "ok: a cd-relative spelling of a template script dedupes (codex round 3)"
 
+# Codex round 4 on PR #615, the other direction: a CANONICAL instance hook lost
+# its path identity and was dropped. The file-name pattern had no dots, so
+# custom.memory_autocapture.py read as the retired memory_autocapture.py; and a
+# `.` ARGUMENT read as the source builtin, so the hook deduped against the
+# template's token-guard.
+cat > "$FIXTURE/instance5.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\" ."}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance5.json" >/dev/null
+python3 - "$FIXTURE/instance5.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/token-guard.py" in c for c in all_cmds), \
+    "a canonical instance hook with a '.' argument was deduped away"
+assert sum("q-system/.q-system/token-guard.py" in c for c in all_cmds) == 1, \
+    "the template token-guard must stay exactly once"
+assert any("q-inst/custom.memory_autocapture.py" in c for c in all_cmds), \
+    "a dotted instance file name was read as a retired basename and dropped"
+EOF
+echo "ok: canonical instance hooks keep identity with a dotted name or a '.' argument (codex round 4)"
+
 python3 - "$MERGE" <<'EOF'
 import importlib.util, sys
 sys.dont_write_bytecode = True
@@ -243,6 +279,14 @@ keeps_path = {
         {"path:.claude/hooks/run-lint.sh", "audhd-lint.py"},
     'python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py"':
         {"token-guard.py"},
+    # codex round 4: a builtin's name as an ARGUMENT is not the builtin, and a
+    # dotted file name is one name
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py" .':
+        {"path:q-inst/token-guard.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/run.py" eval --mode source --dir cd':
+        {"path:q-inst/run.py"},
+    'python3 "$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py"':
+        {"path:q-inst/custom.memory_autocapture.py"},
 }
 # Outside the grammar: basename identity, whatever the path seems to say.
 basename_only = [
@@ -253,6 +297,13 @@ basename_only = [
     # a command that moves the working directory is outside the grammar
     'cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
     'pushd "$CLAUDE_PROJECT_DIR" >/dev/null; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    # ... wherever the builtin is the command name: after a reserved word, an
+    # assignment, a redirection, or the builtin/command wrappers
+    'if cd "$CLAUDE_PROJECT_DIR"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi',
+    'X=1 builtin cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    '> /dev/null cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    '2>/dev/null command . "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    'true && { source "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; } && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
     # a command that rewrites the anchor, or runs text as code in this shell
     'CLAUDE_PROJECT_DIR="$CLAUDE_PROJECT_DIR/q-system"; python3 "$CLAUDE_PROJECT_DIR/.q-system/token-guard.py"',
     'python3 "${CLAUDE_PROJECT_DIR:=/x}/q-inst/token-guard.py"',

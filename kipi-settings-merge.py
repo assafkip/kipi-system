@@ -26,8 +26,10 @@ import re
 import sys
 
 # A "script" is any .py/.sh path in the command, read with the directory in front
-# of it so ownership can be told (see hook_script_names).
-SCRIPT_PATH_RE = re.compile(r"((?:[^\s;|&()]*/)*)([A-Za-z0-9_\-]+\.(?:py|sh))")
+# of it so ownership can be told (see hook_script_names). Dots are part of the
+# file name: without them custom.memory_autocapture.py read as the retired
+# memory_autocapture.py and an instance hook was dropped (codex round 4, #615).
+SCRIPT_PATH_RE = re.compile(r"((?:[^\s;|&()]*/)*)([A-Za-z0-9_.\-]+\.(?:py|sh))")
 # The one spelling that earns path identity: the anchor, then plain path
 # characters only, so no variable, glob, brace, tilde or escape can sit in it.
 _ANCHORED_RE = re.compile(
@@ -36,12 +38,39 @@ _ANCHORED_RE = re.compile(
 # ${CLAUDE_PROJECT_DIR:=x}) can repoint every anchored path after it.
 _ANCHOR_READ_RE = re.compile(
     r"\$\{CLAUDE_PROJECT_DIR\}|\$CLAUDE_PROJECT_DIR(?![A-Za-z0-9_])")
-_SHELL_WORD_SPLIT_RE = re.compile(r"[\s;|&(){}`<>]+")
 # Builtins that move the working directory or run text as code in this shell.
 _STATE_WORDS = frozenset(("cd", "pushd", "popd", "source", ".", "eval"))
+# What separates one simple command from the next, and what may stand in front
+# of a command's NAME: the POSIX command prefix (assignments, redirections),
+# the reserved words that open a compound command, and the two wrappers that
+# run a builtin by name.
+_SIMPLE_COMMAND_SPLIT_RE = re.compile(r"[;&|(){}`\n]+")
+_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_REDIRECT_RE = re.compile(r"[0-9]*[<>]+")
+_BEFORE_NAME = frozenset(("if", "then", "else", "elif", "do", "while", "until",
+                          "!", "time", "builtin", "command"))
 # The shell removes these before a path reaches the file system, so they are
 # removed before the path is read.
 _SHELL_QUOTING = str.maketrans("", "", "\"'\\")
+
+
+def _command_names(unquoted):
+    """The NAME of each simple command: its first word after the prefix.
+
+    Codex round 4 on PR #615: a position-blind word check read the `.` in
+    `python3 "$CLAUDE_PROJECT_DIR/q-inst/x.py" .` as the source builtin, so a
+    canonical instance hook lost its identity and was deduped away. A builtin
+    only acts when it is the command name; as an argument it is data.
+    """
+    for part in _SIMPLE_COMMAND_SPLIT_RE.split(unquoted):
+        words = iter(part.split())
+        for word in words:
+            if _REDIRECT_RE.fullmatch(word):
+                next(words, None)  # a bare operator: its target is the next word
+            elif not (word in _BEFORE_NAME or _ASSIGNMENT_RE.match(word)
+                      or _REDIRECT_RE.match(word)):
+                yield word
+                break
 
 
 def _plain_command(unquoted):
@@ -50,9 +79,10 @@ def _plain_command(unquoted):
     Codex round 3 on PR #615: a `cd` in front of a relative path made a template
     script read as an instance one. Rather than model which words a `cd` (or a
     reassigned anchor) reaches, a command that does either gets no path identity
-    at all.
+    at all. A missed `cd` costs nothing (an anchored path does not depend on the
+    working directory); the check keeps the accepted form narrow.
     """
-    if _STATE_WORDS & set(_SHELL_WORD_SPLIT_RE.split(unquoted)):
+    if _STATE_WORDS & set(_command_names(unquoted)):
         return False
     return "CLAUDE_PROJECT_DIR" not in _ANCHOR_READ_RE.sub("", unquoted)
 
