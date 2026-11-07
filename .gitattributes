@@ -12,4 +12,11 @@
 # assert_archive_fidelity only refuses on export-ignore/export-subst, not merge.
 #
 # Found by adversarial review 2026-07-26, before it bit.
+#
+# NOT A FIX ON GITHUB (ASK-3829). GitHub does not run merge drivers when it
+# computes mergeability, so two PRs that each appended here still showed
+# CONFLICTING (Oct 2026: 19 of 20 approved PRs). issue_runner close now writes
+# each receipt as one new file under .prd-os/receipts.d/, which needs no driver.
+# This line stays for the legacy file: converge.sh still appends its review
+# receipts here, and a local `git merge origin/main` does honor union.
 .prd-os/receipts.jsonl merge=union

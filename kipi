@@ -297,6 +297,15 @@ PY
       cd "$KIPI_HOME"
       python3 validate-separation.py "${1:-5}"
     fi
+    # The fleet-sync guard has to run INSIDE kipi update, not only exist
+    # (ASK-3821). A grep for its call site proves the text is there, which is how
+    # a wired-looking checklist sat inert for weeks. This replays plugin-sync
+    # 1d2568c5 through THIS home's kipi-update.sh in a throwaway fixture and says
+    # WIRED only when that updater refused to delete the f00ee9d7 work. Blocking.
+    # Dry, about 2s; it copies this home's updater files and writes only inside
+    # its own temp dir.
+    python3 "$KIPI_HOME/q-system/.q-system/scripts/update-preservation-manifest.py" \
+      probe --kipi-home "$KIPI_HOME" || exit 1
     # ADVISORY, and deliberately after the gate: a test named for a script it
     # never runs is usually re-implementing it, which proves the algorithm and
     # can never see the wiring or the interpreter (ASK-607 shipped green that

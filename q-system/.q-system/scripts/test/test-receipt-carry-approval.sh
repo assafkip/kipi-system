@@ -94,6 +94,77 @@ check_eq "the same sha is nothing to carry"           "same"         "$(delta_ki
 check_eq "an unrelated line of history is NOT carriable" "other"     "$(delta_kind "$REPO" "$REVIEWED" "$OTHER")"
 check_eq "a sha git cannot resolve is NOT carriable"  "other"        "$(delta_kind "$REPO" "$REVIEWED" "0000000000000000000000000000000000000000")"
 
+# ---------------------------------------- receipt fragments (ASK-3829, PR #621 round 2)
+# A close now writes its receipt as one new file under .prd-os/receipts.d/. This rule
+# accepted the ledger file only, so a fragment read as unreviewed code and converge
+# refused to push the receipt. Red on 6f04f6c7: "fragment only" and "ledger plus
+# fragment" were both `other`, and converge's receipt_only_ahead refused both.
+echo "receipt fragments (what a close writes since ASK-3829)"
+PREV_REF="$(g rev-parse --abbrev-ref HEAD)"
+FRAG_NAME="20261107T000000000000Z-receipt-0123456789abcdef.jsonl"
+frag_branch() {  # frag_branch <name>: a branch cut at the reviewed sha. -f: the orphan
+  # branch above leaves untracked copies of the reviewed files in this throwaway tree.
+  g checkout -q -f -B "$1" "$REVIEWED"; mkdir -p "$REPO/.prd-os/receipts.d"
+}
+frag_branch fr-only; echo '{"r":2}' > "$REPO/.prd-os/receipts.d/$FRAG_NAME"
+g add -A; g commit -q -m "receipt fragment"; FRAG="$(g rev-parse HEAD)"
+frag_branch fr-both; echo '{"r":2}' > "$REPO/.prd-os/receipts.d/$FRAG_NAME"; echo '{"r":3}' >> "$REPO/.prd-os/receipts.jsonl"
+g add -A; g commit -q -m "ledger line and fragment"; FRAG_BOTH="$(g rev-parse HEAD)"
+frag_branch fr-code; echo '{"r":2}' > "$REPO/.prd-os/receipts.d/$FRAG_NAME"; echo more >> "$REPO/src.sh"
+g add -A; g commit -q -m "fragment and code"; FRAG_CODE="$(g rev-parse HEAD)"
+frag_branch fr-name; echo '{"r":2}' > "$REPO/.prd-os/receipts.d/notes.jsonl"
+g add -A; g commit -q -m "wrong name"; FRAG_BADNAME="$(g rev-parse HEAD)"
+frag_branch fr-rename; g mv src.sh ".prd-os/receipts.d/$FRAG_NAME"; g commit -q -m "code renamed onto a receipt name"; FRAG_RENAME="$(g rev-parse HEAD)"
+g checkout -q -f -B fr-edit "$FRAG"; echo '{"r":9}' > "$REPO/.prd-os/receipts.d/$FRAG_NAME"
+g commit -q -am "edit a written fragment"; FRAG_EDIT="$(g rev-parse HEAD)"
+g checkout -q -f -B fr-del "$FRAG"; g rm -q ".prd-os/receipts.d/$FRAG_NAME"; g commit -q -m "delete a fragment"; FRAG_DEL="$(g rev-parse HEAD)"
+
+check_eq "a receipt fragment alone is carriable"           "receipt-only" "$(delta_kind "$REPO" "$REVIEWED" "$FRAG")"
+check_eq "a ledger line plus a fragment is carriable"      "receipt-only" "$(delta_kind "$REPO" "$REVIEWED" "$FRAG_BOTH")"
+check_eq "a fragment next to code is NOT carriable"        "other"        "$(delta_kind "$REPO" "$REVIEWED" "$FRAG_CODE")"
+check_eq "a file in receipts.d/ with another name is NOT"  "other"        "$(delta_kind "$REPO" "$REVIEWED" "$FRAG_BADNAME")"
+check_eq "code renamed onto a receipt name is NOT"         "other"        "$(delta_kind "$REPO" "$REVIEWED" "$FRAG_RENAME")"
+check_eq "editing a written fragment is NOT"               "other"        "$(delta_kind "$REPO" "$FRAG" "$FRAG_EDIT")"
+check_eq "deleting a fragment is NOT"                      "other"        "$(delta_kind "$REPO" "$FRAG" "$FRAG_DEL")"
+check_eq "--delta-kind answers the same as delta_kind"     "receipt-only" "$(bash "$SCRIPT" --delta-kind "$REPO" "$REVIEWED" "$FRAG" 2>/dev/null)"
+
+# converge's push guard asks this file, so it must agree on every case above. The
+# function is cut out of converge.sh as shipped (converge itself runs on load).
+CONVERGE="$HERE/../converge.sh"
+eval "$(awk '/^receipt_only_ahead\(\) \{/,/^\}/' "$CONVERGE")"
+roa() {  # roa <base> <head>: converge's answer with the tree standing at <head>
+  g checkout -q -f "$2"
+  if SCRIPT_DIR="$(dirname "$SCRIPT")" LOG=/dev/null receipt_only_ahead "$REPO" "$1"; then echo push; else echo refuse; fi
+}
+check_eq "converge pushes a ledger line alone"        "push"   "$(roa "$REVIEWED" "$RECEIPT")"
+check_eq "converge pushes a fragment alone"           "push"   "$(roa "$REVIEWED" "$FRAG")"
+check_eq "converge pushes a ledger line plus fragment" "push"  "$(roa "$REVIEWED" "$FRAG_BOTH")"
+check_eq "converge pushes nothing ahead (same sha)"   "push"   "$(roa "$REVIEWED" "$REVIEWED")"
+check_eq "converge refuses a fragment next to code"   "refuse" "$(roa "$REVIEWED" "$FRAG_CODE")"
+check_eq "converge refuses a wrong name"              "refuse" "$(roa "$REVIEWED" "$FRAG_BADNAME")"
+check_eq "converge refuses code renamed onto a receipt name" "refuse" "$(roa "$REVIEWED" "$FRAG_RENAME")"
+check_eq "converge refuses an edited fragment"        "refuse" "$(roa "$FRAG" "$FRAG_EDIT")"
+check_eq "converge refuses code after review"         "refuse" "$(roa "$REVIEWED" "$CODE")"
+
+# One name, three places: the writer that makes it, the commit gate that admits it,
+# and this rule. A drift between them is a receipt one of them refuses.
+LEFTHOOK="$HERE/../../../../lefthook.yml"
+if [ -f "$LEFTHOOK" ]; then
+  check_eq "lefthook's blocked-paths exception is this exact regex" "yes" \
+    "$(grep -qF -- "$RECEIPT_FRAGMENT_RE" "$LEFTHOOK" && echo yes || echo no)"
+else
+  echo "  skip: no lefthook.yml beside this checkout (an instance), regex parity is checked in the skeleton"
+fi
+WRITER_DIR="$HERE/../../../../plugins/prd-os/scripts"
+if [ -f "$WRITER_DIR/ledger_fragments.py" ]; then
+  WROTE="$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import ledger_fragments as lf; print(lf.append_line(sys.argv[2] + "/receipts.jsonl", "{\"r\": 1}", kind="receipt").name)' "$WRITER_DIR" "$TMP/writer" 2>/dev/null)"
+  check_eq "the name the real writer gives a receipt matches this rule" "yes" \
+    "$(printf '.prd-os/receipts.d/%s\n' "$WROTE" | grep -Eq "$RECEIPT_FRAGMENT_RE" && echo yes || echo no)"
+else
+  echo "  skip: plugins/prd-os is not beside this checkout"
+fi
+g checkout -q -f "$PREV_REF"
+
 # ------------------------------------------------------------------ end to end
 # The stub serves a payload per sha and records every POST.
 STUB="$TMP/gh"; CALLS="$TMP/calls"

@@ -1,402 +1,422 @@
 #!/usr/bin/env python3
-"""Black-box tests for the registry-derived preservation manifest."""
+"""The kipi update sync guard refuses to delete recent instance work (ASK-3821).
+
+Built on the REAL objects of the incident: fixtures/sync-guard-f00ee9d7 holds
+prd_runner.py exactly as plugin-sync 1d2568c5 wrote it (blob 67fc9808) and the
+`git format-patch` of kipi-investigations f00ee9d7, which added
+_deferral_tracking_gate and its test file the day before. Every case checks the
+blob ids, so the fixture cannot drift into a hand-written stand-in, and nothing
+here needs that repo to exist.
+
+Two layers:
+  * GuardTests run `check` on rsync's own itemized preview of the replay, at the
+    literal paths. Each property has a mutant beside it (window moved, skeleton
+    given the function, override added), so a pass cannot come from the guard
+    refusing everything.
+  * WiringTests run `probe`, which drives the updater this checkout ships through
+    a throwaway fixture. The negative case deletes the call site from a copy of
+    kipi-update.sh and must read NOT WIRED, or the positive case proves nothing.
+
+Every repo and directory is under a TemporaryDirectory; no live path is read or
+written.
+"""
 
 from __future__ import annotations
 
-import argparse
-import hashlib
+import importlib.util
 import json
-from pathlib import Path
+import os
+import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
-
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SCRIPT = (
-    REPO_ROOT
-    / "q-system"
-    / ".q-system"
-    / "scripts"
-    / "update-preservation-manifest.py"
-)
-CONTRACT = (
-    REPO_ROOT
-    / "q-system"
-    / ".q-system"
-    / "config"
-    / "instance-ownership-contract.json"
-)
+SCRIPT = REPO_ROOT / "q-system/.q-system/scripts/update-preservation-manifest.py"
+FIXTURE = REPO_ROOT / "q-system/.q-system/scripts/test/fixtures/sync-guard-f00ee9d7"
+
+_spec = importlib.util.spec_from_file_location("upm", SCRIPT)
+upm = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(upm)
+
+RUNNER = "plugins/prd-os/scripts/prd_runner.py"
+TESTFILE = "plugins/prd-os/tests/test_archive_deferral_gate.py"
+SUBJECT = "prd-os: gate archive on deferral prose without a tracked issue"
 
 
-def git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "user.email=test@example.com",
-            "-c",
-            "user.name=test",
-            *args,
-        ],
-        check=True,
-        capture_output=True,
+def g(repo: Path, *args: str, env: dict | None = None) -> str:
+    proc = subprocess.run(
+        ["git", "-c", "user.email=t@t.t", "-c", "user.name=test", "-c", "commit.gpgsign=false",
+         "-C", str(repo), *args],
+        capture_output=True, text=True, env=env,
     )
+    if proc.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)}: {proc.stderr}")
+    return proc.stdout.strip()
 
 
-class ManifestTests(unittest.TestCase):
+def stamp(days_ago: float) -> str:
+    when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return when.strftime("%Y-%m-%dT%H:%M:%S+0000")
+
+
+class Replay:
+    """Instance: prd_runner.py 40 days old, then the real f00ee9d7 patch a day
+    before the sync. Skeleton: prd_runner.py as 1d2568c5 delivered it."""
+
+    def __init__(self, root: Path, skeleton_had_it: bool = False):
+        self.root = root
+        self.inst = root / "inst"
+        self.skel = root / "skel"
+        before = FIXTURE / "prd_runner.py.at-1d2568c5"
+
+        (self.inst / RUNNER).parent.mkdir(parents=True)
+        shutil.copy2(before, self.inst / RUNNER)
+        old = {**os.environ, "GIT_AUTHOR_DATE": stamp(40), "GIT_COMMITTER_DATE": stamp(40)}
+        g(self.inst, "init", "-q", "-b", "main")
+        g(self.inst, "add", "-A", env=old)
+        g(self.inst, "commit", "-qm", "instance base", env=old)
+        g(self.inst, "am", "-q", str(FIXTURE / "f00ee9d7.patch"),
+          env={**os.environ, "GIT_COMMITTER_DATE": stamp(1)})
+        self.commit = g(self.inst, "rev-parse", "HEAD")
+        blobs = (g(self.inst, "rev-parse", f"HEAD~1:{RUNNER}"),
+                 g(self.inst, "rev-parse", f"HEAD:{RUNNER}"),
+                 g(self.inst, "rev-parse", f"HEAD:{TESTFILE}"))
+        assert blobs == (upm.BEFORE_BLOB, upm.AFTER_BLOB, upm.TEST_BLOB), blobs
+
+        (self.skel / RUNNER).parent.mkdir(parents=True)
+        g(self.skel, "init", "-q", "-b", "main")
+        if skeleton_had_it:
+            # The skeleton shipped the function and its tests, then removed them
+            # on purpose. The skeleton owns that removal.
+            shutil.copy2(self.inst / RUNNER, self.skel / RUNNER)
+            (self.skel / TESTFILE).parent.mkdir(parents=True)
+            shutil.copy2(self.inst / TESTFILE, self.skel / TESTFILE)
+            g(self.skel, "add", "-A")
+            g(self.skel, "commit", "-qm", "skeleton ships the gate")
+            (self.skel / TESTFILE).unlink()
+        shutil.copy2(before, self.skel / RUNNER)
+        g(self.skel, "add", "-A")
+        g(self.skel, "commit", "-qm", "skeleton as 1d2568c5 delivered it")
+
+    def stream(self, end: bool = True) -> str:
+        """The framed stream kipi-update.sh builds: rsync's itemized preview."""
+        src, dest = self.skel / "plugins/prd-os", self.inst / "plugins/prd-os"
+        items = subprocess.run(["rsync", "-ain", "--delete", f"{src}/", f"{dest}/"],
+                               capture_output=True, text=True, check=True).stdout
+        head = f"@@scope\t{src}\t{dest}\tplugins/prd-os\tplugins/prd-os\n"
+        return head + items + ("@@end\n" if end else "")
+
+    def check(self, *extra: str, overrides: dict | None = None, end: bool = True):
+        ov = self.root / "overrides.json"
+        ov.write_text(json.dumps(overrides or {"schema_version": 1, "overrides": []}))
+        return subprocess.run(
+            ["python3", str(SCRIPT), "check", "--instance-root", str(self.inst),
+             "--skeleton-root", str(self.skel), "--overrides", str(ov), *extra],
+            input=self.stream(end), capture_output=True, text=True,
+        )
+
+
+class GuardTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
-        self.skeleton = self.root / "skeleton"
-        self.instance = self.root / "instance"
-        self.registry = self.root / "registry.json"
-        self.skeleton.mkdir()
-        self.instance.mkdir()
-        git(self.skeleton, "init", "-q")
-        git(self.instance, "init", "-q")
-
-        (self.skeleton / "q-system").mkdir()
-        (self.skeleton / "q-system" / "generic.md").write_text(
-            "generic\n", encoding="utf-8"
-        )
-        (self.skeleton / ".claude" / "agents").mkdir(parents=True)
-        (self.skeleton / ".claude" / "agents" / "generic.md").write_text(
-            "agent\n", encoding="utf-8"
-        )
-        (self.skeleton / "plugins" / "core").mkdir(parents=True)
-        (self.skeleton / "plugins" / "core" / "runtime.py").write_text(
-            "runtime\n", encoding="utf-8"
-        )
-        git(self.skeleton, "add", "-A")
-        git(self.skeleton, "commit", "-qm", "skeleton")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
 
     def tearDown(self) -> None:
-        self.temporary.cleanup()
+        self.tmp.cleanup()
 
-    def write_registry(
-        self,
-        *,
-        instance_type: str = "subtree",
-        prefix: str | None = "q-system",
-        q_dir: str | None = None,
-    ) -> None:
-        self.registry.write_text(
-            json.dumps(
-                {
-                    "instances": [
-                        {
-                            "name": "fixture",
-                            "path": str(self.instance),
-                            "subtree_prefix": prefix,
-                            "instance_q_dir": q_dir,
-                            "type": instance_type,
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
+    def test_replay_of_1d2568c5_is_refused_and_names_the_commit_it_would_undo(self):
+        r = Replay(self.root)
+        res = r.check()
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("REFUSING SYNC", res.stdout)
+        self.assertIn(f"{RUNNER}: def _deferral_tracking_gate", res.stdout)
+        self.assertIn(f"{TESTFILE}: test file", res.stdout)
+        self.assertIn(f"this sync would undo {r.commit[:12]}", res.stdout)
+        self.assertIn(SUBJECT, res.stdout)
+        # One line per lost item: the refused test file covers its own defs.
+        self.assertNotIn(f"{TESTFILE}: def ", res.stdout)
 
-    def run_manifest(self, *extra: str, expect: int = 0) -> subprocess.CompletedProcess:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "--contract",
-                str(CONTRACT),
-                "--registry",
-                str(self.registry),
-                "--instance-name",
-                "fixture",
-                "--repo-root",
-                str(self.instance),
-                "--skeleton-root",
-                str(self.skeleton),
-                *extra,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, expect, result.stderr)
-        return result
+    def test_a_commit_older_than_the_window_is_not_protected(self):
+        r = Replay(self.root)
+        later = (datetime.now(timezone.utc) + timedelta(days=31)).isoformat()
+        res = r.check("--now", later)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("0 refusals", res.stdout)
 
-    def seed_owned_files(self, *, q_dir: str = "q-system") -> None:
-        tracked_paths = (
-            "q-system/canonical/tracked.md",
-            "q-system/.q-system/scripts/instance-job.py",
-            f"{q_dir}/my-project/tracked.md",
-            f"{q_dir}/memory/tracked.md",
-        )
-        untracked_paths = (
-            "q-system/output/untracked.json",
-            "q-system/.q-system/agent-pipeline/bus/event.json",
-            f"{q_dir}/canonical/private.md",
-            f"{q_dir}/output/report.md",
-            ".claude/agents/instance-only.md",
-            "plugins/instance-only/run.py",
-            ".claude/settings.json",
-        )
-        generic_paths = (
-            "q-system/generic.md",
-            ".claude/agents/generic.md",
-            "plugins/core/runtime.py",
-        )
-        ignored_path = f"{q_dir}/output/ignored-runtime.json"
-        for relative in (*tracked_paths, *untracked_paths, *generic_paths):
-            path = self.instance / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"{relative}\n", encoding="utf-8")
-        (self.instance / ignored_path).parent.mkdir(parents=True, exist_ok=True)
-        (self.instance / ignored_path).write_text("ignored\n", encoding="utf-8")
-        (self.instance / ".gitignore").write_text(
-            f"/{ignored_path}\n", encoding="utf-8"
-        )
-        git(self.instance, "add", *tracked_paths, *generic_paths, ".gitignore")
-        git(self.instance, "commit", "-qm", "instance")
+    def test_a_removal_the_skeleton_made_itself_is_not_refused(self):
+        r = Replay(self.root, skeleton_had_it=True)
+        res = r.check()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("0 refusals", res.stdout)
 
-    def test_tracked_untracked_state_and_automation_are_manifested(self) -> None:
-        self.write_registry()
-        self.seed_owned_files()
-        manifest = json.loads(self.run_manifest().stdout)
-        entries = {entry["path"]: entry for entry in manifest["entries"]}
-        self.assertEqual(manifest["status"], "ready")
-        self.assertEqual(manifest["entry_count"], len(entries))
-        self.assertEqual(
-            entries["q-system/canonical/tracked.md"]["tracking"], "tracked"
-        )
-        self.assertEqual(
-            entries["q-system/output/untracked.json"]["tracking"], "untracked"
-        )
-        self.assertEqual(
-            entries["q-system/output/ignored-runtime.json"]["tracking"], "ignored"
-        )
-        self.assertEqual(
-            entries[".claude/settings.json"]["preservation"], "field_merge_input"
-        )
-        self.assertEqual(
-            entries["q-system/.q-system/scripts/instance-job.py"]["owner_class"],
-            "instance_automation",
-        )
-        self.assertEqual(
-            entries[".claude/agents/instance-only.md"]["owner_class"],
-            "instance_automation",
-        )
-        self.assertEqual(
-            entries["plugins/instance-only/run.py"]["owner_class"],
-            "instance_automation",
-        )
-        for generic in (
-            "q-system/generic.md",
-            ".claude/agents/generic.md",
-            "plugins/core/runtime.py",
-        ):
-            self.assertNotIn(generic, entries)
+    def test_an_override_lets_exactly_the_named_removal_through(self):
+        r = Replay(self.root)
+        fn = {"commit": r.commit[:10], "path": RUNNER, "symbol": "_deferral_tracking_gate",
+              "reason": "gate moved into issue_runner"}
+        res = r.check(overrides={"schema_version": 1, "overrides": [fn]})
+        self.assertEqual(res.returncode, 2, "an override for the function must not cover the test file")
+        self.assertIn(f"{TESTFILE}: test file", res.stdout)
+        self.assertIn("allowed by override", res.stdout)
+        tf = {"commit": r.commit, "path": TESTFILE, "symbol": "<file>",
+              "reason": "tests moved with the gate"}
+        res = r.check(overrides={"schema_version": 1, "overrides": [fn, tf]})
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("gate moved into issue_runner", res.stdout)
 
-    def test_custom_q_dir_and_managed_root_both_contribute_state(self) -> None:
-        self.write_registry(q_dir="q-client")
-        self.seed_owned_files(q_dir="q-client")
-        manifest = json.loads(self.run_manifest().stdout)
-        paths = {entry["path"] for entry in manifest["entries"]}
-        for relative in (
-            "q-system/canonical/tracked.md",
-            "q-system/output/untracked.json",
-            "q-client/canonical/private.md",
-            "q-client/my-project/tracked.md",
-            "q-client/memory/tracked.md",
-            "q-client/output/report.md",
-        ):
-            self.assertIn(relative, paths)
-        self.assertIn("q-system/canonical", manifest["declared_state_roots"])
-        self.assertIn("q-client/canonical", manifest["declared_state_roots"])
+    def test_an_override_without_a_reason_is_an_error_not_a_pass(self):
+        r = Replay(self.root)
+        bad = {"commit": r.commit, "path": RUNNER, "symbol": "_deferral_tracking_gate", "reason": " "}
+        res = r.check(overrides={"schema_version": 1, "overrides": [bad]})
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("missing: reason", res.stdout)
 
-    def test_standalone_and_null_prefix_are_skipped(self) -> None:
-        for instance_type in ("standalone", "subtree"):
-            with self.subTest(instance_type=instance_type):
-                self.write_registry(instance_type=instance_type, prefix=None)
-                manifest = json.loads(self.run_manifest().stdout)
-                self.assertEqual(manifest["status"], "skipped")
-                self.assertEqual(manifest["entries"], [])
+    def test_a_stream_without_its_end_marker_is_an_error_not_a_pass(self):
+        r = Replay(self.root)
+        res = r.check(end=False)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("no @@end", res.stdout)
 
-    def test_output_is_atomic_and_deterministic(self) -> None:
-        self.write_registry()
-        self.seed_owned_files()
-        output = self.root / "manifest.json"
-        stale = self.root / ".manifest.json.tmp.stale"
-        stale.write_text("stale\n", encoding="utf-8")
-        first = self.run_manifest("--output", str(output)).stdout
-        second = self.run_manifest("--output", str(output)).stdout
-        self.assertEqual(first, second)
-        self.assertEqual(output.read_text(encoding="utf-8"), second)
-        self.assertEqual(stale.read_text(encoding="utf-8"), "stale\n")
-        manifest = json.loads(first)
-        self.assertEqual(len(manifest["inputs"]["skeleton_tree"]), 40)
-        self.assertEqual(len(manifest["inputs"]["ownership_contract_sha256"]), 64)
-        self.assertEqual(len(manifest["inputs"]["registry_entry_sha256"]), 64)
-        receipt = manifest.pop("manifest_sha256")
-        canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-        self.assertEqual(
-            receipt, hashlib.sha256(canonical).hexdigest()
-        )
-        self.assertEqual(
-            [entry["path"] for entry in manifest["entries"]],
-            sorted(entry["path"] for entry in manifest["entries"]),
-        )
+    def test_a_recent_shell_function_is_protected_too(self):
+        self._shell_case(self.root / "inst", self.root / "inst")
 
-    def test_invalid_layouts_fail_closed(self) -> None:
-        self.write_registry(prefix="../outside")
-        self.run_manifest(expect=1)
-        self.write_registry(instance_type="unknown")
-        self.run_manifest(expect=1)
-        self.write_registry(instance_type="unknown", prefix=None)
-        self.run_manifest(expect=1)
+    def test_an_instance_inside_a_larger_repo_is_still_protected(self):
+        # The instance root is a SUBDIRECTORY of its git repo. A `<rev>:path`
+        # lookup resolved from the repo root made every def read as absent here,
+        # so nothing could be refused.
+        self._shell_case(self.root / "mono/projects/inst", self.root / "mono")
 
-    def test_registry_path_must_match_requested_repo(self) -> None:
-        self.write_registry()
-        payload = json.loads(self.registry.read_text(encoding="utf-8"))
-        payload["instances"][0]["path"] = str(self.root / "other")
-        self.registry.write_text(json.dumps(payload), encoding="utf-8")
-        self.run_manifest(expect=1)
+    def _plugin_case(self, inst_text: str, skel_text: str, recent_msg: str,
+                     recent_text: str, skel_tracked: bool = True):
+        """Instance plugins/demo/mod.py: inst_text 40 days old, then recent_text
+        committed today with recent_msg. Skeleton ships skel_text, committed or
+        (skel_tracked=False) only on disk, as an untracked or symlinked plugin
+        is: plugins/ syncs from the skeleton's working tree."""
+        inst, skel = self.root / "inst", self.root / "skel"
+        rel = "plugins/demo/mod.py"
+        old = {**os.environ, "GIT_AUTHOR_DATE": stamp(40), "GIT_COMMITTER_DATE": stamp(40)}
+        (inst / rel).parent.mkdir(parents=True)
+        (inst / rel).write_text(inst_text)
+        g(inst, "init", "-q", "-b", "main")
+        g(inst, "add", "-A")
+        g(inst, "commit", "-qm", "instance base", env=old)
+        (inst / rel).write_text(recent_text)
+        g(inst, "commit", "-qam", recent_msg)
+        (skel / "README.md").parent.mkdir(parents=True)
+        (skel / "README.md").write_text("skeleton\n")
+        g(skel, "init", "-q", "-b", "main")
+        g(skel, "add", "-A")
+        g(skel, "commit", "-qm", "skeleton base")
+        (skel / rel).parent.mkdir(parents=True)
+        (skel / rel).write_text(skel_text)
+        if skel_tracked:
+            g(skel, "add", "-A")
+            g(skel, "commit", "-qm", "skeleton ships mod.py")
+        items = subprocess.run(["rsync", "-ain", "--delete", f"{skel}/plugins/demo/",
+                                f"{inst}/plugins/demo/"], capture_output=True, text=True,
+                               check=True).stdout
+        stream = (f"@@scope\t{skel}/plugins/demo\t{inst}/plugins/demo\tplugins/demo\t"
+                  f"plugins/demo\n{items}@@end\n")
+        ov = self.root / "ov.json"
+        ov.write_text('{"schema_version": 1, "overrides": []}')
+        return subprocess.run(["python3", str(SCRIPT), "check", "--instance-root", str(inst),
+                               "--skeleton-root", str(skel), "--overrides", str(ov)],
+                              input=stream, capture_output=True, text=True)
 
-    def test_symlinked_registry_root_is_rejected(self) -> None:
-        link = self.root / "instance-link"
-        link.symlink_to(self.instance, target_is_directory=True)
-        self.write_registry()
-        payload = json.loads(self.registry.read_text(encoding="utf-8"))
-        payload["instances"][0]["path"] = str(link)
-        self.registry.write_text(json.dumps(payload), encoding="utf-8")
-        self.run_manifest(expect=1)
+    def test_a_method_is_protected_when_the_incoming_file_does_not_parse(self):
+        # Review of #609, finding 1. When either side failed ast, the removal was
+        # named `m` while history was read qualified (`C.m`): no match, no adder,
+        # "0 refusals" from a check that could not see.
+        base = "class C:\n    def keep(self):\n        return 1\n"
+        res = self._plugin_case(
+            inst_text=base, skel_text=base + "\ndef oops(:\n", recent_msg="add C.m",
+            recent_text=base + "\n    def m(self):\n        return 2\n")
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("plugins/demo/mod.py: def m", res.stdout)
+        self.assertIn("add C.m", res.stdout)
 
-    def test_untracked_skeleton_file_does_not_claim_instance_ownership(self) -> None:
-        self.write_registry()
-        relative = "q-system/.q-system/scripts/local-only.py"
-        instance_path = self.instance / relative
-        skeleton_path = self.skeleton / relative
-        instance_path.parent.mkdir(parents=True, exist_ok=True)
-        skeleton_path.parent.mkdir(parents=True, exist_ok=True)
-        instance_path.write_text("instance\n", encoding="utf-8")
-        skeleton_path.write_text("untracked skeleton\n", encoding="utf-8")
-        git(self.instance, "add", relative)
-        git(self.instance, "commit", "-qm", "instance")
-        manifest = json.loads(self.run_manifest().stdout)
-        self.assertIn(relative, {entry["path"] for entry in manifest["entries"]})
+    def test_content_the_updater_synced_in_is_the_skeletons_to_remove(self):
+        # Review of #609, finding 2. Skeleton content with no skeleton git history
+        # (untracked or symlinked plugin files) reached the instance in the
+        # updater's own sync commit; the guard blamed that commit and refused.
+        base = "def keep():\n    return 1\n"
+        added = base + "\ndef bar():\n    return 2\n"
+        sync_msg = "chore: sync .claude config + plugins from skeleton 2026-11-05 [no-issue: fleet updater skeleton sync]"
+        res = self._plugin_case(base, base, sync_msg, added, skel_tracked=False)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("0 refusals", res.stdout)
 
-    def test_staged_skeleton_file_is_not_treated_as_archived(self) -> None:
-        self.write_registry()
-        relative = "q-system/.q-system/scripts/staged-only.py"
-        instance_path = self.instance / relative
-        skeleton_path = self.skeleton / relative
-        instance_path.parent.mkdir(parents=True, exist_ok=True)
-        skeleton_path.parent.mkdir(parents=True, exist_ok=True)
-        instance_path.write_text("instance\n", encoding="utf-8")
-        skeleton_path.write_text("staged skeleton\n", encoding="utf-8")
-        git(self.instance, "add", relative)
-        git(self.instance, "commit", "-qm", "instance")
-        git(self.skeleton, "add", relative)
-        manifest = json.loads(self.run_manifest().stdout)
-        self.assertIn(relative, {entry["path"] for entry in manifest["entries"]})
+    def test_the_same_change_by_an_ordinary_commit_is_refused(self):
+        # The control for the case above: only the commit's author differs.
+        base = "def keep():\n    return 1\n"
+        added = base + "\ndef bar():\n    return 2\n"
+        res = self._plugin_case(base, base, "local fix: add bar", added, skel_tracked=False)
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("plugins/demo/mod.py: def bar", res.stdout)
 
-    def test_output_inside_instance_is_rejected(self) -> None:
-        self.write_registry()
-        self.seed_owned_files()
-        self.run_manifest(
-            "--output",
-            str(self.instance / "q-system" / "output" / "manifest.json"),
-            expect=1,
-        )
+    def test_the_updater_still_writes_the_sync_marker_the_guard_trusts(self):
+        # The marker is a contract between two files. If kipi-update.sh's sync
+        # commits stop carrying it, the case above silently turns into refusals.
+        text = (REPO_ROOT / "kipi-update.sh").read_text()
+        self.assertEqual(text.count(f'from skeleton $(date +%Y-%m-%d) {upm.SYNC_MARKER}"'), 2)
 
-    def test_symlinked_owned_ancestor_is_rejected(self) -> None:
-        self.write_registry()
-        outside = self.root / "outside"
-        outside.mkdir()
-        (outside / "secret.txt").write_text("external\n", encoding="utf-8")
-        output = self.instance / "q-system" / "output"
-        output.parent.mkdir(parents=True)
-        output.symlink_to(outside, target_is_directory=True)
-        (self.instance / ".gitignore").write_text(
-            "/q-system/output/\n", encoding="utf-8"
-        )
-        git(self.instance, "add", ".gitignore")
-        git(self.instance, "commit", "-qm", "ignore")
-        self.run_manifest(expect=1)
-
-    def test_empty_owned_directory_is_receipted(self) -> None:
-        self.write_registry()
-        self.seed_owned_files()
-        empty = self.instance / "q-system" / "memory" / "empty-runtime"
-        empty.mkdir(parents=True)
-        manifest = json.loads(self.run_manifest().stdout)
-        entry = {
-            item["path"]: item for item in manifest["entries"]
-        }["q-system/memory/empty-runtime"]
-        self.assertEqual(entry["kind"], "directory")
-        self.assertEqual(entry["tracking"], "filesystem-only")
-
-    def test_unsupported_automation_contract_drift_fails_closed(self) -> None:
-        self.write_registry()
-        self.seed_owned_files()
-        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-        contract["instance_automation"]["excluded_relative_paths"].append("*.tmp")
-        changed = self.root / "changed-contract.json"
-        changed.write_text(json.dumps(contract), encoding="utf-8")
-        self.run_manifest("--contract", str(changed), expect=1)
+    def _shell_case(self, inst: Path, inst_repo: Path):
+        skel = self.root / "skel"
+        for repo, top in ((inst, inst_repo), (skel, skel)):
+            (repo / "hooks").mkdir(parents=True)
+            (repo / "hooks/guard.sh").write_text("#!/bin/bash\nold_fn() {\n  :\n}\n")
+            g(top, "init", "-q", "-b", "main")
+            g(top, "add", "-A")
+            g(top, "commit", "-qm", "base")
+        (inst / "hooks/guard.sh").write_text(
+            "#!/bin/bash\nold_fn() {\n  :\n}\nfunction new_fn {\n  :\n}\n")
+        g(inst, "commit", "-qam", "add new_fn")
+        items = subprocess.run(["rsync", "-ain", "--delete", f"{skel}/hooks/", f"{inst}/hooks/"],
+                               capture_output=True, text=True, check=True).stdout
+        stream = f"@@scope\t{skel}/hooks\t{inst}/hooks\thooks\thooks\n{items}@@end\n"
+        ov = self.root / "ov.json"
+        ov.write_text('{"schema_version": 1, "overrides": []}')
+        res = subprocess.run(["python3", str(SCRIPT), "check", "--instance-root", str(inst),
+                              "--skeleton-root", str(skel), "--overrides", str(ov)],
+                             input=stream, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("hooks/guard.sh: def new_fn", res.stdout)
+        self.assertNotIn("old_fn", res.stdout)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--negative-layouts", action="store_true")
-    args = parser.parse_args()
-    if args.negative_layouts:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "instance").mkdir()
-            (root / "skeleton").mkdir()
-            git(root / "instance", "init", "-q")
-            git(root / "skeleton", "init", "-q")
-            registry = root / "registry.json"
-            registry.write_text(
-                json.dumps(
-                    {
-                        "instances": [
-                            {
-                                "name": "fixture",
-                                "path": str(root / "instance"),
-                                "subtree_prefix": "../escape",
-                                "instance_q_dir": None,
-                                "type": "subtree",
-                            }
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(SCRIPT),
-                    "--contract",
-                    str(CONTRACT),
-                    "--registry",
-                    str(registry),
-                    "--instance-name",
-                    "fixture",
-                    "--repo-root",
-                    str(root / "instance"),
-                    "--skeleton-root",
-                    str(root / "skeleton"),
-                ],
-                capture_output=True,
-            )
-            if result.returncode == 0:
-                print("FAIL: unsafe layout was accepted", file=sys.stderr)
-                return 1
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(ManifestTests)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    return 0 if result.wasSuccessful() else 1
+KEPT = "q-system/.q-system/scripts/test/test-instance-thing.py"
+
+
+class RestoreTests(unittest.TestCase):
+    """Through the REAL updater, on a fixture where the sync lands. The q-system
+    sync snapshots a list of files before its rsync --delete and restores every
+    one the rsync removed. Review round 2 of #609: the guard re-derived "lost"
+    from the raw rsync preview, never saw that list, and refused the whole
+    instance over a test file the sync puts back. Each run here pairs that file
+    with work the sync really loses, so a pass cannot come from the guard going
+    quiet on the q-system scope."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.skel, self.inst = self.root / "skel", self.root / "inst"
+        sk, inst = self.skel, self.inst
+        for rel in upm.UPDATER_FILES + upm.OPTIONAL_FILES:
+            if (REPO_ROOT / rel).is_file():
+                (sk / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(REPO_ROOT / rel, sk / rel)
+        state = sk / "q-system/.q-system/state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "propagation-leak-baseline.json").write_text(json.dumps(upm.LEAK_BASELINE))
+        for root in (sk, inst):
+            (root / ".claude/rules").mkdir(parents=True, exist_ok=True)
+            (root / ".claude/rules/demo.md").write_text("# demo rule\n")
+            (root / "q-system").mkdir(parents=True, exist_ok=True)
+            (root / "q-system/lib.py").write_text("def keep():\n    return 1\n")
+        g(sk, "init", "-q", "-b", "main")
+        # The skeleton shipped old_tool.py, then deleted it on purpose, so
+        # preserve-scan lets that deletion propagate and nothing restores it.
+        (sk / "q-system/old_tool.py").write_text("def a():\n    return 1\n")
+        g(sk, "add", "-A", "-f")
+        g(sk, "commit", "-qm", "skeleton ships old_tool.py")
+        (sk / "q-system/old_tool.py").unlink()
+        g(sk, "add", "-A", "-f")
+        g(sk, "commit", "-qm", "skeleton drops old_tool.py")
+        (sk / "instance-registry.json").write_text(json.dumps({"instances": [{
+            "name": "restore", "path": str(inst), "subtree_prefix": "q-system",
+            "type": "subtree"}]}))
+        # The instance still carries old_tool.py from before that deletion.
+        (inst / "q-system/old_tool.py").write_text("def a():\n    return 1\n")
+        old = {**os.environ, "GIT_AUTHOR_DATE": stamp(40), "GIT_COMMITTER_DATE": stamp(40)}
+        g(inst, "init", "-q", "-b", "main")
+        g(inst, "add", "-A", env=old)
+        g(inst, "commit", "-qm", "instance base", env=old)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def commit_recent(self, files: dict[str, str]) -> None:
+        for rel, text in files.items():
+            (self.inst / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.inst / rel).write_text(text)
+        g(self.inst, "add", "-A")
+        g(self.inst, "commit", "-qm", "instance work",
+          env={**os.environ, "GIT_AUTHOR_DATE": stamp(1), "GIT_COMMITTER_DATE": stamp(1)})
+
+    def update(self) -> str:
+        home = self.root / "home"
+        home.mkdir(exist_ok=True)
+        env = {**os.environ, "HOME": str(home),
+               "KIPI_FLEET_SWEEP_HISTORY": str(self.root / "sweep-history.jsonl")}
+        proc = subprocess.run(["bash", str(self.skel / "kipi-update.sh")], capture_output=True,
+                              text=True, cwd=str(self.root), env=env)
+        return proc.stdout + proc.stderr
+
+    def test_a_q_system_file_the_sync_restores_is_not_refused(self):
+        self.commit_recent({KEPT: "def test_thing():\n    assert True\n"})
+        out = self.update()
+        self.assertNotIn("REFUSING SYNC", out)
+        self.assertNotIn("SYNC GUARD REFUSED", out)
+        # The guard saw the deletion and matched it to the updater's list. A
+        # q-system scope missing from the stream would pass the lines above.
+        self.assertIn("1 deletion(s) skipped, the sync restores them", out)
+        self.assertIn(f"restored untracked: {KEPT}", out)
+        self.assertTrue((self.inst / KEPT).is_file(), out)
+
+    def test_q_system_work_the_sync_does_not_restore_is_still_refused(self):
+        self.commit_recent({
+            KEPT: "def test_thing():\n    assert True\n",
+            "q-system/old_tool.py": "def a():\n    return 1\n\ndef b():\n    return 2\n",
+            "q-system/lib.py": "def keep():\n    return 1\n\ndef extra():\n    return 2\n",
+        })
+        out = self.update()
+        self.assertIn("REFUSING SYNC", out)
+        # Deleted, and not on the restore list: the skeleton once tracked the path.
+        self.assertIn("q-system/old_tool.py: def b", out)
+        # Overwritten: a restore never covers a file the rsync rewrote.
+        self.assertIn("q-system/lib.py: def extra", out)
+        self.assertNotIn(KEPT, out)
+        self.assertTrue((self.inst / KEPT).is_file(), out)
+
+
+def mutant_home(dst: Path) -> Path:
+    """A kipi home holding exactly what the probe copies, so one file can be broken."""
+    for rel in upm.UPDATER_FILES + upm.OPTIONAL_FILES:
+        if (REPO_ROOT / rel).is_file():
+            (dst / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / rel, dst / rel)
+    shutil.copytree(FIXTURE, dst / upm.FIXTURE_REL)
+    return dst
+
+
+class WiringTests(unittest.TestCase):
+    def probe(self, home: Path, *extra: str):
+        return subprocess.run(["python3", str(SCRIPT), "probe", "--kipi-home", str(home), *extra],
+                              capture_output=True, text=True)
+
+    def test_the_shipped_updater_refuses_the_replay_dry_and_real(self):
+        for mode in ([], ["--real"]):
+            res = self.probe(REPO_ROOT, *mode)
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertIn("update sync guard: WIRED", res.stdout)
+            self.assertIn("_deferral_tracking_gate and its tests kept", res.stdout)
+
+    def test_without_the_call_site_the_probe_says_not_wired_and_the_work_is_lost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = mutant_home(Path(tmp))
+            updater = home / "kipi-update.sh"
+            text = updater.read_text()
+            call = 'if ! sync_guard_preflight "$path" "$prefix" "$itype"; then'
+            self.assertEqual(text.count(call), 1, "call site moved; update this mutant")
+            updater.write_text(text.replace(call, "if false; then"))
+            res = self.probe(home, "--real")
+            self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+            self.assertIn("update sync guard: NOT WIRED", res.stdout)
+            self.assertIn("_deferral_tracking_gate removed", res.stdout)
+            self.assertIn("test_archive_deferral_gate.py deleted", res.stdout)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    unittest.main(verbosity=2)

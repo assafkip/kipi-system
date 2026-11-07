@@ -1192,5 +1192,100 @@ class TestLaneBookkeeping(unittest.TestCase):
         self.assertNotIn(triage.HELD_LABEL, b.labels_of("ASK-1"))
 
 
+# ---------------------------------------------------------------------------
+# ASK-3823 part 1: the lane finds claude under launchd. alert_triage_mutants.py
+# reverts each half of the fix and shows this class going RED.
+# ---------------------------------------------------------------------------
+import stat
+import tempfile
+
+
+def _fake_claude(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return str(path)
+
+
+class TestB1ClaudeIsFoundUnderLaunchd(unittest.TestCase):
+    """15 passes logged "no working claude binary": launchd had no PATH, and the
+    real binary at ~/.local/bin/claude was not a candidate."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="alert-triage-b1-")
+        self.home = Path(self.tmp.name) / "home"
+        self.empty = Path(self.tmp.name) / "empty-path"
+        self.empty.mkdir(parents=True)
+        self.home.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _resolve(self, extra_env=None, login=None):
+        env = {"HOME": str(self.home), "PATH": str(self.empty)}
+        env.update(extra_env or {})
+        with patch.dict(triage.os.environ, env, clear=True), \
+             patch.object(triage, "login_shell_claude", lambda: login):
+            return triage.claude_binary()
+
+    def test_local_bin_is_found_with_no_path_at_all(self):
+        want = _fake_claude(self.home / ".local" / "bin" / "claude")
+        self.assertEqual(self._resolve(), want)
+
+    def test_negative_control_nothing_installed_is_none(self):
+        self.assertIsNone(self._resolve())
+
+    def test_kipi_claude_bin_still_wins(self):
+        _fake_claude(self.home / ".local" / "bin" / "claude")
+        pinned = _fake_claude(Path(self.tmp.name) / "pinned" / "claude")
+        self.assertEqual(self._resolve({"KIPI_CLAUDE_BIN": pinned}), pinned)
+
+    def test_the_login_shell_is_the_last_resort(self):
+        found = _fake_claude(Path(self.tmp.name) / "elsewhere" / "claude")
+        self.assertEqual(self._resolve(login=found), found)
+
+    def _probe(self, stdout):
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = list(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+        with patch.object(triage.subprocess, "run", fake_run):
+            return triage.login_shell_claude(), seen.get("argv")
+
+    def test_the_login_shell_answer_survives_escape_codes(self):
+        """Measured: iTerm's shell integration prints escape codes, BEL-ended,
+        in front of `command -v claude`'s answer."""
+        exe = _fake_claude(Path(self.tmp.name) / "zsh-found" / "claude")
+        out = ("\x1b]1337;RemoteHost=me@mac\x07\x1b]1337;CurrentDir=/Users/me/p\x07"
+               "\x1b]1337;ShellIntegrationVersion=14;shell=zsh\x07" + exe + "\n")
+        self.assertEqual(self._probe(out)[0], exe)
+
+    def test_an_alias_or_a_missing_file_is_not_a_binary(self):
+        self.assertIsNone(self._probe("alias claude='npx claude'\n")[0])
+        self.assertIsNone(self._probe(str(Path(self.tmp.name) / "gone" / "claude") + "\n")[0])
+
+    def test_the_login_shell_is_interactive(self):
+        """zsh -lc does not read ~/.zshrc, where ~/.local/bin joins PATH."""
+        argv = self._probe("")[1]
+        self.assertIn("-ilc", argv)
+
+    def test_the_template_sets_path_with_local_bin_first(self):
+        _, d, _ = lane_plists()[0]
+        path = (d.get("EnvironmentVariables") or {}).get("PATH") or ""
+        dirs = path.split(":")
+        self.assertEqual(dirs[0], "__HOME__/.local/bin", path)
+        self.assertIn("/opt/homebrew/bin", dirs, "gh and python3 resolve from here")
+
+    def test_the_template_carries_the_login_identity(self):
+        """PR #628 R1: with PATH alone, claude is found and `claude -p` answers
+        "Not logged in", because the keychain lookup needs USER and LOGNAME."""
+        _, d, _ = lane_plists()[0]
+        env = d.get("EnvironmentVariables") or {}
+        self.assertEqual(env.get("HOME"), "__HOME__", env)
+        self.assertEqual(env.get("USER"), "__USER__", env)
+        self.assertEqual(env.get("LOGNAME"), "__USER__", env)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

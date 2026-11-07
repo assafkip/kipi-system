@@ -390,12 +390,23 @@ PY
 # has to be the ledger.
 #
 # Same shape as PR #23's own LEDGER_PREFIX allowance, deliberately: converge may
-# only ever add to a reviewed head the one file that gate lets past.
+# only ever add to a reviewed head the receipt paths that gate lets past.
+#
+# ONE RULE, ASKED, NOT COPIED (PR #621 round 2, finding 1). This was its own
+# string compare against .prd-os/receipts.jsonl, and receipt-carry-approval.sh
+# kept a second copy. When ASK-3829 moved close receipts into
+# .prd-os/receipts.d/ fragments, both copies read a fragment as unreviewed code:
+# "receipt: NOT pushing", RECEIPT_MISS, and the approval carry never reached.
+# What counts as a receipt path now lives in the carry script's delta_kind
+# alone, and this asks it. A carry script that cannot be run answers nothing,
+# which refuses the push: the safe side.
 receipt_only_ahead() {
-  local tree="$1" sha="$2" gained
+  local tree="$1" sha="$2" gained head
   git -C "$tree" merge-base --is-ancestor "$sha" HEAD 2>/dev/null || return 1
   gained="$(git -C "$tree" diff --name-only "$sha" HEAD 2>/dev/null)" || return 1
-  [ -z "$gained" ] || [ "$gained" = ".prd-os/receipts.jsonl" ]
+  [ -z "$gained" ] && return 0
+  head="$(git -C "$tree" rev-parse HEAD 2>/dev/null)" || return 1
+  [ "$(bash "$SCRIPT_DIR/receipt-carry-approval.sh" --delta-kind "$tree" "$sha" "$head" 2>>"$LOG")" = "receipt-only" ]
 }
 
 # WHY THE RECEIPT NEEDS A CHANNEL OUT OF THIS FUNCTION (PR #42 review, finding 1

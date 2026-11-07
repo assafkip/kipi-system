@@ -43,8 +43,11 @@ def _capture(repo: Path, tmp_path: Path, name: str, script: str) -> Path:
 
 
 def _rows(repo: Path) -> list:
-    f = repo / ".prd-os/receipts.jsonl"
-    return [json.loads(l) for l in f.read_text().splitlines() if l.strip()] if f.exists() else []
+    """Legacy file plus fragments (ASK-3829): close writes one fragment per receipt, so the
+    `== []` checks below read nothing at all if they look only at receipts.jsonl."""
+    import ledger_fragments
+    return [json.loads(text) for _src, _n, text
+            in ledger_fragments.iter_lines(repo / ".prd-os/receipts.jsonl") if text.strip()]
 
 
 def test_a_cap_issue_does_not_close_without_a_runtime_receipt(tmp_path):

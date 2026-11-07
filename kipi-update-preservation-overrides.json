@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "_doc": "The one way past the kipi update sync guard (ASK-3821, update-preservation-manifest.py). Each entry lets ONE removal through: the instance commit that added it (7 to 40 hex chars), the instance-relative path, the symbol (a def or class name, Cls.method for a method, or <file> for a test file) and the reason. The guard prints a ready entry when it refuses. Add entries in a reviewed commit; delete them once the sync has run.",
+  "overrides": []
+}

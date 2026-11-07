@@ -84,11 +84,12 @@ def _drive_close(repo, issue_id):
 
 
 def _gate_rows(repo):
-    path = Path(repo) / ".prd-os" / "gates.jsonl"
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text().splitlines()
-            if line.strip()]
+    """Legacy file plus fragments (ASK-3829). Reading only gates.jsonl here would make the
+    "a refused close registered nothing" assertion pass with a gate sitting in a fragment."""
+    sys.path.insert(0, str(HERE))
+    import ledger_fragments
+    return [json.loads(text) for _src, _n, text
+            in ledger_fragments.iter_lines(Path(repo) / ".prd-os" / "gates.jsonl") if text.strip()]
 
 
 def _setup(tmp):
