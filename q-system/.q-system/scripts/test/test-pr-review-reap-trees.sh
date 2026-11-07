@@ -82,24 +82,20 @@ case "$n" in
 esac
 EOF
 chmod +x "$T/bin/gh"
-for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp gzip mkdir mktemp date cp wc head sleep rmdir find touch; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp gzip mkdir mktemp date cp wc head sleep rmdir find touch python3; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
 # tar is a WRAPPER, never a symlink (writing through a symlink would edit the real
-# binary). While the archive of PR 17 is being written, a competitor tries to take
-# that tree's lock with the same noclobber protocol a starting review uses.
+# binary). While the archive of PR 17 is being written, a starting review tries to
+# take that tree's lock. It calls the REAL acquire_wt_lock as its own process: round
+# 2 kept a hand-copied protocol here, and a copy cannot catch a defect in the original.
 REALTAR="$(command -v tar)"
 cat > "$T/bin/tar" <<EOF
 #!$(command -v bash)
 case " \$* " in
   *" -czf "*"__pr-17-"*)
-    # acquire_wt_lock's whole protocol, stale reclaim included: PR 17's lock was
-    # seeded with a DEAD holder, so a reaper that does not hold it loses it here.
-    L="$(path_of 17).lock"
-    if ( set -o noclobber; printf competitor > "\$L" ) 2>/dev/null; then echo took > "$T/race.out"
-    else
-      h="\$(cat "\$L" 2>/dev/null)"
-      if [ -n "\$h" ] && kill -0 "\$h" 2>/dev/null; then echo refused > "$T/race.out"
-      else rm -f "\$L"; ( set -o noclobber; printf competitor > "\$L" ) 2>/dev/null && echo took > "$T/race.out"; fi
-    fi ;;
+    # PR 17's lock was seeded with a DEAD holder, so a reaper that does not hold
+    # it loses the tree here.
+    "$T/bin/bash" -c '_wt_lock_path=""; source "\$1"; acquire_wt_lock "\$2"; echo "\$?"' _ "$T/lock.sh" "$(path_of 17)" > "$T/race.rc" 2>/dev/null
+    case "\$(cat "$T/race.rc")" in 2) echo refused > "$T/race.out" ;; 0) echo took > "$T/race.out" ;; *) echo error > "$T/race.out" ;; esac ;;
 esac
 exec "$REALTAR" "\$@"
 EOF
@@ -191,13 +187,34 @@ check "ASK-3930 round 1: a truncated list is refused (rc 1)" 'grep -qx "short=1"
 check "ASK-3930 round 1: POSITIVE CONTROL, the same list whole is archived (rc 0)" 'grep -qx "whole=0" "$T/out2"'
 check "ASK-3930 round 1: exactly one archive exists, the whole one" '[ "$(ls "$AR2" 2>/dev/null | wc -l | tr -d " ")" = 1 ]'
 
-# ASK-3930 round 2: two contenders that BOTH read a dead holder. Contender B (this
-# test) holds the claim mutex; contender A (acquire_wt_lock, in the background) has
-# read the dead PID and waits on the mutex. B reclaims the lock for a LIVE holder
-# and lets go. A must re-read inside the mutex, see the live holder and back off.
-# Before round 2, A removed B's fresh lock and took the tree as well.
+# --- the claim mutex (ASK-3930 rounds 2 and 3) -------------------------------
+# acquire_wt_lock serializes every claim on ONE kernel flock per review-trees
+# directory (.tree-lock.mutex). These helpers hold it from outside, the way a
+# contender inside its critical section would.
+hold_mutex() {  # <dir> <ready-file> <release-file>; exec, so $! is the holder itself
+  exec python3 -I -c 'import fcntl, os, sys, time
+fd = os.open(os.path.join(sys.argv[1], ".tree-lock.mutex"), os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[2], "w").close()
+for _ in range(400):
+    if os.path.exists(sys.argv[3]):
+        break
+    time.sleep(0.05)' "$@"
+}
+mutex_free() {  # <dir>: 0 when nobody holds the mutex
+  python3 -I -c 'import fcntl, os, sys
+fd = os.open(os.path.join(sys.argv[1], ".tree-lock.mutex"), os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "$1" 2>/dev/null
+}
+wait_for() { local i=0; while [ ! -e "$1" ] && [ "$i" -lt "${2:-50}" ]; do i=$((i+1)); sleep 0.1; done; [ -e "$1" ]; }
+
+# Round 2: contender A has read a dead holder and waits on the mutex, which this
+# test holds as contender B. B reclaims the lock for a LIVE holder and lets go. A
+# must re-read inside the mutex, see the live holder and back off.
 mkdir -p "$T/race3"; L3="$T/race3/tree"
-printf '%s' "$DEAD" > "$L3.lock"; mkdir "$L3.lock.claim"
+printf '%s' "$DEAD" > "$L3.lock"
+hold_mutex "$T/race3" "$T/race3/held" "$T/race3/let-go" & H3=$!
+wait_for "$T/race3/held"
 cat > "$T/drive3.sh" <<EOF
 set -uo pipefail
 _wt_lock_path=""
@@ -207,23 +224,94 @@ EOF
 PATH="$T/bin" "$T/bin/bash" "$T/drive3.sh" & A=$!
 sleep 0.5
 if kill -0 "$A" 2>/dev/null; then echo blocked > "$T/race3/state"; else echo ran-through > "$T/race3/state"; fi
-printf '%s' "$LIVE" > "$L3.lock"; rmdir "$L3.lock.claim"
-wait "$A"
+printf '%s' "$LIVE" > "$L3.lock"; : > "$T/race3/let-go"
+wait "$H3"; wait "$A"
 check "ASK-3930 round 2: contender A really waited on the claim mutex" '[ "$(cat "$T/race3/state")" = blocked ]'
 check "ASK-3930 round 2: A backs off as busy (rc 2) once B holds the lock" 'grep -qx "rc=2" "$T/race3/rc"'
 check "ASK-3930 round 2: B's live lock survives A's stale read" '[ "$(cat "$L3.lock")" = "$LIVE" ]'
-check "ASK-3930 round 2: A gives the mutex back" '[ ! -e "$L3.lock.claim" ]'
+check "ASK-3930 round 2: A gives the mutex back" 'mutex_free "$T/race3"'
 
-# A mutex left by a killed run (older than two minutes) does not wedge the tree.
-L4="$T/race3/tree4"; printf '%s' "$DEAD" > "$L4.lock"; mkdir "$L4.lock.claim"; touch -t 202601010000 "$L4.lock.claim"
+# Round 3: a mutex whose holder was KILLED is free at once, because the kernel
+# drops an flock when its holder dies. 344b340f instead cleared a mutex by AGE,
+# which is the race below. A fresh mkdir mutex left by a pre-fix run is litter and
+# must not wedge the tree (344b340f waited it out, then gave up with rc 1).
+mkdir -p "$T/race4"; L4="$T/race4/tree"
+printf '%s' "$DEAD" > "$L4.lock"; mkdir "$L4.lock.claim"
+hold_mutex "$T/race4" "$T/race4/held" "$T/race4/never" & H4=$!
+wait_for "$T/race4/held"; kill -9 "$H4" 2>/dev/null; wait "$H4" 2>/dev/null
 cat > "$T/drive4.sh" <<EOF
 set -uo pipefail
 _wt_lock_path=""
 source "$T/lock.sh"
 acquire_wt_lock "$L4"; echo "rc=\$?"
 EOF
-PATH="$T/bin" "$T/bin/bash" "$T/drive4.sh" > "$T/race3/out4" 2>&1
-check "ASK-3930 round 2: a stale mutex is cleared and the dead lock reclaimed (rc 0)" 'grep -qx "rc=0" "$T/race3/out4"'
+PATH="$T/bin" "$T/bin/bash" "$T/drive4.sh" > "$T/race4/out" 2>&1
+check "ASK-3930 round 3: a killed mutex holder frees the mutex, and the dead lock is reclaimed (rc 0)" 'grep -qx "rc=0" "$T/race4/out"'
+
+# Round 3, Codex's interleave, forced. Start: a dead holder and an EXPIRED pre-fix
+# .claim mutex. Two real contenders, A and B. PATH shims pin 344b340f's schedule:
+# both pass the expiry check before either removes the mutex (find), A removes and
+# recreates it and reads the dead holder, then B removes A's fresh mutex, recreates
+# it and also reads the dead holder (cat), and B replaces the lock only after A has
+# returned (rm). This test holds the kernel mutex while both start, so a protocol
+# that uses it queues both at its door. Every wait is bounded: a protocol that never
+# reaches a shim simply runs through. Both contenders stay alive to the end, so a
+# winner can never be reclaimed as stale.
+mkdir -p "$T/race5/bar" "$T/shim5"; L5="$T/race5/tree"; BAR="$T/race5/bar"
+printf '%s' "$DEAD" > "$L5.lock"; mkdir "$L5.lock.claim"; touch -t 202601010000 "$L5.lock.claim"
+SH="$(command -v bash)"; RFIND="$(command -v find)"; RCAT="$(command -v cat)"; RRM="$(command -v rm)"; RSLEEP="$(command -v sleep)"
+cat > "$T/shim5/find" <<EOF
+#!$SH
+out="\$("$RFIND" "\$@")"; rc=\$?
+if [ -n "\${ROLE:-}" ] && [ -n "\$out" ]; then
+  : > "$BAR/found.\$ROLE"; i=0
+  while { [ ! -e "$BAR/found.A" ] || [ ! -e "$BAR/found.B" ]; } && [ "\$i" -lt 100 ]; do i=\$((i+1)); "$RSLEEP" 0.1; done
+  if [ "\$ROLE" = B ]; then i=0; while [ ! -e "$BAR/A.cat2" ] && [ "\$i" -lt 100 ]; do i=\$((i+1)); "$RSLEEP" 0.1; done; fi
+fi
+[ -z "\$out" ] || printf '%s\n' "\$out"
+exit "\$rc"
+EOF
+cat > "$T/shim5/cat" <<EOF
+#!$SH
+if [ -n "\${ROLE:-}" ] && [ "\$#" = 1 ] && [ "\$1" = "$L5.lock" ]; then
+  n=\$(( \$("$RCAT" "$BAR/cat.\$ROLE" 2>/dev/null || echo 0) + 1 )); printf '%s' "\$n" > "$BAR/cat.\$ROLE"
+  out="\$("$RCAT" "\$1")"; rc=\$?
+  if [ "\$n" = 2 ]; then
+    : > "$BAR/\$ROLE.cat2"
+    if [ "\$ROLE" = A ]; then i=0; while [ ! -e "$BAR/B.cat2" ] && [ "\$i" -lt 100 ]; do i=\$((i+1)); "$RSLEEP" 0.1; done; fi
+  fi
+  printf '%s' "\$out"; exit "\$rc"
+fi
+exec "$RCAT" "\$@"
+EOF
+cat > "$T/shim5/rm" <<EOF
+#!$SH
+if [ "\${ROLE:-}" = B ]; then i=0; while [ ! -e "$BAR/done.A" ] && [ "\$i" -lt 100 ]; do i=\$((i+1)); "$RSLEEP" 0.1; done; fi
+exec "$RRM" "\$@"
+EOF
+chmod +x "$T/shim5/find" "$T/shim5/cat" "$T/shim5/rm"
+cat > "$T/drive5.sh" <<EOF
+set -uo pipefail
+_wt_lock_path=""
+source "$T/lock.sh"
+acquire_wt_lock "$L5"; rc=\$?
+echo "\$\$ \$rc" > "$T/race5/out.\$ROLE"; : > "$BAR/done.\$ROLE"
+i=0; while [ ! -e "$BAR/release" ] && [ "\$i" -lt 300 ]; do i=\$((i+1)); sleep 0.1; done
+EOF
+hold_mutex "$T/race5" "$BAR/held" "$BAR/let-go" & H5=$!
+wait_for "$BAR/held"
+ROLE=A PATH="$T/shim5:$T/bin" "$T/bin/bash" "$T/drive5.sh" & CA=$!
+ROLE=B PATH="$T/shim5:$T/bin" "$T/bin/bash" "$T/drive5.sh" & CB=$!
+sleep 1.5; : > "$BAR/let-go"; wait "$H5"
+wait_for "$T/race5/out.A" 150; wait_for "$T/race5/out.B" 150
+owners="$(cat "$T/race5/out.A" "$T/race5/out.B" 2>/dev/null | awk '$2 == 0' | wc -l | tr -d ' ')"
+busy="$(cat "$T/race5/out.A" "$T/race5/out.B" 2>/dev/null | awk '$2 == 2' | wc -l | tr -d ' ')"
+winner="$(cat "$T/race5/out.A" "$T/race5/out.B" 2>/dev/null | awk '$2 == 0 {print $1}' | head -1)"
+echo "round 3 contenders (pid rc): A $(cat "$T/race5/out.A" 2>/dev/null), B $(cat "$T/race5/out.B" 2>/dev/null); the lock holds $(cat "$L5.lock" 2>/dev/null)"
+check "ASK-3930 round 3: after both pass the expiry check, exactly ONE contender owns the tree (red on 344b340f: both did)" '[ "$owners" = 1 ]'
+check "ASK-3930 round 3: the other backs off as busy (rc 2), so it never clears the owner's ref" '[ "$busy" = 1 ]'
+check "ASK-3930 round 3: the lock names the one owner" '[ -n "$winner" ] && [ "$(cat "$L5.lock")" = "$winner" ]'
+: > "$BAR/release"; wait "$CA" "$CB" 2>/dev/null
 
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"

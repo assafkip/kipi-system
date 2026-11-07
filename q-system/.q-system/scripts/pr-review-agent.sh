@@ -573,10 +573,10 @@ _wt_bail() {  # _wt_bail <worktree-path>
 # is reading files while run B re-checkouts it to a different sha. Neither run
 # can tell, and both stamp their verdicts with the sha they THINK they read.
 #
-# Same primitive as mutation-sweep's sweep lock (ASK-1147) and for the same
-# reason: O_CREAT|O_EXCL is atomic everywhere and needs no daemon. A stale lock
-# whose holder is gone is reclaimed, because an operator who must clear locks by
-# hand eventually clears one while a run is live.
+# The lock is a PID file, written atomically and decided under a kernel flock
+# (ASK-3930 round 3, see acquire_wt_lock). A stale lock whose holder is gone is
+# reclaimed, because an operator who must clear locks by hand eventually clears
+# one while a run is live.
 _wt_lock_path=""
 # Exit codes are THREE-VALUED on purpose (PR #265 major, round 2). The caller
 # has to tell "nobody has a tree, so clear the stale ref" apart from "somebody
@@ -585,47 +585,89 @@ _wt_lock_path=""
 # this run never wrote it.
 #   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
 acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
-  local wt="$1" lock="$1.lock" holder m="$1.lock.claim" tries=0
+  # EVERY CLAIM IS ONE KERNEL-LOCKED CRITICAL SECTION (ASK-3930 round 3). The PID
+  # file is still the ownership record every reader uses, but deciding who gets it
+  # (first claim, re-entry, stale reclaim, the reaper's claim) happens only while
+  # holding an flock on one mutex file per review-trees directory. Rounds 1 to 3
+  # each patched a userspace version: noclobber plus a stale reclaim let two
+  # callers that read one dead PID both win; a mkdir mutex fixed that but needed
+  # its own reclaim for a killed holder, an age check then rmdir by pathname, which
+  # let a delayed contender delete a fresh mutex and both win again. Any userspace
+  # lock that must survive a crashed holder needs that reclaim. The kernel drops an
+  # flock when its holder dies, so this one has none, and the mutex file is never
+  # unlinked, so no path can be swapped under a holder.
+  # macOS ships no flock(1), so python3 takes it (the kipi-promote.sh take_lock
+  # idiom); -I keeps a review tree's own files off its import path. The PID goes in
+  # by link(), so the lock file is never seen empty. An empty one can only come
+  # from a pre-round-3 run mid-create, so it gets a moment before it counts as stale.
+  # RE-ENTRANT for this run: review_worktree is called more than once per review.
+  local wt="$1" lock="$1.lock"
   mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
-  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
-    _wt_lock_path="$lock"; return 0
-  fi
-  holder="$(cat "$lock" 2>/dev/null || true)"
-  # RE-ENTRANT for this run. review_worktree is called more than once per review,
-  # and the lock exists to keep OTHER processes out, not this one. Without this
-  # the second call in a single run refuses on a lock it placed itself -- caught
-  # immediately by the existing suites, which went 5 and 2 red.
-  if [ "$holder" = "$$" ]; then
-    _wt_lock_path="$lock"; return 0
-  fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    return 2
-  fi
-  # Stale: reclaim once, UNDER A MUTEX (ASK-3930 round 2). Read-dead, remove,
-  # recreate is a check-then-act: two callers that both read the dead PID could
-  # each remove the lock the other had just taken, and both would hold the tree.
-  # The mkdir mutex makes reclaim exclusive, and the holder is re-read inside it,
-  # so a lock someone else reclaimed first reads as live. The reaper claims through
-  # this same function, so reviews and the reaper share one protocol. A mutex left
-  # by a killed run is cleared after two minutes (a reclaim takes milliseconds);
-  # that clearing is itself check-then-act, so the residual race needs a run killed
-  # mid-reclaim AND two contenders in the same instant.
-  until mkdir "$m" 2>/dev/null; do
-    if [ -n "$(find "$m" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$m" 2>/dev/null; continue; fi
-    tries=$((tries+1)); [ "$tries" -ge 50 ] && return 1
-    sleep 0.1
-  done
-  holder="$(cat "$lock" 2>/dev/null || true)"
-  # An EMPTY holder can be a lock created an instant ago: noclobber creates the
-  # file before printf fills it. Give it a moment before calling it stale.
-  if [ -z "$holder" ] && [ -e "$lock" ]; then sleep 0.2; holder="$(cat "$lock" 2>/dev/null || true)"; fi
-  if [ "$holder" = "$$" ]; then rmdir "$m" 2>/dev/null; _wt_lock_path="$lock"; return 0; fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then rmdir "$m" 2>/dev/null; return 2; fi
-  command rm -f "$lock" 2>/dev/null || true
-  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
-    rmdir "$m" 2>/dev/null; _wt_lock_path="$lock"; return 0
-  fi
-  rmdir "$m" 2>/dev/null; return 1
+  python3 -I - "$lock" "$(dirname "$wt")/.tree-lock.mutex" "$$" <<'PYLOCK' 2>/dev/null
+import errno, fcntl, os, sys, time
+lock, mutex, me = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def holder():
+    try:
+        with open(lock) as fh:
+            return fh.read().strip()
+    except FileNotFoundError:
+        return None
+
+def alive(text):
+    try:
+        pid = int(text)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except (OverflowError, OSError):
+        return False
+    return True
+
+fd = os.open(mutex, os.O_RDWR | os.O_CREAT, 0o600)
+deadline = time.monotonic() + 5
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except OSError as e:
+        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN) or time.monotonic() > deadline:
+            sys.exit(1)
+        time.sleep(0.02)
+h = holder()
+if h == "":
+    time.sleep(0.2)
+    h = holder()
+if h == me:
+    sys.exit(0)
+if h is not None:
+    if alive(h):
+        sys.exit(2)
+    try:
+        os.unlink(lock)
+    except FileNotFoundError:
+        pass
+tmp = "%s.%s.tmp" % (lock, me)
+with open(tmp, "w") as fh:
+    fh.write(me)
+try:
+    os.link(tmp, lock)
+except FileExistsError:
+    sys.exit(2)
+finally:
+    os.unlink(tmp)
+sys.exit(0)
+PYLOCK
+  case "$?" in
+    0) _wt_lock_path="$lock"; return 0 ;;
+    2) return 2 ;;
+    *) return 1 ;;
+  esac
 }
 release_wt_lock() {
   [ -n "$_wt_lock_path" ] || return 0
