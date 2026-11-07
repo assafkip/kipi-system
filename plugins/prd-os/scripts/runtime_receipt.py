@@ -24,6 +24,14 @@ equal, so the term list below is still ONE list.
 Producing a receipt: `python3 runtime_receipt.py capture --out r.json -- <cmd...>`
 runs the command and records what it printed, so the output is observed rather
 than typed.
+
+LIVE receipts (ASK-3830) are the same file and the same loader with `live=True`.
+A spec's checked "Live:" deliverable names a record the RUNNING system writes
+(a ledger row, a status line, a delivered message). 15 of the 23 closed chief gp-* specs
+(measured 2026-11-06) closed with that box checked and "PENDING" in its text; none got its
+record afterwards. A live receipt may READ (tail, grep) because reading the
+running system's own record is the observation; what it may not do is read only
+repo source, or name nothing at all.
 """
 from __future__ import annotations
 
@@ -218,6 +226,32 @@ def _repo_files_named(command: str, repo_root: Path) -> list[str]:
     return found
 
 
+def _records_named(command: str, repo_root: Path) -> list[str]:
+    """Existing paths OUTSIDE repo_root that the command names past each
+    segment's program word: the running system's records (~/.config/x/log.jsonl).
+    The program itself (/usr/bin/python3, /bin/cat) is skipped, so an absolute
+    interpreter path is never mistaken for a record."""
+    root = repo_root.resolve()
+    found: list[str] = []
+    for seg in _segments(command or ""):
+        for arg in seg[1:]:
+            for tok in _PATHISH_RE.findall(arg):
+                if not tok.startswith(("/", "~")) or tok in ("/", "~", "~/"):
+                    continue
+                try:
+                    rp = Path(tok).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    continue
+                try:
+                    rp.relative_to(root)
+                    continue  # inside the repo: source, not a record
+                except ValueError:
+                    pass
+                if rp.exists() and str(rp) not in found:
+                    found.append(str(rp))
+    return found
+
+
 def _parse_ts(raw: str) -> datetime:
     ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     if ts.tzinfo is None:
@@ -229,14 +263,17 @@ def load_receipt(path: str | None, terms: list[str], *,
                  repo_root: str | Path | None = None,
                  bind_to: list[str] | None = None,
                  not_before: str | None = None,
-                 used: dict[str, str] | None = None) -> dict:
+                 used: dict[str, str] | None = None,
+                 live: bool = False) -> dict:
     """Validate a receipt file and return the reference to store on the row.
 
     The keyword arguments bind the receipt to the item, and both runners always
     pass them. repo_root: the command must name a file in that repo; bind_to:
     and that file must be one of these (the issue's allowed files, globs
     allowed); not_before: the receipt must not predate the item; used: sha256 ->
-    id of every OTHER row already holding a receipt.
+    id of every OTHER row already holding a receipt. live: a Live-deliverable
+    receipt (see the module docstring): bind_to is not applied, and a read is
+    accepted when it reads a record outside the repo.
 
     Raises ReceiptError with a message naming what is missing and an example."""
     claim = ", ".join(terms)
@@ -279,7 +316,16 @@ def load_receipt(path: str | None, terms: list[str], *,
             f"runtime receipt {path}: the caller crashed before it could exercise the "
             f"control (exit {code}). A crash is not runtime proof. Fix the run, then "
             f"capture again:\n  {EXAMPLE}")
-    if command_is_source_only(str(data["command"])):
+    command = str(data["command"])
+    records = _records_named(command, Path(repo_root)) if live and repo_root is not None else []
+    if live and repo_root is not None and not records and not _repo_files_named(
+            command, Path(repo_root)):
+        raise ReceiptError(
+            f"live receipt {path}: its command names no record of the running system "
+            f"and no file in this repo ({command!r}), so it observed nothing. Read "
+            f"or run the real record, e.g. tail -1 ~/.config/<app>/<ledger>.jsonl:\n"
+            f"  {EXAMPLE}")
+    if command_is_source_only(command) and not records:
         raise ReceiptError(
             f"runtime receipt {path} only reads source ({data['command']!r}). grep, "
             "rg, cat, sed, an ast parse, git show/diff, or a test run that only "
@@ -289,8 +335,9 @@ def load_receipt(path: str | None, terms: list[str], *,
     # shape; nothing tied it to the item. `date` resolved a token-quota row, one
     # file resolved two unrelated rows, and a receipt dated 2020 passed. The bar
     # is ASK-1810's: this makes a junk receipt a deliberate act, not impossible.
-    command = str(data["command"])
-    if repo_root is not None:
+    # A live receipt reads a record, not the changed code, so the allowed-files
+    # binding does not apply to it; the record check above stands in for it.
+    if repo_root is not None and not live:
         named = _repo_files_named(command, Path(repo_root))
         if bind_to:
             if not any(f == b or fnmatch(f, b) for f in named for b in bind_to):

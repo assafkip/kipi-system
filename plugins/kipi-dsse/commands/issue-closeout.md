@@ -75,6 +75,14 @@ Close the active DSSE issue. Execute in order:
    `allowed_files`, it ran after the issue was loaded, and no other issue's close row
    already holds it. A missing `exit_code` does not skip the crash check.
 
+   A checked deliverable that starts with `Live:` closes only with the spec's
+   `live_receipt:` frontmatter field set to a receipt of the RUNNING system's own
+   record (a ledger row, a status line, a delivered message), made with the same
+   `runtime_receipt.py capture`. Reading that record (`tail -1 ~/.config/<app>/x.jsonl`)
+   is the observation; reading only repo source, or naming nothing, is refused. A
+   checked Live box whose text says PENDING is refused outright: uncheck it until it
+   ships. (ASK-3830: 15 of the 23 closed chief gp-* specs closed that way.)
+
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 
 6. Produce a final report for the founder:

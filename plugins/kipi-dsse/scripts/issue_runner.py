@@ -431,15 +431,16 @@ def _validate_deliverables_count(fm: dict) -> int | None:
     return int(text)
 
 
-def _count_checked_deliverables(text: str) -> tuple[int, int]:
-    """(checked, listed) checkbox lines in the FIRST '## Deliverables'
-    section, top-level boxes only. One section, column-0 boxes: an indented
-    nested subtask or a second injected Deliverables section must not be able
-    to satisfy the locked count (codex major, dsse-deliverable-count-lock).
-    (0, 0) when the section is absent."""
+def _deliverable_boxes(text: str) -> list[tuple[bool, str]]:
+    """(checked, text after the box) for each checkbox line in the FIRST
+    '## Deliverables' section, top-level boxes only. One section, column-0
+    boxes: an indented nested subtask or a second injected Deliverables section
+    must not be able to satisfy the locked count (codex major,
+    dsse-deliverable-count-lock). The count lock and the Live check read this
+    one parser, so they cannot disagree about which boxes exist."""
     in_section = False
     section_seen = False
-    checked = listed = 0
+    boxes: list[tuple[bool, str]] = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("## "):
@@ -454,11 +455,59 @@ def _count_checked_deliverables(text: str) -> tuple[int, int]:
         if line != stripped:
             continue  # indented = nested subtask, not a deliverable
         if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
-            checked += 1
-            listed += 1
+            boxes.append((True, stripped[5:].strip()))
         elif stripped.startswith("- [ ]"):
-            listed += 1
-    return checked, listed
+            boxes.append((False, stripped[5:].strip()))
+    return boxes
+
+
+def _count_checked_deliverables(text: str) -> tuple[int, int]:
+    """(checked, listed) top-level boxes in the first Deliverables section;
+    (0, 0) when the section is absent."""
+    boxes = _deliverable_boxes(text)
+    return sum(1 for c, _ in boxes if c), len(boxes)
+
+
+# A Live deliverable is a box whose text starts with the "Live:" label (chief's
+# gp-* specs, the prd-split activation issues). Only the label counts: "the
+# live view renders" is an ordinary deliverable.
+_LIVE_RE = re.compile(r"^\W*live\b(?:\s+deliverable)?\W*:", re.IGNORECASE)
+# PENDING in any case, as a word. `pending_draft` and `pending:followup:` are
+# code tokens, and backtick spans are stripped before matching.
+_PENDING_RE = re.compile(r"\bpending\b(?![_:]\S)", re.IGNORECASE)
+
+
+def _live_receipt_value(fm: dict) -> str:
+    """The spec's `live_receipt:` path, or "" when unset. The minimal YAML
+    reader turns a bare `live_receipt:` into [], and a hand edit may quote it."""
+    raw = fm.get("live_receipt")
+    if isinstance(raw, list):
+        raw = raw[0] if len(raw) == 1 else ""
+    value = str(raw or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return "" if value.lower() in ("null", "~", "none") else value
+
+
+def _receipt_shas_held_elsewhere(paths: "Paths", issue_id: str) -> dict[str, str]:
+    """sha256 -> issue id for every runtime or live receipt another issue's
+    close row already holds. One receipt proves one item (PR #610 review,
+    major 1), whichever field it was filed under."""
+    used: dict[str, str] = {}
+    if not paths.receipts_path.is_file():
+        return used
+    for line in paths.receipts_path.read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("issue_id") == issue_id:
+            continue
+        for key in ("runtime_receipt", "live_receipt"):
+            ref = row.get(key)
+            if isinstance(ref, dict) and ref.get("sha256"):
+                used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
+    return used
 
 
 def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
@@ -476,6 +525,30 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     err = _require_marker(text)
     if err is not None:
         sys.stderr.write(err + "\n")
+        return 2
+    # BLOCKED-BY (ASK-3830). prd_split writes it on an activation issue: the
+    # founder's own step, which only means something once the mechanism issues
+    # it exercises have closed. Before this, a hand in Acceptance had no spec at
+    # all, so nothing ordered it; an order nothing reads would be the same gap.
+    blockers = fm.get("blocked_by") or []
+    if isinstance(blockers, str):
+        blockers = [b.strip() for b in blockers.strip("[]").split(",") if b.strip()]
+    waiting = []
+    for b in blockers:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", b):
+            waiting.append(f"{b} (not an issue id)")
+            continue
+        try:
+            _bp, bfm, _bt = _load_spec(paths, b)
+            st = str(bfm.get("status") or "no status")
+        except (FileNotFoundError, ValueError):
+            st = "no spec"
+        if st != "closed":
+            waiting.append(f"{b} ({st})")
+    if waiting:
+        sys.stderr.write(
+            f"cannot load {args.issue_id}: blocked by {', '.join(waiting)}. "
+            "Close those issues first; this one exercises what they build.\n")
         return 2
     allowed = fm.get("allowed_files", []) or []
     checks = fm.get("required_checks", []) or []
@@ -1461,16 +1534,7 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         # Bound to THIS issue: it names one of the issue's allowed files, it ran
         # after the issue was loaded, and no other issue's close row holds it
         # (PR #610 review, major 1: one `date` capture closed any issue).
-        used: dict[str, str] = {}
-        if paths.receipts_path.is_file():
-            for line in paths.receipts_path.read_text().splitlines():
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                ref = row.get("runtime_receipt") if isinstance(row, dict) else None
-                if isinstance(ref, dict) and ref.get("sha256") and row.get("issue_id") != issue_id:
-                    used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
+        used = _receipt_shas_held_elsewhere(paths, issue_id)
         try:
             runtime_ref = runtime_receipt.load_receipt(
                 getattr(args, "runtime_receipt", None), terms,
@@ -1547,6 +1611,46 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
                 f"under '## Deliverables' ({listed} listed). Check off what "
                 "shipped, or amend the spec via /issue-amend (founder-gated).\n"
             )
+            return 2
+
+    # LIVE DELIVERABLES (ASK-3830). The lock above counts boxes, so a box
+    # checked as "Live: ... PENDING deploy" closed the issue: 15 of the 23
+    # closed chief gp-* specs did, and none got its record afterwards. A checked
+    # Live box now needs the spec's `live_receipt:` file, a runtime_receipt.py
+    # capture of the running system's record, and may not say PENDING.
+    live_ref = None
+    live_boxes = [b for c, b in _deliverable_boxes(text) if c and _LIVE_RE.match(b)]
+    if live_boxes:
+        pending = [b for b in live_boxes if _PENDING_RE.search(re.sub(r"`[^`]*`", " ", b))]
+        if pending:
+            sys.stderr.write(
+                f"cannot close {issue_id}: a checked Live deliverable says PENDING, "
+                "so it has not shipped:\n"
+                + "".join(f"  - [x] {b[:160]}\n" for b in pending)
+                + "Uncheck it until the running system shows it, or capture that "
+                "record, set `live_receipt:` in the spec and drop PENDING from the "
+                "line.\n")
+            return 2
+        raw = _live_receipt_value(fm)
+        if not raw:
+            sys.stderr.write(
+                f"cannot close {issue_id}: {len(live_boxes)} checked Live "
+                "deliverable(s) and no `live_receipt:` in the spec. A Live box is "
+                "checked from the running system's own record, never a green test:\n"
+                + "".join(f"  - [x] {b[:160]}\n" for b in live_boxes)
+                + "Capture the record and name the file in the spec's frontmatter:\n"
+                f"  {runtime_receipt.EXAMPLE}\n  live_receipt: <that file>\n")
+            return 2
+        live_path = Path(raw).expanduser()
+        if not live_path.is_absolute():
+            live_path = paths.repo_root / live_path
+        try:
+            live_ref = runtime_receipt.load_receipt(
+                str(live_path), ["live"], repo_root=paths.repo_root,
+                not_before=state.get("loaded_at"),
+                used=_receipt_shas_held_elsewhere(paths, issue_id), live=True)
+        except runtime_receipt.ReceiptError as exc:
+            sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
             return 2
 
     # The `verified` receipt must still match the evidence that produced it.
@@ -1640,6 +1744,8 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         receipt["finding_class"] = finding_class
     if runtime_ref is not None:
         receipt["runtime_receipt"] = runtime_ref
+    if live_ref is not None:
+        receipt["live_receipt"] = live_ref
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
