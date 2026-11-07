@@ -22,8 +22,9 @@ check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
 # The whole reap-merged-trees block, so every helper the reaper calls comes along.
 awk '/^# reap-merged-trees-begin/{f=1;next} /^# reap-merged-trees-end/{exit} f' "$AGENT" > "$T/reap.sh"
 awk '/^_wt_rows\(\)/{on=1} on{print} on&&/^}$/{exit}' "$AGENT" > "$T/rows.sh"
-check "slices hold the reaper, its helpers and _wt_rows" \
-  'grep -q "^reap_finished_review_trees()" "$T/reap.sh" && grep -q "^_archive_review_tree()" "$T/reap.sh" && grep -q "^_reap_take_lock()" "$T/reap.sh" && grep -q "^_reap_release_lock()" "$T/reap.sh" && grep -q "^_wt_rows()" "$T/rows.sh"'
+sed -n '/^acquire_wt_lock() {/,/^}/p' "$AGENT" > "$T/lock.sh"
+check "slices hold the reaper, its helpers, _wt_rows and acquire_wt_lock" \
+  'grep -q "^reap_finished_review_trees()" "$T/reap.sh" && grep -q "^_archive_review_tree()" "$T/reap.sh" && grep -q "^_reap_take_lock()" "$T/reap.sh" && grep -q "^_reap_release_lock()" "$T/reap.sh" && grep -q "^_wt_rows()" "$T/rows.sh" && grep -q "^acquire_wt_lock()" "$T/lock.sh"'
 check "the slice does not call the reaper itself" '! grep -qx "reap_finished_review_trees" "$T/reap.sh"'
 
 mkdir -p "$T/bin" "$T/home/.config/kipi/review-trees" "$T/repo"
@@ -81,7 +82,7 @@ case "$n" in
 esac
 EOF
 chmod +x "$T/bin/gh"
-for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp gzip mkdir mktemp date cp wc head; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
+for tool in bash env git cat awk cut grep rm kill printf tr sed dirname lsof cmp gzip mkdir mktemp date cp wc head sleep rmdir find touch; do ln -sf "$(command -v "$tool")" "$T/bin/$tool"; done
 # tar is a WRAPPER, never a symlink (writing through a symlink would edit the real
 # binary). While the archive of PR 17 is being written, a competitor tries to take
 # that tree's lock with the same noclobber protocol a starting review uses.
@@ -107,10 +108,13 @@ chmod +x "$T/bin/tar"
 cat > "$T/drive.sh" <<EOF
 set -uo pipefail   # what pr-review-agent.sh runs under (line 94)
 REVIEW_REPO="$T/repo"; REVIEW_SLUG="$SLUG"; PR=14; KIPI_GH_REPO_ARGS=""; KIPI_REVIEW_ARCHIVE_MAX_KB=2
+_wt_lock_path="the-review-own-lock"
 source "$LIB"
 source "$T/rows.sh"
+source "$T/lock.sh"
 source "$T/reap.sh"
 reap_finished_review_trees
+echo "review lock pointer after: \$_wt_lock_path"
 EOF
 mkdir -p "$T/tmp"
 HOME="$T/home" TMPDIR="$T/tmp" PATH="$T/bin" "$T/bin/bash" "$T/drive.sh" > "$T/out" 2>"$T/err"
@@ -144,6 +148,8 @@ check "ASK-3930 round 1: a competitor could NOT take the lock while the tree was
 check "ASK-3930 round 1: a removed tree's stale lock is gone" '[ ! -e "$(path_of 17).lock" ]'
 check "ASK-3930 round 1: a kept tree's lock is given back, not left holding this run's PID" '[ ! -e "$(path_of 23).lock" ]'
 check "ASK-3930 round 1: a live holder's lock is untouched" '[ "$(cat "$(path_of 15).lock")" = "$LIVE" ]'
+check "ASK-3930 round 2: the review's own lock pointer is put back after the reaper" 'grep -qx "review lock pointer after: the-review-own-lock" "$T/out"'
+check "ASK-3930 round 2: no claim mutex is left behind by the reaper" '[ -z "$(ls -d "$RT"/*.claim 2>/dev/null)" ]'
 check "ASK-3930 the archive carries a manifest naming the PR" 'member 22 MANIFEST.txt | grep -q "^pr: 22$"'
 check "ASK-3930 a duplicate-only tree gets no archive (nothing unique to keep)" '[ -z "$(arch_of 20)" ]'
 check "ASK-3930 a clean tree gets no archive" '[ -z "$(arch_of 19)" ]'
@@ -174,6 +180,7 @@ printf 'a.txt\0b.txt\0' > "$T/cut-whole.list"; printf 'a.txt\0b.txt' > "$T/cut-s
 cat > "$T/drive2.sh" <<EOF
 set -uo pipefail
 REVIEW_REPO="$T/repo"
+source "$T/lock.sh"
 source "$T/reap.sh"
 _archive_review_tree "$T/cut" 30 "$T/cut-short.list" 0 2 >/dev/null; echo "short=\$?"
 _archive_review_tree "$T/cut" 31 "$T/cut-whole.list" 0 2 >/dev/null; echo "whole=\$?"
@@ -183,6 +190,40 @@ AR2="$T/home2/.config/kipi/review-tree-archive"
 check "ASK-3930 round 1: a truncated list is refused (rc 1)" 'grep -qx "short=1" "$T/out2"'
 check "ASK-3930 round 1: POSITIVE CONTROL, the same list whole is archived (rc 0)" 'grep -qx "whole=0" "$T/out2"'
 check "ASK-3930 round 1: exactly one archive exists, the whole one" '[ "$(ls "$AR2" 2>/dev/null | wc -l | tr -d " ")" = 1 ]'
+
+# ASK-3930 round 2: two contenders that BOTH read a dead holder. Contender B (this
+# test) holds the claim mutex; contender A (acquire_wt_lock, in the background) has
+# read the dead PID and waits on the mutex. B reclaims the lock for a LIVE holder
+# and lets go. A must re-read inside the mutex, see the live holder and back off.
+# Before round 2, A removed B's fresh lock and took the tree as well.
+mkdir -p "$T/race3"; L3="$T/race3/tree"
+printf '%s' "$DEAD" > "$L3.lock"; mkdir "$L3.lock.claim"
+cat > "$T/drive3.sh" <<EOF
+set -uo pipefail
+_wt_lock_path=""
+source "$T/lock.sh"
+acquire_wt_lock "$L3"; echo "rc=\$?" > "$T/race3/rc"
+EOF
+PATH="$T/bin" "$T/bin/bash" "$T/drive3.sh" & A=$!
+sleep 0.5
+if kill -0 "$A" 2>/dev/null; then echo blocked > "$T/race3/state"; else echo ran-through > "$T/race3/state"; fi
+printf '%s' "$LIVE" > "$L3.lock"; rmdir "$L3.lock.claim"
+wait "$A"
+check "ASK-3930 round 2: contender A really waited on the claim mutex" '[ "$(cat "$T/race3/state")" = blocked ]'
+check "ASK-3930 round 2: A backs off as busy (rc 2) once B holds the lock" 'grep -qx "rc=2" "$T/race3/rc"'
+check "ASK-3930 round 2: B's live lock survives A's stale read" '[ "$(cat "$L3.lock")" = "$LIVE" ]'
+check "ASK-3930 round 2: A gives the mutex back" '[ ! -e "$L3.lock.claim" ]'
+
+# A mutex left by a killed run (older than two minutes) does not wedge the tree.
+L4="$T/race3/tree4"; printf '%s' "$DEAD" > "$L4.lock"; mkdir "$L4.lock.claim"; touch -t 202601010000 "$L4.lock.claim"
+cat > "$T/drive4.sh" <<EOF
+set -uo pipefail
+_wt_lock_path=""
+source "$T/lock.sh"
+acquire_wt_lock "$L4"; echo "rc=\$?"
+EOF
+PATH="$T/bin" "$T/bin/bash" "$T/drive4.sh" > "$T/race3/out4" 2>&1
+check "ASK-3930 round 2: a stale mutex is cleared and the dead lock reclaimed (rc 0)" 'grep -qx "rc=0" "$T/race3/out4"'
 
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"

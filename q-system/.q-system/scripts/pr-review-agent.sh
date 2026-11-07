@@ -585,7 +585,7 @@ _wt_lock_path=""
 # this run never wrote it.
 #   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
 acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
-  local wt="$1" lock="$1.lock" holder
+  local wt="$1" lock="$1.lock" holder m="$1.lock.claim" tries=0
   mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
   if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
     _wt_lock_path="$lock"; return 0
@@ -601,12 +601,31 @@ acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
   if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
     return 2
   fi
-  # Stale: reclaim once.
+  # Stale: reclaim once, UNDER A MUTEX (ASK-3930 round 2). Read-dead, remove,
+  # recreate is a check-then-act: two callers that both read the dead PID could
+  # each remove the lock the other had just taken, and both would hold the tree.
+  # The mkdir mutex makes reclaim exclusive, and the holder is re-read inside it,
+  # so a lock someone else reclaimed first reads as live. The reaper claims through
+  # this same function, so reviews and the reaper share one protocol. A mutex left
+  # by a killed run is cleared after two minutes (a reclaim takes milliseconds);
+  # that clearing is itself check-then-act, so the residual race needs a run killed
+  # mid-reclaim AND two contenders in the same instant.
+  until mkdir "$m" 2>/dev/null; do
+    if [ -n "$(find "$m" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rmdir "$m" 2>/dev/null; continue; fi
+    tries=$((tries+1)); [ "$tries" -ge 50 ] && return 1
+    sleep 0.1
+  done
+  holder="$(cat "$lock" 2>/dev/null || true)"
+  # An EMPTY holder can be a lock created an instant ago: noclobber creates the
+  # file before printf fills it. Give it a moment before calling it stale.
+  if [ -z "$holder" ] && [ -e "$lock" ]; then sleep 0.2; holder="$(cat "$lock" 2>/dev/null || true)"; fi
+  if [ "$holder" = "$$" ]; then rmdir "$m" 2>/dev/null; _wt_lock_path="$lock"; return 0; fi
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then rmdir "$m" 2>/dev/null; return 2; fi
   command rm -f "$lock" 2>/dev/null || true
   if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
-    _wt_lock_path="$lock"; return 0
+    rmdir "$m" 2>/dev/null; _wt_lock_path="$lock"; return 0
   fi
-  return 1
+  rmdir "$m" 2>/dev/null; return 1
 }
 release_wt_lock() {
   [ -n "$_wt_lock_path" ] || return 0
@@ -1263,19 +1282,18 @@ _archive_review_tree() {
   echo "$arch"
 }
 
-# ASK-3930 round 1: the reaper HOLDS a finished tree's lock from inventory to
-# removal, so a review that starts after the holder check cannot write into a tree
-# that is being archived and removed. Same noclobber protocol as acquire_wt_lock,
-# kept separate so the review's own _wt_lock_path is never touched.
-# 0 = held by this process, 1 = another live run holds it or it could not be taken.
-_reap_take_lock() {
-  local lock="$1" holder
-  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then return 0; fi
-  holder="$(cat "$lock" 2>/dev/null || true)"
-  [ "$holder" = "$$" ] && return 0
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then return 1; fi
-  command rm -f "$lock" 2>/dev/null || true
-  ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null
+# ASK-3930: the reaper HOLDS a finished tree's lock from inventory to removal, so a
+# review that starts after the holder check cannot write into a tree that is being
+# archived and removed. Round 2: it claims through acquire_wt_lock itself, so there
+# is ONE claim protocol and one reclaim mutex for reviews and the reaper. The
+# review's own _wt_lock_path is saved and put back, so its EXIT trap still releases
+# the review's tree and never one the reaper handled.
+# 0 = held by this process, nonzero = another live run holds it or it could not be taken.
+_reap_take_lock() {  # <tree path>
+  local saved="${_wt_lock_path:-}" rc
+  acquire_wt_lock "$1"; rc=$?
+  _wt_lock_path="$saved"
+  [ "$rc" = 0 ]
 }
 _reap_release_lock() {
   if [ -n "$1" ] && [ "$(cat "$1" 2>/dev/null || true)" = "$$" ]; then
@@ -1328,7 +1346,7 @@ reap_finished_review_trees() {
             # every untracked file that is not a main-checkout duplicate) are ARCHIVED
             # and verified first, and the tree goes only when that archive lists back.
             # --no-renames keeps every record a single path.
-            if ! _reap_take_lock "$lock"; then
+            if ! _reap_take_lock "$path"; then
               echo "  review-tree skip: PR $n tree lock is held by another run"
               kept=$((kept+1)); continue
             fi
