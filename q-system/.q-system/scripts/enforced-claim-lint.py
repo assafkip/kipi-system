@@ -134,9 +134,9 @@ KNOWN_KEYS = {"clause", "status", "exec", "config", "test", "directives",
               "note", "marker_removal_ref", "superseded_by", "event"}
 REQUIRED_KEYS = {"clause", "status"}
 
-# Hook events whose exit status refuses nothing: Claude Code shows a SessionStart,
-# SessionEnd, Notification or PostCompact hook's stderr to the user and carries on. An entry
-# that names one of these as its `event` is therefore report-only by construction.
+# Hook events whose exit status refuses nothing: Claude Code shows the hook's stderr
+# to the user (or ignores it) and carries on. An entry that names one of these as
+# its `event` is therefore report-only by construction.
 #
 # Why `event` exists (ASK-3872, sp-0319b513): posture used to be judged per
 # EXECUTABLE. 4 Points case-gate.py denies under PreToolUse (Gates 1 and 3) and
@@ -147,13 +147,36 @@ REQUIRED_KEYS = {"clause", "status"}
 # An event NOT listed here is treated as able to block, which is the old judgment.
 # Omission fails BOTH ways, not only toward a visible red: it keeps an honest
 # DETECTED red (C10), and it also lets an ENFORCED claim on that event pass (C8).
-# PostCompact was missing, so ENFORCED on it passed (PR #619 last review round).
-# Listing an event that CAN block would let an understated gate pass, so the set
-# holds only events the Claude Code hooks reference documents as non-blocking
-# (code.claude.com/docs/en/hooks). PreCompact is NOT one: its exit 2 blocks
-# compaction. Re-check that page when Claude Code adds a hook event.
-NON_BLOCKING_EVENTS = frozenset({"SessionStart", "SessionEnd", "Notification",
-                                 "PostCompact"})
+# PostCompact was missing, so ENFORCED on it passed (PR #619 last review round);
+# a three-name set from memory also missed SubagentStart, InstructionsLoaded and
+# StopFailure (codex, PR #623 round 1). So the set is now COPIED from the table
+# "Exit code 2 behavior per event" at code.claude.com/docs/en/hooks (read
+# 2026-11-07): every row whose "Can block?" is no. Re-copy it when Claude Code adds
+# a hook event; do not add one name at a time.
+#
+# Listing an event that CAN block would let an understated gate pass. PreCompact
+# is NOT here: its exit 2 blocks compaction.
+#
+# TWO "no" ROWS ARE LEFT OUT ON PURPOSE: PostToolUse and PostToolUseFailure. The
+# table says they cannot block because the tool already ran, but their exit 2 feeds
+# stderr back to Claude, and the fleet's ENFORCED contract counts exactly that as
+# a block (skill-hook-pairing.md: "exit 2 = block (stderr fed to Claude)"). Every
+# PostToolUse lint in the fleet rests on it. Reclassifying them is a fleet decision,
+# not a table copy.
+NON_BLOCKING_EVENTS = frozenset({
+    "PermissionRequest", "StopFailure", "PermissionDenied", "Notification",
+    "SubagentStart", "SessionStart", "Setup", "SessionEnd", "CwdChanged",
+    "DirectoryAdded", "FileChanged", "PostCompact", "PostModelSwitch",
+    "InstructionsLoaded", "MessageDisplay",
+})
+# Every event the same table says CAN block, kept so a test can prove the two sets
+# partition the table and that none of these was copied into the set above.
+BLOCKING_EVENTS = frozenset({
+    "PreToolUse", "UserPromptSubmit", "UserPromptExpansion", "Stop", "SubagentStop",
+    "TeammateIdle", "TaskCreated", "TaskCompleted", "ConfigChange", "PostToolBatch",
+    "PreCompact", "PreModelSwitch", "Elicitation", "ElicitationResult",
+    "WorktreeCreate", "WorktreeRemove",
+})
 
 # The block is introduced by an HTML comment so the fence itself stays ordinary
 # ```json -- markdown renderers, and the rules' own readers, treat it as a normal

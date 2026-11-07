@@ -19,6 +19,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 _LINT = Path(__file__).resolve().parent / "enforced-claim-lint.py"
 
 
@@ -1699,19 +1701,66 @@ def _compact_tree(tmp_path, event):
     return rule
 
 
-def test_event_enforced_on_postcompact_fails(tmp_path):
-    """C8 for PostCompact (PR #619 last review round). PostCompact runs after
-    compaction finished, and per the Claude Code hooks reference its exit 2 only
-    shows stderr to the user. It was missing from NON_BLOCKING_EVENTS, so an
-    ENFORCED clause resting on it passed."""
-    v = _lint_in(tmp_path, _compact_tree(tmp_path, "PostCompact"))
+# The "Exit code 2 behavior per event" table at code.claude.com/docs/en/hooks,
+# read 2026-11-07, every row. A fixture captured from the producer (the platform
+# docs), so the partition test below fails if the lint's sets drift from it.
+_DOC_EVENTS_TABLE = frozenset({
+    "PreToolUse", "PermissionRequest", "UserPromptSubmit", "UserPromptExpansion",
+    "Stop", "SubagentStop", "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange", "StopFailure", "PostToolUse", "PostToolUseFailure",
+    "PostToolBatch", "PermissionDenied", "Notification", "SubagentStart",
+    "SessionStart", "Setup", "SessionEnd", "CwdChanged", "DirectoryAdded",
+    "FileChanged", "PreCompact", "PostCompact", "PreModelSwitch", "PostModelSwitch",
+    "Elicitation", "ElicitationResult", "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded", "MessageDisplay",
+})
+# "Can block? no" in the table, kept out of NON_BLOCKING_EVENTS on purpose: see the
+# comment above NON_BLOCKING_EVENTS (the fleet's exit-2 contract for PostToolUse).
+_FLEET_COUNTS_AS_BLOCKING = frozenset({"PostToolUse", "PostToolUseFailure"})
+
+
+def test_event_sets_partition_the_docs_table():
+    """Every row of the docs table is classified exactly once. A set written from
+    memory missed PostCompact, then SubagentStart, InstructionsLoaded and
+    StopFailure (PR #619 last round, PR #623 round 1)."""
+    quiet, loud = L.NON_BLOCKING_EVENTS, L.BLOCKING_EVENTS
+    assert not quiet & loud, sorted(quiet & loud)
+    assert not quiet & _FLEET_COUNTS_AS_BLOCKING
+    assert quiet | loud | _FLEET_COUNTS_AS_BLOCKING == _DOC_EVENTS_TABLE, (
+        sorted(_DOC_EVENTS_TABLE ^ (quiet | loud | _FLEET_COUNTS_AS_BLOCKING)))
+
+
+@pytest.mark.parametrize("event", sorted(
+    {"PostCompact", "SubagentStart", "InstructionsLoaded", "StopFailure",
+     "SessionStart", "SessionEnd", "Notification"}))
+def test_event_enforced_on_a_documented_non_blocking_event_fails(tmp_path, event):
+    """C8. These events' exit status refuses nothing, so an ENFORCED clause resting
+    on one is an overclaim. PostCompact, SubagentStart, InstructionsLoaded and
+    StopFailure all passed C8 before PR #623."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, event))
     assert 8 in _codes(v), [str(x) for x in v]
 
 
-def test_event_enforced_on_precompact_passes(tmp_path):
-    """CONTROL, and the half of that review finding that was rejected: PreCompact
-    exit 2 blocks compaction, so ENFORCED there is honest and must pass."""
-    v = _lint_in(tmp_path, _compact_tree(tmp_path, "PreCompact"))
+@pytest.mark.parametrize("event", sorted(
+    {"PostCompact", "SubagentStart", "InstructionsLoaded", "StopFailure"}))
+def test_event_detected_on_a_documented_non_blocking_event_passes(tmp_path, event):
+    """C10, the other direction of the same omission: a blocking script's
+    report-only clause on one of these events is honest DETECTED. Before PR #623
+    each of these was refused as an understated gate."""
+    rule = _compact_tree(tmp_path, event)
+    entry = dict(_GATE_REPORTS, clause="Gate One", event=event)
+    rule.write_text(rule.read_text().replace(
+        json.dumps([dict(_GATE_BLOCKS, event=event)]), json.dumps([entry])))
+    v = _lint_in(tmp_path, rule)
+    assert v == [], [str(x) for x in v]
+
+
+@pytest.mark.parametrize("event", ["PreCompact", "PostToolUse"])
+def test_event_enforced_on_a_blocking_event_passes(tmp_path, event):
+    """CONTROL. PreCompact exit 2 blocks compaction (the rejected half of the PR
+    #619 finding). PostToolUse is the fleet's exit-2 contract. Both stay honest
+    ENFORCED."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, event))
     assert v == [], [str(x) for x in v]
 
 
