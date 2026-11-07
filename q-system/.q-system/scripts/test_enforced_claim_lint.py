@@ -1597,3 +1597,325 @@ def test_if_then_wiring_form_is_an_invocation():
     # CONTROL: the guard alone still only MENTIONS the script.
     assert E not in L.command_targets(
         'if test -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"; then echo hi; fi')
+
+
+# --- posture per CLAUSE, not per executable (ASK-3872, sp-0319b513) --------------
+#
+# One script, two invocations: `hook` under PreToolUse (it can deny) and `banner`
+# under SessionStart (exit status there blocks nothing). That is the real shape of
+# 4 Points case-gate.py, where Gates 1 and 3 deny and Gate 2 only reports in the
+# banner. Judged per executable, the reporting clause could not say DETECTED
+# because the SAME file blocks elsewhere, so it was written ADVISORY with a note.
+# `event` names the invocation that carries the clause, and the lint reads only
+# the commands wired under that event.
+
+def _two_event_tree(tmp_path, entries):
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(BLOCKER_SRC)
+    (tmp_path / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+    base = 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {
+        "PreToolUse": [{"matcher": "Write", "hooks": [
+            {"type": "command", "command": base + " hook"}]}],
+        "SessionStart": [{"matcher": "startup", "hooks": [
+            {"type": "command", "command": base + " banner"}]}]}}))
+    heads = "".join("# %s (ENFORCED)\n\nSome directive text.\n\n" % e["clause"]
+                    for e in entries)
+    text = ("---\ndescription: fixture\n---\n\n" + heads +
+            "<!-- enforcement -->\n```json\n%s\n```\n" % json.dumps(entries))
+    rule = rules / "fixture.md"
+    rule.write_text(text)
+    return rule
+
+
+_GATE_BLOCKS = dict(_ENFORCED, clause="Gate One")
+_GATE_REPORTS = {"clause": "Gate Two", "status": "DETECTED",
+                 "exec": "q-system/scripts/real-lint.py",
+                 "config": ".claude/settings.json", "event": "SessionStart"}
+
+
+def test_event_detected_report_only_clause_of_a_blocking_script_passes(tmp_path):
+    """THE TICKET. A blocking script's report-only clause can carry DETECTED once
+    it names the non-blocking event that carries it."""
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [_GATE_BLOCKS, _GATE_REPORTS]))
+    assert v == [], [str(x) for x in v]
+
+
+def test_event_false_detected_on_the_blocking_event_still_fails(tmp_path):
+    """NEGATIVE. The same script's blocking invocation named as DETECTED is still
+    an understated gate. Without this the key would be a free pass."""
+    lie = dict(_GATE_REPORTS, event="PreToolUse")
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [_GATE_BLOCKS, lie]))
+    assert 10 in _codes(v), [str(x) for x in v]
+
+
+def test_event_absent_keeps_the_per_executable_judgment(tmp_path):
+    """CONTROL for the default. No `event` means every invocation counts, exactly
+    as before, so existing entries are judged unchanged."""
+    plain = {k: v for k, v in _GATE_REPORTS.items() if k != "event"}
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [_GATE_BLOCKS, plain]))
+    assert 10 in _codes(v), [str(x) for x in v]
+
+
+def test_event_must_be_one_the_script_is_wired_under(tmp_path):
+    """C6. Naming an event the script never runs under would let any DETECTED
+    entry escape C10 by picking a quiet event. The named event has to carry a real
+    invocation of the exec."""
+    ghost = dict(_GATE_REPORTS, event="SessionEnd")
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [_GATE_BLOCKS, ghost]))
+    assert 6 in _codes(v), [str(x) for x in v]
+
+
+def test_event_enforced_on_a_non_blocking_event_fails(tmp_path):
+    """C8. The key narrows the wiring for ENFORCED too, so it must not let an
+    ENFORCED claim rest on an event whose exit status blocks nothing."""
+    quiet = dict(_GATE_BLOCKS, event="SessionStart")
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [quiet, _GATE_REPORTS]))
+    assert 8 in _codes(v), [str(x) for x in v]
+
+
+def test_event_enforced_on_the_blocking_event_passes(tmp_path):
+    """CONTROL for C8 above: the same ENFORCED entry naming the event that can
+    deny is honest and passes."""
+    loud = dict(_GATE_BLOCKS, event="PreToolUse")
+    v = _lint_in(tmp_path, _two_event_tree(tmp_path, [loud, _GATE_REPORTS]))
+    assert v == [], [str(x) for x in v]
+
+
+def test_event_on_advisory_is_refused():
+    """ADVISORY names no executable, so an event on it describes nothing."""
+    block = ('[{"clause": "Cleanup Rule", "status": "ADVISORY", "note": "n", '
+             '"marker_removal_ref": "sp-abc123", "event": "SessionStart"}]')
+    assert 5 in _codes(L.lint_text(_rule(block=block), "fixture.md"))
+
+
+def test_event_must_be_a_string():
+    block = ('[{"clause": "Cleanup Rule", "status": "DETECTED", '
+             '"exec": "q/x.py", "config": ".claude/settings.json", "event": 3}]')
+    assert 4 in _codes(L.lint_text(_rule(block=block), "fixture.md"))
+
+
+# --- refs a SKELETON rule carries into an instance (ASK-3885, sp-6f827f8d) -------
+#
+# The skeleton updater copies every skeleton .claude/rules/*.md into each instance,
+# ledger ids included. token-discipline.md names sp-45473673, open in the
+# skeleton's ledger and absent from the 4 Points ledger, so the 4 Points
+# --sync-marker-refs recorded it 'closed' and --all reported 2 C11s there. An id
+# the local ledger never saw is not closed; it belongs to another ledger. The
+# skeleton now ships its own projection under q-system/.q-system/ (rsynced to
+# every instance, unlike .prd-os/), naming which rule carries which ref.
+
+_SKEL_REL = "q-system/.q-system/skeleton-marker-refs.json"
+
+
+def _skeleton_projection(root, refs, rules):
+    p = root / _SKEL_REL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"_comment": "test fixture", "refs": refs,
+                             "rules": rules}) + "\n")
+
+
+def _instance_ledger(prd_dir, rows=None):
+    rows = rows or [{"id": "sp-0ther0", "status": "open"}]
+    (prd_dir / "spillover.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _sync(tmp_path):
+    import subprocess
+    root = Path(__file__).resolve().parents[3]
+    lint = root / "q-system" / ".q-system" / "scripts" / "enforced-claim-lint.py"
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    return subprocess.run([sys.executable, str(lint), "--sync-marker-refs"],
+                          capture_output=True, text=True, env=env)
+
+
+def test_sync_writes_absent_for_an_id_the_local_ledger_never_saw(tmp_path):
+    """THE GENERATOR HALF. 'closed' is a statement the local ledger makes; for an id
+    it has no row for, the honest record is 'absent'. A resolved id stays 'closed'
+    so the two answers cannot blur."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / ".claude" / "rules" / "second.md").write_text(_rule(
+        heading="Other Rule (ENFORCED)", block=json.dumps([{
+            "clause": "Other Rule", "status": "ADVISORY", "note": "n",
+            "marker_removal_ref": "sp-c105ed"}])))
+    _instance_ledger(prd, [{"id": "sp-c105ed", "status": "open"},
+                           {"id": "sp-c105ed", "status": "resolved"}])
+    r = _sync(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    written = json.loads((prd / "marker-removal-refs.json").read_text())
+    assert written["refs"] == {"sp-abc123": "absent", "sp-c105ed": "closed"}
+
+
+def test_skeleton_owned_ref_absent_locally_passes_on_the_skeleton_projection(tmp_path):
+    """THE TICKET (4 Points shape after a re-sync). The local ledger lacks the id,
+    the local projection records 'absent', and the skeleton projection records it
+    open for this very rule: the ticket is real, in the skeleton's ledger."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _instance_ledger(prd)
+    _projection(prd, {"sp-abc123": "absent"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open"},
+                         {".claude/rules/fixture.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_skeleton_owned_ref_in_a_fresh_instance_clone_passes(tmp_path):
+    """Same, with no ledger at all (CI, a fresh clone of the instance)."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _projection(prd, {"sp-abc123": "absent"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open"},
+                         {".claude/rules/fixture.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_skeleton_owned_ref_closed_in_the_skeleton_is_refused(tmp_path):
+    """NEGATIVE. The skeleton projection is the authority for the skeleton's ids,
+    so a ref it records closed records nothing."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _instance_ledger(prd)
+    _projection(prd, {"sp-abc123": "absent"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "closed"},
+                         {".claude/rules/fixture.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    # Not just "skeleton": the tmp dir is named after this test and contains it.
+    assert "skeleton projection" in r.stderr, r.stderr
+
+
+def test_instance_rule_cannot_borrow_a_skeleton_ref(tmp_path):
+    """NEGATIVE. The skeleton projection names the rule that carries each ref. An
+    instance-authored rule citing a skeleton id is not skeleton-owned, so it is
+    judged by the local ledger, which never saw it."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _instance_ledger(prd)
+    _projection(prd, {"sp-abc123": "absent"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open"},
+                         {".claude/rules/token-discipline.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+
+
+def test_local_projection_saying_closed_for_an_absent_id_is_stale(tmp_path):
+    """The 4 Points projection as PR #23 wrote it: 'closed' for an id its ledger
+    has no row for. With the ledger present that is drift, and the message has to
+    say re-sync, which is the one-command fix."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _instance_ledger(prd)
+    _projection(prd, {"sp-abc123": "closed"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open"},
+                         {".claude/rules/fixture.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "stale" in r.stderr
+
+
+def test_sync_writes_the_skeleton_projection_only_in_the_skeleton(tmp_path):
+    """The shipped file is generated where the ledger that owns its ids lives. In
+    an instance q-system/ is the skeleton's subtree, so writing it there would put
+    the instance's ids into a file the next skeleton sync overwrites."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    _instance_ledger(prd, [{"id": "sp-abc123", "status": "open"}])
+    r = _sync(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (tmp_path / _SKEL_REL).exists(), "an instance must not write it"
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    r = _sync(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    shipped = json.loads((tmp_path / _SKEL_REL).read_text())
+    assert shipped["refs"] == {"sp-abc123": "open"}
+    assert shipped["rules"] == {".claude/rules/fixture.md": ["sp-abc123"]}
+
+
+def test_stale_skeleton_projection_is_caught_in_the_skeleton(tmp_path):
+    """DRIFT for the shipped file. Where the ledger knows the id (the skeleton),
+    the shipped projection must agree with it, or every instance inherits a wrong
+    fact. In an instance the ledger never knows a skeleton id, so this cannot fire
+    there."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _instance_ledger(prd, [{"id": "sp-abc123", "status": "open"}])
+    _projection(prd, {"sp-abc123": "open"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "closed"},
+                         {".claude/rules/fixture.md": ["sp-abc123"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "stale" in r.stderr
+
+
+# --- round 1 review of PR #619: the skeleton must not borrow from itself ---------
+#
+# In the skeleton the local ledger IS the owning ledger, so an id it has no row
+# for is invented, not foreign. The first cut honoured the shipped projection
+# there too, and a fabricated ref listed in that hand-editable file passed --all on
+# the machine that authors commits (claude review round 1, major, with repro).
+
+def _skeleton_tree_with_fake(tmp_path, ledger=True):
+    prd = _advisory_tree(tmp_path, ref="sp-deadbeef00")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    if ledger:
+        _instance_ledger(prd, [{"id": "sp-0ther0", "status": "open"}])
+    _projection(prd, {"sp-deadbeef00": "absent"} if ledger else {})
+    _skeleton_projection(tmp_path, {"sp-deadbeef00": "open"},
+                         {".claude/rules/fixture.md": ["sp-deadbeef00"]})
+    return prd
+
+
+def test_skeleton_does_not_honour_its_own_projection_for_an_invented_id(tmp_path):
+    """THE REVIEWER'S REPRO. Skeleton, live ledger present, no row for the id, the
+    shipped file says open: refused."""
+    _skeleton_tree_with_fake(tmp_path, ledger=True)
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "C11" in r.stderr
+
+
+def test_skeleton_fresh_clone_does_not_honour_its_own_projection(tmp_path):
+    """Same in a fresh clone of the skeleton (no ledger): the local projection does
+    not record the id open, and the shipped file is not a second chance."""
+    _skeleton_tree_with_fake(tmp_path, ledger=False)
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "C11" in r.stderr
+
+
+def test_skeleton_shipped_projection_must_match_its_rules(tmp_path):
+    """Nothing ratcheted the shipped file. In the skeleton --all now derives the
+    rule -> ref map from the tree and refuses a file that disagrees, so a hand-added
+    row cannot ship to every instance (it would let an instance-only rule of that
+    path borrow the id)."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _projection(prd, {"sp-abc123": "open"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open", "sp-fa4e00": "open"},
+                         {".claude/rules/fixture.md": ["sp-abc123"],
+                          ".claude/rules/instance-only.md": ["sp-fa4e00"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "does not match" in r.stderr, r.stderr
+
+
+def test_skeleton_missing_shipped_projection_is_refused(tmp_path):
+    """A skeleton whose rules name refs but ships no projection leaves every
+    instance to judge those refs against a ledger that never saw them."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _projection(prd, {"sp-abc123": "open"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "skeleton-marker-refs.json" in r.stderr, r.stderr
+
+
+def test_skeleton_generated_projection_passes(tmp_path):
+    """CONTROL for the three refusals above: the generator's own output, with the
+    ledger it was generated from, passes --all."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _instance_ledger(prd, [{"id": "sp-abc123", "status": "open"}])
+    assert _sync(tmp_path).returncode == 0
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr

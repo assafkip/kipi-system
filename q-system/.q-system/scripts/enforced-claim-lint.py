@@ -22,6 +22,13 @@ THE VOCABULARY (three values, one meaning each):
   DETECTED  wired and runs, surfaces only (exit 0 / `|| true`), never blocks
   ADVISORY  no executable, and the file says so out loud
 
+PER-CLAUSE POSTURE (`event`, optional, ASK-3872): an ENFORCED or DETECTED entry
+may name the hook event (or lefthook stage) whose invocation carries its clause.
+Wiring, neutering and blocking are then judged on that event's commands alone,
+so one script that denies under PreToolUse and only reports at SessionStart can
+carry ENFORCED on one clause and DETECTED on another. Without the key every
+invocation counts, as before. See NON_BLOCKING_EVENTS.
+
 WHY THE DISPOSITION IS A BODY BLOCK AND NOT FRONTMATTER OR THE HEADING:
 Both alternatives are mechanically REFUSED by the sanctioned write path, which is
 the only way an agent may edit `.claude/`:
@@ -124,8 +131,24 @@ VALID_STATUS = ("ENFORCED", "DETECTED", "ADVISORY")
 # same reason apply_claude_changes refuses unknown proposal keys: a tolerated
 # key is where a future `skip: true` arrives wearing a permitted name.
 KNOWN_KEYS = {"clause", "status", "exec", "config", "test", "directives",
-              "note", "marker_removal_ref", "superseded_by"}
+              "note", "marker_removal_ref", "superseded_by", "event"}
 REQUIRED_KEYS = {"clause", "status"}
+
+# Hook events whose exit status refuses nothing: Claude Code shows a SessionStart,
+# SessionEnd or Notification hook's stderr to the user and carries on. An entry
+# that names one of these as its `event` is therefore report-only by construction.
+#
+# Why `event` exists (ASK-3872, sp-0319b513): posture used to be judged per
+# EXECUTABLE. 4 Points case-gate.py denies under PreToolUse (Gates 1 and 3) and
+# only reports in its SessionStart banner (Gate 2), so the Gate 2 clause could not
+# say DETECTED and was written ADVISORY with a note explaining the lint. Naming
+# the event lets each clause state the invocation that carries it.
+#
+# An event NOT listed here is treated as able to block, which is the old judgment.
+# Getting this wrong by omission only keeps an honest DETECTED red (visible);
+# listing an event that can block would let an understated gate pass, so the set
+# holds only events the platform documents as non-blocking.
+NON_BLOCKING_EVENTS = frozenset({"SessionStart", "SessionEnd", "Notification"})
 
 # The block is introduced by an HTML comment so the fence itself stays ordinary
 # ```json -- markdown renderers, and the rules' own readers, treat it as a normal
@@ -491,7 +514,7 @@ def parse_block(text, path):
         # validator.
         bad_type = False
         for key in ("exec", "config", "test", "note", "marker_removal_ref",
-                    "superseded_by"):
+                    "superseded_by", "event"):
             if key in entry and not isinstance(entry[key], str):
                 violations.append(Violation(
                     4, path, "entry %d %s must be a string, got %s"
@@ -626,8 +649,11 @@ def is_wiring_config(config_rel):
             or bool(_PLUGIN_HOOKS_RE.match(config_rel)))
 
 
-def _lefthook_commands(config_path):
+def _lefthook_commands(config_path, only_stage=None):
     """Every `run:` command in a lefthook config, including block scalars.
+
+    `only_stage` is an entry's `event` for a lefthook config: the stage is the
+    lefthook spelling of an event, so the same per-clause narrowing applies.
 
     ONLY BLOCKING STAGES COUNT. A `run:` under `post-commit` cannot prevent the
     commit that already happened, and an earlier version counted every `run:` line
@@ -663,7 +689,8 @@ def _lefthook_commands(config_path):
         top = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*$", line)
         if top:
             stage = top.group(1)
-            for_blocking_stage = stage in LEFTHOOK_BLOCKING_STAGES
+            for_blocking_stage = (stage in LEFTHOOK_BLOCKING_STAGES
+                                  and only_stage in (None, stage))
             i += 1
             continue
         m = re.match(r"^(\s*)run:\s*(\S.*)?$", line)
@@ -759,8 +786,13 @@ def _normalize_token(token, plugin_root):
     return token
 
 
-def wired_commands(config_path):
+def wired_commands(config_path, event=None):
     """Every hook invocation in a config, as argv-ish strings, read structurally.
+
+    `event` (an entry's optional key, ASK-3872) keeps only the invocations wired
+    under that one event, so posture is judged for the clause that event carries.
+    None keeps every event, which is the per-executable judgment entries without
+    the key have always had.
 
     Only `hooks.<Event>[].hooks[]` entries with `type == "command"` count, and the
     exec form (`command` plus an `args` list) is joined so a legitimate handler
@@ -774,7 +806,7 @@ def wired_commands(config_path):
     error.
     """
     if config_path.name in _LEFTHOOK_CONFIGS:
-        return _lefthook_commands(config_path)
+        return _lefthook_commands(config_path, event)
     try:
         data = json.loads(config_path.read_text())
     except (OSError, ValueError, UnicodeDecodeError):
@@ -783,7 +815,9 @@ def wired_commands(config_path):
     hooks = data.get("hooks")
     if not isinstance(hooks, dict):
         return out
-    for matchers in hooks.values():
+    for name, matchers in hooks.items():
+        if event is not None and name != event:
+            continue
         if not isinstance(matchers, list):
             continue
         for matcher in matchers:
@@ -850,6 +884,50 @@ def _tracked_marker_refs(root):
     return {k: v for k, v in refs.items() if isinstance(v, str)}
 
 
+# The SKELETON's projection, shipped to every instance (ASK-3885, sp-6f827f8d).
+#
+# The skeleton updater copies each skeleton .claude/rules/*.md into every
+# instance, ledger ids included, and the ids belong to the SKELETON's ledger. The
+# instance ledger has no row for them, so the generator used to write them as
+# 'closed' and --all reported a C11 per entry (4 Points PR #23: token-discipline.md
+# names sp-45473673, open in kipi-system, absent in 4 Points). `.prd-os/` never
+# reaches an instance and `q-system/` is rsynced into every one, so the skeleton's
+# answer for its own ids lives here. `rules` names the rule path that carries each
+# ref, so an instance-authored rule cannot cite a skeleton id and borrow its status.
+SKELETON_REFS_REL = os.path.join("q-system", ".q-system", "skeleton-marker-refs.json")
+
+
+def is_skeleton(root):
+    """The skeleton is the tree with instance-registry.json at its root, the same
+    marker apply_claude_changes.py and instance-automation-guard.py read. lexists
+    for the reason apply_claude_changes.py gives: a dangling symlink by that name
+    still means this is not an instance."""
+    return os.path.lexists(os.path.join(str(root), "instance-registry.json"))
+
+
+def _skeleton_marker_refs(root):
+    """(refs, rules) from the shipped skeleton projection, or None if unreadable.
+
+    refs maps id -> status; rules maps a repo-relative rule path -> the ids it
+    names. A malformed file reads as None, so nothing is borrowed from it.
+    """
+    if root is None:
+        return None
+    try:
+        with open(os.path.join(str(root), SKELETON_REFS_REL)) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    refs, rules = data.get("refs"), data.get("rules")
+    if not isinstance(refs, dict) or not isinstance(rules, dict):
+        return None
+    return ({k: v for k, v in refs.items() if isinstance(v, str)},
+            {k: [r for r in v if isinstance(r, str)]
+             for k, v in rules.items() if isinstance(v, list)})
+
+
 def spillover_ledger_present(root):
     """Whether the live ledger is readable at all.
 
@@ -868,14 +946,15 @@ def _all_mode():
     return "--all" in sys.argv
 
 
-def open_spillover_ids(root):
-    """Ids of spillover items that are still OPEN, read locally.
+def spillover_statuses(root):
+    """id -> 'open' | 'closed' for every id the local ledger has a row for.
 
+    The last row for an id wins. An id with no row is ABSENT, which is a third
+    answer and not 'closed': it means the id belongs to another ledger (ASK-3885).
     Local by construction: no network call from a hook that fires on every
-    rule-file write. The ledger is a JSONL file in the repo, which is also what
-    makes the reference checkable at all.
+    rule-file write.
     """
-    out = set()
+    out = {}
     path = os.path.join(str(root), SPILLOVER_REL)
     try:
         with open(path) as fh:
@@ -888,13 +967,15 @@ def open_spillover_ids(root):
                 except ValueError:
                     continue
                 if isinstance(row, dict) and row.get("id"):
-                    if row.get("status") == "open":
-                        out.add(row["id"])
-                    else:
-                        out.discard(row["id"])
+                    out[row["id"]] = "open" if row.get("status") == "open" else "closed"
     except OSError:
-        return set()
+        return {}
     return out
+
+
+def open_spillover_ids(root):
+    """Ids of spillover items that are still OPEN, read locally."""
+    return {k for k, v in spillover_statuses(root).items() if v == "open"}
 
 
 def _advisory_under_marker(entry, idx, path, root):
@@ -943,59 +1024,87 @@ def _advisory_under_marker(entry, idx, path, root):
     if root is None or not _all_mode():
         return []
     tracked = _tracked_marker_refs(root)
+    skeleton = _skeleton_marker_refs(root)
+    try:
+        rule_rel = os.path.relpath(str(Path(path).resolve()), str(root)).replace(os.sep, "/")
+    except ValueError:
+        rule_rel = None
+    # SKELETON-OWNED: the shipped skeleton projection names THIS rule as carrying
+    # THIS ref. Only then may an id the local ledger never saw be judged by the
+    # skeleton's answer (ASK-3885).
+    #
+    # NEVER IN THE SKELETON ITSELF. There the local ledger IS the owning ledger,
+    # so an id it has no row for is invented, not foreign. The first cut honoured
+    # the shipped file there too, and a fabricated ref listed in it passed --all on
+    # the machine that authors commits (PR #619 review round 1, major, repro'd).
+    skeleton_owned = (skeleton is not None and rule_rel is not None
+                      and not is_skeleton(root)
+                      and ref in skeleton[1].get(rule_rel, []))
     if spillover_ledger_present(root):
-        open_ids = open_spillover_ids(root)
+        live = spillover_statuses(root).get(ref, "absent")
         # DRIFT, checked only where the live ledger exists -- which is the machine
         # that authors commits, so the projection cannot be hand-edited into
         # agreement and then committed. A fresh clone has no ledger and therefore
         # cannot make this comparison; that is the honest boundary of the
         # projection, stated rather than papered over.
-        if tracked is not None and ref in tracked:
-            live_status = "open" if ref in open_ids else "closed"
-            if tracked[ref] != live_status:
-                return [Violation(
-                    11, path,
-                    "entry %d names marker_removal_ref %r, which the ledger reports "
-                    "as %s while %s records %r. The tracked projection is stale; "
-                    "re-sync it (--sync-marker-refs) so a fresh clone checks the "
-                    "same fact this one does."
-                    % (idx, ref, live_status, MARKER_REFS_REL, tracked[ref]))]
-        if ref not in open_ids:
+        if tracked is not None and ref in tracked and tracked[ref] != live:
             return [Violation(
                 11, path,
-                "entry %d names marker_removal_ref %r, which is not an OPEN spillover "
-                "item. A closed or invented reference records nothing." % (idx, ref))]
+                "entry %d names marker_removal_ref %r, which the ledger reports "
+                "as %s while %s records %r. The tracked projection is stale; "
+                "re-sync it (--sync-marker-refs) so a fresh clone checks the "
+                "same fact this one does."
+                % (idx, ref, live, MARKER_REFS_REL, tracked[ref]))]
+        local, source = live, "the ledger"
+    else:
+        # No live ledger: this is a clean checkout / CI / a fresh instance. Fall
+        # back to the tracked projection rather than refusing outright, because
+        # refusing here is what made every clean checkout red.
+        if tracked is None and not skeleton_owned:
+            # FAIL CLOSED. This branch used to ACCEPT, on the reasoning that
+            # refusing would be unsatisfiable in a repo that never ran prd-os
+            # init. Measured after the fact (codex-adversarial review of
+            # 53a10d54, blocker): the ledger is GITIGNORED (`*.jsonl`) and absent
+            # from HEAD, so EVERY clean checkout hits this branch and accepted any
+            # fabricated `sp-deadbeef`. The escape hatch was not a corner case, it
+            # was the only case, and the check never fired anywhere.
+            #
+            # An unverifiable ticket is not a ticket. With NEITHER the ledger nor
+            # a projection readable there is nothing to substantiate the claim
+            # against, so it is refused, the same polarity as every other
+            # condition here.
+            return [Violation(
+                11, path,
+                "entry %d names marker_removal_ref %r but neither the spillover ledger "
+                "(%s) nor the tracked projection (%s) is readable, so the ticket cannot "
+                "be verified. An unverifiable reference records nothing."
+                % (idx, ref, SPILLOVER_REL, MARKER_REFS_REL))]
+        local = tracked.get(ref) if tracked is not None else None
+        source = MARKER_REFS_REL
+    if local == "open":
         return []
-    # No live ledger: this is a clean checkout / CI / a fresh instance. Fall back
-    # to the tracked projection rather than refusing outright -- refusing here is
-    # what made every clean checkout red.
-    if tracked is None:
-        # FAIL CLOSED. This branch used to ACCEPT, on the reasoning that refusing
-        # would be unsatisfiable in a repo that never ran prd-os init. Measured
-        # after the fact (codex-adversarial review of 53a10d54, blocker): the
-        # ledger is GITIGNORED (`*.jsonl`) and absent from HEAD, so EVERY clean
-        # checkout hits this branch and accepts any fabricated `sp-deadbeef`. The
-        # escape hatch was not a corner case, it was the only case, and the check
-        # never fired anywhere.
-        #
-        # An unverifiable ticket is not a ticket. With NEITHER the ledger nor the
-        # tracked projection readable there is nothing to substantiate the claim
-        # against, so it is refused -- the same polarity as every other condition
-        # here. What changed is only that a fresh clone now has a second place to
-        # look, so this branch means "both inputs missing" instead of "always".
+    # A ref the local side has no row for (absent, or not projected) belongs to
+    # another ledger. For a skeleton-owned rule that ledger is the skeleton's.
+    if skeleton_owned and local in ("absent", None):
+        if skeleton[0].get(ref) == "open":
+            return []
         return [Violation(
             11, path,
-            "entry %d names marker_removal_ref %r but neither the spillover ledger "
-            "(%s) nor the tracked projection (%s) is readable, so the ticket cannot "
-            "be verified. An unverifiable reference records nothing."
-            % (idx, ref, SPILLOVER_REL, MARKER_REFS_REL))]
-    if tracked.get(ref) != "open":
+            "entry %d names marker_removal_ref %r, which the local ledger has no row "
+            "for, and the skeleton projection (%s) records %r, not open. A closed or "
+            "invented reference records nothing."
+            % (idx, ref, SKELETON_REFS_REL, skeleton[0].get(ref)))]
+    if source == "the ledger":
         return [Violation(
             11, path,
-            "entry %d names marker_removal_ref %r, which %s does not record as an "
-            "OPEN spillover item (it records %r). A closed or invented reference "
-            "records nothing." % (idx, ref, MARKER_REFS_REL, tracked.get(ref)))]
-    return []
+            "entry %d names marker_removal_ref %r, which is not an OPEN spillover "
+            "item (the local ledger reports %s). A closed or invented reference "
+            "records nothing." % (idx, ref, local))]
+    return [Violation(
+        11, path,
+        "entry %d names marker_removal_ref %r, which %s does not record as an "
+        "OPEN spillover item (it records %r). A closed or invented reference "
+        "records nothing." % (idx, ref, MARKER_REFS_REL, local))]
 
 
 def check_exec(entries, path, ratcheted_keys=None):
@@ -1024,7 +1133,7 @@ def check_exec(entries, path, ratcheted_keys=None):
             # Skipping the entry entirely let an ADVISORY entry carry exec/config
             # silently, against the one-meaning-per-status contract (codex
             # standard review of 9ea17813).
-            named = sorted(k for k in ("exec", "config", "test") if k in entry)
+            named = sorted(k for k in ("exec", "config", "test", "event") if k in entry)
             if named:
                 violations.append(Violation(
                     5, path,
@@ -1092,15 +1201,20 @@ def check_exec(entries, path, ratcheted_keys=None):
                 6, path,
                 "entry %d config %r does not exist" % (idx, config_rel)))
             continue
-        commands = wired_commands(config_path)
+        # Narrowed to the entry's `event` when it names one. Checking every event
+        # here would let an entry name a quiet event the script never runs under
+        # and slip past C10 on a claim nothing substantiates (ASK-3872).
+        event = entry.get("event")
+        commands = wired_commands(config_path, event)
         plugin_root = plugin_root_for(config_rel)
         if not any(exec_rel in command_targets(cmd, plugin_root) for cmd in commands):
+            where = config_rel if event is None else "%s under %s" % (config_rel, event)
             violations.append(Violation(
                 6, path,
                 "entry %d claims %s but no hook command in %s INVOKES %r -- it is "
                 "an ORPHAN, it never fires. (A path appearing in the file's text "
                 "is not wiring: it must be the target of a hook command.)"
-                % (idx, entry["status"], config_rel, exec_rel)))
+                % (idx, entry["status"], where, exec_rel)))
     return violations
 
 
@@ -1284,25 +1398,34 @@ def check_posture(entries, path):
         if not config_path.is_file():
             continue
         plugin_root = plugin_root_for(config_rel)
-        matched = [cmd for cmd in wired_commands(config_path)
+        event = entry.get("event")
+        matched = [cmd for cmd in wired_commands(config_path, event)
                    if exec_rel in command_targets(cmd, plugin_root)]
         if not matched:
             continue  # orphan, already reported by check_exec
         # ANY, not ALL (codex-adversarial review of eafadb8f, major). `all` meant
         # one unneutered invocation LAUNDERED every neutered one: a script wired
         # twice, blocking on a rare event and swallowed on the common one, read as
-        # a clean ENFORCED claim. The entry does not say WHICH event enforces the
-        # clause, so the only claim its wiring can support is that every
-        # invocation blocks. If that is too strict for a real case, the fix is a
-        # schema that names the event, not a weaker quantifier.
+        # a clean ENFORCED claim. An entry without `event` does not say WHICH
+        # event enforces the clause, so the only claim its wiring can support is
+        # that every invocation blocks. An entry WITH `event` (ASK-3872) is judged
+        # on that event's invocations alone; the quantifier is unchanged.
         neutered = any(_NEUTERED.search(cmd) for cmd in matched)
+        quiet = event in NON_BLOCKING_EVENTS
         try:
             source = exec_path.read_text()
         except (OSError, UnicodeDecodeError):
             continue
         nonzero = can_exit_nonzero(source, exec_path.suffix)
         if status == "ENFORCED":
-            if neutered:
+            if quiet:
+                violations.append(Violation(
+                    8, path,
+                    "entry %d claims ENFORCED on event %s, whose exit status blocks "
+                    "nothing, so this invocation of %r cannot block. Name the event "
+                    "that can, or label the clause DETECTED."
+                    % (idx, event, exec_rel)))
+            elif neutered:
                 violations.append(Violation(
                     7, path,
                     "entry %d claims ENFORCED but every wired command for %r "
@@ -1315,7 +1438,7 @@ def check_posture(entries, path):
                     "entry %d claims ENFORCED but %r has no non-zero exit path, "
                     "so it cannot block. The honest label is DETECTED."
                     % (idx, exec_rel)))
-        elif status == "DETECTED" and nonzero and not neutered:
+        elif status == "DETECTED" and nonzero and not neutered and not quiet:
             violations.append(Violation(
                 10, path,
                 "entry %d says DETECTED, but %r can exit non-zero and its wired "
@@ -1697,6 +1820,80 @@ def is_rule_file(path):
     return "/.claude/rules/" in p
 
 
+def marker_refs_by_rule(root):
+    """{repo-relative rule path: sorted spillover ids its entries name}.
+
+    The ONE derivation of which rule carries which ref, read by the generator and
+    by check_shipped_projection, so the file and its check cannot disagree about
+    what the tree says.
+    """
+    out = {}
+    rules = Path(root) / ".claude" / "rules"
+    for f in sorted(rules.rglob("*.md")):
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for block in scan_blocks(text)[1]:
+            try:
+                entries = json.loads(block, object_pairs_hook=_no_duplicate_keys)
+            except ValueError:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                ref = entry.get("marker_removal_ref")
+                if isinstance(ref, str) and _SPILLOVER_ID_RE.match(ref):
+                    out.setdefault(f.relative_to(root).as_posix(), set()).add(ref)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def check_shipped_projection(root):
+    """In the skeleton, the shipped projection must be what the generator writes.
+
+    Every instance trusts this file for the skeleton's ids, and nothing else
+    ratcheted it (PR #619 review round 1). STRUCTURE is checked everywhere the
+    skeleton is checked out, CI and fresh clones included, because it needs only
+    the rule files: a hand-added row naming an instance-only rule path would
+    otherwise ship and let that instance rule borrow the id. STATUSES are checked
+    where the live ledger exists, the same boundary as the local projection.
+    Instances skip this: their copy is the skeleton's, overwritten every sync.
+    """
+    if not is_skeleton(root):
+        return []
+    expected = marker_refs_by_rule(root)
+    shipped = _skeleton_marker_refs(root)
+    if shipped is None:
+        if not expected:
+            return []
+        return [Violation(
+            11, SKELETON_REFS_REL,
+            "skeleton rules name %d marker_removal_ref id(s) but %s is missing or "
+            "unreadable, so every instance would judge them against a ledger that "
+            "never saw them. Run --sync-marker-refs where the ledger is."
+            % (sum(len(v) for v in expected.values()), SKELETON_REFS_REL))]
+    refs, rules = shipped
+    want_ids = {ref for ids in expected.values() for ref in ids}
+    if {k: sorted(v) for k, v in rules.items()} != expected or set(refs) != want_ids:
+        return [Violation(
+            11, SKELETON_REFS_REL,
+            "%s does not match the rules in this tree (rule -> ref map or id set "
+            "differs). It is GENERATED; re-run --sync-marker-refs instead of editing "
+            "it." % SKELETON_REFS_REL)]
+    if spillover_ledger_present(root):
+        statuses = spillover_statuses(root)
+        stale = sorted(r for r, st in refs.items() if st != statuses.get(r, "absent"))
+        if stale:
+            return [Violation(
+                11, SKELETON_REFS_REL,
+                "%s is stale for %s: the ledger disagrees. Re-sync it "
+                "(--sync-marker-refs) before every instance inherits the wrong fact."
+                % (SKELETON_REFS_REL, ", ".join(stale)))]
+    return []
+
+
 def sync_marker_refs(root):
     """Regenerate MARKER_REFS_REL from the live ledger. Requires the ledger.
 
@@ -1711,27 +1908,13 @@ def sync_marker_refs(root):
             "readable here. Run it in a working copy that has the ledger.\n"
             % SPILLOVER_REL)
         return 1
-    open_ids = open_spillover_ids(root)
-    refs = {}
-    rules = Path(root) / ".claude" / "rules"
-    for f in sorted(rules.rglob("*.md")):
-        try:
-            text = f.read_text()
-        except OSError:
-            continue
-        for block in scan_blocks(text)[1]:
-            try:
-                entries = json.loads(block, object_pairs_hook=_no_duplicate_keys)
-            except ValueError:
-                continue
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                ref = entry.get("marker_removal_ref")
-                if isinstance(ref, str) and _SPILLOVER_ID_RE.match(ref):
-                    refs[ref] = "open" if ref in open_ids else "closed"
+    statuses = spillover_statuses(root)
+    by_rule = marker_refs_by_rule(root)
+    # 'absent', not 'closed', for an id this ledger has no row for: a skeleton
+    # rule carries the skeleton's ids into every instance, and calling them closed
+    # there was false (ASK-3885).
+    refs = {ref: statuses.get(ref, "absent")
+            for ids in by_rule.values() for ref in ids}
     out = {
         "_comment": (
             "GENERATED by enforced-claim-lint.py --sync-marker-refs. Ids and "
@@ -1745,6 +1928,26 @@ def sync_marker_refs(root):
     with open(dest, "w") as fh:
         fh.write(json.dumps(out, indent=2) + "\n")
     print("[enforced-claim-lint] wrote %s (%d ref(s))" % (MARKER_REFS_REL, len(refs)))
+    # Only the skeleton writes the shipped file. In an instance q-system/ is the
+    # skeleton's subtree: instance ids written there are wrong for every other
+    # instance and are overwritten by the next skeleton sync anyway.
+    if is_skeleton(root):
+        shipped = {
+            "_comment": (
+                "GENERATED in the skeleton by enforced-claim-lint.py "
+                "--sync-marker-refs and shipped to every instance with q-system/. "
+                "Statuses of the skeleton's own spillover ids, and which skeleton "
+                "rule names each, so an instance judges those refs by the ledger "
+                "that owns them. Ids and statuses only, no descriptions."),
+            "refs": dict(sorted(refs.items())),
+            "rules": dict(sorted(by_rule.items())),
+        }
+        dest = os.path.join(str(root), SKELETON_REFS_REL)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w") as fh:
+            fh.write(json.dumps(shipped, indent=2) + "\n")
+        print("[enforced-claim-lint] wrote %s (skeleton, %d ref(s))"
+              % (SKELETON_REFS_REL, len(refs)))
     return 0
 
 
@@ -1785,6 +1988,7 @@ def main():
                     "baseline gained %d entry(ies) since HEAD: %s. It may only "
                     "shrink. A marker that needs excusing is new work, not "
                     "pre-existing debt." % (len(grew), ", ".join(sorted(grew)[:3]))))
+        violations += check_shipped_projection(root)
         excused = set()
         for f in sorted(rules.rglob("*.md")):
             for v in lint_file(f, strict=True):
