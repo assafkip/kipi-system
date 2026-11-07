@@ -1648,7 +1648,10 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
             live_ref = runtime_receipt.load_receipt(
                 str(live_path), ["live"], repo_root=paths.repo_root,
                 not_before=state.get("loaded_at"),
-                used=_receipt_shas_held_elsewhere(paths, issue_id), live=True)
+                used=_receipt_shas_held_elsewhere(paths, issue_id), live=True,
+                live_text="\n".join(live_boxes),
+                forbid_commands=list(state.get("required_checks_snapshot")
+                                     or fm.get("required_checks") or []))
         except runtime_receipt.ReceiptError as exc:
             sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
             return 2

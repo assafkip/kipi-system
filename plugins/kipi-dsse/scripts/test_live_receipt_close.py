@@ -25,7 +25,17 @@ from test_computed_receipts import (  # noqa: E402
 
 SPEC = ".prd-os/issues/probe-1.md"
 LIVE_PENDING = "- [x] Live: one verdict row from a real run. PENDING deploy"
-LIVE_SHIPPED = "- [x] Live: one verdict row from a real run, read from its ledger."
+
+
+def _record_path(tmp_path: Path) -> Path:
+    """Where the running system writes its record: OUTSIDE the repo
+    (the repo is tmp_path/repo)."""
+    return tmp_path / "live" / "verdicts.jsonl"
+
+
+def _shipped(tmp_path: Path) -> str:
+    """A checked Live box that names its record, as chief's gp-* specs do."""
+    return f"- [x] Live: one verdict row from a real run, in {_record_path(tmp_path)}."
 
 
 def _ready(tmp_path: Path, deliverable: str) -> Path:
@@ -57,8 +67,7 @@ def _set_live_receipt(repo: Path, value: str) -> None:
 
 
 def _record(tmp_path: Path) -> Path:
-    """A running system's record, OUTSIDE the repo (the repo is tmp_path/repo)."""
-    rec = tmp_path / "live" / "verdicts.jsonl"
+    rec = _record_path(tmp_path)
     rec.parent.mkdir(exist_ok=True)
     rec.write_text('{"verdict": "allow", "bot": "dev"}\n')
     return rec
@@ -87,7 +96,7 @@ def test_a_checked_pending_live_deliverable_without_a_receipt_does_not_close(tmp
 
 
 def test_a_checked_live_deliverable_without_a_live_receipt_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     proc = _issue(repo, "close")
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert "live_receipt" in proc.stderr, proc.stderr
@@ -114,7 +123,7 @@ def test_lowercase_pending_also_fails(tmp_path):
 # --- the receipt itself --------------------------------------------------------
 
 def test_a_live_receipt_reading_the_running_record_closes_and_lands_on_the_row(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     rec = _record(tmp_path)
     out = _capture(repo, tmp_path / "live.json", "tail", "-1", str(rec))
     _set_live_receipt(repo, str(out))
@@ -126,7 +135,7 @@ def test_a_live_receipt_reading_the_running_record_closes_and_lands_on_the_row(t
 
 
 def test_a_repo_relative_live_receipt_path_resolves_against_the_repo(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     rec = _record(tmp_path)
     (repo / ".prd-os/live").mkdir()
     _capture(repo, repo / ".prd-os/live/probe-1.json", "tail", "-1", str(rec))
@@ -136,7 +145,7 @@ def test_a_repo_relative_live_receipt_path_resolves_against_the_repo(tmp_path):
 
 
 def test_a_live_receipt_that_only_reads_repo_source_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     out = _capture(repo, tmp_path / "src.json", "cat", "README.md")
     _set_live_receipt(repo, str(out))
     proc = _issue(repo, "close")
@@ -145,7 +154,7 @@ def test_a_live_receipt_that_only_reads_repo_source_does_not_close(tmp_path):
 
 
 def test_a_live_receipt_that_names_nothing_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     out = _capture(repo, tmp_path / "date.json", "date")
     _set_live_receipt(repo, str(out))
     proc = _issue(repo, "close")
@@ -153,14 +162,14 @@ def test_a_live_receipt_that_names_nothing_does_not_close(tmp_path):
 
 
 def test_a_missing_live_receipt_file_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     _set_live_receipt(repo, str(tmp_path / "nope.json"))
     proc = _issue(repo, "close")
     assert proc.returncode == 2 and "not found" in proc.stderr, proc.stderr
 
 
 def test_a_live_receipt_from_before_the_issue_loaded_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     rec = _record(tmp_path)
     old = tmp_path / "old.json"
     old.write_text(json.dumps({"command": f"tail -1 {rec}", "output": "row",
@@ -171,7 +180,7 @@ def test_a_live_receipt_from_before_the_issue_loaded_does_not_close(tmp_path):
 
 
 def test_a_live_receipt_already_on_another_issue_does_not_close(tmp_path):
-    repo = _ready(tmp_path, LIVE_SHIPPED)
+    repo = _ready(tmp_path, _shipped(tmp_path))
     rec = _record(tmp_path)
     out = _capture(repo, tmp_path / "reused.json", "tail", "-1", str(rec))
     sha = hashlib.sha256(out.read_bytes()).hexdigest()
@@ -180,6 +189,74 @@ def test_a_live_receipt_already_on_another_issue_does_not_close(tmp_path):
     _set_live_receipt(repo, str(out))
     proc = _issue(repo, "close")
     assert proc.returncode == 2 and "already used to close other-1" in proc.stderr, proc.stderr
+
+
+# --- PR #618 review round 1, major 1: the record is the one the spec names ----
+
+def test_a_green_test_is_not_a_live_receipt(tmp_path):
+    repo = _ready(tmp_path, _shipped(tmp_path))
+    (repo / "test_probe_green.py").write_text("def test_ok():\n    assert True\n")
+    out = _capture(repo, tmp_path / "g.json", sys.executable, "-m", "pytest", "-q",
+                   "-p", "no:cacheprovider", "test_probe_green.py")
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 2 and "runs a test" in proc.stderr, proc.stderr
+    assert _rows(repo) == []
+
+
+def test_a_selftest_is_not_a_live_receipt(tmp_path):
+    repo = _ready(tmp_path, _shipped(tmp_path))
+    (repo / "prove.sh").write_text("echo selftest ok\n")
+    out = _capture(repo, tmp_path / "s.json", "bash", "prove.sh", "--selftest")
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 2 and "runs a test" in proc.stderr, proc.stderr
+
+
+def test_the_issues_own_required_check_is_not_a_live_receipt(tmp_path):
+    """The fixture's required check is python3 -c "print('ok')"."""
+    repo = _ready(tmp_path, _shipped(tmp_path))
+    out = _capture(repo, tmp_path / "rc.json", "bash", "-c", "python3 -c \"print('ok')\"")
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 2 and "required check" in proc.stderr, proc.stderr
+
+
+def test_a_read_of_a_record_the_live_box_does_not_name_does_not_close(tmp_path):
+    repo = _ready(tmp_path, _shipped(tmp_path))
+    other = tmp_path / "unrelated.log"
+    other.write_text("anything\n")
+    out = _capture(repo, tmp_path / "u.json", "tail", "-1", str(other))
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 2 and "Live deliverable names" in proc.stderr, proc.stderr
+    assert _rows(repo) == []
+
+
+def test_a_record_under_a_directory_the_live_box_names_closes(tmp_path):
+    rec = _record_path(tmp_path)
+    repo = _ready(tmp_path, f"- [x] Live: the probe receipt in {rec.parent}/ from one real run.")
+    _record(tmp_path)
+    out = _capture(repo, tmp_path / "d.json", "tail", "-1", str(rec))
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_command_the_live_box_names_in_backticks_closes(tmp_path):
+    """A status line has no file; the Live box names the command instead."""
+    repo = _ready(tmp_path, "- [x] Live: the host status line from `uname -a`.")
+    out = _capture(repo, tmp_path / "b.json", "uname", "-a")
+    _set_live_receipt(repo, str(out))
+    proc = _issue(repo, "close")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_shallow_named_path_binds_nothing():
+    import runtime_receipt as rr
+    assert rr._live_named_paths("Live: a row somewhere in ~/.config/ or /etc") == []
+    named = rr._live_named_paths("Live: the row in ~/.config/chief/out.jsonl.")
+    assert [p.name for p in named] == ["out.jsonl"], named
 
 
 # --- controls ---------------------------------------------------------------

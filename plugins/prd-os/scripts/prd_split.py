@@ -401,9 +401,10 @@ def _render_spec(
     template = TEMPLATE_RELPATH.read_text()
     live = any(_LIVE_DELIVERABLE_RE.match(d) for d in entry.get("deliverables") or [])
     live_note = (
-        "<!-- A checked \"Live:\" box also needs live_receipt: in the frontmatter"
-        " (a runtime_receipt.py capture of the running system's record), and may"
-        " not say PENDING. -->\n" if live else "")
+        "<!-- A checked \"Live:\" box also needs live_receipt: in the frontmatter:"
+        " a runtime_receipt.py capture that reads the record this line names (a"
+        " path, or a status command in backticks). It may not say PENDING. -->\n"
+        if live else "")
     rendered = (
         template.replace("{{id}}", entry["id"])
         .replace("{{title}}", entry["title"])
@@ -793,6 +794,10 @@ ACTIVATION_FINDING_ID = "activation"
 _LIVE_DELIVERABLE_RE = re.compile(r"^\W*live\b(?:\s+deliverable)?\W*:", re.IGNORECASE)
 _LIST_ITEM_RE = re.compile(r"^(?:[-*+]|\d+[.)])\s")
 _ACCEPTANCE_HEADING_RE = re.compile(r"^#{2,3}\s+Acceptance\b", re.IGNORECASE)
+# A non-goal is declared out of scope, not deferred (PR #618 review round 1,
+# major 2: prd-model-gate-2026-10-02's Non-goals lines were refused while the
+# message told the author to write a dropped item as a non-goal).
+_NON_GOALS_HEADING_RE = re.compile(r"^#{2,3}\s+Non[- ]?goals?\b", re.IGNORECASE)
 
 
 def _prose_lines(text: str):
@@ -949,6 +954,8 @@ def _untracked_deferrals(text: str, tracked: set[str]) -> list[tuple[int, str, s
     soon as ANY one backtick token anywhere resolved."""
     out = []
     for unit in _prose_units(text):
+        if _NON_GOALS_HEADING_RE.match(unit[0][2] or ""):
+            continue
         hit = next(((ln, ph, s) for ln, s, _ in unit
                     for ph in [_deferral_phrase(s)] if ph), None)
         if not hit:
@@ -1075,8 +1082,9 @@ def _activation_entries(prd_id: str, text: str, entries: list[dict]) -> list[dic
                 f"Activation issue for a founder hand in {prd_id}: {hand}. "
                 f"Blocked by {', '.join(blockers)}; issue_runner load refuses it "
                 "until they close. It closes on the running system's own record "
-                "of the hand: capture it with runtime_receipt.py capture and name "
-                "the file in this spec's live_receipt field."),
+                "of the hand: name that record in the Live line (its path, or "
+                "the status command in backticks), capture a read of it with "
+                "runtime_receipt.py capture, and put the file in live_receipt."),
         }
         entry = _validate_entry(raw, len(entries) + n - 1)
         entry["blocked_by"] = blockers
@@ -1208,6 +1216,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     untracked = _untracked_deferrals(text, _tracked_ids(
         cfg, parent_prd_id, {e["id"] for e in entries + activations}))
+    # The one bypass, with its reason in the PRD file where review sees it.
+    # A detector with no hatch gets switched off the first time it is wrong.
+    bypass = str(fm.get("untracked_deferrals_ok") or "").strip().strip("\"'").strip()
+    if untracked and bypass:
+        sys.stderr.write(
+            f"{prd_path}: WARN: {len(untracked)} untracked deferral(s) allowed by "
+            f"untracked_deferrals_ok: {bypass}\n"
+            + "".join(f"  line {ln} [{ph}]: {line[:160]}\n" for ln, ph, line in untracked))
+        untracked = []
     if untracked:
         sys.stderr.write(
             f"{prd_path}: refusing to split: {len(untracked)} deferral(s) in the PRD "
@@ -1217,7 +1234,9 @@ def main(argv: list[str] | None = None) -> int:
             + "".join(f"  line {ln} [{ph}]: {line[:160]}\n" for ln, ph, line in untracked)
             + "Name what tracks it in the same paragraph or list item: a manifest "
             "entry id, an issue spec id, an ASK-n ticket or an sp- spillover id. "
-            "If the work is dropped rather than deferred, say so as a non-goal.\n")
+            "If the work is dropped rather than deferred, move it under "
+            "## Non-goals. If it is tracked somewhere this check cannot see, set "
+            "untracked_deferrals_ok: <where> in the PRD frontmatter.\n")
         return 2
     entries = entries + activations
 

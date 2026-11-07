@@ -13,8 +13,10 @@ messages; this file starts at 0.16.0.
   `runtime_receipt.py capture` of the running system's own record. The receipt
   is checked with the same loader #610 added for runtime-control fixes, in
   `live=True` mode: it must postdate the issue load, no other issue's close row
-  may hold it, and it may not only read repo source or name nothing. The close
-  row carries it as `live_receipt`.
+  may hold it, and it must read the record the checked Live line names (a path,
+  a directory holding it, or a status command in backticks). A test run, a
+  `--selftest` and the issue's own required check are refused. The close row
+  carries it as `live_receipt`.
 - **A checked Live box that says PENDING is refused**, with or without a receipt.
   Measured 2026-11-06: 15 of the 23 closed chief gp-* specs closed with exactly
   that, and none got its record afterwards.

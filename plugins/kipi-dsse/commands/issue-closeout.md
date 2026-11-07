@@ -79,9 +79,12 @@ Close the active DSSE issue. Execute in order:
    `live_receipt:` frontmatter field set to a receipt of the RUNNING system's own
    record (a ledger row, a status line, a delivered message), made with the same
    `runtime_receipt.py capture`. Reading that record (`tail -1 ~/.config/<app>/x.jsonl`)
-   is the observation; reading only repo source, or naming nothing, is refused. A
-   checked Live box whose text says PENDING is refused outright: uncheck it until it
-   ships. (ASK-3830: 15 of the 23 closed chief gp-* specs closed that way.)
+   is the observation. The record must be the one the Live line names: its path (or
+   a directory holding it), or a status command in backticks. A test run, a
+   `--selftest`, the issue's own required check, a read of only repo source, or a
+   path the Live line does not name is refused. A checked Live box whose text says
+   PENDING is refused outright: uncheck it until it ships. (ASK-3830: 15 of the 23
+   closed chief gp-* specs closed that way.)
 
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 

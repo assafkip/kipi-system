@@ -58,7 +58,7 @@ def _entry(issue_id: str, **extra) -> dict:
     }
 
 
-def _write_prd(repo: Path, prose: str, entries: list[dict]) -> Path:
+def _write_prd(repo: Path, prose: str, entries: list[dict], extra_fm: str = "") -> Path:
     prds = repo / ".prd-os" / "prds"
     prds.mkdir(parents=True, exist_ok=True)
     path = prds / f"{PRD_ID}.md"
@@ -67,7 +67,8 @@ def _write_prd(repo: Path, prose: str, entries: list[dict]) -> Path:
         f"id: {PRD_ID}\n"
         "title: Fixture\n"
         "status: approved\n"
-        "---\n\n# Fixture\n\n" + prose.strip("\n") + "\n\n## Issues\n\n"
+        + extra_fm
+        + "---\n\n# Fixture\n\n" + prose.strip("\n") + "\n\n## Issues\n\n"
         "```json\n" + json.dumps(entries, indent=2) + "\n```\n"
     )
     return path
@@ -178,6 +179,37 @@ def test_non_deferrals_do_not_refuse(fake_repo, write_config, run_prd_split, pro
     _write_prd(fake_repo, prose, TWO)
     r = run_prd_split(fake_repo, "--prd-id", PRD_ID)
     assert r.returncode == 0, r.stderr
+
+
+def test_a_non_goal_is_not_a_deferral(fake_repo, write_config, run_prd_split):
+    """PR #618 review round 1, major 2: prd-model-gate-2026-10-02 lines 41 and 43
+    sit under ## Non-goals and were refused, while the message said to write a
+    dropped item as a non-goal."""
+    _bootstrap(fake_repo, write_config)
+    _write_prd(fake_repo, "## Non-goals\n\n- Routing chief through the gate: "
+               "follow-up tickets (below), not edits here.\n\n## Proposed approach\n\n"
+               "Ship it.\n", TWO)
+    r = run_prd_split(fake_repo, "--prd-id", PRD_ID)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_bypass_names_its_reason_and_the_lines(fake_repo, write_config, run_prd_split):
+    _bootstrap(fake_repo, write_config)
+    _write_prd(fake_repo, "The cache warmer is a follow-up.\n", TWO,
+               extra_fm="untracked_deferrals_ok: tracked in the ops board, not Linear\n")
+    r = run_prd_split(fake_repo, "--prd-id", PRD_ID)
+    assert r.returncode == 0, r.stderr
+    assert "untracked_deferrals_ok" in r.stderr and "ops board" in r.stderr, r.stderr
+    assert "The cache warmer is a follow-up." in r.stderr, r.stderr
+    assert sorted(_issues(fake_repo)) == ["issue-a", "issue-b"]
+
+
+def test_an_empty_bypass_reason_does_not_bypass(fake_repo, write_config, run_prd_split):
+    _bootstrap(fake_repo, write_config)
+    _write_prd(fake_repo, "The cache warmer is a follow-up.\n", TWO,
+               extra_fm="untracked_deferrals_ok:\n")
+    r = run_prd_split(fake_repo, "--prd-id", PRD_ID)
+    assert r.returncode == 2, r.stderr
 
 
 def test_a_prd_written_from_the_template_splits(fake_repo, write_config, run_prd_split):

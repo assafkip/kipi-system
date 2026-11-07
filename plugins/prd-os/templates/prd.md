@@ -85,7 +85,9 @@ Deferrals: any prose that defers work ("open for v2", "a follow-up", "deferred
 to a later PR") must name what tracks it in the same paragraph or list item: a
 manifest entry id, an issue spec id, an ASK-n ticket or an sp- spillover id.
 prd-split refuses the PRD and names the line otherwise, because deferred prose
-is converted to nothing at split and is gone at archive.
+is converted to nothing at split and is gone at archive. Lines under
+## Non-goals are not deferrals. Work tracked where the check cannot see goes in
+the frontmatter as `untracked_deferrals_ok: <where it is tracked>`.
 -->
 
 <!--
