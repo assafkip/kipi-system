@@ -81,8 +81,12 @@
 # which status context it posts, and which directory its artifacts land in.
 #
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
-#                            [--engine claude|codex]
+#                            [--engine claude|codex] [--delta | --base <sha>]
 #         --post also comments the review on the PR and the Linear issue.
+#         --delta reviews only `git diff <last reviewed sha> <head>`, the sha
+#         read from this engine's verdict record; with no usable record it
+#         reads the whole PR (round 1). --base <sha> names the base directly.
+#         Either way the verdict and kipi/reviewer-approved land on the head.
 #         On a PUBLIC repo the PR comment is the verdict and finding counts
 #         only, never the review text or the diff (ASK-2893).
 set -uo pipefail
@@ -162,9 +166,15 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
 PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
+REVIEW_BASE_ARG=""; DELTA=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
+    # DELTA ROUNDS (ASK-3884). --base names the last reviewed sha; --delta reads
+    # it from this engine's own verdict record. Neither given is a full review,
+    # exactly as before. Resolved below, next to the PR fetch.
+    --base)   shift; REVIEW_BASE_ARG="${1:-}" ;;
+    --delta)  DELTA=1 ;;
     --engine) shift; ENGINE="${1:-}" ;;
     # WHICH REPO THE WORK IS IN (ASK-738). $SKEL is where this CODE lives; it is
     # not where the PR lives. Before this argument the two were the same
@@ -225,7 +235,7 @@ GH_R_PROMPT=""
 # form, which is what every pre-ASK-738 caller and fixture already relies on.
 STATUS_REPO_PATH="{owner}/{repo}"
 [ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
-[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex]" >&2; exit 1; }
+[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex] [--delta | --base <sha>]" >&2; exit 1; }
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
 # the whole reason this is a flag and not a second script.
@@ -803,6 +813,58 @@ fi
 ROUND="$(review_round "$ENGINE_DIR" "$PR" "$REVIEW_SLUG")"
 echo "  round: $ROUND (engine: $ENGINE)"
 
+# DELTA ROUNDS (ASK-3884, sp-ff374488). Founder rule 11, 2026-11-06: "option 1.
+# not all changes need a full cycle review". Round 1 reads the whole PR; a later
+# round reads only `git diff <last reviewed sha> <head>`. Before this the only
+# flags were --issue, --engine, --repo and --post, so every round re-read the
+# whole PR, and on 4 Points PR #23 the delta round had to go to a separate agent
+# that could not post kipi/reviewer-approved.
+#
+# Every doubtful case falls back to a FULL read, never to a smaller one: a full
+# review of a delta is wasted tokens, a delta review standing in for an unread
+# change is an unearned green. So:
+#   - the receipt's head_sha is a base only when that record says usable. A
+#     provider blip writes a record too, and nobody read the sha it names.
+#   - a base that is not an ancestor of the head (a rebase, a force-push) has no
+#     meaningful delta, so the whole PR is read and the log says why.
+# Two explicit-input mistakes REFUSE instead, because guessing what the caller
+# meant is worse than saying no: a --base that is not a commit here, and a base
+# equal to the head (nothing new; the verdict on that sha already stands).
+REVIEW_BASE=""
+if [ -n "$REVIEW_BASE_ARG" ]; then
+  REVIEW_BASE="$(git -C "$REVIEW_REPO" rev-parse --verify --quiet "${REVIEW_BASE_ARG}^{commit}" 2>/dev/null || true)"
+  if [ -z "$REVIEW_BASE" ]; then
+    echo "REFUSING: --base $REVIEW_BASE_ARG is not a commit in $REVIEW_REPO. No review ran; no verdict posted." >&2
+    exit 1
+  fi
+  BASE_SOURCE="--base"
+elif [ "$DELTA" = "1" ]; then
+  _rec="$(verdict_record_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")"
+  _usable="$(python3 -c 'import json,sys
+try: print("1" if json.load(open(sys.argv[1])).get("usable") is True else "0")
+except Exception: print("0")' "$_rec" 2>/dev/null || echo 0)"
+  _prev="$(head_sha_from_record "$_rec")"
+  if [ "$_usable" = "1" ] && [ -n "$_prev" ]; then
+    REVIEW_BASE="$(git -C "$REVIEW_REPO" rev-parse --verify --quiet "${_prev}^{commit}" 2>/dev/null || true)"
+    [ -n "$REVIEW_BASE" ] || echo "  WARN: delta: last reviewed sha ${_prev:0:12} is not in $REVIEW_REPO; reading the whole PR." >&2
+  else
+    echo "  delta: no usable earlier review of PR #$PR on record; reading the whole PR (round 1)."
+  fi
+  BASE_SOURCE="this engine's verdict record"
+fi
+if [ -n "$REVIEW_BASE" ]; then
+  if [ "$REVIEW_BASE" = "$HEAD_SHA" ]; then
+    echo "REFUSING: nothing to review since ${REVIEW_BASE:0:12}, which is the head of PR #$PR. The verdict on that sha stands. No review ran; no verdict posted." >&2
+    exit 1
+  fi
+  if [ -z "$HEAD_SHA" ] || ! git -C "$REVIEW_REPO" merge-base --is-ancestor "$REVIEW_BASE" "$HEAD_SHA" 2>/dev/null; then
+    echo "  WARN: delta base ${REVIEW_BASE:0:12} is not an ancestor of head ${HEAD_SHA:0:12} (rebase or force-push?); reading the whole PR." >&2
+    REVIEW_BASE=""
+  else
+    echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
+  fi
+fi
+
 # A repeat review must not re-litigate. Fresh eyes on the CODE is the point;
 # fresh eyes on the ARGUMENT is how a PR grinds forever (PR #11 reached round 4
 # with findings still arriving). So from round 2 on, the reviewer is told the
@@ -815,8 +877,18 @@ SCRATCH_BASE="${KIPI_REVIEW_SCRATCH_BASE:-$HOME/.config/kipi/review-scratch}"
 PR_CONTEXT_DIR="$(mkdir -p "$SCRATCH_BASE" && mktemp -d "$SCRATCH_BASE/ctx.XXXXXX")" || {
   echo "REFUSING: cannot create a PR context dir under $SCRATCH_BASE. No review ran; no verdict posted." >&2
   exit 4; }
+# A delta round's pr.diff is the local `git diff <base> <head>`; both shas were
+# proven present and ordered above. The PR view is still fetched, so the PR's
+# title, body and state come from GitHub either way.
+fetch_pr_diff() {
+  if [ -n "$REVIEW_BASE" ]; then
+    git -C "$REVIEW_REPO" diff "$REVIEW_BASE" "$HEAD_SHA"
+  else
+    gh pr diff "$PR" $KIPI_GH_REPO_ARGS
+  fi
+}
 if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTEXT_DIR/err" \
-   || ! gh pr diff "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
+   || ! fetch_pr_diff > "$PR_CONTEXT_DIR/pr.diff" 2>>"$PR_CONTEXT_DIR/err"; then
   echo "$(TS) could not fetch PR #$PR from GitHub ($(head -c 200 "$PR_CONTEXT_DIR/err")); no review, no status. Exit 9." >&2
   command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
   exit 9
@@ -870,9 +942,28 @@ Then apply this rule, which is binding:
   a finding about the review process, and it is worth more than another nit."
 fi
 
+# The delta round's instructions. Empty on a full review, so the full-review
+# prompt stays byte-identical to what every earlier round was given.
+DELTA_RULE=""
+PR_DIFF_LABEL="(gh ${GH_R_PROMPT}pr diff $PR)"
+if [ -n "$REVIEW_BASE" ]; then
+  PR_DIFF_LABEL="(git diff ${REVIEW_BASE:0:12} ${HEAD_SHA:0:12}: ONLY the commits since the last reviewed round)"
+  DELTA_RULE="
+
+## THIS IS A DELTA ROUND
+
+An earlier round of this review read this PR up to commit ${REVIEW_BASE:0:12}. Rounds
+after the first read only what changed since the last reviewed sha (founder rule,
+2026-11-06), so pr.diff below holds \`git diff ${REVIEW_BASE:0:12} ${HEAD_SHA:0:12}\`, not the
+whole PR. Review that delta. Code outside it was reviewed already: raise a finding
+there only when the delta changes how that code behaves, and say how. An earlier
+blocking finding counts as fixed only if the tree at the head shows it fixed, and
+the whole tree at the head is in front of you to check that."
+fi
+
 PROMPT="You are a SENIOR STAFF ENGINEER at Meta. You have NEVER seen this codebase before.
 You were asked to review pull request #$PR in $REVIEW_ROOT, and you are ADVERSARIAL by default:
-your job is to find what is wrong, not to be agreeable.$ROUND_RULE
+your job is to find what is wrong, not to be agreeable.$ROUND_RULE$DELTA_RULE
 
 ## YOU ARE ALONE. THERE IS NOBODY TO ASK.
 
@@ -901,7 +992,7 @@ sandbox is read-only with no network (CODEX_SANDBOX in pr-review-agent.sh), so
 gh cannot reach GitHub there. The fetched copies:
 
   $PR_CONTEXT_DIR/pr.txt     (gh ${GH_R_PROMPT}pr view $PR)
-  $PR_CONTEXT_DIR/pr.diff    (gh ${GH_R_PROMPT}pr diff $PR)
+  $PR_CONTEXT_DIR/pr.diff    $PR_DIFF_LABEL
 
 ## What your fresh eyes are FOR
 
@@ -1492,12 +1583,13 @@ REVIEWED_BY="$CODEX_MODEL"
 # The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
 # argv 16 rather than rebuilt in python -- a second place that knows the naming
 # rule is a second writer, which is the defect class this repo keeps finding.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${REVIEW_BASE:-}" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = sys.argv[16]
-json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
+review_base = sys.argv[17] if len(sys.argv) > 17 else ""
+record = {"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
            "engine": engine,
@@ -1513,7 +1605,12 @@ json.dump({"pr": int(pr), "issue": issue, "verdict": verdict,
            # key exists to prevent.
            "usable": usable == "1",
            "round": int(rnd), "review": review, "head_sha": head_sha,
-           "ts": ts}, open(out, "w"), indent=2)
+           "ts": ts}
+# Written ONLY on a delta round (ASK-3884): absent means this round read the
+# whole PR, so every record a full review writes keeps its exact old shape.
+if review_base:
+    record["review_base"] = review_base
+json.dump(record, open(out, "w"), indent=2)
 PY
 
 # Severity floor, minors half: APPROVE WITH NITS is a TERMINAL state -- the loop
@@ -1659,6 +1756,9 @@ post_reviewer_status() {
   # this marker a green kipi/codex-approved is indistinguishable from a real
   # second opinion, and the whole point of this engine is that it is not Claude.
   [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
+  # A delta approval covers the commits since the base, not the whole PR; the
+  # required check says so rather than reading like a full read (ASK-3884).
+  [ -n "${REVIEW_BASE:-}" ] && desc="delta ${REVIEW_BASE:0:8}..${sha:0:8}: $desc"
   desc="$(printf '%.140s' "$desc")"
   # STATUS_REPO_PATH, not {owner}/{repo}: `gh api` resolves those placeholders
   # from the CWD repo and accepts no -R, so an unattended run posted
