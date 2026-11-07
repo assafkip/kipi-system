@@ -636,8 +636,15 @@ while True:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         break
     except OSError as e:
-        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN) or time.monotonic() > deadline:
+        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
             sys.exit(1)
+        # Timing out means ANOTHER process is inside the mutex, so the tree may be
+        # theirs: busy (2), never 1, which sends review_worktree to _wt_bail and
+        # deletes a live owner's ref (ASK-3930 round 4). A failure that is ours
+        # alone (no python3, an unopenable mutex) stays 1, because a 2 there would
+        # leave a stale ref that wedges every later review (PR #265 round 2).
+        if time.monotonic() > deadline:
+            sys.exit(2)
         time.sleep(0.02)
 h = holder()
 if h == "":

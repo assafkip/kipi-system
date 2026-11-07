@@ -313,5 +313,27 @@ check "ASK-3930 round 3: the other backs off as busy (rc 2), so it never clears 
 check "ASK-3930 round 3: the lock names the one owner" '[ -n "$winner" ] && [ "$(cat "$L5.lock")" = "$winner" ]'
 : > "$BAR/release"; wait "$CA" "$CB" 2>/dev/null
 
+# Round 4: a contender that times out on the mutex reports BUSY (rc 2), never rc 1.
+# rc 1 sends review_worktree to _wt_bail, which deletes refs/remotes/pr/<N>, and a
+# timeout means another process is inside the mutex, not that nobody owns the tree.
+# Codex's schedule: A owns the tree (LIVE), B (this test) holds the directory-wide
+# mutex past the wait, C claims A's tree. The elapsed time proves C took the
+# timeout path, not a fast one.
+mkdir -p "$T/race6"; L6="$T/race6/tree"
+printf '%s' "$LIVE" > "$L6.lock"
+hold_mutex "$T/race6" "$T/race6/held" "$T/race6/let-go" & H6=$!
+wait_for "$T/race6/held"
+cat > "$T/drive6.sh" <<EOF
+set -uo pipefail
+_wt_lock_path=""
+source "$T/lock.sh"
+s=\$(date +%s); acquire_wt_lock "$L6"; rc=\$?; echo "rc=\$rc waited=\$(( \$(date +%s) - s ))"
+EOF
+PATH="$T/bin" "$T/bin/bash" "$T/drive6.sh" > "$T/race6/out" 2>&1
+: > "$T/race6/let-go"; wait "$H6"
+check "ASK-3930 round 4: a mutex timeout reports busy (rc 2), so the owner's ref is never cleared" 'grep -q "^rc=2 " "$T/race6/out"'
+check "ASK-3930 round 4: that contender really waited out the mutex (4s or more)" '[ "$(sed -n "s/.*waited=//p" "$T/race6/out")" -ge 4 ]'
+check "ASK-3930 round 4: the live owner's lock is untouched" '[ "$(cat "$L6.lock")" = "$LIVE" ]'
+
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"
