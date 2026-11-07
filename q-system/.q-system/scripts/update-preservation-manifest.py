@@ -574,8 +574,14 @@ def run_replay(kipi_home: Path, work: Path, real: bool) -> dict:
     fx = build_replay(kipi_home, work)
     home = work / "home"
     home.mkdir()
+    # The fake HOME hides any global git identity, so the updater's own sync
+    # commit needs one from env. Scar: #609 validate. A CI runner has no
+    # identity to guess, that commit failed, the abandon restored the instance,
+    # and the mutant read "work kept" instead of lost. A Mac passed by guessing.
     env = {**os.environ, "HOME": str(home),
-           "KIPI_FLEET_SWEEP_HISTORY": str(work / "sweep-history.jsonl")}
+           "KIPI_FLEET_SWEEP_HISTORY": str(work / "sweep-history.jsonl"),
+           "GIT_AUTHOR_NAME": "probe", "GIT_AUTHOR_EMAIL": "probe@kipi.local",
+           "GIT_COMMITTER_NAME": "probe", "GIT_COMMITTER_EMAIL": "probe@kipi.local"}
     cmd = ["bash", str(fx["skel"] / "kipi-update.sh")] + ([] if real else ["--dry-run"])
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(work), env=env)
     out = proc.stdout + proc.stderr
