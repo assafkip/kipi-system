@@ -8,6 +8,7 @@ You are starting a DSSE issue. The issue id is: $ARGUMENTS
 Execute the following, in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" load $ARGUMENTS`. The output is JSON describing the loaded spec. If the command exits non-zero, stop and report the error. Do not invent an issue spec.
+   An exit 2 with an aging list (ASK-3826) means the PRD's oldest work comes first: report the list, then start the oldest named issue instead, or own the named spillover rows (`prd_runner.py spillover own <id>`). Pass `--age-override REASON` only for an item that is obsolete; every use is logged to `.prd-os/gate-bypasses.jsonl`.
 
 2. Read the full spec file at the `spec_path` returned by step 1.
 
