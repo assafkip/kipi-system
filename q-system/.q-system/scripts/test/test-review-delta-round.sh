@@ -182,6 +182,33 @@ grep -q 'nothing to review' "$WORK/r4.out" || fail "the refusal does not say why
 $(tail -10 "$WORK/r4.out")"
 ok "--base equal to head: refused, no model call, no status"
 
+# --- an EMPTY delta: refuse, no model call, no status (PR #619 review round 2) ----
+# A push whose tree equals the last reviewed tree (an empty commit to re-trigger
+# CI, a revert and reapply) is not the same sha, so the sha check above passes
+# it. The first cut then handed the engine a 0-byte pr.diff and posted green.
+G -C "$WORK/skel" commit -q --allow-empty -m "re-trigger CI"
+EMPTY="$(git -C "$WORK/skel" rev-parse HEAD)"
+echo "$EMPTY" > "$WORK/head"
+before="$(calls)"; : > "$GH_LOG"
+run_reviewer "$WORK/r4b.out" --base "$SHA2" --post
+[ "$(calls)" = "$before" ] || fail "THE DEFECT: an empty delta still called the model:
+$(tail -10 "$WORK/r4b.out")"
+[ "$(cat "$WORK/r4b.out.rc")" != "0" ] || fail "an empty delta exited 0; nothing was reviewed"
+grep 'statuses/' "$GH_LOG" | grep -q 'state=success' && fail "an empty delta posted a success status:
+$(grep statuses "$GH_LOG")"
+grep -q 'nothing to review' "$WORK/r4b.out" || fail "the empty-delta refusal does not say why:
+$(tail -10 "$WORK/r4b.out")"
+ok "an empty delta: refused, no model call, no status"
+G -C "$WORK/skel" checkout -q "$SHA2"
+echo "$SHA2" > "$WORK/head"
+
+# --- --base with no value: refuse, never a silent full review ---------------------
+before="$(calls)"
+run_reviewer "$WORK/r4c.out" --base
+[ "$(calls)" = "$before" ] || fail "--base with no value still called the model"
+[ "$(cat "$WORK/r4c.out.rc")" != "0" ] || fail "--base with no value exited 0"
+ok "--base with no value: refused, no model call"
+
 # --- an explicit --base that is not a commit: refuse ------------------------------
 before="$(calls)"
 run_reviewer "$WORK/r5.out" --base deadbeefdeadbeefdeadbeefdeadbeefdeadbeef

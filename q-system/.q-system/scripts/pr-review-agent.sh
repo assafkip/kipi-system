@@ -85,8 +85,10 @@
 #         --post also comments the review on the PR and the Linear issue.
 #         --delta reviews only `git diff <last reviewed sha> <head>`, the sha
 #         read from this engine's verdict record; with no usable record it
-#         reads the whole PR (round 1). --base <sha> names the base directly.
+#         reads the whole PR (round 1). --base <sha> names the base directly;
+#         it is trusted as the caller's last reviewed sha and wins over --delta.
 #         Either way the verdict and kipi/reviewer-approved land on the head.
+#         An empty delta, or a base equal to the head, refuses: no review runs.
 #         On a PUBLIC repo the PR comment is the verdict and finding counts
 #         only, never the review text or the diff (ASK-2893).
 set -uo pipefail
@@ -166,14 +168,14 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
 PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
-REVIEW_BASE_ARG=""; DELTA=0
+REVIEW_BASE_ARG=""; DELTA=0; BASE_FLAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
     # DELTA ROUNDS (ASK-3884). --base names the last reviewed sha; --delta reads
     # it from this engine's own verdict record. Neither given is a full review,
     # exactly as before. Resolved below, next to the PR fetch.
-    --base)   shift; REVIEW_BASE_ARG="${1:-}" ;;
+    --base)   shift; REVIEW_BASE_ARG="${1:-}"; BASE_FLAG=1 ;;
     --delta)  DELTA=1 ;;
     --engine) shift; ENGINE="${1:-}" ;;
     # WHICH REPO THE WORK IS IN (ASK-738). $SKEL is where this CODE lives; it is
@@ -831,6 +833,12 @@ echo "  round: $ROUND (engine: $ENGINE)"
 # meant is worse than saying no: a --base that is not a commit here, and a base
 # equal to the head (nothing new; the verdict on that sha already stands).
 REVIEW_BASE=""
+# `--base` with no value is a caller mistake, not a request for a full review;
+# reading it as one would hide the mistake behind a run that looks fine.
+if [ "$BASE_FLAG" = "1" ] && [ -z "$REVIEW_BASE_ARG" ]; then
+  echo "REFUSING: --base needs a sha. No review ran; no verdict posted." >&2
+  exit 1
+fi
 if [ -n "$REVIEW_BASE_ARG" ]; then
   REVIEW_BASE="$(git -C "$REVIEW_REPO" rev-parse --verify --quiet "${REVIEW_BASE_ARG}^{commit}" 2>/dev/null || true)"
   if [ -z "$REVIEW_BASE" ]; then
@@ -860,6 +868,15 @@ if [ -n "$REVIEW_BASE" ]; then
   if [ -z "$HEAD_SHA" ] || ! git -C "$REVIEW_REPO" merge-base --is-ancestor "$REVIEW_BASE" "$HEAD_SHA" 2>/dev/null; then
     echo "  WARN: delta base ${REVIEW_BASE:0:12} is not an ancestor of head ${HEAD_SHA:0:12} (rebase or force-push?); reading the whole PR." >&2
     REVIEW_BASE=""
+  elif git -C "$REVIEW_REPO" diff --quiet "$REVIEW_BASE" "$HEAD_SHA" 2>/dev/null; then
+    # An EMPTY delta: a new sha whose tree equals the reviewed one (an empty
+    # commit to re-trigger CI, a revert and reapply). The sha check above lets it
+    # through, and the first cut handed the engine a 0-byte diff and posted green
+    # on the head (PR #619 review round 2, major, repro'd). A round that reads
+    # nothing must not move the gate. A full review (no flag) is the way to put a
+    # verdict on this head.
+    echo "REFUSING: nothing to review: the tree at head ${HEAD_SHA:0:12} is identical to the tree at ${REVIEW_BASE:0:12}. No review ran; no verdict posted. Run without --delta/--base for a full review of this head." >&2
+    exit 1
   else
     echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
   fi
