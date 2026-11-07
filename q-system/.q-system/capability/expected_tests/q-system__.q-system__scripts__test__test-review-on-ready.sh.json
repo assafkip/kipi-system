@@ -1,0 +1,8 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-review-on-ready.sh",
+ "runner": "bash",
+ "timeout_s": 120,
+ "covers": [
+  "q-system/.q-system/scripts/pr-review-agent.sh"
+ ]
+}
