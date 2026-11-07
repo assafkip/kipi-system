@@ -2,6 +2,36 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.31.0] - 2026-11-06
+
+### Fixed - `gates run` exited 0 when registered gates existed and none ran (ASK-3822)
+
+ASK-1038 added a WARN line for an empty executed set and kept exit 0. No caller
+reads a line, so the run still read as green. Measured 2026-11-06: kipi-system's
+registry held 112 rows and 0 of them `regression`, so `gates run` there executed
+nothing and exited 0.
+
+The exit contract of `gates run` is now:
+
+- `0`: every executed gate green and no blocking spillover, or the registry is
+  empty. A fresh repo promised nothing, and the line says "0 gates registered"
+  instead of "all 0 regression gates green".
+- `1`: a gate or the spillover verdict is RED. Red outranks not-run.
+- `2`: gates are registered and 0 executed (every row historical-receipt,
+  retired or external, or every regression row skipped as self-referential).
+  The `[NOT RUN]` line names the count, the lifecycle mix and the
+  `migrate_gate_lifecycle.py` command that marks the gates that still protect
+  something.
+
+Repo action on upgrade: a repo whose registry has no `regression` row now gets
+exit 2 from `gates run` until its live gates are classified. Minor bump, not
+patch, for that reason (pre-1.0, so the minor carries the contract change).
+
+### Gap in this file
+
+Releases 0.22.1 through 0.30.23 were not recorded here. Their history is
+`git log -- plugins/prd-os`.
+
 ## [0.22.0] - 2026-08-05
 
 ### Fixed - archive was scoped to the whole fleet's backlog, so it was unreachable
