@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-06
 **Trigger:** the 3-round Codex cap (iteration-speed rule 6) on kipi-system PR #615, ASK-3685
-**Surface-fix commit:** pending (round-3 finding handed to a fresh Sana agent)
-**Structural-fix commit:** pending
+**Surface-fix commit:** fc10fb6c (the round-3 `cd` input, red then green)
+**Structural-fix commit:** fc10fb6c (one canonical spelling earns path identity; the bare-relative branch is gone)
 
 ## What happened
 
@@ -37,7 +37,9 @@ The merge had no test of instance-owned hooks at all before this PR. Its tests o
 
 - Old vs new merge over all 13 registered instances that have a settings.json: 0 merged hook sets differ (measured this session), so no live instance is affected by rounds 1 to 3.
 - `test-settings-merge.sh` and `test-apply-claude-changes.sh` (146/0) are green on branch head 44b66a8c.
-- The round-3 input is not yet a test. It stays unverified until the handoff agent adds it red, then green.
+- Round 4 (handoff agent, fc10fb6c): the round-3 input and a 20-row grammar table were added to test-settings-merge.sh. Red on 0f1f7536: the merge kept 2 token-guards, and 12 of 14 out-of-grammar spellings got path identity. Two of those were doubling routes no review had named: `$CLAUDE_PROJECT_DIR//q-system/...` and `$CLAUDE_PROJECT_DIR/$SUB/...`. Green on fc10fb6c, 6 of 6 blocks; test-apply-claude-changes.sh 146 passed, 0 failed.
+- mutate.py, 5 of 5 KILLED, each applied once with a moved digest and restored: the `cd` check off, `cd` dropped from the word set, the anchor-write check off, a leading slash allowed, the path charset opened.
+- Fleet re-measure on fc10fb6c, in memory only: 14 registered instances have a settings.json (13 when the RCA was opened). Old vs new merge differ in 0 of them. All 17 live path-identity hooks keep it, and every one uses the canonical spelling.
 
 ## Contributing factors
 
@@ -46,8 +48,8 @@ The merge had no test of instance-owned hooks at all before this PR. Its tests o
 
 ## Fixes shipped
 
-- Surface fix: pending. Handed to a fresh Sana agent with the round-3 input.
-- Structural fix: pending. Recommended shape: path identity ONLY for one canonical form, a token anchored on `$CLAUDE_PROJECT_DIR/` in a command with no `cd`; every other spelling keeps basename identity (fails toward dedup).
+- Surface fix (fc10fb6c): the round-3 spelling now dedupes, because a relative path never earns path identity.
+- Structural fix (fc10fb6c): the parser accepts one spelling and refuses the rest. Path identity needs a token that starts with `$CLAUDE_PROJECT_DIR/` or `${CLAUDE_PROJECT_DIR}/` and goes on in plain path characters. It also needs a command that never moves the working directory (cd, pushd, popd), never runs text as code in the shell (source, ., eval), and only reads CLAUDE_PROJECT_DIR. Anything else keeps basename identity and fails toward dedup. This is narrower than the handoff's recommendation, which restricted only the anchor and `cd`.
 
 ## Recurrence
 
@@ -56,9 +58,9 @@ No earlier RCA in this directory covers hook identity in kipi-settings-merge.py.
 
 ## Action items
 
-- [ ] Add the round-3 `cd` input to test-settings-merge.sh, show it red — owner: Sana (handoff agent) — type: test
-- [ ] Narrow path identity to the canonical `$CLAUDE_PROJECT_DIR/<rel>` form with no `cd`; drop the bare-relative branch — owner: Sana (handoff agent) — type: code
-- [ ] Run Codex round 4 on PR #615 from a fresh agent; merge only on a clean verdict — owner: Sana (handoff agent) — type: process
+- [x] Add the round-3 `cd` input to test-settings-merge.sh, show it red; owner: Sana (handoff agent); type: test
+- [x] Narrow path identity to the canonical `$CLAUDE_PROJECT_DIR/<rel>` form with no `cd`; drop the bare-relative branch; owner: Sana (handoff agent); type: code
+- [ ] Run Codex round 4 on PR #615 from a fresh agent; merge only on a clean verdict; owner: Sana (handoff agent); type: process
 
 ## Lessons
 
