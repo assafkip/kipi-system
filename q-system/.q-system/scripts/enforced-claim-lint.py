@@ -1032,7 +1032,13 @@ def _advisory_under_marker(entry, idx, path, root):
     # SKELETON-OWNED: the shipped skeleton projection names THIS rule as carrying
     # THIS ref. Only then may an id the local ledger never saw be judged by the
     # skeleton's answer (ASK-3885).
+    #
+    # NEVER IN THE SKELETON ITSELF. There the local ledger IS the owning ledger,
+    # so an id it has no row for is invented, not foreign. The first cut honoured
+    # the shipped file there too, and a fabricated ref listed in it passed --all on
+    # the machine that authors commits (PR #619 review round 1, major, repro'd).
     skeleton_owned = (skeleton is not None and rule_rel is not None
+                      and not is_skeleton(root)
                       and ref in skeleton[1].get(rule_rel, []))
     if spillover_ledger_present(root):
         live = spillover_statuses(root).get(ref, "absent")
@@ -1049,18 +1055,6 @@ def _advisory_under_marker(entry, idx, path, root):
                 "re-sync it (--sync-marker-refs) so a fresh clone checks the "
                 "same fact this one does."
                 % (idx, ref, live, MARKER_REFS_REL, tracked[ref]))]
-        # The shipped projection drifts the same way, and only where the ledger
-        # KNOWS the id: in the skeleton. An instance ledger never has a row for a
-        # skeleton id, so this cannot misfire there.
-        if (skeleton is not None and live != "absent" and ref in skeleton[0]
-                and skeleton[0][ref] != live):
-            return [Violation(
-                11, path,
-                "entry %d names marker_removal_ref %r, which the ledger reports "
-                "as %s while %s records %r. The shipped skeleton projection is "
-                "stale; re-sync it (--sync-marker-refs) before every instance "
-                "inherits the wrong fact."
-                % (idx, ref, live, SKELETON_REFS_REL, skeleton[0][ref]))]
         local, source = live, "the ledger"
     else:
         # No live ledger: this is a clean checkout / CI / a fresh instance. Fall
@@ -1826,6 +1820,80 @@ def is_rule_file(path):
     return "/.claude/rules/" in p
 
 
+def marker_refs_by_rule(root):
+    """{repo-relative rule path: sorted spillover ids its entries name}.
+
+    The ONE derivation of which rule carries which ref, read by the generator and
+    by check_shipped_projection, so the file and its check cannot disagree about
+    what the tree says.
+    """
+    out = {}
+    rules = Path(root) / ".claude" / "rules"
+    for f in sorted(rules.rglob("*.md")):
+        try:
+            text = f.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for block in scan_blocks(text)[1]:
+            try:
+                entries = json.loads(block, object_pairs_hook=_no_duplicate_keys)
+            except ValueError:
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                ref = entry.get("marker_removal_ref")
+                if isinstance(ref, str) and _SPILLOVER_ID_RE.match(ref):
+                    out.setdefault(f.relative_to(root).as_posix(), set()).add(ref)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def check_shipped_projection(root):
+    """In the skeleton, the shipped projection must be what the generator writes.
+
+    Every instance trusts this file for the skeleton's ids, and nothing else
+    ratcheted it (PR #619 review round 1). STRUCTURE is checked everywhere the
+    skeleton is checked out, CI and fresh clones included, because it needs only
+    the rule files: a hand-added row naming an instance-only rule path would
+    otherwise ship and let that instance rule borrow the id. STATUSES are checked
+    where the live ledger exists, the same boundary as the local projection.
+    Instances skip this: their copy is the skeleton's, overwritten every sync.
+    """
+    if not is_skeleton(root):
+        return []
+    expected = marker_refs_by_rule(root)
+    shipped = _skeleton_marker_refs(root)
+    if shipped is None:
+        if not expected:
+            return []
+        return [Violation(
+            11, SKELETON_REFS_REL,
+            "skeleton rules name %d marker_removal_ref id(s) but %s is missing or "
+            "unreadable, so every instance would judge them against a ledger that "
+            "never saw them. Run --sync-marker-refs where the ledger is."
+            % (sum(len(v) for v in expected.values()), SKELETON_REFS_REL))]
+    refs, rules = shipped
+    want_ids = {ref for ids in expected.values() for ref in ids}
+    if {k: sorted(v) for k, v in rules.items()} != expected or set(refs) != want_ids:
+        return [Violation(
+            11, SKELETON_REFS_REL,
+            "%s does not match the rules in this tree (rule -> ref map or id set "
+            "differs). It is GENERATED; re-run --sync-marker-refs instead of editing "
+            "it." % SKELETON_REFS_REL)]
+    if spillover_ledger_present(root):
+        statuses = spillover_statuses(root)
+        stale = sorted(r for r, st in refs.items() if st != statuses.get(r, "absent"))
+        if stale:
+            return [Violation(
+                11, SKELETON_REFS_REL,
+                "%s is stale for %s: the ledger disagrees. Re-sync it "
+                "(--sync-marker-refs) before every instance inherits the wrong fact."
+                % (SKELETON_REFS_REL, ", ".join(stale)))]
+    return []
+
+
 def sync_marker_refs(root):
     """Regenerate MARKER_REFS_REL from the live ledger. Requires the ledger.
 
@@ -1841,32 +1909,12 @@ def sync_marker_refs(root):
             % SPILLOVER_REL)
         return 1
     statuses = spillover_statuses(root)
-    refs = {}
-    by_rule = {}
-    rules = Path(root) / ".claude" / "rules"
-    for f in sorted(rules.rglob("*.md")):
-        try:
-            text = f.read_text()
-        except OSError:
-            continue
-        for block in scan_blocks(text)[1]:
-            try:
-                entries = json.loads(block, object_pairs_hook=_no_duplicate_keys)
-            except ValueError:
-                continue
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                ref = entry.get("marker_removal_ref")
-                if isinstance(ref, str) and _SPILLOVER_ID_RE.match(ref):
-                    # 'absent', not 'closed', for an id this ledger has no row
-                    # for: a skeleton rule carries the skeleton's ids into every
-                    # instance, and calling them closed there was false (ASK-3885).
-                    refs[ref] = statuses.get(ref, "absent")
-                    rel = f.relative_to(root).as_posix()
-                    by_rule.setdefault(rel, set()).add(ref)
+    by_rule = marker_refs_by_rule(root)
+    # 'absent', not 'closed', for an id this ledger has no row for: a skeleton
+    # rule carries the skeleton's ids into every instance, and calling them closed
+    # there was false (ASK-3885).
+    refs = {ref: statuses.get(ref, "absent")
+            for ids in by_rule.values() for ref in ids}
     out = {
         "_comment": (
             "GENERATED by enforced-claim-lint.py --sync-marker-refs. Ids and "
@@ -1892,7 +1940,7 @@ def sync_marker_refs(root):
                 "rule names each, so an instance judges those refs by the ledger "
                 "that owns them. Ids and statuses only, no descriptions."),
             "refs": dict(sorted(refs.items())),
-            "rules": {k: sorted(v) for k, v in sorted(by_rule.items())},
+            "rules": dict(sorted(by_rule.items())),
         }
         dest = os.path.join(str(root), SKELETON_REFS_REL)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -1940,6 +1988,7 @@ def main():
                     "baseline gained %d entry(ies) since HEAD: %s. It may only "
                     "shrink. A marker that needs excusing is new work, not "
                     "pre-existing debt." % (len(grew), ", ".join(sorted(grew)[:3]))))
+        violations += check_shipped_projection(root)
         excused = set()
         for f in sorted(rules.rglob("*.md")):
             for v in lint_file(f, strict=True):

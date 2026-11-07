@@ -1845,3 +1845,77 @@ def test_stale_skeleton_projection_is_caught_in_the_skeleton(tmp_path):
     r = _run_all(tmp_path)
     assert r.returncode == 1, r.stdout + r.stderr
     assert "stale" in r.stderr
+
+
+# --- round 1 review of PR #619: the skeleton must not borrow from itself ---------
+#
+# In the skeleton the local ledger IS the owning ledger, so an id it has no row
+# for is invented, not foreign. The first cut honoured the shipped projection
+# there too, and a fabricated ref listed in that hand-editable file passed --all on
+# the machine that authors commits (claude review round 1, major, with repro).
+
+def _skeleton_tree_with_fake(tmp_path, ledger=True):
+    prd = _advisory_tree(tmp_path, ref="sp-deadbeef00")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    if ledger:
+        _instance_ledger(prd, [{"id": "sp-0ther0", "status": "open"}])
+    _projection(prd, {"sp-deadbeef00": "absent"} if ledger else {})
+    _skeleton_projection(tmp_path, {"sp-deadbeef00": "open"},
+                         {".claude/rules/fixture.md": ["sp-deadbeef00"]})
+    return prd
+
+
+def test_skeleton_does_not_honour_its_own_projection_for_an_invented_id(tmp_path):
+    """THE REVIEWER'S REPRO. Skeleton, live ledger present, no row for the id, the
+    shipped file says open: refused."""
+    _skeleton_tree_with_fake(tmp_path, ledger=True)
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "C11" in r.stderr
+
+
+def test_skeleton_fresh_clone_does_not_honour_its_own_projection(tmp_path):
+    """Same in a fresh clone of the skeleton (no ledger): the local projection does
+    not record the id open, and the shipped file is not a second chance."""
+    _skeleton_tree_with_fake(tmp_path, ledger=False)
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "C11" in r.stderr
+
+
+def test_skeleton_shipped_projection_must_match_its_rules(tmp_path):
+    """Nothing ratcheted the shipped file. In the skeleton --all now derives the
+    rule -> ref map from the tree and refuses a file that disagrees, so a hand-added
+    row cannot ship to every instance (it would let an instance-only rule of that
+    path borrow the id)."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _projection(prd, {"sp-abc123": "open"})
+    _skeleton_projection(tmp_path, {"sp-abc123": "open", "sp-fa4e00": "open"},
+                         {".claude/rules/fixture.md": ["sp-abc123"],
+                          ".claude/rules/instance-only.md": ["sp-fa4e00"]})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "does not match" in r.stderr, r.stderr
+
+
+def test_skeleton_missing_shipped_projection_is_refused(tmp_path):
+    """A skeleton whose rules name refs but ships no projection leaves every
+    instance to judge those refs against a ledger that never saw them."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _projection(prd, {"sp-abc123": "open"})
+    r = _run_all(tmp_path)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "skeleton-marker-refs.json" in r.stderr, r.stderr
+
+
+def test_skeleton_generated_projection_passes(tmp_path):
+    """CONTROL for the three refusals above: the generator's own output, with the
+    ledger it was generated from, passes --all."""
+    prd = _advisory_tree(tmp_path, ref="sp-abc123")
+    (tmp_path / "instance-registry.json").write_text("{}\n")
+    _instance_ledger(prd, [{"id": "sp-abc123", "status": "open"}])
+    assert _sync(tmp_path).returncode == 0
+    r = _run_all(tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr

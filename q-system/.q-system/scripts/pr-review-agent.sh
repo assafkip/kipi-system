@@ -1608,6 +1608,10 @@ record = {"pr": int(pr), "issue": issue, "verdict": verdict,
            "ts": ts}
 # Written ONLY on a delta round (ASK-3884): absent means this round read the
 # whole PR, so every record a full review writes keeps its exact old shape.
+# RECORD-ONLY, DELIBERATELY: no gate reads it. Founder rule 11 makes a delta
+# approval on the head the same gate as a full one, so a reader that treated the
+# two differently would be the bug. It is the audit trail of what this round
+# covered, next to the status description that says the same out loud.
 if review_base:
     record["review_base"] = review_base
 json.dump(record, open(out, "w"), indent=2)
