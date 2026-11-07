@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from config import Config, ConfigError, load as load_config  # noqa: E402
 from concurrency import ConcurrencyError, assert_no_active_issue  # noqa: E402
 import runtime_receipt  # noqa: E402
+import ledger_fragments  # noqa: E402
 
 
 PRD_STATES = ("idea", "draft", "in-review", "approved", "archived")
@@ -206,9 +207,9 @@ def _depends_on_gate(cfg: Config, spec_path) -> tuple[int, str]:
         return 0, ""
     import subprocess as _subprocess
     gates = _gates_path(cfg)
-    if not gates.is_file():
+    if not ledger_fragments.has_rows(gates):
         return 0, ""  # no registry yet — nothing to gate on
-    for raw in gates.read_text().splitlines():
+    for _src, _n, raw in ledger_fragments.iter_lines(gates):
         line = raw.strip()
         if not line:
             continue
@@ -811,19 +812,16 @@ DEFERRED_WARN_DAYS = 30
 
 def _load_receipt_issue_ids(path: Path) -> set[str]:
     ids: set[str] = set()
-    if not path.is_file():
-        return ids
-    with path.open() as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(rec, dict) and isinstance(rec.get("issue_id"), str):
-                ids.add(rec["issue_id"])
+    for _src, _n, raw in ledger_fragments.iter_lines(path):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict) and isinstance(rec.get("issue_id"), str):
+            ids.add(rec["issue_id"])
     return ids
 
 
@@ -835,38 +833,35 @@ def _load_receipts_for_prd(path: Path, prd_id: str) -> set[str]:
     must not satisfy coverage because its old close row still exists.
     """
     latest: dict[str, tuple[datetime, bool]] = {}
-    if not path.is_file():
-        return set()
-    with path.open() as fh:
-        for raw in fh:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict):
-                continue
-            if rec.get("prd_id") != prd_id:
-                continue
-            fid = rec.get("finding_id")
-            if not (isinstance(fid, str) and fid):
-                continue
-            if rec.get("reopened_at"):
-                ts, is_close = _parse_iso_z(rec["reopened_at"]), False
-            elif rec.get("closed_at"):
-                ts, is_close = _parse_iso_z(rec["closed_at"]), True
-            else:
-                continue
-            if ts is None:
-                continue  # an unparseable timestamp proves nothing either way
-            prev = latest.get(fid)
-            # ASK-988 round 6: identical timestamps tie-break to REOPEN, never
-            # to physical ledger order (see accept-rate.py for the reasoning).
-            if (prev is None or ts > prev[0]
-                    or (ts == prev[0] and not is_close)):
-                latest[fid] = (ts, is_close)
+    for _src, _n, raw in ledger_fragments.iter_lines(path):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("prd_id") != prd_id:
+            continue
+        fid = rec.get("finding_id")
+        if not (isinstance(fid, str) and fid):
+            continue
+        if rec.get("reopened_at"):
+            ts, is_close = _parse_iso_z(rec["reopened_at"]), False
+        elif rec.get("closed_at"):
+            ts, is_close = _parse_iso_z(rec["closed_at"]), True
+        else:
+            continue
+        if ts is None:
+            continue  # an unparseable timestamp proves nothing either way
+        prev = latest.get(fid)
+        # ASK-988 round 6: identical timestamps tie-break to REOPEN, never
+        # to physical ledger order (see accept-rate.py for the reasoning).
+        if (prev is None or ts > prev[0]
+                or (ts == prev[0] and not is_close)):
+            latest[fid] = (ts, is_close)
     return {fid for fid, (_ts, is_close) in latest.items() if is_close}
 
 
@@ -1094,7 +1089,8 @@ def _archive_coverage_gate(cfg: Config, state: dict) -> tuple[int, str]:
         for fid in missing:
             lines.append(f"  - {fid}")
         lines.append(
-            f"(receipts source: {_relpath(cfg, cfg.receipts_path)}; "
+            f"(receipts source: {_relpath(cfg, cfg.receipts_path)} plus "
+            f"{_relpath(cfg, ledger_fragments.fragment_dir(cfg.receipts_path))}/; "
             "close each issue with `/issue-closeout` to record a receipt.)"
         )
         return 2, "\n".join(lines) + "\n"
@@ -1276,8 +1272,10 @@ def gate_register(
     protects: str | None = None,
 ) -> dict:
     """Idempotent append: gate_id = <issue_id>-<sha256(command)[:8]>; an
-    existing gate_id is a no-op. Single-line write + flush (atomic at line
-    granularity); raises on I/O failure so the CALLER (dsse close) aborts."""
+    existing gate_id (legacy file or fragment) is a no-op. One row, one fragment
+    file, through ledger_fragments (ASK-3829: 93 of chief's merged PRs touched
+    gates.jsonl, and parallel closes conflicted on it); raises on I/O failure so
+    the CALLER (dsse close) aborts."""
     import hashlib as _hashlib
     if lifecycle not in GATE_LIFECYCLES:
         raise ValueError(
@@ -1286,20 +1284,19 @@ def gate_register(
         )
     gate_id = f"{issue_id}-{_hashlib.sha256(command.encode()).hexdigest()[:8]}"
     path = _gates_path(cfg)
-    if path.is_file():
-        for raw in path.read_text().splitlines():
-            try:
-                existing = json.loads(raw)
-                if existing.get("gate_id") == gate_id:
-                    existing_lifecycle = _gate_lifecycle(existing)
-                    if existing_lifecycle != lifecycle:
-                        raise ValueError(
-                            f"gate {gate_id!r} already registered as "
-                            f"{existing_lifecycle!r}, not {lifecycle!r}"
-                        )
-                    return {"gate_id": gate_id, "registered": False}
-            except json.JSONDecodeError:
-                continue
+    for _src, _n, raw in ledger_fragments.iter_lines(path):
+        try:
+            existing = json.loads(raw)
+            if existing.get("gate_id") == gate_id:
+                existing_lifecycle = _gate_lifecycle(existing)
+                if existing_lifecycle != lifecycle:
+                    raise ValueError(
+                        f"gate {gate_id!r} already registered as "
+                        f"{existing_lifecycle!r}, not {lifecycle!r}"
+                    )
+                return {"gate_id": gate_id, "registered": False}
+        except json.JSONDecodeError:
+            continue
     # AFTER the idempotency lookup, never before: gate_id is issue_id+sha256(command),
     # so a RE-CLOSE resolves to an existing row and must be a no-op. Validating first
     # turned that into a raise, and issue_runner converts any raise into `cannot close`,
@@ -1314,10 +1311,7 @@ def gate_register(
     protects = (protects if protects is not None else _gate_protects(cfg, issue_id)).strip()
     if protects:
         record["protects"] = protects
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
-        fh.write(json.dumps(record) + "\n")
-        fh.flush()
+    ledger_fragments.append_line(path, json.dumps(record), kind="gate")
     return {"gate_id": gate_id, "registered": True}
 
 
@@ -3036,22 +3030,21 @@ def cmd_gates(cfg: Config, args) -> int:
     import re as _re
     path = _gates_path(cfg)
     records = []
-    if path.is_file():
-        for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                sys.stderr.write(f"{path}:{lineno}: invalid JSONL; fix before running gates\n")
-                return 2
-            try:
-                record["lifecycle"] = _gate_lifecycle(record)
-            except ValueError as exc:
-                sys.stderr.write(f"{path}:{lineno}: {exc}\n")
-                return 2
-            records.append(record)
+    for source, lineno, raw in ledger_fragments.iter_lines(path):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            sys.stderr.write(f"{source}:{lineno}: invalid JSONL; fix before running gates\n")
+            return 2
+        try:
+            record["lifecycle"] = _gate_lifecycle(record)
+        except ValueError as exc:
+            sys.stderr.write(f"{source}:{lineno}: {exc}\n")
+            return 2
+        records.append(record)
     if args.gates_cmd == "list":
         if args.lifecycle:
             records = [

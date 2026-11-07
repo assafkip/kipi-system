@@ -275,6 +275,16 @@ def section_unknown():
         check("required-check: reason names the required check",
               "adds or removes a required check" in out, out[:400])
 
+    # ASK-3829: a registered gate is now one fragment file under .prd-os/gates.d/.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_sandbox(tmp)
+        rel = ".prd-os/gates.d/20261106T000000000000Z-gate-0123456789abcdef.jsonl"
+        code, out = run_tier(produce_diff(
+            root, rel, "", '{"gate_id": "x-1", "command": "true", "lifecycle": "regression"}\n'),
+            root)
+        check("required-check: a gate fragment ESCALATES as a required check",
+              code == EXIT_ESCALATE and "adds or removes a required check" in out, out[:400])
+
     # One unknown file poisons an otherwise self-safe change.
     with tempfile.TemporaryDirectory() as tmp:
         root = make_sandbox(tmp)

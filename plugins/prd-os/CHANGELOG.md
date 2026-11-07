@@ -2,6 +2,34 @@
 
 All notable changes to the `prd-os` plugin are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow semantic versioning; see `README.md` for the bump policy and the distinction between plugin version and config schema version.
 
+## [0.32.0] - 2026-11-06
+
+### Changed - receipts and gates are one file per row, so parallel closes merge clean (ASK-3829)
+
+Every close appended a line to `.prd-os/receipts.jsonl` and `.prd-os/gates.jsonl`.
+GitHub ignores the `merge=union` driver, so two PRs that each closed an issue were
+CONFLICTING. October 2026: 19 of 20 approved kipi-system PRs on receipts.jsonl.
+chief since 2026-09-15: 96 merged PRs touched receipts.jsonl and 93 touched gates.jsonl.
+
+- New `scripts/ledger_fragments.py`, the one write path and the one reader. A row
+  lands in `<ledger>.d/<UTC microseconds>Z-<kind>-<sha256[:16]>.jsonl`. The fold
+  reads the legacy file first, in file order, then every fragment in name order.
+- Writers keep their bytes: `gate_register` here, `_append_receipt` in kipi-dsse.
+- Readers fold: `_load_receipt_issue_ids`, `_load_receipts_for_prd`,
+  `_depends_on_gate`, `gate_register`'s dedup, `gates list/run` (an error names the
+  fragment file), and judgment_compiler's remediation rows and receipt refs.
+- Legacy files are never rewritten, moved or deleted. No migration ships.
+- One fallback: when git tracks the legacy file and the repo's .gitignore would
+  ignore a fragment, the row goes to the legacy file and stderr says how to switch.
+
+kipi-dsse 0.16.0 ships the same module, byte-identical (a test pins the copies),
+and two close fixes:
+
+- `close` finds prd-os beside itself in the source, marketplace-clone and
+  install-cache layouts, not only under `<repo>/plugins/` (sp-93f41220, chief).
+- `verify` and mutant runs load a pytest plugin that lifts verbosity to -1 when
+  it is lower, so a `-q` check under `addopts = -q` prints its count (sp-dae00232).
+
 ## [0.31.0] - 2026-11-06
 
 ### Fixed - `gates run` exited 0 when registered gates existed and none ran (ASK-3822)

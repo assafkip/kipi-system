@@ -37,12 +37,21 @@ Exit 0 clean, exit 1 on any violation (lefthook pre-commit contract).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
 import sys
 
 LEDGER = ".prd-os/receipts.jsonl"
+# ASK-3829: since the fragment switch every close writes ONE new file here instead of a line in
+# LEDGER (GitHub ignores merge=union, so parallel closes conflicted on LEDGER). Same public repo,
+# same content rule, plus: the exact name ledger_fragments.append_line gives a receipt, a name
+# hash that matches the bytes, exactly one record, and write-once. lefthook's blocked-paths lets
+# exactly this name pattern through, so this is the checker for that exception too.
+FRAGMENT_PREFIX = ".prd-os/receipts.d/"
+FRAGMENT_NAME_RE = re.compile(
+    r"^\.prd-os/receipts\.d/\d{8}T\d{12}Z-receipt-(?P<sha>[0-9a-f]{16})\.jsonl$")
 
 # Every key the producer emits. Anything else is drift and must be reviewed
 # before it reaches a public repo.
@@ -141,8 +150,46 @@ def check_value(where: str, key: str, value) -> list[str]:
     return problems
 
 
-def check_record(number: int, record) -> list[str]:
-    where = f"{LEDGER} line {number}"
+def staged_fragments() -> list[tuple[str, str]]:
+    """(status letter, path) for every staged change under the fragment directory."""
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-status", "--diff-filter=ACMRT"],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[-1].startswith(FRAGMENT_PREFIX):
+            rows.append((parts[0][:1], parts[-1]))
+    return rows
+
+
+def check_fragment(status: str, path: str) -> list[str]:
+    if status != "A":
+        return [f"{path}: a receipt fragment is written once and never edited, renamed or "
+                f"copied (git status {status}); write a new receipt instead"]
+    m = FRAGMENT_NAME_RE.match(path)
+    if not m:
+        return [f"{path}: not a name ledger_fragments writes "
+                "(.prd-os/receipts.d/<YYYYmmddTHHMMSSffffffZ>-receipt-<16 hex>.jsonl)"]
+    blob = subprocess.run(["git", "show", f":{path}"], capture_output=True, check=False)
+    if blob.returncode != 0:
+        return [f"{path}: staged but unreadable"]
+    if hashlib.sha256(blob.stdout).hexdigest()[:16] != m.group("sha"):
+        return [f"{path}: the name's hash does not match its bytes, so it was edited after "
+                "it was written"]
+    lines = [line for line in blob.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return [f"{path}: holds {len(lines)} records; a fragment holds exactly one"]
+    try:
+        record = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        return [f"{path}: not valid JSON ({exc})"]
+    return check_record(1, record, source=path)
+
+
+def check_record(number: int, record, source: str = LEDGER) -> list[str]:
+    where = f"{source} line {number}"
     if not isinstance(record, dict):
         return [f"{where}: expected a JSON object, got {type(record).__name__}"]
     problems: list[str] = []
@@ -170,10 +217,13 @@ def check_record(number: int, record) -> list[str]:
 
 def main() -> int:
     lines = staged_ledger_lines()
-    if lines is None:
+    fragments = staged_fragments()
+    if lines is None and not fragments:
         return 0  # ledger not part of this commit
     problems: list[str] = []
-    for number, line in enumerate(lines, start=1):
+    for status, path in fragments:
+        problems.extend(check_fragment(status, path))
+    for number, line in enumerate(lines or [], start=1):
         if not line.strip():
             continue
         try:
@@ -189,9 +239,9 @@ def main() -> int:
 
     if problems:
         sys.stderr.write(
-            "BLOCK: .prd-os/receipts.jsonl is the one .jsonl allowed past "
-            "blocked-paths, and it is committed to a PUBLIC repo. It failed its "
-            "content check:\n\n"
+            "BLOCK: .prd-os/receipts.jsonl and its .prd-os/receipts.d/ fragments are "
+            "the .jsonl paths allowed past blocked-paths, and they are committed to a "
+            "PUBLIC repo. This commit failed their content check:\n\n"
         )
         for problem in problems[:40]:
             sys.stderr.write(f"  - {problem}\n")
