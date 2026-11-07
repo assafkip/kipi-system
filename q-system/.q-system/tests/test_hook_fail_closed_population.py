@@ -79,7 +79,7 @@ SECURITY = {
 # ("lints stay as they are"): a lint failing open costs one bad file landing.
 # Moving a name from here to SECURITY is how the tail gets picked up.
 NOT_SECURITY = {
-    "token-guard.py", "read-first-gate.py", "miyo-research-gate.py", "design-chain-gate.py",
+    "token-guard.py", "read-first-gate.py", "agent-brief-one-job-guard.py", "miyo-research-gate.py", "design-chain-gate.py",
     "design-engine-door.py", "enforced-claim-lint.py", "voice-lint.py",
     "voice-substance-lint.py", "voiceloop-band-lint.py", "memory-confidence-validator.py",
     "consumer-parity-check.py", "audhd-lint.py", "batch-uniformity-lint.py",

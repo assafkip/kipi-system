@@ -8,7 +8,10 @@ and state directories are read from `.prd-os/config.json` when present; when
 absent, defaults are used that work for any generic instance.
 
 Subcommands:
-  load <issue-id>          Load spec, write active-issue state, print JSON summary
+  load <issue-id> [--age-override REASON]
+                           Load spec, write active-issue state, print JSON summary.
+                           Refuses (exit 2, aging list on stderr) while the PRD's oldest
+                           work ages (ASK-3826, work_item_age.py). The override is logged.
   status                   Print active issue + receipt state
   scope <path>             Exit 0 if path is in allowed_files (or carve-out), exit 2 otherwise
   gate                     Exit 0 if stop is allowed, exit 2 if gate blocks
@@ -26,8 +29,11 @@ Subcommands:
   close                    Verify all receipts; flip status=closed; flush amendments to spec footer; clear state
   clear                    Clear active state (for abandoned work)
   allowed-files            Print snapshotted allowed_files as JSON array
-  record-review <kind>     CLAIM a review slot (standard|adversarial) under cap.
-                           Writes no receipt: the review has not run yet.
+  record-review <kind> [--dry]
+                           CLAIM a review slot (standard|adversarial) under the cap
+                           the diff's size class earns (check_budget.DEPTH).
+                           Writes no receipt: the review has not run yet. --dry
+                           prints the class and caps and claims nothing.
   complete-review <kind> --verdict STR --evidence-file PATH
                            Record a FINISHED review: hashes the reviewer's own
                            output, seals it to the issue, and writes `reviewed`
@@ -61,11 +67,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
+import runtime_receipt  # noqa: E402
+import check_budget  # noqa: E402
+import work_item_age  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
 REVIEW_KINDS = ("standard", "adversarial")
-REVIEW_CAP_DEFAULTS = {"standard": 2, "adversarial": 1}
+# The per-kind caps live in check_budget.DEPTH, keyed by the diff's ASK-1749 size class
+# (ASK-3827). They were one fixed {"standard": 2, "adversarial": 1} for every issue.
 REVIEW_CAP_OVERRIDE_ENV = "ISSUE_ALLOW_REVIEW_REPEAT"
 
 CONFIG_RELPATH = ".prd-os/config.json"
@@ -485,6 +495,8 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     except ValueError as exc:
         sys.stderr.write(f"cannot load {args.issue_id}: {exc}\n")
         return 2
+    if _age_gate_refuses(paths, fm.get("id", args.issue_id), getattr(args, "age_override", None)):
+        return 2
     state = {
         "issue_id": fm.get("id", args.issue_id),
         "loaded_at": _now_iso(),
@@ -510,6 +522,54 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         "required_reviews": reviews,
     }, indent=2))
     return 0
+
+
+def _prd_items(paths: Paths) -> list:
+    """Every spec as {id, prd_id, at, status}, read with the runner's own parsers."""
+    items = []
+    for spec in sorted(paths.issues_dir.glob("*.md")) if paths.issues_dir.is_dir() else []:
+        try:
+            text = spec.read_text()
+            fm = _parse_frontmatter(text)
+        except (OSError, ValueError):
+            continue
+        marker = _extract_marker_fields(text) or {}
+        items.append({"id": fm.get("id") or spec.stem, "stem": spec.stem,
+                      "prd_id": marker.get("prd_id"),
+                      "at": work_item_age._ts(marker.get("marker_at")),
+                      "status": str(fm.get("status") or "").strip()})
+    return items
+
+
+def _age_gate_refuses(paths: Paths, issue_id: str, override: str | None) -> bool:
+    """ASK-3826: True (and the aging list on stderr) when this start must be refused."""
+    if override is not None and not override.strip():
+        sys.stderr.write(f"cannot load {issue_id}: {work_item_age.OVERRIDE_FLAG} needs a reason\n")
+        return True
+    blockers, notes = work_item_age.gate(paths.repo_root, paths.receipts_path,
+                                         _prd_items(paths), issue_id, paths.issues_dir)
+    for note in notes:
+        sys.stderr.write(note + "\n")
+    if not blockers:
+        return False
+    listing = "".join(f"  - {b}\n" for b in blockers)
+    if override is None:
+        sys.stderr.write(
+            f"cannot start {issue_id}: its PRD's oldest work comes first (ASK-3826). Aging list:\n"
+            f"{listing}Finish the started items first, and promote each named spillover row to "
+            f"a Linear issue (`spillover-promote.py <id>`). For an item that is obsolete, rerun "
+            f"with {work_item_age.OVERRIDE_FLAG} REASON; every use is logged.\n")
+        return True
+    try:
+        ledger = work_item_age.record_override(paths.repo_root, issue_id, override.strip(),
+                                               blockers, _now_iso())
+    except OSError as exc:
+        sys.stderr.write(f"cannot load {issue_id}: the override could not be logged ({exc}), "
+                         "and an unlogged override is a silent bypass\n")
+        return True
+    sys.stderr.write(f"age gate OVERRIDDEN for {issue_id} ({override.strip()}); logged to "
+                     f"{ledger}. Aging list:\n{listing}")
+    return False
 
 
 def cmd_status(paths: Paths, args: argparse.Namespace) -> int:
@@ -764,10 +824,10 @@ def _review_seal(issue_id: str, completions: dict) -> str:
 # spec date: a date cutoff would have exempted the 25 dc-* specs that produced the scar).
 
 VERIFY_CONTRACT = 2
-REPEAT_MAX = 10
-REPEAT_MIN = 5
+# REPEAT_MIN and REPEAT_MAX were 5 and 10 for every issue. They come from the size class
+# now (check_budget.DEPTH: S 2 and 2, M and L 5 and 10, ASK-3827). The budget is one number.
 REPEAT_BUDGET_S = 1200.0
-# Lower-only test seam: min(REPEAT_BUDGET_S, this). Raising it cannot skip the N < 5 refusal.
+# Lower-only test seam: min(REPEAT_BUDGET_S, this). Raising it cannot skip the minimum.
 REPEAT_BUDGET_ENV = "KIPI_VERIFY_BUDGET_S"
 OBSERVER_DIR = Path(__file__).resolve().parent / "real_path_observer"
 REAL_PATH_LIMITS = ("it sees Python processes only; a child started with PYTHON* variables "
@@ -1104,6 +1164,8 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
                          "not a finite positive number of seconds.\n")
         return 2
     budget = min(REPEAT_BUDGET_S, budget)
+    sized = check_budget.size_class(paths.repo_root)
+    depth = check_budget.depth(sized["class"])
 
     evidence, seen, seconds, outputs = [], {}, {}, {}
     for command in checks:
@@ -1143,12 +1205,13 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
                 "until this mutant fails it, then record the mutant again.")
 
     first = sum(seconds.values())
-    n = min(REPEAT_MAX, int(budget // first)) if first > 0 else REPEAT_MAX
-    if n < REPEAT_MIN:
+    n = min(depth["repeat_max"], int(budget // first)) if first > 0 else depth["repeat_max"]
+    if n < depth["repeat_min"]:
         slowest = max(seconds, key=seconds.get)
         refusals.append(
             f"the required checks take {first:.0f}s a pass, so only {n} run(s) fit the "
-            f"{budget:.0f}s evidence budget and at least {REPEAT_MIN} are needed. Slowest: "
+            f"{budget:.0f}s evidence budget and at least {depth['repeat_min']} are needed "
+            f"(size class {sized['class']}: {sized['reasons'][0]}). Slowest: "
             f"{slowest!r} at {seconds[slowest]:.0f}s. Narrow it to the files this issue changes.")
         green = 0
     else:
@@ -1164,8 +1227,10 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
         "real_path": real,
         "defined_vs_ran": counts,
         "mutants": mutants,
+        # The class is sealed with the count, so close can say which minimum it held n to.
         "repeats": {"green": green, "n": n, "first_pass_seconds": round(first, 2),
-                    "budget_seconds": budget},
+                    "budget_seconds": budget, "size_class": sized["class"],
+                    "repeat_min": depth["repeat_min"]},
     }
     state["verified_green"] = result_green
     if refusals:
@@ -1186,8 +1251,11 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
     return 0
 
 
-def _green_shape_problems(green) -> list[str]:
-    """What close checks on a contract-2 issue: presence and shape, never truth."""
+def _green_shape_problems(green, sized: dict) -> list[str]:
+    """What close checks on a contract-2 issue: presence and shape, never truth.
+
+    The repeat minimum is the one the change earns at CLOSE, not the one sealed at verify:
+    an S verify (2 repeats) on a change that then grew to L must not close on 2."""
     if not isinstance(green, dict):
         return ["no computed green recorded"]
     probs = []
@@ -1199,9 +1267,13 @@ def _green_shape_problems(green) -> list[str]:
                                            for r in counts):
         probs.append("defined_vs_ran missing or refused")
     rep = green.get("repeats")
-    if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < REPEAT_MIN
+    floor = check_budget.depth(sized["class"])["repeat_min"]
+    if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < floor
             or rep.get("green") != rep.get("n")):
-        probs.append("repeats missing, under the minimum, or not all green")
+        # The class's reason rides along: "size class L" alone sent an agent with one
+        # uncommitted patch to re-verify instead of commit (PR #620 review, major 1).
+        probs.append(f"repeats missing, under the minimum of {floor} for size class "
+                     f"{sized['class']} ({sized['reasons'][0]}), or not all green")
     return probs
 
 
@@ -1431,11 +1503,14 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     if not issue_id:
         sys.stderr.write("no active issue\n")
         return 2
+    # ASK-3827: the class of the change being CLOSED. A receipt earned while the change was
+    # S does not cover it after it grew, so both the repeats and the review kinds read this.
+    sized = check_budget.size_class(paths.repo_root)
     if state.get("verify_contract") == VERIFY_CONTRACT and state["receipts"].get("verified"):
         # ASK-1810. First, so an edited green is named for what it is rather than hidden
         # behind a missing-receipt message.
         green = state.get("verified_green")
-        probs = _green_shape_problems(green)
+        probs = _green_shape_problems(green, sized)
         if probs:
             sys.stderr.write(f"cannot close {issue_id}: the verified receipt's computed evidence is not whole "
                              f"({'; '.join(probs)}). {GREEN_SHAPE_TEXT}. Re-run "
@@ -1444,6 +1519,40 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         if state.get("verified_seal") != _evidence_seal(issue_id, state.get("verified_evidence") or [], green):
             sys.stderr.write(f"cannot close {issue_id}: the verified receipt does not match its "
                              f"evidence. {GREEN_SHAPE_TEXT}. Re-run `issue_runner.py verify`.\n")
+            return 2
+    # After the ASK-1810 check on purpose: a tampered green is named first.
+    # RUNTIME RECEIPT (RCA 2026-10-02 / 2026-10-06): an issue whose title claims
+    # a gate, cap, meter, budget, ledger, guard, limit, rate or quota fix closed on
+    # source that read correctly and had never fired on the real caller. It needs a
+    # receipt of a real call; runtime_receipt.py is mirrored from prd-os.
+    runtime_ref = None
+    try:
+        _p, _fm, _t = _load_spec(paths, issue_id)
+        terms = runtime_receipt.claims_runtime_control(str(_fm.get("title") or ""))
+    except FileNotFoundError:
+        terms = []
+    if terms:
+        # Bound to THIS issue: it names one of the issue's allowed files, it ran
+        # after the issue was loaded, and no other issue's close row holds it
+        # (PR #610 review, major 1: one `date` capture closed any issue).
+        used: dict[str, str] = {}
+        if paths.receipts_path.is_file():
+            for line in paths.receipts_path.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                ref = row.get("runtime_receipt") if isinstance(row, dict) else None
+                if isinstance(ref, dict) and ref.get("sha256") and row.get("issue_id") != issue_id:
+                    used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
+        try:
+            runtime_ref = runtime_receipt.load_receipt(
+                getattr(args, "runtime_receipt", None), terms,
+                repo_root=paths.repo_root,
+                bind_to=list(state.get("allowed_files_snapshot") or _fm.get("allowed_files") or []),
+                not_before=state.get("loaded_at"), used=used)
+        except runtime_receipt.ReceiptError as exc:
+            sys.stderr.write(f"cannot close {issue_id}: {exc}\n")
             return 2
     missing = [k for k in RECEIPT_FIELDS if not state["receipts"].get(k)]
     if missing:
@@ -1532,11 +1641,13 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     # close trusts a field anyone with filesystem access can type.
     if state["receipts"].get("reviewed"):
         completions = state.get("review_completions") or {}
-        missing = [k for k in REVIEW_KINDS if k not in completions]
+        missing = [k for k in _required_review_kinds(sized) if k not in completions]
         if missing:
             sys.stderr.write(
                 f"cannot close {issue_id}: the reviewed receipt is set but "
-                f"{missing} never completed.\n")
+                f"{missing} never completed, and size class {sized['class']} "
+                f"({sized['reasons'][0]}) needs it. If the change grew after its "
+                "review, run /issue-review for the missing kind.\n")
             return 2
         # REREAD the artifacts. The seal proves the stored RECORD is
         # self-consistent; it says nothing about the file still being there.
@@ -1603,6 +1714,8 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     finding_class = _closed_finding_class(paths, marker["prd_id"], marker["finding_id"])
     if finding_class is not None:
         receipt["finding_class"] = finding_class
+    if runtime_ref is not None:
+        receipt["runtime_receipt"] = runtime_ref
     _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
@@ -1802,6 +1915,12 @@ def cmd_allowed_files(paths: Paths, args: argparse.Namespace) -> int:
     return 0
 
 
+def _required_review_kinds(sized: dict) -> list[str]:
+    """The kinds a `reviewed` receipt needs: every kind the class gives a slot."""
+    caps = check_budget.depth(sized["class"])["review_cap"]
+    return [k for k in REVIEW_KINDS if caps[k] > 0]
+
+
 def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
     if args.kind not in REVIEW_KINDS:
         sys.stderr.write(f"kind must be one of {REVIEW_KINDS}; got {args.kind!r}\n")
@@ -1812,11 +1931,23 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         return 2
     rounds = state.setdefault("review_rounds", {k: 0 for k in REVIEW_KINDS})
     current = rounds.get(args.kind, 0)
-    cap = REVIEW_CAP_DEFAULTS[args.kind]
+    # ASK-3827: the cap is the one the diff's size class earns, read fresh on every claim,
+    # so a change that grows between rounds earns the bigger budget.
+    sized = check_budget.size_class(paths.repo_root)
+    caps = check_budget.depth(sized["class"])["review_cap"]
+    cap = caps[args.kind]
     override = os.environ.get(REVIEW_CAP_OVERRIDE_ENV) == "1"
+    if args.dry:
+        sys.stderr.write(f"size class {sized['class']}: cap: standard {caps['standard']}, "
+                         f"adversarial {caps['adversarial']} ({'; '.join(sized['reasons'])})\n")
+        print(json.dumps({"dry": True, "kind": args.kind, "size_class": sized["class"],
+                          "reasons": sized["reasons"], "caps": caps, "round": current,
+                          "would_claim": current < cap or override}))
+        return 0
     if current >= cap and not override:
         sys.stderr.write(
-            f"review cap reached for {args.kind}: {current}/{cap}. "
+            f"review cap reached for {args.kind}: {current}/{cap} "
+            f"(size class {sized['class']}: {sized['reasons'][0]}). "
             f"Findings beyond this round should auto-defer. "
             f"Override with {REVIEW_CAP_OVERRIDE_ENV}=1 if you really want another round.\n"
         )
@@ -1839,6 +1970,8 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         "round": rounds[args.kind],
         "cap": cap,
         "capped": rounds[args.kind] >= cap,
+        "size_class": sized["class"],
+        "caps": caps,
     }))
     return 0
 
@@ -1895,12 +2028,15 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
     # two kinds. Writing it after the first completion let `close` report
     # reviewed work while the adversarial pass had never run -- Codex caught
     # exactly that, twice (PR #110 rounds 2 and 3). One completion is not the
-    # review; it is half of it.
-    missing = [k for k in REVIEW_KINDS if k not in completions]
+    # review; it is half of it. Which kinds make it whole is the size class's call
+    # (ASK-3827): an S change earns no adversarial pass, so its standard pass is whole.
+    sized = check_budget.size_class(paths.repo_root)
+    missing = [k for k in _required_review_kinds(sized) if k not in completions]
     if missing:
         _write_state(paths, state)
         print(json.dumps({"recorded": args.kind, "verdict": args.verdict,
-                          "awaiting": missing, "reviewed": None}))
+                          "awaiting": missing, "reviewed": None,
+                          "size_class": sized["class"]}))
         return 0
     state["reviewed_seal"] = _review_seal(state["issue_id"], completions)
     stamp = _write_receipt(paths, state, "reviewed")
@@ -1956,6 +2092,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_load = sub.add_parser("load")
     p_load.add_argument("issue_id")
+    p_load.add_argument("--age-override", dest="age_override", metavar="REASON", default=None,
+                        help="start despite the aging list (ASK-3826); writes a row to "
+                             ".prd-os/gate-bypasses.jsonl naming the reason and each blocker")
     p_load.set_defaults(func=cmd_load)
 
     sub.add_parser("status").set_defaults(func=cmd_status)
@@ -1982,7 +2121,12 @@ def main(argv: list[str] | None = None) -> int:
     p_amend.add_argument("--reason", required=True, help="why the spec is being amended")
     p_amend.set_defaults(func=cmd_amend)
 
-    sub.add_parser("close").set_defaults(func=cmd_close)
+    p_close = sub.add_parser("close")
+    p_close.add_argument("--runtime-receipt", dest="runtime_receipt",
+                         help="JSON receipt of a REAL call; required when the issue "
+                              "title claims a gate/cap/meter/budget/ledger/guard/limit/"
+                              "rate/quota fix (runtime_receipt.py capture)")
+    p_close.set_defaults(func=cmd_close)
     sub.add_parser("clear").set_defaults(func=cmd_clear)
     sub.add_parser("allowed-files").set_defaults(func=cmd_allowed_files)
 
@@ -1997,6 +2141,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_record = sub.add_parser("record-review")
     p_record.add_argument("kind", help="standard|adversarial")
+    p_record.add_argument("--dry", action="store_true",
+                          help="print the size class and its caps; claim nothing")
     p_record.set_defaults(func=cmd_record_review)
 
     args = parser.parse_args(argv)

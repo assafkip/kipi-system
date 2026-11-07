@@ -50,7 +50,9 @@ Close the active DSSE issue. Execute in order:
 
    Must print `0`. If non-zero, the gate will block close. Re-triage the remaining findings.
 
-5. Record triage, then close. Run these as two separate steps and STOP if the
+5. Commit the patches applied above first: `close` re-reads the size class
+   from committed HEAD, and uncommitted code counts as L. Record triage, then
+   close. Run these as two separate steps and STOP if the
    first one exits non-zero -- there is no `set -e` here, so a failed `triage`
    would otherwise fall through into `close` and produce a confusing second
    failure at the receipt gate:
@@ -66,6 +68,14 @@ Close the active DSSE issue. Execute in order:
    always computed, while the receipt was hand-stamped, so the two could
    disagree. If `triage` exits 2 it names what is still pending -- go back to
    step 3 and disposition those findings.
+
+   If the issue title claims a gate, cap, meter, budget, ledger, guard, limit, rate or
+   quota fix, `close` refuses without `--runtime-receipt <file>`: a receipt of one REAL
+   call through the real caller, made with `scripts/runtime_receipt.py capture --out <file>
+   -- <cmd>`. A grep or read of the source is refused as the only proof (RCA 2026-10-02).
+   The receipt must belong to this issue: its command names one of the issue's
+   `allowed_files`, it ran after the issue was loaded, and no other issue's close row
+   already holds it. A missing `exit_code` does not skip the crash check.
 
    `close` re-runs the gate as a final check (receipts present + zero in-scope pending findings + no invalid dispositions), flips `status: closed` in the spec, and clears the state file. Do not edit the spec or state file manually to bypass it.
 

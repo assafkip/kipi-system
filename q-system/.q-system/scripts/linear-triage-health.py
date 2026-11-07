@@ -37,6 +37,14 @@ IT FLAGS, IT NEVER CLOSES. GitHub's stale-bot pattern is the reference and the
 warning: a bot that silently closes real work teaches people the tracker lies.
 A dormant issue gets ONE COMMENT. Closing stays a judgment call.
 
+A DORMANT STARTED TICKET IS ROUTED (ASK-3825, RULE-2026-11-06-B). An owner:sana
+ticket left In Progress with no activity for 7 days goes back to Backlog through
+linear-sync.py requeue, unless something says someone is on it: no row in the
+worker's attempts ledger (a lane or a person started it), a live worker claim,
+or an open PR. Backlog is the column the worker picker, the DoR
+drafter and linear-route.py read, so the ticket is visible to a consumer again.
+That is a state move, not a close: Done and Canceled are never touched.
+
 The comment is the ONLY mutation this script makes -- it writes no label. This
 line used to promise "a comment and a label" while no label mutation existed
 anywhere in the file (Codex minor round 2, PR #204). The promise was corrected
@@ -110,12 +118,29 @@ TEAM_KEY = os.environ.get("KIPI_LINEAR_TEAM", "ASK")
 TRIAGE_LABEL = "needs-triage"
 DORMANT_LABEL = "dormant"
 
-# Default dormancy threshold. 75 days sits inside the 60-90 band the stale-bot
-# research describes, and is deliberately NOT 90: the board itself is 22 days old
-# as of 2026-08-16, so a 90-day threshold could not fire at all for another two
-# months and would read as protection while doing nothing. A guard that cannot
-# fire on the population it runs against is decoration.
-DEFAULT_DORMANT_DAYS = 75
+# Default dormancy threshold: 7 days (ASK-3825, RULE-2026-11-06-B). It was 75,
+# and at 75 a ticket that went In Progress and then failed sat invisible to every
+# drain for two and a half months before this job even counted it. Measured
+# 2026-11-06: 15 owner:sana tickets In Progress, the oldest 43 days, every one
+# under the old line.
+DEFAULT_DORMANT_DAYS = 7
+
+# THE HUMAN-FACING FLAG KEEPS ITS OWN HORIZON. The flag is a comment asking for a
+# decision, and at 7 days it would land on 1544 Backlog and Todo tickets
+# (measured 2026-11-06, 1550 dormant at 7d, 6 of them started): the stale-bot
+# failure this docstring warns about, a comment stack nobody reads. A Backlog
+# ticket is already in the column every drain reads, so 7 days changes what is
+# ROUTED (started tickets, below) and the flag still waits the researched 75.
+DORMANT_FLAG_DAYS = 75
+
+# Dormant STARTED tickets are ROUTED, not counted (ASK-3825): sent back to
+# Backlog through linear-sync.py requeue, the one state writer, so the worker
+# picker, the DoR drafter, linear-route.py and the alert promoter can see them
+# again. Only owner:sana tickets: this fleet moves its own work and never a
+# person's In Progress ticket. Ten a run, oldest first, the same bound
+# linear-route.py holds per sweep.
+ROUTE_OWNER_LABEL = "owner:sana"
+DORMANT_ROUTE_LIMIT = 10
 
 # Thresholds that make the run worth an alert. Below these the run says nothing:
 # "still fine" every day is how a channel stops being read, which is the exact
@@ -139,7 +164,7 @@ OPEN_ISSUES_QUERY = """
 query($teamId: ID!, $after: String) {
   issues(filter: {team: {id: {eq: $teamId}}}, first: 250, after: $after) {
     nodes {
-      id identifier title createdAt updatedAt
+      id identifier title createdAt updatedAt startedAt
       state { name type }
       project { id name }
       labels { nodes { name } }
@@ -335,6 +360,78 @@ def find_dormant(issues: list, now: datetime, threshold_days: int) -> list:
         if days is not None and days >= threshold_days:
             out.append((issue, round(days, 1)))
     out.sort(key=lambda pair: pair[1], reverse=True)
+    return out
+
+
+def find_dormant_started(issues: list, now: datetime, threshold_days: int) -> list:
+    """owner:sana tickets in a STARTED state with no activity past the threshold.
+
+    Not filtered on project, unlike find_dormant: an unrouted ticket left In
+    Progress is still a ticket left In Progress, and Backlog is where
+    linear-route.py can route it. The human `dormant` label is still honoured as
+    an override. Oldest first, so a capped run spends its writes on the worst.
+    """
+    out = []
+    for issue in issues:
+        if ((issue.get("state") or {}).get("type") or "") != "started":
+            continue
+        labels = label_names(issue)
+        if ROUTE_OWNER_LABEL not in labels or DORMANT_LABEL in labels:
+            continue
+        days = age_days(issue.get("updatedAt") or "", now)
+        if days is not None and days >= threshold_days:
+            out.append((issue, round(days, 1)))
+    out.sort(key=lambda pair: pair[1], reverse=True)
+    return out
+
+
+def worker_state_dir() -> str:
+    """The worker's state dir (claims, attempts ledger), through the same KIPI_STATE_DIR seam."""
+    return os.environ.get("KIPI_STATE_DIR") or os.path.expanduser("~/.config/kipi")
+
+
+def route_dormant(ln, started: list, now: datetime, apply_writes: bool,
+                  limit: int = DORMANT_ROUTE_LIMIT) -> dict:
+    """Route each dormant started ticket back to Backlog, or say why it is held.
+
+    The hold rule is linear-sync.py started_hold_reason, the SAME one the worker
+    picker and the DoR drafter ask: no row in the worker attempts ledger (the
+    fleet never ran it, so a lane or a person started it), a live claim on its
+    worker tree, or an open PR means someone, or the PR pipeline, is on it. The write is
+    linear-sync.py requeue_issue, the one state writer, which moves only a
+    started ticket and posts one line naming the exit. Report-only runs read and
+    write nothing beyond the hold check, and say what they WOULD route.
+    """
+    out = {"started": [i["identifier"] for i, _ in started], "routed": [],
+           "would_route": [], "held": {}, "failed": {}, "over_limit": []}
+    budget = limit
+    where = worker_state_dir()
+    for issue, days in started:
+        ident = issue["identifier"]
+        why = ln.started_hold_reason(issue, now, where)
+        if why:
+            out["held"][ident] = why
+            continue
+        if not apply_writes:
+            out["would_route"].append(ident)
+            continue
+        if budget <= 0:
+            out["over_limit"].append(ident)
+            continue
+        budget -= 1
+        try:
+            outcome, message = ln.requeue_issue(
+                issue.get("id") or ident, "dormant",
+                f"no activity in {days:.0f} days, no live claim, "
+                f"no open PR", "sana")
+        except Exception as exc:  # a transport failure is a failed write, said
+            outcome, message = "failed", str(exc)[:200]
+        if outcome == "moved":
+            out["routed"].append(ident)
+        elif outcome == "unchanged":
+            out["held"][ident] = message   # it left started since the walk
+        else:
+            out["failed"][ident] = message
     return out
 
 
@@ -874,7 +971,8 @@ def main(argv: list) -> int:
     ap.add_argument("--dormant-days", type=int, default=DEFAULT_DORMANT_DAYS,
                     help=f"dormancy threshold in days (default {DEFAULT_DORMANT_DAYS})")
     ap.add_argument("--apply", action="store_true",
-                    help="write dormancy comments (default: report only)")
+                    help="write dormancy comments and route dormant In Progress "
+                         "tickets back to Backlog (default: report only)")
     ap.add_argument("--no-notify", action="store_true",
                     help="never call the alert path")
     ap.add_argument("--json", action="store_true", help="print the measurement as JSON")
@@ -978,6 +1076,29 @@ def _run(args, holding_lock: bool) -> int:
     m["dormant_threshold_days"] = args.dormant_days
     m["complete"] = complete
 
+    # ASK-3825: dormant STARTED tickets are ROUTED back to Backlog, not counted.
+    # Assigned here, before both outputs, for the reason the route keys below
+    # are: the machine report never carries less than the human one. The
+    # started population is in the JSON so the ticket's Done ("the 15 are
+    # re-picked or closed within a week") is read off this job, not by hand.
+    route = route_dormant(ln, find_dormant_started(issues, now, args.dormant_days),
+                          now, apply_writes=args.apply)
+    m["dormant_started"] = route["started"]
+    m["dormant_routed"] = route["routed"]
+    m["dormant_would_route"] = route["would_route"]
+    m["dormant_route_held"] = route["held"]
+    m["dormant_route_failed"] = route["failed"]
+    m["dormant_route_over_limit"] = route["over_limit"]
+    started_now = sorted(
+        (i for i in issues if ((i.get("state") or {}).get("type") or "") == "started"
+         and ROUTE_OWNER_LABEL in label_names(i)),
+        key=lambda i: i.get("startedAt") or i.get("updatedAt") or "")
+    m["started_owner_sana"] = [i["identifier"] for i in started_now]
+    oldest_started = started_now[0] if started_now else None
+    m["started_owner_sana_oldest_days"] = (
+        round(age_days(oldest_started.get("startedAt") or "", now) or 0.0, 1)
+        if oldest_started else 0.0)
+
     # ASK-1951, measured HERE -- before BOTH outputs and before breaches() reads
     # it. `ran` is carried separately from the count for the same reason
     # registry_ok is carried in the resolver: a check that could not run reports
@@ -1014,6 +1135,12 @@ def _run(args, holding_lock: bool) -> int:
         print(f"  oldest untriaged      : {m['oldest_triage_days']:.0f}d "
               f"{m['oldest_triage_id']}")
         print(f"  dormant (>={args.dormant_days}d)      : {m['dormant']}")
+        if m["dormant_started"]:
+            verb = "routed to Backlog" if args.apply else "would route to Backlog"
+            moved = m["dormant_routed"] if args.apply else m["dormant_would_route"]
+            print(f"  dormant In Progress   : {len(m['dormant_started'])} owner:sana, "
+                  f"{len(moved)} {verb}, {len(m['dormant_route_held'])} held, "
+                  f"{len(m['dormant_route_failed'])} failed")
         if m["route_sweep_ran"]:
             print(f"  DoR tickets nothing can pick up: {m['route_pending']} "
                   f"({m['route_unroutable']} unroutable), {m['route_written']} "
@@ -1027,6 +1154,12 @@ def _run(args, holding_lock: bool) -> int:
     # how a refused write reached the operator as a printed line and reached
     # launchd as success.
     outcomes = {}
+    # The flag keeps its own horizon (DORMANT_FLAG_DAYS), and a ticket this run
+    # already routed is not flagged as well: one write says what happened.
+    flag_days = max(args.dormant_days, DORMANT_FLAG_DAYS)
+    routed_now = set(m["dormant_routed"])
+    flaggable = [(i, d) for i, d in dormant
+                 if d >= flag_days and i["identifier"] not in routed_now]
 
     if dormant:
         # The WRITE loop is separate from the DISPLAY loop on purpose, and this
@@ -1036,11 +1169,11 @@ def _run(args, holding_lock: bool) -> int:
         # -- a line about DISPLAY that read as a line about work done. Measured
         # 2026-08-16: 193 dormant at a 7-day threshold, so 173 would have been
         # silently skipped. A display bound must never decide what gets written.
-        to_flag = select_to_flag(dormant, args.limit)
+        to_flag = select_to_flag(flaggable, args.limit)
         if args.apply:
             for issue, days in to_flag:
                 outcomes[issue["identifier"]] = flag_dormant(
-                    ln, issue, days, args.dormant_days)
+                    ln, issue, days, flag_days)
 
         if args.apply:
             capped = f", capped at {args.limit}" if args.limit else ""
@@ -1054,7 +1187,13 @@ def _run(args, holding_lock: bool) -> int:
             outcome = outcomes.get(issue["identifier"])
             if args.apply:
                 # "not-attempted" is said out loud rather than left blank: a blank
-                # next to a listed issue is what made the old cap invisible.
+                # next to a listed issue is what made the old cap invisible. A
+                # ticket under the flag horizon says that instead, so the line
+                # never blames a --limit that did not apply to it.
+                if not outcome and issue["identifier"] in routed_now:
+                    outcome = "routed to Backlog"
+                elif not outcome and days < flag_days:
+                    outcome = f"in the queue; the flag waits {flag_days}d"
                 line += "  [" + (outcome or "not-attempted (over --limit)") + "]"
             say(line)
         if len(dormant) > 20:
@@ -1065,7 +1204,7 @@ def _run(args, holding_lock: bool) -> int:
             say(f"  flagged={wrote} already-flagged="
                   f"{sum(1 for v in outcomes.values() if v == 'already-flagged')} "
                   f"failed={sum(1 for v in outcomes.values() if v.startswith('FAILED'))} "
-                  f"not-attempted={len(dormant) - len(to_flag)}")
+                  f"not-attempted={len(flaggable) - len(to_flag)}")
 
     # Printed here, measured above with every other key. NOT MEASURED is said out
     # loud rather than shown as 0, because those are different claims.
@@ -1104,6 +1243,11 @@ def _run(args, holding_lock: bool) -> int:
     # major round 2, PR #204). The same shape as the alert bug beside it, one
     # layer down, which is why both now terminate in a code and not a print.
     failed_writes = sorted(k for k, v in outcomes.items() if v.startswith("FAILED"))
+    # A route that did not land is a failed write too (ASK-3825), and its reason
+    # is printed here because the JSON keeps it but the human report does not.
+    for ident, why in sorted(m["dormant_route_failed"].items()):
+        failed_writes.append(ident)
+        print(f"ROUTE FAILED: {ident}: {why}", file=sys.stderr)
 
     # Precedence is worst-measurement-first: a partial walk means the dormancy
     # set itself is untrustworthy, so it outranks what happened to the writes.
@@ -1116,7 +1260,9 @@ def _run(args, holding_lock: bool) -> int:
               file=sys.stderr)
         return EXIT_ALERT_FAILED
     if failed_writes:
-        print(f"WRITE FAILED: {len(failed_writes)} of {len(outcomes)} dormancy "
+        attempted = (len(outcomes) + len(m["dormant_routed"])
+                     + len(m["dormant_route_failed"]))
+        print(f"WRITE FAILED: {len(failed_writes)} of {attempted} dormancy "
               f"write(s) did not land: {', '.join(failed_writes)}", file=sys.stderr)
         return EXIT_WRITE_FAILED
     return EXIT_OK

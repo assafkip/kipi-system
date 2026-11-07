@@ -281,6 +281,70 @@ echo "$OUT6C" | grep -q "unsafe directory symlink" || \
   fail "an escaping DIRECTORY symlink was modeled instead of refused: $OUT6C"
 echo "PASS: a venv's file symlinks model fine; escaping dangling and directory symlinks refuse"
 
+# case D (ASK-3887): a GITIGNORED escaping directory symlink is left out of the
+# model instead of refusing the whole instance. Measured 2026-11-06 with --dry:
+# a client instance carries a link from one of its folders to another repo, a deliberate,
+# gitignored symlink (founder, 2026-11-03), and every skeleton sync preview of
+# that instance stopped on it. Leaving it out of the model is the safe answer: a
+# path the model does not contain cannot be written through. The target must be
+# byte-identical afterwards. An ignored link that is TRACKED anyway is part of
+# the repo and still refuses (case D2).
+rm "$I6/q-system/escapedir"
+mkdir -p "$OUT6DIR/clientrepo" "$I6/vendor"
+printf 'CLIENT FILE\n' > "$OUT6DIR/clientrepo/keep.md"
+printf 'vendor/original\nforced-link\n' > "$I6/.gitignore"
+( cd "$I6" && G add .gitignore && G commit -qm ignore )
+ln -s "$OUT6DIR/clientrepo" "$I6/vendor/original"
+snapshot_out6() {  # every directory and file under the outside targets, with file hashes
+  python3 - "$OUT6DIR" <<'PY'
+import hashlib, os, sys
+for d, ds, fs in sorted(os.walk(sys.argv[1])):
+    print("dir", os.path.relpath(d, sys.argv[1]))
+    for f in sorted(fs):
+        p = os.path.join(d, f)
+        print(os.path.relpath(p, sys.argv[1]), hashlib.sha256(open(p, "rb").read()).hexdigest())
+PY
+}
+BEFORE6D="$(snapshot_out6)"
+OUT6D="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6D" | grep -q "unsafe" && \
+  fail "a gitignored escaping directory symlink blocked dry-run modeling: $OUT6D"
+echo "$OUT6D" | grep -qE "Changes vs skeleton|Up to date|final state" || \
+  fail "--dry-run produced no model for an instance with a gitignored escaping symlink: $OUT6D"
+echo "$OUT6D" | grep -q "left out 1 gitignored symlink" || \
+  fail "the dry run did not say it left the ignored symlink out of the model: $OUT6D"
+[ "$BEFORE6D" = "$(snapshot_out6)" ] || \
+  fail "the dry run wrote into the target of a gitignored escaping symlink"
+[ -L "$I6/vendor/original" ] || fail "the dry run removed the instance's ignored symlink"
+
+# case D2: ignored by .gitignore but TRACKED (git add -f) is repo content, refused.
+ln -s "$OUT6DIR/clientrepo" "$I6/forced-link"
+( cd "$I6" && G add -f forced-link && G commit -qm forced )
+OUT6D2="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6D2" | grep -q "unsafe directory symlink escapes the disposable model: forced-link" || \
+  fail "a TRACKED escaping directory symlink was left out instead of refused: $OUT6D2"
+[ "$BEFORE6D" = "$(snapshot_out6)" ] || fail "the refused dry run wrote into the symlink target"
+
+# case D3: the exclude is what keeps the target safe, so prove it on a path the
+# model's sync DOES write. An ignored .claude -> outside directory: copied into
+# the model, the config sync would mkdir agents/, rules/ and output-styles/
+# through it, into the outside directory. Left out, the model has no .claude.
+( cd "$I6" && G rm -q --cached forced-link && G commit -qm unforce )
+rm "$I6/forced-link"
+mkdir -p "$OUT6DIR/claudedir"
+printf '{}\n' > "$OUT6DIR/claudedir/settings.json"
+printf 'vendor/original\n.claude\n' > "$I6/.gitignore"
+( cd "$I6" && G add .gitignore && G commit -qm ignore-claude )
+ln -s "$OUT6DIR/claudedir" "$I6/.claude"
+BEFORE6D3="$(snapshot_out6)"
+OUT6D3="$(bash "$SK6/kipi-update.sh" --dry-run --only venvinst 2>&1 || true)"
+echo "$OUT6D3" | grep -q "left out 2 gitignored symlink" || \
+  fail "the dry run did not leave both ignored symlinks out of the model: $OUT6D3"
+[ "$BEFORE6D3" = "$(snapshot_out6)" ] || \
+  fail "the dry run wrote through an ignored .claude symlink into the directory outside the instance"
+rm "$I6/.claude"
+echo "PASS: a gitignored escaping symlink is left out of the model and its target untouched; a tracked one refuses (ASK-3887)"
+
 # --- the dry-run model must not copy nested repositories --------------------
 # The model is built with `rsync -a --delete --exclude=.git` of the WHOLE
 # instance tree. Measured 2026-07-25: one registered instance's path is the

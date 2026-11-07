@@ -261,7 +261,7 @@ _ROOT = None
 
 
 def acquire_lock(root):
-    """Serialise the whole read-decide-write. Returns the held file object.
+    """Serialise the whole read-decide-write. Returns what must stay held.
 
     Without this, two concurrent applies each read the same base content, each
     stage against it, and the second write silently discards the first
@@ -276,17 +276,32 @@ def acquire_lock(root):
     re-runs. The lock is released when the process exits, so a crashed run does
     not wedge the tool (flock is bound to the fd, not to a file that must be
     cleaned up).
+
+    Two locks. The .apply.lock file excludes another apply. A flock on the
+    .claude/ directory itself excludes kipi-settings-merge.py, which rebuilds an
+    instance's settings.json on the fleet update path and takes that same
+    directory lock (ASK-3880: an apply landing inside the merge's read-modify-
+    write was erased by it, after printing "OK applied"). The merge locks the
+    directory and not this file because creating the file left an untracked
+    path in every instance that does not ignore q-system/output/ (8 of 14,
+    measured 2026-11-07), and the updater leaves a clean tree.
     """
     import fcntl
     lock_dir = os.path.join(root, "q-system", "output", "claude-changes")
     os.makedirs(lock_dir, exist_ok=True)
     handle = open(os.path.join(lock_dir, ".apply.lock"), "w")
+    claude_fd = None
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        claude_fd = os.open(os.path.join(root, ".claude"), os.O_RDONLY)
+        fcntl.flock(claude_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (OSError, IOError):
         handle.close()
-        raise Refusal("another apply is already running (lock held); nothing was read or written")
-    return handle
+        if claude_fd is not None:
+            os.close(claude_fd)
+        raise Refusal("another apply or the fleet settings merge is running (lock held); "
+                      "nothing was read or written")
+    return handle, claude_fd
 
 
 def repo_root_from_script():
@@ -1038,6 +1053,35 @@ def check_requires(root, prop, log):
             raise Refusal("required file missing: %s" % rel)
         log.append("require ok: %s present" % rel)
 
+def is_templateless_instance(root):
+    """True for an instance tree: no settings-template.json and not the skeleton.
+
+    The pair rule below exists because kipi update rebuilds settings.json from
+    the SKELETON's template. That is a skeleton concern. An instance carries no
+    template of its own (measured 2026-11-06: 0 of 21 registered instances), and
+    kipi-settings-merge.py unions instance-added hooks into the rebuilt file, so
+    an instance hook wired only in .claude/settings.json survives every update.
+    Before this existed the pair rule refused EVERY instance settings.json edit,
+    and two ready gates (consulting gate-draft, 4 Points case gate) had no lawful
+    way in (ASK-3685).
+
+    The skeleton is told apart by instance-registry.json at its root, the marker
+    instance-automation-guard.py already reads. A skeleton whose template went
+    missing is broken, not an instance, so it keeps the refusal.
+
+    lexists, not exists: a DANGLING settings-template.json symlink reads as
+    absent to exists(), so the tree looked like an instance and an edit creating
+    the symlink's target under .claude/ bootstrapped a template by another name
+    (codex review of PR #615). Any directory entry by that name, live or
+    dangling, means this is not a template-less instance. The registry marker
+    gets the same rule: with exists() a dangling instance-registry.json symlink
+    flipped a skeleton missing its template into instance mode (fleet reviewer,
+    PR #615).
+    """
+    return (not os.path.lexists(os.path.join(root, "settings-template.json"))
+            and not os.path.lexists(os.path.join(root, "instance-registry.json")))
+
+
 def check_template_pairs(root, prop, staged, template_key, log):
     """settings.json and settings-template.json are both-or-neither.
 
@@ -1130,7 +1174,33 @@ def main(argv):
     # the state sync-check calls red.
     if touches_template and not touches_settings:
         raise Refusal("settings-template.json edited without .claude/settings.json")
-    if touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
+    instance_mode = is_templateless_instance(root)
+    if instance_mode:
+        # resolve_special_keys matches by inode, so a template that does not
+        # exist yet is invisible to touches_template. Check by name instead: a
+        # create_file here would bootstrap a template in a tree whose
+        # settings.json kipi update owns, and turn sync-check on against it.
+        # Lowercased because macOS is case-insensitive: Settings-Template.json
+        # is the same file (the round-1 second-name class).
+        for edit in prop["edits"]:
+            if os.path.normpath(edit["file"]).lower() in {p.lower() for p in PAIRED_OUTSIDE}:
+                raise Refusal("an instance carries no settings-template.json; "
+                              "fleet hooks are wired in the kipi-system skeleton")
+        if touches_settings:
+            # The fleet merge keys an instance script by its path only in the
+            # canonical spelling; any other spelling is keyed by basename and is
+            # dropped, with a line on the merge's output, when an earlier hook in
+            # the same event and matcher runs a script of that name (fleet
+            # reviewer, PR #615). It is no longer retired by name alone
+            # (ASK-3876). Say so where the operator reads it.
+            log.append("instance mode: no settings-template.json and no "
+                       "instance-registry.json; the fleet merge keys a hook by its "
+                       "path only when written as \"$CLAUDE_PROJECT_DIR/<path>\" "
+                       "with <path> outside q-system/ and no source, . or eval in "
+                       "the command; it keys anything else, including any script "
+                       "under q-system/, by its basename, and names on its output "
+                       "any such hook it drops as a duplicate")
+    elif touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
         raise Refusal(".claude/settings.json edited without the settings-template.json pair")
 
     staged = {}

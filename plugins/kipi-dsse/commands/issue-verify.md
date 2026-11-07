@@ -8,7 +8,9 @@ Verify the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm an issue is loaded. If `issue_id` is null, stop and tell the founder to run `/issue-start <issue-id>` first.
 
-2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" verify`.
+2. Commit the issue's work first. The size class (ASK-1749 tier) reads
+   committed HEAD, so uncommitted code verifies, reviews and closes at L.
+   Then run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" verify`.
 
    This ONE command is the whole step. It runs every check in the spec
    snapshot itself, records each check's exit code and an output hash as
@@ -31,8 +33,9 @@ Verify the active DSSE issue. Execute in order:
      that only runs a copy is refused;
    - `defined_vs_ran`: test functions in each named Python test file, from the
      AST, against the runner's own count; hidden tests are refused;
-   - `repeats`: the checks rerun up to 10 times inside a 20-minute budget,
-     refused below 5 runs or on any red run.
+   - `repeats`: the checks rerun inside a 20-minute budget as many times as
+     the diff's size class earns (S: 2, refused below 2; M and L: up to 10,
+     refused below 5), and refused on any red run.
    - `mutants` (ASK-2768): each mutant run recorded for this issue, judged
      against verify's own clean run. `caught` names the tests that failed only
      under the mutant; a test failing in both runs is not counted. A `silent`

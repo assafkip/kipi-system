@@ -197,6 +197,12 @@ CLAUDE_FALLBACKS = (
 # Statuses worth drafting for. A Done/Canceled issue needs no DoR, and drafting
 # onto one would be pure noise on a permanent object.
 DRAFTABLE_STATE_TYPES = ("backlog", "unstarted")
+# PLUS a started issue nobody is working (ASK-3825, RULE-2026-11-06-B). A run that
+# failed or parked left its ticket In Progress and this job read Backlog only, so
+# a needs-scope refusal on a started ticket was never redrafted. Which started
+# issue counts is linear-sync.py started_hold_reason, the SAME rule the worker
+# picker uses, decided once per run in fetch_draftable and passed in as
+# `started_ok`; selection_mode stays pure and reads no network.
 
 # The worker's refusal label. This is the redrive input: the issue is selected
 # BECAUSE it carries this, not excluded because it already has a DoR.
@@ -331,7 +337,7 @@ def _linear():
 # set therefore had to be replaced. That was false; removedLabelIds exists and is
 # what this script sends. See needs_scope_label_ids().
 ISSUES_Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
-  nodes{id identifier title description project{name} state{name type}
+  nodes{id identifier title description project{name} state{name type} startedAt
         labels{nodes{id name}}}
   pageInfo{hasNextPage endCursor}}}"""
 
@@ -543,7 +549,7 @@ def strip_owned_marker(before: str) -> str:
     return "\n".join(lines[:-1] + ([last] if last.strip() else [])).rstrip()
 
 
-def selection_mode(issue: dict) -> str | None:
+def selection_mode(issue: dict, started_ok: frozenset = frozenset()) -> str | None:
     """"redraft" | "terminal" | "draft" | None -- THE selection predicate.
 
     ORDER IS THE WHOLE FIX. The needs-scope branch sits ABOVE the has-a-DoR
@@ -552,7 +558,9 @@ def selection_mode(issue: dict) -> str | None:
     the exact bug while looking like it had been fixed, which is why the paired
     test asserts on an issue carrying BOTH the heading and the label.
     """
-    if (issue.get("state") or {}).get("type") not in DRAFTABLE_STATE_TYPES:
+    state_type = (issue.get("state") or {}).get("type")
+    if state_type not in DRAFTABLE_STATE_TYPES and not (
+            state_type == "started" and issue.get("identifier") in started_ok):
         return None
     desc = issue.get("description") or ""
     # This job's own failure record. Drafting onto it burns a bounded nightly
@@ -601,10 +609,42 @@ def selection_mode(issue: dict) -> str | None:
     return "draft"
 
 
-def needs_dor(issue: dict) -> bool:
+def needs_dor(issue: dict, started_ok: frozenset = frozenset()) -> bool:
     """Kept as the boolean face of selection_mode: this job's other test file
     (test-linear-dor-failure-reporting.py) asserts on it directly."""
-    return selection_mode(issue) is not None
+    return selection_mode(issue, started_ok) is not None
+
+
+def admitted_started(issue: dict) -> frozenset:
+    """A started issue fetch_draftable admitted keeps that admission downstream.
+
+    prioritise() and apply_write() re-classify issues this job already selected.
+    Without this, a started needs-scope issue would be ranked a first draft and a
+    skipped write would report it as no longer pending.
+    """
+    if (issue.get("state") or {}).get("type") == "started":
+        return frozenset({issue.get("identifier")})
+    return frozenset()
+
+
+def started_abandoned_ids(ls, issues: list, now=None) -> frozenset:
+    """Started issues this job would draft, that ls.started_hold_reason releases.
+
+    Only issues that pass every OTHER selection rule are asked, because the rule
+    may read Linear once per issue. The claims and the attempts ledger come from
+    KIPI_STATE_DIR, the same seam the worker uses, so a suite never reads live state.
+    """
+    now = now or datetime.now(timezone.utc)
+    state_dir = os.environ.get("KIPI_STATE_DIR") or str(Path.home() / ".config" / "kipi")
+    out = set()
+    for i in issues:
+        if (i.get("state") or {}).get("type") != "started":
+            continue
+        if selection_mode(i, admitted_started(i)) is None:
+            continue
+        if ls.started_hold_reason(i, now, state_dir) == "":
+            out.add(i.get("identifier"))
+    return frozenset(out)
 
 
 def notify(message: str) -> bool:
@@ -791,7 +831,8 @@ def fetch_draftable(ls, team_id: str) -> list:
         print(f"dor-drafter: {len(unrouted)} issue(s) NOT drafted -- no project, "
               f"so no checkout could ever be routed one: {shown}{more}")
 
-    return [i for i in issues if needs_dor(i)]
+    started_ok = started_abandoned_ids(ls, issues)
+    return [i for i in issues if needs_dor(i, started_ok)]
 
 
 # Redrafts and terminals sort ahead of first drafts. NOT cosmetic ordering: the
@@ -815,7 +856,7 @@ def prioritise(issues: list) -> list:
     exactly that). Anything unclassifiable is a first draft, the behaviour every
     issue in the batch had before modes existed.
     """
-    paired = [(selection_mode(i) or "draft", i) for i in issues]
+    paired = [(selection_mode(i, admitted_started(i)) or "draft", i) for i in issues]
     return sorted(paired, key=lambda pair: MODE_RANK.get(pair[0], 9))
 
 
@@ -1034,7 +1075,7 @@ def apply_write(ls, issue: dict, mode: str, body: str,
             return Skipped(
                 "it changed while this attempt was drafting "
                 "(rival redraft, label change, or a hand edit)",
-                selection_mode(fresh) is not None)
+                selection_mode(fresh, admitted_started(issue)) is not None)
         # Description and label drop go in ONE mutation on purpose. As two calls,
         # a failure between them leaves a rewritten DoR still wearing needs-scope:
         # the picker keeps ignoring it and the next night spends another capped
@@ -1053,7 +1094,7 @@ def apply_write(ls, issue: dict, mode: str, body: str,
         # already refused it REDRAFT_CAP times.
         if moved_since_selection(selected, fresh):
             return Skipped("it changed while this run was working",
-                           selection_mode(fresh) is not None)
+                           selection_mode(fresh, admitted_started(issue)) is not None)
         # dor_section, NOT existing_dor: this value is WRITTEN BACK, so the
         # prompt's character budget must not touch it.
         payload = {"description": rebuild_description(
@@ -1065,7 +1106,7 @@ def apply_write(ls, issue: dict, mode: str, body: str,
         if has_dor_section(fresh_desc):
             return Skipped("it gained a Definition of Ready while this "
                            "attempt was drafting",
-                           selection_mode(fresh) is not None)
+                           selection_mode(fresh, admitted_started(issue)) is not None)
         payload = {"description": fresh_desc.rstrip() + f"\n\n{DOR_HEADING}\n\n{body}\n"}
 
     update_issue(ls, issue, payload)
