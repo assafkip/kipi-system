@@ -165,8 +165,10 @@ def test_silencer_patterns_fire_on_every_spelling(line, silenced):
 MAIN_ONLY = "{} && github.ref == 'refs/heads/main'"
 
 
-def test_a_red_run_opens_or_updates_one_issue():
-    """The route out of a red run: no secret, one deduped issue, a named consumer."""
+def test_a_red_run_files_through_the_filer():
+    """The route out of a red run: no secret, one issue per (check, breaking
+    commit), a named consumer (ASK-2262, ASK-3828). The dedup and the bisect are
+    proven end to end in test_gates_red_filer.py; this pins the wiring."""
     text = _text()
     jobs = _jobs(_code_lines(text))
     reporters = sorted(j for j in jobs if j != "gates")
@@ -177,13 +179,43 @@ def test_a_red_run_opens_or_updates_one_issue():
     assert keys.get("if") == MAIN_ONLY.format("failure()"), \
         "the reporter runs only when gates failed, and only for main"
     assert re.search(r"(?m)^\s+issues:\s*write\s*$", rep), "needs issues: write"
+    assert re.search(r"(?m)^\s+actions:\s*read\s*$", rep), "the filer reads the gates job's log"
     assert "github.token" in rep, "the built-in token, never a stored secret"
-    assert "gates-red" in rep and "--label gates-red" in rep
-    assert "gates-red: nightly gates failed" in rep, "the title is the dedup key"
-    assert "gh issue comment" in rep and "gh issue create" in rep, "update or open"
+    assert "gh label create gates-red" in rep
+    assert re.search(r"gates-red-filer\.py .*--run-id", rep.replace("\\\n", " ")), "the filer files"
+    assert "fetch-depth: 0" in rep, "a shallow clone has no commits to bisect"
     # The consumer this route depends on. Without it the issue is an output nobody reads.
     fh = (ROOT / "q-system/.q-system/scripts/fleet-health-daily.py").read_text()
     assert '"id": "gates-red"' in fh and "--label" in fh
+
+
+def _filer():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gates_red_filer", ROOT / "q-system/.q-system/scripts/gates-red-filer.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_filer_knows_every_check_step_by_its_real_name():
+    """The filer reads findings out of the step named CAPABILITY_STEP and re-runs
+    any other step from STEP_PROBES. A renamed step or a restated command that
+    drifted would make it file "step failed" with no bisect, so each name and
+    each argv is pinned to the step that really runs it."""
+    f = _filer()
+    gates = _jobs(_code_lines(_text()))["gates"]
+    named = {b.split("\n", 1)[0].strip(): b for b in _steps(gates)}
+    assert f.CAPABILITY_STEP in named and "capability-gate.py" in named[f.CAPABILITY_STEP]
+    for name, (argv, env) in f.STEP_PROBES.items():
+        assert name in named, f"STEP_PROBES names a step gates.yml does not have: {name!r}"
+        assert " ".join(argv) in named[name], f"{name!r} no longer runs {' '.join(argv)!r}"
+        for k, v in env.items():
+            assert re.search(rf'{k}:\s*"?{v}"?', named[name]), f"{name!r} lost {k}={v}"
+    checks = {n for n, b in named.items()
+              if re.search(r"(?m)^\s*run:\s*(python3|pytest)\b", b) and "pip install" not in b}
+    unknown = checks - {f.CAPABILITY_STEP} - set(f.STEP_PROBES)
+    assert not unknown, f"check step(s) the filer cannot re-run: {sorted(unknown)}"
 
 
 def test_a_green_run_closes_the_issue():

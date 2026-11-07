@@ -89,7 +89,7 @@ APPROVED_COMMENT_WORDS = (41, 53, 71, 74, 84, 100, 141, 160, 173)
 # X gets the LinkedIn band because no X reply corpus exists. Not a measurement.
 X_BAND_IS_BORROWED = True
 
-CHANNELS = ("linkedin", "x")
+CHANNELS = ("linkedin", "x", "threads")
 
 
 def _usable(row):

@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/control-file-propagate.py",
+ "reason": "its only wiring was repo-preflight.sh check 2's remedy text, and check 2 is retired (ASK-3526). It refuses a MISSING file, so it cannot cure an absent guard either. Kept as the named remedy for a stale guard file once hook content parity lands (ASK-3539, sp-e6c71bb0); wire it there or delete it.",
+ "spillover_id": "sp-e6c71bb0"
+}

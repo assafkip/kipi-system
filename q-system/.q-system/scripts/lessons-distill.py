@@ -44,10 +44,38 @@ _spec = importlib.util.spec_from_file_location("lessons_scrub", SCRIPTS / "lesso
 scrub_mod = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(scrub_mod)
 
 
-def load_instances(registry_path):
+def load_intake(registry_path):
+    """(live (name, path) pairs, count of dead paths skipped).
+
+    THE INTAKE LIST (ASK-3403). It read only `instances[]`, so the skeleton's own RCAs and
+    learnings (the `skeleton` key) and any repo outside the registry (chief) were never
+    distilled, and 8 of 20 registered paths did not exist and vanished without a count.
+    Sources: `instances[]`, the `skeleton` entry, and `learning_sources[]` for live repos
+    that are not instances. A path that is not a directory is skipped and counted.
+    """
     data = json.loads(Path(registry_path).read_text())
-    return [(e["name"], e["path"]) for e in data.get("instances", [])
-            if not str(e.get("status", "")).startswith("merged")]
+    entries = [e for e in data.get("instances", [])
+               if not str(e.get("status", "")).startswith("merged")]
+    if isinstance(data.get("skeleton"), dict):
+        entries.append({"name": "skeleton", **data["skeleton"]})
+    entries += data.get("learning_sources", [])
+    live, dead, seen = [], 0, set()
+    for e in entries:
+        path = str(e.get("path", ""))
+        if path in seen:
+            continue
+        seen.add(path)
+        if Path(path).is_dir():
+            live.append((e.get("name") or Path(path).name, path))
+        else:
+            dead += 1
+    if dead:
+        print(f"lessons-distill: skipped {dead} dead intake path(s)", file=sys.stderr)
+    return live, dead
+
+
+def load_instances(registry_path):
+    return load_intake(registry_path)[0]
 
 
 def new_rcas(instances, ledger):
@@ -84,6 +112,41 @@ def new_learnings(instances, ledger):
             h = hashlib.sha1(text.encode()).hexdigest()[:16]
             if h not in ledger:
                 yield name, str(note), h, text
+
+
+def public_instance_label(name):
+    """The instance as a ledger row may name it: one constant, for every instance.
+
+    THE LEDGER SHIPS IN A PUBLIC REPO (ASK-2736, ASK-2058). Its rows used to carry
+    the raw instance name, and instance names include client engagements; the
+    ASK-2058 scrub relabelled 119 rows by hand and this writer would have put a
+    real name back in every new row.
+
+    Not a hash (codex, PR #551 round 2): an unsalted sha1 prefix of a name is
+    reversed by hashing a candidate list, and a stable per-instance label lets
+    rows be grouped by client. Nothing reads the field, so a constant costs
+    nothing. `name` stays in the signature so the call site keeps saying which
+    value is being withheld.
+    """
+    return "redacted"
+
+
+def count_candidates(instances):
+    """How many source notes (RCAs + learnings) exist at intake, ledgered or not.
+
+    ASK-3516. `scanned` counts only NEW un-ledgered sources, which is zero on a
+    normal quiet night, so it cannot feed the starvation alarm (PR #572 review).
+    This counts what the distiller COULD read, so it is zero only when the intake
+    itself is empty or its dirs are gone. File names only, no reads: it runs on
+    every nightly pass and the same two globs as new_rcas/new_learnings.
+    """
+    n = 0
+    for _name, path in instances:
+        for sub in ("rca", "learnings"):
+            d = Path(path) / "q-system" / "output" / sub
+            if d.is_dir():
+                n += sum(1 for f in d.glob("*.md") if f.name.lower() != "readme.md")
+    return n
 
 
 def new_sources(instances, ledger):
@@ -242,7 +305,8 @@ def main():
     used_ids = set()
     published, held, scanned = [], [], 0
 
-    for name, path, h, text in new_sources(load_instances(args.registry), ledger):
+    intake, skipped_dead = load_intake(args.registry)
+    for name, path, h, text in new_sources(intake, ledger):
         if args.limit and scanned >= args.limit:
             break
         scanned += 1
@@ -265,7 +329,8 @@ def main():
                 f"source: {held_source_link(path)}\n\n"
                 f"proposed title: {distilled['title']}\n\n{distilled['body']}\n")
             held.append(distilled["title"])
-        row = {"instance": name, "status": "published" if published_text else "held", "date": stamp}
+        row = {"instance": public_instance_label(name),
+               "status": "published" if published_text else "held", "date": stamp}
         if published_text:
             # Provenance: which lesson this source became. Without it the ledger said a source
             # was published but no published lesson traced back to anything (ASK-539).
@@ -279,7 +344,9 @@ def main():
         # first run on a fresh checkout leaves the file the daily job commits.
         flush_ledger(ledger_path, ledger)
 
-    print(json.dumps({"scanned": scanned, "published": published, "held": held}, indent=2))
+    print(json.dumps({"scanned": scanned, "published": published, "held": held,
+                      "skipped_dead": skipped_dead,
+                      "candidates": count_candidates(intake)}, indent=2))
     return 0
 
 

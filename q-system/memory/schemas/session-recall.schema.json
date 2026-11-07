@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "session-recall.schema.json",
   "title": "Session recall artifact (.session-recall.json)",
-  "description": "The surfaced-set for memory auto-capture (PRD prd-memory-autocapture-2026-07-04, finding-5). Records which memories were surfaced (recalled) per session so the Stop-hook capture knows the candidate set. Producer: SessionStart surface scripts via session_recall.record_surfaced. Consumer: memory_autocapture.py via read_recall, then clear_session. Gitignored, session-scoped. On-disk shape is a MAP keyed by session_id so overlapping sessions never mix or truncate each other; each value is one per-session record.",
+  "description": "The surfaced-set for memory auto-capture (PRD prd-memory-autocapture-2026-07-04, finding-5). Records which memories were surfaced (recalled) per session so the Stop-hook capture knows the candidate set. RETIRED 2026-10-30 (ASK-3400/ASK-3401): the producer and the consumer (memory_autocapture.py) are deleted, nothing writes this file; only correction_outcome.py still reads it. Formerly: Producer SessionStart surface scripts via session_recall.record_surfaced, Consumer memory_autocapture.py via read_recall then clear_session. Gitignored, session-scoped. On-disk shape is a MAP keyed by session_id so overlapping sessions never mix or truncate each other; each value is one per-session record.",
   "type": "object",
   "additionalProperties": {
     "type": "object",

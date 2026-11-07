@@ -159,7 +159,83 @@ def run(mod, label):
             f"selection_mode returned {mod.selection_mode(redrive)!r}")
 
 
+def run_started(mod, label):
+    """A started issue nobody is working is drafted again; a lane's is not (ASK-3825).
+
+    Driven through fetch_draftable with the REAL linear-sync.py, so the rule the
+    drafter asks is the same started_hold_reason the worker picker asks. Only the
+    transport is replaced: graphql answers from a dict, and KIPI_STATE_DIR points
+    at an empty temp dir so no live claim file is ever read.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    print(f"== DoR drafter, started tickets ({label})")
+    spec = importlib.util.spec_from_file_location(
+        "ls_for_drafter_test", os.path.join(HERE, "..", "linear-sync.py"))
+    ls = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ls)
+    now = datetime.now(timezone.utc)
+
+    def started(ident, hours, **kw):
+        node = issue(ident, project="kipi-system", state="started", **kw)
+        node["startedAt"] = (now - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+        return node
+
+    board = [
+        started("ASK-820", 24 * 30, desc="a real issue with no DoR yet"),
+        started("ASK-821", 1, desc="a lane moved this to In Progress an hour ago"),
+        started("ASK-822", 24 * 30, desc="## Definition of Ready\nOutcome: x",
+                labels=(mod.NEEDS_SCOPE_LABEL,)),
+        started("ASK-823", 24 * 30, desc="a lane moved this by hand a month ago"),
+    ]
+
+    def fake_graphql(query, variables):
+        if "attachments(" in query:
+            return {"issue": {"attachments": {"nodes": []}}}
+        return {"issues": {"nodes": board, "pageInfo": {"hasNextPage": False}}}
+
+    ls.graphql = fake_graphql
+    old_state = os.environ.get("KIPI_STATE_DIR")
+    state = tempfile.mkdtemp()
+    os.environ["KIPI_STATE_DIR"] = state
+    # The fleet ran ASK-820, ASK-821 and ASK-822; nobody in it ran ASK-823.
+    with open(os.path.join(state, "linear-worker-attempts.json"), "w") as fh:
+        fh.write('{"ASK-820": {"rounds": 1}, "ASK-821": {"rounds": 1}, '
+                 '"ASK-822": {"rounds": 1}}')
+    try:
+        got = {i["identifier"] for i in mod.fetch_draftable(ls, "team-fixture")}
+        ranked = {i["identifier"]: m for m, i in mod.prioritise(
+            [i for i in board if i["identifier"] in got])}
+    finally:
+        if old_state is None:
+            os.environ.pop("KIPI_STATE_DIR", None)
+        else:
+            os.environ["KIPI_STATE_DIR"] = old_state
+
+    if "ASK-820" in got:
+        ok("drafts a started issue abandoned 30 days with no claim and no PR (ASK-820)")
+    else:
+        bad("drafts an abandoned started issue (ASK-820)",
+            f"THE DEFECT: selected {sorted(got)}; a started ticket is invisible to the drafter")
+    if "ASK-821" not in got:
+        ok("leaves alone a ticket moved to In Progress an hour ago (ASK-821, the lane trap)")
+    else:
+        bad("leaves an hour-old started ticket alone (ASK-821)",
+            "the drafter would rewrite a live lane ticket")
+    if "ASK-823" not in got:
+        ok("leaves alone a month-old started ticket the fleet never ran (ASK-823, no worker history)")
+    else:
+        bad("leaves a ticket with no worker history alone (ASK-823)",
+            "the drafter would rewrite a ticket a lane or a person started")
+    if ranked.get("ASK-822") == "redraft":
+        ok("a started needs-scope refusal is ranked a redraft, not a first draft (ASK-822)")
+    else:
+        bad("a started needs-scope refusal is ranked a redraft (ASK-822)",
+            f"selected {sorted(got)}, ranked {ranked}")
+
+
 run(load(DRAFTER), os.path.basename(DRAFTER))
+run_started(load(DRAFTER), os.path.basename(DRAFTER))
 print()
 print(f"  {PASS} passed, {FAIL} failed")
 sys.exit(0 if FAIL == 0 else 1)

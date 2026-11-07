@@ -42,6 +42,27 @@ REPO="${KIPI_REPO:-/Users/assafkipnis/projects/kipi-system}"
 # log line still read normally. The tests drive the real script and stub `gh` by
 # prepending to PATH instead, which adds no knob to the shipped code.
 PREFLIGHT="$REPO/q-system/.q-system/scripts/repo-preflight.sh"
+# THE PRIVATE DISPATCH OVERLAY (ASK-3526). Client repos are dispatchable under
+# RULE-2026-10-30-A, and preflight check 4 enters no repo whose row does not pin
+# its remote. A client repo's remote carries the client's name, and this repo is
+# public: client-name-guard.py blocked the first cut, which put four such pins in
+# instance-registry.json. Same answer as that guard's own token list: the data
+# lives outside the repo, here, in rows with the registry's shape. Read by
+# fleet_candidates, slug_for_repo (repo-slug-lib.sh) and registry_facts
+# (linear_registry.py), all through this one exported variable.
+# DEFAULTED ONLY WHEN THE REGISTRY IS NOT OVERRIDDEN, so a test that points
+# KIPI_DISPATCH_REGISTRY at a fixture never reads the founder's live overlay.
+# A FUNCTION, SO THE SUITE CAN DRIVE IT (review of PR #577): inline, the
+# hermeticity rule had no test, and inverting it passed every case.
+dispatch_targets_default() {
+  if [ -n "${KIPI_DISPATCH_TARGETS+x}" ]; then
+    printf '%s' "$KIPI_DISPATCH_TARGETS"
+  elif [ -z "${KIPI_DISPATCH_REGISTRY:-}" ]; then
+    printf '%s' "$HOME/.config/kipi/dispatch-targets.json"
+  fi
+}
+KIPI_DISPATCH_TARGETS="$(dispatch_targets_default)"
+export KIPI_DISPATCH_TARGETS
 LOG="$HOME/.config/kipi/dispatch.log"
 # THE GLOBAL CAP IS NOW A SPEND CEILING, NOT THE CONFLICT GUARD (ASK-804).
 # One-run-per-repo is enforced structurally in the selection loop below, so this
@@ -101,9 +122,20 @@ PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
 # flagged. linear-worker.sh already does clear-on-recovery and is the reference.
 # Every page_once key below has a matching page_clear on its healthy path.
 # ONE LOCK PRIMITIVE, used by BOTH page_once and page_clear, so a clear cannot
-# interleave with a decision. mkdir is the atomic claim.
+# interleave with a decision.
 #
-# AN ORPHANED LOCK MUST AGE OUT. Treating any existing lock dir as a live holder
+# THE CLAIM IS BASH'S OWN O_EXCL REDIRECT, NOT THE mkdir BINARY (ASK-3797).
+# `( set -C; : > "$lock" )` is an open(O_CREAT|O_EXCL) done by bash itself, so
+# the kernel decides the winner and no utility sits in between. The old claim was
+# `mkdir "$lock"`, which is exclusive only if the mkdir program surfaces EEXIST.
+# GNU and BSD mkdir do. uutils coreutils 0.10.0 (Ubuntu 26.04's mkdir, and now
+# GitHub's ubuntu-latest) checks first, then creates and tolerates "already
+# exists": two concurrent mkdirs both exited 0 in 480 of 500 rounds, and
+# test-dispatch-stale-checkout.sh case 11 caught the duplicate page on 22 of 60
+# runner runs. A directory left by the old code still counts as held (the
+# redirect fails on it) and still ages out below (rmdir after rm fails).
+#
+# AN ORPHANED LOCK MUST AGE OUT. Treating any existing lock as a live holder
 # meant a notifier killed between the mkdir and its cleanup -- launchd reaping the
 # job, a reboot, a SIGKILL -- silenced that key PERMANENTLY. Reproduced: leave the
 # dir behind and the next three runs page 0, 0, 0 while the log cheerfully reports
@@ -114,7 +146,7 @@ PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
 # an orphan always self-clears before the next beat rather than needing a human.
 page_lock() {
   local lock="$1" now lock_mtime lock_probe
-  mkdir "$lock" 2>/dev/null && return 0
+  ( set -C; : > "$lock" ) 2>/dev/null && return 0
   now="$(date -u +%s)"
   lock_probe="$(stat -c %Y "$lock" 2>/dev/null)"
   case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac
@@ -124,8 +156,8 @@ page_lock() {
   # stealing a live lock and double-paging is the bug this exists to prevent.
   if [ -n "$lock_mtime" ] && [ "$(( now - lock_mtime ))" -gt 300 ]; then
     say "page lock: reaping an orphaned lock at $lock ($(( now - lock_mtime ))s old; a notifier was killed mid-decision)"
-    rmdir "$lock" 2>/dev/null || true
-    mkdir "$lock" 2>/dev/null && return 0
+    rm -f "$lock" 2>/dev/null || rmdir "$lock" 2>/dev/null || true
+    ( set -C; : > "$lock" ) 2>/dev/null && return 0
   fi
   return 1
 }
@@ -146,7 +178,7 @@ page_clear() {
   lock="$mark.lock"
   # Nothing to clear and nobody mid-decision: stay cheap on the healthy path, which
   # is every single beat.
-  [ -f "$mark" ] || [ -d "$lock" ] || return 0
+  [ -f "$mark" ] || [ -e "$lock" ] || return 0
   if ! page_lock "$lock"; then
     say "page state NOT cleared ($key): a notifier is mid-decision; the next healthy beat clears it"
     return 0
@@ -155,7 +187,7 @@ page_clear() {
     rm -f "$mark" 2>/dev/null || true
     say "page state cleared: $key recovered, so a recurrence pages again immediately"
   fi
-  rmdir "$lock" 2>/dev/null || true
+  rm -f "$lock" 2>/dev/null || true
 }
 
 page_once() {
@@ -170,10 +202,11 @@ page_once() {
   # comments included, for terms that would let a repo opt out of the preflight. A
   # few ordinary English words are therefore unusable in comments here. Reworded
   # rather than loosening a client-repo safety gate to suit my own prose. sp-cc67d834.)
-  # mkdir is the atomic primitive; a lock we cannot take means another process is
-  # already handling this exact key, so staying quiet is the correct answer.
-  # AN ORPHANED LOCK MUST AGE OUT. The first cut treated any existing lock dir as a
-  # live holder forever, so a notifier killed between the mkdir and its cleanup --
+  # page_lock's O_EXCL redirect is the atomic primitive (not mkdir: ASK-3797, see
+  # page_lock); a lock we cannot take means another process is already handling
+  # this exact key, so staying quiet is the correct answer.
+  # AN ORPHANED LOCK MUST AGE OUT. The first cut treated any existing lock as a
+  # live holder forever, so a notifier killed between the claim and its cleanup --
   # launchd reaping the job, a reboot, a SIGKILL -- silenced that key PERMANENTLY.
   # Reproduced: leave the dir behind and the next three runs page 0, 0, 0, while the
   # log cheerfully reports "another dispatcher is already deciding it" with nobody
@@ -191,17 +224,17 @@ page_once() {
   fi
   # RELEASED EXPLICITLY AT EVERY EXIT, NOT BY A `trap ... RETURN`.
   # The trap form looked tidier and was broken: bash tears down the function's
-  # locals before running the RETURN trap, so `rmdir "$lock"` hit an unset variable
+  # locals before running the RETURN trap, so the release hit an unset variable
   # and `set -u` killed the whole dispatcher mid-page. It surfaced as four unrelated
   # test failures at once (a missing verdict, two missing log lines) because the
-  # script simply stopped. Three exits, three rmdirs, no cleverness.
+  # script simply stopped. Every exit that took the lock removes it by hand.
   if [ -f "$mark" ]; then
     prev="$(sed -n 1p "$mark" 2>/dev/null)"
     stamp="$(sed -n 2p "$mark" 2>/dev/null)"
     case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
     if [ "$prev" = "$hash" ] && [ "$(( now - stamp ))" -lt "$PAGE_REPING_SECONDS" ]; then
       say "page suppressed ($key unchanged for $(( (now - stamp) / 60 ))m; re-pings after $(( PAGE_REPING_SECONDS / 3600 ))h)"
-      rmdir "$lock" 2>/dev/null || true
+      rm -f "$lock" 2>/dev/null || true
       return 0
     fi
   fi
@@ -210,7 +243,7 @@ page_once() {
   else
     say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
   fi
-  rmdir "$lock" 2>/dev/null || true
+  rm -f "$lock" 2>/dev/null || true
 }
 
 cd "$REPO" 2>/dev/null || {
@@ -544,8 +577,9 @@ turn_lock() {
 # The cursor's ONLY writer. Finding-12 rejected storing this in attempts-ledger.py
 # and the reason generalises: a plain read-then-write from two overlapping
 # heartbeats loses an update, which is the exact race attempts-ledger.py exists to
-# prevent. So the file gets one writer, an atomic mkdir lock (mkdir is the portable
-# test-and-set; macOS ships no flock(1)), and a rename rather than a truncating
+# prevent. So the file gets one writer, the turn lock (a mkdir claim, chosen
+# because macOS ships no flock(1); exclusive on BSD and GNU mkdir but NOT on
+# uutils mkdir, see page_lock and ASK-3915), and a rename rather than a truncating
 # write so no reader ever sees a half-written name.
 cursor_set() {
   local name="$1"
@@ -578,27 +612,59 @@ cursor_get() {
 # the count here was a comment that had to be edited the first time anyone used the
 # feature it describes, so it names the opted-in rows instead -- and the authority is
 # the registry, not this line. Opt-in is still consent and never safety:
-# repo-preflight.sh is what decides whether entering one is safe NOW, and it refuses
-# a client engagement repo and the engagement root even when the row says true.
+# repo-preflight.sh is what decides whether entering one is safe NOW. Client
+# engagement repos are entered like any other repo since RULE-2026-10-30-A, which
+# superseded the 2026-08-13 refusal; they pass the same preflight checks or stay out.
 fleet_candidates() {
   local registry="${KIPI_DISPATCH_REGISTRY:-$REPO/instance-registry.json}"
   printf '%s\t%s\t%s\n' "$(basename "$REPO")" "$REPO" ""
   [ -f "$registry" ] || { say "fleet: no registry at $registry, home repo only"; return 0; }
-  python3 - "$registry" "$REPO" <<'PY'
+  python3 - "$registry" "$REPO" "${KIPI_DISPATCH_TARGETS:-}" <<'PY'
 import json, sys
-reg, home = sys.argv[1], sys.argv[2]
+reg, home, overlay = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(reg))
 except Exception:
     sys.exit(0)          # an unreadable registry means home only, never "everything"
-for e in data.get("instances", []):
+# The private overlay (KIPI_DISPATCH_TARGETS, see the top of this file) has the
+# registry's shape. An unreadable overlay adds nothing. A path the PUBLIC registry
+# records as explicitly off (enabled: false, a decision with a reason) is never
+# switched on from the overlay: a recorded decision is not overridden silently.
+# Paths compare by realpath, as slug_for_repo and registry_facts do: the first
+# cut compared strings, so a trailing slash in the overlay undid a recorded OFF.
+import os
+def real(p):
+    try:
+        return os.path.realpath(p)
+    except Exception:
+        return p
+def opted(e):
     d = e.get("dispatch")
-    if not isinstance(d, dict) or d.get("enabled") is not True:
+    return isinstance(d, dict) and d.get("enabled") is True and bool(e.get("path"))
+rows = list(data.get("instances", []))
+off = {real(e["path"]) for e in rows if e.get("path")
+       and isinstance(e.get("dispatch"), dict) and e["dispatch"].get("enabled") is False}
+extra = []
+if overlay:
+    try:
+        extra = [e for e in json.load(open(overlay)).get("instances", [])
+                 if isinstance(e, dict) and opted(e) and real(e["path"]) not in off]
+    except Exception:
+        extra = []
+# An opted-in registry row with no pin takes the overlay's pin for the same path,
+# so the three readers agree on the remote preflight is handed.
+pins = {real(e["path"]): e["dispatch"].get("expected_remote", "") for e in extra}
+seen = set()
+for e in rows + extra:
+    if not isinstance(e, dict) or not opted(e):
         continue
-    p = e.get("path", "")
-    if not p or p == home:
+    p = e["path"]
+    r = real(p)
+    if p == home or r in seen:
         continue
-    print("%s\t%s\t%s" % (e.get("name", ""), p, d.get("expected_remote", "")))
+    seen.add(r)
+    remote = e["dispatch"].get("expected_remote") or pins.get(r, "")
+    print("%s\t%s\t%s" % (e.get("name", ""), p, remote))
 PY
 }
 
@@ -637,7 +703,7 @@ rotation() {
 # carries on past it; a repo that is permanently unsafe must not stall the repos
 # behind it forever.
 pick_list() {
-  local name path remote out client_n=0 client_names=""
+  local name path remote out
   while IFS=$'\t' read -r name path remote; do
     [ -n "$name" ] || continue
     if [ "$path" = "$REPO" ]; then
@@ -655,20 +721,11 @@ pick_list() {
       printf '%s\t%s\n' "$name" "$path"
     else
       say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
-      case "$out" in
-        *"FAIL client-repo:"*)
-          client_n=$((client_n + 1))
-          client_names="${client_names:+$client_names, }$name" ;;
-      esac
     fi
   done < <(rotation)
-  # COUNTED, AND IN THE DIGEST'S OWN SHAPE. daily-linear-digest.py's third section
-  # ("tried, could not be worked") scrapes this log for `N thing(s) <what>` lines,
-  # so a refusal phrased any other way is invisible in the one surface the founder
-  # actually reads once a day. Emitted only when it happened: a client repo being
-  # refused is a real event, and a "0 refused" line every 15 minutes is the
-  # cry-wolf noise that gets a channel muted.
-  [ "$client_n" -gt 0 ] && say "$client_n repo(s) REFUSED as client engagement repos (unattended dispatch is not allowed there, even when opted in): $client_names"
+  # The counted "REFUSED as client engagement repos" line that used to follow is
+  # gone with the refusal it counted (RULE-2026-10-30-A). A client repo that fails
+  # a remaining check is named by the REFUSED line above, like any other repo.
   return 0
 }
 
@@ -989,15 +1046,15 @@ if [ "$TARGET_PATH" != "$REPO" ]; then
   # (repo-slug-lib.sh), and review artifacts are keyed by repo AND PR so two
   # repos' PR #42 cannot consume each other's records.
   #
-  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. Founder,
-  # 2026-08-13: "no. unattended agents should not reach a client repo." That is
-  # enforced by repo-preflight.sh check 0, which #144 landed and which pick_list
-  # above runs BEFORE any repo reaches this point -- a client-shaped path is
-  # refused there even when its registry row says dispatch.enabled: true. This
-  # HOLD was a blunt stand-in for a gate that did not exist yet. It exists now,
-  # upstream, and it fails closed. Removing a stand-in is only safe because the
-  # real thing landed first; if check 0 is ever weakened, that is the line that
-  # matters, not this one.
+  # WHAT PROTECTS CLIENT REPOS IS NOT THIS LINE, AND NEVER WAS. The HOLD was a
+  # stand-in for repo-preflight.sh, which pick_list above runs BEFORE any repo
+  # reaches this point. Its check 0 refused client engagement repos under the
+  # founder decision of 2026-08-13 ("no. unattended agents should not reach a
+  # client repo"). That decision is SUPERSEDED by RULE-2026-10-30-A: "The
+  # unattended agent should and can reach client repos to work on the tickets."
+  # Client repos now pass or fail the same remaining checks as every repo (kill
+  # switch, hooks, pinned remote, credentials, branch protection; the dirty-tree
+  # refusal was retired in ASK-3526 because the worker never uses the main checkout).
   #
   # TWO CARRIERS FOR ONE FACT, as the comment above says: --repo is the explicit
   # argument the worker parses, and KIPI_TARGET_REPO crosses the converge.sh
@@ -1072,9 +1129,33 @@ fi
 # stale_check applies to a failed fetch. linear-worker.sh:251 exits BEFORE any
 # Linear call and already pages the founder itself, so this must not double-page;
 # it must only refrain from clearing.
-if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed'; then
+# The default-branch stop (ASK-3550) sits where the fetch halt does: after the
+# fetch, before Linear, self-paged by the worker. Same branch, same reason.
+if printf '%s' "$WORK_OUT" | grep -qiE 'INFRA: git fetch failed|INFRA: cannot determine the default branch'; then
   say "worker stopped on an environment failure before reaching Linear; leaving linear-down state untouched (the worker pages this one itself)"
   exit 1
+fi
+# THE USAGE BRAKE STOPS THE RUN IN THE SAME PLACE, AND MUST BE READ THE SAME WAY
+# (ASK-2010; claude review of PR #472, major 2). rc=3 is linear-worker.sh's usage
+# breaker holding the bot. It fires as the FIRST thing after the argument parse,
+# before the fetch, the claim and every Linear call, so a braked run is no more
+# evidence that Linear recovered than a failed fetch is -- and clearing on it
+# ERASES the state that would page a real outage. Silence dressed as health, the
+# exact defect the guard above this line exists to close.
+#
+# KEYED ON THE EXIT CODE, NOT ON THE PAUSE LINE. linear-worker.sh's own header
+# says a caller must never have to parse a message to tell a brake from a break,
+# and a code cannot be reworded out from under this guard the way the INFRA
+# strings above were. `${WORK_RC:-0}` because the test harness slices this block
+# out and drives it with WORK_OUT alone; unset means "no brake", the safe read.
+#
+# NO PAGE and exit 0: the breaker files its own single Linear ticket on the way
+# into the pause and stays quiet while it holds, and a deliberately idle loop is
+# healthy, not down. Paging here would be one ticket per 15-minute beat for a
+# condition already on the board.
+if [ "${WORK_RC:-0}" -eq 3 ]; then
+  say "worker is BRAKED by the usage breaker: it stopped before reaching Linear, so nothing was picked and this is not evidence of recovery. Leaving linear-down state untouched; the breaker files its own ticket."
+  exit 0
 fi
 page_clear linear-down
 # --- LINEAR-OUTAGE-GUARD:END ---

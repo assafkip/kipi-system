@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-worker-state-round-trip.sh",
+ "runner": "bash"
+}

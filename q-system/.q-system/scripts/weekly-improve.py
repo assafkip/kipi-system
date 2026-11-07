@@ -11,9 +11,12 @@ mbl-weekly-improve-runner); this file never schedules itself.
 
 Three rules, each with a failing input in test_weekly_improve.py:
 
-1. EMPTY IS NOT BROKEN. No friction file, or an empty one, renders
-   "nothing this week". An unreadable or malformed one renders COULD NOT READ.
-   The two strings differ (a-zero-result-must-prove-it-is-empty-not-broken).
+1. EMPTY IS NOT BROKEN, AND A MISSING INPUT IS NOT A QUIET WEEK (ASK-3402).
+   An unreadable or malformed file renders COULD NOT READ. A file that does
+   not exist renders "input missing, no <file> exists"; an empty one "input
+   empty"; rows all older than the window name the last row's date. "nothing
+   this week" is no longer printed for a starved input: on 2026-10-26 the only
+   run said it while both producers had no caller.
 2. THE ROADMAP BOUNDARY IS A GATE HERE TOO. Every line is re-classified at
    read time with roadmap_scope (Codex finding-1: a line that reached the file
    with a declared system target is not trusted). roadmap and unknown are
@@ -135,6 +138,19 @@ def read_inbox(inbox=None):
     return files, None
 
 
+def _day(raw) -> str:
+    return str(raw)[:10]
+
+
+def input_count(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> int:
+    """In-window friction rows plus inbox files: the number loop_starvation.py
+    records per run. An unreadable input counts 0 and is already degraded."""
+    now = now or dt.datetime.now().astimezone()
+    rows, _ = read_friction(friction_path)
+    files, _ = read_inbox(inbox)
+    return len([r for r in rows if in_window(r, now, days)]) + len(files)
+
+
 def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> tuple:
     """(message, degraded)."""
     now = now or dt.datetime.now().astimezone()
@@ -149,8 +165,14 @@ def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> 
         older = len(all_rows) - len(rows)
         proposals, refused = propose(rows)
         lines.append("*Friction*")
-        if not rows:
-            lines.append("  nothing this week")
+        fpath = Path(friction_path) if friction_path else FRICTION_FILE
+        if not fpath.exists():
+            lines.append(f"  Friction: input missing, no {fpath.name} exists (nothing has ever written one)")
+        elif not all_rows:
+            lines.append(f"  Friction: input empty, {fpath.name} has no rows")
+        elif not rows:
+            last = max(_day(r.get("at", "")) for r in all_rows)
+            lines.append(f"  Friction: no new rows in {days} days, last row {last}")
         else:
             lines += [f"  {p}" for p in proposals] or ["  nothing proposable this week"]
             if refused:
@@ -163,7 +185,14 @@ def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> 
         lines.append(f"  COULD NOT READ: {ierr}")
         degraded = True
     elif not files:
-        lines.append("  nothing this week")
+        idir = Path(inbox) if inbox else INBOX_DIR
+        if not idir.is_dir():
+            lines.append("  Skill proposals inbox: input missing, no inbox directory exists")
+        else:
+            stamps = [p.stat().st_mtime for p in idir.iterdir() if p.is_file()]
+            last = dt.datetime.fromtimestamp(max(stamps), dt.timezone.utc).strftime("%Y-%m-%d") if stamps else None
+            lines.append(f"  Skill proposals inbox: input empty, last file {last}" if last
+                         else "  Skill proposals inbox: input empty, no file has ever landed")
     else:
         lines += [f"  {f}" for f in files]
     return "\n".join(lines), degraded
@@ -174,7 +203,18 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="print, send nothing")
     ap.add_argument("--friction", default=None, help="override the friction ledger path")
     ap.add_argument("--inbox", default=None, help="override the proposals inbox dir")
+    ap.add_argument("--count-inputs", action="store_true", help="print the run's input count, send nothing")
     args = ap.parse_args(argv)
+    if args.count_inputs:
+        # An unreadable input is not starvation: exit 1 with no number so the
+        # caller records nothing (PR #572 review, minor).
+        _, ferr = read_friction(args.friction)
+        _, ierr = read_inbox(args.inbox)
+        if ferr or ierr:
+            print(ferr or ierr, file=sys.stderr)
+            return 1
+        print(input_count(args.friction, args.inbox))
+        return 0
     message, degraded = build(args.friction, args.inbox)
     print(message)
     if args.dry_run:

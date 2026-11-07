@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Session-scoped recall record for kipi memory auto-capture (issue
+"""RETIRED 2026-10-30 (ASK-3400/ASK-3401): the earned-trust loop is retired.
+memory_autocapture.py, memory-scores-surface.py and knowledge_supply's
+_record_recall are removed, so nothing in the fleet writes this file any more.
+The module stays only because correction_outcome.py still reads it; the
+producers named below no longer exist.
+
+Session-scoped recall record for kipi memory auto-capture (issue
 autocapture-recall-artifact, PRD prd-memory-autocapture-2026-07-04, finding-5).
 
 The MISSING ARTIFACT the referee needs: which memories were actually surfaced
 (recalled) this session. Capture can only score a memory that was recalled, and
 nothing recorded that until now.
 
-- Producer: the SessionStart surface scripts (memory-scores-surface.py,
-  memory-confidence-surface.py) call `record_surfaced` with the ids they printed.
-- Consumer: the Stop-hook capture (memory_autocapture.py) calls `read_recall` for
-  the candidate set, then `clear_session` to rotate.
+- Producer (RETIRED): memory-scores-surface.py and knowledge_supply were the
+  callers of `record_surfaced`; both are gone. memory-confidence-surface.py never
+  called it (zero non-test callers as of 2026-10-30).
+- Consumer (RETIRED): memory_autocapture.py is deleted. Only correction_outcome.py
+  still calls `read_recall`.
 
 Why a session-keyed MAP and not a flat single-session file (Codex finding-5):
 overlapping Claude sessions share this one path. A flat `{session_id, surfaced}`

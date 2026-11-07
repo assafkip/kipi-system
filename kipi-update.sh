@@ -5,6 +5,20 @@ trap "" PIPE
 # still run the instance's active hooks and fail closed when a hook rejects them.
 export GIT_TERMINAL_PROMPT=0
 
+# ASK-3621. The updater's commits run each TARGET's own pre-commit gates, and the
+# consulting root's `linear-identity` gate goes red when KIPI_LINEAR_API_KEY is
+# empty. launchd runs /bin/bash and never reads ~/.zshenv, so the weekly
+# lessons-daily fan-out always had an empty one: measured 2026-10-31 16:13, the
+# gate printed "Linear writes would be recorded as the founder" and the consulting
+# config commit was refused and rolled back. This is the same declaration
+# ~/.zshenv makes for interactive shells, not a bypass: it makes the gate TRUE
+# (the Sana token is the identity) instead of switching it off. Never overrides a
+# value already set, and never reaches for the founder key.
+if [ -z "${KIPI_LINEAR_API_KEY:-}" ] && [ -s "$HOME/.config/kipi/linear-sana-token" ]; then
+  KIPI_LINEAR_API_KEY="$(cat "$HOME/.config/kipi/linear-sana-token")"
+  export KIPI_LINEAR_API_KEY
+fi
+
 # kipi-update.sh - Sync latest kipi-system skeleton into all registered instances
 # Usage: ./kipi-update.sh [--dry-run]
 #
@@ -14,7 +28,17 @@ export GIT_TERMINAL_PROMPT=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="$SCRIPT_DIR/instance-registry.json"
-SKELETON_REMOTE="https://github.com/assafkip/kipi-system.git"
+# KIPI_SKELETON_REMOTE lets a fork point at itself (GitHub issue #2); default is upstream
+SKELETON_REMOTE="${KIPI_SKELETON_REMOTE:-https://github.com/assafkip/kipi-system.git}"
+# With no override, the provenance proof compares this checkout with ITS OWN origin, which is
+# what it always did: a fork whose origin is itself, and a test fixture whose origin is a bare
+# repo on disk, both prove against the remote they actually came from. The override wins when
+# set. (Review round 2 of PR A: fetching the upstream URL by default broke the fixture that
+# has no network and no override.)
+if [ -z "${KIPI_SKELETON_REMOTE:-}" ]; then
+  ORIGIN_URL="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)"
+  [ -n "$ORIGIN_URL" ] && SKELETON_REMOTE="$ORIGIN_URL"
+fi
 SKELETON_BRANCH="main"
 # Args in any order: --dry-run and/or --only <name>. Without --only there is no
 # way to verify a risky change against ONE repo before the other 22, and a
@@ -28,6 +52,27 @@ ONLY=""
 # consulting run script passes it, because there "ahead" has meant real work
 # every time (2026-09-06, three times in one day).
 REFUSE_INSTANCE_AHEAD=0
+# --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
+# checked-out branch still holds updater commits origin does not have (ASK-3655,
+# ASK-3633). Scar: the updater commits to the LOCAL branch and nothing pushes it.
+# consulting stacked 12 unpushed commits, another instance 88; the next origin edit to the
+# same file (ASK-3528 on .claude/settings.json) then conflicted follow_main.sh and
+# every later sync built on a base origin never saw. Reported always; refused only
+# with the flag, because fleet-wide most instances are ahead on purpose (measured
+# 2026-11-01: 12 of 13 with commits ahead) and a gate red on its population gets
+# switched off. Only updater-authored commits count, so a human's own branch work
+# is never judged. Reads the LAST FETCHED origin ref and never fetches.
+REFUSE_UNLANDED_SYNC=0
+UNLANDED_SYNC_COUNT=0
+unlanded_sync_scan() {
+  local path="$1" up
+  UNLANDED_SYNC_COUNT=0
+  up="$(git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
+  UNLANDED_SYNC_COUNT="$(git -C "$path" log --format=%s "$up..HEAD" 2>/dev/null \
+    | grep -c '\[no-issue: fleet updater' || true)"
+  [ "$UNLANDED_SYNC_COUNT" -gt 0 ] && echo "  unlanded sync: $UNLANDED_SYNC_COUNT updater commit(s) on HEAD are not on $up"
+  return 0
+}
 # --skip-reach-preflight: run without first asking fleet-reach-audit.py which
 # instances would refuse. See reach_preflight. The hatch exists so a genuinely
 # unblockable instance cannot wedge the whole fleet, and it says so out loud.
@@ -42,6 +87,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     --refuse-instance-ahead) REFUSE_INSTANCE_AHEAD=1; shift ;;
+    --refuse-unlanded-sync) REFUSE_UNLANDED_SYNC=1; shift ;;
     --skip-reach-preflight) SKIP_REACH_PREFLIGHT=1; shift ;;
     --only)
       ONLY="${2:-}"
@@ -53,7 +99,7 @@ while [ $# -gt 0 ]; do
       ;;
     *)
       echo "ERROR: unknown argument: $1" >&2
-      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--skip-reach-preflight]" >&2
+      echo "Usage: kipi-update.sh [--dry-run] [--only <instance-name>] [--refuse-instance-ahead] [--refuse-unlanded-sync] [--skip-reach-preflight]" >&2
       exit 1
       ;;
   esac
@@ -284,6 +330,13 @@ PLUGIN_COPY_EXCLUDES=(
 # fixtures and clones with no origin, where there is no remote to disagree with.
 fleet_ship_ref() {
   local ref
+  # Once skeleton-provenance.sh has proven HEAD equals the CONFIGURED remote's branch, HEAD
+  # is the ref with the proven meaning; origin/<branch> is only that when origin happens to be
+  # the configured remote, which a fork with KIPI_SKELETON_REMOTE set is not (issue #2, PR A).
+  if [ "${PROVENANCE_OK:-}" = "1" ]; then
+    printf 'HEAD\n'
+    return 0
+  fi
   for ref in "refs/remotes/origin/$SKELETON_BRANCH" "refs/heads/$SKELETON_BRANCH" HEAD; do
     if git -C "$SCRIPT_DIR" rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
       printf '%s\n' "$ref"
@@ -787,7 +840,11 @@ if [ -n "$SYNC_SCOPE_DIRTY" ]; then
   exit 1
 fi
 
-if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
+# ARMED BY THE OVERRIDE TOO, NOT ONLY BY `origin` (ASK-2935, Codex P1 on PR #555). The
+# override names a remote to prove against, so "nothing to be stale against" is false
+# whenever it is set. Gated on origin alone, a checkout with the override and no origin
+# printed DISARMED and fanned an unproven HEAD to every instance.
+if [ -n "${KIPI_SKELETON_REMOTE:-}" ] || git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
   SKELETON_HEAD_BRANCH="$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD || true)"
   if [ "$SKELETON_HEAD_BRANCH" != "$SKELETON_BRANCH" ]; then
     echo ""
@@ -818,40 +875,24 @@ if git -C "$SCRIPT_DIR" remote get-url origin >/dev/null 2>&1; then
   # exported at the top of this script, so an unreachable origin errors out
   # rather than hanging on credentials. Fanning to 23 repos on an unproven
   # source is worse than not fanning at all.
-  if ! git -C "$SCRIPT_DIR" fetch origin "$SKELETON_BRANCH" --quiet 2>/dev/null; then
+  # The proof itself lives in skeleton-provenance.sh so a test can drive it with two bare
+  # repositories. It fetches the CONFIGURED remote ($SKELETON_REMOTE, overridable through
+  # KIPI_SKELETON_REMOTE) and compares HEAD with FETCH_HEAD, never with origin/<branch>:
+  # a fork with the override set used to be compared against whatever `origin` was, so the
+  # override was printed above and ignored here (GitHub issue #2, PR A, review round 1).
+  PROVENANCE="$SCRIPT_DIR/q-system/.q-system/scripts/skeleton-provenance.sh"
+  if [ ! -f "$PROVENANCE" ]; then
     echo ""
-    echo "ABORT: could not fetch origin/$SKELETON_BRANCH."
-    echo "Without it there is no way to prove this working tree matches what was"
-    echo "reviewed. Fix connectivity, or propagate later; do not fan 23 repos"
-    echo "from an unverified source."
+    echo "ABORT: skeleton-provenance.sh is missing at $PROVENANCE; nothing can prove this"
+    echo "working tree matches what was reviewed."
     exit 1
   fi
-  SKELETON_LOCAL_SHA="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
-  SKELETON_REMOTE_SHA="$(
-    git -C "$SCRIPT_DIR" rev-parse "refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || true
-  )"
-  if [ -z "$SKELETON_LOCAL_SHA" ] || [ -z "$SKELETON_REMOTE_SHA" ]; then
-    echo ""
-    echo "ABORT: could not resolve HEAD or origin/$SKELETON_BRANCH to a commit."
+  if ! bash "$PROVENANCE" "$SCRIPT_DIR" "$SKELETON_REMOTE" "$SKELETON_BRANCH"; then
     exit 1
   fi
-  if [ "$SKELETON_LOCAL_SHA" != "$SKELETON_REMOTE_SHA" ]; then
-    SKELETON_DRIFT="$(
-      git -C "$SCRIPT_DIR" rev-list --left-right --count \
-        "HEAD...refs/remotes/origin/$SKELETON_BRANCH" 2>/dev/null || printf '? ?'
-    )"
-    echo ""
-    echo "ABORT: the skeleton is on $SKELETON_BRANCH but not AT origin/$SKELETON_BRANCH."
-    echo "  local:  $SKELETON_LOCAL_SHA"
-    echo "  origin: $SKELETON_REMOTE_SHA"
-    echo "  ahead/behind: $SKELETON_DRIFT"
-    echo "Ahead means bytes nobody reviewed; behind means bytes that were"
-    echo "superseded. Either way the fleet would get something other than"
-    echo "$SKELETON_BRANCH. Push or pull before propagating."
-    exit 1
-  fi
+  PROVENANCE_OK=1     # fleet_ship_ref ships HEAD from here on: it is the proven ref
 else
-  echo "skeleton branch check: DISARMED (no origin remote; nothing to be stale against)"
+  echo "skeleton branch check: DISARMED (no origin remote and no KIPI_SKELETON_REMOTE; nothing to be stale against)"
 fi
 
 # Preflight: refuse to overwrite a replica that has drifted AHEAD of the skeleton.
@@ -1840,6 +1881,61 @@ trap cleanup_updater_temps EXIT
 #   and the disarm is announced rather than silent.
 #
 # Pinned by test-kipi-update-reach-preflight.sh.
+# Busy guard. Returns 0 when no process matching the target's guard regex is
+# running (or it has none), 1 after KIPI_BUSY_WAIT_SECS (default 600). Polls every
+# KIPI_BUSY_POLL_SECS (default 15). The sleep is the updater's own wait loop, run
+# as the founder's launchd/shell job, never inside an agent tool call.
+KIPI_BUSY_GUARDS_DEFAULT='ASK_AI_consultant=follow_main\.sh|content-engine-runner\.sh|pipeline\.daily|problems-run\.sh'
+# The processes that ARE the job, not processes that merely mention it. `pgrep -f`
+# matched the whole command line, so a wait loop whose text contains
+# "pipeline.daily" (consulting-72's heartbeat wait, pid 28423, 2026-11-01) held the
+# approved consulting apply at "busy, nothing written" forever. A process counts
+# only when its argv0 or its first non-flag argument has a basename equal to a
+# guard name (with an optional .py/.sh), so `bash job.sh` and `python3 -u job.py`
+# match and `bash -c 'until ...; # job.sh'` does not (argv1 is -c, and its text
+# is not an argument we read). The updater's own pid and its ancestors are
+# excluded: they carry this script's name and arguments.
+busy_processes() {
+  local re="$1" skip=" $$ " p
+  p=$$
+  while [ "${p:-0}" -gt 1 ] 2>/dev/null; do
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    [ -n "$p" ] && skip="$skip$p "
+  done
+  ps -axo pid=,command= | awk -v re="^(${re})(\\.py|\\.sh)?$" -v skip="$skip" '
+    function base(s,   n, a) { n = split(s, a, "/"); return a[n] }
+    {
+      pid = $1
+      if (index(skip, " " pid " ")) next
+      hit = (base($2) ~ re)
+      for (i = 3; i <= NF && !hit; i++) {
+        if ($i ~ /^-/) continue
+        hit = (base($i) ~ re)
+        break
+      }
+      if (hit) print pid ":" base($2)
+    }'
+}
+
+wait_for_quiet_target() {
+  local target="$1" guards="${KIPI_BUSY_GUARDS-$KIPI_BUSY_GUARDS_DEFAULT}" g re waited=0
+  re=""
+  while IFS= read -r g; do
+    [ "${g%%=*}" = "$target" ] && re="${g#*=}"
+  done <<< "$(printf '%s\n' "$guards" | tr ';' '\n')"
+  [ -n "$re" ] || return 0
+  while [ -n "$(busy_processes "$re")" ]; do
+    if [ "$waited" -ge "${KIPI_BUSY_WAIT_SECS:-600}" ]; then
+      echo "  $target busy after ${waited}s; still running: $(busy_processes "$re" | head -3 | tr '\n' ' ')"
+      return 1
+    fi
+    [ "$waited" -eq 0 ] && echo "  $target is busy; waiting for: $(busy_processes "$re" | head -3 | tr '\n' ' ')"
+    sleep "${KIPI_BUSY_POLL_SECS:-15}"
+    waited=$((waited + ${KIPI_BUSY_POLL_SECS:-15}))
+  done
+  return 0
+}
+
 reach_preflight() {
   local audit="$SCRIPT_DIR/fleet-reach-audit.py" out rc
   if [ "$SKIP_REACH_PREFLIGHT" = "1" ]; then
@@ -1865,7 +1961,12 @@ reach_preflight() {
   # for exactly the case where it cannot build the guard's pathspec; the old
   # 2>/dev/null deleted it and left an ABORT naming only an exit code.
   # A non-zero exit aborts even with stdout present: a raising audit is no verdict.
-  out="$(python3 "$audit" --json)" && rc=0 || rc=$?
+  # --gates: run each target's own pre-commit gates in a scratch worktree BEFORE
+  # any write (ASK-3621). Scoped to --only so a red gate in one instance cannot
+  # stop a run aimed at another. A dry run probes too: the probe is read-only.
+  local audit_args=(--json --gates)
+  [ -n "${ONLY:-}" ] && audit_args+=(--only "$ONLY")
+  out="$(python3 "$audit" "${audit_args[@]}")" && rc=0 || rc=$?
   if [ -z "$out" ] || [ "$rc" -ne 0 ]; then
     echo ""
     echo "ABORT: the reach preflight produced no verdict (exit $rc)."
@@ -1895,7 +1996,8 @@ reach_preflight() {
   #     skipped entirely, which let the run ENTER a blocked instance.
   # Only `|| rc=$?` both suppresses set -e and preserves python's real status.
   rc=0
-  python3 - "$out" "${ONLY:-}" <<'PYEOF' || rc=$?
+  GATED_FILE="$(mktemp)"
+  python3 - "$out" "${ONLY:-}" "$GATED_FILE" <<'PYEOF' || rc=$?
 import json, sys
 rows = json.loads(sys.argv[1])
 only = sys.argv[2]
@@ -1913,12 +2015,13 @@ def _in_loop_only(r):
 in_loop = [r for r in fleet if _in_loop_only(r)]
 fleet = [r for r in fleet if not _in_loop_only(r)]
 founder = [r for r in rows if r.get("verdict") == "BLOCKED-FOUNDER"]
+gated = [r for r in rows if r.get("verdict") == "BLOCKED-GATE"]
 ok = [r for r in rows if r.get("verdict") == "WOULD-SYNC"]
 # MISSING and NOT-A-REPO count against the denominator, so they are NAMED.
 # Unnamed, they read as an unexplained shortfall -- "23 of 24" with nothing
 # accounting for the 24th (PR #396 review round 2, minor).
 other = [r for r in rows
-         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER")]
+         if r.get("verdict") not in ("WOULD-SYNC", "BLOCKED-FLEET", "BLOCKED-FOUNDER", "BLOCKED-GATE")]
 scope = f" (scoped to --only {only})" if only else ""
 # The headline says what the audit MEASURED (a dirty tree inside the synced
 # pathspec), never "would sync now": a stale skeleton or a dangling symlink
@@ -1946,8 +2049,23 @@ for r in fleet:
     print(f"  {r['name']}: BLOCKED by updater exhaust")
     for b in (r.get("blocked_by") or [])[:5]:
         print(f"      {b.get('status','?')}  {b.get('path')}")
-sys.exit(2 if fleet else 0)
+for r in gated:
+    print(f"  {r['name']}: BLOCKED by its own pre-commit gate(s): "
+          f"{', '.join(r.get('gates_red') or [])}")
+# Scoped to ONE instance (--only), a red gate aborts: there is nothing else to
+# run. In a fleet run it must NOT abort the others -- PR #396's lesson, one
+# instance's refusal stopping every sync. The names go to a file the loop reads,
+# and each is skipped UNWRITTEN there.
+open(sys.argv[3], "w").write("".join(r["name"] + "\n" for r in gated))
+sys.exit(3 if (gated and only) else (2 if fleet else 0))
 PYEOF
+  if [ "$rc" -eq 3 ]; then
+    echo ""
+    echo "ABORT: the target's own pre-commit gate is red on its current HEAD."
+    echo "Nothing was written to it. The gate is named above; fix the"
+    echo "cause (environment or the target), do not skip the gate."
+    exit 1
+  fi
   if [ "$rc" -eq 2 ]; then
     echo ""
     echo "ABORT: instance(s) named above carry the updater's own exhaust."
@@ -1982,6 +2100,23 @@ while IFS='|' read -r name path prefix itype declared; do
     continue
   fi
   echo "--- $name ($itype) ---"
+  if [ -n "${GATED_FILE:-}" ] && grep -qxF -- "$name" "$GATED_FILE" 2>/dev/null; then
+    echo "  SKIPPED UNWRITTEN: its own pre-commit gate is red (named in the reach preflight above)"
+    count_instance_failure
+    echo ""
+    continue
+  fi
+  # ASK-3621 / consulting-72 ruling 2026-10-31: the consulting root runs launchd
+  # jobs that write into the same tree the rsync rewrites. Wait while one is up,
+  # then abandon the target UNWRITTEN rather than race it. The pattern list is
+  # data (KIPI_BUSY_GUARDS, "name=regex"), and the updater does the check itself
+  # so no operator has to remember to run pgrep first.
+  if [ "$DRY_RUN" != "--dry-run" ] && ! wait_for_quiet_target "$name"; then
+    echo "  ERROR: $name is busy (jobs matching its busy guard still running); nothing written"
+    count_instance_failure
+    echo ""
+    continue
+  fi
 
   if [ ! -d "$path" ]; then
     echo "  SKIP: path $path does not exist"
@@ -2082,9 +2217,11 @@ while IFS='|' read -r name path prefix itype declared; do
     if [ "${#MODEL_SKIPPED_PATHS[@]}" -gt 0 ]; then
       echo "  dry-run model: skipped ${#MODEL_SKIPPED_PATHS[@]} nested repositories (separate repos, not synced)"
     fi
-    if ! python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
+    if ! MODEL_IGNORED_LINKS_FILE="$DRY_MODEL_ROOT/ignored-links" \
+        python3 - "$path" ${MODEL_SKIPPED_PATHS[@]+"${MODEL_SKIPPED_PATHS[@]}"} <<'PY'
 import os
 import pathlib
+import subprocess
 import sys
 
 # An escaping symlink is allowed ONLY when it resolves to an existing regular
@@ -2111,6 +2248,36 @@ root = pathlib.Path(sys.argv[1]).resolve()
 # canonical links refused cole-gtm, its parent, for a sync that never touches
 # personal-brand at all.
 skipped = {(root / arg).resolve(strict=False) for arg in sys.argv[2:]}
+# Links the model leaves out, one relative path per line, for the rsync excludes.
+ignored_out = open(os.environ["MODEL_IGNORED_LINKS_FILE"], "w")
+
+
+def left_out(candidate):
+    """True for a link git IGNORES and does not track, which the model can leave
+    out: a path the model does not contain cannot be written through.
+
+    Scar ASK-3887 (measured 2026-11-06): a client instance carries a
+    gitignored link from one of its folders to another repo on purpose, and this
+    walk refused every dry run of it. `git check-ignore` exits 0 only for an ignored path that
+    is not tracked; a tracked link (even one a .gitignore line names) and a path
+    under .git/ exit 1 and keep the refusal, as does any git error. A name that
+    rsync would read as a pattern is not left out, so the exclude cannot match
+    more than this one path.
+    """
+    rel = str(candidate.relative_to(root))
+    if any(ch in rel for ch in "*?[\\\n"):
+        return False
+    try:
+        result = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--", rel],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    if result.returncode != 0:
+        return False
+    ignored_out.write(rel + "\n")
+    return True
+
+
 for current, directories, files in os.walk(root, followlinks=False):
     directories[:] = [
         name for name in directories
@@ -2149,7 +2316,7 @@ for current, directories, files in os.walk(root, followlinks=False):
                 break
         else:
             internal = False
-        if internal:
+        if internal or left_out(candidate):
             continue
         reason = "directory" if candidate.is_dir() else "dangling"
         print(f"unsafe {reason} symlink escapes the disposable model: {candidate.relative_to(root)} -> {target}", file=sys.stderr)
@@ -2157,6 +2324,18 @@ for current, directories, files in os.walk(root, followlinks=False):
 PY
     then
       abandon_instance "  ERROR: unsafe symlink prevents isolated dry-run modeling" && continue
+    fi
+    # The walk's left-out links become rsync excludes, so the model never holds
+    # them (ASK-3887). Anchored with a leading slash: the walk refused any name
+    # rsync would read as a pattern.
+    MODEL_IGNORED_LINKS=0
+    if [ -s "$DRY_MODEL_ROOT/ignored-links" ]; then
+      while IFS= read -r ignored_rel; do
+        [ -n "$ignored_rel" ] || continue
+        MODEL_EXCLUDES+=(--exclude="/$ignored_rel")
+        MODEL_IGNORED_LINKS=$((MODEL_IGNORED_LINKS + 1))
+      done < "$DRY_MODEL_ROOT/ignored-links"
+      echo "  dry-run model: left out $MODEL_IGNORED_LINKS gitignored symlink(s) that leave the instance (not modeled)"
     fi
     SOURCE_GIT_DIR="$(
       git -C "$path" rev-parse --path-format=absolute --git-common-dir \
@@ -2492,6 +2671,11 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     instance_ahead_preflight "$path" "$prefix" "$name"
     if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    fi
+
+    unlanded_sync_scan "$path"
+    if [ "$REFUSE_UNLANDED_SYNC" = "1" ] && [ "$UNLANDED_SYNC_COUNT" -gt 0 ]; then
+      abandon_instance "  ERROR: $UNLANDED_SYNC_COUNT earlier updater commit(s) never reached origin; refusing (--refuse-unlanded-sync), nothing staged, nothing written. Land them first: a worktree off origin, merge, PR (ASK-3655)" && continue
     fi
 
     # ASK-605. The list above is hand-maintained and names 3 paths. auto-commit.py's
@@ -3411,7 +3595,21 @@ PYEOF
 }
 record_sweep_history
 
+# ASK-3689: Claude Code loads every ancestor's rules, so a client repo nested in
+# another instance loaded the parent's rules AND its own byte-identical copy. A
+# sync is exactly when rules files change, so the user-scope excludes that keep
+# one copy are recomputed here, after every instance synced. A copy that differs
+# from its parent is never excluded, so a failed parent sync cannot leave a stale
+# rule as the only one loaded. Reported, never folded into the exit code: this
+# script's exit is the PROPAGATION verdict (see JOBS_NOT_ARMED below).
+CHARS_AUDIT="$SCRIPT_DIR/q-system/.q-system/scripts/instruction-chars-audit.py"
+CHARS_LINE=""
+if [ -z "$DRY_RUN" ] && [ -f "$CHARS_AUDIT" ]; then
+  CHARS_LINE="$(python3 "$CHARS_AUDIT" --apply 2>&1 | tail -1)" || true
+fi
+
 echo "=== Summary ==="
+[ -n "$CHARS_LINE" ] && echo "  Instruction excludes: $CHARS_LINE"
 echo "  Updated: $PASS"
 echo "  Failed:  $FAIL"
 if [ -n "$FAILED_NAMES" ]; then

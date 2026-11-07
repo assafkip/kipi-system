@@ -203,7 +203,7 @@ SH
 new_skel() {  # new_skel <parent-dir>  -> echoes the skeleton path
   local parent="$1" skel="$1/kipi-system"
   mkdir -p "$parent"
-  git init --quiet --bare "$parent/origin.git"
+  git init --quiet --bare "$parent/origin.git" && git -C "$parent/origin.git" symbolic-ref HEAD refs/heads/main
   git init --quiet "$skel"
   git -C "$skel" config user.email t@t; git -C "$skel" config user.name t
   : > "$skel/seed"; git -C "$skel" add seed; git -C "$skel" commit --quiet -m seed

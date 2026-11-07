@@ -13,7 +13,10 @@
 # worktree path into launchd (the Phase 2 lesson).
 #
 # The plist itself is the template com.kipi.lessons-daily.plist, rendered by
-# install-plist.sh, so the schedule has one source (Weekday 1, 06:00).
+# install-plist.sh, so the schedule has one source (daily 08:00).
+# The fleet's automatic arming uses install-plist.sh --missing, which never
+# rewrites an installed plist: a schedule change reaches launchd only when
+# this script is run (it renders and reloads unconditionally).
 #
 # Extra arguments pass through to install-plist.sh, so
 #   bash install-lessons-daily.sh --render-only /tmp/out.plist

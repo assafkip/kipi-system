@@ -276,8 +276,9 @@ PH="$WORK/prim.sh"
   echo 'page_once "$@"'
 } > "$PH"
 grep -q '^page_lock() {' "$PH" && grep -q '^page_once() {' "$PH" || { echo "primitive harness did not extract page_once"; exit 1; }
-# A FRESH lock is respected (the duplicate-page fix must still hold).
-mkdir -p "$PL/paged-korph.lock"
+# A FRESH lock is respected (the duplicate-page fix must still hold). The lock is
+# held the way page_lock holds it since ASK-3797: a plain file, not a directory.
+: > "$PL/paged-korph.lock"
 FRESH="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
 [ "${FRESH:-0}" -eq 0 ] \
   && ok "a FRESH lock is respected, so concurrent dispatchers still do not duplicate" \
@@ -288,6 +289,18 @@ AGED="$( LOG="$PL/dispatch.log" bash "$PH" korph "real fault" 2>/dev/null | grep
 [ "${AGED:-0}" -ge 1 ] \
   && ok "an ORPHANED lock is reaped and the alert gets through ($AGED page)" \
   || bad "THE DEFECT: an orphaned lock mutes this key forever -- a dedupe that became a permanent silence"
+[ -e "$PL/paged-korph.lock" ] \
+  && bad "the reaping page_once left its own lock behind, so the next beat is muted for 300s" \
+  || ok "the page that reaped the orphan released its own lock"
+# A lock DIRECTORY left by the pre-ASK-3797 mkdir claim on a live machine must
+# still count as held while fresh and still age out, or the upgrade mutes a key.
+mkdir -p "$PL/paged-klegacy.lock"
+LFRESH="$( LOG="$PL/dispatch.log" bash "$PH" klegacy "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+touch -t 202501010000 "$PL/paged-klegacy.lock" 2>/dev/null
+LAGED="$( LOG="$PL/dispatch.log" bash "$PH" klegacy "real fault" 2>/dev/null | grep -c '^PAGE ' || true )"
+[ "${LFRESH:-0}" -eq 0 ] && [ "${LAGED:-0}" -ge 1 ] && [ ! -e "$PL/paged-klegacy.lock" ] \
+  && ok "a legacy lock directory is held while fresh and reaped once old ($LFRESH then $LAGED)" \
+  || bad "THE DEFECT: a lock directory from the old mkdir claim is mishandled ($LFRESH then $LAGED; still there: $([ -e "$PL/paged-klegacy.lock" ] && echo yes || echo no))"
 
 echo
 echo "== 11. concurrent page_once must not duplicate the same alert =="
@@ -299,6 +312,45 @@ TOTAL=$(( $(grep -c '^PAGE ' "$WORK/c1.out" || true) + $(grep -c '^PAGE ' "$WORK
 [ "$TOTAL" -le 1 ] \
   && ok "two dispatchers deciding the same key produced $TOTAL page(s), not 2" \
   || bad "THE DEFECT: unlocked marker check let concurrent dispatchers send $TOTAL duplicate pages"
+
+echo
+echo "== 11b. ASK-3797: the page lock must not trust the mkdir BINARY to be exclusive =="
+# MEASURED, NOT GUESSED. Case 11 went red on 22 of 60 GitHub runs (2026-11-07,
+# idle runners, load 0.2) and on main's nightly since 2026-11-05. A traced run
+# showed BOTH racers' `mkdir "$lock"` exit 0 on the same path, then the first
+# racer's rmdir fail because the second had already removed the one directory.
+# ubuntu-latest is now Ubuntu 26.04, whose mkdir is uutils coreutils 0.10.0. It
+# checks for the directory, then creates it and tolerates "already exists", so a
+# directory that appears between the two reads as success. Two concurrent
+# `mkdir P` both exit 0 there in 480 of 500 rounds; GNU mkdir 9.4, os.mkdir and a
+# bash O_EXCL redirect all 0 of 500. Case 11 is a coin toss on that window; this
+# shim makes the lost race happen every time: it exits 0 for a path that exists.
+REAL_MKDIR="$(command -v mkdir)"
+LIAR="$WORK/liar-bin"; mkdir -p "$LIAR"
+printf '#!/bin/sh\n"%s" "$@" 2>/dev/null\nexit 0\n' "$REAL_MKDIR" > "$LIAR/mkdir"
+chmod +x "$LIAR/mkdir"
+# The shim must actually lie, or the next check passes on an honest mkdir.
+mkdir -p "$WORK/liar-probe"
+PATH="$LIAR:$PATH" mkdir "$WORK/liar-probe" 2>/dev/null \
+  && ok "the shim behaves like uutils' lost race: mkdir of an existing dir exits 0" \
+  || bad "the mkdir shim is not in effect, so the lock check below proves nothing"
+LK="$WORK/plock-liar"; mkdir -p "$LK"
+LH="$WORK/lockpair.sh"
+{
+  echo 'set -uo pipefail'
+  echo 'say() { printf "SAY %s\n" "$*" >&2; }'
+  awk '/^page_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'page_lock "$1" && echo FIRST=TAKEN || echo FIRST=REFUSED'
+  echo 'page_lock "$1" && echo SECOND=TAKEN || echo SECOND=REFUSED'
+} > "$LH"
+grep -q '^page_lock() {' "$LH" || { echo "lock-pair harness did not extract page_lock"; exit 1; }
+LP="$(PATH="$LIAR:$PATH" bash "$LH" "$LK/paged-kliar.lock" 2>/dev/null | tr '\n' ' ')"
+case "$LP" in
+  *FIRST=TAKEN*SECOND=REFUSED*)
+    ok "a held page lock refuses a second taker even when mkdir is not exclusive ($LP)" ;;
+  *)
+    bad "THE DEFECT (ASK-3797): two takers both hold the page lock when mkdir is not exclusive ($LP), which is case 11's duplicate page on Ubuntu 26.04" ;;
+esac
 
 echo
 echo "== 12. the Linear outage guard vs the PRODUCER'S REAL OUTPUT =="
@@ -326,6 +378,10 @@ GUARD="$WORK/guard.sh"
 grep -q 'page_clear linear-down' "$GUARD" \
   || bad "the outage guard block is missing its BEGIN/END markers or its page_clear"
 guard() { bash "$GUARD" "$1" 2>&1; }
+# Same slice, driven with the worker's EXIT CODE as well as its output. The
+# braked case below is keyed on rc, not on text: `linear-worker.sh`'s own header
+# says a caller must not have to parse a message to tell a brake from a break.
+guard_rc() { WORK_RC="$1" bash "$GUARD" "$2" 2>&1; }
 
 # The exact line linear-worker.sh:417 emits, and the one that was missed.
 G="$(guard 'INFRA: linear unreachable (HTTPSConnectionPool: Max retries exceeded). Not counted against any issue.')"
@@ -346,6 +402,17 @@ echo "$G" | grep -q '^CLEAR ' \
   && bad "THE DEFECT: a run that never reached Linear cleared the outage state" \
   || ok "a run that never reached Linear does not count as recovery"
 
+# ASK-3550: the default-branch stop sits in the same position as the fetch halt
+# (after the fetch, before Linear) and self-pages the same way. Falling through to
+# page_clear would erase a real outage page on a run that never reached Linear.
+G="$(guard 'INFRA: cannot determine the default branch of /Users/x/repo (origin/HEAD unset, GitHub gave nothing). Stopping before any worktree is cut from a guessed base.')"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a run stopped on an unknown default branch cleared the outage state" \
+  || ok "a run stopped on an unknown default branch does not count as recovery"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: the worker already notifies about an unknown default branch" \
+  || ok "an unknown default branch does not double-page"
+
 # linear-worker.sh:989 / :1049 -- these print INFRA: and then `continue`. The worker
 # is still working, so paging "the loop is stopped" would be a false alarm. This is
 # why the matcher is not a bare `INFRA:` prefix.
@@ -356,6 +423,20 @@ for line in 'INFRA: could not create worktree for ASK-1 (not counted against the
     && bad "false alarm: '${line:0:34}...' does not stop the worker but paged an outage" \
     || ok "a non-stopping INFRA line does not page an outage (${line:0:28}...)"
 done
+
+# ASK-2010: the usage brake exits 3 from the FIRST thing after the worker's
+# argument parse -- before the fetch, before the claim, before any Linear call.
+# Exactly the position the git-fetch halt above sits in, and it fell through to
+# page_clear (claude review of PR #472, major 2). A run that never reached Linear
+# is not evidence Linear recovered; clearing on it ERASES a real outage page and
+# the loop goes quiet on an outage nobody is told about any more.
+G="$(guard_rc 3 "PAUSED: usage breaker holds 'worker' (see /tmp/x.log). No work this run.")"
+echo "$G" | grep -q '^CLEAR ' \
+  && bad "THE DEFECT: a braked run cleared the outage state -- it never reached Linear" \
+  || ok "a braked run does not count as evidence Linear recovered"
+echo "$G" | grep -q '^PAGE ' \
+  && bad "double-paged: the breaker files its own single ticket on the way into the pause" \
+  || ok "a braked run does not page an outage that is not happening"
 
 # A healthy run must still clear.
 G="$(guard '3 ready issues; dispatching ASK-9')"
@@ -376,6 +457,29 @@ if [ -f "$WORKER" ]; then
   grep -q 'INFRA: git fetch failed' "$WORKER" \
     && ok "linear-worker.sh still prints 'INFRA: git fetch failed'" \
     || bad "the producer was reworded: the pre-Linear guard now matches nothing"
+  grep -q 'INFRA: cannot determine the default branch' "$WORKER" \
+    && ok "linear-worker.sh still prints 'INFRA: cannot determine the default branch'" \
+    || bad "the producer was reworded: the default-branch guard now matches nothing"
+  # The braked guard reads an exit CODE, so the claim to re-derive is the code
+  # the worker ACTUALLY RETURNS -- and that is what this runs. Grepping the line
+  # of documentation that promises exit 3 passed happily on a worker that had
+  # stopped returning it (claude review of PR #472, minor): a comment is not a
+  # producer, and deleting the brake while leaving its comment kept this green.
+  # So: inject a breaker that orders a pause and read the worker's own code.
+  BRAKE_STUB="$WORK/breaker-pause.sh"
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$BRAKE_STUB"
+  chmod +x "$BRAKE_STUB"
+  # KIPI_NOTIFY is /usr/bin/true: this drives the REAL worker, whose failure
+  # paths page. Same reason test-worker-usage-brake.sh pins it.
+  KIPI_STATE_DIR="$WORK/brake-state" \
+  KIPI_USAGE_BREAKER_CMD="bash $BRAKE_STUB" \
+  KIPI_USAGE_BREAKER_BOT="worker-test" \
+  KIPI_NOTIFY=/usr/bin/true \
+  bash "$WORKER" >/dev/null 2>&1
+  brake_rc=$?
+  [ "$brake_rc" = "3" ] \
+    && ok "linear-worker.sh answers 3 for a usage pause (ran it; rc=3)" \
+    || bad "the producer's exit contract moved: a paused breaker made the worker exit $brake_rc, not 3"
   # say() must reach stdout, or none of this text ever arrives in WORK_OUT.
   grep -qE '^say\(\).*tee' "$WORKER" \
     && ok "the worker's say() still tees to stdout, so the dispatcher can see it" \
@@ -390,8 +494,9 @@ echo "== 14. MINOR: a clear cannot interleave with an in-flight page decision ==
 # marker, page_once wrote one a moment later, and that marker then described an
 # already-recovered condition -- muting the next real episode for up to 24h.
 PR="$WORK/prace"; mkdir -p "$PR"
-# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand.
-mkdir -p "$PR/paged-krace.lock"
+# Simulate page_once holding the lock (a slow notifier) by taking the lock by hand,
+# in the shape page_lock takes it (a file, since ASK-3797).
+: > "$PR/paged-krace.lock"
 printf 'oldhash\n1\n' > "$PR/paged-krace"
 CL="$( LOG="$PR/dispatch.log" bash -c '
   set -uo pipefail

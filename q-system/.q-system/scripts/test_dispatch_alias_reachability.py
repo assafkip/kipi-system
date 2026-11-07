@@ -21,8 +21,8 @@ TWO DEFECTS, TWO TESTS, and the second is the one with teeth:
   1. the alias. A row whose Linear project name differs from its registry name must
      classify as reachable. This is the reproducer the issue names.
   2. reachable is not dispatchable. Promoting those 17 into the routine-skip line
-     would say "the rotation reaches them later", which for a CLIENT repo is false
-     forever -- repo-preflight check 0 refuses it whatever its name resolves to. So
+     would say "the rotation reaches them later", which is false for any repo the
+     preflight refuses, whatever its name resolves to. So
      the third bucket is asserted through the REAL repo-preflight.sh, never a stub:
      a test that stubs the gate it is claiming to consult proves nothing about the
      gate.
@@ -87,6 +87,11 @@ def _build(tmp_path, registry_rows, board, preflight_stub=None):
     # git fetch runs before any of the reporting under test, so origin has to be
     # real or the run exits 9 and this test measures the guard instead.
     subprocess.run(["git", "init", "-q", "--bare", str(tmp_path / "origin.git")], check=True)
+    # The remote's HEAD names main, as a real GitHub repo's does. The worker reads
+    # the default branch from it (ASK-3550); a bare repo's own default HEAD would
+    # dangle at a branch nobody pushed and the run would stop before reporting.
+    subprocess.run(["git", "-C", str(tmp_path / "origin.git"), "symbolic-ref", "HEAD",
+                    "refs/heads/main"], check=True)
     target = tmp_path / "target"
     subprocess.run(["git", "init", "-q", str(target)], check=True)
     for k, v in (("user.email", "t@t"), ("user.name", "t")):
@@ -176,15 +181,19 @@ def test_registry_name_differing_from_linear_project_is_reachable(aliased):
 
 @pytest.fixture()
 def client_repo(tmp_path):
-    """An aliased row whose path has the shape repo-preflight check 0 refuses.
+    """An aliased row the real repo-preflight refuses.
 
     NO PREFLIGHT STUB. The point of this test is that resolving the name does not
     resolve the safety question, and the only thing that can show that is the real
-    gate. Check 0 is decided on path shape alone and exits before any network call,
-    so running it for real here is both honest and cheap.
+    gate. This used to lean on check 0 refusing the client path shape; that refusal
+    was reversed by RULE-2026-10-30-A ("The unattended agent should and can reach
+    client repos to work on the tickets"), so the fixture now carries the kill
+    switch. Preflight checks it before any network call, so running the real gate
+    stays honest and cheap. The fixture name is kept so the diff stays small.
     """
     client = tmp_path / "consulting" / "projects" / "someclient"
     client.mkdir(parents=True)
+    (client / ".kipi-no-dispatch").write_text("")
     rows = [
         {"name": "registry_side_name", "linear_project": "Board Side Name",
          "path": str(client)},
@@ -204,19 +213,19 @@ def test_resolved_name_does_not_promote_a_client_repo_into_the_queue(client_repo
 
     refused = _line(out, "REFUSED by preflight")
     assert refused, (
-        "an aliased project on a client-repo path has a checkout but repo-preflight "
-        "refuses it forever, so it is neither a routine skip nor unreachable. The "
+        "an aliased project has a checkout but repo-preflight refuses it, so it "
+        "is neither a routine skip nor unreachable. The "
         f"worker reported no third bucket at all. Output was:\n{out}")
     assert "Board Side Name" in refused, f"expected the project named: {refused}"
-    assert "client-repo" in refused, (
+    assert "kill-switch" in refused, (
         "the refusal must carry the reason the real gate gave, or the operator "
         f"cannot tell a permanent refusal from a curable one: {refused}")
 
     # It must NOT read as a routine skip -- that is the sentence that would be false
-    # forever, because no rotation turn will ever make a client repo dispatchable.
+    # until the refusal is cured, because no rotation turn changes a refusal.
     skipped = _line(out, "skipped as out-of-repo")
     assert "Board Side Name" not in skipped, (
-        f"a client repo can never be reached by a later rotation turn: {skipped}")
+        f"a refused repo is not reached by a later rotation turn: {skipped}")
     assert "Board Side Name" not in _line(out, "UNREACHABLE"), (
         "the checkout exists; calling it unreachable sends the operator to clone it")
 

@@ -10,9 +10,10 @@
   machine's home in it (kipi-push-upstream's tripwire refuses it anyway).
 
   Monday 06:30 local, before the 07:00 brief, so the week's proposal is in the
-  founder's Slack when he opens it. USER/LOGNAME are set because
-  draft-vs-sent.py shells `claude -p` for the Gmail lookup and the keychain
-  needs them (measured on com.kipi.morning-brief).
+  founder's Slack when he opens it. USER/LOGNAME stay set
+  from when draft-vs-sent.py shelled `claude -p` for the Gmail lookup and the
+  keychain needed them (measured on com.kipi.morning-brief). draft-vs-sent.py
+  and route-overrides-to-learn.py are RETIRED 2026-10-30 (ASK-3402).
 -->
 <plist version="1.0">
 <dict>

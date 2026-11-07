@@ -31,6 +31,13 @@
 # EXIT CODES
 #   0  ran (or had nothing to run). A caller may treat this as healthy.
 #   1  usage error
+#   3  PAUSED by the usage breaker (ASK-2010). The run did NO work and that is
+#      deliberate, not a failure: this bot is over its share of the rolling
+#      7-day usage ledger, or the fleet floor is down on it. Same code
+#      `usage_breaker.py check` returns, and the same one control.py uses for
+#      paused, so a caller never has to parse a message to tell a brake from a
+#      break. One Linear ticket is filed on the way into the pause and never
+#      again while it holds; one trial run is granted 24h in.
 #   9  INFRA: the environment is down (git fetch failed) and the run did NO
 #      work. Paged on the way out. Distinct from 1 so a caller can tell a dead
 #      environment from a bad invocation.
@@ -241,6 +248,59 @@ while [ $# -gt 0 ]; do
   shift || true
 done
 
+# --- THE BRAKE (ASK-2010, Step 4) -------------------------------------------
+# FIRST thing after the arguments parse, and deliberately BEFORE the git fetch,
+# the claim and the worktree. A brake that fires after the expensive setup has
+# already paid for the run it was meant to stop.
+#
+# $STATE_DIR is created HERE and not at its old spot further down, because the
+# brake redirects into $LOG, which lives in it (claude review of PR #472,
+# minor). On a first run, or any run with a fresh KIPI_STATE_DIR, the redirect
+# failed, bash answered 1, and `breaker_rc` held the redirect's failure instead
+# of the breaker's verdict -- so a brake ordering a pause (3) was read as "run"
+# and the pause never happened. Measured 2026-10-22: line 283 printed "No such
+# file or directory" and the run continued.
+mkdir -p "$STATE_DIR"
+#
+# usage_breaker.py reads the Step 2 usage ledger (ASK-2008) and answers in exit
+# codes, the contract the DoR pinned: 0 run, 3 paused. It files ONE Linear ticket
+# for Sana on the way into a pause and stays quiet while the pause holds -- this
+# worker ticks every 15 minutes, so a page per check would be 96 tickets a day.
+# It grants one trial run 24h in, so a bot that stopped spending is not held for
+# a week by a share it no longer exceeds.
+#
+# It fails OPEN by design: an unreadable ledger exits 0 with a line on stderr.
+# The failure this brake exists to prevent is an unnoticed spend; the failure a
+# fail-CLOSED brake would cause is every bot dark at once on a bug in one file.
+# Bypass for one run: KIPI_USAGE_BREAKER=0.
+# Injectable as a COMMAND, the same seam and the same reason as REVIEWER_CMD and
+# CODEX_CMD above: "what does the worker do when the brake says stop" is a real
+# state, and asserting it against the live ledger would make the test read a
+# machine-local data path. Default is always the real breaker.
+BREAKER_DEFAULT="$SKEL/plugins/kipi-core/voiceloop/usage_breaker.py"
+BREAKER_CMD="${KIPI_USAGE_BREAKER_CMD:-python3 $BREAKER_DEFAULT}"
+BREAKER_BOT="${KIPI_USAGE_BREAKER_BOT:-worker}"
+if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
+  # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
+  # kipi-dispatch.sh runs this script with no --apply to pick the next issue and
+  # launches the real --apply round minutes later. Both pass through here, so the
+  # pick was consuming the breaker's one 24h trial run and the round that was
+  # actually going to spend arrived to find it already gone. --dry answers the
+  # same question and records nothing.
+  BREAKER_DRY=""
+  [ "$APPLY" = "1" ] || BREAKER_DRY="--dry"
+  $BREAKER_CMD check --bot "$BREAKER_BOT" $BREAKER_DRY >>"$LOG" 2>&1
+  breaker_rc=$?
+  if [ "$breaker_rc" -eq 3 ]; then
+    echo "PAUSED: usage breaker holds '$BREAKER_BOT' (see $LOG). No work this run." | tee -a "$LOG" >&2
+    exit 3
+  fi
+else
+  # Never silent: a brake whose engine is missing is a brake that is not there,
+  # and the whole point of ASK-2010 is that nobody notices the spend until the bill.
+  echo "usage breaker missing at $BREAKER_DEFAULT; running unbraked" | tee -a "$LOG" >&2
+fi
+
 # --- WHICH REPO THIS RUN WORKS IN ----------------------------------------
 # $SKEL used to mean two things at once, and separating them is the whole point
 # of this argument:
@@ -406,6 +466,42 @@ if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   exit 9
 fi
 
+# --- THE TARGET'S DEFAULT BRANCH, DERIVED ONCE (ASK-3550) ---------------------
+# This worker said "origin/main" in seven places. Two client repos opted in under
+# RULE-2026-10-30-A default to `master` and have no origin/main at all, so every
+# issue there died at `git worktree add` with "INFRA: could not create worktree"
+# (measured 2026-10-31, test-worker-default-branch.sh case A). Every base, PR
+# target and freshness check below reads $DEFAULT_BRANCH instead.
+#
+# Three sources, cheapest first, all read-only (test-repo-preflight case 2h
+# allowlists the git verbs aimed at the target): origin/HEAD, which a clone
+# records but a fetch never creates; the remote's own HEAD via ls-remote, which
+# the fetch above just proved reachable; then GitHub's answer, scoped by the
+# pinned slug like every other gh call here.
+#
+# FAIL CLOSED. Guessing "main" is the defect being removed; with no answer the
+# run stops before any tree is cut, says why and pages, same as a failed fetch.
+DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+[ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
+if [ -z "$DEFAULT_BRANCH" ] \
+   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
+    | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+fi
+if { [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
+   && [ -n "${TARGET_SLUG:-}" ]; then
+  DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
+fi
+if [ -z "$DEFAULT_BRANCH" ] \
+   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
+  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
+  exit 9
+fi
+export DEFAULT_BRANCH
+
 # --- repo identity, for the project-scope filter -----------------------------
 # The worker cuts EVERY worktree from $TARGET_REPO (which defaults to $SKEL). An issue filed against
 # another repo can therefore never reach a terminal state here: the agent lands
@@ -487,12 +583,12 @@ fi
 # close by hand. Exactly one worker has to own it, and the registry already
 # DECLARES which one: `skeleton.linear_project`, returned as skeleton_project.
 REGISTRY_FACTS="$(SKEL_PATH="$TARGET_REPO" REG="$SKEL/instance-registry.json" \
-  MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
+  OVERLAY="${KIPI_DISPATCH_TARGETS:-}" MOD_DIR="$SCRIPT_DIR" python3 - <<'PY' 2>/dev/null
 import json, os, sys
 sys.path.insert(0, os.environ["MOD_DIR"])
 import linear_registry
 print(json.dumps(linear_registry.registry_facts(
-    os.environ["REG"], os.environ["SKEL_PATH"])))
+    os.environ["REG"], os.environ["SKEL_PATH"], os.environ.get("OVERLAY") or None)))
 PY
 )"
 _facts_get() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;d=json.load(sys.stdin);v=d.get('$1');print('\n'.join(v) if isinstance(v,list) else v)" 2>/dev/null; }
@@ -513,16 +609,51 @@ REGISTRY_OK="$(_facts_get ok)"
 SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
 
+# --- the open PRs, for the WIP ceiling (ASK-3826) ---------------------------
+# Counted BEFORE the pick because the picker below holds the board, and the
+# ceiling needs the board to judge each PR's ticket. One gh call, -q so an
+# empty answer means no open PRs (real gh prints nothing for an empty list
+# under -q, and so does every fixture stub that models no PRs). A non-zero
+# exit means the pile was NOT counted, and the block before the issue loop
+# then starts nothing. Not asked under --issue: an explicit issue is a driver
+# override (converge, the redrives), the same rule the picker keeps.
+# NOT ASKED WITHOUT A SLUG EITHER. An empty $KIPI_GH_REPO_ARGS binds gh to the
+# process cwd, so the list would describe whatever checkout the caller stood
+# in, not the target: the first run of test-worker-project-scope.sh (a fixture
+# with a local-path origin, run from a kipi-system checkout) counted the REAL
+# 8 open kipi-system PRs as the fixture repo pile and started nothing. A target
+# with no GitHub slug has no PRs gh can name; every dispatch target carries a
+# pinned remote (kipi-dispatch.sh fleet_candidates).
+WIP_OWN_RC=""; WIP_OWN_PRS=""; WIP_GH_ERRLINE=""
+if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then
+  say "WIP: $TARGET_REPO has no GitHub slug, so its open PRs are not counted and the ceiling does not apply"
+elif [ -z "$ONLY_ISSUE" ]; then
+  # gh's own words are kept for the page (PR #613 review round 1, major 1:
+  # 2>/dev/null left the operator "exited 1" and nothing else).
+  WIP_GH_ERRF="$(mktemp "${TMPDIR:-/tmp}/kipi-wip-gh.XXXXXX" 2>/dev/null)" || WIP_GH_ERRF="/dev/null"
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  WIP_OWN_PRS="$(gh pr list $KIPI_GH_REPO_ARGS --state open --limit 200 \
+    --json number,headRefName,createdAt,url \
+    -q '.[] | [.number, .headRefName, .createdAt, .url] | @tsv' 2>"$WIP_GH_ERRF")"
+  WIP_OWN_RC=$?
+  WIP_GH_ERRLINE="$(head -1 "$WIP_GH_ERRF" 2>/dev/null | tr -d '\r' | cut -c1-200)"
+  [ "$WIP_GH_ERRF" = "/dev/null" ] || rm -f "$WIP_GH_ERRF"
+fi
+export WIP_OWN_RC WIP_OWN_PRS
+
 # --- pick ready issues ------------------------------------------------------
-PICKED="$(python3 - "$ONLY_ISSUE" <<'PY'
+PICKED="$(python3 - "$ONLY_ISSUE" "$STATE_DIR" <<'PY'
 import importlib.util, json, os, sys, pathlib
+from datetime import datetime, timezone
 here = pathlib.Path(os.environ["SCRIPT_DIR"])
 spec = importlib.util.spec_from_file_location("ls", here / "linear-sync.py")
 ls = importlib.util.module_from_spec(spec); spec.loader.exec_module(ls)
 only = (sys.argv[1] or "").strip()
+state_dir = sys.argv[2] if len(sys.argv) > 2 else ""
+now = datetime.now(timezone.utc)
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
- nodes{id identifier title description state{name type} project{name}
+ nodes{id identifier title description state{name type} startedAt project{name}
        labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}"""
 try:
     tid = ls.graphql('query{teams(filter:{key:{eq:"ASK"}}){nodes{id}}}',{})["teams"]["nodes"][0]["id"]
@@ -603,6 +734,29 @@ def in_this_repo(i):
     # issues got into this queue in the first place.
     return project_of(i) == repo_project
 
+# A STARTED TICKET NOBODY IS WORKING IS WORK AGAIN (ASK-3825, RULE-2026-11-06-B).
+# This picker read backlog and unstarted only, so a ticket that went In Progress
+# and then failed, capped or parked was invisible here for good: 15 owner:sana
+# tickets on 2026-11-06, the oldest 43 days. ls.started_hold_reason is the ONE
+# rule (the DoR drafter and linear-triage-health.py ask it too): started over 24
+# hours ago, a row in this worker attempts ledger (the fleet ran it, so a lane
+# ticket moved by hand is never released by a clock), no live claim on its
+# worker tree, no open PR on any branch. It runs LAST in ready(), because it may
+# read Linear once per candidate. Memoised: ready() and ready_ignoring_project()
+# both ask about the same ticket.
+QUEUE_STATES = ("backlog", "unstarted")
+STARTED_WHY = "started, no live claim"
+_started_memo = {}
+
+def started_hold(i):
+    key = i["identifier"]
+    if key not in _started_memo:
+        _started_memo[key] = ls.started_hold_reason(i, now, state_dir)
+    return _started_memo[key]
+
+def started_open(i, d):
+    return i["state"]["type"] == "started" and "Definition of Ready" in d and started_hold(i) == ""
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
@@ -622,10 +776,17 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
-    if i["state"]["type"] not in ("backlog", "unstarted"): return False
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
+    # ONE state exit, carrying its own marker, because terminal-states.json row
+    # state-not-open counts exactly one site here. A started ticket passes only
+    # when started_open releases it, asked after the free checks above. The
+    # tuple is written out, not QUEUE_STATES: test_linear_alert_triage.py runs
+    # this function verbatim with only the names it used before ASK-3825, and a
+    # module name here broke it (validate on PR #611, NameError). started_open
+    # is reached only for a ticket outside the two queue states.
+    if i["state"]["type"] not in ("backlog", "unstarted") and not started_open(i, d): return False
     return "## Definition of Ready" in d or "Definition of Ready" in d
 
 # Everything the project filter is ABOUT to drop, counted before it drops it, so
@@ -637,8 +798,9 @@ def ready_ignoring_project(i):
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
             and not is_fleet_alert(i)
-            and i["state"]["type"] in ("backlog", "unstarted")
-            and "Definition of Ready" in (i.get("description") or ""))
+            and "Definition of Ready" in (i.get("description") or "")
+            and (i["state"]["type"] in QUEUE_STATES
+                 or started_open(i, i.get("description") or "")))
 
 # BOTH SELECTORS, OR THE FIX IS HALF DONE. ready() alone would stop an alert
 # ticket being WORKED while leaving it in `dropped`, so it would keep being
@@ -666,9 +828,10 @@ dropped = [i for i in issues if ready_ignoring_project(i) and not in_this_repo(i
 # A THIRD BUCKET, BECAUSE TWO OF THEM WERE BOTH WRONG FOR THE SAME REPOS
 # (ASK-840). Resolving the alias moves 17 issues out of UNREACHABLE, and the
 # tempting next step -- drop them in with the routine skips -- swaps one false
-# sentence for another. "The rotation reaches it on a later turn" is false
-# FOREVER for a client engagement repo: repo-preflight check 0 refuses it whether
-# or not its name resolves, and no waiting changes that. So reachability answers
+# sentence for another. "The rotation reaches it on a later turn" is false for a
+# repo preflight refuses, and no waiting changes that until its failure is cured.
+# (Client repos were refused forever here until RULE-2026-10-30-A reversed the
+# 2026-08-13 ruling; they now face the same checks as any repo.) So reachability answers
 # only "is there a checkout", and the preflight verdict (taken from the REAL
 # script, in the shell, never re-implemented here) splits what is left.
 def has_local_checkout(i):
@@ -790,9 +953,153 @@ pool = [i for i in issues if ready(i)]
 if only:
     pool = [i for i in issues if i["identifier"] == only]
 
+# The started tickets this repo would take but for the hold rule, with the
+# reason, so a held lane ticket reads as held and not as a missing one. Only
+# tickets ready() already asked about: everything else is still in the memo.
+started_held = [{"id": i["identifier"], "why": _started_memo[i["identifier"]]}
+                for i in issues
+                if i["state"]["type"] == "started" and i["identifier"] in _started_memo
+                and _started_memo[i["identifier"]] and in_this_repo(i)]
+
+# Why a started ticket is in the pool. An explicit --issue skips the filter, so
+# a started ticket named that way is said to be named, never called abandoned.
+def pick_why(i):
+    if i["state"]["type"] != "started":
+        return ""
+    if _started_memo.get(i["identifier"]) == "":
+        return STARTED_WHY
+    return "started, named by --issue"
+
+# THE WIP CEILING (ASK-3826, RULE-2026-11-06-B). No WIP limit existed here:
+# 8 open sana/* PRs in kipi-system on 2026-11-06 while each tick started a new
+# issue. The rule is ported from chief/cloud_worker.py:66 to :75 (WIP_CAP 5,
+# added after 82 open sana/* PRs where no fire went back to one): at 5 open
+# fleet-own PRs in a repo, rework the oldest one that can move instead.
+# This half judges each PR by its TICKET, because only the picker holds the
+# board; the shell block before the issue loop judges the PR itself.
+#
+# FLEET-OWN IS THE sana/ HEAD BRANCH. Every PR is authored by the same GitHub
+# account, so the author cannot tell fleet from human. The worker and converge
+# open sana/<id> (linear-worker.sh BRANCH, converge.sh:123) and the lanes open
+# sana/<id>-<slug>; lessons/weekly-* and human branches are not fleet WIP.
+WIP_CEILING = 5
+OWN_PREFIX = "sana/"
+# A walk bound, as in chief (MAX_WALK): each candidate may cost two Linear reads.
+WIP_WALK = 10
+by_ident = {i["identifier"]: i for i in issues}
+
+
+def worker_branch_issue(branch):
+    # sana/ask-901 -> ASK-901. A lane branch (sana/ask-901-slug) gives "": the
+    # worker and converge commit only onto sana/<id>, so work for a lane PR
+    # would land on a branch no open PR is on (the kipi-dispatch.sh
+    # branch_guard refusal, ASK-358).
+    tail = branch[len(OWN_PREFIX):] if branch.startswith(OWN_PREFIX) else ""
+    head, _sep, num = tail.partition("-")
+    return (head.upper() + "-" + num) if head.isalpha() and num.isdigit() else ""
+
+
+def held_only_by(i, url):
+    # True when the ONE thing the ASK-3825 rule holds this started ticket for
+    # is this PR. started_hold_reason checks age, worker history and the live
+    # claim before it reads PRs, and returns the first open PR line, so a hold
+    # equal to that line means every earlier check passed. Every rework
+    # candidate has an open PR by definition, so the no-open-PR check is the
+    # one clause excused, and only when no OTHER open PR (a lane beside it)
+    # holds the ticket too. Any read failure keeps the hold (fail closed).
+    why = started_hold(i)
+    if not why:
+        return False
+    try:
+        prs = ls.open_prs(i.get("id") or i["identifier"])
+    except Exception:
+        return False
+    return bool(prs) and why == prs[0] and all(p.startswith("open PR " + url + " ") for p in prs)
+
+
+def refusal_why(i):
+    # Names the refusal for the run log. It never decides: ready() does.
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    for held in ("owner:assaf", "needs-scope", "blocked:capability"):
+        if held in labels:
+            return "ticket labelled " + held
+    if "owner:sana" not in labels:
+        return "ticket is not owner:sana"
+    if is_fleet_alert(i):
+        return "ticket is a fleet alert, not dispatch work (ASK-839)"
+    if not in_this_repo(i):
+        return "ticket is on project " + str(project_of(i)) + ", not this repo"
+    if "Definition of Ready" not in (i.get("description") or ""):
+        return "ticket has no Definition of Ready"
+    if i["state"]["type"] == "started":
+        return "ticket held: " + (started_hold(i) or "not released")
+    return "ticket is " + (i["state"].get("name") or i["state"]["type"])
+
+
+def rework_hold(ident, url):
+    # "" when the worker may rework this PR for its ticket, else why not.
+    # ONE ELIGIBILITY RULE, NOT TWO: the ticket must pass ready(), the same
+    # predicate that picks fresh work, with the ASK-3825 started rule inside
+    # it. For a started ticket held only by this PR, ready() is asked again
+    # with that one hold lifted in the memo, then the memo is put back so the
+    # started_held report above is untouched. Trap 1 of the ticket: a lane
+    # ticket moved by hand an hour ago, with no ledger row, stays held.
+    i = by_ident.get(ident)
+    if i is None:
+        return "ticket " + ident + " is not on the board"
+    if ready(i):
+        return ""
+    if i["state"]["type"] == "started" and held_only_by(i, url):
+        saved = _started_memo[ident]
+        _started_memo[ident] = ""
+        try:
+            if ready(i):
+                return ""
+        finally:
+            _started_memo[ident] = saved
+    return refusal_why(i)
+
+
+wip = {"asked": False}
+if os.environ.get("WIP_OWN_RC", "") != "":
+    wip = {"asked": True, "ceiling": WIP_CEILING, "known": True, "error": ""}
+    rows = []
+    if os.environ.get("WIP_OWN_RC") != "0":
+        wip["error"] = "gh pr list exited " + os.environ.get("WIP_OWN_RC", "?")
+    for line in (os.environ.get("WIP_OWN_PRS") or "").splitlines():
+        if wip["error"] or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 4 or not parts[0].isdigit():
+            wip["error"] = "gh pr list gave a line that is not number, branch, created, url: " + line[:80]
+            continue
+        rows.append({"pr": int(parts[0]), "branch": parts[1], "created_at": parts[2], "url": parts[3]})
+    own = sorted([r for r in rows if r["branch"].startswith(OWN_PREFIX)],
+                 key=lambda r: (r["created_at"], r["pr"]))
+    wip["known"] = not wip["error"]
+    wip["count"] = len(own)
+    wip["at_ceiling"] = wip["known"] and len(own) >= WIP_CEILING
+    walked = 0
+    for r in own:
+        r["issue"] = worker_branch_issue(r["branch"])
+        if not wip["at_ceiling"]:
+            r["hold"] = ""
+        elif not r["issue"]:
+            r["hold"] = "lane branch, the worker commits only onto sana/<id>, so it cannot rework this one"
+        elif walked >= WIP_WALK:
+            r["hold"] = "not checked, past the first " + str(WIP_WALK) + " candidates"
+        else:
+            walked += 1
+            r["hold"] = rework_hold(r["issue"], r["url"])
+        r["state"] = ((by_ident.get(r["issue"]) or {}).get("state") or {}).get("type") or "-"
+    wip["own"] = own
+
 print(json.dumps({
-    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i)}
+    "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
+               "state": i["state"]["type"],
+               "why": pick_why(i)}
               for i in pool],
+    "started_held": started_held,
     "total_open": len(issues),
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
@@ -818,6 +1125,8 @@ print(json.dumps({
     # rather than allowed to look like a finished board.
     "project_known": any(project_of(i) == repo_project for i in issues),
     "repo_project": repo_project,
+    # ASK-3826: the open fleet-own PRs, oldest first, each with its ticket hold.
+    "wip": wip,
 }))
 PY
 )"
@@ -849,13 +1158,12 @@ fi
 # THE REACHABLE HALF IS SPLIT BY THE REAL GATE, NOT BY A COPY OF ITS RULES
 # (ASK-840). A project with a checkout is not therefore dispatchable, and the
 # difference is exactly what repo-preflight.sh already decides. Re-implementing
-# its client-repo test here would be a second copy of the one refusal the founder
-# said must hold everywhere -- and the copy is what goes stale. So preflight is
-# executed, once per distinct project, and its own words become the reason.
+# any of its checks here would be a second copy, and the copy is what goes stale
+# (the client-repo refusal was reversed by RULE-2026-10-30-A in preflight alone,
+# which is the proof). So preflight is executed, once per distinct project, and
+# its own words become the reason.
 #
-# CHEAP FOR THE CASE THAT MATTERS: check 0 is decided on path shape and exits
-# before any network call, so every client repo costs a fork and nothing else.
-# The handful that get past it pay a few gh calls once per run, not per issue.
+# A few gh calls per distinct project, once per run, not per issue.
 PREFLIGHT="$SCRIPT_DIR/repo-preflight.sh"
 # UNIT SEPARATOR, NOT TAB. Tab is an IFS WHITESPACE character, so bash collapses
 # runs of it however IFS is set -- and an unpinned row has an EMPTY remote, which
@@ -883,8 +1191,9 @@ while IFS=$'\037' read -r _proj _path _remote _cnt; do
     REFUSED_N=$((REFUSED_N + _cnt))
     # THE CHECK NAMES, NOT THE FULL MESSAGES. One failed check carries a fix
     # command long enough to bury the line it is on, and this is read in a daily
-    # digest. The class of refusal is what tells a permanent one (client-repo)
-    # from a curable one (control-code), which is the decision being supported.
+    # digest. The class of refusal is what tells a curable one (hooks)
+    # from one that needs a person's decision (kill-switch), which is the
+    # decision being supported.
     _why="$(printf '%s' "$_pf_out" | grep '^FAIL' | sed 's/^FAIL \([^:]*\):.*/\1/' | tr '\n' ',' | sed 's/,$//')"
     REFUSED_IN="${REFUSED_IN:+$REFUSED_IN; }$_proj (${_why:-refused})"
   fi
@@ -898,15 +1207,26 @@ REG_OK="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sy
 DEFERRED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("deferred_needs_scope",0))' 2>/dev/null)"
 
 say "worker: $READY_COUNT ready issue(s) (owner:sana, has a DoR, not owner:assaf, project=$REPO_PROJECT)"
+# THE STARTED HALF OF THE POOL, SAID OUT LOUD (ASK-3825). Two lines, because the
+# two answers need different readers: re-picked tickets are work this loop now
+# owns again, held ones are someone live (a lane, a claim, a PR on another
+# branch) and must read as held, not as missing.
+STARTED_PICKED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print(" ".join(i["id"] for i in json.load(sys.stdin)["ready"] if i.get("why") == "started, no live claim"))' 2>/dev/null)"
+[ -n "$STARTED_PICKED" ] && say "worker: $(printf '%s\n' $STARTED_PICKED | grep -c .) of them started, no live claim (In Progress with nobody on it, back in the pool): $STARTED_PICKED"
+STARTED_HELD="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+print("; ".join(h["id"] + " (" + h["why"] + ")" for h in json.load(sys.stdin).get("started_held", [])))' 2>/dev/null)"
+[ -n "$STARTED_HELD" ] && say "worker: started ticket(s) held, not re-picked: $STARTED_HELD"
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
-# this one needs either a cure (control-code drift) or nothing at all ever
-# (client-repo, which no rotation and no cure will change). Collapsing it into the
-# skip line promises the operator a turn that is never coming.
+# this one needs a cure (hooks drift), a decision (the kill
+# switch), or a change outside the repo (branch protection on a GitHub plan that
+# has no protection toggle, which no script can cure). Collapsing it into the
+# skip line promises the operator a turn that is not coming until someone acts.
 [ "${REFUSED_N:-0}" != "0" ] && say "worker: $REFUSED_N ready-shaped issue(s) REFUSED by preflight: the checkout exists but the gate will not let a dispatcher in -- $REFUSED_IN"
 # UNREACHABLE IS NOT A ROUTINE SKIP, AND NEVER SHARES ITS LINE (ASK-729). A skip
 # resolves itself on a later rotation turn; this does not resolve at all until a
@@ -1149,7 +1469,21 @@ if [ "${BLOCKED_CAP:-0}" != "0" ]; then
   say "worker: $BLOCKED_CAP issue(s) held at blocked:capability -- the specs are sound, the runner is missing something it cannot grant itself ($BLOCKED_IDS)"
 fi
 
-if [ "$READY_COUNT" = "0" ]; then
+# AN EMPTY QUEUE DOES NOT END THE RUN WHILE THE CEILING HOLDS (PR #613 review
+# round 1, major 2). The WIP block sits below this line, so with nothing ready
+# it never ran: the oldest movable own PR waited on DoR inflow and the log said
+# "nothing ready" over a pile at the ceiling, which is "no fire went back to
+# one" again. An uncounted pile gets through for its page too.
+read -r WIP_HOLDS WIP_COUNTED <<<"$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+w = json.load(sys.stdin).get("wip") or {}
+holds = w.get("asked") and (w.get("at_ceiling") or not w.get("known"))
+print("1" if holds else "0", "1" if w.get("asked") and w.get("known") else "0")' 2>/dev/null)"
+# A COUNTED PILE ENDS A COUNT OUTAGE. Released here, above the early exit, so
+# a good count re-arms the page whether or not anything is ready; the page
+# itself is in the WIP block below.
+WIP_COUNT_CLAIM="$STATE_DIR/wip-count-outage"
+[ "${WIP_COUNTED:-0}" = "1" ] && env_alert_release "$WIP_COUNT_CLAIM"
+if [ "$READY_COUNT" = "0" ] && [ "${WIP_HOLDS:-0}" != "1" ]; then
   say "nothing ready. The DoR drafter feeds this queue; check kipi dor."
   exit 0
 fi
@@ -1454,54 +1788,16 @@ arm_automerge() {
   return 0
 }
 
-# disarm_automerge <pr-number> <dir>: take the merge back off the platform, and
-# publish what that reached. Sets $AUTOMERGE to unarmed | armed | unknown.
-#
-# WHY THIS EXISTS (PR #446 review, finding 1 -- major). Step 5 calls
-# arm_automerge UNCONDITIONALLY, forty-two lines before it runs the review. Gate
-# 50 -- "the only review on record is the degraded Opus fallback" -- is decided
-# AFTER that review, so at the moment gate 50 fires, GitHub has already been told
-# to land this PR. The fallback posts `kipi/reviewer-approved` itself, which is
-# the required context holding the PR, so "not arming" was never the whole fix:
-# the arm that already happened has to come off. Without this call the gate-50
-# branches printed an honest sentence over a PR that merged anyway.
-#
-# NOT SYMMETRIC WITH THE ARM, DELIBERATELY. The arm pages once per ISSUE through
-# claim_page_once, because an unarmed approved PR is a stall that does not change
-# between runs. A REFUSED disarm is the opposite class: unreviewed code queued to
-# land, which resolves itself the wrong way within minutes. It pages on every run
-# that sees it, and the flag it clears on success is the arm's own, so a PR that
-# went armed -> disarmed -> armed can page again.
-disarm_automerge() {
-  local pr="$1" dir="$2"
-  AUTOMERGE="unknown"
-  [ -n "$pr" ] || { AUTOMERGE=""; return 0; }
-  automerge_disarm "$pr" "$dir" "$LOG"
-  case "$AUTOMERGE_DISARM_STATE" in
-    disarmed)
-      AUTOMERGE="unarmed"
-      # Only audible when there was something to take off. A PR that was never
-      # armed reaches this every scheduled run for as long as it sits at 50.
-      [ "$AUTOMERGE_DISARM_WAS" = "1" ] && \
-        say "$ISSUE: auto-merge DISARMED on PR #$pr -- it was queued to land on a review only the degraded fallback ran"
-      ;;
-    armed)
-      AUTOMERGE="armed"
-      say "WARN: auto-merge is STILL ARMED on PR #$pr for $ISSUE and gh refused to turn it off: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. GitHub will land code no independent reviewer read. Do: gh pr merge --disable-auto $pr"
-      bash "$NOTIFY" "worker: $ISSUE PR #$pr is armed for auto-merge but only the DEGRADED Opus fallback reviewed it, and gh refused to disarm it: ${AUTOMERGE_DISARM_ERR:-gh printed no reason}. It can land unreviewed. Needs a human: gh pr merge --disable-auto $pr" 2>/dev/null || true
-      ;;
-    *)
-      AUTOMERGE="unknown"
-      say "WARN: could not disarm auto-merge on PR #$pr for $ISSUE and could not read its state either: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Whether it can still land unreviewed is UNKNOWN. Do: gh pr merge --disable-auto $pr"
-      bash "$NOTIFY" "worker: $ISSUE PR #$pr had only the DEGRADED fallback review it, and gh could neither disarm auto-merge nor read its state: ${AUTOMERGE_DISARM_ERR:-gh answered neither}. Needs a human to confirm it cannot land: gh pr merge --disable-auto $pr" 2>/dev/null || true
-      ;;
-  esac
-  # PUBLISHED for the same reason the arm publishes: converge.sh reads this record
-  # instead of re-probing, and a stale "armed" here would have it report that
-  # GitHub owns the merge on a PR this run just unqueued.
-  record_automerge "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr").automerge" "$AUTOMERGE"
-  return 0
-}
+# --- the skeleton's guard set for a tree that carries none (ASK-3529) --------
+# guard_settings_now: the JSON to pass as `claude -p --settings` for $TREE at
+# THIS moment, or nothing when the tree has its own .claude/settings.json.
+# Read at each call site, not once per issue: the first agent session can add
+# or remove the tree's settings before the stand-in session starts, and a stale
+# answer either double-fires every guard or runs the stand-in unguarded.
+# Measured 2026-10-31: --settings ADDS to project settings, so a tree with
+# settings must get nothing (skeleton-guard-settings.py header has the table).
+GUARD_JSON=""
+guard_settings_now() { [ -f "$TREE/.claude/settings.json" ] || printf '%s' "$GUARD_JSON"; }
 
 # --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
 # tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
@@ -1546,7 +1842,7 @@ position_tree_on_pr_head() {
     POSITION_REFUSAL="the tree has uncommitted changes"
     return 1
   fi
-  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" origin/main 2>/dev/null)"
+  extra="$(git -C "$tree" rev-list HEAD --not "origin/$branch" "origin/$DEFAULT_BRANCH" 2>/dev/null)"
   if [ -n "$extra" ]; then
     POSITION_REFUSAL="the tree holds $(printf '%s\n' "$extra" | grep -c .) commit(s) that exist nowhere else"
     return 1
@@ -1558,6 +1854,28 @@ position_tree_on_pr_head() {
   if ! tree_holds_pr_head "$tree" "$branch"; then
     POSITION_REFUSAL="the tree still does not contain origin/$branch after the checkout"
     return 1
+  fi
+}
+
+# --- BACK TO BACKLOG ON A NON-SUCCESS EXIT (ASK-3825, RULE-2026-11-06-B) -----
+# A ticket that went In Progress (Linear moves it there when the branch or PR
+# appears) stayed there after its run failed, capped or parked, and every drain
+# reads Backlog only. So each such exit below hands it back, through the ONE
+# state writer, linear-sync.py requeue, which moves only a started ticket and is
+# a no-op on anything else. That no-op is what keeps a skip that fires every
+# tick from writing a comment every tick.
+#
+# --apply only: a dry run changes nothing (the same rule the codex hold above
+# keeps). </dev/null: this runs inside the `while read` loop, whose stdin is the
+# list of issues still to visit.
+requeue_issue() {  # requeue_issue <issue> <exit> <why>
+  [ "$APPLY" = "1" ] || return 0
+  local out rc=0
+  out="$(python3 "$SYNC" requeue "$1" --exit "$2" --why "$3" --agent "$AGENT" 2>&1 </dev/null)" || rc=$?
+  if [ "$rc" = "0" ]; then
+    say "$1: ${out:-requeue printed nothing}"
+  else
+    say "WARN: $1 did not go back to Backlog after exit '$2' (rc=$rc): $(printf '%s\n' "$out" | tail -1)"
   fi
 }
 
@@ -1580,8 +1898,169 @@ for _stale in "$STATE_DIR"/linear-worker-env-halt.* "$STATE_DIR"/linear-worker-r
   case "$_pid" in ''|*[!0-9]*) continue ;; esac
   kill -0 "$_pid" 2>/dev/null || rm -f "$_stale" 2>/dev/null || true
 done
-printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"]) for i in json.load(sys.stdin)["ready"]]' | \
+
+# --- THE WIP CEILING, PR HALF (ASK-3826, RULE-2026-11-06-B) -----------------
+# The picker judged each open fleet-own PR by its TICKET (the ASK-3825 rule,
+# inside ready()). This judges the PR: would one worker round on it change
+# anything? Each check is a decision the issue loop below already makes about
+# an existing PR, asked through the same functions, so the pick never lands on
+# a PR the loop would then skip on every tick:
+#   attempts    attempts_for >= MAX_ATTEMPTS, the loop's first skip
+#   codex hold  codex_outage_noted under a live outage claim, its second skip
+#   round cap   the reviewer's OWN count (pr-review-agent.sh, PRIOR_ROUNDS):
+#               usable rounds at --engine claude, the engine this worker always
+#               reviews with (its reviewer call passes it), against
+#               KIPI_REVIEW_MAX_ROUNDS. A push to a capped PR gets no review,
+#               so its gate never turns: reworking it moves nothing. ASK-3824
+#               is the consumer that ends a cap; until it lands, a capped PR is
+#               passed over and named, never reworked. Measured 2026-11-06:
+#               #543, #559, #584, #606, #609 at 3 of 3.
+#   the gate    rework_gate: 10 approved at its head and 20 never reviewed have
+#               nothing to rework; 30 and 40 are rounds until their caps spend.
+# WHEN NOTHING CAN MOVE, NOTHING STARTS. The ceiling means stop starting new
+# work, so falling back to a fresh issue would be the defect this ports out of
+# chief. The run names the count and the consumer instead.
+REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
+case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
+
+wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, else "<kind>|<why>"
+  local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
+  n="$(attempts_for "$issue")"
+  if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
+    printf 'held|%s/%s attempts spent, terminal' "$n" "$MAX_ATTEMPTS"; return 0
+  fi
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$issue" codex_outage_noted "" 2>/dev/null)" = "True" ] \
+     && env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
+    printf 'held|held while the second runner (Codex) is unavailable'; return 0
+  fi
+  # find -name, the quote-safe form review_round uses; the reviewer counts the
+  # same <key>-*.md set with the same review_is_usable predicate. -H because the
+  # reviewer counts with a glob, which follows a symlinked reviews dir, and plain
+  # BSD find does not descend one: the first live dry run (state dir linking
+  # pr-reviews) read #543 as 0 rounds instead of 3 and picked a capped PR.
+  while IFS= read -r f; do
+    [ -n "$f" ] && review_is_usable "$f" && rounds=$((rounds + 1))
+  done < <(find -H "$REVIEWS_DIR" -maxdepth 1 -type f -name "$(review_md_name_glob "$TARGET_SLUG" "$pr")" 2>/dev/null)
+  if [ "$rounds" -ge "$REVIEW_MAX_ROUNDS" ]; then
+    printf 'cap|at the review round cap (%s of %s usable rounds), so a push gets no new review' "$rounds" "$REVIEW_MAX_ROUNDS"; return 0
+  fi
+  # The gate's inputs, read the way the issue loop reads them for EXISTING_PR.
+  rec="$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$pr")"
+  verdict="$(verdict_from_record "$rec")"
+  if [ -z "$verdict" ]; then
+    latest="$(ls -t "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr")-"*.md "$REVIEWS_DIR/pr-$pr-"*.md 2>/dev/null | head -1)"
+    [ -n "$latest" ] && verdict="$(extract_verdict "$latest")"
+  fi
+  merge="$(pr_merge_state "$pr")"
+  reviewed="$(head_sha_from_record "$rec")"
+  current="$(pr_head_sha "$pr")"
+  rework_gate "$verdict" "$merge" "$reviewed" "$current" >/dev/null; gate=$?
+  case "$gate" in
+    10) printf 'wait|approved at its head (%s), nothing to rework' "$verdict" ;;
+    20) printf 'wait|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
+    30) [ "$(conflict_rounds_for "$issue")" -ge "$MAX_CONFLICT_ROUNDS" ] \
+          && printf 'held|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
+    40) [ "$(drift_rounds_for "$issue")" -ge "$MAX_DRIFT_ROUNDS" ] \
+          && printf 'held|head still unreviewed after %s drift rounds' "$MAX_DRIFT_ROUNDS" ;;
+  esac
+  return 0
+}
+
+# Tabs and newlines folded so every field survives the tab split below.
+WIP_ROWS="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+w = json.load(sys.stdin).get("wip") or {}
+if not w.get("asked"):
+    raise SystemExit(0)
+clean = lambda v: " ".join(str(v).split()) or "-"
+print("\t".join(["meta", clean(w.get("known")), clean(w.get("at_ceiling")),
+                 clean(w.get("count", 0)), clean(w.get("ceiling", 5)), clean(w.get("error") or "-")]))
+for r in w.get("own") or []:
+    print("\t".join(["pr", clean(r["pr"]), clean(r.get("issue") or "-"), clean(r.get("state") or "-"),
+                     clean(r["branch"]), clean(r.get("hold") or "-")]))
+' 2>/dev/null)"
+WIP_REPLACE=0; WIP_FEED=""
+if [ -n "$WIP_ROWS" ]; then
+  IFS=$'\t' read -r _wk WIP_KNOWN WIP_AT WIP_COUNT WIP_CEIL WIP_ERR <<<"$(printf '%s\n' "$WIP_ROWS" | head -1)"
+  WIP_WHERE="${TARGET_SLUG:-$REPO_PROJECT}"
+  if [ "$WIP_KNOWN" != "True" ]; then
+    say "WIP ceiling: could not count the open own PRs in $WIP_WHERE ($WIP_ERR). Starting nothing this run: an uncounted pile is not a pile under the ceiling."
+    # A STOP NOBODY IS TOLD ABOUT IS A SILENT HALT (PR #613 review round 1,
+    # major 1). This branch starts nothing in this repo on every tick while gh
+    # cannot answer, so it pages, ONCE per outage: the same claim the runner
+    # outages use, taken over after a day so a long outage is re-announced
+    # daily, released above by the first good count. gh's own line goes to the
+    # page and the log, never to stdout: kipi-dispatch.sh greps this run's
+    # stdout for "authentication" to call LINEAR down, and gh says that word.
+    [ -n "$WIP_GH_ERRLINE" ] && echo "$(TS) WIP ceiling: gh said: $WIP_GH_ERRLINE" >> "$LOG"
+    if env_alert_claim "$WIP_COUNT_CLAIM" "$ENV_OUTAGE_MAX_AGE"; then
+      bash "$NOTIFY" "kipi worker: could not count the open PRs in $WIP_WHERE ($WIP_ERR${WIP_GH_ERRLINE:+; gh said: $WIP_GH_ERRLINE}), so the WIP ceiling cannot be checked and the worker starts no new issue there until it can. Do: run gh pr list -R $WIP_WHERE --state open by hand and fix the gh login or wait out the GitHub outage. One page per outage." 2>/dev/null || true
+    fi
+    WIP_REPLACE=1
+  elif [ "$WIP_AT" != "True" ]; then
+    say "WIP: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL)"
+  else
+    WIP_REPLACE=1
+    WIP_PICKED=0; WIP_FIRST=""; WIP_PASSED=""
+    WIP_CAPPED=0; WIP_LANE=0; WIP_HELD=0; WIP_WAIT=0
+    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_hold; do
+      [ "$_wk" = "pr" ] || continue
+      [ "$WIP_PICKED" -ge "$LIMIT" ] && break
+      if [ "$w_issue" = "-" ]; then w_label="#$w_pr ($w_branch)"; else w_label="#$w_pr ($w_issue)"; fi
+      if [ "$w_hold" != "-" ]; then
+        case "$w_hold" in "lane branch"*) WIP_LANE=$((WIP_LANE + 1)) ;; *) WIP_HELD=$((WIP_HELD + 1)) ;; esac
+        WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: $w_hold"
+        continue
+      fi
+      w_why="$(wip_move_why "$w_issue" "$w_pr")"
+      if [ -n "$w_why" ]; then
+        case "${w_why%%|*}" in
+          cap)  WIP_CAPPED=$((WIP_CAPPED + 1)) ;;
+          wait) WIP_WAIT=$((WIP_WAIT + 1)) ;;
+          *)    WIP_HELD=$((WIP_HELD + 1)) ;;
+        esac
+        WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: ${w_why#*|}"
+        continue
+      fi
+      if [ -z "$WIP_FIRST" ]; then
+        WIP_FIRST="PR #$w_pr ($w_issue)"
+        w_pick_why="WIP ceiling: rework PR #$w_pr, the oldest movable of $WIP_COUNT open own PRs (ceiling $WIP_CEIL)"
+      else
+        w_pick_why="WIP ceiling: rework PR #$w_pr, the next movable of $WIP_COUNT open own PRs (ceiling $WIP_CEIL)"
+      fi
+      WIP_PICKED=$((WIP_PICKED + 1))
+      WIP_FEED="$WIP_FEED$(python3 -c 'import json,sys;print(json.dumps({"id": sys.argv[1], "state": sys.argv[2], "why": sys.argv[3]}))' "$w_issue" "$w_state" "$w_pick_why")"$'\n'
+    done <<<"$WIP_ROWS"
+    if [ "$WIP_PICKED" -gt 0 ]; then
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST."
+    else
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). Starting nothing: the ceiling stops new issues, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_CAPPED at the review round cap, whose consumer is ASK-3824; $WIP_LANE on lane branches; $WIP_HELD held; $WIP_WAIT waiting on a review or a merge)."
+    fi
+    [ -n "$WIP_PASSED" ] && say "WIP ceiling: passed over, oldest first: $WIP_PASSED"
+  fi
+fi
+# ONE REWRITE OF THE LOOP FEED, and the halt report after the loop reads the
+# same list, so what the loop was handed and what it reports cannot disagree.
+if [ "$WIP_REPLACE" = "1" ]; then
+  PICKED="$(printf '%s' "$PICKED" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+d["ready"] = [json.loads(l) for l in sys.argv[1].splitlines() if l.strip()]
+print(json.dumps(d))' "$WIP_FEED")"
+fi
+
+# One line per issue: id, the state the picker saw, and why a started one is in
+# the pool (ASK-3825). The loop header stays `while IFS= read -r ISSUE; do`
+# byte for byte, because test-terminal-states.sh finds the issue loop by that
+# exact shape, and the fields are split inside it. Ids and state types carry no
+# spaces, so the reason is everything after the second one.
+printf '%s' "$PICKED" | python3 -c 'import json,sys;[print(i["id"], i.get("state") or "-", i.get("why") or "") for i in json.load(sys.stdin)["ready"]]' | \
 while IFS= read -r ISSUE; do
+  PICK_STATE=""; PICK_WHY=""
+  case "$ISSUE" in
+    *" "*) PICK_REST="${ISSUE#* }"; ISSUE="${ISSUE%% *}"
+           PICK_STATE="${PICK_REST%% *}"
+           case "$PICK_REST" in *" "*) PICK_WHY="${PICK_REST#* }" ;; esac ;;
+  esac
   [ "$DONE" -ge "$LIMIT" ] && break
 
   N="$(attempts_for "$ISSUE")"
@@ -1631,6 +2110,9 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # pages nobody, which is the exact defect this block fixes.
       bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
+    # Only when the picker saw it started: this skip fires on every tick, and a
+    # Backlog ticket needs no Linear read to stay where it is.
+    [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "$N of $MAX_ATTEMPTS attempts spent; last reason: $STUCK_WHY"
     continue
   fi
 
@@ -1660,7 +2142,9 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   fi
 
   if [ "$APPLY" = "0" ]; then
-    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)"
+    # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
+    # issue; the reason rides AFTER that shape, never inside it.
+    say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
     DONE=$((DONE+1)); continue
   fi
 
@@ -1705,13 +2189,12 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # silently stop ASK-212's rebase rounds from ever firing again.
     REVIEWED_SHA="$(head_sha_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
     CURRENT_SHA="$(pr_head_sha "$EXISTING_PR")"
-    # ARGUMENT 5: WAS THE REVIEW INDEPENDENT (ASK-2036, sp-e9284708). Same record
-    # the verdict and the reviewed sha come from, read through the lib's reader so
-    # this script never learns the field's name. Empty for every pre-ASK-445
-    # record, which the gate reads as unknown and answers exactly as it does today.
-    # APPENDED, NEVER INSERTED, for the reason $MERGE_STATE keeps argument 2.
+    # WAS THE ONLY REVIEW THE DEGRADED FALLBACK. Read here and said at gate 10,
+    # never passed to the gate: ASK-3832 removed gate 50, so a degraded approval
+    # is an approval (RULE-2026-11-06-C). Gate 50 used to print a skip line for
+    # this state; the gate-10 line below keeps it visible in the run log.
     PR_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$EXISTING_PR")")"
-    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA" "$PR_DEGRADED")"; GATE=$?
+    GATE_NOTE="$(rework_gate "$PR_VERDICT" "$MERGE_STATE" "$REVIEWED_SHA" "$CURRENT_SHA")"; GATE=$?
     [ -n "$GATE_NOTE" ] && say "$GATE_NOTE"
     # THE DRIFT STREAK ENDS ON A STATED NON-DRIFT, and nothing less. Two halves,
     # both of them scars:
@@ -1745,37 +2228,6 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     if [ "$GATE" != "40" ] && [ -n "$REVIEWED_SHA" ] && [ -n "$CURRENT_SHA" ]; then
       clear_drift_rounds "$ISSUE"
     fi
-    if [ "$GATE" = "50" ]; then
-      # THE ONLY REVIEW ON RECORD IS THE DEGRADED FALLBACK (ASK-2036). codex was
-      # down, Opus filled the required status so this repo would not wedge, and
-      # the record says `degraded: true`. The verdict approves and it is pinned
-      # to the head; what is missing is the INDEPENDENCE this loop pays a second
-      # engine for.
-      #
-      # IT SITS ABOVE GATE 10 AND ITS ARM, which is the whole production
-      # consequence. Before this branch existed a degraded approval reached 10,
-      # arm_automerge ran, and GitHub then landed the PR the moment `validate`
-      # went green -- over a `kipi/reviewer-approved` that the fallback itself
-      # had posted. Nothing independent had read the diff and nothing could say
-      # so. Not arming here is HALF the fix, and the half that is not enough: a
-      # PREVIOUS run reached step 5, armed unconditionally 42 lines before its
-      # review, and that arm outlives this run (PR #446 review, finding 1 --
-      # major). So this branch takes the arm off rather than merely declining to
-      # add one. On a PR that was never armed the disarm is a silent no-op.
-      #
-      # A SKIP, NOT A ROUND. Dispatching Sana would rework an approved diff with
-      # no findings to act on, and the review closing that round meets the same
-      # outage and writes the same record -- rounds spent to the cap, nothing
-      # learned. Per `self-healing-retry.md` rule 5 a dead external engine is
-      # environmental-trigger class: it stops on attempt 1 and waits for the
-      # machine, it does not retry logic at it. The cost of that choice, stated:
-      # during a long codex outage approved PRs accumulate unmerged. That is the
-      # direction the loop should fail in -- an unmerged PR costs a day, an
-      # auto-merged unreviewed one costs whatever it broke fleet-wide.
-      disarm_automerge "$EXISTING_PR" "$TARGET_REPO"
-      say "skip $ISSUE: PR #$EXISTING_PR reads '$PR_VERDICT', but the only review on record is the DEGRADED Opus fallback (codex was down), so nothing independent has read this code. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $EXISTING_PR --issue $ISSUE --post"
-      continue
-    fi
     if [ "$GATE" = "10" ]; then
       # ARM BEFORE THE SKIP (PR #33 review round 3, finding 1 -- major). This
       # branch is the population the issue is named for: approved, clean, pinned
@@ -1785,6 +2237,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # merge needed" across exactly this state. Arming here does not turn a done
       # PR into a round: no agent, no reviewer, no Linear comment. The skip stays
       # a skip; only the arm is new.
+      [ "$PR_DEGRADED" = "1" ] && \
+        say "$ISSUE: PR #$EXISTING_PR's only review is the degraded Opus fallback (codex was down). It is an approval and gets the same arm (RULE-2026-11-06-C)"
       arm_automerge "$EXISTING_PR" "$TARGET_REPO"
       # AND THE LINE SAYS WHO MERGES IT (round 3, finding 2 -- minor). Round 2
       # fixed this sentence at the closing line and at converge's and left this
@@ -1825,6 +2279,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" drift_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
         fi
+        [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR head still unreviewed after $DR of $MAX_DRIFT_ROUNDS drift rounds"
         continue
       fi
       # PLANNED, NOT SPENT (same discipline as CONFLICT_ROUND below). Everything
@@ -1847,6 +2302,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
         if page_once "$ISSUE" conflict_paged; then
           bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
         fi
+        [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR still $MERGE_STATE after $CR of $MAX_CONFLICT_ROUNDS rebase rounds"
         continue
       fi
       # THE ROUND IS NOT SPENT HERE, only planned (PR #25 review, finding 2).
@@ -1883,7 +2339,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
   # refreshed origin/$BRANCH, so the lease sees no surprise and allows the
   # push. The PR's head is origin/$BRANCH; when there is a PR, that is the
   # only defensible start point.
-  BASE="origin/main"
+  BASE="origin/$DEFAULT_BRANCH"
   if [ -n "$EXISTING_PR" ]; then
     if git -C "$TARGET_REPO" rev-parse --verify -q "origin/$BRANCH" >/dev/null 2>&1; then
       BASE="origin/$BRANCH"
@@ -1895,7 +2351,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # origin/main is the exact behaviour this block exists to stop -- and
       # refusing instead would stall the issue every cycle with one INFRA line
       # nobody reads.
-      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/main (nothing on the remote to overwrite)"
+      say "$ISSUE: PR #$EXISTING_PR is recorded but origin/$BRANCH does not exist; cutting from origin/$DEFAULT_BRANCH (nothing on the remote to overwrite)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
@@ -1984,8 +2440,29 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       # this issue for every later run, which is the failure this refusal exists
       # to avoid, one layer out.
       ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      requeue_issue "$ISSUE" park "its worktree cannot be moved onto PR #$EXISTING_PR: $POSITION_REFUSAL"
       continue
     fi
+  fi
+
+  # 3b. THE GUARD SET, decided on the tree the agent will actually run in
+  # (ASK-3529). A target that is not an instance carries no .claude/settings.json,
+  # so its agent used to run with none of the skeleton's guards. The set comes
+  # from the renderer beside this script, so it is the pinned skeleton's, and
+  # repo-preflight.sh check 3 approved the same renderer's output.
+  #
+  # Built here, after the tree is positioned and before anything is spent, so a
+  # failure declines the round with the budget intact. FAIL CLOSED: a tree with
+  # no settings and no buildable set gets no agent. "Run it unguarded this once"
+  # is the hole this exists to close.
+  GUARD_JSON="$(python3 "$SCRIPT_DIR/skeleton-guard-settings.py" 2>>"$LOG")" || GUARD_JSON=""
+  if [ ! -f "$TREE/.claude/settings.json" ]; then
+    if [ -z "$GUARD_JSON" ]; then
+      say "INFRA: $ISSUE: $TREE has no .claude/settings.json and the skeleton guard set could not be built; not starting an unguarded agent (not counted against the issue)"
+      ( cd "$TREE" && python3 "$CLAIM" release "$ISSUE" --agent "$AGENT" --session "$SESSION" ) >/dev/null 2>&1 || true
+      continue
+    fi
+    say "$ISSUE: $TREE has no .claude/settings.json; the agent runs with the skeleton guard set"
   fi
 
   # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every
@@ -1999,7 +2476,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     bump_drift_round "$ISSUE"
     say "$ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' at $REVIEWED_SHA but the head is $CURRENT_SHA -- dispatching re-review round $DRIFT_ROUND/$MAX_DRIFT_ROUNDS"
   fi
-  say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)"
+  say "start $ISSUE on $BRANCH in $TREE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
   # ONE PICKUP NOTE PER ATTEMPT THAT RUNS, not one per tick of an outage (PR #421
   # round 6, major). The note goes out BEFORE the runner is reached, so while the
   # account is dead every tick picked the same issue up and posted another
@@ -2034,15 +2511,15 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
 ## THIS IS A REBASE ROUND. THE CONFLICT IS THE ONLY TASK.
 
 PR #$EXISTING_PR on this branch was already REVIEWED AND APPROVED ('$PR_VERDICT').
-GitHub now reports its merge state as $MERGE_STATE: main moved underneath it and
+GitHub now reports its merge state as $MERGE_STATE: $DEFAULT_BRANCH moved underneath it and
 it no longer merges. This is round $CONFLICT_ROUND of $MAX_CONFLICT_ROUNDS; at the cap the
 worker stops and pages a human, so do not spend this round on anything else.
 
 Do exactly this:
 
   git fetch origin
-  git rebase origin/main        # or merge origin/main, whichever this repo prefers
-  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on main
+  git rebase origin/$DEFAULT_BRANCH        # or merge origin/$DEFAULT_BRANCH, whichever this repo prefers
+  # resolve the conflicts, keeping BOTH intents: yours and whatever landed on $DEFAULT_BRANCH
   bash <the tests this PR already ships>   # they must still pass after the rebase
   git push --force-with-lease origin $BRANCH
 
@@ -2115,7 +2592,7 @@ because you and the code share one mental model and it does not.
 Read the review before touching anything. It is in two places:
 
   gh pr view $EXISTING_PR --comments
-  python3 q-system/.q-system/scripts/linear-sync.py comments $ISSUE
+  python3 $SKEL/q-system/.q-system/scripts/linear-sync.py comments $ISSUE
 
 THE REVIEW IS THE SPEC FOR THIS PASS. Do not restart the task and do not
 re-litigate the design. For EACH finding, either:
@@ -2128,7 +2605,7 @@ The review conversation lives on $ISSUE, because that is the one surface both yo
 and the reviewer read (and the founder reads it too). When you have worked the
 findings, post ONE reply there:
 
-  python3 q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
+  python3 $SKEL/q-system/.q-system/scripts/linear-sync.py progress $ISSUE \\
     \"<one line per finding: fixed + the test that now covers it, or answered + the file:line>\" \\
     --agent sana --evidence \"<the command you ran and its real output>\"
 
@@ -2175,7 +2652,7 @@ Push to the SAME branch $BRANCH. Do not open a second PR."
 
   PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
 
-You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/main.
+You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/$DEFAULT_BRANCH.
 Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
 
 1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
@@ -2256,7 +2733,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
   : > "$RUN_OUT_FILE" 2>/dev/null || true
   # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
   # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"; then
+  # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
+  # argument at all. Positional, never spliced into this string: the JSON holds
+  # quotes and globs that would break the quoting here.
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -2296,6 +2776,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
       bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      requeue_issue "$ISSUE" cap "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
+    else
+      requeue_issue "$ISSUE" fail "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
     fi
     fi
   fi
@@ -2472,7 +2955,9 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
         : > "$RUN_OUT_FILE" 2>/dev/null || true
-        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+        # The stand-in is a second agent session in the same tree, so it gets
+        # the same guard set as Sana's run, read again for this moment (ASK-3529).
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
           crc=0
         else
           crc=$?
@@ -2624,6 +3109,10 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # clean refusal: a silent failure here is an infinite redispatch loop.
       say "$ISSUE REFUSED but the $REFUSE_LABEL label did NOT apply (see $LOG) -- it will be offered again"
     fi
+    # A PARK IS A NON-SUCCESS EXIT TOO (ASK-3825): the label says who acts next,
+    # Backlog says nobody is on it now. Not when Codex continued the work or was
+    # down: REFUSE_LABEL is empty there and the issue stays as it is.
+    [ -n "$REFUSE_LABEL" ] && requeue_issue "$ISSUE" park "refused on $REFUSE_KIND, labelled $REFUSE_LABEL"
     # Different next action per class. A capability block that says "re-scope this"
     # sends the drafter to rewrite a spec that was already right.
     if [ -n "$CODEX_CONTINUED" ]; then
@@ -2741,7 +3230,7 @@ $SCOPE_WHY
   # Only fires when there is something to open a PR FOR: commits ahead of
   # origin/main. A branch with no commits still yields no PR, which is a real
   # failure the driver should still see.
-  AHEAD="$(cd "$TREE" && git rev-list --count origin/main..HEAD 2>/dev/null || echo 0)"
+  AHEAD="$(cd "$TREE" && git rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo 0)"
 
   # PUSH BEFORE THE REVIEW, ON BOTH PATHS -- not only when this worker opens the
   # PR. The push used to live inside the `[ -z "$PR_NUM" ]` branch below, so it
@@ -2778,12 +3267,12 @@ $SCOPE_WHY
   if [ -z "$PR_NUM" ]; then
     if [ "${AHEAD:-0}" -gt 0 ]; then
       say "$ISSUE: $AHEAD commit(s) pushed but no PR; opening it (the agent left it unopened)"
-      (cd "$TREE" && gh pr create --head "$BRANCH" --base main \
+      (cd "$TREE" && gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
          --title "$(git log -1 --pretty=%s)" \
          --body "Autonomous worker (Sana) on $ISSUE. Opened by the worker because the run ended without opening it.
 
 Commits on this branch:
-$(git log --oneline origin/main..HEAD)
+$(git log --oneline "origin/$DEFAULT_BRANCH..HEAD")
 
 Review runs next. Do not merge without it." >/dev/null 2>&1) || true
       PR_NUM="$(cd "$TREE" && gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null)"
@@ -2890,12 +3379,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (absent is not drift, fail toward terminal); the missing thing was the
     # sentence. Adds no per-run noise: the gate is silent whenever both shas were
     # read, which is every healthy round.
-    # ARGUMENT 5 IS RE-READ, NOT REUSED FROM THE TOP OF THE RUN (ASK-2036). The
-    # reviewer a few lines up just rewrote this record, and whether THAT review
-    # was degraded is the only question the closing line may answer. Reusing
-    # $PR_DEGRADED would report on the review before this round's.
-    FINAL_DEGRADED="$(degraded_from_record "$(verdict_record_path "$REVIEWS_DIR" "$TARGET_SLUG" "$PR_NUM")")"
-    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA" "$FINAL_DEGRADED")"; FINAL_GATE=$?
+    FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA")"; FINAL_GATE=$?
     [ -n "$FINAL_GATE_NOTE" ] && say "$FINAL_GATE_NOTE"
     # NO PAGE HERE, deliberately, and it is the one place in this pass that buys
     # silence: the NEXT scheduled run gates this same PR at 40, spends a drift
@@ -2909,20 +3393,6 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # replaces.
     if [ "$FINAL_GATE" = "40" ]; then
       say "$ISSUE NOT converged: PR #$PR_NUM still reads '$FINAL_VERDICT' recorded at $FINAL_REVIEWED_SHA while the head is $FINAL_CURRENT_SHA -- this round's review wrote no record, so the code at the head is still unreviewed. Re-review next run ($(drift_rounds_for "$ISSUE")/$MAX_DRIFT_ROUNDS drift round(s) spent)."
-    elif [ "$FINAL_GATE" = "50" ]; then
-      # The closing line is the one an operator scans, and without this arm it
-      # said "converged ... auto-merge armed, no human merge needed" over a
-      # review codex never ran (ASK-2036). Same posture as the 40 arm above: no
-      # page here, because the NEXT run gates this PR at 50 too and says so.
-      #
-      # THE SENTENCE WAS NOT THE FIX (PR #446 review, finding 1 -- major). This
-      # branch is reached AFTER arm_automerge ran unconditionally 42 lines up, so
-      # "Not merged" was a claim about a PR GitHub had already been told to land
-      # the moment `validate` went green -- over a `kipi/reviewer-approved` the
-      # degraded fallback posted itself. The disarm is what makes the sentence
-      # true; disarm_automerge owns the paging when gh refuses.
-      disarm_automerge "$PR_NUM" "$TREE"
-      say "$ISSUE NOT converged: PR #$PR_NUM reads '$FINAL_VERDICT', but that verdict came from the DEGRADED Opus fallback -- codex never read this code, so it is not an independent review. Auto-merge is $AUTOMERGE. Re-review once codex answers: kipi review $PR_NUM --issue $ISSUE --post"
     else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")
@@ -2991,6 +3461,12 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" refused_no_pr >/dev/null 2>&1 || true
     else
       bump_attempt "$ISSUE" "run exited 0 but opened no PR on $BRANCH (no output)"
+      N3="$(attempts_for "$ISSUE")"
+      if [ "${N3:-0}" -ge "$MAX_ATTEMPTS" ]; then
+        requeue_issue "$ISSUE" cap "run exited 0 and opened no PR, attempt $N3 of $MAX_ATTEMPTS"
+      else
+        requeue_issue "$ISSUE" fail "run exited 0 and opened no PR, attempt $N3 of $MAX_ATTEMPTS"
+      fi
     fi
   fi
 

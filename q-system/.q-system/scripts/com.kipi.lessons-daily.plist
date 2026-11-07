@@ -16,8 +16,10 @@
   install-plist.sh (__KIPI_REPO__, __HOME__, __USER__). A literal path here
   would fan out to 25 instances with one machine's home in it.
 
-  Monday 06:00 local, matching the job installed by hand before this template
-  existed (Weekday 1, 06:00). PATH carries ~/.local/bin because the job checks
+  Daily 08:00 local (founder, 2026-11-02: "daily at 8"). It was Monday 06:00,
+  copied from a job installed by hand, and 06:00 collided with consulting's
+  06:05 content-engine, whose busy guard made the fan-out skip consulting
+  (2026-11-02 run, ASK-3676). PATH carries ~/.local/bin because the job checks
   for the claude CLI and treats a missing binary as a broken machine, not a
   quiet night.
 -->
@@ -36,7 +38,7 @@
     <string>/bin/bash</string>
     <string>__KIPI_REPO__/q-system/.q-system/scripts/lessons-daily.sh</string>
   </array>
-  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>
   <key>StandardOutPath</key><string>__KIPI_REPO__/q-system/output/lessons-daily.out</string>
   <key>StandardErrorPath</key><string>__KIPI_REPO__/q-system/output/lessons-daily.err</string>

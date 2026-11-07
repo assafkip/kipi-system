@@ -50,37 +50,46 @@ jobs:
 
       # The capability gate replaces the old hardcoded 4-test loop: it
       # discovers every test artifact by convention, diffs declared-vs-actual
-      # BOTH directions, and runs the full declared suite. The hardcoded loop
-      # ran 4 of 41 declared artifacts — 90.2% never executed anywhere
+      # BOTH directions, and runs the declared tests. The hardcoded loop ran 4 of
+      # 41 declared artifacts, 90.2% never executed anywhere
       # (prd-silent-absence-capability-gate-2026-07-23).
       #
-      # A PULL REQUEST AND A PUSH TO MAIN BOTH RUN ONLY THE TESTS THEIR DIFF EARNS
-      # (ASK-1749 for PRs; pushes since 2026-09-30, ASK-2316, founder-directed:
-      # the full suite belongs to the nightly gates.yml). Measured on run 35478270323:
-      # this step was 17m41s of a 19m36s job because it ran every declared
-      # artifact on every push of every PR, and then once more on the merge push.
-      # change-size.py picks the declared tests that name the changed files. It
-      # falls back to the FULL suite on anything it cannot vouch for: a change to
-      # the gate, the classifier, either selector, a pytest config or conftest, a
-      # dependency manifest, a capability declaration, a new third-party import, or any
-      # error reading the diff. A WIDE selection is not a fallback: a file many tests
-      # name runs those tests (ASK-2388). Structure, declared-vs-actual
-      # and wiring checks are not tests and run in full either way. The checkout
-      # above uses fetch-depth 0, so origin/<base> and the push's `before` resolve.
+      # THIS JOB IS RED ONLY FOR WHAT THE CHANGE INTRODUCED (ASK-3828, RCA
+      # 2026-11-06 root cause #6). A required check that reads the whole tree goes
+      # red on every PR the day main carries a finding, and no PR author can turn
+      # it green, so the PR waits for a human or the floor gets bypassed. Every
+      # check below is scoped to the diff against $base:
+      #   * covers-lint: only the declarations the change touched.
+      #   * the gate's tests: the set the diff earns (ASK-1749 for PRs; pushes
+      #     since 2026-09-30, ASK-2316). change-size.py falls back to the FULL
+      #     suite on anything it cannot vouch for: a change to the gate, the
+      #     classifier, either selector, a pytest config or conftest, a dependency
+      #     manifest, a capability declaration, a new third-party import, or any
+      #     error reading the diff. A WIDE selection is not a fallback (ASK-2388).
+      #   * the gate's structure checks (declared-vs-actual, required data, inert
+      #     engines, the manifest): a finding $base already has is printed as a
+      #     note, never failed. A finding the change adds still fails it, which is
+      #     why PR #600's own undeclared test stays red here.
+      # The unscoped versions, plus validate-separation phase 1 (a whole-skeleton
+      # sweep with no diff mode), run nightly in gates.yml on main. A red there
+      # files one issue against the commit that broke it (gates-red-filer.py).
+      # test_ci_workflows.py fails if a tree-wide gate comes back to this job.
       #
-      # THE PUSH BASE. `github.event.before` is main as it stood before this push,
-      # so the diff is exactly what the push landed. It is unusable on a branch's
-      # first push (all zeros) and after a force-push (the old tip is gone from
-      # the clone). Then the base is HEAD^, the first parent: main squash-merges,
-      # so HEAD^ is main one merge ago. If even that cannot resolve, the gate's
-      # own select_for_diff fails closed to the full suite, never to nothing.
-      # ASK-1918, and it runs BEFORE the gate on purpose: a wrong `covers`
-      # declaration would make the gate below select fewer tests, so the check on
-      # the declarations cannot be downstream of the thing they steer.
-      - name: Coverage declarations are real
-        run: python3 q-system/.q-system/scripts/covers-lint.py --repo-root .
-
-      - name: Capability gate (declared-vs-actual + the tests this change earns)
+      # covers-lint runs FIRST, inside this step (ASK-1918): a wrong `covers`
+      # declaration makes the gate select fewer tests, so the check on the
+      # declarations cannot be downstream of the thing they steer. The empty-list
+      # guard is load-bearing: covers-lint with no path sweeps every fragment.
+      #
+      # THE BASE. On a PR it is origin/<target>. On a push, `github.event.before`
+      # is main as it stood before this push, so the diff is exactly what the
+      # push landed. That sha is unusable on a branch's first push (all zeros)
+      # and after a force-push (the old tip is gone from the clone); then the base
+      # is HEAD^, the first parent, which is main one merge ago because main
+      # squash-merges. A base that still does not resolve stops the step red: the
+      # scoping above has nothing to scope against, and guessing would be silent.
+      # The checkout above uses fetch-depth 0, so origin/<base> and `before`
+      # resolve.
+      - name: Capability gate (the declarations, structure and tests this change earns)
         run: |
           if [ "$EVENT" = "pull_request" ]; then
             base="origin/$BASE_REF"
@@ -91,7 +100,17 @@ jobs:
               base="HEAD^"
             fi
           fi
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "::error::diff base '${base}' is not a commit in this clone"
+            exit 1
+          fi
           echo "capability gate diff base: ${base}"
+          frags="$(git diff --name-only --diff-filter=d "$base" -- q-system/.q-system/capability/expected_tests/)"
+          if [ -n "$frags" ]; then
+            python3 q-system/.q-system/scripts/covers-lint.py --repo-root . $frags
+          else
+            echo "covers-lint: no coverage declaration changed against ${base}"
+          fi
           python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "$base"
         env:
           CI: true
@@ -101,28 +120,6 @@ jobs:
           # dc-25: a design-chain test with no browser SKIPS and the file exits 0, so the gate read
           # green over tests that never ran. With this set they fail instead.
           DC_REQUIRE_REAL_PRODUCERS: "1"
-
-      # CAPABILITY_GATE_SKIP: the gate ran as its own step above; running it again
-      # inside validate-separation would execute that same step's tests twice per CI
-      # run (finding-15). The skip is honored only with caller proof (GITHUB_ACTIONS
-      # here).
-      #
-      # WHAT THE STEP ABOVE ACTUALLY RAN (claude review of PR #377, minor 2). On a
-      # pull_request and on a push to main it is the SUBSET that diff earns, unless
-      # change-size could not vouch for the diff. The full declared suite runs
-      # nowhere in this job. Its only home is the nightly gates.yml, and that
-      # workflow is DISABLED as of 2026-09-30, so today no job runs the full
-      # declared suite and a selection that was too narrow is caught by nothing
-      # until it is turned back on. verify.yml's pytest run covers only the
-      # pytest-collectible slice, never a bash-runner artifact. The skip is still
-      # right, because the double execution it avoids is of whatever that step ran.
-      # Writing "just ran the full suite" here was the part that stopped being
-      # true, and a wrong why-comment is worse than none.
-      - name: Run skeleton validation (Phase 1)
-        run: python3 validate-separation.py 1 --verbose
-        env:
-          CI: true
-          CAPABILITY_GATE_SKIP: "1"
 
       # NO UNSCOPED prd-os STEP (RULE-2026-10-01-A). One stood here and ran all of
       # plugins/prd-os/tests on every PR and push, whatever the change touched.
@@ -145,6 +142,10 @@ jobs:
         env:
           CI: true
 
+      # STAYS ON THE PR (ASK-3828): already diff-scoped. It diffs against the
+      # merge-base of base.sha and HEAD, so it can only name a plugin this PR
+      # changed. Checked 2026-11-06 on #530, #529 and #528: every plugin it
+      # named was one that PR's own diff touched.
       - name: Plugin version-bump guard (PR only)
         if: github.event_name == 'pull_request'
         run: |

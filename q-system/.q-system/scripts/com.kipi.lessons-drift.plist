@@ -4,8 +4,8 @@
   com.kipi.lessons-drift -- the registered trigger for the drift reporter
   (prd-lessons-rail-and-up-rail, issues lr-drift-reporter and
   lr-drift-trigger-proof): what a declared hub instance has that the skeleton
-  lacks, Monday 06:45 local, after the 06:00 lessons job and before the 07:00
-  brief, via slack_founder.deliver.
+  lacks, Monday 06:45 local, before the 07:00 brief. It reads what the previous
+  day's 08:00 lessons job left (that job is daily since ASK-3574), via slack_founder.deliver.
 
   kipi-scope: skeleton-only
   (the reporter compares hubs against the skeleton it runs in; the registry's

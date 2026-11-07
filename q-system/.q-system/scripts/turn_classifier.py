@@ -186,8 +186,12 @@ def should_inject(prompt: str, hook: str = "default") -> bool:
 SHARES = {
     # 175 of 176 lessons fit in 5000; the largest (4,777 bytes) plus the
     # header needs 5,400, and a share that can never carry a lesson whole
-    # starves it silently.
-    "lessons-inject": 5500,
+    # starves it silently. Raised 5500 -> 6000 on 2026-10-31: the 27 lessons in
+    # PR #585 include one of 5,021 bytes, and the guard test
+    # (test_the_largest_real_lesson_fits_the_lessons_share) went red on the
+    # weekly lessons PR, which would have blocked the fleet's learning from
+    # shipping. 6000 leaves room for a 5,400-byte lesson.
+    "lessons-inject": 6000,
     "knowledge-inject": 4000,
 }
 # The cap on ADVISORY bytes per turn. Voice is outside it (see above).

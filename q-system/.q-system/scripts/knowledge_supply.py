@@ -1956,6 +1956,12 @@ def _record_misses(qroot: Path, prompt: str, scan: str, truncated: bool,
 def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = None,
            record: bool = True, deadline_s: float | None = None,
            recall_path: Path | None = None) -> dict | None:
+    # RETIRED 2026-10-30 (ASK-3400/ASK-3401): supply() no longer writes the session
+    # recall file. recall_path is accepted and ignored so callers and the
+    # no-write test (test_supply_never_writes_session_recall) can still aim at a
+    # file and prove it stays untouched. Scar: the old _record_recall ran per
+    # prompt fleet-wide for a consumer that wrote 0 outcomes; consulting's
+    # recall file hit 2.28 MB, rewritten whole on every prompt.
     t0 = time.time()
     t_deadline = t0 + (SUPPLY_DEADLINE_S if deadline_s is None else deadline_s)
     deadline_hit: dict | None = None
@@ -2307,7 +2313,6 @@ def supply(root: Path, prompt: str, *, session_id: str, now: dt.date | None = No
     if record:
         append_bounded(receipts_path, receipt, RECEIPT_LEDGER_MAX_BYTES)
         _record_misses(qroot, prompt, scan, truncated, entities, ts, session_id, candidates_dropped)
-        _record_recall(bundle, session_id, recall_path)
     return bundle
 
 
@@ -2346,31 +2351,6 @@ def stores_cut_by_ceiling(all_items: list[dict], kept: list[dict]) -> list[str]:
     had = {it.get("store") or PROJECT_STORE for it in all_items}
     have = {it.get("store") or PROJECT_STORE for it in kept}
     return sorted(had - have)
-
-
-def _record_recall(bundle: dict, session_id: str, recall_path: Path | None) -> None:
-    """Producer half of the memory outcome loop (knowledge-supply plan, Phase 2).
-    Each distinct source file this pass surfaced is recorded in the session
-    recall artifact, the same one memory-scores-surface.py writes, so the Stop
-    hook memory_autocapture.py can score it: useful if the model opened that
-    file this session, dead_end if it never touched it. That is the only proxy
-    for "the bundle was used" this repo has, and it needs no new mechanism. The
-    id prefix lets a consumer tell these rows from auto-memory rows. Best
-    effort: a recall write must never fail a supply pass."""
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "session_recall", Path(__file__).resolve().parent / "session_recall.py")
-        sr = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(sr)
-        seen: dict[str, str] = {}
-        for it in bundle["items"]:
-            seen.setdefault(it["abs_src"], it["src"])
-        entries = [{"memory_id": f"knowledge-supply:{rel_src}", "source_file": abs_src}
-                   for abs_src, rel_src in seen.items()]
-        if entries:
-            sr.record_surfaced(entries, session_id=session_id, path=recall_path)
-    except Exception:
-        pass
 
 
 def _hash(text: str) -> str:

@@ -1046,8 +1046,50 @@ def git_operation_in_progress():
     return None
 
 
+SKELETON_MEMORY_PREFIX = "q-system/memory/"
+
+
+def on_skeleton_default_branch():
+    """True in the skeleton (instance-registry.json at the root, the same
+    self-detection notes-publish uses) with its default branch checked out."""
+    if not os.path.isfile(os.path.join(PROJ_DIR, "instance-registry.json")):
+        return False
+    head = run(["git", "symbolic-ref", "--short", "-q", "HEAD"]).stdout.strip()
+    if not head:
+        return False
+    r = run(["git", "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"])
+    default = r.stdout.strip().split("/", 1)[-1] if r.returncode == 0 and r.stdout.strip() else "main"
+    return head == default
+
+
+def hold_skeleton_memory(groups):
+    """Drop session-memory groups on the skeleton's default branch (ASK-3525).
+
+    why: this hook commits on the checked-out branch and never pushes it. On the
+    skeleton that branch is main, so every Stop put local main further ahead of
+    origin/main, lessons-daily's sync_skel_to_main then left it alone and
+    kipi-update.sh refused (`propagate FAILED` 2026-10-05, 10-12, 10-19; PR #573
+    tried to undo the drift after the fact and stopped at its round cap). The
+    files stay on disk, uncommitted; lessons-daily holds any that origin also
+    changed before it fast-forwards. The skeleton is a public repo, so its own
+    handoff is published nowhere (notes-publish.py, founder choice b 2026-09-28).
+    """
+    if not on_skeleton_default_branch():
+        return groups
+    kept, held = {}, []
+    for key, paths in groups.items():
+        keep = [p for p in paths if not p.startswith(SKELETON_MEMORY_PREFIX)]
+        held += [p for p in paths if p.startswith(SKELETON_MEMORY_PREFIX)]
+        if keep:
+            kept[key] = keep
+    if held:
+        print(f"auto-commit: skeleton default branch: {len(held)} memory file(s) "
+              "left uncommitted so local main stays at origin/main")
+    return kept
+
+
 def main():
-    paused = git_operation_in_progress()
+    paused =git_operation_in_progress()
     if paused is not None:
         print(f"auto-commit: git merge in progress ({paused}); committing nothing, "
               "notes not published. Finish or abort it first.")
@@ -1121,6 +1163,7 @@ def _commit_main():
         return
 
     groups, unclassified = group_files(files)
+    groups = hold_skeleton_memory(groups)
     refusals = shrink_refusals([f for fl in groups.values() for f in fl])
     if refusals:
         report_refusal(refusals)

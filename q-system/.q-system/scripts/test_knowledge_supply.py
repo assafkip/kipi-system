@@ -714,23 +714,45 @@ def test_entities_capped_and_dropped_names_in_receipt(tmp_path):
     assert "ENTITIES DROPPED" in ks.render(b) and b["receipt"]["entities_dropped"][0] in ks.render(b)
 
 
-# ---------------------------------------------------------------- Phase 2: recall producer
+# ---------------------------------------------------------------- ASK-3400: recall producer RETIRED
 
-def test_recall_records_each_surfaced_source_once(tmp_path):
-    """Every distinct source file the pass surfaced lands in the session recall
-    artifact under this session, so memory_autocapture can score it at Stop
-    (useful if opened, dead_end if never touched). record=False writes nothing."""
+def test_supply_never_writes_session_recall(tmp_path):
+    """ASK-3400/3401 (2026-10-30): the earned-trust loop is retired. supply() with
+    record on must not create or grow the session-recall file. Scar: the old
+    writer ran on every prompt fleet-wide, its only consumer was gated to one
+    instance and wrote 0 outcomes, and consulting's file reached 2.28 MB /
+    608 sessions, rewritten whole on each prompt. The prior test here pinned the
+    defect (asserted the write happened)."""
     root, q = make_instance(tmp_path)
     recall = tmp_path / "recall.json"
     b = run(root, "what do we know about Dana Okafor", recall_path=recall)
-    entries = json.loads(recall.read_text())["test-session"]["surfaced"]
-    srcs = {e["source_file"] for e in entries}
-    assert srcs == {i["abs_src"] for i in b["items"]} and len(srcs) > 1
-    assert len(entries) == len(srcs), "one entry per source file"
-    assert all(e["memory_id"].startswith("knowledge-supply:") for e in entries)
-    recall.unlink()
-    run(root, "what do we know about Dana Okafor", record=False, recall_path=recall)
+    assert b is not None and len(b["items"]) > 1, "fixture must surface items, or the assert below is vacuous"
     assert not recall.exists()
+    recall.write_text("{}")
+    before = recall.read_bytes()
+    run(root, "what do we know about Dana Okafor", recall_path=recall)
+    assert recall.read_bytes() == before, "a pre-existing recall file must not grow"
+
+
+def test_supply_never_writes_default_session_recall(tmp_path):
+    """ASK-3512: the test above only aims at an explicit recall_path, so a
+    re-added writer that passes path=None (the old _record_recall did) would
+    write DEFAULT_PATH and stay green. Run a COPY of the engine in a fake
+    q-system tree so DEFAULT_PATH resolves under tmp_path, never the live
+    memory dir, and assert nothing lands there."""
+    scripts = tmp_path / "fake" / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("knowledge_supply.py", "session_recall.py"):
+        shutil.copy(HERE / name, scripts / name)
+    s = importlib.util.spec_from_file_location("knowledge_supply_copy", scripts / "knowledge_supply.py")
+    ks_copy = importlib.util.module_from_spec(s)
+    s.loader.exec_module(ks_copy)
+    default = tmp_path / "fake" / "q-system" / "memory" / ".session-recall.json"
+    root, _ = make_instance(tmp_path)
+    b = ks_copy.supply(root, "what do we know about Dana Okafor", now=NOW, session_id="test-session")
+    assert b is not None and len(b["items"]) > 1, "fixture must surface items, or the assert below is vacuous"
+    assert not default.exists(), "supply() wrote the default session-recall path"
+    assert not list(default.parent.glob(".session-recall*")), "supply() left a recall file or lock"
 
 
 # ---------------------------------------------------------------- ASK-1261: one chokepoint + captured minors

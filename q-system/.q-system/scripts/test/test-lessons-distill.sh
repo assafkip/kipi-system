@@ -58,6 +58,16 @@ check("held lesson not published", len(list(lessons.glob("*.md"))) == before)
 check("held lesson written to held dir", any(held.glob("held-*.md")))
 check("summary reports 1 held", len(out3["held"]) == 1)
 
+# ASK-2736: the ledger ships in a PUBLIC repo with the lessons, so no row may
+# carry the raw instance name (instance names include client engagements).
+rows = json.loads(ledger.read_text())
+check("ledger rows never carry the raw instance name",
+      rows and all(r.get("instance") != "acme" and "acme" not in json.dumps(r) for r in rows.values()))
+# Not any per-instance label either: a sha1 prefix of the name is reversed by
+# hashing a candidate list (codex, PR #551 round 2). One constant for all.
+check("ledger rows carry the constant 'redacted', never a per-instance label",
+      {r.get("instance") for r in rows.values()} == {"redacted"})
+
 print("ALL PASS" if not fails else f"SOME FAILED: {fails}")
 sys.exit(1 if fails else 0)
 PY
