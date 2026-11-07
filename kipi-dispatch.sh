@@ -577,8 +577,9 @@ turn_lock() {
 # The cursor's ONLY writer. Finding-12 rejected storing this in attempts-ledger.py
 # and the reason generalises: a plain read-then-write from two overlapping
 # heartbeats loses an update, which is the exact race attempts-ledger.py exists to
-# prevent. So the file gets one writer, an atomic mkdir lock (mkdir is the portable
-# test-and-set; macOS ships no flock(1)), and a rename rather than a truncating
+# prevent. So the file gets one writer, the turn lock (a mkdir claim, chosen
+# because macOS ships no flock(1); exclusive on BSD and GNU mkdir but NOT on
+# uutils mkdir, see page_lock and ASK-3915), and a rename rather than a truncating
 # write so no reader ever sees a half-written name.
 cursor_set() {
   local name="$1"
