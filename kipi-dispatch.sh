@@ -1162,6 +1162,25 @@ page_clear linear-down
 
 NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
 
+# --- WIP-RELEASE-APPLY:BEGIN (ASK-3866, RULE-2026-11-07-A) -------------------
+# The pick above is a DRY run, and this loop never runs the worker with --apply
+# outside --issue: the round it launches is converge --issue, which never reaches
+# the WIP block. So a release the dry pick only NAMES would never happen, and
+# the 2026-11-07 deadlock (8 unmovable PRs over a ceiling of 5, "Starting
+# nothing" every tick) would come back with a better log line. When the dry pick
+# names one, this pass applies it: the worker counts and picks again from fresh
+# state, releases at most one PR, and stops before its issue loop
+# (--release-only), so it starts no agent and spends no model call. Before the
+# red-CI redrive and the empty-NEXT exit, because the release matters most on
+# exactly the ticks where nothing else can be picked. Its outcome is logged; a
+# failed pass is logged and the cycle goes on, and the next tick retries.
+if printf '%s' "$WORK_OUT" | grep -qE '\[dry\] would release PR #[0-9]+'; then
+  # shellcheck disable=SC2086  # $WORK_ARGS is spliced unquoted, as above
+  REL_OUT="$(bash ./kipi work $WORK_ARGS --release-only --apply 2>&1)"; REL_RC=$?
+  say "WIP release pass (rc=$REL_RC): $(printf '%s\n' "$REL_OUT" | grep -E 'release PR #|WARN' | tail -3 | tr '\n' ' ')"
+fi
+# --- WIP-RELEASE-APPLY:END ---------------------------------------------------
+
 # --- RED-CI REDRIVE (ASK-295) -----------------------------------------------
 # A PR this loop opened going red is a dead end: ready() only returns
 # backlog/unstarted issues, and an issue with a live PR is In Progress, so the

@@ -491,3 +491,13 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-11-06
 - **Held by:** not yet wired. Ticket: ASK-3817. Expires: 2026-12-06.
 - **Revisit:** Only on a founder order.
+
+## The fleet worker always has a way out (2026-11-07)
+
+### RULE-2026-11-07-A: The fleet worker never sits at zero progress with no automated way out
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "We cant have things be totally stuck with no recourse")
+- **Decision:** Every worker tick at a repo does one of four things: works an issue, reworks a movable PR, releases one unmovable PR through a coded exit, or names an external outage that pages once and has an expiry. A stop, cap or ceiling that holds work without one of these exits is a defect. A release closes a PR or adopts it onto a worker branch. It never deletes a branch and never resets a review cap. A kind of hold with no exit row fails the coverage lint.
+- **Reason:** Measured 2026-11-07: 9 open own PRs in kipi-system, 1 movable. After it, 8 unmovable PRs against a ceiling of 5, and the worker starts nothing on every tick. No tracked code closes a PR. #613's review predicted this (sp-55e61d4b, filed as ASK-3866), and it shipped as nonblocking. Source: `q-system/output/rca/rca-worker-wip-deadlock-2026-11-07.md`.
+- **Date:** 2026-11-07
+- **Held by:** `wip_release` in `q-system/.q-system/scripts/linear-worker.sh`, called once from the WIP ceiling block where "Starting nothing" used to print, keyed on hold kinds through its exit table `wip_release.kinds` in `q-system/.q-system/terminal-states.json`, with the age backstop. Wired live by the `WIP-RELEASE-APPLY` block in `kipi-dispatch.sh` (launchd `com.kipi.dispatch`): when the dry pick names a release, it runs `kipi work --release-only --apply`. Test: `q-system/.q-system/scripts/test/test-worker-wip-liveness.sh` (red on d65ac5d5; coverage lint L11; mutants L12 and L13c). Lane adoption with the round count carried: ASK-3938.
+- **Revisit:** Only on a founder order.

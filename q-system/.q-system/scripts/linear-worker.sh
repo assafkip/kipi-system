@@ -49,8 +49,10 @@
 # problem and mark good work STUCK. Same distinction self-healing-retry.md rule 5
 # draws, and the same one OpenSwarm's scheduler makes.
 #
-# Usage:  linear-worker.sh [--apply] [--limit N] [--issue ASK-123]
+# Usage:  linear-worker.sh [--apply] [--limit N] [--issue ASK-123] [--release-only]
 # Dry by default: prints what it would pick and stops.
+# --release-only: count, pick and run the WIP release, then stop before the
+# issue loop. kipi-dispatch.sh applies a release its dry pick named this way.
 #
 # THE BRACE AROUND EVERYTHING BELOW IS LOAD-BEARING (ASK-351). Do not remove it,
 # and do not "clean up" the bare `}` on the last line.
@@ -236,6 +238,7 @@ LIMIT=1
 APPLY=0
 ONLY_ISSUE=""
 TARGET_REPO_ARG=""
+RELEASE_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -243,6 +246,7 @@ while [ $# -gt 0 ]; do
     --limit) shift; LIMIT="${1:-1}" ;;
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
     --repo) shift; TARGET_REPO_ARG="${1:-}" ;;
+    --release-only) RELEASE_ONLY=1 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
@@ -289,6 +293,9 @@ if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # same question and records nothing.
   BREAKER_DRY=""
   [ "$APPLY" = "1" ] || BREAKER_DRY="--dry"
+  # A release-only pass runs no model, so it spends nothing and must not take
+  # the breaker trial the real round minutes later is owed (ASK-3866).
+  [ "$RELEASE_ONLY" = "1" ] && BREAKER_DRY="--dry"
   $BREAKER_CMD check --bot "$BREAKER_BOT" $BREAKER_DRY >>"$LOG" 2>&1
   breaker_rc=$?
   if [ "$breaker_rc" -eq 3 ]; then
@@ -1017,23 +1024,52 @@ def held_only_by(i, url):
     return bool(prs) and why == prs[0] and all(p.startswith("open PR " + url + " ") for p in prs)
 
 
-def refusal_why(i):
-    # Names the refusal for the run log. It never decides: ready() does.
+def hold(kind, why):
+    # A HOLD IS A MACHINE KEY PLUS ITS PROSE (ASK-3866, RULE-2026-11-07-A). The
+    # first release draft keyed on the prose (case "lane branch"*), so a reworded
+    # reason would have moved a PR into the wrong exit with no test noticing.
+    # wip_release keys on the kind through the exit table in terminal-states.json
+    # (wip_release.kinds); the prose is for the run log only. Every kind passed
+    # here needs a row there: test-worker-wip-liveness.sh L11 reads this call
+    # shape and goes red on a kind with no row.
+    return kind, why
+
+
+def ticket_is_live(i):
+    # True when someone may be ON this started ticket right now: it started
+    # inside the lane window, or a worker claim on its tree is live. The same two
+    # predicates ls.started_hold_reason asks, called directly so the kind never
+    # rests on that function prose. A PR in this state is never released, not even
+    # by the backstop: on a ceiling of old PRs, converge reworking one of them
+    # holds a live claim, and closing it mid-run would throw away that round.
+    began = ls._parse_stamp(i.get("startedAt"))
+    if began is None or (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+        return True
+    return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
+
+
+def refusal(i):
+    # (kind, why) for the run log and the release. It never decides: ready() does.
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
         if held in labels:
-            return "ticket labelled " + held
+            return hold("refused-label", "ticket labelled " + held)
     if "owner:sana" not in labels:
-        return "ticket is not owner:sana"
+        return hold("refused-label", "ticket is not owner:sana")
     if is_fleet_alert(i):
-        return "ticket is a fleet alert, not dispatch work (ASK-839)"
+        return hold("alert", "ticket is a fleet alert, not dispatch work (ASK-839)")
     if not in_this_repo(i):
-        return "ticket is on project " + str(project_of(i)) + ", not this repo"
+        return hold("off-repo", "ticket is on project " + str(project_of(i)) + ", not this repo")
     if "Definition of Ready" not in (i.get("description") or ""):
-        return "ticket has no Definition of Ready"
+        return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
-        return "ticket held: " + (started_hold(i) or "not released")
-    return "ticket is " + (i["state"].get("name") or i["state"]["type"])
+        if ticket_is_live(i):
+            return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
+        return hold("ticket-held", "ticket held: " + (started_hold(i) or "not released"))
+    name = "ticket is " + (i["state"].get("name") or i["state"]["type"])
+    if i["state"]["type"] in ("completed", "canceled"):
+        return hold("ticket-closed", name)
+    return hold("ticket-state", name)
 
 
 def rework_hold(ident, url):
@@ -1046,18 +1082,48 @@ def rework_hold(ident, url):
     # ticket moved by hand an hour ago, with no ledger row, stays held.
     i = by_ident.get(ident)
     if i is None:
-        return "ticket " + ident + " is not on the board"
+        return hold("not-on-board", "ticket " + ident + " is not on the board")
     if ready(i):
-        return ""
+        return "", ""
     if i["state"]["type"] == "started" and held_only_by(i, url):
         saved = _started_memo[ident]
         _started_memo[ident] = ""
         try:
             if ready(i):
-                return ""
+                return "", ""
         finally:
             _started_memo[ident] = saved
-    return refusal_why(i)
+    return refusal(i)
+
+
+def lane_branch_issue(branch):
+    # sana/ask-3823-promoter -> ASK-3823: the ticket a lane PR belongs to. Read
+    # only to RELEASE the PR (ASK-3866); a lane is never reworked (see above).
+    parts = (branch[len(OWN_PREFIX):] if branch.startswith(OWN_PREFIX) else "").split("-")
+    if len(parts) >= 3 and parts[0].isalpha() and parts[1].isdigit():
+        return parts[0].upper() + "-" + parts[1]
+    return ""
+
+
+LANE_WHY = "lane branch, the worker commits only onto sana/<id>, so it cannot rework this one"
+
+
+def lane_hold(ident):
+    # A LIVE LANE IS NEVER RELEASED. The orchestrator moves a lane ticket to In
+    # Progress by hand when the lane starts (linear-sync.py STARTED_STALE_HOURS),
+    # and on 2026-11-07 three supervised lanes were finishing PRs while the
+    # ceiling held. Closing one of those mid-review is the lane race of
+    # ASK-3826 trap 1 with a worse outcome, so a lane ticket started inside the
+    # same window is held. A lane on a closed or missing ticket takes that exit.
+    i = by_ident.get(ident)
+    if i is None:
+        return hold("not-on-board", LANE_WHY + "; its ticket " + (ident or "(none in the branch name)") + " is not on the board")
+    st = i["state"]["type"]
+    if st in ("completed", "canceled"):
+        return hold("ticket-closed", LANE_WHY + "; its ticket is " + (i["state"].get("name") or st))
+    if st == "started" and ticket_is_live(i):
+        return hold("lane-live", LANE_WHY + "; its ticket started inside the " + str(ls.STARTED_STALE_HOURS) + "h lane window or holds a live claim, so a lane may be on it")
+    return hold("lane", LANE_WHY)
 
 
 wip = {"asked": False}
@@ -1082,16 +1148,18 @@ if os.environ.get("WIP_OWN_RC", "") != "":
     walked = 0
     for r in own:
         r["issue"] = worker_branch_issue(r["branch"])
+        # The ticket a release comments on: the worker issue, or the lane ticket.
+        r["ticket"] = r["issue"] or lane_branch_issue(r["branch"])
         if not wip["at_ceiling"]:
-            r["hold"] = ""
+            r["kind"], r["hold"] = "", ""
         elif not r["issue"]:
-            r["hold"] = "lane branch, the worker commits only onto sana/<id>, so it cannot rework this one"
+            r["kind"], r["hold"] = lane_hold(r["ticket"])
         elif walked >= WIP_WALK:
-            r["hold"] = "not checked, past the first " + str(WIP_WALK) + " candidates"
+            r["kind"], r["hold"] = hold("walk", "not checked, past the first " + str(WIP_WALK) + " candidates")
         else:
             walked += 1
-            r["hold"] = rework_hold(r["issue"], r["url"])
-        r["state"] = ((by_ident.get(r["issue"]) or {}).get("state") or {}).get("type") or "-"
+            r["kind"], r["hold"] = rework_hold(r["issue"], r["url"])
+        r["state"] = ((by_ident.get(r["ticket"]) or {}).get("state") or {}).get("type") or "-"
     wip["own"] = own
 
 print(json.dumps({
@@ -1927,11 +1995,11 @@ wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, 
   local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
   n="$(attempts_for "$issue")"
   if [ "$n" -ge "$MAX_ATTEMPTS" ]; then
-    printf 'held|%s/%s attempts spent, terminal' "$n" "$MAX_ATTEMPTS"; return 0
+    printf 'attempts|%s/%s attempts spent, terminal' "$n" "$MAX_ATTEMPTS"; return 0
   fi
   if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$issue" codex_outage_noted "" 2>/dev/null)" = "True" ] \
      && env_alert_held "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
-    printf 'held|held while the second runner (Codex) is unavailable'; return 0
+    printf 'codex|held while the second runner (Codex) is unavailable'; return 0
   fi
   # find -name, the quote-safe form review_round uses; the reviewer counts the
   # same <key>-*.md set with the same review_is_usable predicate. -H because the
@@ -1956,13 +2024,177 @@ wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, 
   current="$(pr_head_sha "$pr")"
   rework_gate "$verdict" "$merge" "$reviewed" "$current" >/dev/null; gate=$?
   case "$gate" in
-    10) printf 'wait|approved at its head (%s), nothing to rework' "$verdict" ;;
-    20) printf 'wait|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
+    10) printf 'approved|approved at its head (%s), nothing to rework' "$verdict" ;;
+    20) printf 'unreviewed|no recorded review verdict, nothing to rework against (the reviewer redrive owns it)' ;;
     30) [ "$(conflict_rounds_for "$issue")" -ge "$MAX_CONFLICT_ROUNDS" ] \
-          && printf 'held|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
+          && printf 'conflict|still %s after %s rebase rounds' "${merge:-unmergeable}" "$MAX_CONFLICT_ROUNDS" ;;
     40) [ "$(drift_rounds_for "$issue")" -ge "$MAX_DRIFT_ROUNDS" ] \
-          && printf 'held|head still unreviewed after %s drift rounds' "$MAX_DRIFT_ROUNDS" ;;
+          && printf 'drift|head still unreviewed after %s drift rounds' "$MAX_DRIFT_ROUNDS" ;;
   esac
+  return 0
+}
+
+# --- THE WIP RELEASE (ASK-3866, RULE-2026-11-07-A) ---------------------------
+# THE CEILING WAS HALF A PATTERN. chief pairs WIP_CAP 5 with a drain (LGTM
+# closes a PR idle 14 days, branch kept, issue back to the queue). ASK-3826
+# ported the stop and wrote the exit as a ticket name, and no tracked code
+# closed a PR. Measured 2026-11-07: 9 open own PRs in kipi-system, 1 movable;
+# after it, 8 that no round could move held the ceiling of 5, and every tick
+# printed "Starting nothing" and paged no one. The orchestrator cleared it by
+# closing 5 PRs by hand. RCA: q-system/output/rca/rca-worker-wip-deadlock-2026-11-07.md.
+#
+# So every tick at the ceiling now releases ONE passed-over PR, oldest first,
+# through the exit its hold kind names in ONE table (terminal-states.json,
+# wip_release.kinds; this block is its one reader):
+#   close-requeue  close it (last FINDINGS block in the comment), keep the
+#                  branch, ticket back to Backlog with "resume from branch X at
+#                  sha Y", one attempt charged. The attempt budget is what bounds
+#                  rounds across PRs: the closed PR keeps its review records, so
+#                  its own cap is never reset.
+#   close-comment  close it, keep the branch, one comment on the ticket.
+#   wait           no direct exit: a named consumer with an expiry owns it. The
+#                  backstop below covers it once it outlives the age bar, unless
+#                  its row says backstop false (someone may be on it now).
+# A kind with no row is treated as wait, so a hold nobody listed still reaches
+# the backstop; test-worker-wip-liveness.sh L11 lints that every kind has a row.
+# NEVER --delete-branch and never a review-record write: a release is undone by
+# reopening the PR.
+WIP_EXITS_FILE="$SCRIPT_DIR/../terminal-states.json"
+WIP_EXITS=""
+wip_exit_rows() {  # kind<TAB>exit<TAB>backstop, one line per row of the table
+  python3 - "$WIP_EXITS_FILE" <<'PY' 2>/dev/null
+import json, sys
+try:
+    rows = json.load(open(sys.argv[1]))["wip_release"]["kinds"]
+except Exception:
+    raise SystemExit(0)
+for kind, row in rows.items():
+    print("\t".join([kind, str(row.get("exit") or ""), "1" if row.get("backstop", True) else "0"]))
+PY
+}
+wip_exit_for() {  # wip_exit_for <kind> -> "<exit> <backstop>"; "wait 1" when no row
+  local got
+  got="$(printf '%s\n' "$WIP_EXITS" | awk -F'\t' -v k="$1" '$1 == k { print $2 " " $3; exit }')"
+  printf '%s' "${got:-wait 1}"
+}
+
+# THE BACKSTOP AGE BAR: the larger of 10 x the p85 merged cycle time of own PRs
+# and 3 days. 3 days because the merged sana/ PRs since 2026-10-24 had a max
+# cycle time of 2.99 days, and no PR older than that ever merged. The p85 is
+# work_item_age.py tail_seconds (one percentile definition, nearest rank, at
+# least MIN_MERGED merges) fed the PR instrument, created to merged, because the
+# age it is compared with is a PR age from the same createdAt field. Any failure
+# answers the floor.
+WIP_BACKSTOP_FLOOR_S=259200
+wip_backstop_bar() {
+  local merged
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  merged="$(gh pr list $KIPI_GH_REPO_ARGS --state merged --limit 100 \
+    --json headRefName,createdAt,mergedAt -q '.[] | [.headRefName, .createdAt, .mergedAt] | @tsv' 2>/dev/null </dev/null)"
+  WIP_MERGED="$merged" python3 - "$SCRIPT_DIR/../../../plugins/kipi-dsse/scripts" "$WIP_BACKSTOP_FLOOR_S" <<'PY' 2>/dev/null \
+    || printf '%s' "$WIP_BACKSTOP_FLOOR_S"
+import os, sys
+floor = int(sys.argv[2])
+sys.path.insert(0, sys.argv[1])
+try:
+    import work_item_age as wia
+except Exception:
+    print(floor); raise SystemExit(0)
+items, receipts = [], []
+for n, line in enumerate((os.environ.get("WIP_MERGED") or "").splitlines()):
+    parts = line.split("\t")
+    if len(parts) != 3 or not parts[0].startswith("sana/"):
+        continue
+    items.append({"id": str(n), "status": "closed", "at": wia._ts(parts[1])})
+    receipts.append({"issue_id": str(n), "closed_at": parts[2]})
+tail, _count = wia.tail_seconds(items, receipts)
+print(max(floor, int(10 * tail)) if tail else floor)
+PY
+}
+# The timestamp goes in through the environment, not argv: with `pass' "$1"` on
+# the line after `except Exception:`, validate-separation.py read the pair as a
+# label and a dollar amount, and the propagation leak gate aborted the fleet
+# updater on a "pricing" fact (test-updater-arms-new-jobs.py, PR #629 validate).
+iso_age_s() {  # iso_age_s <2026-11-07T12:00:00Z> -> seconds since then, or "" when unreadable
+  WIP_ISO="$1" python3 -c 'import os,datetime as d
+try:
+    t = d.datetime.strptime(os.environ["WIP_ISO"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc)
+    print(int((d.datetime.now(d.timezone.utc) - t).total_seconds()))
+except Exception:
+    pass' 2>/dev/null
+}
+
+wip_release() {  # wip_release <pr> <ticket> <kind> <exit> <branch> <state> <why> <created> [backstop]
+  local pr="$1" ticket="$2" kind="$3" exit="$4" branch="$5" state="$6" why="$7" created="$8" mode="${9:-}"
+  local label words sha f findings body line old out rc=0
+  label="$kind"; [ "$mode" = "backstop" ] && label="backstop: $kind"
+  if [ "$exit" = "close-requeue" ]; then
+    words="close it with its last FINDINGS block, keep branch $branch, requeue $ticket and charge one attempt"
+  else
+    words="close it, keep branch $branch, comment on $ticket"
+  fi
+  [ "$mode" = "backstop" ] && words="$words, page once"
+  # A DRY RUN STAYS DRY: kipi-dispatch.sh greps this line and applies it with
+  # --release-only --apply (its WIP-RELEASE-APPLY block).
+  if [ "$APPLY" != "1" ]; then
+    say "[dry] would release PR #$pr ($label): $words"
+    return 0
+  fi
+  sha="$(pr_head_sha "$pr")"
+  # The newest review that HAS a findings block: the reviewer writes its .md
+  # empty first, so the newest file can be a review still in flight.
+  findings=""
+  while IFS= read -r f; do
+    { [ -n "$f" ] && grep -q '^FINDINGS:' "$f" 2>/dev/null; } || continue
+    findings="$(awk '/^FINDINGS:/{on=1} on{print} /^END FINDINGS/{if(on) exit}' "$f" | head -60)"
+    break
+  done < <(ls -t "$REVIEWS_DIR/$(artifact_key "$TARGET_SLUG" "$pr")-"*.md "$REVIEWS_DIR/pr-$pr-"*.md 2>/dev/null)
+  body="Closed by the fleet worker WIP release (ASK-3866, RULE-2026-11-07-A). $WIP_COUNT open own PRs hold the ceiling of $WIP_CEIL, and no worker round can move this one.
+
+Kind: $label. $why
+
+Branch $branch is kept at ${sha:-its last head}. Nothing was deleted. Reopen this PR to undo."
+  [ "$exit" = "close-requeue" ] && body="$body
+$ticket goes back to Backlog with one attempt charged. Resume from branch $branch at ${sha:-its last head}."
+  body="$body
+
+Last review findings:
+${findings:-(no FINDINGS block recorded for this PR)}"
+  # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+  if ! gh pr close "$pr" $KIPI_GH_REPO_ARGS --comment "$body" >/dev/null 2>>"$LOG" </dev/null; then
+    say "WARN: WIP release could not close PR #$pr ($label); it stays open and counted, and the next tick tries again (see $LOG)"
+    return 1
+  fi
+  say "release PR #$pr ($label): closed, branch $branch kept at ${sha:-an unknown head}"
+  if [ "$ticket" = "-" ]; then
+    say "release PR #$pr: its branch names no ticket, so there is no ticket to comment on"
+    return 0
+  fi
+  # RESUME FIRST: linear-sync.py requeue cuts its reason at 300 characters.
+  line="PR #$pr was closed by the WIP release ($label: $why). Branch $branch is kept at ${sha:-its last head}; reopen the PR to undo."
+  [ "$exit" = "close-requeue" ] && line="Resume from branch $branch at ${sha:-its last head}. $line"
+  # ONE ATTEMPTS-LEDGER ROW, through the one writer. A requeue kind charges the
+  # attempt (the bound across PRs); the old reason rides along so a third
+  # attempt does not lose the diagnosis of the first two.
+  if [ "$exit" = "close-requeue" ]; then
+    old="$(python3 "$LEDGER" "$ATTEMPTS" get "$ticket" why "" 2>/dev/null </dev/null)"
+    bump_attempt "$ticket" "$(printf '%s' "$line${old:+ Before: $old}" | cut -c1-300)" </dev/null \
+      || say "WARN: $ticket: the attempt for the release of PR #$pr was not recorded"
+  else
+    python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ticket" "wip_released_pr$pr" >/dev/null 2>&1 </dev/null; rc=$?
+    if [ "$mode" = "backstop" ] && [ "$rc" = "0" ]; then
+      bash "$NOTIFY" "kipi worker: WIP backstop released PR #$pr in $WIP_WHERE ($kind: $why; open since $created, past the age bar). No exit-table row releases this kind, so classify it: add a row to terminal-states.json wip_release.kinds. The branch is kept; reopen the PR to undo. One page per PR." 2>/dev/null || true
+    fi
+  fi
+  # ONE LINEAR COMMENT. A started ticket goes back to Backlog through the one
+  # state writer, whose single line is the comment; anything else gets a note.
+  if [ "$state" = "started" ] && { [ "$exit" = "close-requeue" ] || [ "$mode" = "backstop" ]; }; then
+    out="$(python3 "$SYNC" requeue "$ticket" --exit wip-release --why "$line" --agent "$AGENT" 2>&1 </dev/null)"; rc=$?
+    say "$ticket: ${out:-requeue printed nothing}"
+    [ "$rc" = "0" ] && return 0
+  fi
+  out="$(python3 "$SYNC" progress "$ticket" "$line" --agent "$AGENT" 2>&1 </dev/null)" \
+    || say "WARN: $ticket: the release comment did not post: $(printf '%s\n' "$out" | tail -1)"
   return 0
 }
 
@@ -1977,7 +2209,8 @@ print("\t".join(["meta", clean(w.get("known")), clean(w.get("at_ceiling")),
                  clean(w.get("count", 0)), clean(w.get("ceiling", 5)), clean(w.get("error") or "-")]))
 for r in w.get("own") or []:
     print("\t".join(["pr", clean(r["pr"]), clean(r.get("issue") or "-"), clean(r.get("state") or "-"),
-                     clean(r["branch"]), clean(r.get("hold") or "-")]))
+                     clean(r["branch"]), clean(r.get("kind") or "-"), clean(r.get("ticket") or "-"),
+                     clean(r.get("created_at") or "-"), clean(r.get("hold") or "-")]))
 ' 2>/dev/null)"
 WIP_REPLACE=0; WIP_FEED=""
 if [ -n "$WIP_ROWS" ]; then
@@ -2003,23 +2236,36 @@ if [ -n "$WIP_ROWS" ]; then
     WIP_REPLACE=1
     WIP_PICKED=0; WIP_FIRST=""; WIP_PASSED=""
     WIP_CAPPED=0; WIP_LANE=0; WIP_HELD=0; WIP_WAIT=0
-    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_hold; do
+    WIP_EXITS="$(wip_exit_rows)"
+    [ -n "$WIP_EXITS" ] || say "WARN: WIP release: no exit table at $WIP_EXITS_FILE (wip_release.kinds), so every hold waits on the backstop"
+    # WIP_REL: the oldest passed-over PR whose kind has a close exit, released
+    # this tick. WIP_OLD: the oldest passed-over PR with no exit the backstop may
+    # take. One row each, tab-separated: pr ticket kind exit branch state why created.
+    WIP_REL=""; WIP_OLD=""
+    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_kind w_ticket w_created w_hold; do
       [ "$_wk" = "pr" ] || continue
       [ "$WIP_PICKED" -ge "$LIMIT" ] && break
       if [ "$w_issue" = "-" ]; then w_label="#$w_pr ($w_branch)"; else w_label="#$w_pr ($w_issue)"; fi
       if [ "$w_hold" != "-" ]; then
-        case "$w_hold" in "lane branch"*) WIP_LANE=$((WIP_LANE + 1)) ;; *) WIP_HELD=$((WIP_HELD + 1)) ;; esac
-        WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: $w_hold"
-        continue
+        w_why="$w_kind|$w_hold"
+      else
+        w_why="$(wip_move_why "$w_issue" "$w_pr")"
       fi
-      w_why="$(wip_move_why "$w_issue" "$w_pr")"
       if [ -n "$w_why" ]; then
-        case "${w_why%%|*}" in
-          cap)  WIP_CAPPED=$((WIP_CAPPED + 1)) ;;
-          wait) WIP_WAIT=$((WIP_WAIT + 1)) ;;
-          *)    WIP_HELD=$((WIP_HELD + 1)) ;;
+        w_kind="${w_why%%|*}"
+        case "$w_kind" in
+          cap)                 WIP_CAPPED=$((WIP_CAPPED + 1)) ;;
+          lane|lane-live)      WIP_LANE=$((WIP_LANE + 1)) ;;
+          approved|unreviewed) WIP_WAIT=$((WIP_WAIT + 1)) ;;
+          *)                   WIP_HELD=$((WIP_HELD + 1)) ;;
         esac
         WIP_PASSED="${WIP_PASSED:+$WIP_PASSED; }$w_label: ${w_why#*|}"
+        read -r w_exit w_back <<<"$(wip_exit_for "$w_kind")"
+        w_row="$w_pr"$'\t'"$w_ticket"$'\t'"$w_kind"$'\t'"$w_exit"$'\t'"$w_branch"$'\t'"$w_state"$'\t'"${w_why#*|}"$'\t'"$w_created"
+        case "$w_exit" in
+          close-requeue|close-comment) [ -z "$WIP_REL" ] && WIP_REL="$w_row" ;;
+          *) [ -z "$WIP_OLD" ] && [ "$w_back" = "1" ] && WIP_OLD="$w_row" ;;
+        esac
         continue
       fi
       if [ -z "$WIP_FIRST" ]; then
@@ -2031,12 +2277,44 @@ if [ -n "$WIP_ROWS" ]; then
       WIP_PICKED=$((WIP_PICKED + 1))
       WIP_FEED="$WIP_FEED$(python3 -c 'import json,sys;print(json.dumps({"id": sys.argv[1], "state": sys.argv[2], "why": sys.argv[3]}))' "$w_issue" "$w_state" "$w_pick_why")"$'\n'
     done <<<"$WIP_ROWS"
+    # THE BACKSTOP (RULE-2026-11-07-A): nothing movable and no close exit, so
+    # the oldest PR whose kind lets the backstop take it goes once it outlives
+    # the age bar, with one page naming its kind so the table gets a row.
+    WIP_REL_MODE=""; WIP_NEXT=""
+    if [ -z "$WIP_REL" ] && [ "$WIP_PICKED" = "0" ]; then
+      if [ -n "$WIP_OLD" ]; then
+        IFS=$'\t' read -r b_pr _b_ticket b_kind _b_exit _b_branch _b_state _b_why b_created <<<"$WIP_OLD"
+        b_bar="$(wip_backstop_bar)"; b_age="$(iso_age_s "$b_created")"
+        case "$b_bar" in ''|*[!0-9]*) b_bar="$WIP_BACKSTOP_FLOOR_S" ;; esac
+        if [ -n "$b_age" ] && [ "$b_age" -ge "$b_bar" ]; then
+          WIP_REL="$WIP_OLD"; WIP_REL_MODE="backstop"
+        else
+          WIP_NEXT="the backstop releases PR #$b_pr ($b_kind) once it has been open $((b_bar / 3600))h, the larger of 10 x the merged p85 cycle time and 3 days (open since $b_created)"
+        fi
+      else
+        WIP_NEXT="every one is live (a lane window or a live worker claim), and that ends on its own"
+      fi
+    fi
+    WIP_REL_PR=""; r_label=""
+    if [ -n "$WIP_REL" ]; then
+      IFS=$'\t' read -r WIP_REL_PR r_ticket r_kind r_exit r_branch r_state r_why r_created <<<"$WIP_REL"
+      r_label="$r_kind"; [ "$WIP_REL_MODE" = "backstop" ] && r_label="backstop: $r_kind"
+    fi
+    WIP_STUCK="$WIP_CAPPED at the review round cap; $WIP_LANE on lane branches; $WIP_HELD held; $WIP_WAIT waiting on a review or a merge"
     if [ "$WIP_PICKED" -gt 0 ]; then
-      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST."
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST${WIP_REL_PR:+, and releases PR #$WIP_REL_PR ($r_label)}."
+    elif [ -n "$WIP_REL_PR" ]; then
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). This run releases the oldest one through its exit: PR #$WIP_REL_PR ($r_label)."
     else
-      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). Starting nothing: the ceiling stops new issues, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_CAPPED at the review round cap, whose consumer is ASK-3824; $WIP_LANE on lane branches; $WIP_HELD held; $WIP_WAIT waiting on a review or a merge)."
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). Nothing is released this tick: each one waits on a consumer with an expiry, and $WIP_NEXT."
     fi
     [ -n "$WIP_PASSED" ] && say "WIP ceiling: passed over, oldest first: $WIP_PASSED"
+    # ONE CALL SITE, AFTER THE LOOP: the loop reads $WIP_ROWS on stdin, and a
+    # release reads gh and Linear. test-worker-wip-liveness.sh L12 cuts this
+    # call and must go red.
+    if [ -n "$WIP_REL_PR" ]; then
+      wip_release "$WIP_REL_PR" "$r_ticket" "$r_kind" "$r_exit" "$r_branch" "$r_state" "$r_why" "$r_created" "$WIP_REL_MODE"
+    fi
   fi
 fi
 # ONE REWRITE OF THE LOOP FEED, and the halt report after the loop reads the
@@ -2046,6 +2324,14 @@ if [ "$WIP_REPLACE" = "1" ]; then
 d = json.load(sys.stdin)
 d["ready"] = [json.loads(l) for l in sys.argv[1].splitlines() if l.strip()]
 print(json.dumps(d))' "$WIP_FEED")"
+fi
+# THE APPLY PASS STOPS HERE (ASK-3866). kipi-dispatch.sh picks with a dry run
+# and launches converge --issue, which never reaches the WIP block, so the
+# dispatcher applies a release its dry pick named with --release-only --apply.
+# That pass must start no issue and no rework round: those go through converge.
+if [ "$RELEASE_ONLY" = "1" ]; then
+  say "release-only: the run stops before the issue loop; any rework or new issue goes through the dispatcher pick"
+  exit 0
 fi
 
 # One line per issue: id, the state the picker saw, and why a started one is in

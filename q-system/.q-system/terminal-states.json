@@ -885,5 +885,133 @@
       "terminal": true,
       "rationale": "The failing arm is environmental-trigger: the process launched and died immediately, which is a broken interpreter or a crashing ./kipi, and the budget slot is already spent -- so a retry tier would burn the daily cap on a process that cannot stay up. It pages with the log path. The succeeding arm is not a dead end at all: the converge run IS the consumer and its own exits are registered under the converge source above. Both are honest ends of this driver's cycle, which is why one rationale covers the pair."
     }
-  ]
+  ],
+  "wip_release": {
+    "_doc": [
+      "ONE ROW PER HOLD KIND AT THE WIP CEILING (ASK-3866, RULE-2026-11-07-A).",
+      "",
+      "At 5 open fleet-own PRs the worker stops starting issues (ASK-3826). On",
+      "2026-11-07 8 PRs no worker round could move held that ceiling, and every",
+      "tick started nothing. So every tick at the ceiling now releases ONE passed-",
+      "over PR, oldest first, through the exit its hold kind names here.",
+      "",
+      "A kind is the machine key the picker (hold(...) in linear-worker.sh) or",
+      "wip_move_why (printf '<kind>|...') emits. Exits:",
+      "  close-requeue  close the PR with its last FINDINGS block, keep the branch,",
+      "                 ticket back to Backlog with resume-from-branch, one attempt",
+      "  close-comment  close the PR, keep the branch, one comment on the ticket",
+      "  wait           a named consumer with an expiry owns it; the backstop takes",
+      "                 the oldest past the age bar unless backstop is false",
+      "A release never deletes a branch and never touches a review record, so a",
+      "PR keeps its own round count; reopening it undoes the release.",
+      "A kind with no row is read as wait with backstop true, and",
+      "test-worker-wip-liveness.sh L11 fails while any emitted kind has no row,",
+      "or any row names no emitted kind."
+    ],
+    "kinds": {
+      "cap": {
+        "exit": "close-requeue",
+        "what": "At the reviewer round cap: a push gets no new review. ASK-3824 takes the cap sites over when it lands, and its last step still closes the PR and requeues the ticket.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket returns to Backlog through linear-sync.py requeue, and the worker picks it up again; one attempt is charged, so MAX_ATTEMPTS bounds it."
+      },
+      "attempts": {
+        "exit": "close-requeue",
+        "what": "The ticket spent MAX_ATTEMPTS worker attempts.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket returns to Backlog through linear-sync.py requeue, and the worker picks it up again; one attempt is charged, so MAX_ATTEMPTS bounds it."
+      },
+      "conflict": {
+        "exit": "close-requeue",
+        "what": "Still conflicting after MAX_CONFLICT_ROUNDS rebase rounds.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket returns to Backlog through linear-sync.py requeue, and the worker picks it up again; one attempt is charged, so MAX_ATTEMPTS bounds it."
+      },
+      "drift": {
+        "exit": "close-requeue",
+        "what": "Head still unreviewed after MAX_DRIFT_ROUNDS drift rounds.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket returns to Backlog through linear-sync.py requeue, and the worker picks it up again; one attempt is charged, so MAX_ATTEMPTS bounds it."
+      },
+      "lane": {
+        "exit": "close-requeue",
+        "what": "A lane branch sana/<id>-<slug> the worker cannot rework, its ticket not live. Adoption onto sana/<id> with the round count carried is ASK-3938.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket returns to Backlog through linear-sync.py requeue, and the worker picks it up again; one attempt is charged, so MAX_ATTEMPTS bounds it."
+      },
+      "alert": {
+        "exit": "close-comment",
+        "what": "The ticket is a fleet alert (ASK-839), not dispatch work.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The ticket itself belongs to linear-alert-triage.py."
+      },
+      "refused-label": {
+        "exit": "close-comment",
+        "what": "The ticket carries owner:assaf, needs-scope or blocked:capability, or lacks owner:sana.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). The label has its own consumer: linear-dor-drafter.py for needs-scope, the capability grant for blocked:capability."
+      },
+      "no-dor": {
+        "exit": "close-comment",
+        "what": "The ticket has no Definition of Ready.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). linear-dor-drafter.py drafts the DoR; the worker picks the ticket again once it has one."
+      },
+      "off-repo": {
+        "exit": "close-comment",
+        "what": "The ticket is on another project, so this repo worker never picks it.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). That project worker owns the ticket."
+      },
+      "ticket-closed": {
+        "exit": "close-comment",
+        "what": "The ticket is Done or Canceled; the PR outlived it.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). Nothing more: the ticket is closed and is not requeued."
+      },
+      "not-on-board": {
+        "exit": "close-comment",
+        "what": "The branch names a ticket that is not on the board.",
+        "consumer": "linear-worker.sh wip_release (ASK-3866), this table's one reader; kipi-dispatch.sh applies it (WIP-RELEASE-APPLY). Nothing more: there is no ticket to requeue."
+      },
+      "approved": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "Approved at its head; it waits on a merge or on CI.",
+        "consumer": "Auto-merge on a green head; ci-redrive.py (ASK-295) on a red one; the backstop past the age bar."
+      },
+      "unreviewed": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "No recorded review verdict.",
+        "consumer": "review-redrive.py runs the reviewer; the backstop past the age bar."
+      },
+      "codex": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "Held while the second runner (Codex) is unavailable.",
+        "consumer": "The Codex outage claim, released when Codex answers or at CODEX_OUTAGE_MAX_AGE (a day)."
+      },
+      "ticket-held": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "A started ticket held by the ASK-3825 rule for a reason other than a live run.",
+        "consumer": "linear-sync.py started_hold_reason releases it when its hold ends; the backstop past the age bar."
+      },
+      "ticket-live": {
+        "exit": "wait",
+        "backstop": false,
+        "what": "A started ticket inside the lane window or under a live worker claim: someone may be on it now.",
+        "consumer": "The 24h lane window (linear-sync.py STARTED_STALE_HOURS) or the claim ends, and the PR is judged again. Never the backstop: closing it would throw away a live round."
+      },
+      "lane-live": {
+        "exit": "wait",
+        "backstop": false,
+        "what": "A lane branch whose ticket is inside the lane window or under a live claim.",
+        "consumer": "The 24h lane window ends, then kind lane and its exit. Never the backstop: a supervised lane may be on it."
+      },
+      "ticket-state": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "The ticket is in a state the picker does not take (for example Triage).",
+        "consumer": "Linear triage moves it; the backstop past the age bar."
+      },
+      "walk": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "Past the walk bound of 10 candidates, so not checked this tick.",
+        "consumer": "Transient: the walk reaches it as older PRs leave; the backstop past the age bar."
+      }
+    }
+  }
 }
