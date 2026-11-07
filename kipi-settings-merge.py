@@ -119,11 +119,16 @@ def _script_identity(prefix, name, plain):
     hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
     if hit is None:
         return name, False
-    rel = os.path.normpath(hit.group(1)).lower()
+    exact = os.path.normpath(hit.group(1))
+    # Identity folds case so Q-SYSTEM/ dedupes as q-system/ on macOS, where they
+    # are one directory. The evidence that lets a hook be DELETED keeps case:
+    # on a case-sensitive file system Q-SYSTEM/ is an instance's own directory
+    # (Codex round 2 on PR #624), and no template spelling was ever upper case.
+    rel = exact.lower()
     if rel.startswith(("/", "..")):
         return name, False
     if rel.split("/", 1)[0] == "q-system":
-        return name, True
+        return name, exact.split("/", 1)[0] == "q-system"
     return "path:" + rel, False
 
 

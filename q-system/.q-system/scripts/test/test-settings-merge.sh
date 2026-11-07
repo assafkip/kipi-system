@@ -307,6 +307,11 @@ cat > "$FIXTURE/instance6.json" <<'EOF'
       {"hooks": [
         {"type": "command", "command": "python3 memory_autocapture.py --session"}
       ]}
+    ],
+    "PreCompact": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/Q-SYSTEM/memory_autocapture.py\""}
+      ]}
     ]
   }
 }
@@ -321,7 +326,10 @@ kept = ['eval true && python3 "$CLAUDE_PROJECT_DIR/automation/memory_autocapture
         'python3 automation/memory-scores-surface.py',
         'cd automation && python3 q-system/memory_autocapture.py',
         'python3 q-system/.q-system/scripts/memory_autocapture.py',
-        'python3 memory_autocapture.py --session']
+        'python3 memory_autocapture.py --session',
+        # Codex round 2 on PR #624: on a case-sensitive file system Q-SYSTEM/ is
+        # not the skeleton's subtree, so case is kept when reading the evidence
+        'python3 "$CLAUDE_PROJECT_DIR/Q-SYSTEM/memory_autocapture.py"']
 for cmd in kept:
     assert cmd in all_cmds, \
         "a retired-name hook outside the canonical q-system/ spelling was deleted: " + cmd
