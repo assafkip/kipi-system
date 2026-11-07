@@ -155,7 +155,13 @@ REQUIRED_KEYS = {"clause", "status"}
 # a hook event; do not add one name at a time.
 #
 # Listing an event that CAN block would let an understated gate pass. PreCompact
-# is NOT here: its exit 2 blocks compaction.
+# is NOT here: its exit 2 blocks compaction. PermissionRequest is NOT here either,
+# although its exit 2 is not honored: its JSON `decision.behavior: "deny"` refuses
+# the permission (codex, PR #623 round 2). Every other "no" row has no decision
+# control at all per the same page. This lint reads wiring and exit paths, not a
+# hook's JSON, so an exit-code-only PermissionRequest hook that claims ENFORCED
+# still passes. That is the pre-#619 default for every event, and it never refuses
+# an honest JSON-deny gate.
 #
 # TWO "no" ROWS ARE LEFT OUT ON PURPOSE: PostToolUse and PostToolUseFailure. The
 # table says they cannot block because the tool already ran, but their exit 2 feeds
@@ -164,15 +170,15 @@ REQUIRED_KEYS = {"clause", "status"}
 # PostToolUse lint in the fleet rests on it. Reclassifying them is a fleet decision,
 # not a table copy.
 NON_BLOCKING_EVENTS = frozenset({
-    "PermissionRequest", "StopFailure", "PermissionDenied", "Notification",
+    "StopFailure", "PermissionDenied", "Notification",
     "SubagentStart", "SessionStart", "Setup", "SessionEnd", "CwdChanged",
     "DirectoryAdded", "FileChanged", "PostCompact", "PostModelSwitch",
     "InstructionsLoaded", "MessageDisplay",
 })
-# Every event the same table says CAN block, kept so a test can prove the two sets
-# partition the table and that none of these was copied into the set above.
+# Every event the same table says CAN block, plus PermissionRequest (JSON deny),
+# kept so a test can prove the sets partition the table.
 BLOCKING_EVENTS = frozenset({
-    "PreToolUse", "UserPromptSubmit", "UserPromptExpansion", "Stop", "SubagentStop",
+    "PreToolUse", "PermissionRequest", "UserPromptSubmit", "UserPromptExpansion", "Stop", "SubagentStop",
     "TeammateIdle", "TaskCreated", "TaskCompleted", "ConfigChange", "PostToolBatch",
     "PreCompact", "PreModelSwitch", "Elicitation", "ElicitationResult",
     "WorktreeCreate", "WorktreeRemove",
@@ -864,6 +870,28 @@ def wired_commands(config_path, event=None):
     return out
 
 
+def wired_events(config_path, exec_rel, plugin_root=None):
+    """The hook events under which `exec_rel` is wired in a JSON hook config.
+
+    For an entry with no `event` key. Without this, such an entry was never judged
+    quiet, so a script wired ONLY under PostCompact passed C8 as ENFORCED and an
+    honest DETECTED on it failed C10 (fleet review of PR #623, minor 1). A lefthook
+    config returns nothing: its stages are not hook events and none is quiet, which
+    keeps the judgment those entries always had.
+    """
+    if config_path.name in _LEFTHOOK_CONFIGS:
+        return set()
+    try:
+        hooks = json.loads(config_path.read_text()).get("hooks")
+    except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+        return set()
+    if not isinstance(hooks, dict):
+        return set()
+    return {name for name in hooks
+            if any(exec_rel in command_targets(cmd, plugin_root)
+                   for cmd in wired_commands(config_path, name))}
+
+
 SPILLOVER_REL = os.path.join(".prd-os", "spillover.jsonl")
 _SPILLOVER_ID_RE = re.compile(r"^sp-[0-9a-f]{6,}$")
 
@@ -1439,7 +1467,13 @@ def check_posture(entries, path):
         # that every invocation blocks. An entry WITH `event` (ASK-3872) is judged
         # on that event's invocations alone; the quantifier is unchanged.
         neutered = any(_NEUTERED.search(cmd) for cmd in matched)
-        quiet = event in NON_BLOCKING_EVENTS
+        # No `event`: quiet only when EVERY event the script is wired under is
+        # non-blocking. One blocking invocation keeps the old judgment.
+        if event is not None:
+            quiet = event in NON_BLOCKING_EVENTS
+        else:
+            events = wired_events(config_path, exec_rel, plugin_root)
+            quiet = bool(events) and events <= NON_BLOCKING_EVENTS
         try:
             source = exec_path.read_text()
         except (OSError, UnicodeDecodeError):
