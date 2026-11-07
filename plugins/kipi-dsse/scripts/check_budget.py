@@ -26,11 +26,16 @@ suite, and that rule was red on 23 closed issues that shipped fine.
 HONEST BOUNDARY: rule 2 compares path prefixes, so inside one large directory any test
 "targets" any file. It reads the spec, never what verify actually ran.
 
-stdlib only. Test: test_check_budget.py.
+SIZE CLASS (ASK-3827). `size_class()` and `DEPTH` decide how much review and how many
+verify repeats an issue earns, from the ASK-1749 class of its diff. See the section below.
+
+stdlib only. Tests: test_check_budget.py, test_size_class_depth.py.
 """
 from __future__ import annotations
 
+import importlib.util
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -100,6 +105,94 @@ def judge(front: dict) -> tuple[str, list[str]]:
         probs.append(f"{issue}: no check targets its own allowed_files tree. A green from "
                      f"another subsystem proves nothing about this change.")
     return ("full" if full else "narrow"), probs
+
+
+# ---------------------------------------------------------------------------
+# Size class (ASK-3827): the review depth and verify repeats a diff earns
+# ---------------------------------------------------------------------------
+#
+# The founder's lean-mode ruling, given four times (2026-09-18, 09-23, 10-30, 11-04): one
+# review, one fix round, merge; an adversarial pass only for code that sends mail, touches
+# client data, loses data or moves money. Until this, issue_runner gave every issue 2
+# standard reviews, 1 adversarial and 5 to 10 verify repeats, so a one-line fix paid the
+# receipt store's price (RCA 2026-11-06, root cause #4).
+#
+# ONE CLASSIFIER. The class is the tier the host repo's own change-size.py (ASK-1749) gives
+# the committed diff against origin/main, loaded by path and called through
+# `plan_for_repo`, the same file and the same entry point CI's capability gate calls.
+# This plugin runs from the marketplace cache, which has no copy, and carries none: a
+# vendored copy would be a second classifier that drifts from the one CI runs.
+#
+# UNKNOWN IS L. No classifier in the repo, a diff it cannot read, a tier it does not know,
+# or uncommitted code: each gets the strict numbers. change-size.py reads committed HEAD,
+# so uncommitted work reads as a 0-line S diff whatever its real size.
+#
+# NO RISK FLAG YET. The carve-out (adversarial for mail, client data, data loss, money,
+# whatever the size) has no input: neither the classifier's verdict nor the issue spec
+# carries a risk field, and a keyword guess would be a second, unmeasured classifier.
+# Until one exists, adversarial follows the S/M/L numbers. Follow-up: ASK-3906.
+#
+# M's repeats are L's on purpose: the ruling sized M's review (1 plus 1), not its repeats.
+DEPTH = {
+    "S": {"review_cap": {"standard": 1, "adversarial": 0}, "repeat_min": 2, "repeat_max": 2},
+    "M": {"review_cap": {"standard": 1, "adversarial": 1}, "repeat_min": 5, "repeat_max": 10},
+    "L": {"review_cap": {"standard": 2, "adversarial": 1}, "repeat_min": 5, "repeat_max": 10},
+}
+STRICT_CLASS = "L"
+CLASSIFIER_RELPATH = "q-system/.q-system/scripts/change-size.py"
+DIFF_BASE = "origin/main"
+
+
+def depth(size: str) -> dict:
+    """The review caps and repeat bounds for a class. Anything not in DEPTH is L."""
+    return DEPTH.get(size, DEPTH[STRICT_CLASS])
+
+
+def _strict(reason: str) -> dict:
+    return {"class": STRICT_CLASS, "reasons": [reason], "base": DIFF_BASE}
+
+
+def _uncommitted(repo_root: Path) -> list[str]:
+    """Paths git reports as changed or untracked (not ignored), new name for a rename."""
+    r = subprocess.run(["git", "-C", str(repo_root), "status", "--porcelain=v1", "-z",
+                        "--untracked-files=all"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"git status: {r.stderr.strip()[:200]}")
+    out, entries = [], r.stdout.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        out.append(entry[3:])
+        if entry[0] in "RC":
+            i += 1          # -z puts a rename's old name in the next field
+    return out
+
+
+def size_class(repo_root: Path) -> dict:
+    """{"class": S|M|L, "reasons": [...], "base": ref} for the repo's diff. Never raises."""
+    path = Path(repo_root) / CLASSIFIER_RELPATH
+    if not path.is_file():
+        return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH}, so the strict numbers apply")
+    try:
+        spec = importlib.util.spec_from_file_location("kipi_change_size", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        dirty = [p for p in _uncommitted(Path(repo_root)) if mod.is_code(p) or mod.machinery_reason(p)]
+        verdict = mod.plan_for_repo(Path(repo_root), DIFF_BASE)
+        tier, reasons = verdict["tier"], [str(r) for r in verdict["reasons"]]
+    except Exception as exc:  # noqa: BLE001 -- any failure here means the strict numbers
+        return _strict(f"could not classify the diff against {DIFF_BASE} "
+                       f"({type(exc).__name__}: {str(exc)[:160]})")
+    if dirty:
+        more = f" and {len(dirty) - 1} more" if len(dirty) > 1 else ""
+        return _strict(f"uncommitted change to {dirty[0]}{more}; the classifier reads committed "
+                       "HEAD only, so this change's size is unknown. Commit it")
+    if tier not in DEPTH:
+        return _strict(f"the classifier returned tier {tier!r}, which has no depth")
+    return {"class": tier, "reasons": reasons, "base": DIFF_BASE}
 
 
 def main(argv: list[str]) -> int:

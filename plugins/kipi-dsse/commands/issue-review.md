@@ -22,7 +22,8 @@ Run the required reviews for the active DSSE issue. Execute in order:
    ```
 
    - Exit 0: slot claimed, proceed to step 4.
-   - Exit 2: cap reached (default 2 standard rounds). The runner names the cap and the override env. Stop and ask the founder if they want to opt in via `ISSUE_ALLOW_REVIEW_REPEAT=1` for a single retry, OR triage and close with the existing review.
+   - The cap comes from the diff's size class (the ASK-1749 tier of the committed diff against `origin/main`, read by `check_budget.size_class`): S 1 standard and 0 adversarial, M 1 and 1, L 2 and 1. No classifier, an unreadable diff or uncommitted code counts as L. `record-review standard --dry` prints the class and both caps and claims nothing.
+   - Exit 2: cap reached. The runner names the cap and the override env. Stop and ask the founder if they want to opt in via `ISSUE_ALLOW_REVIEW_REPEAT=1` for a single retry, OR triage and close with the existing review.
 
 4. Invoke `codex:review` (Codex native review) against `origin/main`. Build the focus text with the scope filter inline so Codex stays inside the contracted surface:
 
@@ -51,14 +52,14 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    If the standard review returned approve with no findings, skip the writer call for this source. Do this before invoking the adversarial pass in step 6.
 
-5. Try to claim an "adversarial" review slot:
+5. If the size class gives adversarial 0 (an S change), skip steps 5 and 6: lean mode, no adversarial pass, and the standard review alone is the whole review. Otherwise try to claim an "adversarial" review slot:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" record-review adversarial
    ```
 
    - Exit 0: slot claimed, proceed to step 6.
-   - Exit 2: cap reached (default 1 adversarial round per slice). Stop. Ask the founder if they want to opt in via `ISSUE_ALLOW_REVIEW_REPEAT=1` OR proceed straight to closeout.
+   - Exit 2: cap reached (1 adversarial round for M and L; `0/0` is an S change). Stop. Ask the founder if they want to opt in via `ISSUE_ALLOW_REVIEW_REPEAT=1` OR proceed straight to closeout.
 
 6. Invoke `codex:adversarial-review` against `origin/main` with focus text built from `$ALLOWED` plus the contract directive:
 
@@ -79,7 +80,7 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    If the adversarial review returned approve with no findings, skip the writer call for this source.
 
-7. If both reviews completed (regardless of verdict, even if findings exist):
+7. If every review the size class requires completed (S: standard; M and L: standard and adversarial), regardless of verdict, even if findings exist:
    - For EACH review that returned a verdict, SAVE THE REVIEWER'S OWN OUTPUT
      to a file and record the completion against it:
 
@@ -98,7 +99,9 @@ Run the required reviews for the active DSSE issue. Execute in order:
    `record-review` in step 3 / step 5 only CLAIMED the slot; it writes no
    receipt, because at that moment the reviewer had not run. `complete-review`
    hashes the artifact, seals it to the issue, and writes `reviewed` only once
-   EVERY kind has landed. `close` re-checks that seal.
+   every kind the size class requires has landed. `close` re-checks that seal,
+   and re-reads the class: a change that grew after an S review needs the
+   adversarial pass before it closes.
 
    The boundary, stated plainly: this does not PROVE a reviewer ran -- this
    command shares a trust boundary with the agent calling it. It makes the
