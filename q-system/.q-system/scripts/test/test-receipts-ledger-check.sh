@@ -94,6 +94,98 @@ an over-long value|{"issue_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 CASES
 ok "$i leak shapes all blocked"
 
+# --- ASK-3829: receipt fragments, one new file per close ----------------------
+# Every close now writes its receipt as a fragment (GitHub ignores merge=union, so
+# parallel closes conflicted on the one ledger). Same public repo, same content rule,
+# and lefthook's blocked-paths admits exactly the name the writer gives.
+git rm -q --cached "$LEDGER" >/dev/null 2>&1 || true
+rm -f "$LEDGER"
+FRAGS=".prd-os/receipts.d"
+# Through the real chokepoint, so a writer/gate drift on the name fails here.
+frag_write() {
+  python3 - "$ROOT/plugins/prd-os/scripts" "$1" "${2:-receipt}" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import ledger_fragments
+print(ledger_fragments.append_line(".prd-os/receipts.jsonl", sys.argv[2], kind=sys.argv[3]))
+PY
+}
+# Raw bytes under a writer-shaped name; the name hash is of the bytes unless $2 overrides it.
+frag_raw() {
+  python3 - "$1" "${2:-}" <<'PY'
+import hashlib, pathlib, sys
+data = sys.argv[1].encode().decode("unicode_escape").encode()
+sha = sys.argv[2] or hashlib.sha256(data).hexdigest()[:16]
+p = pathlib.Path(".prd-os/receipts.d") / f"20261106T000000000000Z-receipt-{sha}.jsonl"
+p.parent.mkdir(parents=True, exist_ok=True)
+p.write_bytes(data)
+print(p)
+PY
+}
+unstage_frags() { git rm -r -q --cached "$FRAGS" >/dev/null 2>&1 || true; rm -f "$FRAGS"/*.jsonl; }
+BLOCKED_LINE="$(grep -E '^[[:space:]]+blocked=\$\(git diff --cached' "$ROOT/lefthook.yml" | sed 's/^[[:space:]]*//')"
+[ -n "$BLOCKED_LINE" ] || fail "could not find lefthook.yml's blocked-paths line to test"
+blocked_by_lefthook() { local blocked; eval "$BLOCKED_LINE"; [ -n "$blocked" ]; }
+
+F="$(frag_write "$VALID")"
+git add -f "$F"
+allows || fail "a well-formed receipt fragment from the real writer was refused"
+ok "a well-formed receipt fragment passes"
+blocked_by_lefthook && fail "lefthook blocked-paths refused the writer's own fragment name: $F"
+ok "lefthook blocked-paths admits the writer's fragment name"
+unstage_frags
+
+mkdir -p "$FRAGS"; printf '%s\n' "$VALID" > "$FRAGS/notes.jsonl"; git add -f "$FRAGS/notes.jsonl"
+blocked_by_lefthook || fail "lefthook blocked-paths admitted a hand-named .jsonl under receipts.d"
+allows && fail "the gate admitted a hand-named fragment"
+ok "a hand-named fragment is refused by both lefthook and the gate"
+unstage_frags
+
+mkdir -p "$FRAGS/nested"
+printf '%s\n' "$VALID" > "$FRAGS/nested/20261106T000000000000Z-receipt-0123456789abcdef.jsonl"
+git add -f "$FRAGS/nested"
+blocked_by_lefthook || fail "lefthook blocked-paths admitted a nested path under receipts.d"
+allows && fail "the gate admitted a nested fragment path"
+git rm -r -q --cached "$FRAGS/nested" >/dev/null 2>&1
+rm -f "$FRAGS"/nested/*.jsonl
+rmdir "$FRAGS/nested"
+ok "a nested fragment path is refused by both"
+
+while IFS='|' read -r label payload hash; do
+  [ -n "$label" ] || continue
+  F="$(frag_raw "$payload" "$hash")"; git add -f "$F"
+  if allows; then fail "FRAGMENT LEAKED THROUGH: $label"; fi
+  unstage_frags
+done <<CASES
+two records in one fragment|$VALID\n$VALID\n|
+an empty fragment||
+free text in a fragment|{"issue_id":"x","notes":"call Acme Corp about pricing"}\n|
+a name hash that does not match the bytes|$VALID\n|0123456789abcdef
+CASES
+ok "fragment shapes refused: two records, empty, free text, edited bytes"
+
+F="$(frag_write '{"issue_id":"x","notes":"call Acme Corp about pricing"}')"; git add -f "$F"
+allows && fail "a free-text receipt written through the real writer passed the gate"
+unstage_frags
+F="$(frag_write "$VALID" gate)"; git add -f "$F"
+allows && fail "a gate row filed under receipts.d passed the gate"
+unstage_frags
+ok "the gate refuses what the writer would accept but the ledger must not hold"
+
+F="$(frag_write "$VALID")"; git add -f "$F"; git commit -q -m "one receipt" >/dev/null
+printf '%s\n' '{"issue_id":"y","closed_at":"2026-07-26T00:00:00Z"}' > "$F"; git add -f "$F"
+allows && fail "an edited (already committed) fragment passed the gate"
+git reset -q HEAD -- "$F"
+git checkout -q -- "$F"
+ok "a committed fragment cannot be edited in a later commit"
+# A rename keeps the bytes and the hash, so only write-once catches it, and it would
+# move the receipt in the fold order (the timestamp is the sort key).
+MOVED="$FRAGS/19990101T000000000000Z-receipt-${F##*-receipt-}"
+git mv "$F" "$MOVED"
+allows && fail "a renamed (re-timestamped) fragment passed the gate"
+git mv "$MOVED" "$F"
+ok "a committed fragment cannot be renamed to another valid name"
+
 # --- the gate is a no-op when the ledger is not in the commit --------------
 git rm -q --cached "$LEDGER" >/dev/null 2>&1 || true
 printf 'unrelated\n' > other.txt

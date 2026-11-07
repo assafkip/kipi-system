@@ -16,6 +16,15 @@ PRD_RUNNER = PLUGIN_ROOT / "scripts" / "prd_runner.py"
 MIGRATE = PLUGIN_ROOT / "scripts" / "migrate_gate_lifecycle.py"
 
 
+def _fold(ledger: Path) -> list[dict]:
+    """Every row of a ledger, legacy file plus fragments (ASK-3829). An absence check that read
+    only the legacy file would pass even when a row landed in a fragment."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import ledger_fragments
+    return [json.loads(text) for _src, _n, text in ledger_fragments.iter_lines(ledger)
+            if text.strip()]
+
+
 def run(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(PRD_RUNNER), "--repo-root", str(repo), *args],
@@ -114,7 +123,7 @@ def test_gate_register_validates_and_persists_lifecycle(repo):
         lifecycle="regression",
     )
 
-    record = json.loads((repo / ".prd-os" / "gates.jsonl").read_text())
+    (record,) = _fold(repo / ".prd-os" / "gates.jsonl")
     assert registered["registered"] is True
     assert record["lifecycle"] == "regression"
     with pytest.raises(ValueError, match="invalid gate lifecycle"):
@@ -443,8 +452,8 @@ def test_gate_register_ACTUALLY_CALLS_the_unrunnable_guard(repo):
 
     # AND IT REFUSED BEFORE WRITING. A guard that raises after the append still leaves
     # the permanent row it exists to prevent.
-    gates = repo / ".prd-os" / "gates.jsonl"
-    assert not gates.exists() or "issue-wiring" not in gates.read_text()
+    assert not any("issue-wiring" in json.dumps(r)
+                   for r in _fold(repo / ".prd-os" / "gates.jsonl"))
 
 
 @pytest.mark.parametrize("prose", [

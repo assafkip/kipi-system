@@ -66,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
 import runtime_receipt  # noqa: E402
 import check_budget  # noqa: E402
+import ledger_fragments  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
@@ -374,6 +375,46 @@ def _extract_marker_fields(text: str) -> dict[str, str] | None:
     return None
 
 
+def _version_key(name: str) -> tuple:
+    try:
+        return tuple(int(piece) for piece in name.split("."))
+    except ValueError:
+        return (-1,)
+
+
+def _prd_os_scripts_dir(repo_root: Path) -> Path | None:
+    """Where prd-os's scripts are, for the imports close makes. None when no layout has them.
+
+    Scar sp-93f41220 (chief, 2026-10-29): gate registration looked only in
+    <repo>/plugins/prd-os/scripts. chief has no plugins/ dir, so every close there died with
+    "No module named prd_runner" and two were finished by hand with a PYTHONPATH. The runner
+    knows where it is installed, and prd-os sits beside it in every layout:
+      source and marketplace clone   plugins/kipi-dsse/scripts -> plugins/prd-os/scripts
+      install cache                  cache/<mkt>/kipi-dsse/<ver>/scripts
+                                       -> cache/<mkt>/prd-os/<highest ver with prd_runner>/scripts
+    The repo's own copy is tried first, so kipi-system closes against the prd-os it is changing."""
+    here = Path(__file__).resolve()
+    candidates = [Path(repo_root) / "plugins" / "prd-os" / "scripts"]
+    if len(here.parents) > 2:
+        candidates.append(here.parents[2] / "prd-os" / "scripts")
+    if len(here.parents) > 3 and (here.parents[3] / "prd-os").is_dir():
+        versions = sorted((d for d in (here.parents[3] / "prd-os").iterdir() if d.is_dir()),
+                          key=lambda d: _version_key(d.name), reverse=True)
+        candidates.extend(d / "scripts" for d in versions)
+    for candidate in candidates:
+        if (candidate / "prd_runner.py").is_file():
+            return candidate
+    return None
+
+
+def _use_prd_os(repo_root: Path) -> None:
+    """Put prd-os's scripts first on sys.path. When no layout has them, sys.path is left alone,
+    so the import that follows still fails with Python's own "No module named" line."""
+    found = _prd_os_scripts_dir(repo_root)
+    if found is not None:
+        sys.path.insert(0, str(found))
+
+
 def _closed_finding_class(paths: "Paths", prd_id: str, finding_id: str) -> str | None:
     """The `finding_class` of the PRD finding this close settles, or None.
 
@@ -385,7 +426,7 @@ def _closed_finding_class(paths: "Paths", prd_id: str, finding_id: str) -> str |
     means no class, never a refused close: the field is optional.
     """
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "prd-os" / "scripts"))
+        _use_prd_os(paths.repo_root)
         from findings_writer import FINDING_CLASSES
     except ImportError:
         return None
@@ -404,10 +445,11 @@ def _closed_finding_class(paths: "Paths", prd_id: str, finding_id: str) -> str |
     return None
 
 
-def _append_receipt(path: Path, entry: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
-        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+def _append_receipt(path: Path, entry: dict) -> Path:
+    """One receipt, one fragment file (ASK-3829). Every close used to append to the one tracked
+    receipts.jsonl, so two parallel closes conflicted on GitHub every time. The bytes per row are
+    unchanged; ledger_fragments decides the file."""
+    return ledger_fragments.append_line(path, json.dumps(entry, sort_keys=True), kind="receipt")
 
 
 # ---------------------------------------------------------------------------
@@ -1029,12 +1071,31 @@ def _mutant_rows(paths: Paths, issue_id: str, clean: dict) -> dict:
     return {"dir": _rel(paths, d), "status": status, "reason": reason, "rows": rows}
 
 
+COUNT_FLOOR_DIR = Path(__file__).resolve().parent / "pytest_count_floor"
+COUNT_FLOOR_PLUGIN = "kipi_dsse_count_floor"
+
+
+def _count_env(env: dict) -> dict:
+    """`env` with pytest's summary line guaranteed, for every run whose count is read.
+
+    Scar sp-dae00232: a check with -q in a repo whose addopts already carry -q runs at -2, pytest
+    prints no count, and verify refused. pytest_count_floor/ raises verbosity to -1 only when it
+    is lower. A command that runs no pytest ignores both variables."""
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(COUNT_FLOOR_DIR)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    listed = [p.strip() for p in (env.get("PYTEST_PLUGINS") or "").split(",") if p.strip()]
+    if COUNT_FLOOR_PLUGIN not in listed:
+        listed.append(COUNT_FLOOR_PLUGIN)
+    env["PYTEST_PLUGINS"] = ",".join(listed)
+    return env
+
+
 def _run_observed(paths: Paths, command: str) -> tuple[subprocess.CompletedProcess, float, set[str]]:
     import tempfile
     import time
     fd, log = tempfile.mkstemp(prefix="kipi-real-path-", suffix=".jsonl")
     os.close(fd)
-    env = dict(os.environ)
+    env = _count_env(dict(os.environ))
     env["KIPI_REAL_PATH_LOG"] = log
     env["PYTHONPATH"] = os.pathsep.join([str(OBSERVER_DIR)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
     t0 = time.monotonic()
@@ -1301,7 +1362,8 @@ def cmd_mutant(paths: Paths, args: argparse.Namespace) -> int:
         return 2
     runs = []
     for command in state.get("required_checks_snapshot") or []:
-        r = subprocess.run(command, shell=True, cwd=paths.repo_root, capture_output=True, text=True)
+        r = subprocess.run(command, shell=True, cwd=paths.repo_root, capture_output=True, text=True,
+                           env=_count_env(dict(os.environ)))
         runs.append({"command": command, "returncode": r.returncode,
                      "stdout": r.stdout or "", "stderr": r.stderr or ""})
     d.mkdir(parents=True, exist_ok=True)
@@ -1482,15 +1544,14 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         # after the issue was loaded, and no other issue's close row holds it
         # (PR #610 review, major 1: one `date` capture closed any issue).
         used: dict[str, str] = {}
-        if paths.receipts_path.is_file():
-            for line in paths.receipts_path.read_text().splitlines():
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                ref = row.get("runtime_receipt") if isinstance(row, dict) else None
-                if isinstance(ref, dict) and ref.get("sha256") and row.get("issue_id") != issue_id:
-                    used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
+        for _src, _n, line in ledger_fragments.iter_lines(paths.receipts_path):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            ref = row.get("runtime_receipt") if isinstance(row, dict) else None
+            if isinstance(ref, dict) and ref.get("sha256") and row.get("issue_id") != issue_id:
+                used[ref["sha256"]] = str(row.get("issue_id") or "another issue")
         try:
             runtime_ref = runtime_receipt.load_receipt(
                 getattr(args, "runtime_receipt", None), terms,
@@ -1662,7 +1723,7 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         receipt["finding_class"] = finding_class
     if runtime_ref is not None:
         receipt["runtime_receipt"] = runtime_ref
-    _append_receipt(paths.receipts_path, receipt)
+    landed = _append_receipt(paths.receipts_path, receipt)
     new_text = re.sub(
         r"(?m)^status:\s*.+$", "status: closed", text, count=1
     )
@@ -1676,7 +1737,7 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
         "spec": str(path.relative_to(paths.repo_root)),
         "amendments_flushed": len(amendments),
         "commit_sha": sha,
-        "receipt": str(paths.receipts_path.relative_to(paths.repo_root)),
+        "receipt": str(landed.relative_to(paths.repo_root)),
     }))
     return 0
 
@@ -1782,7 +1843,7 @@ def _enforce_spine_contract(paths, fm: dict, marker: dict, issue_id: str) -> str
             return (f"cannot close {issue_id}: bypass_check exited "
                     f"{result.returncode}:\n{tail}\n")
         try:
-            sys.path.insert(0, str(paths.repo_root / "plugins" / "prd-os" / "scripts"))
+            _use_prd_os(paths.repo_root)
             import prd_runner as _prd_runner
             from config import load as _load_config
             cfg = _load_config(paths.repo_root)

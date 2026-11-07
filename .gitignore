@@ -56,6 +56,14 @@ q-system/output/marketing/linkedin/*
 # working copy. Verified 2026-07-26: structural ids and timestamps only, no
 # free-text, safe for a public repo.
 !.prd-os/receipts.jsonl
+# ASK-3829: each close now writes its receipt as one new file here, because
+# GitHub ignores merge=union and parallel closes conflicted on receipts.jsonl.
+# Tracked for the same reason the ledger is. lefthook admits these names only,
+# and receipts-ledger-check.py checks each one's content.
+!.prd-os/receipts.d/*.jsonl
+# A fragment is written under a hidden temp name and linked into place; a crash
+# between the two leaves the temp file, which is never a receipt.
+.prd-os/*.d/.tmp-*
 
 # SQLite databases (generated at runtime)
 *.db

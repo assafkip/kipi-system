@@ -124,7 +124,9 @@ Acceptance is a negative invariant, machine-enforced:
   proving no bypass remains) or an explicit `bypass_exempt: <reason>`;
   optional `invariant` (the statement) and `deletes` (regex list the issue
   must remove from tracked source). Approval refuses entries with neither.
-- **Gate registry** — `.prd-os/gates.jsonl` (committed). Issue closeout
+- **Gate registry** — `.prd-os/gates.jsonl` plus one file per gate under
+  `.prd-os/gates.d/` (ASK-3829; receipts likewise under `.prd-os/receipts.d/`).
+  `scripts/ledger_fragments.py` is the one writer and the one reader. Issue closeout
   auto-registers `bypass_check` BEFORE flipping status; a registration
   failure aborts the close. `prd_runner.py gates list|run` — run executes
   every registered gate from the repo root, red exits non-zero. The registry
