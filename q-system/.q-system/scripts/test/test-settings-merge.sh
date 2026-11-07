@@ -268,10 +268,14 @@ echo "ok: canonical instance hooks keep identity with a dotted name, a '.' argum
 # grammar keeps BASENAME identity, so an instance's own script that shares a
 # retired name was deleted by the retired-hook drop, with nothing printed. That
 # drop runs before the union and ignores event and matcher, so nothing replaced
-# the hook. A retired hook is now dropped only when its path shows it is the
-# skeleton's (it leads with q-system/, as every template spelling of a retired
-# script ever did); anything else is kept and named on stdout, the stream the
-# updater shows. A dedup drop of such a spelling is named too, never silent.
+# the hook. A retired hook is now dropped only in the canonical spelling under
+# q-system/, the one every template spelling of a retired script ever used;
+# anything else is kept and named on stdout, the stream the updater shows. A
+# dedup drop of such a spelling is named too, never silent.
+# Codex round 1 on PR #624: the first fix read q-system/ off ANY spelling, so
+# `cd automation && python3 q-system/memory_autocapture.py`, which runs the
+# instance's automation/q-system/ script, was still deleted. A relative path
+# names whatever the working directory says, so it is kept and named.
 cat > "$FIXTURE/instance6.json" <<'EOF'
 {
   "hooks": {
@@ -285,8 +289,18 @@ cat > "$FIXTURE/instance6.json" <<'EOF'
       {"hooks": [
         {"type": "command", "command": "eval true && python3 \"$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py\""},
         {"type": "command", "command": "python3 automation/memory-scores-surface.py"},
-        {"type": "command", "command": "python3 q-system/.q-system/scripts/memory_autocapture.py"},
-        {"type": "command", "command": "eval true; python3 \"$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/scripts/memory-scores-surface.py\""}
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\""},
+        {"type": "command", "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/scripts/memory-scores-surface.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/scripts/memory-scores-surface.py\" || true"}
+      ]}
+    ],
+    "Notification": [
+      {"hooks": [
+        {"type": "command", "command": "cd automation && python3 q-system/memory_autocapture.py"}
+      ]}
+    ],
+    "SubagentStop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 q-system/.q-system/scripts/memory_autocapture.py"}
       ]}
     ],
     "SessionStart": [
@@ -303,25 +317,48 @@ import json, sys
 merged = json.load(open(sys.argv[1]))
 report = sys.argv[2]
 all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
-kept = ['automation/memory_autocapture.py', 'automation/memory-scores-surface.py',
+kept = ['eval true && python3 "$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py"',
+        'python3 automation/memory-scores-surface.py',
+        'cd automation && python3 q-system/memory_autocapture.py',
+        'python3 q-system/.q-system/scripts/memory_autocapture.py',
         'python3 memory_autocapture.py --session']
-for frag in kept:
-    assert any(frag in c for c in all_cmds), \
-        "an instance hook sharing a retired name was deleted although its path is not under q-system/: " + frag
-    assert any(frag in line and "KEPT" in line for line in report.splitlines()), \
-        "a kept retired-name hook was not named on stdout: " + frag
-for fossil in ("q-system/.q-system/scripts/memory_autocapture.py",
-               "q-system/q-system/.q-system/scripts/memory-scores-surface.py"):
-    assert not any(fossil in c for c in all_cmds), "a q-system/ fossil of a retired script survived: " + fossil
+for cmd in kept:
+    assert cmd in all_cmds, \
+        "a retired-name hook outside the canonical q-system/ spelling was deleted: " + cmd
+    assert any(cmd in line and "KEPT" in line for line in report.splitlines()), \
+        "a kept retired-name hook was not named on stdout: " + cmd
+for fossil in ('python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py"',
+               'test -f "$CLAUDE_PROJECT_DIR/q-system/q-system/.q-system/scripts/memory-scores-surface.py"'):
+    assert not any(c.startswith(fossil) for c in all_cmds), \
+        "a canonical q-system/ fossil of a retired script survived: " + fossil
 # Dedup is unchanged: the template's token-guard runs once. The drop of a
 # spelling that does not show it is the skeleton's is named; a fossil is not.
 tg = [c for c in all_cmds if "token-guard.py" in c]
 assert tg == ['python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py"'], tg
 assert any("automation/token-guard.py" in line and "DROPPED" in line for line in report.splitlines()), \
-    "a dedup drop of a hook whose path is not under q-system/ was silent"
+    "a dedup drop of a non-canonical hook was silent"
 assert "q-system/q-system" not in report, "a fossil drop was reported: the report would be noise"
 EOF
-echo "ok: retired names outside q-system/ are kept and named; q-system/ fossils still drop (ASK-3876)"
+echo "ok: retired names are dropped only in the canonical q-system/ spelling; every other spelling is kept and named (ASK-3876)"
+
+# Every instance carries the template's for-loop guard verbatim. It is not in the
+# canonical spelling, so a report keyed on spelling alone named its drop in all
+# 14 instances on every run (measured 2026-11-07). An exact copy of a kept hook
+# loses nothing and must stay quiet, or the report is noise nobody reads.
+python3 - "$REPO_ROOT/settings-template.json" "$FIXTURE/instance7.json" <<'EOF'
+import json, sys
+t = json.load(open(sys.argv[1]))
+loop = [(ev, g.get("matcher", ""), h) for ev, gs in t["hooks"].items() for g in gs
+        for h in g["hooks"] if h.get("command", "").startswith("for R in ")]
+assert loop, "the template no longer carries the for-loop guard this case copies"
+ev, matcher, hook = loop[0]
+json.dump({"hooks": {ev: [{"matcher": matcher, "hooks": [hook]}]}}, open(sys.argv[2], "w"))
+EOF
+OUT7="$(python3 "$MERGE" "$REPO_ROOT/settings-template.json" "$FIXTURE/instance7.json")"
+case "$OUT7" in
+  *DROPPED*) echo "FAIL: an exact copy of a template hook was reported as dropped: $OUT7" >&2; exit 1 ;;
+esac
+echo "ok: an exact copy of a kept hook drops quietly (ASK-3876)"
 
 python3 - "$MERGE" <<'EOF'
 import importlib.util, sys

@@ -94,24 +94,37 @@ def _plain_command(unquoted):
 
 
 def _script_identity(prefix, name, plain):
-    """Basename for a skeleton script, "path:<rel>" for an instance-owned one.
+    """(identity, shows the skeleton) for one script a command invokes.
 
-    Instance-owned means the canonical spelling (see hook_script_names) with a
-    leading component other than q-system. Everything else keeps the old
-    basename identity, because the other failure, a skeleton script read as an
-    instance one, runs that script twice: the token-guard scar. The cost of the
-    trade is that a non-canonical instance hook is deduped against a template
-    script of the same name. That drop is reported, never silent, and the
-    retired-hook drop no longer follows from basename identity alone
-    (_skeleton_path, ASK-3876).
+    Identity is "path:<rel>" for an instance-owned script and the basename for
+    everything else. Instance-owned means the canonical spelling (see
+    hook_script_names) with a leading component other than q-system. Everything
+    else keeps basename identity, because the other failure, a skeleton script
+    read as an instance one, runs that script twice: the token-guard scar.
+
+    "Shows the skeleton" is the SAME canonical spelling with q-system as the
+    leading component, and it is the only evidence that lets the retired-hook
+    drop delete a hook. Scar ASK-3876 (fleet reviewer, PR #615 round 1): that
+    drop keyed on the basename alone, so `eval true && python3
+    "$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py"`, an instance's own
+    script, was deleted as the retired skeleton script, before the union and
+    whatever its event, with nothing printed. A first fix read q-system/ off any
+    spelling, and Codex round 1 on PR #624 deleted `cd automation && python3
+    q-system/memory_autocapture.py` with it: a relative path names whatever the
+    working directory says. One grammar decides both directions, as the PR #615
+    RCA concluded. Every template spelling of a retired script ever shipped is
+    canonical (git log -S over settings-template.json, 2026-11-06), so real
+    fossils still drop; any other spelling is kept and reported.
     """
     hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
     if hit is None:
-        return name
+        return name, False
     rel = os.path.normpath(hit.group(1)).lower()
-    if rel.startswith(("/", "..")) or rel.split("/", 1)[0] == "q-system":
-        return name
-    return "path:" + rel
+    if rel.startswith(("/", "..")):
+        return name, False
+    if rel.split("/", 1)[0] == "q-system":
+        return name, True
+    return "path:" + rel, False
 
 
 def hook_script_names(command):
@@ -143,40 +156,16 @@ def hook_script_names(command):
     return frozenset(identity for identity, _ in _script_refs(command))
 
 
-# Any spelling of the anchor, read loosely on purpose: this only decides whether
-# a path is the skeleton's, and a loose read can only say "yes" for a path that
-# then leads with q-system/.
-_ANCHOR_SPLIT_RE = re.compile(r"(?:\$CLAUDE_PROJECT_DIR|\$\{CLAUDE_PROJECT_DIR\})/")
-
-
-def _skeleton_path(prefix, name):
-    """True when the path, read after its last anchor, leads with q-system/.
-
-    The evidence a basename-keyed hook must show before the retired-hook drop
-    may delete it. Scar ASK-3876 (fleet reviewer, PR #615 round 1): the drop
-    keyed on the basename alone, so `eval true && python3
-    "$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py"`, an instance's own
-    script outside the canonical grammar, was deleted as the retired skeleton
-    script, before the union and whatever its event, with nothing printed.
-    q-system/ is the skeleton's subtree by fleet rule (instance-automation-guard
-    refuses an instance script there), and every template spelling of a retired
-    script ever shipped leads with it (git log -S over settings-template.json,
-    2026-11-06), so real fossils still drop.
-    """
-    rel = os.path.normpath(_ANCHOR_SPLIT_RE.split(prefix + name)[-1])
-    return rel.split("/", 1)[0] == "q-system"
-
-
 def _script_refs(command):
-    """(identity, is-the-skeleton's) for each script the command invokes."""
+    """(identity, shows the skeleton) for each script the command invokes."""
     unquoted = command.translate(_SHELL_QUOTING)
     plain = _plain_command(unquoted)
-    return [(_script_identity(prefix, name, plain), _skeleton_path(prefix, name))
+    return [_script_identity(prefix, name, plain)
             for prefix, name in SCRIPT_PATH_RE.findall(unquoted)]
 
 
 def _shows_skeleton(command):
-    """True when the command invokes scripts and every one is under q-system/."""
+    """True when the command invokes scripts and every one shows the skeleton."""
     refs = _script_refs(command)
     return bool(refs) and all(skeleton for _, skeleton in refs)
 
@@ -223,7 +212,7 @@ def merge_settings(template, existing, retired=None, report=None):
     # hooks #571 removed from the template survived in every instance as inert
     # `test -f` wiring that no check could tell from live wiring. Drop retired
     # scripts from the INSTANCE side only, before the union, and only when the
-    # path shows the script is the skeleton's (ASK-3876, _skeleton_path).
+    # canonical path shows the script is the skeleton's (ASK-3876, _script_identity).
     retired = load_retired(report=report) if retired is None else frozenset(retired)
     existing = json.loads(json.dumps(existing))
     for event, groups in existing.get("hooks", {}).items():
@@ -235,7 +224,7 @@ def merge_settings(template, existing, retired=None, report=None):
                     live.append(h)
                 elif not _shows_skeleton(command):
                     live.append(h)
-                    report.append("    KEPT [%s] retired script name, path not under q-system/: %s"
+                    report.append("    KEPT [%s] retired script name, not spelled $CLAUDE_PROJECT_DIR/q-system/...: %s"
                                   % (event, command))
             grp["hooks"] = live
         existing["hooks"][event] = [g for g in groups if g.get("hooks")]
@@ -282,22 +271,27 @@ def merge_settings(template, existing, retired=None, report=None):
             for from_instance, grp in groups:
                 m = grp.get("matcher", "")
                 if m not in by_matcher:
-                    by_matcher[m] = {"matcher": m, "hooks": [], "_seen": set()}
+                    by_matcher[m] = {"matcher": m, "hooks": [], "_seen": set(), "_text": set()}
                     order.append(m)
                 for h in grp.get("hooks", []):
                     command = h.get("command", "")
                     key = hook_key(command)
                     if key not in by_matcher[m]["_seen"]:
                         by_matcher[m]["_seen"].add(key)
+                        by_matcher[m]["_text"].add(command)
                         by_matcher[m]["hooks"].append(h)
                     elif (from_instance and not isinstance(key, str)
+                          and command not in by_matcher[m]["_text"]
                           and not _shows_skeleton(command)):
                         # A fossil of a template hook drops quietly: that is the
-                        # token-guard fix. A spelling that does not show it is
-                        # the skeleton's may be the instance's own script, so
-                        # its drop is named (ASK-3876).
+                        # token-guard fix. So does an exact copy of a kept hook:
+                        # every instance carries the template's for-loop guard
+                        # verbatim (measured 2026-11-07, 14 of 14). A different
+                        # spelling that does not show it is the skeleton's may be
+                        # the instance's own script, so its drop is named
+                        # (ASK-3876).
                         report.append("    DROPPED [%s %s] same script name as an earlier hook, "
-                                      "path not under q-system/: %s" % (event, m or "*", command))
+                                      "not spelled $CLAUDE_PROJECT_DIR/q-system/...: %s" % (event, m or "*", command))
             merged_hooks[event] = [
                 {"matcher": by_matcher[m]["matcher"], "hooks": by_matcher[m]["hooks"]}
                 if by_matcher[m]["matcher"] else {"hooks": by_matcher[m]["hooks"]}
