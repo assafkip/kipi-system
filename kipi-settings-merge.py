@@ -92,8 +92,12 @@ def _script_identity(prefix, name, plain):
 
     Instance-owned means the canonical spelling (see hook_script_names) with a
     leading component other than q-system. Everything else keeps the old
-    basename identity, so a spelling this does not accept fails toward dedup,
-    the direction the token-guard scar was about.
+    basename identity. That is a trade, not a free default: such a hook is
+    deduped against a template script of the same name AND dropped when that
+    name is retired, so a non-canonical instance hook can be lost (fleet
+    reviewer, PR #615; ASK-3876 tracks refusing it at apply time). It is taken
+    because the other failure, a skeleton script read as an instance one, runs
+    that script twice: the token-guard scar.
     """
     hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
     if hit is None:

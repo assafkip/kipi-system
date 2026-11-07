@@ -446,6 +446,68 @@ if [ ! -e "$T/.claude/new-template.json" ]; then
 else bad "dangling-symlink refusal created the template target"; fi
 rm -r "$T"
 
+# The skeleton marker gets the same lexists rule as the template: a DANGLING
+# instance-registry.json symlink read as absent, so a skeleton whose template
+# went missing flipped into instance mode (fleet reviewer, PR #615, minor).
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+ln -s missing-registry.json "$T/instance-registry.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/gate.py"
+mk_instance_hook_proposal "$T/inst.json"
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/inst.json" "$T"
+check "dangling registry symlink: still the skeleton, edit refused" 2 "without the settings-template.json pair" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "dangling-registry refusal left settings.json untouched"
+else bad "dangling-registry refusal modified settings.json"; fi
+rm -r "$T"
+
+# The premise instance mode rests on, run end to end: a hook applied here must
+# survive the fleet merge that rebuilds settings.json from the SKELETON's
+# template. Until PR #615 it held only by luck (codex round 1): the merge keyed
+# hooks by basename, so these two names, one a template script and one a
+# retired script, were deduped and retired away. The merge script lives at the
+# skeleton root and does not reach instances, so there this case is skipped.
+# Ref hatch: SETTINGS_MERGE=<old merge, with kipi-retired-hooks.json beside it>.
+MERGE_SCRIPT="${SETTINGS_MERGE:-$SCRIPT_DIR/../../../../kipi-settings-merge.py}"
+TEMPLATE_REAL="$SCRIPT_DIR/../../../../settings-template.json"
+if [ -f "$MERGE_SCRIPT" ] && [ -f "$TEMPLATE_REAL" ]; then
+  T=$(mktemp -d); mk_fixture "$T"
+  rm "$T/settings-template.json"
+  mkdir -p "$T/q-inst" "$T/automation"
+  echo "print('gate')" > "$T/q-inst/token-guard.py"
+  echo "print('gate')" > "$T/automation/memory_autocapture.py"
+  cat > "$T/chain.json" <<'JSON'
+{
+  "schema_version": 1, "slug": "instance-hook-chain", "reason": "wire instance hooks whose names collide",
+  "edits": [
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "\"PostToolUse\": [",
+      "insert": "\n      {\n        \"matcher\": \"Edit|Write|MultiEdit|Bash\",\n        \"hooks\": [\n          { \"type\": \"command\", \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py\\\"\" },\n          { \"type\": \"command\", \"command\": \"python3 \\\"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\\\"\" }\n        ]\n      },",
+      "reason": "instance gates" }
+  ]
+}
+JSON
+  run_engine "$ENGINE" "$T/chain.json" "$T"
+  check "instance hooks with colliding names apply" 0 "OK applied instance-hook-chain" "$RC" "$OUT"
+  python3 "$MERGE_SCRIPT" "$TEMPLATE_REAL" "$T/.claude/settings.json" >/dev/null 2>&1
+  if python3 - "$T/.claude/settings.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+cmds = [h.get("command", "") for ev in m.get("hooks", {}).values() for g in ev for h in g.get("hooks", [])]
+missing = [s for s in ("automation/memory_autocapture.py", "q-inst/token-guard.py")
+           if not any(s in c for c in cmds)]
+if missing:
+    sys.stderr.write("    dropped by the fleet merge: %s\n" % missing)
+sys.exit(1 if missing else 0)
+PY
+  then ok "applied instance hooks survive the fleet merge (template and retired name collisions)"
+  else bad "the fleet merge dropped an applied instance hook"; fi
+  rm -r "$T"
+else
+  echo "  SKIP: apply-then-merge chain (kipi-settings-merge.py is skeleton-only)"
+fi
+
 # --------------------------------------------- 9. gate break -> auto-revert
 # Deliberately ships a proposal that applies cleanly and passes the ratchet, but
 # wires a hook to a script that does not exist. hook-scripts-exist goes

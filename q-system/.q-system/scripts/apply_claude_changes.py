@@ -1058,10 +1058,13 @@ def is_templateless_instance(root):
     absent to exists(), so the tree looked like an instance and an edit creating
     the symlink's target under .claude/ bootstrapped a template by another name
     (codex review of PR #615). Any directory entry by that name, live or
-    dangling, means this is not a template-less instance.
+    dangling, means this is not a template-less instance. The registry marker
+    gets the same rule: with exists() a dangling instance-registry.json symlink
+    flipped a skeleton missing its template into instance mode (fleet reviewer,
+    PR #615).
     """
     return (not os.path.lexists(os.path.join(root, "settings-template.json"))
-            and not os.path.exists(os.path.join(root, "instance-registry.json")))
+            and not os.path.lexists(os.path.join(root, "instance-registry.json")))
 
 
 def check_template_pairs(root, prop, staged, template_key, log):
@@ -1169,8 +1172,14 @@ def main(argv):
                 raise Refusal("an instance carries no settings-template.json; "
                               "fleet hooks are wired in the kipi-system skeleton")
         if touches_settings:
+            # The fleet merge keys an instance script by its path only in the
+            # canonical spelling; any other spelling is keyed by basename and can
+            # be deduped or retired away (fleet reviewer, PR #615; ASK-3876 is
+            # the refusal at this point). Say so where the operator reads it.
             log.append("instance mode: no settings-template.json and no "
-                       "instance-registry.json; kipi update keeps instance-added hooks")
+                       "instance-registry.json; the fleet merge keeps an instance "
+                       "hook written as \"$CLAUDE_PROJECT_DIR/<path>\" with no cd, "
+                       "and keys any other spelling by its script basename")
     elif touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
         raise Refusal(".claude/settings.json edited without the settings-template.json pair")
 
