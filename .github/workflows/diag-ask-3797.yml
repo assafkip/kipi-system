@@ -21,35 +21,10 @@ jobs:
       - run: |
           git config --global user.name "kipi-ci"
           git config --global user.email "ci@kipi.invalid"
-      - name: Loop the test, keep every failing run
-        run: bash .github/diag-ask-3797-loop.sh 15
+      - name: Case 11 alone, traced
+        run: bash .github/diag-ask-3797-race.sh kipi-dispatch.sh 400; nproc; df -T /tmp; uname -r; bash --version | head -1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: loop-${{ matrix.shard }}
           path: out/
-
-  fullgate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - run: |
-          git config --global user.name "kipi-ci"
-          git config --global user.email "ci@kipi.invalid"
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - run: pip install pytest
-      - run: pip install playwright pillow && python -m playwright install --with-deps chromium
-      - name: Capability gate, full suite (prints FAIL lines above the tail)
-        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root .
-        env:
-          CI: true
-          DC_REQUIRE_REAL_PRODUCERS: "1"
