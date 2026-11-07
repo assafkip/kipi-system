@@ -61,6 +61,16 @@ TEST_PATTERNS = ("test_*.py", "test-*.py", "test-*.sh")
 SCAN_ROOTS = ("q-system/.q-system/scripts", "q-system/.q-system")
 DEFAULT_TIMEOUT_S = 60
 TIMEOUT_MIN_S, TIMEOUT_MAX_S = 5, 600
+# A FAILING TEST'S FAIL LINE IS USUALLY NOT IN ITS LAST 20 LINES (ASK-3797).
+# test-dispatch-stale-checkout.sh went red on main's nightly and on PR #619
+# three times as "69 passed, 1 failed", and the 20-line tail held only the
+# PASS lines of its last section. Nobody could see which assertion failed, so
+# the flake sat for days as a guess. A bash test prints `  FAIL: ...`, unittest
+# prints `FAIL: test_x`, pytest prints `FAILED path::t`, TAP prints `not ok`.
+# Every such line above the tail is kept, capped so a test that fails 5000
+# times cannot flood the log.
+FAIL_LINE = re.compile(r"^\s*(FAIL|FAILED|not ok)\b")
+TAIL_LINES, FAIL_LINES_CAP = 20, 40
 
 # Wiring surfaces for the inert-engine check (F2 class). Textual-reference
 # heuristic, declared as such in the PRD: a false "inert" is resolved by a
@@ -765,6 +775,21 @@ def select_for_diff(root, base, notes):
     return set(selected)
 
 
+def failure_tail(text):
+    """The last TAIL_LINES lines, preceded by every FAIL line printed above them.
+    See FAIL_LINE for why the tail alone hid a red test's cause."""
+    lines = text.splitlines()
+    tail = lines[-TAIL_LINES:]
+    early = [ln for ln in lines[:-TAIL_LINES] if FAIL_LINE.match(ln)]
+    if not early:
+        return "\n".join(tail)
+    if len(early) > FAIL_LINES_CAP:
+        early = early[:FAIL_LINES_CAP] + [
+            f"... {len(early) - FAIL_LINES_CAP} more FAIL lines not shown"]
+    return "\n".join(["FAIL lines above the tail:", *early,
+                      f"last {TAIL_LINES} lines:", *tail])
+
+
 def run_tests(root, manifest, mode, errors, notes, only=None):
     skeleton_only = set(manifest.get("skeleton_only", []))
     env = dict(os.environ, QROOT=str(root / "q-system"))
@@ -809,12 +834,12 @@ def run_tests(root, manifest, mode, errors, notes, only=None):
             # the partial output often names the hang (a prompt, a URL being
             # polled) — discarding it made timeouts undiagnosable (codex,
             # sag-runner-contract)
-            tail = "\n".join((r.stdout + r.stderr).splitlines()[-20:])
+            tail = failure_tail(r.stdout + r.stderr)
             errors.append(f"test-timeout ({timeout}s): {path}" + (f"\n{tail}" if tail else ""))
             continue
         ran += 1
         if r.returncode != 0:
-            tail = "\n".join((r.stdout + r.stderr).splitlines()[-20:])
+            tail = failure_tail(r.stdout + r.stderr)
             errors.append(f"test-failed rc={r.returncode}: {path}\n{tail}")
     notes.append(f"tests: ran={ran} quarantined={quarantined} "
                  f"skipped-skeleton-only={skipped}"

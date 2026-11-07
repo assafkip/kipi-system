@@ -26,8 +26,11 @@ Subcommands:
   close                    Verify all receipts; flip status=closed; flush amendments to spec footer; clear state
   clear                    Clear active state (for abandoned work)
   allowed-files            Print snapshotted allowed_files as JSON array
-  record-review <kind>     CLAIM a review slot (standard|adversarial) under cap.
-                           Writes no receipt: the review has not run yet.
+  record-review <kind> [--dry]
+                           CLAIM a review slot (standard|adversarial) under the cap
+                           the diff's size class earns (check_budget.DEPTH).
+                           Writes no receipt: the review has not run yet. --dry
+                           prints the class and caps and claims nothing.
   complete-review <kind> --verdict STR --evidence-file PATH
                            Record a FINISHED review: hashes the reviewer's own
                            output, seals it to the issue, and writes `reviewed`
@@ -62,11 +65,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
 import runtime_receipt  # noqa: E402
+import check_budget  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
 REVIEW_KINDS = ("standard", "adversarial")
-REVIEW_CAP_DEFAULTS = {"standard": 2, "adversarial": 1}
+# The per-kind caps live in check_budget.DEPTH, keyed by the diff's ASK-1749 size class
+# (ASK-3827). They were one fixed {"standard": 2, "adversarial": 1} for every issue.
 REVIEW_CAP_OVERRIDE_ENV = "ISSUE_ALLOW_REVIEW_REPEAT"
 
 CONFIG_RELPATH = ".prd-os/config.json"
@@ -765,10 +770,10 @@ def _review_seal(issue_id: str, completions: dict) -> str:
 # spec date: a date cutoff would have exempted the 25 dc-* specs that produced the scar).
 
 VERIFY_CONTRACT = 2
-REPEAT_MAX = 10
-REPEAT_MIN = 5
+# REPEAT_MIN and REPEAT_MAX were 5 and 10 for every issue. They come from the size class
+# now (check_budget.DEPTH: S 2 and 2, M and L 5 and 10, ASK-3827). The budget is one number.
 REPEAT_BUDGET_S = 1200.0
-# Lower-only test seam: min(REPEAT_BUDGET_S, this). Raising it cannot skip the N < 5 refusal.
+# Lower-only test seam: min(REPEAT_BUDGET_S, this). Raising it cannot skip the minimum.
 REPEAT_BUDGET_ENV = "KIPI_VERIFY_BUDGET_S"
 OBSERVER_DIR = Path(__file__).resolve().parent / "real_path_observer"
 REAL_PATH_LIMITS = ("it sees Python processes only; a child started with PYTHON* variables "
@@ -1105,6 +1110,8 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
                          "not a finite positive number of seconds.\n")
         return 2
     budget = min(REPEAT_BUDGET_S, budget)
+    sized = check_budget.size_class(paths.repo_root)
+    depth = check_budget.depth(sized["class"])
 
     evidence, seen, seconds, outputs = [], {}, {}, {}
     for command in checks:
@@ -1144,12 +1151,13 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
                 "until this mutant fails it, then record the mutant again.")
 
     first = sum(seconds.values())
-    n = min(REPEAT_MAX, int(budget // first)) if first > 0 else REPEAT_MAX
-    if n < REPEAT_MIN:
+    n = min(depth["repeat_max"], int(budget // first)) if first > 0 else depth["repeat_max"]
+    if n < depth["repeat_min"]:
         slowest = max(seconds, key=seconds.get)
         refusals.append(
             f"the required checks take {first:.0f}s a pass, so only {n} run(s) fit the "
-            f"{budget:.0f}s evidence budget and at least {REPEAT_MIN} are needed. Slowest: "
+            f"{budget:.0f}s evidence budget and at least {depth['repeat_min']} are needed "
+            f"(size class {sized['class']}: {sized['reasons'][0]}). Slowest: "
             f"{slowest!r} at {seconds[slowest]:.0f}s. Narrow it to the files this issue changes.")
         green = 0
     else:
@@ -1165,8 +1173,10 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
         "real_path": real,
         "defined_vs_ran": counts,
         "mutants": mutants,
+        # The class is sealed with the count, so close can say which minimum it held n to.
         "repeats": {"green": green, "n": n, "first_pass_seconds": round(first, 2),
-                    "budget_seconds": budget},
+                    "budget_seconds": budget, "size_class": sized["class"],
+                    "repeat_min": depth["repeat_min"]},
     }
     state["verified_green"] = result_green
     if refusals:
@@ -1187,8 +1197,11 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
     return 0
 
 
-def _green_shape_problems(green) -> list[str]:
-    """What close checks on a contract-2 issue: presence and shape, never truth."""
+def _green_shape_problems(green, sized: dict) -> list[str]:
+    """What close checks on a contract-2 issue: presence and shape, never truth.
+
+    The repeat minimum is the one the change earns at CLOSE, not the one sealed at verify:
+    an S verify (2 repeats) on a change that then grew to L must not close on 2."""
     if not isinstance(green, dict):
         return ["no computed green recorded"]
     probs = []
@@ -1200,9 +1213,13 @@ def _green_shape_problems(green) -> list[str]:
                                            for r in counts):
         probs.append("defined_vs_ran missing or refused")
     rep = green.get("repeats")
-    if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < REPEAT_MIN
+    floor = check_budget.depth(sized["class"])["repeat_min"]
+    if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < floor
             or rep.get("green") != rep.get("n")):
-        probs.append("repeats missing, under the minimum, or not all green")
+        # The class's reason rides along: "size class L" alone sent an agent with one
+        # uncommitted patch to re-verify instead of commit (PR #620 review, major 1).
+        probs.append(f"repeats missing, under the minimum of {floor} for size class "
+                     f"{sized['class']} ({sized['reasons'][0]}), or not all green")
     return probs
 
 
@@ -1432,11 +1449,14 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     if not issue_id:
         sys.stderr.write("no active issue\n")
         return 2
+    # ASK-3827: the class of the change being CLOSED. A receipt earned while the change was
+    # S does not cover it after it grew, so both the repeats and the review kinds read this.
+    sized = check_budget.size_class(paths.repo_root)
     if state.get("verify_contract") == VERIFY_CONTRACT and state["receipts"].get("verified"):
         # ASK-1810. First, so an edited green is named for what it is rather than hidden
         # behind a missing-receipt message.
         green = state.get("verified_green")
-        probs = _green_shape_problems(green)
+        probs = _green_shape_problems(green, sized)
         if probs:
             sys.stderr.write(f"cannot close {issue_id}: the verified receipt's computed evidence is not whole "
                              f"({'; '.join(probs)}). {GREEN_SHAPE_TEXT}. Re-run "
@@ -1567,11 +1587,13 @@ def cmd_close(paths: Paths, args: argparse.Namespace) -> int:
     # close trusts a field anyone with filesystem access can type.
     if state["receipts"].get("reviewed"):
         completions = state.get("review_completions") or {}
-        missing = [k for k in REVIEW_KINDS if k not in completions]
+        missing = [k for k in _required_review_kinds(sized) if k not in completions]
         if missing:
             sys.stderr.write(
                 f"cannot close {issue_id}: the reviewed receipt is set but "
-                f"{missing} never completed.\n")
+                f"{missing} never completed, and size class {sized['class']} "
+                f"({sized['reasons'][0]}) needs it. If the change grew after its "
+                "review, run /issue-review for the missing kind.\n")
             return 2
         # REREAD the artifacts. The seal proves the stored RECORD is
         # self-consistent; it says nothing about the file still being there.
@@ -1839,6 +1861,12 @@ def cmd_allowed_files(paths: Paths, args: argparse.Namespace) -> int:
     return 0
 
 
+def _required_review_kinds(sized: dict) -> list[str]:
+    """The kinds a `reviewed` receipt needs: every kind the class gives a slot."""
+    caps = check_budget.depth(sized["class"])["review_cap"]
+    return [k for k in REVIEW_KINDS if caps[k] > 0]
+
+
 def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
     if args.kind not in REVIEW_KINDS:
         sys.stderr.write(f"kind must be one of {REVIEW_KINDS}; got {args.kind!r}\n")
@@ -1849,11 +1877,23 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         return 2
     rounds = state.setdefault("review_rounds", {k: 0 for k in REVIEW_KINDS})
     current = rounds.get(args.kind, 0)
-    cap = REVIEW_CAP_DEFAULTS[args.kind]
+    # ASK-3827: the cap is the one the diff's size class earns, read fresh on every claim,
+    # so a change that grows between rounds earns the bigger budget.
+    sized = check_budget.size_class(paths.repo_root)
+    caps = check_budget.depth(sized["class"])["review_cap"]
+    cap = caps[args.kind]
     override = os.environ.get(REVIEW_CAP_OVERRIDE_ENV) == "1"
+    if args.dry:
+        sys.stderr.write(f"size class {sized['class']}: cap: standard {caps['standard']}, "
+                         f"adversarial {caps['adversarial']} ({'; '.join(sized['reasons'])})\n")
+        print(json.dumps({"dry": True, "kind": args.kind, "size_class": sized["class"],
+                          "reasons": sized["reasons"], "caps": caps, "round": current,
+                          "would_claim": current < cap or override}))
+        return 0
     if current >= cap and not override:
         sys.stderr.write(
-            f"review cap reached for {args.kind}: {current}/{cap}. "
+            f"review cap reached for {args.kind}: {current}/{cap} "
+            f"(size class {sized['class']}: {sized['reasons'][0]}). "
             f"Findings beyond this round should auto-defer. "
             f"Override with {REVIEW_CAP_OVERRIDE_ENV}=1 if you really want another round.\n"
         )
@@ -1876,6 +1916,8 @@ def cmd_record_review(paths: Paths, args: argparse.Namespace) -> int:
         "round": rounds[args.kind],
         "cap": cap,
         "capped": rounds[args.kind] >= cap,
+        "size_class": sized["class"],
+        "caps": caps,
     }))
     return 0
 
@@ -1932,12 +1974,15 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
     # two kinds. Writing it after the first completion let `close` report
     # reviewed work while the adversarial pass had never run -- Codex caught
     # exactly that, twice (PR #110 rounds 2 and 3). One completion is not the
-    # review; it is half of it.
-    missing = [k for k in REVIEW_KINDS if k not in completions]
+    # review; it is half of it. Which kinds make it whole is the size class's call
+    # (ASK-3827): an S change earns no adversarial pass, so its standard pass is whole.
+    sized = check_budget.size_class(paths.repo_root)
+    missing = [k for k in _required_review_kinds(sized) if k not in completions]
     if missing:
         _write_state(paths, state)
         print(json.dumps({"recorded": args.kind, "verdict": args.verdict,
-                          "awaiting": missing, "reviewed": None}))
+                          "awaiting": missing, "reviewed": None,
+                          "size_class": sized["class"]}))
         return 0
     state["reviewed_seal"] = _review_seal(state["issue_id"], completions)
     stamp = _write_receipt(paths, state, "reviewed")
@@ -2039,6 +2084,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_record = sub.add_parser("record-review")
     p_record.add_argument("kind", help="standard|adversarial")
+    p_record.add_argument("--dry", action="store_true",
+                          help="print the size class and its caps; claim nothing")
     p_record.set_defaults(func=cmd_record_review)
 
     args = parser.parse_args(argv)
