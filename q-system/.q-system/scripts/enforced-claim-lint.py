@@ -134,9 +134,9 @@ KNOWN_KEYS = {"clause", "status", "exec", "config", "test", "directives",
               "note", "marker_removal_ref", "superseded_by", "event"}
 REQUIRED_KEYS = {"clause", "status"}
 
-# Hook events whose exit status refuses nothing: Claude Code shows a SessionStart,
-# SessionEnd or Notification hook's stderr to the user and carries on. An entry
-# that names one of these as its `event` is therefore report-only by construction.
+# Hook events whose exit status refuses nothing: Claude Code shows the hook's stderr
+# to the user (or ignores it) and carries on. An entry that names one of these as
+# its `event` is therefore report-only by construction.
 #
 # Why `event` exists (ASK-3872, sp-0319b513): posture used to be judged per
 # EXECUTABLE. 4 Points case-gate.py denies under PreToolUse (Gates 1 and 3) and
@@ -145,10 +145,44 @@ REQUIRED_KEYS = {"clause", "status"}
 # the event lets each clause state the invocation that carries it.
 #
 # An event NOT listed here is treated as able to block, which is the old judgment.
-# Getting this wrong by omission only keeps an honest DETECTED red (visible);
-# listing an event that can block would let an understated gate pass, so the set
-# holds only events the platform documents as non-blocking.
-NON_BLOCKING_EVENTS = frozenset({"SessionStart", "SessionEnd", "Notification"})
+# Omission fails BOTH ways, not only toward a visible red: it keeps an honest
+# DETECTED red (C10), and it also lets an ENFORCED claim on that event pass (C8).
+# PostCompact was missing, so ENFORCED on it passed (PR #619 last review round);
+# a three-name set from memory also missed SubagentStart, InstructionsLoaded and
+# StopFailure (codex, PR #623 round 1). So the set is now COPIED from the table
+# "Exit code 2 behavior per event" at code.claude.com/docs/en/hooks (read
+# 2026-11-07): every row whose "Can block?" is no. Re-copy it when Claude Code adds
+# a hook event; do not add one name at a time.
+#
+# Listing an event that CAN block would let an understated gate pass. PreCompact
+# is NOT here: its exit 2 blocks compaction. PermissionRequest is NOT here either,
+# although its exit 2 is not honored: its JSON `decision.behavior: "deny"` refuses
+# the permission (codex, PR #623 round 2). Every other "no" row has no decision
+# control at all per the same page. This lint reads wiring and exit paths, not a
+# hook's JSON, so an exit-code-only PermissionRequest hook that claims ENFORCED
+# still passes. That is the pre-#619 default for every event, and it never refuses
+# an honest JSON-deny gate.
+#
+# TWO "no" ROWS ARE LEFT OUT ON PURPOSE: PostToolUse and PostToolUseFailure. The
+# table says they cannot block because the tool already ran, but their exit 2 feeds
+# stderr back to Claude, and the fleet's ENFORCED contract counts exactly that as
+# a block (skill-hook-pairing.md: "exit 2 = block (stderr fed to Claude)"). Every
+# PostToolUse lint in the fleet rests on it. Reclassifying them is a fleet decision,
+# not a table copy.
+NON_BLOCKING_EVENTS = frozenset({
+    "StopFailure", "PermissionDenied", "Notification",
+    "SubagentStart", "SessionStart", "Setup", "SessionEnd", "CwdChanged",
+    "DirectoryAdded", "FileChanged", "PostCompact", "PostModelSwitch",
+    "InstructionsLoaded", "MessageDisplay",
+})
+# Every event the same table says CAN block, plus PermissionRequest (JSON deny),
+# kept so a test can prove the sets partition the table.
+BLOCKING_EVENTS = frozenset({
+    "PreToolUse", "PermissionRequest", "UserPromptSubmit", "UserPromptExpansion", "Stop", "SubagentStop",
+    "TeammateIdle", "TaskCreated", "TaskCompleted", "ConfigChange", "PostToolBatch",
+    "PreCompact", "PreModelSwitch", "Elicitation", "ElicitationResult",
+    "WorktreeCreate", "WorktreeRemove",
+})
 
 # The block is introduced by an HTML comment so the fence itself stays ordinary
 # ```json -- markdown renderers, and the rules' own readers, treat it as a normal
@@ -836,6 +870,28 @@ def wired_commands(config_path, event=None):
     return out
 
 
+def wired_events(config_path, exec_rel, plugin_root=None):
+    """The hook events under which `exec_rel` is wired in a JSON hook config.
+
+    For an entry with no `event` key. Without this, such an entry was never judged
+    quiet, so a script wired ONLY under PostCompact passed C8 as ENFORCED and an
+    honest DETECTED on it failed C10 (fleet review of PR #623, minor 1). A lefthook
+    config returns nothing: its stages are not hook events and none is quiet, which
+    keeps the judgment those entries always had.
+    """
+    if config_path.name in _LEFTHOOK_CONFIGS:
+        return set()
+    try:
+        hooks = json.loads(config_path.read_text()).get("hooks")
+    except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+        return set()
+    if not isinstance(hooks, dict):
+        return set()
+    return {name for name in hooks
+            if any(exec_rel in command_targets(cmd, plugin_root)
+                   for cmd in wired_commands(config_path, name))}
+
+
 SPILLOVER_REL = os.path.join(".prd-os", "spillover.jsonl")
 _SPILLOVER_ID_RE = re.compile(r"^sp-[0-9a-f]{6,}$")
 
@@ -1411,7 +1467,13 @@ def check_posture(entries, path):
         # that every invocation blocks. An entry WITH `event` (ASK-3872) is judged
         # on that event's invocations alone; the quantifier is unchanged.
         neutered = any(_NEUTERED.search(cmd) for cmd in matched)
-        quiet = event in NON_BLOCKING_EVENTS
+        # No `event`: quiet only when EVERY event the script is wired under is
+        # non-blocking. One blocking invocation keeps the old judgment.
+        if event is not None:
+            quiet = event in NON_BLOCKING_EVENTS
+        else:
+            events = wired_events(config_path, exec_rel, plugin_root)
+            quiet = bool(events) and events <= NON_BLOCKING_EVENTS
         try:
             source = exec_path.read_text()
         except (OSError, UnicodeDecodeError):

@@ -19,6 +19,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 _LINT = Path(__file__).resolve().parent / "enforced-claim-lint.py"
 
 
@@ -1675,6 +1677,141 @@ def test_event_enforced_on_a_non_blocking_event_fails(tmp_path):
     quiet = dict(_GATE_BLOCKS, event="SessionStart")
     v = _lint_in(tmp_path, _two_event_tree(tmp_path, [quiet, _GATE_REPORTS]))
     assert 8 in _codes(v), [str(x) for x in v]
+
+
+def _compact_tree(tmp_path, event):
+    """One blocking script wired under a single compaction event, one ENFORCED
+    clause naming that event."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(BLOCKER_SRC)
+    (tmp_path / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {
+        event: [{"matcher": "auto", "hooks": [
+            {"type": "command",
+             "command": 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel}]}]}}))
+    entry = dict(_GATE_BLOCKS, event=event)
+    text = ("---\ndescription: fixture\n---\n\n# Gate One (ENFORCED)\n\n"
+            "Some directive text.\n\n<!-- enforcement -->\n```json\n%s\n```\n"
+            % json.dumps([entry]))
+    rule = rules / "fixture.md"
+    rule.write_text(text)
+    return rule
+
+
+# The "Exit code 2 behavior per event" table at code.claude.com/docs/en/hooks,
+# read 2026-11-07, every row. A fixture captured from the producer (the platform
+# docs), so the partition test below fails if the lint's sets drift from it.
+_DOC_EVENTS_TABLE = frozenset({
+    "PreToolUse", "PermissionRequest", "UserPromptSubmit", "UserPromptExpansion",
+    "Stop", "SubagentStop", "TeammateIdle", "TaskCreated", "TaskCompleted",
+    "ConfigChange", "StopFailure", "PostToolUse", "PostToolUseFailure",
+    "PostToolBatch", "PermissionDenied", "Notification", "SubagentStart",
+    "SessionStart", "Setup", "SessionEnd", "CwdChanged", "DirectoryAdded",
+    "FileChanged", "PreCompact", "PostCompact", "PreModelSwitch", "PostModelSwitch",
+    "Elicitation", "ElicitationResult", "WorktreeCreate", "WorktreeRemove",
+    "InstructionsLoaded", "MessageDisplay",
+})
+# "Can block? no" in the table, kept out of NON_BLOCKING_EVENTS on purpose: see the
+# comment above NON_BLOCKING_EVENTS (the fleet's exit-2 contract for PostToolUse).
+_FLEET_COUNTS_AS_BLOCKING = frozenset({"PostToolUse", "PostToolUseFailure"})
+
+
+def test_event_sets_partition_the_docs_table():
+    """Every row of the docs table is classified exactly once. A set written from
+    memory missed PostCompact, then SubagentStart, InstructionsLoaded and
+    StopFailure (PR #619 last round, PR #623 round 1)."""
+    quiet, loud = L.NON_BLOCKING_EVENTS, L.BLOCKING_EVENTS
+    assert not quiet & loud, sorted(quiet & loud)
+    assert not quiet & _FLEET_COUNTS_AS_BLOCKING
+    assert quiet | loud | _FLEET_COUNTS_AS_BLOCKING == _DOC_EVENTS_TABLE, (
+        sorted(_DOC_EVENTS_TABLE ^ (quiet | loud | _FLEET_COUNTS_AS_BLOCKING)))
+
+
+@pytest.mark.parametrize("event", sorted(
+    {"PostCompact", "SubagentStart", "InstructionsLoaded", "StopFailure",
+     "SessionStart", "SessionEnd", "Notification"}))
+def test_event_enforced_on_a_documented_non_blocking_event_fails(tmp_path, event):
+    """C8. These events' exit status refuses nothing, so an ENFORCED clause resting
+    on one is an overclaim. PostCompact, SubagentStart, InstructionsLoaded and
+    StopFailure all passed C8 before PR #623."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, event))
+    assert 8 in _codes(v), [str(x) for x in v]
+
+
+@pytest.mark.parametrize("event", sorted(
+    {"PostCompact", "SubagentStart", "InstructionsLoaded", "StopFailure"}))
+def test_event_detected_on_a_documented_non_blocking_event_passes(tmp_path, event):
+    """C10, the other direction of the same omission: a blocking script's
+    report-only clause on one of these events is honest DETECTED. Before PR #623
+    each of these was refused as an understated gate."""
+    rule = _compact_tree(tmp_path, event)
+    entry = dict(_GATE_REPORTS, clause="Gate One", event=event)
+    rule.write_text(rule.read_text().replace(
+        json.dumps([dict(_GATE_BLOCKS, event=event)]), json.dumps([entry])))
+    v = _lint_in(tmp_path, rule)
+    assert v == [], [str(x) for x in v]
+
+
+@pytest.mark.parametrize("event", ["PreCompact", "PostToolUse", "PermissionRequest"])
+def test_event_enforced_on_a_blocking_event_passes(tmp_path, event):
+    """CONTROL. PreCompact exit 2 blocks compaction (the rejected half of the PR
+    #619 finding). PostToolUse is the fleet's exit-2 contract. PermissionRequest
+    denies through its JSON decision (codex, PR #623 round 2). All stay honest
+    ENFORCED."""
+    v = _lint_in(tmp_path, _compact_tree(tmp_path, event))
+    assert v == [], [str(x) for x in v]
+
+
+def _eventless_tree(tmp_path, events, entry):
+    """One blocking script wired under each of `events`, one clause whose entry
+    carries NO `event` key, so every invocation counts."""
+    rules = tmp_path / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    exec_rel = "q-system/scripts/real-lint.py"
+    (tmp_path / exec_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / exec_rel).write_text(BLOCKER_SRC)
+    (tmp_path / "q-system/scripts/test_real_lint.py").write_text("# real-lint.py\n")
+    cmd = 'python3 "$CLAUDE_PROJECT_DIR/%s"' % exec_rel
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"hooks": {
+        ev: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}]
+        for ev in events}}))
+    entry = {k: v for k, v in entry.items() if k != "event"}
+    # The heading carries the (ENFORCED) marker whatever the disposition, as in
+    # _two_event_tree: the block is what says DETECTED.
+    text = ("---\ndescription: fixture\n---\n\n# %s (ENFORCED)\n\nSome directive text.\n\n"
+            "<!-- enforcement -->\n```json\n%s\n```\n"
+            % (entry["clause"], json.dumps([entry])))
+    rule = rules / "fixture.md"
+    rule.write_text(text)
+    return rule
+
+
+def test_eventless_enforced_wired_only_under_postcompact_fails(tmp_path):
+    """C8 with no `event` key (fleet review of PR #623, minor 1). The script runs
+    only after compaction, so no invocation can block; before PR #623 this passed
+    because an event-less entry was never judged quiet."""
+    v = _lint_in(tmp_path, _eventless_tree(tmp_path, ["PostCompact"], _GATE_BLOCKS))
+    assert 8 in _codes(v), [str(x) for x in v]
+
+
+def test_eventless_enforced_with_one_blocking_invocation_passes(tmp_path):
+    """CONTROL. One invocation under a blocking event keeps the per-executable
+    judgment the entry always had."""
+    v = _lint_in(tmp_path, _eventless_tree(
+        tmp_path, ["PostCompact", "PreToolUse"], _GATE_BLOCKS))
+    assert v == [], [str(x) for x in v]
+
+
+def test_eventless_detected_wired_only_under_quiet_events_passes(tmp_path):
+    """C10, the other direction: a blocking script wired only under events that
+    refuse nothing is honest DETECTED."""
+    entry = dict(_GATE_REPORTS, clause="Gate One")
+    v = _lint_in(tmp_path, _eventless_tree(
+        tmp_path, ["PostCompact", "SessionStart"], entry))
+    assert v == [], [str(x) for x in v]
 
 
 def test_event_enforced_on_the_blocking_event_passes(tmp_path):
