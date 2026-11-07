@@ -20,10 +20,12 @@ does not know keep surviving updates (the original reason this merge exists).
 Usage: kipi-settings-merge.py <template.json> <instance-settings.json>
 Writes the merged result back to <instance-settings.json>.
 """
+import fcntl
 import json
 import os
 import re
 import sys
+import time
 
 # A "script" is any .py/.sh path in the command, read with the directory in front
 # of it so ownership can be told (see hook_script_names). Dots are part of the
@@ -306,18 +308,75 @@ def merge_settings(template, existing, retired=None, report=None):
     return merged
 
 
+# Measured 2026-11-07: an instance-mode apply in the test fixture holds the lock
+# for 0.04s. The bound is for a stuck holder, so an unattended update fails one
+# instance instead of hanging the fleet run.
+LOCK_WAIT_SECONDS = 30.0
+
+
+class LockBusy(Exception):
+    pass
+
+
+def hold_apply_lock(settings_path, wait):
+    """Flock the directory holding settings_path, as apply does; returns the fd.
+
+    Scar ASK-3880: instance mode made apply_claude_changes.py a second writer of
+    an instance's .claude/settings.json. Apply held a lock and the merge took
+    none, so an apply landing between the merge's read and its write was erased
+    by the merge, while apply had printed "OK applied". The lock spans the READ:
+    one that covers only the write still merges from a stale base.
+
+    The DIRECTORY, not apply's .apply.lock file: taking the file meant creating
+    it, and that left an untracked q-system/output/ path in every instance that
+    does not ignore it (8 of 14, measured 2026-11-07), against the updater's
+    clean-tree contract (test-kipi-update-safety.sh). Apply's acquire_lock takes
+    this directory lock too; test-apply-claude-changes.sh case 8d holds it
+    through apply's own acquire_lock, so the two cannot drift apart.
+    """
+    path = os.path.dirname(os.path.abspath(settings_path))
+    fd = os.open(path, os.O_RDONLY)
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            # Only "someone holds it" waits. Any other flock error is not an
+            # apply and reaches main's "cannot lock" line at once.
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise LockBusy(path)
+            time.sleep(0.1)
+        except OSError:
+            os.close(fd)
+            raise
+
+
 def main(argv):
     if len(argv) != 3:
         sys.stderr.write("usage: kipi-settings-merge.py <template.json> <instance-settings.json>\n")
         return 2
-    template = json.load(open(argv[1]))
-    existing = json.load(open(argv[2]))
-    report = []
-    merged = merge_settings(template, existing, report=report)
-    with open(argv[2], "w") as f:
-        json.dump(merged, f, indent=2)
-    # stdout, not stderr: kipi-update.sh discards this script's stderr, so a
-    # line there is a silent drop by another name.
+    wait = float(os.environ.get("KIPI_SETTINGS_MERGE_LOCK_WAIT", LOCK_WAIT_SECONDS))
+    # Every line goes to stdout, not stderr: kipi-update.sh discards this
+    # script's stderr, so a line there is a silent drop by another name.
+    try:
+        lock = hold_apply_lock(argv[2], wait)
+    except LockBusy as busy:
+        print("    settings.json NOT updated: %s locked for over %gs by an apply" % (busy, wait))
+        return 1
+    except OSError as err:
+        print("    settings.json NOT updated: cannot lock its directory: %s" % err)
+        return 1
+    try:
+        template = json.load(open(argv[1]))
+        existing = json.load(open(argv[2]))
+        report = []
+        merged = merge_settings(template, existing, report=report)
+        with open(argv[2], "w") as f:
+            json.dump(merged, f, indent=2)
+    finally:
+        os.close(lock)
     for line in report:
         print(line)
     print("    settings.json updated (MCP, plugins, permissions, tools, hooks preserved)")

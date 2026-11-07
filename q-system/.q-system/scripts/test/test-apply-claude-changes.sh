@@ -514,6 +514,132 @@ else
   echo "  SKIP: apply-then-merge chain (kipi-settings-merge.py is skeleton-only)"
 fi
 
+# ---------------------- 8d. the fleet merge and an apply never interleave (ASK-3880)
+# Instance mode made this engine a second writer of an instance's
+# .claude/settings.json, next to kipi-settings-merge.py on the fleet update path.
+# Apply held its flock; the merge took none. An apply that wrote between the
+# merge's read and its write was erased by the merge's stale write, while apply
+# had printed "OK applied" and the merge "hooks preserved". Both now flock the
+# .claude/ directory: apply in acquire_lock, the merge across its whole
+# read-modify-write, with a bounded wait. The holder below takes the lock through
+# apply's own acquire_lock, so a merge that locked anything else goes red here.
+# Ref hatch: SETTINGS_MERGE=<old merge> shows all three cases red.
+wait_pid() {  # wait_pid <pid> <seconds>: 0 when the process ended in time
+  local i=0
+  while kill -0 "$1" 2>/dev/null; do
+    [ "$i" -ge $(( $2 * 10 )) ] && return 1
+    python3 -c "import time; time.sleep(0.1)"; i=$((i+1))
+  done
+  return 0
+}
+hold_lock() {  # hold_lock <root> <seconds>: holds what apply holds, via apply's own acquire_lock
+  python3 - "$ENGINE" "$1" "$2" <<'PY' &
+import importlib.util, os, sys, time
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("apply_engine", sys.argv[1])
+engine = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(engine)
+held = engine.acquire_lock(sys.argv[2])
+open(os.path.join(sys.argv[2], "lock.held"), "w").close()
+time.sleep(float(sys.argv[3]))
+PY
+  HOLDER=$!
+  local i=0
+  while [ ! -e "$1/lock.held" ] && [ "$i" -lt 100 ]; do
+    python3 -c "import time; time.sleep(0.1)"; i=$((i+1))
+  done
+}
+if [ -f "$MERGE_SCRIPT" ] && [ -f "$TEMPLATE_REAL" ]; then
+  # Case A: an apply arrives while the merge is inside its read-modify-write.
+  # The merge runs from a copy whose kipi-retired-hooks.json is a FIFO. The merge
+  # opens that file after it reads settings.json and before it writes it, so the
+  # FIFO parks it exactly inside the window, with no test-only code in the merge.
+  T=$(mktemp -d); mk_fixture "$T"
+  rm "$T/settings-template.json"
+  mkdir -p "$T/q-inst" "$T/m"; echo "print('gate')" > "$T/q-inst/gate.py"
+  mk_instance_hook_proposal "$T/inst.json"
+  cp "$MERGE_SCRIPT" "$T/m/kipi-settings-merge.py"
+  mkfifo "$T/m/kipi-retired-hooks.json"
+  python3 "$T/m/kipi-settings-merge.py" "$TEMPLATE_REAL" "$T/.claude/settings.json" >"$T/merge.out" 2>&1 &
+  MERGER=$!
+  # Opening the write end blocks until the merge opens the read end: that is
+  # the signal the merge is past its reads. The feeder then waits for "go".
+  python3 - "$T" <<'PY' &
+import os, sys, time
+t = sys.argv[1]
+w = open(os.path.join(t, "m", "kipi-retired-hooks.json"), "w")
+open(os.path.join(t, "merge.parked"), "w").close()
+while not os.path.exists(os.path.join(t, "go")):
+    time.sleep(0.05)
+w.write('{"scripts": []}')
+w.close()
+PY
+  FEEDER=$!
+  i=0
+  while [ ! -e "$T/merge.parked" ] && [ "$i" -lt 100 ]; do
+    python3 -c "import time; time.sleep(0.1)"; i=$((i+1))
+  done
+  run_engine "$ENGINE" "$T/inst.json" "$T"
+  touch "$T/go"
+  if wait_pid "$MERGER" 15; then wait "$MERGER" 2>/dev/null || true
+  else kill "$MERGER" "$FEEDER" 2>/dev/null || true; fi
+  wait "$FEEDER" 2>/dev/null || true
+  [ -e "$T/merge.parked" ] || bad "the merge never reached its read-modify-write window"
+  landed=no; grep -q 'q-inst/gate.py' "$T/.claude/settings.json" && landed=yes
+  case "$RC:$landed" in
+    0:yes) ok "an apply during the merge landed and survived the merge" ;;
+    0:no)  bad "apply printed OK applied, then the merge's stale write erased its hook :: $OUT" ;;
+    2:no)  check "an apply during the merge is refused on the shared lock" 2 "(lock held)" "$RC" "$OUT" ;;
+    *)     bad "an apply during the merge: exit $RC, hook landed=$landed :: $OUT" ;;
+  esac
+  rm -r "$T"
+
+  # Case B: the merge arrives while an apply holds the lock. It must wait, then
+  # read the file the apply left, so the applied hook survives.
+  T=$(mktemp -d); mk_fixture "$T"
+  rm "$T/settings-template.json"
+  hold_lock "$T" 3
+  python3 - "$T/.claude/settings.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["hooks"]["PostToolUse"][0]["hooks"].append(
+    {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/held.py\""})
+json.dump(s, open(sys.argv[1], "w"), indent=2)
+PY
+  python3 "$MERGE_SCRIPT" "$TEMPLATE_REAL" "$T/.claude/settings.json" >"$T/merge.out" 2>&1 &
+  MERGER=$!
+  python3 -c "import time; time.sleep(1)"
+  if kill -0 "$MERGER" 2>/dev/null; then ok "the merge waits while an apply holds the lock"
+  else bad "the merge ran while an apply held the lock"; fi
+  wait_pid "$MERGER" 15 || kill "$MERGER" 2>/dev/null || true
+  set +e; wait "$MERGER"; MRC=$?; set -e
+  wait "$HOLDER" 2>/dev/null || true
+  if [ "$MRC" = 0 ] && grep -q 'q-inst/held.py' "$T/.claude/settings.json" \
+     && grep -q 'token-guard.py' "$T/.claude/settings.json"; then
+    ok "after the wait the merge keeps the hook written under the lock"
+  else bad "after the wait: exit $MRC, held hook or template hooks missing :: $(cat "$T/merge.out")"; fi
+  rm -r "$T"
+
+  # Case C: the wait is bounded. A lock held past it fails the merge, loudly and
+  # without writing, so an unattended update can neither hang nor race.
+  T=$(mktemp -d); mk_fixture "$T"
+  rm "$T/settings-template.json"
+  hold_lock "$T" 6
+  SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+  set +e
+  MOUT=$(KIPI_SETTINGS_MERGE_LOCK_WAIT=1 python3 "$MERGE_SCRIPT" "$TEMPLATE_REAL" "$T/.claude/settings.json" 2>/dev/null)
+  MRC=$?
+  set -e
+  kill "$HOLDER" 2>/dev/null || true; wait "$HOLDER" 2>/dev/null || true
+  check "a lock held past the bounded wait fails the merge" 1 "NOT updated" "$MRC" "$MOUT"
+  if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+    ok "a merge that timed out on the lock wrote nothing"
+  else bad "a merge that timed out on the lock still wrote settings.json"; fi
+  rm -r "$T"
+else
+  echo "  SKIP: merge and apply lock (kipi-settings-merge.py is skeleton-only)"
+fi
+
 # --------------------------------------------- 9. gate break -> auto-revert
 # Deliberately ships a proposal that applies cleanly and passes the ratchet, but
 # wires a hook to a script that does not exist. hook-scripts-exist goes
@@ -594,7 +720,7 @@ cat > "$T/concurrent.json" <<'JSON'
 JSON
 SUM=$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')
 run_engine "$ENGINE" "$T/concurrent.json" "$T"
-check "concurrent apply refused" 2 "another apply is already running" "$RC" "$OUT"
+check "concurrent apply refused" 2 "(lock held)" "$RC" "$OUT"
 if [ "$SUM" = "$(shasum -a 256 "$T/.claude/rules/coding-standards.md" | awk '{print $1}')" ]; then
   ok "concurrent apply wrote nothing"
 else bad "concurrent apply mutated the file"; fi
