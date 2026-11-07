@@ -96,12 +96,12 @@ def _script_identity(prefix, name, plain):
 
     Instance-owned means the canonical spelling (see hook_script_names) with a
     leading component other than q-system. Everything else keeps the old
-    basename identity. That is a trade, not a free default: such a hook is
-    deduped against a template script of the same name AND dropped when that
-    name is retired, so a non-canonical instance hook can be lost (fleet
-    reviewer, PR #615; ASK-3876 tracks refusing it at apply time). It is taken
-    because the other failure, a skeleton script read as an instance one, runs
-    that script twice: the token-guard scar.
+    basename identity, because the other failure, a skeleton script read as an
+    instance one, runs that script twice: the token-guard scar. The cost of the
+    trade is that a non-canonical instance hook is deduped against a template
+    script of the same name. That drop is reported, never silent, and the
+    retired-hook drop no longer follows from basename identity alone
+    (_skeleton_path, ASK-3876).
     """
     hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
     if hit is None:
@@ -138,10 +138,45 @@ def hook_script_names(command):
     reads text, not the disk, so an instance directory that is a symlink into
     q-system/ is not seen.
     """
+    return frozenset(identity for identity, _ in _script_refs(command))
+
+
+# Any spelling of the anchor, read loosely on purpose: this only decides whether
+# a path is the skeleton's, and a loose read can only say "yes" for a path that
+# then leads with q-system/.
+_ANCHOR_SPLIT_RE = re.compile(r"(?:\$CLAUDE_PROJECT_DIR|\$\{CLAUDE_PROJECT_DIR\})/")
+
+
+def _skeleton_path(prefix, name):
+    """True when the path, read after its last anchor, leads with q-system/.
+
+    The evidence a basename-keyed hook must show before the retired-hook drop
+    may delete it. Scar ASK-3876 (fleet reviewer, PR #615 round 1): the drop
+    keyed on the basename alone, so `eval true && python3
+    "$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py"`, an instance's own
+    script outside the canonical grammar, was deleted as the retired skeleton
+    script, before the union and whatever its event, with nothing printed.
+    q-system/ is the skeleton's subtree by fleet rule (instance-automation-guard
+    refuses an instance script there), and every template spelling of a retired
+    script ever shipped leads with it (git log -S over settings-template.json,
+    2026-11-06), so real fossils still drop.
+    """
+    rel = os.path.normpath(_ANCHOR_SPLIT_RE.split(prefix + name)[-1])
+    return rel.split("/", 1)[0] == "q-system"
+
+
+def _script_refs(command):
+    """(identity, is-the-skeleton's) for each script the command invokes."""
     unquoted = command.translate(_SHELL_QUOTING)
     plain = _plain_command(unquoted)
-    return frozenset(_script_identity(prefix, name, plain)
-                     for prefix, name in SCRIPT_PATH_RE.findall(unquoted))
+    return [(_script_identity(prefix, name, plain), _skeleton_path(prefix, name))
+            for prefix, name in SCRIPT_PATH_RE.findall(unquoted)]
+
+
+def _shows_skeleton(command):
+    """True when the command invokes scripts and every one is under q-system/."""
+    refs = _script_refs(command)
+    return bool(refs) and all(skeleton for _, skeleton in refs)
 
 
 def _only_retired(command, retired):
@@ -163,29 +198,44 @@ RETIRED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "kipi-retired-hooks.json")
 
 
-def load_retired(path=None):
+def load_retired(path=None, report=None):
     """Script basenames whose hooks were retired from the template. Missing
     file means none retired; a present-but-unreadable file raises, because a
     silent empty list would resurrect every dead hook (ASK-3512)."""
     path = path or RETIRED_PATH
     if not os.path.exists(path):
-        sys.stderr.write("    WARNING: kipi-retired-hooks.json missing; retired hooks will NOT be dropped\n")
+        # Into the report, not stderr: kipi-update.sh runs this script with
+        # 2>/dev/null, so a stderr warning reached nobody.
+        (report if report is not None else []).append(
+            "    WARNING: kipi-retired-hooks.json missing; retired hooks will NOT be dropped")
         return frozenset()
     with open(path) as f:
         return frozenset(e["script"] for e in json.load(f).get("scripts", []))
 
 
-def merge_settings(template, existing, retired=None):
+def merge_settings(template, existing, retired=None, report=None):
+    """The merged settings. Every instance hook it drops or keeps against the
+    rules is appended to `report` as one line (main prints them on stdout)."""
+    report = [] if report is None else report
     # Scar ASK-3512: the union below keeps every instance-only hook, so the two
     # hooks #571 removed from the template survived in every instance as inert
     # `test -f` wiring that no check could tell from live wiring. Drop retired
-    # scripts from the INSTANCE side only, before the union.
-    retired = load_retired() if retired is None else frozenset(retired)
+    # scripts from the INSTANCE side only, before the union, and only when the
+    # path shows the script is the skeleton's (ASK-3876, _skeleton_path).
+    retired = load_retired(report=report) if retired is None else frozenset(retired)
     existing = json.loads(json.dumps(existing))
     for event, groups in existing.get("hooks", {}).items():
         for grp in groups:
-            grp["hooks"] = [h for h in grp.get("hooks", [])
-                            if not _only_retired(h.get("command", ""), retired)]
+            live = []
+            for h in grp.get("hooks", []):
+                command = h.get("command", "")
+                if not _only_retired(command, retired):
+                    live.append(h)
+                elif not _shows_skeleton(command):
+                    live.append(h)
+                    report.append("    KEPT [%s] retired script name, path not under q-system/: %s"
+                                  % (event, command))
+            grp["hooks"] = live
         existing["hooks"][event] = [g for g in groups if g.get("hooks")]
     merged = dict(template)
 
@@ -223,20 +273,29 @@ def merge_settings(template, existing, retired=None):
         merged_hooks = {}
         events = set(list(template.get("hooks", {})) + list(existing.get("hooks", {})))
         for event in events:
-            groups = (template.get("hooks", {}).get(event, [])
-                      + existing.get("hooks", {}).get(event, []))
+            groups = ([(False, g) for g in template.get("hooks", {}).get(event, [])]
+                      + [(True, g) for g in existing.get("hooks", {}).get(event, [])])
             by_matcher = {}
             order = []
-            for grp in groups:
+            for from_instance, grp in groups:
                 m = grp.get("matcher", "")
                 if m not in by_matcher:
                     by_matcher[m] = {"matcher": m, "hooks": [], "_seen": set()}
                     order.append(m)
                 for h in grp.get("hooks", []):
-                    key = hook_key(h.get("command", ""))
+                    command = h.get("command", "")
+                    key = hook_key(command)
                     if key not in by_matcher[m]["_seen"]:
                         by_matcher[m]["_seen"].add(key)
                         by_matcher[m]["hooks"].append(h)
+                    elif (from_instance and not isinstance(key, str)
+                          and not _shows_skeleton(command)):
+                        # A fossil of a template hook drops quietly: that is the
+                        # token-guard fix. A spelling that does not show it is
+                        # the skeleton's may be the instance's own script, so
+                        # its drop is named (ASK-3876).
+                        report.append("    DROPPED [%s %s] same script name as an earlier hook, "
+                                      "path not under q-system/: %s" % (event, m or "*", command))
             merged_hooks[event] = [
                 {"matcher": by_matcher[m]["matcher"], "hooks": by_matcher[m]["hooks"]}
                 if by_matcher[m]["matcher"] else {"hooks": by_matcher[m]["hooks"]}
@@ -253,9 +312,14 @@ def main(argv):
         return 2
     template = json.load(open(argv[1]))
     existing = json.load(open(argv[2]))
-    merged = merge_settings(template, existing)
+    report = []
+    merged = merge_settings(template, existing, report=report)
     with open(argv[2], "w") as f:
         json.dump(merged, f, indent=2)
+    # stdout, not stderr: kipi-update.sh discards this script's stderr, so a
+    # line there is a silent drop by another name.
+    for line in report:
+        print(line)
     print("    settings.json updated (MCP, plugins, permissions, tools, hooks preserved)")
     return 0
 
