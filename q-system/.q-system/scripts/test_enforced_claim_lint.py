@@ -1497,3 +1497,77 @@ def test_ratchet_control_unchanged_baseline_passes_after_commit(tmp_path):
 
     r = _run_all(tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# --- W8 (ASK-3859): the synonyms of ENFORCED are claims too -----------------------
+#
+# Case-055 RCA root cause #10. Investigation rules said "(NON-NEGOTIABLE)",
+# "(MANDATORY)" and "BLOCKING" on their gate headings, never "(ENFORCED)", so this
+# lint never asked those gates for an executable and none existed. A synonym now
+# needs a disposition exactly like the marker does. It is NOT added to
+# apply_claude_changes' ratchet, so it stays removable, which is also why an
+# ADVISORY disposition under a synonym needs no removal ticket (C11's reason is
+# that the ratcheted marker cannot be removed).
+
+def test_synonym_headings_need_a_disposition():
+    for heading in ("Gate One (NON-NEGOTIABLE)", "Gate One (MANDATORY)",
+                    "Gate One -- BLOCKING before findings",
+                    "Gate One -- BLOCKING before findings (NON-NEGOTIABLE)"):
+        v = L.lint_text(_rule(heading=heading), "fixture.md")
+        assert _codes(v) == [1], (heading, [str(x) for x in v])
+
+
+def test_synonym_heading_with_a_disposition_passes():
+    """CONTROL. Without it, a lint refusing every synonym heading passes above."""
+    for heading, clause in (("Gate One (NON-NEGOTIABLE)", "Gate One"),
+                            ("Gate One (MANDATORY)", "Gate One"),
+                            ("Gate One -- BLOCKING before findings",
+                             "Gate One -- BLOCKING before findings"),
+                            ("Gate One -- BLOCKING before findings (NON-NEGOTIABLE)",
+                             "Gate One -- BLOCKING before findings")):
+        block = json.dumps([{"clause": clause, "status": "ADVISORY",
+                             "note": "judgment, no hook observes it"}])
+        v = L.lint_text(_rule(heading=heading, block=block), "fixture.md")
+        assert v == [], (heading, [str(x) for x in v])
+
+
+def test_words_that_are_not_the_synonyms_are_not_claims():
+    """CONTROL on the other side: a heading that says it does NOT block, or uses
+    the word in lower case, is not a claim."""
+    for heading in ("Non Blocking Notes", "Writes are NON-BLOCKING here",
+                    "Blocked Extraction", "Cleanup Rule (UNENFORCED)",
+                    "Blocking behaviour, described", "A MANDATORY-looking word"):
+        assert L.marked_headings("# %s\n" % heading) == [], heading
+
+
+def test_advisory_under_the_ratcheted_marker_still_needs_a_ticket():
+    """The synonym exemption from C11 must not reach the real marker, even on a
+    heading that carries both."""
+    block = json.dumps([{"clause": "Gate One -- BLOCKING", "status": "ADVISORY",
+                         "note": "n"}])
+    v = L.lint_text(_rule(heading="Gate One -- BLOCKING (ENFORCED)", block=block),
+                    "fixture.md")
+    assert 11 in _codes(v), [str(x) for x in v]
+
+
+def test_synonym_claim_gets_the_full_exec_check(tmp_path):
+    """A synonym heading that declares ENFORCED is held to the same receipt: a
+    fictional executable is refused."""
+    block = json.dumps([{"clause": "Cleanup Rule", "status": "ENFORCED",
+                         "exec": "q-system/scripts/totally-imaginary-lint.py",
+                         "config": ".claude/settings.json",
+                         "test": "q-system/scripts/test_real_lint.py"}])
+    v = _lint_in(tmp_path, _tree(tmp_path, block, heading="Cleanup Rule (NON-NEGOTIABLE)"))
+    # 3 absent: the entry covers a heading the lint recognises as a claim, so the
+    # C5 is the exec check speaking, not an orphaned entry.
+    assert 5 in _codes(v) and 3 not in _codes(v), [str(x) for x in v]
+
+
+def test_synonym_heading_directive_count_is_checked():
+    """C12 reaches a synonym-marked section too. Found by mutation: with the
+    section map still keyed on MARKER alone, a wrong `directives` count under a
+    synonym heading passed silently."""
+    block = json.dumps([{"clause": "Gate One", "status": "ADVISORY",
+                         "note": "n", "directives": 99}])
+    v = L.lint_text(_rule(heading="Gate One (NON-NEGOTIABLE)", block=block), "fixture.md")
+    assert 12 in _codes(v), [str(x) for x in v]
