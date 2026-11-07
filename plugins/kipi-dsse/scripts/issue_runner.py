@@ -1071,22 +1071,27 @@ def _mutant_rows(paths: Paths, issue_id: str, clean: dict) -> dict:
     return {"dir": _rel(paths, d), "status": status, "reason": reason, "rows": rows}
 
 
-COUNT_FLOOR_DIR = Path(__file__).resolve().parent / "pytest_count_floor"
-COUNT_FLOOR_PLUGIN = "kipi_dsse_count_floor"
+# Core pytest option, no plugin and no import (PR #621 review, major 1).
+COUNT_FLOOR_OPT = "--verbosity=0"
 
 
 def _count_env(env: dict) -> dict:
-    """`env` with pytest's summary line guaranteed, for every run whose count is read.
+    """`env` that lets pytest print its summary line, for every run whose count is read.
 
-    Scar sp-dae00232: a check with -q in a repo whose addopts already carry -q runs at -2, pytest
-    prints no count, and verify refused. pytest_count_floor/ raises verbosity to -1 only when it
-    is lower. A command that runs no pytest ignores both variables."""
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(COUNT_FLOOR_DIR)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    listed = [p.strip() for p in (env.get("PYTEST_PLUGINS") or "").split(",") if p.strip()]
-    if COUNT_FLOOR_PLUGIN not in listed:
-        listed.append(COUNT_FLOOR_PLUGIN)
-    env["PYTEST_PLUGINS"] = ",".join(listed)
+    Scar sp-dae00232: pytest prints its summary ("2 passed in 0.01s") only at verbosity -1 or
+    higher. chief's addopts carry -q and every split spec's check carries -q too, so those runs
+    sat at -2, printed no count even on a failure, and verify refused every chief issue. pytest
+    applies the repo's ini addopts, then PYTEST_ADDOPTS, then the command's own args, so
+    --verbosity=0 here resets only what the repo's addopts set, and the check's own -q still
+    counts from zero. An operator's PYTEST_ADDOPTS goes after it and still applies.
+
+    Scar PR #621 review: the first version loaded a plugin through PYTEST_PLUGINS plus a
+    PYTHONPATH entry. A check that assigns PYTHONPATH itself (six specs in .prd-os/issues do)
+    dropped the entry, kept the name, and pytest aborted on "Error importing plugin". A core
+    option needs no import. A check that sets PYTEST_ADDOPTS itself replaces this, which is
+    today's behaviour, never a crash. A command that runs no pytest ignores the variable."""
+    env["PYTEST_ADDOPTS"] = " ".join(
+        [COUNT_FLOOR_OPT] + ([env["PYTEST_ADDOPTS"]] if env.get("PYTEST_ADDOPTS") else []))
     return env
 
 

@@ -120,7 +120,9 @@ def _init_repo(root, *, plugins_copy):
     (prd / "receipts.jsonl").write_text(
         "".join(json.dumps(r, sort_keys=True) + "\n" for r in LEGACY_RECEIPTS))
     (prd / "gates.jsonl").write_text("".join(json.dumps(r) + "\n" for r in LEGACY_GATES))
-    (root / ".gitignore").write_text(".claude/state/\n")
+    # __pycache__ as every real repo ignores it: CI writes bytecode, and two worktrees that each
+    # `git add -A` their own .pyc conflict on binaries that have nothing to do with the ledgers.
+    (root / ".gitignore").write_text(".claude/state/\n__pycache__/\n")
     _git(root, "add", "-A")
     _git(root, "commit", "-q", "-m", "init")
     return root
@@ -212,31 +214,50 @@ def test_close_registers_its_gate_from_the_install_cache_layout():
 
 # --- check 3: -q on top of addopts -q still yields a count ------------------------------------
 
+def _verify_qq(tmp, check):
+    """verify one issue whose required check is `check`, in a repo whose addopts carry -q."""
+    repo = _init_repo(Path(tmp) / "qq", plugins_copy=False)
+    (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\naddopts = "-q"\n')
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_two.py").write_text(
+        "def test_one():\n    assert True\n\n\ndef test_two():\n    assert True\n")
+    issues = repo / ".prd-os" / "issues"
+    issues.mkdir(parents=True, exist_ok=True)
+    (issues / "qq-1.md").write_text(
+        "---\nid: qq-1\ntitle: qq\nstatus: open\npriority: p0\n"
+        "allowed_files:\n  - tests/test_two.py\ndisallowed_files: []\n"
+        f"required_checks:\n  - {check}\n"
+        f"required_reviews: []\n---\n\n{_MARKER}\n\nFixture.\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "spec")
+    for step in (["load", "qq-1"], ["approve"]):
+        r = _runner(repo, *step)
+        assert r.returncode == 0, r.stdout + r.stderr
+    verified = _runner(repo, "verify")
+    state = json.loads(_runner(repo, "status").stdout)
+    rows = (state.get("verified_green") or {}).get("defined_vs_ran") or []
+    return verified, rows
+
+
 def test_a_dash_q_check_under_addopts_dash_q_gets_a_parsed_count():
     with tempfile.TemporaryDirectory() as tmp:
-        repo = _init_repo(Path(tmp) / "qq", plugins_copy=False)
-        (repo / "pyproject.toml").write_text('[tool.pytest.ini_options]\naddopts = "-q"\n')
-        (repo / "tests").mkdir()
-        (repo / "tests" / "test_two.py").write_text(
-            "def test_one():\n    assert True\n\n\ndef test_two():\n    assert True\n")
-        issues = repo / ".prd-os" / "issues"
-        issues.mkdir(parents=True, exist_ok=True)
-        (issues / "qq-1.md").write_text(
-            "---\nid: qq-1\ntitle: qq\nstatus: open\npriority: p0\n"
-            "allowed_files:\n  - tests/test_two.py\ndisallowed_files: []\n"
-            "required_checks:\n  - python3 -m pytest tests/test_two.py -q -p no:cacheprovider\n"
-            f"required_reviews: []\n---\n\n{_MARKER}\n\nFixture.\n")
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-q", "-m", "spec")
-        for step in (["load", "qq-1"], ["approve"]):
-            r = _runner(repo, *step)
-            assert r.returncode == 0, r.stdout + r.stderr
-        verified = _runner(repo, "verify")
-        state = json.loads(_runner(repo, "status").stdout)
-        rows = (state.get("verified_green") or {}).get("defined_vs_ran") or []
+        verified, rows = _verify_qq(
+            tmp, "python3 -m pytest tests/test_two.py -q -p no:cacheprovider")
         assert "printed no count" not in verified.stderr, verified.stderr
         assert rows and rows[0].get("status") == "ok", (rows, verified.stderr)
         assert rows[0].get("ran") == 2 and rows[0].get("defined") == 2, rows
+
+
+def test_a_check_that_sets_its_own_pythonpath_still_runs_and_counts():
+    """PR #621 review, major 1: a check that assigns PYTHONPATH itself (six specs in
+    .prd-os/issues do) dropped an injected plugin dir while PYTEST_PLUGINS survived, and pytest
+    aborted with "Error importing plugin". Whatever the runner adds must not need an import."""
+    with tempfile.TemporaryDirectory() as tmp:
+        verified, rows = _verify_qq(
+            tmp, "PYTHONPATH=tests python3 -m pytest tests/test_two.py -q -p no:cacheprovider")
+        assert "Error importing plugin" not in verified.stdout + verified.stderr, verified.stderr
+        assert rows and rows[0].get("status") == "ok", (rows, verified.stderr)
+        assert rows[0].get("ran") == 2, rows
 
 
 # --- check 4 (Done): 20 branches, 20 clean merges, fold = 20 + legacy -------------------------

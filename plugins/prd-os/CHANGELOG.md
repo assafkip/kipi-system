@@ -27,8 +27,10 @@ and two close fixes:
 
 - `close` finds prd-os beside itself in the source, marketplace-clone and
   install-cache layouts, not only under `<repo>/plugins/` (sp-93f41220, chief).
-- `verify` and mutant runs load a pytest plugin that lifts verbosity to -1 when
-  it is lower, so a `-q` check under `addopts = -q` prints its count (sp-dae00232).
+- `verify` and mutant runs put `--verbosity=0` first in `PYTEST_ADDOPTS`. pytest
+  applies it after the repo's addopts and before the check's own flags, so a `-q`
+  check under `addopts = -q` prints its count (sp-dae00232). A core option, no
+  plugin import, so a check that sets its own PYTHONPATH still runs.
 
 ## [0.31.0] - 2026-11-06
 
