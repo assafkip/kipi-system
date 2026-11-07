@@ -1157,7 +1157,7 @@ def _verify_v2(paths: Paths, state: dict, checks: list[str]) -> int:
         refusals.append(
             f"the required checks take {first:.0f}s a pass, so only {n} run(s) fit the "
             f"{budget:.0f}s evidence budget and at least {depth['repeat_min']} are needed "
-            f"(size class {sized['class']}). Slowest: "
+            f"(size class {sized['class']}: {sized['reasons'][0]}). Slowest: "
             f"{slowest!r} at {seconds[slowest]:.0f}s. Narrow it to the files this issue changes.")
         green = 0
     else:
@@ -1216,8 +1216,10 @@ def _green_shape_problems(green, sized: dict) -> list[str]:
     floor = check_budget.depth(sized["class"])["repeat_min"]
     if (not isinstance(rep, dict) or not isinstance(rep.get("n"), int) or rep.get("n", 0) < floor
             or rep.get("green") != rep.get("n")):
+        # The class's reason rides along: "size class L" alone sent an agent with one
+        # uncommitted patch to re-verify instead of commit (PR #620 review, major 1).
         probs.append(f"repeats missing, under the minimum of {floor} for size class "
-                     f"{sized['class']}, or not all green")
+                     f"{sized['class']} ({sized['reasons'][0]}), or not all green")
     return probs
 
 

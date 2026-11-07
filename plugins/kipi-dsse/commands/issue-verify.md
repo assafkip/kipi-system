@@ -8,7 +8,9 @@ Verify the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm an issue is loaded. If `issue_id` is null, stop and tell the founder to run `/issue-start <issue-id>` first.
 
-2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" verify`.
+2. Commit the issue's work first. The size class (ASK-1749 tier) reads
+   committed HEAD, so uncommitted code verifies, reviews and closes at L.
+   Then run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" verify`.
 
    This ONE command is the whole step. It runs every check in the spec
    snapshot itself, records each check's exit code and an output hash as

@@ -202,3 +202,15 @@ def test_s_repeats_do_not_close_a_change_that_grew_to_l(tmp_path):
     r = _issue(repo, "close")
     assert r.returncode == 2, r.stdout + r.stderr
     assert "under the minimum" in r.stderr and "size class L" in r.stderr
+
+
+def test_a_close_refused_for_uncommitted_code_names_the_file(tmp_path):
+    # PR #620 review, major 1: an uncommitted patch made close read L and refuse the S
+    # repeats, and the message said "size class L" with no cause, so the agent re-verified
+    # instead of committing.
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _close_ready(repo)
+    (repo / "scripts/tool.py").write_text(SMALL_EDIT + "\n\ndef patched():\n    return 8\n")
+    r = _issue(repo, "close")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "uncommitted change to scripts/tool.py" in r.stderr and "Commit it" in r.stderr, r.stderr
