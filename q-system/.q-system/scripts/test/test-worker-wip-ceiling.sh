@@ -14,10 +14,11 @@
 #      row. The ASK-3825 rule holds that ticket, so the rework pick must skip
 #      its PR, never take it (case 2).
 #   2. CAPPED PRs. A PR at the reviewer round cap gets no new review after a
-#      push, so reworking it moves nothing until ASK-3824 lands. When every
-#      candidate is capped or held, the worker starts NOTHING and says so in
-#      one line naming the count and ASK-3824. It never falls back to a new
-#      issue (case 3, dry and --apply).
+#      push, so reworking it moves nothing. When every candidate is capped or
+#      held, the worker starts no new issue and no rework round; it releases
+#      the oldest one through its exit and names it in one line (ASK-3866,
+#      RULE-2026-11-07-A; test-worker-wip-liveness.sh owns the release). It
+#      never falls back to a new issue (case 3, dry and --apply).
 #   3. ONLY FLEET-OWN PRs COUNT. lessons/weekly-* and a human fix/ branch do
 #      not (case 4).
 #
@@ -340,12 +341,13 @@ if grep -q '\[dry\] would work' "$WORK/s3.out"; then
 else
   ok "case 3 (trap 2): with every candidate capped or held, nothing starts (no new issue, no capped PR)"
 fi
-STOP="$(grep 'WIP ceiling: 6 open own PRs' "$WORK/s3.out" | grep 'Starting nothing')"
-if [ "$(printf '%s\n' "$STOP" | grep -c .)" = "1" ] && grep -q 'ASK-3824' <<<"$STOP" \
-   && grep -q '3 at the review round cap' <<<"$STOP"; then
-  ok "case 3b: ONE line names the count (6), the 3 capped PRs and their consumer ASK-3824"
+# Since ASK-3866 the stop names its action: the oldest PR goes through its exit.
+STOP="$(grep 'WIP ceiling: 6 open own PRs' "$WORK/s3.out" | grep 'No new issue starts, and none of the 6')"
+if [ "$(printf '%s\n' "$STOP" | grep -c .)" = "1" ] && grep -q 'releases the oldest one through its exit: PR #931 (cap)' <<<"$STOP" \
+   && grep -q '3 at the review round cap' <<<"$STOP" && grep -q '\[dry\] would release PR #931 (cap)' "$WORK/s3.out"; then
+  ok "case 3b: ONE line names the count (6), the 3 capped PRs and the release of the oldest, PR #931 (cap)"
 else
-  bad "case 3b: one stop line naming the count and ASK-3824" "stop line(s): ${STOP:-none}. Output: $(flat "$WORK/s3.out")"
+  bad "case 3b: one stop line naming the count and the release" "stop line(s): ${STOP:-none}. Output: $(flat "$WORK/s3.out")"
 fi
 grep -q '#931 (ASK-931): at the review round cap (3 of 3 usable rounds)' "$WORK/s3.out" \
   && ok "case 3c: the capped PR is named with the reviewer's own count" \
@@ -360,7 +362,7 @@ grep -q '#941 (ASK-941): 3/3 attempts spent' "$WORK/s3.out" \
 rm -f "$WORK/claude-ran.log"; : > "$FIXLOG"
 run_worker "$WORKER" "$WORK/s3.prs" "$WORK/s3-apply.out" --apply --limit 1
 if [ ! -e "$WORK/claude-ran.log" ] && ! grep -q '^.* start ASK-' "$WORK/s3-apply.out" \
-   && grep -q 'Starting nothing' "$WORK/s3-apply.out"; then
+   && grep -q 'release PR #931 (cap): closed' "$WORK/s3-apply.out"; then
   ok "case 3e: under --apply the ceiling starts no agent run either"
 else
   bad "case 3e: --apply at the ceiling starts nothing" \
@@ -520,7 +522,7 @@ fi
 restore
 
 # 9b. no ticket rule: case 2 must go red.
-if mutate 'r["hold"] = rework_hold(r["issue"], r["url"])' 'r["hold"] = ""'; then
+if mutate 'r["kind"], r["hold"] = rework_hold(r["issue"], r["url"])' 'r["kind"], r["hold"] = "", ""'; then
   run_worker "$MUT/linear-worker.sh" "$WORK/s2.prs" "$WORK/m.out" --limit 1
   grep -q '\[dry\] would work ASK-911 ' "$WORK/m.out" \
     && ok "mutant killed: without the ASK-3825 ticket rule the lane PR #911 is picked, so case 2 can go red" \
