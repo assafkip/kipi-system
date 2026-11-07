@@ -8,7 +8,10 @@ and state directories are read from `.prd-os/config.json` when present; when
 absent, defaults are used that work for any generic instance.
 
 Subcommands:
-  load <issue-id>          Load spec, write active-issue state, print JSON summary
+  load <issue-id> [--age-override REASON]
+                           Load spec, write active-issue state, print JSON summary.
+                           Refuses (exit 2, aging list on stderr) while the PRD's oldest
+                           work ages (ASK-3826, work_item_age.py). The override is logged.
   status                   Print active issue + receipt state
   scope <path>             Exit 0 if path is in allowed_files (or carve-out), exit 2 otherwise
   gate                     Exit 0 if stop is allowed, exit 2 if gate blocks
@@ -67,6 +70,7 @@ from concurrency import ConcurrencyError, assert_no_active_prd  # noqa: E402
 import runtime_receipt  # noqa: E402
 import check_budget  # noqa: E402
 import ledger_fragments  # noqa: E402
+import work_item_age  # noqa: E402
 
 
 RECEIPT_FIELDS = ("verified", "reviewed", "findings_triaged")
@@ -533,6 +537,8 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     except ValueError as exc:
         sys.stderr.write(f"cannot load {args.issue_id}: {exc}\n")
         return 2
+    if _age_gate_refuses(paths, fm.get("id", args.issue_id), getattr(args, "age_override", None)):
+        return 2
     state = {
         "issue_id": fm.get("id", args.issue_id),
         "loaded_at": _now_iso(),
@@ -558,6 +564,54 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         "required_reviews": reviews,
     }, indent=2))
     return 0
+
+
+def _prd_items(paths: Paths) -> list:
+    """Every spec as {id, prd_id, at, status}, read with the runner's own parsers."""
+    items = []
+    for spec in sorted(paths.issues_dir.glob("*.md")) if paths.issues_dir.is_dir() else []:
+        try:
+            text = spec.read_text()
+            fm = _parse_frontmatter(text)
+        except (OSError, ValueError):
+            continue
+        marker = _extract_marker_fields(text) or {}
+        items.append({"id": fm.get("id") or spec.stem, "stem": spec.stem,
+                      "prd_id": marker.get("prd_id"),
+                      "at": work_item_age._ts(marker.get("marker_at")),
+                      "status": str(fm.get("status") or "").strip()})
+    return items
+
+
+def _age_gate_refuses(paths: Paths, issue_id: str, override: str | None) -> bool:
+    """ASK-3826: True (and the aging list on stderr) when this start must be refused."""
+    if override is not None and not override.strip():
+        sys.stderr.write(f"cannot load {issue_id}: {work_item_age.OVERRIDE_FLAG} needs a reason\n")
+        return True
+    blockers, notes = work_item_age.gate(paths.repo_root, paths.receipts_path,
+                                         _prd_items(paths), issue_id, paths.issues_dir)
+    for note in notes:
+        sys.stderr.write(note + "\n")
+    if not blockers:
+        return False
+    listing = "".join(f"  - {b}\n" for b in blockers)
+    if override is None:
+        sys.stderr.write(
+            f"cannot start {issue_id}: its PRD's oldest work comes first (ASK-3826). Aging list:\n"
+            f"{listing}Finish the started items first, and promote each named spillover row to "
+            f"a Linear issue (`spillover-promote.py <id>`). For an item that is obsolete, rerun "
+            f"with {work_item_age.OVERRIDE_FLAG} REASON; every use is logged.\n")
+        return True
+    try:
+        ledger = work_item_age.record_override(paths.repo_root, issue_id, override.strip(),
+                                               blockers, _now_iso())
+    except OSError as exc:
+        sys.stderr.write(f"cannot load {issue_id}: the override could not be logged ({exc}), "
+                         "and an unlogged override is a silent bypass\n")
+        return True
+    sys.stderr.write(f"age gate OVERRIDDEN for {issue_id} ({override.strip()}); logged to "
+                     f"{ledger}. Aging list:\n{listing}")
+    return False
 
 
 def cmd_status(paths: Paths, args: argparse.Namespace) -> int:
@@ -2104,6 +2158,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_load = sub.add_parser("load")
     p_load.add_argument("issue_id")
+    p_load.add_argument("--age-override", dest="age_override", metavar="REASON", default=None,
+                        help="start despite the aging list (ASK-3826); writes a row to "
+                             ".prd-os/gate-bypasses.jsonl naming the reason and each blocker")
     p_load.set_defaults(func=cmd_load)
 
     sub.add_parser("status").set_defaults(func=cmd_status)
