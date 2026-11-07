@@ -149,6 +149,33 @@ _FENCE_RE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})[ \t]*([^`~\s]*)")
 _HEADING_RE = re.compile(r"^[ ]{0,3}(#{1,6})[ \t]+(.*)$")
 MARKER = "(ENFORCED"
 
+# W8, ASK-3859 (case-055 RCA root cause #10): the investigation rules marked
+# their gates "(NON-NEGOTIABLE)", "(MANDATORY)" and "BLOCKING", never
+# "(ENFORCED)", so this lint never asked those gates for an executable and none
+# existed. A heading carrying a synonym is a claim and needs a disposition.
+#
+# The synonyms are NOT the ratcheted marker. apply_claude_changes._rule_marks
+# counts "(ENFORCED" only and must keep doing so, so a synonym stays removable by
+# the sanctioned write path. That is also why C11 (ADVISORY needs a removal
+# ticket) applies to MARKER alone: its whole reason is that the marker cannot be
+# removed, and a synonym can.
+#
+# BLOCKING is upper case and a whole word, with a hyphen counted as part of the
+# word. A negation right before it (NON, NOT, NEVER, any case, joined by a space
+# or a hyphen) says the opposite and is not a claim (reviewer minor, PR #616).
+SYNONYM_MARKERS = ("(NON-NEGOTIABLE", "(MANDATORY")
+_BLOCKING_RE = re.compile(r"(?<![\w-])BLOCKING(?![\w-])")
+_NEGATED_RE = re.compile(r"\b(?:non|not|never)[ -]$", re.I)
+_PAREN_MARKERS = (MARKER,) + SYNONYM_MARKERS
+
+
+def carries_claim(line):
+    """True when a heading line carries MARKER or one of its synonyms."""
+    if any(m in line for m in _PAREN_MARKERS):
+        return True
+    return any(not _NEGATED_RE.search(line[:m.start()])
+               for m in _BLOCKING_RE.finditer(line))
+
 
 
 # THE CONDITION REGISTRY: the single machine-readable list of what this lint can
@@ -165,7 +192,7 @@ MARKER = "(ENFORCED"
 # is constructed rather than sliding into stderr.
 CONDITIONS = {
     0: "structural: the baseline or the file itself could not be trusted",
-    1: "an ENFORCED-marked heading has no disposition entry",
+    1: "an ENFORCED-marked (or synonym-marked) heading has no disposition entry",
     2: "clause keys collide, or normalize to empty",
     3: "a disposition entry matches no marked heading",
     4: "the enforcement block violates the schema",
@@ -290,7 +317,8 @@ def clause_key(text):
     Defined exactly, because "normalising case and punctuation" was not
     implementable as written (codex-adversarial finding-7).
 
-      1. Drop a trailing parenthetical ONLY IF IT CONTAINS THE MARKER. Two
+      1. Drop a trailing parenthetical ONLY IF IT OPENS WITH THE MARKER or a
+         parenthesised synonym, (NON-NEGOTIABLE or (MANDATORY (W8). Two
          narrower rules were tried and both alias distinct claims:
            - dropping EVERY parenthetical made `# Delete (local)` and
              `# Delete (prod)` both "delete", so one entry covered both headings
@@ -319,7 +347,7 @@ def clause_key(text):
     # one file disagreeing about what the marker is, is the same drift class as
     # two files disagreeing about what a heading is (codex standard review of
     # 6fdca4bf). One definition, used by both.
-    if tail and ("(" + tail.group(1)).startswith(MARKER):
+    if tail and ("(" + tail.group(1)).startswith(_PAREN_MARKERS):
         text = text[:tail.start()]
     text = text.lower()
     text = re.sub(r"[^a-z0-9 ]+", " ", text)
@@ -385,7 +413,8 @@ def check_clause_keys(entries, text, path):
         if key not in heading_keys:
             violations.append(Violation(
                 3, path,
-                "entry %d clause %r matches no ENFORCED-marked heading in this "
+                "entry %d clause %r matches no ENFORCED-marked heading (or "
+                "synonym-marked one) in this "
                 "file. Either the heading was reworded and this disposition is "
                 "stale, or the clause is misspelled." % (idx, entry["clause"])))
     return violations
@@ -486,7 +515,8 @@ def parse_block(text, path):
 
 
 def marked_headings(text):
-    """Every heading line carrying the ENFORCED marker, as (raw_text, key).
+    """Every heading line carrying the ENFORCED marker or a synonym of it
+    (carries_claim), as (raw_text, key).
 
     Headings only, deliberately. `_rule_marks` counts marker occurrences ANYWHERE
     and separately counts marker-carrying HEADINGS, because a marker parked in
@@ -496,7 +526,7 @@ def marked_headings(text):
     out = []
     for line in text.splitlines():
         m = _HEADING_RE.match(line)
-        if m and MARKER in line:
+        if m and carries_claim(line):
             out.append((m.group(2).strip(), clause_key(m.group(2))))
     return out
 
@@ -549,6 +579,7 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
 # merely mentions the path, and mentioning is what this whole check refuses.
 INTERPRETERS = frozenset({"python", "python2", "python3", "bash", "sh", "zsh",
                           "node", "ruby", "perl", "uv", "uvx"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "do", "!", "{"})
 
 # The only files whose `hooks` object actually wires anything in this fleet.
 # Without this allowlist ANY in-repo JSON carrying a hooks-shaped object -- a
@@ -698,6 +729,12 @@ def command_targets(command, plugin_root=None):
             tokens = segment.split()
         # Drop leading `VAR=value` env assignments; the program follows them.
         while tokens and _ASSIGNMENT.match(tokens[0]):
+            tokens = tokens[1:]
+        # Shell keywords in front of the program: the fleet's guarded form is
+        # `if test -f X; then python3 X; fi`, and reading `then` as the program
+        # gave every rule naming such a hook a false C6 (found landing the
+        # 4 Points case gate, 2026-11-06).
+        while tokens and tokens[0] in _SHELL_KEYWORDS:
             tokens = tokens[1:]
         if not tokens:
             continue
@@ -961,7 +998,7 @@ def _advisory_under_marker(entry, idx, path, root):
     return []
 
 
-def check_exec(entries, path):
+def check_exec(entries, path, ratcheted_keys=None):
     """C5 and C6: the named executable exists, and is wired in the config named.
 
     C5 exec is a PATH, not a basename. `skill-hook-audit.py` matches hook scripts
@@ -994,7 +1031,10 @@ def check_exec(entries, path):
                     "entry %d is ADVISORY, which means no executable, but it names "
                     "%s. Use DETECTED (wired, surfaces only) or ENFORCED if there "
                     "really is one." % (idx, ", ".join(named))))
-            violations += _advisory_under_marker(entry, idx, path, root)
+            # C11 only under the ratcheted marker (see SYNONYM_MARKERS). None
+            # means "unknown", and unknown keeps the old, stricter behaviour.
+            if ratcheted_keys is None or clause_key(entry["clause"]) in ratcheted_keys:
+                violations += _advisory_under_marker(entry, idx, path, root)
             continue
         if root is None:
             violations.append(Violation(
@@ -1426,7 +1466,7 @@ def check_directive_counts(entries, text, path):
     by_key = {}
     for heading_line, body in sections(text):
         m = _HEADING_RE.match(heading_line)
-        if m and MARKER in heading_line:
+        if m and carries_claim(heading_line):
             by_key[clause_key(m.group(2))] = (m.group(2).strip(), body)
     violations = []
     for idx, entry in enumerate(entries):
@@ -1457,7 +1497,8 @@ def check_coverage(entries, text, path):
         if key not in covered:
             violations.append(Violation(
                 1, path, clause=raw, detail=
-                "heading %r carries the ENFORCED marker but no enforcement entry "
+                "heading %r carries an enforcement claim (ENFORCED, NON-NEGOTIABLE, "
+                "MANDATORY or BLOCKING) but no enforcement entry "
                 "covers it. Declare one: status ENFORCED (names a wired, blocking, "
                 "tested executable), DETECTED (wired, surfaces only), or ADVISORY "
                 "(no executable, said out loud)." % raw))
@@ -1474,7 +1515,8 @@ def lint_text(text, path):
     entries, violations = parse_block(text, path)
     violations = list(violations)
     violations += check_clause_keys(entries, text, path)
-    violations += check_exec(entries, path)
+    ratcheted = {key for raw, key in marked_headings(text) if MARKER in raw}
+    violations += check_exec(entries, path, ratcheted)
     violations += check_posture(entries, path)
     violations += check_directive_counts(entries, text, path)
     violations += check_coverage(entries, text, path)
@@ -1768,7 +1810,7 @@ def main():
             return 1
         # Printed on EVERY run, including green ones. Debt that stops being
         # mentioned stops being debt and becomes furniture.
-        print("[enforced-claim-lint] PASS -- every ENFORCED marker is dispositioned "
+        print("[enforced-claim-lint] PASS -- every ENFORCED marker (or synonym) is dispositioned "
               "or baselined. %d marker(s) still owe a disposition (baseline may only "
               "shrink)." % len(excused))
         return 0
