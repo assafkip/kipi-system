@@ -109,6 +109,10 @@ REQUIRED_CHECK_FILES = {
 # also have silently downgraded every test-adding PR out of the review tier.
 REQUIRED_CHECK_PREFIXES = (
     "q-system/.q-system/capability/",
+    # ASK-3829: every gate registered since the fragment switch lands as one new file here, not
+    # a line in gates.jsonl. Same reason as the capability split above: without the prefix the
+    # split would demote every gate-adding PR out of the review tier.
+    ".prd-os/gates.d/",
 )
 REQUIRED_CHECK_KEY = re.compile(r"^\s*(-\s*)?required_checks\s*:|required_checks")
 

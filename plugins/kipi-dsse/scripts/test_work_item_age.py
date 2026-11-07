@@ -22,6 +22,9 @@ _spec = importlib.util.spec_from_file_location(
 _fx = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fx)
 _run, _issue, PRDOS = _fx._run, _fx._issue, _fx.PRDOS
+_fspec = importlib.util.spec_from_file_location("_wia_fragments", DSSE / "ledger_fragments.py")
+_frag = importlib.util.module_from_spec(_fspec)
+_fspec.loader.exec_module(_frag)
 
 MARKER_AT = re.compile(r"(<!-- generated-by: prd_split\.py prd=\S+ finding=\S+ at=)(\S+)( -->)")
 DAY = 86400
@@ -83,13 +86,19 @@ def _set_spec(repo: Path, issue_id: str, split_at: datetime, status: str | None 
     path.write_text(text)
 
 
-def _close(repo: Path, prd_id: str, issue_id: str, split_days_ago: float, cycle_days: float) -> None:
-    """Close an issue the way `close` leaves it: status closed plus one close receipt row."""
+def _close(repo: Path, prd_id: str, issue_id: str, split_days_ago: float, cycle_days: float,
+           fragment: bool = False) -> None:
+    """Close an issue the way `close` leaves it: status closed plus one close receipt row.
+    `fragment`: the row goes through the real fragment writer, as `close` writes it since ASK-3829."""
     split_at = _ago(split_days_ago)
     _set_spec(repo, issue_id, split_at, status="closed")
     row = {"issue_id": issue_id, "prd_id": prd_id, "finding_id": "finding-1",
            "closed_at": _iso(split_at + timedelta(days=cycle_days)), "verified_at": None,
            "reviewed_at": None, "findings_triaged_at": None, "commit_sha": "0" * 40}
+    if fragment:
+        _frag.append_line(repo / ".prd-os/receipts.jsonl", json.dumps(row, sort_keys=True),
+                          kind="receipt")
+        return
     with (repo / ".prd-os/receipts.jsonl").open("a") as fh:
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
@@ -187,6 +196,21 @@ def test_a_healthy_prd_starts(tmp_path):
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads(r.stdout)["loaded"] == "new-1"
+
+
+def test_closes_written_as_fragments_count_as_merged_items(tmp_path):
+    # ASK-3829: `close` writes its receipt to receipts.d/ now. Three legacy closes plus two
+    # fragment closes are five merged items, so the tail exists and the 9-day item refuses.
+    # Reading receipts.jsonl alone saw 3, skipped the cycle-time half and let new-1 start.
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "new-1"])
+    for n, i in enumerate(C5, start=1):
+        _close(repo, prd, i, split_days_ago=30, cycle_days=n, fragment=n > 3)
+    assert len(list((repo / ".prd-os/receipts.d").glob("*.jsonl"))) == 2
+    _set_spec(repo, "old-1", _ago(9), status="in-progress")
+    _set_spec(repo, "new-1", _ago(9))
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "old-1" in r.stderr and "5 merged" in r.stderr, r.stderr
 
 
 # --- the cycle-time half needs 5 merged items; the unowned half does not ------------------

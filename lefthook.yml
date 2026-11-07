@@ -72,7 +72,14 @@ pre-commit:
         # free text, safe for a public repo. grep -vxF is an exact whole-line match,
         # so it widens nothing else -- every other .jsonl, .env, .pem and .key stays
         # blocked, and gitleaks remains the deeper net.
-        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' | grep -vxF '.prd-os/receipts.jsonl' || true)
+        #
+        # And the ledger's fragments (ASK-3829), by the exact name the one writer
+        # gives a receipt: .prd-os/receipts.d/<UTC microseconds>Z-receipt-<16 hex>.jsonl.
+        # Every close writes one of these instead of a line in receipts.jsonl, because
+        # GitHub ignores merge=union and parallel closes conflicted on the one file.
+        # The anchored pattern admits no other name and no subdirectory, and the
+        # receipts-ledger hook above checks each one's content and that it is new.
+        blocked=$(git diff --cached --name-only --diff-filter=ACMRT | grep -E '(^|/)(\.env$|\.envrc$|\.env\.local$|\.env\.(production|staging|development|test)($|\..+)|.*\.pem(\..*)?$|.*\.key(\..*)?$|.*\.jsonl$|\.claude/(plans|sessions|skills|MEMORY)/|__pycache__/)' | grep -vxF '.prd-os/receipts.jsonl' | grep -vE '^\.prd-os/receipts\.d/[0-9]{8}T[0-9]{12}Z-receipt-[0-9a-f]{16}\.jsonl$' || true)
         if [ -n "$blocked" ]; then
           echo "BLOCK: these paths should not be committed:"
           echo "$blocked"

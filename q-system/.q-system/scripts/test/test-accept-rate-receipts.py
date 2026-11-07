@@ -103,6 +103,46 @@ stub = tempfile.mkdtemp()  # directory with NO receipts.jsonl at all
 check("mutation guard: empty-loader shape is detectable as wrong",
       ar.load_receipts(ledger([CLOSE_F1])) == ar.load_receipts(stub), False)
 
+# 7. FRAGMENTS (ASK-3829, PR #621 round 2, finding 2). A close writes its receipt as
+#    one new file under receipts.d/. load_receipts opened receipts.jsonl only, so a
+#    fragment close was invisible: red on 6f04f6c7, the finding counted as
+#    accepted-without-receipt and --gate exited 2. Rows go through the real writer,
+#    so this pins the layout the fold reads, not a copy of it.
+def fragmented(legacy_rows, fragment_rows):
+    d = ledger(legacy_rows)
+    fold = ar.load_fold()
+    for row in fragment_rows:
+        fold.append_line(os.path.join(d, "receipts.jsonl"), json.dumps(row), kind="receipt")
+    return d
+
+
+check("a close written as a fragment counts",
+      ar.load_receipts(fragmented([], [CLOSE_F1])), {("P", "f1")})
+check("a fragment reopen undoes a legacy close",
+      ar.load_receipts(fragmented([CLOSE_F1], [REOPEN_F1])), set())
+check("a fragment reclose re-earns a legacy reopen",
+      ar.load_receipts(fragmented([CLOSE_F1, REOPEN_F1], [RECLOSE_F1])), {("P", "f1")})
+check("timestamp wins over fragment name order (reclose written before reopen)",
+      ar.load_receipts(fragmented([], [RECLOSE_F1, REOPEN_F1])), {("P", "f1")})
+
+D7 = fragmented([], [CLOSE_F1])
+os.makedirs(os.path.join(D7, "findings"))
+with open(os.path.join(D7, "findings", "P-findings.jsonl"), "w") as fh:
+    fh.write(json.dumps({"prd_id": "P", "id": "f1", "disposition": "accepted",
+                         "severity": "major"}) + "\n")
+rows7, _ = ar.build_report(D7)
+check("end to end: a fragment-receipted finding is not accepted-without-receipt",
+      rows7[0]["accepted_without_receipt"], 0)
+
+# 7b. No fold, no report. A legacy-only read here would call every fragment receipt
+#     missing, the false alarm finding 2 was, so a missing module stops the run.
+try:
+    ar.load_fold(tempfile.mkdtemp())
+    missing = "returned"
+except SystemExit as exc:
+    missing = "stopped" if "receipts.d" in str(exc) else f"stopped without naming receipts.d: {exc}"
+check("a missing ledger_fragments stops the run and says why", missing, "stopped")
+
 if failures:
     for line in failures:
         print(f"  - {line}")

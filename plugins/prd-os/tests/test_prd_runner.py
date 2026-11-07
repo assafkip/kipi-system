@@ -777,8 +777,12 @@ def _write_issue_spec(repo: Path, issue_id: str, title_line: str) -> None:
 
 
 def _gate_rows(repo: Path) -> list[dict]:
-    path = repo / ".prd-os" / "gates.jsonl"
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    """Legacy file plus fragments: gate_register writes one fragment per gate (ASK-3829)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import ledger_fragments
+    return [json.loads(text) for _src, _n, text
+            in ledger_fragments.iter_lines(repo / ".prd-os" / "gates.jsonl") if text.strip()]
 
 
 def test_gate_register_records_the_property_from_the_issue_spec_title(tmp_path):

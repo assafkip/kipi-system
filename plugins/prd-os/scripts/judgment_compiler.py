@@ -62,6 +62,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import Config, ConfigError, load as load_config  # noqa: E402
+import ledger_fragments  # noqa: E402
 
 RECEIPT_SCHEMA_VERSION = 1
 # 1 -> 2 (ASK-1886). The packet's FIELD SET is unchanged -- the readable text is
@@ -810,15 +811,14 @@ def _read_findings(path: Path) -> list[dict]:
 def _assemble_remediation(cfg: Config, prd_id: str, finding_id: str,
                           missing: list[str]) -> list[dict]:
     path = cfg.receipts_path
-    if not path.is_file():
+    if not ledger_fragments.has_rows(path):
         return []
-    rel = os.path.relpath(path, cfg.repo_root)
     rows = []
     try:
-        for line_number, raw in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), 1):
+        for source, line_number, raw in ledger_fragments.iter_lines(path):
             if not raw.strip():
                 continue
+            rel = os.path.relpath(source, cfg.repo_root)
             record = json.loads(raw)
             if record.get("prd_id") == prd_id and \
                     record.get("finding_id") == finding_id:
@@ -1366,9 +1366,9 @@ def _resolve_one_ref(cfg: Config, kind: str, value: str) -> str | None:
         known = {r.get("receipt_id") for r in read_ledger(ledger_path(cfg))}
         return None if value in known else "no such judgment receipt"
     if kind == "receipt":
-        if not cfg.receipts_path.is_file():
+        if not ledger_fragments.has_rows(cfg.receipts_path):
             return "no receipts ledger exists"
-        for raw in cfg.receipts_path.read_text(encoding="utf-8").splitlines():
+        for _src, _n, raw in ledger_fragments.iter_lines(cfg.receipts_path):
             if raw.strip() and json.loads(raw).get("issue_id") == value:
                 return None
         return "no remediation receipt for that issue"

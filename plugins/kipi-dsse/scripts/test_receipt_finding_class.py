@@ -90,8 +90,9 @@ def _close(repo: Path) -> dict:
     _check_off_deliverables(repo)
     proc = _issue(repo, "close")
     assert proc.returncode == 0, f"close refused: {proc.stderr}"
-    rows = [json.loads(line) for line in
-            (repo / ".prd-os/receipts.jsonl").read_text().splitlines() if line.strip()]
+    import ledger_fragments  # legacy file plus fragments (ASK-3829)
+    rows = [json.loads(text) for _src, _n, text
+            in ledger_fragments.iter_lines(repo / ".prd-os/receipts.jsonl") if text.strip()]
     assert len(rows) == 1, rows
     return rows[0]
 

@@ -38,8 +38,16 @@ from __future__ import annotations
 import json
 import math
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+# The fold sits beside this file (both kipi-dsse copies are pinned byte-identical), and the
+# tests load this module by path, so the directory goes on sys.path the way issue_runner's does.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import ledger_fragments  # noqa: E402
 
 TAIL_PERCENTILE = 85
 MIN_MERGED = 5
@@ -86,6 +94,25 @@ def _jsonl(path: Path) -> list:
         return []
     rows = []
     for raw in path.read_text().splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            rows.append(rec)
+    return rows
+
+
+def _receipt_rows(ledger: Path) -> list:
+    """Every receipt row: receipts.jsonl, then its receipts.d/ fragments, through the one fold.
+
+    WHY NOT `_jsonl` (ASK-3829, merging #626 into #621). Since the fragment switch a close writes
+    its receipt as a new file under receipts.d/, so reading receipts.jsonl alone sees no close
+    made after the switch: the merged count stops growing, the cycle-time half reports "fewer
+    than 5 merged" forever, and a re-close in a fragment never updates its issue's last close.
+    Fold order is write order, so "last row per issue wins" below keeps its meaning."""
+    rows = []
+    for _source, _number, raw in ledger_fragments.iter_lines(ledger):
         try:
             rec = json.loads(raw)
         except ValueError:
@@ -192,7 +219,7 @@ def gate(repo_root: Path, receipts_path: Path, items: list, issue_id: str,
     prd = me["prd_id"]
     blockers = []
 
-    tail, merged = tail_seconds(items, _jsonl(receipts_path))
+    tail, merged = tail_seconds(items, _receipt_rows(receipts_path))
     if tail is None:
         notes.append(f"age gate: cycle-time half skipped, {merged} merged item(s) in this repo and "
                      f"an {TAIL_PERCENTILE}th percentile needs {MIN_MERGED}; the "
