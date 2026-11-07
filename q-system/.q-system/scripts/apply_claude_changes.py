@@ -1038,6 +1038,26 @@ def check_requires(root, prop, log):
             raise Refusal("required file missing: %s" % rel)
         log.append("require ok: %s present" % rel)
 
+def is_templateless_instance(root):
+    """True for an instance tree: no settings-template.json and not the skeleton.
+
+    The pair rule below exists because kipi update rebuilds settings.json from
+    the SKELETON's template. That is a skeleton concern. An instance carries no
+    template of its own (measured 2026-11-06: 0 of 21 registered instances), and
+    kipi-settings-merge.py unions instance-added hooks into the rebuilt file, so
+    an instance hook wired only in .claude/settings.json survives every update.
+    Before this existed the pair rule refused EVERY instance settings.json edit,
+    and two ready gates (consulting gate-draft, 4 Points case gate) had no lawful
+    way in (ASK-3685).
+
+    The skeleton is told apart by instance-registry.json at its root, the marker
+    instance-automation-guard.py already reads. A skeleton whose template went
+    missing is broken, not an instance, so it keeps the refusal.
+    """
+    return (not os.path.exists(os.path.join(root, "settings-template.json"))
+            and not os.path.exists(os.path.join(root, "instance-registry.json")))
+
+
 def check_template_pairs(root, prop, staged, template_key, log):
     """settings.json and settings-template.json are both-or-neither.
 
@@ -1130,7 +1150,22 @@ def main(argv):
     # the state sync-check calls red.
     if touches_template and not touches_settings:
         raise Refusal("settings-template.json edited without .claude/settings.json")
-    if touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
+    instance_mode = is_templateless_instance(root)
+    if instance_mode:
+        # resolve_special_keys matches by inode, so a template that does not
+        # exist yet is invisible to touches_template. Check by name instead: a
+        # create_file here would bootstrap a template in a tree whose
+        # settings.json kipi update owns, and turn sync-check on against it.
+        # Lowercased because macOS is case-insensitive: Settings-Template.json
+        # is the same file (the round-1 second-name class).
+        for edit in prop["edits"]:
+            if os.path.normpath(edit["file"]).lower() in {p.lower() for p in PAIRED_OUTSIDE}:
+                raise Refusal("an instance carries no settings-template.json; "
+                              "fleet hooks are wired in the kipi-system skeleton")
+        if touches_settings:
+            log.append("instance mode: no settings-template.json and no "
+                       "instance-registry.json; kipi update keeps instance-added hooks")
+    elif touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
         raise Refusal(".claude/settings.json edited without the settings-template.json pair")
 
     staged = {}

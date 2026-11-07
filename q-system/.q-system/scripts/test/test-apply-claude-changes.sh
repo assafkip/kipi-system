@@ -367,6 +367,70 @@ run_engine "$ENGINE" "$T/rt-only.json" "$T"
 check "settings.json without template pair refused" 2 "without the settings-template.json pair" "$RC" "$OUT"
 rm -r "$T"
 
+# ------------------------- 8c. an INSTANCE has no template to pair with (ASK-3685)
+# Measured 2026-11-06: 0 of 21 registered instances carry a settings-template.json,
+# so the both-or-neither rule above refused EVERY instance settings.json edit and
+# two ready hooks (consulting's gate-draft, 4 Points' case gate) had no lawful
+# path in. kipi update keeps instance-added hooks (kipi-settings-merge.py unions
+# them), so the pair rule's reason does not hold where there is no template.
+# The skeleton is told apart by instance-registry.json, the same marker
+# instance-automation-guard.py reads.
+mk_instance_hook_proposal() {  # <out.json> [extra edit JSON]
+  cat > "$1" <<JSON
+{
+  "schema_version": 1, "slug": "instance-hook", "reason": "wire an instance-owned hook",
+  "edits": [
+    { "file": ".claude/settings.json", "op": "insert_after",
+      "anchor": "\"PostToolUse\": [",
+      "insert": "\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [ { \"type\": \"command\", \"command\": \"python3 \\\\\"\$CLAUDE_PROJECT_DIR/q-inst/gate.py\\\\\"\" } ]\n      },",
+      "reason": "instance gate" }${2:-}
+  ]
+}
+JSON
+}
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/gate.py"
+mk_instance_hook_proposal "$T/inst.json"
+run_engine "$ENGINE" "$T/inst.json" "$T"
+check "instance with no template: settings.json edit applies" 0 "OK applied instance-hook" "$RC" "$OUT"
+if grep -q 'q-inst/gate.py' "$T/.claude/settings.json" \
+   && python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$T/.claude/settings.json"; then
+  ok "instance hook landed and settings.json still parses"
+else bad "instance hook missing or settings.json invalid"; fi
+if [ ! -e "$T/settings-template.json" ]; then
+  ok "instance apply created no template"
+else bad "instance apply created a settings-template.json"; fi
+rm -r "$T"
+
+# The skeleton with its template missing is NOT an instance: still refused.
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+echo '{}' > "$T/instance-registry.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/gate.py"
+mk_instance_hook_proposal "$T/inst.json"
+SUM=$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')
+run_engine "$ENGINE" "$T/inst.json" "$T"
+check "skeleton missing its template: settings.json edit still refused" 2 "without the settings-template.json pair" "$RC" "$OUT"
+if [ "$SUM" = "$(shasum -a 256 "$T/.claude/settings.json" | awk '{print $1}')" ]; then
+  ok "skeleton refusal left settings.json untouched"
+else bad "skeleton refusal modified settings.json"; fi
+rm -r "$T"
+
+# An instance may not bootstrap a template through the instance path: a template
+# would turn sync-check on in a tree whose runtime file kipi update owns.
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/gate.py"
+mk_instance_hook_proposal "$T/inst.json" ',
+    { "file": "settings-template.json", "op": "create_file", "insert": "{}\n", "reason": "bootstrap" }'
+run_engine "$ENGINE" "$T/inst.json" "$T"
+check "instance may not create a settings-template.json" 2 "instance carries no settings-template.json" "$RC" "$OUT"
+if [ ! -e "$T/settings-template.json" ]; then
+  ok "refused bootstrap left no template behind"
+else bad "refused bootstrap left a template behind"; fi
+rm -r "$T"
+
 # --------------------------------------------- 9. gate break -> auto-revert
 # Deliberately ships a proposal that applies cleanly and passes the ratchet, but
 # wires a hook to a script that does not exist. hook-scripts-exist goes
