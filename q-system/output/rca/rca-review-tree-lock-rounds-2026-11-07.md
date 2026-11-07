@@ -78,6 +78,9 @@ Evidence that the diagnosis is real, gathered before the fix:
 - [x] Capture PID reuse on the long-lived PID lock (a dead holder's PID reused by an unrelated process reads as live, so the tree is kept) as spillover: sp-fac84397, ASK-3933. owner: sana. type: process
 - [x] Capture that a review never releases its own tree lock (review_worktree runs in a command substitution, so the EXIT trap sees an empty lock path), which widens sp-fac84397: sp-08d14f6b, ASK-3934. owner: sana. type: process
 - [ ] Fix sp-fac84397 and sp-08d14f6b through their own issues. owner: sana. type: code
+- [x] Round 6: rc 1 only on proof taken inside the mutex, rc 3 for unknown ownership, and the stale-ref clear run while the mutex is held. owner: sana. type: code
+- [x] Round 6: one failure-path test per return path, each red on 96e2d311 by its effect, and the round 4 test proven by effect instead of elapsed time. owner: sana. type: test
+- [x] Round 6: the mutation table extended so every new guard has a mutant it kills. owner: sana. type: test
 
 ## Residuals stated, not shipped as acceptable
 
@@ -104,9 +107,61 @@ What the next round builds (one change, not another path):
 - Tests: a LIVE owner holds the tree, python3 is absent from PATH, and `review_worktree` must return without deleting the ref (drive it the way `test-review-early-bail-ref.sh` does). A mutant that maps "unknown" back to rc 1 must be KILLED.
 - Medium: the round 4 test asserts `kill -0 "$H6"` (the holder still holds) after the contender returns and before `let-go`, instead of elapsed time, and `hold_mutex` waits for its release file with no 20 second expiry.
 
+## Round 6: the class, path by path
+
+Built by a fresh agent from the plan above. One change to the contract instead of one more path: rc 1, the only code that leads to a ref deletion, is now earned on proof, and every outcome nobody planned for is rc 3. Codex round 5 also said "perform stale-ref cleanup only after acquiring the mutex", so the shell now holds the mutex on fd 8 (python3 flocks the inherited fd, the `kipi-promote.sh` idiom) until the verdict and any cleanup are done, and `acquire_wt_lock <wt> clear-stale-ref` runs `_wt_bail` itself, inside it.
+
+### Every return path of `acquire_wt_lock`
+
+| Path | 96e2d311 | Now | Proof behind the code | Test (case in test-pr-review-reap-trees.sh) |
+|---|---|---|---|---|
+| `mkdir -p` of the parent fails | 1 | 1, clears via `_wt_bail` | no directory, so no tree and no lock file | early-bail "a mkdir bail" |
+| mutex cannot be opened | 1 | 3 | none | round 6 mutexdir |
+| python3 cannot launch (126, 127) | 1 | 3 | none | round 6 nopy |
+| python3 killed by a signal (128+n) | 1 | 3 | none | round 6 sigkill |
+| flock error other than EWOULDBLOCK | 1 | 3 | none | round 6 flock |
+| mutex wait times out | 2 | 3 | another process in a directory-wide mutex says nothing about this tree | round 4 |
+| lock file unreadable | 1 | 3 | none | round 6 read |
+| liveness check errors with neither ESRCH nor EPERM | 0: read as dead, reclaimed a LIVE owner's lock | 3 | none | round 6 kill |
+| live holder that is not this run | 2 | 2 | `kill(pid, 0)` succeeded or EPERM, inside the mutex | round 2, root-and-lock |
+| link finds a lock that appeared (EEXIST) | 2 | 2 | a pre-round-3 run created it outside the mutex | none (rollout residual) |
+| lock names this run (re-entry) | 0 | 0 if the lock file reads `$$` | the lock record | root-and-lock "re-enters" |
+| absent or dead holder, claim linked | 0 | 0 if the lock file reads `$$` | ESRCH or no file, inside the mutex | round 6 control, round 3 |
+| absent or dead holder, unlink, tmp write or link fails | 1, cleared AFTER the mutex was let go | 1, cleared INSIDE the mutex | ESRCH or no file, inside the mutex | round 6 claimfail |
+| claim linked, tmp tidy fails | 1: this run held the lock and deleted its own ref | 0 | the link | round 6 tmpunlink |
+| helper exits 0 but the lock does not name this run | 0: "took" a live owner's tree | 3 | none | round 6 noop |
+| any other helper exit (uncaught exception 1, usage error 2) | 1 or 2 | 3 | none | the `*)` mapping, mutant "unexpected exit maps to 1" |
+
+Python's only deliberate exits are 0, 20 (busy), 21 (unowned, written in one place, after the proof) and 22 (timeout). The shell maps 0 to 0 only after reading the lock, 20 to 2, 21 to 1, and everything else to 3.
+
+### Every caller and what it does with each rc
+
+| Caller | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| `review_worktree` | proceeds as the owner; its later bails run `_wt_bail` on a tree it owns | returns 1; the ref was already cleared inside the mutex | returns 1, ref left | returns 1, ref left |
+| `_reap_take_lock` (reaper, no clear flag) | archives and removes | skips, keeps the tree | skips | skips |
+| main flow, after an empty `review_worktree` | | `assert_pr_ref_not_stale`: absent or current goes on to the fallback search | same | same; a stale ref makes this run refuse with FATAL |
+
+The reaper never touches a ref, so it needed no change. Its skip line still says "held by another run" for rc 1 and 3; it carries no decision, so it was left.
+
+### Evidence
+
+- Red: the new test file against the 96e2d311 agent (a copy, the worktree untouched): rc 1, 91 PASS, 19 FAIL. nopy, mutexdir, flock, sigkill and read each printed `rc=1 ref=` (the live owner's ref deleted). kill printed `rc=0` with the lock rewritten to the claimant (two owners). noop printed `rc=0` and the ref moved. claimfail printed `clears=free free`. tmpunlink printed `rc=1`. The control printed `rc=0` on both versions.
+- Green: `bash q-system/.q-system/scripts/test/test-pr-review-reap-trees.sh` rc 0, 110 PASS, 0 FAIL; the same under `PATH=/bin:/usr/bin:/usr/sbin:/sbin:/opt/homebrew/bin /bin/bash` rc 0, 110 PASS. Every case printed its fault as fired and `mutex-after=free`; claimfail printed `clears=held held`. `test-review-root-and-lock.sh`, `test-review-early-bail-ref.sh` and `test-pr-review-scratch.sh` rc 0 on both shells.
+- Mutation: 22 mutants through `plugins/prd-os/scripts/mutate.py`, driven by the session scratchpad's `mutate5.sh` (it carries the round 1 to 4 rows forward with anchors re-cut for this code), each on a fresh copy and checked against one named test. All 22 KILLED, 789 seconds. The 12 new rows: an unexpected exit mapped to 1, the 96e2d311 helper restored, rc 0 trusted without reading the lock, an unopenable mutex returning 1, any kill() error read as dead, the clear run after the mutex is let go, a failed tmp tidy overturning a linked claim, the mutex never given back, review_worktree not asking for the clear, review_worktree clearing on unknown, and a timeout mapped back to busy or to unowned. One row first SURVIVED because the instrument named the ref check: with only the old helper swapped in, the new review_worktree no longer calls `_wt_bail` on rc 1, so the ref survives anyway. Renamed to the rc check, it was KILLED.
+- Medium closed: `hold_mutex` no longer expires on its own (a 300 second hang guard only). The round 4 check asserts rc 3, which a contender that got inside the mutex could not return (it would read the live PID and return 2), and asserts the holder was still alive when the contender returned. No elapsed-time check remains.
+
+### Residuals stated
+
+- The `mkdir -p` bail is decided outside a mutex, because there is no directory to keep one in. `mkdir -p` treats a concurrent create as success, so its failure means the path cannot be a directory for any run.
+- Children started inside the fd 8 window inherit it, and bash 3.2 cannot set close-on-exec (measured: `func 8>&-` moves the fd to 10 and children still get it). Only `cat` and `git update-ref -d` run there. A git hook that outlived the window would hold the mutex, and later claims would time out as rc 3, which keeps refs, so that leak fails closed.
+- A run that started on the pre-round-6 script still maps its own failures to rc 1 until it finishes.
+
 ## Lessons
 
 - A userspace lock that must survive a crashed holder cannot be made exclusive by adding another userspace lock. The crash case always needs a reclaim, and a pathname reclaim is a race. Use a lock the kernel releases.
 - When a fix's own comment names a residual race, the fix is not done. That residual is the next review's finding.
 - Before writing a lock, search the repo for its lock primitive (`LOCK_EX`, `flock`), not only for the lock being patched.
 - Test a lock with two real contenders and a forced schedule, and assert the property (one owner), not the patch.
+- A return code that lets a caller destroy something must be earned on proof, never sit in the default arm of a `case`. Rounds 4 and 5 were the same finding because `*) return 1` turned every unplanned failure into "nobody owns this".
+- When a fix is "one more path", list every return path and every caller first. The table above took one pass and found three paths no review had named yet (the liveness error, the no-op exit 0, the failed tmp tidy).

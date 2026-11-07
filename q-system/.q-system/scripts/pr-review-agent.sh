@@ -578,13 +578,21 @@ _wt_bail() {  # _wt_bail <worktree-path>
 # reclaimed, because an operator who must clear locks by hand eventually clears
 # one while a run is live.
 _wt_lock_path=""
-# Exit codes are THREE-VALUED on purpose (PR #265 major, round 2). The caller
-# has to tell "nobody has a tree, so clear the stale ref" apart from "somebody
-# else owns this tree RIGHT NOW", because the cleanup that is correct for the
-# first is destructive for the second: the ref belongs to the live holder, and
-# this run never wrote it.
-#   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
-acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
+# Exit codes are FOUR-VALUED, and only 1 lets a caller treat the tree as nobody's.
+# PR #265 round 2 split "could not lock" from "busy" because the stale-ref cleanup
+# that is right when nobody has a tree deletes a live owner's evidence when
+# somebody does. But "could not lock" stayed the DEFAULT, so python3 failing to
+# launch, an unopenable mutex, a mutex timeout or an unreadable lock file each
+# read as "nobody has it" and sent review_worktree to _wt_bail. Rounds 4 and 5 of
+# ASK-3930 found two of those, one per round. So 1 is now earned, never defaulted:
+# it is returned only on proof, and every outcome nobody planned for is 3.
+#   0 = held by us: the helper said so AND the lock file names this run
+#   1 = nobody owns it and the claim could not be written: no parent directory, or
+#       an absent or dead holder read inside the mutex. With clear-stale-ref,
+#       _wt_bail has already run, inside the mutex.
+#   2 = busy: a live holder that is not this run, read inside the mutex
+#   3 = ownership unknown: anything else. Nothing may clear a ref on it.
+acquire_wt_lock() {  # acquire_wt_lock <worktree-path> [clear-stale-ref]
   # EVERY CLAIM IS ONE KERNEL-LOCKED CRITICAL SECTION (ASK-3930 round 3). The PID
   # file is still the ownership record every reader uses, but deciding who gets it
   # (first claim, re-entry, stale reclaim, the reaper's claim) happens only while
@@ -601,50 +609,72 @@ acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
   # by link(), so the lock file is never seen empty. An empty one can only come
   # from a pre-round-3 run mid-create, so it gets a moment before it counts as stale.
   # RE-ENTRANT for this run: review_worktree is called more than once per review.
-  local wt="$1" lock="$1.lock"
-  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
-  python3 -I - "$lock" "$(dirname "$wt")/.tree-lock.mutex" "$$" <<'PYLOCK' 2>/dev/null
-import errno, fcntl, os, sys, time
-lock, mutex, me = sys.argv[1], sys.argv[2], sys.argv[3]
+  local wt="$1" lock="$1.lock" clear="${2:-}" dir mutex rc
+  dir="$(dirname "$wt")"; mutex="$dir/.tree-lock.mutex"
+  # No parent directory means no tree and no lock file in it, so nobody owns one.
+  # It is the one verdict reached outside the mutex, because there is no directory
+  # to keep a mutex in.
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    [ "$clear" = clear-stale-ref ] && _wt_bail "$wt"
+    return 1
+  fi
+  # THIS SHELL HOLDS THE MUTEX, on fd 8, until the verdict AND any ref cleanup are
+  # done. python3 flocks the inherited fd (the kipi-promote.sh take_lock idiom),
+  # and an flock lives on the open file description, so it outlasts the python
+  # child and is dropped only by the close below or by this shell dying. Round 5
+  # named the gap: a cleanup run after the mutex is let go lets another run claim
+  # the tree in between, and the cleanup then deletes that run's fresh ref.
+  # The braces matter: a bare `exec 8>>f 2>/dev/null` silences this shell's stderr
+  # for the rest of the run. Children started inside this window (cat, and git in
+  # _wt_bail) inherit fd 8 too; bash 3.2 cannot hide it from them. A child that
+  # outlived the window would hold the mutex, and every later claim then times out
+  # as unknown (3), which keeps refs, so that leak fails closed.
+  [ -e "$mutex" ] || (umask 077; : >> "$mutex") 2>/dev/null
+  { exec 8>>"$mutex"; } 2>/dev/null || return 3
+  python3 -I - "$lock" "$$" 8 <<'PYLOCK' 2>/dev/null
+import fcntl, os, sys, time
+lock, me, fd = sys.argv[1], sys.argv[2], int(sys.argv[3])
+# 0, BUSY and UNOWNED are the only verdicts. Every other exit, an uncaught
+# exception's 1 and a signal's 128+n included, reaches the shell as unknown (3).
+BUSY, UNOWNED, TIMEOUT = 20, 21, 22
 
 def holder():
     try:
-        with open(lock) as fh:
+        with open(lock, encoding="ascii", errors="replace") as fh:
             return fh.read().strip()
     except FileNotFoundError:
         return None
 
-def alive(text):
+def proven_dead(text):
+    # Only ESRCH proves a PID has no process. Until round 6 ANY kill() error read
+    # as dead, so a liveness check that merely failed reclaimed a live owner's lock.
     try:
         pid = int(text)
     except ValueError:
-        return False
+        return True   # not a PID: no writer of this file names an owner this way
     if pid <= 0:
-        return False
+        return True
     try:
         os.kill(pid, 0)
-    except PermissionError:
+    except ProcessLookupError:
         return True
-    except (OverflowError, OSError):
-        return False
-    return True
+    except OverflowError:
+        return True   # past pid_t: no process can hold it
+    except PermissionError:
+        return False  # another user's live process
+    return False
 
-fd = os.open(mutex, os.O_RDWR | os.O_CREAT, 0o600)
 deadline = time.monotonic() + 5
 while True:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         break
-    except OSError as e:
-        if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-            sys.exit(1)
-        # Timing out means ANOTHER process is inside the mutex, so the tree may be
-        # theirs: busy (2), never 1, which sends review_worktree to _wt_bail and
-        # deletes a live owner's ref (ASK-3930 round 4). A failure that is ours
-        # alone (no python3, an unopenable mutex) stays 1, because a 2 there would
-        # leave a stale ref that wedges every later review (PR #265 round 2).
+    except BlockingIOError:
+        # Another process is inside the mutex, which covers the whole directory,
+        # so a timeout says nothing about who owns THIS tree: unknown, never busy
+        # and never unowned (ASK-3930 rounds 4 and 6).
         if time.monotonic() > deadline:
-            sys.exit(2)
+            sys.exit(TIMEOUT)
         time.sleep(0.02)
 h = holder()
 if h == "":
@@ -652,29 +682,45 @@ if h == "":
     h = holder()
 if h == me:
     sys.exit(0)
-if h is not None:
-    if alive(h):
-        sys.exit(2)
-    try:
-        os.unlink(lock)
-    except FileNotFoundError:
-        pass
+if h is not None and not proven_dead(h):
+    sys.exit(BUSY)
+# PROOF IN HAND: inside the mutex, the holder is absent or dead. Only from here
+# may a failure report UNOWNED, the one verdict that lets a ref be cleared.
 tmp = "%s.%s.tmp" % (lock, me)
-with open(tmp, "w") as fh:
-    fh.write(me)
+code = UNOWNED
 try:
+    if h is not None:
+        try:
+            os.unlink(lock)
+        except FileNotFoundError:
+            pass
+    with open(tmp, "w") as fh:
+        fh.write(me)
     os.link(tmp, lock)
+    code = 0
 except FileExistsError:
-    sys.exit(2)
+    code = BUSY   # a pre-round-3 run created it outside the mutex
+except OSError:
+    pass
 finally:
-    os.unlink(tmp)
-sys.exit(0)
+    # Best effort. The link decides the claim, so failing to tidy the tmp name must
+    # not turn a lock this run holds into a reported failure.
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+sys.exit(code)
 PYLOCK
-  case "$?" in
-    0) _wt_lock_path="$lock"; return 0 ;;
-    2) return 2 ;;
-    *) return 1 ;;
+  rc=$?
+  case "$rc" in
+    0)  [ "$(cat "$lock" 2>/dev/null)" = "$$" ] || rc=3 ;;
+    20) rc=2 ;;
+    21) rc=1; [ "$clear" = clear-stale-ref ] && _wt_bail "$wt" ;;
+    *)  rc=3 ;;
   esac
+  exec 8>&-
+  [ "$rc" = 0 ] && _wt_lock_path="$lock"
+  return "$rc"
 }
 release_wt_lock() {
   [ -n "$_wt_lock_path" ] || return 0
@@ -701,13 +747,21 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # under the reviewer that WON it, invalidating a live review's evidence. My own
   # two fixes colliding -- the ref cleanup is right when nobody has a tree and
   # destructive when somebody does.
-  acquire_wt_lock "$wt"
+  #
+  # This arm never calls _wt_bail itself (ASK-3930 round 6). acquire_wt_lock clears
+  # the ref only when it has proven nobody owns the tree, and while it still holds
+  # the claim mutex, so no run can claim the tree between the proof and the clear.
+  # Unknown ownership leaves the ref: if it is stale, assert_pr_ref_not_stale
+  # refuses this run, a refusal and never a review of the wrong commit, and the
+  # next run that can lock refreshes it.
+  acquire_wt_lock "$wt" clear-stale-ref
   case "$?" in
     0) : ;;
     2) echo "  WARN: another review holds $wt; leaving its ref alone and falling back." >&2
        return 1 ;;
-    *) echo "  WARN: could not lock $wt; not reusing a tree a live run can re-checkout under us." >&2
-       _wt_bail "$wt"
+    1) echo "  WARN: could not lock $wt, which nobody owns; its stale ref is cleared." >&2
+       return 1 ;;
+    *) echo "  WARN: could not tell who owns $wt; leaving its ref alone and falling back." >&2
        return 1 ;;
   esac
   mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1

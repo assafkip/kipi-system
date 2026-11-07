@@ -191,12 +191,16 @@ check "ASK-3930 round 1: exactly one archive exists, the whole one" '[ "$(ls "$A
 # acquire_wt_lock serializes every claim on ONE kernel flock per review-trees
 # directory (.tree-lock.mutex). These helpers hold it from outside, the way a
 # contender inside its critical section would.
+# It lets go only when told (or killed). Round 5 medium: a 20 second self-expiry let
+# a paused contender walk into a mutex this test claimed to be holding. The 300
+# second bound is a hang guard for a broken test, not a schedule: a check that
+# depends on the holder still holding asserts `kill -0` on it instead.
 hold_mutex() {  # <dir> <ready-file> <release-file>; exec, so $! is the holder itself
   exec python3 -I -c 'import fcntl, os, sys, time
 fd = os.open(os.path.join(sys.argv[1], ".tree-lock.mutex"), os.O_RDWR | os.O_CREAT, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 open(sys.argv[2], "w").close()
-for _ in range(400):
+for _ in range(6000):
     if os.path.exists(sys.argv[3]):
         break
     time.sleep(0.05)' "$@"
@@ -313,12 +317,15 @@ check "ASK-3930 round 3: the other backs off as busy (rc 2), so it never clears 
 check "ASK-3930 round 3: the lock names the one owner" '[ -n "$winner" ] && [ "$(cat "$L5.lock")" = "$winner" ]'
 : > "$BAR/release"; wait "$CA" "$CB" 2>/dev/null
 
-# Round 4: a contender that times out on the mutex reports BUSY (rc 2), never rc 1.
-# rc 1 sends review_worktree to _wt_bail, which deletes refs/remotes/pr/<N>, and a
-# timeout means another process is inside the mutex, not that nobody owns the tree.
-# Codex's schedule: A owns the tree (LIVE), B (this test) holds the directory-wide
-# mutex past the wait, C claims A's tree. The elapsed time proves C took the
-# timeout path, not a fast one.
+# Round 4: a contender that times out on the mutex never returns rc 1, which sends
+# review_worktree to _wt_bail and deletes refs/remotes/pr/<N>. Codex's schedule: A
+# owns the tree (LIVE), B (this test) holds the directory-wide mutex, C claims A's
+# tree. Round 6 makes the timeout UNKNOWN (rc 3): the mutex covers the directory, so
+# B being inside it says nothing about who owns A's tree.
+# The proof the timeout path ran is by effect, not elapsed time (round 5 medium).
+# Had C got inside the mutex it would have read A's live PID and returned busy (2),
+# so rc 3 here means it never did, and B is asserted still alive, so still holding,
+# at the moment C returned.
 mkdir -p "$T/race6"; L6="$T/race6/tree"
 printf '%s' "$LIVE" > "$L6.lock"
 hold_mutex "$T/race6" "$T/race6/held" "$T/race6/let-go" & H6=$!
@@ -327,13 +334,149 @@ cat > "$T/drive6.sh" <<EOF
 set -uo pipefail
 _wt_lock_path=""
 source "$T/lock.sh"
-s=\$(date +%s); acquire_wt_lock "$L6"; rc=\$?; echo "rc=\$rc waited=\$(( \$(date +%s) - s ))"
+acquire_wt_lock "$L6"; echo "rc=\$?"
 EOF
 PATH="$T/bin" "$T/bin/bash" "$T/drive6.sh" > "$T/race6/out" 2>&1
+if kill -0 "$H6" 2>/dev/null; then echo held > "$T/race6/holder"; else echo gone > "$T/race6/holder"; fi
 : > "$T/race6/let-go"; wait "$H6"
-check "ASK-3930 round 4: a mutex timeout reports busy (rc 2), so the owner's ref is never cleared" 'grep -q "^rc=2 " "$T/race6/out"'
-check "ASK-3930 round 4: that contender really waited out the mutex (4s or more)" '[ "$(sed -n "s/.*waited=//p" "$T/race6/out")" -ge 4 ]'
+check "ASK-3930 round 4: a mutex timeout is unknown (rc 3), never 1, so the owner's ref is never cleared" 'grep -qx "rc=3" "$T/race6/out"'
+check "ASK-3930 round 4: the mutex holder still held when the contender returned" '[ "$(cat "$T/race6/holder")" = held ]'
 check "ASK-3930 round 4: the live owner's lock is untouched" '[ "$(cat "$L6.lock")" = "$LIVE" ]'
+
+# --- Round 6: rc 1 only on proof (ASK-3930, Codex rounds 4 and 5) -------------
+# review_worktree clears refs/remotes/pr/<N> only when acquire_wt_lock says nobody
+# owns the tree. Each case breaks ONE step of a claim and drives the REAL
+# review_worktree, then reads the effect: the rc acquire_wt_lock gave it, whether
+# the ref survived, whether the lock still names its holder, and whether the mutex
+# was given back to this same shell (it holds the mutex on fd 8 now). A fault shim
+# stands in for python3: the real interpreter runs the same script with one OS call
+# broken, and logs that the fault fired, so a case proves its path was taken.
+RW="$T/rw"; mkdir -p "$RW/repo" "$RW/shim" "$RW/nopy" "$RW/gitshim" "$RW/home"
+REALPY="$(command -v python3)"; REALGIT="$(command -v git)"; RBASH="$(command -v bash)"
+git -C "$RW/repo" init -q
+printf one > "$RW/repo/f.txt"; git -C "$RW/repo" add f.txt
+git -C "$RW/repo" -c user.name=t -c user.email=t@example.invalid commit -q -m one
+RW1="$(git -C "$RW/repo" rev-parse HEAD)"
+printf two > "$RW/repo/f.txt"
+git -C "$RW/repo" -c user.name=t -c user.email=t@example.invalid commit -q -am two
+RW2="$(git -C "$RW/repo" rev-parse HEAD)"
+{ sed -n '/^_wt_bail() {/,/^}/p' "$AGENT"
+  sed -n '/^acquire_wt_lock() {/,/^}/p' "$AGENT" | sed '1s/^acquire_wt_lock()/_acquire_under_test()/'
+  sed -n '/^release_wt_lock() {/,/^}/p' "$AGENT"
+  sed -n '/^review_worktree() {/,/^  printf/p' "$AGENT"; echo '}'; } > "$RW/fns.sh"
+check "ASK-3930 round 6: the slice holds review_worktree, _wt_bail and the lock under test" \
+  'grep -q "^_wt_bail()" "$RW/fns.sh" && grep -q "^_acquire_under_test()" "$RW/fns.sh" && grep -q "^review_worktree()" "$RW/fns.sh" && grep -q "clear-stale-ref" "$RW/fns.sh"'
+for f in "$T/bin"/*; do [ "${f##*/}" = python3 ] || ln -s "$f" "$RW/nopy/${f##*/}"; done
+cat > "$RW/shim/python3" <<EOF
+#!$RBASH
+# python3 with ONE OS call broken (\$FAULT). Each patch logs to \$FAULT_LOG when it fires.
+if [ "\${FAULT:-}" = noop ]; then echo noop >> "\$FAULT_LOG"; exit 0; fi
+shift 2   # drop -I and -: the script arrives on stdin, its argv follows
+exec "$REALPY" -I -c '
+import builtins, errno, fcntl, os, signal, sys
+fault, log, lock = os.environ.get("FAULT", ""), os.environ["FAULT_LOG"], sys.argv[1]
+r_flock, r_kill, r_open, r_link, r_unlink = fcntl.flock, os.kill, builtins.open, os.link, os.unlink
+def fired():
+    with r_open(log, "a") as fh:
+        fh.write(fault + "\n")
+def flock(*a):
+    if fault == "flock":
+        fired(); raise OSError(errno.ENOLCK, "no locks available")
+    r_flock(*a)
+    if fault == "sigkill":
+        fired(); r_kill(os.getpid(), signal.SIGKILL)
+def kill(pid, sig):
+    if fault == "kill" and pid != os.getpid():
+        fired(); raise OSError(errno.EIO, "liveness unknown")
+    return r_kill(pid, sig)
+def opener(path, *a, **k):
+    if fault == "read" and path == lock:
+        fired(); raise PermissionError(errno.EACCES, "denied", path)
+    return r_open(path, *a, **k)
+def link(src, dst, *a, **k):
+    if fault == "link":
+        fired(); raise PermissionError(errno.EACCES, "denied", dst)
+    return r_link(src, dst, *a, **k)
+def unlink(path, *a, **k):
+    if fault == "tmpunlink" and str(path).endswith(".tmp"):
+        fired(); raise PermissionError(errno.EACCES, "denied", path)
+    return r_unlink(path, *a, **k)
+fcntl.flock, os.kill, builtins.open, os.link, os.unlink = flock, kill, opener, link, unlink
+src = sys.stdin.read()
+sys.argv = ["-"] + sys.argv[1:]
+exec(compile(src, "<acquire_wt_lock>", "exec"), {"__name__": "__main__"})
+' "\$@"
+EOF
+# git shim: at every ref delete, record whether the claim mutex is held right then.
+cat > "$RW/gitshim/git" <<EOF
+#!$RBASH
+case " \$* " in
+  *" update-ref -d "*)
+    if "$REALPY" -I -c 'import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "\$CLEAR_MUTEX" 2>/dev/null; then echo free; else echo held; fi >> "\$CLEAR_LOG" ;;
+esac
+exec "$REALGIT" "\$@"
+EOF
+chmod +x "$RW/shim/python3" "$RW/gitshim/git"
+cat > "$RW/drive.sh" <<EOF
+set -uo pipefail
+HOME="$RW/home"; REVIEW_REPO="$RW/repo"; REVIEW_SLUG=acme/widgets; PR=77
+_wt_lock_path=""
+source "$RW/fns.sh"
+review_tree_path() { echo "\$CASE/trees/acme_widgets__pr-77"; }
+acquire_wt_lock() { _acquire_under_test "\$@"; local rc=\$?; echo "\$rc" > "\$CASE/rc"; return "\$rc"; }
+echo "\$\$" > "\$CASE/me"
+review_worktree "$RW2" > "\$CASE/path" 2> "\$CASE/warn"
+if "$REALPY" -I -c 'import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' "\$CASE/trees/.tree-lock.mutex" 2>/dev/null; then echo free; else echo held; fi > "\$CASE/mutex-after"
+EOF
+rw_case() {  # <name> <holder pid> <fault> [nopy|mutexdir]
+  local c="$RW/case-$1" p="$RW/gitshim:$RW/shim:$T/bin"
+  mkdir -p "$c/trees"; printf '%s' "$2" > "$c/trees/acme_widgets__pr-77.lock"; : > "$c/fault.log"; : > "$c/clear.log"
+  [ "${4:-}" = nopy ] && p="$RW/gitshim:$RW/nopy"
+  [ "${4:-}" = mutexdir ] && mkdir "$c/trees/.tree-lock.mutex"
+  git -C "$RW/repo" update-ref refs/remotes/pr/77 "$RW1"
+  CASE="$c" FAULT="$3" FAULT_LOG="$c/fault.log" CLEAR_LOG="$c/clear.log" CLEAR_MUTEX="$c/trees/.tree-lock.mutex" \
+    PATH="$p" "$T/bin/bash" "$RW/drive.sh" > "$c/out" 2>&1
+  echo "round 6 $1: rc=$(cat "$c/rc" 2>/dev/null) ref=$(git -C "$RW/repo" rev-parse --verify --quiet refs/remotes/pr/77 | cut -c1-8) lock=$(cat "$c/trees/acme_widgets__pr-77.lock" 2>/dev/null) fault=$(tr '\n' ' ' < "$c/fault.log") clears=$(tr '\n' ' ' < "$c/clear.log") mutex-after=$(cat "$c/mutex-after" 2>/dev/null)"
+  git -C "$RW/repo" rev-parse --verify --quiet refs/remotes/pr/77 > "$c/ref-after"
+}
+rw() { cat "$RW/case-$1/$2" 2>/dev/null; }
+# Ownership unknown, with a LIVE owner of the tree: the ref and the lock must survive.
+for spec in "nopy::nopy" "mutexdir::mutexdir" "flock:flock:" "sigkill:sigkill:" "read:read:" "kill:kill:" "noop:noop:"; do
+  name="${spec%%:*}"; rest="${spec#*:}"; fault="${rest%%:*}"; mode="${rest#*:}"
+  rw_case "$name" "$LIVE" "$fault" "$mode"
+  check "ASK-3930 round 6: $name: ownership unknown is rc 3, never 1" '[ "$(rw "$name" rc)" = 3 ]'
+  check "ASK-3930 round 6: $name: the live owner's ref survives" '[ "$(rw "$name" ref-after)" = "$RW1" ]'
+  check "ASK-3930 round 6: $name: the live owner's lock is untouched" '[ "$(rw "$name" trees/acme_widgets__pr-77.lock)" = "$LIVE" ]'
+  [ -n "$fault" ] && check "ASK-3930 round 6: $name: the fault fired, so this path was taken" 'grep -qx "$fault" "$RW/case-$name/fault.log"'
+  [ "$mode" = mutexdir ] || check "ASK-3930 round 6: $name: the mutex is given back" '[ "$(rw "$name" mutex-after)" = free ]'
+done
+check "ASK-3930 round 6: nopy: python3 really was absent from that PATH" '[ ! -e "$RW/nopy/python3" ] && [ -e "$RW/nopy/git" ]'
+check "ASK-3930 round 6: mutexdir: the mutex path really is a directory" '[ -d "$RW/case-mutexdir/trees/.tree-lock.mutex" ]'
+# Proven unowned (a DEAD holder, read inside the mutex), and the claim cannot be
+# written: rc 1, the ref is cleared, and it is cleared while the mutex is held.
+rw_case claimfail "$DEAD" link
+check "ASK-3930 round 6: claimfail: a dead holder plus a failed claim is rc 1" '[ "$(rw claimfail rc)" = 1 ]'
+check "ASK-3930 round 6: claimfail: the stale ref is cleared" '[ -z "$(rw claimfail ref-after)" ]'
+check "ASK-3930 round 6: claimfail: the clear ran while the claim mutex was held" 'grep -qx held "$RW/case-claimfail/clear.log" && ! grep -qx free "$RW/case-claimfail/clear.log"'
+check "ASK-3930 round 6: claimfail: the fault fired, so this path was taken" 'grep -qx link "$RW/case-claimfail/fault.log"'
+check "ASK-3930 round 6: claimfail: the mutex is given back" '[ "$(rw claimfail mutex-after)" = free ]'
+# The claim was linked but the tmp name could not be tidied: the lock is this run's.
+rw_case tmpunlink "$DEAD" tmpunlink
+check "ASK-3930 round 6: tmpunlink: a claim that linked is held (rc 0) though its tmp file stayed" '[ "$(rw tmpunlink rc)" = 0 ]'
+check "ASK-3930 round 6: tmpunlink: the lock names this run" '[ "$(rw tmpunlink trees/acme_widgets__pr-77.lock)" = "$(rw tmpunlink me)" ]'
+check "ASK-3930 round 6: tmpunlink: the fault fired, so this path was taken" 'grep -qx tmpunlink "$RW/case-tmpunlink/fault.log"'
+check "ASK-3930 round 6: tmpunlink: the mutex is given back" '[ "$(rw tmpunlink mutex-after)" = free ]'
+# POSITIVE CONTROL: the same shim with no fault claims a dead holder's tree.
+rw_case control "$DEAD" none
+check "ASK-3930 round 6: control: no fault claims the tree (rc 0)" '[ "$(rw control rc)" = 0 ]'
+check "ASK-3930 round 6: control: the ref moves to the reviewed sha" '[ "$(rw control ref-after)" = "$RW2" ]'
+check "ASK-3930 round 6: control: the lock names this run" '[ "$(rw control trees/acme_widgets__pr-77.lock)" = "$(rw control me)" ]'
+check "ASK-3930 round 6: control: no fault fired and no ref was deleted" '[ ! -s "$RW/case-control/fault.log" ] && [ ! -s "$RW/case-control/clear.log" ]'
+check "ASK-3930 round 6: control: the mutex is given back" '[ "$(rw control mutex-after)" = free ]'
 
 kill "$LIVE" "$CWDPROC" 2>/dev/null
 exit "$fail"
