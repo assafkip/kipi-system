@@ -122,9 +122,20 @@ PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
 # flagged. linear-worker.sh already does clear-on-recovery and is the reference.
 # Every page_once key below has a matching page_clear on its healthy path.
 # ONE LOCK PRIMITIVE, used by BOTH page_once and page_clear, so a clear cannot
-# interleave with a decision. mkdir is the atomic claim.
+# interleave with a decision.
 #
-# AN ORPHANED LOCK MUST AGE OUT. Treating any existing lock dir as a live holder
+# THE CLAIM IS BASH'S OWN O_EXCL REDIRECT, NOT THE mkdir BINARY (ASK-3797).
+# `( set -C; : > "$lock" )` is an open(O_CREAT|O_EXCL) done by bash itself, so
+# the kernel decides the winner and no utility sits in between. The old claim was
+# `mkdir "$lock"`, which is exclusive only if the mkdir program surfaces EEXIST.
+# GNU and BSD mkdir do. uutils coreutils 0.10.0 (Ubuntu 26.04's mkdir, and now
+# GitHub's ubuntu-latest) checks first, then creates and tolerates "already
+# exists": two concurrent mkdirs both exited 0 in 480 of 500 rounds, and
+# test-dispatch-stale-checkout.sh case 11 caught the duplicate page on 22 of 60
+# runner runs. A directory left by the old code still counts as held (the
+# redirect fails on it) and still ages out below (rmdir after rm fails).
+#
+# AN ORPHANED LOCK MUST AGE OUT. Treating any existing lock as a live holder
 # meant a notifier killed between the mkdir and its cleanup -- launchd reaping the
 # job, a reboot, a SIGKILL -- silenced that key PERMANENTLY. Reproduced: leave the
 # dir behind and the next three runs page 0, 0, 0 while the log cheerfully reports
@@ -135,7 +146,7 @@ PAGE_REPING_SECONDS="${KIPI_PAGE_REPING_SECONDS:-86400}"
 # an orphan always self-clears before the next beat rather than needing a human.
 page_lock() {
   local lock="$1" now lock_mtime lock_probe
-  mkdir "$lock" 2>/dev/null && return 0
+  ( set -C; : > "$lock" ) 2>/dev/null && return 0
   now="$(date -u +%s)"
   lock_probe="$(stat -c %Y "$lock" 2>/dev/null)"
   case "$lock_probe" in ''|*[!0-9]*) lock_probe="" ;; esac
@@ -145,8 +156,8 @@ page_lock() {
   # stealing a live lock and double-paging is the bug this exists to prevent.
   if [ -n "$lock_mtime" ] && [ "$(( now - lock_mtime ))" -gt 300 ]; then
     say "page lock: reaping an orphaned lock at $lock ($(( now - lock_mtime ))s old; a notifier was killed mid-decision)"
-    rmdir "$lock" 2>/dev/null || true
-    mkdir "$lock" 2>/dev/null && return 0
+    rm -f "$lock" 2>/dev/null || rmdir "$lock" 2>/dev/null || true
+    ( set -C; : > "$lock" ) 2>/dev/null && return 0
   fi
   return 1
 }
@@ -167,7 +178,7 @@ page_clear() {
   lock="$mark.lock"
   # Nothing to clear and nobody mid-decision: stay cheap on the healthy path, which
   # is every single beat.
-  [ -f "$mark" ] || [ -d "$lock" ] || return 0
+  [ -f "$mark" ] || [ -e "$lock" ] || return 0
   if ! page_lock "$lock"; then
     say "page state NOT cleared ($key): a notifier is mid-decision; the next healthy beat clears it"
     return 0
@@ -176,7 +187,7 @@ page_clear() {
     rm -f "$mark" 2>/dev/null || true
     say "page state cleared: $key recovered, so a recurrence pages again immediately"
   fi
-  rmdir "$lock" 2>/dev/null || true
+  rm -f "$lock" 2>/dev/null || true
 }
 
 page_once() {
@@ -191,10 +202,11 @@ page_once() {
   # comments included, for terms that would let a repo opt out of the preflight. A
   # few ordinary English words are therefore unusable in comments here. Reworded
   # rather than loosening a client-repo safety gate to suit my own prose. sp-cc67d834.)
-  # mkdir is the atomic primitive; a lock we cannot take means another process is
-  # already handling this exact key, so staying quiet is the correct answer.
-  # AN ORPHANED LOCK MUST AGE OUT. The first cut treated any existing lock dir as a
-  # live holder forever, so a notifier killed between the mkdir and its cleanup --
+  # page_lock's O_EXCL redirect is the atomic primitive (not mkdir: ASK-3797, see
+  # page_lock); a lock we cannot take means another process is already handling
+  # this exact key, so staying quiet is the correct answer.
+  # AN ORPHANED LOCK MUST AGE OUT. The first cut treated any existing lock as a
+  # live holder forever, so a notifier killed between the claim and its cleanup --
   # launchd reaping the job, a reboot, a SIGKILL -- silenced that key PERMANENTLY.
   # Reproduced: leave the dir behind and the next three runs page 0, 0, 0, while the
   # log cheerfully reports "another dispatcher is already deciding it" with nobody
@@ -212,17 +224,17 @@ page_once() {
   fi
   # RELEASED EXPLICITLY AT EVERY EXIT, NOT BY A `trap ... RETURN`.
   # The trap form looked tidier and was broken: bash tears down the function's
-  # locals before running the RETURN trap, so `rmdir "$lock"` hit an unset variable
+  # locals before running the RETURN trap, so the release hit an unset variable
   # and `set -u` killed the whole dispatcher mid-page. It surfaced as four unrelated
   # test failures at once (a missing verdict, two missing log lines) because the
-  # script simply stopped. Three exits, three rmdirs, no cleverness.
+  # script simply stopped. Every exit that took the lock removes it by hand.
   if [ -f "$mark" ]; then
     prev="$(sed -n 1p "$mark" 2>/dev/null)"
     stamp="$(sed -n 2p "$mark" 2>/dev/null)"
     case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
     if [ "$prev" = "$hash" ] && [ "$(( now - stamp ))" -lt "$PAGE_REPING_SECONDS" ]; then
       say "page suppressed ($key unchanged for $(( (now - stamp) / 60 ))m; re-pings after $(( PAGE_REPING_SECONDS / 3600 ))h)"
-      rmdir "$lock" 2>/dev/null || true
+      rm -f "$lock" 2>/dev/null || true
       return 0
     fi
   fi
@@ -231,7 +243,7 @@ page_once() {
   else
     say "page: $key did NOT go out; leaving the marker unset so the next heartbeat retries it"
   fi
-  rmdir "$lock" 2>/dev/null || true
+  rm -f "$lock" 2>/dev/null || true
 }
 
 cd "$REPO" 2>/dev/null || {
