@@ -1571,3 +1571,29 @@ def test_synonym_heading_directive_count_is_checked():
                          "note": "n", "directives": 99}])
     v = L.lint_text(_rule(heading="Gate One (NON-NEGOTIABLE)", block=block), "fixture.md")
     assert 12 in _codes(v), [str(x) for x in v]
+
+
+def test_negated_blocking_is_not_a_claim():
+    """Reviewer minor on PR #616: NOT BLOCKING, NEVER BLOCKING and NON BLOCKING
+    say the opposite of a claim, like NON-BLOCKING. The negation is read in any
+    case, joined by a space or a hyphen."""
+    for heading in ("Writes are NOT BLOCKING", "Hooks here are NEVER BLOCKING",
+                    "Reports are NON BLOCKING", "Reports are non-BLOCKING"):
+        assert L.marked_headings("# %s\n" % heading) == [], heading
+    # CONTROL: a negation elsewhere on the line does not cancel the claim.
+    assert L.marked_headings("# Not optional: BLOCKING before findings\n")
+
+
+def test_if_then_wiring_form_is_an_invocation():
+    """The fleet's standard guarded form `if test -f X; then python3 X; fi` (and
+    `if [ -f X ]; then ...`) read as a program named `then`, so every rule naming
+    a hook wired that way got a false C6. Found landing the 4 Points case gate."""
+    E = "q-system/scripts/lint.py"
+    for cmd in ('if test -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"; then '
+                'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py" hook; fi',
+                'if [ -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py" ]; then '
+                'python3 "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"; fi'):
+        assert E in L.command_targets(cmd), cmd
+    # CONTROL: the guard alone still only MENTIONS the script.
+    assert E not in L.command_targets(
+        'if test -f "$CLAUDE_PROJECT_DIR/q-system/scripts/lint.py"; then echo hi; fi')

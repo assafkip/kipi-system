@@ -161,16 +161,20 @@ MARKER = "(ENFORCED"
 # removed, and a synonym can.
 #
 # BLOCKING is upper case and a whole word, with a hyphen counted as part of the
-# word, so "NON-BLOCKING" (which says the opposite) is not a claim.
+# word. A negation right before it (NON, NOT, NEVER, any case, joined by a space
+# or a hyphen) says the opposite and is not a claim (reviewer minor, PR #616).
 SYNONYM_MARKERS = ("(NON-NEGOTIABLE", "(MANDATORY")
 _BLOCKING_RE = re.compile(r"(?<![\w-])BLOCKING(?![\w-])")
+_NEGATED_RE = re.compile(r"\b(?:non|not|never)[ -]$", re.I)
 _PAREN_MARKERS = (MARKER,) + SYNONYM_MARKERS
 
 
 def carries_claim(line):
     """True when a heading line carries MARKER or one of its synonyms."""
-    return (any(m in line for m in _PAREN_MARKERS)
-            or _BLOCKING_RE.search(line) is not None)
+    if any(m in line for m in _PAREN_MARKERS):
+        return True
+    return any(not _NEGATED_RE.search(line[:m.start()])
+               for m in _BLOCKING_RE.finditer(line))
 
 
 
@@ -313,7 +317,8 @@ def clause_key(text):
     Defined exactly, because "normalising case and punctuation" was not
     implementable as written (codex-adversarial finding-7).
 
-      1. Drop a trailing parenthetical ONLY IF IT CONTAINS THE MARKER. Two
+      1. Drop a trailing parenthetical ONLY IF IT OPENS WITH THE MARKER or a
+         parenthesised synonym, (NON-NEGOTIABLE or (MANDATORY (W8). Two
          narrower rules were tried and both alias distinct claims:
            - dropping EVERY parenthetical made `# Delete (local)` and
              `# Delete (prod)` both "delete", so one entry covered both headings
@@ -574,6 +579,7 @@ _SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\||\n")
 # merely mentions the path, and mentioning is what this whole check refuses.
 INTERPRETERS = frozenset({"python", "python2", "python3", "bash", "sh", "zsh",
                           "node", "ruby", "perl", "uv", "uvx"})
+_SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "do", "!", "{"})
 
 # The only files whose `hooks` object actually wires anything in this fleet.
 # Without this allowlist ANY in-repo JSON carrying a hooks-shaped object -- a
@@ -723,6 +729,12 @@ def command_targets(command, plugin_root=None):
             tokens = segment.split()
         # Drop leading `VAR=value` env assignments; the program follows them.
         while tokens and _ASSIGNMENT.match(tokens[0]):
+            tokens = tokens[1:]
+        # Shell keywords in front of the program: the fleet's guarded form is
+        # `if test -f X; then python3 X; fi`, and reading `then` as the program
+        # gave every rule naming such a hook a false C6 (found landing the
+        # 4 Points case gate, 2026-11-06).
+        while tokens and tokens[0] in _SHELL_KEYWORDS:
             tokens = tokens[1:]
         if not tokens:
             continue
@@ -1798,7 +1810,7 @@ def main():
             return 1
         # Printed on EVERY run, including green ones. Debt that stops being
         # mentioned stops being debt and becomes furniture.
-        print("[enforced-claim-lint] PASS -- every ENFORCED marker is dispositioned "
+        print("[enforced-claim-lint] PASS -- every ENFORCED marker (or synonym) is dispositioned "
               "or baselined. %d marker(s) still owe a disposition (baseline may only "
               "shrink)." % len(excused))
         return 0
