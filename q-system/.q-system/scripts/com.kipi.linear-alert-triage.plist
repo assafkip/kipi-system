@@ -25,7 +25,13 @@
      PATH only through ~/.zshrc. 15 passes logged "0 written, 8 failed" with
      "no working claude binary" on every row. /etc/profile's path_helper puts
      the system dirs first and keeps these entries after them (measured), so
-     claude, gh and python3 all resolve. -->
+     claude, gh and python3 all resolve.
+
+     USER AND LOGNAME TOO, OR CLAUDE IS FOUND AND STILL FAILS (PR #628 R1). The
+     claude login lives in the keychain, and the lookup needs them: without them
+     `claude -p` answers "Not logged in", rc 1, on every row (ASK-1178 measured the
+     same 2026-08-30). launchd's default environment for this job is PATH alone.
+     Same four keys as com.kipi.weekly-improve. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.kipi.linear-alert-triage</string>
@@ -37,6 +43,9 @@
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
     <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><false/>

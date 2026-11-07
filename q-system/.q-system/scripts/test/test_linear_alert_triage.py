@@ -1277,6 +1277,15 @@ class TestB1ClaudeIsFoundUnderLaunchd(unittest.TestCase):
         self.assertEqual(dirs[0], "__HOME__/.local/bin", path)
         self.assertIn("/opt/homebrew/bin", dirs, "gh and python3 resolve from here")
 
+    def test_the_template_carries_the_login_identity(self):
+        """PR #628 R1: with PATH alone, claude is found and `claude -p` answers
+        "Not logged in", because the keychain lookup needs USER and LOGNAME."""
+        _, d, _ = lane_plists()[0]
+        env = d.get("EnvironmentVariables") or {}
+        self.assertEqual(env.get("HOME"), "__HOME__", env)
+        self.assertEqual(env.get("USER"), "__USER__", env)
+        self.assertEqual(env.get("LOGNAME"), "__USER__", env)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
