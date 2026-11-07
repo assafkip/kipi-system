@@ -16,13 +16,21 @@ Where the numbers come from (all local; `load` makes no network call):
 - The percentile is over every closed spec in the repo, not one PRD. Measured 2026-11-07 in
   kipi-system: 200 merged items repo-wide; per PRD, all 77 open specs belonged to PRDs with
   fewer than 5 closes, so a per-PRD tail would have judged nothing.
-- An open PR is covered without GitHub: its issue's spec is not closed on main until it merges.
+- Only STARTED work ages. An unstarted spec is backlog, and every spec of one split shares
+  its split time, so judging backlog refuses 76 of 77 kipi-system starts (review of #626,
+  round 1). Started = `status: in-progress` in this checkout, or a commit on any local ref
+  (remote-tracking refs from the last fetch included) that is not on the base branch and
+  changes the spec's `status:` line to in-progress or closed. That second signal is the open
+  PR, or the abandoned branch, read from git instead of GitHub. Measured 2026-11-07: 2 of
+  77 open kipi-system specs carry one, flipped 77 and 93 days ago and never merged.
 - Spillover rows are prd-os's ledger, read at the same root prd_runner writes it.
 
-"Unowned" = no `owner` field AND no linked Linear issue. Rows filed since RULE-2026-08-24-B
-carry `owner: sana`; 585 of 998 open kipi-system rows predate it and carry none. A link is
-the capture ticket `{"state": "filed"|"captured", "identifier": ...}` or a promotion's string.
-Whether that Linear issue is still open is NOT checked: that needs the network.
+"Unowned" = no tracker ref: prd_runner's `_spillover_has_tracker_ref`, copied below. NOT the
+`owner` field: `spillover add` writes `owner: sana` on every row (RULE-2026-08-24-B), and a
+check its own default satisfies is not a check (prd_runner.py, the same trap, 2026-08-24).
+NOT the capture ticket `{"state": "filed", ...}` either: that alert makes a row visible, it
+is not an issue in a queue somebody works. Review of #626 round 1 measured the first
+definition firing on 0 of 260 open majors.
 """
 
 from __future__ import annotations
@@ -96,11 +104,50 @@ def _spillover(repo_root: Path) -> list:
     return [r for r in items.values() if r.get("status") == "open"]
 
 
-def _linked(row: dict) -> bool:
+def has_tracker_ref(row: dict) -> bool:
+    """A copy of prd_runner._spillover_has_tracker_ref; test_work_item_age.py pins the two."""
     link = row.get("linear")
-    if isinstance(link, dict):
-        return link.get("state") in ("filed", "captured") and bool(str(link.get("identifier") or "").strip())
-    return isinstance(link, str) and bool(link.strip())
+    return bool((link.strip() if isinstance(link, str) else "")
+                or str(row.get("linear_ref") or "").strip())
+
+
+BASE_REFS = ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/heads/main",
+             "refs/heads/master")
+
+
+def started_on_refs(repo_root: Path, issues_dir: Path) -> tuple:
+    """({spec file stem: seconds since its latest status flip}, base ref) for specs whose
+    `status:` line moves to in-progress or closed in a commit no base ref holds.
+
+    (None, why) when git cannot answer. That fails OPEN, with a note: a git hiccup that
+    refused every start would wedge the fleet, and the in-checkout signal still applies.
+    """
+    def git(*argv):
+        return subprocess.run(["git", *argv], cwd=str(repo_root), capture_output=True,
+                              text=True, timeout=30)
+    try:
+        base = next((r for r in BASE_REFS
+                     if git("rev-parse", "--verify", "-q", r).returncode == 0), None)
+        if base is None:
+            return None, "no origin/main or main ref"
+        rel = issues_dir.resolve().relative_to(Path(repo_root).resolve())
+        out = git("log", "--all", "--not", base, "--no-merges",
+                  "-G", "^status: (in-progress|closed)", "--format=C %ct", "--name-only",
+                  "--", str(rel))
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return None, f"git log failed: {exc}"
+    if out.returncode != 0:
+        return None, f"git log exited {out.returncode}"
+    now = datetime.now(timezone.utc).timestamp()
+    seen: dict = {}
+    when = None
+    for line in out.stdout.splitlines():
+        if line.startswith("C "):
+            when = int(line.split()[1])
+        elif line.strip().endswith(".md") and when is not None:
+            stem = Path(line.strip()).stem
+            seen[stem] = min(seen.get(stem, now - when), now - when)
+    return seen, base
 
 
 def tail_seconds(items: list, receipts: list) -> tuple[float | None, int]:
@@ -124,18 +171,26 @@ def tail_seconds(items: list, receipts: list) -> tuple[float | None, int]:
 
 
 def gate(repo_root: Path, receipts_path: Path, items: list, issue_id: str,
-         now: datetime | None = None) -> tuple[list, list]:
+         issues_dir: Path, now: datetime | None = None) -> tuple[list, list]:
     """(blockers, notes) for starting `issue_id`. `items`: one dict per spec with
-    id, prd_id, at (datetime or None), status. A refusal needs a non-empty blockers list."""
+    id, stem, prd_id, at (datetime or None), status. A refusal needs a non-empty blockers list."""
     now = now or datetime.now(timezone.utc)
     me = next((it for it in items if it["id"] == issue_id), None)
     if me is None or not me["prd_id"]:
         return [], []
-    if me["status"] == "in-progress":
-        # Resuming work already started lowers the PRD's age; refusing it would make it rot.
-        return [], [f"age gate: {issue_id} is already in progress, so this is not a new start"]
+    on_refs, base = started_on_refs(repo_root, issues_dir)
+    notes = []
+    if on_refs is None:
+        notes.append(f"age gate: unmerged-branch signal unavailable ({base}); only "
+                     "`status: in-progress` in this checkout marks started work")
+        on_refs = {}
+    if me["status"] == "in-progress" or me["stem"] in on_refs:
+        # Reworking started work lowers the PRD's age; refusing it would make it rot, and it
+        # is the very remedy the aging list asks for.
+        return [], notes + [f"age gate: {issue_id} is already started, so this is rework, "
+                            "not a new start"]
     prd = me["prd_id"]
-    blockers, notes = [], []
+    blockers = []
 
     tail, merged = tail_seconds(items, _jsonl(receipts_path))
     if tail is None:
@@ -143,17 +198,19 @@ def gate(repo_root: Path, receipts_path: Path, items: list, issue_id: str,
                      f"an {TAIL_PERCENTILE}th percentile needs {MIN_MERGED}; the "
                      f"{UNOWNED_DAYS}-day unowned-major half still applies")
     else:
-        my_at = me["at"] or now
         for it in sorted(items, key=lambda x: x["at"] or now):
             if it["prd_id"] != prd or it["id"] == issue_id or it["status"] == "closed" or it["at"] is None:
                 continue
-            # Past the tail AND split more than one tail before this issue. Specs split within
-            # one tail of each other are one wave (prd_split stamps each spec separately, a
-            # second or two apart), so starting any of them is working the oldest work. Without
-            # this every aging sibling blocks every other one and the PRD can never move.
-            if (now - it["at"]).total_seconds() > tail and (my_at - it["at"]).total_seconds() > tail:
+            if it["status"] == "in-progress":
+                how = "in progress in this checkout"
+            elif it["stem"] in on_refs:
+                how = (f"status flipped {on_refs[it['stem']] / DAY_S:.0f} days ago on a ref "
+                       f"{base} does not hold")
+            else:
+                continue  # backlog, not work in progress
+            if (now - it["at"]).total_seconds() > tail:
                 blockers.append(
-                    f"{it['id']} ({it['status']}) split {(now - it['at']).total_seconds() / DAY_S:.1f} "
+                    f"{it['id']} ({how}) split {(now - it['at']).total_seconds() / DAY_S:.1f} "
                     f"days ago, past the repo's {TAIL_PERCENTILE}th percentile of merged cycle time "
                     f"({tail / DAY_S:.1f} days over {merged} merged)")
 
@@ -163,13 +220,13 @@ def gate(repo_root: Path, receipts_path: Path, items: list, issue_id: str,
         created = _ts(row.get("created_at"))
         if (row.get("source") not in sources or created is None
                 or str(row.get("severity") or "").strip().lower() not in MAJOR_SEVERITIES
-                or str(row.get("owner") or "").strip() or _linked(row)):
+                or has_tracker_ref(row)):
             continue
         days = (now - created).total_seconds() / DAY_S
         if days >= UNOWNED_DAYS:
             blockers.append(
                 f"{row['id']} [{row.get('severity')}] spillover from {row['source']} unowned for "
-                f"{days:.0f} days (no owner, no linked Linear issue): "
+                f"{days:.0f} days (no tracker ref; promote it to a Linear issue): "
                 f"{str(row.get('description') or '')[:100]}")
     return blockers, notes
 

@@ -534,7 +534,8 @@ def _prd_items(paths: Paths) -> list:
         except (OSError, ValueError):
             continue
         marker = _extract_marker_fields(text) or {}
-        items.append({"id": fm.get("id") or spec.stem, "prd_id": marker.get("prd_id"),
+        items.append({"id": fm.get("id") or spec.stem, "stem": spec.stem,
+                      "prd_id": marker.get("prd_id"),
                       "at": work_item_age._ts(marker.get("marker_at")),
                       "status": str(fm.get("status") or "").strip()})
     return items
@@ -546,7 +547,7 @@ def _age_gate_refuses(paths: Paths, issue_id: str, override: str | None) -> bool
         sys.stderr.write(f"cannot load {issue_id}: {work_item_age.OVERRIDE_FLAG} needs a reason\n")
         return True
     blockers, notes = work_item_age.gate(paths.repo_root, paths.receipts_path,
-                                         _prd_items(paths), issue_id)
+                                         _prd_items(paths), issue_id, paths.issues_dir)
     for note in notes:
         sys.stderr.write(note + "\n")
     if not blockers:
@@ -555,9 +556,9 @@ def _age_gate_refuses(paths: Paths, issue_id: str, override: str | None) -> bool
     if override is None:
         sys.stderr.write(
             f"cannot start {issue_id}: its PRD's oldest work comes first (ASK-3826). Aging list:\n"
-            f"{listing}Work or own those items first: `prd_runner.py spillover own <id>` owns a "
-            f"row. For an item that is obsolete, rerun with {work_item_age.OVERRIDE_FLAG} REASON; "
-            "every use is logged.\n")
+            f"{listing}Finish the started items first, and promote each named spillover row to "
+            f"a Linear issue (`spillover-promote.py <id>`). For an item that is obsolete, rerun "
+            f"with {work_item_age.OVERRIDE_FLAG} REASON; every use is logged.\n")
         return True
     try:
         ledger = work_item_age.record_override(paths.repo_root, issue_id, override.strip(),

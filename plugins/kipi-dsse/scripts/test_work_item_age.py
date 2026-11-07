@@ -94,26 +94,45 @@ def _close(repo: Path, prd_id: str, issue_id: str, split_days_ago: float, cycle_
         fh.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+
+
 def _spill(repo: Path, source: str, sid: str, severity: str = "major", days_ago: float = 8,
-           owner: str | None = None, linear=None) -> None:
-    """File a row through the real `spillover add`, then append the full-copy row the ledger
-    would hold for an older row: backdated, and with the owner and link the case needs.
-    Rows written before RULE-2026-08-24-B carry no owner field (585 of 998 open rows in the
-    kipi-system ledger on 2026-11-07)."""
+           **fields) -> None:
+    """File a row through the real `spillover add` (owner: sana, as the producer writes it),
+    then append the full-copy row the ledger holds once time passes: backdated, plus any
+    field a later writer adds (a promotion's `linear` string, a capture ticket dict)."""
     r = _run(repo, PRDOS / "prd_runner.py", "spillover", "add", "--source", source,
              "--desc", f"probe {sid}", "--id", sid, "--severity", severity, "--no-promote")
     assert r.returncode == 0, r.stderr
     ledger = repo / ".prd-os/spillover.jsonl"
     rows = [json.loads(x) for x in ledger.read_text().splitlines() if x.strip()]
     last = [x for x in rows if x.get("id") == sid][-1]
-    row = dict(last, created_at=_iso(_ago(days_ago)))
-    row.pop("owner", None)
-    if owner is not None:
-        row["owner"] = owner
-    if linear is not None:
-        row["linear"] = linear
+    assert last.get("owner") == "sana", last  # the producer's own default, kept as written
     with ledger.open("a") as fh:
-        fh.write(json.dumps(row) + "\n")
+        fh.write(json.dumps(dict(last, created_at=_iso(_ago(days_ago)), **fields)) + "\n")
+
+
+def _git(repo: Path, *argv) -> None:
+    r = subprocess.run(["git", *argv], cwd=repo, capture_output=True, text=True)
+    assert r.returncode == 0, (argv, r.stderr)
+
+
+def _commit_specs(repo: Path, msg: str) -> None:
+    _git(repo, "add", "-A", "-f", ".prd-os/issues", ".prd-os/prds")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", msg)
+
+
+def _flip_on_branch(repo: Path, issue_id: str) -> None:
+    """Start `issue_id` the way a worker does: on a branch the base never merges."""
+    _commit_specs(repo, "specs on the base branch")
+    base = subprocess.run(["git", "branch", "--show-current"], cwd=repo,
+                          capture_output=True, text=True).stdout.strip()
+    _git(repo, "checkout", "-qb", f"sana/{issue_id}")
+    path = repo / ".prd-os/issues" / f"{issue_id}.md"
+    path.write_text(re.sub(r"(?m)^status:\s*.+$", "status: in-progress", path.read_text(), count=1))
+    _commit_specs(repo, f"start {issue_id}")
+    _git(repo, "checkout", "-q", base)
+    assert "status: open" in path.read_text()
 
 
 def _five_closed(repo: Path, prd_id: str, ids: list) -> None:
@@ -122,9 +141,13 @@ def _five_closed(repo: Path, prd_id: str, ids: list) -> None:
         _close(repo, prd_id, i, split_days_ago=30, cycle_days=n)
 
 
+C5 = ["c1", "c2", "c3", "c4", "c5"]
+
+
 # --- the DoR check: an 8-day unowned major refuses, naming it ---------------------------------
 
 def test_an_eight_day_unowned_major_spillover_refuses_start_naming_it(tmp_path):
+    # The row is exactly what the producer wrote, owner: sana included (review of #626, F1).
     repo, prd = _prd_repo(tmp_path, ["new-1"])
     _spill(repo, prd, "sp-unowned1", days_ago=8)
     r = _issue(repo, "load", "new-1")
@@ -134,23 +157,33 @@ def test_an_eight_day_unowned_major_spillover_refuses_start_naming_it(tmp_path):
 
 
 def test_a_prd_item_older_than_the_cycle_time_tail_refuses_start_naming_it(tmp_path):
-    ids = ["c1", "c2", "c3", "c4", "c5"]
-    repo, prd = _prd_repo(tmp_path, ids + ["old-1", "new-1"])
-    _five_closed(repo, prd, ids)
-    _set_spec(repo, "old-1", _ago(9))
-    _set_spec(repo, "new-1", _ago(0))
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "old-1", _ago(9), status="in-progress")
+    _set_spec(repo, "new-1", _ago(9))
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 2, r.stdout + r.stderr
     assert "old-1" in r.stderr and "85th percentile" in r.stderr, r.stderr
 
 
+def test_work_started_on_an_unmerged_branch_ages_and_refuses_start(tmp_path):
+    # The open-PR (or abandoned-branch) case, read from git: the base still says open.
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "old-1", _ago(9))
+    _set_spec(repo, "new-1", _ago(9))
+    _flip_on_branch(repo, "old-1")
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "old-1" in r.stderr and "does not hold" in r.stderr, r.stderr
+
+
 def test_a_healthy_prd_starts(tmp_path):
-    ids = ["c1", "c2", "c3", "c4", "c5"]
-    repo, prd = _prd_repo(tmp_path, ids + ["young-1", "new-1"])
-    _five_closed(repo, prd, ids)
-    _set_spec(repo, "young-1", _ago(2))
+    repo, prd = _prd_repo(tmp_path, C5 + ["young-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "young-1", _ago(2), status="in-progress")
     _set_spec(repo, "new-1", _ago(0))
-    _spill(repo, prd, "sp-owned1", days_ago=20, owner="sana")
+    _spill(repo, prd, "sp-owned1", days_ago=20, linear="ASK-1556")
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert json.loads(r.stdout)["loaded"] == "new-1"
@@ -163,7 +196,7 @@ def test_fewer_than_five_merged_items_skips_the_cycle_time_half_in_one_line(tmp_
     repo, prd = _prd_repo(tmp_path, ids + ["old-1", "new-1"])
     for n, i in enumerate(ids, start=1):
         _close(repo, prd, i, split_days_ago=30, cycle_days=n)
-    _set_spec(repo, "old-1", _ago(20))
+    _set_spec(repo, "old-1", _ago(20), status="in-progress")
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 0, r.stdout + r.stderr
     [line] = [x for x in r.stderr.splitlines() if x.startswith("age gate:")]
@@ -186,54 +219,78 @@ def test_the_tail_is_the_85th_percentile_of_merged_cycle_time(tmp_path):
     repo, prd = _prd_repo(tmp_path, ids + ["mid-1", "new-1"])
     for n, i in enumerate(ids, start=1):
         _close(repo, prd, i, split_days_ago=40, cycle_days=n)
-    _set_spec(repo, "mid-1", _ago(8.5))
+    _set_spec(repo, "mid-1", _ago(8.5), status="in-progress")
     assert _issue(repo, "load", "new-1").returncode == 0, "8.5 days is inside a 9-day tail"
-    _set_spec(repo, "mid-1", _ago(9.5))
+    _set_spec(repo, "mid-1", _ago(9.5), status="in-progress")
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 2 and "mid-1" in r.stderr and "9.0 days over 10 merged" in r.stderr, r.stderr
 
 
-# --- no deadlock: the oldest work itself can always start ---------------------------------
+# --- no deadlock: backlog never blocks, and started work can always be reworked -----------
 
-def test_aging_specs_from_one_split_wave_do_not_block_each_other(tmp_path):
-    ids = ["c1", "c2", "c3", "c4", "c5"]
-    repo, prd = _prd_repo(tmp_path, ids + ["wave-1", "wave-2"])
-    _five_closed(repo, prd, ids)
-    _set_spec(repo, "wave-1", _ago(20) - timedelta(seconds=2))
-    _set_spec(repo, "wave-2", _ago(20))
+def test_unstarted_siblings_never_block_however_old(tmp_path):
+    # One split stamps every spec within seconds (review of #626, F2: 76 of 77 open
+    # kipi-system specs have an old open sibling). Backlog is not work in progress.
+    repo, prd = _prd_repo(tmp_path, C5 + ["wave-1", "wave-2"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "wave-1", _ago(100) - timedelta(days=3))
+    _set_spec(repo, "wave-2", _ago(100))
     r = _issue(repo, "load", "wave-2")
     assert r.returncode == 0, r.stdout + r.stderr
 
 
 def test_resuming_an_issue_already_in_progress_is_not_a_new_start(tmp_path):
-    ids = ["c1", "c2", "c3", "c4", "c5"]
-    repo, prd = _prd_repo(tmp_path, ids + ["old-1", "new-1"])
-    _five_closed(repo, prd, ids)
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "old-1", _ago(9), status="in-progress")
+    _set_spec(repo, "new-1", _ago(9), status="in-progress")
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "already started" in r.stderr
+
+
+def test_reworking_an_issue_started_on_a_branch_is_not_a_new_start(tmp_path):
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "old-2"])
+    _five_closed(repo, prd, C5)
     _set_spec(repo, "old-1", _ago(9))
-    _set_spec(repo, "new-1", _ago(0), status="in-progress")
-    r = _issue(repo, "load", "new-1")
+    _set_spec(repo, "old-2", _ago(9))
+    _flip_on_branch(repo, "old-1")
+    _flip_on_branch(repo, "old-2")
+    r = _issue(repo, "load", "old-2")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "already in progress" in r.stderr
+    assert "already started" in r.stderr
 
 
-# --- what "unowned" means --------------------------------------------------------------
+# --- what "unowned" means: no tracker ref ---------------------------------------------------
 
-def test_an_owner_field_or_a_linked_linear_issue_owns_a_row(tmp_path):
+def test_the_owner_default_and_a_capture_ticket_do_not_own_a_row(tmp_path):
     repo, prd = _prd_repo(tmp_path, ["new-1"])
-    _spill(repo, prd, "sp-own", days_ago=30, owner="sana")
-    _spill(repo, prd, "sp-cap", days_ago=30,
+    _spill(repo, prd, "sp-captured", days_ago=30,
            linear={"state": "filed", "identifier": "ASK-1555", "exit": 0, "at": _iso(_ago(29))})
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 2 and "sp-captured" in r.stderr, r.stderr
+
+
+def test_a_promotion_or_a_linear_ref_owns_a_row(tmp_path):
+    repo, prd = _prd_repo(tmp_path, ["new-1"])
     _spill(repo, prd, "sp-promo", days_ago=30, linear="ASK-1556")
+    _spill(repo, prd, "sp-ref", days_ago=30, linear_ref="ASK-1557")
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 0, r.stdout + r.stderr
 
 
-def test_a_failed_capture_ticket_is_not_a_link(tmp_path):
-    repo, prd = _prd_repo(tmp_path, ["new-1"])
-    _spill(repo, prd, "sp-failed", days_ago=9,
-           linear={"state": "failed", "identifier": None, "exit": 1, "at": _iso(_ago(9))})
-    r = _issue(repo, "load", "new-1")
-    assert r.returncode == 2 and "sp-failed" in r.stderr, r.stderr
+def test_the_tracker_ref_copy_agrees_with_prd_runner(tmp_path):
+    spec = importlib.util.spec_from_file_location("_prd_runner_ref", PRDOS / "prd_runner.py")
+    prd_runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(prd_runner)
+    wspec = importlib.util.spec_from_file_location("_wia_ref", DSSE / "work_item_age.py")
+    wia = importlib.util.module_from_spec(wspec)
+    wspec.loader.exec_module(wia)
+    shapes = [{}, {"owner": "sana"}, {"linear": "ASK-1"}, {"linear": "  "}, {"linear_ref": "ASK-2"},
+              {"linear_ref": " "}, {"linear": {"state": "filed", "identifier": "ASK-3"}},
+              {"linear": {"state": "failed", "identifier": None}}, {"linear": None}]
+    assert [wia.has_tracker_ref(r) for r in shapes] == [
+        prd_runner._spillover_has_tracker_ref(r) for r in shapes]
 
 
 def test_rows_that_are_young_minor_resolved_or_from_another_prd_do_not_refuse(tmp_path):
@@ -241,11 +298,7 @@ def test_rows_that_are_young_minor_resolved_or_from_another_prd_do_not_refuse(tm
     _spill(repo, prd, "sp-young", days_ago=6)
     _spill(repo, prd, "sp-medium", severity="medium", days_ago=30)
     _spill(repo, "prd-someone-else-2026-01-01", "sp-other", days_ago=30)
-    _spill(repo, prd, "sp-done", days_ago=30)
-    ledger = repo / ".prd-os/spillover.jsonl"
-    done = [json.loads(x) for x in ledger.read_text().splitlines() if '"sp-done"' in x][-1]
-    with ledger.open("a") as fh:
-        fh.write(json.dumps(dict(done, status="resolved")) + "\n")
+    _spill(repo, prd, "sp-done", days_ago=30, status="resolved")
     r = _issue(repo, "load", "new-1")
     assert r.returncode == 0, r.stdout + r.stderr
 
@@ -277,9 +330,7 @@ def test_the_override_needs_a_reason_and_writes_a_row(tmp_path):
 
 def test_a_worktree_start_reads_the_main_checkouts_ledger(tmp_path):
     repo, prd = _prd_repo(tmp_path, ["new-1"])
-    subprocess.run(["git", "add", "-A", "-f", ".prd-os/issues", ".prd-os/prds"], cwd=repo,
-                   capture_output=True)
-    subprocess.run(["git", "commit", "-qm", "specs"], cwd=repo, capture_output=True)
+    _commit_specs(repo, "specs")
     wt = tmp_path / "wt"
     made = subprocess.run(["git", "worktree", "add", "-q", str(wt)], cwd=repo,
                           capture_output=True, text=True)
@@ -290,9 +341,38 @@ def test_a_worktree_start_reads_the_main_checkouts_ledger(tmp_path):
     spec = importlib.util.spec_from_file_location("_prd_runner_for_parity", PRDOS / "prd_runner.py")
     prd_runner = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(prd_runner)
-    sys_path_wia = importlib.util.spec_from_file_location("_wia", DSSE / "work_item_age.py")
-    wia = importlib.util.module_from_spec(sys_path_wia)
-    sys_path_wia.loader.exec_module(wia)
+    wspec = importlib.util.spec_from_file_location("_wia", DSSE / "work_item_age.py")
+    wia = importlib.util.module_from_spec(wspec)
+    wspec.loader.exec_module(wia)
     assert wia.ledger_root(wt) == prd_runner._ledger_root(wt) == repo.resolve()
     r = _issue(wt, "load", "new-1")
     assert r.returncode == 2 and "sp-main-only" in r.stderr, r.stdout + r.stderr
+
+
+def test_without_a_base_ref_the_branch_signal_says_so_and_the_checkout_signal_still_holds(tmp_path):
+    repo, prd = _prd_repo(tmp_path, C5 + ["old-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _git(repo, "branch", "-m", "trunk")
+    _set_spec(repo, "old-1", _ago(9), status="in-progress")
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 2 and "old-1" in r.stderr, r.stderr
+    assert "unmerged-branch signal unavailable (no origin/main or main ref)" in r.stderr, r.stderr
+
+
+def test_a_squash_merged_siblings_branch_does_not_make_it_started(tmp_path):
+    # A squash merge leaves the branch's own commits off the base forever, so the spec stays
+    # on an unmerged ref after it closed on the base. Closed on the base is what counts.
+    repo, prd = _prd_repo(tmp_path, C5 + ["m-1", "new-1"])
+    _five_closed(repo, prd, C5)
+    _set_spec(repo, "m-1", _ago(9))
+    _commit_specs(repo, "specs on the base branch")
+    base = subprocess.run(["git", "branch", "--show-current"], cwd=repo,
+                          capture_output=True, text=True).stdout.strip()
+    _git(repo, "checkout", "-qb", "sana/m-1")
+    _set_spec(repo, "m-1", _ago(9), status="closed")
+    _commit_specs(repo, "close m-1 on its branch")
+    _git(repo, "checkout", "-q", base)
+    _close(repo, prd, "m-1", split_days_ago=9, cycle_days=1)
+    _commit_specs(repo, "squash merge of sana/m-1")
+    r = _issue(repo, "load", "new-1")
+    assert r.returncode == 0, r.stdout + r.stderr
