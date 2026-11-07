@@ -100,4 +100,57 @@ assert "Bash(ls:*)" in merged["permissions"]["allow"], "template permission drop
 EOF
 echo "ok: stale token-guard variants retired, template form wins, instance hooks/MCP/permissions survive"
 
+# ASK-3685: apply-claude-changes now lets an instance wire its OWN hooks in
+# .claude/settings.json, on the premise that this merge keeps them. Codex review
+# of PR #615 showed the premise held only by luck: identity was the BASENAME
+# alone, so an instance script that happened to share a name with a template
+# script (or with a retired one) was deduped or retired away on the next update.
+# A script outside the q-system/ subtree is the instance's own, so it is keyed
+# by its path instead. Template hooks all live under q-system/ and keep their
+# basename identity, so the token-guard fossil dedup above is unchanged.
+cat > "$FIXTURE/template2.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+cat > "$FIXTURE/instance2.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": ".*", "hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""},
+        {"type": "command", "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-inst/token-guard.py\"; fi"}
+      ]}
+    ],
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/memory_autocapture.py\""},
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/memory_autocapture.py\""}
+      ]}
+    ]
+  }
+}
+EOF
+python3 "$MERGE" "$FIXTURE/template2.json" "$FIXTURE/instance2.json" >/dev/null
+python3 - "$FIXTURE/instance2.json" <<'EOF'
+import json, sys
+merged = json.load(open(sys.argv[1]))
+all_cmds = [h["command"] for ev in merged["hooks"].values() for g in ev for h in g["hooks"]]
+assert any("q-inst/token-guard.py" in c for c in all_cmds), \
+    "an instance-owned script sharing a template basename was deduped away"
+assert sum("q-system/.q-system/token-guard.py" in c for c in all_cmds) == 1, \
+    "the template token-guard must stay exactly once"
+assert any("q-inst/memory_autocapture.py" in c for c in all_cmds), \
+    "an instance-owned script sharing a retired basename was retired away"
+assert not any("q-system/.q-system/scripts/memory_autocapture.py" in c for c in all_cmds), \
+    "the retired skeleton script must still be dropped"
+EOF
+echo "ok: instance-owned scripts keep their hooks even when a basename collides"
+
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"

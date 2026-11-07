@@ -25,13 +25,36 @@ import os
 import re
 import sys
 
-# A "script" is any .py/.sh path in the command; basenames identify the hook
-# across path layouts (flattened vs pre-flattening) and wrapper forms.
-SCRIPT_NAME_RE = re.compile(r"([A-Za-z0-9_\-]+\.(?:py|sh))")
+# A "script" is any .py/.sh path in the command, read with the directory in front
+# of it so ownership can be told (see hook_script_names).
+SCRIPT_PATH_RE = re.compile(r"((?:[^\s\"'/;|&()]*/)*)([A-Za-z0-9_\-]+\.(?:py|sh))")
+_PROJECT_PREFIXES = ("$CLAUDE_PROJECT_DIR/", "${CLAUDE_PROJECT_DIR}/", "./")
 
 
 def hook_script_names(command):
-    return frozenset(SCRIPT_NAME_RE.findall(command))
+    """Script identities a command invokes.
+
+    A script under the q-system/ subtree is the skeleton's, and is identified by
+    basename so every path layout of it dedupes (the token-guard fossil scar in
+    the module docstring). Every template hook lives there (measured 2026-11-06).
+    Any other path is the instance's own script and is identified by its path:
+    keyed by basename alone, an instance's q-inst/token-guard.py was deduped
+    against the template's token-guard, and an instance script that shared a
+    retired name was retired with it (codex review of kipi-system PR #615,
+    ASK-3685). apply-claude-changes lets an instance wire its own hooks on the
+    premise that this merge keeps them; this is what makes that true.
+    """
+    out = set()
+    for prefix, name in SCRIPT_PATH_RE.findall(command):
+        if not prefix or "q-system/" in prefix:
+            out.add(name)
+            continue
+        rel = prefix + name
+        for lead in _PROJECT_PREFIXES:
+            if rel.startswith(lead):
+                rel = rel[len(lead):]
+        out.add("path:" + rel)
+    return frozenset(out)
 
 
 def _only_retired(command, retired):
@@ -43,9 +66,9 @@ def _only_retired(command, retired):
 
 
 def hook_key(command):
-    """Identity of a hook command for dedup: the set of script basenames it
-    invokes, or the raw string when no script is recognizable."""
-    names = frozenset(SCRIPT_NAME_RE.findall(command))
+    """Identity of a hook command for dedup: the set of script identities it
+    invokes (see hook_script_names), or the raw string when none is recognizable."""
+    names = hook_script_names(command)
     return names if names else command
 
 

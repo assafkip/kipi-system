@@ -1053,8 +1053,14 @@ def is_templateless_instance(root):
     The skeleton is told apart by instance-registry.json at its root, the marker
     instance-automation-guard.py already reads. A skeleton whose template went
     missing is broken, not an instance, so it keeps the refusal.
+
+    lexists, not exists: a DANGLING settings-template.json symlink reads as
+    absent to exists(), so the tree looked like an instance and an edit creating
+    the symlink's target under .claude/ bootstrapped a template by another name
+    (codex review of PR #615). Any directory entry by that name, live or
+    dangling, means this is not a template-less instance.
     """
-    return (not os.path.exists(os.path.join(root, "settings-template.json"))
+    return (not os.path.lexists(os.path.join(root, "settings-template.json"))
             and not os.path.exists(os.path.join(root, "instance-registry.json")))
 
 

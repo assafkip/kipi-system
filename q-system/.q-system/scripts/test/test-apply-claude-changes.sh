@@ -431,6 +431,21 @@ if [ ! -e "$T/settings-template.json" ]; then
 else bad "refused bootstrap left a template behind"; fi
 rm -r "$T"
 
+# A dangling settings-template.json symlink is not "no template": creating its
+# target under .claude/ would bootstrap one by another name (codex, PR #615).
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+ln -s .claude/new-template.json "$T/settings-template.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/gate.py"
+mk_instance_hook_proposal "$T/inst.json" ',
+    { "file": ".claude/new-template.json", "op": "create_file", "insert": "{}\n", "reason": "bootstrap by symlink" }'
+run_engine "$ENGINE" "$T/inst.json" "$T"
+check "dangling template symlink is not an instance" 2 "without the settings-template.json pair" "$RC" "$OUT"
+if [ ! -e "$T/.claude/new-template.json" ]; then
+  ok "dangling-symlink refusal created no template target"
+else bad "dangling-symlink refusal created the template target"; fi
+rm -r "$T"
+
 # --------------------------------------------- 9. gate break -> auto-revert
 # Deliberately ships a proposal that applies cleanly and passes the ratchet, but
 # wires a hook to a script that does not exist. hook-scripts-exist goes
