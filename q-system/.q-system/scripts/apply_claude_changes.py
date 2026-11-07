@@ -1177,9 +1177,11 @@ def main(argv):
             # be deduped or retired away (fleet reviewer, PR #615; ASK-3876 is
             # the refusal at this point). Say so where the operator reads it.
             log.append("instance mode: no settings-template.json and no "
-                       "instance-registry.json; the fleet merge keeps an instance "
-                       "hook written as \"$CLAUDE_PROJECT_DIR/<path>\" with no cd, "
-                       "and keys any other spelling by its script basename")
+                       "instance-registry.json; the fleet merge keys a hook by its "
+                       "path only when written as \"$CLAUDE_PROJECT_DIR/<path>\" "
+                       "with <path> outside q-system/ and no source, . or eval in "
+                       "the command; it keys anything else, including any script "
+                       "under q-system/, by its basename")
     elif touches_settings and not touches_template and not (prop.get("requires") or {}).get("template_pairs"):
         raise Refusal(".claude/settings.json edited without the settings-template.json pair")
 

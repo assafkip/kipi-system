@@ -238,7 +238,8 @@ cat > "$FIXTURE/instance5.json" <<'EOF'
     ],
     "Stop": [
       {"hooks": [
-        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py\""}
+        {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py\""},
+        {"type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && python3 \"$CLAUDE_PROJECT_DIR/automation/memory_autocapture.py\""}
       ]}
     ]
   }
@@ -255,8 +256,13 @@ assert sum("q-system/.q-system/token-guard.py" in c for c in all_cmds) == 1, \
     "the template token-guard must stay exactly once"
 assert any("q-inst/custom.memory_autocapture.py" in c for c in all_cmds), \
     "a dotted instance file name was read as a retired basename and dropped"
+# Fleet review 2 on PR #615: a `cd` cannot change what an ANCHORED path names
+# (it is absolute), so refusing cd protected nothing and deleted this instance
+# hook as the retired memory_autocapture.py.
+assert any(c.startswith("cd ") and "automation/memory_autocapture.py" in c for c in all_cmds), \
+    "a cd in front of an anchored instance path dropped the hook as a retired basename"
 EOF
-echo "ok: canonical instance hooks keep identity with a dotted name or a '.' argument (codex round 4)"
+echo "ok: canonical instance hooks keep identity with a dotted name, a '.' argument or a cd (codex round 4, fleet review 2)"
 
 python3 - "$MERGE" <<'EOF'
 import importlib.util, sys
@@ -287,6 +293,14 @@ keeps_path = {
         {"path:q-inst/run.py"},
     'python3 "$CLAUDE_PROJECT_DIR/q-inst/custom.memory_autocapture.py"':
         {"path:q-inst/custom.memory_autocapture.py"},
+    # fleet review 2: an anchored path is absolute, so moving the working
+    # directory does not change what it names
+    'cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"':
+        {"path:q-inst/token-guard.py"},
+    'pushd "$CLAUDE_PROJECT_DIR" >/dev/null; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"':
+        {"path:q-inst/token-guard.py"},
+    'if cd "$CLAUDE_PROJECT_DIR"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi':
+        {"path:q-inst/token-guard.py"},
 }
 # Outside the grammar: basename identity, whatever the path seems to say.
 basename_only = [
@@ -294,14 +308,12 @@ basename_only = [
     'cd "$CLAUDE_PROJECT_DIR/q-system" && python3 .q-system/token-guard.py',
     'python3 q-inst/token-guard.py',
     'python3 ./q-inst/token-guard.py',
-    # a command that moves the working directory is outside the grammar
-    'cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
-    'pushd "$CLAUDE_PROJECT_DIR" >/dev/null; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
-    # ... wherever the builtin is the command name: after a reserved word, an
-    # assignment, a redirection, or the builtin/command wrappers
-    'if cd "$CLAUDE_PROJECT_DIR"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi',
-    'X=1 builtin cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
-    '> /dev/null cd "$CLAUDE_PROJECT_DIR" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    # code the merge cannot read (a sourced file, an eval) can repoint the
+    # anchor, wherever the builtin is the command name: after a reserved word,
+    # an assignment, a redirection, or the builtin/command wrappers
+    'if . "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"; fi',
+    'X=1 builtin source "$CLAUDE_PROJECT_DIR/q-inst/env.sh" && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
+    '> /dev/null eval "python3 $CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
     '2>/dev/null command . "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
     'true && { source "$CLAUDE_PROJECT_DIR/q-inst/env.sh"; } && python3 "$CLAUDE_PROJECT_DIR/q-inst/token-guard.py"',
     # a command that rewrites the anchor, or runs text as code in this shell

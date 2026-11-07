@@ -38,8 +38,11 @@ _ANCHORED_RE = re.compile(
 # ${CLAUDE_PROJECT_DIR:=x}) can repoint every anchored path after it.
 _ANCHOR_READ_RE = re.compile(
     r"\$\{CLAUDE_PROJECT_DIR\}|\$CLAUDE_PROJECT_DIR(?![A-Za-z0-9_])")
-# Builtins that move the working directory or run text as code in this shell.
-_STATE_WORDS = frozenset(("cd", "pushd", "popd", "source", ".", "eval"))
+# Builtins that run text as code in this shell, which can repoint the anchor out
+# of the merge's sight. Not cd, pushd or popd: an anchored path is absolute, so
+# the working directory cannot change what it names, and refusing them only
+# deleted real instance hooks (fleet review 2 on PR #615).
+_STATE_WORDS = frozenset(("source", ".", "eval"))
 # What separates one simple command from the next, and what may stand in front
 # of a command's NAME: the POSIX command prefix (assignments, redirections),
 # the reserved words that open a compound command, and the two wrappers that
@@ -76,11 +79,12 @@ def _command_names(unquoted):
 def _plain_command(unquoted):
     """True when nothing in the command can change what an anchored path means.
 
-    Codex round 3 on PR #615: a `cd` in front of a relative path made a template
-    script read as an instance one. Rather than model which words a `cd` (or a
-    reassigned anchor) reaches, a command that does either gets no path identity
-    at all. A missed `cd` costs nothing (an anchored path does not depend on the
-    working directory); the check keeps the accepted form narrow.
+    Only the anchor matters, because only an anchored path earns path identity.
+    It can be repointed by a write to CLAUDE_PROJECT_DIR in the command, or by
+    code the merge cannot read (a sourced file, an eval). A command that does
+    either gets no path identity at all. Codex round 3's `cd` input needed no
+    rule here: its path was relative, and relative paths no longer earn path
+    identity.
     """
     if _STATE_WORDS & set(_command_names(unquoted)):
         return False

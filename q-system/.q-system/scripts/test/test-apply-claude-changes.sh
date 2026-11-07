@@ -401,6 +401,12 @@ else bad "instance hook missing or settings.json invalid"; fi
 if [ ! -e "$T/settings-template.json" ]; then
   ok "instance apply created no template"
 else bad "instance apply created a settings-template.json"; fi
+# The log is where an operator learns which spelling survives the fleet merge.
+# Fleet review 2 on PR #615: it promised path identity for any
+# "$CLAUDE_PROJECT_DIR/<path>", but a path under q-system/ is keyed by basename.
+if grep -q 'outside q-system/' "$T/q-system/output/claude-changes/apply.log"; then
+  ok "instance-mode log names the q-system/ carve-out"
+else bad "instance-mode log omits that a q-system/ path is keyed by basename"; fi
 rm -r "$T"
 
 # The skeleton with its template missing is NOT an instance: still refused.
