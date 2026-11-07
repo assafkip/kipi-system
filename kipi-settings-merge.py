@@ -28,30 +28,48 @@ import sys
 # A "script" is any .py/.sh path in the command, read with the directory in front
 # of it so ownership can be told (see hook_script_names).
 SCRIPT_PATH_RE = re.compile(r"((?:[^\s;|&()]*/)*)([A-Za-z0-9_\-]+\.(?:py|sh))")
-_PROJECT_VARS = ("${CLAUDE_PROJECT_DIR}/", "$CLAUDE_PROJECT_DIR/")
+# The one spelling that earns path identity: the anchor, then plain path
+# characters only, so no variable, glob, brace, tilde or escape can sit in it.
+_ANCHORED_RE = re.compile(
+    r"(?:\$CLAUDE_PROJECT_DIR|\$\{CLAUDE_PROJECT_DIR\})/([A-Za-z0-9._/\-]+)")
+# A plain READ of the anchor. Any other mention (an assignment, an export,
+# ${CLAUDE_PROJECT_DIR:=x}) can repoint every anchored path after it.
+_ANCHOR_READ_RE = re.compile(
+    r"\$\{CLAUDE_PROJECT_DIR\}|\$CLAUDE_PROJECT_DIR(?![A-Za-z0-9_])")
+_SHELL_WORD_SPLIT_RE = re.compile(r"[\s;|&(){}`<>]+")
+# Builtins that move the working directory or run text as code in this shell.
+_STATE_WORDS = frozenset(("cd", "pushd", "popd", "source", ".", "eval"))
+# The shell removes these before a path reaches the file system, so they are
+# removed before the path is read.
+_SHELL_QUOTING = str.maketrans("", "", "\"'\\")
 
 
-def _script_identity(prefix, name):
+def _plain_command(unquoted):
+    """True when nothing in the command can change what an anchored path means.
+
+    Codex round 3 on PR #615: a `cd` in front of a relative path made a template
+    script read as an instance one. Rather than model which words a `cd` (or a
+    reassigned anchor) reaches, a command that does either gets no path identity
+    at all.
+    """
+    if _STATE_WORDS & set(_SHELL_WORD_SPLIT_RE.split(unquoted)):
+        return False
+    return "CLAUDE_PROJECT_DIR" not in _ANCHOR_READ_RE.sub("", unquoted)
+
+
+def _script_identity(prefix, name, plain):
     """Basename for a skeleton script, "path:<rel>" for an instance-owned one.
 
-    Instance-owned means PROVABLY project-relative (after $CLAUDE_PROJECT_DIR/,
-    or a bare relative path) with a leading component other than q-system.
-    Everything else keeps the old basename identity, so a spelling this cannot
-    read fails toward dedup, the direction the token-guard scar was about.
+    Instance-owned means the canonical spelling (see hook_script_names) with a
+    leading component other than q-system. Everything else keeps the old
+    basename identity, so a spelling this does not accept fails toward dedup,
+    the direction the token-guard scar was about.
     """
-    full = prefix + name
-    rel = None
-    for var in _PROJECT_VARS:
-        at = full.rfind(var)
-        if at != -1:
-            rel = full[at + len(var):]
-            break
-    if rel is None:
-        rel = full[2:] if full.startswith("./") else full
-        if "/" not in rel or rel.startswith(("/", "~", "$")):
-            return name
-    rel = os.path.normpath(rel).lower()
-    if rel.startswith("..") or rel.split("/", 1)[0] == "q-system":
+    hit = _ANCHORED_RE.fullmatch(prefix + name) if plain else None
+    if hit is None:
+        return name
+    rel = os.path.normpath(hit.group(1)).lower()
+    if rel.startswith(("/", "..")) or rel.split("/", 1)[0] == "q-system":
         return name
     return "path:" + rel
 
@@ -69,14 +87,22 @@ def hook_script_names(command):
     lets an instance wire its own hooks on the premise that this merge keeps
     them; this is what makes that true.
 
-    Ownership is the LEADING path component, read after shell quotes are
-    removed. Codex round 2 broke both shortcuts: a substring test made
-    q-inst/not-q-system/x.py skeleton-owned, and a quote between directory and
-    name ("$D/q-system/.q-system"/token-guard.py) hid the prefix so a template
-    script read as an instance one and ran twice.
+    Path identity is granted to ONE spelling, the one all 17 live
+    path-identity hooks across 14 instances use (measured 2026-11-06): a token
+    that starts with $CLAUDE_PROJECT_DIR/ or ${CLAUDE_PROJECT_DIR}/ and goes on
+    in plain path characters, in a command that cannot change what that anchor
+    means (_plain_command). Ownership is then the LEADING path component, read
+    after shell quoting is removed. Scar: three Codex rounds on PR #615 each
+    found a spelling that broke the fix before it (a substring test, a quote
+    between directory and name, a `cd` before a relative path), because the
+    parser tried to READ every spelling. It now accepts one and refuses the
+    rest (RCA rca-settings-merge-identity-three-rounds-2026-11-06). Limit: this
+    reads text, not the disk, so an instance directory that is a symlink into
+    q-system/ is not seen.
     """
-    unquoted = command.replace('"', "").replace("'", "")
-    return frozenset(_script_identity(prefix, name)
+    unquoted = command.translate(_SHELL_QUOTING)
+    plain = _plain_command(unquoted)
+    return frozenset(_script_identity(prefix, name, plain)
                      for prefix, name in SCRIPT_PATH_RE.findall(unquoted))
 
 
