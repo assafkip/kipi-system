@@ -573,40 +573,152 @@ _wt_bail() {  # _wt_bail <worktree-path>
 # is reading files while run B re-checkouts it to a different sha. Neither run
 # can tell, and both stamp their verdicts with the sha they THINK they read.
 #
-# Same primitive as mutation-sweep's sweep lock (ASK-1147) and for the same
-# reason: O_CREAT|O_EXCL is atomic everywhere and needs no daemon. A stale lock
-# whose holder is gone is reclaimed, because an operator who must clear locks by
-# hand eventually clears one while a run is live.
+# The lock is a PID file, written atomically and decided under a kernel flock
+# (ASK-3930 round 3, see acquire_wt_lock). A stale lock whose holder is gone is
+# reclaimed, because an operator who must clear locks by hand eventually clears
+# one while a run is live.
 _wt_lock_path=""
-# Exit codes are THREE-VALUED on purpose (PR #265 major, round 2). The caller
-# has to tell "nobody has a tree, so clear the stale ref" apart from "somebody
-# else owns this tree RIGHT NOW", because the cleanup that is correct for the
-# first is destructive for the second: the ref belongs to the live holder, and
-# this run never wrote it.
-#   0 = held by us   1 = could not lock (our problem)   2 = busy (their tree)
-acquire_wt_lock() {  # acquire_wt_lock <worktree-path>
-  local wt="$1" lock="$1.lock" holder
-  mkdir -p "$(dirname "$wt")" 2>/dev/null || return 1
-  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
-    _wt_lock_path="$lock"; return 0
-  fi
-  holder="$(cat "$lock" 2>/dev/null || true)"
-  # RE-ENTRANT for this run. review_worktree is called more than once per review,
-  # and the lock exists to keep OTHER processes out, not this one. Without this
-  # the second call in a single run refuses on a lock it placed itself -- caught
-  # immediately by the existing suites, which went 5 and 2 red.
-  if [ "$holder" = "$$" ]; then
-    _wt_lock_path="$lock"; return 0
-  fi
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    return 2
-  fi
-  # Stale: reclaim once.
-  command rm -f "$lock" 2>/dev/null || true
-  if ( set -o noclobber; printf '%s' "$$" > "$lock" ) 2>/dev/null; then
-    _wt_lock_path="$lock"; return 0
-  fi
-  return 1
+# Exit codes are FOUR-VALUED, and only 1 lets a caller treat the tree as nobody's.
+# PR #265 round 2 split "could not lock" from "busy" because the stale-ref cleanup
+# that is right when nobody has a tree deletes a live owner's evidence when
+# somebody does. But "could not lock" stayed the DEFAULT, so python3 failing to
+# launch, an unopenable mutex, a mutex timeout or an unreadable lock file each
+# read as "nobody has it" and sent review_worktree to _wt_bail. Rounds 4 and 5 of
+# ASK-3930 found two of those, one per round. So 1 is now earned, never defaulted:
+# it is returned only on proof, and every outcome nobody planned for is 3.
+#   0 = held by us: the helper said so AND the lock file names this run
+#   1 = nobody owns it and the claim could not be written: an absent or dead
+#       holder read inside the mutex. With clear-stale-ref, _wt_bail has already
+#       run, inside the mutex. No other path returns 1.
+#   2 = busy: a live holder that is not this run, read inside the mutex
+#   3 = ownership unknown: anything else. Nothing may clear a ref on it.
+acquire_wt_lock() {  # acquire_wt_lock <worktree-path> [clear-stale-ref]
+  # EVERY CLAIM IS ONE KERNEL-LOCKED CRITICAL SECTION (ASK-3930 round 3). The PID
+  # file is still the ownership record every reader uses, but deciding who gets it
+  # (first claim, re-entry, stale reclaim, the reaper's claim) happens only while
+  # holding an flock on one mutex file per review-trees directory. Rounds 1 to 3
+  # each patched a userspace version: noclobber plus a stale reclaim let two
+  # callers that read one dead PID both win; a mkdir mutex fixed that but needed
+  # its own reclaim for a killed holder, an age check then rmdir by pathname, which
+  # let a delayed contender delete a fresh mutex and both win again. Any userspace
+  # lock that must survive a crashed holder needs that reclaim. The kernel drops an
+  # flock when its holder dies, so this one has none, and the mutex file is never
+  # unlinked, so no path can be swapped under a holder.
+  # macOS ships no flock(1), so python3 takes it (the kipi-promote.sh take_lock
+  # idiom); -I keeps a review tree's own files off its import path. The PID goes in
+  # by link(), so the lock file is never seen empty. An empty one can only come
+  # from a pre-round-3 run mid-create, so it gets a moment before it counts as stale.
+  # RE-ENTRANT for this run: review_worktree is called more than once per review.
+  local wt="$1" lock="$1.lock" clear="${2:-}" dir mutex rc
+  dir="$(dirname "$wt")"; mutex="$dir/.tree-lock.mutex"
+  # A failed mkdir proves nothing about the tree, so it is unknown (3) and clears
+  # nothing. Round 6 first called it "no directory, so no owner" and cleared the
+  # ref outside any mutex; Codex showed EACCES on a parent fails mkdir while the
+  # tree exists and a live run owns it, and that run's ref was deleted.
+  mkdir -p "$dir" 2>/dev/null || return 3
+  # THIS SHELL HOLDS THE MUTEX, on fd 8, until the verdict AND any ref cleanup are
+  # done. python3 flocks the inherited fd (the kipi-promote.sh take_lock idiom),
+  # and an flock lives on the open file description, so it outlasts the python
+  # child and is dropped only by the close below or by this shell dying. Round 5
+  # named the gap: a cleanup run after the mutex is let go lets another run claim
+  # the tree in between, and the cleanup then deletes that run's fresh ref.
+  # The braces matter: a bare `exec 8>>f 2>/dev/null` silences this shell's stderr
+  # for the rest of the run. Children started inside this window (cat, and git in
+  # _wt_bail) inherit fd 8 too; bash 3.2 cannot hide it from them. A child that
+  # outlived the window would hold the mutex, and every later claim then times out
+  # as unknown (3), which keeps refs, so that leak fails closed.
+  [ -e "$mutex" ] || (umask 077; : >> "$mutex") 2>/dev/null
+  { exec 8>>"$mutex"; } 2>/dev/null || return 3
+  python3 -I - "$lock" "$$" 8 <<'PYLOCK' 2>/dev/null
+import fcntl, os, sys, time
+lock, me, fd = sys.argv[1], sys.argv[2], int(sys.argv[3])
+# 0, BUSY and UNOWNED are the only verdicts. Every other exit, an uncaught
+# exception's 1 and a signal's 128+n included, reaches the shell as unknown (3).
+BUSY, UNOWNED, TIMEOUT = 20, 21, 22
+
+def holder():
+    try:
+        with open(lock, encoding="ascii", errors="replace") as fh:
+            return fh.read().strip()
+    except FileNotFoundError:
+        return None
+
+def proven_dead(text):
+    # Only ESRCH proves a PID has no process. Until round 6 ANY kill() error read
+    # as dead, so a liveness check that merely failed reclaimed a live owner's lock.
+    try:
+        pid = int(text)
+    except ValueError:
+        return True   # not a PID: no writer of this file names an owner this way
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OverflowError:
+        return True   # past pid_t: no process can hold it
+    except PermissionError:
+        return False  # another user's live process
+    return False
+
+deadline = time.monotonic() + 5
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        break
+    except BlockingIOError:
+        # Another process is inside the mutex, which covers the whole directory,
+        # so a timeout says nothing about who owns THIS tree: unknown, never busy
+        # and never unowned (ASK-3930 rounds 4 and 6).
+        if time.monotonic() > deadline:
+            sys.exit(TIMEOUT)
+        time.sleep(0.02)
+h = holder()
+if h == "":
+    time.sleep(0.2)
+    h = holder()
+if h == me:
+    sys.exit(0)
+if h is not None and not proven_dead(h):
+    sys.exit(BUSY)
+# PROOF IN HAND: inside the mutex, the holder is absent or dead. Only from here
+# may a failure report UNOWNED, the one verdict that lets a ref be cleared.
+tmp = "%s.%s.tmp" % (lock, me)
+code = UNOWNED
+try:
+    if h is not None:
+        try:
+            os.unlink(lock)
+        except FileNotFoundError:
+            pass
+    with open(tmp, "w") as fh:
+        fh.write(me)
+    os.link(tmp, lock)
+    code = 0
+except FileExistsError:
+    code = BUSY   # a pre-round-3 run created it outside the mutex
+except OSError:
+    pass
+finally:
+    # Best effort. The link decides the claim, so failing to tidy the tmp name must
+    # not turn a lock this run holds into a reported failure.
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+sys.exit(code)
+PYLOCK
+  rc=$?
+  case "$rc" in
+    0)  [ "$(cat "$lock" 2>/dev/null)" = "$$" ] || rc=3 ;;
+    20) rc=2 ;;
+    21) rc=1; [ "$clear" = clear-stale-ref ] && _wt_bail "$wt" ;;
+    *)  rc=3 ;;
+  esac
+  exec 8>&-
+  [ "$rc" = 0 ] && _wt_lock_path="$lock"
+  return "$rc"
 }
 release_wt_lock() {
   [ -n "$_wt_lock_path" ] || return 0
@@ -633,13 +745,21 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   # under the reviewer that WON it, invalidating a live review's evidence. My own
   # two fixes colliding -- the ref cleanup is right when nobody has a tree and
   # destructive when somebody does.
-  acquire_wt_lock "$wt"
+  #
+  # This arm never calls _wt_bail itself (ASK-3930 round 6). acquire_wt_lock clears
+  # the ref only when it has proven nobody owns the tree, and while it still holds
+  # the claim mutex, so no run can claim the tree between the proof and the clear.
+  # Unknown ownership leaves the ref: if it is stale, assert_pr_ref_not_stale
+  # refuses this run, a refusal and never a review of the wrong commit, and the
+  # next run that can lock refreshes it.
+  acquire_wt_lock "$wt" clear-stale-ref
   case "$?" in
     0) : ;;
     2) echo "  WARN: another review holds $wt; leaving its ref alone and falling back." >&2
        return 1 ;;
-    *) echo "  WARN: could not lock $wt; not reusing a tree a live run can re-checkout under us." >&2
-       _wt_bail "$wt"
+    1) echo "  WARN: could not lock $wt, which nobody owns; its stale ref was cleared under the claim mutex." >&2
+       return 1 ;;
+    *) echo "  WARN: could not tell who owns $wt; leaving its ref alone and falling back." >&2
        return 1 ;;
   esac
   mkdir -p "$(dirname "$wt")" 2>/dev/null || _wt_bail "$wt" || return 1
@@ -1200,9 +1320,96 @@ done
 # and a wrongly removed one costs a live review its evidence.
 # Temp worktrees under $TMPDIR/tmp.*/wt are only REPORTED: no marker proves which
 # run made them (the PR #495 lesson recorded in review_scratch_cleanup above).
+
+# ASK-3930: keep a finished review tree's unique files before the tree goes.
+# Args: tree path, PR number, list file (NUL-separated untracked paths that are NOT
+# byte-identical to the main checkout copy), 1 when tracked files differ from HEAD,
+# and the number of list records the caller counted on its own: a list cut short
+# (a full TMPDIR mid-append drops the last record) is caught by that count, not
+# trusted. Tracked changes go in as TWO binary patches, the index against HEAD and
+# the worktree against the index, so a staged version that differs from both ends
+# survives; textconv and external diff drivers are off, because their output need
+# not restore the bytes. Prints the archive path and returns 0 only when the
+# archive lists back every member. Returns 2 (printing the payload in KB) over KIPI_REVIEW_ARCHIVE_MAX_KB,
+# and 1 on any other failure, leaving no archive behind: the caller then KEEPS the
+# tree. An untracked directory (a nested repo) is not copied, so it fails closed
+# here instead of being measured as zero bytes and copied whole.
+_archive_review_tree() {
+  local path="$1" n="$2" list="$3" tracked="$4" expect_n="$5" name dir stage arch rel
+  local bytes=0 kb want=1 got seen=0 side
+  local cap="${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}"
+  [ -n "$list" ] && [ -f "$list" ] || return 1
+  name="${path##*/}"; dir="$HOME/.config/kipi/review-tree-archive"
+  while IFS= read -r -d '' rel; do
+    seen=$((seen+1))
+    [ -L "$path/$rel" ] && continue
+    [ -f "$path/$rel" ] || return 1
+    bytes=$(( bytes + $(wc -c < "$path/$rel") )) || return 1
+  done < "$list"
+  [ "$seen" = "$expect_n" ] || return 1
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/review-archive.XXXXXX")" || return 1
+  if ! mkdir -p "$stage/$name/untracked"; then command rm -rf -- "$stage"; return 1; fi
+  if [ "$tracked" = 1 ]; then
+    for side in staged unstaged; do
+      if [ "$side" = staged ]; then set -- --cached; else set --; fi
+      if ! git -C "$path" diff "$@" --binary --no-textconv --no-ext-diff --no-color \
+           > "$stage/$name/$side.patch" 2>/dev/null; then
+        command rm -rf -- "$stage"; return 1
+      fi
+      want=$((want+1)); bytes=$(( bytes + $(wc -c < "$stage/$name/$side.patch") ))
+    done
+  fi
+  kb=$(( (bytes + 1023) / 1024 ))
+  if [ "$kb" -gt "$cap" ]; then command rm -rf -- "$stage"; echo "$kb"; return 2; fi
+  while IFS= read -r -d '' rel; do
+    if ! { mkdir -p "$stage/$name/untracked/$(dirname "$rel")" && cp -pP "$path/$rel" "$stage/$name/untracked/$rel"; }; then
+      command rm -rf -- "$stage"; return 1
+    fi
+    want=$((want+1))
+  done < "$list"
+  {
+    printf 'tree: %s\npr: %s\nhead: %s\nmain_checkout: %s\narchived_utc: %s\nstatus:\n' \
+      "$name" "$n" "$(git -C "$path" rev-parse HEAD 2>/dev/null)" "$REVIEW_REPO" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    git -C "$path" status --porcelain=v1 -uall --no-renames 2>/dev/null | sed 's/^/  /'
+  } > "$stage/$name/MANIFEST.txt"
+  mkdir -p "$dir" || { command rm -rf -- "$stage"; return 1; }
+  arch="$dir/$name-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar.gz"
+  if ! tar -czf "$arch" -C "$stage" "$name" 2>/dev/null; then
+    command rm -f -- "$arch"; command rm -rf -- "$stage"; return 1
+  fi
+  command rm -rf -- "$stage"
+  got="$(tar -tzf "$arch" 2>/dev/null </dev/null | grep -vc '/$')" || got=0
+  if [ "$got" != "$want" ]; then command rm -f -- "$arch"; return 1; fi
+  echo "$arch"
+}
+
+# ASK-3930: the reaper HOLDS a finished tree's lock from inventory to removal, so a
+# review that starts after the holder check cannot write into a tree that is being
+# archived and removed. Round 2: it claims through acquire_wt_lock itself, so there
+# is ONE claim protocol and one reclaim mutex for reviews and the reaper. The
+# review's own _wt_lock_path is saved and put back, so its EXIT trap still releases
+# the review's tree and never one the reaper handled.
+# 0 = held by this process, nonzero = another live run holds it or it could not be taken.
+_reap_take_lock() {  # <tree path>
+  local saved="${_wt_lock_path:-}" rc
+  acquire_wt_lock "$1"; rc=$?
+  _wt_lock_path="$saved"
+  [ "$rc" = 0 ]
+}
+_reap_release_lock() {
+  if [ -n "$1" ] && [ "$(cat "$1" 2>/dev/null || true)" = "$$" ]; then
+    command rm -f "$1" 2>/dev/null || true
+  fi
+  return 0
+}
+
 reap_finished_review_trees() {
-  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0
+  local path sha det n state lock holder expect kept=0 gone=0 forced=0 unk=0 archived=0
+  local list arch arc any unreadable tracked nondup code rel rec cwds force held="" listbad
+  list="$(mktemp "${TMPDIR:-/tmp}/review-archive.list.XXXXXX" 2>/dev/null)" || list=""
   while read -r path sha det; do
+    # Every `continue` below lands here, so a held lock is always given back.
+    _reap_release_lock "$held"; held=""
     case "$path" in
       */review-trees/*__pr-*)
         n="${path##*__pr-}"
@@ -1231,20 +1438,37 @@ reap_finished_review_trees() {
             # nobody else holds. Only a provable duplicate may be removed with --force.
             # NUL records must never pass through $(...), which drops them: the
             # first cut did, saw one fused record, and removed every dirty tree.
-            # The sentinel makes a failed status read count as NOT a duplicate.
-            force=""; any=0; dup=1
+            # The sentinel makes a failed status read keep the tree.
+            # ASK-3930 (disk 99%, 2026-11-07): the dirty skip still kept 22 finished
+            # trees (3.4 GB) for good, because review sessions write into their own
+            # trees (.active-case, the sycophancy stamp, last-handoff.md, reproducer
+            # scratch). Nothing in a review tree is anyone's only copy for long, but
+            # "for long" is not proof, so a tree's unique files (the tracked diff and
+            # every untracked file that is not a main-checkout duplicate) are ARCHIVED
+            # and verified first, and the tree goes only when that archive lists back.
+            # --no-renames keeps every record a single path.
+            if ! _reap_take_lock "$path"; then
+              echo "  review-tree skip: PR $n tree lock is held by another run"
+              kept=$((kept+1)); continue
+            fi
+            held="$lock"
+            force=""; any=0; unreadable=0; tracked=0; nondup=0; listbad=0
+            if [ -z "$list" ] || ! : > "$list"; then listbad=1; fi
             while IFS= read -r -d '' rec; do
               [ -n "$rec" ] || continue
               any=1; code="${rec:0:2}"; rel="${rec:3}"
-              if [ "$code" != '??' ] || [ ! -f "$path/$rel" ] || [ -L "$path/$rel" ] \
-                 || [ ! -f "$REVIEW_REPO/$rel" ] || ! cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then dup=0; fi
-            done < <(git -C "$path" status --porcelain=v1 -z -uall 2>/dev/null || printf '!!unreadable\0')
-            if [ "$any" = 1 ]; then
-              if [ "$dup" != 1 ]; then
-                echo "  review-tree skip: PR $n tree has uncommitted or untracked changes (or status unreadable)"
-                kept=$((kept+1)); continue
+              if [ "$code" = '!!' ]; then unreadable=1
+              elif [ "$code" != '??' ]; then tracked=1
+              elif [ -f "$path/$rel" ] && [ ! -L "$path/$rel" ] && [ -f "$REVIEW_REPO/$rel" ] \
+                   && cmp -s "$path/$rel" "$REVIEW_REPO/$rel"; then :
+              else
+                nondup=$((nondup+1))
+                if [ "$listbad" = 0 ] && ! printf '%s\0' "$rel" >> "$list" 2>/dev/null; then listbad=1; fi
               fi
-              force="--force"
+            done < <(git -C "$path" status --porcelain=v1 -z -uall --no-renames 2>/dev/null || printf '!!unreadable\0')
+            if [ "$unreadable" = 1 ]; then
+              echo "  review-tree skip: PR $n tree status is unreadable"
+              kept=$((kept+1)); continue
             fi
             if ! command -v lsof >/dev/null 2>&1; then
               echo "  review-tree skip: PR $n tree kept, lsof missing so live processes cannot be ruled out"
@@ -1255,17 +1479,33 @@ reap_finished_review_trees() {
               echo "  review-tree skip: PR $n tree is the cwd of a live process"
               kept=$((kept+1)); continue
             fi
+            if [ "$tracked" = 1 ] || [ "$nondup" -gt 0 ]; then
+              if [ "$listbad" = 1 ]; then arc=1; arch=""
+              else arch="$(_archive_review_tree "$path" "$n" "$list" "$tracked" "$nondup")"; arc=$?; fi
+              case "$arc" in
+                0) archived=$((archived+1)) ;;
+                2) echo "  review-tree skip: PR $n tree holds ${arch}K unique, over the ${KIPI_REVIEW_ARCHIVE_MAX_KB:-51200}K archive cap"
+                   kept=$((kept+1)); continue ;;
+                *) echo "  review-tree skip: PR $n tree kept, its unique files could not be archived and verified"
+                   kept=$((kept+1)); continue ;;
+              esac
+            fi
+            [ "$any" = 1 ] && force="--force"
             if git -C "$REVIEW_REPO" worktree remove $force "$path" 2>/dev/null; then
               gone=$((gone+1)); [ -n "$force" ] && forced=$((forced+1)); command rm -f "$lock" 2>/dev/null || true
+              held=""
             else kept=$((kept+1)); fi ;;
           *) kept=$((kept+1)) ;;
         esac ;;
       /tmp/*/wt|/private/tmp/*/wt|/var/folders/*/tmp.*/wt|/private/var/folders/*/tmp.*/wt) unk=$((unk+1)) ;;
     esac
   done < <(_wt_rows)
+  _reap_release_lock "$held"; held=""
   git -C "$REVIEW_REPO" worktree prune 2>/dev/null || true
-  # ASK-3630 minor: a force-removed tree deleted untracked files for good; say how many.
-  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed: untracked files identical to the main checkout), kept $kept; $unk temp tree(s) of unproven owner left alone"
+  [ -n "$list" ] && command rm -f -- "$list"
+  # ASK-3630 minor: say how many trees were force-removed. ASK-3930: and how many had
+  # their unique files archived first, and where.
+  echo "  review-tree cleanup: removed $gone finished ($forced of them force-removed; $archived archived to $HOME/.config/kipi/review-tree-archive first), kept $kept; $unk temp tree(s) of unproven owner left alone"
 }
 # reap-merged-trees-end
 reap_finished_review_trees
