@@ -1103,5 +1103,47 @@
     "status": "published",
     "date": "2026-11-06",
     "lesson_id": "research-tool-usage-across-all-community-surfaces-not-just-c"
+  },
+  "9c4e49d629dec9e9": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "make-enforcement-checks-verify-the-artifact-not-the-wording"
+  },
+  "8018686934c3dd9d": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "re-adding-a-category-means-re-pointing-every-check"
+  },
+  "09790a1674fe1fdb": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "make-the-executed-plan-the-only-source-of-truth"
+  },
+  "5aacc49734084d1b": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "every-terminal-state-needs-a-named-next-actor"
+  },
+  "56dbca2d470d790e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "don-t-infer-identity-from-free-form-text"
+  },
+  "fe4f7ad4bb273b6b": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "prefer-data-endpoints-over-browser-automation-behind-bot-wal"
+  },
+  "3743be02dc20e4b1": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-07",
+    "lesson_id": "review-later-rounds-against-the-delta-not-the-whole-diff"
   }
 }
