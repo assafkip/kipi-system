@@ -36,7 +36,7 @@ if git -C "$PROJ_DIR" fetch origin --quiet 2>/dev/null; then
   elif [ "$REMOTE_AHEAD" -gt 0 ]; then
     echo "--- Pulling ${REMOTE_AHEAD} new commit(s) from remote ---"
     git -C "$PROJ_DIR" pull --ff-only 2>/dev/null || \
-      WARNINGS="${WARNINGS}--- WARNING: Cannot fast-forward from remote ---\nRun 'git pull' manually to update.\n\n"
+      WARNINGS="${WARNINGS}--- WARNING: Cannot fast-forward from remote ---\nRun 'git pull' to update.\n\n"
   fi
 fi
 

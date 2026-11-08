@@ -1149,7 +1149,7 @@ Be specifically suspicious of:
 - **Claims of enforcement.** 'This ensures X' in a comment is not enforcement. Find
   the code path that refuses, or call it a finding.
 - **Error paths, retries, partial failure.** What is left behind when this dies
-  halfway? What does the operator see?
+  halfway? What does Sana's alert triage see?
 
 ## The operational bar (this is the Meta staff part)
 
@@ -1158,7 +1158,7 @@ BE DELETED, in a PUBLIC repo. So judge it that way:
 - What happens at 3am when this fires and nobody is watching?
 - What is the blast radius of it being wrong? What is permanent and unrecoverable?
 - What pages a human, and is that signal or noise? A checker that cries wolf trains
-  the operator to ignore it, which costs the real alert later.
+  the alert triage to ignore it, which costs the real alert later.
 - Can this be rolled back? If not, say so loudly.
 - Concurrency: two of these running at once. What breaks?
 
@@ -1172,9 +1172,9 @@ anchors is a real event on this fleet, so calibrate against them directly:
   a Linear object that cannot be deleted. Destroys or overwrites founder work.
   Silently disables the very detector the change adds, forever. If the honest
   answer to 'can we undo this after it fires?' is no, it is a blocker.
-- **major** — wrong behavior unattended that a human must clean up, but CAN clean
-  up. Files duplicate permanent issues. Cries wolf on every run (a checker the
-  operator learns to ignore costs the real alert later, which is why false alarms
+- **major** — wrong behavior unattended that leaves a cleanup behind, and the cleanup
+  is possible. Files duplicate permanent issues. Cries wolf on every run (a checker the
+  alert triage learns to ignore costs the real alert later, which is why false alarms
   rank here and not below). Reports success for work that did not happen.
 - **minor** — real, reproducible, and bounded. Log or help text that misstates
   what the code does. A narrow false negative on an input shape nobody hits yet.
@@ -1182,7 +1182,7 @@ anchors is a real event on this fleet, so calibrate against them directly:
 - **nit** — style, naming, formatting, preference. Never gates anything.
 
 Two calibration checks before you assign a severity:
-1. If you cannot name what a human has to DO about it at 3am, it is not a blocker
+1. If you cannot name what has to be DONE about it at 3am, it is not a blocker
    or a major.
 2. If your reproducer only fails under inputs you had to construct and no producer
    in this repo emits, drop the severity a level and say so.

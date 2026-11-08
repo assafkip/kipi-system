@@ -1,0 +1,17 @@
+{
+  "_doc": [
+    "Machine messages that still hand work to nobody, each left to the ticket that replaces it with code (ASK-4012).",
+    "Read by q-system/.q-system/tests/test_no_handoff_to_nobody.py. A row matches a hit when `path` is equal and `contains` is in the hit's text.",
+    "THIS LIST MAY ONLY SHRINK. Every row must still match a hit, the count is capped by EXCEPTION_CEILING in the test, and a row absent from origin/main's copy fails.",
+    "All seven rows are the five cap sites ASK-3824 rewrites: each cap gets a Fable RCA, one Opus attempt, then a park that E2 closes. Rewording them before that code lands would name a consumer that does not exist yet."
+  ],
+  "exceptions": [
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "stuck after $MAX_ATTEMPTS attempts - needs a human", "ticket": "ASK-3824", "site": "attempts cap (3 attempts)"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "conflict round(s) -- a human resolves this one.", "ticket": "ASK-3824", "site": "rebase-round cap, log line"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "rebase round(s) - needs a human", "ticket": "ASK-3824", "site": "rebase-round cap, page"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "Needs a human to check: gh pr merge --auto --squash $pr", "ticket": "ASK-3824", "site": "not-armed branch, state unknown"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "unmerged until someone runs: gh pr merge --auto --squash $pr", "ticket": "ASK-3824", "site": "not-armed branch, log line"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "sits there forever. Needs a human: gh pr merge --auto --squash $pr", "ticket": "ASK-3824", "site": "not-armed branch, page"},
+    {"path": "q-system/.q-system/scripts/pr-review-agent.sh", "contains": "review cap reached ($MAX_ROUNDS); needs a human decision", "ticket": "ASK-3824", "site": "review-round cap"}
+  ]
+}

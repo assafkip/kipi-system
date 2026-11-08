@@ -94,8 +94,8 @@ CORPUS:
 
 CRITIC_INSTRUCTIONS = """\
 You are an ADVERSARIAL critic protecting a person's voice-DNA reference from
-generic slop. Below is a JSON array of claimed DURABLE voice patterns for a person
-named Assaf, each with evidence quotes.
+generic slop. Below is a JSON array of claimed DURABLE voice patterns for
+Assaf, each with evidence quotes.
 
 For EACH pattern decide: is it genuinely DISTINCTIVE to Assaf, or is it something
 any articulate tech founder would say or do (generic)? Default to "reject" when
