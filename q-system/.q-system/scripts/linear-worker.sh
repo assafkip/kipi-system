@@ -765,27 +765,20 @@ def started_hold(i):
 def started_open(i, d):
     return i["state"]["type"] == "started" and "Definition of Ready" in d and started_hold(i) == ""
 
-# AN EXPIRED PARK IS FOR E2 TO CLOSE, NOT FOR THIS LOOP TO WORK (ASK-3995, D24).
-# A park is the triage bot countdown to a close, not a hold: Backlog idle 30 days
-# gets a review date 30 days out, and at that date E2 closes it, reversibly. On
-# 2026-11-08 the first dispatch of the day went to ASK-834, a No-priority park 25
-# days past its date, while an Urgent ticket waited, and 227 of 502 parks were
-# expired. Two costs: one of three daily dispatches spent on a ticket the board
-# already ruled closed by age, and a race, because Linear moves a ticket to In
-# Progress only when its branch or PR appears, so until the first push E2 can
-# close it under a live run.
+# AN EXPIRED PARK IS WORKED LAST (ASK-3995 D24, changed by the D32 audit).
+# A park is the triage bot countdown to a close: Backlog idle 30 days gets a
+# review date 30 days out, and at that date chief E2 closes it, reversibly. On
+# 2026-11-08 2 of the day 3 dispatches went to expired parks while an Urgent
+# ticket waited, so D24 refused them. Then E2 was measured closing 0, starved
+# behind the 200 write cap, so a refused park went nowhere at all, and the daily
+# cap that made a dispatch scarce was lifted (D28). So the pool sort puts an
+# expired park after every live ticket: it never takes a slot from live work, and
+# it is still worked when nothing else is ready. The predicate below says which
+# tickets are expired parks; it no longer decides whether one is pickable.
 #
-# A PARK WITH ITS DATE AHEAD STAYS PICKABLE. Oldest first (ASK-248) exists to work
-# old tickets before they decay, and working one is the rescue.
-#
-# THE REFUSAL IS EXACTLY THE SET E2 CLOSES, NEVER WIDER. Mirrored from chief
-# bots/triage/skills/__init__.py, park_expired (the parked label, a due date
-# strictly before the LOCAL date, Backlog only, none of NEVER_AUTO_CLOSE) and its
-# open-PR rail, which runs first. Anything refused here that E2 will not close
-# has no exit at all. The open-PR half reads the heads this run already listed for
-# the WIP ceiling; a PR this worker cannot see (a human branch, another repo) is
-# the accepted residual on ASK-3995, and its exit is that PR merge. The two
-# copies drift in silence, so test-worker-expired-park.sh pins every arm.
+# THE SET IS E2 OWN (chief bots/triage/skills/__init__.py, park_expired: the
+# parked label, a due date strictly before the LOCAL date, Backlog only, none of
+# NEVER_AUTO_CLOSE, and no open PR). test-worker-expired-park.sh pins every arm.
 PARK_LABEL = "parked"
 PARK_NEVER_CLOSED = frozenset({"frozen", "security", "data-loss", "ready"})
 TODAY_LOCAL = now.astimezone().date().isoformat()
@@ -823,7 +816,6 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
-    if expired_park(i):              return False   # ASK-3995, E2 closes it
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -845,7 +837,6 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
-            and not expired_park(i)
             and not is_fleet_alert(i)
             and "Definition of Ready" in (i.get("description") or "")
             and (i["state"]["type"] in QUEUE_STATES
@@ -1008,7 +999,15 @@ pool = [i for i in issues if ready(i)]
 # lower bands leave by age through the park and its close (chief, E2), not by
 # this order. Linear priority 0 means No priority and sorts after Low (4).
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
-pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
+# AN EXPIRED PARK SORTS LAST, IT IS NOT REFUSED (D32 audit, 2026-11-08). D24
+# (ASK-3995) refused it on the grounds that E2 closes it, but E2 was measured
+# closing 0 on Monday, starved behind the 200 write cap, so refused and not
+# closed was a hang: work that goes nowhere, against the founder direction. And
+# its budget argument went with the daily cap (D28). So it stays in the pool,
+# after every live ticket, and is worked when nothing else is ready: the queue
+# drains it instead of holding it. No mirror of E2 is needed any more.
+pool.sort(key=lambda i: (1 if expired_park(i) else 0,
+                         PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
@@ -1614,7 +1613,7 @@ EXPIRED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".joi
 # them, so the sentence would be false. Nothing is picked wrongly in those runs:
 # --issue replaces the pool, and a failed list starts nothing this tick.
 if [ "${EXPIRED_PARKS:-0}" != "0" ] && [ -z "$ONLY_ISSUE" ] && [ "${WIP_OWN_RC:-}" = "0" ]; then
-  say "worker: $EXPIRED_PARKS issue(s) not picked: parked past the review date, so chief E2 closes them, reversibly (ASK-3995; first ids: $EXPIRED_IDS)"
+  say "worker: $EXPIRED_PARKS issue(s) parked past the review date sort last: worked after every live ticket (D32; first ids: $EXPIRED_IDS)"
 fi
 
 # AN EMPTY QUEUE DOES NOT END THE RUN WHILE THE CEILING HOLDS (PR #613 review

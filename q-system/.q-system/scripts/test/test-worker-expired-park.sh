@@ -151,12 +151,14 @@ else
   ok "fixture self-test: the repo reads as GitHub, so open PRs are listed"
 fi
 
-case " $GOT" in
-  *" ASK-971 "*|*" ASK-982 "*) bad "an expired Backlog park is left for E2, not worked" "picks: [$GOT]" ;;
-  *) ok "an expired Backlog park is left for E2, not worked" ;;
+# D32 audit: an expired park is worked LAST, never refused. E2 was measured
+# closing 0 (starved behind its write cap), so a refused park went nowhere.
+case "$GOT" in
+  *"ASK-981 ASK-971 ASK-982 ") ok "an expired Backlog park is worked last, after every live ticket, never refused" ;;
+  *) bad "an expired Backlog park is worked last, never refused" "picks: [$GOT]" ;;
 esac
 
-WANT="ASK-972 ASK-973 ASK-974 ASK-975 ASK-976 ASK-977 ASK-978 ASK-979 ASK-980 ASK-981 "
+WANT="ASK-972 ASK-973 ASK-974 ASK-975 ASK-976 ASK-977 ASK-978 ASK-979 ASK-980 ASK-981 ASK-971 ASK-982 "
 if [ "$GOT" = "$WANT" ]; then
   ok "everything E2 will not close stays pickable: date ahead, due today, Todo, security, ready, frozen, data-loss, open sana PR, no date, not parked"
 else
@@ -171,16 +173,16 @@ GOT1="$(picks "$(run_worker --limit 1)")"
   && ok "the dispatcher's one pick skips the expired park ahead of it" \
   || bad "the dispatcher's one pick skips the expired park" "got [$GOT1], want [ASK-972 ]"
 
-if printf '%s\n' "$OUT" | grep -q 'worker: 2 issue(s) not picked: parked past the review date.*ASK-971 ASK-982'; then
-  ok "the run says how many expired parks it left for E2, and which"
+if printf '%s\n' "$OUT" | grep -q 'worker: 2 issue(s) parked past the review date sort last.*ASK-971 ASK-982'; then
+  ok "the run says how many expired parks sort last, and which"
 else
-  bad "the run names the expired parks it left for E2" "$(printf '%s\n' "$OUT" | grep -i 'park' | head -2)"
+  bad "the run names the expired parks that sort last" "$(printf '%s\n' "$OUT" | grep -i 'park' | head -2)"
 fi
 
 # THE COUNT IS SAID ONLY WHEN THE OPEN-PR RAIL WAS ASKED (PR #649 round 1,
 # minor). Under --issue and on a gh failure the WIP list is empty, so the count
 # would name ASK-979, whose open PR keeps E2 off it.
-EXPIRED_LINE='not picked: parked past the review date'
+EXPIRED_LINE='parked past the review date sort last'
 OUT_FAIL="$(FIXTURE_GH_FAIL=1 run_worker --limit 99)"
 if printf '%s\n' "$OUT_FAIL" | grep -q "$EXPIRED_LINE"; then
   bad "a run whose PR list failed does not claim E2 closes anything" "$(printf '%s\n' "$OUT_FAIL" | grep "$EXPIRED_LINE" | head -1)"
