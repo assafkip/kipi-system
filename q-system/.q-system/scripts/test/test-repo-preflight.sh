@@ -929,6 +929,20 @@ AFTER2="$(KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKH" 2>/dev/null)"
   && ok "a reaper whose age reading went stale re-checks, and leaves the winner's marker" \
   || bad "a reaper acted on a stale age reading and unlinked the winner's marker (winner $(cat "$WORK/w5.out"), marker '${W5_MARK}', next turn $AFTER2)"
 rmdir "$TL4" 2>/dev/null; rm -f "$TL4.owner" 2>/dev/null; true
+# A REAP THAT FAILED SAYS SO (PR #639 round 1). A stale lock dir that is not empty
+# refuses rmdir; the log must not report a clean reap while every turn is denied.
+LOCKV="$WORK/lockv.sh"
+{ echo 'set -uo pipefail'; echo 'say() { echo "SAY: $*"; }'
+  awk '/^turn_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'turn_lock && echo GOT || echo DENIED'; } > "$LOCKV"
+mkdir -p "$TL4"; : > "$TL4/stray"; touch -t 202601010000 "$TL4"
+V="$(KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKV" 2>/dev/null)"
+case "$V" in
+  *"could NOT be removed"*DENIED) ok "a stale lock that cannot be removed is logged as such, and the turn is denied" ;;
+  *) bad "a failed reap was not reported as failed: $(printf '%s' "$V" | tr '\n' ' ')" ;;
+esac
+printf '%s' "$V" | grep -q 'reaped a stale' && bad "a failed reap was still logged as a clean reap" || true
+rm -f "$TL4/stray" "$TL4.owner" 2>/dev/null; rmdir "$TL4" 2>/dev/null; true
 
 # THE SAME CASE UNDER GNU stat. This is the CI failure, reproduced on purpose.
 # The BSD form `stat -f %m` is valid on macOS and means --file-system on GNU,

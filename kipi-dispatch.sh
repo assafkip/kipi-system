@@ -547,7 +547,7 @@ turn_lock() {
   # against every new copy, so only another old copy can walk in (ASK-3978).
   local OWNER="$LOCK.owner"
   mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
-  local now p probe age
+  local now p probe age reaped
   now="$(date -u +%s)"
   # STALE LOCKS ARE REAPED BY AGE, the marker first and then the directory, each by
   # its own mtime. A marker with no directory is what an older copy leaves when it
@@ -592,8 +592,16 @@ turn_lock() {
       # still the one that was measured is removed, and nothing slow (the log
       # write was) sits between that check and the unlink.
       if [ "$(_turn_lock_mtime "$p")" = "$probe" ]; then
-        if [ -d "$p" ]; then rmdir "$p" 2>/dev/null || true; else rm -f "$p" 2>/dev/null || true; fi
-        say "turn-lock: reaped a stale ${p##*/} (${age}s old)"
+        # The log says what happened, not what was tried (PR #639 round 1): a lock
+        # dir that is not empty refuses rmdir, and a dispatcher wedged behind it
+        # must not report a clean reap every tick.
+        reaped=""
+        if [ -d "$p" ]; then rmdir "$p" 2>/dev/null && reaped=1; else rm -f "$p" 2>/dev/null; [ -e "$p" ] || reaped=1; fi
+        if [ -n "$reaped" ]; then
+          say "turn-lock: reaped a stale ${p##*/} (${age}s old)"
+        else
+          say "turn-lock: a stale ${p##*/} (${age}s old) could NOT be removed; every turn is denied until it is"
+        fi
       fi
     fi
   done
