@@ -162,19 +162,43 @@ class Fake:
 
 
 @needs
-def test_state_moves_first_then_one_comment():
+def test_state_moves_first_then_one_comment(tmp_path):
     f = Fake()
-    assert mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG") == "reopened"
+    pend = tmp_path / "pending.json"
+    assert mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", pend) == "reopened"
     assert [c[0] for c in f.calls] == ["state", "comment"] and f.calls[0][1] == "BACKLOG"
+    assert not pend.exists()
 
 
 @needs
-def test_a_refused_state_move_writes_no_comment():
+def test_a_refused_state_move_writes_no_comment(tmp_path):
     """A marker on a ticket that never moved would make every later run skip it."""
     f = Fake(state_ok=False)
     with pytest.raises(RuntimeError):
-        mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG")
+        mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", tmp_path / "p.json")
     assert [c[0] for c in f.calls] == ["state"]
+
+
+@needs
+def test_a_refused_comment_is_kept_and_posted_next_run(tmp_path):
+    """PR #661, Codex P2: moved to Backlog, so no longer a candidate; the comment must
+    still land."""
+    pend = tmp_path / "pending.json"
+    with pytest.raises(RuntimeError):
+        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend)
+    assert list(mod.read_pending(pend)) == ["ASK-297"]
+    assert mod.retry_pending(Fake(comment_ok=False), pend) == ([], ["ASK-297"])
+    assert mod.retry_pending(Fake(), pend) == (["ASK-297"], [])
+    assert mod.read_pending(pend) == {}
+
+
+@needs
+def test_over_100_comments_without_the_marker_is_not_acted_on():
+    """PR #661, Codex P1: the marker may sit on page two."""
+    issue = ask297()
+    issue["comments"]["pageInfo"]["hasNextPage"] = True
+    d = mod.decide(issue, {})
+    assert not d["reopen"] and "page one" in d["why"]
 
 
 @needs

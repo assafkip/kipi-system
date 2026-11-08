@@ -28,6 +28,15 @@ ASK-3960 ships its consumer; no label returns it to the fleet worker's pool.
 
 ONCE PER MERGE. The comment carries the merged PR's URL. If that marker is already
 on the ticket, this job acted on that merge before and a later Done is respected.
+Over 100 comments with no marker on page one: the marker may be on a later page, so
+the job does not act (PR #661, Codex P1). Missing a rare ticket is recoverable; moving
+a deliberately re-completed one back again is the defect this marker exists to stop.
+
+STATE FIRST, THEN THE COMMENT, AND A FAILED COMMENT IS RETRIED. A marker on a ticket
+that never moved would make every later run skip it, so the state moves first. If the
+comment then fails, the ticket is in Backlog and no longer a candidate, so the comment
+is kept in PENDING_PATH and posted at the start of the next run (PR #661, Codex P2).
+This job is that file's only writer.
 
 Exit codes:
   0  ok (report, or every planned reopen landed)
@@ -70,6 +79,7 @@ WORKER_LOG = "linear-worker.log"
 
 # Job state lives outside every checkout (separate-worktrees.md).
 EVIDENCE_PATH = pathlib.Path.home() / ".local" / "state" / "kipi" / "linear-not-done-reopen" / "last-run.json"
+PENDING_PATH = EVIDENCE_PATH.with_name("pending-comments.json")
 
 NOT_DONE = re.compile(r"^(\S+Z) (ASK-\d+) is NOT done\b")
 START = re.compile(r"^(\S+Z) start (ASK-\d+) ")
@@ -151,10 +161,14 @@ def decide(issue: dict, log: dict) -> dict:
         return out
     out["merge"] = merge
     url = merge["url"]
-    for c in ((issue.get("comments") or {}).get("nodes") or []):
+    comments = issue.get("comments") or {}
+    for c in (comments.get("nodes") or []):
         if f"<!-- {MARKER}: {url} -->" in (c.get("body") or ""):
             out["why"] = "already reopened once for this merge; a later Done is respected"
             return out
+    if (comments.get("pageInfo") or {}).get("hasNextPage"):
+        out["why"] = "over 100 comments and no marker on page one; the marker may be later, so no action"
+        return out
     present = {(n.get("name") or ""): n.get("id") for n in ((issue.get("labels") or {}).get("nodes") or [])}
     held = [h for h in HOLD_LABELS if h in present]
     for h in held:
@@ -219,16 +233,61 @@ def candidates(sync, team_id: str, log: dict, now: datetime) -> list:
     return sorted(names)
 
 
-def apply_one(sync, issue: dict, d: dict, backlog_id: str) -> str:
+def read_pending(path: pathlib.Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_pending(path: pathlib.Path, pending: dict) -> None:
+    """Atomic, one writer (this job)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".pending.", suffix=".json")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(pending, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def post_comment(sync, issue_id: str, body: str) -> bool:
+    res = sync.graphql(COMMENT_CREATE, {"input": {"issueId": issue_id, "body": body}}) or {}
+    return bool((res.get("commentCreate") or {}).get("success"))
+
+
+def retry_pending(sync, path: pathlib.Path) -> tuple:
+    """(posted ids, still pending ids). Runs before any new reopen."""
+    pending = read_pending(path)
+    posted = []
+    for ident, row in sorted(pending.items()):
+        try:
+            if post_comment(sync, row["issue_id"], row["body"]):
+                posted.append(ident)
+        except Exception:  # noqa: BLE001 - stays pending; the next run retries
+            pass
+    for ident in posted:
+        pending.pop(ident, None)
+    if posted:
+        write_pending(path, pending)
+    return posted, sorted(pending)
+
+
+def apply_one(sync, issue: dict, d: dict, backlog_id: str, pending_path: pathlib.Path) -> str:
     """State first, then the comment: a failed comment must not leave a marker on a
-    ticket that never moved, or the next run would skip it for good."""
+    ticket that never moved, or the next run would skip it for good. A comment that
+    fails after the move is kept in pending_path for the next run."""
     res = sync.graphql(ISSUE_UPDATE, {"id": issue["id"], "input": {"stateId": backlog_id}}) or {}
     if not (res.get("issueUpdate") or {}).get("success"):
         raise RuntimeError(f"{d['identifier']}: issueUpdate(stateId) refused; still Done")
-    res = sync.graphql(COMMENT_CREATE, {"input": {"issueId": issue["id"],
-                                                  "body": reopen_comment(d)}}) or {}
-    if not (res.get("commentCreate") or {}).get("success"):
-        raise RuntimeError(f"{d['identifier']}: moved to Backlog, but commentCreate refused")
+    body = reopen_comment(d)
+    try:
+        ok = post_comment(sync, issue["id"], body)
+    except Exception:  # noqa: BLE001 - same handling as a refused comment
+        ok = False
+    if not ok:
+        pending = read_pending(pending_path)
+        pending[d["identifier"]] = {"issue_id": issue["id"], "body": body}
+        write_pending(pending_path, pending)
+        raise RuntimeError(f"{d['identifier']}: moved to Backlog; comment refused, kept for the next run")
     return "reopened"
 
 
@@ -285,6 +344,9 @@ def main(argv: list) -> int:
     decisions = [decide(i, log) for i in issues]
     plan = [(i, d) for i, d in zip(issues, decisions) if d["reopen"]][:MAX_REOPENS]
     done, failed = [], []
+    retried, still_pending = [], []
+    if args.apply:
+        retried, still_pending = retry_pending(sync, PENDING_PATH)
     if args.apply and plan:
         backlog_id = sync.requeue_state_id(team_id)
         if not backlog_id:
@@ -292,7 +354,8 @@ def main(argv: list) -> int:
         else:
             for issue, d in plan:
                 try:
-                    done.append({"id": d["identifier"], "did": apply_one(sync, issue, d, backlog_id)})
+                    done.append({"id": d["identifier"],
+                                 "did": apply_one(sync, issue, d, backlog_id, PENDING_PATH)})
                 except Exception as exc:
                     failed.append({"id": d["identifier"], "error": str(exc)[:200]})
 
@@ -301,7 +364,8 @@ def main(argv: list) -> int:
               "reopen": [{"id": d["identifier"], "why": d["why"], "merge": d["merge"]["url"]}
                          for _, d in plan],
               "stays_done": [{"id": d["identifier"], "why": d["why"]} for d in decisions if not d["reopen"]],
-              "done": done, "failed": failed}
+              "done": done, "failed": failed,
+              "pending_posted": retried, "pending_left": still_pending}
     if args.apply:
         try:
             write_evidence(EVIDENCE_PATH, result)
@@ -315,7 +379,7 @@ def main(argv: list) -> int:
             print(f"  REOPEN {r['id']}: {r['why']} ({r['merge']})")
         for f in failed:
             print(f"  FAILED {f['id']}: {f['error']}")
-    return EXIT_WRITE_FAILED if failed else EXIT_OK
+    return EXIT_WRITE_FAILED if (failed or still_pending) else EXIT_OK
 
 
 if __name__ == "__main__":
