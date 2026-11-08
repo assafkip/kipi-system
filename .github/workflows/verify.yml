@@ -7,8 +7,10 @@
 name: verify
 on:
   pull_request:
-    # edited: a PR body is checked again when it changes (ASK-4079); on an edit
-    # only the closing-keyword step runs, the suites already graded this head.
+    # edited: a PR body is checked again when it changes (ASK-4079). The WHOLE
+    # job runs on an edit, suites included: a run that skipped them would post a
+    # green `verify` that graded nothing, over a red one on the same head (PR #677
+    # round 1, major).
     types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
@@ -56,27 +58,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # NO CLOSING KEYWORD AIMED AT ANOTHER OPEN PR (ASK-4079). 2026-11-08 22:57Z:
-      # merging #671 closed the live #664, because #671's body said "the WIP
-      # release closed #664" and GitHub reads that as a closing keyword. The body
-      # comes from the event file, never through an expression, so a body cannot
-      # inject shell.
-      - name: no closing keyword aimed at another open PR (ASK-4079)
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          python3 -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"])); open("pr-body.tmp","w").write(e["pull_request"].get("body") or "")'
-          gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[].commit.message' > pr-commits.tmp
-          python3 q-system/.q-system/scripts/pr-closing-keyword-check.py --repo "$REPO" --pr "$PR" \
-            --body-file pr-body.tmp --commits-file pr-commits.tmp
       # From the fleet's verify requirements (pytest + pytest-xdist), so the
       # adversarial suite's parallel and .verify-serial cases run for real here
       # instead of taking their no-xdist branch (2026-10-05).
-      - if: github.event.action != 'edited'
-        run: pip install -r q-system/.q-system/requirements-verify.txt
+      - run: pip install -r q-system/.q-system/requirements-verify.txt
       # SCOPED, NOT --full (RULE-2026-10-01-A, founder bar 2026-10-01: "no
       # 6000-test runs on small changes"). This step ran `verify.sh --full` on
       # every PR and every push to main: 12.5 min on run 36820282302, the same
@@ -92,7 +77,6 @@ jobs:
       # against `before` (main as it was), or HEAD^ when that commit is not in
       # the clone (a first push, a force-push); same rule as validate.yml.
       - name: verify.sh --changed (the suites and tests this change owns)
-        if: github.event.action != 'edited'
         run: |
           if [ "$EVENT" = "pull_request" ]; then
             base="origin/$BASE_REF"
@@ -117,7 +101,6 @@ jobs:
       # I wired the floor and left its own test suite unwired. A check nobody
       # invokes is an aspiration, whichever layer it sits on.
       - name: adversarial suite (the floor's own tests)
-        if: github.event.action != 'edited'
         run: bash q-system/.q-system/test_verify_adversarial.sh q-system/.q-system/verify.sh
       # ASK-1900. The concurrency half, wired in the SAME commit that adds it --
       # its sibling above shipped unwired and a Codex review had to find that.
@@ -125,10 +108,25 @@ jobs:
       # test-*.sh and not test_*.sh, so a file named like these two is discovered
       # by nothing. This caller is the only thing that runs it.
       - name: concurrent suite (collision is not a failed check)
-        if: github.event.action != 'edited'
         run: bash q-system/.q-system/test_verify_concurrent.sh q-system/.q-system/verify.sh
       # The push door (--changed, 2026-09-30), wired in the SAME commit for the
       # same reason as the two above: discovered by nothing else.
       - name: changed suite (push runs only the owning tests, never nothing)
-        if: github.event.action != 'edited'
         run: bash q-system/.q-system/test_verify_changed.sh q-system/.q-system/verify.sh
+      # LAST, so a refusal here never hides a suite result (PR #677 round 1).
+      # NO CLOSING KEYWORD AIMED AT ANOTHER OPEN PR (ASK-4079). 2026-11-08 22:57Z:
+      # merging #671 closed the live #664, because #671's body said "the WIP
+      # release closed #664" and GitHub reads that as a closing keyword. The body
+      # comes from the event file, never through an expression, so a body cannot
+      # inject shell.
+      - name: no closing keyword aimed at another open PR (ASK-4079)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"])); open("pr-body.tmp","w").write(e["pull_request"].get("body") or "")'
+          gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[].commit.message' > pr-commits.tmp
+          python3 q-system/.q-system/scripts/pr-closing-keyword-check.py --repo "$REPO" --pr "$PR" \
+            --body-file pr-body.tmp --commits-file pr-commits.tmp

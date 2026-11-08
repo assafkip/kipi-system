@@ -25,16 +25,25 @@ import re
 import subprocess
 import sys
 
+# The reference forms GitHub links (PR #677 round 1, minor: `GH-N` and the full
+# URL reproduced the scar): #N, GH-N, owner/repo#N, and a github.com issue or
+# pull URL. ONE LINE only ([ \t], not \s): a keyword at a line end and a number
+# on the next line is not a reference.
 KEYWORD_RX = re.compile(
-    r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s+"
-    r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(?P<num>\d+)\b")
+    r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[ \t]*:?[ \t]+"
+    r"(?:(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#|#|GH-|"
+    r"https?://github\.com/(?P<urlrepo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(?:issues|pull)/)"
+    r"(?P<num>\d+)\b")
+# GitHub links no reference inside code, so neither does this check (PR #677
+# round 1, minor): a body that quotes the keyword in a code span or fence passes.
+CODE_RX = re.compile(r"```.*?```|~~~.*?~~~|`[^`\n]*`", re.S)
 
 
 def references(text: str, own: int, repo: str) -> list:
     """(keyword, number) for each closing reference in this repo to a number not own."""
     out = []
-    for m in KEYWORD_RX.finditer(text or ""):
-        ref_repo = m.group("repo")
+    for m in KEYWORD_RX.finditer(CODE_RX.sub(" ", text or "")):
+        ref_repo = m.group("repo") or m.group("urlrepo")
         if ref_repo and ref_repo.lower() != repo.lower():
             continue
         num = int(m.group("num"))

@@ -35,13 +35,19 @@ def run(body, commits="", own=671, open_prs="664 670", check_path=CHECK):
 print("== pr-closing-keyword-check")
 rc, out = run("At 21:58:58Z the WIP release closed #664 as kind no-dor.")
 check("the scar body is refused: 'closed #664' would close the open PR", (rc, "open PR #664" in out), (1, True))
-for phrase in ("Fixes #670", "resolves: #664", "This closes assafkip/kipi-system#664", "fixed #670."):
+for phrase in ("Fixes #670", "resolves: #664", "This closes assafkip/kipi-system#664", "fixed #670.",
+               "Closes GH-664", "fixes https://github.com/assafkip/kipi-system/pull/664",
+               "resolves https://github.com/assafkip/kipi-system/issues/670"):
     check(f"refused: {phrase!r}", run(phrase)[0], 1)
 check("a closing keyword in a commit message is refused too",
       run("clean body", commits="fix(x): y\n\nThis closes #664\n")[0], 1)
 for phrase in ("Fixes ASK-4057.", "PR 664 was shut by the release", "closed PR #664 earlier",
                "see #664 for context", "Closes #671", "closes otherorg/other#664",
-               "fixes #12 (an issue, not a PR)"):
+               "fixes #12 (an issue, not a PR)",
+               "the release `closed #664` (quoted in code)",
+               "```\nthe release closed #664\n```",
+               "the release closed\n#664 on the next line",
+               "closes https://github.com/otherorg/other/pull/664"):
     check(f"allowed: {phrase!r}", run(phrase)[0], 0)
 check("a failed lookup fails closed (exit 2), never reads as allowed",
       run("closes #999", open_prs="LOOKUP-FAILS")[0], 2)
