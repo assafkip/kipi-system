@@ -255,6 +255,23 @@ check("approved, CLEAN, but our read of CI is red -> not a merge (the two reads 
              {"ASK-2540": ticket("ASK-2540")})["action"], "close-requeue")
 check("approved, HAS_HOOKS, CI green -> merge", act_of(pr(reviewer=ok_rv, merge_state="HAS_HOOKS"))["action"], "merge")
 
+print("-- an approved PR GitHub will not merge is asked of pr-verdict-lib.sh rework_gate (PR #659 round 5)")
+t2540 = {"ASK-2540": ticket("ASK-2540")}
+check("approved, CI green, MERGEABLE, BLOCKED -> wait, never rework or close (rework_gate says terminal)",
+      act_of(pr(reviewer=ok_rv, merge_state="BLOCKED"), t2540)["action"], "wait")
+check("approved, CI green, MERGEABLE, merge state UNKNOWN -> wait",
+      act_of(pr(reviewer=ok_rv, merge_state="UNKNOWN"), t2540)["action"], "wait")
+no_field = po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": False, "mergeable": "MERGEABLE"})["merge_state"]
+check("gh omitted mergeStateStatus on an approved green PR -> wait, not a rework (round 5 minor)",
+      act_of(pr(reviewer=ok_rv, merge_state=no_field), t2540)["action"], "wait")
+check("approved, BEHIND -> still red (rework_gate: a rebase round)",
+      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540)["action"], "close-requeue")
+_lib = getattr(po, "VERDICT_LIB", None)
+po.VERDICT_LIB = TMP / "no-such-lib.sh"
+check("rework_gate cannot answer -> hold, never a guess",
+      act_of(pr(reviewer=ok_rv, merge_state="BLOCKED"), t2540)["action"], "hold")
+po.VERDICT_LIB = _lib
+
 # ---------------------------------------------------------------- readers
 print("-- readers")
 check("the floor description is read from reviewer-floor.sh", FLOOR.startswith("no reviewer verdict at this head"), True)
@@ -645,6 +662,21 @@ got = try_call(po.act, rq_pr, {"action": "close-requeue", "ticket": TICKETS["ASK
 check("close-requeue whose requeue fails -> not ok, and the failure is named",
       (got[0], "requeue failed" in got[1]) if isinstance(got, tuple) else got, (False, True))
 po.run = fake_run
+import contextlib, io
+with contextlib.redirect_stdout(io.StringIO()):
+    try:
+        rc_help = po.main(["-h"])
+    except SystemExit as exc:
+        rc_help = f"SystemExit({exc.code!r})"
+check("-h exits 0, not the usage-error 64 (round 5 nit)", rc_help, 0)
+keep = (PRS[:], po.read_ticket)
+PRS[:] = [raw(1, "fix/thing-ask-2540")]
+po.read_ticket = loader({"ASK-2540": RuntimeError("HTTP 503 from Linear")})
+with contextlib.redirect_stdout(io.StringIO()) as buf:
+    rc_down = po.main([])
+PRS[:], po.read_ticket = keep
+check("Linear down, every red PR held -> exit 2, not a healthy 0 (round 5 minor)",
+      (rc_down, "hold o/fx#1" in buf.getvalue()), (2, True))
 po.state_path().write_text("{not json")
 try:
     rc_refused = po.main(["--apply"])

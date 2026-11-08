@@ -501,6 +501,39 @@ def resolve_ticket(pr: dict, load):
     return None, ""
 
 
+# ---------------------------------------------------------------- an approved PR GitHub will not merge
+
+VERDICT_LIB = SCRIPTS / "pr-verdict-lib.sh"
+_GATE_SH = r'''
+. "$1" >/dev/null 2>&1 || exit 99
+rework_gate "APPROVE" "$2"
+'''
+_GATE_RC: dict = {}
+
+
+def approved_gate(merge_state: str) -> int:
+    """pr-verdict-lib.sh rework_gate on an approval: 10 terminal, 30 a rebase round, else unknown.
+
+    ASKED, NOT COPIED (PR #659 round 5, major). This file's own table sent an
+    approved, green PR that GitHub calls BLOCKED or UNKNOWN to rework and then
+    close. rework_gate is the repo's one reader of that field, and it calls both
+    terminal: BLOCKED is branch protection a rebase cannot fix, UNKNOWN is GitHub
+    still computing. Rounds 1 and 2 moved one constant of this table twice; the
+    RCA's lesson is to ask the other side's code, so this runs it. A local read
+    with no side effect, so it calls subprocess directly, like archived(), and a
+    test drives the real lib.
+    """
+    key = (str(VERDICT_LIB), merge_state)
+    if key not in _GATE_RC:
+        try:
+            _GATE_RC[key] = subprocess.run(["bash", "-c", _GATE_SH, "pr-owner-gate", str(VERDICT_LIB), merge_state],
+                                           capture_output=True, text=True, timeout=30,
+                                           stdin=subprocess.DEVNULL).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            _GATE_RC[key] = 99
+    return _GATE_RC[key]
+
+
 # ---------------------------------------------------------------- the cap ladder
 
 # Read by path from THIS checkout. The job runs from its own pinned tree
@@ -680,7 +713,15 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
     if rv == "cap":
         red.append(f"review cap: {rv_desc}")
     if not red and rv == "approved":
-        red.append(f"approved, but GitHub says merge state {pr['merge_state']}")
+        gate = approved_gate(pr["merge_state"])
+        if gate == 10:
+            return {"action": "wait",
+                    "reason": f"approved and CI green, but GitHub says merge state {pr['merge_state']}; "
+                              f"pr-verdict-lib.sh rework_gate calls that terminal, so it is never reworked or closed for it. "
+                              f"pr-owner reads it again next hour; a mover for it is ASK-4061"}
+        if gate != 30:
+            return {"action": "hold", "reason": f"pr-verdict-lib.sh rework_gate could not answer (rc {gate}) for merge state {pr['merge_state']}"}
+        red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
     if not red and rv == "unreviewed":
         past = (state.get("reviews") or {}).get(key) or {}
         if past.get("head") == pr["head"]:
@@ -881,8 +922,8 @@ def _run(argv=None) -> int:
                     help="leave one PR alone this run (owner/repo#n or repo#n); repeatable")
     try:
         args = ap.parse_args(argv)
-    except SystemExit:
-        return 64
+    except SystemExit as exc:
+        return 0 if exc.code == 0 else 64  # -h printed its help and is done (PR #659 round 5, nit)
 
     floor = floor_desc()
     if not floor:
@@ -966,6 +1007,11 @@ def _run(argv=None) -> int:
                     continue
             d = decide(pr, now, state, read_ticket, review_left, set(args.skip))
             counts[d["action"]] += 1
+            if d["action"] == "hold":
+                # A HOLD IS AN UNREAD PR (PR #659 round 5, minor). With Linear down
+                # every red PR holds, and exit 0 told launchd-health-check.py the
+                # run owned them. Same exit 2 as a GitHub read that failed.
+                n_unreadable += 1
             if d["action"] == "review":
                 review_left -= 1
             if d["action"] not in WRITES:
