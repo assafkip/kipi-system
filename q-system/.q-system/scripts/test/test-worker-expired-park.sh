@@ -215,7 +215,11 @@ OUTU="$(FIXTURE_BOARD=urgent-park KIPI_PICK_PRIORITY=1 run_worker_board --limit 
 printf '%s\n' "$OUTU" | grep -qE '\[dry\] pick priority ASK-990 0$' \
   && ok "the urgent-slot scan (plain --limit 1) reads an expired Urgent park as priority 0" \
   || bad "the urgent-slot scan reads an expired Urgent park as 0" "$(printf '%s\n' "$OUTU" | grep -E 'pick priority|would work|ready issue' | head -3)"
-MUTW="$WORK/mut-scripts"; cp -R "$REPO_SCRIPTS" "$MUTW"
+# The copy keeps the repo shape, scripts/ beside terminal-states.json, since the
+# worker reads its WIP exit table from $SCRIPT_DIR/../terminal-states.json (PR #673
+# round 1, nit).
+MUTW="$WORK/mut/scripts"; mkdir -p "$WORK/mut"; cp -R "$REPO_SCRIPTS" "$MUTW"
+cp "$REPO_SCRIPTS/../terminal-states.json" "$WORK/mut/terminal-states.json"
 sed 's/p = \[0 if i.get("expired_park") else i.get("priority")/p = [i.get("priority")/' "$WORKER" > "$MUTW/linear-worker.sh"
 if cmp -s "$WORKER" "$MUTW/linear-worker.sh"; then
   bad "mutant urgent-park: anchor" "the pick-priority line moved"
