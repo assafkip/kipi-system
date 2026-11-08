@@ -10,8 +10,9 @@ template renders into that checkout, and this prints RED with the count.
 
 GREEN:
   * every committed template renders with --render-only (scratch HOME, nothing created);
-  * only the labels in job-checkouts.json shared_exceptions point at the checkout the
-    renderer lives in, and each exception names a reason, a ticket and at most 30 days;
+  * every committed template is in exactly one of job-checkouts.json `pinned` (opt-in)
+    or `shared_exceptions`; pinned renders never point at the shared checkout, the others
+    render exactly as before, and each exception names a reason, a ticket and at most 30 days;
   * every other job starts `/bin/bash <its own tree>/.../kipi-job-pinned.sh`, its tree is
     <HOME>/<pinned_root>/<label>/kipi-system, its working directory (if any) is that tree,
     and it writes no stdout or stderr inside it (a job that writes inside its checkout
@@ -21,8 +22,11 @@ GREEN:
     runs the job and files once; it survives the advance rewriting the wrapper itself;
   * install, in the same fixture: creates the job tree locked, then installs; refuses and
     installs nothing when origin/main has no wrapper.
-MUTANTS: the wrapper insertion removed from a fixture copy of install-plist.sh; an
-exception with no ticket; an exception of 31 days.
+MUTANTS: the wrapper insertion removed from a fixture copy of install-plist.sh; a
+template in neither list; a template in both; an exception with no ticket; an exception
+of 31 days. PR #632 round 1 added: no pinned path may climb out of its tree with /..,
+a dirty tree refuses even when origin does not touch the dirty file, and the install
+runs through --pinned, the one migration command.
 
 NEVER A LIVE PATH: renders go to scratch with a scratch HOME, the fixture is a scratch
 repo with a scratch origin, and launchctl is the KIPI_LAUNCHCTL test seam.
@@ -91,6 +95,14 @@ def render(installer: Path, label: str, home: Path) -> tuple[int, str, str]:
 
 def exception_problems(table: dict, labels: list[str]) -> list[str]:
     out = []
+    pinned, shared = set(table.get("pinned") or []), set(table.get("shared_exceptions") or {})
+    for label in labels:
+        if label not in pinned and label not in shared:
+            out.append(f"{label}: a committed template in neither pinned nor shared_exceptions")
+        if label in pinned and label in shared:
+            out.append(f"{label}: both pinned and a shared exception")
+    for label in sorted(pinned - set(labels)):
+        out.append(f"{label}: pinned, but no committed template has that label")
     for label, row in sorted((table.get("shared_exceptions") or {}).items()):
         if label not in labels:
             out.append(f"{label}: an exception for a label with no committed template")
@@ -131,14 +143,16 @@ exceptions = set(table.get("shared_exceptions") or {})
 
 print("-- every template renders, and only the named exceptions point at the shared checkout")
 check("every committed template renders", bad_renders, [])
-check("renders that point at the shared checkout are exactly the exceptions",
-      sorted(set(hits) - exceptions), [])
+pinned_set = set(table.get("pinned") or [])
+check("no pinned job's render points at the shared checkout", sorted(set(hits) & pinned_set), [])
+check("every template that is not pinned still renders as before (opt-in, PR #632 major 1)",
+      sorted(set(renders) - pinned_set - set(hits)), [])
 check("render-only creates nothing under HOME", home.exists(), False)
 check("every exception is bounded and named", exception_problems(table, labels), [])
 
 print("-- every pinned job starts the wrapper in its own tree")
 root = Path(home) / table["pinned_root"]
-for label in sorted(set(renders) - exceptions):
+for label in sorted(set(renders) & pinned_set):
     tree = root / label / "kipi-system"
     # Comments stripped first: 5 committed templates carry `--` inside a comment, which
     # XML forbids and expat refuses while plutil and launchd accept it. This check reads
@@ -157,8 +171,21 @@ for label in sorted(set(renders) - exceptions):
         check(f"{label}: its working directory is its own tree", wd, str(tree))
     inside = [k for k in ("StandardOutPath", "StandardErrorPath") if str(d.get(k, "")).startswith(str(tree))]
     check(f"{label}: writes no stdout or stderr inside its tree", inside, [])
+    # PR #632 major 2: a path that climbs out of the job's tree with /.. names a
+    # sibling of the SHARED checkout, which does not exist next to a pinned one.
+    climbs = [a for a in args + [str(d.get(k, "")) for k in ("WorkingDirectory", "StandardOutPath")]
+              if str(tree) + "/.." in str(a)]
+    check(f"{label}: no path climbs out of its own tree with /..", climbs, [])
 
 print("-- mutants on the table (in memory)")
+m = copy.deepcopy(table)
+m["pinned"] = [p for p in m["pinned"] if p != "com.kipi.linear-dor"]
+check("mutant goes red: a template in neither list",
+      any("in neither pinned nor shared_exceptions" in p for p in exception_problems(m, labels)), True)
+m = copy.deepcopy(table)
+m["shared_exceptions"]["com.kipi.linear-dor"] = dict(sorted(m["shared_exceptions"].items())[0][1])
+check("mutant goes red: a template in both lists",
+      any("both pinned and a shared exception" in p for p in exception_problems(m, labels)), True)
 m = copy.deepcopy(table)
 first = sorted(m["shared_exceptions"])[0]
 m["shared_exceptions"][first]["ticket"] = ""
@@ -215,6 +242,28 @@ check("the log names the advance and the label", "com.kipi.fx: advanced" in log.
 for f in ("ran-at", "ran-in"):
     (tree / f).unlink()
 
+# Dirty, on a file origin does NOT touch (PR #632 review, minor): checkout alone would
+# advance and carry the edit forever. The wrapper must refuse anyway.
+(skel / "state.txt").write_text("base\n")
+git("add", "state.txt", cwd=skel)
+git("commit", "-qm", "c2b", cwd=skel)
+git("push", "-q", "origin", "HEAD:main", cwd=skel)
+run(["bash", str(tree / WRAPPER_REL), "/bin/true"], env=env)
+c2b = git("rev-parse", "HEAD", cwd=tree)
+(tree / "state.txt").write_text("written by the job\n")
+(skel / "other.txt").write_text("unrelated\n")
+git("add", "other.txt", cwd=skel)
+git("commit", "-qm", "c2c", cwd=skel)
+git("push", "-q", "origin", "HEAD:main", cwd=skel)
+p = run(["bash", str(tree / WRAPPER_REL), "/bin/true"], env=env)
+check("dirty on an untouched file: no advance", git("rev-parse", "HEAD", cwd=tree), c2b)
+check("dirty on an untouched file: filed", notes.exists() and len(notes.read_text().splitlines()), 1)
+git("checkout", "-q", "--", "state.txt", cwd=tree)
+notes.unlink()
+(fx / "job-pinned-paged-com.kipi.fx").unlink(missing_ok=True)
+run(["bash", str(tree / WRAPPER_REL), "/bin/true"], env=env)
+c2 = git("rev-parse", "HEAD", cwd=tree)
+
 # Dirty: the tree holds an edit to a file origin changes again. Refuse, keep it, still run, file once.
 (tree / "f.txt").write_text("a human edit\n")
 (skel / "f.txt").write_text("three\n")
@@ -237,6 +286,7 @@ for rel in ("q-system/.q-system/scripts/install-plist.sh", "q-system/.q-system/j
     shutil.copy2(UNDER_REPO / rel, skel / rel)
 fixture_table = json.loads((skel / "q-system/.q-system/job-checkouts.json").read_text())
 fixture_table["shared_exceptions"] = {}
+fixture_table["pinned"] = ["com.kipi.fxjob"]
 (skel / "q-system/.q-system/job-checkouts.json").write_text(json.dumps(fixture_table))
 (scripts / "com.kipi.fxjob.plist").write_text(
     '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
@@ -253,9 +303,9 @@ stub.write_text("#!/bin/sh\nexit 0\n")
 stub.chmod(0o755)
 ienv = dict(env, KIPI_LAUNCHCTL=str(stub))
 fx_installer = skel / "q-system/.q-system/scripts/install-plist.sh"
-p = run(["bash", str(fx_installer), "com.kipi.fxjob"], env=ienv)
+p = run(["bash", str(fx_installer), "--pinned"], env=ienv)
 jt = fx / "home" / ".local/state/kipi/jobs" / "com.kipi.fxjob" / "kipi-system"
-check("install exits 0", p.returncode, 0 if p.returncode == 0 else f"{p.returncode}: {p.stderr.strip()[-200:]}")
+check("install --pinned exits 0", p.returncode, 0 if p.returncode == 0 else f"{p.returncode}: {p.stderr.strip()[-200:]}")
 check("install created the job's own tree", (jt / ".git").exists(), True)
 porcelain = git("worktree", "list", "--porcelain", cwd=skel)
 block = [b for b in porcelain.split("\n\n") if f"worktree {jt}" in b or f"worktree {jt.resolve()}" in b]
@@ -280,6 +330,8 @@ git("commit", "-qm", "c5 no wrapper", cwd=skel)
 git("push", "-q", "origin", "HEAD:main", cwd=skel)
 (scripts / "kipi-job-pinned.sh").write_text(wrapper_src)  # the renderer's own checkout keeps one
 (scripts / "com.kipi.fxjob2.plist").write_text((scripts / "com.kipi.fxjob.plist").read_text().replace("fxjob", "fxjob2"))
+fixture_table["pinned"].append("com.kipi.fxjob2")
+(skel / "q-system/.q-system/job-checkouts.json").write_text(json.dumps(fixture_table))
 git("add", "q-system/.q-system/scripts/com.kipi.fxjob2.plist", cwd=skel)
 git("commit", "-qm", "c6 second template", cwd=skel)
 p = run(["bash", str(fx_installer), "com.kipi.fxjob2"], env=ienv)

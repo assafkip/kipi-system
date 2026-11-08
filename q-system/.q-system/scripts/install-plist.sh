@@ -84,7 +84,7 @@ EOF
 }
 
 usage() {
-  echo "usage: install-plist.sh <label> [--render-only <output-path>]" >&2
+  echo "usage: install-plist.sh <label> [--render-only <output-path>] | --pinned | --all | --missing" >&2
   echo "labels available (from $(templates_source)):" >&2
   committed_templates | while IFS= read -r p; do
     echo "  $(basename "$p" .plist)" >&2
@@ -116,6 +116,24 @@ fi
 # A label in the paused ledger is skipped too: paused is a decision somebody made,
 # and re-arming it on the next sync would overrule them silently.
 MODE="$1"
+# THE MIGRATION STEP (ASK-3966, PR #632 review, major 1). A label moved to its own
+# pinned checkout renders differently from the job already installed, and
+# fleet-health's plist-drift detector files one Linear issue per drifted label until
+# it is reinstalled. This reinstalls exactly the labels job-checkouts.json pins, one
+# command, from the primary checkout only (the same refusal as --all).
+if [ "$MODE" = "--pinned" ]; then
+  if [ -f "$KIPI_REPO/.git" ] || [ ! -d "$KIPI_REPO/.git" ]; then
+    echo "REFUSED: --pinned only runs from the primary checkout, not a worktree (resolved KIPI_REPO=$KIPI_REPO)." >&2
+    exit 2
+  fi
+  _pinned="$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("pinned") or []))' \
+    "$KIPI_REPO/q-system/.q-system/job-checkouts.json")" || { echo "REFUSED: job-checkouts.json is unreadable" >&2; exit 2; }
+  rc=0
+  for _label in $_pinned; do
+    bash "$SCRIPT_DIR/install-plist.sh" "$_label" || { echo "  FAILED: $_label" >&2; rc=1; }
+  done
+  exit $rc
+fi
 if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
   # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
   # git worktree rewrote every live job to point at that worktree, including the
@@ -344,7 +362,11 @@ try:
     t = json.load(open(table))
 except (OSError, ValueError) as e:
     sys.exit("job-checkouts.json is unreadable: %s" % e)
-if ident != t.get("applies_to_ident") or label in (t.get("shared_exceptions") or {}):
+pinned, shared = set(t.get("pinned") or []), set(t.get("shared_exceptions") or {})
+if label in pinned and label in shared:
+    sys.exit("%s is both pinned and a shared exception in job-checkouts.json" % label)
+# Opt-in (PR #632 review, major 1): only a listed label changes its render.
+if ident != t.get("applies_to_ident") or label not in pinned:
     sys.exit(0)
 print(os.path.join(home, t["pinned_root"], label, ident))
 PY

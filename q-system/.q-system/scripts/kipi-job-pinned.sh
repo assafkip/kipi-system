@@ -18,7 +18,7 @@
 # the start of its own run, and nothing else ever moves it.
 #
 # IT REFUSES, NEVER FORCES (the rule kipi-dispatch-pinned.sh carries). The advance is
-# `checkout --detach origin/main`, which refuses on a tree it cannot move cleanly, and
+# `checkout --detach origin/main`, attempted only on a tree with no tracked change, and
 # never `reset --hard`, `-f` or `clean`. On a refusal the job still runs, on the head it
 # has: a consistent old version beats no run, and the refusal is logged and filed once a
 # day. A tree that is dirty is a bug in the job (it writes inside its checkout) and the
@@ -65,7 +65,14 @@ fi
 git -C "$TREE" fetch --quiet origin main 2>/dev/null || say "fetch failed; running the head this checkout has"
 
 before="$(git -C "$TREE" rev-parse --short HEAD 2>/dev/null || echo '?')"
-if git -C "$TREE" checkout --detach --quiet origin/main 2>>"$LOG"; then
+# ANY TRACKED CHANGE REFUSES, NOT ONLY ONE THAT CONFLICTS (PR #632 review, minor).
+# `git checkout` itself refuses only when the modified file also changes upstream;
+# a file the job rewrote that origin/main does not touch would ride along silently,
+# forever. A job must not write inside its checkout, so any tracked change is the
+# finding. Untracked files are left out: a job's own caches (__pycache__) are
+# ignored, and a stray untracked file cannot change what the tracked code does.
+dirty="$(git -C "$TREE" status --porcelain --untracked-files=no 2>/dev/null)"
+if [ -z "$dirty" ] && git -C "$TREE" checkout --detach --quiet origin/main 2>>"$LOG"; then
   after="$(git -C "$TREE" rev-parse --short HEAD 2>/dev/null || echo '?')"
   [ "$before" = "$after" ] || say "advanced $before -> $after"
   rm -f "$(dirname "$LOG")/job-pinned-paged-$LABEL" 2>/dev/null || true
@@ -75,6 +82,10 @@ else
 fi
 
 cd "$TREE" || { say "cannot cd into $TREE"; exit 1; }
+# -e is deliberately off in this block: a failed fetch or a refused advance must
+# still run the job, on the head it has. exec does not return; if it cannot start the
+# program, a non-interactive bash exits 126 or 127 here. The exit below only makes it
+# certain that nothing after this block is ever read from a file the advance rewrote.
 exec "$@"
 exit $?
 }
