@@ -194,7 +194,9 @@ else
   echo "FAIL  the page carried the line's tail or no marker: ${NOTX:-<empty>}"
   FAIL=$((FAIL + 1))
 fi
-if grep -q 'XYZ123' "$TMPX/skel/q-system/output/open-loops-heartbeat.log" 2>/dev/null; then
+# The sweep's OWN halt line, not the agent output it tees into the same log: the
+# tee alone would pass this with that line deleted (PR #646 round 1).
+if grep -q 'environmental failure (.*XYZ123.*) -- halting the sweep' "$TMPX/skel/q-system/output/open-loops-heartbeat.log" 2>/dev/null; then
   echo "PASS  ...and the sweep's own log keeps the whole line"
   PASS=$((PASS + 1))
 else
