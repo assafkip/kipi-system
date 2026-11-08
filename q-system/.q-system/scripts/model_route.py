@@ -186,10 +186,17 @@ def main(argv=None) -> int:
     c.add_argument("--files", nargs="*", default=[])
     c.add_argument("--repo", default="")
     c.add_argument("--text", default="")
+    k = sub.add_parser("known", help="exit 0 when the model id is in the table's known_models")
+    k.add_argument("model")
     a = ap.parse_args(argv)
     if a.verb == "classify":
         print(classify(a.repo, a.files, a.text))
         return 0
+    if a.verb == "known":
+        try:
+            return 0 if a.model in load().get("known_models", []) else 1
+        except (OSError, ValueError):
+            return 1
     try:
         t = load()
     except (OSError, ValueError) as exc:

@@ -138,7 +138,12 @@ if [ -z "$_SKEL_TOPLEVEL" ] || [ "$_SKEL_TOPLEVEL" != "$_SKEL_PHYS" ]; then
 fi
 unset _SKEL_TOPLEVEL _SKEL_PHYS
 SYNC="$SCRIPT_DIR/linear-sync.py"
-OUT_DIR="$HOME/.config/kipi/pr-reviews"
+# KIPI_REVIEW_OUT_DIR is the MEASUREMENT seam (ASK-4038): a model evaluation
+# re-reviews old PRs, and their round files and verdict records ARE the history
+# the routing table is measured from. Writing an eval round into the live dir
+# would add a round to a merged PR and overwrite its record. Refused with --post
+# below: a posted verdict whose record lands elsewhere is one no gate can read.
+OUT_DIR="${KIPI_REVIEW_OUT_DIR:-$HOME/.config/kipi/pr-reviews}"
 TIMEOUT_SECONDS=2400
 NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 
@@ -176,10 +181,13 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
 PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
-REVIEW_BASE_ARG=""; DELTA=0; BASE_FLAG=0
+REVIEW_BASE_ARG=""; DELTA=0; BASE_FLAG=0; MODEL_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
+    # AN EXPLICIT MODEL IS FOR MEASURING THE TABLE, NEVER FOR GATING (ASK-4038).
+    # Refused with --post below, so every posted verdict runs the table's model.
+    --model)  shift; MODEL_ARG="${1:-}" ;;
     # DELTA ROUNDS (ASK-3884). --base names the last reviewed sha; --delta reads
     # it from this engine's own verdict record. Neither given is a full review,
     # exactly as before. Resolved below, next to the PR fetch.
@@ -227,6 +235,14 @@ done
 # approve-vs-rework. Telling a reader no gate moved is the same silent-dry-run
 # defect aimed at the reader who did read the label, and worse, because they
 # trusted it. So the note names both halves: what was withheld, and what landed.
+if [ "$POST" = "1" ] && { [ -n "$MODEL_ARG" ] || [ -n "${KIPI_REVIEW_OUT_DIR:-}" ]; }; then
+  echo "REFUSING: --model and KIPI_REVIEW_OUT_DIR are measurement seams (ASK-4038); a posted review runs the routing table's model and writes the live record. Drop --post, or drop the seam." >&2
+  exit 2
+fi
+if [ -n "$MODEL_ARG" ] && ! python3 "$SCRIPT_DIR/model_route.py" known "$MODEL_ARG" 2>/dev/null; then
+  echo "REFUSING: --model '$MODEL_ARG' is not in the routing table's known_models." >&2
+  exit 2
+fi
 DRY_NOTE=""
 [ "$POST" = "1" ] || DRY_NOTE=" (DRY RUN -- nothing posted to GitHub or Linear; the verdict record WAS written and the loop still gates on it; re-run with --post)"
 
@@ -1045,6 +1061,9 @@ fi
 gh pr diff "$PR" $KIPI_GH_REPO_ARGS --name-only > "$PR_CONTEXT_DIR/pr.files" 2>>"$PR_CONTEXT_DIR/err" || : > "$PR_CONTEXT_DIR/pr.files"
 _ROUTED="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review --files-from "$PR_CONTEXT_DIR/pr.files" --repo "$REVIEW_SLUG" --tree "$REVIEW_REPO" 2>>"$PR_CONTEXT_DIR/err")"
 [ -n "$_ROUTED" ] && CLAUDE_MODEL="$_ROUTED"
+# A measurement run names its model (dry runs only, checked above); recorded as
+# reviewed_by like any other, so the eval's records say which model spoke.
+[ -n "$MODEL_ARG" ] && CLAUDE_MODEL="$MODEL_ARG"
 if [ "$ROUND" -gt 1 ]; then
   gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
   # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the

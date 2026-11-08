@@ -1,0 +1,8 @@
+{
+ "path": "q-system/.q-system/tests/test_review_eval_seams.py",
+ "runner": "python3",
+ "covers": [
+  "q-system/.q-system/scripts/pr-review-agent.sh",
+  "q-system/.q-system/scripts/model_route.py"
+ ]
+}
