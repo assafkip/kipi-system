@@ -512,6 +512,51 @@ finally:
     dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv
     dor.STATE, dor.fetch_draftable = _real_state, _real_fetch
 
+# --- ASK-278: the runner's refusal is named, and it stops the run -------------
+# Measured 2026-11-07: the 11-07 failure was "claude exited rc=1 with 63 chars of
+# output", and the 63 chars were "You've hit your weekly limit · resets 6am
+# (America/Los_Angeles)" (15 session files, 02:00 to 07:00). Two diagnoses guessed
+# the login from the length. The reason now names a runner refusal through
+# env-failure-lib.sh, the fleet's one classifier, and any other output stays a
+# length only (ASK-204: a permanent record carries no untrusted text).
+LIMIT_TEXT = "You've hit your weekly limit · resets 6am (America/Los_Angeles)"
+_calls = []
+_real_run2, _real_which2 = dor.subprocess.run, dor.shutil.which
+try:
+    dor.shutil.which = lambda _name: str(_fake_bin)
+
+    def _limited(*_a, **_k):
+        _calls.append(1)
+        return _Res(1, LIMIT_TEXT)
+
+    dor.subprocess.run = _limited
+    _lim_body, _lim_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
+    check("ASK-278: a usage-limit refusal is named in the reason", "weekly limit" in _lim_reason, True)
+    check("ASK-278: it is marked as the runner's, not the issue's",
+          _lim_reason.startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), True)
+    dor.subprocess.run = lambda *_a, **_k: _Res(1, "Traceback: secret=abc123 in the issue body\n")
+    _other = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    check("ASK-278: any other output stays a length, never its text", "secret" in _other, False)
+
+    # Through main(): three queued issues and a limited runner. One call, then stop.
+    _calls.clear()
+    dor.draft_one = _real_draft
+    dor.subprocess.run = _limited
+    dor.STATE = SANDBOX / "state-278.json"
+    dor._linear = lambda: FakeLinear()
+    dor.fetch_draftable = lambda ls_, tid: [
+        {"id": f"x{n}", "identifier": f"ASK-{n}", "title": "t", "description": "", "project": None,
+         "state": {"name": "Backlog", "type": "backlog"}} for n in (1, 2, 3)]
+    sys.argv = ["linear-dor-drafter.py", "--limit", "3", "--apply"]
+    dor.main()
+    check("ASK-278: a limited runner costs ONE claude call, not one per queued issue", len(_calls), 1)
+    _saved = json.loads((SANDBOX / "state-278.json").read_text())
+    check("ASK-278: the issues it did not reach stay queued", _saved.get("remaining"), 3)
+finally:
+    dor.subprocess.run, dor.shutil.which = _real_run2, _real_which2
+    dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv
+    dor.STATE, dor.fetch_draftable = _real_state, _real_fetch
+
 if failures:
     print("\nFAIL:")
     for f in failures:
