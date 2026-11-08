@@ -573,6 +573,20 @@ try:
     _m_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     dor.ENV_LIB = _real_lib
     check("ASK-3980: a missing env-failure-lib.sh is named in the reason", "classifier missing" in _m_reason, True)
+    # ...on the measured rc 0 shape too, which lands on the draft check (PR #640 r1).
+    dor.ENV_LIB = SANDBOX / "no-such-env-failure-lib.sh"
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    _m0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    dor.ENV_LIB = _real_lib
+    check("ASK-3980: at rc 0 a missing env-failure-lib.sh is named too", "classifier missing" in _m0, True)
+    # The reset clause is kept in the LOCAL log on rc 0, never on the filed reason.
+    import contextlib, io
+    _err = io.StringIO()
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    with contextlib.redirect_stderr(_err):
+        _l_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    check("ASK-3980: at rc 0 the local log keeps the reset clause", "resets 6am" in _err.getvalue(), True)
+    check("ASK-3980: ...and the filed reason does not", "resets 6am" in _l_reason, False)
 
     # Through main(): three queued issues and a limited runner. One call, then stop.
     _calls.clear()

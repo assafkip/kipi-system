@@ -749,38 +749,41 @@ ENV_LIB = HERE / "env-failure-lib.sh"
 CLASSIFIER_MISSING = " (refusal classifier missing: env-failure-lib.sh)"
 
 
-def runner_refusal(text: str, success: bool = False) -> str:
-    """The runner's own refusal when the MACHINE refused, else "".
+def runner_refusal(text: str, success: bool = False) -> tuple:
+    """(filed, local) when the MACHINE refused, else ("", "").
 
-    On a failed exit, the CLI's line. On a successful one (success=True), the
-    marker only, with a note that the rest of the line was not copied.
+    `filed` goes on the permanent Linear record: the CLI's line on a failed exit,
+    the marker only (with a note) on a successful one. `local` is always the whole
+    line, for this Mac's own log, so the reset clause is never lost (PR #640 r1).
 
     Popen, not subprocess.run: the failure-reporting test replaces subprocess.run
     to stand in for claude, and the classifier must not be mistaken for a call.
     """
     if not text:
-        return ""
+        return "", ""
     if not ENV_LIB.is_file():
         # Said, not silent: without the lib every refusal reads as a length again,
         # which is the wrong-cause string this whole path exists to remove.
         print(f"  dor-drafter: {ENV_LIB} is missing, so a runner refusal cannot be named",
               file=sys.stderr)
-        return ""
-    reader = "environmental_marker" if success else "environmental_reason"
+        return "", ""
     try:
         proc = subprocess.Popen(
-            ["bash", "-c", f'. "$1" && is_environmental "$2" && {reader} "$2"',
+            ["bash", "-c", '. "$1" && is_environmental "$2" && environmental_reason "$2" '
+             '&& printf "\\n" && environmental_marker "$2"',
              "_", str(ENV_LIB), text[:4000]],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
         out, _ = proc.communicate(timeout=10)
     except (OSError, subprocess.SubprocessError):
-        return ""
-    line = (out or "").strip().splitlines()
-    if proc.returncode != 0 or not line:
-        return ""
+        return "", ""
+    lines = (out or "").strip().splitlines()
+    if proc.returncode != 0 or not lines:
+        return "", ""
+    local = lines[0][:160]
     if success:
-        return line[0][:120] + " (read on a successful exit; the rest of the line is not copied)"
-    return line[0][:160]
+        marker = (lines[-1] if len(lines) > 1 else "")[:120] or "a machine refusal"
+        return marker + " (read on a successful exit; the rest of the line is not copied)", local
+    return local, local
 
 
 def _subscription_env():
@@ -861,15 +864,17 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
     # each issue for a malformed draft. linear-worker.sh and pr-review-agent.sh read
     # the success branch for the same reason. A real draft cannot match:
     # is_environmental refuses any output with one line that is not a machine marker.
-    refusal = runner_refusal(out + "\n" + (res.stderr or ""), success=res.returncode == 0)
-    if refusal:
-        reason = RUNNER_REFUSED + refusal
-        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
-        return None, reason
+    filed, local = runner_refusal(out + "\n" + (res.stderr or ""), success=res.returncode == 0)
+    if filed:
+        # The local log (linear-dor.err, this Mac only) keeps the CLI's whole line,
+        # reset clause included; only `filed` reaches Linear (PR #640 round 1).
+        print(f"  {issue['identifier']}: {RUNNER_REFUSED}{local}", file=sys.stderr)
+        return None, RUNNER_REFUSED + filed
+    # A missing classifier is named on EVERY failure reason, rc 0 included: the
+    # measured outage exits 0 with 63 chars and lands on the draft check below.
+    missing = CLASSIFIER_MISSING if not ENV_LIB.is_file() else ""
     if res.returncode != 0 or len(out) < 60:
-        reason = f"claude exited rc={res.returncode} with {len(out)} chars of output"
-        if not ENV_LIB.is_file():
-            reason += CLASSIFIER_MISSING
+        reason = f"claude exited rc={res.returncode} with {len(out)} chars of output{missing}"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
     # Strip any stray fencing the model added despite instructions.
@@ -882,7 +887,7 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
     if start:
         out = out[start.start():].strip()
     if "**Energy:**" not in out:
-        reason = f"draft had no Energy/Time line ({len(out)} chars), not written"
+        reason = f"draft had no Energy/Time line ({len(out)} chars), not written{missing}"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
     return out, ""
