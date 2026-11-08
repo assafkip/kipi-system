@@ -188,8 +188,11 @@ work_instance() {
     # environmental failures stop on attempt 1 and surface immediately, because
     # retrying cannot fix an environment. The heartbeat simply never applied it.
     if is_environmental "$agent_out"; then
-      ENV_HALT="$(environmental_reason "$agent_out")"
-      echo "$(TS) heartbeat[$name]: environmental failure ($ENV_HALT) -- halting the sweep" >> "$LOG"
+      # The marker travels to the ticket and the page; this log keeps the whole
+      # line (ASK-3981): a run killed at its timeout exits non-zero with whatever
+      # the agent printed, so the tail is not proof of the CLI.
+      ENV_HALT="$(environmental_marker "$agent_out")"
+      echo "$(TS) heartbeat[$name]: environmental failure ($(environmental_reason "$agent_out")) -- halting the sweep" >> "$LOG"
       # skipped, NOT failed: the environment refused the run, the instance did
       # not fail at anything. Recording it as a failure is what put a step-audit
       # ticket on top of the pile.

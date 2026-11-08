@@ -3057,7 +3057,13 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # as an ordinary silent agent. Classifying only on failure would leave the
     # exact measured outage unhandled.
     if is_environmental "$AGENT_OUT"; then
-      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+      # ON A SUCCESSFUL EXIT THE BYTES ARE THE AGENT'S (ASK-3981). An issue body
+      # can steer what a successful agent prints, so a one-line answer shaped like
+      # a limit line would carry its tail into the Slack page and the Linear halt
+      # note. Only the closed-vocabulary marker leaves the Mac; this log keeps the
+      # whole line. A failed exit (below) is the CLI speaking and keeps its line.
+      say "$ISSUE: runner refusal read on a successful exit: $(environmental_reason "$AGENT_OUT")"
+      ENV_FAIL="$(environmental_marker "$AGENT_OUT") (the rest of the line is in the worker log, not copied here)"
     else
       : > "$RUNNER_OK_FILE" 2>/dev/null || true
       python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
@@ -3076,7 +3082,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
       # healthy issues driven to TERMINAL in six hours, four charges each, no
       # branch, no commit, no diff -- the agent never spoke because the account
       # could not answer.
-      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+      # The marker here too (PR #644 round 1): a run killed at the timeout exits
+      # non-zero with whatever the agent printed, so a failed exit is not proof the
+      # line is the CLI's. Slack and Linear get the marker; this log keeps the line.
+      say "$ISSUE: runner refusal read on a failed exit (rc=$rc): $(environmental_reason "$AGENT_OUT")"
+      ENV_FAIL="$(environmental_marker "$AGENT_OUT") (the rest of the line is in the worker log, not copied here)"
     else
     # The runner answered and the failure is the issue's: the machine is up.
     : > "$RUNNER_OK_FILE" 2>/dev/null || true

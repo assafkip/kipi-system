@@ -235,6 +235,45 @@ else
       "THE DEFECT: rc=0 makes an outage byte-identical to a healthy run, and launchd-failing goes blind"
 fi
 
+# --- A5. ON A SUCCESSFUL EXIT ONLY THE MARKER TRAVELS (ASK-3981) --------------
+# Run A's limit line exits 0, so its bytes are the AGENT'S: an issue body can
+# steer them. A one-line answer shaped like a limit line used to carry its tail
+# into the Slack page and the Linear halt note. Only the closed-vocabulary marker
+# may leave the Mac now; this Mac's own log keeps the whole line.
+STUB_A5="$WORK/stub-a5"; mkdir -p "$STUB_A5"
+cp "$WORK/gh" "$STUB_A5/gh"
+cat > "$STUB_A5/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "You have hit your weekly limit - resets 6am. TOKEN=XYZ123 copied out of the issue body"
+exit 0
+SH
+chmod +x "$STUB_A5/claude"
+SKEL_A5="$(make_skel "$WORK/run-a5")"
+STATE_A5="$WORK/state-a5"
+NOTIFY_A5="$WORK/notify-a5.log"
+PATH="$STUB_A5:$PATH" \
+   KIPI_SKEL="$SKEL_A5" KIPI_STATE_DIR="$STATE_A5" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_A5" \
+   bash "$WORKER" --apply --limit 2 > "$WORK/run-a5.out" 2>&1
+ALERT_A5="$(cat "$NOTIFY_A5" 2>/dev/null)"
+if grep -qi 'weekly limit' <<<"$ALERT_A5" && ! grep -q 'XYZ123' <<<"$ALERT_A5"; then
+  ok "on rc 0 the alert names the limit and carries nothing after the marker"
+else
+  bad "on rc 0 the alert carries only the marker" "alert text: '${ALERT_A5:-<empty>}'"
+fi
+# The worker's OWN say line, not the agent output it tees: the tee alone would
+# pass this with the say line deleted (PR #644 round 1).
+if grep -q 'runner refusal read on a successful exit: .*XYZ123' "$STATE_A5/linear-worker.log" 2>/dev/null; then
+  ok "...and the worker logs the whole line on this Mac"
+else
+  bad "the worker logs the whole line on this Mac" "no say line in $STATE_A5/linear-worker.log"
+fi
+
 # ============================================================================
 # RUN B -- THE NEGATIVE FIXTURE (mandatory: the cap is a runaway brake)
 # ============================================================================
@@ -394,6 +433,7 @@ continue|Credit balance is too low - the top-up flow now handles it.
 halt|You've hit your weekly limit - resets Aug 18 at 2pm (America/Los_Angeles)
 halt|You've hit your 5-hour limit - resets at 2pm
 halt|Invalid API key · Please run /login
+continue|You've hit your 12345678901234567890-hour limit
 CASES
 
 # The pipe is the field separator of the two tables above, so the pipe-tail case

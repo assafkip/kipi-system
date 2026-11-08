@@ -79,7 +79,7 @@
 #
 # Leading whitespace is tolerated (up to 3) because the CLI pads some of these;
 # an indented quote inside agent prose does not reach that far left.
-ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]+-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary[[:space:]]*(—|–|-{1,2})[[:space:]]*try again in a moment\. if it persists, check https://status\.claude\.com\.?)?"
+ENV_MARKERS="(you've |you have )?hit your (weekly|usage|session|[0-9]{1,3}-hour) limit|usage limit reached|credit balance is too low|invalid api key|authentication_error|please run /login|api error: 529 overloaded(\. this is a server-side issue, usually temporary[[:space:]]*(—|–|-{1,2})[[:space:]]*try again in a moment\. if it persists, check https://status\.claude\.com\.?)?"
 # The 529 line, added 2026-09-23 (ASK-2009) from the real worker log: on
 # 2026-08-18 three runs printed ONE line that begins
 #   API Error: 529 Overloaded. This is a server-side issue, usually temporary
@@ -167,9 +167,15 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
 # written: a SUCCESSFUL `claude -p` exit, whose bytes an issue body can steer
 # through the prompt. The tail after a marker is matched word-led on purpose
 # (`resets .*`, see ENV_TAIL_BODY), so it is free text; the marker is the closed
-# vocabulary in ENV_MARKERS. The DoR drafter files this one on rc 0 and
-# environmental_reason on a failed exit. linear-worker.sh and pr-review-agent.sh
-# still post environmental_reason on rc 0; moving them is ASK-3981.
+# vocabulary in ENV_MARKERS. Every consumer that files a reason onto a ticket,
+# a page or a PR files this one; the whole line goes to that consumer's own log:
+#   linear-dor-drafter.py   rc 0 only; a failed exit keeps the CLI line (ASK-3980)
+#   linear-worker.sh        both exits: a timeout kill is non-zero too (ASK-3981)
+#   open-loops-heartbeat.sh failed exits, the only ones it reads (ASK-3981)
+#   pr-review-agent.sh      prints to its own stderr only, never to a ticket, so
+#                           it keeps the whole line. The `-hour` alternative is bounded to 1 to 3 digits
+# (the real shape is "5-hour"): unbounded, it let a model answer put a long digit
+# run into the marker that reaches Linear (PR #640 round 2).
 environmental_marker() {  # environmental_marker <runner-output> -> the marker only
   printf '%s' "${1:-}" \
     | grep -iE "$ENV_LINE_RE" \
