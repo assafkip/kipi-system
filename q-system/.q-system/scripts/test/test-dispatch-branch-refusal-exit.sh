@@ -164,7 +164,7 @@ if grep -q '^MAIN excl=\[ASK-7\]$' "$WORK/kipi-calls.txt"; then
 else
   bad "F1: the next tick passes the set-aside list" "calls: [$(tr '\n' '|' < "$WORK/kipi-calls.txt")] log: $(tail -5 "$DLOG" 2>/dev/null | tr '\n' '|' | cut -c1-400)"
 fi
-grep -q 'set aside for a day after a branch refusal, not picked: ASK-7' "$DLOG" 2>/dev/null \
+grep -q 'set aside for a day after a branch refusal, left out of the fresh pick and the WIP rework pick: ASK-7' "$DLOG" 2>/dev/null \
   && ok "F1b: the tick says which issues it left out" \
   || bad "F1b: the tick names what it left out" "$(tail -5 "$DLOG" 2>/dev/null | tr '\n' '|' | cut -c1-400)"
 
