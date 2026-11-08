@@ -63,8 +63,10 @@ elif a[:1] == ["api"]:
         print(w.get("main_sha", "m1"))
     elif "/compare/main..." in path:
         b = path.split("/compare/main...", 1)[1]
+        if w.get("compare_fails"):
+            sys.stderr.write("HTTP 502: Bad Gateway\n"); sys.exit(1)
         if b not in w.get("branches", {}):
-            sys.exit(1)
+            sys.stderr.write("gh: Not Found (HTTP 404)\n"); sys.exit(1)
         print(w["branches"][b] if jq == ".ahead_by" else json.dumps(w.get("branch_files", [])))
     elif "/compare/" in path:
         print(json.dumps(w.get("changed", [])))
@@ -462,6 +464,48 @@ def case_sites() -> None:
           LADDER.exists() and not re.search(r"COOLDOWN|cooldown_days", LADDER.read_text()))
 
 
+def case_review_fixes() -> None:
+    """PR #662 review round 1, each major pinned."""
+    # major 2: a gh fault on the compare is not "no branch".
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        world(env, compare_fails=True)
+        for _ in range(3):
+            led(env, "bump-attempt", "ASK-2", "no PR opened")
+        out = ladder(env, "--apply")
+        check("review: a gh fault on the branch compare keeps the cap and retries, never clears it",
+              ledger_row(env, "ASK-2").get("count") == 3 and "retries" in out
+              and not any(c[:2] == ["requeue", "ASK-2"] for c in log(env, "sync")), out)
+    # nonblocking major: unattended sub-tickets are marked needs-triage.
+    td, env = decision_world([RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    ladder(env, "--apply")
+    made = [x for x in writes(env) if x["op"] == "create"]
+    check("review: a SPLIT sub-ticket carries owner:sana and needs-triage",
+          made and set(made[0].get("labels") or []) >= {"owner:sana", "needs-triage"}, made)
+    td.cleanup()
+    # major 3: the founder ask has a reader, a resolve command, and resolving releases the hold.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant the repo token\n"])
+    ladder(env, "--apply")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fa", str(SCRIPTS / "founder_asks.py"))
+    fa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fa)
+    rows, err = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    check("review: founder_asks.py renders the ask with the command that resolves it",
+          err is None and any("ASK-1" in r and "--resolve ASK-1" in r for r in rows), (rows, err))
+    out = ladder(env, "--resolve", "ASK-1", "--note", "token granted")
+    rows2, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    reset(env)
+    at(env, 4)
+    out2 = ladder(env, "--apply")
+    check("review: --resolve marks it resolved, the brief drops it, and the held ticket re-enters",
+          "1 ask(s)" in out and not rows2 and "founder decision is resolved" in out2
+          and ledger_row(env, "ASK-1").get("ladder_hold") is not True, (out, rows2, out2))
+    td.cleanup()
+    src = (SCRIPTS / "morning-brief.py").read_text()
+    check("review: the morning brief registers founder_asks.py", '"founder_asks.py"' in src)
+
+
 def case_owns() -> None:
     """ladder_owns() is the one rule pr-owner.py asks (ASK-3962), so it is pinned here."""
     import importlib.util
@@ -532,6 +576,7 @@ def main() -> int:
         case_events()
         case_edges()
         case_owns()
+        case_review_fixes()
         case_mutant()
     case_worker()
     case_sites()

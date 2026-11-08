@@ -126,10 +126,13 @@ def now() -> datetime:
 
 
 def run(argv: list, timeout: int = 120) -> tuple[int, str]:
+    """(rc, stdout). On a failure the stderr rides along, so a caller can tell
+    gh's 404 from a network fault."""
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                            stdin=subprocess.DEVNULL)
-        return p.returncode, (p.stdout or "").strip()
+        out = (p.stdout or "").strip()
+        return p.returncode, out if p.returncode == 0 else (out + "\n" + (p.stderr or "")).strip()
     except (OSError, subprocess.SubprocessError) as exc:
         return 99, str(exc)
 
@@ -304,6 +307,62 @@ STATUS = env_path("CAP_LADDER_STATUS", HOME / ".local/state/kipi/morning-status.
 OPEN_TYPES = ("backlog", "unstarted", "started", "triage")
 
 
+# --- THE MORNING STATUS FILE: this script is its one writer ------------------
+# Founder rulings: spend, access and outside reach are "parked with its reason
+# and listed in the morning status file. It is not a page." founder_asks.py
+# renders the unresolved entries into the 07:00 morning brief, and each line
+# carries the one command that releases the hold: `cap-ladder.py --resolve ASK-n`.
+# Other jobs add asks through `cap-ladder.py --founder-ask`, never by appending.
+
+def _status_rows() -> list:
+    try:
+        return [json.loads(l) for l in STATUS.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def _status_write(rows: list) -> None:
+    STATUS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS.with_suffix(f".tmp.{os.getpid()}")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    os.replace(tmp, STATUS)
+
+
+def _status_locked(fn):
+    lock = STATUS.with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return fn()
+
+
+def status_add(issue: str, kind: str, ask: str, rca: str = "", source: str = JOB) -> bool:
+    """Append one unresolved ask, unless this issue already has one of this kind."""
+    def go():
+        rows = _status_rows()
+        if any(r.get("issue") == issue and r.get("kind") == kind and not r.get("resolved") for r in rows):
+            return False
+        rows.append({"at": now().isoformat(), "issue": issue, "kind": kind, "ask": ask[:300],
+                     "source": source, "rca": rca, "resolved": False,
+                     "resolve": f"python3 q-system/.q-system/scripts/cap-ladder.py --resolve {issue}"})
+        _status_write(rows)
+        return True
+    return _status_locked(go)
+
+
+def status_resolve(issue: str, note: str = "") -> int:
+    """Mark every unresolved ask for this issue resolved. Returns how many."""
+    def go():
+        rows, n = _status_rows(), 0
+        for r in rows:
+            if r.get("issue") == issue and not r.get("resolved"):
+                r.update(resolved=True, resolved_at=now().isoformat(), note=note[:300])
+                n += 1
+        _status_write(rows)
+        return n
+    return _status_locked(go)
+
+
 def write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}")
@@ -365,10 +424,12 @@ def lin(op: str, **kw):
     g = _sync().graphql
     if op == "create":
         p = ticket(kw["parent"]) or {}
-        lab = g('query($n:String!){issueLabels(filter:{name:{eq:$n}}){nodes{id}}}', {"n": "owner:sana"})
+        ids = []
+        for name in kw.get("labels") or []:
+            lab = g('query($n:String!){issueLabels(filter:{name:{eq:$n}}){nodes{id}}}', {"n": name})
+            ids += [n["id"] for n in lab["issueLabels"]["nodes"]][:1]
         inp = {"teamId": p.get("team_id"), "title": kw["title"], "description": kw["description"],
-               "parentId": p.get("uuid"),
-               "labelIds": [n["id"] for n in lab["issueLabels"]["nodes"]][:1]}
+               "parentId": p.get("uuid"), "labelIds": ids}
         if p.get("project_id"):
             inp["projectId"] = p["project_id"]
         res = g("mutation($i:IssueCreateInput!){issueCreate(input:$i){success issue{identifier}}}", {"i": inp})
@@ -426,8 +487,13 @@ def close_pr(slug: str, pr: dict, note: str) -> bool:
 def open_from_branch(slug: str, branch: str, title: str, body: str) -> tuple[bool, str]:
     """(ok, url). ok is False only when the branch holds work and the PR would not open."""
     rc, ahead = run(GH + ["api", f"repos/{slug}/compare/main...{branch}", "--jq", ".ahead_by"])
-    if rc != 0 or not ahead.strip().isdigit() or int(ahead) == 0:
-        return True, ""        # no branch, or nothing on it to resume
+    # ONLY A 404 MEANS "NO BRANCH" (PR #662 review, major 2). Any other failure is
+    # a gh or network fault, and reading it as "nothing to resume" cleared the cap
+    # with no successor PR. So it is a refusal: the cap stays, the next run retries.
+    if rc != 0:
+        return ("404" in ahead or "Not Found" in ahead), ""
+    if not ahead.strip().isdigit() or int(ahead) == 0:
+        return True, ""        # the branch exists and holds nothing to resume
     rc, out = run(GH + ["pr", "create", "-R", slug, "--head", branch, "--base", "main",
                         "--title", title, "--body", body])
     return (rc == 0), (out.splitlines()[-1] if rc == 0 and out else "")
@@ -580,7 +646,10 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
                    f"* **Files:** start from branch {branch} and the RCA's NEXT section.\n"
                    f"* **Check:** {section(d.get('text', ''), 'REFUTE') or 'the parent RCA REFUTE line'}\n"
                    f"* **Not doing:** anything outside this outcome.\n")
-            ident = lin("create", parent=issue, title=title[:200], description=dor)
+            # needs-triage: an unattended filer marks its output (ASK-882,
+            # linear-filer-label-lint.py). The DoR makes it workable anyway.
+            ident = lin("create", parent=issue, title=title[:200], description=dor,
+                        labels=["owner:sana", "needs-triage"])
             if ident:
                 made.append(ident)
         if not made:
@@ -605,11 +674,7 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
     if d["target_kind"] == "ticket":
         lin("relate", blocker=target, blocked=issue)
     if d["target_kind"] == "founder":
-        STATUS.parent.mkdir(parents=True, exist_ok=True)
-        with open(STATUS, "a") as fh:
-            fh.write(json.dumps({"at": now().isoformat(), "issue": issue, "kind": "founder-decision",
-                                 "ask": target.split(":", 1)[1].strip(), "source": JOB,
-                                 "rca": rca_ref, "resolved": False}) + "\n")
+        status_add(issue, "founder-decision", target.split(":", 1)[1].strip(), rca_ref)
     if pr:
         close_pr(slug, pr, f"Closed by {JOB}: {issue} is BLOCKED-ON {target}. Branch "
                            f"{pr['headRefName']} is kept; the ladder reopens work from it when the blocker moves.")
@@ -639,13 +704,9 @@ def event_for(issue: str, row: dict, t: dict, slug: str) -> str:
             if rc == 0 and st.strip() != "OPEN":
                 return f"(a) blocker {target} closed"
     elif d.get("target_kind") == "founder":
-        try:
-            for l in STATUS.read_text().splitlines():
-                e = json.loads(l)
-                if e.get("issue") == issue and e.get("resolved"):
-                    return "(a) the founder decision is resolved in the status file"
-        except (OSError, ValueError):
-            pass
+        if any(r.get("issue") == issue and r.get("kind") == "founder-decision" and r.get("resolved")
+               for r in _status_rows()):
+            return "(a) the founder decision is resolved in the status file"
     hit = sorted(set(changed_on_main(slug, snap.get("main_sha", ""))) & set(snap.get("files") or []))
     if hit:
         return f"(b) {hit[0]} changed on origin/main"
@@ -757,7 +818,20 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="write; without it, print the plan")
     ap.add_argument("--limit", type=int, default=5, help="caps climbed per run (bounds RCA spend)")
+    ap.add_argument("--resolve", metavar="ISSUE", help="mark the founder asks for ISSUE resolved, then exit")
+    ap.add_argument("--note", default="", help="with --resolve: what was decided")
+    ap.add_argument("--founder-ask", nargs=3, metavar=("ISSUE", "KIND", "ASK"),
+                    help="add one ask to the morning status file (other jobs call this), then exit")
     args = ap.parse_args(argv)
+    if args.resolve:
+        print(f"cap-ladder: {status_resolve(args.resolve, args.note)} ask(s) for {args.resolve} resolved; "
+              "a held ticket re-enters at the next nightly run")
+        return 0
+    if args.founder_ask:
+        i, k, a = args.founder_ask
+        print("cap-ladder: ask added" if status_add(i, k, a, source="cap-ladder.py --founder-ask")
+              else "cap-ladder: an unresolved ask of this kind is already listed")
+        return 0
     if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("CAP_LADDER_STATE"):
         print("cap-ladder: REFUSED under pytest without CAP_LADDER_STATE (live data path)", file=sys.stderr)
         return 4
