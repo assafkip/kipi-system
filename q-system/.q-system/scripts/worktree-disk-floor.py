@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -61,6 +62,21 @@ def deny(reason: str) -> None:
     }}))
 
 
+def floor_of(cfg: dict, reaper) -> tuple:
+    """(floor_gb, note). A value that is not a finite number >= 0 ("5 GB", "nan", -1,
+    missing) falls back to the reaper's default, so a hand-edit cannot turn the floor
+    off. 0 stays legal: it is the explicit off. PR #674 review round 1, minors 1-2."""
+    raw = cfg.get("refuse_worktree_below_gb")
+    try:
+        floor = float(raw)
+        if math.isfinite(floor) and floor >= 0:
+            return floor, ""
+    except (TypeError, ValueError):
+        pass
+    return (float(reaper.DEFAULTS["refuse_worktree_below_gb"]),
+            f" (refuse_worktree_below_gb {raw!r} is not a usable number; using the default)")
+
+
 def check() -> int:
     # The floor read and the comparison sit INSIDE the try (PR #656 review,
     # finding 2): exit 1 holds the whole fleet, so a crash after the measure (a
@@ -79,13 +95,7 @@ def check() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"disk-floor: could not measure free disk space ({exc!r})")
         return 2
-    note = ""
-    try:
-        floor = float(cfg["refuse_worktree_below_gb"])
-    except (KeyError, TypeError, ValueError):
-        floor = float(reaper.DEFAULTS["refuse_worktree_below_gb"])
-        note = (f" (refuse_worktree_below_gb {cfg.get('refuse_worktree_below_gb')!r} "
-                f"is not a number; using the default)")
+    floor, note = floor_of(cfg, reaper)
     under = free < floor
     print(f"disk-floor: {free:.1f} GB free, floor {floor:g} GB -> {'UNDER' if under else 'OK'}{note}")
     return 1 if under else 0
@@ -113,12 +123,9 @@ def main() -> int:
     # A MALFORMED FLOOR KEEPS THE FLOOR ON (ASK-4039, PR #656 round 3, minor 1): the
     # hook path used to compare outside the try, so a hand-edited "5 GB" raised and the
     # hook exited 1 with no deny, failing OPEN. Same default fallback as --check.
-    try:
-        floor = float(cfg["refuse_worktree_below_gb"])
-    except (KeyError, TypeError, ValueError):
-        floor = float(_reaper().DEFAULTS["refuse_worktree_below_gb"])
+    floor, note = floor_of(cfg, reaper)   # the bound module, never a second load
     if free < floor:
-        deny(f"{free:.1f} GB free, under the {floor:g} GB floor. A worktree is "
+        deny(f"{free:.1f} GB free, under the {floor:g} GB floor{note}. A worktree is "
              f"~0.4 GB. Free space first: python3 {HERE}/worktree-reaper.py "
              f"lists finished worktrees, and --apply removes them.")
     return 0

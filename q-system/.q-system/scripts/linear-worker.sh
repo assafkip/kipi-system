@@ -3781,6 +3781,7 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
+    REVIEW_LOG_FROM=$(( $(wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
     KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
     REVIEW_RC=$?
     if [ "$REVIEW_RC" = "9" ]; then
@@ -3789,9 +3790,10 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       # 9 with no charge and no "review produced no verdict" page.
       # NAME THE CAUSE (ASK-4039, PR #656 round 3, minor 2): exit 9 is the reviewer's code
       # for any machine condition, and since ASK-3648 that includes the disk floor. The
-      # floor is measured again here, so the line says which one it was.
-      python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null >/dev/null 2>>"$LOG"
-      if [ "$?" -eq 1 ]; then
+      # line says which one it was, from the REVIEWER'S OWN reason (its "ENV: disk-floor"
+      # line in this run's part of the log), not from a second measurement that could
+      # disagree with what the reviewer saw (PR #674 review round 1, minor 3).
+      if tail -n "+${REVIEW_LOG_FROM:-1}" "$LOG" 2>/dev/null | grep -q "ENV: disk-floor:"; then
         say "$ISSUE: the reviewer stopped because the disk is under the worktree floor -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until kipi-dispatch.sh finds space again"
       else
         say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
