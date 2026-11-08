@@ -44,12 +44,19 @@ that never moved would make every later run skip it, so the state moves first. I
 comment then fails, the ticket is in Backlog and no longer a candidate, so the comment
 is kept in PENDING_PATH and posted at the start of the next run (PR #661, Codex P2).
 This job is that file's only writer. A retry re-reads the ticket first and drops the
-row if it left Backlog. After MAX_COMMENT_ATTEMPTS refusals the row is dropped with
+row if it left Backlog. After MAX_COMMENT_ATTEMPTS refusals in all (the first try plus
+the retries) the row is dropped with
 one stderr line (PR #661 review, major: a permanently refused comment exited 6 every
 hour and launchd-health paged every 6 hours). Dropping is safe: the state and the
 label already route the ticket to its consumer; the comment only explains. A pending
 retry never sets the exit code; only a failed write in this run does. A corrupt
 pending file is moved aside, not read as empty.
+
+THE ONCE-PER-MERGE RECORD DOES NOT RIDE ON THE COMMENT (PR #661 review round 2,
+major). The comment marker was the only record, and a dropped pending comment took it
+with it, so a re-closed ticket was reopened every hour. Right after the state move, the
+merge is written to ACTED_PATH (this job is its only writer), before the comment is
+tried. decide() honours that record and the comment marker, either one.
 
 Exit codes:
   0  ok (report, or every planned reopen landed)
@@ -94,6 +101,7 @@ WORKER_LOG = "linear-worker.log"
 # Job state lives outside every checkout (separate-worktrees.md).
 EVIDENCE_PATH = pathlib.Path.home() / ".local" / "state" / "kipi" / "linear-not-done-reopen" / "last-run.json"
 PENDING_PATH = EVIDENCE_PATH.with_name("pending-comments.json")
+ACTED_PATH = EVIDENCE_PATH.with_name("acted.json")
 
 # "is NOT done: held at <label>." names the hold; "is NOT done and is NOT held" does not.
 NOT_DONE = re.compile(r"^(\S+Z) (ASK-\d+) is NOT done(?:: held at ([a-z:-]+))?")
@@ -165,7 +173,7 @@ def last_merge(issue: dict):
     return max(merged, key=lambda r: r["merged_at"]) if merged else None
 
 
-def decide(issue: dict, log: dict) -> dict:
+def decide(issue: dict, log: dict, acted=None) -> dict:
     """{"reopen": bool, "why": str, "label": str|None, "merge": {...}|None}. Pure."""
     out = {"identifier": issue.get("identifier"), "reopen": False, "why": "", "label": None,
            "merge": None}
@@ -183,6 +191,10 @@ def decide(issue: dict, log: dict) -> dict:
         if f"<!-- {MARKER}: {url} -->" in (c.get("body") or ""):
             out["why"] = "already reopened once for this merge; a later Done is respected"
             return out
+    if url in ((acted or {}).get(issue.get("identifier") or "") or []):
+        out["why"] = ("already reopened once for this merge (this job's record); a later Done "
+                      "is respected")
+        return out
     if (comments.get("pageInfo") or {}).get("hasNextPage"):
         out["why"] = "over 100 comments and no marker on page one; the marker may be later, so no action"
         return out
@@ -258,12 +270,41 @@ def candidates(sync, team_id: str, log: dict, now: datetime) -> list:
     return sorted(names)
 
 
+def read_acted(path: pathlib.Path) -> dict:
+    """{identifier: [merged PR URLs this job moved it back for]}. {} when absent."""
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        # Unreadable is not "never acted": refuse to decide on a guess. The caller
+        # treats this as a failed read and writes nothing (exit 9).
+        raise RuntimeError(f"{path} is unreadable ({exc}); cannot tell which merges were acted on")
+
+
+def record_acted(path: pathlib.Path, ident: str, url: str) -> None:
+    acted = read_acted(path)
+    urls = acted.setdefault(ident, [])
+    if url not in urls:
+        urls.append(url)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".acted.", suffix=".json")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(acted, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
 def read_pending(path: pathlib.Path) -> dict:
     """{} when there is no file. A corrupt one is moved aside, never read as empty
     (PR #661 review, minor: that dropped every queued comment silently)."""
     try:
         text = path.read_text()
     except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        print(f"linear-not-done-reopen: {path} unreadable ({exc}); no pending comment retried",
+              file=sys.stderr)
         return {}
     try:
         data = json.loads(text)
@@ -307,6 +348,9 @@ def retry_pending(sync, path: pathlib.Path) -> tuple:
     pending = read_pending(path)
     posted, dropped = [], []
     for ident, row in sorted(pending.items()):
+        if not isinstance(row, dict) or not row.get("issue_id") or not row.get("body"):
+            dropped.append(f"{ident}: malformed row, dropped")
+            continue
         try:
             st = ((((sync.graphql(STATE_QUERY, {"id": row["issue_id"]}) or {}).get("issue") or {})
                    .get("state") or {}).get("type"))
@@ -320,9 +364,12 @@ def retry_pending(sync, path: pathlib.Path) -> tuple:
                 continue
         except Exception:  # noqa: BLE001 - counts as a refused attempt
             pass
-        row["attempts"] = int(row.get("attempts") or 1) + 1
-        if row["attempts"] > MAX_COMMENT_ATTEMPTS:
-            dropped.append(f"{ident}: comment refused {MAX_COMMENT_ATTEMPTS} times, dropped")
+        try:
+            row["attempts"] = int(row.get("attempts") or 1) + 1
+        except (TypeError, ValueError):
+            row["attempts"] = MAX_COMMENT_ATTEMPTS
+        if row["attempts"] >= MAX_COMMENT_ATTEMPTS:
+            dropped.append(f"{ident}: comment refused {row['attempts']} times in all, dropped")
     gone = set(posted) | {d.split(":", 1)[0] for d in dropped}
     for ident in gone:
         pending.pop(ident, None)
@@ -332,13 +379,16 @@ def retry_pending(sync, path: pathlib.Path) -> tuple:
     return posted, sorted(pending), dropped
 
 
-def apply_one(sync, issue: dict, d: dict, backlog_id: str, pending_path: pathlib.Path) -> str:
-    """State first, then the comment: a failed comment must not leave a marker on a
-    ticket that never moved, or the next run would skip it for good. A comment that
-    fails after the move is kept in pending_path for the next run."""
+def apply_one(sync, issue: dict, d: dict, backlog_id: str, pending_path: pathlib.Path,
+              acted_path: pathlib.Path) -> str:
+    """State first, then this job's record, then the comment. A marker on a ticket that
+    never moved would make every later run skip it, so nothing is recorded before the
+    move lands; the record lands before the comment is tried, so a refused comment
+    cannot lose it. A comment that fails is kept in pending_path for the next run."""
     res = sync.graphql(ISSUE_UPDATE, {"id": issue["id"], "input": {"stateId": backlog_id}}) or {}
     if not (res.get("issueUpdate") or {}).get("success"):
         raise RuntimeError(f"{d['identifier']}: issueUpdate(stateId) refused; still Done")
+    record_acted(acted_path, d["identifier"], d["merge"]["url"])
     body = reopen_comment(d)
     try:
         ok = post_comment(sync, issue["id"], body)
@@ -402,7 +452,12 @@ def main(argv: list) -> int:
         print(f"linear-not-done-reopen: a read failed ({exc}); nothing written. Exit 9.", file=sys.stderr)
         return EXIT_INCOMPLETE
 
-    decisions = [decide(i, log) for i in issues]
+    try:
+        acted = read_acted(ACTED_PATH)
+    except RuntimeError as exc:
+        print(f"linear-not-done-reopen: {exc}; nothing written. Exit 9.", file=sys.stderr)
+        return EXIT_INCOMPLETE
+    decisions = [decide(i, log, acted) for i in issues]
     plan, capped = split_plan(issues, decisions)
     done, failed = [], []
     retried, still_pending, dropped = [], [], []
@@ -416,7 +471,8 @@ def main(argv: list) -> int:
             for issue, d in plan:
                 try:
                     done.append({"id": d["identifier"],
-                                 "did": apply_one(sync, issue, d, backlog_id, PENDING_PATH)})
+                                 "did": apply_one(sync, issue, d, backlog_id, PENDING_PATH,
+                                                  ACTED_PATH)})
                 except Exception as exc:
                     failed.append({"id": d["identifier"], "error": str(exc)[:200]})
 

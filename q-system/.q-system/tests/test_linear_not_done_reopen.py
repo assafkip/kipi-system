@@ -200,7 +200,7 @@ class Fake:
 def test_state_moves_first_then_one_comment(tmp_path):
     f = Fake()
     pend = tmp_path / "pending.json"
-    assert mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", pend) == "reopened"
+    assert mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", pend, tmp_path / "acted.json") == "reopened"
     assert [c[0] for c in f.calls] == ["state", "comment"] and f.calls[0][1] == "BACKLOG"
     assert not pend.exists()
 
@@ -210,7 +210,7 @@ def test_a_refused_state_move_writes_no_comment(tmp_path):
     """A marker on a ticket that never moved would make every later run skip it."""
     f = Fake(state_ok=False)
     with pytest.raises(RuntimeError):
-        mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", tmp_path / "p.json")
+        mod.apply_one(f, ask297(), mod.decide(ask297(), {}), "BACKLOG", tmp_path / "p.json", tmp_path / "acted.json")
     assert [c[0] for c in f.calls] == ["state"]
 
 
@@ -220,7 +220,7 @@ def test_a_refused_comment_is_kept_and_posted_next_run(tmp_path):
     still land."""
     pend = tmp_path / "pending.json"
     with pytest.raises(RuntimeError):
-        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend)
+        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend, tmp_path / "acted.json")
     assert list(mod.read_pending(pend)) == ["ASK-297"]
     assert mod.retry_pending(Fake(comment_ok=False), pend) == ([], ["ASK-297"], [])
     assert mod.retry_pending(Fake(), pend) == (["ASK-297"], [], [])
@@ -232,12 +232,15 @@ def test_a_comment_refused_for_good_is_dropped_after_the_cap(tmp_path):
     """PR #661 review, major: it used to exit 6 every hour, and launchd-health paged."""
     pend = tmp_path / "pending.json"
     with pytest.raises(RuntimeError):
-        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend)
-    seen = []
-    for _ in range(mod.MAX_COMMENT_ATTEMPTS + 2):
-        seen.append(mod.retry_pending(Fake(comment_ok=False), pend))
-    assert seen[mod.MAX_COMMENT_ATTEMPTS - 1][1] == [] and seen[mod.MAX_COMMENT_ATTEMPTS - 1][2]
-    assert mod.read_pending(pend) == {}
+        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend, tmp_path / "acted.json")
+    refusals = 1  # apply_one's own try
+    while mod.read_pending(pend):
+        f = Fake(comment_ok=False)
+        mod.retry_pending(f, pend)
+        refusals += sum(1 for c in f.calls if c[0] == "comment")
+        assert refusals <= mod.MAX_COMMENT_ATTEMPTS + 1
+    # PR #661 round 2, minor: the cap counts every refusal, the first try included.
+    assert refusals == mod.MAX_COMMENT_ATTEMPTS
 
 
 @needs
@@ -295,3 +298,43 @@ def test_the_job_runs_hourly_from_a_pinned_tree():
     assert "instance-registry" not in PATH.read_text() and "linear_registry" not in PATH.read_text()
     table = json.loads((QDIR / "job-checkouts.json").read_text())
     assert "com.kipi.linear-not-done-reopen" in table["pinned"]
+
+
+@needs
+def test_a_refused_comment_never_costs_the_once_per_merge_record(tmp_path):
+    """PR #661 round 2, major, the reviewer's repro: comment refused, ticket re-closed,
+    every hour. It used to reopen every hour; now only the first."""
+    pend, acted = tmp_path / "pending.json", tmp_path / "acted.json"
+    reopens = 0
+    for _hour in range(5):
+        log_acted = mod.read_acted(acted)
+        d = mod.decide(ask297(), {}, log_acted)
+        mod.retry_pending(Fake(comment_ok=False, now_state="completed"), pend)
+        if d["reopen"]:
+            reopens += 1
+            with pytest.raises(RuntimeError):
+                mod.apply_one(Fake(comment_ok=False), ask297(), d, "BACKLOG", pend, acted)
+    assert reopens == 1
+    assert mod.read_acted(acted) == {"ASK-297": [PR]}
+
+
+@needs
+def test_a_new_merge_on_the_same_ticket_can_reopen_it(tmp_path):
+    acted = {"ASK-297": ["https://github.com/assafkip/example-client/pull/19"]}
+    assert mod.decide(ask297(), {}, acted)["reopen"]
+
+
+@needs
+def test_an_unreadable_acted_record_refuses_to_guess(tmp_path):
+    p = tmp_path / "acted.json"
+    p.write_text("{not json")
+    with pytest.raises(RuntimeError):
+        mod.read_acted(p)
+
+
+@needs
+def test_a_malformed_pending_row_is_dropped_not_a_crash(tmp_path):
+    pend = tmp_path / "pending.json"
+    mod.write_pending(pend, {"ASK-1": {"attempts": "x"}, "ASK-2": "junk"})
+    posted, left, dropped = mod.retry_pending(Fake(), pend)
+    assert (posted, left) == ([], []) and len(dropped) == 2
