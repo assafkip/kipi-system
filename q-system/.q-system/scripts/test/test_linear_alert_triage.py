@@ -874,6 +874,15 @@ class TestD1LaneHasAScheduledCaller(unittest.TestCase):
         a = triage.build_parser().parse_args(["run", "--limit", "8", "--apply"])
         self.assertEqual((a.verb, a.limit, a.apply), ("run", 8, True))
 
+    def test_the_nightly_limit_is_d1s_number(self):
+        """ASK-3964, D1 of the stuck-work synthesis 2026-11-07: 60 a night while a
+        pass is healthy, else 8. Pinned so that changing it is a decision with a
+        reason (edit D1 and this test together), never a drift."""
+        _, _, cmd = lane_plists()[0]
+        m = re.search(r"--limit (\d+)", cmd)
+        self.assertIsNotNone(m, cmd)
+        self.assertEqual(int(m.group(1)), 60, cmd)
+
 
 class TestD2HoldHasNoneOfClosesOldDefects(unittest.TestCase):
     """R2: the hold path was written in the commit that fixed do_close, and had
