@@ -192,7 +192,7 @@
   },
   "lesson-distill": {
    "model": "claude-opus-5-5",
-   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. Measured 2026-11-08 (ASK-4038 Part 3), distill_with_claude on 10 published sources: scrub gate and validator Sonnet 10/10, Opus 9/10; blind Opus judge preferred Opus 6 of 9. Not enough data yet; a 30-input run settles it."
+   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. Measured 2026-11-08 (ASK-4038 Part 3), distill_with_claude on 30 published sources: scrub gate and lesson validator Sonnet 30/30, Opus 29/30; blind Opus judge on 29 pairs preferred Opus 18, Sonnet 9, equal 2. Sonnet passes every gate but is not rated equal: Opus needed."
   },
   "lesson-verify": {
    "model": "claude-opus-5-5",
