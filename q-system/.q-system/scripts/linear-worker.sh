@@ -1151,12 +1151,6 @@ def rework_hold(ident, url):
     i = by_ident.get(ident)
     if i is None:
         return hold("not-on-board", "ticket " + ident + " is not on the board")
-    # THE SECOND PICK PATH HONOURS THE SET-ASIDE LIST TOO (ASK-3993, PR #651 round 1,
-    # major). At the WIP ceiling this feed replaces the fresh pool, so a set-aside
-    # issue that left the pool above came straight back here, and the dispatcher
-    # refused it again every tick. Held as a wait: the list expires in a day.
-    if ident in _set_aside:
-        return hold("set-aside", "set aside for a day after a branch refusal (ASK-3993)")
     if ready(i):
         return "", ""
     if i["state"]["type"] == "started" and held_only_by(i, url):
@@ -2088,6 +2082,11 @@ done
 REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
 case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
 
+wip_set_aside() {  # wip_set_aside <issue>: is it on the dispatcher set-aside list (ASK-3993)
+  case " ${KIPI_PICK_EXCLUDE:-} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, else "<kind>|<why>"
   local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
   n="$(attempts_for "$issue")"
@@ -2347,6 +2346,15 @@ if [ -n "$WIP_ROWS" ]; then
         w_why="$w_kind|$w_hold"
       else
         w_why="$(wip_move_why "$w_issue" "$w_pr")"
+        # THE REWORK PICK HONOURS THE SET-ASIDE LIST (ASK-3993, PR #651 round 1,
+        # major). At the ceiling this feed replaces the fresh pool, so a set-aside
+        # issue came straight back as the pick and the dispatcher refused it every
+        # tick. Asked LAST, of a PR every other check calls movable (PR #651 round
+        # 2, minor): a cap, a drift, an attempts limit or a refusal label keeps its
+        # own kind and its own exit instead of waiting a day behind this one.
+        if [ -z "$w_why" ] && wip_set_aside "$w_issue"; then
+          w_why="$(printf 'set-aside|%s' "set aside for a day after a branch refusal (ASK-3993)")"
+        fi
       fi
       if [ -n "$w_why" ]; then
         w_kind="${w_why%%|*}"

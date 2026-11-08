@@ -840,22 +840,27 @@ fi
 # round is a real codex run, so an issue also spends up to MAX_ROUNDS of a
 # separate external quota that did not exist when this number was chosen.
 #
-# HELD AT 3 on 2026-07-30 (sana's call, the founder does not set this). Reasons,
-# in order of weight:
-#   1. Per-issue cost went UP since 3 was picked -- 4 rounds instead of 3, plus a
-#      codex run per round -- while the number stayed put. Raising it now would
-#      compound a cost increase that was never accounted for.
-#   2. The loop self-merges and has NO accepted-change instrumentation. That is
-#      loop-exits.md's own named blind spot. Raising throughput on a loop that
-#      cannot measure whether its output is good buys more blast radius blind.
-#   3. The loop is not clean on the first pass, and tonight is the evidence: codex
-#      found two majors in PR #46, which was itself the fix for a codex minor. The
-#      review rounds are load-bearing, so throughput is not the binding constraint.
-#   4. What actually blocked progress was evidence, not rate: the review never
-#      reached the PR (sp-48688b24) and the receipt was unreadable (sp-1d1ad606).
-#      Raising the cap before those landed would only have produced more
-#      invisible reviews. Revisit AFTER an accepted-change signal exists.
-DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-4}"
+# LIFTED 2026-11-08 (D28, ASK-4003). Founder, verbatim: "We need to get the work
+# done so we need to consider taking the three cap off unless it's the
+# tremendmental. Unless there's a really good reason to keep the cap, we should
+# take it off so we can get this work done". The plist carries 96, one per tick,
+# so no daily cap is in effect. And no usage stop line either (D31): "This
+# account's usage resets 2:00 p.m. on Tuesday so there isn't a reason to stop at
+# all."
+#
+# THE 2026-07-30 REASONS FOR HOLDING AT 3, RE-CHECKED THAT DAY:
+#   1. Per-issue cost: what bounds it is the weekly limit itself. The worker
+#      halts on the limit line (env-failure-lib.sh reads "hit your weekly limit"
+#      as environmental) rather than burning attempts. NOT the usage breaker: it
+#      meters only bots that write usage-ledger rows, and the worker writes none
+#      (PR #653 round 1, ASK-3126).
+#   2. No accepted-change signal: a merge needs validate, verify and
+#      kipi/reviewer-approved, and the round cap holds per issue.
+#   3. Review rounds are load-bearing: unchanged, enforced per issue.
+#   4. The evidence gaps (sp-48688b24, sp-1d1ad606) were fixed long ago.
+# Still bounding the loop: live concurrency, one run per repo, the WIP ceiling of
+# 5 and the tick. Lower the cap only on measured evidence.
+DAILY_MAX="${KIPI_DISPATCH_DAILY_MAX:-96}"
 # The budget day starts at RESET_HOUR LOCAL, not at midnight and not at UTC.
 # Founder-set 2026-07-28, and the reasoning is safety, not tidiness:
 #
@@ -896,8 +901,8 @@ page_clear budget-day
 # Resetting the counter would have conflated a test run with a production run and
 # put the same wall back tomorrow. So verification gets its OWN budget: its own
 # counter file, its own cap, and a visible label in every line it writes. The
-# production budget is untouched and still 3 -- the reasoning above the DAILY_MAX
-# assignment is unchanged and still holds.
+# production budget keeps its own counter too; its cap was lifted to 96 on
+# 2026-11-08 (D28, see above DAILY_MAX), and the test lane keeps its own.
 #
 # A SEPARATE CAP, NOT NO CAP. "Never stop testing" is not "never bounded": an
 # unbounded test lane is the same runaway loop wearing a different label, and the
@@ -1367,7 +1372,10 @@ NEXT="$(printf '%s' "$WORK_OUT" | grep -oE '\[dry\] would work ASK-[0-9]+' | gre
 # failed pass is logged and the cycle goes on, and the next tick retries.
 if printf '%s' "$WORK_OUT" | grep -qE '\[dry\] would release PR #[0-9]+'; then
   # shellcheck disable=SC2086  # $WORK_ARGS is spliced unquoted, as above
-  REL_OUT="$(bash ./kipi work $WORK_ARGS --release-only --apply 2>&1)"; REL_RC=$?
+  # The apply pass sees the same set-aside list as the dry pick that named the
+  # release, or it recomputes the hold kinds without it and closes a different
+  # PR than the log names (ASK-3993 follow-up, PR #651 round 2, major).
+  REL_OUT="$(KIPI_PICK_EXCLUDE="$BRANCH_EXCLUDE" bash ./kipi work $WORK_ARGS --release-only --apply 2>&1)"; REL_RC=$?
   say "WIP release pass (rc=$REL_RC): $(printf '%s\n' "$REL_OUT" | grep -E 'release PR #|WARN' | tail -3 | tr '\n' ' ')"
 fi
 # --- WIP-RELEASE-APPLY:END ---------------------------------------------------
