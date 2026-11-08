@@ -206,17 +206,26 @@ check("a fork on sana/ask-2540, its ticket started long ago -> outside",
       po.decide(fork, NOW, {}, watching, 1, set())["action"], "outside")
 check("... and Linear is never read for it", LOOKED, [])
 check("an unstated head -> outside", act_of(pr(provenance="unstated"))["action"], "outside")
+check("a fork whose alert is filed -> outside-filed, no second alert",
+      act_of(fork, state={"outside": {"assafkip/kipi-system#526": {"head": "x", "at": NOW - H}}})["action"], "outside-filed")
 check("provenance comes from ci-redrive's head_provenance",
       [po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": v})["provenance"] for v in (False, True, None)],
       ["same-repo", "fork", "unstated"])
 
-print("-- merge needs green CI and CLEAN (PR #659 round 1, major 2)")
+print("-- merge needs our read of CI green; UNSTABLE alone is no veto (PR #659 rounds 1 and 2)")
 ok_rv = ("approved", "APPROVE")
 check("approved, UNSTABLE, CI red -> not a merge",
       act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE", ci="red", ci_names=["lint=FAILURE"]),
              {"ASK-2540": ticket("ASK-2540")})["action"], "close-requeue")
-check("approved, UNSTABLE, CI green -> not a merge",
-      act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE"), {"ASK-2540": ticket("ASK-2540")})["action"] != "merge", True)
+check("approved, UNSTABLE only from the advisory codex slot, CI green -> merge (round 2 major)",
+      act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE"), {"ASK-2540": ticket("ASK-2540")})["action"], "merge")
+check("approved, UNSTABLE, CI still running -> wait",
+      act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE", ci="running", ci_names=["validate"]))["action"], "wait")
+check("normalize: codex-approved red is not CI, so an UNSTABLE PR reads CI green",
+      po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": False, "mergeStateStatus": "UNSTABLE",
+                                      "statusCheckRollup": [{"__typename": "StatusContext", "context": "kipi/codex-approved", "state": "FAILURE"},
+                                                            {"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}]})["ci"],
+      "green")
 check("approved, CLEAN, CI still running -> wait",
       act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="running", ci_names=["validate"]))["action"], "wait")
 check("approved, CLEAN, but our read of CI is red -> not a merge (the two reads can disagree)",
@@ -318,6 +327,8 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
         return 0, f"{argv[3]}: In Progress -> Backlog (exit: pr-owner)" if argv[2] == "requeue" else "", ""
     if len(argv) > 2 and argv[2] == "review":
         return 0, "", ""
+    if len(argv) > 1 and argv[1].endswith("slack-notify.sh"):
+        return 0, "", ""
     return 1, "", "unfaked: " + " ".join(argv)
 
 
@@ -337,7 +348,7 @@ def writes():
     for a in SENT:
         if a[:3] in (["gh", "pr", "close"], ["gh", "pr", "merge"], ["gh", "pr", "comment"]):
             out.append(a)
-        elif len(a) > 2 and (a[1].endswith("linear-sync.py") or a[2] == "review"):
+        elif len(a) > 2 and (a[1].endswith("linear-sync.py") or a[1].endswith("slack-notify.sh") or a[2] == "review"):
             out.append(a)
     return out
 
@@ -375,17 +386,22 @@ check("#5 waits: the run's one review is spent", sent_for(5, "close") + sent_for
 check("#6 (pushed an hour ago) gets nothing", sent_for(6, "close") + sent_for(6, "comment"), [])
 check("#7 (lessons batch on main) is closed as superseded", len(sent_for(7, "close")), 1)
 check("#8 (--skip) gets nothing", [a for a in writes() if "8" in a[3:4] or "ASK-142" in a], [])
-check("#9 (a fork on sana/ask-3036) gets nothing, not even a read of its head",
+check("#9 (a fork on sana/ask-3036) gets no close, comment, merge, review or Linear write, and no read of its head",
       [a for a in SENT if "9" in a[3:4] or any(SHA[9] in x for x in a)], [])
+pages = [a for a in writes() if a[1].endswith("slack-notify.sh")]
+check("#9 gets exactly one alert, naming it, for the alert lane",
+      [("PR #9" in a[2], "outside the fleet" in a[2]) for a in pages], [(True, True)])
+check("the alert is recorded", "o/fx#9" in json.loads(po.state_path().read_text()).get("outside", {}), True)
 st = json.loads(po.state_path().read_text())
 check("the strike on #2 is recorded at its head", st["strikes"]["o/fx#2"]["head"], SHA[2])
 check("the review on #4 is recorded at its head", st["reviews"]["o/fx#4"]["head"], SHA[4])
 
 SENT.clear()
-PRS[:] = [p for p in PRS if p["number"] in (2, 4)]
+PRS[:] = [p for p in PRS if p["number"] in (2, 4, 9)]
 os.environ["KIPI_PR_OWNER_NOW"] = str(NOW + 49 * H)
 po.main(["--apply"])
 check("49h later, #2 still red at the same head is closed", len(sent_for(2, "close")), 1)
+check("49h later, #9's alert is not filed a second time", [a for a in writes() if a[1].endswith("slack-notify.sh")], [])
 check("... and its ticket gets the resume note", any(a[3] == "ASK-3036" for a in writes() if a[1].endswith("linear-sync.py")), True)
 check("49h later, #4 reviewed at this head with no verdict is closed, not reviewed again",
       (len(sent_for(4, "close")), len([a for a in writes() if len(a) > 2 and a[2] == "review"])), (1, 0))

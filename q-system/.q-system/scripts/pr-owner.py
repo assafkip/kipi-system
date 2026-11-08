@@ -41,9 +41,13 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
   * a lessons PR whose every ledger entry is already on its base: close as
     superseded. Decided by content, the way the 4 weekly batches (#515, #518, #536,
     #539) were measured and closed on 2026-11-08, not by age or branch name.
-  * kipi/reviewer-approved green, every CI check green, and GitHub says
-    mergeable and CLEAN: `gh pr merge --squash --match-head-commit <sha>`. Never
-    on UNSTABLE: that is GitHub saying a check is not green (PR #659 round 1).
+  * kipi/reviewer-approved green, every CI check green by our read, and GitHub
+    says mergeable and CLEAN, HAS_HOOKS or UNSTABLE: `gh pr merge --squash
+    --match-head-commit <sha>`. UNSTABLE is allowed ONLY because our read of CI
+    must be green first: round 1 of PR #659 caught a merge on UNSTABLE with CI red,
+    and round 2 caught the over-fix, where dropping UNSTABLE sent an approved PR
+    whose only non-green status was the advisory kipi/codex-approved to rework
+    and then close. The CI read is the guard; GitHub's merge state is not.
   * CI green and never reviewed: `kipi review <n> --repo <path> --post`, at most one
     per run, at most one per head.
   * red (CI failure, conflict, REQUEST CHANGES or BLOCK or no verdict, review cap,
@@ -62,8 +66,10 @@ ticket here. A stranger's PR on `sana/ask-2540` would have moved a live lane's
 ticket to Backlog 48 hours later. So provenance is read before anything else,
 through ci-redrive.py's head_provenance (the rule review-redrive.py imports too),
 and a fork or an unstated head gets `outside`: no read of Linear, no comment, no
-close. An outside contribution is the founder's call, not the fleet's; the run
-output lists it.
+close. Its next actor is the alert lane: --apply files one alert per PR through
+slack-notify.sh (a Linear ticket for Sana, which linear-alert-triage.py takes
+nightly), and never a second for the same PR (PR #659 round 2: a line in
+pr-owner.log alone is read by nothing).
 
 A LIVE LANE IS NEVER CLOSED. A ticket started inside linear-sync.py's
 STARTED_STALE_HOURS window, or with a live worker claim, holds its PR. Same rule
@@ -120,7 +126,7 @@ AGENT = "pr-owner"
 
 GREEN_RUN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RUNNING_STATUS = {"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
-MERGE_READY = {"CLEAN", "HAS_HOOKS"}
+MERGE_READY = {"CLEAN", "HAS_HOOKS", "UNSTABLE"}
 
 
 def now_s() -> int:
@@ -462,13 +468,17 @@ def resolve_ticket(pr: dict, load):
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?}. Actions: skip, outside, young, wait,
-    hold, merge, review, close-superseded, rework, close-requeue, close-comment.
+    Returns {"action", "reason", "ticket"?}. Actions: skip, outside, outside-filed,
+    young, wait, hold, merge, review, close-superseded, rework, close-requeue,
+    close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
     if key in skip or f"{pr['slug'].split('/')[-1]}#{pr['number']}" in skip:
         return {"action": "skip", "reason": "named by --skip"}
     if pr.get("provenance") != ci_redrive().SAME_REPO:
+        filed = (state.get("outside") or {}).get(key)
+        if filed:
+            return {"action": "outside-filed", "reason": f"outside the fleet; its alert was filed at {iso(filed['at'])}"}
         return {"action": "outside",
                 "reason": f"head provenance is {pr.get('provenance') or 'unstated'}: its branch and title are its author's, so it binds no ticket and pr-owner does not act on it"}
     age = now - (pr["created"] or now)
@@ -602,6 +612,16 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
     slug, n, head, branch = pr["slug"], str(pr["number"]), pr["head"], pr["branch"]
     key = f"{slug}#{n}"
     short = head[:8]
+    if d["action"] == "outside":
+        notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
+        msg = (f"pr-owner: {slug} PR #{n} ({pr['url']}) is outside the fleet ({d['reason']}). "
+               f"pr-owner never acts on it. Decide: review, merge or close it, then record why on the PR.")
+        rc, out, err = run(["bash", notify, msg])
+        if rc != 0:
+            return False, f"alert did not file: {' '.join((err or out).split())[-160:]}"
+        state.setdefault("outside", {})[key] = {"head": head, "at": now}
+        save_state(state_path(), state)
+        return True, "alert filed (once per PR)"
     if d["action"] == "merge":
         rc, out, err = gh_write(["pr", "merge", n, "-R", slug, "--squash", "--match-head-commit", head])
         return rc == 0, "merged" if rc == 0 else f"merge failed: {' '.join(err.split())[:160]}"
@@ -656,7 +676,7 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
 
 # ---------------------------------------------------------------- main
 
-WRITES = ("merge", "review", "rework", "close-superseded", "close-requeue", "close-comment")
+WRITES = ("outside", "merge", "review", "rework", "close-superseded", "close-requeue", "close-comment")
 
 
 def main(argv=None) -> int:
@@ -697,7 +717,7 @@ def main(argv=None) -> int:
     if not rows:
         print("REFUSED: fleet_candidates returned no repo at all, not even home", file=sys.stderr)
         return 3
-    counts = {k: 0 for k in ("skip", "outside", "young", "wait", "hold") + WRITES}
+    counts = {k: 0 for k in ("skip", "outside-filed", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
     for name, path, _remote in rows:
