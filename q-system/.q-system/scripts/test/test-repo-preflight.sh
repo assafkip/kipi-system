@@ -886,6 +886,50 @@ P3="$(KIPI_DISPATCH_TURNLOCK="$TL3" bash "$LOCKH" 2>/dev/null)"
   || bad "a reaped holder released a lock it no longer owned (second $(cat "$WORK/p2.out"), third $P3): two dispatchers share a turn"
 { [ -e "$TL3" ] || [ -e "$TL3.owner" ]; } && bad "the new holder's lock outlived it" || ok "the new holder releases its own lock on exit"
 
+# A REAPER THAT LOST THE RACE MUST NOT UNLINK THE WINNER'S MARKER (ASK-3978, PR #635
+# round 2). The age is read, then the path is removed. A reaper paused between the
+# two (it used to log there) finds the path holding the winner's FRESH marker, and
+# unlinking it leaves a lock the winner's owner-only release will not remove: every
+# turn DENIED for an hour, nothing alive holding it. Modelled by a reaper whose log
+# write sleeps, so the winner reaps and takes the turn inside that window.
+LOCKS="$WORK/locks.sh"
+{ echo 'set -uo pipefail'; echo 'say() { sleep 2; }'
+  awk '/^turn_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'turn_lock && echo GOT || echo DENIED'; } > "$LOCKS"
+TL4="$WORK/turnlock4.d"
+mkdir -p "$TL4"; printf 'pid=1\n' > "$TL4.owner"; touch -t 202601010000 "$TL4" "$TL4.owner"
+KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKS" > "$WORK/slow.out" 2>/dev/null & SLOW=$!
+sleep 0.5
+REL="$WORK/rel4" KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKW" > "$WORK/w4.out" 2>/dev/null & W4=$!
+wait_got "$WORK/w4.out"
+wait "$SLOW" 2>/dev/null
+W4_MARK="$(cat "$TL4.owner" 2>/dev/null)"
+: > "$WORK/rel4"; wait "$W4" 2>/dev/null
+AFTER="$(KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKH" 2>/dev/null)"
+{ [ "$(cat "$WORK/w4.out")" = "GOT" ] && [ -n "$W4_MARK" ] && [ "$W4_MARK" != "pid=1" ] && [ "$AFTER" = "GOT" ]; } \
+  && ok "a reaper that lost the race leaves the winner's marker, and the turn frees on the winner's exit" \
+  || bad "a slow reaper unlinked the winner's fresh marker (winner $(cat "$WORK/w4.out"), marker '${W4_MARK}', next turn $AFTER): dispatch stalls an hour"
+rmdir "$TL4" 2>/dev/null; rm -f "$TL4.owner" 2>/dev/null; true
+# The same window opened at the READ, which only the re-check closes: a stat that
+# answers with what it saw, but late. The loser's age reading is the stale marker's;
+# by the time it acts, the winner has replaced it.
+SLOWSTAT="$WORK/slowstat"; mkdir -p "$SLOWSTAT"
+REALSTAT="$(command -v stat)"
+printf '#!/bin/sh\nout="$(%s "$@")" || exit $?\nsleep 2\nprintf "%%s\\n" "$out"\n' "$REALSTAT" > "$SLOWSTAT/stat"; chmod +x "$SLOWSTAT/stat"
+mkdir -p "$TL4"; printf 'pid=1\n' > "$TL4.owner"; touch -t 202601010000 "$TL4" "$TL4.owner"
+PATH="$SLOWSTAT:$PATH" KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKH" > "$WORK/slow2.out" 2>/dev/null & SLOW=$!
+sleep 0.5
+REL="$WORK/rel5" KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKW" > "$WORK/w5.out" 2>/dev/null & W5=$!
+wait_got "$WORK/w5.out"
+wait "$SLOW" 2>/dev/null
+W5_MARK="$(cat "$TL4.owner" 2>/dev/null)"
+: > "$WORK/rel5"; wait "$W5" 2>/dev/null
+AFTER2="$(KIPI_DISPATCH_TURNLOCK="$TL4" bash "$LOCKH" 2>/dev/null)"
+{ [ "$(cat "$WORK/w5.out")" = "GOT" ] && [ -n "$W5_MARK" ] && [ "$W5_MARK" != "pid=1" ] && [ "$AFTER2" = "GOT" ]; } \
+  && ok "a reaper whose age reading went stale re-checks, and leaves the winner's marker" \
+  || bad "a reaper acted on a stale age reading and unlinked the winner's marker (winner $(cat "$WORK/w5.out"), marker '${W5_MARK}', next turn $AFTER2)"
+rmdir "$TL4" 2>/dev/null; rm -f "$TL4.owner" 2>/dev/null; true
+
 # THE SAME CASE UNDER GNU stat. This is the CI failure, reproduced on purpose.
 # The BSD form `stat -f %m` is valid on macOS and means --file-system on GNU,
 # where %m is read as a FILE operand: stat errors on it, still prints a block for
