@@ -146,7 +146,7 @@ run_dispatch() {
   ( cd "$HOMEREPO" \
     && PATH="$STUB:$PATH" HOME="$WORK/home" KIPI_REPO="$HOMEREPO" \
        KIPI_DISPATCH_REGISTRY="$REG" KIPI_DISPATCH_CURSOR="$WORK/cursor" \
-       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_NOTIFY="/usr/bin/true" \
+       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_DISPATCH_LIVE_PATTERN="kipi-fixture-no-such-converge" KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv" KIPI_NOTIFY="/usr/bin/true" \
        bash "$DISPATCH" ) >> "$WORK/stdout.txt" 2>&1
 }
 new_tick() {  # new_tick <ledger rows...>: fresh home state carrying this ledger

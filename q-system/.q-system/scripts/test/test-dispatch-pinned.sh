@@ -272,5 +272,73 @@ ls "$R8"/pinned-paged-* >/dev/null 2>&1 \
   && ok "T9-neg the round-2 shape DOES burn the window (T9 is load-bearing)" \
   || bad "T9-neg the assertion CAN fail" "the mutant behaved like the fix, so T9 proves nothing"
 
+# ---------------------------------------------------------------------------
+# TEST 10: FILL EVERY FREE REPO (ASK-4008, D29). One tick runs a pass per
+# rotation repo and stops on the pass verdict. The stub answers per pass from
+# FILL_MODE, as kipi-dispatch.sh's pass_verdict_write would.
+# ---------------------------------------------------------------------------
+build_fill_fixture() {
+  local root; root="$(mktemp -d)"
+  git init -q -b main "$root/upstream"
+  cat >"$root/upstream/kipi-dispatch.sh" <<'STUB'
+#!/bin/bash
+echo "DISPATCH_RAN pass=$KIPI_DISPATCH_PASS file=${KIPI_DISPATCH_PASS_FILE:+set}"
+v() { printf '%s\n' "$1" > "$KIPI_DISPATCH_PASS_FILE"; }
+case "${FILL_MODE:-}:$KIPI_DISPATCH_PASS" in
+  all:*)        v "entered=r$KIPI_DISPATCH_PASS repos=3 dispatched=ASK-$KIPI_DISPATCH_PASS" ;;
+  noverdict:2)  : ;;
+  noverdict:*)  v "entered=r$KIPI_DISPATCH_PASS repos=3 dispatched=" ;;
+  empty:*)      v "entered= repos=3 dispatched=" ;;
+  fail:*)       exit 1 ;;
+  many:*)       v "entered=r$KIPI_DISPATCH_PASS repos=99 dispatched=" ;;
+esac
+exit 0
+STUB
+  git -C "$root/upstream" add -A
+  git -C "$root/upstream" -c user.email=t@t -c user.name=t commit -qm init
+  git clone -q "$root/upstream" "$root/main"
+  echo "$root"
+}
+fill_runs() { printf '%s\n' "$1" | grep -c '^DISPATCH_RAN'; }
+
+RF="$(build_fill_fixture)"
+outf="$(FILL_MODE=all run_wrapper "$RF" "$WRAPPER")"
+[ "$(fill_runs "$outf")" = "3" ] && grep -q 'fill: 3 pass(es) this tick' "$RF/log" \
+  && ok "T10a a tick runs one pass per rotation repo (3 of 3) and logs it" \
+  || bad "T10a one pass per rotation repo" "runs: $(fill_runs "$outf"); out: $(printf '%s' "$outf" | tr '\n' '|')"
+printf '%s' "$outf" | grep -q 'file=set' \
+  && ok "T10b each pass is handed the verdict file" \
+  || bad "T10b each pass is handed the verdict file" "$(printf '%s' "$outf" | tr '\n' '|')"
+outf="$(FILL_MODE=noverdict run_wrapper "$RF" "$WRAPPER")"
+[ "$(fill_runs "$outf")" = "2" ] \
+  && ok "T10c a pass that writes no verdict (it stopped before the turn) ends the tick" \
+  || bad "T10c no verdict stops the loop" "runs: $(fill_runs "$outf")"
+outf="$(FILL_MODE=empty run_wrapper "$RF" "$WRAPPER")"
+[ "$(fill_runs "$outf")" = "1" ] \
+  && ok "T10d a pass that entered no repo (none free) ends the tick" \
+  || bad "T10d an empty entered stops the loop" "runs: $(fill_runs "$outf")"
+outf="$(FILL_MODE=fail run_wrapper "$RF" "$WRAPPER")"; frc=$?
+FILL_MODE=fail run_wrapper "$RF" "$WRAPPER" >/dev/null 2>&1; frc=$?
+[ "$(fill_runs "$outf")" = "1" ] && [ "$frc" = "1" ] \
+  && ok "T10e a failed pass ends the tick and its exit code is handed on" \
+  || bad "T10e a failed pass stops with its code" "runs: $(fill_runs "$outf") rc: $frc"
+outf="$(FILL_MODE=many KIPI_DISPATCH_FILL_MAX=5 run_wrapper "$RF" "$WRAPPER")"
+[ "$(fill_runs "$outf")" = "5" ] \
+  && ok "T10f the loop never runs past KIPI_DISPATCH_FILL_MAX" \
+  || bad "T10f the fill ceiling holds" "runs: $(fill_runs "$outf")"
+# T10-neg: the one-pass wrapper (exec, before ASK-4008) runs once, so T10a can fail.
+ONEPASS="$RF/one-pass-wrapper.sh"
+python3 - "$WRAPPER" "$ONEPASS" <<'PY'
+import sys, re
+src = open(sys.argv[1]).read()
+i = src.index("# --- FILL EVERY FREE REPO")
+src = src[:i] + 'exec env KIPI_REPO="$PINNED" bash "$PINNED/kipi-dispatch.sh" "$@"\n'
+open(sys.argv[2], "w").write(src)
+PY
+outf="$(FILL_MODE=all run_wrapper "$RF" "$ONEPASS")"
+[ "$(fill_runs "$outf")" = "1" ] \
+  && ok "T10-neg the one-pass wrapper runs once, so T10a is load-bearing" \
+  || bad "T10-neg the mutant behaves like the fix" "runs: $(fill_runs "$outf")"
+
 [ "$fails" -eq 0 ] && { echo "PASS: dispatch-pinned"; exit 0; }
 echo "FAIL: $fails check(s)"; exit 1

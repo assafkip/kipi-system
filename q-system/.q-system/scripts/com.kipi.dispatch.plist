@@ -23,36 +23,15 @@
 		     /opt/homebrew/bin; without it the dispatcher pages and exits. -->
 		<key>PATH</key>
 		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-		<!-- HOW MANY RUNS AT ONCE, FLEET-WIDE. This was 1, and the reason was
-		     conflicts, not spend: the dispatcher picks by readiness and has NO
-		     idea which files an issue touches, so two concurrent runs can land
-		     on the same file (observed 2026-07-28: the next pick, ASK-223,
-		     edits the same linear-worker.sh region as the live ASK-222).
-		     Unattended, that yields a pile of conflicted PRs, which is worse
-		     than half the throughput. The old comment here said to raise this
-		     only once dispatch is file-disjointness aware. That condition has
-		     been MET IN PART and the number reflects exactly the part.
-
-		     ASK-804 made the rule structural rather than numeric: a repo with
-		     a live run is DEPRIORITISED, so with several dispatchable repos the
-		     work spreads one per repo. Two runs in different repos share no
-		     working tree, no branch namespace and no file, so the conflict
-		     argument says nothing about them.
-
-		     IT IS A PREFERENCE, NOT A GUARANTEE. When only one repo is
-		     dispatchable, dispatch takes it anyway rather than idling; an
-		     absolute rule re-created the ready-queue starvation that
-		     test-ci-redrive 14g exists to prevent. So same-repo overlap is
-		     still POSSIBLE at this cap, and this number is what bounds it.
-		     The open decision is ASK-811.
-
-		     3 IS DERIVED, NOT PICKED. instance-registry.json carries exactly
-		     two dispatch.enabled instances, plus the home repo, which selection
-		     treats as its own dispatchable target. Three repos, one run each. A
-		     fourth slot could never be filled by a conflict-free pick, so
-		     raising this further buys no throughput and only loosens spend. -->
-		<key>KIPI_DISPATCH_MAX</key>
-		<string>3</string>
+		<!-- HOW MANY RUNS AT ONCE: NOT SET HERE, DERIVED IN CODE (ASK-4008, D29).
+		     This said 3, "derived" on 2026-08-14 from two opted-in repos plus
+		     home. By 2026-11-08 the rotation held home plus 6, and the founder
+		     asked whether the number "actually stops us". kipi-dispatch.sh now
+		     defaults MAX_CONCURRENT to the rotation size, enforces one run per
+		     repo in its selection loop, and bounds the rest by memory (its
+		     MEMORY GATE, added after about 16 parallel claude processes filled
+		     the disk that day). kipi-dispatch-pinned.sh fills every free repo
+		     each tick. Set KIPI_DISPATCH_MAX here only to cap below that. -->
 
 		<!-- THE SPEND DIAL. Founder-set 2026-07-28.
 		     How many issues may be STARTED per UTC day. One issue costs up to
