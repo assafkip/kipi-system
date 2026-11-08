@@ -259,5 +259,80 @@ class CallSites(unittest.TestCase):
         self.assertFalse(literal_sites("x.py", '"""docstring naming claude-opus-5"""\nX = 1\n'))
 
 
+def names_its_model(path_name: str, text: str) -> list:
+    """Why a call-site file is NOT on the CLI default, or [] when nothing pins it.
+
+    A model is named by `--model` in code, by the routing table, by a lean_call
+    `job=`, or by an ANTHROPIC_MODEL pin the file sets itself. Measured
+    2026-11-08: the lean jobs (DoR drafter, fleet triage, lesson distill) named
+    none, and with no settings loaded the CLI picked claude-opus-5-5 for them."""
+    code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    if path_name.endswith(".py"):
+        import ast
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return []
+        strings = " ".join(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        kwargs = {k.arg for n in ast.walk(tree) if isinstance(n, ast.Call) for k in n.keywords}
+        code = strings + " " + " ".join(sorted(k for k in kwargs if k))
+    why = [w for w, hit in (("--model", "--model" in code), ("model_route", "model_route" in code),
+                            ("job=", "job" in code.split()), ("ANTHROPIC_MODEL", "ANTHROPIC_MODEL" in code)) if hit]
+    return why
+
+
+class EveryCallNamesAModel(unittest.TestCase):
+    """Coordinator, 2026-11-08: a fleet `claude -p` with no --model runs on the CLI
+    default. The literal lint above catches a direct id; this catches the missing one."""
+
+    def test_every_claude_p_call_site_names_its_model(self):
+        root = QS.parents[1]
+        sys.path.insert(0, str(root / "plugins" / "kipi-core"))
+        from voiceloop import call_sites as cs
+        sites = sorted(cs.call_sites(root))
+        self.assertGreater(len(sites), 10, "the detector found no population; a silent scan is not coverage")
+        bare = [rel for rel in sites if not names_its_model(rel, (root / rel).read_text(errors="replace"))]
+        self.assertEqual(bare, [], "these claude -p call sites run on the CLI default")
+
+    def test_every_lean_call_names_a_job(self):
+        # lean_call is the chokepoint for background calls; each caller names its row
+        import ast
+        bare = []
+        for py in sorted(SCRIPTS.glob("*.py")):
+            if py.name == "lean_call.py":
+                continue
+            tree = ast.parse(py.read_text())
+            for n in ast.walk(tree):
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "run"
+                        and isinstance(n.func.value, ast.Name) and n.func.value.id == "lean_call"
+                        and not any(k.arg == "job" for k in n.keywords)):
+                    bare.append(f"{py.name}:{n.lineno}")
+        self.assertEqual(bare, [])
+
+    def test_lean_call_job_adds_the_rows_model(self):
+        import lean_call
+        seen = {}
+
+        def fake(argv, **kw):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        orig = lean_call.subprocess.run
+        lean_call.subprocess.run = fake
+        try:
+            lean_call.run(["claude", "-p", "hi"], job="dor-drafting", capture_output=True, text=True)
+        finally:
+            lean_call.subprocess.run = orig
+        argv = seen["argv"]
+        self.assertEqual(argv[argv.index("--model") + 1], model_route.pick("dor-drafting"))
+        for job in ("dor-drafting", "fleet-triage", "lesson-distill", "lesson-verify", "on-demand"):
+            self.assertIn(job, json.loads(TABLE.read_text())["jobs"], job)
+
+    def test_negative_self_test_a_bare_call_is_caught(self):
+        self.assertEqual(names_its_model("x.py", 'import subprocess\nsubprocess.run(["claude", "-p", "hi"])\n'), [])
+        self.assertEqual(names_its_model("x.sh", 'claude -p "hi"\n# --model claude-x only in a comment\n'), [])
+        self.assertTrue(names_its_model("x.py", 'lean_call.run(["claude", "-p", "x"], job="fleet-triage")\n'))
+        self.assertTrue(names_its_model("x.sh", 'claude -p "$1" --model "$M"\n'))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

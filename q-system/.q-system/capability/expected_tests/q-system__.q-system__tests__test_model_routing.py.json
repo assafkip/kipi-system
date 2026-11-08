@@ -8,6 +8,13 @@
   "q-system/.q-system/scripts/pr-review-agent.sh",
   "q-system/.q-system/scripts/linear-alert-triage.py",
   "q-system/.q-system/scripts/com.kipi.dispatch.plist",
-  ".github/workflows/reviewer-hosted.yml"
+  ".github/workflows/reviewer-hosted.yml",
+  "q-system/.q-system/scripts/lean_call.py",
+  "q-system/.q-system/scripts/linear-dor-drafter.py",
+  "q-system/.q-system/scripts/linear-triage.py",
+  "q-system/.q-system/scripts/lessons-distill.py",
+  "q-system/.q-system/scripts/probe_hook_envelope.py",
+  "q-system/.q-system/scripts/skill-trigger-eval.py",
+  "plugins/kipi-core/voiceloop/call_sites.py"
  ]
 }
