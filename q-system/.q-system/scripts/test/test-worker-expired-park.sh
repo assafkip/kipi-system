@@ -179,6 +179,14 @@ else
   bad "the run names the expired parks that sort last" "$(printf '%s\n' "$OUT" | grep -i 'park' | head -2)"
 fi
 
+# AN EXPIRED PARK NEVER READS AS URGENT TO THE URGENT SLOT (PR #663 round 1,
+# major). It sorts after all live work, so its dry pick must report priority 0,
+# or a repo holding only expired parks would win the once-a-day slot.
+OUTP="$(KIPI_PICK_PRIORITY=1 run_worker --limit 1 --issue ASK-971)"
+printf '%s\n' "$OUTP" | grep -qE '\[dry\] pick priority ASK-971 0$' \
+  && ok "an expired park reports priority 0 to the urgent-slot scan" \
+  || bad "an expired park reports priority 0" "$(printf '%s\n' "$OUTP" | grep -E 'pick priority|would work' | head -2)"
+
 # THE COUNT IS SAID ONLY WHEN THE OPEN-PR RAIL WAS ASKED (PR #649 round 1,
 # minor). Under --issue and on a gh failure the WIP list is empty, so the count
 # would name ASK-979, whose open PR keeps E2 off it.

@@ -982,10 +982,8 @@ founder_routed = held_with("owner:assaf", founder_scope)
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
 blocked_cap = held_with("blocked:capability")
-# Counted for the same reason (ASK-3995): a pool that shrinks by 200 overnight must
-# say why. These wait for E2, which closes them at its next sweep, 50 a day.
-expired_parks = [i for i in issues if in_this_repo(i) and expired_park(i)
-                 and "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}]
+# Expired parks are counted too (ASK-3995), after the pool is built, below: they
+# sort last rather than wait for E2 (ASK-4031, PR #663 round 1).
 
 pool = [i for i in issues if ready(i)]
 # PRIORITY, THEN OLDEST FIRST (ASK-248, NEW-6). The query has no orderBy, and
@@ -1005,10 +1003,14 @@ PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 # closed was a hang: work that goes nowhere, against the founder direction. And
 # its budget argument went with the daily cap (D28). So it stays in the pool,
 # after every live ticket, and is worked when nothing else is ready: the queue
-# drains it instead of holding it. No mirror of E2 is needed any more.
+# drains it instead of holding it. expired_park() still mirrors E2 own set, but
+# only to say which tickets sort last; it refuses nothing (PR #663 round 1).
 pool.sort(key=lambda i: (1 if expired_park(i) else 0,
                          PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
+# Counted from the POOL, so the run line names only parks that will be worked
+# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()).
+expired_parks = [i for i in pool if expired_park(i)]
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -1232,6 +1234,7 @@ if os.environ.get("WIP_OWN_RC", "") != "":
 print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
                "state": i["state"]["type"], "priority": i.get("priority"),
+               "expired_park": expired_park(i),
                "why": pick_why(i)}
               for i in pool],
     "started_held": started_held,
@@ -2539,9 +2542,11 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
     # Linear priority: 1 Urgent, 2 High, 3 Medium, 4 Low, 0 or none No priority.
+    # An expired park reports 0: it sorts after all live work, so it must not win
+    # the once-a-day Urgent slot ahead of a live Urgent ticket (PR #663 round 1).
     if [ "${KIPI_PICK_PRIORITY:-0}" = "1" ]; then
       say "[dry] pick priority $ISSUE $(printf '%s' "$PICKED" | python3 -c 'import json,sys
-p = [i.get("priority") for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]]
+p = [0 if i.get("expired_park") else i.get("priority") for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]]
 print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
     DONE=$((DONE+1)); continue
