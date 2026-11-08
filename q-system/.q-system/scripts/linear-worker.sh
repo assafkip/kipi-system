@@ -1008,9 +1008,6 @@ PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 pool.sort(key=lambda i: (1 if expired_park(i) else 0,
                          PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
-# Counted from the POOL, so the run line names only parks that will be worked
-# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()).
-expired_parks = [i for i in pool if expired_park(i)]
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -1020,6 +1017,11 @@ expired_parks = [i for i in pool if expired_park(i)]
 _set_aside = set((os.environ.get("KIPI_PICK_EXCLUDE") or "").split())
 if _set_aside:
     pool = [i for i in pool if i["identifier"] not in _set_aside]
+# Counted from the POOL, so the run line names only parks that will be worked
+# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()),
+# and after the set-aside filter, since a park the dispatcher set aside for the
+# day is not worked this run either (ASK-4043).
+expired_parks = [i for i in pool if expired_park(i)]
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
 # converge.sh and an explicit kipi-work invocation both name an issue the picker
 # already chose, and a rework round must be able to return to it. The job of the
