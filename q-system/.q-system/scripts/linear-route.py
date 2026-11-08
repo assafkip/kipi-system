@@ -534,20 +534,25 @@ def plan_actions(issues: list, facts: RoutingFacts, board_projects: set | None =
     route naming a project the board does not have is REFUSED HERE, before it can
     take a write slot (ASK-4089): measured on the router's first real run, a
     `[label]` naming a registry row with no board project failed its write every
-    night and spent 1 of the 10 slots. The ticket goes to the stage-2 list.
+    night and spent 1 of the 10 slots. The ticket stays unrouted, and
+    linear-triage-health.py raises the board gap as a named breach.
     """
     rows = []
     for issue in issues:
         if not is_pending(issue):
             continue
         decision = evidence_decision(issue, facts)
+        current = project_of(issue)
         off_board = None
-        if decision.project and board_projects is not None and decision.project.lower() not in board_projects:
+        # Only a route that WOULD be written is checked: a ticket that already has
+        # a project never gets set_project, so its evidence naming an off-board
+        # project refuses nothing (PR #679 review, minor 2).
+        if (decision.project and not current and board_projects is not None
+                and decision.project.lower() not in board_projects):
             off_board = decision.project
             decision = Decision(None, None,
                                 f"the evidence names {off_board!r}, which is not a project on the "
-                                "board; left for the stage-2 decision (ASK-3959)")
-        current = project_of(issue)
+                                "board; linear-triage-health.py files the board gap as an alert")
         labels = labels_of(issue)
         set_project = decision.project if (not current and decision.project) else None
         will_have_project = bool(current or set_project)
@@ -575,7 +580,10 @@ def plan_actions(issues: list, facts: RoutingFacts, board_projects: set | None =
                                     and "Definition of Ready" in (issue.get("description") or "")
                                     and not is_fleet_alert(issue)
                                     and not is_marked_unroutable(issue)),
+            # Not for an off-board route: this meter means "the comment page ran
+            # out", and an off-board ticket's problem is the board (PR #679, minor 3).
             "mark_unknown": bool(not will_have_project
+                                 and not off_board
                                  and mark_read_incomplete(issue)),
             "rule": decision.rule,
             "reason": decision.reason,
@@ -595,6 +603,8 @@ def rows_with_work(rows: list) -> list:
 def measure(issues: list, facts: RoutingFacts, board_projects: set | None = None) -> dict:
     rows = plan_actions(issues, facts, board_projects)
     routable = [r for r in rows if r["set_project"] or r["project"]]
+    refused = [{"id": r["identifier"], "project": r["not_on_board"]}
+               for r in rows if r["not_on_board"]]
     return {
         "registry_ok": facts.ok,
         "pending": len(rows),
@@ -606,9 +616,11 @@ def measure(issues: list, facts: RoutingFacts, board_projects: set | None = None
         # Routes refused because the named project is not on the board (ASK-4089).
         # Each row names the ticket AND the name, so the nightly log says which
         # registry row lacks a board project, not only that one does.
-        "not_on_board": sum(1 for r in rows if r["not_on_board"]),
-        "not_on_board_ids": [{"id": r["identifier"], "project": r["not_on_board"]}
-                             for r in rows if r["not_on_board"]],
+        "not_on_board": len(refused),
+        "not_on_board_ids": refused,
+        # The report lines travel in the JSON so linear-triage-health.py prints
+        # the same text without importing this file (it runs it as a subprocess).
+        "not_on_board_lines": not_on_board_lines(refused),
         "with_work": len(rows_with_work(rows)),
         "by_rule": {rule: sum(1 for r in rows if r["rule"] == rule)
                     for rule in sorted({r["rule"] for r in rows if r["rule"]})},
@@ -725,6 +737,22 @@ def apply_row(sync, row: dict, projects: dict, labels: dict) -> list:
     return done
 
 
+def not_on_board_lines(refused: list, sample: int = 3) -> list:
+    """One line per refused PROJECT, not per ticket: the count is bounded by the
+    registry rows, so 60 off-board tickets cannot become 60 log lines twice over
+    (PR #679 review, nit). Shared with linear-triage-health.py's report."""
+    by_project: dict = {}
+    for off in refused:
+        by_project.setdefault(off.get("project") or "?", []).append(off.get("id") or "?")
+    out = []
+    for project in sorted(by_project):
+        ids = by_project[project]
+        eg = ", ".join(ids[:sample]) + (", ..." if len(ids) > sample else "")
+        out.append(f"route refused: {project!r} is not a project on the board, so no "
+                   f"project write for {len(ids)} ticket(s) ({eg})")
+    return out
+
+
 def render(m: dict, rows: list) -> str:
     if not m["registry_ok"]:
         return ("linear-route: UNKNOWN -- instance-registry.json or kipi-update.sh "
@@ -734,9 +762,8 @@ def render(m: dict, rows: list) -> str:
              f"{m['with_work']} with a write to make."]
     if m["by_rule"]:
         lines.append("  routed by: " + ", ".join(f"{k}={v}" for k, v in m["by_rule"].items()))
-    for off in m.get("not_on_board_ids", []):
-        lines.append(f"  {off['id']}: refused, {off['project']!r} is not a project on the board "
-                     "(no write spent; stage-2 list)")
+    for line in m.get("not_on_board_lines", []):
+        lines.append("  " + line)
     for row in rows_with_work(rows):
         acts = [a for a in (
             f"project={row['set_project']}" if row["set_project"] else "",

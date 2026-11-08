@@ -253,6 +253,19 @@ def test_the_off_board_refusals_survive_the_subprocess(monkeypatch):
     assert out["write_failures"] == 0
 
 
+def test_a_route_to_a_project_not_on_the_board_raises_a_named_breach():
+    """PR #679 review, major: the refusal removed the no-such-project write failure
+    that used to raise this. Without a breach the only consumer was a log line."""
+    base = {"unrouted": 0, "needs_triage": 0, "oldest_triage_days": 0.0,
+            "oldest_triage_id": ""}
+    assert health.breaches(dict(base, route_not_on_board=[])) == []
+    refused = [{"id": "ASK-40", "project": "cole-GTM"},
+               {"id": "ASK-41", "project": "cole-GTM"},
+               {"id": "ASK-50", "project": "openwitness"}]
+    line = health.breaches(dict(base, route_not_on_board=refused))[0]
+    assert line == "3 route(s) name a project not on the board (cole-GTM, openwitness)"
+
+
 def test_dormancy_default_can_actually_fire_on_this_board():
     """A threshold the population can never reach reads as protection and is not.
 

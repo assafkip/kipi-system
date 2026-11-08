@@ -468,14 +468,44 @@ def test_off_board_route_spends_no_write_slot(board, tmp_path):
     assert off["not_on_board"] == "cole-GTM"
 
 
-def test_off_board_route_is_listed_for_stage_2(board, tmp_path):
+def test_off_board_route_is_counted_and_named(board, tmp_path):
     m = route.measure([_gtm_ticket(tmp_path), issue("ASK-41")], board, ON_BOARD)
     assert m["not_on_board"] == 1
     assert m["not_on_board_ids"] == [{"id": "ASK-40", "project": "cole-GTM"}]
-    # Still unroutable, so the stage-2 decision (ASK-3959) sees it.
+    # Still unroutable: no project was written.
     assert m["unroutable"] == 1
     assert m["routable"] == 1
-    assert "refused, 'cole-GTM' is not a project on the board" in route.render(m, [])
+    assert ("route refused: 'cole-GTM' is not a project on the board, so no project "
+            "write for 1 ticket(s) (ASK-40)") in route.render(m, [])
+
+
+def test_a_ticket_that_has_a_project_refuses_nothing(board, tmp_path):
+    """PR #679 review, minor 2: no set_project would be written, so nothing is refused,
+    and the owner label still lands."""
+    t = issue("ASK-42", files=str(tmp_path / "cole-gtm" / "projects" / "site.md"),
+              project="kipi-system")
+    rows = route.plan_actions([t], board, ON_BOARD)
+    assert rows[0]["not_on_board"] is None
+    assert rows[0]["add_label"] == "owner:sana"
+    assert route.measure([t], board, ON_BOARD)["not_on_board"] == 0
+
+
+def test_an_off_board_ticket_is_not_counted_as_a_short_comment_read(board, tmp_path):
+    """PR #679 review, minor 3: mark_unknown means the comment page ran out."""
+    t = issue("ASK-43", files=str(tmp_path / "cole-gtm" / "projects" / "site.md"),
+              truncated=True)
+    rows = route.plan_actions([t], board, ON_BOARD)
+    assert rows[0]["not_on_board"] == "cole-GTM"
+    assert rows[0]["mark_unknown"] is False
+
+
+def test_refusal_lines_are_one_per_project_not_per_ticket():
+    refused = [{"id": f"ASK-{n}", "project": "cole-GTM"} for n in range(60)]
+    refused.append({"id": "ASK-99", "project": "openwitness"})
+    lines = route.not_on_board_lines(refused)
+    assert len(lines) == 2
+    assert "for 60 ticket(s) (ASK-0, ASK-1, ASK-2, ...)" in lines[0]
+    assert "'openwitness'" in lines[1] and "for 1 ticket(s) (ASK-99)" in lines[1]
 
 
 def test_board_check_ignores_case(board, tmp_path):
@@ -486,7 +516,7 @@ def test_board_check_ignores_case(board, tmp_path):
 
 
 def test_no_board_list_leaves_the_check_off(board, tmp_path):
-    """A dry run whose project read failed routes as before, and says so on stderr."""
+    """A dry run whose project read failed passes None here, and routes as before."""
     rows = route.plan_actions([_gtm_ticket(tmp_path)], board)
     assert rows[0]["set_project"] == "cole-GTM"
     assert route.measure([_gtm_ticket(tmp_path)], board)["not_on_board"] == 0
