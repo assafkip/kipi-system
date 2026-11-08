@@ -3,7 +3,7 @@
 # stuck-work synthesis 2026-11-07).
 #
 # WHY THIS EXISTS. The picker query had no orderBy and selected no priority, so
-# the pool came in Linear's default order. Measured live 2026-11-08 06:00Z: that
+# the pool came in Linear's default order. Measured live 2026-11-08 05:45Z: that
 # order is NEWEST CREATED FIRST. So the queue was a stack, not a queue: 234
 # ready-shaped kipi-system tickets, 39 of them under a week old and picked ahead
 # of 119 that were over 60 days old, while the 3 Urgent and 62 High ones waited
