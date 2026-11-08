@@ -2747,6 +2747,18 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
+    # DISK FLOOR (ASK-3648). This tree is cut from shell, so the PreToolUse floor
+    # never sees it; on 2026-11-08 trees like it took the disk to 0 bytes free.
+    # Under the floor no issue gets a tree, so stop the whole run, not just this
+    # issue. Nothing was claimed yet (the claim is step 2, inside the tree), so
+    # nothing is counted against the issue. kipi-dispatch.sh holds the same floor
+    # every heartbeat, runs the worktree reaper, and resumes once space is back.
+    # Exit 2 (could not measure) proceeds: `git worktree add` below fails loudly.
+    FLOOR_LINE="$(python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null 2>>"$LOG")"; FLOOR_RC=$?
+    if [ "$FLOOR_RC" -eq 1 ]; then
+      say "INFRA: $FLOOR_LINE; no worktree for $ISSUE and no further issue this run (not counted against the issue). kipi-dispatch.sh re-checks the floor every heartbeat."
+      break
+    fi
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the

@@ -956,6 +956,46 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+# --- DISK FLOOR (ASK-3648) ----------------------------------------------
+# A tick can cut up to three worktrees (worker tree, review tree, the reviewer's
+# own copy) and start sessions whose swap lands on the same disk. On 2026-11-08
+# the disk reached 0 bytes free: every write on the Mac failed, this log
+# included. The PreToolUse floor (worktree-disk-floor.py) never fired, because
+# no tree in that run was cut by a tool call. The worker and reviewer cut them
+# from shell, and this dispatcher is what starts both, so the floor is held here.
+#
+# Under the floor: run the worktree reaper once (it removes only clean, idle
+# trees, never with --force), measure again, and if still under, dispatch
+# nothing. No ticket is claimed, counted or set aside, because a full disk is not
+# the ticket's fault. The next heartbeat (15 min) measures again and resumes by
+# itself. The page goes out once per episode (page_once) and clears when space
+# is back. A full disk stops the whole fleet, which is a build-killing break.
+# On a broken measurement (exit 2) the tick proceeds: `git worktree add` fails
+# loudly on a full disk anyway, and refusing on a bad reading would hold every
+# tick with nothing that clears it.
+DISK_FLOOR_PY="$REPO/q-system/.q-system/scripts/worktree-disk-floor.py"
+WORKTREE_REAPER="${KIPI_WORKTREE_REAPER:-$REPO/q-system/.q-system/scripts/worktree-reaper.py}"
+disk_floor_check() {
+  [ -f "$DISK_FLOOR_PY" ] || { echo "disk-floor: $DISK_FLOOR_PY missing"; return 2; }
+  python3 "$DISK_FLOOR_PY" --check </dev/null 2>>"$LOG"
+}
+FLOOR_LINE="$(disk_floor_check)"; FLOOR_RC=$?
+if [ "$FLOOR_RC" -eq 1 ]; then
+  say "disk floor: $FLOOR_LINE; running the worktree reaper once before deciding"
+  python3 "$WORKTREE_REAPER" --apply </dev/null >>"$LOG" 2>&1 || true
+  FLOOR_LINE="$(disk_floor_check)"; FLOOR_RC=$?
+fi
+if [ "$FLOOR_RC" -eq 1 ]; then
+  say "DISK FLOOR: $FLOOR_LINE after the reaper ran. No dispatch this tick and no ticket touched; the next heartbeat measures again."
+  # The page text is fixed, so page_once's hash holds across ticks: a free-space
+  # number in it would change every tick and page again each time. The number is
+  # in the say line above.
+  page_once disk-floor "kipi dispatch: free disk is under the worktree floor even after the worktree reaper ran. Dispatch is holding: no ticket is touched, it measures again every 15 min, and it resumes by itself once space is back. Do: free disk space. The numbers are in ~/.config/kipi/dispatch.log, and what the reaper kept is in ~/.config/kipi/worktree-reaper.out."
+  exit 0
+fi
+[ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (a full disk still fails git worktree add loudly)"
+page_clear disk-floor
+
 # --- WHICH REPO GETS THIS TURN -------------------------------------------
 # pick_list() has already refused every candidate that failed its preflight, so
 # nothing below has to re-check safety -- and nothing below is allowed to add a
