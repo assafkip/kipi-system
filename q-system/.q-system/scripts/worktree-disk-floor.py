@@ -110,9 +110,15 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         deny(f"could not measure free disk space ({exc!r}); refusing the worktree")
         return 0
-    floor = cfg["refuse_worktree_below_gb"]
+    # A MALFORMED FLOOR KEEPS THE FLOOR ON (ASK-4039, PR #656 round 3, minor 1): the
+    # hook path used to compare outside the try, so a hand-edited "5 GB" raised and the
+    # hook exited 1 with no deny, failing OPEN. Same default fallback as --check.
+    try:
+        floor = float(cfg["refuse_worktree_below_gb"])
+    except (KeyError, TypeError, ValueError):
+        floor = float(_reaper().DEFAULTS["refuse_worktree_below_gb"])
     if free < floor:
-        deny(f"{free:.1f} GB free, under the {floor} GB floor. A worktree is "
+        deny(f"{free:.1f} GB free, under the {floor:g} GB floor. A worktree is "
              f"~0.4 GB. Free space first: python3 {HERE}/worktree-reaper.py "
              f"lists finished worktrees, and --apply removes them.")
     return 0

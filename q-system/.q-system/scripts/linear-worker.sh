@@ -3787,7 +3787,15 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       # The reviewer's RUNNER refused (PR #421 round 16, minor): the same account
       # Sana just used ran out between the two calls. env_halt makes converge exit
       # 9 with no charge and no "review produced no verdict" page.
-      say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      # NAME THE CAUSE (ASK-4039, PR #656 round 3, minor 2): exit 9 is the reviewer's code
+      # for any machine condition, and since ASK-3648 that includes the disk floor. The
+      # floor is measured again here, so the line says which one it was.
+      python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null >/dev/null 2>>"$LOG"
+      if [ "$?" -eq 1 ]; then
+        say "$ISSUE: the reviewer stopped because the disk is under the worktree floor -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until kipi-dispatch.sh finds space again"
+      else
+        say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      fi
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
     elif [ "$REVIEW_RC" != "0" ]; then
       say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
