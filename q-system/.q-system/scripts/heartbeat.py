@@ -285,10 +285,17 @@ def issue_body(v: dict, table: dict) -> str:
         # --missing never rewrites an installed job, so a plist installed before its
         # --heartbeat flag runs green on the Mac and reads missing here, and launchctl
         # and the .out log both show a healthy job. The Action names the reinstall.
+        # THE DIFF IS AGAINST A RENDERED COPY, NOT THE RAW TEMPLATE (ASK-3987, PR #643
+        # round 2): a healthy pinned install differs from the raw template on 13
+        # lines, so the one that matters, `--heartbeat` in the argv, was lost in the
+        # noise. --render-only writes the plist install-plist.sh would install and
+        # touches no live job; fleet-health plist drift compares the same way.
         "missing": (f"Run `launchctl print gui/$(id -u)/{label}` on the Mac and read "
                     "its last exit, then the job's log under `~/.config/kipi/`. If it ran and "
                     f"exited 0, the installed `~/Library/LaunchAgents/{label}.plist` may predate "
-                    "`--heartbeat`: diff it against the template in `q-system/.q-system/scripts/` "
+                    "`--heartbeat`: render what would be installed with "
+                    f"`bash q-system/.q-system/scripts/install-plist.sh {label} --render-only /tmp/{label}.plist`, "
+                    f"diff the installed plist against that file, "
                     f"and reinstall with `bash q-system/.q-system/scripts/install-plist.sh {label}`. "
                     f"Producer: `{producer}`."),
         "starved": (f"Read the failure lines of the job's last two runs in `~/.config/kipi/{v['job']}.out` "

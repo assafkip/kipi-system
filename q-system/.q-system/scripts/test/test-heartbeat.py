@@ -298,6 +298,14 @@ check("a missing issue names the stale installed plist and its reinstall",
       ("~/Library/LaunchAgents/com.kipi.linear-alert-triage.plist" in miss,
        "install-plist.sh com.kipi.linear-alert-triage" in miss, "--heartbeat" in miss),
       (True, True, True))
+# ASK-3987 (PR #643 round 2, minor 2). Diffing the installed plist against the RAW
+# template drowns the one fact that matters: a healthy pinned install differs from
+# it on 13 lines (4 placeholders filled, the kipi-job-pinned.sh pair added). The
+# Action must compare against a --render-only copy, as fleet-health plist drift does.
+check("the missing Action diffs against a --render-only copy, not the raw template",
+      ("install-plist.sh com.kipi.linear-alert-triage --render-only" in miss,
+       "the template in" in miss),
+      (True, False))
 check("...and opens nothing", [c for c in gh.calls if c[1:3] == ["issue", "create"]], [])
 
 print("-- wiring: every listed producer emits, and the reader is scheduled")
