@@ -161,6 +161,13 @@ def _emit(job, n_in, n_done, queue, error, state_dir, repo_root, publish, run, n
     state.mkdir(parents=True, exist_ok=True)
     ledger = state / f"{job}.jsonl"
     prev = _last_row(ledger) or {}
+    # COERCED ONCE, BEFORE THE DECISION (PR #631 round 2, minor 1). A producer that
+    # passes "32" must neither kill the emit nor publish a row whose queue
+    # disagrees with the starved decision taken on it. Unreadable reads as unknown.
+    try:
+        queue = None if queue is None else int(queue)
+    except (TypeError, ValueError):
+        queue = None
     starved = is_starved(int(n_in), int(n_done), error, queue)
     streak = int(prev.get("starved_streak") or 0) + 1 if starved else 0
     row = {"job": job, "at": _iso(now or _now()), "in": int(n_in), "done": int(n_done),

@@ -297,14 +297,47 @@ wf = (REPO / ".github" / "workflows" / "heartbeat.yml").read_text()
 for needle in ("schedule:", "cron:", "issues: write", "toJSON(vars)",
                "heartbeat.py check --file-issues"):
     check(f"the workflow carries {needle!r}", needle in wf, True)
-tmpl = (SCRIPTS / "com.kipi.linear-dor.plist").read_text()
-rendered = tmpl.replace("__KIPI_REPO__", "/r").replace("__HOME__", "/h").encode()
-try:
-    args = plistlib.loads(rendered)["ProgramArguments"]
-except Exception as exc:  # noqa: BLE001 - a parse failure IS the finding
-    args = [f"unparseable: {type(exc).__name__}"]
-check("the linear-dor plist parses strictly and passes --heartbeat",
-      "--heartbeat" in (args[-1] if args else "").split(), True)
+# EVERY listed job's plist passes --heartbeat (ASK-3965): a producer that emits only
+# when asked, run by a plist that never asks, is the silent job this table exists for.
+for job, spec in sorted(table["jobs"].items()):
+    tmpl_path = SCRIPTS / f"{spec.get('launchd', '')}.plist"
+    tmpl = tmpl_path.read_text() if tmpl_path.is_file() else ""
+    rendered = tmpl.replace("__KIPI_REPO__", "/r").replace("__HOME__", "/h").encode()
+    try:
+        args = plistlib.loads(rendered)["ProgramArguments"]
+    except Exception as exc:  # noqa: BLE001 - a parse failure IS the finding
+        args = [f"unparseable: {type(exc).__name__}"]
+    check(f"{job}: its plist parses strictly and passes --heartbeat",
+          "--heartbeat" in (args[-1] if args else "").split(), True)
+
+print("-- wiring: the alert-triage pass emits only when asked, and only when it writes")
+tri = load(SCRIPTS / "linear-alert-triage.py", "triage_under_test")
+tbeats: list = []
+tri.heartbeat = lambda n_in, n_done, queue=None: tbeats.append((n_in, n_done, queue))
+tri.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
+tri.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool, __import__("collections").Counter())
+tri._prepass_part = lambda _pre, _apply: ""
+tri.write_run_evidence = lambda _line: None
+tri._triage_one = lambda _ls, issue, _d, _apply: "written" if issue["identifier"] == "ASK-0" else "skipped"
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True)
+check("alert-triage without the flag emits nothing", tbeats, [])
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, False, beat=True)
+check("alert-triage dry run emits nothing, flag or not", tbeats, [])
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True)
+check("alert-triage with --heartbeat emits in 2, done 1, queue 3", tbeats, [(2, 1, 3)])
+check("the parser carries --heartbeat",
+      tri.build_parser().parse_args(["run", "--apply", "--heartbeat"]).heartbeat, True)
+
+print("-- emit coerces queue before it decides (PR #631 round 2, minor 1)")
+cq, tc = SANDBOX / "coerce", datetime(2026, 11, 8, 10, 30, tzinfo=timezone.utc)
+hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False, now=tc)
+rq = hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False,
+             now=tc + timedelta(hours=24))["row"]
+check("a string queue twice is a starved streak of 2, and the row says 32",
+      (rq["starved_streak"], rq["queue"]), (2, 32))
 
 print("-- wiring: the drafter's real main() emits only when asked")
 sys.path.insert(0, str(SCRIPTS))

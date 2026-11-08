@@ -38,7 +38,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string><string>-lc</string>
-    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 8 --apply</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 8 --apply --heartbeat</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
   <key>EnvironmentVariables</key>

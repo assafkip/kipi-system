@@ -6,6 +6,12 @@
       "since": "2026-11-08",
       "producer": "q-system/.q-system/scripts/linear-dor-drafter.py",
       "launchd": "com.kipi.linear-dor"
+    },
+    "linear-alert-triage": {
+      "period_hours": 24,
+      "since": "2026-11-09",
+      "producer": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "launchd": "com.kipi.linear-alert-triage"
     }
   }
 }
