@@ -3352,7 +3352,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_OUTAGE_NEW=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_ENV_FILED=""; CODEX_OUTAGE_NEW=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -3411,10 +3411,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         crc=$?
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
-      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""
+      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
       # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
       # is refused too (a Claude limit) does the outage path below apply.
       if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        CODEX_DOWN_MARK="$(codex_env_marker "$CODEX_OUT" "$crc")"
         CODEX_STOOD_IN=1
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
@@ -3433,6 +3434,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # the every-line rule never matched a real Codex outage (PR #421 round 8).
       if CODEX_ENV="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
         [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
+        # WHAT IS FILED IS THE MARKER (ASK-3988, sp-762d494b): CODEX_ENV is the
+        # whole line Codex printed, for the log; the page and the ticket note
+        # carry CODEX_ENV_FILED, the closed vocabulary only.
+        CODEX_ENV_FILED="$(codex_env_marker "$CODEX_OUT" "$crc")"
+        [ -n "$CODEX_ENV_FILED" ] || CODEX_ENV_FILED="the second runner refused for a machine reason"
       else
         CODEX_ENV=""
         # Only CODEX answering ends a Codex outage. When Opus stood in, Codex
@@ -3485,6 +3491,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       if [ -n "$CODEX_STOOD_IN" ] && [ -z "$CODEX_ENV" ] \
          && ! { [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; }; then
         CODEX_ENV="Codex unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the Opus stand-in did not finish it either${CODEX_WHY:+: $(printf '%s' "$CODEX_WHY" | head -c 200)}"
+        CODEX_ENV_FILED="Codex unavailable (${CODEX_DOWN_MARK:-a machine refusal}); the Opus stand-in did not finish it either"
         CODEX_WHY=""
       fi
       # CHECKED FIRST, before any of the outcomes below. A runner that could not
@@ -3537,7 +3544,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # A day: nothing but a capability refusal ever reaches Codex, so nothing
         # else would release this claim (see env_alert_claim's max age).
         if env_alert_claim "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
-          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
+          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV_FILED). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
@@ -3596,7 +3603,7 @@ Sana stopped here:
 
 $SCOPE_WHY
 
-The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
+The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV_FILED\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
 
 **Next:** nothing per issue, and no founder decision. The next run tries both runners again; if Codex is genuinely not equipped either, it parks then with both refusals named."
     elif [ "$REFUSE_KIND" = "capability" ]; then
