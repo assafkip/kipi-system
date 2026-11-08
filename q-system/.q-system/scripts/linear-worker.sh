@@ -661,6 +661,7 @@ now = datetime.now(timezone.utc)
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
  nodes{id identifier title description state{name type} startedAt project{name}
+       priority createdAt
        labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}"""
 try:
     tid = ls.graphql('query{teams(filter:{key:{eq:"ASK"}}){nodes{id}}}',{})["teams"]["nodes"][0]["id"]
@@ -951,6 +952,16 @@ founder_routed = held_with("owner:assaf", founder_scope)
 blocked_cap = held_with("blocked:capability")
 
 pool = [i for i in issues if ready(i)]
+# PRIORITY, THEN OLDEST FIRST (ASK-248, NEW-6). The query has no orderBy, and
+# Linear answers newest created first (measured 2026-11-08), so the pool was a
+# stack: 39 tickets under a week old were worked ahead of 119 over 60 days old,
+# and the 3 Urgent and 62 High ones waited behind fresh Low filings. ASK-248, the
+# ticket asking for this order, was parked unpicked after 30 days. A stack never
+# reaches its bottom; a queue bounds every wait by its depth. Linear priority 0
+# means No priority and sorts after Low (4), whatever its age.
+PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
+pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
+                         i.get("createdAt") or "9999", i["identifier"]))
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
 # converge.sh and an explicit kipi-work invocation both name an issue the picker
 # already chose, and a rework round must be able to return to it. The job of the
