@@ -225,14 +225,19 @@ def launchd_finding(detector_id: str, label: str, detail: str = "") -> dict:
 
 
 def _stopped_labels() -> set:
-    """The labels the report-only detectors leave alone: the declared intent the
-    heal reads (`_disabled_labels`: launchd-intent.json plus the ledgers), so a job
-    declared disabled is neither re-armed nor filed as dark or never installed
-    (ASK-4055, PR #667 delta minor: the heal read the manifest and these two
-    detectors read the ledgers only). When the intent cannot be read, a report is
-    cheap and a re-arm is not, so the detectors fall back to the ledger reader."""
-    stopped = _disabled_labels()
-    return _paused_labels() if "*" in stopped else stopped
+    """The labels the report-only detectors leave alone: the watchdog's
+    load_stopped_labels, the ledgers PLUS every job launchd-intent.json declares
+    disabled, so "deliberately stopped" has one definition for every reporter
+    (ASK-4055). Not `_disabled_labels`: that one resolves a ledger and manifest
+    disagreement in the manifest's favour, right for the heal deciding what to
+    re-arm, and it dropped a ledger-paused job the manifest calls enabled, which
+    these detectors then filed as dark (PR #676 round 1, major)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("wd_stopped", HERE / "launchd-health-check.py")
+    wd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wd)
+    return wd.load_stopped_labels()
 
 
 def detect_dark_jobs(_ctx) -> list:

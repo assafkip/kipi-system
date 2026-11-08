@@ -387,19 +387,54 @@ _ih2 = WORK / "intent-home-2"; (_ih2 / ".config" / "kipi").mkdir(parents=True, e
     '{"jobs": [{"label": "com.kipi.never-installed", "intent": "disabled"}]}')
 _tpl = WORK / "tpl-4055"; _agt = WORK / "agents-4055"; _tpl.mkdir(); _agt.mkdir()
 (_tpl / "com.kipi.never-installed.plist").write_text("<plist/>")
+# PR #676 round 1, major: the CONFLICT case. A job paused in a ledger that the
+# manifest calls enabled stays stopped for the reporters (the union), and the dark
+# detector, run for real, files neither it nor the manifest-disabled job.
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.never-installed", "intent": "disabled"},'
+    ' {"label": "com.kipi.ledger-paused", "intent": "enabled"}]}')
+(_ih2 / ".config" / "kipi" / "launchd-paused.txt").write_text("com.kipi.ledger-paused\n")
+_saved_dark = (fh._launchd_labels, fh._is_loaded)
+fh._launchd_labels = lambda: ["com.kipi.never-installed", "com.kipi.ledger-paused", "com.kipi.truly-dark"]
+fh._is_loaded = lambda _l: False
 _os.environ["HOME"] = str(_ih2)
 try:
     _stopped = fh._stopped_labels()
     _ni = fh.never_installed_findings(template_dir=_tpl, launch_agents=_agt)
+    _dark = sorted(f["subject"] for f in fh.detect_dark_jobs({}))
     (_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text("{not json")
     _stopped_bad = fh._stopped_labels()
 finally:
     _os.environ["HOME"] = _home_saved
+    fh._launchd_labels, fh._is_loaded = _saved_dark
 check("a job declared disabled only in launchd-intent.json is stopped for the detectors",
       "com.kipi.never-installed" in _stopped, True)
-check("...so never-installed files nothing for it", _ni, [])
-check("an unreadable intent falls back to the ledger reader, not to 'everything stopped'",
-      "*" in _stopped_bad, False)
+check("a ledger-paused job the manifest calls enabled is still stopped for the reporters",
+      "com.kipi.ledger-paused" in _stopped, True)
+check("...so never-installed files nothing for the manifest-disabled one", _ni, [])
+check("detect_dark_jobs, run for real, files only the job no source stopped",
+      [s for s in _dark if "never-installed" in s or "ledger-paused" in s or "truly-dark" in s],
+      [s for s in _dark if "truly-dark" in s])
+check("...and it does file that one", any("truly-dark" in s for s in _dark), True)
+check("an unreadable intent leaves the ledgers, never 'everything stopped'",
+      ("*" in _stopped_bad, "com.kipi.ledger-paused" in _stopped_bad), (False, True))
+# Negative control for the conflict case: with the heal's reader (round 1's choice)
+# the ledger-paused job IS filed as dark, so the check above can go red.
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.ledger-paused", "intent": "enabled"}]}')
+_real_stopped2 = fh._stopped_labels
+fh._stopped_labels = fh._disabled_labels
+fh._launchd_labels = lambda: ["com.kipi.ledger-paused"]
+fh._is_loaded = lambda _l: False
+_os.environ["HOME"] = str(_ih2)
+try:
+    _dark_r1 = [f["subject"] for f in fh.detect_dark_jobs({})]
+finally:
+    _os.environ["HOME"] = _home_saved
+    fh._stopped_labels = _real_stopped2
+    fh._launchd_labels, fh._is_loaded = _saved_dark
+check("negative control: the manifest-resolved reader files the ledger-paused job as dark",
+      any("ledger-paused" in s for s in _dark_r1), True)
 # Negative control: with the ledger-only reader (the old one) the same job IS filed,
 # so the check above can go red.
 _os.environ["HOME"] = str(_ih2)
