@@ -96,9 +96,21 @@
 		     spending plan usage: 6 issues Sat 26 Sep, 8 Sun 27 Sep, all Opus,
 		     and about half the sana/* branches never land on main. 3 is the
 		     plan's number until the worker moves to cloud sessions. Install
-		     the live copy too (see the unload/load lines above). -->
+		     the live copy too (see the unload/load lines above).
+
+		     LIFTED 3 -> 96 (one per 15-minute tick, so no daily cap in
+		     effect), founder ruling 2026-11-08 (D28, ASK-4003), verbatim:
+		     "We need to get the work done so we need to consider taking the
+		     three cap off unless it's the tremendmental. Unless there's a
+		     really good reason to keep the cap, we should take it off so we
+		     can get this work done". No reason held up: the usage breaker
+		     and the D15 weekly guard now bound spend, a merge still needs
+		     validate, verify and kipi/reviewer-approved, and the review-round
+		     cap is enforced per issue. What still bounds the loop: live
+		     concurrency (KIPI_DISPATCH_MAX), the WIP ceiling of 5, and the
+		     tick. Lower it only on measured evidence from a day at 96. -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
-		<string>3</string>
+		<string>96</string>
 
 		<!-- REVIEWER ON SONNET, founder-approved 2026-09-28 (same audit).
 		     pr-review-agent.sh defaults to claude-opus-5 (its line 144); a
