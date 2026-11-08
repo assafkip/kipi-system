@@ -181,6 +181,22 @@ class Table(unittest.TestCase):
             for cls in ("guards-hooks", "dispatcher-worker", "concurrency-locks", "unknown"):
                 self.assertIn("opus", self.t["jobs"][job]["classes"][cls]["model"], f"{job}/{cls}")
 
+    def test_no_row_leaves_opus_until_the_bar_is_enforced_in_code(self):
+        # PR #664 round 2, minor: the decision rule's sample bar lived only in
+        # prose, so a one-key edit could route a class to Sonnet on 2 samples with
+        # CI green. Until ASK-4038 makes model_route compute a row from measured
+        # evidence, every row of every job is Opus, and this test is the bar.
+        for job, spec in self.t["jobs"].items():
+            rows = spec.get("classes", {"*": spec})
+            for cls, row in rows.items():
+                self.assertIn("opus", row["model"], f"{job}/{cls} left Opus with no evidence check in code")
+
+    def test_a_hook_wired_only_in_the_settings_template_is_a_guard(self):
+        # PR #664 round 2, minor: miyo-session-pull.py is wired only in
+        # settings-template.json, which is what instances install.
+        hooks = model_route.wired_hooks(QS.parents[1])
+        self.assertIn("q-system/.q-system/scripts/miyo-session-pull.py", hooks)
+
     def test_unreadable_table_floor_is_the_table_default(self):
         # the floor is the only literal outside the table; it must not drift from it
         self.assertEqual(model_route.FLOOR, self.t["default"])
