@@ -1,0 +1,11 @@
+{
+  "_comment": "Read by heartbeat.py check (.github/workflows/heartbeat.yml), ASK-3947. One row per consumer that calls `heartbeat.py emit`. List a job only once its producer emits: a listed job that never reports fires `missing` 2 periods after `since`, which is the point. test-heartbeat.py fails if a producer named here does not call heartbeat.",
+  "jobs": {
+    "linear-dor": {
+      "period_hours": 24,
+      "since": "2026-11-08",
+      "producer": "q-system/.q-system/scripts/linear-dor-drafter.py",
+      "launchd": "com.kipi.linear-dor"
+    }
+  }
+}

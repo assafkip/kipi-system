@@ -1,0 +1,54 @@
+name: Heartbeat
+
+# THE READER THAT DOES NOT RUN ON THE MAC (ASK-3947). Each consumer listed in
+# q-system/.q-system/heartbeat-jobs.json (today: linear-dor) publishes its latest
+# run to a repo variable, KIPI_HB_<JOB>, through `heartbeat.py emit`. This job
+# reads them on GitHub's runners and opens one `heartbeat-red` issue per
+# (job, kind): missing (no report for 2 periods) or
+# starved (done 0 while work waited, 2 runs in a row). A green run closes it.
+#
+# Why off the Mac: every earlier watcher ran on the same Mac, under the same
+# launchd, read by the same queue. The needs-triage promoter wrote 0 decisions on
+# 16 nights running and nothing outside that Mac could see it. A Mac that is off
+# or asleep still alarms here, because its rows stop changing.
+#
+# No secret, no model call: the built-in token files GitHub issues, and
+# fleet-health-daily.py mirrors open `heartbeat-red` issues into Linear (the
+# `gates-red` route). Public repo, so the minutes are free.
+#
+# The log is public. heartbeat.py prints only KIPI_HB_* rows (counts, times),
+# never any other variable from toJSON(vars).
+
+on:
+  schedule:
+    # Every 6 hours. A daily job alarms within 6 hours of passing 2 periods.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# One check at a time: two runs could both see no open issue and both open one.
+concurrency:
+  group: heartbeat
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read every heartbeat and file or close heartbeat-red issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KIPI_HB_VARS: ${{ toJSON(vars) }}
+        run: |
+          set -euo pipefail
+          gh label create heartbeat-red --color B60205 \
+            --description "A fleet consumer is missing or starved (heartbeat.yml)" --force
+          python3 q-system/.q-system/scripts/heartbeat.py check --file-issues
