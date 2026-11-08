@@ -198,7 +198,7 @@ if "excluded guard" not in err:
     bad.append("empty hooks: the excluded guards the tree lacks are not reported")
 rc, d, _ = run(tree("parity", full["hooks"]))
 if rc != 0 or d:
-    bad.append("parity: a tree that runs every guard got %d hooks; they would fire twice" % len(cmds(d)))
+    bad.append("parity: a tree that runs every guard wants no hooks and rc 0, got %d hooks (rc %d)" % (len(cmds(d)), rc))
 one = json.loads(json.dumps(full["hooks"]))
 for groups in one.values():
     for g in groups:
