@@ -78,10 +78,38 @@ class Classify(unittest.TestCase):
         # a client repo touching a hook is still a guard change first
         self.assertEqual(self.cls(["q-system/hooks/x.sh"], repo="client-path"), "guards-hooks")
 
+    def test_every_wired_hook_is_a_guard_change(self):
+        # PR #664 round 1, major: a name matcher missed 38 of the 50 hook scripts
+        # .claude/settings.json wires (*-lint.py, *-check.py, *-door.py). The
+        # reviewer's reproducer, against the repo's own config.
+        txt = (QS.parents[1] / ".claude" / "settings.json").read_text()
+        wired = sorted(set(re.findall(r"q-system/\.q-system/[A-Za-z0-9_./-]+\.(?:py|sh)", txt)))
+        self.assertGreater(len(wired), 20)
+        miss = [p for p in wired if self.cls([p]) != "guards-hooks"]
+        self.assertEqual(miss, [])
+
+    def test_a_newly_wired_hook_is_picked_up_from_the_config(self):
+        # negative self-test: the same file is single-code-file until a config runs it
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+                {"type": "command", "command": 'python3 "$CLAUDE_PROJECT_DIR/q-system/x/plain-name.py"'}]}]}}))
+            (root / "plugins" / "p" / "hooks").mkdir(parents=True)
+            (root / "plugins" / "p" / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+                {"type": "command", "command": 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/also-plain.py"'}]}]}}))
+            hooks = model_route.wired_hooks(root)
+            self.assertEqual(hooks, {"q-system/x/plain-name.py", "plugins/p/scripts/also-plain.py"})
+            self.assertEqual(model_route.classify(files=["q-system/x/plain-name.py"], hooks=hooks), "guards-hooks")
+            self.assertEqual(model_route.classify(files=["plugins/p/scripts/also-plain.py"], hooks=hooks), "guards-hooks")
+            self.assertEqual(model_route.classify(files=["q-system/x/plain-name.py"], hooks=set()), "single-code-file")
+
     def test_concurrency_from_the_ticket_text(self):
-        self.assertEqual(self.cls(["q-system/.q-system/scripts/open-loops.py"],
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/board_rows.py"],
                                   text="the ledger write races a second worker; take a flock"),
                          "concurrency-locks")
+        # name tokens are anchored: "claim" inside a longer word is not a lock
+        self.assertNotEqual(model_route.classify(files=["a/reclaimer.py"], hooks=set()), "concurrency-locks")
 
     def test_client_repo(self):
         # ASK-767, a client engagement's PR: a test-only change, still client work first
@@ -117,6 +145,16 @@ class Classify(unittest.TestCase):
         self.assertEqual(model_route.dor_files(dor), ["q-system/.q-system/scripts/open-loops.py",
                                                       "q-system/.q-system/tests/test_open_loops.py"])
         self.assertEqual(model_route.dor_files("no files line here"), [])
+
+    def test_bare_field_dor_never_reads_not_doing(self):
+        # PR #664 round 1, minor: the reviewer's shape. A bare **Files:** field with
+        # no bullet; the first parser read on into **Not doing:** and routed by a
+        # path the ticket is told not to touch.
+        dor = ("## Definition of Ready\n\n**Outcome:** stop the open-loops writer from racing\n\n"
+               "**Files:** `q-system/.q-system/scripts/open-loops.py`\n"
+               "**Not doing:** `q-system/hooks/destructive-op-deny.sh`\n"
+               "**Check:** `python3 q-system/.q-system/tests/test_open_loops.py`\n")
+        self.assertEqual(model_route.dor_files(dor), ["q-system/.q-system/scripts/open-loops.py"])
 
 
 class Table(unittest.TestCase):

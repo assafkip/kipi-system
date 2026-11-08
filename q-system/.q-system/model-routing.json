@@ -20,9 +20,11 @@
   {
    "name": "guards-hooks",
    "match": {
+    "wired_hooks": true,
     "path": "(^|/)(hooks|\\.githooks)/|(^|/)settings(\\.local)?\\.json$|destructive|break-glass|branch-protect",
-    "code_basename": "guard|gate|deny|tripwire|protect"
-   }
+    "code_basename": "(^|[-_.])(guard|gate|deny|tripwire|protect|lint|check|door|validator)s?([-_.]|$)"
+   },
+   "why": "Any script a hook config runs (.claude/settings.json, plugins/*/hooks/hooks.json), plus name tokens. PR #664 round 1: names alone missed 38 of 50 wired hooks."
   },
   {
    "name": "dispatcher-worker",
@@ -34,7 +36,7 @@
    "name": "concurrency-locks",
    "match": {
     "text": "\\b(flock|lockfile|lock file|races?|racing|concurren\\w*|atomic\\w*|single[- ]writer|mutex|deadlock)\\b",
-    "code_basename": "lock|claim|mutex"
+    "code_basename": "(^|[-_.])(lock|claim|mutex)s?([-_.]|$)"
    }
   },
   {
@@ -185,5 +187,6 @@
  "method": "History only, no model runs. Review rounds: ~/.config/kipi/pr-reviews/*.md (FINDINGS block severities, VERDICT), 1338 round files, 613 with a known model (the review-tree transcript that started 0-50 min before the file, or the verdict.json reviewed_by for the last round). Authoring model: the model that ran most of a ticket's `git commit` calls in ~/.claude/projects transcripts, or claude-opus-5 for tickets linear-worker.log started (ANTHROPIC_MODEL under dispatch since 2026-08-01). Classes from each PR's changed files via model_route.classify. Delta rounds excluded from review rates; authoring uses the first full round. Script posted on ASK-4013.",
  "interactive": "Interactive Sana subagents take their model from ~/.claude/agents/sana.md frontmatter `model: opus` (the harness reads it; it resolves to claude-opus-5-5). Sonnet 5.5 authored 14 PRs interactively, approve 57% vs Opus 5.5 63 PRs at 67%, merged 86% both: not shown to hold, so no sana-light agent type. Frontmatter stays `opus`.",
  "not_routed_here": "Jobs with no reader of this table yet, and no Sonnet history either: DoR drafting, fleet triage and lesson distilling (lean_call.run passes no --model, so they ride the CLI default), RCA writing (interactive), lessons-daily.sh (exports claude-opus-5).",
- "client_path_markers_why": "A repo is a client engagement when its checkout sits under one of these roots. Path, not slug: this repo is public and never names a client."
+ "client_path_markers_why": "A repo is a client engagement when its checkout sits under one of these roots. Path, not slug: this repo is public and never names a client.",
+ "decision_rule_status": "Interim. With fewer than 10 Sonnet samples per class this table reads 'unknown', and unknown routes to Opus. ASK-4038 measures Sonnet for real (reviewer recall on 12 PRs, worker replay on 3 low-risk classes) and makes model_route read that evidence, so a row moves from data, not from an edit (PR #664 round 1, finding 2; spillover sp-24fc6463)."
 }

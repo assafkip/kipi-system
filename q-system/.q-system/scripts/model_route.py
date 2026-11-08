@@ -47,28 +47,77 @@ def _say(msg: str) -> None:
     print(f"model_route: {msg}", file=sys.stderr)
 
 
+def _load_script(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, HERE / filename)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def dor_files(description: str) -> list:
-    """Backticked paths on the DoR's Files line, in order. [] when there is none."""
-    m = re.search(r"\*\*Files:\*\*(.*?)(?:\n\s*[*-]\s*\*\*|\n\n|\Z)", description or "", re.S)
-    if not m:
-        return []
-    out = []
-    for p in re.findall(r"`([^`\s]+)`", m.group(1)):
-        if "/" in p or "." in p:
-            if p not in out:
-                out.append(p)
+    """Backticked paths on the DoR's Files field, in order. [] when there is none.
+
+    linear-route.py's parser, not a second one (PR #664 round 1, minor): the first
+    cut here needed a bullet before the next field, so on a bare-field DoR it read
+    on into **Not doing:** and routed a ticket by the paths it must not touch."""
+    return _load_script("linear_route", "linear-route.py").dor_file_paths(description or "")
+
+
+_PROJECT_REF = re.compile(r"\$\{?CLAUDE_PROJECT_DIR\}?\"?/([\w./-]+\.(?:py|sh))")
+_PLUGIN_REF = re.compile(r"\$\{?CLAUDE_PLUGIN_ROOT\}?\"?/([\w./-]+\.(?:py|sh))")
+
+
+def _commands(node):
+    if isinstance(node, dict):
+        if isinstance(node.get("command"), str):
+            yield node["command"]
+        for v in node.values():
+            yield from _commands(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _commands(v)
+
+
+def wired_hooks(root) -> set:
+    """Repo-relative paths of every script a hook config in `root` runs.
+
+    From the configs, not from names (PR #664 round 1, major): this repo names
+    its enforcement hooks *-lint.py, *-check.py, *-door.py, and a name matcher
+    missed 38 of the 50 that .claude/settings.json wires."""
+    root = Path(root)
+    out = set()
+    cfgs = [(root / ".claude" / "settings.json", None)]
+    cfgs += [(p, p.parent.parent) for p in sorted(root.glob("plugins/*/hooks/hooks.json"))]
+    for cfg, plugin in cfgs:
+        try:
+            data = json.loads(cfg.read_text())
+        except (OSError, ValueError):
+            continue
+        for cmd in _commands(data.get("hooks", data)):
+            out.update(_PROJECT_REF.findall(cmd))
+            if plugin is not None:
+                out.update(str((plugin / m).relative_to(root)) for m in _PLUGIN_REF.findall(cmd))
     return out
 
 
-def classify(repo: str = "", files=(), text: str = "", table: dict | None = None) -> str:
-    """The first class, in the table's risk order, whose rule matches."""
+def classify(repo: str = "", files=(), text: str = "", table: dict | None = None,
+             hooks: set | None = None) -> str:
+    """The first class, in the table's risk order, whose rule matches.
+
+    `hooks` is the set of scripts the repo's hook configs run (wired_hooks); a
+    change to any of them is a guard change whatever the file is called."""
     t = table or load()
     files = [f for f in files if f]
     if not files:
         return "unknown"
+    if hooks is None:
+        hooks = wired_hooks(HERE.parents[2])
     code = [f for f in files if CODE_EXT.search(f) and not TEST_PATH.search(f)]
     for c in t["classes"]:
         rule = c["match"]
+        if rule.get("wired_hooks") and any(f in hooks for f in files):
+            return c["name"]
         if "path" in rule and any(re.search(rule["path"], f) for f in files):
             return c["name"]
         if "code_basename" in rule and any(re.search(rule["code_basename"], Path(f).name)
@@ -163,7 +212,9 @@ def main(argv=None) -> int:
             files = dor_files(i.get("description") or "")
     except Exception as exc:  # noqa: BLE001 -- any read failure is the Opus default, said aloud
         _say(f"could not read the {'diff' if a.files_from else 'issue'} ({type(exc).__name__}: {exc}); class unknown")
-    cls = classify(repo, files, text, t)
+    # the hooks the TARGET repo wires, when the caller names its checkout
+    hooks = wired_hooks(a.tree) if a.tree and Path(a.tree).is_dir() else None
+    cls = classify(repo, files, text, t, hooks)
     model = pick(a.job, cls)
     _say(f"job={a.job} class={cls} files={len(files)} -> {model}")
     print(model)

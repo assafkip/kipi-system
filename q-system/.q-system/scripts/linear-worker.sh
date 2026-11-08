@@ -2539,6 +2539,10 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE MODEL THE RUN WOULD GET (ASK-4013), on its own line for the same reason
+    # as the priority line below. The same read the real run makes, so a dry run
+    # shows the routing table's answer before any session is spent on it.
+    say "[dry] model $ISSUE $(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
     # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
