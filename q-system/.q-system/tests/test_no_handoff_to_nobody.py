@@ -5,8 +5,12 @@ Founder, 2026-11-08, verbatim: "You keep saying someone needs to do a thing. Who
 this someone? This feels like hedging and getting things stuck." And: "Everything
 must be enforced with code."
 
-WHAT IS SCANNED. Every string a fleet script can send: Linear comments, ticket
+WHAT IS SCANNED. The strings fleet scripts under SCAN_PREFIXES (q-system/.q-system/,
+q-system/hooks/, scripts/) and the root `kipi` CLI can send: Linear comments, ticket
 titles and bodies, Slack and page text, cap and refusal lines, worker prompts.
+plugins/ is NOT scanned. Measured 2026-11-08 (PR #658 review): 142 plugin scripts,
+9 hits, one a live blocking hook ("run the deep read manually"). Widening the
+scope is its own change, captured on the spillover ledger for Sana.
   * Python: every string literal, by ast. Docstrings are skipped (they are the
     code's own notes) and so are pattern arguments to re.compile and its siblings
     (a detector that matches the words is not a message that says them).
@@ -17,15 +21,25 @@ WHAT FAILS. needs a human (or "a human" plus an action verb), someone, somebody,
 action, parked for later, operator. Each says the next step belongs to nobody in
 particular. The fix is a message that names the script or job that takes it.
 
-THE EXCEPTIONS MAY ONLY SHRINK. handoff-wording-exceptions.json lists the five
-ASK-3824 cap sites, which that ticket rewrites with the code behind them. Every
-exception must still match a hit (a stale one fails), the list is capped by
-EXCEPTION_CEILING here, and when git can read origin/main the list must be a
-subset of main's.
+A NEW EXCEPTION IS A REVIEWED DECISION, NEVER A MARKER. handoff-wording-exceptions.json
+lists the five ASK-3824 cap sites, which that ticket rewrites with the code behind
+them. Every exception must still match a hit (a stale one fails), and the count is
+capped by EXCEPTION_CEILING here. There is no bypass marker, by design (coordinator
+ruling, 2026-11-08): a legitimate use of a banned word, such as help text that means
+a comparison operator, gets a row in the PR that needs it, with a `why`, and raises
+the ceiling in the same diff, so the reviewer reads both. A row that is not on
+origin/main and carries no `why` fails. PR #658 review, major: the earlier rule
+refused every new row, so no author could turn the required check green.
+
+AN EXCEPTION COVERS ITS PHRASE, NOT ITS LINE. A hit is excused only when the banned
+word sits inside the row's `contains` text. Wording appended to an excused line
+still fails (PR #658 review, minor: four phrases appended to a cap page passed).
 """
 from __future__ import annotations
 
 import ast
+
+import pytest
 import json
 import pathlib
 import re
@@ -105,24 +119,53 @@ def python_hits(rel: str, text: str) -> list:
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return [(rel, 0, "unparseable", "the scanner cannot read this file")]
+        return [(rel, 0, "unparseable", "the scanner cannot read this file", 0)]
     skip = _docstring_ids(tree) | _pattern_ids(tree)
     hits = []
     for n in ast.walk(tree):
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in skip:
-            for m in BANNED.finditer(n.value):
-                hits.append((rel, n.lineno, m.group(0), " ".join(n.value.split())))
+            # Matched on the normalized text so the offset indexes the text reported.
+            norm = " ".join(n.value.split())
+            for m in BANNED.finditer(norm):
+                hits.append((rel, n.lineno, m.group(0), norm, m.start()))
     return hits
+
+
+def strip_shell_comment(line: str) -> str:
+    """The line up to an unquoted `#` that starts a word. `${#v}` and `$#` stay.
+
+    PR #658 review, minor: only full-line comments were skipped, so
+    `git pull --ff-only  # someone else may have pushed` failed the gate.
+    """
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch == "\\":
+            i += 2
+            continue
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+        i += 1
+    return line
 
 
 def shell_hits(rel: str, text: str) -> list:
     hits = []
     for no, line in enumerate(text.splitlines(), 1):
-        s = line.strip()
-        if not s or s.startswith("#"):
+        s = strip_shell_comment(line).strip()
+        if not s:
             continue
         for m in BANNED.finditer(s):
-            hits.append((rel, no, m.group(0), s))
+            hits.append((rel, no, m.group(0), s, m.start()))
     return hits
 
 
@@ -135,7 +178,16 @@ def scan(repo: pathlib.Path, files=None) -> list:
 
 
 def matches(exc: dict, hit) -> bool:
-    return exc["path"] == hit[0] and exc["contains"] in hit[3]
+    """The hit's word lies inside an occurrence of the row's phrase on that line."""
+    if exc["path"] != hit[0]:
+        return False
+    text, at, want = hit[3], hit[4], exc["contains"]
+    start = text.find(want)
+    while start >= 0:
+        if start <= at < start + len(want):
+            return True
+        start = text.find(want, start + 1)
+    return False
 
 
 def check(hits: list, exceptions: list, ceiling: int, origin_keys=None) -> list:
@@ -153,8 +205,9 @@ def check(hits: list, exceptions: list, ceiling: int, origin_keys=None) -> list:
         out.append(f"{len(exceptions)} exceptions, ceiling {ceiling}: the list may only shrink")
     if origin_keys is not None:
         for e in exceptions:
-            if (e["path"], e["contains"]) not in origin_keys:
-                out.append(f"exception {e['path']} / {e['contains']!r} is new; the list may only shrink")
+            if (e["path"], e["contains"]) not in origin_keys and not (e.get("why") or "").strip():
+                out.append(f"exception {e['path']} / {e['contains']!r} is new and gives no `why`; "
+                           f"a new row carries the reason the reviewer reads")
     return out
 
 
@@ -245,8 +298,35 @@ def test_growing_the_exception_list_goes_red(tmp_path):
     root = _tree(tmp_path, {"s/b.sh": 'echo "needs a human"\n'})
     exc = [{"path": "s/b.sh", "contains": "needs a human", "ticket": "ASK-1"}]
     assert any("ceiling" in p for p in check(scan(root, ["s/b.sh"]), exc, 0))
-    assert any("is new" in p for p in check(scan(root, ["s/b.sh"]), exc, 1, origin_keys=set()))
+    assert any("gives no `why`" in p for p in check(scan(root, ["s/b.sh"]), exc, 1, origin_keys=set()))
     assert check(scan(root, ["s/b.sh"]), exc, 1, origin_keys={("s/b.sh", "needs a human")}) == []
+
+
+def test_a_new_row_with_a_why_and_a_raised_ceiling_is_green(tmp_path):
+    """The reviewer's repro B: the author adds the row and raises the ceiling."""
+    root = _tree(tmp_path, {"s/n.sh": 'echo "usage: pick a comparison operator (eq, gt, lt)"\n'})
+    exc = [{"path": "s/n.sh", "contains": "pick a comparison operator", "ticket": "ASK-1",
+            "why": "help text: a comparison operator, not a person"}]
+    assert check(scan(root, ["s/n.sh"]), exc, 1, origin_keys=set()) == []
+    assert any("ceiling" in p for p in check(scan(root, ["s/n.sh"]), exc, 0, origin_keys=set()))
+
+
+def test_an_exception_does_not_license_words_appended_to_its_line(tmp_path):
+    root = _tree(tmp_path, {"s/b.sh": 'echo "stuck - needs a human; ask someone, parked for later"\n'})
+    exc = [{"path": "s/b.sh", "contains": "stuck - needs a human", "ticket": "ASK-1"}]
+    problems = check(scan(root, ["s/b.sh"]), exc, 1)
+    assert len(problems) == 2
+    assert any("'someone'" in p for p in problems) and any("'parked for later'" in p for p in problems)
+
+
+@pytest.mark.parametrize("line,want", [
+    ("git pull --ff-only  # someone else may have pushed here", []),
+    ('echo "ask someone"  # trailing note', ["someone"]),
+    ("echo 'a # inside quotes, someone'", ["someone"]),
+    ('n=${#arr[@]}; echo "$# args for someone"', ["someone"]),
+])
+def test_a_trailing_shell_comment_is_a_comment(tmp_path, line, want):
+    assert [h[2] for h in shell_hits("s/c.sh", line + "\n")] == want
 
 
 def test_test_files_are_never_scanned():
