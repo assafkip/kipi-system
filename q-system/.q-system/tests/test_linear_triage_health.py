@@ -237,6 +237,22 @@ def test_the_failure_kinds_survive_the_subprocess(monkeypatch):
     assert out["failure_kinds"] == ["no-such-label"]
 
 
+def test_the_off_board_refusals_survive_the_subprocess(monkeypatch):
+    """ASK-4089: the router names the ticket and the project; the log must too."""
+    refused = [{"id": "ASK-40", "project": "cole-GTM"}]
+    payload = json.dumps({"registry_ok": True, "pending": 4, "unroutable": 1,
+                          "written": 0, "write_failures": 0,
+                          "not_on_board": 1, "not_on_board_ids": refused})
+
+    class Res:
+        stdout = payload
+
+    monkeypatch.setattr(health.subprocess, "run", lambda *a, **k: Res())
+    out = health.route_pending()
+    assert out["not_on_board"] == refused
+    assert out["write_failures"] == 0
+
+
 def test_dormancy_default_can_actually_fire_on_this_board():
     """A threshold the population can never reach reads as protection and is not.
 

@@ -906,7 +906,11 @@ def route_pending(apply_writes: bool = False) -> dict:
                 # guess it shipped was "refused by Linear" for failures that
                 # never reached Linear (PR #461 review, minor).
                 "failure_kinds": out.get("write_failure_kinds", []),
-                "mark_unknown": out.get("mark_unknown", 0)}
+                "mark_unknown": out.get("mark_unknown", 0),
+                # ASK-4089. The ticket AND the name ride up, so the nightly log
+                # says which registry row has no board project, not only that one
+                # route was refused. The router's stderr is captured and dropped.
+                "not_on_board": out.get("not_on_board_ids", [])}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         # Never raises: a meter that crashes on a sibling meter reports nothing at
         # all, which is strictly worse than reporting one number short.
@@ -1122,6 +1126,7 @@ def _run(args, holding_lock: bool) -> int:
     m["route_write_failures"] = sweep.get("write_failures", 0)
     m["route_failure_kinds"] = sweep.get("failure_kinds", [])
     m["route_mark_unknown"] = sweep.get("mark_unknown", 0)
+    m["route_not_on_board"] = sweep.get("not_on_board", [])
 
     say = human_writer(args.json)
 
@@ -1145,6 +1150,9 @@ def _run(args, holding_lock: bool) -> int:
             print(f"  DoR tickets nothing can pick up: {m['route_pending']} "
                   f"({m['route_unroutable']} unroutable), {m['route_written']} "
                   f"routed this run")
+            for off in m["route_not_on_board"]:
+                print(f"    {off.get('id')}: route refused, {off.get('project')!r} is not "
+                      "a project on the board (no write spent; stage-2 list)")
         else:
             print("  DoR tickets nothing can pick up: NOT MEASURED "
                   "(router did not run or the registry was unreadable)")
