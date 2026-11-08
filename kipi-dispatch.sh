@@ -804,7 +804,7 @@ case "$LAST_BEAT" in ''|*[!0-9]*) LAST_BEAT="" ;; esac
 
 if [ -z "$LAST_BEAT" ]; then
   say "heartbeat: first beat on record"
-  page "kipi heartbeat: STARTED. The Linear loop is live and will check for ready issues every 15 min (max ${KIPI_DISPATCH_DAILY_MAX:-4} issues/day). Nothing to do."
+  page "kipi heartbeat: STARTED. The Linear loop is live and will check for ready issues every 15 min (max ${KIPI_DISPATCH_DAILY_MAX:-96} issues/day). Nothing to do."
 else
   GAP=$(( (NOW_EPOCH - LAST_BEAT) / 60 ))
   if [ "$GAP" -ge "$GAP_MINUTES" ]; then
