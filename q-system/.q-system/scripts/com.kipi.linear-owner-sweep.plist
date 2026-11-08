@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly owner sweep: every open fleet ticket gets an owner label (ASK-4010).
+     TEMPLATE, not a loadable plist: install-plist.sh renders __KIPI_REPO__ and __HOME__.
+     Install: install-plist.sh with its pinned flag (from the primary
+     checkout), or the single label from anywhere.
+
+     WHY A JOB AND NOT A RULE. Founder, 2026-11-08: "Everything must be enforced with
+     code." 88 of 2374 open tickets had no owner:* label that day, and ready() refuses
+     every one of them. A rule that says "label it" is read by nobody at 02:00.
+
+     PINNED (job-checkouts.json): it runs from its own worktree at origin/main, so a
+     fast-forward of the shared checkout never lands mid-run.
+
+     02:00, ahead of com.kipi.linear-alert-triage (02:30) and com.kipi.linear-dor
+     (03:00), so the tickets it labels are in the queue those jobs and the dispatcher
+     read the same night. Its run evidence is
+     ~/.local/state/kipi/linear-owner-sweep/last-run.json. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-owner-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/linear-owner-sweep.py --apply</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/linear-owner-sweep.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/linear-owner-sweep.err.log</string>
+</dict>
+</plist>
