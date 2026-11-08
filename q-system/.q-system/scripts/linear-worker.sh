@@ -1223,7 +1223,7 @@ if os.environ.get("WIP_OWN_RC", "") != "":
 
 print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
-               "state": i["state"]["type"],
+               "state": i["state"]["type"], "priority": i.get("priority"),
                "why": pick_why(i)}
               for i in pool],
     "started_held": started_held,
@@ -2513,6 +2513,15 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
+    # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
+    # shape, and a second reader of the pick rules there would drift from ready().
+    # Linear priority: 1 Urgent, 2 High, 3 Medium, 4 Low, 0 or none No priority.
+    if [ "${KIPI_PICK_PRIORITY:-0}" = "1" ]; then
+      say "[dry] pick priority $ISSUE $(printf '%s' "$PICKED" | python3 -c 'import json,sys
+p = [i.get("priority") for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]]
+print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
+    fi
     DONE=$((DONE+1)); continue
   fi
 

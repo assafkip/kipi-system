@@ -1006,6 +1006,81 @@ FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 
 # line that only appears when something happens cannot say it.
 say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
 
+# --- URGENT SLOT (ASK-3996, D25) ----------------------------------------------
+# ONE DISPATCH A DAY GOES TO AN URGENT TICKET, AHEAD OF THE ROTATION. Measured
+# 2026-11-08: the rotation walks home plus 7 opted-in repos, one per tick, and the
+# daily budget is 3, so a repo waits up to 8 dispatches, about 2.7 days, whatever
+# its tickets say. That day the Urgent ASK-3824 waited while all 3 dispatches went
+# to ktlyst, consulting and Alice, 2 of them to expired parks. Priority already
+# orders the pool inside a repo (ASK-248); across repos it counted for nothing.
+#
+# WHY ONE SLOT AND NOT STRICT PRIORITY. kipi-system alone held 3 Urgent and 62
+# High tickets, so priority-first across repos would starve the client repos for
+# weeks, against RULE-2026-10-30-A. One slot bounds an Urgent wait at one budget
+# day and leaves the rotation at least 2 of the 3 daily dispatches.
+#
+# WHY IT CANNOT JAM (the D23 scar: one refusal repeated every tick, all day). The
+# slot is decided ONCE per budget day, on a tick with no dispatch yet, and the
+# decision is written to its file BEFORE any repo is entered. A scan that finds
+# nothing, a repo that turns out to have nothing ready, a redrive that takes the
+# tick: each costs at most this one tick, and every later tick reads the file and
+# runs the plain rotation. A file that cannot be written means no slot, never a
+# slot that repeats.
+#
+# THE SCAN ASKS THE WORKER, IT DOES NOT COPY ITS RULES. Each cleared repo, in
+# rotation order, gets the same dry pick this script already runs, with
+# KIPI_PICK_PRIORITY=1 so the worker also names the priority of what it would
+# work. The first repo whose pick is Urgent takes the slot. A second copy of
+# ready() here would drift from the worker in silence.
+#
+# THE CURSOR IS NOT MOVED. The slot is extra to the rotation, so the repo whose
+# turn was next keeps it for the next tick (SLOT_TAKEN, at cursor_set below).
+URGENT_SLOT_FILE="$HOME/.config/kipi/dispatch-urgent-slot$COUNT_SUFFIX-$BUDGET_DAY"
+URGENT_SLOT_WORK="${KIPI_URGENT_SLOT_WORK:-bash ./kipi work}"
+SLOT_NAME=""; SLOT_PATH=""; SLOT_ISSUE=""
+urgent_slot_scan() {  # fills SLOT_NAME, SLOT_PATH, SLOT_ISSUE, or leaves them empty
+  local name path args out issue pri live
+  live="$(live_repos 2>/dev/null)"
+  while IFS=$'\t' read -r name path; do
+    [ -n "$name" ] || continue
+    # The same refusals the entry path below applies, so the slot never names a
+    # repo that path would then refuse to enter.
+    case "$path" in *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*) continue ;; esac
+    if [ -n "$live" ] && printf '%s\n' "$live" | grep -qxF -- "$path"; then continue; fi
+    args=""
+    [ "$path" = "$REPO" ] || args="--repo $path"
+    # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
+    out="$(if [ -n "$args" ]; then export KIPI_TARGET_REPO="$path"; fi
+           KIPI_PICK_PRIORITY=1 $URGENT_SLOT_WORK $args 2>&1)"
+    issue="$(printf '%s' "$out" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
+    [ -n "$issue" ] || continue
+    pri="$(printf '%s\n' "$out" | grep -E "\[dry\] pick priority $issue [0-9]+\$" | head -1 | awk '{print $NF}')"
+    if [ "$pri" = "1" ]; then
+      SLOT_NAME="$name"; SLOT_PATH="$path"; SLOT_ISSUE="$issue"
+      return 0
+    fi
+  done <<SLOTEOF
+$PICKS
+SLOTEOF
+  return 0
+}
+if [ "$DISPATCHED_TODAY" = "0" ] && [ ! -e "$URGENT_SLOT_FILE" ] && [ -n "$PICKS" ]; then
+  urgent_slot_scan
+  SLOT_STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ -n "$SLOT_ISSUE" ]; then
+    if printf 'taken %s %s %s\n' "$SLOT_ISSUE" "$SLOT_NAME" "$SLOT_STAMP" > "$URGENT_SLOT_FILE" 2>/dev/null; then
+      say "urgent slot: $SLOT_ISSUE in $SLOT_NAME goes first today, ahead of the rotation (ASK-3996); the rotation cursor stays where it is"
+    else
+      say "urgent slot: could not record the slot in $URGENT_SLOT_FILE, so it is not taken; the rotation runs as usual"
+      SLOT_NAME=""; SLOT_PATH=""; SLOT_ISSUE=""
+    fi
+  else
+    printf 'none %s\n' "$SLOT_STAMP" > "$URGENT_SLOT_FILE" 2>/dev/null
+    say "urgent slot: no cleared repo would pick an Urgent ticket first today; the rotation runs as usual"
+  fi
+fi
+# --- END URGENT SLOT ---
+
 TARGET_NAME=""
 TARGET_PATH=""
 # THE PER-REPO RULE IS ENFORCED HERE, WHERE A REPO IS CHOSEN (sp-e45251f7).
@@ -1072,6 +1147,13 @@ fi
 # missing behaviour as a failure of the code rather than of the cut. That is the
 # fourth incomplete-extract in this file's history; delimit explicitly.
 
+# THE URGENT SLOT TAKES THIS TICK (ASK-3996). Applied after the rotation chose,
+# so the selection loop above is untouched, and SLOT_TAKEN keeps cursor_set off.
+SLOT_TAKEN=0
+if [ -n "$SLOT_PATH" ]; then
+  TARGET_NAME="$SLOT_NAME"; TARGET_PATH="$SLOT_PATH"; SLOT_TAKEN=1
+fi
+
 if [ -z "$TARGET_NAME" ]; then
   say "no dispatchable repo this cycle"
   exit 0
@@ -1136,7 +1218,8 @@ fi
 # Consume the turn HERE, not after a successful dispatch. A repo that took its turn
 # and had nothing ready must still hand the next turn on, or an idle home repo
 # pins the rotation and the fleet starves exactly as it does today.
-cursor_set "$TARGET_NAME"
+# The urgent slot is extra to the rotation, so it hands no turn on (ASK-3996).
+[ "$SLOT_TAKEN" = "1" ] || cursor_set "$TARGET_NAME"
 
 WORK_OUT="$(bash ./kipi work $WORK_ARGS 2>&1)"
 WORK_RC=$?
