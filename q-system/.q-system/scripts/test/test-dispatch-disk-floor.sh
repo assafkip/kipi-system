@@ -14,19 +14,27 @@
 #   3. a reaper that frees space lets the same tick dispatch, and the page clears;
 #   4. over the floor, dispatch does not run the reaper and dispatches;
 #   5. under the floor, the worker cuts no tree, starts no session, and says so;
-#   6. over the floor, the same worker run cuts the tree and starts the session.
+#   6. over the floor, the same worker run cuts the tree and starts the session;
+#   5c-5e. the worker's halt is an environmental halt: exit 9 and the env_halt
+#      flag, so converge.sh exits 9, charges no attempt and pages nothing
+#      (PR #656 review, finding 1: a bare break read as "no PR" and charged);
+#   7. the reviewer cuts no NEW review tree under the floor, still re-detaches
+#      an existing one, and cuts a new one over the floor.
 #
 # The floor is set through worktree-reaper.json (refuse_worktree_below_gb), the
 # same file the hook and the reaper read, so nothing here depends on how full the
 # disk of the machine running the test is.
 #
-# REF HATCH: KIPI_DISPATCH_UNDER_TEST and KIPI_WORKER_UNDER_TEST point at other
-# copies, so the pre-fix scripts can be watched to FAIL.
+# REF HATCH: KIPI_DISPATCH_UNDER_TEST, KIPI_WORKER_UNDER_TEST and
+# KIPI_REVIEWER_UNDER_TEST point at other copies, so the pre-fix scripts can be
+# watched to FAIL. The worker copy runs from beside the real worker, so it keeps
+# the sibling scripts it loads (PR #656 review, finding 3).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 SCRIPTS="$ROOT/q-system/.q-system/scripts"
 DISPATCH="${KIPI_DISPATCH_UNDER_TEST:-$ROOT/kipi-dispatch.sh}"
 WORKER="${KIPI_WORKER_UNDER_TEST:-$SCRIPTS/linear-worker.sh}"
+REVIEWER="${KIPI_REVIEWER_UNDER_TEST:-$SCRIPTS/pr-review-agent.sh}"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; [ -n "${2:-}" ] && printf '       %s\n' "$2"; }
@@ -38,7 +46,8 @@ command -v git >/dev/null || { echo "FATAL: git not on PATH"; exit 1; }
 unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID KIPI_WORKTREE_REAPER_CONFIG 2>/dev/null || true
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+UT_WORKER=""
+trap 'rm -rf "$WORK"; [ -n "$UT_WORKER" ] && rm -f "$UT_WORKER"' EXIT
 G() { git -c user.email=t@t.t -c user.name=t "$@"; }
 
 floor_config() {  # floor_config <path> <gb>
@@ -189,6 +198,17 @@ fi
 
 # ============================== worker ======================================
 echo "== disk floor, worker (under test: $WORKER)"
+# The worker finds its sibling scripts through SCRIPT_DIR and the skeleton's
+# guard settings through SCRIPT_DIR/../../.., so a copy anywhere else dies on a
+# missing function or guard set, not on the floor (PR #656 review, finding 3).
+# The copy under test sits beside the real worker, under a name the EXIT trap
+# removes.
+if [ -n "${KIPI_WORKER_UNDER_TEST:-}" ]; then
+  UT_WORKER="$SCRIPTS/.worker-under-test-$$.sh"
+  cp "$KIPI_WORKER_UNDER_TEST" "$UT_WORKER"
+  WORKER="$UT_WORKER"
+fi
+WSCRIPTS="$(dirname "$WORKER")"
 git init -q --bare "$WORK/w-origin" && git -C "$WORK/w-origin" symbolic-ref HEAD refs/heads/main
 git init -q "$WORK/skel"
 G -C "$WORK/skel" commit -q --allow-empty -m init
@@ -229,6 +249,10 @@ run_worker() {  # run_worker <label> <floor-gb> <issue>
        KIPI_PR_REVIEWER="$WSTUB/reviewer-noop" KIPI_NOTIFY="/usr/bin/true" \
        KIPI_WORKTREE_REAPER_CONFIG="$WORK/wfloor-$1.json" \
        bash "$WORKER" --apply --issue "$3" --limit 1 ) >"$WORK/$1.out" 2>&1
+  echo "$?" > "$WORK/$1.rc"
+}
+flag() {  # flag <state-label> <issue> <field>
+  "$REAL_PY" "$WSCRIPTS/attempts-ledger.py" "$WORK/state-$1/linear-worker-attempts.json" get "$2" "$3" "" 2>/dev/null
 }
 worked() { { grep -c "$1" "$WORK/worked.txt" 2>/dev/null || echo 0; } | head -1; }
 
@@ -244,6 +268,37 @@ grep -q "INFRA: disk-floor: .* -> UNDER; no worktree for ASK-AAA" "$WORK/under.o
   && ok "case 5b: the worker says why, and that the issue is not charged" \
   || bad "case 5b: the worker says why" "$(tail -5 "$WORK/under.out")"
 
+[ "$(cat "$WORK/under.rc")" = "9" ] \
+  && ok "case 5c: the halted run exits 9, the worker's infra code, not 0" \
+  || bad "case 5c: the halted run exits 9" "rc=$(cat "$WORK/under.rc")"
+[ "$(flag under ASK-AAA env_halt)" = "True" ] \
+  && ok "case 5d: the issue carries the env_halt flag converge.sh reads" \
+  || bad "case 5d: env_halt is set" "env_halt=[$(flag under ASK-AAA env_halt)]"
+
+# --- 5e: converge over a held worker charges nothing ---------------------------
+floor_config "$WORK/wfloor-conv.json" "$UNDER"
+mkdir -p "$WORK/state-conv"
+: > "$WORK/conv-pages.txt"
+cat > "$WORK/conv-notify" <<EOF
+#!/usr/bin/env bash
+printf 'PAGE %s\n' "\$1" >> "$WORK/conv-pages.txt"
+EOF
+chmod +x "$WORK/conv-notify"
+( cd "$WORK/skel" \
+  && PATH="$WSTUB:$PATH" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-conv" \
+     KIPI_PR_REVIEWER="$WSTUB/reviewer-noop" KIPI_NOTIFY="$WORK/conv-notify" \
+     KIPI_WORKTREE_REAPER_CONFIG="$WORK/wfloor-conv.json" \
+     KIPI_CONVERGE_WORKER="bash $WORKER" \
+     bash "$WSCRIPTS/converge.sh" --issue ASK-CCC --max-rounds 1 ) >"$WORK/conv.out" 2>&1
+CONV_RC=$?
+CONV_COUNT="$(flag conv ASK-CCC count)"
+if [ "$CONV_RC" = "9" ] && { [ -z "$CONV_COUNT" ] || [ "$CONV_COUNT" = "0" ] || [ "$CONV_COUNT" = "None" ]; } \
+   && ! grep -q "could not open" "$WORK/conv-pages.txt"; then
+  ok "case 5e: converge over a floor-held worker exits 9, charges no attempt, pages no 'could not open a PR'"
+else
+  bad "case 5e: converge charges nothing for a floor hold" "rc=$CONV_RC count=[$CONV_COUNT] pages: $(tr '\n' '|' < "$WORK/conv-pages.txt" | cut -c1-200) out: $(grep -E 'STOP|NOT ATTEMPTED|INFRA' "$WORK/conv.out" | head -2 | tr '\n' '|')"
+fi
+
 # --- 6: over the floor --------------------------------------------------------
 # Its own issue: a pre-fix worker in case 5 leaves sana/ask-aaa checked out in
 # case 5's tree, and git refuses that branch a second tree.
@@ -254,6 +309,39 @@ if [ -d "$WORK/state-over/worktrees/ask-bbb" ] && [ "$(worked ask-bbb)" -ge 1 ];
 else
   bad "case 6: over the floor, the worker works as before" "$(grep -iE 'INFRA|disk|skip' "$WORK/over.out" | head -3)"
 fi
+
+# ============================== reviewer ====================================
+echo "== disk floor, reviewer tree (under test: $REVIEWER)"
+RREPO="$WORK/rrepo"; mkdir -p "$RREPO"; git init -q "$RREPO"
+echo r1 > "$RREPO/f.txt"; G -C "$RREPO" add -A; G -C "$RREPO" commit -q -m r1
+RSHA="$(git -C "$RREPO" rev-parse HEAD)"
+RT="$WORK/review-tree"
+# The real function, lifted out by name as test-review-worktree-ref.sh does.
+review_call() {  # review_call <floor-gb> -> prints what review_worktree printed
+  floor_config "$WORK/rfloor.json" "$1"
+  ( PR=77; REVIEW_REPO="$RREPO"; REVIEW_SLUG="t/t"
+    DISK_FLOOR_PY="$SCRIPTS/worktree-disk-floor.py"
+    export KIPI_WORKTREE_REAPER_CONFIG="$WORK/rfloor.json"
+    for fn in _wt_bail acquire_wt_lock release_wt_lock review_worktree; do
+      pat="/^${fn}() {/,/^}/p"
+      eval "$(sed -n "$pat" "$REVIEWER")"
+      declare -f "$fn" >/dev/null || { echo "EXTRACT-FAILED $fn"; exit 1; }
+    done
+    review_tree_path() { echo "$RT"; }
+    review_worktree "$RSHA" 2>/dev/null )
+}
+R1="$(review_call "$UNDER")"
+[ -z "$R1" ] && [ ! -d "$RT" ] \
+  && ok "case 7: under the floor, the reviewer cuts no new review tree" \
+  || bad "case 7: no new review tree under the floor" "printed=[$R1] tree-exists=$([ -d "$RT" ] && echo yes || echo no)"
+R2="$(review_call "$OVER")"
+[ "$R2" = "$RT" ] && [ -d "$RT" ] \
+  && ok "case 7b: over the floor, the reviewer cuts its tree" \
+  || bad "case 7b: a review tree over the floor" "printed=[$R2]"
+R3="$(review_call "$UNDER")"
+[ "$R3" = "$RT" ] \
+  && ok "case 7c: under the floor, an existing review tree is still re-detached (it costs no disk)" \
+  || bad "case 7c: re-detach under the floor" "printed=[$R3]"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

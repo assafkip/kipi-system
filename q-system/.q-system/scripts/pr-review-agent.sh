@@ -94,6 +94,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DISK_FLOOR_PY="$SCRIPT_DIR/worktree-disk-floor.py"   # ASK-3648, read by review_worktree
 SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
@@ -766,6 +767,21 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   else
+    # DISK FLOOR (ASK-3648, PR #656 review). A NEW tree is cut from shell, so the
+    # PreToolUse floor never sees it. Under the floor this bails like any failed
+    # add, and the caller's documented fallback (tree search, with its WARN)
+    # reviews without allocating. Re-detaching an existing tree, above, costs no
+    # disk and is never refused. ${DISK_FLOOR_PY:-} is empty when a test lifts
+    # this function out alone; empty or missing means proceed, as does exit 2.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      local floor_line
+      floor_line="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      if [ "$?" -eq 1 ]; then
+        echo "  WARN: $floor_line; no new review tree for PR #$PR." >&2
+        _wt_bail "$wt" || return 1
+        return 1
+      fi
+    fi
     git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha

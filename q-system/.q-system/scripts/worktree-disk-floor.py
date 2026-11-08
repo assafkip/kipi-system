@@ -62,16 +62,20 @@ def deny(reason: str) -> None:
 
 
 def check() -> int:
+    # The floor read and the comparison sit INSIDE the try (PR #656 review,
+    # finding 2): exit 1 holds the whole fleet, so a crash after the measure (a
+    # hand-edited "5 GB" in the config) must read as "could not measure", not as
+    # "under the floor".
     try:
         reaper = _reaper()
         cfg = reaper.load_config()
-        free = reaper.free_gb()
+        free = float(reaper.free_gb())
+        floor = float(cfg["refuse_worktree_below_gb"])
+        under = free < floor
     except Exception as exc:  # noqa: BLE001
         print(f"disk-floor: could not measure free disk space ({exc!r})")
         return 2
-    floor = cfg["refuse_worktree_below_gb"]
-    under = free < floor
-    print(f"disk-floor: {free:.1f} GB free, floor {floor} GB -> {'UNDER' if under else 'OK'}")
+    print(f"disk-floor: {free:.1f} GB free, floor {floor:g} GB -> {'UNDER' if under else 'OK'}")
     return 1 if under else 0
 
 

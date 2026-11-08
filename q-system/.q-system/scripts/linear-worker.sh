@@ -2750,13 +2750,24 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     # DISK FLOOR (ASK-3648). This tree is cut from shell, so the PreToolUse floor
     # never sees it; on 2026-11-08 trees like it took the disk to 0 bytes free.
     # Under the floor no issue gets a tree, so stop the whole run, not just this
-    # issue. Nothing was claimed yet (the claim is step 2, inside the tree), so
-    # nothing is counted against the issue. kipi-dispatch.sh holds the same floor
-    # every heartbeat, runs the worktree reaper, and resumes once space is back.
-    # Exit 2 (could not measure) proceeds: `git worktree add` below fails loudly.
+    # issue. Nothing was claimed yet (the claim is step 2, inside the tree).
+    #
+    # IT IS AN ENVIRONMENTAL HALT, AND IT IS MARKED LIKE ONE (PR #656 review,
+    # finding 1, major). A bare `break` ended the run with rc 0, no PR and an
+    # unmoved counter, which converge.sh reads as "Sana could not open one": it
+    # charged an attempt at exit-7 and paged, and three ticks took a healthy issue
+    # to TERMINAL. The env_halt flag is what converge reads (converge.sh, the
+    # ENV_HALT_MARK branch) to exit 9 with nothing charged and no page, and
+    # $ENV_HALT_FILE sends this run to the halt block after the loop: one note per
+    # outage, one page per condition, exit 9. Same two markers as step 4a.
+    # kipi-dispatch.sh holds the same floor every heartbeat, runs the worktree
+    # reaper, and resumes once space is back. Exit 2 (could not measure)
+    # proceeds: `git worktree add` below fails loudly.
     FLOOR_LINE="$(python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null 2>>"$LOG")"; FLOOR_RC=$?
     if [ "$FLOOR_RC" -eq 1 ]; then
       say "INFRA: $FLOOR_LINE; no worktree for $ISSUE and no further issue this run (not counted against the issue). kipi-dispatch.sh re-checks the floor every heartbeat."
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      printf '%s|%s|%s' "$ISSUE" "$DONE" "the disk is under the worktree floor: $FLOOR_LINE" > "$ENV_HALT_FILE" 2>/dev/null || true
       break
     fi
     mkdir -p "$(dirname "$TREE")"
