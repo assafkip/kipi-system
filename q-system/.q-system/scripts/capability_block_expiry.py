@@ -142,6 +142,155 @@ STATUSES = ("pass", ROTATED, "fail", "unprobeable", "unknown")
 # status ends up clearing in one place and not the other.
 CLEARING = ("pass", ROTATED)
 
+
+# --- THE 14-DAY ROUTE FOR A BLOCK NOTHING CAN PROBE (ASK-3960) -----------------
+# Measured 2026-11-08: 38 parked, 38 unprobeable, 0 clearable. A block with no
+# probe was "hand-clear-only", which is the ticket that just stays. Founder,
+# 2026-11-08: "but what happens if nothing changed? the ticket just stays?" So
+# at 14 days every unprobeable block takes a route by the capability it lacks,
+# read from its own park comment:
+#   claude-write  a .claude/ write the harness refuses agents. Listed for
+#                 apply-claude-changes.sh, the founder's one-command land.
+#   credential    a credential or account. One line on the morning status list.
+#   unknown       neither. Handed to cap-ladder.py as a capout and unblocked, so
+#                 the ladder's RCA, runner change, re-scope and decision move it.
+# Both founder lines go to the status file the stall sweep reads; nothing pages.
+ROUTE_AFTER_DAYS = 14
+CLAUDE_WRITE_RE = re.compile(r"\.claude/|sensitive[- ]path|settings(\.local)?\.json|harness (guard|permission)", re.I)
+CREDENTIAL_RE = re.compile(r"credential|\btoken\b|api[ _-]?key|log ?in\b|logged in|oauth|password|\baccount\b|secret", re.I)
+ATTEMPTS_FILE = os.environ.get("KIPI_ATTEMPTS") or os.path.expanduser(
+    "~/.config/kipi/linear-worker-attempts.json")
+LEDGER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attempts-ledger.py")
+PARK_TEXT_Q = """query($id:String!){issue(id:$id){comments(first:100){nodes{body createdAt}}}}"""
+
+
+def dispatch_projects() -> list:
+    """The Linear projects of every repo the dispatcher enters: the home row plus
+    registry and overlay rows with dispatch.enabled true. The same opt-in set as
+    kipi-dispatch.sh fleet_candidates, so a repo switched off (chief) is skipped.
+    The probes test THIS machine, which every dispatch target shares."""
+    home = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+    rows, out = [], []
+    try:
+        with open(os.path.join(home, "instance-registry.json"), encoding="utf-8") as fh:
+            reg = json.load(fh)
+        out.append((reg.get("skeleton") or {}).get("linear_project") or "")
+        rows += reg.get("instances") or []
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(os.path.expanduser("~/.config/kipi/dispatch-targets.json"), encoding="utf-8") as fh:
+            rows += json.load(fh).get("instances") or []
+    except (OSError, ValueError):
+        pass
+    out += [r.get("linear_project") or r.get("name") or "" for r in rows
+            if (r.get("dispatch") or {}).get("enabled") is True]
+    seen = []
+    for p in out:
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+def classify(text: str) -> str:
+    """The capability an unprobeable block lacks, from its park comment."""
+    if CLAUDE_WRITE_RE.search(text or ""):
+        return "claude-write"
+    if CREDENTIAL_RE.search(text or ""):
+        return "credential"
+    return "unknown"
+
+
+def park_text(ls, identifier: str) -> str:
+    """The newest comment that parked the issue on a missing capability."""
+    nodes = (((ls.graphql(PARK_TEXT_Q, {"id": identifier}) or {}).get("issue") or {})
+             .get("comments") or {}).get("nodes") or []
+    parks = [n for n in nodes if "missing capability" in (n.get("body") or "")
+             or BLOCK_LABEL in (n.get("body") or "")]
+    parks.sort(key=lambda n: n.get("createdAt") or "")
+    return (parks[-1].get("body") if parks else "") or ""
+
+
+def _founder_ask(identifier: str, ask: str) -> tuple[bool, str]:
+    """Hand one ask to the morning status file through its ONE writer,
+    cap-ladder.py --founder-ask (ASK-3824). Never appended here: two writers on
+    one file is the race the ladder's lock exists to prevent."""
+    ladder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap-ladder.py")
+    if not os.path.isfile(ladder):
+        return False, "cap-ladder.py is not on this tree, so the ask has no writer yet"
+    p = subprocess.run([sys.executable, ladder, "--founder-ask", identifier, "founder-decision", ask],
+                       capture_output=True, text=True, timeout=60)
+    return p.returncode == 0, (p.stdout or p.stderr).strip()
+
+
+def _fixture_run() -> bool:
+    """A run against a loopback Linear (a test fixture) that has NOT redirected the
+    ledger and the status file. The first test run of this route wrote two capout
+    records into the LIVE attempts ledger (ASK-903, ASK-908, 2026-11-08, undone
+    with clear-capout): the Linear writes went to the fixture, the local ones did
+    not. So a fixture run may only write local state it was pointed at."""
+    url = os.environ.get("KIPI_LINEAR_API_URL") or ""
+    loop = re.search(r"//(localhost|127\.\d+\.\d+\.\d+|\[::1\])[:/]", url)
+    return bool(loop) and not (os.environ.get("KIPI_ATTEMPTS") and os.environ.get("CAP_LADDER_STATUS"))
+
+
+def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_iso: str = "") -> str:
+    """One line: what happened to an unprobeable block. Writes only with apply."""
+    if apply and _fixture_run():
+        return ("unprobeable; REFUSED to route: a fixture Linear with the live ledger and status "
+                "file (set KIPI_ATTEMPTS and CAP_LADDER_STATUS)")
+    from datetime import datetime, timedelta, timezone
+    now = datetime.fromisoformat(now_iso) if now_iso else datetime.now(timezone.utc)
+    try:
+        parked = datetime.fromisoformat((since or "").replace("Z", "+00:00"))
+    except ValueError:
+        parked = None
+    if parked and now - parked < timedelta(days=ROUTE_AFTER_DAYS):
+        due = (parked + timedelta(days=ROUTE_AFTER_DAYS)).date().isoformat()
+        return f"unprobeable; routed by kind on {due} (day {ROUTE_AFTER_DAYS})"
+    text = park_text(ls, identifier)
+    kind = classify(text)
+    if kind == "claude-write":
+        # NOT A MISSING CAPABILITY. apply_claude_changes.py is built to be run by
+        # an agent ("There is no privileged caller"), so a .claude/ write the
+        # Write tool refuses still has a coded path. The ticket goes back with
+        # that path named, once per ticket; a second park after it falls through
+        # to the ladder below instead of repeating.
+        flag = "capability_route_claude_write"
+        once = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "get", identifier, flag, ""],
+                              capture_output=True, text=True).stdout.strip()
+        if once != "True":
+            if not apply:
+                return "unprobeable claude-write; would unblock and requeue it through apply-claude-changes.sh"
+            subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, flag],
+                           capture_output=True, text=True)
+            urc, _d = _sync("unblock", identifier, BLOCK_LABEL)
+            _sync("progress", identifier,
+                  "**Unblocked by capability_block_expiry.py (ASK-3960).** The block was a .claude/ write the "
+                  "Write tool refuses. That is not a missing capability: the fleet lands .claude/ edits through "
+                  "`bash q-system/.q-system/scripts/apply-claude-changes.sh <proposal.json>`, which an agent may "
+                  "run. Write the change as a proposal and apply it with that command. If this parks again, "
+                  "cap-ladder.py takes it.", "--agent", "sana")
+            _sync("requeue", identifier, "--exit", "capability-route", "--why",
+                  ".claude/ write routed through apply-claude-changes.sh", "--agent", "sana")
+            return f"unprobeable claude-write; unblocked (rc {urc}) and requeued through apply-claude-changes.sh"
+        kind = "unknown"
+    if kind == "credential":
+        if not apply:
+            return "unprobeable credential; would add one line to the morning status list"
+        ok, detail = _founder_ask(identifier, f"access: {identifier} needs a credential or account the "
+                                              "fleet cannot grant itself")
+        return f"unprobeable credential; {'ask listed' if ok else 'ask NOT listed'} ({detail})"
+    if not apply:
+        return "unprobeable, kind unknown; would hand to cap-ladder.py (capout) and unblock"
+    rc = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "record-capout", identifier,
+                         f"blocked:capability {ROUTE_AFTER_DAYS}+ days, no probe, no known capability kind"],
+                        capture_output=True, text=True).returncode
+    if rc != 0:
+        return "unprobeable, kind unknown; the capout did NOT record, so it stays parked and the next run retries"
+    urc, _detail = _sync("unblock", identifier, BLOCK_LABEL)
+    return f"unprobeable, kind unknown; handed to cap-ladder.py (capout recorded, unblock rc {urc})"
+
 # Each returns (passed, evidence). The evidence string goes onto the Linear issue
 # verbatim: "I ran X and got Y" is this repo's bar, and an unblock that says only
 # "the probe passed" cannot be checked by the person reading it later.
@@ -615,6 +764,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo-project", default=os.environ.get("REPO_PROJECT") or None,
                     help="only re-test blocks in this Linear project (default $REPO_PROJECT)")
+    ap.add_argument("--dispatch-targets", action="store_true",
+                    help="re-test every repo the dispatcher enters (the nightly job passes this)")
     ap.add_argument("--team", default="ASK", help="Linear team key (default ASK)")
     ap.add_argument("--apply", action="store_true",
                     help="actually clear the blocks that pass; dry without it")
@@ -623,7 +774,12 @@ def main(argv=None) -> int:
     # Refused BEFORE the first API call, and refused for a dry run too. A dry
     # run that prints "ASK-906 WOULD BE CLEARED" for another repo's issue is a
     # lie about what --apply does, and the operator plans against the dry output.
-    if not (args.repo_project or "").strip():
+    projects = dispatch_projects() if args.dispatch_targets else [args.repo_project]
+    if args.dispatch_targets and not projects:
+        print("BLOCK: --dispatch-targets found no dispatch-enabled project in the registry "
+              "or ~/.config/kipi/dispatch-targets.json", file=sys.stderr)
+        return EXIT_USAGE
+    if not args.dispatch_targets and not (args.repo_project or "").strip():
         print("BLOCK: no repo scope. This sweep clears blocks for ONE checkout; "
               "with no scope it would clear every parked block on team "
               f"{args.team}, including issues no runner here can check out. "
@@ -633,7 +789,7 @@ def main(argv=None) -> int:
 
     ls = _load_linear_sync()
     try:
-        parked = blocked_issues(ls, args.team, args.repo_project)
+        parked = [i for proj in projects for i in blocked_issues(ls, args.team, proj)]
     except ls.LinearAPIError as exc:
         print(f"INFRA: linear unreachable ({exc}). No block was re-tested.", file=sys.stderr)
         return EXIT_INFRA
@@ -666,6 +822,10 @@ def main(argv=None) -> int:
         status, evidence = run_probe(probe if probe is not None else PROBE_NONE)
         counts[status] = counts.get(status, 0) + 1
 
+        if status == "unprobeable":
+            print(f"capability-expiry: {ident} "
+                  + route_unprobeable(ls, ident, parked_at(ls, ident, block_label_id), args.apply))
+            continue
         if status not in CLEARING:
             reason = {"unprobeable": "no recorded probe -- stays parked, nothing to re-test",
                       "unknown": "probe not runnable -- stays parked (fail closed)",

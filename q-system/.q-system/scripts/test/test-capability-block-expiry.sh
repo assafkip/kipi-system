@@ -366,6 +366,11 @@ for _ in $(seq 1 100); do PORT="$(cat "$WORK/port" 2>/dev/null)"; [ -n "${PORT:-
 LINEAR_ENV=(
   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql"
   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret"
+  # The day-14 route writes the attempts ledger and the morning status file
+  # (ASK-3960). Both go to this run's own WORK dir, never the live paths: the
+  # first run of this route without them wrote two capouts into the live ledger.
+  KIPI_ATTEMPTS="$WORK/attempts.json"
+  CAP_LADDER_STATUS="$WORK/morning-status.jsonl"
   # The environment the sweep re-tests against. The credential is SET and holds
   # the SAME value the park refused, which is the whole of the expired-token
   # case: ASK-909 (fingerprinted at park time) must read that as no change,
@@ -470,11 +475,13 @@ else
   ok "a still-failing probe posts no comment (re-tests are not comment spam)"
 fi
 
-# --- 3. no recorded probe -> unprobeable, never expired ---------------------
-if printf '%s' "$MUTATIONS" | grep -q "ASK-903"; then
-  bad "an issue with no probe is never expired" "ASK-903 was unblocked with nothing to test"
+# --- 3. no recorded probe -> never cleared AS A PASS ------------------------
+# ASK-3960 gives an unprobeable block a route at day 14, so it may be unblocked
+# by the route. What must still hold: nothing calls it a passed probe.
+if grep -q "ASK-903 WOULD BE CLEARED\|ASK-903 cleared" "$WORK/run.out" 2>/dev/null; then
+  bad "an issue with no probe is never cleared as a passed probe" "ASK-903 was cleared as if a probe passed"
 else
-  ok "an issue with no probe is never expired"
+  ok "an issue with no probe is never cleared as a passed probe"
 fi
 if printf '%s\n' "$OUT" | grep -q "ASK-903"; then
   ok "an unprobeable block is REPORTED, not silently held"
@@ -522,9 +529,11 @@ fi
 # asked about a different capability, in a different month. It can pass. Taking
 # "the last marker on the thread" then un-parks an issue whose current block was
 # never tested at all, which is the one unrecoverable direction.
-if printf '%s' "$MUTATIONS" | grep -q "ASK-908"; then
+# (ASK-3960: the current park recorded nothing, so after day 14 the ROUTE may
+# unblock it. What must hold is that the OLD marker is never read as a pass.)
+if grep -q "ASK-908 WOULD BE CLEARED\|ASK-908 cleared" "$WORK/run.out" 2>/dev/null; then
   bad "a marker older than the current park does not clear it" \
-      "ASK-908 was unblocked on a probe recorded by a park from 2026-07-01 -- the current park (2026-08-02) recorded nothing"
+      "ASK-908 was cleared as a pass on a probe recorded by a park from 2026-07-01 -- the current park (2026-08-02) recorded nothing"
 else
   ok "a marker older than the current park does not clear it"
 fi
@@ -769,33 +778,37 @@ fi
 # that the pre-pick step EXISTS and precedes the pick. Grepping for the call is
 # the load-path proof for a step whose only observable effect is on Linear.
 #
-# MATCH THE INVOCATION, NOT THE NAME (codex PR #77, this file:285). The first cut
-# grepped for `capability_block_expiry.py`, whose first hit is the line that
-# builds the PATH -- `EXPIRY="$SCRIPT_DIR/capability_block_expiry.py"`. Deleting
-# the line that actually RUNS it left this assertion green, so the wiring proof
-# proved only that the worker knows the filename. The pattern below requires the
-# script to be executed.
-expiry_invocation_line() { # <worker-file>
-  grep -nE 'python3[[:space:]]+"\$EXPIRY"' "$1" | head -1 | cut -d: -f1
+# A NIGHTLY JOB RUNS IT, NOT THE PICK (ASK-3960). PR #77 ran the expiry inside
+# every worker tick; ASK-3960 runs it once a night from its own pinned job, over
+# every dispatch target, so a re-test costs one Linear walk a day, not 96. The
+# wiring proof is the job's own arguments: the script, --apply, and the target set.
+PLIST="$(dirname "$WORKER")/com.kipi.capability-expiry.plist"
+job_runs_expiry() { # <plist> -> 0 when its ProgramArguments run the expiry for real
+  python3 - "$1" <<'PY'
+import plistlib, sys
+try:
+    args = " ".join(plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if all(t in args for t in ("capability_block_expiry.py", "--apply", "--dispatch-targets")) else 1)
+PY
 }
-PRE_PICK_LINE="$(expiry_invocation_line "$WORKER")"
-PICK_LINE="$(grep -n "^PICKED=" "$WORKER" | head -1 | cut -d: -f1)"
-if [ -n "$PRE_PICK_LINE" ] && [ -n "$PICK_LINE" ] && [ "$PRE_PICK_LINE" -lt "$PICK_LINE" ]; then
-  ok "the worker runs the expiry BEFORE it picks (line $PRE_PICK_LINE < $PICK_LINE)"
+if job_runs_expiry "$PLIST"; then
+  ok "the nightly job runs the expiry with --apply over every dispatch target"
 else
-  bad "the worker runs the expiry before it picks" \
-      "expiry invocation at '${PRE_PICK_LINE:-none}', pick at '${PICK_LINE:-none}'"
+  bad "the nightly job runs the expiry" "no com.kipi.capability-expiry.plist running it with --apply --dispatch-targets"
 fi
-# NEGATIVE SELF-TEST for the assertion above, which is the only reason to trust
-# it. Strip the invocation from a copy and the check must go RED. Without this,
-# the next loosening of the pattern is invisible exactly the way the last one was.
-MUTILATED="$WORK/worker-without-the-call.sh"
-grep -vE 'python3[[:space:]]+"\$EXPIRY"' "$WORKER" > "$MUTILATED"
-if [ -z "$(expiry_invocation_line "$MUTILATED")" ]; then
-  ok "negative self-test: removing the expiry invocation makes the wiring check fail"
+MUTILATED="$WORK/plist-without-apply.plist"
+sed 's/ --apply//' "$PLIST" > "$MUTILATED" 2>/dev/null
+if ! job_runs_expiry "$MUTILATED"; then
+  ok "negative self-test: a job without --apply makes the wiring check fail"
 else
-  bad "negative self-test: removing the expiry invocation makes the wiring check fail" \
-      "the check still finds an invocation in a worker that has none -- it is matching something other than the call"
+  bad "negative self-test: a job without --apply makes the wiring check fail" "the check passed a dry job"
+fi
+if grep -q '"com.kipi.capability-expiry"' "$(dirname "$WORKER")/../job-checkouts.json"; then
+  ok "the job is pinned to its own checkout (job-checkouts.json)"
+else
+  bad "the job is pinned" "com.kipi.capability-expiry is not in job-checkouts.json pinned"
 fi
 
 # The park path must RECORD a probe, or the expiry above has nothing to read on
@@ -993,11 +1006,12 @@ import capability_block_expiry as cbe
 print(cbe.EXIT_PARTIAL)
 PY
 )"
-if grep -q "EXPIRY_RC\" -eq $PARTIAL_CODE" "$WORKER"; then
-  ok "the worker branches on EXIT_PARTIAL ($PARTIAL_CODE) rather than lumping it in"
+# The job's exit code is what launchd-health reads, so a refused unblock must
+# exit nonzero and distinct from "did not run" (EXIT_USAGE) and "Linear down".
+if [ -n "$PARTIAL_CODE" ] && [ "$PARTIAL_CODE" != "0" ]; then
+  ok "a refused unblock exits $PARTIAL_CODE, nonzero, so the nightly job reads as failed"
 else
-  bad "the worker branches on EXIT_PARTIAL" \
-      "no test for rc=$PARTIAL_CODE in $WORKER -- a refused unblock is reported as 'parked blocks were NOT re-tested', which is false and reads as ordinary noise"
+  bad "a refused unblock exits nonzero" "EXIT_PARTIAL is '$PARTIAL_CODE'"
 fi
 
 # --- 17. a write probe over a MISSING directory is kept, not discarded ------
