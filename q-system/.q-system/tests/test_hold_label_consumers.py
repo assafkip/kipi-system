@@ -176,6 +176,11 @@ def problems(registry: dict, refused: dict, templates: dict, read, missing_ceili
                            f"OUTSIDE_ALLOWED in the same PR so the claim is reviewed")
             continue
         c = row["consumer"]
+        if c.get("path") and c.get("path") == row.get("refused_by"):
+            # PR #666 round 2: naming the script that refuses the label as its consumer
+            # turned a missing row green with nothing built. The refuser is never the exit.
+            out.append(f"{label}: consumer {c['path']} is the script that refuses it")
+            continue
         src = read(c.get("path", ""))
         if src is None:
             out.append(f"{label}: consumer {c.get('path')} does not exist")
@@ -344,12 +349,27 @@ def test_a_row_with_two_dispositions_goes_red():
 
 
 def test_an_unlisted_outside_consumer_is_red():
-    """PR #666 review, minor: five arbitrary strings turned a missing row green."""
-    registry = json.loads(REGISTRY.read_text())
-    refused = refused_labels(ready_source(WORKER.read_text()))
-    row = registry["labels"]["owner:assaf"]
-    row.pop("missing")
-    row["outside_consumer"] = {"repo": "nowhere", "path": "nothing", "marker": "none",
-                               "job": "a desk", "owner": "not a script"}
-    got = problems(registry, refused, committed_templates(REPO), _read_repo, MISSING_CEILING)
-    assert any("owner:assaf: an outside consumer" in p for p in got)
+    """PR #666 review, minor: five arbitrary strings turned a missing row green. On the
+    fixture, never the live registry, so it holds when a real row changes (round 2)."""
+    reg = fixture_registry()
+    reg["labels"]["owner:sana"] = {"refused_when": "absent", "outside_consumer": {
+        "repo": "nowhere", "path": "nothing", "marker": "none", "job": "a desk", "owner": "x"}}
+    assert any("owner:sana: an outside consumer" in p for p in run_fixture(registry=reg))
+
+
+def test_the_refuser_is_never_its_own_consumer():
+    """PR #666 round 2, minor: the worker that refuses a label named as its consumer."""
+    reg = fixture_registry()
+    reg["labels"]["needs-scope"] = {"refused_when": "present", "refused_by": "scripts/worker.sh",
+                                    "consumer": {"path": "scripts/worker.sh", "job": "com.kipi.dor"}}
+    assert any("is the script that refuses it" in p for p in run_fixture(registry=reg))
+
+
+def test_the_suite_is_declared_to_run_on_every_pr():
+    """PR #666 round 2, major: verify.sh --changed skips tests/ unless a file there
+    changes, so a new refusal in linear-worker.sh went unchecked. Declared with no
+    `covers`, it sits on the capability gate's always-run floor."""
+    frag = QDIR / "capability" / "expected_tests" / "q-system__.q-system__tests__test_hold_label_consumers.py.json"
+    d = json.loads(frag.read_text())
+    assert d["path"] == "q-system/.q-system/tests/test_hold_label_consumers.py"
+    assert d["runner"] == "pytest" and "covers" not in d
