@@ -75,6 +75,25 @@ def test_production_writes_the_live_path(tmp_path):
     assert json.loads(p.read_text())["ASK-1"]["count"] == 1
 
 
-def test_the_shell_suites_get_kipi_test_from_their_runner():
-    src = (HERE.parent / "scripts" / "capability-gate.py").read_text()
-    assert 'KIPI_TEST="1"' in src
+def _gate():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "capability_gate_for_guard_test", HERE.parent / "scripts" / "capability-gate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_shell_suites_get_kipi_test_from_their_runner(tmp_path, monkeypatch):
+    """PR #669 review, minor: this was a source grep. Now a declared bash suite that
+    passes only when it receives KIPI_TEST=1 is run through run_tests itself. The
+    variable is removed from this process first, so under the real gate (which sets
+    it) the check still cannot pass by inheritance."""
+    monkeypatch.delenv("KIPI_TEST", raising=False)
+    (tmp_path / "q-system").mkdir()
+    (tmp_path / "t.sh").write_text('[ "${KIPI_TEST:-}" = "1" ] || { echo "no KIPI_TEST"; exit 1; }\n')
+    errors, notes = [], []
+    _gate().run_tests(tmp_path, {"expected_tests": [{"path": "t.sh", "runner": "bash"}]},
+                      "skeleton", errors, notes)
+    assert errors == [], errors
+    assert any("ran=1" in n for n in notes), notes

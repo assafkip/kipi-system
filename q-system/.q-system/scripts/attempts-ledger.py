@@ -106,6 +106,10 @@ drops a page:
      catch-all in main() -- ANY unanticipated failure, e.g. an OSError from
      mkstemp / os.replace / json.dump on a full or read-only filesystem.
   3  NOTHING WAS WRITTEN because the lock could not be taken.
+  4  claim-flag-uncapped ONLY: converge already gave up on this issue (parked).
+  5  NOTHING WAS WRITTEN because a test aimed the write at the live ledger
+     (PYTEST_CURRENT_TEST or KIPI_TEST=1 set, ASK-4052). The fix is in the test:
+     set KIPI_STATE_DIR. Production sets neither variable, so it never sees 5.
 
 READ 2 AS OPEN-ENDED, NOT AS "a typo in a call site" (codex round 4, minor).
 This line used to say only "usage error", which reads as a bounded, transient,

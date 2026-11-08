@@ -1806,12 +1806,15 @@ ledger_fault() {
   local issue="$1" flag="$2" rc="$3" detail
   case "$rc" in
     3) detail="the lock was contended, so nothing was written. The flag is still UNCLAIMED and the next run will claim it and page -- this defers a page by one cycle, it does not drop it." ;;
+    5) detail="the ledger refused a live-path write because this worker runs under a test (KIPI_TEST=1 or pytest, ASK-4052). The test that started it must set KIPI_STATE_DIR to a temp folder." ;;
     *) detail="the ledger wrote nothing (exit $rc). No later run will claim this flag either, so no later run will page: this state is dropped until the ledger is writable." ;;
   esac
   say "WARN: the attempts ledger did not record the $flag flag for $issue (exit $rc) -- $detail"
   [ "$LEDGER_FAULT_ALERTED" -eq 0 ] || return 0
   LEDGER_FAULT_ALERTED=1
-  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: check the ledger file is writable." 2>/dev/null || true
+  local fix="check the ledger file is writable"
+  [ "$rc" = "5" ] && fix="set KIPI_STATE_DIR in the test that ran this worker; the live ledger is refused under a test (ASK-4052)"
+  bash "$NOTIFY" "kipi worker: the attempts ledger at $ATTEMPTS is not answering (exit $rc, first seen on $issue/$flag). Once-only pages cannot be de-duplicated while this holds, so the worker is staying quiet on them rather than re-posting. Do: $fix." 2>/dev/null || true
 }
 
 page_once() {
