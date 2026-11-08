@@ -729,6 +729,39 @@ def claude_binary() -> str | None:
     return None
 
 
+# A RUNNER REFUSAL IS THE MACHINE'S, AND IT IS NAMED (ASK-278). On 2026-11-07 the
+# failure read "claude exited rc=1 with 63 chars of output", and the 63 chars were
+# "You've hit your weekly limit · resets 6am (America/Los_Angeles)". Two diagnoses
+# guessed the login from the length, and the job kept spending a call per queued
+# issue against a limit that refuses them all. The classifier is env-failure-lib.sh,
+# the fleet's ONE answer to "whose failure is this" (ASK-873): is_environmental
+# passes only when EVERY spoken line is a machine refusal, so the line that reaches
+# Linear is the CLI's own refusal and never issue-derived text (ASK-204). Anything
+# else stays a length.
+RUNNER_REFUSED = "runner refused: "
+ENV_LIB = HERE / "env-failure-lib.sh"
+
+
+def runner_refusal(text: str) -> str:
+    """The runner's own refusal line when the MACHINE refused, else "".
+
+    Popen, not subprocess.run: the failure-reporting test replaces subprocess.run
+    to stand in for claude, and the classifier must not be mistaken for a call.
+    """
+    if not text or not ENV_LIB.is_file():
+        return ""
+    try:
+        proc = subprocess.Popen(
+            ["bash", "-c", '. "$1" && is_environmental "$2" && environmental_reason "$2"',
+             "_", str(ENV_LIB), text[:4000]],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
+        out, _ = proc.communicate(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    line = (out or "").strip().splitlines()
+    return line[0][:160] if proc.returncode == 0 and line else ""
+
+
 def _subscription_env():
     """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
 
@@ -800,6 +833,18 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
     out = (res.stdout or "").strip()
+    # READ FOR A REFUSAL ON EVERY EXIT CODE, BEFORE THE LENGTH CHECK (PR #637 round 1).
+    # The measured shape of this outage EXITS 0 (ASK-873: on 2026-08-15 every
+    # `claude -p` printed the weekly-limit line and succeeded), and at 63 chars it
+    # also passes the length check, so it reached the draft validator and blamed
+    # each issue for a malformed draft. linear-worker.sh and pr-review-agent.sh read
+    # the success branch for the same reason. A real draft cannot match:
+    # is_environmental refuses any output with one line that is not a machine marker.
+    refusal = runner_refusal(out + "\n" + (res.stderr or ""))
+    if refusal:
+        reason = RUNNER_REFUSED + refusal
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
     if res.returncode != 0 or len(out) < 60:
         reason = f"claude exited rc={res.returncode} with {len(out)} chars of output"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
@@ -1334,6 +1379,7 @@ def main() -> int:
     # drafted by this run nor still queued, and counting them as remaining
     # reported work that no longer exists (codex round 3).
     drafted, failed, done_redrives = 0, [], 0
+    stopped = ""
     elsewhere, elsewhere_redrives = 0, 0
     for mode, issue in batch:
         desc = issue.get("description") or ""
@@ -1376,6 +1422,11 @@ def main() -> int:
             body, reason = draft_one(issue, args.timeout)
         if not body:
             failed.append(f"{issue['identifier']}: {reason}")
+            if reason.startswith(RUNNER_REFUSED):
+                # The machine refused, and it refuses every issue behind this one the
+                # same way: stop, and leave the rest queued for the next night.
+                stopped = reason
+                break
             continue
 
         try:
@@ -1425,6 +1476,8 @@ def main() -> int:
     held_note = f", {len(unfiled)} STILL UNFILED" if unfiled else ""
     elsewhere_note = (f", {elsewhere} completed by another writer"
                       if elsewhere else "")
+    if stopped:
+        elsewhere_note += f"; STOPPED, {stopped}"
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
           f"{carried_note}{held_note}{elsewhere_note}, {remaining} still queued: "
           f"{queue_breakdown(remaining, remaining_redrives)}")
