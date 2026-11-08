@@ -69,6 +69,9 @@ case "\$*" in
   *)                  r=home ;;
 esac
 if [ "\${KIPI_PICK_PRIORITY:-0}" = "1" ]; then
+  # Reads one stdin line, as any descendant of a real worker could: the scan
+  # must not hand it the repo list (PR #650 round 1).
+  IFS= read -r _leak || true
   printf 'SCAN %s\n' "\$r" >> "$WORK/kipi-calls.txt"
   read -r id pri < "$WORK/board-\$r" 2>/dev/null || exit 0
   [ -n "\$id" ] || exit 0
@@ -195,10 +198,12 @@ case "$C4" in
 esac
 
 # --- 5: the Urgent pick is in a non-home repo -------------------------------
-new_day "ASK-1 3" "ASK-3 1" ""
+# The slot repo is plainrepo, the next in turn, so an unguarded cursor_set would
+# write plainrepo: the cursor half can fail (PR #650 round 1, nit).
+new_day "ASK-1 3" "ASK-3 4" "ASK-2 1"
 run_dispatch
 C5="$(calls)"; K5="$(cursor)"
-if [ "$C5" = "SCAN plainrepo SCAN home SCAN client_d MAIN client_d " ] && [ "$K5" = "client_d" ]; then
+if [ "$C5" = "SCAN plainrepo MAIN plainrepo " ] && [ "$K5" = "client_d" ]; then
   ok "case 5: the slot reaches a non-home repo, entered with --repo, and the cursor stays"
 else
   bad "case 5: the slot reaches a non-home repo" "$(ctx)"

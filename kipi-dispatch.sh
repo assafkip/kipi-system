@@ -1036,6 +1036,11 @@ say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted i
 # THE CURSOR IS NOT MOVED. The slot is extra to the rotation, so the repo whose
 # turn was next keeps it for the next tick (SLOT_TAKEN, at cursor_set below).
 #
+# WHAT IT COSTS, MEASURED. One worker dry pick per cleared repo until the first
+# Urgent hit, inside the turn lock, on one tick a day: 55s for 4 repos against
+# the live board on 2026-11-08 (PR #650 round 1 named it; accepted, since it is
+# once a day and well inside the 3600s stale-lock reap).
+#
 # KNOWN RESIDUAL. A reviewer or red-CI redrive in the slot repo still outranks a
 # fresh pick there, by design, so it can take the slot tick. Each redrive is one
 # attempt per PR per head, so it cannot take the slot two days running for the
@@ -1053,9 +1058,12 @@ urgent_slot_scan() {  # fills SLOT_NAME, SLOT_PATH, SLOT_ISSUE, or leaves them e
     if [ -n "$live" ] && printf '%s\n' "$live" | grep -qxF -- "$path"; then continue; fi
     args=""
     [ "$path" = "$REPO" ] || args="--repo $path"
+    # </dev/null (PR #650 round 1): the repo list is this loop stdin, so any
+    # descendant that read one line would eat a repo row, end the scan early and
+    # log a healthy "no Urgent" for the whole day.
     # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
     out="$(if [ -n "$args" ]; then export KIPI_TARGET_REPO="$path"; fi
-           KIPI_PICK_PRIORITY=1 bash ./kipi work $args 2>&1)"
+           KIPI_PICK_PRIORITY=1 bash ./kipi work $args </dev/null 2>&1)"
     issue="$(printf '%s' "$out" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
     [ -n "$issue" ] || continue
     pri="$(printf '%s\n' "$out" | grep -E "\[dry\] pick priority $issue [0-9]+\$" | head -1 | awk '{print $NF}')"
