@@ -39,10 +39,11 @@ All on fixtures. test-pr-owner.py asserts its state path and worker state dir ar
 
 - The harness: a temp copy of the real slack-notify.sh runs as a subprocess. Its alert-to-linear.py is a wrapper that runs the REAL alert-to-linear.py main() (fingerprint, lock, dedup, create), with the Linear transport replaced by a JSON file and urlopen blocked.
 - Red at 959e037b: the final test-pr-owner.py run against the 959e037b pr-owner.py fails 26 checks. The sink shows the major exactly: fork #9 files ASK-9001, fork #11 lands as a counted repeat on it, and pr-owner records both as filed. Fork #12 (open 1h) and fork #14 (pushed 1h ago) are alerted. Ladder-owned #10 gets a rework comment and a Linear note. Four fork PRs, two of them #2 in different repos, share one fingerprint.
-- Green on the fix: 127 checks, PASS. #9 and #11 get ASK-9001 and ASK-9002, each naming its own PR. pr-owner records the ticket the sink named. #12 reads `young` and #14 reads `wait`. #10 reads `ladder` through the real ladder_owns() of PR #662 (b3edcfda, read from origin/sana/ask-3824-ladder). 49 hours later, neither fork is alerted again: 2 tickets, 0 comments.
+- Green on the fix: 127 checks, PASS at e02d7f70, and 130 after the round-4 minors. #9 and #11 get ASK-9001 and ASK-9002, each naming its own PR. pr-owner records the ticket the sink named. #12 reads `young` and #14 reads `wait`. #10 reads `ladder` through the real ladder_owns() of PR #662 (b3edcfda, read from origin/sana/ask-3824-ladder). 49 hours later, neither fork is alerted again: 2 tickets, 0 comments.
 - Exit 0 with no ticket: the real capture hatch (KIPI_ALERT_CAPTURE) returns 0 and names no ticket. act() returns not-ok and records nothing.
 - The review runner: a stub `kipi` that leaves `( sleep 20 ) &` holding its stdout, run as a real subprocess through act(). On the round-3 code the call took 20.0s. On the fix it returns at once, and the stub's output is in pr-owner's review log.
-- Mutants, each run once on a sibling copy and then removed: 10 of 10 KILLED. They were: a constant ref, a CAP_TICKET-style a-j PR-number ref, exit 0 read as a record, provenance before the gates, no ladder branch in decide, a fallback that yields nothing, a broken ladder read as not owned, the ladder not asked in main, fork commits not read, and the review read through a pipe.
+- Round 4 (delta 959e037b..e02d7f70): APPROVE WITH NITS, kipi/reviewer-approved=success. Its nonblocking major went to ASK-4056. Measured 2026-11-08 ~22:05Z: the shared and pinned registries name the same dispatch rows (ktlyst, brag), so no instance is missed today. Both minors are fixed red-first. A failed requeue now returns not-ok and names itself; it was (True, "rework asked; note posted"). Every REFUSED exits 3; an unreadable state file exited 1.
+- Mutants, each run once on a sibling copy and then removed: 12 of 12 KILLED after round 4. The first 10 were KILLED at e02d7f70. They were: a constant ref, a CAP_TICKET-style a-j PR-number ref, exit 0 read as a record, provenance before the gates, no ladder branch in decide, a fallback that yields nothing, a broken ladder read as not owned, the ladder not asked in main, fork commits not read, the review read through a pipe, a failed requeue read as ok, and a refusal exiting 1.
 
 ## Contributing factors
 
@@ -69,7 +70,7 @@ No earlier RCA in this directory covers pr-owner.py or the alert sink's fingerpr
 - [x] The fork branch sits behind the 48h age and 12h quiet gates; owner: Sana (ASK-3962 handoff agent); type: code
 - [x] test-pr-owner.py drives the real slack-notify.sh and alert-to-linear.py main() (fake transport only) and the real cap-ladder.py ladder_owns(); no hand model of either sink; owner: Sana (ASK-3962 handoff agent); type: test
 - [x] pr-owner.py yields every PR cap-ladder.py owns, through ladder_owns() from PR #662; owner: Sana (ASK-3962 handoff agent); type: code
-- [ ] Round 4 on PR #659 reads only the delta since 959e037b; owner: pr-review-agent.sh, run by the ASK-3962 handoff agent; type: process
+- [x] Round 4 on PR #659 reads only the delta since 959e037b; owner: pr-review-agent.sh, run by the ASK-3962 handoff agent; type: process. Done: APPROVE WITH NITS, minors fixed, round 5 reads the delta since e02d7f70.
 
 ## Lessons
 

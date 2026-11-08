@@ -759,16 +759,28 @@ def latest_findings(slug: str, number: int) -> str:
     return ""
 
 
-def ticket_note(ticket: dict, line: str) -> str:
-    """Requeue a started ticket (one line, linear-sync's one state writer), else a progress note."""
+def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
+    """(ok, what). Requeue a started ticket (linear-sync's one state writer), else a progress note.
+
+    A FAILED REQUEUE IS NOT OK (PR #659 round 4, minor). It fell back to a
+    progress note and act() still said "rework asked": the ticket stayed In
+    Progress, so no worker picked it up, while the PR comment said it went back to
+    Backlog, and 48h later the PR closed as "still red". The note is still posted
+    so the resume line lands, and the run counts a failure and exits 2, which
+    launchd-health-check.py reads.
+    """
     sync = str(SCRIPTS / "linear-sync.py")
+    lost = ""
     if ticket["state_type"] == "started":
         rc, out, err = run([sys.executable, sync, "requeue", ticket["id"], "--exit", AGENT,
                             "--why", line, "--agent", AGENT])
         if rc == 0:
-            return out.strip() or "requeued"
+            return True, out.strip() or "requeued"
+        lost = f"WARN requeue failed, {ticket['id']} is still {ticket['state_name'] or 'started'} ({' '.join((err or out).split())[-120:]}); "
     rc, out, err = run([sys.executable, sync, "progress", ticket["id"], line, "--agent", AGENT])
-    return "note posted" if rc == 0 else f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
+    if rc != 0:
+        return False, lost + f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
+    return not lost, lost + "note posted"
 
 
 def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
@@ -815,7 +827,8 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
             return False, f"comment failed: {' '.join(err.split())[:160]}"
         state.setdefault("strikes", {})[key] = {"head": head, "at": now, "why": d["reason"][:200]}
         save_state(state_path(), state)
-        return True, f"rework asked; {ticket_note(ticket, line)}"
+        noted, what = ticket_note(ticket, line)
+        return noted, f"rework asked; {what}"
     if d["action"] in ("close-superseded", "close-requeue", "close-comment"):
         ticket = d.get("ticket")
         findings = latest_findings(slug, pr["number"])
@@ -832,12 +845,13 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         (state.setdefault("strikes", {})).pop(key, None)
         state.setdefault("closed", {})[key] = {"head": head, "at": now, "action": d["action"]}
         save_state(state_path(), state)
-        what = "closed, branch kept"
+        what, noted = "closed, branch kept", True
         if ticket and d["action"] == "close-requeue":
             line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962) closed PR #{n} ({d['reason']}). "
                     f"Branch kept; reopen the PR to undo.")
-            what += "; " + ticket_note(ticket, line)
-        return True, what
+            noted, note = ticket_note(ticket, line)
+            what += "; " + note
+        return noted, what
     return True, "nothing to do"
 
 
@@ -847,6 +861,20 @@ WRITES = ("outside", "merge", "review", "rework", "close-superseded", "close-req
 
 
 def main(argv=None) -> int:
+    """EXIT 3 FOR EVERY REFUSAL (PR #659 round 4, minor). fleet_repos, load_state
+    and gh_write refuse with SystemExit("REFUSED: ..."), which Python exits as 1,
+    the same code as a crash, while the docstring and main()'s own refusals say 3.
+    launchd-health-check.py reads the code, so the two must not look alike."""
+    try:
+        return _run(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            print(exc.code, file=sys.stderr)
+            return 3
+        raise
+
+
+def _run(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Give every open fleet PR an owner (ASK-3962).")
     ap.add_argument("--apply", action="store_true", help="act; without it, print and write nothing")
     ap.add_argument("--skip", action="append", default=[], metavar="REPO#N",

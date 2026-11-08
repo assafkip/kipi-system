@@ -622,6 +622,37 @@ check("... and its ticket gets the resume note", any(a[3] == "ASK-3036" for a in
 check("49h later, #4 reviewed at this head with no verdict is closed, not reviewed again",
       (len(sent_for(4, "close")), len([a for a in writes() if len(a) > 2 and a[2] == "review"])), (1, 0))
 
+print("-- a failed requeue and a refusal are loud (PR #659 round 4, minors)")
+# linear-sync.py's own failure shape: "BLOCK: ..." on stderr and its EXIT_USAGE.
+LS_FAIL = po.linear_sync().EXIT_USAGE
+
+
+def requeue_fails(argv, timeout=120, env=None, cwd=None):
+    argv = [str(a) for a in argv]
+    if len(argv) > 2 and argv[1].endswith("linear-sync.py") and argv[2] == "requeue":
+        SENT.append(argv)
+        return LS_FAIL, "", "BLOCK: HTTP 500 from Linear"
+    return fake_run(argv, timeout, env, cwd)
+
+
+po.run = requeue_fails
+rq_state: dict = {}
+rq_pr = pr(slug="o/fx", number=2, branch="sana/ask-3036", head=SHA[2])
+got = try_call(po.act, rq_pr, {"action": "rework", "ticket": TICKETS["ASK-3036"], "reason": "CI red"}, rq_state, NOW)
+check("rework whose requeue fails -> not ok, and the failure is named",
+      (got[0], "requeue failed" in got[1]) if isinstance(got, tuple) else got, (False, True))
+got = try_call(po.act, rq_pr, {"action": "close-requeue", "ticket": TICKETS["ASK-3036"], "reason": "CI red"}, rq_state, NOW)
+check("close-requeue whose requeue fails -> not ok, and the failure is named",
+      (got[0], "requeue failed" in got[1]) if isinstance(got, tuple) else got, (False, True))
+po.run = fake_run
+po.state_path().write_text("{not json")
+try:
+    rc_refused = po.main(["--apply"])
+except SystemExit as exc:
+    rc_refused = f"SystemExit({exc.code!r})"
+check("an unreadable state file refuses with exit 3, as the docstring says", rc_refused, 3)
+po.state_path().unlink()
+
 print("-- the sink's exit 0 is not a record; the ticket it names is")
 real_sink = importlib.util.spec_from_file_location("alert_sink_real", SCRIPTS / "alert-to-linear.py")
 a2l = importlib.util.module_from_spec(real_sink)
