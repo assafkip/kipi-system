@@ -294,16 +294,6 @@
       "rationale": "A notification is not work, so refusing it here is the correct end and not a dead end. The body is a raw alert line, not a spec anyone scoped; drafting a DoR onto one would only make it READY-SHAPED and admit it to this queue. Measured on the live board 2026-08-15: 81 open alert tickets, and all 19 already drafted onto sat in the permanently-UNREACHABLE bucket. The consumer of an alert is the operator who reads it; the paired refusal in linear-dor-drafter.py stops the conversion at source. Registered with its own marker rather than left under state-not-open, whose row it would otherwise silently inflate to two sites -- which is exactly how this was caught."
     },
     {
-      "id": "expired-park",
-      "source": "linear-worker",
-      "class": "selection-filter",
-      "marker": "if expired_park(i):",
-      "sites": 1,
-      "what": "The ticket is parked, its review date is before the local date, it sits in Backlog, it carries none of frozen, security, data-loss or ready, and no open sana PR names it: exactly the set chief's triage E2 (park_expired) closes, reversibly, at its next sweep (ASK-3995).",
-      "terminal": true,
-      "rationale": "Leaving it is the correct end here, not a dead end: a park is chief's countdown to a close, and at the date E2 closes it. Working it spent 1 of 3 daily dispatches on a ticket the board had already ruled closed by age (ASK-834 on 2026-11-08, 25 days past its date, while an Urgent ticket waited), and raced E2 until the first push. The refusal is held to E2's set exactly, because anything refused here that E2 will not close has no exit; test-worker-expired-park.sh pins every arm. The exit is chief's, so the ticket_states row carries it as a dated debt until the table can name a cross-repo consumer (ASK-3973)."
-    },
-    {
       "id": "out-of-repo",
       "source": "linear-worker",
       "class": "selection-filter",
@@ -1249,22 +1239,6 @@
             "since": "2026-11-08",
             "expires": "2026-12-08",
             "what": "chief's triage parks an idle Backlog ticket after 30 days and chief #370 (ASK-3955) closes it, reversibly, at the review date; recorded here once the table can name a cross-repo consumer."
-          }
-        ]
-      },
-      "expired-park": {
-        "max_age_days": 14,
-        "covers": [
-          "expired-park"
-        ],
-        "what": "A Backlog ticket parked past its review date, left by the worker for E2 to close.",
-        "exits": [
-          {
-            "kind": "debt",
-            "ticket": "ASK-3973",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "chief's triage E2 (park_expired, chief #370, ASK-3955) closes it, reversibly, at its next sweep, 50 a day; recorded here once the table can name a cross-repo consumer."
           }
         ]
       },
