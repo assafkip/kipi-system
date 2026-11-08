@@ -15,6 +15,7 @@
   "q-system/.q-system/scripts/lessons-distill.py",
   "q-system/.q-system/scripts/probe_hook_envelope.py",
   "q-system/.q-system/scripts/skill-trigger-eval.py",
-  "plugins/kipi-core/voiceloop/call_sites.py"
+  "plugins/kipi-core/voiceloop/call_sites.py",
+  "q-system/.q-system/model-eval-evidence.json"
  ]
 }

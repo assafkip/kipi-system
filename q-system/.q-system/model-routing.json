@@ -208,5 +208,34 @@
  "interactive": "Interactive Sana subagents take their model from ~/.claude/agents/sana.md frontmatter `model: opus` (the harness reads it; it resolves to claude-opus-5-5). Sonnet 5.5 authored 14 PRs interactively, approve 57% vs Opus 5.5 63 PRs at 67%, merged 86% both: not shown to hold, so no sana-light agent type. Frontmatter stays `opus`.",
  "not_routed_here": "Jobs with no reader of this table yet, and no Sonnet history either: DoR drafting, fleet triage and lesson distilling (lean_call.run passes no --model, so they ride the CLI default), RCA writing (interactive), lessons-daily.sh (exports claude-opus-5).",
  "client_path_markers_why": "A repo is a client engagement when its checkout sits under one of these roots. Path, not slug: this repo is public and never names a client.",
- "decision_rule_status": "Interim. With fewer than 10 Sonnet samples per class this table reads 'unknown', and unknown routes to Opus. ASK-4038 measures Sonnet for real (reviewer recall on 12 PRs, worker replay on 3 low-risk classes) and makes model_route read that evidence, so a row moves from data, not from an edit (PR #664 round 1, finding 2; spillover sp-24fc6463)."
+ "decision_rule_status": "Computed: model_route.decide() reads model-eval-evidence.json against sonnet_rule (ASK-4038). The class rows are the Opus base.",
+ "sonnet_rule": {
+  "why": "ASK-4038. A row moves to Sonnet only when model_route.decide() finds measured evidence (model-eval-evidence.json, written by the eval, never by hand) that meets these bars. Founder 2026-11-08: 'You're supposed to check when sonnet can be used instead of opus'.",
+  "sonnet_model": "claude-sonnet-5-5",
+  "never": [
+   "guards-hooks",
+   "dispatcher-worker",
+   "concurrency-locks",
+   "unknown"
+  ],
+  "review": {
+   "min_majors": 10,
+   "min_recall": 0.8,
+   "why": "at least 10 Opus majors in the class, Sonnet raises 80% of them, and Sonnet approves no PR Opus sent back"
+  },
+  "worker": {
+   "min_tickets": 3,
+   "why": "at least 3 replays per arm, and Sonnet no worse than Opus on committed, tests passing, round-1 approve, gating findings, tests failing"
+  },
+  "decision": {
+   "min_n": 10,
+   "min_same": 0.95,
+   "why": "a triage miss promotes work nobody can execute and costs a full worker run, against cents saved per call, so near-total agreement is the bar"
+  },
+  "content": {
+   "min_n": 10,
+   "min_share": 0.45,
+   "why": "a blind Opus judge rates Sonnet equal or better on 45% or more of pairs (a coin is 50%), and Sonnet passes the job's own gate at least as often"
+  }
+ }
 }

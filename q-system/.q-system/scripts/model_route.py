@@ -138,7 +138,67 @@ def classify(repo: str = "", files=(), text: str = "", table: dict | None = None
     return "unknown"
 
 
-def pick(job: str, cls: str = "*", table_path: Path | None = None) -> str:
+EVIDENCE = HERE.parent / "model-eval-evidence.json"
+
+
+def decide(job: str, cls: str, table: dict, evidence: dict | None) -> tuple:
+    """(sonnet_model_or_None, why). Sonnet only when measured evidence meets the
+    table's `sonnet_rule` for this job and class; anything else is None.
+
+    Why in code (PR #664 round 2, minor; founder 2026-11-08: "You're supposed to
+    check when sonnet can be used instead of opus"): the bar was prose, so a
+    one-key table edit could move a class on 2 samples. Now a row moves only from
+    data a re-run of the eval writes, and the bar is checked here, not trusted."""
+    rule = table.get("sonnet_rule") or {}
+    if not evidence:
+        return None, "no evidence file"
+    if cls in rule.get("never", []):
+        return None, f"{cls} is a risk class"
+    if job == "review":
+        e = ((evidence.get("review") or {}).get("per_class") or {}).get(cls)
+        r = rule.get("review") or {}
+        if not e or e["opus_majors"] < r.get("min_majors", 10**9):
+            seen = (f"; measured so far: caught {e['caught']}/{e['opus_majors']}, approved "
+                    f"{e.get('sonnet_approved_those', 0)} of {e.get('opus_request_changes', 0)} Opus REQUEST CHANGES") if e else ""
+            return None, f"review/{cls}: {e['opus_majors'] if e else 0} Opus majors measured, under {r.get('min_majors')}{seen}"
+        recall = e["caught"] / e["opus_majors"]
+        if recall < r.get("min_recall", 1.1) or e.get("sonnet_approved_those", 0) > 0:
+            return None, f"review/{cls}: recall {e['caught']}/{e['opus_majors']}, approved {e.get('sonnet_approved_those', 0)} Opus REQUEST CHANGES"
+        return (evidence["review"]["model"], f"review/{cls}: recall {e['caught']}/{e['opus_majors']}")
+    if job == "worker":
+        arms = ((evidence.get("worker") or {}).get("per_class") or {}).get(cls) or {}
+        s, o = arms.get("sonnet"), arms.get("opus")
+        r = rule.get("worker") or {}
+        if not s or not o or min(s["runs"], o["runs"]) < r.get("min_tickets", 10**9):
+            return None, f"worker/{cls}: {s['runs'] if s else 0} Sonnet replays, under {r.get('min_tickets')}"
+        worse = [k for k in ("committed", "tests_pass", "r1_approve") if s[k] < o[k]] + \
+                [k for k in ("gating", "tests_fail") if s[k] > o[k]]
+        if worse:
+            return None, f"worker/{cls}: Sonnet worse on {', '.join(worse)}"
+        return (evidence["worker"]["models"]["sonnet"], f"worker/{cls}: no worse on any check over {s['runs']}")
+    e = (evidence.get("jobs") or {}).get(job)
+    if not e:
+        return None, f"{job}: not measured"
+    if e.get("kind") == "decision":
+        r = rule.get("decision") or {}
+        if e["n"] < r.get("min_n", 10**9) or e["same"] / e["n"] < r.get("min_same", 1.1):
+            return None, f"{job}: same decision {e['same']}/{e['n']}"
+        return rule.get("sonnet_model"), f"{job}: same decision {e['same']}/{e['n']}"
+    r = rule.get("content") or {}
+    share = (e.get("sonnet_better", 0) + e.get("equal", 0)) / max(1, e.get("judged", 0))
+    if e["n"] < r.get("min_n", 10**9) or share < r.get("min_share", 1.1) or (e.get("sonnet_gate") or 0) < (e.get("opus_gate") or 0):
+        return None, f"{job}: judge equal-or-Sonnet {share:.0%} of {e.get('judged')}, gate {e.get('sonnet_gate')} vs {e.get('opus_gate')}"
+    return rule.get("sonnet_model"), f"{job}: judge equal-or-Sonnet {share:.0%}"
+
+
+def _evidence(path: Path | None = None) -> dict | None:
+    try:
+        return json.loads(Path(path or EVIDENCE).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def pick(job: str, cls: str = "*", table_path: Path | None = None, evidence_path: Path | None = None) -> str:
     try:
         t = load(table_path)
     except (OSError, ValueError) as exc:
@@ -149,6 +209,9 @@ def pick(job: str, cls: str = "*", table_path: Path | None = None) -> str:
         _say(f"no job {job!r} in the table; using the default")
         return t["default"]
     rows = spec.get("classes")
+    sonnet, _why = decide(job, cls if rows is not None else "*", t, _evidence(evidence_path))
+    if sonnet:
+        return sonnet
     if rows is None:
         return spec["model"]
     row = rows.get(cls) or rows.get("unknown")
@@ -188,11 +251,19 @@ def main(argv=None) -> int:
     c.add_argument("--files", nargs="*", default=[])
     c.add_argument("--repo", default="")
     c.add_argument("--text", default="")
+    sub.add_parser("decisions", help="every job and class, the model it gets, and why")
     k = sub.add_parser("known", help="exit 0 when the model id is in the table's known_models")
     k.add_argument("model")
     a = ap.parse_args(argv)
     if a.verb == "classify":
         print(classify(a.repo, a.files, a.text))
+        return 0
+    if a.verb == "decisions":
+        t, e = load(), _evidence()
+        for job, spec in t["jobs"].items():
+            for cls in (list(spec["classes"]) if "classes" in spec else ["*"]):
+                sonnet, why = decide(job, cls, t, e)
+                print(f"{job}\t{cls}\t{sonnet or pick(job, cls)}\t{why}")
         return 0
     if a.verb == "known":
         try:

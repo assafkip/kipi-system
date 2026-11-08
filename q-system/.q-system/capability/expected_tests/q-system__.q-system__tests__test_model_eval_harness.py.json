@@ -1,0 +1,8 @@
+{
+ "path": "q-system/.q-system/tests/test_model_eval_harness.py",
+ "runner": "python3",
+ "covers": [
+  "q-system/.q-system/model-eval/*.py",
+  "q-system/.q-system/scripts/lean_call.py"
+ ]
+}

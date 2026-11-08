@@ -181,15 +181,61 @@ class Table(unittest.TestCase):
             for cls in ("guards-hooks", "dispatcher-worker", "concurrency-locks", "unknown"):
                 self.assertIn("opus", self.t["jobs"][job]["classes"][cls]["model"], f"{job}/{cls}")
 
-    def test_no_row_leaves_opus_until_the_bar_is_enforced_in_code(self):
-        # PR #664 round 2, minor: the decision rule's sample bar lived only in
-        # prose, so a one-key edit could route a class to Sonnet on 2 samples with
-        # CI green. Until ASK-4038 makes model_route compute a row from measured
-        # evidence, every row of every job is Opus, and this test is the bar.
+    def test_rows_are_the_opus_base_and_sonnet_comes_only_from_evidence(self):
+        # PR #664 round 2, minor: a one-key edit could route a class to Sonnet on
+        # 2 samples with CI green. Since ASK-4038 the rows stay the Opus base and a
+        # Sonnet answer can only come from decide() over measured evidence.
         for job, spec in self.t["jobs"].items():
             rows = spec.get("classes", {"*": spec})
             for cls, row in rows.items():
-                self.assertIn("opus", row["model"], f"{job}/{cls} left Opus with no evidence check in code")
+                self.assertIn("opus", row["model"], f"{job}/{cls}: a row names Sonnet; let the evidence move it")
+        ev = model_route._evidence()
+        self.assertIsNotNone(ev, "model-eval-evidence.json must exist and parse")
+        for job, spec in self.t["jobs"].items():
+            for cls in (spec.get("classes") or {"*": None}):
+                picked = model_route.pick(job, cls)
+                sonnet, why = model_route.decide(job, cls, self.t, ev)
+                if "sonnet" in picked:
+                    self.assertEqual(picked, sonnet, f"{job}/{cls} on Sonnet without the rule: {why}")
+
+    def test_decide_moves_a_row_only_over_the_bar(self):
+        # negative self-test both ways: evidence just over each bar moves the row,
+        # just under it does not, and a risk class never moves
+        t = self.t
+        r = t["sonnet_rule"]
+        good_review = {"review": {"model": r["sonnet_model"], "per_class": {"docs-text": {
+            "opus_majors": r["review"]["min_majors"], "caught": r["review"]["min_majors"], "sonnet_approved_those": 0}}}}
+        self.assertEqual(model_route.decide("review", "docs-text", t, good_review)[0], r["sonnet_model"])
+        low = json.loads(json.dumps(good_review))
+        low["review"]["per_class"]["docs-text"]["caught"] = int(r["review"]["min_majors"] * r["review"]["min_recall"]) - 1
+        self.assertIsNone(model_route.decide("review", "docs-text", t, low)[0])
+        let_through = json.loads(json.dumps(good_review))
+        let_through["review"]["per_class"]["docs-text"]["sonnet_approved_those"] = 1
+        self.assertIsNone(model_route.decide("review", "docs-text", t, let_through)[0])
+        self.assertIsNone(model_route.decide("review", "guards-hooks", t,
+                                             {"review": {"model": "x", "per_class": {"guards-hooks": {"opus_majors": 99, "caught": 99}}}})[0])
+        arm = {"runs": 3, "committed": 3, "tests_pass": 3, "tests_fail": 0, "r1_approve": 2, "gating": 1}
+        good_worker = {"worker": {"models": {"sonnet": r["sonnet_model"]}, "per_class": {"test-only": {"sonnet": dict(arm), "opus": dict(arm)}}}}
+        self.assertEqual(model_route.decide("worker", "test-only", t, good_worker)[0], r["sonnet_model"])
+        worse = json.loads(json.dumps(good_worker))
+        worse["worker"]["per_class"]["test-only"]["sonnet"]["gating"] = 2
+        self.assertIsNone(model_route.decide("worker", "test-only", t, worse)[0])
+        n = r["decision"]["min_n"]
+        self.assertEqual(model_route.decide("alert-triage", "*", t, {"jobs": {"alert-triage": {"kind": "decision", "n": n, "same": n}}})[0],
+                         r["sonnet_model"])
+        self.assertIsNone(model_route.decide("alert-triage", "*", t, {"jobs": {"alert-triage": {"kind": "decision", "n": n, "same": n - 1}}})[0])
+        content = {"jobs": {"lesson-distill": {"kind": "content", "n": 30, "judged": 20, "sonnet_better": 6, "equal": 4,
+                                               "sonnet_gate": 30, "opus_gate": 29}}}
+        self.assertEqual(model_route.decide("lesson-distill", "*", t, content)[0], r["sonnet_model"])
+        content["jobs"]["lesson-distill"]["equal"] = 2
+        self.assertIsNone(model_route.decide("lesson-distill", "*", t, content)[0])
+
+    def test_the_measured_evidence_routes_today(self):
+        # what the 2026-11-08 eval measured, read through the same code path
+        ev = model_route._evidence()
+        why = model_route.decide("lesson-distill", "*", self.t, ev)[1]
+        self.assertIn("38%", why)
+        self.assertIsNone(model_route.decide("review", "multi-code-file", self.t, ev)[0])
 
     def test_a_hook_wired_only_in_the_settings_template_is_a_guard(self):
         # PR #664 round 2, minor: miyo-session-pull.py is wired only in

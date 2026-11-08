@@ -1,0 +1,127 @@
+{
+ "_": "ASK-4038. Measured Sonnet vs Opus evidence, derived from the raw eval results by summarize.py; model_route.decide() reads it with the table rule. Do not edit by hand: re-run the eval.",
+ "jobs": {
+  "alert-triage": {
+   "kind": "decision",
+   "misses": [
+    "ASK-1592"
+   ],
+   "n": 10,
+   "same": 9
+  },
+  "dor-drafting": {
+   "equal": 0,
+   "judged": 9,
+   "kind": "content",
+   "n": 10,
+   "opus_better": 7,
+   "opus_gate": 9,
+   "opus_paths_real": "8/11",
+   "sonnet_better": 2,
+   "sonnet_gate": 10,
+   "sonnet_paths_real": "3/7"
+  },
+  "fleet-triage": {
+   "kind": "decision",
+   "misses": [
+    "ASK-4051"
+   ],
+   "n": 10,
+   "same": 9
+  },
+  "lesson-distill": {
+   "equal": 2,
+   "judged": 29,
+   "kind": "content",
+   "n": 30,
+   "opus_better": 18,
+   "opus_gate": 29,
+   "sonnet_better": 9,
+   "sonnet_gate": 30
+  }
+ },
+ "measured": "2026-11-08",
+ "review": {
+  "baseline": "claude-opus-5",
+  "check": "Sonnet re-reviews the PR at the head sha Opus reviewed; a catch is the same defect raised at any severity (hand-read, part1/matches.json)",
+  "model": "claude-sonnet-5-5",
+  "not_reviewed_environment": 2,
+  "per_class": {
+   "dispatcher-worker": {
+    "caught": 0,
+    "opus_majors": 2,
+    "opus_request_changes": 0,
+    "prs": 1,
+    "sonnet_approved_those": 0,
+    "sonnet_median_secs": 107
+   },
+   "docs-text": {
+    "caught": 0,
+    "opus_majors": 1,
+    "opus_request_changes": 0,
+    "prs": 1,
+    "sonnet_approved_those": 0,
+    "sonnet_median_secs": 60
+   },
+   "guards-hooks": {
+    "caught": 3,
+    "opus_majors": 9,
+    "opus_request_changes": 1,
+    "prs": 4,
+    "sonnet_approved_those": 1,
+    "sonnet_median_secs": 77
+   },
+   "multi-code-file": {
+    "caught": 1,
+    "opus_majors": 4,
+    "opus_request_changes": 2,
+    "prs": 2,
+    "sonnet_approved_those": 2,
+    "sonnet_median_secs": 94
+   },
+   "unknown": {
+    "caught": 0,
+    "opus_majors": 4,
+    "opus_request_changes": 0,
+    "prs": 2,
+    "sonnet_approved_those": 0,
+    "sonnet_median_secs": 109
+   }
+  }
+ },
+ "worker": {
+  "judge": "claude-opus-5 (blind: no model or branch in its prompt)",
+  "models": {
+   "opus": "claude-opus-5",
+   "sonnet": "claude-sonnet-5-5"
+  },
+  "per_class": {
+   "config-data": {
+    "opus": {
+     "committed": 1,
+     "gating": 0,
+     "majors": 0,
+     "minors": 0,
+     "r1_approve": 1,
+     "refused": 0,
+     "runs": 1,
+     "tests_fail": 0,
+     "tests_pass": 0
+    }
+   },
+   "test-only": {
+    "sonnet": {
+     "committed": 0,
+     "gating": 0,
+     "majors": 0,
+     "minors": 0,
+     "r1_approve": 0,
+     "refused": 1,
+     "runs": 1,
+     "tests_fail": 0,
+     "tests_pass": 0
+    }
+   }
+  }
+ }
+}
