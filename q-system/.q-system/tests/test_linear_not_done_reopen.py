@@ -99,6 +99,36 @@ def test_a_not_done_superseded_by_a_later_run_stays_done():
 
 
 @needs
+def test_work_finished_by_another_actor_stays_done():
+    """PR #661 review, major, the reviewer's repro: the worker gave up and logged NOT
+    done, then the orchestrator finished the same PR. The hold label is gone."""
+    issue = ask297(label_added="2026-11-08T17:40:00Z", labels=(("owner:sana", "o1"),))
+    d = mod.decide(issue, mod.read_log(LOG))
+    assert not d["reopen"] and "no hold label" in d["why"]
+
+
+@needs
+def test_a_not_done_that_named_no_hold_never_reopens():
+    log = mod.read_log(["2026-11-08T17:53:38Z ASK-297 is NOT done and is NOT held: no label was applied"])
+    d = mod.decide(ask297(label_added="2026-11-08T17:40:00Z"), log)
+    assert not d["reopen"]
+
+
+@needs
+def test_a_not_done_must_name_a_hold_still_on_the_ticket():
+    log = mod.read_log(["2026-11-08T17:53:38Z ASK-297 is NOT done: held at blocked:capability."])
+    d = mod.decide(ask297(label_added="2026-11-08T17:40:00Z"), log)
+    assert not d["reopen"]
+
+
+@needs
+def test_a_cut_history_is_said_in_the_reason():
+    issue = ask297(label_added="2026-10-19T16:08:50.523Z")
+    issue["history"]["pageInfo"] = {"hasNextPage": True}
+    assert "history cut at 100" in mod.decide(issue, {})["why"]
+
+
+@needs
 def test_a_not_done_from_before_the_pr_stays_done():
     log = mod.read_log(["2026-11-08T17:00:00Z ASK-297 is NOT done: held at needs-scope."])
     d = mod.decide(ask297(label_added="2026-11-08T17:40:00Z"), log)
@@ -116,6 +146,7 @@ def test_a_merge_this_job_already_acted_on_stays_done():
     (ask297(state="started"), "not completed"),
     (ask297(merged=False), "no merged PR"),
     (ask297(labels=(("owner:sana", "o1"),)), "no hold label"),
+    (ask297(label_added="2026-10-19T16:08:50.523Z"), "stale hold"),
 ])
 def test_other_shapes_stay(issue, why):
     d = mod.decide(issue, {})
@@ -126,6 +157,7 @@ def test_other_shapes_stay(issue, why):
 def test_the_log_is_read_once_per_line_shape():
     log = mod.read_log(LOG + ["garbage line", "2026-11-08T18:00:00Z worker: something else"])
     assert len(log["ASK-297"]["not_done"]) == 2 and len(log["ASK-297"]["start"]) == 1
+    assert {lab for _, lab in log["ASK-297"]["not_done"]} == {"needs-scope"}
 
 
 # --- the comment ------------------------------------------------------------------------
@@ -134,7 +166,6 @@ def test_the_log_is_read_once_per_line_shape():
 @pytest.mark.parametrize("label,named", [
     ("needs-scope", "linear-dor-drafter.py"),
     ("blocked:capability", "ASK-3960"),
-    (None, "com.kipi.dispatch"),
 ])
 def test_the_comment_names_the_next_consumer(label, named):
     d = mod.decide(ask297(), {})
@@ -148,10 +179,14 @@ def test_the_comment_names_the_next_consumer(label, named):
 # --- the write path -----------------------------------------------------------------------
 
 class Fake:
-    def __init__(self, state_ok=True, comment_ok=True):
+    def __init__(self, state_ok=True, comment_ok=True, now_state="backlog"):
         self.calls, self.state_ok, self.comment_ok = [], state_ok, comment_ok
+        self.now_state = now_state
 
     def graphql(self, q, v):
+        if "issue(id:$id){id state{type}}" in q:
+            self.calls.append(("read", v["id"]))
+            return {"issue": {"id": v["id"], "state": {"type": self.now_state}}}
         if "issueUpdate" in q:
             self.calls.append(("state", v["input"]["stateId"]))
             return {"issueUpdate": {"success": self.state_ok}}
@@ -187,9 +222,50 @@ def test_a_refused_comment_is_kept_and_posted_next_run(tmp_path):
     with pytest.raises(RuntimeError):
         mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend)
     assert list(mod.read_pending(pend)) == ["ASK-297"]
-    assert mod.retry_pending(Fake(comment_ok=False), pend) == ([], ["ASK-297"])
-    assert mod.retry_pending(Fake(), pend) == (["ASK-297"], [])
+    assert mod.retry_pending(Fake(comment_ok=False), pend) == ([], ["ASK-297"], [])
+    assert mod.retry_pending(Fake(), pend) == (["ASK-297"], [], [])
     assert mod.read_pending(pend) == {}
+
+
+@needs
+def test_a_comment_refused_for_good_is_dropped_after_the_cap(tmp_path):
+    """PR #661 review, major: it used to exit 6 every hour, and launchd-health paged."""
+    pend = tmp_path / "pending.json"
+    with pytest.raises(RuntimeError):
+        mod.apply_one(Fake(comment_ok=False), ask297(), mod.decide(ask297(), {}), "BACKLOG", pend)
+    seen = []
+    for _ in range(mod.MAX_COMMENT_ATTEMPTS + 2):
+        seen.append(mod.retry_pending(Fake(comment_ok=False), pend))
+    assert seen[mod.MAX_COMMENT_ATTEMPTS - 1][1] == [] and seen[mod.MAX_COMMENT_ATTEMPTS - 1][2]
+    assert mod.read_pending(pend) == {}
+
+
+@needs
+def test_a_retry_rereads_the_ticket_and_drops_a_comment_that_is_no_longer_true(tmp_path):
+    pend = tmp_path / "pending.json"
+    mod.write_pending(pend, {"ASK-297": {"issue_id": "uuid-297", "body": "b", "attempts": 1}})
+    f = Fake(now_state="completed")
+    posted, left, dropped = mod.retry_pending(f, pend)
+    assert (posted, left) == ([], []) and "completed" in dropped[0]
+    assert [c[0] for c in f.calls] == ["read"]
+
+
+@needs
+def test_a_corrupt_pending_file_is_moved_aside_not_read_as_empty(tmp_path):
+    pend = tmp_path / "pending.json"
+    pend.write_text('{"ASK-297": {"issue_id": "u", "bo')
+    assert mod.read_pending(pend) == {}
+    assert not pend.exists() and [p.name for p in tmp_path.iterdir() if "corrupt" in p.name]
+
+
+@needs
+def test_reopens_past_the_cap_are_listed_not_lost():
+    issues = [ask297() for _ in range(mod.MAX_REOPENS + 2)]
+    for n, i in enumerate(issues):
+        i["identifier"] = f"ASK-{n}"
+    decisions = [mod.decide(i, {}) for i in issues]
+    plan, capped = mod.split_plan(issues, decisions)
+    assert len(plan) == mod.MAX_REOPENS and capped == ["ASK-10", "ASK-11"]
 
 
 @needs
