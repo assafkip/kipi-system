@@ -439,7 +439,7 @@ def case_worker() -> None:
             pool = [{"identifier": "ASK-A", "priority": 2, "createdAt": "2026-01-01"},
                     {"identifier": "ASK-B", "priority": 2, "createdAt": "2026-06-01"},
                     {"identifier": "ASK-U", "priority": 1, "createdAt": "2026-09-01"}]
-            ns = {"pool": pool, "state_dir": td, "json": json, "os": os}
+            ns = {"pool": pool, "state_dir": td, "json": json, "os": os, "expired_park": lambda i: False}
             exec(src[s:e + len("pool.sort(key=pick_order_key)")], ns)
             got = [i["identifier"] for i in ns["pool"]]
             check("worker: a ticket blocking 2 others is picked before an equal-priority ticket blocking 0, "
