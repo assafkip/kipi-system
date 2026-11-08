@@ -306,6 +306,11 @@ check("the missing Action diffs against a --render-only copy, not the raw templa
       ("install-plist.sh com.kipi.linear-alert-triage --render-only" in miss,
        "the template in" in miss),
       (True, False))
+# PR #652 round 1: render from the primary checkout, and compare the argv, not
+# the raw files (where --heartbeat lives, without the comment noise).
+check("...from the primary checkout, comparing ProgramArguments",
+      ("~/projects/kipi-system" in miss, "plutil -extract ProgramArguments" in miss),
+      (True, True))
 check("...and opens nothing", [c for c in gh.calls if c[1:3] == ["issue", "create"]], [])
 
 print("-- wiring: every listed producer emits, and the reader is scheduled")

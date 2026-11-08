@@ -289,14 +289,19 @@ def issue_body(v: dict, table: dict) -> str:
         # round 2): a healthy pinned install differs from the raw template on 13
         # lines, so the one that matters, `--heartbeat` in the argv, was lost in the
         # noise. --render-only writes the plist install-plist.sh would install and
-        # touches no live job; fleet-health plist drift compares the same way.
+        # touches no live job; fleet-health plist drift compares the same render,
+        # structurally. The Action compares ProgramArguments, because a raw diff of
+        # the two files is 19 of 21 lines comment noise (PR #652 round 1).
         "missing": (f"Run `launchctl print gui/$(id -u)/{label}` on the Mac and read "
                     "its last exit, then the job's log under `~/.config/kipi/`. If it ran and "
                     f"exited 0, the installed `~/Library/LaunchAgents/{label}.plist` may predate "
-                    "`--heartbeat`: render what would be installed with "
+                    "`--heartbeat`: from the primary checkout `~/projects/kipi-system` (a worktree "
+                    "renders its own paths), render what would be installed with "
                     f"`bash q-system/.q-system/scripts/install-plist.sh {label} --render-only /tmp/{label}.plist`, "
-                    f"diff the installed plist against that file, "
-                    f"and reinstall with `bash q-system/.q-system/scripts/install-plist.sh {label}`. "
+                    "then compare the two argv, where `--heartbeat` lives: "
+                    f"`plutil -extract ProgramArguments json -o - ~/Library/LaunchAgents/{label}.plist` "
+                    f"against the same on `/tmp/{label}.plist` (a raw diff is mostly comment noise). "
+                    f"Reinstall with `bash q-system/.q-system/scripts/install-plist.sh {label}`. "
                     f"Producer: `{producer}`."),
         "starved": (f"Read the failure lines of the job's last two runs in `~/.config/kipi/{v['job']}.out` "
                     f"and `.err`, and fix the cause. Producer: `{producer}`."),
