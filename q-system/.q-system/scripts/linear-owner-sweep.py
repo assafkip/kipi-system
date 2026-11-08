@@ -25,9 +25,11 @@ WHAT IT DOES. One pass over the open board:
     or with no project at all, gets ONE comment naming the next consumer, then
     owner:sana. The project-unset population is the skeleton's (ASK-839,
     linear_registry.skeleton_project), so it is the fleet's;
-  * a ticket in a project no registry row names is counted and listed by id. Those
-    projects run their own triage (chief's bot for Chief); this job does not reach
-    into them.
+  * a ticket in a project no row of the registry copy it read names is counted and
+    listed by id, never labelled. "Outside" is a fact about that copy, not the
+    project: on 2026-11-08 origin's copy lacked infohawk, a fleet project (PR #654
+    review). So the job runs from the shared checkout, whose copy is current
+    (job-checkouts.json, ASK-3967), and the drift itself is ASK-4024.
 
 COMMENT FIRST, THEN THE LABEL. The comment carries SWEEP_MARKER and is looked up
 before it is posted. A label write that fails after its comment landed is retried
