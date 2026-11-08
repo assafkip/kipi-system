@@ -135,6 +135,18 @@ GOT1="$(picks "$(run_worker 1)")"
   && ok "the dispatcher's one pick is the Urgent ticket, not the newest one" \
   || bad "the dispatcher's one pick is the Urgent ticket" "got [$GOT1], want [ASK-955 ]"
 
+# THE DISPATCHER URGENT SLOT READS THE PICK PRIORITY FROM HERE (ASK-3996). Asked
+# for with KIPI_PICK_PRIORITY=1, the worker names the priority of the pick it
+# would work, on its own line; unasked, the line is absent, so no other reader of
+# the dry output sees a change.
+OUTP="$(KIPI_PICK_PRIORITY=1 run_worker 1)"
+printf '%s\n' "$OUTP" | grep -qE '\[dry\] pick priority ASK-955 1$' \
+  && ok "asked, the worker names the priority of its one pick (ASK-955, Urgent)" \
+  || bad "asked, the worker names the pick priority" "$(printf '%s\n' "$OUTP" | grep -E 'dry|Traceback' | head -3)"
+printf '%s\n' "$(run_worker 1)" | grep -q 'pick priority' \
+  && bad "unasked, the worker prints no pick priority line" "it printed one" \
+  || ok "unasked, the worker prints no pick priority line"
+
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" = "0" ]
