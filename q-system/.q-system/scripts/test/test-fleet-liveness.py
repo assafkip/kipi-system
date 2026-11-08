@@ -203,10 +203,21 @@ debts = sum(1 for row in rows.values() for e in row["exits"] if e.get("kind") ==
 latest = max(_day(e["expires"]) for row in rows.values() for e in row["exits"] if e.get("kind") == "debt")
 check("no finding while every debt is open",
       fh.liveness_debt_findings(TABLE, today=min(_day(e["since"]) for row in rows.values()
-                                                 for e in row["exits"] if e.get("kind") == "debt")), [])
-late = fh.liveness_debt_findings(TABLE, today=date.fromordinal(latest.toordinal() + 1))
+                                                 for e in row["exits"] if e.get("kind") == "debt"),
+                                jobs_table_path=SCRIPTS / "no-such-jobs.json"), [])
+late = fh.liveness_debt_findings(TABLE, today=date.fromordinal(latest.toordinal() + 1), jobs_table_path=SCRIPTS / "no-such-jobs.json")
 check("the day after the last expiry, one finding per debt", len(late), debts)
 check("each finding names its state and ticket", all("Liveness debt expired" in f["title"] for f in late), True)
+import tempfile as _tf
+jobs_tbl = Path(_tf.mkdtemp()) / "job-checkouts.json"
+jobs_tbl.write_text(json.dumps({"shared_exceptions": {
+    "com.kipi.x": {"reason": "r", "ticket": "ASK-1", "since": "2026-11-08", "expires": "2026-11-15"}}}))
+check("a job exception inside its date files nothing",
+      [f for f in fh.liveness_debt_findings(TABLE, today=date(2026, 11, 15), jobs_table_path=jobs_tbl)
+       if f["subject"].startswith("liveness-debt-job-")], [])
+check("a job exception past its date files one finding (PR #632 minor 2)",
+      [f["subject"] for f in fh.liveness_debt_findings(TABLE, today=date(2026, 11, 16), jobs_table_path=jobs_tbl)
+       if f["subject"].startswith("liveness-debt-job-")], ["liveness-debt-job-com.kipi.x"])
 check("an unreadable table is a finding, never zero",
       [f["subject"] for f in fh.liveness_debt_findings(SCRIPTS / "no-such-table.json")], ["liveness-debt-blind"])
 check("the detector is registered to file",

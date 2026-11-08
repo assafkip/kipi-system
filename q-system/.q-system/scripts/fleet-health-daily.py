@@ -1737,7 +1737,7 @@ def detect_gates_red(_ctx) -> list:
     return gates_red_findings()
 
 
-def liveness_debt_findings(table_path=None, today=None) -> list:
+def liveness_debt_findings(table_path=None, today=None, jobs_table_path=None) -> list:
     """Every ticket_states debt past its expiry, one finding each (RULE-2026-11-07-B, ASK-3953).
 
     THE DATES HAVE TO HAVE A READER WITH A REAL CLOCK. test-fleet-liveness.py
@@ -1762,6 +1762,31 @@ def liveness_debt_findings(table_path=None, today=None) -> list:
                           "`python3 q-system/.q-system/scripts/test/test-fleet-liveness.py`.")}]
     today = today or datetime.now(timezone.utc).date()
     out = []
+    # The same dated promise in a second table: a launchd job still running from the
+    # shared checkout (job-checkouts.json shared_exceptions, ASK-3966). PR #632's
+    # review found that table's expiries read by nothing; one reader serves both.
+    jobs_path = Path(jobs_table_path) if jobs_table_path else REPO_ROOT / "q-system" / ".q-system" / "job-checkouts.json"
+    try:
+        jobs = json.loads(jobs_path.read_text()) if jobs_path.is_file() else {}
+    except (OSError, ValueError):
+        jobs = {}
+        out.append({"subject": "liveness-debt-jobs-blind",
+                    "title": "Could not read job-checkouts.json",
+                    "body": f"`{jobs_path}` did not parse, so no expired job exception can be seen today."})
+    for label, row in sorted((jobs.get("shared_exceptions") or {}).items()):
+        try:
+            expires = datetime.strptime(str(row.get("expires")), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if expires < today:
+            out.append({
+                "subject": f"liveness-debt-job-{label}",
+                "title": (f"Job exception expired: {label} still runs from the shared checkout "
+                          f"({row.get('ticket')}, due {row.get('expires')})"),
+                "body": (f"`job-checkouts.json` lists `{label}` as a shared-checkout exception: "
+                         f"{row.get('reason', '')}\n\n## Action\nLand {row.get('ticket')} for this job, "
+                         "move it to `pinned` and run `install-plist.sh --pinned`, or re-plan the "
+                         "exception with a new bounded expiry and the reason.")})
     rows = ((data.get("ticket_states") or {}).get("rows") or {})
     for rid in sorted(rows):
         for e in rows[rid].get("exits") or []:
