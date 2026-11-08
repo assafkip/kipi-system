@@ -119,22 +119,19 @@ MODE="$1"
 # THE MIGRATION STEP (ASK-3966, PR #632 review, major 1). A label moved to its own
 # pinned checkout renders differently from the job already installed, and
 # fleet-health's plist-drift detector files one Linear issue per drifted label until
-# it is reinstalled. This reinstalls exactly the labels job-checkouts.json pins, one
-# command, from the primary checkout only (the same refusal as --all).
-if [ "$MODE" = "--pinned" ]; then
-  if [ -f "$KIPI_REPO/.git" ] || [ ! -d "$KIPI_REPO/.git" ]; then
-    echo "REFUSED: --pinned only runs from the primary checkout, not a worktree (resolved KIPI_REPO=$KIPI_REPO)." >&2
-    exit 2
-  fi
-  _pinned="$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("pinned") or []))' \
-    "$KIPI_REPO/q-system/.q-system/job-checkouts.json")" || { echo "REFUSED: job-checkouts.json is unreadable" >&2; exit 2; }
-  rc=0
-  for _label in $_pinned; do
-    bash "$SCRIPT_DIR/install-plist.sh" "$_label" || { echo "  FAILED: $_label" >&2; rc=1; }
-  done
-  exit $rc
-fi
-if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
+# it is reinstalled. --pinned reinstalls exactly the labels job-checkouts.json pins.
+#
+# IT WALKS WITH --all AND --missing, NOT BESIDE THEM (ASK-3969, PR #632 round 2). Its
+# first cut was its own loop, so it skipped every guard the walk carries: a retired,
+# skeleton-only or disabled label was re-armed, and in a repo the table does not
+# apply to it pinned nothing and reported success. Inside the walk it inherits each
+# guard from the one copy. Its own rule: the table must pin something HERE.
+# A job that is installed, not loaded and NOT paused is reinstalled and loaded like
+# any other. By fleet-health's contract that state is a dark job, not a decision: a
+# stop someone meant is recorded in launchd intent or the pause ledger, which the
+# disabled guard above honours (PR #641 round 1: treating it as a stop made one
+# transient bootstrap failure permanent, reported as reinstalled).
+if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ] || [ "$MODE" = "--pinned" ]; then
   # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
   # git worktree rewrote every live job to point at that worktree, including the
   # dispatcher, seconds before the directory was to be deleted. One label is a
@@ -179,8 +176,27 @@ if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ]; then
   # from a ledger was armed.
   # Fail CLOSED: if the set cannot be resolved, --missing arms nothing, because
   # arming a job somebody stopped is the harm this mode must not do.
+  # --pinned: the labels the table pins, and only if it applies to THIS repo
+  # (applies_to_ident, the origin basename, read as the single-label path reads it).
+  # A table that pins nothing here is a refusal, never a quiet success.
+  _pinned=""
+  if [ "$MODE" = "--pinned" ]; then
+    _ident="$(git -C "$KIPI_REPO" remote get-url origin 2>/dev/null || true)"
+    _ident="${_ident##*/}"; _ident="${_ident%.git}"
+    if ! _pinned="$(python3 - "$KIPI_REPO/q-system/.q-system/job-checkouts.json" "$_ident" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))
+if sys.argv[2] != t.get("applies_to_ident"):
+    sys.exit("job-checkouts.json applies to %r and this repo is %r" % (t.get("applies_to_ident"), sys.argv[2]))
+print("\n".join(t.get("pinned") or []))
+PY
+    )" || [ -z "$_pinned" ]; then
+      echo "REFUSED: --pinned pins nothing in this repo (job-checkouts.json unreadable, empty, or for another repo); nothing installed." >&2
+      exit 2
+    fi
+  fi
   _disabled=""
-  if [ "$MODE" = "--missing" ]; then
+  if [ "$MODE" = "--missing" ] || [ "$MODE" = "--pinned" ]; then
     if ! _disabled="$(python3 - "$SCRIPT_DIR/launchd-intent-verify.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("iv", sys.argv[1])
@@ -191,7 +207,7 @@ intent, _conflicts = iv.load_intent(iv.read_text(iv.INTENT_MANIFEST), texts)
 print("\n".join(sorted(k for k, v in intent.items() if v == iv.DISABLED)))
 PY
     )"; then
-      echo "REFUSED: --missing could not resolve the disabled-label set; arming nothing." >&2
+      echo "REFUSED: $MODE could not resolve the disabled-label set; arming nothing." >&2
       exit 2
     fi
   fi
@@ -205,6 +221,9 @@ PY
   while IFS= read -r _p; do
     [ -e "$_p" ] || continue
     _label="$(basename "$_p" .plist)"
+    if [ "$MODE" = "--pinned" ] && ! printf '%s\n' "$_pinned" | grep -qxF "$_label"; then
+      continue
+    fi
     # RETIREMENT DECLARED IN THE TREE, and this is the signal that travels.
     # The sidecar check further down (`<label>.plist.retired-<date>` in
     # ~/Library/LaunchAgents) reads UNTRACKED machine-local state: it is real on
@@ -227,10 +246,14 @@ PY
       _n_skipped=$((_n_skipped + 1))
       continue
     fi
-    if [ "$MODE" = "--missing" ]; then
-      if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
-        _n_present=$((_n_present + 1))
-        continue
+    if [ "$MODE" = "--missing" ] || [ "$MODE" = "--pinned" ]; then
+      # Kept as its own nested if: test-updater-arms-new-jobs.py mutates this exact
+      # line (PR #641 round 1), so it must read the same as it always has.
+      if [ "$MODE" = "--missing" ]; then
+        if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
+          _n_present=$((_n_present + 1))
+          continue
+        fi
       fi
       # A MISSING PLIST IS NOT THE SAME AS A NEW JOB, and reading it that way is
       # how this mode resurrects work the founder deliberately stopped. The fleet
@@ -283,7 +306,9 @@ EOF
   # 0. The founder's only signal was silence. Every committed label now lands in
   # exactly one of these three counts, and a template that could not be installed
   # is named and carries the exit code out.
-  if [ "$MODE" = "--missing" ]; then
+  if [ "$MODE" = "--pinned" ]; then
+    echo "install-jobs: $_n_installed pinned job(s) reinstalled, $_n_skipped skipped, $_n_failed failed (of $(printf '%s\n' "$_pinned" | grep -c .) pinned)"
+  elif [ "$MODE" = "--missing" ]; then
     echo "install-jobs: $_n_installed newly installed, $_n_present already installed (untouched), $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_present + _n_skipped + _n_failed)) committed)"
   else
     echo "install-jobs: $_n_installed installed, $_n_skipped skipped, $_n_failed failed (of $((_n_installed + _n_skipped + _n_failed)) committed)"
