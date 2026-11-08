@@ -8,8 +8,9 @@
 # ready-shaped kipi-system tickets, 39 of them under a week old and picked ahead
 # of 119 that were over 60 days old, while the 3 Urgent and 62 High ones waited
 # behind fresh Low and unprioritized filings. ASK-248, the ticket that asked for
-# this order, was itself parked by triage after 30 days unpicked. A stack starves
-# its bottom forever; a queue bounds every wait by its depth.
+# this order, was itself parked by triage after 30 days unpicked. Oldest first
+# bounds a wait within a band. Across bands there is no aging, by decision, so the
+# lower bands leave by age through the park and its close, not through this order.
 #
 # THE SEAM is test-worker-project-scope.sh's: the REAL linear-worker.sh picker
 # against a fixture Linear server through KIPI_LINEAR_API_URL, never a copy of

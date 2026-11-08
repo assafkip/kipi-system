@@ -956,9 +956,12 @@ pool = [i for i in issues if ready(i)]
 # Linear answers newest created first (measured 2026-11-08), so the pool was a
 # stack: 39 tickets under a week old were worked ahead of 119 over 60 days old,
 # and the 3 Urgent and 62 High ones waited behind fresh Low filings. ASK-248, the
-# ticket asking for this order, was parked unpicked after 30 days. A stack never
-# reaches its bottom; a queue bounds every wait by its depth. Linear priority 0
-# means No priority and sorts after Low (4), whatever its age.
+# ticket asking for this order, was parked unpicked after 30 days. Oldest first
+# bounds a wait WITHIN a band by the band ahead of it. Across bands it does not:
+# there is no aging, by decision (ASK-248 Not doing), so a lower band waits while
+# higher ones refill, and spillover-promote.py files at Medium by default. The
+# lower bands leave by age through the park and its close (chief, E2), not by
+# this order. Linear priority 0 means No priority and sorts after Low (4).
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
