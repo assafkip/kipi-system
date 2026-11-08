@@ -85,6 +85,17 @@ def _worker_ready(repo_project="kipi-system"):
           "project_of": lambda i: ((i.get("project") or {}).get("name") or "")}
     exec(compile("def in_this_repo(i):\n    return project_of(i) == repo_project\n",
                  "worker:in_this_repo", "exec"), ns)
+    # ready() asks expired_park() since ASK-3995. Lifted verbatim with its
+    # constants, never stubbed: a stub here is the hand-written subset the
+    # docstring above warns about. Its inputs are the picker clock and the
+    # environment, so both are handed in.
+    pm = re.search(r"^PARK_LABEL = .*?^            and not has_open_own_pr\(i\[\"identifier\"\]\)\)$",
+                   src, re.S | re.M)
+    if not pm:
+        raise AssertionError("could not locate the expired_park block in linear-worker.sh")
+    import datetime as _dt
+    ns.update({"now": _dt.datetime.now(_dt.timezone.utc), "os": os})
+    exec(compile(pm.group(0), "linear-worker.sh:expired_park", "exec"), ns)
     exec(compile(m.group(0), "linear-worker.sh:ready", "exec"), ns)
     return ns["ready"]
 
