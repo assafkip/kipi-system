@@ -858,12 +858,13 @@ fi
 # ASK-3968. H went red on about 1 in 10 ubuntu-latest runs once the runners
 # moved to Ubuntu 26.04 (7 of about 74 validate runs, 2026-11-01 to 11-08), and
 # never on a Mac. That mkdir is uutils coreutils: it checks for the path, then
-# creates it and treats "already exists" as success, so two racers that both
-# pass the check both exit 0. H sees that only when the scheduler lines two
-# racers up, so it passes by luck 9 runs in 10. This
-# shim loses the race every time: it makes the directory when it is missing and
-# reports success either way. Two claims in a row under it must still give
-# exactly one winner, on any OS.
+# calls mkdir(2), and an EEXIST that lands INSIDE that window is reported as
+# success, so two racers that both pass the check both exit 0. A path that already
+# stood at the check is still refused (23 to 34 bad trials of 300, not 300 of 300).
+# H sees the window only when the scheduler lines two racers up, so it passes by
+# luck 9 runs in 10. This shim makes the window permanent, the worst case: it
+# makes the directory when it is missing and reports success either way. Two
+# claims in a row under it must still give exactly one winner, on any OS.
 REAL_MKDIR="$(command -v mkdir)"
 SHIM_BIN="$WORK/lost-race-bin"; "$REAL_MKDIR" -p "$SHIM_BIN"
 cat > "$SHIM_BIN/mkdir" <<SH
@@ -921,6 +922,27 @@ else
       "THE SILENT OUTAGE: a failed holder write was read as a lost race, so nobody pages"
 fi
 chmod 0755 "$H3_STATE/$ENV_ALERT_CLAIM_NAME" 2>/dev/null || true
+
+# --- H4. ...and under that mkdir an EXPIRED claim is still taken over ---------
+# PR #633 round 1, major. The max-age takeover hung off mkdir's exit code, so a
+# mkdir that says yes over an existing claim skipped it, the O_EXCL holder write
+# then found the old holder, and the run stayed quiet: an outage claimed two days
+# ago kept every later outage silent for good. Under the H2 shim (the window
+# made permanent), a claim older than its max age must page exactly once.
+H4_STATE="$WORK/claim-expired-shim"; "$REAL_MKDIR" -p "$H4_STATE/$ENV_ALERT_CLAIM_NAME"
+printf 'pid=1 claimed_at=old epoch=%s\n' "$(( $(date +%s) - 172800 ))" > "$H4_STATE/$ENV_ALERT_CLAIM_NAME/holder"
+H4_WINS=0
+for _i in 1 2; do
+  if ( PATH="$SHIM_BIN:$PATH"; . "$REPO_SCRIPTS/env-failure-lib.sh"; env_alert_claim "$H4_STATE" 86400 ) 2>/dev/null; then
+    H4_WINS=$((H4_WINS+1))
+  fi
+done
+if [ "$H4_WINS" -eq 1 ]; then
+  ok "under a mkdir that says yes, an expired claim is taken over and pages exactly once"
+else
+  bad "under a mkdir that says yes, an expired claim is taken over and pages exactly once" \
+      "got $H4_WINS. 0 is the permanent silence: the expired claim was never taken over."
+fi
 
 # --- G. two dispatcher runs, one machine, one page --------------------------
 # ONE skeleton and ONE $STATE_DIR across both runs, because that is the production
