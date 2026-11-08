@@ -241,6 +241,73 @@ except ValueError:
     _refused = True
 check("a moved template_dir with the default renderer is REFUSED", _refused, True)
 
+# === THE DRIFT HEALS ITSELF (ASK-4022) =====================================
+# A drift finding used to wait for a hand reinstall. heal_plist_drift reinstalls
+# the job through install-plist.sh and files only what it could not heal. Every
+# effect is a fake here: nothing reloads a real job.
+_drift = {"subject": "com.kipi.dispatch",
+          "title": "installed job drifted from its committed template: com.kipi.dispatch (1 key)",
+          "body": "## Values that differ"}
+_other = {"subject": "com.kipi.x", "title": "a template could not be rendered: com.kipi.x", "body": "b"}
+
+
+def _heal(**kw):
+    calls = []
+    def install(label):
+        calls.append(label)
+        return kw.get("rc", 0), "tail"
+    args = dict(install=install, running=lambda _l: kw.get("running", False),
+                paused=kw.get("paused", set()), current=lambda: kw.get("current", True),
+                recheck=lambda: kw.get("still", []))
+    left, healed = fh.heal_plist_drift([_drift, _other], **args)
+    return left, healed, calls
+
+
+_l, _h, _c = _heal()
+check("a drifted job is reinstalled and its finding drops", (_h, _c, _l), (["com.kipi.dispatch"], ["com.kipi.dispatch"], [_other]))
+_l, _h, _c = _heal(running=True)
+check("a job that is running is not reloaded; the finding stays and says why",
+      (_h, _c, "was running" in _l[0]["body"]), ([], [], True))
+_l, _h, _c = _heal(paused={"com.kipi.dispatch"})
+check("a paused job is never re-armed", (_h, _c, len(_l)), ([], [], 2))
+_l, _h, _c = _heal(current=False)
+check("a checkout behind origin/main installs nothing and says so",
+      (_h, _c, "not at origin/main" in _l[0]["body"]), ([], [], True))
+_l, _h, _c = _heal(rc=1)
+check("a failed install keeps the finding with the installer's exit code",
+      (_h, "exited 1" in _l[0]["body"]), ([], True))
+_l, _h, _c = _heal(still=[_drift])
+check("an install that leaves drift keeps the finding", (_h, len(_l)), ([], 2))
+check("a finding that is not drift is never touched", _heal()[0], [_other])
+# Negative self-test: a heal that ignores the running guard reloads a live job.
+_src = Path(fh.__file__).read_text()
+_anchor = "        if running(label):\n"
+check("mutant anchor present exactly once", _src.count(_anchor), 1)
+_mut_ns = {"__file__": fh.__file__, "__name__": "fh_heal_mutant"}
+exec(compile(_src.replace(_anchor, "        if False:\n"), "fh-mutant", "exec"), _mut_ns)
+_calls = []
+_mut_ns["heal_plist_drift"]([_drift], install=lambda l: (_calls.append(l), (0, ""))[1],
+                            running=lambda _l: True, paused=set(), current=lambda: True,
+                            recheck=lambda: [])
+check("mutant killed: without the running guard a live job is reloaded, so the guard case can fail",
+      _calls, ["com.kipi.dispatch"])
+
+# Only the daily job own --apply run heals. A test or a dry read that calls the
+# detector must reload nothing: test-fleet-health-daily.py calls every detector.
+_saved = (fh.REPO_ROOT, fh.plist_drift_findings, fh.heal_plist_drift, fh.HEAL_APPLY)
+_fake_root = WORK / "primary"; (_fake_root / ".git").mkdir(parents=True, exist_ok=True)
+_heal_calls = []
+fh.REPO_ROOT = _fake_root
+fh.plist_drift_findings = lambda: [_drift]
+fh.heal_plist_drift = lambda fs: (_heal_calls.append(1), ([], ["com.kipi.dispatch"]))[1]
+fh.HEAL_APPLY = False
+_dry = fh.detect_plist_drift(None)
+fh.HEAL_APPLY = True
+_live = fh.detect_plist_drift(None)
+fh.REPO_ROOT, fh.plist_drift_findings, fh.heal_plist_drift, fh.HEAL_APPLY = _saved
+check("without --apply the detector reports drift and reloads nothing; with it, it heals",
+      (_dry, len(_heal_calls), _live), ([_drift], 1, []))
+
 # === REGISTRY WIRING =======================================================
 # A detector not in DETECTORS is a function nobody calls.
 _ids = [d["id"] for d in fh.DETECTORS]

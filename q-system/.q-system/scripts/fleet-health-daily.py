@@ -1626,6 +1626,102 @@ def detect_never_installed(_ctx) -> list:
     return never_installed_findings()
 
 
+# --- THE DRIFT HEALS ITSELF (ASK-4022) ----------------------------------------
+# A drift finding used to wait for an actor to reinstall the job. On 2026-11-08
+# two template changes in one day (the dispatch cap to 96, then KIPI_DISPATCH_MAX
+# dropped) each needed a hand bootout and bootstrap, and a finding that waits for
+# "someone" is the stall the founder ruled out. So a drifted job is re-rendered
+# from its committed template and reloaded through install-plist.sh, the one
+# installer (it does the bootout and bootstrap safely), and only a heal that
+# fails or leaves drift files the finding.
+#
+# FOUR GUARDS, each a scar or a near one:
+#   - the job is not reloaded while it runs (a live PID in launchctl list): a
+#     bootout mid-run kills a dispatch tick or a nightly pass; the next run retries;
+#   - a paused job (launchd-paused.txt) is never re-armed: that is the founder
+#     stop, not drift;
+#   - the primary checkout must sit at origin/main: its templates are what gets
+#     installed, and a stale checkout would install OLD values over new ones;
+#   - one install per job per run;
+#   - only under --apply, the daily job own mode for live writes: a test or a dry
+#     read that calls the detector reloads nothing (HEAL_APPLY, set by main).
+HEAL_APPLY = False
+
+
+def _job_running(label: str) -> bool:
+    try:
+        res = subprocess.run(["launchctl", "list", label], capture_output=True,
+                             text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True  # unknown is not idle: never reload into it
+    return res.returncode == 0 and '"PID" =' in res.stdout
+
+
+def _checkout_at_origin_main() -> bool:
+    def rev(ref):
+        return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", ref],
+                              capture_output=True, text=True, timeout=30).stdout.strip()
+    try:
+        subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "--quiet", "origin", "main"],
+                       capture_output=True, timeout=120)
+        head, main = rev("HEAD"), rev("origin/main")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(head) and head == main
+
+
+def _install_job(label: str) -> tuple:
+    try:
+        res = subprocess.run(["bash", str(PLIST_INSTALLER), label], capture_output=True,
+                             text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)
+    return res.returncode, (res.stdout + res.stderr)[-400:]
+
+
+def heal_plist_drift(findings: list, install=None, running=None, paused=None,
+                     current=None, recheck=None) -> tuple:
+    """(findings still open, labels healed). Every effect is injectable for tests."""
+    install = install or _install_job
+    running = running or _job_running
+    paused = _paused_labels() if paused is None else set(paused)
+    current = current or _checkout_at_origin_main
+    recheck = recheck or plist_drift_findings
+    drifted = [f for f in findings
+               if str(f.get("title", "")).startswith("installed job drifted")]
+    if not drifted:
+        return findings, []
+    if not current():
+        note = ("\n\n## Not healed\nThe primary checkout is not at origin/main, so its "
+                "templates may be older than the committed ones; no job was reinstalled.")
+        return [dict(f, body=f.get("body", "") + note) if f in drifted else f
+                for f in findings], []
+    healed, notes = [], {}
+    for f in drifted:
+        label = f.get("subject")
+        if not label or label in paused:
+            continue
+        if running(label):
+            notes[label] = "it was running, so it was not reloaded; the next run retries"
+            continue
+        rc, tail = install(label)
+        if rc != 0:
+            notes[label] = f"install-plist.sh exited {rc}: {tail}"
+            continue
+        healed.append(label)
+    still = {f.get("subject") for f in recheck()} if healed else set()
+    healed = [l for l in healed if l not in still]
+    out = []
+    for f in findings:
+        label = f.get("subject")
+        if f in drifted and label in healed:
+            continue
+        if f in drifted and label in notes:
+            f = dict(f, body=f.get("body", "") + f"\n\n## Not healed\n{notes[label]}")
+        out.append(f)
+    return out, healed
+
+
 def detect_plist_drift(_ctx) -> list:
     """`plist_drift_findings`, refused from a worktree.
 
@@ -1652,7 +1748,12 @@ def detect_plist_drift(_ctx) -> list:
                 "somewhere else."
             ),
         }]
-    return plist_drift_findings()
+    if not HEAL_APPLY:
+        return plist_drift_findings()
+    remaining, healed = heal_plist_drift(plist_drift_findings())
+    for label in healed:
+        print(f"plist-drift: {label} re-rendered from its template and reloaded (ASK-4022)", file=sys.stderr)
+    return remaining
 
 
 GATES_RED_LABEL = "gates-red"
@@ -2820,6 +2921,8 @@ def main() -> int:
             print(f"  - {p}", file=sys.stderr)
         return 1
 
+    global HEAL_APPLY
+    HEAL_APPLY = bool(args.apply)  # plist drift heals only on the live run (ASK-4022)
     all_findings, per_detector = run_detectors()
 
     print(f"fleet-health {_now()}")
