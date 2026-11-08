@@ -6,14 +6,26 @@
      ASK-113), which made the skeleton unusable on any other machine and failed
      validate-separation's Full skeleton sweep; converted to the
      openloops-heartbeat placeholder convention in ASK-191.
-     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-dor -->
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.linear-dor
+
+     NO EnvironmentVariables, AND THAT IS MEASURED (2026-11-07). A probe job run by
+     this same launchd domain, through this same `/bin/bash -lc`, had HOME, USER and
+     LOGNAME, and `claude -p` answered OK. The "Not logged in" seen under
+     `env -i HOME PATH` is a simulation launchd does not perform. The 63-char
+     failures on ASK-278 were the weekly usage limit, not the login.
+
+     The heartbeat flag below (ASK-3947): this run reports in/done through
+     heartbeat.py, and .github/workflows/heartbeat.yml reads it off this Mac. Only
+     the plist passes it, so a test that runs the drafter in apply mode never touches
+     the live heartbeat. No double hyphen in this comment: XML forbids one there,
+     and expat (plistlib) refuses the whole file while plutil accepts it. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.kipi.linear-dor</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string><string>-lc</string>
-    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi dor --limit 8 --apply</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi dor --limit 8 --apply --heartbeat</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
   <key>RunAtLoad</key><false/>
