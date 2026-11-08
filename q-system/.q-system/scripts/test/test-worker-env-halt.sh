@@ -235,6 +235,41 @@ else
       "THE DEFECT: rc=0 makes an outage byte-identical to a healthy run, and launchd-failing goes blind"
 fi
 
+# --- A6. A FAILED EXIT TOO (ASK-3981 round 1, guarded by ASK-3989) ------------
+# A run killed at its timeout exits non-zero with whatever the agent printed, so
+# the failed-exit site posts the marker as well, and logs the whole line here.
+STUB_A6="$WORK/stub-a6"; mkdir -p "$STUB_A6"
+cp "$WORK/gh" "$STUB_A6/gh"
+cat > "$STUB_A6/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "You have hit your weekly limit - resets 6am. TOKEN=XYZ123 copied out of the issue body"
+exit 1
+SH
+chmod +x "$STUB_A6/claude"
+SKEL_A6="$(make_skel "$WORK/run-a6")"
+STATE_A6="$WORK/state-a6"
+NOTIFY_A6="$WORK/notify-a6.log"
+PATH="$STUB_A6:$PATH" \
+   KIPI_SKEL="$SKEL_A6" KIPI_STATE_DIR="$STATE_A6" \
+   KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
+   KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+   KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+   KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
+   KIPI_NOTIFY="$WORK/recording-notify.sh" \
+   TEST_NOTIFY_LOG="$NOTIFY_A6" \
+   bash "$WORKER" --apply --limit 2 > "$WORK/run-a6.out" 2>&1
+ALERT_A6="$(cat "$NOTIFY_A6" 2>/dev/null)"
+if grep -qi 'weekly limit' <<<"$ALERT_A6" && ! grep -q 'XYZ123' <<<"$ALERT_A6"; then
+  ok "on a failed exit the alert names the limit and carries nothing after the marker"
+else
+  bad "on a failed exit the alert carries only the marker" "alert text: '${ALERT_A6:-<empty>}'"
+fi
+if grep -q 'runner refusal read on a failed exit (rc=[0-9]*): .*XYZ123' "$STATE_A6/linear-worker.log" 2>/dev/null; then
+  ok "...and the worker logs the whole failed-exit line on this Mac"
+else
+  bad "the worker logs the whole failed-exit line on this Mac" "no say line in $STATE_A6/linear-worker.log"
+fi
+
 # --- A5. ON A SUCCESSFUL EXIT ONLY THE MARKER TRAVELS (ASK-3981) --------------
 # Run A's limit line exits 0, so its bytes are the AGENT'S: an issue body can
 # steer them. A one-line answer shaped like a limit line used to carry its tail

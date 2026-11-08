@@ -179,6 +179,29 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ONLY THE MARKER LEAVES THE MAC (ASK-3981, guarded by ASK-3989). A run killed at
+# its timeout exits non-zero with whatever the agent printed, so the tail of a
+# limit-shaped line is not proof of the CLI. The page carries the marker; the
+# sweep's own log keeps the whole line.
+TMPX="$(HB_LIMIT_LINE="You have hit your weekly limit - resets 6am. TOKEN=XYZ123 copied out of the issue body" build_env_fixture)"
+PATH="$TMPX/bin:$PATH" KIPI_REPO="$TMPX/skel" \
+  bash "$TMPX/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+NOTX="$(cat "$TMPX/notifies" 2>/dev/null)"
+if grep -qi 'weekly limit' <<<"$NOTX" && ! grep -q 'XYZ123' <<<"$NOTX"; then
+  echo "PASS  a failed exit pages the marker only, never the line's tail"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  the page carried the line's tail or no marker: ${NOTX:-<empty>}"
+  FAIL=$((FAIL + 1))
+fi
+if grep -q 'XYZ123' "$TMPX/skel/q-system/output/open-loops-heartbeat.log" 2>/dev/null; then
+  echo "PASS  ...and the sweep's own log keeps the whole line"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  the sweep's own log lost the whole line"
+  FAIL=$((FAIL + 1))
+fi
+
 # THIS ASSERTION WAS INVERTED ON PURPOSE (PR #198 review, major). It previously
 # demanded a non-zero exit here, on the reading that ASK-184 requires any failed
 # sweep to reach launchd. Measured consequence: the non-zero exit trips the
