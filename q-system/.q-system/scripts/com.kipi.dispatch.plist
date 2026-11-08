@@ -103,12 +103,17 @@
 		     "We need to get the work done so we need to consider taking the
 		     three cap off unless it's the tremendmental. Unless there's a
 		     really good reason to keep the cap, we should take it off so we
-		     can get this work done". No reason held up: the usage breaker
-		     and the D15 weekly guard now bound spend, a merge still needs
-		     validate, verify and kipi/reviewer-approved, and the review-round
-		     cap is enforced per issue. What still bounds the loop: live
-		     concurrency (KIPI_DISPATCH_MAX), the WIP ceiling of 5, and the
-		     tick. Lower it only on measured evidence from a day at 96. -->
+		     can get this work done". What still bounds the loop: live
+		     concurrency (KIPI_DISPATCH_MAX, 3 converges at once), the
+		     review-round cap per issue, the WIP ceiling of 5 open own PRs,
+		     the tick, and the subscription limit itself: env-failure-lib.sh
+		     reads "hit your weekly limit" as environmental and the worker
+		     halts on it rather than burning attempts. A merge still needs
+		     validate, verify and kipi/reviewer-approved.
+		     NOT a bound today (PR #653 round 1): the usage breaker. It
+		     meters only bots that write usage-ledger rows, and the worker
+		     writes none (unmetered since 2026-10-25, ASK-3126, ASK-4005).
+		     Lower the cap only on measured evidence from a day at 96. -->
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
 		<string>96</string>
 
