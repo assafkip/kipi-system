@@ -1035,8 +1035,12 @@ say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted i
 #
 # THE CURSOR IS NOT MOVED. The slot is extra to the rotation, so the repo whose
 # turn was next keeps it for the next tick (SLOT_TAKEN, at cursor_set below).
+#
+# KNOWN RESIDUAL. A reviewer or red-CI redrive in the slot repo still outranks a
+# fresh pick there, by design, so it can take the slot tick. Each redrive is one
+# attempt per PR per head, so it cannot take the slot two days running for the
+# same reason.
 URGENT_SLOT_FILE="$HOME/.config/kipi/dispatch-urgent-slot$COUNT_SUFFIX-$BUDGET_DAY"
-URGENT_SLOT_WORK="${KIPI_URGENT_SLOT_WORK:-bash ./kipi work}"
 SLOT_NAME=""; SLOT_PATH=""; SLOT_ISSUE=""
 urgent_slot_scan() {  # fills SLOT_NAME, SLOT_PATH, SLOT_ISSUE, or leaves them empty
   local name path args out issue pri live
@@ -1051,7 +1055,7 @@ urgent_slot_scan() {  # fills SLOT_NAME, SLOT_PATH, SLOT_ISSUE, or leaves them e
     [ "$path" = "$REPO" ] || args="--repo $path"
     # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
     out="$(if [ -n "$args" ]; then export KIPI_TARGET_REPO="$path"; fi
-           KIPI_PICK_PRIORITY=1 $URGENT_SLOT_WORK $args 2>&1)"
+           KIPI_PICK_PRIORITY=1 bash ./kipi work $args 2>&1)"
     issue="$(printf '%s' "$out" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
     [ -n "$issue" ] || continue
     pri="$(printf '%s\n' "$out" | grep -E "\[dry\] pick priority $issue [0-9]+\$" | head -1 | awk '{print $NF}')"
