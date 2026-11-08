@@ -260,6 +260,15 @@ codex_env_reason() {  # codex_env_reason <codex-output> <rc> -> the line; 0 when
 # and two workers hitting the same outage inside it both read "unclaimed" and both
 # page -- the defect, reproduced rather than fixed. Eight racing subshells in
 # test-worker-env-halt.sh pin that exactly one wins.
+# EXCEPT WHERE mkdir IS NOT THAT SYSCALL (ASK-3968). On Ubuntu 26.04 the mkdir
+# binary is uutils coreutils: it checks for the path, then calls mkdir(2), and an
+# EEXIST that arrives INSIDE that check-then-create window is reported as success.
+# A path that already existed at the check is still refused (measured: 23 to 34
+# bad trials of 300, not 300 of 300). So two racers that both pass the check can
+# both exit 0. Nothing here may rely on which case occurs: the race is settled by
+# the holder below, which bash creates with O_EXCL, and the takeover runs from
+# either side (test-worker-env-halt.sh H2 and H4 make the window permanent, the
+# worst case).
 #
 # NO STATE DIR MEANS PAGE. A caller that passes nothing gets a claim, because the
 # failure direction here matters: a missing page for a real outage is silence a
@@ -295,14 +304,8 @@ _env_claim_older_than() {  # _env_claim_older_than <claim-dir> <max-age-seconds>
   fi
 }
 
-env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when THIS process may page
-  local state="${1:-}" max_age="${2:-}" claim dead
-  [ -n "$state" ] || return 0
-  mkdir -p "$state" 2>/dev/null || return 0
-  claim="$state/$ENV_ALERT_CLAIM_NAME"
-  if ! mkdir "$claim" 2>/dev/null; then
-    [ -n "$max_age" ] || return 1
-    _env_claim_older_than "$claim" "$max_age" || return 1
+_env_claim_takeover() {  # _env_claim_takeover <claim-dir> <max-age-seconds> -> 0 when THIS run made a fresh claim
+  local claim="$1" max_age="$2" dead
     # A name nothing holds (PR #421 round 11, nit): mv onto an EXISTING
     # directory moves the claim inside it, the cleanup below misses, and the
     # litter stays. mktemp -u picks a free name on BSD and GNU alike.
@@ -325,15 +328,52 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
     rm -f "$dead/holder" 2>/dev/null || true
     rmdir "$dead" 2>/dev/null || true
     mkdir "$claim" 2>/dev/null || return 1
+}
+
+_env_claim_write_holder() {  # _env_claim_write_holder <claim-dir> -> 0 when THIS run created the holder
+  { ( set -C; printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" > "$1/holder" ); } 2>/dev/null
+}
+
+env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when THIS process may page
+  local state="${1:-}" max_age="${2:-}" claim
+  [ -n "$state" ] || return 0
+  mkdir -p "$state" 2>/dev/null || return 0
+  claim="$state/$ENV_ALERT_CLAIM_NAME"
+  if ! mkdir "$claim" 2>/dev/null; then
+    [ -n "$max_age" ] || return 1
+    _env_claim_older_than "$claim" "$max_age" || return 1
+    _env_claim_takeover "$claim" "$max_age" || return 1
   fi
   # For the human reading $STATE_DIR later. The directory's existence is still
   # the protocol; only a caller that passed a max age reads the epoch back
   # (env_alert_claim above, env_alert_held below).
+  # THE HOLDER IS ALSO THE TIE-BREAK (ASK-3968). It was a clobbering `>`, so
+  # when uutils mkdir told two racers they had both made the claim, both wrote
+  # a holder and both paged: H in test-worker-env-halt.sh went red on 7 of
+  # about 74 validate runs on Ubuntu 26.04 (2026-11-01 to 11-08), and a copy of
+  # H on that runner let 2 to 8 of the 8 racers win in 23 to 34 of 300 trials.
+  # `set -C` makes the redirect an open(O_EXCL) done by bash
+  # itself, so exactly one racer creates the holder, with no utility between
+  # the claim and the kernel (the page_lock cure in kipi-dispatch.sh, ASK-3797).
+  # A run that finds a holder already there LOST and stays quiet. A write that
+  # failed with no holder left behind still pages: a missing page is the worse
+  # failure, and the mtime fallback covers the lost epoch.
   # Braced so a failed redirect stays quiet too: if a racing takeover moved the
   # directory in this instant, the shell reports the open failure before a
-  # trailing 2>/dev/null would apply. The mtime fallback covers the lost epoch.
-  { printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
-    > "$claim/holder"; } 2>/dev/null || true
+  # trailing 2>/dev/null would apply.
+  _env_claim_write_holder "$claim" && return 0
+  # The write failed. Nothing standing means page (the fail-open rule above).
+  [ -e "$claim/holder" ] || return 0
+  # A holder stands, so this run lost -- UNLESS that holder is an expired claim a
+  # mkdir which says yes over an existing directory let it reach (PR #633 round 1,
+  # major). The takeover above hangs off mkdir's exit code, so under that mkdir it
+  # never ran, and an expired claim would keep the next outage silent for good. The
+  # same takeover runs here; a fresh holder (younger than max_age) still means lost.
+  [ -n "$max_age" ] && _env_claim_older_than "$claim" "$max_age" || return 1
+  _env_claim_takeover "$claim" "$max_age" || return 1
+  _env_claim_write_holder "$claim" && return 0
+  [ -e "$claim/holder" ] && return 1
   return 0
 }
 
