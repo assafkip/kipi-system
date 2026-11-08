@@ -1787,6 +1787,60 @@ def detect_liveness_debt(_ctx) -> list:
     return liveness_debt_findings()
 
 
+HEARTBEAT_RED_LABEL = "heartbeat-red"
+
+
+def heartbeat_red_findings(repo_root=None, run=None, gh_dirs=None) -> list:
+    """Every OPEN `heartbeat-red` GitHub issue, as one finding each (ASK-3947).
+
+    `.github/workflows/heartbeat.yml` reads the consumers' heartbeats off this Mac
+    and opens one issue per (job, kind). Without a reader here that issue is a
+    state with no machine consumer (RULE-2026-11-06-B), so this mirrors it into
+    Linear the way gates-red is mirrored. A separate function rather than a label
+    argument on gates_red_findings, so the gates-red route and its tests do not
+    move in a change about something else.
+
+    A gh that cannot answer is BLIND, never zero findings, for the same reason as
+    gates-red: an unreadable alarm queue that reports empty is a silent all-clear.
+    """
+    root = Path(repo_root) if repo_root else REPO_ROOT
+    if not (root / ".github" / "workflows" / "heartbeat.yml").is_file():
+        return []
+    blind = {"subject": "heartbeat-red-blind",
+             "title": "Could not read the heartbeat-red issues on GitHub",
+             "body": ("`gh issue list --label heartbeat-red` did not answer: {r}\n\n"
+                      "The outside heartbeat check opens these issues and this detector is "
+                      "their only reader on the Mac, so today a missing or starved consumer "
+                      "could not reach triage.\n\n## Action\nCheck `gh auth status` for the "
+                      "account the fleet-health job runs as.")}
+    run = run or subprocess.run
+    gh = _find_gh(gh_dirs)
+    if not gh:
+        return [dict(blind, body=blind["body"].format(r="gh is not installed"))]
+    try:
+        proc = run([gh, "issue", "list", "--label", HEARTBEAT_RED_LABEL, "--state", "open",
+                    "--limit", "50", "--json", "number,title,url,updatedAt"],
+                   capture_output=True, text=True, timeout=60, cwd=str(root))
+        if proc.returncode != 0:
+            return [dict(blind, body=blind["body"].format(r=f"exit {proc.returncode}"))]
+        issues = json.loads(proc.stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return [dict(blind, body=blind["body"].format(r=exc.__class__.__name__))]
+    return [{
+        "subject": f"heartbeat-red-{i['number']}",
+        "title": f"{i.get('title', 'heartbeat-red')}: GitHub issue #{i['number']}",
+        "body": (f"{i.get('url', '')}\n\nOpened by `.github/workflows/heartbeat.yml` "
+                 f"(last update {i.get('updatedAt', '?')}). The next heartbeat run where "
+                 "the job is green closes it, after which this finding stops.\n\n"
+                 "## Action\nOpen the linked issue; its Action section names the job's "
+                 "launchd label and log."),
+    } for i in issues]
+
+
+def detect_heartbeat_red(_ctx) -> list:
+    return heartbeat_red_findings()
+
+
 def detect_promoted_audit(_ctx) -> list:
     """RUN the promoted-rows audit daily; file a finding only when it cannot.
 
@@ -2136,6 +2190,13 @@ DETECTORS = [
         "id": "liveness-debt-expired",
         "description": "a ticket_states debt past its expiry: a board state still has no by-age exit",
         "detect": detect_liveness_debt,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
+    {
+        "id": "heartbeat-red",
+        "description": "an open heartbeat-red GitHub issue: a consumer is missing or starved, seen from off the Mac",
+        "detect": detect_heartbeat_red,
         "action": "file_issue",
         "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
     },

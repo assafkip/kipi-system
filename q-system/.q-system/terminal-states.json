@@ -1246,6 +1246,21 @@
             "what": "E11: the age backstop covers every open PR, below the ceiling too."
           }
         ]
+      },
+      "consumer-report": {
+        "max_age_days": 2,
+        "covers": [],
+        "what": "A consumer's own report: in and done per run, read off the Mac (missing past 2 periods, or starved twice).",
+        "exits": [
+          {
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/heartbeat.py",
+            "marker": "MISSING_PERIODS = 2",
+            "test": "q-system/.q-system/scripts/test/test-heartbeat.py",
+            "what": "heartbeat.yml opens a heartbeat-red issue when a row is 2 periods old or starved twice; fleet-health mirrors it into Linear (ASK-3947)."
+          }
+        ]
       }
     }
   }
