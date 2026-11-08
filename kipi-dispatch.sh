@@ -988,17 +988,23 @@ MEM_PROCS="$(printf '%s' "$MEM_NOW" | sed -n 's/.*procs=\([0-9]*\).*/\1/p')"
 # Each such run is counted as 2 claude processes (worker plus reviewer) and 5 points
 # of memory (about 800 MB of 16 GB).
 #
-# ONLY WHILE ps CANNOT SEE IT (ASK-4042 item 1). Reserved on top of the ps count, a
-# run that ps already shows counted twice, and the gate held at about half its
-# ceiling. kipi-dispatch-pinned.sh passes the converge pids this tick started; a
-# pid with a claude anywhere under it is already in the reading, a pid that is gone
-# has given its memory back, and only the rest are reserved. Runs with no known pid
-# (RESERVED_RUNS above the pid count) stay reserved: the safe side.
-# KIPI_DISPATCH_PS_TABLE ("pid ppid comm" lines) replaces ps in tests only.
+# THE PROCESS RESERVATION ENDS WHEN ps SEES THE RUN (ASK-4042 item 1). Reserved on
+# top of the ps count, a run that ps already shows counted twice, and the gate held
+# at about half its ceiling. kipi-dispatch-pinned.sh passes the converge pids this
+# tick started; a pid with a claude anywhere under it is already in the process
+# count, a pid that is gone is in neither, and only the rest are reserved as
+# processes. Runs with no known pid (RESERVED_RUNS above the pid count) stay
+# reserved: the safe side.
+# THE MEMORY RESERVATION DOES NOT (PR #672 round 1, major). A claude that ps shows is
+# seconds old and has not spent its memory yet, so the free percentage still
+# under-counts it; releasing the 5 points on visibility let a fill burst pass the
+# floor. Every run this tick started keeps its memory reservation for the tick.
+# KIPI_DISPATCH_PS_TABLE is a PATH to a file of "pid ppid comm" lines that replaces
+# ps, in tests only.
 RESERVED_RUNS="${KIPI_DISPATCH_RESERVED_RUNS:-0}"
 case "$RESERVED_RUNS" in ''|*[!0-9]*) RESERVED_RUNS=0 ;; esac
 reserved_unseen() {
-  python3 - "$RESERVED_RUNS" "${KIPI_DISPATCH_RESERVED_PIDS:-}" "${KIPI_DISPATCH_PS_TABLE:-}" <<'PY' 2>/dev/null || printf '%s' "$RESERVED_RUNS"
+  python3 - "$RESERVED_RUNS" "${KIPI_DISPATCH_RESERVED_PIDS:-}" "${KIPI_DISPATCH_PS_TABLE:-}" <<'PY' 2>/dev/null
 import subprocess, sys
 runs, pids, table = int(sys.argv[1] or 0), sys.argv[2].split(), sys.argv[3]
 if table:
@@ -1031,15 +1037,22 @@ print(unseen + max(0, runs - len(known)), end="")
 PY
 }
 UNSEEN_RUNS=0
-[ "$RESERVED_RUNS" = "0" ] && [ -z "${KIPI_DISPATCH_RESERVED_PIDS:-}" ] || UNSEEN_RUNS="$(reserved_unseen)"
-case "$UNSEEN_RUNS" in ''|*[!0-9]*) UNSEEN_RUNS="$RESERVED_RUNS" ;; esac
+if [ "$RESERVED_RUNS" != "0" ] || [ -n "${KIPI_DISPATCH_RESERVED_PIDS:-}" ]; then
+  UNSEEN_RUNS="$(reserved_unseen)" || UNSEEN_RUNS=""
+  case "$UNSEEN_RUNS" in
+    ''|*[!0-9]*)
+      # Said, not silent (PR #672 round 1, minor): the fallback is the old count.
+      say "memory gate: could not read the process table, so all $RESERVED_RUNS run(s) this tick started are reserved as processes"
+      UNSEEN_RUNS="$RESERVED_RUNS" ;;
+  esac
+fi
 if [ -n "$MEM_PROCS" ]; then MEM_PROCS=$((MEM_PROCS + 2 * UNSEEN_RUNS)); fi
-if [ -n "$MEM_FREE" ]; then MEM_FREE=$((MEM_FREE - 5 * UNSEEN_RUNS)); fi
+if [ -n "$MEM_FREE" ]; then MEM_FREE=$((MEM_FREE - 5 * RESERVED_RUNS)); fi
 if { [ -n "$MEM_FREE" ] && [ "$MEM_FREE" -lt "$MEM_FREE_MIN" ]; } \
    || { [ -n "$MEM_PROCS" ] && [ "$MEM_PROCS" -ge "$CLAUDE_PROCS_MAX" ]; }; then
   # The adjusted values are what decided (ASK-4042 item 2): the raw reading alone
   # can sit under both floors and read as a gate that should have filled.
-  say "memory gate: not filling a slot this tick (reading $MEM_NOW; adjusted free=${MEM_FREE:-?} procs=${MEM_PROCS:-?} for $UNSEEN_RUNS unseen run(s) of the $RESERVED_RUNS this tick started; floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
+  say "memory gate: not filling a slot this tick (reading $MEM_NOW; adjusted free=${MEM_FREE:-?} procs=${MEM_PROCS:-?} for $UNSEEN_RUNS unseen run(s) of the $RESERVED_RUNS this tick started (memory reserved for all $RESERVED_RUNS); floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
   # The page text carries no reading (PR #660 round 1, minor): page_once dedupes on
   # the text, and a reading that moves one point a tick would page every tick.
   page_once memory-gate "kipi dispatch: holding new runs, the Mac is short of memory. It resumes on its own when memory frees up; the reading is in dispatch.log."

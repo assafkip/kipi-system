@@ -150,6 +150,20 @@ RES_PIDS="" PS_TABLE="$WORK/ps-one-seen.txt" run_dispatch "free=60 procs=10" 1 2
   && ok "6d: runs with no known pid are reserved, as before (fail safe)" \
   || bad "6d: runs with no pid" "$(ctx)"
 
+# 6e. PR #672 round 1, major: a run ps already sees keeps its MEMORY reservation for
+# the tick, since its claude has not spent its memory yet. 28 free, two runs this
+# tick, one seen: 28 - 2 x 5 = 18, under the floor of 20, holds.
+RES_PIDS="111 222" PS_TABLE="$WORK/ps-one-seen.txt" run_dispatch "free=28 procs=2" 1 2
+[ ! -s "$WORK/kipi-calls.txt" ] && grep -q 'adjusted free=18 procs=4' "$DLOG" 2>/dev/null \
+  && ok "6e: a visible run keeps its memory reservation for the tick (28 - 2 runs x 5 = 18 holds)" \
+  || bad "6e: memory reserved for every run this tick started" "$(ctx)"
+# 6f. PR #672 round 1, minor: an unreadable process table is said, and every run is
+# reserved as before.
+RES_PIDS="111 222" PS_TABLE="$WORK/no-such-ps-table.txt" run_dispatch "free=60 procs=10" 1 2
+[ ! -s "$WORK/kipi-calls.txt" ] && grep -q 'could not read the process table, so all 2 run(s)' "$DLOG" 2>/dev/null \
+  && ok "6f: an unreadable process table is logged and every run is reserved (14 holds)" \
+  || bad "6f: the fallback is said" "$(ctx)"
+
 # 7. ASK-4042 item 2: the hold line prints the adjusted reading next to the raw one.
 RES_PIDS="111 222" PS_TABLE="$WORK/ps-none-seen.txt" run_dispatch "free=60 procs=10" 1 2
 grep -q 'reading free=60 procs=10; adjusted free=50 procs=14 for 2 unseen run(s)' "$DLOG" 2>/dev/null \
