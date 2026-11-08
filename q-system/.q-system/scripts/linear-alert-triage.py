@@ -1336,7 +1336,7 @@ def _pass_exit_code(tally: Counter, batch: int, apply: bool) -> int:
 HEARTBEAT_JOB = "linear-alert-triage"
 
 
-def heartbeat(n_in: int, n_done: int, queue=None) -> None:
+def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
     """One heartbeat row for this pass (ASK-3965). Only the launchd job asks for it.
 
     WHY. This job wrote 0 on 16 nights in a row (2026-10-23 to 11-07) while its
@@ -1348,7 +1348,7 @@ def heartbeat(n_in: int, n_done: int, queue=None) -> None:
     never raises: a heartbeat must not cost the pass.
     """
     mod = _load("heartbeat", "heartbeat.py")
-    res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue)
+    res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue, error=error)
     print(f"  heartbeat: in {n_in}, done {n_done}, {res['published']}")
 
 
@@ -1357,10 +1357,20 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     """One bounded unattended pass. Returns the process exit code.
 
     prepass_only runs the no-model half alone: the founder's drain of the queue
-    spends no subscription quota (ASK-3823). beat sends one heartbeat row: in is
-    the batch the model was handed, done is what it wrote, queue is what waits."""
+    spends no subscription quota (ASK-3823). beat sends one heartbeat row for the
+    whole pass: in is what both halves took on, done is what both halves wrote
+    (pre-pass closes count: a night that closed 12 did work, PR #642 round 1), queue
+    is what waits. A pre-pass-only drain never emits: it is not the nightly job, and
+    its row would land in the nightly job's ledger."""
     decider = decider or decide
-    pool, refused = lane_pool(ls)
+    beat = beat and apply and not prepass_only
+    try:
+        pool, refused = lane_pool(ls)
+    except Exception:
+        # The outage night says so, instead of reading "missing" two days later.
+        if beat:
+            heartbeat(0, 0, error="linear-unreachable")
+        raise
     pool, pre = run_prepass(ls, pool, apply, pr_state)
     batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
@@ -1379,8 +1389,9 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
             + _prepass_part(pre, apply))
     print(line)
     write_run_evidence(line)
-    if beat and apply:
-        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch))
+    if beat:
+        heartbeat(len(batch) + pre["attempted"], tally["written"] + pre["closed"],
+                  queue=len(pool) - len(batch))
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "

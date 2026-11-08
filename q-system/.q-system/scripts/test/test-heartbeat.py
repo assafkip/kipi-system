@@ -313,7 +313,7 @@ for job, spec in sorted(table["jobs"].items()):
 print("-- wiring: the alert-triage pass emits only when asked, and only when it writes")
 tri = load(SCRIPTS / "linear-alert-triage.py", "triage_under_test")
 tbeats: list = []
-tri.heartbeat = lambda n_in, n_done, queue=None: tbeats.append((n_in, n_done, queue))
+tri.heartbeat = lambda n_in, n_done, queue=None, error=None: tbeats.append((n_in, n_done, queue, error))
 tri.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
 tri.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool, __import__("collections").Counter())
 tri._prepass_part = lambda _pre, _apply: ""
@@ -327,17 +327,38 @@ with redirect_stdout(io.StringIO()):
 check("alert-triage dry run emits nothing, flag or not", tbeats, [])
 with redirect_stdout(io.StringIO()):
     tri.run_triage(None, 2, True, beat=True)
-check("alert-triage with --heartbeat emits in 2, done 1, queue 3", tbeats, [(2, 1, 3)])
+check("alert-triage with --heartbeat emits in 2, done 1, queue 3", tbeats, [(2, 1, 3, None)])
+# The no-model pre-pass's closes are work done (PR #642 round 1): 3 examined, 2 closed.
+tbeats.clear()
+tri.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool, __import__("collections").Counter(attempted=3, closed=2))
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True)
+check("pre-pass closes count as done: in 5, done 3", tbeats, [(5, 3, 3, None)])
+tbeats.clear()
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True, prepass_only=True)
+check("a pre-pass-only drain never emits into the nightly job's ledger", tbeats, [])
+def _down(_ls):
+    raise RuntimeError("linear is down")
+tri.lane_pool = _down
+try:
+    with redirect_stdout(io.StringIO()):
+        tri.run_triage(None, 2, True, beat=True)
+except RuntimeError:
+    pass
+check("an outage night emits an errored row, not silence", tbeats, [(0, 0, None, "linear-unreachable")])
 check("the parser carries --heartbeat",
       tri.build_parser().parse_args(["run", "--apply", "--heartbeat"]).heartbeat, True)
 
 print("-- emit coerces queue before it decides (PR #631 round 2, minor 1)")
 cq, tc = SANDBOX / "coerce", datetime(2026, 11, 8, 10, 30, tzinfo=timezone.utc)
 hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False, now=tc)
-rq = hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False,
-             now=tc + timedelta(hours=24))["row"]
+# Read through .get, so a regression is a FAIL line here, not a crash that skips
+# every check after it (PR #642 round 1).
+rq = (hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False,
+              now=tc + timedelta(hours=24)) or {}).get("row") or {}
 check("a string queue twice is a starved streak of 2, and the row says 32",
-      (rq["starved_streak"], rq["queue"]), (2, 32))
+      (rq.get("starved_streak"), rq.get("queue")), (2, 32))
 
 print("-- wiring: the drafter's real main() emits only when asked")
 sys.path.insert(0, str(SCRIPTS))
