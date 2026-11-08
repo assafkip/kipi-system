@@ -2759,6 +2759,34 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
+    # DISK FLOOR (ASK-3648). This tree is cut from shell, so the PreToolUse floor
+    # never sees it; on 2026-11-08 trees like it took the disk to 0 bytes free.
+    # Under the floor no issue gets a tree, so stop the whole run, not just this
+    # issue. Nothing was claimed yet (the claim is step 2, inside the tree).
+    #
+    # IT IS AN ENVIRONMENTAL HALT, AND IT IS MARKED LIKE ONE (PR #656 review,
+    # finding 1, major). A bare `break` ended the run with rc 0, no PR and an
+    # unmoved counter, which converge.sh reads as "Sana could not open one": it
+    # charged an attempt at exit-7 and paged, and three ticks took a healthy issue
+    # to TERMINAL. The env_halt flag is what converge reads (converge.sh, the
+    # ENV_HALT_MARK branch) to exit 9 with nothing charged and no page, and
+    # $ENV_HALT_FILE sends this run to the halt block after the loop and exit 9.
+    # Same two markers as step 4a. That block files NO page or note for a disk
+    # halt: kipi-dispatch.sh owns the disk page (page_once disk-floor), and the
+    # shared env-alert claim holds one slot for every condition, so taking it here
+    # would silence a usage-limit page for up to a day (PR #656 review round 2,
+    # finding 3).
+    # kipi-dispatch.sh holds the same floor every heartbeat, runs the worktree
+    # reaper, and resumes once space is back. Exit 2 (could not measure)
+    # proceeds: `git worktree add` below fails loudly.
+    FLOOR_LINE="$(python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null 2>>"$LOG")"; FLOOR_RC=$?
+    if [ "$FLOOR_RC" -eq 1 ]; then
+      say "INFRA: $FLOOR_LINE; no worktree for $ISSUE and no further issue this run (not counted against the issue). kipi-dispatch.sh re-checks the floor every heartbeat."
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      printf '%s|%s|%s' "$ISSUE" "$DONE" "the disk is under the worktree floor: $FLOOR_LINE" > "$ENV_HALT_FILE" 2>/dev/null || true
+      break
+    fi
+    [ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (git worktree add below still fails loudly on a full disk)"
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
@@ -3946,6 +3974,15 @@ print(max(0, min(behind, budget)))
   # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
   # finds nothing at all.
   say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  # A DISK HALT FILES NOTHING HERE (ASK-3648, PR #656 review round 2, finding 3).
+  # The claim below is one condition-free slot (env-alert.claim), so a disk halt
+  # taking it would swallow a usage-limit page for up to ENV_OUTAGE_MAX_AGE.
+  # kipi-dispatch.sh pages the disk condition itself, once per episode.
+  case "$HALT_REASON" in
+    "the disk is under the worktree floor"*)
+      say "worker: disk-floor halt; the page is kipi-dispatch.sh's (page_once disk-floor), not filed here"
+      exit 9 ;;
+  esac
   # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
   # The alert above was already "one per run", and a run is the wrong unit for a
   # fact about the MACHINE: concurrent workers each meet the same dead account
