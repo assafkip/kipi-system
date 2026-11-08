@@ -838,7 +838,12 @@ def main(argv=None) -> int:
                 continue
             d = row.get("decision") or {}
             slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
-            red = d.get("target_kind") == "ticket" and not owned_open(ticket(d.get("target", "")))
+            # UNREADABLE IS NOT OWNERLESS (PR #662 round 4, minor). ticket() is None on a
+            # failed read and owned_open(None) is False, so the row went red as "lost its
+            # owner" and named linear-owner-sweep.py for a fault it cannot fix. A failed
+            # read is read again at the next run, like every other read here.
+            bt = ticket(d.get("target", "")) if d.get("target_kind") == "ticket" else None
+            red = bt is not None and not owned_open(bt)
             ev = event_for(issue, row, t, slug)
             if ev:
                 say(release(issue, row, t, slug, ev, args.apply))

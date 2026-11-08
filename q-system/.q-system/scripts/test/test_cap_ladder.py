@@ -304,6 +304,17 @@ def case_decisions() -> None:
     rep = json.loads(Path(env["CAP_LADDER_REPORT"]).read_text())["rows"]
     check("a blocker that lost its owner is RED in the report (a dead end the sweep flags)",
           any(r["issue"] == "ASK-1" and r.get("red") for r in rep), rep)
+    # PR #662 round 4, minor: unreadable is not ownerless. linear-owner-sweep.py,
+    # the consumer the docstring names for a red row, cannot fix a failed read.
+    fx = Path(env["CAP_LADDER_LINEAR_FIXTURE"])
+    tickets = json.loads(fx.read_text())
+    tickets.pop("ASK-50")
+    fx.write_text(json.dumps(tickets))
+    out = ladder(env, "--apply")
+    rep = json.loads(Path(env["CAP_LADDER_REPORT"]).read_text())["rows"]
+    check("an unreadable blocker is NOT red as ownerless; the hold stays and the next run reads it again",
+          not any(r["issue"] == "ASK-1" and r.get("red") for r in rep) and "no owner" not in out
+          and ledger_row(env, "ASK-1").get("ladder_hold") is True, (out, rep))
     td.cleanup()
 
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON waiting for the vendor to answer\n",
