@@ -260,6 +260,11 @@ codex_env_reason() {  # codex_env_reason <codex-output> <rc> -> the line; 0 when
 # and two workers hitting the same outage inside it both read "unclaimed" and both
 # page -- the defect, reproduced rather than fixed. Eight racing subshells in
 # test-worker-env-halt.sh pin that exactly one wins.
+# EXCEPT WHERE mkdir IS NOT THAT SYSCALL (ASK-3968). On Ubuntu 26.04 the mkdir
+# binary is uutils coreutils, and it checks for the path, then creates it and
+# treats "already exists" as success. Two racers that both pass its check both
+# exit 0. So the mkdir only turns away a claim that already stood; the race
+# itself is settled by the holder below, which bash creates with O_EXCL.
 #
 # NO STATE DIR MEANS PAGE. A caller that passes nothing gets a claim, because the
 # failure direction here matters: a missing page for a real outage is silence a
@@ -329,11 +334,23 @@ env_alert_claim() {  # env_alert_claim <state-dir> [max-age-seconds] -> 0 when T
   # For the human reading $STATE_DIR later. The directory's existence is still
   # the protocol; only a caller that passed a max age reads the epoch back
   # (env_alert_claim above, env_alert_held below).
+  # THE HOLDER IS ALSO THE TIE-BREAK (ASK-3968). It was a clobbering `>`, so
+  # when uutils mkdir told two racers they had both made the claim, both wrote
+  # a holder and both paged: H in test-worker-env-halt.sh went red on every
+  # ubuntu-latest validate run that selected it once the runners moved to
+  # Ubuntu 26.04. `set -C` makes the redirect an open(O_EXCL) done by bash
+  # itself, so exactly one racer creates the holder, with no utility between
+  # the claim and the kernel (the page_lock cure in kipi-dispatch.sh, ASK-3797).
+  # A run that finds a holder already there LOST and stays quiet. A write that
+  # failed with no holder left behind still pages: a missing page is the worse
+  # failure, and the mtime fallback covers the lost epoch.
   # Braced so a failed redirect stays quiet too: if a racing takeover moved the
   # directory in this instant, the shell reports the open failure before a
-  # trailing 2>/dev/null would apply. The mtime fallback covers the lost epoch.
-  { printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" \
-    > "$claim/holder"; } 2>/dev/null || true
+  # trailing 2>/dev/null would apply.
+  if ! { ( set -C; printf 'pid=%s claimed_at=%s epoch=%s\n' "$$" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$(date +%s)" > "$claim/holder" ); } 2>/dev/null; then
+    [ -e "$claim/holder" ] && return 1
+  fi
   return 0
 }
 
