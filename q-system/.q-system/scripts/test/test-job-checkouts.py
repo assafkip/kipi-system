@@ -93,6 +93,23 @@ def render(installer: Path, label: str, home: Path) -> tuple[int, str, str]:
     return p.returncode, (dest.read_text() if dest.is_file() else ""), p.stderr
 
 
+def all_strings(obj) -> list[str]:
+    """Every string value in a parsed plist, at any depth."""
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        return [x for v in obj.values() for x in all_strings(v)]
+    if isinstance(obj, (list, tuple)):
+        return [x for v in obj for x in all_strings(v)]
+    return []
+
+
+# The walk itself must be able to fail: a /.. inside EnvironmentVariables, a key the
+# old list of keys never read, is found.
+assert any("/.." in a for a in all_strings({"EnvironmentVariables": {"X": "/t/../y"}})), \
+    "all_strings cannot see EnvironmentVariables"
+
+
 def exception_problems(table: dict, labels: list[str]) -> list[str]:
     out = []
     pinned, shared = set(table.get("pinned") or []), set(table.get("shared_exceptions") or {})
@@ -173,9 +190,10 @@ for label in sorted(set(renders) & pinned_set):
     check(f"{label}: writes no stdout or stderr inside its tree", inside, [])
     # PR #632 major 2: a path that climbs out of the job's tree with /.. names a
     # sibling of the SHARED checkout, which does not exist next to a pinned one.
-    climbs = [a for a in args + [str(d.get(k, "")) for k in ("WorkingDirectory", "StandardOutPath")]
-              if str(tree) + "/.." in str(a)]
-    check(f"{label}: no path climbs out of its own tree with /..", climbs, [])
+    # EVERY string in the plist, not a list of keys (ASK-3969): StandardErrorPath
+    # and EnvironmentVariables carry paths too, and a key list misses the next one.
+    climbs = [a for a in all_strings(d) if str(tree) + "/.." in a]
+    check(f"{label}: no string in its plist climbs out of its own tree with /..", climbs, [])
 
 print("-- mutants on the table (in memory)")
 m = copy.deepcopy(table)
@@ -281,7 +299,10 @@ check("no job command is refused with exit 2", run(["bash", str(tree / WRAPPER_R
 
 # --- install, in the same fixture --------------------------------------------------------
 print("-- install creates the job tree locked, or installs nothing")
-for rel in ("q-system/.q-system/scripts/install-plist.sh", "q-system/.q-system/job-checkouts.json"):
+# launchd-intent-verify.py too: --pinned resolves the disabled set through it, and
+# fails closed (arms nothing) when it cannot (ASK-3969).
+for rel in ("q-system/.q-system/scripts/install-plist.sh", "q-system/.q-system/job-checkouts.json",
+            "q-system/.q-system/scripts/launchd-intent-verify.py"):
     (skel / rel).parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(UNDER_REPO / rel, skel / rel)
 fixture_table = json.loads((skel / "q-system/.q-system/job-checkouts.json").read_text())
@@ -299,9 +320,13 @@ git("add", "-A", cwd=skel)
 git("commit", "-qm", "c4 installer", cwd=skel)
 git("push", "-q", "origin", "HEAD:main", cwd=skel)
 stub = fx / "launchctl"
-stub.write_text("#!/bin/sh\nexit 0\n")
+lclog = fx / "launchctl.log"
+# Logs every call, and answers `print` with "not loaded" for any label in FX_UNLOADED.
+stub.write_text('#!/bin/sh\necho "$@" >> "$FX_LCLOG"\n'
+                'if [ "$1" = "print" ]; then case " $FX_UNLOADED " in *" ${2##*/} "*) exit 113 ;; esac; fi\n'
+                'exit 0\n')
 stub.chmod(0o755)
-ienv = dict(env, KIPI_LAUNCHCTL=str(stub))
+ienv = dict(env, KIPI_LAUNCHCTL=str(stub), FX_LCLOG=str(lclog), FX_UNLOADED="")
 fx_installer = skel / "q-system/.q-system/scripts/install-plist.sh"
 p = run(["bash", str(fx_installer), "--pinned"], env=ienv)
 jt = fx / "home" / ".local/state/kipi/jobs" / "com.kipi.fxjob" / "kipi-system"
@@ -314,6 +339,34 @@ installed = fx / "home" / "Library/LaunchAgents/com.kipi.fxjob.plist"
 check("the installed job starts the wrapper in its own tree",
       plistlib.loads(installed.read_bytes())["ProgramArguments"][:2] if installed.exists() else None,
       ["/bin/bash", str(jt / WRAPPER_REL)])
+
+# --- --pinned carries the walk's guards (ASK-3969, PR #632 round 2) ----------------------
+print("-- --pinned: an unloaded job stays unloaded, a disabled one is skipped, another repo refuses")
+def bootstraps(log: Path) -> list[str]:
+    return [l for l in (log.read_text().splitlines() if log.exists() else []) if l.startswith("bootstrap")]
+lclog.unlink(missing_ok=True)
+installed.write_text(installed.read_text().replace("<dict>", "<dict>\n  <!-- an old render -->", 1))
+p = run(["bash", str(fx_installer), "--pinned"], env=dict(ienv, FX_UNLOADED="com.kipi.fxjob"))
+check("unloaded: --pinned exits 0", p.returncode, 0 if p.returncode == 0 else f"{p.returncode}: {p.stderr.strip()[-200:]}")
+check("unloaded: it is never bootstrapped", bootstraps(lclog), [])
+check("unloaded: its plist is re-rendered", "an old render" in installed.read_text(), False)
+check("unloaded: the run says it was left unloaded", "left unloaded" in p.stdout, True)
+paused = fx / "home" / ".config/kipi/launchd-paused.txt"
+paused.parent.mkdir(parents=True, exist_ok=True)
+paused.write_text("com.kipi.fxjob  # stopped on purpose\n")
+lclog.unlink(missing_ok=True)
+p = run(["bash", str(fx_installer), "--pinned"], env=ienv)
+check("disabled: --pinned skips it, and says why", "skipped (disabled): com.kipi.fxjob" in p.stdout, True)
+check("disabled: it is never bootstrapped", bootstraps(lclog), [])
+paused.unlink()
+other = dict(fixture_table, applies_to_ident="some-other-repo")
+(skel / "q-system/.q-system/job-checkouts.json").write_text(json.dumps(other))
+p = run(["bash", str(fx_installer), "--pinned"], env=ienv)
+check("another repo's table: --pinned refuses with exit 2", (p.returncode, "REFUSED" in p.stderr), (2, True))
+(skel / "q-system/.q-system/job-checkouts.json").write_text(json.dumps(fixture_table))
+lclog.unlink(missing_ok=True)
+p = run(["bash", str(fx_installer), "--pinned"], env=ienv)
+check("loaded and enabled: --pinned reinstalls it", len(bootstraps(lclog)), 1)
 
 # Mutant: the renderer without the wrapper insertion.
 src = fx_installer.read_text()
