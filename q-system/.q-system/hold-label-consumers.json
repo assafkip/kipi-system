@@ -3,7 +3,7 @@
     "Every label that holds a ticket out of a worker's queue, and the code that takes it out again (ASK-4011).",
     "Founder, 2026-11-08: \"We cannot have these things get stuck again on rules that are not being enforced and then tickets don't get done because they're waiting for someone that doesn't exist.\"",
     "",
-    "Read by q-system/.q-system/tests/test_hold_label_consumers.py (CI). stall-sweep.py (ASK-4019, stacked on this PR) reads it once it lands, to name the next consumer of a held ticket.",
+    "Read by q-system/.q-system/tests/test_hold_label_consumers.py (CI) and by q-system/.q-system/scripts/stall-sweep.py (com.kipi.stall-sweep, ASK-4019), which names the next consumer of every held ticket idle 24h.",
     "",
     "`labels` must hold EXACTLY the labels linear-worker.sh ready() refuses, read from its source by AST, plus every `lane_holds` label. A new ready() refusal fails CI until it has a row here: the test is declared to the capability gate with no `covers`, so it runs on every PR, including one that only touches linear-worker.sh (PR #666 round 2). `lane_holds` is DECLARED, not discovered: each row's marker must exist in its path, but a new lane refusal is caught only when its author adds the row (PR #666 review, minor). The census that cannot be fooled covers ready() only.",
     "`refused_when`: `present` (the label holds the ticket) or `absent` (missing the label holds it, as with owner:sana).",
