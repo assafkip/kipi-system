@@ -282,7 +282,7 @@ build_fill_fixture() {
   git init -q -b main "$root/upstream"
   cat >"$root/upstream/kipi-dispatch.sh" <<'STUB'
 #!/bin/bash
-echo "DISPATCH_RAN pass=$KIPI_DISPATCH_PASS file=${KIPI_DISPATCH_PASS_FILE:+set}"
+echo "DISPATCH_RAN pass=$KIPI_DISPATCH_PASS file=${KIPI_DISPATCH_PASS_FILE:+set} reserved=${KIPI_DISPATCH_RESERVED_RUNS:-}"
 v() { printf '%s\n' "$1" > "$KIPI_DISPATCH_PASS_FILE"; }
 case "${FILL_MODE:-}:$KIPI_DISPATCH_PASS" in
   all:*)        v "entered=r$KIPI_DISPATCH_PASS repos=3 dispatched=ASK-$KIPI_DISPATCH_PASS" ;;
@@ -309,6 +309,9 @@ outf="$(FILL_MODE=all run_wrapper "$RF" "$WRAPPER")"
 printf '%s' "$outf" | grep -q 'file=set' \
   && ok "T10b each pass is handed the verdict file" \
   || bad "T10b each pass is handed the verdict file" "$(printf '%s' "$outf" | tr '\n' '|')"
+[ "$(printf '%s\n' "$outf" | grep -o 'reserved=[0-9]*' | tr '\n' ' ')" = "reserved=0 reserved=1 reserved=2 " ] \
+  && ok "T10g each pass is told how many runs this tick already started (0, 1, 2)" \
+  || bad "T10g the reservation count" "$(printf '%s' "$outf" | tr '\n' '|')"
 outf="$(FILL_MODE=noverdict run_wrapper "$RF" "$WRAPPER")"
 [ "$(fill_runs "$outf")" = "2" ] \
   && ok "T10c a pass that writes no verdict (it stopped before the turn) ends the tick" \

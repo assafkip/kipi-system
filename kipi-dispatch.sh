@@ -979,13 +979,31 @@ mem_reading() {
 MEM_NOW="$(mem_reading)"
 MEM_FREE="$(printf '%s' "$MEM_NOW" | sed -n 's/.*free=\([0-9]*\).*/\1/p')"
 MEM_PROCS="$(printf '%s' "$MEM_NOW" | sed -n 's/.*procs=\([0-9]*\).*/\1/p')"
+# A RESERVATION FOR THIS TICK OWN RUNS (PR #660 round 1, major). A converge started
+# by an earlier pass of the same tick is seconds old: its claude processes may not
+# exist yet and its memory is not spent yet, so the process table and the free
+# percentage both under-count it, and every free repo would be filled at once.
+# kipi-dispatch-pinned.sh passes how many runs this tick already started; each is
+# counted as 2 claude processes (worker plus reviewer) and 5 points of memory
+# (about 800 MB of 16 GB).
+RESERVED_RUNS="${KIPI_DISPATCH_RESERVED_RUNS:-0}"
+case "$RESERVED_RUNS" in ''|*[!0-9]*) RESERVED_RUNS=0 ;; esac
+if [ -n "$MEM_PROCS" ]; then MEM_PROCS=$((MEM_PROCS + 2 * RESERVED_RUNS)); fi
+if [ -n "$MEM_FREE" ]; then MEM_FREE=$((MEM_FREE - 5 * RESERVED_RUNS)); fi
 if { [ -n "$MEM_FREE" ] && [ "$MEM_FREE" -lt "$MEM_FREE_MIN" ]; } \
    || { [ -n "$MEM_PROCS" ] && [ "$MEM_PROCS" -ge "$CLAUDE_PROCS_MAX" ]; }; then
-  say "memory gate: not filling a slot this tick ($MEM_NOW; floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
-  page_once memory-gate "kipi dispatch: holding new runs, the Mac is short of memory ($MEM_NOW). It resumes on its own when memory frees up."
+  say "memory gate: not filling a slot this tick ($MEM_NOW, plus $RESERVED_RUNS run(s) this tick started; floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
+  # The page text carries no reading (PR #660 round 1, minor): page_once dedupes on
+  # the text, and a reading that moves one point a tick would page every tick.
+  page_once memory-gate "kipi dispatch: holding new runs, the Mac is short of memory. It resumes on its own when memory frees up; the reading is in dispatch.log."
   exit 0
 fi
-page_clear memory-gate
+# Cleared only with headroom past the floor, so a reading that hovers at the line
+# does not re-arm the page every other tick (PR #660 round 1, minor).
+if { [ -z "$MEM_FREE" ] || [ "$MEM_FREE" -ge $((MEM_FREE_MIN + 10)) ]; } \
+   && { [ -z "$MEM_PROCS" ] || [ "$MEM_PROCS" -le $((CLAUDE_PROCS_MAX - 3)) ]; }; then
+  page_clear memory-gate
+fi
 # --- END MEMORY GATE ---
 
 # gh is what every downstream step needs; failing here with a clear page beats

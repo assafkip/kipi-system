@@ -217,17 +217,21 @@ clear_page_marks
 # until the passes reach the rotation size or FILL_MAX.
 PASS_FILE="$(dirname "$LOG")/dispatch-pass.verdict"
 FILL_MAX="${KIPI_DISPATCH_FILL_MAX:-16}"
-pass=0; rc=0
+pass=0; rc=0; started=0
 while :; do
   pass=$((pass + 1))
   rm -f "$PASS_FILE" 2>/dev/null || true
+  # KIPI_DISPATCH_RESERVED_RUNS: the runs this tick already started, which the
+  # memory gate counts before the process table can see them (PR #660 round 1).
   env KIPI_REPO="$PINNED" KIPI_DISPATCH_PASS_FILE="$PASS_FILE" KIPI_DISPATCH_PASS="$pass" \
+      KIPI_DISPATCH_RESERVED_RUNS="$started" \
     bash "$PINNED/kipi-dispatch.sh" "$@"
   rc=$?
   [ "$rc" = "0" ] || break
   verdict="$(cat "$PASS_FILE" 2>/dev/null)"
   entered="$(printf '%s' "$verdict" | sed -n 's/.*entered=\([^ ]*\).*/\1/p')"
   repos="$(printf '%s' "$verdict" | sed -n 's/.*repos=\([0-9]*\).*/\1/p')"
+  case "$verdict" in *dispatched=ASK-*) started=$((started + 1)) ;; esac
   [ -n "$entered" ] || break
   [ "$pass" -lt "${repos:-1}" ] || break
   [ "$pass" -lt "$FILL_MAX" ] || break

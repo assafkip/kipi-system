@@ -55,13 +55,15 @@ chmod +x "$WORK/notify.sh"
 REG="$WORK/registry.json"; printf '{"instances":[]}\n' > "$REG"
 VERDICT="$WORK/pass.verdict"
 
-run_dispatch() {  # run_dispatch <mem reading> [ask for a verdict: 1|0]
-  rm -rf "$WORK/home"; mkdir -p "$WORK/home/.config/kipi"
+run_dispatch() {  # run_dispatch <mem reading> [ask for a verdict: 1|0] [reserved runs] [keep home: 1]
+  if [ "${4:-0}" != "1" ]; then rm -rf "$WORK/home"; fi
+  mkdir -p "$WORK/home/.config/kipi"
   : > "$WORK/kipi-calls.txt"; : > "$WORK/pages.log"; rm -f "$VERDICT"
   local vf=""; [ "${2:-1}" = "1" ] && vf="$VERDICT"
   ( cd "$HOMEREPO" \
     && PATH="$STUB:$PATH" HOME="$WORK/home" KIPI_REPO="$HOMEREPO" \
        KIPI_DISPATCH_MEM_READING="$1" KIPI_DISPATCH_PASS_FILE="$vf" \
+       KIPI_DISPATCH_RESERVED_RUNS="${3:-0}" \
        KIPI_DISPATCH_REGISTRY="$REG" KIPI_DISPATCH_CURSOR="$WORK/cursor" \
        KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_DISPATCH_LIVE_PATTERN="kipi-fixture-no-such-converge" KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv" KIPI_NOTIFY="$WORK/notify.sh" \
        bash "$DISPATCH" ) > "$WORK/stdout.txt" 2>&1
@@ -97,6 +99,35 @@ run_dispatch "free=60 procs=20"
 [ ! -s "$WORK/kipi-calls.txt" ] && [ ! -e "$VERDICT" ] && grep -q 'memory gate: not filling a slot' "$DLOG" 2>/dev/null \
   && ok "3b: claude processes at the ceiling hold the pass" \
   || bad "3b: the process ceiling holds the pass" "$(ctx)"
+
+# 4. PR #660 round 1, major: runs this tick already started count before ps can
+# see them. 10 processes plus 2 reserved runs (4 processes) reach the ceiling of 14.
+run_dispatch "free=60 procs=10" 1 2
+[ ! -s "$WORK/kipi-calls.txt" ] && grep -q 'plus 2 run(s) this tick started' "$DLOG" 2>/dev/null \
+  && ok "4a: reserved runs count toward the process ceiling (10 + 2 runs x 2 = 14 holds)" \
+  || bad "4a: reserved runs count toward the ceiling" "$(ctx)"
+run_dispatch "free=60 procs=10" 1 0
+grep -q '^MAIN$' "$WORK/kipi-calls.txt" \
+  && ok "4b: the same reading with nothing reserved still fills (the reservation is what held 4a)" \
+  || bad "4b: no reservation, no hold" "$(ctx)"
+run_dispatch "free=30 procs=2" 1 3
+[ ! -s "$WORK/kipi-calls.txt" ] \
+  && ok "4c: reserved runs count against free memory too (30 - 3 runs x 5 = 15, under 20)" \
+  || bad "4c: reserved runs count against free memory" "$(ctx)"
+
+# 5. PR #660 round 1, minor: the page carries no reading, so a reading that moves
+# between holding ticks pages once, with HOME kept across ticks as in production.
+run_dispatch "free=10 procs=2" 1 0
+run_dispatch "free=11 procs=2" 1 0 1
+run_dispatch "free=12 procs=2" 1 0 1
+PAGES="$(grep -c 'short of memory' "$WORK/pages.log" 2>/dev/null)"
+run_dispatch "free=10 procs=2" 1 0
+: > "$WORK/pages.log"
+run_dispatch "free=11 procs=2" 1 0 1
+run_dispatch "free=12 procs=2" 1 0 1
+[ "$(grep -c 'short of memory' "$WORK/pages.log")" = "0" ] \
+  && ok "5: three holding ticks with a moving reading page once, not once a tick" \
+  || bad "5: the memory page dedupes across a moving reading" "pages after the first: $(grep -c 'short of memory' "$WORK/pages.log")"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
