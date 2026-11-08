@@ -138,6 +138,7 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_STATE": str(tmp / "state/state.json"),
         "CAP_LADDER_REPORT": str(tmp / "state/report.json"),
         "CAP_LADDER_BLOCKERS": str(tmp / "kipi/cap-ladder-blockers.json"),
+        "CAP_LADDER_STATUS": str(tmp / "state/morning-status.jsonl"),
         "CAP_LADDER_LINEAR_LOG": str(tmp / "linear-writes.log"),
         "CAP_LADDER_ATTEMPTS": str(tmp / "attempts.json"),
         "CAP_LADDER_REVIEWS": str(tmp / "reviews"),
@@ -333,26 +334,14 @@ def case_decisions() -> None:
           "no owner" in out and len(made) == 1 and "do the thing" in made[0]["description"], (out, w))
     td.cleanup()
 
-    # FOUNDER-DECISION is refused until its channel ships (ASK-4069, split out of
-    # PR #662 after three review rounds). Driven through the real decide() loop:
-    # no hold, no status file, the agent is asked again for SPLIT or CLOSE only,
-    # and that SPLIT is what lands.
-    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the vendor plan\n",
-                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
-    out = ladder(env, "--apply")
-    fable = log(env, "fable")
-    check("FOUNDER-DECISION is refused at validation: no hold, re-asked for SPLIT or CLOSE, the SPLIT lands",
-          "ASK-4069" in out and ledger_row(env, "ASK-1").get("ladder_hold") is not True
-          and len(fable) == 2 and "split-close" in fable[1]
-          and any(x["op"] == "create" for x in writes(env))
-          and not any(x["op"] == "relate" for x in writes(env))
-          and not list(Path(env["W"]).rglob("morning-status.jsonl")), (out, fable, writes(env)))
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the vendor plan\n"])
+    ladder(env, "--apply")
+    st = Path(env["CAP_LADDER_STATUS"])
+    rows = [json.loads(l) for l in st.read_text().splitlines()] if st.exists() else []
+    check("FOUNDER-DECISION lands in the morning status file and pages nobody",
+          any(r["issue"] == "ASK-1" and "vendor" in r["ask"] for r in rows)
+          and ledger_row(env, "ASK-1").get("ladder_hold") is True, rows)
     td.cleanup()
-    src = (SCRIPTS / "fable-escalate.py").read_text()
-    m = re.search(r'"any": """(.*?)"""', src, re.S)
-    check("the rung-4 prompt does not offer FOUNDER-DECISION, so no RCA call is spent on a refused answer",
-          bool(m) and "FOUNDER-DECISION" not in m.group(1) and "BLOCKED-ON ASK-<n>" in m.group(1),
-          m.group(1) if m else "no DECIDE_ASK any block")
 
     td, env = decision_world([""])
     ladder(env, "--apply")
@@ -506,21 +495,159 @@ def case_review_fixes() -> None:
     check("review: a SPLIT sub-ticket carries owner:sana and needs-triage",
           made and set(made[0].get("labels") or []) >= {"owner:sana", "needs-triage"}, made)
     td.cleanup()
+    # major 3: the founder ask has a reader, a resolve command, and resolving releases the hold.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant the repo token\n"])
+    ladder(env, "--apply")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fa", str(SCRIPTS / "founder_asks.py"))
+    fa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fa)
+    rows, err = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    check("review: founder_asks.py renders the ask with the command that resolves it",
+          err is None and any("ASK-1" in r and "--resolve ASK-1" in r for r in rows), (rows, err))
+    out = ladder(env, "--resolve", "ASK-1", "--note", "token granted")
+    rows2, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    reset(env)
+    at(env, 4)
+    out2 = ladder(env, "--apply")
+    check("review: --resolve marks it resolved, the brief drops it, and the held ticket re-enters",
+          "1 ask for" in out and not rows2 and "founder decision is resolved" in out2
+          and ledger_row(env, "ASK-1").get("ladder_hold") is not True, (out, rows2, out2))
+    td.cleanup()
+    src = (SCRIPTS / "morning-brief.py").read_text()
+    check("review: the morning brief registers founder_asks.py", '"founder_asks.py"' in src)
+
+
+def case_review_round2() -> None:
+    """PR #662 review round 2, each finding pinned."""
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant token A\n",
+                              RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve plan B\n"])
+    ladder(env, "--apply")                                  # hold 1, ask A
+    ladder(env, "--resolve", "ASK-1")                       # A resolved
+    at(env, 4)
+    ladder(env, "--apply")                                  # re-enters on A
+    at(env, 5)
+    led(env, "record-capout", "ASK-1", "fifth cap")
+    ladder(env, "--apply")                                  # hold 2, ask B
+    reset(env)
+    at(env, 6)
+    out = ladder(env, "--apply")
+    check("round 2 major: a resolved earlier ask does NOT release a later founder hold on the same issue",
+          ledger_row(env, "ASK-1").get("ladder_hold") is True and not log(env, "sync"), out)
+    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
+    check("round 2 minor: two distinct asks on one issue are both listed, each with its own id",
+          len({r["id"] for r in rows}) == 2 and sum(1 for r in rows if not r["resolved"]) == 1, rows)
+    ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: a third thing")
+    ladder(env, "--resolve", "ASK-1", "--note", "only the newest")
+    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
+    check("round 2 minor: --resolve ISSUE resolves only its newest open ask",
+          sum(1 for r in rows if not r["resolved"]) == 1 and [r["note"] for r in rows if r.get("note")] == ["only the newest"] or
+          sum(1 for r in rows if r.get("note") == "only the newest") == 1, rows)
+    td.cleanup()
 
 
 def case_pytest_refusal() -> None:
-    """PR #662 round 2, minor: the live-path refusal runs before anything else.
+    """PR #662 round 2, minor: the live-path refusal runs before every verb.
 
     HOME and every seam point at a temp world, so even a broken refusal reaches
-    no live path; only CAP_LADDER_STATE is unset, which is what the refusal keys on.
+    no live path; only CAP_LADDER_STATE is unset, which is what the refusal keys
+    on. (This check once ran with the real HOME: a regression in the refusal
+    would have written the real morning status file.)
     """
-    with tempfile.TemporaryDirectory() as td:
-        env = make_world(Path(td))
-        env.pop("CAP_LADDER_STATE")
-        env["PYTEST_CURRENT_TEST"] = "x"
-        p = subprocess.run([sys.executable, str(LADDER), "--apply"], env=env, capture_output=True, text=True)
-        check("under pytest without CAP_LADDER_STATE the ladder refuses (exit 4) before it reads gh or writes",
-              p.returncode == 4 and not log(env, "gh") and not (Path(td) / ".local").exists(), p.stdout + p.stderr)
+    for verb in (["--apply"], ["--resolve", "ASK-1"], ["--founder-ask", "ASK-1", "founder-decision", "spend: x"]):
+        with tempfile.TemporaryDirectory() as td:
+            env = make_world(Path(td))
+            env.pop("CAP_LADDER_STATE")
+            env["PYTEST_CURRENT_TEST"] = "x"
+            p = subprocess.run([sys.executable, str(LADDER), *verb], env=env, capture_output=True, text=True)
+            check(f"under pytest without CAP_LADDER_STATE, {verb[0]} is refused (exit 4) before it reads or writes",
+                  p.returncode == 4 and not log(env, "gh") and not Path(env["CAP_LADDER_STATUS"]).exists()
+                  and not (Path(td) / ".local").exists(), p.stdout + p.stderr)
+
+
+def case_ask_lifecycle() -> None:
+    """ONE founder ask, its whole life, through the real CLI (ASK-4069).
+
+    PR #662 spent three review rounds on this channel and each fix caused the
+    next round's major, because each round pinned only the scenario the reviewer
+    named. Round 3's bug was the "re-cap with the same ask" step below: the
+    dedupe returned "", the hold stored it, and no resolve could release it.
+    So this case walks every step in order, against the real writer
+    (--apply, --founder-ask, --resolve) and the real reader (founder_asks.collect).
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fa_life", str(SCRIPTS / "founder_asks.py"))
+    fa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fa)
+    A = "access: grant the repo token"
+    td, env = decision_world([RCA + f"DECISION: BLOCKED-ON FOUNDER-DECISION: {A}\n",
+                              RCA + f"DECISION: BLOCKED-ON FOUNDER-DECISION: {A}\n",
+                              RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve plan B\n"])
+    status = Path(env["CAP_LADDER_STATUS"])
+
+    def rows():
+        return [json.loads(l) for l in status.read_text().splitlines()] if status.exists() else []
+
+    def held_on():
+        st = json.loads(Path(env["CAP_LADDER_STATE"]).read_text()).get("ASK-1") or {}
+        return st.get("held"), (st.get("decision") or {}).get("ask_id")
+
+    def hold_flag():
+        return ledger_row(env, "ASK-1").get("ladder_hold") is True
+
+    try:
+        ladder(env, "--apply")                                    # 1. create + hold
+        held, x = held_on()
+        check("lifecycle 1: a FOUNDER-DECISION holds the ticket on the id of its one open ask",
+              held is True and hold_flag() and bool(x) and [r["id"] for r in rows()] == [x], (held, x, rows()))
+        out = ladder(env, "--founder-ask", "ASK-1", "founder-decision", A)   # 2. dedupe
+        check("lifecycle 2: the same ask again is not a second row, and the CLI names the open id",
+              len(rows()) == 1 and x in out, (out, rows()))
+        fa_rows, err = fa.collect(None, {}, status=status)
+        check("lifecycle 2: the brief lists it once, with the command that resolves that id",
+              err is None and len(fa_rows) == 1 and f"--resolve {x}" in fa_rows[0], (fa_rows, err))
+        at(env, 4)                                                # 3. release on event (b)
+        world(env, changed=["q-system/a.py"])
+        out = ladder(env, "--apply")
+        world(env, changed=[])
+        check("lifecycle 3: event (b) releases the hold while the ask is still open",
+              "re-entered" in out and not hold_flag() and held_on()[0] is False, out)
+        at(env, 5)                                                # 4. re-cap, same ask
+        led(env, "record-capout", "ASK-1", "fifth cap")
+        ladder(env, "--apply")
+        held, x2 = held_on()
+        check("lifecycle 4: re-capped on the same ask, the hold waits on the SAME open id (round 3 major)",
+              held is True and hold_flag() and x2 == x and len(rows()) == 1, (held, x, x2, rows()))
+        at(env, 6)                                                # 5. resolve by id
+        out = ladder(env, "--resolve", x, "--note", "token granted")
+        check("lifecycle 5: --resolve <id> resolves exactly that ask and says so",
+              "1 ask" in out and [r["resolved"] for r in rows()] == [True], (out, rows()))
+        reset(env)
+        at(env, 7)
+        out = ladder(env, "--apply")
+        check("lifecycle 5: the next run releases the hold that waited on it",
+              "founder decision is resolved" in out and not hold_flag() and held_on()[0] is False, out)
+        at(env, 8)                                                # 6. a second, distinct ask
+        led(env, "record-capout", "ASK-1", "sixth cap")
+        ladder(env, "--apply")
+        held, y = held_on()
+        ladder(env, "--founder-ask", "ASK-1", "founder-decision", "outside: a third thing")
+        out = ladder(env, "--resolve", "ASK-1")                   # by issue: the newest open, not y
+        reset(env)
+        at(env, 9)
+        ladder(env, "--apply")
+        check("lifecycle 6: a distinct ask gets its own id, and --resolve ISSUE resolves the newest, "
+              "so the hold on the other ask stays",
+              held is True and y and y != x and hold_flag() and held_on() == (True, y)
+              and sum(1 for r in rows() if not r["resolved"]) == 1
+              and next(r for r in rows() if r["id"] == y)["resolved"] is False, (y, out, rows()))
+        p = subprocess.run([sys.executable, str(LADDER), "--resolve", "ASK-404"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        check("lifecycle 7: --resolve with no open match says so and exits non-zero, never 'resolved'",
+              p.returncode != 0 and "no open ask" in p.stdout + p.stderr and "resolved;" not in p.stdout,
+              (p.returncode, p.stdout + p.stderr))
+    finally:
+        td.cleanup()
 
 
 def case_owns() -> None:
@@ -594,6 +721,8 @@ def main() -> int:
         case_edges()
         case_owns()
         case_review_fixes()
+        case_review_round2()
+        case_ask_lifecycle()
         case_pytest_refusal()
         case_mutant()
     case_worker()
