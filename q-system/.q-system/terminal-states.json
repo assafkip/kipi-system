@@ -1053,10 +1053,10 @@
           },
           {
             "kind": "debt",
-            "ticket": "ASK-3955",
+            "ticket": "ASK-3973",
             "since": "2026-11-08",
             "expires": "2026-12-08",
-            "what": "E2: unpromoted at 14 days parks stale-alert, closes at 30 days."
+            "what": "chief's triage parks an idle Backlog ticket after 30 days and chief #370 (ASK-3955) closes it, reversibly, at the review date; recorded here once the table can name a cross-repo consumer."
           }
         ]
       },
@@ -1211,10 +1211,10 @@
           },
           {
             "kind": "debt",
-            "ticket": "ASK-3955",
+            "ticket": "ASK-3973",
             "since": "2026-11-08",
             "expires": "2026-12-08",
-            "what": "E2: a ticket at the redraft cap closes, reversibly, at 30 days."
+            "what": "chief's triage parks an idle Backlog ticket after 30 days and chief #370 (ASK-3955) closes it, reversibly, at the review date; recorded here once the table can name a cross-repo consumer."
           }
         ]
       },
