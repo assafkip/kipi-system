@@ -675,6 +675,26 @@
       }
     },
     {
+      "id": "dispatch-memory-gate",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "memory gate: not filling a slot this tick",
+      "sites": 1,
+      "what": "The Mac is short of memory (the system memory-free percentage under its floor, or the claude processes at their ceiling), so the pass starts no new converge (ASK-4008). Added after 2026-11-08, when about 16 parallel claude processes pushed swap to about 10 GB and filled the disk.",
+      "consumer": "com.kipi.dispatch -- the next tick reads memory again; when runs finish and memory frees, the same read passes and page_clear turns the recovery into silence",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "MEM_NOW=\"$(mem_reading)\"",
+        "why": "Memory is read again on every tick of the same job, and it frees by itself as runs finish, so the state clears without anyone acting."
+      }
+    },
+    {
       "id": "dispatch-gh-missing",
       "source": "kipi-dispatch",
       "class": "infra-failure",
@@ -1053,7 +1073,8 @@
       "`not_a_state` with its reason, so a new stop added to a driver fails CI until it has a row."
     ],
     "not_a_state": {
-      "dispatch-daily-cap": "A rate, not a state: no ticket is held by it, the next budget day takes the same picks."
+      "dispatch-daily-cap": "A rate, not a state: no ticket is held by it, the next budget day takes the same picks.",
+      "dispatch-memory-gate": "A rate, not a state: no ticket is held by it, the next tick with room takes the same picks."
     },
     "rows": {
       "needs-triage-alert": {
