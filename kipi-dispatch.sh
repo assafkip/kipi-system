@@ -533,10 +533,24 @@ compact_live_ledger() {
 # which is a worse failure than the duplicate turn this prevents.
 turn_lock() {
   local LOCK="${KIPI_DISPATCH_TURNLOCK:-$HOME/.config/kipi/dispatch-turn.lock}"
+  # THE OWNER MARKER SITS BESIDE THE LOCK, NEVER INSIDE IT (ASK-3915, PR #635
+  # round 1). Every dispatcher copy older than this one reaps a stale lock with a
+  # bare rmdir, which refuses a directory that is not empty. A marker inside meant
+  # a holder killed mid-turn (a reboot, launchd reaping the group) left a lock the
+  # old reaper could never clear: measured on f3a0c0f3, a 298-day-old lock still
+  # DENIED every turn, silently. Pinned checkouts advance on their own schedule, so
+  # an old and a new copy do share this path. Beside the lock, the directory stays
+  # empty, and either copy can reap it.
+  local OWNER="$LOCK.owner"
   mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
-  if [ -d "$LOCK" ]; then
-    local now mtime age probe
-    now="$(date -u +%s)"
+  local now p probe age
+  now="$(date -u +%s)"
+  # STALE LOCKS ARE REAPED BY AGE, the marker first and then the directory, each by
+  # its own mtime. A marker with no directory is what an older copy leaves when it
+  # reaps the directory alone, and it must age out too, or this copy is the one
+  # that wedges.
+  for p in "$OWNER" "$LOCK"; do
+    [ -e "$p" ] || continue
     # PORTABILITY, AND IT IS NOT COSMETIC. The first cut was
     #   mtime="$(stat -f %m "$LOCK" || stat -c %Y "$LOCK" || echo "$now")"
     # which is correct on BSD/macOS and CRASHES THE CALLER on GNU/Linux. GNU -f
@@ -553,24 +567,18 @@ turn_lock() {
     # GNU form FIRST, each candidate validated as digits before it is used, and
     # an unreadable mtime means DO NOT REAP -- keeping a lock we cannot age is
     # safe (one skipped turn), reaping one we guessed at is not.
-    mtime=""
-    probe="$(stat -c %Y "$LOCK" 2>/dev/null)"
+    probe="$(stat -c %Y "$p" 2>/dev/null)"
     case "$probe" in ''|*[!0-9]*) probe="" ;; esac
     # The BSD arm OF the two-kernel branch described above, reached only after the GNU
     # form returned no digits. Deliberate, not an oversight, hence: portability-lint-skip
-    [ -n "$probe" ] || { probe="$(stat -f %m "$LOCK" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; } # portability-lint-skip
-    mtime="$probe"
-    if [ -n "$mtime" ]; then
-      age=$(( now - mtime ))
-      if [ "$age" -gt 3600 ]; then
-        say "turn-lock: reaping a stale lock (${age}s old)"
-        # The owner marker first: rmdir refuses a directory that is not empty, and a
-        # reap that silently failed would wedge every later turn (ASK-3915).
-        rm -f "$LOCK/owner" 2>/dev/null || true
-        rmdir "$LOCK" 2>/dev/null || true
-      fi
+    [ -n "$probe" ] || { probe="$(stat -f %m "$p" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; } # portability-lint-skip
+    [ -n "$probe" ] || continue
+    age=$(( now - probe ))
+    if [ "$age" -gt 3600 ]; then
+      say "turn-lock: reaping a stale ${p##*/} (${age}s old)"
+      if [ -d "$p" ]; then rmdir "$p" 2>/dev/null || true; else rm -f "$p" 2>/dev/null || true; fi
     fi
-  fi
+  done
   mkdir "$LOCK" 2>/dev/null || return 1
   # THE TURN IS WON BY AN O_EXCL CREATE, NOT BY mkdir (ASK-3915, the ASK-3968 cure).
   # uutils coreutils mkdir (Ubuntu 26.04, GitHub's ubuntu-latest since 2026-11-01)
@@ -579,21 +587,25 @@ turn_lock() {
   # the turn and returns 1 without touching the lock it does not own. A marker that
   # cannot be written at all also returns 1: a skipped turn is safe, a shared one is
   # the defect. On this Mac mkdir is BSD /bin/mkdir, which is exclusive already.
-  if ! ( set -C; printf 'pid=%s\n' "$$" > "$LOCK/owner" ) 2>/dev/null; then
+  if ! ( set -C; printf 'pid=%s\n' "$$" > "$OWNER" ) 2>/dev/null; then
     return 1
   fi
   TURN_LOCK_DIR="$LOCK"
-  trap 'rm -f "$TURN_LOCK_DIR/owner" 2>/dev/null; rmdir "$TURN_LOCK_DIR" 2>/dev/null || true' EXIT
+  # RELEASED ONLY BY ITS OWNER (PR #635 round 1). A turn can outlive the reap
+  # window, because `kipi work` runs inside it. The holder reaped that way must not
+  # delete the lock the reaper now holds, or a third dispatcher walks in mid-turn.
+  # So the release reads the marker first and touches nothing that is not its own.
+  trap '[ "$(cat "$TURN_LOCK_DIR.owner" 2>/dev/null)" = "pid=$$" ] && { rm -f "$TURN_LOCK_DIR.owner" 2>/dev/null; rmdir "$TURN_LOCK_DIR" 2>/dev/null; }; true' EXIT
   return 0
 }
 
 # The cursor's ONLY writer. Finding-12 rejected storing this in attempts-ledger.py
 # and the reason generalises: a plain read-then-write from two overlapping
 # heartbeats loses an update, which is the exact race attempts-ledger.py exists to
-# prevent. So the file gets one writer, the turn lock (a mkdir claim, chosen
-# because macOS ships no flock(1); exclusive on BSD and GNU mkdir but NOT on
-# uutils mkdir, see page_lock and ASK-3915), and a rename rather than a truncating
-# write so no reader ever sees a half-written name.
+# prevent. So the file gets one writer, the holder of the turn lock (won by an
+# O_EXCL owner marker, because macOS ships no flock(1) and uutils mkdir is not
+# exclusive under a race, ASK-3915), and a rename rather than a truncating write
+# so no reader ever sees a half-written name.
 cursor_set() {
   local name="$1"
   local CURSOR_FILE="${KIPI_DISPATCH_CURSOR:-$HOME/.config/kipi/dispatch-cursor}"
