@@ -1864,8 +1864,19 @@ arm_automerge() {
 # answer either double-fires every guard or runs the stand-in unguarded.
 # Measured 2026-10-31: --settings ADDS to project settings, so a tree with
 # settings must get nothing (skeleton-guard-settings.py header has the table).
+#
+# A TREE WITH SETTINGS GETS THE GUARDS IT LACKS (ASK-3957). Its own settings can
+# predate a skeleton guard: on 2026-11-08 every client tree cut from origin lacked
+# agent-brief-one-job-guard.py (#612), so those sessions ran without it while
+# preflight, judging the main checkout, said OK. The renderer returns only the hooks
+# the tree does not already run, so nothing fires twice, and nothing at all for a
+# tree at parity. A renderer failure here leaves the tree's own settings, which is
+# what ran before; the tree with no settings still fails closed in 3b.
 GUARD_JSON=""
-guard_settings_now() { [ -f "$TREE/.claude/settings.json" ] || printf '%s' "$GUARD_JSON"; }
+guard_settings_now() {
+  if [ ! -f "$TREE/.claude/settings.json" ]; then printf '%s' "$GUARD_JSON"; return 0; fi
+  python3 "$SCRIPT_DIR/skeleton-guard-settings.py" --for-tree "$TREE" 2>>"$LOG" || true
+}
 
 # --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
 # tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
@@ -2749,6 +2760,8 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
       continue
     fi
     say "$ISSUE: $TREE has no .claude/settings.json; the agent runs with the skeleton guard set"
+  elif [ -n "$(guard_settings_now)" ]; then
+    say "$ISSUE: $TREE lacks skeleton guards its settings predate; the agent gets them through --settings (ASK-3957)"
   fi
 
   # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every

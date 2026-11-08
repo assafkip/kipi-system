@@ -3,6 +3,9 @@
 settings of its own (ASK-3529).
 
 Usage:
+  skeleton-guard-settings.py --for-tree <dir>
+                                      the guards a tree WITH settings lacks, as compact
+                                      JSON, or nothing when it runs them all (ASK-3957)
   skeleton-guard-settings.py          print the set as one compact JSON object, exit 0;
                                       exit 1 and print nothing on stdout if it does not resolve
   skeleton-guard-settings.py --check  one line on stdout; exit 0 resolves, exit 1 refuses
@@ -141,10 +144,78 @@ def build(root=ROOT):
     return {"hooks": hooks, "permissions": {"deny": list(deny)}}, dropped
 
 
+def overlay_for_tree(tree, root=ROOT):
+    """(overlay, unsuppliable): the guards a tree WITH its own settings lacks (ASK-3957).
+
+    WHY. ASK-3529 supplied the skeleton set only to a tree with no settings, because
+    --settings ADDS to project settings. That left the other gap open: a tree whose
+    settings predate a guard ran without it, silently. Measured 2026-11-08: in all 6
+    client repos the worker enters, origin's .claude/settings.json does not wire
+    agent-brief-one-job-guard.py (#612, 11-06), and the issue tree is cut from origin,
+    so every client session ran without it while preflight, judging the main
+    checkout, said OK.
+
+    So this returns ONLY the hooks the tree does not run itself: a kept hook of the
+    skeleton set is supplied when none of the scripts it names is both wired in the
+    tree's settings and present in the tree. A hook the tree already runs is never
+    supplied again, so nothing fires twice. `unsuppliable` names the template guards
+    the tree lacks that the set cannot carry (EXCLUDED, because they break outside an
+    instance); they are reported, never refused, because a tree that ran without them
+    yesterday must not be blocked by this change.
+    """
+    full, _ = build(root)
+    path = os.path.join(tree, ".claude", "settings.json")
+    if not os.path.isfile(path):
+        return full, []
+    try:
+        with open(path) as fh:
+            mine = (json.load(fh) or {}).get("hooks") or {}
+    except (OSError, ValueError) as e:
+        raise Unresolved("the tree's .claude/settings.json is unreadable: %s" % e)
+    wired = {name for groups in mine.values() for g in groups or [] for h in (g or {}).get("hooks") or []
+             for name in SCRIPT_NAME.findall((h or {}).get("command") or "")}
+    path_rx = re.compile(re.escape(root) + r"/([\w./-]+\.(?:py|sh))")
+    hooks = {}
+    for event, groups in full["hooks"].items():
+        kept_groups = []
+        for group in groups:
+            kept = []
+            for hook in group["hooks"]:
+                rels = path_rx.findall(hook["command"])
+                runs_here = [r for r in rels if os.path.basename(r) in wired
+                             and os.path.isfile(os.path.join(tree, r))]
+                if rels and not runs_here:
+                    kept.append(hook)
+            if kept:
+                kept_groups.append(dict(group, hooks=kept))
+        if kept_groups:
+            hooks[event] = kept_groups
+    with open(os.path.join(root, "settings-template.json")) as fh:
+        tpl = json.load(fh)
+    template_names = {n for groups in (tpl.get("hooks") or {}).values() for g in groups or []
+                      for h in g.get("hooks") or [] for n in SCRIPT_NAME.findall(h.get("command") or "")}
+    unsuppliable = sorted((template_names & set(EXCLUDED)) - wired)
+    return ({"hooks": hooks} if hooks else {}), unsuppliable
+
+
 def main(argv):
     args = argv[1:]
+    if len(args) == 2 and args[0] == "--for-tree":
+        # The worker's call (guard_settings_now): the JSON to pass as --settings for
+        # this tree, or nothing at all when the tree already runs every guard.
+        try:
+            overlay, unsuppliable = overlay_for_tree(args[1])
+        except Unresolved as e:
+            print("skeleton guard overlay does not resolve: %s" % e, file=sys.stderr)
+            return 1
+        if unsuppliable:
+            print("skeleton guard overlay: the tree lacks %d excluded guard(s) the set cannot carry: %s"
+                  % (len(unsuppliable), ", ".join(unsuppliable)), file=sys.stderr)
+        if overlay:
+            json.dump(overlay, sys.stdout, separators=(",", ":"))
+        return 0
     if args not in ([], ["--check"]):
-        print("usage: skeleton-guard-settings.py [--check]", file=sys.stderr)
+        print("usage: skeleton-guard-settings.py [--check | --for-tree <dir>]", file=sys.stderr)
         return 2
     check = args == ["--check"]
     try:

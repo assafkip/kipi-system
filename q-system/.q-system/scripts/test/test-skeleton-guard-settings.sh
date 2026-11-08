@@ -166,6 +166,61 @@ python3 "$Q/q-system/.q-system/scripts/skeleton-guard-settings.py" --check >/dev
   && bad "a root with a space passed; the rewritten commands would split on it" \
   || ok "a root with characters a hook command cannot carry unquoted refuses"
 
+# 4. --for-tree: a tree WITH settings gets exactly the guards it does not run (ASK-3957).
+# The worker passes this as --settings. Five shapes, each one the renderer must get right:
+#   empty hooks -> every kept hook; parity -> nothing; one guard missing -> that one only;
+#   wired but its file absent -> supplied; an EXCLUDED guard the tree lacks -> reported, not refused.
+FT="$WORK/for-tree"; mkdir -p "$FT"
+python3 - "$GEN" "$ROOT" "$FT" <<'PY'
+import json, os, re, subprocess, sys
+gen, root, ft = sys.argv[1:4]
+def run(tree):
+    p = subprocess.run([sys.executable, gen, "--for-tree", tree], capture_output=True, text=True)
+    return p.returncode, (json.loads(p.stdout) if p.stdout.strip() else {}), p.stderr
+def cmds(d):
+    return [h["command"] for v in d.get("hooks", {}).values() for g in v for h in g["hooks"]]
+full = json.loads(subprocess.run([sys.executable, gen], capture_output=True, text=True).stdout)
+n_full = len(cmds(full))
+def tree(name, hooks, present=True):
+    t = os.path.join(ft, name); os.makedirs(t + "/.claude", exist_ok=True)
+    txt = json.dumps({"hooks": hooks}).replace(root + "/", "$CLAUDE_PROJECT_DIR/")
+    open(t + "/.claude/settings.json", "w").write(txt)
+    if present:
+        for rel in set(re.findall(r"\$CLAUDE_PROJECT_DIR/([\w./-]+\.(?:py|sh))", txt)):
+            os.makedirs(os.path.dirname(os.path.join(t, rel)), exist_ok=True)
+            open(os.path.join(t, rel), "w").close()
+    return t
+bad = []
+rc, d, err = run(tree("empty", {}))
+if rc != 0 or len(cmds(d)) != n_full:
+    bad.append("empty hooks: want all %d kept hooks, got %d (rc %d)" % (n_full, len(cmds(d)), rc))
+if "excluded guard" not in err:
+    bad.append("empty hooks: the excluded guards the tree lacks are not reported")
+rc, d, _ = run(tree("parity", full["hooks"]))
+if rc != 0 or d:
+    bad.append("parity: a tree that runs every guard got %d hooks; they would fire twice" % len(cmds(d)))
+one = json.loads(json.dumps(full["hooks"]))
+for groups in one.values():
+    for g in groups:
+        g["hooks"] = [h for h in g["hooks"] if "agent-brief-one-job-guard.py" not in h["command"]]
+rc, d, _ = run(tree("one-missing", one))
+got = cmds(d)
+if len(got) != 1 or "agent-brief-one-job-guard.py" not in got[0] or root + "/" not in got[0]:
+    bad.append("one missing: want exactly that guard, from this skeleton; got %r" % [c[-50:] for c in got])
+t = tree("absent", full["hooks"])
+gone = next(r for r in re.findall(r"\$CLAUDE_PROJECT_DIR/([\w./-]+\.py)", open(t + "/.claude/settings.json").read())
+            if r.endswith("agent-brief-one-job-guard.py"))
+os.remove(os.path.join(t, gone))
+rc, d, _ = run(t)
+if not any("agent-brief-one-job-guard.py" in c for c in cmds(d)):
+    bad.append("wired but absent: a guard the tree names but does not have was not supplied")
+for b in bad:
+    print("  FAIL: " + b)
+sys.exit(1 if bad else 0)
+PY
+if [ $? -eq 0 ]; then ok "--for-tree: all for an empty tree, none at parity, exactly the missing one, a wired-but-absent one, excluded reported"
+else bad "--for-tree: see the lines above"; fi
+
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
 [ "$FAIL" = "0" ]
