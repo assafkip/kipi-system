@@ -131,13 +131,17 @@ def python_hits(rel: str, text: str) -> list:
     return hits
 
 
-def strip_shell_comment(line: str) -> str:
-    """The line up to an unquoted `#` that starts a word. `${#v}` and `$#` stay.
+HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
 
-    PR #658 review, minor: only full-line comments were skipped, so
-    `git pull --ff-only  # someone else may have pushed` failed the gate.
+
+def _strip(line: str, quote):
+    """(the line up to an unquoted word-start `#`, the quote still open at its end).
+
+    PR #658 review round 1: only full-line comments were skipped, so a trailing
+    comment failed the gate. Round 2: the quote state was per line, so a ` # `
+    inside a multi-line quoted string cut off the message text after it. `${#v}`
+    and `$#` are never comments.
     """
-    quote = None
     i = 0
     while i < len(line):
         ch = line[i]
@@ -153,15 +157,40 @@ def strip_shell_comment(line: str) -> str:
             i += 2
             continue
         elif ch == "#" and (i == 0 or line[i - 1].isspace()):
-            return line[:i]
+            return line[:i], quote
         i += 1
-    return line
+    return line, quote
+
+
+def strip_shell_comment(line: str) -> str:
+    return _strip(line, None)[0]
 
 
 def shell_hits(rel: str, text: str) -> list:
-    hits = []
+    """Quote state runs across lines. A heredoc body is tracked apart from it, so an
+    apostrophe in body text never opens a quote over the code after the body.
+
+    HEREDOC BODIES KEEP SHELL COMMENT RULES, ON PURPOSE (PR #658 round 2, the half
+    rejected). Measured 2026-11-08: scanning bodies raw adds 10 hits on this tree and
+    every one is a `#` comment inside embedded code (the python in linear-worker.sh),
+    none a message.
+    """
+    hits, quote, delim = [], None, None
     for no, line in enumerate(text.splitlines(), 1):
-        s = strip_shell_comment(line).strip()
+        if delim is not None:
+            if line.strip() == delim:
+                delim = None
+                continue
+            s = strip_shell_comment(line).strip()
+        else:
+            code, after = _strip(line, quote)
+            s = code.strip()
+            # Any quote state: `X="$(python3 - <<'PY'` opens a quote AND a heredoc, and
+            # the quote closes on the `)"` line after the body, so it is kept across.
+            m = HEREDOC.search(code)
+            if m:
+                delim = m.group(2)
+            quote = after
         if not s:
             continue
         for m in BANNED.finditer(s):
@@ -327,6 +356,32 @@ def test_an_exception_does_not_license_words_appended_to_its_line(tmp_path):
 ])
 def test_a_trailing_shell_comment_is_a_comment(tmp_path, line, want):
     assert [h[2] for h in shell_hits("s/c.sh", line + "\n")] == want
+
+
+def test_a_hash_inside_a_multi_line_string_is_text():
+    """PR #658 round 2: the quote opened on line 1 is still open on line 2."""
+    text = 'echo "the job stops here,\n  # then someone has to restart it"\n'
+    assert [h[2] for h in shell_hits("s/m.sh", text)] == ["someone"]
+
+
+def test_a_heredoc_body_keeps_comment_rules_and_leaks_no_quote():
+    text = ("python3 - <<'PY'\n"
+            "# a comment inside embedded code may say someone\n"
+            "print(\"don't stop\")\n"
+            "PY\n"
+            "git pull --ff-only  # someone else may have pushed\n"
+            'echo "ask someone"\n')
+    assert [(h[1], h[2]) for h in shell_hits("s/h.sh", text)] == [(6, "someone")]
+
+
+def test_a_heredoc_inside_a_command_substitution_is_still_a_heredoc():
+    """The ready() shape in linear-worker.sh: the quote and the heredoc open on one line."""
+    text = ('PICKED="$(python3 - <<\'PY\'\n'
+            "# embedded code may say the operator reads this\n"
+            "PY\n"
+            ')"\n'
+            'echo "ask someone"\n')
+    assert [(h[1], h[2]) for h in shell_hits("s/r.sh", text)] == [(5, "someone")]
 
 
 def test_test_files_are_never_scanned():
