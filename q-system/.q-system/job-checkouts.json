@@ -1,0 +1,52 @@
+{
+  "_doc": [
+    "Where each launchd job's code runs from (ASK-3966). Read by install-plist.sh and test-job-checkouts.py.",
+    "Founder, 2026-11-08: \"ensure everyitng runs on separate work trees so things done conflict\".",
+    "",
+    "Every job runs from its own worktree, <HOME>/<pinned_root>/<label>/<repo ident>, detached at origin/main",
+    "and created locked (worktree-reaper.py removes a clean idle worktree already on origin/main; a locked one",
+    "it keeps). kipi-job-pinned.sh advances it at the start of each run, and nothing else touches it, so a",
+    "fast-forward can never land in the middle of a job's run.",
+    "",
+    "shared_exceptions: the jobs that still run from the shared checkout, each for a measured reason, with the",
+    "ticket that removes the reason and an expiry at most 30 days after `since`. test-job-checkouts.py fails a",
+    "render that points at the shared checkout for any label not listed here, and an exception with no ticket",
+    "or a longer debt."
+  ],
+  "applies_to_ident": "kipi-system",
+  "pinned_root": ".local/state/kipi/jobs",
+  "shared_exceptions": {
+    "com.kipi.lessons-daily": {
+      "reason": "Writes tracked files in the checkout (q-system/output/lessons-daily.out, q-system/memory/.sycophancy-monthly-stamp) and untracked logs that readers expect there.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.openloops-heartbeat": {
+      "reason": "Writes tracked q-system/memory/open-loops.json and q-system/output/heartbeat-run-last.json in the checkout; sessions read them there.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.weekly-improve": {
+      "reason": "Writes q-system/output/weekly-improve.log in the checkout and reads untracked inputs there.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.voice-refresh": {
+      "reason": "Its stdout and stderr go to q-system/output/voice-refresh-nudge.out and .err in the checkout, and it reads q-system/output/voice-corpus/, which is untracked.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.fleet-health": {
+      "reason": "Reads instance-registry.json; the shared checkout's copy is ahead of origin (infohawk, 2026-11-08), so a pinned copy would silently skip an instance.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.lessons-drift": {
+      "reason": "Reads instance-registry.json, which is ahead of origin in the shared checkout (infohawk).",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.linear-triage-health": {
+      "reason": "Reads instance-registry.json, which is ahead of origin in the shared checkout (infohawk).",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-12-08"
+    },
+    "com.kipi.dispatch": {
+      "reason": "Already does its work from its own pinned checkout (kipi-dispatch-pinned.sh, ASK-812); only that wrapper is read from the shared checkout. It is the critical job, so it moves after kipi-job-pinned.sh has run one night on the others.",
+      "ticket": "ASK-3967", "since": "2026-11-08", "expires": "2026-11-15"
+    }
+  }
+}

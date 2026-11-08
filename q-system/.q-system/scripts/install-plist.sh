@@ -318,9 +318,66 @@ fi
 # reachable and unrenderable, which is a louder failure than the silence it replaces
 # but still a failure.
 RENDER_USER="$(id -un)"
+
+# WHERE THE JOB RUNS (ASK-3966). Founder, 2026-11-08: "ensure everyitng runs on
+# separate work trees so things done conflict". Every job used to run its code from
+# THIS checkout, the shared one a human works in and the orchestrator fast-forwards,
+# so a fast-forward could land mid-run. Now __KIPI_REPO__ renders as the job's own
+# worktree, <HOME>/<pinned_root>/<label>/<ident>, and kipi-job-pinned.sh is put in
+# front of its ProgramArguments to advance that tree at the start of each run. The
+# labels that still need the shared checkout are listed, with a reason, a ticket and
+# an expiry, in job-checkouts.json; that table is the only place this is decided.
+#
+# Only for the repo the table names (applies_to_ident, the origin basename). This
+# script ships to every instance, and an instance on another default branch, or one
+# whose jobs write their own state, must not change behaviour because the skeleton
+# did. No table, or another repo: the old rendering, unchanged.
+JOB_TABLE="$KIPI_REPO/q-system/.q-system/job-checkouts.json"
+JOB_REPO=""
+if [ -f "$JOB_TABLE" ]; then
+  _ident="$(git -C "$KIPI_REPO" remote get-url origin 2>/dev/null || true)"
+  _ident="${_ident##*/}"; _ident="${_ident%.git}"
+  JOB_REPO="$(python3 - "$JOB_TABLE" "$LABEL" "$HOME" "$_ident" <<'PY'
+import json, os, sys
+table, label, home, ident = sys.argv[1:5]
+try:
+    t = json.load(open(table))
+except (OSError, ValueError) as e:
+    sys.exit("job-checkouts.json is unreadable: %s" % e)
+if ident != t.get("applies_to_ident") or label in (t.get("shared_exceptions") or {}):
+    sys.exit(0)
+print(os.path.join(home, t["pinned_root"], label, ident))
+PY
+)" || { echo "ERROR: could not decide where $LABEL runs (job-checkouts.json)" >&2; exit 1; }
+fi
+RENDER_REPO="${JOB_REPO:-$KIPI_REPO}"
+JOB_WRAPPER="$RENDER_REPO/q-system/.q-system/scripts/kipi-job-pinned.sh"
+
 render() {
   # sed with | as the delimiter: the path replacements contain /.
-  sed -e "s|__KIPI_REPO__|$KIPI_REPO|g" -e "s|__ROOT__|$KIPI_REPO|g" -e "s|__HOME__|$HOME|g" -e "s|__USER__|$RENDER_USER|g" "$TEMPLATE"
+  sed -e "s|__KIPI_REPO__|$RENDER_REPO|g" -e "s|__ROOT__|$RENDER_REPO|g" -e "s|__HOME__|$HOME|g" -e "s|__USER__|$RENDER_USER|g" "$TEMPLATE" | wrap_pinned
+}
+
+# A pinned job runs `/bin/bash <its tree>/.../kipi-job-pinned.sh <its own argv>`.
+# A text edit, not plutil: --render-only runs on the Linux CI runner, which has no
+# plutil, and plist-drift compares the installed job against this exact render. The
+# ProgramArguments array must appear exactly once; a template with none is not a
+# job and passes through.
+wrap_pinned() {
+  if [ -z "$JOB_REPO" ]; then cat; return; fi
+  python3 -c '
+import re, sys
+text, wrapper = sys.stdin.read(), sys.argv[1]
+found = list(re.finditer(r"<key>ProgramArguments</key>(\s*)<array>", text))
+if len(found) > 1:
+    sys.exit("ProgramArguments appears %d times; refusing to guess which one runs" % len(found))
+if found:
+    m = found[0]
+    pad = "\n    "
+    text = (text[:m.end()] + pad + "<string>/bin/bash</string>" + pad
+            + "<string>%s</string>" % wrapper + text[m.end():])
+sys.stdout.write(text)
+' "$JOB_WRAPPER"
 }
 
 # A template that still carries a placeholder after substitution is a broken
@@ -350,12 +407,33 @@ if [ -n "$RENDER_ONLY" ]; then
   mkdir -p "$(dirname "$RENDER_ONLY")"
   render > "$RENDER_ONLY"
   assert_rendered "$RENDER_ONLY"
-  echo "rendered $LABEL -> $RENDER_ONLY (KIPI_REPO=$KIPI_REPO)"
+  echo "rendered $LABEL -> $RENDER_ONLY (KIPI_REPO=$KIPI_REPO, runs from $RENDER_REPO)"
   exit 0
 fi
 
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.config/kipi"
+
+# THE JOB'S OWN CHECKOUT, created before the plist that names it (ASK-3966). LOCKED,
+# because worktree-reaper.py removes a clean worktree that is already on origin/main
+# once it has sat idle, which is exactly what a daily job's tree looks like between
+# runs; the reaper keeps a locked one. FAIL CLOSED: a job is never installed pointing
+# at a tree that does not exist, or one that has no wrapper to run.
+if [ -n "$JOB_REPO" ]; then
+  if [ ! -e "$JOB_REPO/.git" ]; then
+    mkdir -p "$(dirname "$JOB_REPO")"
+    git -C "$KIPI_REPO" fetch --quiet origin main 2>/dev/null || true
+    if ! git -C "$KIPI_REPO" worktree add --quiet --detach --lock \
+        --reason "pinned launchd job checkout for $LABEL (ASK-3966)" "$JOB_REPO" origin/main; then
+      echo "REFUSED: could not create the pinned checkout $JOB_REPO for $LABEL; nothing installed" >&2
+      exit 1
+    fi
+  fi
+  if [ ! -f "$JOB_WRAPPER" ]; then
+    echo "REFUSED: $JOB_WRAPPER is missing (is origin/main older than ASK-3966?); nothing installed" >&2
+    exit 1
+  fi
+fi
 
 # STAGE, VALIDATE, THEN MOVE. This used to render straight onto $PLIST and check
 # afterwards, so a template that failed either check left the broken copy sitting in
@@ -378,5 +456,5 @@ UID_="$(id -u)"
 # never sets it.
 "${KIPI_LAUNCHCTL:-launchctl}" bootout "gui/$UID_/$LABEL" 2>/dev/null || true
 "${KIPI_LAUNCHCTL:-launchctl}" bootstrap "gui/$UID_" "$PLIST"
-echo "installed $LABEL -> $PLIST (KIPI_REPO=$KIPI_REPO)"
+echo "installed $LABEL -> $PLIST (KIPI_REPO=$KIPI_REPO, runs from $RENDER_REPO)"
 "${KIPI_LAUNCHCTL:-launchctl}" list | grep "$LABEL" || echo "  WARN: not loaded"
