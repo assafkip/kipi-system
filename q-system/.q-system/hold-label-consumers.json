@@ -11,7 +11,9 @@
     "  `consumer`: an in-repo script (`path`) whose source carries the label literal, run by a committed, non-retired com.kipi template (`job`) whose ProgramArguments reach the script, directly or through `via` (a `./kipi <verb>` case).",
     "  `outside_consumer`: code another repo owns (`repo`, `path`, `marker`, `job`, `owner`). Named, not verified here; that repo's own suite owns it. Its label must be in the test's OUTSIDE_ALLOWED, so adding one is a reviewed edit.",
     "  `missing`: no consumer exists yet. It names the ticket that builds one. The set of missing labels may only shrink: the test pins its ceiling.",
-    "A person is never a consumer. A row that names one is a missing row."
+    "A person is never a consumer. A row that names one is a missing row.",
+    "`caps`: a consumer that stops is not an exit. Every `*_CAP` constant the consumer's source defines is classified here, both directions, so a new cap fails CI until somebody says whether reaching it strands the ticket. `per_ticket: true` needs an `after_cap` ticket that builds the next consumer, and puts the label in the test's CAP_GAP_CEILING, which may only shrink. `per_ticket: false` needs a `what` (a batch bound strands nothing). PR #666 round 1, major 2: needs-scope read as covered while the drafter keeps the label ON at REDRAFT_CAP.",
+    "The census reads ready() at ANY depth: a refusal nested in an inner block, or reached through `not helper(i)`, is counted, and `not` inverts the polarity (PR #666 round 1, major 1)."
   ],
   "labels": {
     "owner:sana": {
@@ -39,7 +41,21 @@
         "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
         "job": "com.kipi.linear-dor",
         "via": "dor",
-        "what": "Nightly at 03:00: selects on the label, rewrites the DoR, drops the label so ready() offers it again, up to 3 redrafts."
+        "what": "Nightly at 03:00: selects on the label, rewrites the DoR, drops the label so ready() offers it again, up to 3 redrafts.",
+        "caps": {
+          "REDRAFT_CAP": {
+            "per_ticket": true,
+            "what": "At 3 of 3 the drafter writes TERMINAL_NOTE and keeps needs-scope ON deliberately (linear-dor-drafter.py:1182-1193), so this consumer stops and ready() keeps refusing the ticket.",
+            "after_cap": {
+              "ticket": "ASK-4092",
+              "what": "Nothing selects on a capped needs-scope ticket. ASK-4092 builds the next consumer: a different strategy, a recorded reversible close, or an age sweep. Until it lands this label is in CAP_GAP_CEILING, which may only shrink."
+            }
+          },
+          "PENDING_CAP": {
+            "per_ticket": false,
+            "what": "How many issues one nightly run drafts. A ticket over the batch bound is offered again the next night, so it strands nothing."
+          }
+        }
       }
     },
     "blocked:capability": {
