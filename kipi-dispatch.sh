@@ -564,13 +564,26 @@ turn_lock() {
       age=$(( now - mtime ))
       if [ "$age" -gt 3600 ]; then
         say "turn-lock: reaping a stale lock (${age}s old)"
+        # The owner marker first: rmdir refuses a directory that is not empty, and a
+        # reap that silently failed would wedge every later turn (ASK-3915).
+        rm -f "$LOCK/owner" 2>/dev/null || true
         rmdir "$LOCK" 2>/dev/null || true
       fi
     fi
   fi
   mkdir "$LOCK" 2>/dev/null || return 1
+  # THE TURN IS WON BY AN O_EXCL CREATE, NOT BY mkdir (ASK-3915, the ASK-3968 cure).
+  # uutils coreutils mkdir (Ubuntu 26.04, GitHub's ubuntu-latest since 2026-11-01)
+  # checks the path, then treats EEXIST as success, so two racers can both pass the
+  # mkdir above. Only one can create the owner marker under `set -C`; the other lost
+  # the turn and returns 1 without touching the lock it does not own. A marker that
+  # cannot be written at all also returns 1: a skipped turn is safe, a shared one is
+  # the defect. On this Mac mkdir is BSD /bin/mkdir, which is exclusive already.
+  if ! ( set -C; printf 'pid=%s\n' "$$" > "$LOCK/owner" ) 2>/dev/null; then
+    return 1
+  fi
   TURN_LOCK_DIR="$LOCK"
-  trap 'rmdir "$TURN_LOCK_DIR" 2>/dev/null || true' EXIT
+  trap 'rm -f "$TURN_LOCK_DIR/owner" 2>/dev/null; rmdir "$TURN_LOCK_DIR" 2>/dev/null || true' EXIT
   return 0
 }
 

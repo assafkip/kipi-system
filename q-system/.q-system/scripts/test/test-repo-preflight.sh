@@ -818,6 +818,27 @@ rmdir "$TL" 2>/dev/null || true
   && ok "a second dispatcher is DENIED while the turn is held ($A then $B)" \
   || bad "the turn lock is not exclusive ($A then $B)"
 
+# THE SAME CASE UNDER uutils mkdir (ASK-3915, the ASK-3968 race). On Ubuntu 26.04
+# mkdir is uutils coreutils, which treats EEXIST as success inside its check-then-
+# create window. A shim mkdir that says yes to an existing directory is that window
+# made permanent, so the case is deterministic on any OS: a held turn (lock dir plus
+# its owner marker) must still DENY the second dispatcher.
+UUMKDIR="$WORK/uumkdir"; mkdir -p "$UUMKDIR"
+printf '#!/bin/sh\n/bin/mkdir "$@" 2>/dev/null\nexit 0\n' > "$UUMKDIR/mkdir"; chmod +x "$UUMKDIR/mkdir"
+mkdir -p "$TL"; printf 'pid=1\n' > "$TL/owner"
+C="$(PATH="$UUMKDIR:$PATH" KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+[ "$C" = "DENIED" ] \
+  && ok "a mkdir that says yes to a held turn still DENIES the second dispatcher" \
+  || bad "under a uutils-style mkdir a held turn was taken again ($C): two dispatchers share one turn"
+# A stale lock that carries its owner marker is still reaped, or every later turn
+# is denied forever.
+touch -t 202601010000 "$TL"
+D="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+[ "$D" = "GOT" ] \
+  && ok "a stale turn lock with its owner marker is reaped and taken" \
+  || bad "a stale turn lock with an owner marker was never reaped ($D): the dispatcher wedges"
+[ -e "$TL" ] && bad "the turn lock outlived the shell that held it" || ok "the turn lock is released, marker and all"
+
 # THE SAME CASE UNDER GNU stat. This is the CI failure, reproduced on purpose.
 # The BSD form `stat -f %m` is valid on macOS and means --file-system on GNU,
 # where %m is read as a FILE operand: stat errors on it, still prints a block for
