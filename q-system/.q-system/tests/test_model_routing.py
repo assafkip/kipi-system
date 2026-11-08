@@ -312,19 +312,48 @@ def names_its_model(path_name: str, text: str) -> list:
     `job=`, or by an ANTHROPIC_MODEL pin the file sets itself. Measured
     2026-11-08: the lean jobs (DoR drafter, fleet triage, lesson distill) named
     none, and with no settings loaded the CLI picked claude-opus-5-5 for them."""
-    code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    return [] if bare_calls(path_name, text) else ["every call names its model"]
+
+
+def bare_calls(path_name: str, text: str) -> list:
+    """The `claude -p` calls in one file that name no model, as 'file:line'.
+
+    PER CALL, not per file (PR #664 round 4, major): the first cut matched a
+    string anywhere in the file, so stripping --model from a real call stayed
+    green. Python: every function (or the module body) that builds an argv list
+    holding "-p" must also hold "--model" in that same scope, or pass lean_call a
+    job=, or set ANTHROPIC_MODEL for the call's env there. Shell: every non-comment line that runs `claude -p` carries --model,
+    unless the file exports ANTHROPIC_MODEL itself (an env pin, still a pin)."""
+    bare = []
     if path_name.endswith(".py"):
         import ast
         try:
             tree = ast.parse(text)
         except SyntaxError:
-            return []
-        strings = " ".join(n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str))
-        kwargs = {k.arg for n in ast.walk(tree) if isinstance(n, ast.Call) for k in n.keywords}
-        code = strings + " " + " ".join(sorted(k for k in kwargs if k))
-    why = [w for w, hit in (("--model", "--model" in code), ("model_route", "model_route" in code),
-                            ("job=", "job" in code.split()), ("ANTHROPIC_MODEL", "ANTHROPIC_MODEL" in code)) if hit]
-    return why
+            return [f"{path_name}:unparseable"]
+        scopes = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        top = ast.Module(body=[n for n in tree.body if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))],
+                         type_ignores=[])
+        for scope in scopes + [top]:
+            nodes = list(ast.walk(scope))
+            argvs = [n for n in nodes if isinstance(n, (ast.List, ast.Tuple))
+                     and any(isinstance(e, ast.Constant) and e.value == "-p" for e in n.elts)]
+            if not argvs:
+                continue
+            consts = {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+            jobs = any(k.arg == "job" for n in nodes if isinstance(n, ast.Call) for k in n.keywords)
+            # an env pin set in the same scope (env["ANTHROPIC_MODEL"] = ..., setdefault) is a pin too
+            if "--model" not in consts and "ANTHROPIC_MODEL" not in consts and not jobs:
+                bare.append(f"{path_name}:{argvs[0].lineno}")
+        return bare
+    pinned = re.search(r"(?m)^\s*export\s+ANTHROPIC_MODEL=", text)
+    for n, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if s.startswith("#") or not re.search(r"\bclaude\s+-p\b", s):
+            continue
+        if "--model" not in s and not pinned and not s.startswith(("echo ", "say ", "log ")):
+            bare.append(f"{path_name}:{n}")
+    return bare
 
 
 class EveryCallNamesAModel(unittest.TestCase):
@@ -378,6 +407,19 @@ class EveryCallNamesAModel(unittest.TestCase):
         self.assertEqual(names_its_model("x.sh", 'claude -p "hi"\n# --model claude-x only in a comment\n'), [])
         self.assertTrue(names_its_model("x.py", 'lean_call.run(["claude", "-p", "x"], job="fleet-triage")\n'))
         self.assertTrue(names_its_model("x.sh", 'claude -p "$1" --model "$M"\n'))
+
+    def test_negative_self_test_stripping_a_real_calls_model_is_caught(self):
+        # PR #664 round 4, major: the reviewer's own mutation. A file-level match
+        # stayed green with --model gone from a real call; per call, it goes red.
+        agent = (SCRIPTS / "pr-review-agent.sh").read_text()
+        self.assertIn("claude -p --model '$CLAUDE_MODEL'", agent)
+        self.assertTrue(bare_calls("pr-review-agent.sh", agent.replace("claude -p --model '$CLAUDE_MODEL'", "claude -p")))
+        distill = (SCRIPTS / "lessons-distill.py").read_text()
+        self.assertTrue(bare_calls("lessons-distill.py", distill.replace('job="lesson-distill"', 'timeout2=1')))
+        # a second call in a file that already names a model elsewhere is still caught
+        two = ('def a():\n    run(["claude", "-p", "x", "--model", "m"])\n'
+               'def b():\n    run(["claude", "-p", "y"])\n')
+        self.assertEqual(bare_calls("two.py", two), ["two.py:4"])
 
 
 if __name__ == "__main__":

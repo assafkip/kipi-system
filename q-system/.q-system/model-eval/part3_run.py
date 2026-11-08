@@ -90,8 +90,8 @@ def judge_pair(context, a, b, what):
               f"does it follow the stated format. Ignore length and style.\n"
               f"Answer with ONE line of JSON: {{\"better\": \"A\" | \"B\" | \"equal\", \"why\": \"one sentence\"}}.\n"
               f"\n=== INPUT\n{context[:6000]}\n\n=== A\n{a[:6000]}\n\n=== B\n{b[:6000]}\n")
-    FORCE['model'] = JUDGE
-    r = lean_call.run(['claude', '-p', prompt], capture_output=True, text=True, timeout=300,
+    FORCE['model'] = None  # the judge names its model itself
+    r = lean_call.run(['claude', '-p', prompt, '--model', JUDGE], capture_output=True, text=True, timeout=300,
                       stdin=subprocess.DEVNULL, env={k: v for k, v in os.environ.items() if k != 'ANTHROPIC_API_KEY'})
     m = re.search(r'\{.*\}', r.stdout or '', re.S)
     try:

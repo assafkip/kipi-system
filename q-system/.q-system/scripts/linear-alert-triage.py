@@ -527,7 +527,7 @@ LABEL_CREATE_M = """mutation($input:IssueLabelCreateInput!){
 
 TRIAGE_PROMPT = """You are triaging ONE fleet alert ticket in a software repo.
 
-Decide whether it describes real, scoped engineering work someone should execute.
+Decide whether it describes real, scoped engineering work the fleet worker (linear-worker.sh) can execute.
 
 Reply with EITHER:
   PROMOTE

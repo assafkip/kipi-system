@@ -217,21 +217,27 @@ clear_page_marks
 # until the passes reach the rotation size or FILL_MAX.
 PASS_FILE="$(dirname "$LOG")/dispatch-pass.verdict"
 FILL_MAX="${KIPI_DISPATCH_FILL_MAX:-16}"
-pass=0; rc=0; started=0
+pass=0; rc=0; started=0; started_pids=""
 while :; do
   pass=$((pass + 1))
   rm -f "$PASS_FILE" 2>/dev/null || true
-  # KIPI_DISPATCH_RESERVED_RUNS: the runs this tick already started, which the
-  # memory gate counts before the process table can see them (PR #660 round 1).
+  # KIPI_DISPATCH_RESERVED_RUNS and _PIDS: the runs this tick already started, which
+  # the memory gate counts until the process table can see them (PR #660 round 1;
+  # by pid, so a run ps already sees counts once: ASK-4042).
   env KIPI_REPO="$PINNED" KIPI_DISPATCH_PASS_FILE="$PASS_FILE" KIPI_DISPATCH_PASS="$pass" \
-      KIPI_DISPATCH_RESERVED_RUNS="$started" \
+      KIPI_DISPATCH_RESERVED_RUNS="$started" KIPI_DISPATCH_RESERVED_PIDS="$started_pids" \
     bash "$PINNED/kipi-dispatch.sh" "$@"
   rc=$?
   [ "$rc" = "0" ] || break
   verdict="$(cat "$PASS_FILE" 2>/dev/null)"
   entered="$(printf '%s' "$verdict" | sed -n 's/.*entered=\([^ ]*\).*/\1/p')"
   repos="$(printf '%s' "$verdict" | sed -n 's/.*repos=\([0-9]*\).*/\1/p')"
-  case "$verdict" in *dispatched=ASK-*) started=$((started + 1)) ;; esac
+  case "$verdict" in
+    *dispatched=ASK-*)
+      started=$((started + 1))
+      run_pid="$(printf '%s' "$verdict" | sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p')"
+      [ -z "$run_pid" ] || started_pids="${started_pids:+$started_pids }$run_pid" ;;
+  esac
   [ -n "$entered" ] || break
   [ "$pass" -lt "${repos:-1}" ] || break
   [ "$pass" -lt "$FILL_MAX" ] || break

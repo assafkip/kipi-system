@@ -16,6 +16,10 @@
   "q-system/.q-system/scripts/probe_hook_envelope.py",
   "q-system/.q-system/scripts/skill-trigger-eval.py",
   "plugins/kipi-core/voiceloop/call_sites.py",
-  "q-system/.q-system/model-eval-evidence.json"
+  "q-system/.q-system/model-eval-evidence.json",
+  "q-system/.q-system/scripts/granola-voice-synthesize.py",
+  "q-system/.q-system/scripts/morning-brief.py",
+  "q-system/.q-system/scripts/audhd-output-eval.py",
+  "q-system/.q-system/scripts/open-loops-heartbeat.sh"
  ]
 }
