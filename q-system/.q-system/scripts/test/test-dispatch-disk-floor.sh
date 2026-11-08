@@ -389,7 +389,7 @@ fi
 # --- 8: a malformed floor value ------------------------------------------------
 printf '{"refuse_worktree_below_gb": "%s GB"}' "$UNDER" > "$WORK/bad-floor.json"
 M_LINE="$(KIPI_WORKTREE_REAPER_CONFIG="$WORK/bad-floor.json" "$REAL_PY" "$SCRIPTS/worktree-disk-floor.py" --check 2>/dev/null)"; M_RC=$?
-[ "$M_RC" != "2" ] && printf '%s' "$M_LINE" | grep -q "is not a number; using the default" \
+[ "$M_RC" != "2" ] && printf '%s' "$M_LINE" | grep -q "is not a usable number; using the default" \
   && ok "case 8: a malformed floor value keeps the floor on at the default and says so" \
   || bad "case 8: a malformed floor keeps the floor on" "rc=$M_RC line=$M_LINE"
 
