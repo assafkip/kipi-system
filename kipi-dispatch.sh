@@ -538,19 +538,23 @@ turn_lock() {
   # bare rmdir, which refuses a directory that is not empty. A marker inside meant
   # a holder killed mid-turn (a reboot, launchd reaping the group) left a lock the
   # old reaper could never clear: measured on f3a0c0f3, a 298-day-old lock still
-  # DENIED every turn, silently. Pinned checkouts advance on their own schedule, so
-  # an old and a new copy do share this path. Beside the lock, the directory stays
-  # empty, and either copy can reap it.
+  # DENIED every turn, silently. The dispatcher's pinned checkout advances to
+  # origin/main on every tick (kipi-dispatch-pinned.sh), so an old and a new copy
+  # share this path only across a merge or a rollback, which is exactly when a
+  # wedge would land. Beside the lock, the directory stays empty, and either copy
+  # can reap it. The cost, for that window only: an old copy's unconditional rmdir
+  # can now remove a new holder's empty directory. The marker still holds the turn
+  # against every new copy, so only another old copy can walk in (ASK-3978).
   local OWNER="$LOCK.owner"
   mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
-  local now p probe age
+  local now p probe age reaped
   now="$(date -u +%s)"
   # STALE LOCKS ARE REAPED BY AGE, the marker first and then the directory, each by
   # its own mtime. A marker with no directory is what an older copy leaves when it
   # reaps the directory alone, and it must age out too, or this copy is the one
   # that wedges.
-  for p in "$OWNER" "$LOCK"; do
-    [ -e "$p" ] || continue
+  _turn_lock_mtime() {  # digits, or nothing when the mtime cannot be read
+    local m
     # PORTABILITY, AND IT IS NOT COSMETIC. The first cut was
     #   mtime="$(stat -f %m "$LOCK" || stat -c %Y "$LOCK" || echo "$now")"
     # which is correct on BSD/macOS and CRASHES THE CALLER on GNU/Linux. GNU -f
@@ -567,16 +571,38 @@ turn_lock() {
     # GNU form FIRST, each candidate validated as digits before it is used, and
     # an unreadable mtime means DO NOT REAP -- keeping a lock we cannot age is
     # safe (one skipped turn), reaping one we guessed at is not.
-    probe="$(stat -c %Y "$p" 2>/dev/null)"
-    case "$probe" in ''|*[!0-9]*) probe="" ;; esac
+    m="$(stat -c %Y "$1" 2>/dev/null)"
+    case "$m" in ''|*[!0-9]*) m="" ;; esac
     # The BSD arm OF the two-kernel branch described above, reached only after the GNU
     # form returned no digits. Deliberate, not an oversight, hence: portability-lint-skip
-    [ -n "$probe" ] || { probe="$(stat -f %m "$p" 2>/dev/null)"; case "$probe" in ''|*[!0-9]*) probe="" ;; esac; } # portability-lint-skip
+    [ -n "$m" ] || { m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac; } # portability-lint-skip
+    printf '%s' "$m"
+  }
+  for p in "$OWNER" "$LOCK"; do
+    [ -e "$p" ] || continue
+    probe="$(_turn_lock_mtime "$p")"
     [ -n "$probe" ] || continue
     age=$(( now - probe ))
     if [ "$age" -gt 3600 ]; then
-      say "turn-lock: reaping a stale ${p##*/} (${age}s old)"
-      if [ -d "$p" ]; then rmdir "$p" 2>/dev/null || true; else rm -f "$p" 2>/dev/null || true; fi
+      # RE-STAT RIGHT BEFORE THE UNLINK, AND LOG AFTER IT (ASK-3978, PR #635 round 2).
+      # The age was read a moment ago. If another dispatcher reaped this path and
+      # won the turn in between, the path now holds ITS fresh marker, and unlinking
+      # that leaves the winner a lock it will not release, so every turn is DENIED
+      # for an hour with nothing alive holding it. Only the path whose mtime is
+      # still the one that was measured is removed, and nothing slow (the log
+      # write was) sits between that check and the unlink.
+      if [ "$(_turn_lock_mtime "$p")" = "$probe" ]; then
+        # The log says what happened, not what was tried (PR #639 round 1): a lock
+        # dir that is not empty refuses rmdir, and a dispatcher wedged behind it
+        # must not report a clean reap every tick.
+        reaped=""
+        if [ -d "$p" ]; then rmdir "$p" 2>/dev/null && reaped=1; else rm -f "$p" 2>/dev/null; [ -e "$p" ] || reaped=1; fi
+        if [ -n "$reaped" ]; then
+          say "turn-lock: reaped a stale ${p##*/} (${age}s old)"
+        else
+          say "turn-lock: a stale ${p##*/} (${age}s old) could NOT be removed; every turn is denied until it is"
+        fi
+      fi
     fi
   done
   mkdir "$LOCK" 2>/dev/null || return 1
