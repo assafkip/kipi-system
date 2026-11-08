@@ -3793,7 +3793,10 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
       # line says which one it was, from the REVIEWER'S OWN reason (its "ENV: disk-floor"
       # line in this run's part of the log), not from a second measurement that could
       # disagree with what the reviewer saw (PR #674 review round 1, minor 3).
-      if tail -n "+${REVIEW_LOG_FROM:-1}" "$LOG" 2>/dev/null | grep -q "ENV: disk-floor:"; then
+      # The match names THIS PR: workers share the log, and another worker's line can
+      # land inside the window (PR #674 review round 2, minor). Two workers never review
+      # one PR at once (the claim lock), so the PR number makes the line this run's.
+      if tail -n "+${REVIEW_LOG_FROM:-1}" "$LOG" 2>/dev/null | grep -qE "ENV: disk-floor:.*no review tree for PR #${PR_NUM}([^0-9]|\$)"; then
         say "$ISSUE: the reviewer stopped because the disk is under the worktree floor -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until kipi-dispatch.sh finds space again"
       else
         say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"

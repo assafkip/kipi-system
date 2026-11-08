@@ -73,12 +73,16 @@ run_block() {  # run_block <reviewer stderr line> -> the line the block says
 if [ -s "$BLOCK" ] && grep -q "ENV: disk-floor" "$BLOCK"; then
   U="$(run_block '  ENV: disk-floor: 1.0 GB free, floor 5 GB -> UNDER; no review tree for PR #7')"
   O="$(run_block 'claude: usage limit reached')"
+  X="$(run_block '  ENV: disk-floor: 1.0 GB free, floor 5 GB -> UNDER; no review tree for PR #71')"
   printf '%s' "$U" | grep -q "disk is under the worktree floor" \
     && ok "case 2a: the reviewer's own disk-floor line makes the worker name the disk floor" \
     || bad "case 2a: the reviewer's disk-floor line names the disk" "got: $U"
   printf '%s' "$O" | grep -q "runner is unavailable" \
     && ok "case 2b: a runner refusal (and an older run's disk line) names the runner" \
     || bad "case 2b: a runner refusal names the runner" "got: $O"
+  printf '%s' "$X" | grep -q "runner is unavailable" \
+    && ok "case 2c: another worker's disk line (PR #71, not #7) in the shared log does not count" \
+    || bad "case 2c: another PR's disk line does not count" "got: $X"
 else
   bad "case 2: the cause-naming block is not in linear-worker.sh (anchors moved, or the fix is missing)"
 fi
