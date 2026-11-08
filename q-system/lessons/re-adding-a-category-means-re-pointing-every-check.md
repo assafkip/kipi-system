@@ -25,7 +25,7 @@ You maintain a system where some enumerated dimension (a category, channel, tena
 
 A second, compounding failure mode: the full validation is real but exists only as several independent commands in several places. Anyone running it manually will run a subset and believe they ran all of it.
 
-- **Provide one command that runs the complete suite** and prints a per-check pass[PATH] line plus a single overall verdict. Make this the only documented way to validate. Individual checks may stay available for debugging, but they should not be the documented path.
+- **Provide one command that runs the complete suite** and prints a pass, fail or skip line per check plus a single overall verdict. Make this the only documented way to validate. Individual checks may stay available for debugging, but they should not be the documented path.
 - **Require every check to report an explicit outcome.** Any check that is skipped, unconfigured, or inapplicable must say so by name in the output and must force the overall verdict to "incomplete" rather than "pass." The aggregate verdict should be unanimous-pass only.
 - **Thread the full context through the entry point.** If a check needs a source document, a baseline, or a category to do real work, the entry point should require those arguments rather than let them default to something that makes the check vacuous. Missing context is an error, not a reduced-strength run.
 
@@ -45,4 +45,3 @@ If automation is not ready and a stage must be done by hand for a while, write d
 - A validator whose rule set or example set is keyed by some dimension, with no assertion that the set is non-empty.
 - Any enumeration written out in more than one place without a test tying the copies together.
 - A documented process that is a list of commands rather than one command.
-- Logs or reports that show clean results with no record of how many rules or references were actually evaluated. Have checks emit their input counts so a vacuous run is visible on inspection.

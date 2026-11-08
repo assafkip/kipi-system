@@ -1144,6 +1144,6 @@
     "instance": "redacted",
     "status": "published",
     "date": "2026-11-07",
-    "lesson_id": "incremental-review-rounds-with-batched-pushes"
+    "lesson_id": "review-later-rounds-against-the-delta-not-the-whole-diff"
   }
 }
