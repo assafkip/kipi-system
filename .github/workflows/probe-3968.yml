@@ -1,0 +1,135 @@
+name: probe-3968 (TEMPORARY, ASK-3968 diagnosis)
+
+# TEMPORARY. Never merged: it lives only on sana/ask-3968-probe, and it runs only
+# on a push to that branch. It measures the alert claim race (env_alert_claim) on
+# a real ubuntu-latest runner, old lib vs patched lib, plain and through the
+# capability gate's own run_contained, and rebuilds the exact merge commit a red
+# validate run tested to read the winner count from inside the gate.
+on:
+  push:
+    branches: [sana/ask-3968-probe]
+
+env:
+  BASE: cac3f446febb2625d3bf782b506b31f8ed291e3b
+  PR632_HEAD: 0fda6bfd5cc95a32cec5c4b92a3483248a3de46b
+  L: q-system/.q-system/scripts/env-failure-lib.sh
+  TF: q-system/.q-system/scripts/test/test-worker-env-halt.sh
+
+jobs:
+  primitive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: git identity
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: machine
+        run: |
+          grep PRETTY /etc/os-release; uname -r; echo "nproc=$(nproc)"; bash --version | head -1
+          ls -l "$(command -v mkdir)"; echo "resolves to: $(readlink -f "$(command -v mkdir)")"
+          mkdir --version | head -2; cat /proc/loadavg
+      - name: old, new and mutant copies
+        run: |
+          V="$RUNNER_TEMP/v"; mkdir -p "$V"; cp -R .github/probe-3968 "$RUNNER_TEMP/probe"
+          git show "$BASE:$L" > "$V/lib-old.sh"; cp "$L" "$V/lib-new.sh"
+          git show "$BASE:$TF" > "$V/test-old.sh"; cp "$TF" "$V/test-new.sh"
+          sed 's/( set -C; printf/( printf/' "$L" > "$V/lib-m1.sh"
+          sed 's/^    \[ -e "\$claim\/holder" \] && return 1$/    return 1/' "$L" > "$V/lib-m2.sh"
+          echo "M1 diff:"; diff "$V/lib-new.sh" "$V/lib-m1.sh" || true
+          echo "M2 diff:"; diff "$V/lib-new.sh" "$V/lib-m2.sh" || true
+      - name: strace proof (the lost race made on purpose)
+        continue-on-error: true
+        run: |
+          command -v strace >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq strace; }
+          strace -V | head -1
+          bash "$RUNNER_TEMP/probe/strace-proof.sh"
+      - name: section H x300, idle machine
+        run: |
+          bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-old.sh" 300
+          bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-new.sh" 300
+      - name: section H x300, through run_contained
+        run: |
+          PROBE_RAW=1 python3 "$RUNNER_TEMP/probe/contained.py" "$PWD" "H-old-contained" bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-old.sh" 300
+          PROBE_RAW=1 python3 "$RUNNER_TEMP/probe/contained.py" "$PWD" "H-new-contained" bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-new.sh" 300
+      - name: section H x300, 4 busy loops on 4 CPUs
+        run: |
+          for i in 1 2 3 4; do ( while :; do :; done ) & done
+          cat /proc/loadavg
+          bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-old.sh" 300
+          bash "$RUNNER_TEMP/probe/probe-h.sh" "$RUNNER_TEMP/v/lib-new.sh" 300
+          kill $(jobs -p) 2>/dev/null || true
+      - name: whole test file, the gate's way (run_contained)
+        run: |
+          V="$RUNNER_TEMP/v"; C="$RUNNER_TEMP/probe/contained.py"
+          put() { cp "$V/lib-$1.sh" "$L"; cp "$V/test-$2.sh" "$TF"; }
+          for i in 1 2 3; do put old old; python3 "$C" "$PWD" "old#$i" bash "$TF"; done
+          for i in 1 2 3; do put new new; python3 "$C" "$PWD" "new#$i" bash "$TF"; done
+          put old new; python3 "$C" "$PWD" "red-first(old lib, new test)" bash "$TF"
+          put m1 new;  python3 "$C" "$PWD" "M1(no set -C)" bash "$TF"
+          put m2 new;  python3 "$C" "$PWD" "M2(no fail-open guard)" bash "$TF"
+          put old old; for i in 1 2; do echo "[plain-old#$i]"; bash "$TF" 2>&1 | grep -A1 -E '^  FAIL|passed,'; done
+          put new new
+
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: git identity
+        run: |
+          git config --global user.name "kipi-ci"
+          git config --global user.email "ci@kipi.invalid"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies (as validate.yml)
+        run: pip install pytest
+      - name: Install a browser (as validate.yml)
+        run: pip install playwright pillow && python -m playwright install --with-deps chromium
+      - name: rebuild the merge commit run 42438722016 tested (PR 632 into cac3f446)
+        run: |
+          cp -R .github/probe-3968 "$RUNNER_TEMP/probe"
+          git fetch -q origin pull/632/head
+          git checkout -q --detach "$BASE"
+          git merge -q --no-edit "$PR632_HEAD"
+          git log -1 --format='%H %s'
+          python3 "$RUNNER_TEMP/probe/instrument-h.py" "$TF"
+          git status --short
+      - name: start a load sampler
+        run: |
+          nohup bash -c 'while :; do echo "$(date -u +%T) $(cat /proc/loadavg)"; sleep 10; done' > "$RUNNER_TEMP/load.txt" 2>&1 &
+          echo started
+      - name: Capability gate, exactly as validate ran it for PR 632
+        continue-on-error: true
+        env:
+          CI: true
+          EVENT: pull_request
+          BASE_REF: main
+          PUSH_BEFORE: ''
+          DC_REQUIRE_REAL_PRODUCERS: "1"
+          PROBE_SNAP: ${{ runner.temp }}/h-snap.txt
+        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "$BASE" 2>&1 | grep -E 'change-size|tests: ran|RED|FAIL|passed,|capability-gate:' | cut -c1-300
+      - name: what section H saw inside the gate
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/h-snap.txt" || echo "no snapshot: H never ran"
+          echo "--- load samples"; cat "$RUNNER_TEMP/load.txt"
+      - name: processes left after the gate
+        if: always()
+        run: ps -eo pid,ppid,pgid,sid,pcpu,etimes,args --sort=-pcpu | head -30
+      - name: the same test alone, right after the gate, x2
+        if: always()
+        env:
+          PROBE_SNAP: ${{ runner.temp }}/h-snap-after.txt
+        run: |
+          for i in 1 2; do python3 "$RUNNER_TEMP/probe/contained.py" "$PWD" "after-gate#$i" bash "$TF"; done
+          cat "$PROBE_SNAP" || true
