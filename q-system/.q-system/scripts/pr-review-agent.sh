@@ -776,11 +776,12 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
     if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
       local floor_line
       floor_line="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
-      if [ "$?" -eq 1 ]; then
-        echo "  WARN: $floor_line; no new review tree for PR #$PR." >&2
-        _wt_bail "$wt" || return 1
-        return 1
-      fi
+      case "$?" in
+        1) echo "  WARN: $floor_line; no new review tree for PR #$PR." >&2
+           _wt_bail "$wt" || return 1
+           return 1 ;;
+        2) echo "  WARN: $floor_line; proceeding without the floor." >&2 ;;
+      esac
     fi
     git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
@@ -864,6 +865,20 @@ if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}
     echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
     HEAD_SHA_ISOLATED=1
   else
+    # UNDER THE DISK FLOOR IS THE MACHINE, NOT THE REVIEW (ASK-3648, PR #656
+    # review round 2, finding 1). review_worktree refused a new tree; that runs in
+    # a subshell, so the floor is read again here. Exit 9 is this script's code
+    # for a machine condition (see the runner-unavailable exits below), and
+    # linear-worker.sh reads 9 as env_halt: no charge, no "reviewer failed" line.
+    # The fallback below would refuse anyway, with no tree at this sha, and blame
+    # the clone.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      FLOOR_LINE="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      if [ "$?" -eq 1 ]; then
+        echo "  ENV: $FLOOR_LINE; no review tree for PR #$PR, so no review this run. A condition of the machine (exit 9), not of the PR; the next run reviews it once space is back." >&2
+        exit 9
+      fi
+    fi
     # Say it out loud rather than quietly reviewing the live tree. A degraded run
     # that nobody knows is degraded is how the original defect stayed invisible.
     echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2

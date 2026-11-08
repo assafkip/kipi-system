@@ -66,16 +66,28 @@ def check() -> int:
     # finding 2): exit 1 holds the whole fleet, so a crash after the measure (a
     # hand-edited "5 GB" in the config) must read as "could not measure", not as
     # "under the floor".
+    #
+    # A MALFORMED FLOOR VALUE KEEPS THE FLOOR ON (PR #656 review round 2, finding
+    # 2). The one config error a person makes is a hand-edited value like "5 GB".
+    # Exit 2 would turn the floor off in all three producers, so the value falls
+    # back to the reaper's default and the line says so. Only a failure to
+    # measure free space itself is exit 2.
     try:
         reaper = _reaper()
         cfg = reaper.load_config()
         free = float(reaper.free_gb())
-        floor = float(cfg["refuse_worktree_below_gb"])
-        under = free < floor
     except Exception as exc:  # noqa: BLE001
         print(f"disk-floor: could not measure free disk space ({exc!r})")
         return 2
-    print(f"disk-floor: {free:.1f} GB free, floor {floor:g} GB -> {'UNDER' if under else 'OK'}")
+    note = ""
+    try:
+        floor = float(cfg["refuse_worktree_below_gb"])
+    except (KeyError, TypeError, ValueError):
+        floor = float(reaper.DEFAULTS["refuse_worktree_below_gb"])
+        note = (f" (refuse_worktree_below_gb {cfg.get('refuse_worktree_below_gb')!r} "
+                f"is not a number; using the default)")
+    under = free < floor
+    print(f"disk-floor: {free:.1f} GB free, floor {floor:g} GB -> {'UNDER' if under else 'OK'}{note}")
     return 1 if under else 0
 
 

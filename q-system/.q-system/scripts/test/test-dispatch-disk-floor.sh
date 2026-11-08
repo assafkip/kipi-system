@@ -18,8 +18,14 @@
 #   5c-5e. the worker's halt is an environmental halt: exit 9 and the env_halt
 #      flag, so converge.sh exits 9, charges no attempt and pages nothing
 #      (PR #656 review, finding 1: a bare break read as "no PR" and charged);
+#   5f. the disk halt leaves the shared env-alert claim alone, so a usage-limit
+#      page in the same window still goes out (review round 2, finding 3);
 #   7. the reviewer cuts no NEW review tree under the floor, still re-detaches
-#      an existing one, and cuts a new one over the floor.
+#      an existing one, and cuts a new one over the floor;
+#   7d. with no tree under the floor, the reviewer exits 9, the fleet's code for
+#      a machine condition, so the worker sets env_halt instead of logging a
+#      reviewer failure (review round 2, finding 1);
+#   8. a malformed floor value keeps the floor on at the default (finding 2).
 #
 # The floor is set through worktree-reaper.json (refuse_worktree_below_gb), the
 # same file the hook and the reaper read, so nothing here depends on how full the
@@ -275,6 +281,10 @@ grep -q "INFRA: disk-floor: .* -> UNDER; no worktree for ASK-AAA" "$WORK/under.o
   && ok "case 5d: the issue carries the env_halt flag converge.sh reads" \
   || bad "case 5d: env_halt is set" "env_halt=[$(flag under ASK-AAA env_halt)]"
 
+[ ! -e "$WORK/state-under/env-alert.claim" ] && grep -q "the page is kipi-dispatch.sh's" "$WORK/under.out" \
+  && ok "case 5f: the disk halt takes no shared env-alert claim; dispatch owns the disk page" \
+  || bad "case 5f: the disk halt leaves env-alert.claim alone" "claim=$([ -e "$WORK/state-under/env-alert.claim" ] && echo present || echo absent) $(grep -E 'HALTED|disk-floor halt' "$WORK/under.out" | head -2 | tr '\n' '|')"
+
 # --- 5e: converge over a held worker charges nothing ---------------------------
 floor_config "$WORK/wfloor-conv.json" "$UNDER"
 mkdir -p "$WORK/state-conv"
@@ -342,6 +352,40 @@ R3="$(review_call "$UNDER")"
 [ "$R3" = "$RT" ] \
   && ok "case 7c: under the floor, an existing review tree is still re-detached (it costs no disk)" \
   || bad "case 7c: re-detach under the floor" "printed=[$R3]"
+
+# --- 7d: the shipped caller block, run with no tree --------------------------
+# Extracted from the real reviewer by its own anchors, so the case follows the
+# code. review_worktree is stubbed to "no tree", which is what it prints under
+# the floor (case 7); the block must then exit 9 under the floor and fall
+# through to the tree-search WARN over it.
+CALLER="$WORK/caller.sh"
+awk '/^if \[ -n "\$HEAD_SHA" \] && git -C "\$REVIEW_REPO" cat-file -e/{on=1} on && /^elif \[ -n "\$HEAD_SHA" \]; then/{exit} on' "$REVIEWER" > "$CALLER"
+echo "fi" >> "$CALLER"
+caller_rc() {  # caller_rc <floor-gb> -> exit code of the extracted block
+  floor_config "$WORK/cfloor.json" "$1"
+  ( HEAD_SHA="$RSHA"; REVIEW_REPO="$RREPO"; PR=77
+    DISK_FLOOR_PY="$SCRIPTS/worktree-disk-floor.py"
+    export KIPI_WORKTREE_REAPER_CONFIG="$WORK/cfloor.json"
+    review_worktree() { return 1; }
+    assert_pr_ref_not_stale() { return 0; }
+    . "$CALLER" ) >/dev/null 2>&1
+  echo "$?"
+}
+if [ "$(grep -c 'review_worktree' "$CALLER")" -ge 1 ]; then
+  C_UNDER="$(caller_rc "$UNDER")"; C_OVER="$(caller_rc "$OVER")"
+  [ "$C_UNDER" = "9" ] && [ "$C_OVER" = "0" ] \
+    && ok "case 7d: with no tree, the reviewer exits 9 under the floor and falls through over it" \
+    || bad "case 7d: reviewer exit 9 under the floor" "under=$C_UNDER over=$C_OVER"
+else
+  bad "case 7d: the caller block was not extracted (anchors moved in $REVIEWER)"
+fi
+
+# --- 8: a malformed floor value ------------------------------------------------
+printf '{"refuse_worktree_below_gb": "%s GB"}' "$UNDER" > "$WORK/bad-floor.json"
+M_LINE="$(KIPI_WORKTREE_REAPER_CONFIG="$WORK/bad-floor.json" "$REAL_PY" "$SCRIPTS/worktree-disk-floor.py" --check 2>/dev/null)"; M_RC=$?
+[ "$M_RC" != "2" ] && printf '%s' "$M_LINE" | grep -q "is not a number; using the default" \
+  && ok "case 8: a malformed floor value keeps the floor on at the default and says so" \
+  || bad "case 8: a malformed floor keeps the floor on" "rc=$M_RC line=$M_LINE"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

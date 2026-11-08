@@ -2758,8 +2758,12 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     # charged an attempt at exit-7 and paged, and three ticks took a healthy issue
     # to TERMINAL. The env_halt flag is what converge reads (converge.sh, the
     # ENV_HALT_MARK branch) to exit 9 with nothing charged and no page, and
-    # $ENV_HALT_FILE sends this run to the halt block after the loop: one note per
-    # outage, one page per condition, exit 9. Same two markers as step 4a.
+    # $ENV_HALT_FILE sends this run to the halt block after the loop and exit 9.
+    # Same two markers as step 4a. That block files NO page or note for a disk
+    # halt: kipi-dispatch.sh owns the disk page (page_once disk-floor), and the
+    # shared env-alert claim holds one slot for every condition, so taking it here
+    # would silence a usage-limit page for up to a day (PR #656 review round 2,
+    # finding 3).
     # kipi-dispatch.sh holds the same floor every heartbeat, runs the worktree
     # reaper, and resumes once space is back. Exit 2 (could not measure)
     # proceeds: `git worktree add` below fails loudly.
@@ -2770,6 +2774,7 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       printf '%s|%s|%s' "$ISSUE" "$DONE" "the disk is under the worktree floor: $FLOOR_LINE" > "$ENV_HALT_FILE" 2>/dev/null || true
       break
     fi
+    [ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (git worktree add below still fails loudly on a full disk)"
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
@@ -3957,6 +3962,15 @@ print(max(0, min(behind, budget)))
   # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
   # finds nothing at all.
   say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  # A DISK HALT FILES NOTHING HERE (ASK-3648, PR #656 review round 2, finding 3).
+  # The claim below is one condition-free slot (env-alert.claim), so a disk halt
+  # taking it would swallow a usage-limit page for up to ENV_OUTAGE_MAX_AGE.
+  # kipi-dispatch.sh pages the disk condition itself, once per episode.
+  case "$HALT_REASON" in
+    "the disk is under the worktree floor"*)
+      say "worker: disk-floor halt; the page is kipi-dispatch.sh's (page_once disk-floor), not filed here"
+      exit 9 ;;
+  esac
   # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
   # The alert above was already "one per run", and a run is the wrong unit for a
   # fact about the MACHINE: concurrent workers each meet the same dead account
