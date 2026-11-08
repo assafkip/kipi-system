@@ -448,6 +448,78 @@ check("failed pre-pass closes are queued: in 0, done 0, queue 5, streak 1 then 2
 check("...so two such nights fire starved, as the exit code already says", (pf_rcs, pf_kinds),
       ([1, 1], [[], ["starved"]]))
 
+# ASK-3986 (PR #643 round 2, minor 1). A pre-pass close that SKIPS because the
+# alert could not be re-read leaves it open for tomorrow, exactly like a failed
+# close, so it is queued work. A skip because the ticket is not an alert (or was
+# promoted mid-close) is terminal for this lane and is not. Before this, every
+# skip read as done: a night whose every close skipped on a re-read read queue 0
+# and exited 0, so both channels were green on a lane doing nothing.
+#
+# 1. The real do_close says which kind of skip it is.
+class _FakeLs:
+    def __init__(self, issue=None, fail=False):
+        self.issue, self.fail = issue, fail
+
+    def graphql(self, _q, _v):
+        if self.fail:
+            raise RuntimeError("linear timed out")
+        return {"issue": self.issue}
+
+
+_ALERT = {"identifier": "ASK-9", "description": "x\n<!-- kipi-alert-fingerprint: 0a1b2c3d4e5f -->"}
+with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    _o_reread = tri.do_close(_FakeLs(fail=True), _ALERT, "r", True)
+    _o_notalert = tri.do_close(_FakeLs(issue={"description": "a real spec"}), _ALERT, "r", True)
+check("a close that could not re-read the alert skips and WAITS (it stays open)",
+      (_o_reread.wrote, getattr(_o_reread, "waits", None)), (False, True))
+check("a close of a ticket that is not an alert skips and does NOT wait (terminal here)",
+      (_o_notalert.wrote, getattr(_o_notalert, "waits", None)), (False, False))
+
+# 2. The real run_prepass counts the waiting skips apart. Only its inputs are faked:
+# every alert has a subject that ended, so every one is a close attempt.
+pp = load(SCRIPTS / "linear-alert-triage.py", "triage_prepass_split")
+pp.alert_subject = lambda _issue: {"shape": "fixture"}
+pp.duplicates_by_kept = lambda _pool: {}
+pp._why_subjects_ended = lambda *_a, **_k: ("the subject ended.", "ended")
+pp.read_cursor = lambda: None
+pp.write_cursor = lambda _i: None
+_pool5 = [dict(_ALERT, identifier=f"ASK-{n}", createdAt="2026-11-01T00:00:00Z") for n in range(5)]
+with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    _left, _tally = pp.run_prepass(_FakeLs(fail=True), _pool5, True, pr_state=lambda *_a: None)
+check("run_prepass counts every re-read skip as waiting: 5 skipped, 5 waiting",
+      (_tally["skipped"], _tally["skipped_waits"]), (5, 5))
+
+# 3. Through the real emit and evaluate, two nights of re-read skips fire starved;
+# two nights of not-an-alert skips stay green.
+_saved = (mh_shim.state, mh.lane_pool, mh.run_prepass)
+
+
+def _two_nights(state, counter):
+    mh_shim.state = state
+    mh.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
+    mh.run_prepass = lambda _ls, pool, _apply, _pr=None: ([], counter)
+    rows, kinds = [], []
+    for night in (at("2026-11-24T10:30:00Z"), at("2026-11-25T10:30:00Z")):
+        mh_shim.now = night
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+        led = state / "linear-alert-triage.jsonl"
+        rows = [json.loads(x) for x in led.read_text().splitlines()] if led.is_file() else []
+        kinds.append([v["kind"] for v in hb.evaluate(
+            {"linear-alert-triage": rows[-1]} if rows else {}, mh_table, night + timedelta(hours=1))
+            if v["job"] == "linear-alert-triage"])
+    return [(r.get("queue"), r.get("starved_streak")) for r in rows], kinds
+
+
+check("two nights of re-read skips are queued and fire starved on night 2",
+      _two_nights(SANDBOX / "prepass-reread", _Counter(attempted=5, skipped=5, skipped_waits=5)),
+      ([(5, 1), (5, 2)], [[], ["starved"]]))
+check("two nights of not-an-alert skips stay green: nothing waits",
+      _two_nights(SANDBOX / "prepass-notalert", _Counter(attempted=5, skipped=5))[1],
+      [[], []])
+# The checks below read the failed-close setup above, so it goes back as it was.
+mh_shim.state, mh.lane_pool, mh.run_prepass = _saved
+
 # PR #643 round 1, minor: the wrapper's own _load was unguarded. An unloadable
 # heartbeat.py killed the pass after its Linear writes (the exit code never ran), and
 # on an outage night it replaced the Linear error in the launchd log with its own.

@@ -98,7 +98,10 @@ PROMOTED_MARKER = "kipi-alert-promoted"
 # to infer success from "the call did not raise", and one did exactly that and
 # counted a refusal as a write. The status now travels WITH the line, so a call
 # site cannot forget to ask.
-Outcome = namedtuple("Outcome", "wrote line")
+# WAITS (ASK-3986): a refusal that leaves the alert open for tomorrow, because it
+# could not be re-read, is work that waits; the heartbeat queue counts it. A
+# refusal because the ticket is not an alert, or was promoted, is terminal here.
+Outcome = namedtuple("Outcome", "wrote line waits", defaults=(False,))
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
 FOUNDER_LABEL = "owner:assaf"
@@ -363,7 +366,7 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     # equally careful; only one of them was.
     fresh = reread(ls, ident)
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     if not is_alert_ticket(fresh.get("description") or ""):
         return Outcome(False, f"{ident}: SKIPPED (not an alert ticket; this verb "
                               "closes alerts, and closing anything else is not "
@@ -429,7 +432,7 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     latest = reread(ls, ident)
     if latest is None:
         return Outcome(False, f"{ident}: SKIPPED (could not confirm it is still an "
-                              "alert immediately before closing)")
+                              "alert immediately before closing)", True)
     if not is_alert_ticket(latest.get("description") or ""):
         return Outcome(False, f"{ident}: SKIPPED (promoted while this close was "
                               "being prepared)")
@@ -1264,6 +1267,8 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
             continue
         print(out.line)
         tally["closed" if out.wrote else ("skipped" if apply else "would_close")] += 1
+        if apply and not out.wrote and out.waits:
+            tally["skipped_waits"] += 1
         if out.wrote or not apply:
             tally[f"rule:{rule}"] += 1
     if apply and (tally["unchecked"] == 0 or last_examined is not None):
@@ -1402,7 +1407,8 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     print(line)
     write_run_evidence(line)
     if beat:
-        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch) + pre["failed"])
+        heartbeat(len(batch), tally["written"],
+                  queue=len(pool) - len(batch) + pre["failed"] + pre["skipped_waits"])
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
