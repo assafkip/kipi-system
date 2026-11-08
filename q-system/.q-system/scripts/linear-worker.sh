@@ -1599,7 +1599,12 @@ if [ "${BLOCKED_CAP:-0}" != "0" ]; then
 fi
 EXPIRED_PARKS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("expired_parks",0))' 2>/dev/null)"
 EXPIRED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("expired_park_ids",[])))' 2>/dev/null)"
-if [ "${EXPIRED_PARKS:-0}" != "0" ]; then
+# SAID ONLY WHEN THE OPEN-PR RAIL WAS ASKED (PR #649 round 1, minor). The heads
+# come from the WIP list, which is empty under --issue, with no GitHub slug, and
+# when gh failed. There the count would name tickets whose open PR keeps E2 off
+# them, so the sentence would be false. Nothing is picked wrongly in those runs:
+# --issue replaces the pool, and a failed list starts nothing this tick.
+if [ "${EXPIRED_PARKS:-0}" != "0" ] && [ -z "$ONLY_ISSUE" ] && [ "${WIP_OWN_RC:-}" = "0" ]; then
   say "worker: $EXPIRED_PARKS issue(s) not picked: parked past the review date, so chief E2 closes them, reversibly (ASK-3995; first ids: $EXPIRED_IDS)"
 fi
 

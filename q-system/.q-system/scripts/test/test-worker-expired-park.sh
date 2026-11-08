@@ -121,25 +121,27 @@ printf '979\tsana/ask-979-fix\t2026-10-01T12:00:00Z\thttps://github.com/x/kipi-s
 cat > "$STUBS/gh" <<'GH'
 #!/usr/bin/env bash
 case "$*" in
-  *"pr list"*"--state open"*) cat "$FIXTURE_PRS" 2>/dev/null ;;
+  *"pr list"*"--state open"*)
+    [ "${FIXTURE_GH_FAIL:-0}" = "1" ] && { echo "gh: HTTP 502: Bad Gateway" >&2; exit 1; }
+    cat "$FIXTURE_PRS" 2>/dev/null ;;
 esac
 exit 0
 GH
 chmod +x "$STUBS/gh"
 
 # KIPI_NOTIFY=/usr/bin/true: a suite that can reach slack-notify.sh pages the founder.
-run_worker() {  # run_worker <limit>
+run_worker() {  # run_worker <worker args...>
   env PATH="$STUBS:$PATH" FIXTURE_PRS="$WORK/prs.tsv" \
       KIPI_SKEL="$ROOT" KIPI_STATE_DIR="$WORK/state" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" KIPI_NOTIFY="/usr/bin/true" \
-      bash "$WORKER" --limit "$1" 2>&1
+      bash "$WORKER" "$@" 2>&1
 }
 picks() { printf '%s\n' "$1" | grep -o '\[dry\] would work ASK-[0-9]*' | sed 's/.*would work //' | tr '\n' ' '; }
 
 echo "== expired parks (worker under test: $WORKER)"
 
-OUT="$(run_worker 99)"
+OUT="$(run_worker --limit 99)"
 GOT="$(picks "$OUT")"
 
 # Self-test of the fixture: if gh was never asked, the open-PR case proves nothing.
@@ -164,7 +166,7 @@ else
 fi
 
 # --limit 1 is what the dispatcher runs: the one pick is the oldest live ticket.
-GOT1="$(picks "$(run_worker 1)")"
+GOT1="$(picks "$(run_worker --limit 1)")"
 [ "$GOT1" = "ASK-972 " ] \
   && ok "the dispatcher's one pick skips the expired park ahead of it" \
   || bad "the dispatcher's one pick skips the expired park" "got [$GOT1], want [ASK-972 ]"
@@ -174,6 +176,28 @@ if printf '%s\n' "$OUT" | grep -q 'worker: 2 issue(s) not picked: parked past th
 else
   bad "the run names the expired parks it left for E2" "$(printf '%s\n' "$OUT" | grep -i 'park' | head -2)"
 fi
+
+# THE COUNT IS SAID ONLY WHEN THE OPEN-PR RAIL WAS ASKED (PR #649 round 1,
+# minor). Under --issue and on a gh failure the WIP list is empty, so the count
+# would name ASK-979, whose open PR keeps E2 off it.
+EXPIRED_LINE='not picked: parked past the review date'
+OUT_FAIL="$(FIXTURE_GH_FAIL=1 run_worker --limit 99)"
+if printf '%s\n' "$OUT_FAIL" | grep -q "$EXPIRED_LINE"; then
+  bad "a run whose PR list failed does not claim E2 closes anything" "$(printf '%s\n' "$OUT_FAIL" | grep "$EXPIRED_LINE" | head -1)"
+else
+  ok "a run whose PR list failed does not claim E2 closes anything"
+fi
+OUT_ISSUE="$(run_worker --limit 1 --issue ASK-971)"
+if printf '%s\n' "$OUT_ISSUE" | grep -q "$EXPIRED_LINE"; then
+  bad "an --issue run does not claim E2 closes anything" "$(printf '%s\n' "$OUT_ISSUE" | grep "$EXPIRED_LINE" | head -1)"
+else
+  ok "an --issue run does not claim E2 closes anything"
+fi
+# Self-test: the failed-list run must have reached gh and failed, or the case
+# above passes for the wrong reason.
+printf '%s\n' "$OUT_FAIL" | grep -q 'HTTP 502\|could not list\|gh said\|WIP' \
+  && ok "fixture self-test: the failed-list run saw gh fail" \
+  || bad "fixture self-test: the failed-list run saw gh fail" "$(printf '%s\n' "$OUT_FAIL" | tail -3 | tr '\n' '|')"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
