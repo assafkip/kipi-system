@@ -1100,13 +1100,6 @@
         "exits": [
           {
             "kind": "debt",
-            "ticket": "ASK-3957",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E5: the worker supplies the skeleton guards a tree lacks."
-          },
-          {
-            "kind": "debt",
             "ticket": "ASK-3958",
             "since": "2026-11-08",
             "expires": "2026-12-08",
