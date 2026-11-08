@@ -22,6 +22,7 @@
     "com.kipi.launchd-health",
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",
+    "com.kipi.pr-owner",
     "com.kipi.worktree-reaper"
   ],
   "shared_exceptions": {

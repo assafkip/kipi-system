@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hourly owner of every open PR in a fleet repo, whatever its branch (ASK-3962).
+     TEMPLATE, not a loadable plist: __KIPI_REPO__, __HOME__ and __USER__ are
+     materialized by install-plist.sh.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.pr-owner
+
+     WHY IT EXISTS. The dead-end audit of 2026-11-08 found kipi-system #526 (fix/,
+     open since 10-07), brag #2 (since 10-24) and ktlyst #8 (since 11-01) with no
+     mover: every PR selector read only sana/ heads, and wip_release moves a PR only
+     at 5 open sana/ PRs. A consumer nothing invokes is the same dead end, so this is
+     its caller.
+
+     PINNED (job-checkouts.json). It runs from its own worktree, advanced to
+     origin/main by kipi-job-pinned.sh at the start of each run, never from the
+     shared checkout a human works in (founder, 2026-11-08, separate worktrees).
+
+     HOURLY, NOT DAILY. Each run writes at most one review and acts only on PRs 48h
+     old with 12h of quiet, so most runs read and do nothing. An hour bounds how long
+     an approved, mergeable PR waits for its merge.
+
+     PATH, USER AND LOGNAME, because the review step runs `claude -p` through
+     pr-review-agent.sh: a bash login shell does not put ~/.local/bin on PATH
+     (ASK-3823), and without USER and LOGNAME the keychain lookup answers "Not
+     logged in" (ASK-1178). Same four keys as com.kipi.linear-alert-triage. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.pr-owner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/pr-owner.py --apply</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>USER</key><string>__USER__</string>
+    <key>LOGNAME</key><string>__USER__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/pr-owner.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/pr-owner.err</string>
+</dict>
+</plist>
