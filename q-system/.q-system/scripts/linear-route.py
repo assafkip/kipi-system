@@ -439,22 +439,31 @@ def _route_one(path: str, facts: RoutingFacts) -> Decision:
     return Decision(None, None, f"no rule fired for {path}")
 
 
-def route_paths(paths: list, facts: RoutingFacts) -> Decision:
-    """One decision for the whole **Files:** list. Disagreement refuses."""
+def route_paths(paths: list, facts: RoutingFacts, source: str = "the DoR",
+                rules: tuple = ("R1", "R2", "R3")) -> Decision:
+    """One decision for a list of paths. Disagreement refuses.
+
+    `rules` narrows which rules may route (PR #675 review, major): in a ticket
+    with no DoR, R3 is too weak. Generic root names and every kipi-update-shipped
+    path exist in EVERY instance, so "skeleton-managed and present" says nothing
+    about which repo the ticket is for. Free text routes on R1 and R2 only.
+    """
     if not facts.ok:
         return Decision(None, None,
                         "UNKNOWN: instance-registry.json or kipi-update.sh could "
                         "not be read; nothing classified")
     if not paths:
-        return Decision(None, None, "the DoR names no files")
+        return Decision(None, None, f"{source} names no files")
     hits, misses = [], []
     for path in paths:
         decision = _route_one(path, facts)
+        if decision.project and decision.rule not in rules:
+            decision = Decision(None, None, f"{path} matched only {decision.rule}, which {source} cannot route on")
         (hits if decision.project else misses).append(decision)
     named = sorted({d.project for d in hits})
     if len(named) > 1:
         return Decision(None, None,
-                        "the DoR's files disagree: " + ", ".join(named))
+                        f"{source}'s files disagree: " + ", ".join(named))
     if named:
         return hits[0]
     return misses[0] if misses else Decision(None, None, "no path resolved")
@@ -471,8 +480,9 @@ def text_file_paths(description: str) -> list:
     """Backticked path tokens anywhere in a ticket with NO DoR (ASK-3959).
 
     Wider than dor_file_paths, which stays bounded to **Files:** for a DoR
-    ticket. A ticket with no DoR has no Check or Blast radius fields whose paths
-    must not count, and route_paths still refuses when two paths disagree.
+    ticket, so the rules that may route on them are narrower: R1 (an absolute
+    path inside a checkout) and R2 (an instance's own q-dir prefix), never R3.
+    route_paths still refuses when two paths disagree.
     """
     return [t.strip() for t in _BACKTICKED.findall(description or "") if _looks_like_a_path(t)]
 
@@ -507,11 +517,11 @@ def evidence_decision(issue: dict, facts: RoutingFacts) -> Decision:
     # A fleet alert's body is a raw alert line that may name any repo's files,
     # so it routes on the filer's own label only.
     d = Decision(None, None, "a fleet alert routes on its title label only") if is_fleet_alert(issue) \
-        else route_paths(text_file_paths(desc), facts)
+        else route_paths(text_file_paths(desc), facts, source="the text", rules=("R1", "R2"))
     if tp and d.project and tp != d.project:
         return Decision(None, None, f"the title label names {tp} and the text's paths name {d.project}")
     if d.project:
-        return Decision(d.project, d.rule, "no DoR; " + d.reason)
+        return Decision(d.project, d.rule, d.reason)
     if tp:
         return Decision(tp, "title", f"no DoR; the title's own label names {tp}")
     return d

@@ -182,21 +182,29 @@ def test_fleet_alert_with_no_project_routes_on_its_title_only(board):
     assert route.evidence_decision(it, board).project == board.skeleton_project
 
 
-def test_no_dor_routes_on_paths_in_its_text(board):
-    it = issue("ASK-9", body="the reaper misses `q-system/.q-system/scripts/x.py` again")
+def test_no_dor_routes_on_an_instance_q_dir_path(board):
+    """R2 in free text: an instance's own q-dir prefix names its repo."""
+    it = issue("ASK-9", body="the lane drops `q-consult/canonical/crm.md` again")
     rows = route.plan_actions([it], board)
-    assert rows and rows[0]["set_project"] == board.skeleton_project
+    proj = next(p for p, r in board.rows_by_project.items() if r.get("q_dir") == "q-consult")
+    assert rows and rows[0]["set_project"] == proj
+
+
+def test_no_dor_never_routes_on_a_skeleton_managed_path(board):
+    """PR #675 review, major: R3 in free text is too weak. A kipi-update-shipped
+    path exists in every instance, so it says nothing about the ticket's repo."""
+    it = issue("ASK-9", body="the reaper misses `q-system/.q-system/scripts/x.py` again")
+    d = route.evidence_decision(it, board)
+    assert d.project is None and "cannot route on" in d.reason and "the text" in d.reason
 
 
 def test_no_dor_title_and_paths_that_disagree_refuse(board):
-    it = issue("ASK-10", body="see `q-system/.q-system/scripts/x.py`")
+    it = issue("ASK-10", body="see `q-consult/canonical/crm.md`")
+    q_proj = next(p for p, r in board.rows_by_project.items() if r.get("q_dir") == "q-consult")
     it["title"] = "[nosuchlabel] thing"
-    assert route.evidence_decision(it, board).project == board.skeleton_project  # unknown label adds nothing
-    for proj in board.rows_by_project:
-        if proj != board.skeleton_project:
-            it["title"] = f"[{proj}] thing"
-            assert route.evidence_decision(it, board).project is None
-            break
+    assert route.evidence_decision(it, board).project == q_proj      # an unknown label adds nothing
+    it["title"] = f"[{board.skeleton_project}] thing"
+    assert route.evidence_decision(it, board).project is None        # the label and the path disagree
 
 
 def test_no_dor_unrouted_gets_no_route_unknown_comment(board):
