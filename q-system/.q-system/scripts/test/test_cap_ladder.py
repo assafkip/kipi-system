@@ -138,7 +138,6 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_STATE": str(tmp / "state/state.json"),
         "CAP_LADDER_REPORT": str(tmp / "state/report.json"),
         "CAP_LADDER_BLOCKERS": str(tmp / "kipi/cap-ladder-blockers.json"),
-        "CAP_LADDER_STATUS": str(tmp / "state/morning-status.jsonl"),
         "CAP_LADDER_LINEAR_LOG": str(tmp / "linear-writes.log"),
         "CAP_LADDER_ATTEMPTS": str(tmp / "attempts.json"),
         "CAP_LADDER_REVIEWS": str(tmp / "reviews"),
@@ -323,14 +322,26 @@ def case_decisions() -> None:
           "no owner" in out and len(made) == 1 and "do the thing" in made[0]["description"], (out, w))
     td.cleanup()
 
-    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the vendor plan\n"])
-    ladder(env, "--apply")
-    st = Path(env["CAP_LADDER_STATUS"])
-    rows = [json.loads(l) for l in st.read_text().splitlines()] if st.exists() else []
-    check("FOUNDER-DECISION lands in the morning status file and pages nobody",
-          any(r["issue"] == "ASK-1" and "vendor" in r["ask"] for r in rows)
-          and ledger_row(env, "ASK-1").get("ladder_hold") is True, rows)
+    # FOUNDER-DECISION is refused until its channel ships (ASK-4069, split out of
+    # PR #662 after three review rounds). Driven through the real decide() loop:
+    # no hold, no status file, the agent is asked again for SPLIT or CLOSE only,
+    # and that SPLIT is what lands.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the vendor plan\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    out = ladder(env, "--apply")
+    fable = log(env, "fable")
+    check("FOUNDER-DECISION is refused at validation: no hold, re-asked for SPLIT or CLOSE, the SPLIT lands",
+          "ASK-4069" in out and ledger_row(env, "ASK-1").get("ladder_hold") is not True
+          and len(fable) == 2 and "split-close" in fable[1]
+          and any(x["op"] == "create" for x in writes(env))
+          and not any(x["op"] == "relate" for x in writes(env))
+          and not list(Path(env["W"]).rglob("morning-status.jsonl")), (out, fable, writes(env)))
     td.cleanup()
+    src = (SCRIPTS / "fable-escalate.py").read_text()
+    m = re.search(r'"any": """(.*?)"""', src, re.S)
+    check("the rung-4 prompt does not offer FOUNDER-DECISION, so no RCA call is spent on a refused answer",
+          bool(m) and "FOUNDER-DECISION" not in m.group(1) and "BLOCKED-ON ASK-<n>" in m.group(1),
+          m.group(1) if m else "no DECIDE_ASK any block")
 
     td, env = decision_world([""])
     ladder(env, "--apply")
@@ -484,60 +495,21 @@ def case_review_fixes() -> None:
     check("review: a SPLIT sub-ticket carries owner:sana and needs-triage",
           made and set(made[0].get("labels") or []) >= {"owner:sana", "needs-triage"}, made)
     td.cleanup()
-    # major 3: the founder ask has a reader, a resolve command, and resolving releases the hold.
-    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant the repo token\n"])
-    ladder(env, "--apply")
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("fa", str(SCRIPTS / "founder_asks.py"))
-    fa = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(fa)
-    rows, err = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
-    check("review: founder_asks.py renders the ask with the command that resolves it",
-          err is None and any("ASK-1" in r and "--resolve ASK-1" in r for r in rows), (rows, err))
-    out = ladder(env, "--resolve", "ASK-1", "--note", "token granted")
-    rows2, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
-    reset(env)
-    at(env, 4)
-    out2 = ladder(env, "--apply")
-    check("review: --resolve marks it resolved, the brief drops it, and the held ticket re-enters",
-          "1 ask(s)" in out and not rows2 and "founder decision is resolved" in out2
-          and ledger_row(env, "ASK-1").get("ladder_hold") is not True, (out, rows2, out2))
-    td.cleanup()
-    src = (SCRIPTS / "morning-brief.py").read_text()
-    check("review: the morning brief registers founder_asks.py", '"founder_asks.py"' in src)
 
 
-def case_review_round2() -> None:
-    """PR #662 review round 2, each finding pinned."""
-    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant token A\n",
-                              RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve plan B\n"])
-    ladder(env, "--apply")                                  # hold 1, ask A
-    ladder(env, "--resolve", "ASK-1")                       # A resolved
-    at(env, 4)
-    ladder(env, "--apply")                                  # re-enters on A
-    at(env, 5)
-    led(env, "record-capout", "ASK-1", "fifth cap")
-    ladder(env, "--apply")                                  # hold 2, ask B
-    reset(env)
-    at(env, 6)
-    out = ladder(env, "--apply")
-    check("round 2 major: a resolved earlier ask does NOT release a later founder hold on the same issue",
-          ledger_row(env, "ASK-1").get("ladder_hold") is True and not log(env, "sync"), out)
-    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
-    check("round 2 minor: two distinct asks on one issue are both listed, each with its own id",
-          len({r["id"] for r in rows}) == 2 and sum(1 for r in rows if not r["resolved"]) == 1, rows)
-    ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: a third thing")
-    ladder(env, "--resolve", "ASK-1", "--note", "only the newest")
-    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
-    check("round 2 minor: --resolve ISSUE resolves only its newest open ask",
-          sum(1 for r in rows if not r["resolved"]) == 1 and [r["note"] for r in rows if r.get("note")] == ["only the newest"] or
-          sum(1 for r in rows if r.get("note") == "only the newest") == 1, rows)
-    td.cleanup()
-    e = dict(os.environ, PYTEST_CURRENT_TEST="x")
-    e.pop("CAP_LADDER_STATE", None)
-    p2 = subprocess.run([sys.executable, str(LADDER), "--resolve", "ASK-1"], env=e, capture_output=True, text=True)
-    check("round 2 minor: --resolve under pytest without CAP_LADDER_STATE is refused before it writes",
-          p2.returncode == 4, p2.stdout + p2.stderr)
+def case_pytest_refusal() -> None:
+    """PR #662 round 2, minor: the live-path refusal runs before anything else.
+
+    HOME and every seam point at a temp world, so even a broken refusal reaches
+    no live path; only CAP_LADDER_STATE is unset, which is what the refusal keys on.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        env.pop("CAP_LADDER_STATE")
+        env["PYTEST_CURRENT_TEST"] = "x"
+        p = subprocess.run([sys.executable, str(LADDER), "--apply"], env=env, capture_output=True, text=True)
+        check("under pytest without CAP_LADDER_STATE the ladder refuses (exit 4) before it reads gh or writes",
+              p.returncode == 4 and not log(env, "gh") and not (Path(td) / ".local").exists(), p.stdout + p.stderr)
 
 
 def case_owns() -> None:
@@ -611,7 +583,7 @@ def main() -> int:
         case_edges()
         case_owns()
         case_review_fixes()
-        case_review_round2()
+        case_pytest_refusal()
         case_mutant()
     case_worker()
     case_sites()

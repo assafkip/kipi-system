@@ -60,3 +60,23 @@ type: process
 ## Lessons
 - A ruling that adds a new channel mid-PR gets its own PR, designed before code, with a lifecycle test written first.
 - When a review finding lands in code the previous round wrote, test the whole lifecycle of that code before the next push, not only the named scenario.
+
+## Addendum: the agent that took over (2026-11-08, after the cap)
+
+Main's decision, recorded: SPLIT. PR A (#662, this branch) lands the ladder without the founder-ask channel. PR B (a new branch and ticket) carries the channel with the round-3 fixes.
+
+### What PR A does with FOUNDER-DECISION
+- check_blocker refuses a FOUNDER-DECISION target at validation. The refusal sends the RCA agent back for SPLIT or CLOSE, the same path a free-text blocker takes.
+- The rung-4 prompt in fable-escalate.py no longer offers FOUNDER-DECISION, so no RCA call is spent on an answer that is always refused.
+- Removed from PR A: the status file writer and reader, `--resolve`, `--founder-ask`, founder_asks.py and its morning-brief registration. PR B puts them back and turns the refusal off.
+- ladder_owns() is unchanged, signature included, because pr-owner.py (#659) loads it by path.
+
+### What changes in how I test
+1. **Drive the real thing, never a model of it.** Every check runs the real cap-ladder.py as a subprocess, through its real CLI, against a temp world. For PR B, that means the real `--founder-ask` and `--resolve` verbs write the file, and the real `founder_asks.collect` reads it. No check builds status rows by hand and then asserts on them.
+2. **Test the whole lifecycle, not the named finding.** PR B writes one property test first, before any fix: create an ask, dedupe returns the same id, hold, release on an event, re-cap with the same ask (same id again), resolve by id and by issue, the hold releases, then a second distinct ask on the same issue stays held. The round-3 bug was the "re-cap with the same ask" step of that sequence.
+3. **Every new check is seen to fail.** Each one gets a mutant run through `plugins/prd-os/scripts/mutate.py`: the anchor matches exactly once, the bytes move (digest), the baseline is green first, and the bytecode cache sits outside the tree. For PR A, the mutant is a check_blocker that accepts FOUNDER-DECISION again. The refusal case must turn red.
+4. **Name only readers that exist.** A comment that names a consumer names a script that is in the repo and installed, plus when it runs. cap-ladder.py:57 said the stall sweep (ASK-4019) reads report.json. ASK-4019 scans tickets and PRs, not that file. The honest consumers are cap-ladder.py itself the next night (no decision on file) and linear-owner-sweep.py at 02:00 (a blocker that lost its owner:* label).
+
+### Stop rule for this agent
+- One review round on the delta (KIPI_REVIEW_MAX_ROUNDS=4).
+- If that round finds a major in code PR A changed, this agent does not start a fifth round. It writes the finding here and hands off to a fresh Sana agent, per iteration-speed.md rule 6.

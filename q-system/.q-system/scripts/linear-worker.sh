@@ -2530,8 +2530,8 @@ while IFS= read -r ISSUE; do
   fi
 
   # HELD ON A RECORDED DECISION (ASK-3824). cap-ladder.py sets ladder_hold when
-  # a capped ticket's RCA agent decides BLOCKED-ON an owned ticket, a fleet PR or
-  # a FOUNDER-DECISION, and clears it the night an event lands (the blocker
+  # a capped ticket's RCA agent decides BLOCKED-ON an owned ticket or a fleet PR,
+  # and clears it the night an event lands (the blocker
   # closes, a file it touched changes on main, its description changes, the
   # model config changes). Re-running it before then retries the same failure on
   # an unchanged ticket, which is the timed retry the founder ruled out. Checked
