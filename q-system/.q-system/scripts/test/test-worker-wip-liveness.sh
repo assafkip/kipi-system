@@ -589,7 +589,7 @@ make_kipi() {  # make_kipi <release|norelease>
   cat > "$DREPO/kipi" <<SH
 printf '%s\n' "\$*" >> "$DROOT/kipi-calls.log"
 case "\$1 \$*" in
-  *--release-only*) echo "release PR #543 (cap): closed" ;;
+  *--release-only*) printf 'apply-excl=[%s]\n' "\${KIPI_PICK_EXCLUDE:-}" >> "$DROOT/kipi-calls.log"; echo "release PR #543 (cap): closed" ;;
   work*) if [ "$1" = "release" ]; then echo "[dry] would release PR #543 (cap): close it"; else echo "nothing ready."; fi ;;
 esac
 exit 0
@@ -599,6 +599,8 @@ SH
 run_dispatch() {  # run_dispatch <dispatch-script>
   rm -rf "$DROOT/home/.config/kipi"; mkdir -p "$DROOT/home/.config/kipi"
   date -u +%s > "$DROOT/home/.config/kipi/dispatch-lastbeat"; : > "$DROOT/kipi-calls.log"
+  [ -z "${SEED_SET_ASIDE:-}" ] || printf '%s\t%s\n' "$SEED_SET_ASIDE" "$(date +%s)" \
+    > "$DROOT/home/.config/kipi/dispatch-branch-refused.tsv"
   ( cd "$DREPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \
       KIPI_REPO="$DREPO" KIPI_NOTIFY="$DROOT/notify.sh" \
       KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
@@ -608,6 +610,13 @@ make_kipi release; run_dispatch "$DISPATCH"
 grep -q -- 'work --release-only --apply' "$DROOT/kipi-calls.log" \
   && ok "L13: a dry pick that names a release makes the dispatcher run kipi work --release-only --apply" \
   || bad "L13: the dispatcher applies the named release" "kipi calls: $(tr '\n' '|' < "$DROOT/kipi-calls.log")"
+# L13c. THE APPLY PASS SEES THE SAME SET-ASIDE LIST AS THE DRY PICK (ASK-3993
+# follow-up, PR #651 round 2, major). Without it the apply pass recomputes the
+# hold kinds without the list and closes a different PR than the log names.
+make_kipi release; SEED_SET_ASIDE="ASK-931" run_dispatch "$DISPATCH"
+grep -q '^apply-excl=\[ASK-931\]$' "$DROOT/kipi-calls.log" \
+  && ok "L13c: the release-apply pass carries the set-aside list the dry pick used" \
+  || bad "L13c: the release-apply pass carries the set-aside list" "kipi calls: $(tr '\n' '|' < "$DROOT/kipi-calls.log")"
 make_kipi norelease; run_dispatch "$DISPATCH"
 grep -q -- '--release-only' "$DROOT/kipi-calls.log" \
   && bad "L13b (negative): no release named, no apply pass" "$(tr '\n' '|' < "$DROOT/kipi-calls.log")" \

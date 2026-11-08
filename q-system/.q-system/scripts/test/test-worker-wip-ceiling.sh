@@ -325,6 +325,19 @@ else
   bad "case 1f: the rework pick honours the set-aside list" "picks: $(picks "$WORK/s1f.out"). Output: $(flat "$WORK/s1f.out")"
 fi
 
+# 1g. A TERMINAL REASON IS NOT MASKED BY THE SET-ASIDE LIST (ASK-3993 follow-up,
+# PR #651 round 2, minor). The capped PR #931 stays "at the review round cap"
+# with its own release exit even when ASK-931 is set aside; the list holds only
+# a PR that would otherwise be reworked.
+KIPI_PICK_EXCLUDE="ASK-931" run_worker "$WORKER" "$WORK/s3.prs" "$WORK/s1g.out" --limit 1
+if grep -q '#931 (ASK-931): at the review round cap' "$WORK/s1g.out" \
+   && grep -q '\[dry\] would release PR #931 (cap)' "$WORK/s1g.out" \
+   && ! grep -q '#931 (ASK-931): set aside' "$WORK/s1g.out"; then
+  ok "case 1g: a capped PR keeps its cap kind and its release though its ticket is set aside"
+else
+  bad "case 1g: the set-aside list does not mask a terminal reason" "$(grep -E '#931|release' "$WORK/s1g.out" | head -3 | tr '\n' '|')"
+fi
+
 # ============================================================================
 # 2. TRAP 1, THE LANE RACE: the oldest own PR's ticket was started an hour ago
 # ============================================================================
@@ -584,6 +597,17 @@ if mutate 'if [ -z "$ONLY_ISSUE" ] && [ -z "$TARGET_SLUG" ]; then' 'if false; th
     || ok "mutant killed: without the slug guard an unscoped count reads another pile, so case 5b can go red"
 else
   bad "mutant 9f: anchor" "the slug guard moved"
+fi
+restore
+
+# 9h. the rework pick ignores the set-aside list: case 1f must go red.
+if mutate '        if [ -z "$w_why" ] && wip_set_aside "$w_issue"; then' '        if false; then'; then
+  KIPI_PICK_EXCLUDE="ASK-901" run_worker "$MUT/linear-worker.sh" "$WORK/s1.prs" "$WORK/m.out" --limit 1
+  grep -q '\[dry\] would work ASK-901 ' "$WORK/m.out" \
+    && ok "mutant killed: without the set-aside hold the set-aside ASK-901 is the rework pick, so case 1f can go red" \
+    || bad "mutant 9h survived" "picks: $(picks "$WORK/m.out")"
+else
+  bad "mutant 9h: anchor" "the set-aside hold moved"
 fi
 restore
 
