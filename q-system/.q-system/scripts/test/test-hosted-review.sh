@@ -42,12 +42,12 @@ else
     && ok "carries this PR's earlier review rounds between runs, so ROUND_RULE can arm" \
     || bad "PR #437 round 2 major: pr-reviews is not carried between runs; every push is round 1"
   has "state=success" "$W" && bad "the workflow itself writes state=success" || ok "the workflow never writes state=success itself"
-  # The Mac reviewer runs on the model com.kipi.dispatch.plist sets; the hosted
-  # one must run the same, not pr-review-agent.sh's Opus default (codex minor, #464).
-  MAC_MODEL="$(python3 -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["EnvironmentVariables"]["KIPI_REVIEW_CLAUDE_MODEL"])' "$ROOT/q-system/.q-system/scripts/com.kipi.dispatch.plist" 2>/dev/null)"
-  [ -n "$MAC_MODEL" ] && has "KIPI_REVIEW_CLAUDE_MODEL: $MAC_MODEL" "$W" \
-    && ok "the hosted reviewer runs the Mac's reviewer model ($MAC_MODEL)" \
-    || bad "THE #464 MINOR: the workflow does not set KIPI_REVIEW_CLAUDE_MODEL to the Mac's '${MAC_MODEL:-<unreadable plist>}', so pr-review-agent.sh falls back to Opus"
+  # The #464 parity: the hosted reviewer must run the Mac's model. Since ASK-4013
+  # both read q-system/.q-system/model-routing.json, so parity holds only while
+  # NEITHER side sets a model of its own: a workflow env model would fork them again.
+  grep -q "KIPI_REVIEW_CLAUDE_MODEL:" "$W" \
+    && bad "THE #464 MINOR, inverted: the workflow sets its own reviewer model, so it no longer runs the routing table's" \
+    || ok "the hosted reviewer sets no model of its own; it reads the same routing table as the Mac"
   has "secrets.ANTHROPIC_API_KEY" "$W" \
     && bad "NO-API RULE (2026-09-28): the workflow hands the billed ANTHROPIC_API_KEY to the reviewer" \
     || ok "the workflow passes no ANTHROPIC_API_KEY (subscription token only)"

@@ -117,12 +117,12 @@
 		<key>KIPI_DISPATCH_DAILY_MAX</key>
 		<string>96</string>
 
-		<!-- REVIEWER ON SONNET, founder-approved 2026-09-28 (same audit).
-		     pr-review-agent.sh defaults to claude-opus-5 (its line 144); a
-		     review is content review, which model-allocation.md gives to the
-		     Sonnet tier. Subscription only: every call is claude -p. -->
-		<key>KIPI_REVIEW_CLAUDE_MODEL</key>
-		<string>claude-sonnet-5</string>
+		<!-- NO REVIEWER MODEL HERE (ASK-4013). The 2026-09-28 Sonnet reviewer
+		     key that sat here was superseded by the founder's 2026-11-08 ruling:
+		     q-system/.q-system/model-routing.json routes each review by the PR's
+		     class, with the evidence per row, and pr-review-agent.sh reads only
+		     that table. An installed copy that still exports the old key is
+		     inert: nothing reads it. -->
 
 		<!-- WHEN THE ALLOWANCE REFILLS, local hour. Founder-set 2026-07-28,
 		     for safety rather than tidiness: a midnight reset hands a full

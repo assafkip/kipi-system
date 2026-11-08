@@ -1,0 +1,13 @@
+{
+ "path": "q-system/.q-system/tests/test_model_routing.py",
+ "runner": "python3",
+ "covers": [
+  "q-system/.q-system/model-routing.json",
+  "q-system/.q-system/scripts/model_route.py",
+  "q-system/.q-system/scripts/linear-worker.sh",
+  "q-system/.q-system/scripts/pr-review-agent.sh",
+  "q-system/.q-system/scripts/linear-alert-triage.py",
+  "q-system/.q-system/scripts/com.kipi.dispatch.plist",
+  ".github/workflows/reviewer-hosted.yml"
+ ]
+}

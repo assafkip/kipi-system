@@ -1,0 +1,209 @@
+"""Model routing is data the code reads (ASK-4013).
+
+Founder, 2026-11-08, verbatim: "I want you to evaluate what kind of tickets can go
+to sonnet and what kind of tickets can stay on Opus and make that a rule in code".
+His concern, verbatim: "it's probably not going to create as good as code solutions
+for open PRS and tickets".
+
+Why this shape: before ASK-4013 the model was a literal in three call sites
+(linear-worker.sh SECOND_RUNNER_FALLBACK, pr-review-agent.sh CLAUDE_MODEL,
+linear-alert-triage.py TRIAGE_MODEL), the worker's main run named none and took
+whatever ANTHROPIC_MODEL its parent exported (claude-opus-5 under dispatch, the
+settings default "opus" alias by hand), and the reviewer's real model came from a
+plist env var. Four places, three mechanisms, no evidence attached to any of them.
+Now one table (q-system/.q-system/model-routing.json) says which job class runs on
+which model and carries the evidence per row, and model_route.py is the only
+reader. This test fails when a governed call site names a model directly again.
+"""
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+QS = Path(__file__).resolve().parents[1]
+SCRIPTS = QS / "scripts"
+TABLE = QS / "model-routing.json"
+sys.path.insert(0, str(SCRIPTS))
+import model_route  # noqa: E402
+
+# The call sites the table governs. Each must read model_route.py and name no model.
+GOVERNED = ("linear-worker.sh", "pr-review-agent.sh", "linear-alert-triage.py")
+MODEL_ID = re.compile(r"claude-(?:opus|sonnet|haiku|fable)-\d")
+
+
+def literal_sites(path_name: str, text: str) -> list:
+    """Code lines (whole-line comments skipped) that name a model id."""
+    hits = []
+    for n, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if MODEL_ID.search(s):
+            hits.append(f"{path_name}:{n}: {s[:120]}")
+    if path_name.endswith(".py"):
+        # docstrings may cite a model in prose; only string constants that are code count
+        import ast
+        tree = ast.parse(text)
+        docs = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant):
+                docs.add(body[0].value.lineno)
+        code = {node.lineno for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and MODEL_ID.search(node.value) and node.lineno not in docs}
+        hits = [h for h in hits if int(h.split(":")[1]) in code]
+    return hits
+
+
+class Classify(unittest.TestCase):
+    """Cases are real tickets; the comment names the PR the file list came from."""
+
+    def cls(self, files, repo="kipi-system", text=""):
+        return model_route.classify(repo=repo, files=files, text=text)
+
+    def test_dispatcher_worker_reviewer_paths(self):
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/linear-worker.sh"]), "dispatcher-worker")
+        self.assertEqual(self.cls(["kipi-dispatch.sh", "q-system/.q-system/scripts/test/test-x.sh"]), "dispatcher-worker")
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/pr-review-agent.sh"]), "dispatcher-worker")
+
+    def test_guards_and_hooks_outrank_everything(self):
+        self.assertEqual(self.cls(["q-system/hooks/destructive-op-deny.sh"]), "guards-hooks")
+        self.assertEqual(self.cls([".claude/settings.json"]), "guards-hooks")
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/merge-bypass-gate.py"]), "guards-hooks")
+        # a client repo touching a hook is still a guard change first
+        self.assertEqual(self.cls(["q-system/hooks/x.sh"], repo="client-path"), "guards-hooks")
+
+    def test_concurrency_from_the_ticket_text(self):
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/open-loops.py"],
+                                  text="the ledger write races a second worker; take a flock"),
+                         "concurrency-locks")
+
+    def test_client_repo(self):
+        # ASK-767, a client engagement's PR: a test-only change, still client work first
+        self.assertEqual(self.cls(["tests/test_open_loops_skip.py"], repo="client-path"), "client-repo")
+        # the CLI derives client-path from the checkout, never from a named slug
+        with tempfile.NamedTemporaryFile("w", suffix=".files", delete=False) as fh:
+            fh.write("src/collector.py\n")
+        out = subprocess.run([sys.executable, str(SCRIPTS / "model_route.py"), "pick", "--job", "review",
+                              "--files-from", fh.name, "--tree",
+                              "/Users/x/projects/consulting/projects/example_instance"],
+                             capture_output=True, text=True)
+        Path(fh.name).unlink()
+        self.assertIn("class=client-repo", out.stderr)
+
+    def test_code_size_classes(self):
+        # ASK-2388, kipi-system PR #500: one script plus its test
+        self.assertEqual(self.cls(["q-system/.q-system/scripts/change-size.py",
+                                   "q-system/.q-system/tests/test_change_size.py"]), "single-code-file")
+        self.assertEqual(self.cls(["a/x.py", "b/y.sh"]), "multi-code-file")
+
+    def test_non_code_classes(self):
+        self.assertEqual(self.cls(["q-system/.q-system/tests/test_open_loops.py"]), "test-only")
+        self.assertEqual(self.cls(["q-system/.q-system/heartbeat-jobs.json"]), "config-data")
+        self.assertEqual(self.cls(["docs/autonomous-systems.md"]), "docs-text")
+
+    def test_no_file_list_is_unknown(self):
+        self.assertEqual(self.cls([]), "unknown")
+
+    def test_dor_file_list_is_parsed(self):
+        dor = ("## Definition of Ready\n\n* **Outcome:** x\n"
+               "* **Files:** `q-system/.q-system/scripts/open-loops.py` (read-only), "
+               "and `q-system/.q-system/tests/test_open_loops.py`.\n* **Check:** y\n")
+        self.assertEqual(model_route.dor_files(dor), ["q-system/.q-system/scripts/open-loops.py",
+                                                      "q-system/.q-system/tests/test_open_loops.py"])
+        self.assertEqual(model_route.dor_files("no files line here"), [])
+
+
+class Table(unittest.TestCase):
+    def setUp(self):
+        self.t = json.loads(TABLE.read_text())
+
+    def test_every_routed_row_has_a_model_and_evidence(self):
+        for job, spec in self.t["jobs"].items():
+            rows = spec.get("classes", {"*": spec})
+            for cls, row in rows.items():
+                self.assertIn(row.get("model"), self.t["known_models"], f"{job}/{cls}")
+                self.assertTrue((row.get("evidence") or "").strip(), f"{job}/{cls} has no evidence")
+
+    def test_code_jobs_cover_every_class(self):
+        names = [c["name"] for c in self.t["classes"]] + ["unknown"]
+        for job in ("worker", "review"):
+            self.assertEqual(sorted(self.t["jobs"][job]["classes"]), sorted(names), job)
+
+    def test_default_is_opus(self):
+        self.assertIn("opus", self.t["default"])
+
+    def test_risky_classes_stay_on_opus(self):
+        for job in ("worker", "review"):
+            for cls in ("guards-hooks", "dispatcher-worker", "concurrency-locks", "unknown"):
+                self.assertIn("opus", self.t["jobs"][job]["classes"][cls]["model"], f"{job}/{cls}")
+
+    def test_unreadable_table_floor_is_the_table_default(self):
+        # the floor is the only literal outside the table; it must not drift from it
+        self.assertEqual(model_route.FLOOR, self.t["default"])
+
+
+class Pick(unittest.TestCase):
+    def test_known_job_and_class(self):
+        t = json.loads(TABLE.read_text())
+        self.assertEqual(model_route.pick("worker", "dispatcher-worker"),
+                         t["jobs"]["worker"]["classes"]["dispatcher-worker"]["model"])
+
+    def test_unknown_job_or_class_falls_to_default(self):
+        t = json.loads(TABLE.read_text())
+        self.assertEqual(model_route.pick("no-such-job"), t["default"])
+        self.assertEqual(model_route.pick("worker", "no-such-class"),
+                         t["jobs"]["worker"]["classes"]["unknown"]["model"])
+
+    def test_unreadable_table_fails_toward_opus(self):
+        with tempfile.TemporaryDirectory() as d:
+            bad = Path(d) / "model-routing.json"
+            bad.write_text("{not json")
+            self.assertIn("opus", model_route.pick("worker", "docs-text", table_path=bad))
+
+
+class CallSites(unittest.TestCase):
+    def test_governed_sites_name_no_model(self):
+        hits = []
+        for name in GOVERNED:
+            hits += literal_sites(name, (SCRIPTS / name).read_text())
+        self.assertEqual(hits, [], "a governed call site names a model; read it from model_route.py")
+
+    def test_governed_sites_read_the_table(self):
+        for name in GOVERNED:
+            self.assertTrue("model_route" in (SCRIPTS / name).read_text(), f"{name} does not read model_route")
+
+    def test_worker_main_run_passes_a_model(self):
+        text = (SCRIPTS / "linear-worker.sh").read_text()
+        main = [l for l in text.splitlines() if 'claude -p \\"\\$1\\"' in l and not l.strip().startswith("#")]
+        self.assertEqual(len(main), 1, "expected exactly one main-run claude -p line")
+        self.assertIn("--model", main[0])
+
+    def test_the_retired_reviewer_env_is_read_and_set_nowhere(self):
+        # The 2026-09-28 Sonnet reviewer lived in this env var, set in the dispatch plist
+        # and copied into the hosted workflow. A var that still overrode the table would
+        # make the table decoration. The installed plist may still export it: inert.
+        root = QS.parents[1]
+        for rel in ("q-system/.q-system/scripts/pr-review-agent.sh",
+                    "q-system/.q-system/scripts/com.kipi.dispatch.plist",
+                    ".github/workflows/reviewer-hosted.yml"):
+            code = [l for l in (root / rel).read_text().splitlines()
+                    if "KIPI_REVIEW_CLAUDE_MODEL" in l and not l.strip().startswith(("#", "<!--"))]
+            self.assertEqual(code, [], rel)
+
+    def test_negative_self_test_the_lint_catches_a_literal(self):
+        # A lint that cannot fail is not a lint: plant each shape it must catch.
+        self.assertTrue(literal_sites("x.sh", 'M="${X:-claude-opus-5}"\n'))
+        self.assertTrue(literal_sites("x.sh", "claude -p --model claude-sonnet-5-5 hi\n"))
+        self.assertTrue(literal_sites("x.py", 'TRIAGE_MODEL = "claude-opus-5"\n'))
+        self.assertFalse(literal_sites("x.sh", "# claude-opus-5 was the old pin\n"))
+        self.assertFalse(literal_sites("x.py", '"""docstring naming claude-opus-5"""\nX = 1\n'))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

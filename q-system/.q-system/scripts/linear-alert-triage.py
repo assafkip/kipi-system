@@ -508,7 +508,12 @@ VERDICTS = ("PROMOTE", "HOLD")
 # PINNED, not inherited (batch-jobs-pin-model): an unpinned headless `claude -p`
 # rides whatever the interactive default is that night, and the fleet has paid
 # for that once already. The caller's ANTHROPIC_MODEL is overwritten on purpose.
-TRIAGE_MODEL = "claude-opus-5"
+# The pin is the routing table's alert-triage row (ASK-4013), not a literal here:
+# one table says which job runs on which model, with the evidence beside it.
+_mr_spec = importlib.util.spec_from_file_location("model_route", HERE / "model_route.py")
+model_route = importlib.util.module_from_spec(_mr_spec)
+_mr_spec.loader.exec_module(model_route)
+TRIAGE_MODEL = model_route.pick("alert-triage")
 MODEL_TIMEOUT = 300
 
 HELD_LABEL_Q = """query($n:String!){issueLabels(filter:{name:{eq:$n}}){
