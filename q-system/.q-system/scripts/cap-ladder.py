@@ -11,52 +11,65 @@ Every cap in the loop ended in a page and a parked state that nothing read:
     linear-worker.sh  2 rebase rounds, conflict_paged, "needs a human"
     review-redrive    one machine attempt per head, then a page, then nothing
 
-Both redrives skip a capout (ci-redrive.py capout_skip), the worker skips a
-ticket at 3 attempts, and wip_release only fires at 5 open sana/ PRs in one
-repo. Measured 2026-11-08: no target repo had more than 3, so every capped PR
-sat open with no mover (dead-end audit, ~/.config/kipi/handoffs/2026-11-08-dead-end-audit.md).
+Both redrives skip a capout, the worker skips a ticket at 3 attempts, and
+wip_release only fires at 5 open sana/ PRs in one repo. Measured 2026-11-08: no
+target repo had more than 3, so every capped PR sat open with no mover
+(dead-end audit, ~/.config/kipi/handoffs/2026-11-08-dead-end-audit.md).
 
 THE FOUNDER'S RULINGS, the spec for the ladder below:
   2026-11-06 "after 3 failed merges we must stop, change agent and use fable to
              do a full rca"
   2026-11-08 "So you're telling me if Fable does the root cause and Opus still
-             fails? After that it just hangs and goes nowhere. But that's
-             against my direction. That doesn't work."
-  iteration-speed.md rule 6: at round 3, hand off to a fresh agent, which
-             writes an RCA and continues. Hand off, never stop.
+             fails? After that it just hangs and goes nowhere."
+  2026-11-08 "What's the point of timed retries? What's gonna change in seven,
+             fourteen or 28 days?"
+  2026-11-08 "but what happens if nothing changed? the ticket just stays?"
+  iteration-speed.md rule 2: the same failure twice means stop and diagnose.
 
-THE LADDER (one rung per cap event, per issue, counter kept forever)
---------------------------------------------------------------------
-  rung 1  rca       a fresh model (Fable, fable-escalate.py --kind rca) writes
-                    an RCA of the full packet, then the work continues.
-  rung 2  runner    a new RCA, and the next attempt runs on a different runner
-                    (ledger flag ladder_runner_codex, read by linear-worker.sh).
+THE LADDER (one rung per cap event, per issue, counter kept)
+------------------------------------------------------------
+  rung 1  rca       a fresh model (Fable, fable-escalate.py --kind rca) writes an
+                    RCA of the full packet, then the work continues.
+  rung 2  runner    a new RCA, and the next attempt runs on Codex (ledger flag
+                    ladder_runner_codex, read by linear-worker.sh).
   rung 3  rescope   a new RCA, needs-scope, and linear-dor-drafter.py --issue
                     rewrites the Definition of Ready in the same run.
-  rung 4+ reentry   a timed re-entry: 7, then 14, then every 28 days, a new RCA
-                    each time, the runner alternating. Never terminal.
+  rung 4+ decide    NO TIMED RETRY. The RCA agent records exactly one decision:
+                      SPLIT       sub-tickets filed (owner:sana, same project, a
+                                  DoR each); the parent closes Done, "split into".
+                      CLOSE       Canceled with the RCA path as the reason.
+                      BLOCKED-ON  an open owned ticket, an open fleet PR, or
+                                  FOUNDER-DECISION (spend, access, outside reach).
+                    A BLOCKED-ON answer that names anything else is refused and
+                    the agent is asked again for SPLIT or CLOSE only; two invalid
+                    answers in a row default to SPLIT on the RCA's own findings.
 
-THE 11-07 AMENDMENT IS NOT FOLLOWED, ON PURPOSE. It ended the ladder in a park
-that chief E2 closes at 14 days. A park is a terminal state wearing a date, and
-E2 closes 0 parks a day behind its 200-write cap (measured 2026-11-08). The
-founder's 2026-11-08 ruling above supersedes it; main approved this ladder.
+  A BLOCKED-ON ticket is held (ledger flag ladder_hold, read by the worker) and
+  re-enters ONLY on an event since its decision: (a) its blocker closed, (b) a
+  file its last attempt touched or its RCA names changed on origin/main, (c) its
+  description changed, (d) the worker's model config changed. No event, no run,
+  and one log line naming the event it waits on. A ticket that is the blocker of
+  N held tickets is picked first in its priority band (cap-ladder-blockers.json).
+
+So nothing just stays: every capped ticket either moves on a rung, ends on a
+recorded decision, or waits on a named, owned event, and the report file lists
+each one with what it waits on. A capped ticket with no decision on file, or a
+blocker that lost its owner, is marked red there for the stall sweep (ASK-4019).
 
 HOW "CONTINUE" IS MADE REAL, AND WHY A NEW PR
 ---------------------------------------------
-A capped PR cannot continue in place: a review-capped PR gets no more reviews
-(its round count is review records on disk, which nothing may delete), and a
-fresh pick of a ticket with no open PR cuts its tree from origin/main with
-`worktree add -B` (linear-worker.sh), so the old branch would be reset under it
-and the push refused. So the ladder closes the capped PR (branch kept, never
---delete-branch) and opens a NEW PR on the same branch. The worker then sees an
-open PR, bases its tree on origin/<branch>, and runs a rework round whose prompt
-reads the Linear comments, where the RCA was posted. review-redrive sees the new
-PR's absent reviewer slot and re-reviews it. Both are existing consumers.
+A review-capped PR gets no more reviews (its round count is review records on
+disk, which nothing may delete), and a fresh pick of a ticket with no open PR
+cuts its tree from origin/main with `worktree add -B`, so the old branch would be
+reset and the push refused. So the ladder closes the capped PR (branch kept,
+never --delete-branch) and opens a NEW PR on the same branch. The worker then
+bases its tree on origin/<branch> and runs a rework round whose prompt reads the
+Linear comments, where the RCA was posted.
 
-SINGLE WRITERS. The ladder's own state is one file, written only here, through a
-temp file and a rename under a lock. The attempts ledger is written only through
-attempts-ledger.py. Linear is written only through linear-sync.py. GitHub only
-through gh. Each is a seam so the test drives every one of them.
+SINGLE WRITERS. The ladder's own state, report and blockers files are written
+only here, through a temp file and a rename under a lock. The attempts ledger is
+written only through attempts-ledger.py. GitHub only through gh. Each outside
+call is a seam the test drives.
 
 Exit is always 0 under launchd; the summary line says what happened.
 """
@@ -64,13 +77,13 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -78,7 +91,6 @@ HERE = Path(__file__).resolve().parent
 HOME = Path.home()
 
 MAX_ATTEMPTS = 3                      # linear-worker.sh MAX_ATTEMPTS
-COOLDOWN_DAYS = (7, 14, 28)           # rung 4, rung 5, rung 6 and every rung after
 RUNG_NAMES = {1: "rca", 2: "runner", 3: "rescope"}
 RUNNER_FLAG = "ladder_runner_codex"   # read by linear-worker.sh ladder_runner_for
 JOB = "cap-ladder.py (com.kipi.cap-ladder, nightly 04:40)"
@@ -215,73 +227,166 @@ def read_ledger() -> dict:
         return {}
 
 
+def cap_sigs(e: dict, slug: str = "", pr_number=None, reviews: Path = REVIEWS) -> list:
+    """Every cap signature one ledger entry holds, for one open PR or none.
+
+    THE ONE DEFINITION OF "CAPPED". find_caps (this file) and ladder_owns (read
+    by pr-owner.py, ASK-3962) both ask it, so the two consumers can never
+    disagree about which PRs the ladder owns. Two copies of one rule is how a
+    PR ends up with two writers, or with none.
+    """
+    out = []
+    e = e if isinstance(e, dict) else {}
+    if e.get("capout"):
+        out.append(f"capout:{e.get('capout_at', '')}")
+    if isinstance(e.get("count"), int) and e["count"] >= MAX_ATTEMPTS:
+        out.append(f"attempts:{e.get('last', '')}")
+    if e.get("conflict_paged"):
+        out.append(f"conflict:{e.get('last_conflict', '')}")
+    if pr_number is not None:
+        for key in e:
+            m = re.match(r"^review_escalated_[a-z]+_pr(\d+)_", key)
+            if m and m.group(1) == str(pr_number):
+                out.append(f"escalated:{key}")
+        name = f".round-cap-{slug.replace('/', '_')}-pr-{pr_number}"
+        # Both engines: pr-review-agent.sh writes the codex engine's marker one
+        # directory down (ENGINE_DIR=$OUT_DIR/codex).
+        if (reviews / name).exists() or (reviews / "codex" / name).exists():
+            out.append(f"reviewcap:{slug}#{pr_number}")
+    return out
+
+
 def find_caps(ledger: dict, prs_by_issue: dict, slug_by_pr: dict) -> dict:
     """{issue: [signature, ...]} for every cap that holds a ticket or PR now.
 
     A signature names ONE cap event. The ladder clears what it consumed, so a
-    signature that is still present on the next run is either new or a write
-    that failed, and both deserve the next look.
+    signature still present on the next run is either new or a write that
+    failed, and both deserve the next look. Only an OPEN PR carries the PR-keyed
+    caps (escalation, review cap): a closed one is history.
     """
     caps: dict = {}
-
-    def add(issue, sig):
-        caps.setdefault(issue, []).append(sig)
-
-    for issue, e in ledger.items():
-        if not isinstance(e, dict):
-            continue
-        if e.get("capout"):
-            add(issue, f"capout:{e.get('capout_at', '')}")
-        if isinstance(e.get("count"), int) and e["count"] >= MAX_ATTEMPTS:
-            add(issue, f"attempts:{e.get('last', '')}")
-        if e.get("conflict_paged"):
-            add(issue, f"conflict:{e.get('last_conflict', '')}")
-        for key in e:
-            m = re.match(r"^review_escalated_[a-z]+_pr(\d+)_", key)
-            pr = prs_by_issue.get(issue)
-            if m and pr and str(pr["number"]) == m.group(1):
-                add(issue, f"escalated:{key}")
-    # The reviewer's cap leaves a marker per repo and PR, and a PENDING status no
-    # redrive reads. Only an OPEN PR is a live cap; a closed one is history.
-    for issue, pr in prs_by_issue.items():
-        slug = slug_by_pr[(issue, pr["number"])]
-        name = f".round-cap-{slug.replace('/', '_')}-pr-{pr['number']}"
-        # Both engines: pr-review-agent.sh writes the codex engine's marker one
-        # directory down (ENGINE_DIR=$OUT_DIR/codex).
-        if (REVIEWS / name).exists() or (REVIEWS / "codex" / name).exists():
-            add(issue, f"reviewcap:{slug}#{pr['number']}")
+    for issue in set(ledger) | set(prs_by_issue):
+        pr = prs_by_issue.get(issue)
+        sigs = cap_sigs(ledger.get(issue) or {}, slug_by_pr.get((issue, pr["number"]), "") if pr else "",
+                        pr["number"] if pr else None)
+        if sigs:
+            caps[issue] = sigs
     return caps
 
 
-# --- Linear -------------------------------------------------------------------
+def ladder_owns(slug: str, number: int, branch: str, state_dir: str) -> str:
+    """"" when cap-ladder.py does not own this PR, else a one-line reason.
+
+    For pr-owner.py (ASK-3962), which loads this file by path and yields any PR
+    the ladder owns. Lane branches (sana/<id>-<slug>) are never the ladder's:
+    pr-owner.py owns them. `state_dir` is the worker's KIPI_STATE_DIR, where the
+    attempts ledger and pr-reviews/ live.
+    """
+    issue = issue_of_branch(branch)
+    if not issue or branch.lower() != f"{LANE_PREFIX}{issue.lower()}":
+        return ""
+    try:
+        e = (json.loads((Path(state_dir) / "linear-worker-attempts.json").read_text()) or {}).get(issue) or {}
+    except (OSError, ValueError):
+        e = {}
+    sigs = cap_sigs(e, slug, number, Path(state_dir) / "pr-reviews")
+    if e.get(HOLD_FLAG):
+        sigs.append("held on a BLOCKED-ON decision")
+    if not sigs:
+        return ""
+    return f"cap-ladder owns it: {issue} holds {', '.join(s.split(':', 1)[0] for s in sigs)}"
+
+
+HOLD_FLAG = "ladder_hold"             # read by linear-worker.sh, issue loop
+BLOCKERS = env_path("CAP_LADDER_BLOCKERS", HOME / ".config/kipi/cap-ladder-blockers.json")
+REPORT = env_path("CAP_LADDER_REPORT", HOME / ".local/state/kipi/cap-ladder/report.json")
+STATUS = env_path("CAP_LADDER_STATUS", HOME / ".local/state/kipi/morning-status.jsonl")
+OPEN_TYPES = ("backlog", "unstarted", "started", "triage")
+
+
+def write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+    os.replace(tmp, path)
+
+
+# --- Linear: reads, and the three writes a decision needs ---------------------
 
 _SYNC_MOD = None
 
 
-def ticket(issue: str) -> dict | None:
-    """{state_type, labels, project, title} or None when it cannot be read."""
-    fixture = os.environ.get("CAP_LADDER_LINEAR_FIXTURE")
-    if fixture:
-        return (json.loads(Path(fixture).read_text()) or {}).get(issue)
+def _sync():
     global _SYNC_MOD
+    if _SYNC_MOD is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("kipi_linear_sync_ladder", str(HERE / "linear-sync.py"))
+        _SYNC_MOD = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_SYNC_MOD)
+    return _SYNC_MOD
+
+
+def ticket(issue: str) -> dict | None:
+    """{state_type, labels, project, title, desc_hash, ...} or None when unreadable."""
+    fixture = os.environ.get("CAP_LADDER_LINEAR_FIXTURE")
     try:
-        if _SYNC_MOD is None:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("kipi_linear_sync_ladder",
-                                                          str(HERE / "linear-sync.py"))
-            _SYNC_MOD = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(_SYNC_MOD)
-        data = _SYNC_MOD.graphql(
-            "query($id:String!){issue(id:$id){title state{type} project{name} labels{nodes{name}}}}",
-            {"id": issue})
+        if fixture:
+            i = (json.loads(Path(fixture).read_text()) or {}).get(issue)
+            if i is None:
+                return None
+            return dict(i, desc_hash=hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16])
+        data = _sync().graphql(
+            "query($id:String!){issue(id:$id){id title description state{type} team{id} "
+            "project{id name} labels{nodes{name}}}}", {"id": issue})
         i = data.get("issue") or {}
         return {"state_type": (i.get("state") or {}).get("type", ""),
                 "labels": [n["name"] for n in (i.get("labels") or {}).get("nodes") or []],
-                "project": (i.get("project") or {}).get("name") or "",
-                "title": i.get("title") or ""}
+                "project": (i.get("project") or {}).get("name") or "", "title": i.get("title") or "",
+                "desc_hash": hashlib.sha256((i.get("description") or "").encode()).hexdigest()[:16],
+                "uuid": i.get("id"), "team_id": (i.get("team") or {}).get("id"),
+                "project_id": (i.get("project") or {}).get("id")}
     except Exception as exc:  # noqa: BLE001 - one unreadable ticket must not stop the run
         say(f"WARN could not read {issue} from Linear ({str(exc)[:120]}); it waits for the next run")
         return None
+
+
+def owned_open(t: dict | None) -> bool:
+    return bool(t) and t.get("state_type") in OPEN_TYPES and any(
+        l.startswith("owner:") for l in t.get("labels") or [])
+
+
+def lin(op: str, **kw):
+    """create -> new identifier; state / relate -> True. Seam: CAP_LADDER_LINEAR_LOG."""
+    log = os.environ.get("CAP_LADDER_LINEAR_LOG")
+    if log:
+        with open(log, "a") as fh:
+            fh.write(json.dumps(dict(op=op, **kw)) + "\n")
+        return f"ASK-9{sum(1 for _ in open(log)):03d}" if op == "create" else True
+    g = _sync().graphql
+    if op == "create":
+        p = ticket(kw["parent"]) or {}
+        lab = g('query($n:String!){issueLabels(filter:{name:{eq:$n}}){nodes{id}}}', {"n": "owner:sana"})
+        inp = {"teamId": p.get("team_id"), "title": kw["title"], "description": kw["description"],
+               "parentId": p.get("uuid"),
+               "labelIds": [n["id"] for n in lab["issueLabels"]["nodes"]][:1]}
+        if p.get("project_id"):
+            inp["projectId"] = p["project_id"]
+        res = g("mutation($i:IssueCreateInput!){issueCreate(input:$i){success issue{identifier}}}", {"i": inp})
+        return ((res.get("issueCreate") or {}).get("issue") or {}).get("identifier") or ""
+    if op == "state":
+        t = ticket(kw["issue"]) or {}
+        states = g('query($t:ID!){workflowStates(filter:{team:{id:{eq:$t}}}){nodes{id type}}}',
+                   {"t": t.get("team_id")})["workflowStates"]["nodes"]
+        sid = next((s["id"] for s in states if s["type"] == kw["type"]), None)
+        res = g("mutation($id:String!,$i:IssueUpdateInput!){issueUpdate(id:$id,input:$i){success}}",
+                {"id": kw["issue"], "i": {"stateId": sid}})
+        return bool((res.get("issueUpdate") or {}).get("success"))
+    if op == "relate":
+        a, b = ticket(kw["blocker"]) or {}, ticket(kw["blocked"]) or {}
+        res = g("mutation($i:IssueRelationCreateInput!){issueRelationCreate(input:$i){success}}",
+                {"i": {"issueId": a.get("uuid"), "relatedIssueId": b.get("uuid"), "type": "blocks"}})
+        return bool((res.get("issueRelationCreate") or {}).get("success"))
+    raise ValueError(op)
 
 
 def live(issue: str, pr: dict | None) -> bool:
@@ -294,24 +399,6 @@ def live(issue: str, pr: dict | None) -> bool:
     return any(re.search(p, table, re.M) for p in pats)
 
 
-# --- one rung -----------------------------------------------------------------
-
-def rung_name(r: int) -> str:
-    return RUNG_NAMES.get(r, "reentry")
-
-
-def cooldown_days(r: int) -> int:
-    return 0 if r < 4 else COOLDOWN_DAYS[min(r - 4, len(COOLDOWN_DAYS) - 1)]
-
-
-def next_step_line(r: int) -> str:
-    nxt = r + 1
-    wait = cooldown_days(nxt)
-    when = "at its next nightly run after the cap" if not wait else f"{wait} days after this step"
-    return (f"If this caps again, {JOB} takes rung {nxt} ({rung_name(nxt)}) {when}. "
-            "The ladder has no last rung.")
-
-
 def ledger(op: list) -> bool:
     rc, out = run(LEDGER + [str(ATTEMPTS)] + op)
     if rc not in (0, 1):
@@ -320,112 +407,350 @@ def ledger(op: list) -> bool:
     return True
 
 
-def swap_pr(slug: str, pr: dict, issue: str, r: int, rca: str) -> str:
-    """Close the capped PR (branch kept) and open a new one on the same branch.
+def clear_caps(issue: str) -> None:
+    for op in (["clear-capout", issue], ["clear-flag", issue, "count"],
+               ["clear-flag", issue, "stuck_paged"], ["clear-conflict", issue]):
+        ledger(op)
 
-    Returns the new PR's URL, or "" when it could not be opened.
-    """
-    branch = pr["headRefName"]
-    sha = (pr.get("headRefOid") or "")[:12]
-    close_note = (f"Closed by {JOB}, rung {r} ({rung_name(r)}) of the cap ladder (ASK-3824). "
-                  f"Branch {branch} is kept at {sha}; the work continues on a new PR from it. "
-                  f"RCA: {rca or 'none produced'}. Nothing was deleted; reopen this PR to undo.")
-    rc, _ = run(GH + ["pr", "close", str(pr["number"]), "-R", slug, "--comment", close_note])
+
+# --- GitHub ---------------------------------------------------------------------
+
+def close_pr(slug: str, pr: dict, note: str) -> bool:
+    """Close with the branch kept. NEVER --delete-branch: the branch is the resume point."""
+    rc, _ = run(GH + ["pr", "close", str(pr["number"]), "-R", slug, "--comment", note])
     if rc != 0:
         say(f"WARN could not close PR #{pr['number']} in {slug}; it stays open")
-        return ""
-    body = (f"Resumes #{pr['number']} after it capped. {issue}, cap ladder rung {r} "
-            f"({rung_name(r)}). RCA: {rca or 'none produced'}. "
-            f"Read the RCA comment on {issue} first: its STOP section names the approach that looped.")
-    rc, out = run(GH + ["pr", "create", "-R", slug, "--head", branch, "--base",
-                        pr.get("baseRefName") or "main", "--title", pr.get("title") or issue,
-                        "--body", body])
-    if rc != 0:
-        say(f"WARN closed PR #{pr['number']} but could not open its successor on {branch}: {out[:160]}")
-        return ""
-    return out.splitlines()[-1] if out else "(opened)"
+    return rc == 0
+
+
+def open_from_branch(slug: str, branch: str, title: str, body: str) -> tuple[bool, str]:
+    """(ok, url). ok is False only when the branch holds work and the PR would not open."""
+    rc, ahead = run(GH + ["api", f"repos/{slug}/compare/main...{branch}", "--jq", ".ahead_by"])
+    if rc != 0 or not ahead.strip().isdigit() or int(ahead) == 0:
+        return True, ""        # no branch, or nothing on it to resume
+    rc, out = run(GH + ["pr", "create", "-R", slug, "--head", branch, "--base", "main",
+                        "--title", title, "--body", body])
+    return (rc == 0), (out.splitlines()[-1] if rc == 0 and out else "")
+
+
+def changed_on_main(slug: str, since_sha: str) -> list:
+    if not since_sha:
+        return []
+    rc, out = run(GH + ["api", f"repos/{slug}/compare/{since_sha}...main", "--jq", "[.files[].filename]"])
+    try:
+        return json.loads(out) if rc == 0 and out else []
+    except ValueError:
+        return []
+
+
+def main_sha(slug: str) -> str:
+    rc, out = run(GH + ["api", f"repos/{slug}/commits/main", "--jq", ".sha"])
+    return out.strip() if rc == 0 else ""
+
+
+def branch_files(slug: str, branch: str) -> list:
+    rc, out = run(GH + ["api", f"repos/{slug}/compare/main...{branch}", "--jq", "[.files[].filename]"])
+    try:
+        return json.loads(out) if rc == 0 and out else []
+    except ValueError:
+        return []
+
+
+def model_fp() -> str:
+    """The worker's runner and model config, as one fingerprint (event d)."""
+    fixed = os.environ.get("CAP_LADDER_MODEL_FP")
+    if fixed:
+        return fixed
+    parts = []
+    try:
+        parts.append(str(json.loads((HOME / ".claude/settings.json").read_text()).get("model")))
+    except (OSError, ValueError):
+        parts.append("?")
+    try:
+        parts += [l for l in (HERE / "linear-worker.sh").read_text().splitlines()
+                  if l.startswith(("CODEX_CMD=", "SECOND_RUNNER_FALLBACK="))]
+    except OSError:
+        pass
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+# --- the RCA and the decision ---------------------------------------------------
+
+DECISION_RE = re.compile(r"^\s*DECISION:\s*(SPLIT|CLOSE|BLOCKED-ON)\b[ \t]*(.*)$", re.M)
+SUB_RE = re.compile(r"^\s*SUBTICKET:\s*(.+?)\s*::\s*(.+?)\s*$", re.M)
+PATH_RE = re.compile(r"[\w./-]+\.(?:py|sh|json|md|plist|yml|yaml|ts|js)\b")
+
+
+def rca(issue: str, kind: str, why: str, pr: dict | None, slug: str, decide: str = "") -> tuple[str, str]:
+    """(path, text) of a fresh RCA. Empty when Fable produced none."""
+    argv = FABLE + ["--kind", "rca", "--issue", issue, "--site", kind, "--reason", why, "--json"]
+    if decide:
+        argv += ["--decide", decide]
+    if pr:
+        argv += ["--pr", str(pr["number"]), "--branch", pr["headRefName"], "--repo-args", f"-R {slug}"]
+    rc, out = run(argv, timeout=600)
+    try:
+        path = (json.loads(out.splitlines()[-1]) if out else {}).get("rca_path") or ""
+    except (ValueError, IndexError):
+        path = ""
+    try:
+        return path, Path(path).read_text() if path else ""
+    except OSError:
+        return path, ""
+
+
+def section(text: str, name: str) -> str:
+    m = re.search(rf"^{name}:\s*(.+)$", text or "", re.M)
+    return m.group(1).strip() if m else ""
+
+
+def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
+    """(kind, why_refused). kind is ticket, pr or founder; why is "" when valid.
+
+    THE FOUNDER'S QUESTION IS THE RULE: "what happens if nothing changed? the
+    ticket just stays?" A blocker nobody owns is a ticket that just stays, so it
+    is refused HERE, when the decision is written, and the agent is asked again.
+    """
+    arg = arg.strip()
+    if re.fullmatch(r"ASK-\d+", arg):
+        t = ticket(arg)
+        if not t:
+            return "ticket", f"{arg} could not be read"
+        if t.get("state_type") not in OPEN_TYPES:
+            return "ticket", f"{arg} is already {t.get('state_type')}"
+        if not owned_open(t):
+            return "ticket", f"{arg} has no owner:* label, so nothing would ever close it"
+        return "ticket", ""
+    m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", arg)
+    if m:
+        if m.group(1) not in {t["slug"] for t in tgts}:
+            return "pr", f"{m.group(1)} is not a fleet repo, so pr-owner.py (ASK-3962) does not own it"
+        rc, st = run(GH + ["pr", "view", m.group(2), "-R", m.group(1), "--json", "state", "--jq", ".state"])
+        return "pr", "" if rc == 0 and st.strip() == "OPEN" else f"PR {arg} is not open"
+    if re.fullmatch(r"FOUNDER-DECISION:\s*(spend|access|outside):\s*\S.{0,300}", arg, re.I):
+        return "founder", ""
+    return "free", f"'{arg[:80]}' is free text, not an owned ticket, a fleet PR or a FOUNDER-DECISION"
+
+
+def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: list) -> dict | None:
+    """One validated decision, or None when Fable answered nothing at all."""
+    path, text = rca(issue, kind, why, pr, slug, decide="any")
+    if not text:
+        return None
+    refused = []
+    for attempt in (1, 2):
+        m = DECISION_RE.search(text)
+        d = m.group(1) if m else ""
+        if d in ("SPLIT", "CLOSE"):
+            return {"kind": d, "rca": path, "text": text, "refused": refused}
+        if d == "BLOCKED-ON" and attempt == 2:
+            refused.append("BLOCKED-ON again, when only SPLIT or CLOSE was asked")
+        elif d == "BLOCKED-ON":
+            bkind, no = check_blocker(m.group(2), tgts)
+            if not no:
+                return {"kind": d, "target": m.group(2).strip(), "target_kind": bkind,
+                        "rca": path, "text": text, "refused": refused}
+            refused.append(no)
+        elif d != "BLOCKED-ON":
+            refused.append("no DECISION line")
+        say(f"{issue}: decision refused ({refused[-1]}); asking again for SPLIT or CLOSE only")
+        if attempt == 1:
+            path2, text2 = rca(issue, kind, why, pr, slug, decide="split-close")
+            if text2:
+                path, text = path2, text2
+    # Two invalid answers in a row: SPLIT on the RCA's own findings.
+    return {"kind": "SPLIT", "rca": path, "text": text, "refused": refused, "defaulted": True}
+
+
+def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: int, row: dict) -> str:
+    branch = f"{LANE_PREFIX}{issue.lower()}"
+    rca_ref = d.get("rca") or "none"
+    if d["kind"] in ("SPLIT", "CLOSE") and pr:
+        close_pr(slug, pr, f"Closed by {JOB}: {issue} {d['kind']} on cap ladder rung {r}. "
+                           f"Branch {pr['headRefName']} is kept. RCA: {rca_ref}.")
+    if d["kind"] == "SPLIT":
+        subs = SUB_RE.findall(d.get("text") or "")
+        if not subs:
+            nxt = section(d.get("text", ""), "NEXT") or "Resume the work the parent's RCA names."
+            subs = [(f"{t.get('title') or issue} (split after cap)", nxt)]
+        made = []
+        for title, outcome in subs[:5]:
+            dor = (f"Split from {issue} by {JOB}, rung {r}. RCA: {rca_ref}.\n\n"
+                   f"## Definition of Ready\n\n* **Outcome:** {outcome}\n"
+                   f"* **Files:** start from branch {branch} and the RCA's NEXT section.\n"
+                   f"* **Check:** {section(d.get('text', ''), 'REFUTE') or 'the parent RCA REFUTE line'}\n"
+                   f"* **Not doing:** anything outside this outcome.\n")
+            ident = lin("create", parent=issue, title=title[:200], description=dor)
+            if ident:
+                made.append(ident)
+        if not made:
+            return f"{issue}: SPLIT filed no sub-ticket; the cap stays and the next run retries"
+        lin("state", issue=issue, type="completed")
+        run(SYNC + ["progress", issue, f"**Split into {', '.join(made)}** by {JOB} after rung {r}. "
+                    f"RCA: {rca_ref}." + (" (Defaulted to SPLIT after two refused decisions.)" if d.get("defaulted") else ""),
+                    "--agent", "sana"])
+        clear_caps(issue)
+        return f"{issue}: SPLIT into {', '.join(made)}"
+    if d["kind"] == "CLOSE":
+        lin("state", issue=issue, type="canceled")
+        run(SYNC + ["progress", issue, f"**Canceled by {JOB}** after rung {r}: wrong premise or obsolete "
+                    f"work. Reason: RCA {rca_ref}. Reopen to undo.", "--agent", "sana"])
+        clear_caps(issue)
+        return f"{issue}: CLOSE (Canceled, RCA {rca_ref})"
+    # BLOCKED-ON. The hold goes on FIRST: if it does not land, nothing is cleared,
+    # so the cap record still keeps the worker off and the next run retries.
+    if not ledger(["claim-flag", issue, HOLD_FLAG]):
+        return f"{issue}: BLOCKED-ON could not set the hold; the cap stays and the next run retries"
+    target = d["target"]
+    if d["target_kind"] == "ticket":
+        lin("relate", blocker=target, blocked=issue)
+    if d["target_kind"] == "founder":
+        STATUS.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATUS, "a") as fh:
+            fh.write(json.dumps({"at": now().isoformat(), "issue": issue, "kind": "founder-decision",
+                                 "ask": target.split(":", 1)[1].strip(), "source": JOB,
+                                 "rca": rca_ref, "resolved": False}) + "\n")
+    if pr:
+        close_pr(slug, pr, f"Closed by {JOB}: {issue} is BLOCKED-ON {target}. Branch "
+                           f"{pr['headRefName']} is kept; the ladder reopens work from it when the blocker moves.")
+    clear_caps(issue)
+    row["snapshot"] = {"desc_hash": t.get("desc_hash"), "model_fp": model_fp(), "main_sha": main_sha(slug),
+                       "files": sorted(set(branch_files(slug, branch)) | set(PATH_RE.findall(d.get("text") or "")))}
+    row["held"] = True
+    run(SYNC + ["progress", issue, f"**BLOCKED-ON {target}** (cap ladder rung {r}). Held by {JOB}: it "
+                f"re-enters when the blocker closes, a file it touched or its RCA names changes on main, "
+                f"its description changes, or the worker's model config changes. RCA: {rca_ref}.",
+                "--agent", "sana"])
+    return f"{issue}: BLOCKED-ON {target} (held)"
+
+
+def event_for(issue: str, row: dict, t: dict, slug: str) -> str:
+    """The event that releases a held ticket, or ""."""
+    d, snap = row.get("decision") or {}, row.get("snapshot") or {}
+    target = d.get("target", "")
+    if d.get("target_kind") == "ticket":
+        bt = ticket(target)
+        if bt and bt.get("state_type") not in OPEN_TYPES:
+            return f"(a) blocker {target} closed"
+    elif d.get("target_kind") == "pr":
+        m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", target)
+        if m:
+            rc, st = run(GH + ["pr", "view", m.group(2), "-R", m.group(1), "--json", "state", "--jq", ".state"])
+            if rc == 0 and st.strip() != "OPEN":
+                return f"(a) blocker {target} closed"
+    elif d.get("target_kind") == "founder":
+        try:
+            for l in STATUS.read_text().splitlines():
+                e = json.loads(l)
+                if e.get("issue") == issue and e.get("resolved"):
+                    return "(a) the founder decision is resolved in the status file"
+        except (OSError, ValueError):
+            pass
+    hit = sorted(set(changed_on_main(slug, snap.get("main_sha", ""))) & set(snap.get("files") or []))
+    if hit:
+        return f"(b) {hit[0]} changed on origin/main"
+    if snap.get("desc_hash") and t.get("desc_hash") != snap["desc_hash"]:
+        return "(c) its description changed"
+    if snap.get("model_fp") and model_fp() != snap["model_fp"]:
+        return "(d) the worker's model config changed"
+    return ""
+
+
+# --- rungs 1 to 3: a change, then continue --------------------------------------
+
+def rung_name(r: int) -> str:
+    return RUNG_NAMES.get(r, "decide")
+
+
+def next_step_line(r: int) -> str:
+    if r < 3:
+        return f"If this caps again, {JOB} takes rung {r + 1} ({rung_name(r + 1)}) at its next nightly run."
+    return (f"If this caps again, {JOB} takes rung 4: one recorded decision (SPLIT, CLOSE or BLOCKED-ON "
+            "an owned blocker), never a timed retry.")
 
 
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
-          apply: bool) -> str:
-    """Apply the next rung to one capped issue. Returns a one-line outcome."""
+          apply: bool, tgts: list, report: list) -> str:
     row = state.get(issue) or {}
     r = int(row.get("rung", 0)) + 1
-    wait = cooldown_days(r)
-    if wait and row.get("last_at"):
-        due = datetime.fromisoformat(row["last_at"]) + timedelta(days=wait)
-        if now() < due:
-            return f"{issue}: rung {r} ({rung_name(r)}) is due {due.date().isoformat()}; nothing to do yet"
     kind = sigs[0].split(":", 1)[0]
     why = f"{kind} cap ({', '.join(s.split(':', 1)[0] for s in sigs)})"
     if not apply:
         return f"[dry] {issue}: would take rung {r} ({rung_name(r)}) on its {why}"
 
-    # 1. The RCA, every rung: a fresh model, the full packet, never the implementer.
-    argv = FABLE + ["--kind", "rca", "--issue", issue, "--site", kind, "--reason", why, "--json"]
-    if pr:
-        argv += ["--pr", str(pr["number"]), "--branch", pr["headRefName"], "--repo-args", f"-R {slug}"]
-    rc, out = run(argv, timeout=600)
-    try:
-        rca = (json.loads(out.splitlines()[-1]) if out else {}).get("rca_path") or ""
-    except (ValueError, IndexError):
-        rca = ""
-    # A failed RCA does not cost the cap its exit: the work still continues.
+    if r >= 4:
+        d = decide(issue, kind, why, pr, slug, tgts)
+        if d is None:
+            report.append({"issue": issue, "rung": r, "decision": None, "red": True,
+                           "note": "capped with no decision record: Fable produced no RCA; retried next run"})
+            return f"{issue}: rung {r}: no decision record (RED in the report); the cap stays"
+        out = apply_decision(issue, d, t, pr, slug, r, row)
+        if "retries" in out:
+            report.append({"issue": issue, "rung": r, "decision": d["kind"], "red": True, "note": out})
+            return out
+        row.update(rung=r, last_at=now().isoformat(), handled=sigs,
+                   decision={k: v for k, v in d.items() if k != "text"})
+        state[issue] = row
+        return out
 
-    # 2. The runner. Rung 2 and every even re-entry run on the other runner.
-    ledger(["claim-flag" if (r == 2 or (r >= 4 and r % 2 == 0)) else "clear-flag", issue, RUNNER_FLAG])
-
-    # 3. Rung 3 re-scopes: the label goes on BEFORE the ticket can be picked, and
-    #    the drafter rewrites the DoR in this same run and drops the label.
+    rca_path, _ = rca(issue, kind, why, pr, slug)
+    ledger(["claim-flag" if r == 2 else "clear-flag", issue, RUNNER_FLAG])
     if r == 3:
         run(SYNC + ["label", issue, "needs-scope"])
-
-    # 4. Continue: the work needs an OPEN PR on sana/<id> whenever that branch
-    #    holds commits, because a fresh pick without one cuts its tree from main
-    #    and resets the branch. A PR that cannot be opened stops the rung HERE,
-    #    before the clears, so the cap record survives and tomorrow retries it.
+    # Continue: an OPEN PR on sana/<id> whenever that branch holds commits. A PR
+    # that cannot be opened stops the rung before the clears, so the cap record
+    # survives and the next run retries it.
     branch = f"{LANE_PREFIX}{issue.lower()}"
+    body = (f"{issue}, cap ladder rung {r} ({rung_name(r)}). RCA: {rca_path or 'none produced'}. "
+            f"Read the RCA comment on {issue} first: its STOP section names the approach that looped.")
     new_pr = ""
     if pr and pr["headRefName"].lower() == branch:
-        new_pr = swap_pr(slug, pr, issue, r, rca)
-        if not new_pr:
-            return f"{issue}: rung {r} could not move PR #{pr['number']} to a new PR; the cap stays, the next run retries"
+        if not close_pr(slug, pr, f"Closed by {JOB}, rung {r} ({rung_name(r)}). Branch {branch} is kept; "
+                                  f"the work continues on a new PR from it. Reopen this PR to undo."):
+            return f"{issue}: rung {r} could not close PR #{pr['number']}; the cap stays, the next run retries"
+        ok, new_pr = open_from_branch(slug, branch, pr.get("title") or issue, f"Resumes #{pr['number']}. " + body)
+        if not ok:
+            return f"{issue}: rung {r} closed PR #{pr['number']} but could not open its successor; the next run retries"
     elif pr:
-        say(f"{issue}: PR #{pr['number']} is on lane branch {pr['headRefName']}; "
-            "pr-owner.py (ASK-3962) owns lane PRs, so the ticket continues on a fresh branch")
+        say(f"{issue}: PR #{pr['number']} is on lane branch {pr['headRefName']}; pr-owner.py (ASK-3962) owns lane PRs")
     else:
-        rc, ahead = run(GH + ["api", f"repos/{slug}/compare/main...{branch}", "--jq", ".ahead_by"])
-        if rc == 0 and ahead.strip().isdigit() and int(ahead) > 0:
-            rc, out = run(GH + ["pr", "create", "-R", slug, "--head", branch, "--base", "main",
-                                "--title", t.get("title") or issue,
-                                "--body", f"Resumes {branch} after {issue} capped (cap ladder rung {r}). RCA: {rca or 'none produced'}."])
-            if rc != 0:
-                return f"{issue}: rung {r} could not open a PR from {branch}; the cap stays, the next run retries"
-            new_pr = out.splitlines()[-1] if out else "(opened)"
-
-    # 5. Clear what the cap left, so every consumer sees a live ticket again.
-    for op in (["clear-capout", issue], ["clear-flag", issue, "count"],
-               ["clear-flag", issue, "stuck_paged"], ["clear-conflict", issue]):
-        ledger(op)
+        ok, new_pr = open_from_branch(slug, branch, t.get("title") or issue, body)
+        if not ok:
+            return f"{issue}: rung {r} could not open a PR from {branch}; the cap stays, the next run retries"
+    clear_caps(issue)
     run(SYNC + ["requeue", issue, "--exit", f"cap-ladder-rung-{r}",
-                "--why", f"{why}; rung {r} ({rung_name(r)}); RCA {rca or 'none'}", "--agent", "sana"])
+                "--why", f"{why}; rung {r} ({rung_name(r)}); RCA {rca_path or 'none'}", "--agent", "sana"])
     if r == 3:
         run(DRAFTER + ["--issue", issue, "--limit", "1", "--apply"], timeout=900)
-
-    note = (f"**Cap ladder, rung {r} ({rung_name(r)}).** {issue} hit a {why}. "
-            f"RCA: {rca or 'none produced (the work continues anyway)'}. "
-            + (f"New PR {new_pr} on {branch}, which is kept" + ("; the capped PR is closed. " if pr else ". ") if new_pr else "")
-            + ("The next attempt runs on the other runner (Codex). " if r == 2 or (r >= 4 and r % 2 == 0) else "")
+    note = (f"**Cap ladder, rung {r} ({rung_name(r)}).** {issue} hit a {why}. RCA: {rca_path or 'none produced'}. "
+            + (f"New PR {new_pr} on {branch}, which is kept. " if new_pr else "")
+            + ("The next attempt runs on the other runner (Codex). " if r == 2 else "")
             + ("The Definition of Ready is rewritten by linear-dor-drafter.py in this run. " if r == 3 else "")
             + next_step_line(r))
     run(SYNC + ["progress", issue, note, "--agent", "sana"])
-
-    # The state is written LAST: a run that dies above leaves the rung unspent,
-    # and the next night redoes it rather than skipping it.
-    state[issue] = {"rung": r, "last_at": now().isoformat(), "handled": sigs,
-                    "history": (row.get("history") or [])[-20:] + [
-                        {"rung": r, "at": now().isoformat(), "sigs": sigs, "rca": rca, "new_pr": new_pr}]}
+    # The state is written LAST: a run that dies above leaves the rung unspent.
+    row.update(rung=r, last_at=now().isoformat(), handled=sigs)
+    row["history"] = (row.get("history") or [])[-20:] + [{"rung": r, "at": now().isoformat(), "sigs": sigs,
+                                                          "rca": rca_path, "new_pr": new_pr}]
+    state[issue] = row
     return f"{issue}: rung {r} ({rung_name(r)}) taken on its {why}" + (f", new PR {new_pr}" if new_pr else "")
+
+
+def release(issue: str, row: dict, t: dict, slug: str, ev: str, apply: bool) -> str:
+    if not apply:
+        return f"[dry] {issue}: would re-enter on {ev}"
+    branch = f"{LANE_PREFIX}{issue.lower()}"
+    ok, new_pr = open_from_branch(slug, branch, t.get("title") or issue,
+                                  f"{issue} re-enters after its BLOCKED-ON hold: {ev}.")
+    if not ok:
+        return f"{issue}: {ev}, but no PR would open from {branch}; still held, the next run retries"
+    ledger(["clear-flag", issue, HOLD_FLAG])
+    run(SYNC + ["requeue", issue, "--exit", "cap-ladder-event", "--why", ev, "--agent", "sana"])
+    run(SYNC + ["progress", issue, f"**Re-entered** by {JOB}: {ev}." + (f" New PR {new_pr} on {branch}." if new_pr else "")
+                + " If it caps again, the ladder asks for a new decision.", "--agent", "sana"])
+    row["held"] = False
+    row["reentered_on"] = ev
+    return f"{issue}: re-entered on {ev}"
 
 
 def main(argv=None) -> int:
@@ -440,15 +765,16 @@ def main(argv=None) -> int:
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}
     prs_by_issue, slug_by_pr = {}, {}
-    for t in tgts:
-        for pr in open_prs(t["slug"]):
+    for tg in tgts:
+        for pr in open_prs(tg["slug"]):
             issue = issue_of_branch(pr.get("headRefName", ""))
             if issue and issue not in prs_by_issue:
                 prs_by_issue[issue] = pr
-                slug_by_pr[(issue, pr["number"])] = t["slug"]
+                slug_by_pr[(issue, pr["number"])] = tg["slug"]
 
     caps = find_caps(read_ledger(), prs_by_issue, slug_by_pr)
     state = read_state()
+    report: list = []
     lock_path = STATE.with_suffix(".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as lock:
@@ -459,15 +785,10 @@ def main(argv=None) -> int:
             return 0
         done = 0
         for issue in sorted(caps):
-            if done >= args.limit:
-                say(f"limit {args.limit} reached; the rest climb tomorrow")
-                break
             sigs = sorted(caps[issue])
-            # HANDLED IS A 20-HOUR MEMORY, NOT A FOREVER SKIP. The ladder clears
-            # what it consumes, so a signature still here a night later means a
-            # clear failed. Skipping it for good would rebuild the dead end this
-            # file exists to remove; acting again is the recovery.
             row = state.get(issue) or {}
+            # HANDLED IS A 20-HOUR MEMORY, NOT A FOREVER SKIP: a signature still
+            # here a night later means a clear failed, and acting again recovers it.
             if (set(sigs) <= set(row.get("handled") or []) and row.get("last_at")
                     and now() - datetime.fromisoformat(row["last_at"]) < timedelta(hours=20)):
                 continue
@@ -482,15 +803,52 @@ def main(argv=None) -> int:
             if not slug:
                 say(f"{issue}: project {t.get('project') or '(none)'} has no dispatch target; "
                     "the router tickets (ASK-3959, ASK-3958) own that, the ladder waits")
+                report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": "routing (ASK-3959, ASK-3958)"})
                 continue
             if live(issue, pr):
                 say(f"{issue}: a run is live on it; the ladder looks again tomorrow")
                 continue
-            say(climb(issue, sigs, t, pr, slug, state, args.apply))
+            if done >= args.limit:
+                say(f"{issue}: over the limit of {args.limit}; it climbs at the next run")
+                report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": "the next run (limit)"})
+                continue
+            out = climb(issue, sigs, t, pr, slug, state, args.apply, tgts, report)
+            say(out)
             done += 1
+        # THE HELD TICKETS: no event, no run, one line naming what it waits on.
+        for issue, row in sorted(state.items()):
+            if not row.get("held") or issue in caps:
+                continue
+            t = ticket(issue)
+            if t is None:
+                continue
+            if t.get("state_type") in ("completed", "canceled", "duplicate"):
+                state.pop(issue, None)
+                continue
+            d = row.get("decision") or {}
+            slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
+            red = d.get("target_kind") == "ticket" and not owned_open(ticket(d.get("target", "")))
+            ev = event_for(issue, row, t, slug)
+            if ev:
+                say(release(issue, row, t, slug, ev, args.apply))
+                continue
+            wait = (f"held on {d.get('target')}: waiting for it to close, a touched file to change on main, "
+                    "its description to change, or the model config to change")
+            say(f"{issue}: {wait}" + ("; RED: the blocker has no owner" if red else ""))
+            report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
+                           "waiting_on": wait, "red": red,
+                           "note": "the blocker lost its owner, so it is a dead end" if red else ""})
+        blockers: dict = {}
+        for row in state.values():
+            d = row.get("decision") or {}
+            if row.get("held") and d.get("target_kind") == "ticket":
+                blockers[d["target"]] = blockers.get(d["target"], 0) + 1
         if args.apply:
             write_state(state)
-    say(f"run complete: {len(caps)} capped, {done} climbed{'' if args.apply else ' (dry)'}")
+            write_json(BLOCKERS, blockers)
+            write_json(REPORT, {"at": now().isoformat(), "rows": report})
+    say(f"run complete: {len(caps)} capped, {done} climbed, "
+        f"{sum(1 for r in state.values() if r.get('held'))} held{'' if args.apply else ' (dry)'}")
     return 0
 
 

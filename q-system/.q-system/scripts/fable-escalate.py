@@ -627,6 +627,27 @@ Be blunt and specific. The packet names any source it could not read -- if what
 is missing is what you need, say so in SURFACE and make NEXT the command that
 collects it. Do not infer around a hole and present the inference as a finding."""
 
+# THE DECISION, ASKED OF THE SAME RCA AGENT (ASK-3824, rung 4). Founder
+# 2026-11-08: "What's the point of timed retries? What's gonna change in seven,
+# fourteen or 28 days?" So after three rungs the ladder stops retrying and asks
+# for exactly one decision, which cap-ladder.py validates and applies.
+DECIDE_ASK = {
+    "any": """
+DECISION: exactly one line, one of:
+  DECISION: SPLIT
+  DECISION: CLOSE
+  DECISION: BLOCKED-ON ASK-<n>
+  DECISION: BLOCKED-ON https://github.com/<owner>/<repo>/pull/<n>
+  DECISION: BLOCKED-ON FOUNDER-DECISION: <spend|access|outside>: <one line>
+For SPLIT, then one line per sub-ticket: SUBTICKET: <title> :: <one-sentence outcome>.
+BLOCKED-ON must name an OPEN ticket or PR that someone owns; FOUNDER-DECISION is
+only for spend, access or reach outside the fleet. Anything else is refused.""",
+    "split-close": """
+DECISION: exactly one line, SPLIT or CLOSE only:
+  DECISION: SPLIT   (then one line per sub-ticket: SUBTICKET: <title> :: <outcome>)
+  DECISION: CLOSE   (the premise is wrong or the work is obsolete)""",
+}
+
 RCA_SOURCE_CHARS = 2500      # per collector, before the whole-packet cap
 RCA_PACKET_CHAR_CAP = 40000  # a cap packet is a diff, not a chat tail
 RCA_COLLECT_TIMEOUT = 25
@@ -729,7 +750,7 @@ def _spec_for(issue):
         return "", "could not read %s from Linear: %s" % (issue, exc)
 
 
-def build_rca_packet(issue, site, pr, branch, reason, sources):
+def build_rca_packet(issue, site, pr, branch, reason, sources, decide=""):
     """Header + every source, labelled, + the five-section RCA ask.
 
     THE ASK IS RESERVED BEFORE THE SOURCES ARE FITTED, same as build_packet and
@@ -748,7 +769,7 @@ def build_rca_packet(issue, site, pr, branch, reason, sources):
         "problem.",
         "",
     ]
-    budget = RCA_PACKET_CHAR_CAP - len("\n".join(header)) - len(RCA_ASK) - 32
+    budget = RCA_PACKET_CHAR_CAP - len("\n".join(header)) - len(RCA_ASK) - len(DECIDE_ASK.get(decide, "")) - 32
     body = []
     for label, text, note in sources:
         block = "=== %s ===\n%s" % (
@@ -758,10 +779,10 @@ def build_rca_packet(issue, site, pr, branch, reason, sources):
             continue
         budget -= len(block) + 2
         body.append(block)
-    return "\n".join(header + body + ["", RCA_ASK])
+    return "\n".join(header + body + ["", RCA_ASK + DECIDE_ASK.get(decide, "")])
 
 
-def rca_escalate(issue, site, pr, branch, reason, repo_args=""):
+def rca_escalate(issue, site, pr, branch, reason, repo_args="", decide=""):
     """Diagnose one cap. Returns the contract dict the cap resolver reads.
 
     THE RCA IS WRITTEN TO DISK AND POSTED, in that order. The file is the durable
@@ -776,7 +797,7 @@ def rca_escalate(issue, site, pr, branch, reason, repo_args=""):
     sources = collect_rca_sources(issue, pr, branch, repo_args)
     result["sources_declared"] = len(sources)
     result["sources_read"] = sum(1 for _l, t, _n in sources if t)
-    packet = build_rca_packet(issue, site, pr, branch, reason, sources)
+    packet = build_rca_packet(issue, site, pr, branch, reason, sources, decide)
 
     started = time.time()
     rca, failure = call_fable(packet, _int_env("KIPI_FABLE_RCA_TIMEOUT", 180))
@@ -849,7 +870,8 @@ def _post_rca(issue, site, path, rca):
     # reader of this comment is the next runner, so it says what happens next.
     note = ("**Cap RCA (%s), written by %s.** cap-ladder.py (ASK-3824) moves "
             "this cap on: RCA and continue, then a different runner, then a "
-            "re-scope, then a timed re-entry. It never parks the ticket. Read "
+            "re-scope, then one recorded decision (split, close, or blocked on "
+            "an owned blocker). It never parks the ticket and never retries on a timer. Read "
             "STOP before you start: it names the approach that looped.\n\n"
             "Full RCA on disk: `%s`\n\n%s"
             % (site, FABLE_MODEL, path, rca[:4000]))
@@ -1173,6 +1195,8 @@ def main():
     parser.add_argument("--site", default="", help="--kind rca: the cap site tag")
     parser.add_argument("--pr", default="", help="--kind rca: the PR number")
     parser.add_argument("--branch", default="", help="--kind rca: the branch")
+    parser.add_argument("--decide", default="", choices=("", "any", "split-close"),
+                        help="--kind rca: also ask for one decision (cap-ladder.py rung 4)")
     parser.add_argument("--repo-args", default="",
                         help="--kind rca: gh repo args, e.g. '--repo owner/name'")
     parser.add_argument("--reason", default="")
@@ -1203,7 +1227,7 @@ def main():
                    "sources_declared": 0}
         else:
             out = rca_escalate(args.issue, args.site, args.pr, args.branch,
-                               args.reason, args.repo_args)
+                               args.reason, args.repo_args, args.decide)
         if args.json:
             print(json.dumps(out))
         else:

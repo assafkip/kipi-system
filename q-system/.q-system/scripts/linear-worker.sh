@@ -1008,8 +1008,20 @@ pool = [i for i in issues if ready(i)]
 # lower bands leave by age through the park and its close (chief, E2), not by
 # this order. Linear priority 0 means No priority and sorts after Low (4).
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
-pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
-                         i.get("createdAt") or "9999", i["identifier"]))
+# A TICKET THAT BLOCKS CAPPED WORK GOES FIRST IN ITS BAND (ASK-3824). cap-ladder.py
+# writes how many held tickets name each ticket as their BLOCKED-ON target; working
+# that ticket is what releases them. Inside a priority band only, so it reorders
+# peers and never jumps a band. An unreadable file means no blockers.
+try:
+    CAP_BLOCKERS = json.load(open(os.path.join(state_dir, "cap-ladder-blockers.json")))
+except Exception:
+    CAP_BLOCKERS = {}
+
+def pick_order_key(i):
+    return (PRIORITY_RANK.get(i.get("priority"), 4), -int(CAP_BLOCKERS.get(i["identifier"], 0) or 0),
+            i.get("createdAt") or "9999", i["identifier"])
+
+pool.sort(key=pick_order_key)
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -2491,18 +2503,30 @@ while IFS= read -r ISSUE; do
     # write "Human action needed" and page, and nothing read either: the issue
     # was skipped here every tick, forever. cap-ladder.py reads the attempt count
     # this branch tests, and moves the ticket on: a fresh RCA and a continue, then
-    # a different runner, then a re-scope, then a timed re-entry. One comment so
+    # a different runner, then a re-scope, then one recorded decision. One comment so
     # the ticket says who acts next; stuck_paged keeps it to one.
     if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
         "**Capped after $N/$MAX_ATTEMPTS attempts.** Last recorded reason: $STUCK_WHY
 
-**Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA of the full packet, then the work continues. A second cap runs on the other runner, a third re-scopes the Definition of Ready, and every later cap re-enters on a 7, 14, then 28-day cooldown. The ladder has no last rung." \
+**Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA of the full packet, then the work continues. A second cap runs on the other runner, a third re-scopes the Definition of Ready, and the fourth ends in one recorded decision: split, close, or blocked on an owned blocker, which re-enters only when that blocker or the code moves." \
         --agent sana >/dev/null 2>&1 || true
     fi
     # Only when the picker saw it started: this skip fires on every tick, and a
     # Backlog ticket needs no Linear read to stay where it is.
     [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "$N of $MAX_ATTEMPTS attempts spent; last reason: $STUCK_WHY"
+    continue
+  fi
+
+  # HELD ON A RECORDED DECISION (ASK-3824). cap-ladder.py sets ladder_hold when
+  # a capped ticket's RCA agent decides BLOCKED-ON an owned ticket, a fleet PR or
+  # a FOUNDER-DECISION, and clears it the night an event lands (the blocker
+  # closes, a file it touched changes on main, its description changes, the
+  # model config changes). Re-running it before then retries the same failure on
+  # an unchanged ticket, which is the timed retry the founder ruled out. Checked
+  # before the dry pick, so the dispatcher moves to the next ticket.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" ladder_hold "" 2>/dev/null)" = "True" ]; then
+    say "skip $ISSUE: held by cap-ladder.py on a recorded BLOCKED-ON decision; it re-enters on an event, not a clock (ASK-3824)"
     continue
   fi
 
