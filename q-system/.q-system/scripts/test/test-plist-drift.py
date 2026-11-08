@@ -292,6 +292,54 @@ _mut_ns["heal_plist_drift"]([_drift], install=lambda l: (_calls.append(l), (0, "
 check("mutant killed: without the running guard a live job is reloaded, so the guard case can fail",
       _calls, ["com.kipi.dispatch"])
 
+# PR #667 round 1, major: "disabled" is declared intent plus the ledgers, through
+# launchd-intent-verify load_intent, not the watchdog ledger reader alone.
+import os as _os
+_home_saved = _os.environ.get("HOME")
+_ih = WORK / "intent-home"; (_ih / ".config" / "kipi").mkdir(parents=True, exist_ok=True)
+(_ih / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.dispatch", "intent": "disabled"}]}')
+_os.environ["HOME"] = str(_ih)
+try:
+    _dis = fh._disabled_labels()
+    (_ih / ".config" / "kipi" / "launchd-intent.json").write_text("{not json")
+    _dis_bad = fh._disabled_labels()
+finally:
+    _os.environ["HOME"] = _home_saved
+check("a job declared intent disabled in launchd-intent.json is in the disabled set",
+      "com.kipi.dispatch" in _dis, True)
+check("an unreadable intent manifest disables every reload for the run", _dis_bad, {"*"})
+_l, _h, _c = _heal(paused={"*"})
+check("...and then nothing is re-armed, and the finding says why",
+      (_h, _c, "intent is disabled" in _l[0]["body"]), ([], [], True))
+# PR #667 round 1, minor: an install that leaves drift says a reload ran.
+_l, _h, _c = _heal(still=[_drift])
+check("an install that leaves drift keeps the finding and says a bootout and bootstrap ran",
+      ("bootout and a bootstrap ran" in _l[0]["body"], _c), (True, ["com.kipi.dispatch"]))
+# PR #667 round 1, minor: the job running this check heals itself after it exits.
+_os.environ["XPC_SERVICE_NAME"] = "com.kipi.dispatch"
+try:
+    _self = []
+    _calls2 = []
+    _left, _healed = fh.heal_plist_drift(
+        [_drift], install=lambda l: (_calls2.append(l), (0, ""))[1], running=lambda _l: True,
+        paused=set(), current=lambda: True, recheck=lambda: [],
+        self_heal=lambda l: (_self.append(l), True)[1])
+finally:
+    _os.environ.pop("XPC_SERVICE_NAME", None)
+check("the job running this check gets a deferred self-reinstall, not a live reload",
+      (_self, _calls2, "detached reinstall" in _left[0]["body"]), (["com.kipi.dispatch"], [], True))
+# PR #667 round 1, minor: a failed fetch is not a current checkout.
+_nogit = WORK / "no-remote"; _nogit.mkdir(exist_ok=True)
+subprocess.run(["git", "init", "-q", str(_nogit)], check=True)
+_rr = fh.REPO_ROOT
+fh.REPO_ROOT = _nogit
+try:
+    _cur = fh._checkout_at_origin_main()
+finally:
+    fh.REPO_ROOT = _rr
+check("a checkout whose fetch fails is never treated as current", _cur, False)
+
 # Only the daily job own --apply run heals. A test or a dry read that calls the
 # detector must reload nothing: test-fleet-health-daily.py calls every detector.
 _saved = (fh.REPO_ROOT, fh.plist_drift_findings, fh.heal_plist_drift, fh.HEAL_APPLY)

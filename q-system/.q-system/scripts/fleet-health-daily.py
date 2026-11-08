@@ -1278,7 +1278,10 @@ def detect_stale_runtime_plugins(_ctx) -> list:
 # structurally blind -- the same reasoning `detect_stale_runtime_plugins`
 # documents for the plugin registry.
 #
-# REPORT, NEVER REPAIR. A live value may have been set deliberately during an
+# REPORT, THEN REPAIR ONLY THROUGH heal_plist_drift (ASK-4022): on the daily --apply
+# run a drifted job is reinstalled from its template, never a paused, disabled or
+# running one, and never from a checkout behind origin/main. Before ASK-4022 this
+# read REPORT, NEVER REPAIR, for the reason that follows. A live value may have been set deliberately during an
 # incident. Overwriting it silently is how a deliberate change becomes an
 # unexplained regression, so the finding names the divergence and offers the
 # render command; the human chooses.
@@ -1571,7 +1574,8 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     WHY A FINDING AND NOT AN AUTO-INSTALL. Installing every committed template on
     every machine that syncs the skeleton is a fleet-wide behaviour change with a
     blast radius of every instance, and some templates are deliberately not wanted
-    everywhere. The repo's standing posture for launchd is REPORT, NEVER REPAIR (see
+    everywhere. The repo's standing posture for launchd was REPORT, NEVER REPAIR until
+    ASK-4022 added the guarded heal for plist drift only (see
     the header above `plist_drift_findings`), and this holds it: the finding names the
     one command that installs the job, and a human decides.
     """
@@ -1657,13 +1661,37 @@ def _job_running(label: str) -> bool:
     return res.returncode == 0 and '"PID" =' in res.stdout
 
 
+def _disabled_labels() -> set:
+    """Every label declared disabled: launchd-intent.json plus the legacy pause
+    ledgers, through launchd-intent-verify load_intent, the reader install-plist.sh
+    --missing and --pinned already use (PR #667 round 1, major: the watchdog
+    ledger reader sees the two ledger files and not the manifest, so a job
+    declared intent disabled would have been re-armed). An unreadable intent is
+    every label disabled for this run: nothing is re-armed on a guess."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location("iv", HERE / "launchd-intent-verify.py")
+        iv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iv)
+        texts = [t for t in (iv.read_text(q) for q in iv.LEGACY_PAUSED_FILES) if t]
+        intent, _conflicts = iv.load_intent(iv.read_text(iv.INTENT_MANIFEST), texts)
+    except Exception:  # noqa: BLE001 - unknown intent refuses every reload
+        return {"*"}
+    return {k for k, v in intent.items() if v == iv.DISABLED}
+
+
 def _checkout_at_origin_main() -> bool:
     def rev(ref):
         return subprocess.run(["git", "-C", str(REPO_ROOT), "rev-parse", ref],
                               capture_output=True, text=True, timeout=30).stdout.strip()
     try:
-        subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "--quiet", "origin", "main"],
-                       capture_output=True, timeout=120)
+        fetched = subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "--quiet", "origin", "main"],
+                                 capture_output=True, timeout=120)
+        # A failed fetch leaves origin/main stale, so HEAD == origin/main proves
+        # nothing (PR #667 round 1, minor): no fetch, no heal.
+        if fetched.returncode != 0:
+            return False
         head, main = rev("HEAD"), rev("origin/main")
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1679,12 +1707,24 @@ def _install_job(label: str) -> tuple:
     return res.returncode, (res.stdout + res.stderr)[-400:]
 
 
+def _self_heal_after_exit(label: str) -> bool:
+    try:
+        subprocess.Popen(
+            ["bash", "-c", 'while kill -0 "$1" 2>/dev/null; do sleep 5; done; bash "$2" "$3"',
+             "self-heal", str(os.getpid()), str(PLIST_INSTALLER), label],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
 def heal_plist_drift(findings: list, install=None, running=None, paused=None,
-                     current=None, recheck=None) -> tuple:
+                     current=None, recheck=None, self_heal=None) -> tuple:
     """(findings still open, labels healed). Every effect is injectable for tests."""
+    self_heal = self_heal or _self_heal_after_exit
     install = install or _install_job
     running = running or _job_running
-    paused = _paused_labels() if paused is None else set(paused)
+    paused = _disabled_labels() if paused is None else set(paused)
     current = current or _checkout_at_origin_main
     recheck = recheck or plist_drift_findings
     drifted = [f for f in findings
@@ -1699,7 +1739,19 @@ def heal_plist_drift(findings: list, install=None, running=None, paused=None,
     healed, notes = [], {}
     for f in drifted:
         label = f.get("subject")
-        if not label or label in paused:
+        if not label or label in paused or "*" in paused:
+            notes[label] = ("its launchd intent is disabled (or could not be read), "
+                            "so it was not re-armed") if label else ""
+            continue
+        if label == os.environ.get("XPC_SERVICE_NAME"):
+            # THE JOB RUNNING THIS CHECK (PR #667 round 1, minor). It always reads as
+            # running, so "the next run retries" would never come true. A detached
+            # reinstall waits for this process to exit, then runs install-plist.sh.
+            if self_heal(label):
+                notes[label] = ("it is the job running this check; a detached reinstall "
+                                "runs once this run exits")
+            else:
+                notes[label] = "it is the job running this check, and the deferred reinstall could not start"
             continue
         if running(label):
             notes[label] = "it was running, so it was not reloaded; the next run retries"
@@ -1710,13 +1762,17 @@ def heal_plist_drift(findings: list, install=None, running=None, paused=None,
             continue
         healed.append(label)
     still = {f.get("subject") for f in recheck()} if healed else set()
+    for l in healed:
+        if l in still:
+            notes[l] = ("install-plist.sh reinstalled and reloaded it (a bootout and a "
+                        "bootstrap ran), and the drift remains")
     healed = [l for l in healed if l not in still]
     out = []
     for f in findings:
         label = f.get("subject")
         if f in drifted and label in healed:
             continue
-        if f in drifted and label in notes:
+        if f in drifted and notes.get(label):
             f = dict(f, body=f.get("body", "") + f"\n\n## Not healed\n{notes[label]}")
         out.append(f)
     return out, healed
