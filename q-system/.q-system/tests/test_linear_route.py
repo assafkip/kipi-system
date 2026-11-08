@@ -142,8 +142,14 @@ def test_fully_routed_issue_is_not_pending(board):
         issue("ASK-3", labels=["owner:sana"], project="kipi-system"))
 
 
-def test_no_dor_is_not_pending(board):
-    assert not route.is_pending(issue("ASK-4", body="just prose, no readiness"))
+def test_no_dor_with_a_project_is_not_pending(board):
+    assert not route.is_pending(issue("ASK-4", body="just prose, no readiness", project="kipi-system"))
+
+
+def test_no_dor_and_no_project_is_pending(board):
+    """ASK-3959: 351 open no-project tickets, 13 with a DoR. Without a project the
+    drafter skips it and the alert lane refuses it, so the router must take it."""
+    assert route.is_pending(issue("ASK-4", body="just prose, no readiness"))
 
 
 def test_founder_owned_is_not_pending(board):
@@ -159,10 +165,52 @@ def test_closed_state_is_not_pending(board):
     assert not route.is_pending(issue("ASK-7", labels=["owner:sana"], state="completed"))
 
 
-def test_fleet_alert_is_not_pending(board):
+def test_fleet_alert_with_a_project_is_not_pending(board):
     body = ("<!-- kipi-alert-fingerprint: abc123 -->\n\n"
             + DOR.format(files="q-system/.q-system/scripts/x.py"))
-    assert not route.is_pending(issue("ASK-8", body=body))
+    assert not route.is_pending(issue("ASK-8", body=body, project="kipi-system"))
+
+
+def test_fleet_alert_with_no_project_routes_on_its_title_only(board):
+    """ASK-3959: the lane refuses an alert with no project. Its body is a raw
+    alert line that can name any repo's files, so only the filer's own label counts."""
+    body = "<!-- kipi-alert-fingerprint: abc123 -->\n\nsomething broke in `q-consult/x.py`"
+    it = issue("ASK-8", body=body)
+    assert route.is_pending(it)
+    assert route.evidence_decision(it, board).project is None      # paths ignored, no title label
+    it["title"] = "[kipi-system] worker: something broke"
+    assert route.evidence_decision(it, board).project == board.skeleton_project
+
+
+def test_no_dor_routes_on_an_instance_q_dir_path(board):
+    """R2 in free text: an instance's own q-dir prefix names its repo."""
+    it = issue("ASK-9", body="the lane drops `q-consult/canonical/crm.md` again")
+    rows = route.plan_actions([it], board)
+    proj = next(p for p, r in board.rows_by_project.items() if r.get("q_dir") == "q-consult")
+    assert rows and rows[0]["set_project"] == proj
+
+
+def test_no_dor_never_routes_on_a_skeleton_managed_path(board):
+    """PR #675 review, major: R3 in free text is too weak. A kipi-update-shipped
+    path exists in every instance, so it says nothing about the ticket's repo."""
+    it = issue("ASK-9", body="the reaper misses `q-system/.q-system/scripts/x.py` again")
+    d = route.evidence_decision(it, board)
+    assert d.project is None and "cannot route on" in d.reason and "the text" in d.reason
+
+
+def test_no_dor_title_and_paths_that_disagree_refuse(board):
+    it = issue("ASK-10", body="see `q-consult/canonical/crm.md`")
+    q_proj = next(p for p, r in board.rows_by_project.items() if r.get("q_dir") == "q-consult")
+    it["title"] = "[nosuchlabel] thing"
+    assert route.evidence_decision(it, board).project == q_proj      # an unknown label adds nothing
+    it["title"] = f"[{board.skeleton_project}] thing"
+    assert route.evidence_decision(it, board).project is None        # the label and the path disagree
+
+
+def test_no_dor_unrouted_gets_no_route_unknown_comment(board):
+    """A comment nobody reads is not a consumer; the no-DoR class gets none."""
+    rows = route.plan_actions([issue("ASK-11", body="no paths, no label")], board)
+    assert rows and not rows[0]["set_project"] and not rows[0]["mark_unroutable"]
 
 
 # --------------------------------------------------------------------------
