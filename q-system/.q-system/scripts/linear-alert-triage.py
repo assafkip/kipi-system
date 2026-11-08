@@ -1359,6 +1359,41 @@ def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
               "read this job as missing", file=sys.stderr)
 
 
+# D1 IN CODE, NOT IN A COMMENT (ASK-3985, PR #645 round 1). The stuck-work
+# synthesis set the nightly cap at 60 while a pass is healthy and 8 when it is not:
+# healthy means it wrote something and failed at most 10 percent of what it took
+# on. The 60 is in the plist. The 8 used to be a person reading the .out file, so a
+# broken runner spent 60 failing calls a night until somebody looked. Now the lane
+# reads its own newest model pass and caps itself; one healthy pass at 8 lifts it.
+RUN_EVIDENCE = Path(os.path.expanduser("~/.config/kipi/linear-alert-triage.out"))
+UNHEALTHY_LIMIT = 8
+_PASS_LINE = re.compile(r"triage pass: (\d+) written, (\d+) skipped, (\d+) failed")
+
+
+def last_pass_health(path: Path | None = None) -> bool | None:
+    """D1's test on the newest MODEL pass in the run evidence: True healthy, False not.
+
+    None when there is no evidence either way: no file, no model pass yet, or a pass
+    that handed the model nothing. A pre-pass-only drain and a dry run asked no
+    model, so they are skipped, not counted."""
+    try:
+        lines = (path or RUN_EVIDENCE).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for ln in reversed(lines):
+        if "pre-pass only" in ln or "DRY RUN" in ln:
+            continue
+        m = _PASS_LINE.search(ln)
+        if not m:
+            continue
+        written, skipped, failed = (int(g) for g in m.groups())
+        attempted = written + skipped + failed
+        if attempted == 0:
+            return None
+        return written > 0 and failed <= 0.10 * attempted
+    return None
+
+
 def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
                prepass_only: bool = False, beat: bool = False) -> int:
     """One bounded unattended pass. Returns the process exit code.
@@ -1384,6 +1419,10 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
             heartbeat(0, 0, error="linear-unreachable")
         raise
     pool, pre = run_prepass(ls, pool, apply, pr_state)
+    capped = ""
+    if apply and not prepass_only and limit > UNHEALTHY_LIMIT and last_pass_health() is False:
+        limit = UNHEALTHY_LIMIT
+        capped = f"self-capped at {UNHEALTHY_LIMIT}, the last pass was unhealthy (D1): "
     batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
     for issue in batch:
@@ -1391,6 +1430,7 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     reasons = Counter(why.split(";")[0] for _, why in refused)
     line = (("" if apply else "DRY RUN, nothing sent: ")
             + ("pre-pass only, no model: " if prepass_only else "")
+            + capped
             + f"triage pass: {tally['written']} written, "
             + (f"{tally['skipped']} skipped, " if apply else f"{tally['previewed']} previewed, ")
             + f"{tally['failed']} failed; {len(pool) - len(batch)} still queued; "
@@ -1420,7 +1460,7 @@ def write_run_evidence(line: str) -> None:
     ~/Library/Logs/kipi/. This job states what it did, every run, in the one place
     the contract names.
     """
-    path = Path(os.path.expanduser("~/.config/kipi/linear-alert-triage.out"))
+    path = RUN_EVIDENCE
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:

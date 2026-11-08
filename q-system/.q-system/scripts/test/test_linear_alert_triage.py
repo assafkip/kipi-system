@@ -812,9 +812,12 @@ class Board:
                 if "mutation" in q]
 
 
-def run_lane(board, decider, apply=True, limit=8):
+def run_lane(board, decider, apply=True, limit=8, evidence=None):
     out, err = io.StringIO(), io.StringIO()
+    # Never the live .out file: the D1 self-cap reads it (ASK-3985).
+    ev = Path(evidence) if evidence else Path(tempfile.mkdtemp()) / "no-such.out"
     with patch.object(triage, "write_run_evidence", lambda line: None), \
+         patch.object(triage, "RUN_EVIDENCE", ev, create=True), \
          redirect_stdout(out), redirect_stderr(err):
         rc = triage.run_triage(board, limit=limit, apply=apply, decider=decider)
     return rc, out.getvalue(), err.getvalue()
@@ -882,6 +885,50 @@ class TestD1LaneHasAScheduledCaller(unittest.TestCase):
         m = re.search(r"--limit (\d+)", cmd)
         self.assertIsNotNone(m, cmd)
         self.assertEqual(int(m.group(1)), 60, cmd)
+
+
+class TestD1SelfCapAfterAnUnhealthyPass(unittest.TestCase):
+    """ASK-3985 (PR #645 round 1): D1's else-8 lives in code. The lane reads its own
+    newest MODEL pass from the run evidence and caps itself at 8 when that pass wrote
+    nothing or failed more than 10 percent. A healthy pass, or no evidence, keeps the
+    limit. The fixture .out is a temp file, never the live one."""
+
+    UNHEALTHY = "alert-triage 2026-11-07T10:30:13Z: triage pass: 0 written, 0 skipped, 8 failed; 1269 still queued"
+    HEALTHY = "alert-triage 2026-11-08T10:30:00Z: triage pass: 40 written, 15 skipped, 2 failed; 900 still queued"
+    PREPASS = "alert-triage 2026-11-08T00:54:41Z: pre-pass only, no model: triage pass: 0 written, 0 skipped, 0 failed; 1207 still queued"
+
+    def _run(self, *lines):
+        ev = Path(tempfile.mkdtemp()) / "linear-alert-triage.out"
+        if lines:
+            ev.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        b = Board([alert(f"ASK-{n}", created=f"2026-08-{n + 1:02d}") for n in range(12)])
+        seen = []
+        _rc, out, _ = run_lane(b, lambda i: (seen.append(i["identifier"]), None)[1],
+                               limit=60, evidence=ev)
+        return len(seen), out
+
+    def test_an_unhealthy_last_pass_caps_this_one_at_8_and_says_so(self):
+        n, out = self._run(self.UNHEALTHY)
+        self.assertEqual(n, 8)
+        self.assertIn("self-capped at 8", out)
+
+    def test_a_pre_pass_only_drain_is_not_the_pass_it_reads(self):
+        n, _ = self._run(self.UNHEALTHY, self.PREPASS)
+        self.assertEqual(n, 8, "the drain asked no model, so the unhealthy model pass before it still counts")
+
+    def test_a_healthy_last_pass_keeps_the_full_limit(self):
+        n, out = self._run(self.UNHEALTHY, self.HEALTHY)
+        self.assertEqual(n, 12)
+        self.assertNotIn("self-capped", out)
+
+    def test_no_evidence_keeps_the_full_limit(self):
+        n, _ = self._run()
+        self.assertEqual(n, 12)
+
+    def test_more_than_10_percent_failed_is_unhealthy(self):
+        line = "alert-triage x: triage pass: 30 written, 0 skipped, 4 failed; 1 still queued"
+        n, _ = self._run(line)
+        self.assertEqual(n, 8, "4 of 34 failed is 11.8 percent")
 
 
 class TestD2HoldHasNoneOfClosesOldDefects(unittest.TestCase):
