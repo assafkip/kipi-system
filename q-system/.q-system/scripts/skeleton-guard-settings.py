@@ -4,8 +4,9 @@ settings of its own (ASK-3529).
 
 Usage:
   skeleton-guard-settings.py --for-tree <dir>
-                                      the guards a tree WITH settings lacks, as compact
-                                      JSON, or nothing when it runs them all (ASK-3957)
+                                      the guard HOOKS a tree WITH settings lacks, as
+                                      compact JSON, or nothing when it runs them all
+                                      (ASK-3957; hooks only, no deny rules: ASK-3979)
   skeleton-guard-settings.py          print the set as one compact JSON object, exit 0;
                                       exit 1 and print nothing on stdout if it does not resolve
   skeleton-guard-settings.py --check  one line on stdout; exit 0 resolves, exit 1 refuses
@@ -155,6 +156,13 @@ def overlay_for_tree(tree, root=ROOT):
     so every client session ran without it while preflight, judging the main
     checkout, said OK.
 
+    HOOKS ONLY, NEVER THE DENY RULES (PR #636 round 1). A deny rule changes what the
+    agent CAN do, the class this module's header keeps out of a target's run. The
+    set's deny list holds `Bash(git rebase*)`, and the worker runs rebase rounds in
+    these trees, so supplying it would start refusing work that runs today. The
+    credential-read rows are the real gap; which rows a client tree gets is its own
+    decision, ASK-3979.
+
     So this returns ONLY the hooks the tree does not run itself: a kept hook of the
     skeleton set is supplied when none of the scripts it names is both wired in the
     tree's settings and present in the tree. A hook the tree already runs is never
@@ -170,10 +178,12 @@ def overlay_for_tree(tree, root=ROOT):
     try:
         with open(path) as fh:
             mine = (json.load(fh) or {}).get("hooks") or {}
-    except (OSError, ValueError) as e:
+        # A hooks value of the wrong shape is a settings file Claude Code itself
+        # would reject, so it gets the written refusal, not a traceback (round 1 nit).
+        wired = {name for groups in mine.values() for g in groups or [] for h in (g or {}).get("hooks") or []
+                 for name in SCRIPT_NAME.findall((h or {}).get("command") or "")}
+    except (OSError, ValueError, AttributeError, TypeError) as e:
         raise Unresolved("the tree's .claude/settings.json is unreadable: %s" % e)
-    wired = {name for groups in mine.values() for g in groups or [] for h in (g or {}).get("hooks") or []
-             for name in SCRIPT_NAME.findall((h or {}).get("command") or "")}
     path_rx = re.compile(re.escape(root) + r"/([\w./-]+\.(?:py|sh))")
     hooks = {}
     for event, groups in full["hooks"].items():

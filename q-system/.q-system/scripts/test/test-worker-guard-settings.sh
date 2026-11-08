@@ -183,7 +183,7 @@ if any("stop-logger.sh" in c for c in cmds):
     sys.exit("F2: an excluded hook reached the agent")
 print("  argv: -p <prompt> --settings <%d hook commands the tree lacks>" % len(cmds))
 PY
-grep -q 'lacks skeleton guards' "$WORK/run-F2.out" || fail "F2: the run does not say it supplied guards. Output:
+grep -q 'lacks skeleton guard hooks' "$WORK/run-F2.out" || fail "F2: the run does not say it supplied guards. Output:
 $(tail -8 "$WORK/run-F2.out")"
 ok "F2: a tree whose settings predate the guards gets exactly the ones it lacks"
 

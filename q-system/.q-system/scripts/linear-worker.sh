@@ -2761,7 +2761,7 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     fi
     say "$ISSUE: $TREE has no .claude/settings.json; the agent runs with the skeleton guard set"
   elif [ -n "$(guard_settings_now)" ]; then
-    say "$ISSUE: $TREE lacks skeleton guards its settings predate; the agent gets them through --settings (ASK-3957)"
+    say "$ISSUE: $TREE lacks skeleton guard hooks its settings predate; the agent gets those hooks through --settings, not the deny rules (ASK-3957, ASK-3979)"
   fi
 
   # 4. SPEND THE CONFLICT ROUND, at the dispatch and nowhere earlier. Every

@@ -196,6 +196,11 @@ if rc != 0 or len(cmds(d)) != n_full:
     bad.append("empty hooks: want all %d kept hooks, got %d (rc %d)" % (n_full, len(cmds(d)), rc))
 if "excluded guard" not in err:
     bad.append("empty hooks: the excluded guards the tree lacks are not reported")
+# HOOKS ONLY (PR #636 round 1): deny rules change what the agent can do, and the
+# worker runs rebase rounds that Bash(git rebase*) would refuse. ASK-3979 decides
+# which rows a client tree gets; until then none ride the overlay.
+if "permissions" in d:
+    bad.append("empty hooks: the overlay carried permissions; a tree with settings gets hooks only (ASK-3979)")
 rc, d, _ = run(tree("parity", full["hooks"]))
 if rc != 0 or d:
     bad.append("parity: a tree that runs every guard wants no hooks and rc 0, got %d hooks (rc %d)" % (len(cmds(d)), rc))
@@ -214,6 +219,12 @@ os.remove(os.path.join(t, gone))
 rc, d, _ = run(t)
 if not any("agent-brief-one-job-guard.py" in c for c in cmds(d)):
     bad.append("wired but absent: a guard the tree names but does not have was not supplied")
+# A hooks value of the wrong shape gets the written refusal, never a traceback.
+t = os.path.join(ft, "list-hooks"); os.makedirs(t + "/.claude", exist_ok=True)
+open(t + "/.claude/settings.json", "w").write(json.dumps({"hooks": [{"hooks": []}]}))
+rc, d, err = run(t)
+if rc != 1 or d or "unreadable" not in err or "Traceback" in err:
+    bad.append("list-shaped hooks: want rc 1, no output, the unreadable refusal; got rc %d, %r" % (rc, err.strip()[-80:]))
 for b in bad:
     print("  FAIL: " + b)
 sys.exit(1 if bad else 0)
