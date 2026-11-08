@@ -2699,9 +2699,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # rebase prompt would tell the agent to force-push a diff nobody reviewed.
       DR="$(drift_rounds_for "$ISSUE")"
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- review-redrive.py re-offers it for review against the live head on a later com.kipi.dispatch tick."
         if page_once "$ISSUE" drift_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head; review-redrive.py re-offers it against the live head on a later com.kipi.dispatch tick" 2>/dev/null || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR head still unreviewed after $DR of $MAX_DRIFT_ROUNDS drift rounds"
         continue
@@ -2884,9 +2884,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
   # tree and the claim is what says this session owns it.
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
-      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
+      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. wip_release (this file) closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it. Tree: $TREE"
       if page_once "$ISSUE" tree_paged; then
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE. wip_release closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -3028,7 +3028,7 @@ So:
      commit, tests that no longer pass -- fix exactly that, and nothing else.
      Run this PR's tests before you push.
 
-Someone else may have pushed those commits (a founder push, GitHub's 'Update
+Another writer may have pushed those commits (a founder push, GitHub's 'Update
 branch'). Treat them as work you did not write and must not silently rewrite.
 
 Push to the SAME branch $BRANCH. Do not open a second PR."
@@ -3081,7 +3081,7 @@ earlier PR (ASK-113) hit it on both of its review rounds:
 
   round 1: the detector had no update path      -> the fix added one
   round 2: the update path rewrote a CLOSED issue and never reopened it,
-           so the detector went permanently dark after the operator did the
+           so the detector went permanently dark after the issue was closed, the
            right thing -- WORSE than before the fix
   round 2 also: 'the fix landed on the detector and not on the report'
 
@@ -3096,7 +3096,7 @@ ask what each now does with it:
 - is there a SECOND code path doing the same job that I did not touch? Two readers
   of the same input with different semantics is a defect even when each is
   individually defensible.
-- what does the operator SEE when this fires at 3am, and is that signal or noise?
+- what does Sana's alert triage SEE when this fires at 3am, and is that signal or noise?
 
 If a fix makes any downstream thing quieter, say so explicitly on the PR and
 justify it. Silence bought by a fix is the most expensive kind.

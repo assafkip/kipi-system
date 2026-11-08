@@ -3237,7 +3237,7 @@ because this commit is pathspec-limited." -- "${sys_add_paths[@]}" 2>"$sys_errf"
           say "  OK (merged)"
           PASS=$((PASS + 1))
         else
-          echo "  WARN: merge failed (needs manual resolve)"
+          echo "  WARN: merge failed and was aborted; the next kipi update run retries it"
           git merge --abort 2>/dev/null || true
           # No abandon: fall through so the config sync still runs.
           count_instance_failure

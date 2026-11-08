@@ -1166,7 +1166,7 @@ def run_rollback(persona):
                 os.rmdir(pth); print(f"    removed created dir {pth}")
         except OSError as e:
             print(c(f"    KEPT {pth} (not empty / {e})", "33"))
-    print(c("  Rollback done. Reload launchd plists manually if they were live.", "36"))
+    print(c("  Rollback done. If those launchd jobs were live, reload each with launchctl bootstrap gui/<uid> <plist>.", "36"))
 
 
 def _gtm_selfref_scan():

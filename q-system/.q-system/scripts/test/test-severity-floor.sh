@@ -1722,7 +1722,7 @@ done
 $(sed 's/^/        /' "$W2/p3-1.out")"
 ok "gate 40 stops after its round budget (2), not once per scheduled run forever"
 
-grep -q "drift round(s) -- a human resolves this one" "$W2/p3-5.out" \
+grep -q "drift round(s) -- review-redrive.py re-offers it for review" "$W2/p3-5.out" \
   || fail "the capped run skipped for the WRONG REASON: it must stop at the DRIFT cap, not at
       gate 10 or gate 20. It said: $(grep -i skip "$W2/p3-5.out" | head -1)"
 ok "it stopped at the drift cap, not as approved or unreviewed"
@@ -3831,8 +3831,10 @@ $(cat "$W2/pages.txt")"
 grep -qi "receipt" "$W2/pages.txt" \
   || fail "the page does not name the receipt at all, so the operator is woken by a PR that
       silently never merges: $(cat "$W2/pages.txt")"
-grep -qi "needs a human" "$W2/pages.txt" \
-  || fail "the page reports the receipt miss without saying anyone has to act on it:
+# ASK-4012: the page names WHAT acts on it, never "needs a human" (founder, 2026-11-08,
+# "There is no someone"). Its alert ticket goes to linear-alert-triage.py.
+grep -q "linear-alert-triage.py" "$W2/pages.txt" \
+  || fail "the page reports the receipt miss without naming what acts on it:
 $(cat "$W2/pages.txt")"
 grep -q "sana/ask-905" "$W2/pages.txt" \
   || fail "the page names no branch, so the operator cannot act on it without reading the log --
@@ -4136,8 +4138,8 @@ grep -qi "head_sha" "$W2/pages.txt" \
   || fail "the page reports a receipt miss without naming WHY, so it reads identically to a
       broken worktree or a refused commit -- and the fix for those does not fix this one.
       The operator needs a re-review, not a git command: $(cat "$W2/pages.txt")"
-grep -qi "needs a human" "$W2/pages.txt" \
-  || fail "the page names the unpinned record without saying anyone has to act on it:
+grep -q "linear-alert-triage.py" "$W2/pages.txt" \
+  || fail "the page names the unpinned record without naming what acts on it:
 $(cat "$W2/pages.txt")"
 grep -qi "now carries it" "$W2/conv-nopin.out" \
   && fail "no receipt for ASK-920 was written and the log claims origin now carries one:
