@@ -1306,6 +1306,10 @@ REPO = SCRIPTS.parent.parent.parent
 SHIPPED_DEDUP_STATE_DIR = getattr(triage, "DEDUP_STATE_DIR", None)
 _DEDUP_TMP = tempfile.TemporaryDirectory(prefix="alert-triage-dedup-")
 triage.DEDUP_STATE_DIR = _DEDUP_TMP.name
+# The pre-pass cursor too: every apply pass writes it, and the real one sits in
+# ~/.config/kipi. The first run of this suite wrote it there, before this line.
+_CURSOR = Path(_DEDUP_TMP.name) / "cursor" / "prepass-cursor.json"
+triage.PREPASS_CURSOR_FILE = str(_CURSOR)
 
 
 def dedup_state(fp, **state):
@@ -1316,6 +1320,8 @@ def dedup_state(fp, **state):
 def clear_dedup_state():
     for p in Path(_DEDUP_TMP.name).glob("*.json"):
         p.unlink()
+    if _CURSOR.exists():
+        _CURSOR.unlink()
 
 
 def state_alert(ident, msg, created="2026-08-01T00:00:00Z", fp=None, count=1,
@@ -1754,6 +1760,89 @@ class TestB4ExactDuplicatesCloseIntoTheNewest(DedupScratch):
         self.assertEqual(b.mutations(), [])
         self.assertIn("WOULD CLOSE", out)
         self.assertIn("duplicate 1", out)
+
+
+class TestB6APrShapeEndsWithItsPr(DedupScratch):
+    """#630 review r1, major 1. Four shapes page about a PR, and "ASK-50 is Done"
+    does not end "PR #10 is still red". The first cut closed them anyway."""
+
+    CI = ("ci-redrive: ASK-50 PR #10 is still red on validate after the machine "
+          "tier. https://github.com/o/r/pull/10")
+    ARMED = "worker: ASK-50 PR #10 is NOT armed for auto-merge https://github.com/o/r/pull/10"
+
+    def test_an_open_pr_keeps_its_page_open_after_the_issue_is_done(self):
+        for msg in (self.CI, self.ARMED):
+            b = Board([work("ASK-50", "completed", "Done"), state_alert("ASK-1", msg)])
+            _, seen, _, _ = lane(b, pr_state=lambda r, n: "OPEN")
+            self.assertEqual((closes(b), seen), ([], ["ASK-1"]), msg)
+
+    def test_a_pr_shape_with_no_url_never_closes_on_its_issue(self):
+        b = Board([work("ASK-50", "completed", "Done"),
+                   state_alert("ASK-1", "ci-redrive: ASK-50 PR #10 is still red on validate")])
+        lane(b, pr_state=lambda r, n: "MERGED")
+        self.assertEqual(closes(b), [])
+
+    def test_negative_control_a_closed_pr_and_an_ended_issue_close(self):
+        b = Board([work("ASK-50", "completed", "Done"), state_alert("ASK-1", self.CI)])
+        lane(b, pr_state=lambda r, n: "CLOSED")
+        self.assertEqual(closes(b), ["ASK-1"])
+        self.assertIn("o/r#10 is closed unmerged and ASK-50 is Done",
+                      b.comments["uuid-ASK-1"][-1])
+
+
+class TestB7TheReadBoundResumesWhereItStopped(DedupScratch):
+    """#630 review r1, major 2. Alerts about open subjects at the front of the
+    oldest-first pool spent the whole read bound on every pass, so the closable
+    ones behind them were never examined."""
+
+    def passes(self, b, n, apply=True, max_lookups=5):
+        closed = []
+        for _ in range(n):
+            pool, _ = triage.lane_pool(b)
+            with redirect_stdout(io.StringIO()):
+                _, tally = triage.run_prepass(b, pool, apply, lambda r, n: None,
+                                              max_lookups=max_lookups)
+            closed.append(tally["closed"])
+        return closed
+
+    def board(self):
+        return Board([work(f"ASK-{60 + n}", "backlog") for n in range(5)]
+                     + [work("ASK-50", "completed", "Done")]
+                     + [state_alert(f"ASK-{n + 1}", stuck(f"ASK-{60 + n}"),
+                                    created=f"2026-08-0{n + 1}") for n in range(5)]
+                     + [state_alert("ASK-8", STUCK, created="2026-08-08"),
+                        state_alert("ASK-9", "kipi dispatch: ASK-50 was launched but "
+                                    "died immediately", created="2026-08-09")])
+
+    def test_closable_alerts_behind_live_ones_are_reached(self):
+        b = self.board()
+        self.assertEqual(self.passes(b, 1), [0], "5 open subjects spend the bound of 5")
+        self.assertEqual(self.passes(b, 1), [2])
+        self.assertEqual(sorted(closes(b)), ["ASK-8", "ASK-9"])
+
+    def test_a_dry_run_does_not_move_the_cursor(self):
+        b = self.board()
+        self.passes(b, 1, apply=False)
+        self.assertFalse(_CURSOR.exists())
+        self.assertEqual(self.passes(b, 1), [0], "the apply pass still starts at the oldest")
+
+    def test_a_pass_that_saw_everything_starts_from_the_oldest_next(self):
+        b = self.board()
+        self.passes(b, 1)
+        self.assertIsNotNone(triage.read_cursor())
+        self.passes(b, 1, max_lookups=100)
+        self.assertIsNone(triage.read_cursor())
+
+    def test_a_cached_read_does_not_carry_the_cursor_past_a_skipped_alert(self):
+        """C rides on A's cached read after B ran out of reads. The cursor must
+        stop at A, or B is skipped again next pass."""
+        b = Board([work("ASK-60", "backlog"), work("ASK-61", "completed", "Done"),
+                   state_alert("ASK-1", stuck("ASK-60"), created="2026-08-01"),
+                   state_alert("ASK-2", stuck("ASK-61"), created="2026-08-02"),
+                   state_alert("ASK-3", "kipi dispatch: ASK-60 was launched but died "
+                               "immediately", created="2026-08-03")])
+        self.assertEqual(self.passes(b, 2, max_lookups=2), [0, 1])
+        self.assertEqual(closes(b), ["ASK-2"])
 
 
 class TestB5PrepassOnlyCallsNoModel(DedupScratch):

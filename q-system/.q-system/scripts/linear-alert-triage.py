@@ -920,6 +920,15 @@ PREPASS_MAX_CLOSES = 40
 # model exactly as it did before the pre-pass existed.
 PREPASS_MAX_LOOKUPS = 80
 PREPASS_DEADLINE_S = 300
+# WHERE THE LAST BOUNDED PASS STOPPED (PR #630 review r1, major 2). The pool is
+# oldest first, and an alert whose subject is still open costs a read and closes
+# nothing. With 80 such alerts at the front, every pass spent its whole bound on
+# them and the closable ones behind were never examined, every night, forever.
+# So a pass that stops on a bound records the last alert it examined, and the
+# next pass starts after it and wraps. One writer: run_prepass, on --apply only,
+# so a dry run previews the pass the real one will run.
+PREPASS_CURSOR_FILE = os.path.join("~", ".config", "kipi",
+                                   "linear-alert-triage.prepass-cursor.json")
 GH_TIMEOUT_S = 20
 GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
 # alert-to-linear.py's fingerprint -> ticket map, read and never written here.
@@ -960,7 +969,7 @@ def subject_of(msg: str) -> dict | None:
         if not m:
             continue
         subject = {"shape": shape, "producer": producer, "issue": m.group("issue"),
-                   "pr": None, "repo": None}
+                   "pr": None, "repo": None, "carries_pr": "pr" in pattern.groupindex}
         pr = m.groupdict().get("pr")
         url = pr and re.search(rf"github\.com/([\w.-]+/[\w.-]+)/pull/{pr}\b", msg)
         if url:
@@ -1065,17 +1074,33 @@ class _Reads:
         return self.cache[key]
 
 
-def subject_ended(ls, subject: dict, reads: _Reads, pr_state) -> str | None:
-    """Why this subject is over, or None. An unreadable subject is None: a read
-    that failed is not permission to close (do_close's own rule, PR #275 r4)."""
-    ident = subject["issue"]
+def _issue_over(ls, ident: str, reads: _Reads) -> str | None:
     state = (reads.get(ident, lambda: reread(ls, ident)) or {}).get("state") or {}
     if state.get("type") in SUBJECT_CLOSED_TYPES:
         return f"{ident} is {state.get('name') or state['type']} (state type {state['type']})"
-    if subject["pr"] and subject["repo"]:
-        key = f"{subject['repo']}#{subject['pr']}"
-        if reads.get(key, lambda: pr_state(subject["repo"], subject["pr"])) == "MERGED":
-            return f"{key} is merged"
+    return None
+
+
+def subject_ended(ls, subject: dict, reads: _Reads, pr_state) -> str | None:
+    """Why this subject is over, or None. An unreadable subject is None: a read
+    that failed is not permission to close (do_close's own rule, PR #275 r4)."""
+    if not subject["carries_pr"]:
+        return _issue_over(ls, subject["issue"], reads)
+    # A PR SHAPE PAGES ABOUT THE PR (PR #630 review r1, major 1). "PR #10 is still
+    # red" and "PR #10 is NOT armed" outlive "ASK-50 is Done": the first cut closed
+    # them on the issue alone while the PR sat open and red, the class
+    # CONVERGE_NOT_SUBJECT already carves out. So the PR decides: merged ends it,
+    # closed unmerged ends it once the issue has ended too, and a PR that cannot
+    # be read (no URL, gh failed) ends nothing.
+    if not (subject["pr"] and subject["repo"]):
+        return None
+    key = f"{subject['repo']}#{subject['pr']}"
+    pr = reads.get(key, lambda: pr_state(subject["repo"], subject["pr"]))
+    if pr == "MERGED":
+        return f"{key} is merged"
+    if pr == "CLOSED":
+        issue = _issue_over(ls, subject["issue"], reads)
+        return f"{key} is closed unmerged and {issue}" if issue else None
     return None
 
 
@@ -1158,6 +1183,34 @@ def _why_duplicate(ls, issue: dict, kept: dict, reads: _Reads) -> tuple[str | No
             "that same message."), ""
 
 
+def _pool_key(issue: dict) -> tuple:
+    return (issue.get("createdAt") or "", issue.get("identifier") or "")
+
+
+def read_cursor() -> tuple | None:
+    try:
+        with open(os.path.expanduser(PREPASS_CURSOR_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (str(data["createdAt"]), str(data["identifier"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def write_cursor(issue: dict | None) -> None:
+    """The single writer of the cursor. None means start from the oldest."""
+    path = os.path.expanduser(PREPASS_CURSOR_FILE)
+    data = {} if issue is None else dict(zip(("createdAt", "identifier"), _pool_key(issue)))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"  pre-pass: could not save where it stopped ({exc.strerror}); the "
+              "next pass starts from the oldest alert", file=sys.stderr)
+
+
 def run_prepass(ls, pool: list, apply: bool, pr_state=None,
                 cap: int = PREPASS_MAX_CLOSES, max_lookups: int = PREPASS_MAX_LOOKUPS,
                 deadline_s: float = PREPASS_DEADLINE_S,
@@ -1168,16 +1221,17 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
     pass: closed is done, and a failed close stays open with its rationale and is
     retried tomorrow rather than also promoted or held tonight."""
     pr_state = pr_state or gh_pr_state
-    reads, left, tally = _Reads(max_lookups, deadline_s, clock), [], Counter()
+    reads, tally, done = _Reads(max_lookups, deadline_s, clock), Counter(), set()
     dup_of = duplicates_by_kept(pool)
-    for issue in pool:
+    cursor = read_cursor()
+    start = next((n for n, i in enumerate(pool) if cursor and _pool_key(i) > cursor), 0)
+    last_examined = None
+    for issue in pool[start:] + pool[:start]:
         subject, kept = alert_subject(issue), dup_of.get(issue["identifier"])
         if not (subject or kept):
-            left.append(issue)
             continue
         if tally["attempted"] >= cap:
             tally["unchecked"] += 1
-            left.append(issue)
             continue
         why, bucket, rule = None, "", ""
         try:
@@ -1189,11 +1243,15 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
                 (why, bucket), rule = _why_duplicate(ls, issue, kept, reads), "duplicate"
         except _Spent:
             why, bucket = None, "unchecked"
+        # Only up to the FIRST alert left unchecked: a later one that rode on a
+        # cached read must not carry the cursor past the ones skipped before it.
+        if bucket != "unchecked" and not tally["unchecked"]:
+            last_examined = issue
         if not why:
             tally[bucket] += 1
-            left.append(issue)
             continue
         tally["attempted"] += 1
+        done.add(issue["identifier"])
         reason = (f"{why} Closed by the no-model pre-pass of the nightly triage lane "
                   "(ASK-3823); no model was asked. Reopen this issue if that is "
                   "wrong. Nothing was deleted.")
@@ -1208,7 +1266,9 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
         tally["closed" if out.wrote else ("skipped" if apply else "would_close")] += 1
         if out.wrote or not apply:
             tally[f"rule:{rule}"] += 1
-    return left, tally
+    if apply and (tally["unchecked"] == 0 or last_examined is not None):
+        write_cursor(last_examined if tally["unchecked"] else None)
+    return [i for i in pool if i["identifier"] not in done], tally
 
 
 def _prepass_part(pre: Counter, apply: bool) -> str:
