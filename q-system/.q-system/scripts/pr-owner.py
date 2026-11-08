@@ -63,13 +63,23 @@ A close never deletes the branch. Reopening the PR undoes it.
 A FORK IS NEVER ACTED ON (PR #659 round 1, major). On a public repo the branch
 name and the title are strings the PR's author chose, and both bind a PR to a
 ticket here. A stranger's PR on `sana/ask-2540` would have moved a live lane's
-ticket to Backlog 48 hours later. So provenance is read before anything else,
+ticket to Backlog 48 hours later. So provenance is read before any ticket is,
 through ci-redrive.py's head_provenance (the rule review-redrive.py imports too),
 and a fork or an unstated head gets `outside`: no read of Linear, no comment, no
-close. Its next actor is the alert lane: --apply files one alert per PR through
-slack-notify.sh (a Linear ticket for Sana, which linear-alert-triage.py takes
-nightly), and never a second for the same PR (PR #659 round 2: a line in
-pr-owner.log alone is read by nothing).
+close. It waits behind the same 48h age and 12h quiet as every PR (round 3,
+minor: a drive-by PR reached Sana's queue within the hour). Its next actor is the
+alert lane: --apply files one alert per PR through slack-notify.sh (a Linear
+ticket for Sana, which linear-alert-triage.py takes nightly), and never a second
+for the same PR (PR #659 round 2: a line in pr-owner.log alone is read by nothing).
+The alert is recorded only when the sink's own line names a ticket (round 3,
+major): see outside_alert() for why exit 0 is not that proof.
+
+A PR THE CAP LADDER OWNS IS YIELDED (ASK-3824). cap-ladder.py (com.kipi.cap-ladder,
+nightly 04:40, PR #662) is the one consumer of every cap: a capout, 3 attempts, a
+paged conflict, an escalated review, a review round cap. Two writers on one PR
+is how it gets reworked by one job while the other splits its ticket. So any PR
+its ladder_owns() claims gets `ladder`, nothing else. Before PR #662 is in this
+checkout, pr-owner yields every PR the ladder COULD own (see ladder_check).
 
 A LIVE LANE IS NEVER CLOSED. A ticket started inside linear-sync.py's
 STARTED_STALE_HOURS window, or with a live worker claim, holds its PR. Same rule
@@ -96,6 +106,7 @@ from __future__ import annotations
 import argparse
 import base64
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
@@ -173,6 +184,33 @@ def run(argv, timeout=120, env=None, cwd=None):
         return 124, "", f"timed out after {timeout}s"
     except OSError as exc:
         return 127, "", str(exc)
+
+
+def run_logged(argv, log: Path, timeout=2700):
+    """(rc, tail of the log) for a long child whose output nobody reads live.
+
+    A FILE, NEVER A PIPE. pr-review-agent.sh starts a watchdog
+    `( sleep "$secs"; ... ) &` that inherits stdout. run() reads through a pipe
+    until EOF, and the sleep holds the pipe open, so the hourly run would sit up
+    to 40 minutes after the review was done (found 2026-11-08 by the Sonnet vs
+    Opus agent; a stub with a 20s sleep measured 20.0s). A file lets this return
+    when the reviewer exits. The verdict is read from GitHub on the next run,
+    not from this output.
+    """
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "w") as fh:
+            rc = subprocess.run(argv, stdout=fh, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, timeout=timeout).returncode
+    except subprocess.TimeoutExpired:
+        rc = 124
+    except OSError as exc:
+        return 127, str(exc)
+    try:
+        tail = " ".join(log.read_text(errors="replace").split())[-160:]
+    except OSError:
+        tail = ""
+    return rc, tail
 
 
 # THE ONE DOOR FOR A GITHUB WRITE. A close or merge that deletes the branch loses
@@ -463,30 +501,156 @@ def resolve_ticket(pr: dict, load):
     return None, ""
 
 
+# ---------------------------------------------------------------- the cap ladder
+
+# Read by path from THIS checkout. The job runs from its own pinned tree
+# (job-checkouts.json), so this is the ladder that tree carries. A test points it
+# at a temp copy.
+CAP_LADDER = SCRIPTS / "cap-ladder.py"
+_LADDER_MODS: dict = {}
+
+
+def ladder_check(pr: dict, state_dir: str | None = None) -> str:
+    """"" when cap-ladder.py does not own this PR, else why pr-owner yields it.
+
+    ASKED, NOT COPIED. ladder_owns() (cap-ladder.py, PR #662) answers from the
+    same cap_sigs() the ladder itself acts on, so the two jobs cannot disagree
+    about who owns a capped PR. A copy here is the second writer it prevents.
+    Raises RuntimeError when the file is there and cannot answer: main() holds
+    the PR, because "could not ask" is not "the ladder does not own it".
+    """
+    sd = state_dir or str(worker_state_dir())
+    if not CAP_LADDER.is_file():
+        return _ladder_absent(pr, sd)
+    try:
+        mod = _LADDER_MODS.get(str(CAP_LADDER))
+        if mod is None:
+            spec = importlib.util.spec_from_file_location("cap_ladder", CAP_LADDER)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _LADDER_MODS[str(CAP_LADDER)] = mod
+        return mod.ladder_owns(pr["slug"], int(pr["number"]), pr["branch"], sd) or ""
+    except Exception as exc:
+        raise RuntimeError(f"cap-ladder.py could not answer ({type(exc).__name__}: {exc})") from exc
+
+
+def _ladder_absent(pr: dict, sd: str) -> str:
+    """PR #662 is not in this checkout: yield every PR the ladder COULD own.
+
+    A superset of ladder_owns(), on purpose: a review-cap marker for this PR, or
+    any worker-attempts record for the ticket of a sana/ask-N branch (lane
+    branches too). Yielding too much costs a few PRs one more day with the
+    mover they have today. Yielding too little puts two writers on one PR the
+    morning #662 merges. Once cap-ladder.py is in the pinned tree this path is
+    dead, and ladder_owns() answers instead.
+    """
+    name = f".round-cap-{pr['slug'].replace('/', '_')}-pr-{pr['number']}"
+    reviews = Path(sd) / "pr-reviews"
+    why = "cap-ladder.py is not in this checkout yet (PR #662, ASK-3824), and "
+    if (reviews / name).exists() or (reviews / "codex" / name).exists():
+        return why + "this PR has a review-cap marker; yielded until it lands"
+    m = re.match(r"^sana/(ask-\d+)", pr.get("branch") or "", re.I)
+    if not m:
+        return ""
+    ident = m.group(1).upper()
+    try:
+        ledger = json.loads((Path(sd) / "linear-worker-attempts.json").read_text())
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"the worker attempts ledger is unreadable ({exc})") from exc
+    if isinstance(ledger, dict) and ledger.get(ident):
+        return why + f"{ident} has a worker-attempts record; yielded until it lands"
+    return ""
+
+
+# ---------------------------------------------------------------- the fork alert
+
+_SINK = None
+_REF_LETTERS = str.maketrans("0123456789abcdef", "ghijklmnopqrstuv")
+
+
+def alert_sink():
+    # The sink's own _FILED_LINE, imported, so "the line names a ticket" means
+    # what alert-to-linear.py prints, not what this file believes it prints.
+    global _SINK
+    if _SINK is None:
+        spec = importlib.util.spec_from_file_location("alert_to_linear", SCRIPTS / "alert-to-linear.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _SINK = mod
+    return _SINK
+
+
+def alert_ref(key: str) -> str:
+    r"""This PR's identity in a word alert-to-linear.py's fingerprint keeps.
+
+    PR #659 round 3, major. The sink dedups on the SHAPE of a message: it strips
+    every `\S*/\S*` (the slug, the URL), every digit (the PR number) and every
+    7+ hex run. So "brag PR #2" and "kipi-system PR #526" were one fingerprint:
+    the second fork PR became a counted repeat on the first one's ticket, and no
+    Linear object ever named it. pr-review-agent.sh met the same wall at PR #501
+    and spells the PR number in letters (a-j). That carries no repo, and a-f
+    letters can still read as hex, so this hashes the whole key and spells the
+    hash in g-v: letters only, never hex, one word, distinct per PR, the same
+    word every run for one PR so a retry repeats on that PR's own ticket.
+    """
+    return "ref" + hashlib.sha256(key.encode()).hexdigest()[:16].translate(_REF_LETTERS)
+
+
+def outside_alert(pr: dict, reason: str) -> str:
+    key = f"{pr['slug']}#{pr['number']}"
+    return (f"pr-owner: {pr['slug']} PR #{pr['number']} ({pr['url']}) is outside the fleet ({reason}). "
+            f"pr-owner never acts on it. Decide: review, merge or close it, then record why on the PR. "
+            f"Dedup key {alert_ref(key)}.")
+
+
+def filed_ticket(out: str) -> str:
+    """The ticket the sink names for THIS alert, or "".
+
+    EXIT 0 IS NOT A RECORD (PR #659 round 3, major). slack-notify.sh exits 0 for
+    a new ticket, a counted repeat, a noise suppression, a sustained-rule
+    deferral and a test capture. Only the first two name a ticket. The alert's
+    own line is the first stdout line (file_and_drain prints it before any retry
+    line), so a drained retry's "filed ASK-n" is never read as this one's.
+    """
+    for line in (out or "").splitlines():
+        if line.startswith("alert-to-linear: "):
+            m = alert_sink()._FILED_LINE.match(line[len("alert-to-linear: "):])
+            return m.group(1) if m else ""
+    return ""
+
+
 # ---------------------------------------------------------------- the decision
 
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?}. Actions: skip, outside, outside-filed,
-    young, wait, hold, merge, review, close-superseded, rework, close-requeue,
-    close-comment.
+    Returns {"action", "reason", "ticket"?}. Actions: skip, young, wait, outside,
+    outside-filed, ladder, hold, merge, review, close-superseded, rework,
+    close-requeue, close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
     if key in skip or f"{pr['slug'].split('/')[-1]}#{pr['number']}" in skip:
         return {"action": "skip", "reason": "named by --skip"}
-    if pr.get("provenance") != ci_redrive().SAME_REPO:
-        filed = (state.get("outside") or {}).get(key)
-        if filed:
-            return {"action": "outside-filed", "reason": f"outside the fleet; its alert was filed at {iso(filed['at'])}"}
-        return {"action": "outside",
-                "reason": f"head provenance is {pr.get('provenance') or 'unstated'}: its branch and title are its author's, so it binds no ticket and pr-owner does not act on it"}
+    # THE GATES COME BEFORE PROVENANCE (PR #659 round 3, minor). They act on
+    # nothing and bind no ticket, so a fork reaches them safely, and before this
+    # order a fork opened a minute ago was alerted on the next hourly tick.
     age = now - (pr["created"] or now)
     if age < AGE_S:
         return {"action": "young", "reason": f"open {hours(age)}, under the {hours(AGE_S)} age; whatever opened it still owns it"}
     quiet = now - (pr["pushed"] or pr["created"] or now)
     if quiet < QUIET_S:
         return {"action": "wait", "reason": f"pushed {hours(quiet)} ago, under {hours(QUIET_S)} of quiet; whoever pushed still owns it"}
+    if pr.get("provenance") != ci_redrive().SAME_REPO:
+        filed = (state.get("outside") or {}).get(key)
+        if filed:
+            return {"action": "outside-filed",
+                    "reason": f"outside the fleet; its alert {filed.get('ticket') or ''} was filed at {iso(filed['at'])}".replace("  ", " ")}
+        return {"action": "outside",
+                "reason": f"head provenance is {pr.get('provenance') or 'unstated'}: its branch and title are its author's, so it binds no ticket and pr-owner does not act on it"}
+    if pr.get("ladder"):
+        return {"action": "ladder", "reason": pr["ladder"] + "; cap-ladder.py takes it, pr-owner writes nothing"}
     rv, rv_desc = pr.get("reviewer", ("unreviewed", ""))
 
     lv = pr.get("lessons")
@@ -614,14 +778,16 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
     short = head[:8]
     if d["action"] == "outside":
         notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
-        msg = (f"pr-owner: {slug} PR #{n} ({pr['url']}) is outside the fleet ({d['reason']}). "
-               f"pr-owner never acts on it. Decide: review, merge or close it, then record why on the PR.")
-        rc, out, err = run(["bash", notify, msg])
+        rc, out, err = run(["bash", notify, outside_alert(pr, d["reason"])])
         if rc != 0:
             return False, f"alert did not file: {' '.join((err or out).split())[-160:]}"
-        state.setdefault("outside", {})[key] = {"head": head, "at": now}
+        ident = filed_ticket(out)
+        if not ident:
+            return False, (f"the alert sink exited 0 but named no ticket "
+                           f"({' '.join((out or err).split())[-160:]}); not recorded, the next hourly run asks again")
+        state.setdefault("outside", {})[key] = {"head": head, "at": now, "ticket": ident}
         save_state(state_path(), state)
-        return True, "alert filed (once per PR)"
+        return True, f"alert filed on {ident} (once per PR)"
     if d["action"] == "merge":
         rc, out, err = gh_write(["pr", "merge", n, "-R", slug, "--squash", "--match-head-commit", head])
         return rc == 0, "merged" if rc == 0 else f"merge failed: {' '.join(err.split())[:160]}"
@@ -634,8 +800,9 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         # asked again every hour on the same head (one review per head, then red).
         state.setdefault("reviews", {})[key] = {"head": head, "at": now}
         save_state(state_path(), state)
-        rc, out, err = run(argv, timeout=2700)
-        return rc == 0, "review posted" if rc == 0 else f"review exited {rc}: {' '.join((err or out).split())[-160:]}"
+        log = state_path().parent / "reviews" / f"{slug.replace('/', '_')}-pr-{n}.log"
+        rc, tail = run_logged(argv, log, timeout=2700)
+        return rc == 0, "review posted" if rc == 0 else f"review exited {rc} (log {log}): {tail}"
     if d["action"] == "rework":
         ticket = d["ticket"]
         line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962): PR #{n} is red ({d['reason']}). "
@@ -717,7 +884,7 @@ def main(argv=None) -> int:
     if not rows:
         print("REFUSED: fleet_candidates returned no repo at all, not even home", file=sys.stderr)
         return 3
-    counts = {k: 0 for k in ("skip", "outside-filed", "young", "wait", "hold") + WRITES}
+    counts = {k: 0 for k in ("skip", "outside-filed", "ladder", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
     for name, path, _remote in rows:
@@ -749,18 +916,25 @@ def main(argv=None) -> int:
             n_prs += 1
             pr = normalize(slug, name, path, item)
             tag = f"{slug}#{pr['number']} ({pr['branch']})"
-            if pr["provenance"] == ci_redrive().SAME_REPO and now - (pr["created"] or now) >= AGE_S:
+            if now - (pr["created"] or now) >= AGE_S:
                 try:
-                    detail = gh_json(["pr", "view", str(pr["number"]), "-R", slug, "--json", DETAIL_FIELDS])
-                    pr = normalize(slug, name, path, {**item, **(detail or {})})
-                    st = gh_json(["api", f"repos/{slug}/commits/{pr['head']}/status"])
-                    pr["reviewer"] = reviewer_state((st or {}).get("statuses"), floor)
-                    if pr["touches_ledger"]:
-                        pr["lessons"] = lessons_verdict(slug, pr)
+                    if pr["provenance"] == ci_redrive().SAME_REPO:
+                        detail = gh_json(["pr", "view", str(pr["number"]), "-R", slug, "--json", DETAIL_FIELDS])
+                        pr = normalize(slug, name, path, {**item, **(detail or {})})
+                        st = gh_json(["api", f"repos/{slug}/commits/{pr['head']}/status"])
+                        pr["reviewer"] = reviewer_state((st or {}).get("statuses"), floor)
+                        if pr["touches_ledger"]:
+                            pr["lessons"] = lessons_verdict(slug, pr)
+                        pr["ladder"] = ladder_check(pr)
+                    else:
+                        # A fork's commits and nothing else: the 12h quiet gate needs
+                        # its last push (round 3, minor). No status, no Linear.
+                        detail = gh_json(["pr", "view", str(pr["number"]), "-R", slug, "--json", "commits"])
+                        pr = normalize(slug, name, path, {**item, **(detail or {})})
                 except (RuntimeError, ValueError) as exc:
                     counts["hold"] += 1
                     n_unreadable += 1
-                    print(f"hold {tag}: could not read its head ({exc})")
+                    print(f"hold {tag}: could not read it ({exc})")
                     continue
             d = decide(pr, now, state, read_ticket, review_left, set(args.skip))
             counts[d["action"]] += 1

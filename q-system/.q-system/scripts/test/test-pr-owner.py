@@ -15,6 +15,12 @@ dir before anything runs):
     a rework comment and the ticket writes through linear-sync.py; a dry run sends
     no write at all and leaves no state file; a reworked PR still red at the same
     head one age later closes.
+  * a fork alert runs through the REAL slack-notify.sh and alert-to-linear.py main()
+    (only the Linear transport is fake), so each fork PR must get its own ticket
+    and pr-owner records the ticket the sink named, never a bare exit 0 (PR #659
+    round 3; RCA q-system/output/rca/rca-pr-owner-three-rounds-2026-11-08.md).
+  * a PR cap-ladder.py owns is yielded, asked of the REAL ladder_owns() (this tree's
+    cap-ladder.py, else PR #662's pushed branch), and a superset when it is absent.
   * the repo set is the dispatcher's own fleet_candidates on a fixture registry, and
     a dispatcher without that function refuses the run.
   * the wiring: the terminal-states open-pr consumer row, the plist, the pinned
@@ -33,6 +39,7 @@ import plistlib
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -71,6 +78,9 @@ spec.loader.exec_module(po)
 # `gh pr close 1 --delete-branch` from this checkout. It hit a fork PR closed since
 # July and changed nothing, by luck. Every call now lands here until the fake is set.
 BLOCKED: list[list[str]] = []
+# The real run(), kept for ONE caller: the sink harness below, which runs a temp
+# copy of slack-notify.sh. fake_run refuses any other path to it.
+REAL_RUN = po.run
 
 
 def blocked_run(argv, timeout=120, env=None, cwd=None):
@@ -208,9 +218,21 @@ check("... and Linear is never read for it", LOOKED, [])
 check("an unstated head -> outside", act_of(pr(provenance="unstated"))["action"], "outside")
 check("a fork whose alert is filed -> outside-filed, no second alert",
       act_of(fork, state={"outside": {"assafkip/kipi-system#526": {"head": "x", "at": NOW - H}}})["action"], "outside-filed")
+check("a fork opened 100 seconds ago -> young, not alerted (PR #659 round 3, minor)",
+      act_of(pr(provenance="fork", created=NOW - 100, pushed=NOW - 100))["action"], "young")
+check("an old fork pushed an hour ago -> wait (the 12h quiet gate holds forks too)",
+      act_of(pr(provenance="fork", pushed=NOW - H))["action"], "wait")
 check("provenance comes from ci-redrive's head_provenance",
       [po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": v})["provenance"] for v in (False, True, None)],
       ["same-repo", "fork", "unstated"])
+
+print("-- a PR cap-ladder.py owns is yielded (ASK-3824, PR #662)")
+owned = pr(reviewer=("approved", "APPROVE"), merge_state="CLEAN", ladder="cap-ladder owns it: ASK-2540 holds capout")
+check("a ladder-owned PR -> ladder, even when it would merge", act_of(owned)["action"], "ladder")
+check("a ladder-owned PR -> ladder, and Linear is never read",
+      (po.decide(owned, NOW, {}, watching, 1, set())["action"], LOOKED), ("ladder", []))
+check("a ladder-owned PR still young -> young (the gates come first)",
+      act_of({**owned, "created": NOW - H, "pushed": NOW - H})["action"], "young")
 
 print("-- merge needs our read of CI green; UNSTABLE alone is no veto (PR #659 rounds 1 and 2)")
 ok_rv = ("approved", "APPROVE")
@@ -259,6 +281,78 @@ check("lessons/weekly-2026-10-19 names no ticket", po.ticket_candidates("lessons
 check("worker branch", po.worker_branch_issue("sana/ask-3036"), "ASK-3036")
 check("lane branch is not a worker branch", po.worker_branch_issue("sana/ask-3036-slug"), "")
 
+# ---------------------------------------------------------------- the cap-ladder yield
+print("-- ladder_check drives the real cap-ladder.py ladder_owns() (ASK-3824, PR #662)")
+import subprocess
+
+
+def try_call(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except Exception as exc:  # an old pr-owner.py has no ladder_check at all
+        return f"RAISED {type(exc).__name__}: {exc}"
+
+
+LSTATE = TMP / "ladder-state"
+(LSTATE / "pr-reviews" / "codex").mkdir(parents=True)
+(LSTATE / "linear-worker-attempts.json").write_text(json.dumps({
+    "ASK-777": {"capout": True, "capout_at": "2026-11-01T00:00:00Z", "count": 1},
+    "ASK-778": {"rounds": 1}}))
+(LSTATE / "pr-reviews" / ".round-cap-o_fx-pr-55").write_text("")
+lpr = lambda branch, n=10: pr(slug="o/fx", number=n, branch=branch)
+
+# The REAL ladder: this tree's copy once PR #662 is on main, else #662's pushed
+# branch. Never a hand model of what the ladder owns (RCA 2026-11-08, root cause 2).
+real_src = SCRIPTS / "cap-ladder.py"
+if not real_src.is_file():
+    got = subprocess.run(["git", "-C", str(REPO), "show",
+                          "origin/sana/ask-3824-ladder:q-system/.q-system/scripts/cap-ladder.py"],
+                         capture_output=True, text=True)
+    if got.returncode == 0 and "def ladder_owns(" in got.stdout:
+        real_src = TMP / "ladder-real" / "cap-ladder.py"
+        real_src.parent.mkdir()
+        real_src.write_text(got.stdout)
+    else:
+        real_src = None
+REAL_CASES = [("sana/ask-777", 10), ("sana/ask-777-slug", 10), ("sana/ask-555", 55), ("sana/ask-778", 10),
+              ("fix/x-ask-777", 10)]
+if real_src:
+    po.CAP_LADDER = real_src
+    real_owns = {c: try_call(lambda *a: po.ladder_check(*a), lpr(*c), str(LSTATE)) for c in REAL_CASES}
+    check("real ladder: sana/ask-777 with a capout -> owned",
+          str(real_owns[("sana/ask-777", 10)]).startswith("cap-ladder owns it: ASK-777"), True)
+    check("real ladder: a lane branch is never the ladder's", real_owns[("sana/ask-777-slug", 10)], "")
+    check("real ladder: a round-cap marker for o/fx#55 -> owned",
+          str(real_owns[("sana/ask-555", 55)]).startswith("cap-ladder owns it: ASK-555"), True)
+    check("real ladder: an entry with no cap -> not owned", real_owns[("sana/ask-778", 10)], "")
+    check("real ladder: a fix/ branch -> not owned", real_owns[("fix/x-ask-777", 10)], "")
+else:
+    real_owns = {}
+    print("  note: cap-ladder.py is in neither this tree nor origin/sana/ask-3824-ladder; "
+          "the real-ladder checks run once PR #662 is on main")
+
+# PR #662 NOT IN THIS CHECKOUT: yield everything the ladder could own. A superset
+# of ladder_owns, so the two jobs never both write one PR.
+po.CAP_LADDER = TMP / "no-such-dir" / "cap-ladder.py"
+fb = {c: try_call(lambda *a: po.ladder_check(*a), lpr(*c), str(LSTATE)) for c in REAL_CASES}
+check("ladder absent: sana/ask-777 with a record -> yielded", "PR #662" in str(fb[("sana/ask-777", 10)]), True)
+check("ladder absent: the lane branch with a record -> yielded too", "PR #662" in str(fb[("sana/ask-777-slug", 10)]), True)
+check("ladder absent: the round-cap marker -> yielded", "PR #662" in str(fb[("sana/ask-555", 55)]), True)
+check("ladder absent: a fix/ branch with no marker -> not yielded", fb[("fix/x-ask-777", 10)], "")
+check("ladder absent: no record at all -> not yielded",
+      try_call(lambda *a: po.ladder_check(*a), lpr("sana/ask-999"), str(LSTATE)), "")
+if real_owns:
+    check("ladder absent yields every PR the real ladder owns (never two writers)",
+          [c for c in REAL_CASES if real_owns[c] and not str(fb[c]).startswith("cap-ladder")
+           and "PR #662" not in str(fb[c])], [])
+broken = TMP / "broken" / "cap-ladder.py"
+broken.parent.mkdir()
+broken.write_text("X = 1\n")
+po.CAP_LADDER = broken
+check("a cap-ladder.py with no ladder_owns() raises, so main holds the PR",
+      str(try_call(lambda *a: po.ladder_check(*a), lpr("sana/ask-777"), str(LSTATE))).startswith("RAISED RuntimeError"), True)
+po.CAP_LADDER = real_src or (TMP / "no-such-dir" / "cap-ladder.py")
+
 print("-- the branch is never deleted")
 for argv in (["pr", "close", "1", "--delete-branch"], ["pr", "merge", "1", "-d"]):
     try:
@@ -270,10 +364,102 @@ check("a refused write never reached a subprocess, real or blocked", BLOCKED, []
 src = SUBJECT.read_text()
 check("'--delete-branch' appears only in the refusal", src.count('"--delete-branch"'), 1)
 
+# ---------------------------------------------------------------- the real alert sink
+# THE SINK IS DRIVEN, NOT MODELLED (PR #659 round 3, major). A temp copy of the
+# real slack-notify.sh runs as a real subprocess, and its alert-to-linear.py is a
+# wrapper that runs the REAL alert-to-linear.py main(): fingerprint, lock, dedup,
+# create. Only the Linear transport is fake, a JSON file, and urlopen is blocked.
+# Round 3's fake returned (0, "", "") for every alert, so a second fork PR was
+# never a case this suite could see.
+SINK = TMP / "sink"
+SINK.mkdir()
+SINK_NOTIFY = SINK / "slack-notify.sh"
+shutil.copy(SCRIPTS / "slack-notify.sh", SINK_NOTIFY)
+FAKE_LINEAR = TMP / "fake-linear.json"
+FAKE_LINEAR.write_text(json.dumps({"issues": [], "comments": []}))
+(SINK / "alert-to-linear.py").write_text(r"""
+import importlib.util, json, os, sys, urllib.request
+def _blocked(*a, **k):
+    raise RuntimeError("test: network blocked")
+urllib.request.urlopen = _blocked
+spec = importlib.util.spec_from_file_location("alert_to_linear_real", os.environ["PR_OWNER_TEST_SINK_REAL"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+DB = os.environ["PR_OWNER_TEST_FAKE_LINEAR"]
+mod._state_dir = lambda: os.environ["PR_OWNER_TEST_ALERT_STATE"]
+class Fake:
+    def linear_api_key(self):
+        return "test-key"
+    def graphql(self, q, v=None):
+        db = json.load(open(DB))
+        v = v or {}
+        if "teams(filter" in q:
+            out = {"teams": {"nodes": [{"id": "team-1", "key": "ASK"}]}}
+        elif "labels(first" in q:
+            out = {"team": {"labels": {"nodes": [{"id": "l1", "name": "owner:sana"}, {"id": "l2", "name": "needs-triage"}]}}}
+        elif "projects(first" in q:
+            out = {"team": {"projects": {"nodes": []}}}
+        elif "issueCreate" in q:
+            n = 9001 + len(db["issues"])
+            i = {"id": f"uuid-{n}", "identifier": f"ASK-{n}", "url": f"https://linear.app/ASK-{n}",
+                 "state": {"type": "backlog"}, "title": v["input"]["title"], "description": v["input"]["description"]}
+            db["issues"].append(i)
+            out = {"issueCreate": {"success": True, "issue": {k: i[k] for k in ("id", "identifier", "url")}}}
+        elif "commentCreate" in q:
+            db["comments"].append(v["input"])
+            out = {"commentCreate": {"success": True}}
+        elif "issue(id:" in q:
+            hit = [i for i in db["issues"] if v.get("id") in (i["id"], i["identifier"])]
+            out = {"issue": {k: hit[0][k] for k in ("id", "identifier", "url", "state")} if hit else None}
+        else:
+            raise RuntimeError("fake Linear: unexpected query " + q[:60])
+        json.dump(db, open(DB, "w"))
+        return out
+mod._load_linear = lambda: Fake()
+sys.exit(mod.main(sys.argv))
+""")
+os.environ.update({"KIPI_NOTIFY": str(SINK_NOTIFY), "PR_OWNER_TEST_SINK_REAL": str(SCRIPTS / "alert-to-linear.py"),
+                   "PR_OWNER_TEST_FAKE_LINEAR": str(FAKE_LINEAR), "PR_OWNER_TEST_ALERT_STATE": str(TMP / "alert-state"),
+                   "KIPI_INSTANCE_NAME": "kipi-system"})
+for k in ("KIPI_LINEAR_API_URL", "KIPI_ALERT_CAPTURE", "PYTEST_CURRENT_TEST", "KIPI_LINEAR_QUEUE"):
+    os.environ.pop(k, None)
+
+
+def linear_db():
+    return json.loads(FAKE_LINEAR.read_text())
+
+
+# ---------------------------------------------------------------- the review runner
+print("-- the review's output goes to a log file, never a pipe")
+# pr-review-agent.sh starts a watchdog `( sleep "$secs"; ... ) &` (line 334) that
+# inherits stdout. A caller reading the reviewer through a pipe waits for that
+# sleep, up to 40 minutes after the review is done. This stub does the same with
+# a 20s sleep, and runs as a real subprocess.
+stub_root = TMP / "stubroot"
+stub_root.mkdir()
+(stub_root / "kipi").write_text('#!/bin/bash\necho "stub $*"\n( sleep 20 ) &\nexit 0\n')
+saved = (po.ROOT, po.run, po.read_ticket)
+po.ROOT = stub_root
+po.run = lambda argv, timeout=120, env=None, cwd=None: (
+    REAL_RUN(argv, timeout, env, cwd) if len(argv) > 1 and argv[1] == str(stub_root / "kipi") else blocked_run(argv))
+po.read_ticket = loader({})
+rv_pr = pr(slug="o/fx", number=77, branch="feat/x", title="feat: x", path=str(TMP))
+t0 = time.monotonic()
+got = try_call(po.act, rv_pr, {"action": "review", "reason": "CI green, no reviewer verdict"}, {}, NOW)
+took = time.monotonic() - t0
+po.ROOT, po.run, po.read_ticket = saved
+check("the review returns while the reviewer's background sleep still holds its output (under 10s)",
+      (took < 10, f"{took:.1f}s" if took >= 10 else "fast"), (True, "fast"))
+check("... and reports the review posted", got[0] if isinstance(got, tuple) else got, True)
+rlog = po.state_path().parent / "reviews" / "o_fx-pr-77.log"
+check("... and the reviewer's output is in pr-owner's review log",
+      "stub review 77 --repo" in (rlog.read_text() if rlog.is_file() else ""), True)
+po.state_path().unlink(missing_ok=True)  # the dry run below asserts it leaves none
+
 # ---------------------------------------------------------------- apply and dry, end to end
 print("-- --apply and the dry run, end to end on a faked fleet")
 SLUG = "o/fx"
-SHA = {n: f"{n:02d}" + "ab" * 19 for n in range(1, 10)}
+SHA = {n: f"{n:02d}" + "ab" * 19 for n in range(1, 15)}
 OLD, FRESH = "2026-10-01T00:00:00Z", "2026-11-08T20:00:00Z"
 ROLL_OK = [{"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}]
 
@@ -288,15 +474,19 @@ def raw(n, branch, title="t", **kw):
 
 PRS = [raw(1, "fix/thing-ask-2540"), raw(2, "sana/ask-3036"), raw(3, "feat/ok", mergeStateStatus="CLEAN"),
        raw(4, "feat/a"), raw(5, "feat/b"), raw(6, "feat/fresh"), raw(7, "lessons/weekly-2026-10-19"),
-       raw(8, "sana/ask-142"), raw(9, "sana/ask-3036", title="fork (ASK-2540)", isCrossRepository=True)]
-PUSHED = {n: (FRESH if n == 6 else OLD) for n in SHA}
+       raw(8, "sana/ask-142"), raw(9, "sana/ask-3036", title="fork (ASK-2540)", isCrossRepository=True),
+       raw(10, "sana/ask-777"), raw(11, "feat/other-fork", isCrossRepository=True),
+       raw(12, "feat/new-fork", isCrossRepository=True, createdAt=FRESH),
+       raw(14, "feat/busy-fork", isCrossRepository=True)]
+PUSHED = {n: (FRESH if n in (6, 14) else OLD) for n in SHA}
 REVIEWER = {1: ("failure", "delta x..y: REQUEST CHANGES"), 2: ("failure", "unstated: no verdict parsed from the review"),
             3: ("success", "APPROVE"), 4: ("failure", FLOOR), 5: ("failure", FLOOR), 6: ("failure", FLOOR),
             7: ("failure", FLOOR), 8: ("failure", "delta x..y: REQUEST CHANGES"),
-            9: ("failure", "delta x..y: REQUEST CHANGES")}
+            9: ("failure", "delta x..y: REQUEST CHANGES"), 10: ("failure", "delta x..y: REQUEST CHANGES"),
+            11: ("failure", FLOOR), 12: ("failure", FLOOR), 14: ("failure", FLOOR)}
 LEDGERS = {SHA[7]: {"k1": {"status": "published"}, "k2": {"status": "published"}}, "mb7": {}, "main": {"k1": {}, "k2": {}, "k0": {}}}
 TICKETS = {"ASK-2540": ticket("ASK-2540", "backlog"), "ASK-3036": ticket("ASK-3036", "started", started_h=400),
-           "ASK-142": ticket("ASK-142", "started", started_h=200)}
+           "ASK-142": ticket("ASK-142", "started", started_h=200), "ASK-777": ticket("ASK-777", "backlog")}
 SENT: list[list[str]] = []
 
 
@@ -327,8 +517,10 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
         return 0, f"{argv[3]}: In Progress -> Backlog (exit: pr-owner)" if argv[2] == "requeue" else "", ""
     if len(argv) > 2 and argv[2] == "review":
         return 0, "", ""
+    if len(argv) > 1 and argv[1] == str(SINK_NOTIFY):
+        return REAL_RUN(argv, timeout=60)
     if len(argv) > 1 and argv[1].endswith("slack-notify.sh"):
-        return 0, "", ""
+        return 1, "", "test: refused, only the temp copy of slack-notify.sh may run"
     return 1, "", "unfaked: " + " ".join(argv)
 
 
@@ -340,7 +532,17 @@ po.slug_for = lambda root, path, targets: SLUG
 po.archived = lambda path, label: False
 po.archive_guard = lambda: guard
 po.read_ticket = loader(TICKETS)
+
+
+def fake_run_logged(argv, log, timeout=2700):
+    SENT.append([str(a) for a in argv])
+    return 0, ""
+
+
+po.run_logged = fake_run_logged
 (TMP / "fx").mkdir()
+(TMP / "worker").mkdir(exist_ok=True)
+(TMP / "worker" / "linear-worker-attempts.json").write_text(json.dumps({"ASK-777": {"capout": True, "count": 1}}))
 
 
 def writes():
@@ -386,25 +588,61 @@ check("#5 waits: the run's one review is spent", sent_for(5, "close") + sent_for
 check("#6 (pushed an hour ago) gets nothing", sent_for(6, "close") + sent_for(6, "comment"), [])
 check("#7 (lessons batch on main) is closed as superseded", len(sent_for(7, "close")), 1)
 check("#8 (--skip) gets nothing", [a for a in writes() if "8" in a[3:4] or "ASK-142" in a], [])
-check("#9 (a fork on sana/ask-3036) gets no close, comment, merge, review or Linear write, and no read of its head",
-      [a for a in SENT if "9" in a[3:4] or any(SHA[9] in x for x in a)], [])
-pages = [a for a in writes() if a[1].endswith("slack-notify.sh")]
-check("#9 gets exactly one alert, naming it, for the alert lane",
-      [("PR #9" in a[2], "outside the fleet" in a[2]) for a in pages], [(True, True)])
-check("the alert is recorded", "o/fx#9" in json.loads(po.state_path().read_text()).get("outside", {}), True)
+check("#9 (a fork on sana/ask-3036) gets no close, comment, merge, review or Linear write; the only read is its commits",
+      [a for a in SENT if ("9" in a[3:4] or any(SHA[9] in x for x in a)) and a[:3] != ["gh", "pr", "view"]], [])
+check("... and that read asks for commits only", [a[-1] for a in SENT if a[:4] == ["gh", "pr", "view", "9"]], ["commits"])
 st = json.loads(po.state_path().read_text())
+issues = linear_db()["issues"]
+import re as _re
+names = lambda i: _re.findall(r"PR #(\d+) \(", i["description"])
+check("each old fork gets its own Linear ticket from the real sink, naming it (round 3 major)",
+      sorted(names(i)[0] for i in issues if names(i)), ["11", "9"])
+by_pr = {names(i)[0]: i["identifier"] for i in issues if names(i)}
+check("pr-owner records the ticket the sink named, per PR",
+      {k: (st.get("outside") or {}).get(f"o/fx#{k}", {}).get("ticket") for k in ("9", "11")},
+      {"9": by_pr.get("9", "none"), "11": by_pr.get("11", "none")})
+check("#12, a fork opened an hour ago, gets no alert and no record (round 3 minor)",
+      ("o/fx#12" in (st.get("outside") or {}), [i for i in issues if "PR #12 (" in i["description"]]), (False, []))
+check("#14, an old fork pushed an hour ago, gets no alert (the quiet gate reads its commits)",
+      ("o/fx#14" in (st.get("outside") or {}), [i for i in issues if "PR #14 (" in i["description"]]), (False, []))
+check("#10 (cap-ladder owns ASK-777) gets no write at all",
+      [a for a in writes() if "10" in a[3:4] or "ASK-777" in a], [])
 check("the strike on #2 is recorded at its head", st["strikes"]["o/fx#2"]["head"], SHA[2])
 check("the review on #4 is recorded at its head", st["reviews"]["o/fx#4"]["head"], SHA[4])
 
 SENT.clear()
-PRS[:] = [p for p in PRS if p["number"] in (2, 4, 9)]
+PRS[:] = [p for p in PRS if p["number"] in (2, 4, 9, 11)]
 os.environ["KIPI_PR_OWNER_NOW"] = str(NOW + 49 * H)
 po.main(["--apply"])
 check("49h later, #2 still red at the same head is closed", len(sent_for(2, "close")), 1)
-check("49h later, #9's alert is not filed a second time", [a for a in writes() if a[1].endswith("slack-notify.sh")], [])
+check("49h later, neither fork's alert is filed a second time",
+      ([a for a in writes() if a[1].endswith("slack-notify.sh")], len(linear_db()["issues"]), linear_db()["comments"]),
+      ([], 2, []))
 check("... and its ticket gets the resume note", any(a[3] == "ASK-3036" for a in writes() if a[1].endswith("linear-sync.py")), True)
 check("49h later, #4 reviewed at this head with no verdict is closed, not reviewed again",
       (len(sent_for(4, "close")), len([a for a in writes() if len(a) > 2 and a[2] == "review"])), (1, 0))
+
+print("-- the sink's exit 0 is not a record; the ticket it names is")
+real_sink = importlib.util.spec_from_file_location("alert_sink_real", SCRIPTS / "alert-to-linear.py")
+a2l = importlib.util.module_from_spec(real_sink)
+real_sink.loader.exec_module(a2l)
+three = [pr(slug=sl, number=n, url=f"https://github.com/{sl}/pull/{n}", provenance="fork")
+         for sl, n in (("assafkip/kipi-system", 526), ("assafkip/brag", 2), ("assafkip/openwitness", 41),
+                       ("assafkip/kipi-system", 2))]
+fps = [try_call(lambda x: a2l.fingerprint(po.outside_alert(x, "head provenance is fork")), x) for x in three]
+check("four fork PRs, two sharing #2 in different repos -> four fingerprints in the real normalizer",
+      len(set(fps)), 4)
+check("one PR said twice -> one fingerprint (a retry repeats on its own ticket)",
+      try_call(lambda: a2l.fingerprint(po.outside_alert(three[1], "head provenance is fork"))), fps[1])
+cap_file = TMP / "capture.txt"
+os.environ["KIPI_ALERT_CAPTURE"] = str(cap_file)
+lone = pr(slug="o/fx", number=13, url="https://github.com/o/fx/pull/13", provenance="fork", head="13" * 20)
+lone_state: dict = {}
+got = try_call(po.act, lone, {"action": "outside", "reason": "head provenance is fork"}, lone_state, NOW)
+os.environ.pop("KIPI_ALERT_CAPTURE", None)
+check("a sink exit 0 that names no ticket (the real capture hatch) -> not ok", (got[0] if isinstance(got, tuple) else got), False)
+check("... and not recorded, so the next hourly run retries", "o/fx#13" in (lone_state.get("outside") or {}), False)
+check("... and the real sink did take the message", "PR #13 (" in (cap_file.read_text() if cap_file.is_file() else ""), True)
 
 # ---------------------------------------------------------------- the repo set
 print("-- the repo set is the dispatcher's fleet_candidates")
