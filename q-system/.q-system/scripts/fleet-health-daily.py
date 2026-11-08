@@ -1737,6 +1737,56 @@ def detect_gates_red(_ctx) -> list:
     return gates_red_findings()
 
 
+def liveness_debt_findings(table_path=None, today=None) -> list:
+    """Every ticket_states debt past its expiry, one finding each (RULE-2026-11-07-B, ASK-3953).
+
+    THE DATES HAVE TO HAVE A READER WITH A REAL CLOCK. test-fleet-liveness.py
+    checks the table in CI, but only that each debt is bounded (expires at most 30
+    days after since). It never compares to today, on purpose: a PR gate that
+    reads the wall clock turns every unrelated PR red the morning a debt expires,
+    which is the calendar bomb PR #465's round 2 named. So the date check lives
+    here, in the daily job, and an expired debt becomes one Linear issue naming the
+    state and the ticket that promised its exit (RULE-2026-11-06-A: a debt with an
+    expiry nothing reads is prose again).
+
+    An unreadable table is a finding, never zero findings.
+    """
+    path = Path(table_path) if table_path else REPO_ROOT / "q-system" / ".q-system" / "terminal-states.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        return [{"subject": "liveness-debt-blind",
+                 "title": "Could not read the ticket_states exit table",
+                 "body": (f"`{path}` did not parse ({exc.__class__.__name__}), so no expired "
+                          "liveness debt can be seen today.\n\n## Action\nRun "
+                          "`python3 q-system/.q-system/scripts/test/test-fleet-liveness.py`.")}]
+    today = today or datetime.now(timezone.utc).date()
+    out = []
+    rows = ((data.get("ticket_states") or {}).get("rows") or {})
+    for rid in sorted(rows):
+        for e in rows[rid].get("exits") or []:
+            if e.get("kind") != "debt":
+                continue
+            try:
+                expires = datetime.strptime(str(e.get("expires")), "%Y-%m-%d").date()
+            except ValueError:
+                continue  # format is test-fleet-liveness.py's to enforce, in CI
+            if expires < today:
+                out.append({
+                    "subject": f"liveness-debt-{rid}-{e.get('ticket')}",
+                    "title": (f"Liveness debt expired: board state {rid} still has no by-age exit "
+                              f"({e.get('ticket')}, due {e.get('expires')})"),
+                    "body": (f"`terminal-states.json` ticket_states row `{rid}` promised a by-age exit "
+                             f"through {e.get('ticket')} by {e.get('expires')}: {e.get('what', '')}\n\n"
+                             "## Action\nLand that ticket and change the row's exit to a by-age "
+                             "consumer, or re-plan it with a new bounded debt and the reason.")})
+    return out
+
+
+def detect_liveness_debt(_ctx) -> list:
+    return liveness_debt_findings()
+
+
 def detect_promoted_audit(_ctx) -> list:
     """RUN the promoted-rows audit daily; file a finding only when it cannot.
 
@@ -2079,6 +2129,13 @@ DETECTORS = [
         "id": "gates-red",
         "description": "an open gates-red GitHub issue: the nightly gates.yml run went red",
         "detect": detect_gates_red,
+        "action": "file_issue",
+        "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
+    },
+    {
+        "id": "liveness-debt-expired",
+        "description": "a ticket_states debt past its expiry: a board state still has no by-age exit",
+        "detect": detect_liveness_debt,
         "action": "file_issue",
         "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
     },

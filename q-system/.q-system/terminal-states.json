@@ -1013,5 +1013,240 @@
         "consumer": "Transient: the walk reaches it as older PRs leave; the backstop past the age bar."
       }
     }
+  },
+  "ticket_states": {
+    "_doc": [
+      "RULE-2026-11-07-B. One row per state a TICKET or PR can sit in on the board, with a max age",
+      "and the exits that take it out. Read by test-fleet-liveness.py (coverage and bounds, in CI)",
+      "and by fleet-health-daily.py detector liveness-debt-expired (the dates, daily, with a real clock).",
+      "",
+      "An exit is a consumer or a debt. A consumer names a file, a literal marker the test finds in",
+      "it, and the test that proves it fires. `fires: by-age` means the code takes the item out by",
+      "age; `by-order` means it drains the state in some order with no age guarantee. A state is",
+      "live only if it has a by-age consumer or an open debt. A debt names the ticket that builds",
+      "the by-age exit, and expires at most 30 days after `since`: a debt is a dated promise, never",
+      "a permanent excuse (P5 in stuck-work-synthesis-2026-11-07.md: a written reason in place of",
+      "a coded exit is how every half-port passed the last check).",
+      "",
+      "`covers` lists the `states` rows (the per-site registry above) this board state holds",
+      "tickets for. Every `states` row of a ticket-holding class must be covered, or listed in",
+      "`not_a_state` with its reason, so a new stop added to a driver fails CI until it has a row."
+    ],
+    "not_a_state": {
+      "dispatch-daily-cap": "A rate, not a state: no ticket is held by it, the next budget day takes the same picks."
+    },
+    "rows": {
+      "needs-triage-alert": {
+        "max_age_days": 14,
+        "covers": [
+          "fleet-alert-not-a-spec"
+        ],
+        "what": "An alert ticket labelled needs-triage, waiting for the triage lane.",
+        "exits": [
+          {
+            "kind": "consumer",
+            "fires": "by-order",
+            "path": "q-system/.q-system/scripts/linear-alert-triage.py",
+            "marker": "def lane_pool",
+            "test": "q-system/.q-system/scripts/test/test_linear_alert_triage.py",
+            "what": "Decides promote or close, oldest first, a fixed number a night (D1)."
+          },
+          {
+            "kind": "debt",
+            "ticket": "ASK-3955",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E2: unpromoted at 14 days parks stale-alert, closes at 30 days."
+          }
+        ]
+      },
+      "no-project": {
+        "max_age_days": 1,
+        "covers": [
+          "out-of-repo",
+          "not-owner-sana"
+        ],
+        "what": "A ready-shaped ticket with no Linear project or no owner label, so no worker owns it.",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3959",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E4: the router stamps a project at creation; unroutable parks no-project."
+          }
+        ]
+      },
+      "no-checkout": {
+        "max_age_days": 1,
+        "covers": [
+          "out-of-repo"
+        ],
+        "what": "A ticket whose project names a repo with no local checkout the dispatcher can enter.",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3958",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E7: auto-clone a registry row with a pinned remote; else park dispatch-off."
+          }
+        ]
+      },
+      "repo-refused": {
+        "max_age_days": 1,
+        "covers": [],
+        "what": "A ticket in a repo whose latest preflight refuses it (the 240 of 11-07).",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3957",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E5: the worker supplies the skeleton guards a tree lacks."
+          },
+          {
+            "kind": "debt",
+            "ticket": "ASK-3958",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E6: the 2nd refusal of one check parks the repo's tickets repo-refused."
+          }
+        ]
+      },
+      "blocked-capability": {
+        "max_age_days": 14,
+        "covers": [
+          "blocked-capability"
+        ],
+        "what": "A ticket labelled blocked:capability.",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3960",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E8: the nightly probe re-test clears the label when the probe passes."
+          }
+        ]
+      },
+      "attempts-exhausted": {
+        "max_age_days": 1,
+        "covers": [
+          "attempts-cap-stuck"
+        ],
+        "what": "A ticket whose 3 worker attempts are spent.",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3824",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E9: Fable RCA, one Opus attempt, then park attempts-exhausted."
+          }
+        ]
+      },
+      "ready-over-cap": {
+        "max_age_days": 30,
+        "covers": [],
+        "what": "A ready ticket behind more than 2 weeks of merges (215 ready at about 2.4 merges a day).",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3950",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "NEW-6 parks the overflow icebox, paired with ASK-3955's 30-day close (D13)."
+          }
+        ]
+      },
+      "started-dormant": {
+        "max_age_days": 1,
+        "covers": [
+          "state-not-open"
+        ],
+        "what": "A started ticket nobody is working: no live claim, no open PR, started over 24 hours ago.",
+        "exits": [
+          {
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/linear-sync.py",
+            "marker": "def started_hold_reason",
+            "test": "q-system/.q-system/scripts/test/test-linear-requeue.py",
+            "what": "ready() offers it again once started_hold_reason is empty (ASK-3825)."
+          }
+        ]
+      },
+      "owner-assaf": {
+        "max_age_days": 1,
+        "covers": [
+          "owner-assaf"
+        ],
+        "what": "A ticket labelled owner:assaf; the founder has said he will not act on these.",
+        "exits": [
+          {
+            "kind": "debt",
+            "ticket": "ASK-3961",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E10: relabel owner:sana unless it asks a spend, scope or reach question."
+          }
+        ]
+      },
+      "needs-scope": {
+        "max_age_days": 14,
+        "covers": [
+          "needs-scope",
+          "no-dor"
+        ],
+        "what": "A ticket with no Definition of Ready, or one the worker refused as unexecutable.",
+        "exits": [
+          {
+            "kind": "consumer",
+            "fires": "by-order",
+            "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
+            "marker": "def fetch_draftable",
+            "test": "q-system/.q-system/scripts/test/test-linear-dor-drafter-redrive.sh",
+            "what": "The nightly drafter writes or rewrites the DoR, up to 3 redrafts."
+          },
+          {
+            "kind": "debt",
+            "ticket": "ASK-3955",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E2: a ticket at the redraft cap closes, reversibly, at 30 days."
+          }
+        ]
+      },
+      "open-pr": {
+        "max_age_days": 3,
+        "covers": [
+          "drift-cap",
+          "conflict-cap",
+          "tree-position-refused",
+          "converge-no-progress-stall",
+          "converge-round-cap-out",
+          "dispatch-branch-target-refused"
+        ],
+        "what": "An open fleet PR held by a cap, a refused branch, or a stalled converge.",
+        "exits": [
+          {
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/linear-worker.sh",
+            "marker": "wip_release() {",
+            "test": "q-system/.q-system/scripts/test/test-worker-wip-liveness.sh",
+            "what": "At the WIP ceiling each tick releases one PR no round can move (RULE-2026-11-07-A)."
+          },
+          {
+            "kind": "debt",
+            "ticket": "ASK-3962",
+            "since": "2026-11-08",
+            "expires": "2026-12-08",
+            "what": "E11: the age backstop covers every open PR, below the ceiling too."
+          }
+        ]
+      }
+    }
   }
 }
