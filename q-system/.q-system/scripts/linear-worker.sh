@@ -1118,6 +1118,13 @@ def ticket_is_live(i):
 
 def refusal(i):
     # (kind, why) for the run log and the release. It never decides: ready() does.
+    # LIVE FIRST (ASK-4057, D34). A started ticket someone may be on right now
+    # waits, whatever else is missing from it. 2026-11-08 21:58:58Z: with this check
+    # last, PR #664 was closed as no-dor while ASK-4013 was In Progress with a lane
+    # on it, two minutes before its DoR was written. A missing DoR, project or label
+    # on a live ticket is fixed on the ticket; it is never a reason to close the PR.
+    if i["state"]["type"] == "started" and ticket_is_live(i):
+        return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
         if held in labels:
@@ -1131,8 +1138,6 @@ def refusal(i):
     if "Definition of Ready" not in (i.get("description") or ""):
         return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
-        if ticket_is_live(i):
-            return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
         return hold("ticket-held", "ticket held: " + (started_hold(i) or "not released"))
     name = "ticket is " + (i["state"].get("name") or i["state"]["type"])
     if i["state"]["type"] in ("completed", "canceled"):

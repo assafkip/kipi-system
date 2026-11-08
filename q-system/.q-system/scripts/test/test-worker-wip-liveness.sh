@@ -60,12 +60,12 @@ def ago(hours):
     return (NOW - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
 
 
-def issue(ident, state, started_hours=None, alert=False):
+def issue(ident, state, started_hours=None, alert=False, dor=True, project="kipi-system"):
     return {"id": "uuid-" + ident, "identifier": ident, "title": "fixture " + ident,
-            "description": "## Definition of Ready\nOutcome: x" + (ALERT if alert else ""),
+            "description": ("## Definition of Ready\nOutcome: x" if dor else "Outcome: x") + (ALERT if alert else ""),
             "state": {"name": NAMES[state], "type": state},
             "startedAt": ago(started_hours) if started_hours is not None else None,
-            "project": {"name": "kipi-system"}, "team": {"id": "team-fixture"},
+            "project": {"name": project} if project else None, "team": {"id": "team-fixture"},
             "labels": {"nodes": [{"id": "lab-owner", "name": "owner:sana"}]}}
 
 
@@ -83,6 +83,9 @@ TICKETS.append(issue("ASK-3574", "completed", MONTH))             # PR 584
 for n in (3823, 3821, 3827, 3830, 3829):                          # the 5 lanes
     TICKETS.append(issue("ASK-%d" % n, "backlog"))
 TICKETS.append(issue("ASK-971", "started", 1))                    # a LIVE lane
+# L15 (ASK-4057): live tickets a lane is on, one with no DoR, one with no project.
+TICKETS.append(issue("ASK-981", "started", 1, dor=False))
+TICKETS.append(issue("ASK-982", "started", 1, project=None))
 for n in (901, 902, 903, 904, 905, 961, 962, 963, 964, 965):
     TICKETS.append(issue("ASK-%d" % n, "started", MONTH))
 BOARD = {i["identifier"]: i for i in TICKETS}
@@ -604,6 +607,7 @@ run_dispatch() {  # run_dispatch <dispatch-script>
   ( cd "$DREPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \
       KIPI_REPO="$DREPO" KIPI_NOTIFY="$DROOT/notify.sh" \
       KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
+      KIPI_DISPATCH_MEM_READING="free=90 procs=0" \
       bash "$1" >/dev/null 2>&1 )
 }
 make_kipi release; run_dispatch "$DISPATCH"
@@ -629,6 +633,42 @@ else
   grep -q -- '--release-only' "$DROOT/kipi-calls.log" \
     && bad "mutant L13c survived" "the apply pass ran with its block cut out" \
     || ok "mutant killed: without the dispatcher block the release is never applied live, so L13 can go red"
+fi
+
+# ============================================================================
+# L15. A LIVE TICKET'S PR IS NEVER A RELEASE TARGET (ASK-4057, D34)
+# ============================================================================
+# 2026-11-08 21:58:58Z: the release closed PR #664 as kind no-dor while ASK-4013
+# was In Progress with a lane on it, because refusal() read the DoR and project
+# before it asked whether the ticket was live. Two live tickets, older than every
+# PR in today's set: one with no DoR, one with no project. Neither is released;
+# the tick passes over both as ticket-live and releases the oldest real one.
+prs "$WORK/live.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "982:sana/ask-982:2026-10-02T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/live.prs" "$WORK/l15.out" --limit 1
+REL15="$(releases "$WORK/l15.out")"
+[ "$REL15" = "[dry] would release PR #543 (cap);" ] \
+  && ok "L15: live tickets with no DoR or no project are passed over; the release is the oldest real one, PR #543 (cap)" \
+  || bad "L15: a live ticket's PR is never a release target" "releases: ${REL15:-none}. Output: $(flat "$WORK/l15.out")"
+grep -q '#981 (ASK-981): ticket held' "$WORK/l15.out" && grep -q '#982 (ASK-982): ticket held' "$WORK/l15.out" \
+  && ok "L15b: both live PRs are named as passed over, ticket held" \
+  || bad "L15b: both live PRs are named as passed over" "$(grep 'passed over' "$WORK/l15.out" | cut -c1-600)"
+python3 - "$WORKER" "$WORK/worker-livelast.sh" <<'MUT'
+import sys
+s = open(sys.argv[1]).read()
+a = '    if i["state"]["type"] == "started" and ticket_is_live(i):\n        return hold("ticket-live",'
+if s.count(a) != 1:
+    sys.exit("anchor")
+k = s.index(a)
+end = s.index("\n", s.index("\n", k) + 1) + 1
+open(sys.argv[2], "w").write(s[:k] + s[end:])
+MUT
+if [ ! -s "$WORK/worker-livelast.sh" ]; then
+  bad "mutant L15: anchor" "refusal() has no live-first check to cut"
+else
+  run_worker "$WORK/worker-livelast.sh" "$WORK/live.prs" "$WORK/l15m.out" --limit 1
+  [ "$(releases "$WORK/l15m.out")" = "[dry] would release PR #543 (cap);" ] \
+    && bad "mutant L15 survived" "with the live-first check cut, the live no-DoR PR was still passed over" \
+    || ok "mutant killed: without the live-first check the live no-DoR PR #981 is released, so L15 can go red"
 fi
 
 # ============================================================================
