@@ -287,12 +287,15 @@ def mark_read_incomplete(issue: dict) -> bool:
 
 
 def is_pending(issue: dict) -> bool:
-    """Carries a DoR, is open and unheld, and still cannot be picked up.
+    """Open, unheld, and cannot be picked up for a reason a ROUTER can fix.
 
-    The population `ready()` refuses for a reason a ROUTER can fix: a missing
-    project or a missing owner label. An issue whose project simply names no
-    checkout is the sibling check's population
-    (`linear-route-reachability-check.py`), not this one.
+    Two populations. A ticket WITH a DoR that lacks a project or the owner label
+    (the original ASK-1887 class). And, since ASK-3959, ANY ticket with no project
+    at all, DoR or not, fleet alert or not: measured 2026-11-08, 351 open owner:sana
+    tickets had no project and only 13 carried a DoR, because agents file through
+    the Linear MCP and no fleet chokepoint stamps them. The drafter skips a ticket
+    with no project and the alert lane refuses one, so without a project here it
+    has no consumer at all.
     """
     labels = labels_of(issue)
     if FOUNDER_LABEL in labels:
@@ -301,11 +304,9 @@ def is_pending(issue: dict) -> bool:
         return False
     if (issue.get("state") or {}).get("type") not in OPEN_STATE_TYPES:
         return False
-    if "Definition of Ready" not in (issue.get("description") or ""):
-        return False
-    if is_fleet_alert(issue):
-        return False
-    return not project_of(issue) or OWNER_LABEL not in labels
+    if "Definition of Ready" in (issue.get("description") or "") and not is_fleet_alert(issue):
+        return not project_of(issue) or OWNER_LABEL not in labels
+    return not project_of(issue)
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +464,66 @@ def route_paths(paths: list, facts: RoutingFacts) -> Decision:
 # the plan
 # ---------------------------------------------------------------------------
 
+_TITLE_LABEL = re.compile(r"^\[([^\]]+)\]")
+
+
+def text_file_paths(description: str) -> list:
+    """Backticked path tokens anywhere in a ticket with NO DoR (ASK-3959).
+
+    Wider than dor_file_paths, which stays bounded to **Files:** for a DoR
+    ticket. A ticket with no DoR has no Check or Blast radius fields whose paths
+    must not count, and route_paths still refuses when two paths disagree.
+    """
+    return [t.strip() for t in _BACKTICKED.findall(description or "") if _looks_like_a_path(t)]
+
+
+def title_project(issue: dict, facts: RoutingFacts):
+    """The project the filer's own `[label]` title prefix names, or None.
+
+    Matched to a board project name, or to the basename of that project's
+    checkout (alert-to-linear.py labels by checkout directory). Never a guess:
+    an unknown label is None.
+    """
+    m = _TITLE_LABEL.match((issue.get("title") or "").strip())
+    if not m:
+        return None
+    label = m.group(1).strip().lower()
+    for proj, row in (facts.rows_by_project or {}).items():
+        base = os.path.basename(os.path.normpath(_expand(row.get("path") or ""))).lower()
+        if label in (proj.lower(), base):
+            return proj
+    skel = os.path.basename(os.path.normpath(_expand(facts.skeleton_path or ""))).lower()
+    if facts.skeleton_project and label in (facts.skeleton_project.lower(), skel):
+        return facts.skeleton_project
+    return None
+
+
+def evidence_decision(issue: dict, facts: RoutingFacts) -> Decision:
+    """The route for one pending issue, from the evidence its own text carries."""
+    desc = issue.get("description") or ""
+    if "Definition of Ready" in desc and not is_fleet_alert(issue):
+        return route_paths(dor_file_paths(desc), facts)
+    tp = title_project(issue, facts)
+    # A fleet alert's body is a raw alert line that may name any repo's files,
+    # so it routes on the filer's own label only.
+    d = Decision(None, None, "a fleet alert routes on its title label only") if is_fleet_alert(issue) \
+        else route_paths(text_file_paths(desc), facts)
+    if tp and d.project and tp != d.project:
+        return Decision(None, None, f"the title label names {tp} and the text's paths name {d.project}")
+    if d.project:
+        return Decision(d.project, d.rule, "no DoR; " + d.reason)
+    if tp:
+        return Decision(tp, "title", f"no DoR; the title's own label names {tp}")
+    return d
+
+
 def plan_actions(issues: list, facts: RoutingFacts) -> list:
     """One row per pending issue: what a run WOULD write, and why. Pure."""
     rows = []
     for issue in issues:
         if not is_pending(issue):
             continue
-        decision = route_paths(dor_file_paths(issue.get("description")), facts)
+        decision = evidence_decision(issue, facts)
         current = project_of(issue)
         labels = labels_of(issue)
         set_project = decision.project if (not current and decision.project) else None
@@ -487,7 +541,12 @@ def plan_actions(issues: list, facts: RoutingFacts) -> list:
             "project": current,
             "set_project": set_project,
             "add_label": add_label,
+            # The route-unknown comment stays for the DoR class only. The no-DoR
+            # class (ASK-3959) is hundreds of tickets, and a comment nobody reads
+            # is not a consumer; what stays unrouted goes to the model decision.
             "mark_unroutable": bool(not will_have_project
+                                    and "Definition of Ready" in (issue.get("description") or "")
+                                    and not is_fleet_alert(issue)
                                     and not is_marked_unroutable(issue)),
             "mark_unknown": bool(not will_have_project
                                  and mark_read_incomplete(issue)),
@@ -636,7 +695,7 @@ def render(m: dict, rows: list) -> str:
     if not m["registry_ok"]:
         return ("linear-route: UNKNOWN -- instance-registry.json or kipi-update.sh "
                 "could not be read. Nothing classified; this is not a pass.")
-    lines = [f"linear-route: {m['pending']} pending (DoR, unheld, not pickable); "
+    lines = [f"linear-route: {m['pending']} pending (unheld, not pickable: no project, or a DoR with no owner); "
              f"{m['routable']} routable, {m['unroutable']} unroutable, "
              f"{m['with_work']} with a write to make."]
     if m["by_rule"]:
