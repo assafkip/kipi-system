@@ -84,7 +84,7 @@ EOF
 }
 
 usage() {
-  echo "usage: install-plist.sh <label> [--no-load | --render-only <output-path>] | --pinned | --all | --missing" >&2
+  echo "usage: install-plist.sh <label> [--render-only <output-path>] | --pinned | --all | --missing" >&2
   echo "labels available (from $(templates_source)):" >&2
   committed_templates | while IFS= read -r p; do
     echo "  $(basename "$p" .plist)" >&2
@@ -125,9 +125,12 @@ MODE="$1"
 # first cut was its own loop, so it skipped every guard the walk carries: a retired,
 # skeleton-only or disabled label was re-armed, and in a repo the table does not
 # apply to it pinned nothing and reported success. Inside the walk it inherits each
-# guard from the one copy. Its own two rules: the table must pin something HERE, and
-# a job that is installed but not loaded keeps its new plist and its tree but is not
-# loaded. Someone stopped it, and a migration is not the place to overrule that.
+# guard from the one copy. Its own rule: the table must pin something HERE.
+# A job that is installed, not loaded and NOT paused is reinstalled and loaded like
+# any other. By fleet-health's contract that state is a dark job, not a decision: a
+# stop someone meant is recorded in launchd intent or the pause ledger, which the
+# disabled guard above honours (PR #641 round 1: treating it as a stop made one
+# transient bootstrap failure permanent, reported as reinstalled).
 if [ "$MODE" = "--all" ] || [ "$MODE" = "--missing" ] || [ "$MODE" = "--pinned" ]; then
   # REFUSE FROM A WORKTREE. Measured the hard way 2026-08-14: running --all from a
   # git worktree rewrote every live job to point at that worktree, including the
@@ -243,11 +246,15 @@ PY
       _n_skipped=$((_n_skipped + 1))
       continue
     fi
-    if [ "$MODE" = "--missing" ] && [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
-      _n_present=$((_n_present + 1))
-      continue
-    fi
     if [ "$MODE" = "--missing" ] || [ "$MODE" = "--pinned" ]; then
+      # Kept as its own nested if: test-updater-arms-new-jobs.py mutates this exact
+      # line (PR #641 round 1), so it must read the same as it always has.
+      if [ "$MODE" = "--missing" ]; then
+        if [ -e "$HOME/Library/LaunchAgents/$_label.plist" ]; then
+          _n_present=$((_n_present + 1))
+          continue
+        fi
+      fi
       # A MISSING PLIST IS NOT THE SAME AS A NEW JOB, and reading it that way is
       # how this mode resurrects work the founder deliberately stopped. The fleet
       # retires a job by renaming its plist to `<label>.plist.retired-<date>` and
@@ -270,15 +277,7 @@ PY
         continue
       fi
     fi
-    # INSTALLED BUT NOT LOADED (--pinned only). The plist is rewritten and the tree
-    # created, so a later load runs from the pinned checkout, but nothing is loaded.
-    _load=""
-    if [ "$MODE" = "--pinned" ] && [ -e "$HOME/Library/LaunchAgents/$_label.plist" ] \
-        && ! "${KIPI_LAUNCHCTL:-launchctl}" print "gui/$(id -u)/$_label" >/dev/null 2>&1; then
-      _load="--no-load"
-      echo "  installed but not loaded: $_label is re-rendered and left unloaded"
-    fi
-    if bash "$0" "$_label" $_load; then
+    if bash "$0" "$_label"; then
       _n_installed=$((_n_installed + 1))
     else
       rc=1
@@ -330,13 +329,6 @@ if [ -z "$TEMPLATE" ] || [ ! -f "$TEMPLATE" ]; then
   exit 2
 fi
 
-# --no-load: everything an install does (the job's tree, the staged and checked plist)
-# except bootout and bootstrap. --pinned uses it for a job someone stopped (ASK-3969).
-NO_LOAD=""
-if [ "${1:-}" = "--no-load" ]; then
-  NO_LOAD=1
-  shift
-fi
 RENDER_ONLY=""
 if [ "${1:-}" = "--render-only" ]; then
   if [ -z "${2:-}" ]; then
@@ -504,10 +496,6 @@ if command -v plutil >/dev/null 2>&1; then
   plutil -lint "$STAGED" >/dev/null
 fi
 mv "$STAGED" "$PLIST"
-if [ -n "$NO_LOAD" ]; then
-  echo "installed $LABEL -> $PLIST, NOT loaded (--no-load; runs from $RENDER_REPO when loaded)"
-  exit 0
-fi
 
 UID_="$(id -u)"
 # KIPI_LAUNCHCTL is a test seam only (test_lessons_daily_label.py runs --all in a

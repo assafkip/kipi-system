@@ -341,16 +341,17 @@ check("the installed job starts the wrapper in its own tree",
       ["/bin/bash", str(jt / WRAPPER_REL)])
 
 # --- --pinned carries the walk's guards (ASK-3969, PR #632 round 2) ----------------------
-print("-- --pinned: an unloaded job stays unloaded, a disabled one is skipped, another repo refuses")
+print("-- --pinned: a dark job is re-armed, a paused one is skipped, another repo refuses")
 def bootstraps(log: Path) -> list[str]:
     return [l for l in (log.read_text().splitlines() if log.exists() else []) if l.startswith("bootstrap")]
+# DARK, NOT STOPPED (PR #641 round 1): installed, not loaded and NOT paused is what
+# fleet-health calls silent death. One failed bootstrap must not make it permanent.
 lclog.unlink(missing_ok=True)
 installed.write_text(installed.read_text().replace("<dict>", "<dict>\n  <!-- an old render -->", 1))
 p = run(["bash", str(fx_installer), "--pinned"], env=dict(ienv, FX_UNLOADED="com.kipi.fxjob"))
-check("unloaded: --pinned exits 0", p.returncode, 0 if p.returncode == 0 else f"{p.returncode}: {p.stderr.strip()[-200:]}")
-check("unloaded: it is never bootstrapped", bootstraps(lclog), [])
-check("unloaded: its plist is re-rendered", "an old render" in installed.read_text(), False)
-check("unloaded: the run says it was left unloaded", "left unloaded" in p.stdout, True)
+check("dark: --pinned exits 0", p.returncode, 0 if p.returncode == 0 else f"{p.returncode}: {p.stderr.strip()[-200:]}")
+check("dark: it is re-rendered", "an old render" in installed.read_text(), False)
+check("dark: and loaded again", len(bootstraps(lclog)), 1)
 paused = fx / "home" / ".config/kipi/launchd-paused.txt"
 paused.parent.mkdir(parents=True, exist_ok=True)
 paused.write_text("com.kipi.fxjob  # stopped on purpose\n")
