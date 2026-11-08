@@ -126,12 +126,16 @@ esac
 [ -n "$(capout_of ASK-9871 capout_at)" ] \
   && ok "the record is timestamped" || bad "capout_at is empty"
 
-# The founder-facing half. The Slack line is the ONE alarm for this fact, and a
-# park a human cannot clear is a permanent park -- so the page has to carry the
-# clearing command, not just the news.
-grep -q "clear-capout" "$PAGES" \
-  && ok "the cap-out page names the command that clears the park" \
-  || bad "the page does not tell the founder how to un-park it: $(cat "$PAGES")"
+# THE HAND-OFF, NOT A PAGE (ASK-3824). The page went into a 1054-deep alert lane
+# asking a person to clear the record; cap-ladder.py now reads the record and
+# clears it itself. So a RECORDED cap-out pages nobody, and the run names the
+# consumer that takes it next.
+grep -q "ASK-9871" "$PAGES" \
+  && bad "a recorded cap-out still paged, and the ladder owns it now: $(cat "$PAGES")" \
+  || ok "a recorded cap-out pages nobody"
+grep -q "cap-ladder.py" "$WORK/conv.out" \
+  && ok "the cap-out names cap-ladder.py as the next step" \
+  || bad "the cap-out does not name what takes it next: $(tail -3 "$WORK/conv.out")"
 
 # THE PAIRED NEGATIVE. Without it, "always record a cap-out" passes every assert
 # above and parks every converged issue on the board.
@@ -213,8 +217,8 @@ PICK="$(select_review | cut -f2)"
 [ "$PICK" = "ASK-8711" ] \
   && ok "review-redrive skips the capped issue and still offers its un-capped twin" \
   || bad "review-redrive offered '$PICK', want ASK-8711 (empty = a wall, ASK-8710 = no gate)"
-grep -q "ASK-8710" "$WORK/rr.err" && grep -q "clear-capout" "$WORK/rr.err" \
-  && ok "review-redrive says WHY it skipped and how to un-park it" \
+grep -q "ASK-8710" "$WORK/rr.err" && grep -q "cap-ladder.py" "$WORK/rr.err" \
+  && ok "review-redrive says WHY it skipped and what takes it next" \
   || bad "review-redrive skipped silently: $(cat "$WORK/rr.err")"
 
 # --- ci-redrive: the same pair, red on CI rather than on the verdict slot -----
@@ -227,8 +231,8 @@ PICK="$(select_ci | cut -f1)"
 [ "$PICK" = "ASK-8713" ] \
   && ok "ci-redrive skips the capped issue and still offers its un-capped twin" \
   || bad "ci-redrive offered '$PICK', want ASK-8713 -- this is the path that re-entered ASK-830"
-grep -q "ASK-8712" "$WORK/ci.err" && grep -q "clear-capout" "$WORK/ci.err" \
-  && ok "ci-redrive says WHY it skipped and how to un-park it" \
+grep -q "ASK-8712" "$WORK/ci.err" && grep -q "cap-ladder.py" "$WORK/ci.err" \
+  && ok "ci-redrive says WHY it skipped and what takes it next" \
   || bad "ci-redrive skipped silently: $(cat "$WORK/ci.err")"
 
 echo "== the atomic claim refuses a cap-out that landed after the offer =="
@@ -358,8 +362,8 @@ python3 "$LEDGER" "$ATTEMPTS" record-capout ASK-8730 \
 OUT1="$(select_ci)"; cp "$WORK/ci.err" "$WORK/cycle1.err"
 OUT2="$(select_ci)"; cp "$WORK/ci.err" "$WORK/cycle2.err"
 [ "$(PRINTS_OF ASK-8730 "$WORK/cycle1.err")" = "1" ] \
-  && grep -q "clear-capout" "$WORK/cycle1.err" \
-  && ok "the first cycle over a new cap-out announces it, with the clearing command" \
+  && grep -q "cap-ladder.py" "$WORK/cycle1.err" \
+  && ok "the first cycle over a new cap-out announces it, naming cap-ladder.py" \
   || bad "cycle 1 did not announce ASK-8730 once: $(cat "$WORK/cycle1.err")"
 [ "$(PRINTS_OF ASK-8730 "$WORK/cycle2.err")" = "0" ] \
   && ok "a second cycle over the SAME cap-out emits nothing" \

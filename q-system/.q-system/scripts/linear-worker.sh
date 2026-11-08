@@ -1685,6 +1685,16 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # exactly that for one commit (codex round 2), which is why it now reads its exit
 # code through a `||` list instead of bracketing the call in `set +e`/`set -e`.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
+# THE LADDER'S RUNNER CHANGE (ASK-3824, rung 2). cap-ladder.py claims this flag
+# when a ticket caps a second time, so its next attempt runs on a different
+# model, not the same one again: a pattern that deadlocks one model deadlocks it
+# on the very next attempt too. A flag the worker reads, never a sentence in a
+# prompt, because the founder's ruling is that rules live in code. The ladder is
+# the only writer; it clears the flag on the rungs that run the default runner.
+ladder_runner_for() {  # ladder_runner_for <issue> -> "codex" when the ladder asked for it, else ""
+  [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$1" ladder_runner_codex "" 2>/dev/null)" = "True" ] && printf 'codex'
+  return 0
+}
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
@@ -2473,25 +2483,22 @@ while IFS= read -r ISSUE; do
       # loop burned its whole budget and cannot say what a human should do.
       STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
     fi
-    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
+    # The words "is STUCK after" stay: linear-alert-triage.py's worker-stuck shape
+    # reads them to close the old alert tickets this branch used to file. ASK-4014
+    # retires that shape once its file is free (PR #657).
+    say "skip $ISSUE: $ISSUE is STUCK after $N/$MAX_ATTEMPTS attempts. Last reason: $STUCK_WHY. cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+    # THE CAP HANDS OFF TO THE LADDER, IT DOES NOT PAGE (ASK-3824). This used to
+    # write "Human action needed" and page, and nothing read either: the issue
+    # was skipped here every tick, forever. cap-ladder.py reads the attempt count
+    # this branch tests, and moves the ticket on: a fresh RCA and a continue, then
+    # a different runner, then a re-scope, then a timed re-entry. One comment so
+    # the ticket says who acts next; stuck_paged keeps it to one.
     if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
-        "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
+        "**Capped after $N/$MAX_ATTEMPTS attempts.** Last recorded reason: $STUCK_WHY
 
-Last recorded reason: $STUCK_WHY
-
-**Human action needed:** review the reason above and do ONE of:
-- fix the blocker, then clear the attempt count so the loop retries, or
-- rewrite the Definition of Ready so it is achievable from a non-interactive session, or
-- close the issue if it should not be built.
-
-A DoR that cannot be met from the environment the worker actually runs in is a defective spec, not a founder decision. Rewriting it is engineering work." \
+**Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA of the full packet, then the work continues. A second cap runs on the other runner, a third re-scopes the Definition of Ready, and every later cap re-enters on a 7, 14, then 28-day cooldown. The ladder has no last rung." \
         --agent sana >/dev/null 2>&1 || true
-      # `bash "$NOTIFY"`, the shape used at five other sites in this file. There is
-      # no page() helper here -- calling one would have been a silent no-op under
-      # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
-      # pages nobody, which is the exact defect this block fixes.
-      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
     # Only when the picker saw it started: this skip fires on every tick, and a
     # Backlog ticket needs no Linear read to stay where it is.
@@ -2690,9 +2697,13 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # permanent Linear comment on every round.
       CR="$(conflict_rounds_for "$ISSUE")"
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+        # conflict_paged is what cap-ladder.py reads, so the claim stays; the page
+        # it used to gate went to nobody and is now one comment naming the ladder.
         if page_once "$ISSUE" conflict_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+          python3 "$SYNC" progress "$ISSUE" \
+            "PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s). **Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA, then the work continues on a new PR from the same branch." \
+            --agent sana >/dev/null 2>&1 || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR still $MERGE_STATE after $CR of $MAX_CONFLICT_ROUNDS rebase rounds"
         continue
@@ -3130,7 +3141,14 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
+  PRIMARY_CMD="KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"}"
+  if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
+    # Codex takes no --settings; it runs in its own workspace-write sandbox, the
+    # same shape the second-runner path below already runs it in.
+    PRIMARY_CMD="$CODEX_CMD \"\$1\""
+    say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
+  fi
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $PRIMARY_CMD </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -3179,7 +3197,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      say "$ISSUE: stuck after $MAX_ATTEMPTS attempts; cap-ladder.py takes this cap at its next nightly run (ASK-3824)"
       requeue_issue "$ISSUE" cap "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
     else
       requeue_issue "$ISSUE" fail "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"

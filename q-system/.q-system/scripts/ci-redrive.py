@@ -631,10 +631,11 @@ def capout_skip(path, issue, who, pr):
     if not capout_notice_due(path, issue):
         return True
     sys.stderr.write(
-        "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
-        "re-entering it until a human clears the cap-out: %s  (said once per "
-        "cap-out; every parked issue: %s)\n"
-        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue), CAPOUT_LIST % path))
+        "%s: %s PR #%s -- converge capped this issue (%s). Not re-entering it: "
+        "cap-ladder.py (nightly 04:40, ASK-3824) takes the cap-out, writes an "
+        "RCA, moves the work to a new PR and clears the record  (said once per "
+        "cap-out; every capped issue: %s)\n"
+        % (who, issue, pr, why, CAPOUT_LIST % path))
     return True
 
 
@@ -690,7 +691,8 @@ def claim_unless_capped(path, issue, flag, who, pr=""):
         # clearing command because a park with no exit is the worse outage.
         sys.stderr.write(
             "%s: %s%s -- converge already gave up on this issue (%s). NOT "
-            "dispatching, and the attempt is NOT spent. Clear it with: %s\n"
+            "dispatching, and the attempt is NOT spent. cap-ladder.py clears it at "
+            "its next nightly run (the same clear by hand: %s)\n"
             % (who, issue, (" PR #%s" % pr) if pr else "",
                capout(path, issue) or "no reason recorded",
                CAPOUT_CLEAR % (path, issue)))

@@ -593,6 +593,279 @@ def notify_cap(trigger, count):
 
 
 # --------------------------------------------------------------------------
+# --kind rca: the cap-site packet (ASK-3824)
+# --------------------------------------------------------------------------
+#
+# WHY A SECOND PACKET BUILDER AND NOT THE TRANSCRIPT TAIL. Tier A escalates from
+# INSIDE a live session, so the last 25 records are the loop. A cap is the
+# opposite: it is persisted state read on a later tick, and the session that
+# produced it is gone. Sending a transcript tail there sends whatever the worker
+# printed last, which is the cap message itself -- the measured failure shape
+# this file already carries (2026-08-03: 23 of 27 packets had no transcript, and
+# the "diagnosis" was Fable paraphrasing the trigger line back at us).
+#
+# So an RCA packet is built from ARTIFACTS the cap leaves behind: the diff, the
+# review threads, the attempts-ledger rows, the CI log tail, and the spec. Every
+# collector is bounded, every failure is NAMED in the packet rather than leaving
+# a silent hole, and the row records which sources were readable. A thin packet
+# yields a thin RCA; the point is that the reader can tell which they got.
+
+RCA_ASK = """You are writing a root-cause analysis of a stuck engineering task
+that has exhausted its retries. You are NOT implementing anything, and nothing
+you write will be applied.
+
+Return exactly five labelled sections, no preamble:
+SURFACE: the immediate failure, as one falsifiable claim.
+STRUCTURAL: the property of the system that let it happen, not the symptom.
+STOP: the approach that is looping, named concretely. A second runner reads this
+first, so name the thing it must not repeat.
+NEXT: one concrete action a different model could take, with the command or file
+path that proves it.
+REFUTE: the command that would show this diagnosis is wrong.
+
+Be blunt and specific. The packet names any source it could not read -- if what
+is missing is what you need, say so in SURFACE and make NEXT the command that
+collects it. Do not infer around a hole and present the inference as a finding."""
+
+RCA_SOURCE_CHARS = 2500      # per collector, before the whole-packet cap
+RCA_PACKET_CHAR_CAP = 40000  # a cap packet is a diff, not a chat tail
+RCA_COLLECT_TIMEOUT = 25
+
+
+def _run_capture(argv, timeout=RCA_COLLECT_TIMEOUT, cwd=None):
+    """(text, note). Never raises. `note` names the failure, or is None."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, cwd=cwd, stdin=subprocess.DEVNULL)
+    except (subprocess.SubprocessError, OSError) as exc:
+        return "", "%s failed: %s" % (argv[0], exc)
+    if proc.returncode != 0:
+        return "", "%s exit %s: %s" % (argv[0], proc.returncode,
+                                       (proc.stderr or "").strip()[:160])
+    text = (proc.stdout or "").strip()
+    return text, None if text else "%s produced nothing" % argv[0]
+
+
+def collect_rca_sources(issue, pr, branch, repo_args=""):
+    """[(label, text, note)] for every declared RCA source, in packet order.
+
+    A SOURCE THAT COULD NOT BE READ STILL GETS A ROW, with its note. The scar in
+    this file is a packet whose emptiness was only findable because the bytes
+    happened to be identical; a declared source that silently contributes nothing
+    is the same defect wearing a different shape.
+    """
+    gh_args = [a for a in (repo_args or "").split() if a]
+    sources = []
+
+    def add(label, text, note):
+        sources.append((label, (text or "")[:RCA_SOURCE_CHARS], note))
+
+    if branch and branch != "-":
+        text, note = _run_capture(
+            ["git", "diff", "--stat", "origin/main...%s" % branch])
+        add("DIFF STAT (origin/main...%s)" % branch, text, note)
+        text, note = _run_capture(
+            ["git", "log", "--oneline", "-20", "origin/main..%s" % branch])
+        add("COMMITS ON %s" % branch, text, note)
+    else:
+        add("DIFF", "", "no branch supplied, so no diff could be collected")
+
+    if pr and pr != "-":
+        text, note = _run_capture(
+            ["gh", "pr", "view", str(pr)] + gh_args
+            + ["--json", "reviews,comments,title,mergeStateStatus"])
+        add("REVIEW THREADS ON PR #%s" % pr, text, note)
+        text, note = _run_capture(["gh", "pr", "checks", str(pr)] + gh_args)
+        add("CI CHECKS ON PR #%s" % pr, text, note)
+    else:
+        add("REVIEW THREADS", "", "no PR supplied, so no review thread was read")
+
+    ledger = os.environ.get("CAP_ATTEMPTS") or os.path.join(
+        os.path.expanduser("~"), ".config", "kipi",
+        "linear-worker-attempts.json")
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            rows = json.load(fh)
+        row = rows.get(issue) if isinstance(rows, dict) else None
+        add("ATTEMPTS LEDGER ROW (%s)" % issue,
+            json.dumps(row, indent=2, default=str) if row else "",
+            None if row else "no row for %s in %s" % (issue, ledger))
+    except (OSError, ValueError) as exc:
+        add("ATTEMPTS LEDGER ROW (%s)" % issue, "",
+            "could not read %s: %s" % (ledger, exc))
+
+    spec, note = _spec_for(issue)
+    add("THE SPEC (%s Definition of Ready)" % issue, spec, note)
+    return sources
+
+
+def _spec_for(issue):
+    """(description, note) for a Linear issue, through the fleet's one reader.
+
+    linear-sync.py is the single place that knows how this fleet talks to Linear,
+    the same module alert-to-linear.py loads. Re-deriving the key lookup here is
+    exactly what drifted in notify_channel_configured (sp-7773af84).
+    """
+    # A LOCAL import, on purpose. A module-level `import importlib.util` here
+    # changes notify_channel_configured(), which uses importlib without
+    # importing it and so has always answered False on main. That is its own
+    # defect, reported separately (ASK-3824 PR), not fixed as a side effect.
+    import importlib.util
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "kipi_linear_sync_spec",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "linear-sync.py"))
+        if spec is None or spec.loader is None:
+            return "", "linear-sync.py could not be loaded"
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        data = module.graphql(
+            "query($id:String!){issue(id:$id){identifier title description}}",
+            {"id": issue})
+        body = (data["issue"].get("description") or "").strip()
+        return body, None if body else "%s has an empty description" % issue
+    except Exception as exc:  # noqa: BLE001
+        return "", "could not read %s from Linear: %s" % (issue, exc)
+
+
+def build_rca_packet(issue, site, pr, branch, reason, sources):
+    """Header + every source, labelled, + the five-section RCA ask.
+
+    THE ASK IS RESERVED BEFORE THE SOURCES ARE FITTED, same as build_packet and
+    for the same scar: a cap packet is dominated by a diff, so a naive
+    header+body+ask slice cuts the question off and hands Fable a diff with
+    nothing asked of it (PR #75 round 1).
+    """
+    header = [
+        "CAP SITE: %s" % str(site)[:120],
+        "ISSUE: %s" % str(issue)[:40],
+        "PR: %s    BRANCH: %s" % (str(pr)[:20], str(branch)[:120]),
+        "WHAT CAPPED: %s" % ((reason or "(none)")[:REASON_CHARS]),
+        "",
+        "Every source below is declared. One that could not be read says so on "
+        "its own line; treat that as missing evidence, not as absence of a "
+        "problem.",
+        "",
+    ]
+    budget = RCA_PACKET_CHAR_CAP - len("\n".join(header)) - len(RCA_ASK) - 32
+    body = []
+    for label, text, note in sources:
+        block = "=== %s ===\n%s" % (
+            label, text if text else "(UNREADABLE: %s)" % (note or "no reason recorded"))
+        if len(block) + 2 > budget:
+            body.append("=== %s ===\n(DROPPED: packet budget exhausted)" % label)
+            continue
+        budget -= len(block) + 2
+        body.append(block)
+    return "\n".join(header + body + ["", RCA_ASK])
+
+
+def rca_escalate(issue, site, pr, branch, reason, repo_args=""):
+    """Diagnose one cap. Returns the contract dict the cap resolver reads.
+
+    THE RCA IS WRITTEN TO DISK AND POSTED, in that order. The file is the durable
+    artifact the second runner's brief points at and the lessons corpus promotes
+    from; the comment is what makes the diagnosis visible on the ticket. A post
+    that fails must not cost the file, so the file goes first and the row records
+    both outcomes separately -- the same split as `escalated` vs `handed_off`
+    above, for the same reason (ASK-886).
+    """
+    result = {"rca_path": None, "escalated": False, "posted": False,
+              "failure": None, "sources_read": 0, "sources_declared": 0}
+    sources = collect_rca_sources(issue, pr, branch, repo_args)
+    result["sources_declared"] = len(sources)
+    result["sources_read"] = sum(1 for _l, t, _n in sources if t)
+    packet = build_rca_packet(issue, site, pr, branch, reason, sources)
+
+    started = time.time()
+    rca, failure = call_fable(packet, _int_env("KIPI_FABLE_RCA_TIMEOUT", 180))
+    duration = round(time.time() - started, 2)
+    result["escalated"] = rca is not None
+    result["failure"] = failure
+
+    if rca:
+        result["rca_path"] = _write_rca(issue, site, rca, reason)
+        if result["rca_path"]:
+            result["posted"] = _post_rca(issue, site, result["rca_path"], rca)
+        else:
+            result["failure"] = failure or "RCA computed but could not be written"
+
+    log_row({
+        "ts": _now(),
+        "kind": "rca",
+        "trigger": "cap:%s" % site,
+        "issue": issue,
+        "pr": str(pr or ""),
+        "branch": branch or "",
+        "reason": (reason or "")[:300],
+        "packet_sha256": hashlib.sha256(packet.encode()).hexdigest(),
+        "packet_bytes": len(packet.encode()),
+        "sources_declared": result["sources_declared"],
+        "sources_read": result["sources_read"],
+        # Which sources were EMPTY, by name. "5 of 7 read" does not tell the next
+        # reader whether the diff or the spec was the hole, and those two produce
+        # very different RCAs.
+        "sources_unreadable": [l for l, t, _n in sources if not t],
+        "fable_ok": rca is not None,
+        "failure": result["failure"],
+        "duration_s": duration,
+        "diagnosis": (rca or "")[:1500],
+        "rca_path": result["rca_path"],
+        "rca_posted": result["posted"],
+        "capped": False,
+        "starved": False,
+        "call_spent": True,
+        "next_path_taken": "cap-ladder",
+    })
+    return result
+
+
+def _write_rca(issue, site, rca, reason):
+    """The RCA file, under lesson-candidates/. Returns its path, or None."""
+    directory = (os.environ.get("CAP_RCA_DIR")
+                 or os.path.join(QROOT, "output", "lesson-candidates"))
+    path = os.path.join(directory, "rca-cap-%s-%s-%s.md"
+                        % (issue.lower(), site, time.strftime("%Y-%m-%d")))
+    body = ("# Cap RCA: %s at %s\n\n"
+            "- date: %s\n- site: %s\n- what capped: %s\n"
+            "- model: %s (diagnosis only; it never implements)\n\n"
+            "%s\n" % (issue, site, _now(), site,
+                      (reason or "").replace("\n", " ")[:400],
+                      FABLE_MODEL, rca))
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+    except OSError:
+        return None
+
+
+def _post_rca(issue, site, path, rca):
+    """Post the RCA as a comment on the issue. Returns whether it landed."""
+    # The ladder, not a park (founder 2026-11-08: "if Fable does the root cause
+    # and Opus still fails? After that it just hangs and goes nowhere"). The
+    # reader of this comment is the next runner, so it says what happens next.
+    note = ("**Cap RCA (%s), written by %s.** cap-ladder.py (ASK-3824) moves "
+            "this cap on: RCA and continue, then a different runner, then a "
+            "re-scope, then a timed re-entry. It never parks the ticket. Read "
+            "STOP before you start: it names the approach that looped.\n\n"
+            "Full RCA on disk: `%s`\n\n%s"
+            % (site, FABLE_MODEL, path, rca[:4000]))
+    sync = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "linear-sync.py")
+    try:
+        proc = subprocess.run(
+            ["python3", sync, "progress", issue, note, "--agent", "sana"],
+            capture_output=True, text=True, timeout=60,
+            stdin=subprocess.DEVNULL)
+        return proc.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+# --------------------------------------------------------------------------
 # entry
 # --------------------------------------------------------------------------
 
@@ -888,7 +1161,20 @@ def main():
         sys.exit(0)
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--trigger", required=True)
+    # --trigger is required for a triage and MEANINGLESS for a cap RCA, whose
+    # trigger is the site. So it is optional here and the requirement is enforced
+    # per kind below, rather than making every cap site pass a field it has to
+    # invent (ASK-3824).
+    parser.add_argument("--kind", default="triage", choices=("triage", "rca"),
+                        help="triage = the in-session Tier A/B/C lens; "
+                             "rca = a cap site's full-packet root-cause analysis")
+    parser.add_argument("--trigger", default="")
+    parser.add_argument("--issue", default="", help="--kind rca: the ticket")
+    parser.add_argument("--site", default="", help="--kind rca: the cap site tag")
+    parser.add_argument("--pr", default="", help="--kind rca: the PR number")
+    parser.add_argument("--branch", default="", help="--kind rca: the branch")
+    parser.add_argument("--repo-args", default="",
+                        help="--kind rca: gh repo args, e.g. '--repo owner/name'")
     parser.add_argument("--reason", default="")
     parser.add_argument("--transcript", default="")
     parser.add_argument("--count", type=int, default=0,
@@ -903,7 +1189,31 @@ def main():
                         help="machine output (the token-guard contract)")
     args = parser.parse_args()
 
-    if os.environ.get("KIPI_FABLE_ESCALATION") == "0":
+    disabled = os.environ.get("KIPI_FABLE_ESCALATION") == "0"
+
+    if args.kind == "rca":
+        if not args.issue or not args.site:
+            parser.error("--kind rca needs --issue and --site")
+        if disabled:
+            # Every key the rca contract names, on every path, for the same
+            # reason the triage contract does it: a consumer that has to ask
+            # whether a field exists will one day read its absence as False.
+            out = {"rca_path": None, "escalated": False, "posted": False,
+                   "failure": "disabled", "sources_read": 0,
+                   "sources_declared": 0}
+        else:
+            out = rca_escalate(args.issue, args.site, args.pr, args.branch,
+                               args.reason, args.repo_args)
+        if args.json:
+            print(json.dumps(out))
+        else:
+            print(out["rca_path"] or ("no rca: %s" % out["failure"]))
+        sys.exit(0)
+
+    if not args.trigger:
+        parser.error("--trigger is required for --kind triage")
+
+    if disabled:
         # Every key the contract above names, on every path. A consumer that
         # has to ask whether a field exists before reading it is a consumer
         # that will one day read the absence as False and be wrong.

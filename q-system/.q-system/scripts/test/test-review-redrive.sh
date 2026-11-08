@@ -257,18 +257,28 @@ env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
 # the page for THIS pr/action/sha is expected to be spent by now. Asserting an
 # absolute count of 1 here would be asserting the order the cases happen to run
 # in; the property is that the sink saw the page exactly once in total.
+# THE HAND-OFF IS THE FLAG, NOT A PAGE (ASK-3824). cap-ladder.py reads the
+# review_escalated_* flag on an open PR and moves it on; the page went into the
+# alert lane, where nothing could act on a PR. So the escalation is counted in
+# the ledger, and the notify sink must stay empty.
+esc_keys() { python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print("\n".join(k for v in d.values() for k in v if k.startswith("review_escalated_")))' "$LEDGER"; }
+esc_count() { esc_keys | grep -c . ; }
 select_one >/dev/null
-[ "$(pages_count)" = "1" ] && ok "a spent attempt still failing pages once" \
-  || bad "spent attempt produced $(pages_count) pages, want 1"
-grep -q "PR #98" "$PAGES" && grep -q "rework" "$PAGES" \
-  && ok "the page names the PR and which action was already spent" \
-  || bad "the page does not name the PR and the spent action: $(cat "$PAGES")"
+[ "$(esc_count)" = "1" ] && ok "a spent attempt still failing hands off to cap-ladder.py once" \
+  || bad "spent attempt claimed $(esc_count) escalation flags, want 1: $(esc_keys)"
+esc_keys | grep -q "rework_pr98_" \
+  && ok "the flag names the PR and which action was already spent" \
+  || bad "the flag does not name PR 98 and rework: $(esc_keys)"
+[ "$(pages_count)" = "0" ] && ok "the escalation pages nobody" \
+  || bad "the escalation still paged: $(cat "$PAGES")"
 
 # The dispatcher hits this state every heartbeat for as long as the PR sits
-# failing. A page per run is a page every 15 minutes about one unchanged fact.
+# failing. One flag per PR per action per sha, however many passes.
 select_one >/dev/null
-[ "$(pages_count)" = "1" ] && ok "a second pass does NOT page again -- once per PR per action per sha" \
-  || bad "escalation paged $(pages_count) times across two passes"
+[ "$(esc_count)" = "1" ] && ok "a second pass claims nothing new -- once per PR per action per sha" \
+  || bad "escalation claimed $(esc_count) flags across two passes"
 
 # A new head sha is new information and earns its own attempt AND its own page.
 # Without this the cap is permanent: a PR that pushes a real fix could never be
@@ -365,21 +375,22 @@ PICK4="$(select_ps "$WORK/ps-idle.txt")"
 # breath before the reviewer starts, which is the state that produced the bug.
 env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
   --issue ASK-301 --action re-review --pr 101 --head-sha ffff9999 >/dev/null 2>&1
-PAGES_BEFORE="$(pages_count)"
+ESC_BEFORE="$(esc_count)"
 select_ps "$WORK/ps-live.txt" >/dev/null
-[ "$(pages_count)" = "$PAGES_BEFORE" ] \
-  && ok "a spent flag while the reviewer is STILL RUNNING does not page" \
-  || bad "escalated mid-review: pages went $PAGES_BEFORE -> $(pages_count)"
+[ "$(esc_count)" = "$ESC_BEFORE" ] \
+  && ok "a spent flag while the reviewer is STILL RUNNING does not escalate" \
+  || bad "escalated mid-review: flags went $ESC_BEFORE -> $(esc_count)"
 
-# And once the reviewer is gone the escalation still fires. Asserted on the page
-# TEXT as well as the count: an increment alone is satisfied by any page at all.
+# And once the reviewer is gone the escalation still fires. Asserted on the flag
+# KEY as well as the count: an increment alone is satisfied by any flag at all.
 select_ps "$WORK/ps-idle.txt" >/dev/null
-[ "$(pages_count)" = "$((PAGES_BEFORE+1))" ] \
-  && ok "once the reviewer exits, the spent attempt escalates -- the alarm survived" \
-  || bad "reviewer gone and no page fired: pages went $PAGES_BEFORE -> $(pages_count)"
-grep -q "PR #101" "$PAGES" && grep -q "re-review" "$PAGES" \
-  && ok "that page names PR #101 and the re-review that was spent" \
-  || bad "the page does not name PR #101 and re-review: $(cat "$PAGES")"
+[ "$(esc_count)" = "$((ESC_BEFORE+1))" ] \
+  && ok "once the reviewer exits, the spent attempt escalates -- the hand-off survived" \
+  || bad "reviewer gone and no escalation: flags went $ESC_BEFORE -> $(esc_count)"
+esc_keys | grep -q "rereview_pr101_" \
+  && ok "that flag names PR 101 and the re-review that was spent" \
+  || bad "the flag does not name PR 101 and re-review: $(esc_keys)"
+[ "$(pages_count)" = "0" ] && ok "and nothing paged" || bad "a page fired: $(cat "$PAGES")"
 
 # An UNREADABLE table is a THIRD answer and must resolve to "live". Reading "I
 # cannot see the process table" as "nothing is running" is the direction that

@@ -1294,13 +1294,21 @@ say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree pe
 # no page. If the ledger refuses (a lock timeout, a read-only disk) the run says
 # so and still pages, because a cap-out the founder never hears about is the
 # 29-hour park with the alarm removed.
-CAPOUT_NOTE=""
-if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
-  CAPOUT_NOTE=" WARNING: the cap-out could NOT be recorded in $ATTEMPTS, so the redrives may re-enter this issue -- check that file."
-  say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
+#
+# THE RECORD IS NOW A HAND-OFF, NOT A PARK (ASK-3824). cap-ladder.py reads this
+# capout, writes a fresh RCA, closes the PR (branch kept), opens a new PR on the
+# same branch and clears the record, so the redrives re-enter it on purpose and
+# under the ladder's own count. The page that used to follow went into a
+# 1054-deep alert lane and asked a person to clear the record; nothing else read
+# it. Only a FAILED record still pages, because then the ladder cannot see this
+# cap and the alert lane is the one consumer left.
+if python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
+  say "cap-out recorded for $ISSUE; cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes it next: a fresh RCA, then the work continues on a new PR from $BRANCH."
+else
+  say "WARNING: record-capout failed for $ISSUE; cap-ladder.py cannot see this cap-out."
+  bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT, and the cap-out could NOT be recorded in $ATTEMPTS, so cap-ladder.py cannot see it. linear-alert-triage.py takes this ticket; the fix is the ledger write." 2>/dev/null || true
 fi
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
-# The `exit 2` on the line BELOW this comment -- not the `bash "$NOTIFY"` above it --
+# The `exit 2` on the line BELOW this comment -- not the record-capout block above it --
 # is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay
 # unconditional: it is what stops bash from ever reading this file again. See the
 # header. Nothing may be added between it and the closing brace, and nothing may be
