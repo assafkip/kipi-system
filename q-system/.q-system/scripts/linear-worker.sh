@@ -661,7 +661,7 @@ now = datetime.now(timezone.utc)
 
 Q = """query($t:ID!,$a:String){issues(filter:{team:{id:{eq:$t}}},first:250,after:$a){
  nodes{id identifier title description state{name type} startedAt project{name}
-       priority createdAt
+       priority createdAt dueDate
        labels{nodes{name}}} pageInfo{hasNextPage endCursor}}}"""
 try:
     tid = ls.graphql('query{teams(filter:{key:{eq:"ASK"}}){nodes{id}}}',{})["teams"]["nodes"][0]["id"]
@@ -765,6 +765,45 @@ def started_hold(i):
 def started_open(i, d):
     return i["state"]["type"] == "started" and "Definition of Ready" in d and started_hold(i) == ""
 
+# AN EXPIRED PARK IS FOR E2 TO CLOSE, NOT FOR THIS LOOP TO WORK (ASK-3995, D24).
+# A park is the triage bot countdown to a close, not a hold: Backlog idle 30 days
+# gets a review date 30 days out, and at that date E2 closes it, reversibly. On
+# 2026-11-08 the first dispatch of the day went to ASK-834, a No-priority park 25
+# days past its date, while an Urgent ticket waited, and 227 of 502 parks were
+# expired. Two costs: one of three daily dispatches spent on a ticket the board
+# already ruled closed by age, and a race, because Linear moves a ticket to In
+# Progress only when its branch or PR appears, so until the first push E2 can
+# close it under a live run.
+#
+# A PARK WITH ITS DATE AHEAD STAYS PICKABLE. Oldest first (ASK-248) exists to work
+# old tickets before they decay, and working one is the rescue.
+#
+# THE REFUSAL IS EXACTLY THE SET E2 CLOSES, NEVER WIDER. Mirrored from chief
+# bots/triage/skills/__init__.py, park_expired (the parked label, a due date
+# strictly before the LOCAL date, Backlog only, none of NEVER_AUTO_CLOSE) and its
+# open-PR rail, which runs first. Anything refused here that E2 will not close
+# has no exit at all. The open-PR half reads the heads this run already listed for
+# the WIP ceiling; a PR this worker cannot see (a human branch, another repo) is
+# the accepted residual on ASK-3995, and its exit is that PR merge. The two
+# copies drift in silence, so test-worker-expired-park.sh pins every arm.
+PARK_LABEL = "parked"
+PARK_NEVER_CLOSED = frozenset({"frozen", "security", "data-loss", "ready"})
+TODAY_LOCAL = now.astimezone().date().isoformat()
+_OPEN_HEADS = [ln.split("\t")[1] for ln in (os.environ.get("WIP_OWN_PRS") or "").splitlines()
+               if len(ln.split("\t")) > 1]
+
+def has_open_own_pr(ident):
+    head = "sana/" + ident.lower()
+    return any(h == head or h.startswith(head + "-") for h in _OPEN_HEADS)
+
+def expired_park(i):
+    labels = {l["name"] for l in i["labels"]["nodes"]}
+    due = (i.get("dueDate") or "")[:10]
+    return (PARK_LABEL in labels and bool(due) and due < TODAY_LOCAL
+            and i["state"]["type"] == "backlog"
+            and not (labels & PARK_NEVER_CLOSED)
+            and not has_open_own_pr(i["identifier"]))
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
@@ -784,6 +823,7 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
+    if expired_park(i):              return False   # ASK-3995, E2 closes it
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -805,6 +845,7 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
+            and not expired_park(i)
             and not is_fleet_alert(i)
             and "Definition of Ready" in (i.get("description") or "")
             and (i["state"]["type"] in QUEUE_STATES
@@ -950,6 +991,10 @@ founder_routed = held_with("owner:assaf", founder_scope)
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
 blocked_cap = held_with("blocked:capability")
+# Counted for the same reason (ASK-3995): a pool that shrinks by 200 overnight must
+# say why. These wait for E2, which closes them at its next sweep, 50 a day.
+expired_parks = [i for i in issues if in_this_repo(i) and expired_park(i)
+                 and "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}]
 
 pool = [i for i in issues if ready(i)]
 # PRIORITY, THEN OLDEST FIRST (ASK-248, NEW-6). The query has no orderBy, and
@@ -1200,6 +1245,8 @@ print(json.dumps({
     "founder_routed_ids": [i["identifier"] for i in founder_routed],
     "blocked_capability": len(blocked_cap),
     "blocked_capability_ids": [i["identifier"] for i in blocked_cap],
+    "expired_parks": len(expired_parks),
+    "expired_park_ids": [i["identifier"] for i in expired_parks][:10],
     # Does the derived repo identity name a project that EXISTS on the board?
     # If not, every issue fails in_this_repo() and the queue reads a healthy
     # empty -- a permanently silent loop reporting success. That is strictly
@@ -1549,6 +1596,16 @@ BLOCKED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".joi
 # queue unless someone says the number out loud.
 if [ "${BLOCKED_CAP:-0}" != "0" ]; then
   say "worker: $BLOCKED_CAP issue(s) held at blocked:capability -- the specs are sound, the runner is missing something it cannot grant itself ($BLOCKED_IDS)"
+fi
+EXPIRED_PARKS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("expired_parks",0))' 2>/dev/null)"
+EXPIRED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin).get("expired_park_ids",[])))' 2>/dev/null)"
+# SAID ONLY WHEN THE OPEN-PR RAIL WAS ASKED (PR #649 round 1, minor). The heads
+# come from the WIP list, which is empty under --issue, with no GitHub slug, and
+# when gh failed. There the count would name tickets whose open PR keeps E2 off
+# them, so the sentence would be false. Nothing is picked wrongly in those runs:
+# --issue replaces the pool, and a failed list starts nothing this tick.
+if [ "${EXPIRED_PARKS:-0}" != "0" ] && [ -z "$ONLY_ISSUE" ] && [ "${WIP_OWN_RC:-}" = "0" ]; then
+  say "worker: $EXPIRED_PARKS issue(s) not picked: parked past the review date, so chief E2 closes them, reversibly (ASK-3995; first ids: $EXPIRED_IDS)"
 fi
 
 # AN EMPTY QUEUE DOES NOT END THE RUN WHILE THE CEILING HOLDS (PR #613 review
