@@ -803,9 +803,11 @@ fi
 # Asserted on the primitive rather than only through the worker because "exactly
 # one of N concurrent processes wins" is the whole claim, and eight racing
 # subshells can assert it in milliseconds where eight racing workers could not be
-# made deterministic. mkdir is the atomicity: it is a single syscall that either
-# creates the directory or fails because it exists, with no read-then-write window
+# made deterministic. The atomicity is one exclusive create: a single syscall that
+# either makes the claim or fails because it exists, with no read-then-write window
 # for a second process to land in (a `[ -f ] && >` claim has exactly that window).
+# That syscall is NOT the mkdir binary everywhere: uutils mkdir (Ubuntu 26.04) has
+# the window inside it (ASK-3968). H2 below loses that race on purpose.
 CLAIM_STATE="$WORK/claim-race"; mkdir -p "$CLAIM_STATE"
 CLAIM_WINNERS="$WORK/claim-winners"; : > "$CLAIM_WINNERS"
 CLAIM_PIDS=""
@@ -850,6 +852,96 @@ if command -v env_alert_release >/dev/null 2>&1 || type env_alert_release >/dev/
   fi
 else
   bad "a released claim can be taken again" "env_alert_release is not defined"
+fi
+
+# --- H2. a mkdir that says yes to a claim that already stands --------------
+# ASK-3968. H went red on about 1 in 10 ubuntu-latest runs once the runners
+# moved to Ubuntu 26.04 (7 of about 74 validate runs, 2026-11-01 to 11-08), and
+# never on a Mac. That mkdir is uutils coreutils: it checks for the path, then
+# calls mkdir(2), and an EEXIST that lands INSIDE that window is reported as
+# success, so two racers that both pass the check both exit 0. A path that already
+# stood at the check is still refused (23 to 34 bad trials of 300, not 300 of 300).
+# H sees the window only when the scheduler lines two racers up, so it passes by
+# luck 9 runs in 10. This shim makes the window permanent, the worst case: it
+# makes the directory when it is missing and reports success either way. Two
+# claims in a row under it must still give exactly one winner, on any OS.
+REAL_MKDIR="$(command -v mkdir)"
+SHIM_BIN="$WORK/lost-race-bin"; "$REAL_MKDIR" -p "$SHIM_BIN"
+cat > "$SHIM_BIN/mkdir" <<SH
+#!/usr/bin/env bash
+"$REAL_MKDIR" "\$@" 2>/dev/null
+exit 0
+SH
+chmod +x "$SHIM_BIN/mkdir"
+H2_STATE="$WORK/claim-lost-race"; "$REAL_MKDIR" -p "$H2_STATE/already-here"
+if ( PATH="$SHIM_BIN:$PATH"; mkdir "$H2_STATE/already-here" ) 2>/dev/null; then
+  ok "positive self-test: the shim mkdir reports success on a path that exists"
+else
+  bad "positive self-test: the shim mkdir reports success on a path that exists" \
+      "the shim is not the mkdir the lib runs, so H2 below would prove nothing"
+fi
+H2_WINS=0
+for _i in 1 2; do
+  if ( PATH="$SHIM_BIN:$PATH"; . "$REPO_SCRIPTS/env-failure-lib.sh"; env_alert_claim "$H2_STATE" ) 2>/dev/null; then
+    H2_WINS=$((H2_WINS+1))
+  fi
+done
+if [ "$H2_WINS" -eq 1 ]; then
+  ok "a mkdir that says yes to a standing claim still lets exactly 1 process page"
+else
+  bad "a mkdir that says yes to a standing claim still lets exactly 1 process page" \
+      "got $H2_WINS winner(s). 2 means the holder write clobbers, so the uutils lost race pages twice."
+fi
+
+# --- H3. ...and a holder that cannot be written still pages -----------------
+# The tie-break may only silence a run that LOST, never one whose holder write
+# failed for another reason: a missing page is the worse failure (NO STATE DIR
+# MEANS PAGE, env-failure-lib.sh). This shim makes the claim read-only, so the
+# holder write fails and leaves no holder behind.
+SHIM_RO="$WORK/readonly-claim-bin"; "$REAL_MKDIR" -p "$SHIM_RO"
+cat > "$SHIM_RO/mkdir" <<SH
+#!/usr/bin/env bash
+"$REAL_MKDIR" "\$@" || exit \$?
+for _a in "\$@"; do :; done
+case "\$_a" in */$ENV_ALERT_CLAIM_NAME) chmod 0555 "\$_a" ;; esac
+exit 0
+SH
+chmod +x "$SHIM_RO/mkdir"
+H3_STATE="$WORK/claim-unwritable"
+if ( PATH="$SHIM_RO:$PATH"; . "$REPO_SCRIPTS/env-failure-lib.sh"; env_alert_claim "$H3_STATE" ) 2>/dev/null; then H3_RC=0; else H3_RC=1; fi
+if [ -d "$H3_STATE/$ENV_ALERT_CLAIM_NAME" ] && [ ! -e "$H3_STATE/$ENV_ALERT_CLAIM_NAME/holder" ]; then
+  ok "positive self-test: the claim was made and its holder write really failed"
+else
+  bad "positive self-test: the claim was made and its holder write really failed" \
+      "no claim, or a holder was written anyway (running as root?), so H3 below would prove nothing"
+fi
+if [ "$H3_RC" -eq 0 ]; then
+  ok "a claim whose holder cannot be written still pages (the tie-break is not a mute)"
+else
+  bad "a claim whose holder cannot be written still pages (the tie-break is not a mute)" \
+      "THE SILENT OUTAGE: a failed holder write was read as a lost race, so nobody pages"
+fi
+chmod 0755 "$H3_STATE/$ENV_ALERT_CLAIM_NAME" 2>/dev/null || true
+
+# --- H4. ...and under that mkdir an EXPIRED claim is still taken over ---------
+# PR #633 round 1, major. The max-age takeover hung off mkdir's exit code, so a
+# mkdir that says yes over an existing claim skipped it, the O_EXCL holder write
+# then found the old holder, and the run stayed quiet: an outage claimed two days
+# ago kept every later outage silent for good. Under the H2 shim (the window
+# made permanent), a claim older than its max age must page exactly once.
+H4_STATE="$WORK/claim-expired-shim"; "$REAL_MKDIR" -p "$H4_STATE/$ENV_ALERT_CLAIM_NAME"
+printf 'pid=1 claimed_at=old epoch=%s\n' "$(( $(date +%s) - 172800 ))" > "$H4_STATE/$ENV_ALERT_CLAIM_NAME/holder"
+H4_WINS=0
+for _i in 1 2; do
+  if ( PATH="$SHIM_BIN:$PATH"; . "$REPO_SCRIPTS/env-failure-lib.sh"; env_alert_claim "$H4_STATE" 86400 ) 2>/dev/null; then
+    H4_WINS=$((H4_WINS+1))
+  fi
+done
+if [ "$H4_WINS" -eq 1 ]; then
+  ok "under a mkdir that says yes, an expired claim is taken over and pages exactly once"
+else
+  bad "under a mkdir that says yes, an expired claim is taken over and pages exactly once" \
+      "got $H4_WINS. 0 is the permanent silence: the expired claim was never taken over."
 fi
 
 # --- G. two dispatcher runs, one machine, one page --------------------------
