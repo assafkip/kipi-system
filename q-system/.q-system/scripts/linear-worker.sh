@@ -1445,6 +1445,9 @@ if [ "${FOUNDER_ROUTED:-0}" != "0" ]; then
       # the caller writes NOTHING, because a page whose dedup did not record is a
       # page that repeats forever (exit 2) -- the failure being fixed here. Exit 3
       # defers by one cycle, it does not drop.
+      # 5 = the ledger refused a live-path write under a test (ASK-4052): the cause is
+      # the test, not the file, so it is named apart (PR #669 review round 2).
+      5) say "WARN: the attempts ledger refused the founder-routed flag for $fid (exit 5): this worker runs under a test and $ATTEMPTS is the live ledger. Set KIPI_STATE_DIR in the test that started it." ;;
       *) say "WARN: the attempts ledger did not record the founder-routed flag for $fid (exit $rc) -- not paging, to avoid an undeduplicated repeat. Check $ATTEMPTS is writable." ;;
     esac
   done
