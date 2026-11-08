@@ -393,7 +393,7 @@ def detect_duplicate_schedules(ctx, cron_text=None) -> list:
                         f"`{name}` is scheduled by launchd (`{label}`) **and** by a crontab "
                         "entry.\n\n"
                         "Two schedulers on one script means pausing or unloading one has no "
-                        "effect — the other keeps firing. That is how a job the operator "
+                        "effect — the other keeps firing. That is how a job the founder "
                         "believes is stopped keeps running, and how a run gets duplicated.\n\n"
                         "## Action\nPick ONE scheduler. launchd is the fleet convention "
                         "(`launchd-health-check.py` watches it; crontab is invisible to that "
@@ -973,7 +973,7 @@ def detect_cron_shells_claude(ctx, cron_text=None) -> list:
             "Run `crontab -l | cat -n` and read:\n\n"
             + "\n".join(f"- line {n}" for n in numbers)
             + "\n\nThe lines themselves are deliberately NOT copied here. A crontab "
-              "line is operator-authored shell, a Linear issue is permanent, and "
+              "line is shell written outside this repo, a Linear issue is permanent, and "
               "redacting arbitrary shell before publishing it was a denylist that "
               "leaked in nine consecutive review rounds (ASK-204). A line number "
               "carries nothing to leak.\n\n"

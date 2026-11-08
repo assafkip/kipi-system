@@ -1124,14 +1124,34 @@ def ticket_is_live(i):
     # rests on that function prose. A PR in this state is never released, not even
     # by the backstop: on a ceiling of old PRs, converge reworking one of them
     # holds a live claim, and closing it mid-run would throw away that round.
+    # An unreadable start stamp reads live here: a PR is never closed on a guess.
+    if ls._parse_stamp(i.get("startedAt")) is None:
+        return True
+    return live_evidence(i)
+
+
+def live_evidence(i):
+    # True only on POSITIVE evidence that someone is on the ticket now: a start
+    # stamp that parses and is inside the lane window, or a live worker claim.
+    # The live-first check in refusal() asks this, not ticket_is_live (PR #671
+    # round 1, major): an unreadable stamp reads live forever, and live-first
+    # would then mask the no-dor, off-repo, label and alert exits forever, while
+    # ticket-live has no backstop, so that PR would never leave the ceiling.
     began = ls._parse_stamp(i.get("startedAt"))
-    if began is None or (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+    if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
         return True
     return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
 
 
 def refusal(i):
     # (kind, why) for the run log and the release. It never decides: ready() does.
+    # LIVE FIRST (ASK-4057, D34). A started ticket someone may be on right now
+    # waits, whatever else is missing from it. 2026-11-08 21:58:58Z: with this check
+    # last, PR #664 was closed as no-dor while ASK-4013 was In Progress with a lane
+    # on it, two minutes before its DoR was written. A missing DoR, project or label
+    # on a live ticket is fixed on the ticket; it is never a reason to close the PR.
+    if i["state"]["type"] == "started" and live_evidence(i):
+        return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
         if held in labels:
@@ -2711,9 +2731,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # rebase prompt would tell the agent to force-push a diff nobody reviewed.
       DR="$(drift_rounds_for "$ISSUE")"
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- review-redrive.py re-offers it for review against the live head on a later com.kipi.dispatch tick."
         if page_once "$ISSUE" drift_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head; review-redrive.py re-offers it against the live head on a later com.kipi.dispatch tick" 2>/dev/null || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR head still unreviewed after $DR of $MAX_DRIFT_ROUNDS drift rounds"
         continue
@@ -2795,6 +2815,34 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
+    # DISK FLOOR (ASK-3648). This tree is cut from shell, so the PreToolUse floor
+    # never sees it; on 2026-11-08 trees like it took the disk to 0 bytes free.
+    # Under the floor no issue gets a tree, so stop the whole run, not just this
+    # issue. Nothing was claimed yet (the claim is step 2, inside the tree).
+    #
+    # IT IS AN ENVIRONMENTAL HALT, AND IT IS MARKED LIKE ONE (PR #656 review,
+    # finding 1, major). A bare `break` ended the run with rc 0, no PR and an
+    # unmoved counter, which converge.sh reads as "Sana could not open one": it
+    # charged an attempt at exit-7 and paged, and three ticks took a healthy issue
+    # to TERMINAL. The env_halt flag is what converge reads (converge.sh, the
+    # ENV_HALT_MARK branch) to exit 9 with nothing charged and no page, and
+    # $ENV_HALT_FILE sends this run to the halt block after the loop and exit 9.
+    # Same two markers as step 4a. That block files NO page or note for a disk
+    # halt: kipi-dispatch.sh owns the disk page (page_once disk-floor), and the
+    # shared env-alert claim holds one slot for every condition, so taking it here
+    # would silence a usage-limit page for up to a day (PR #656 review round 2,
+    # finding 3).
+    # kipi-dispatch.sh holds the same floor every heartbeat, runs the worktree
+    # reaper, and resumes once space is back. Exit 2 (could not measure)
+    # proceeds: `git worktree add` below fails loudly.
+    FLOOR_LINE="$(python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null 2>>"$LOG")"; FLOOR_RC=$?
+    if [ "$FLOOR_RC" -eq 1 ]; then
+      say "INFRA: $FLOOR_LINE; no worktree for $ISSUE and no further issue this run (not counted against the issue). kipi-dispatch.sh re-checks the floor every heartbeat."
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      printf '%s|%s|%s' "$ISSUE" "$DONE" "the disk is under the worktree floor: $FLOOR_LINE" > "$ENV_HALT_FILE" 2>/dev/null || true
+      break
+    fi
+    [ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (git worktree add below still fails loudly on a full disk)"
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
@@ -2872,9 +2920,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
   # tree and the claim is what says this session owns it.
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
-      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
+      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. wip_release (this file) closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it. Tree: $TREE"
       if page_once "$ISSUE" tree_paged; then
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE. wip_release closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -3016,7 +3064,7 @@ So:
      commit, tests that no longer pass -- fix exactly that, and nothing else.
      Run this PR's tests before you push.
 
-Someone else may have pushed those commits (a founder push, GitHub's 'Update
+Another writer may have pushed those commits (a founder push, GitHub's 'Update
 branch'). Treat them as work you did not write and must not silently rewrite.
 
 Push to the SAME branch $BRANCH. Do not open a second PR."
@@ -3069,7 +3117,7 @@ earlier PR (ASK-113) hit it on both of its review rounds:
 
   round 1: the detector had no update path      -> the fix added one
   round 2: the update path rewrote a CLOSED issue and never reopened it,
-           so the detector went permanently dark after the operator did the
+           so the detector went permanently dark after the issue was closed, the
            right thing -- WORSE than before the fix
   round 2 also: 'the fix landed on the detector and not on the report'
 
@@ -3084,7 +3132,7 @@ ask what each now does with it:
 - is there a SECOND code path doing the same job that I did not touch? Two readers
   of the same input with different semantics is a defect even when each is
   individually defensible.
-- what does the operator SEE when this fires at 3am, and is that signal or noise?
+- what does Sana's alert triage SEE when this fires at 3am, and is that signal or noise?
 
 If a fix makes any downstream thing quieter, say so explicitly on the PR and
 justify it. Silence bought by a fix is the most expensive kind.
@@ -3994,6 +4042,15 @@ print(max(0, min(behind, budget)))
   # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
   # finds nothing at all.
   say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  # A DISK HALT FILES NOTHING HERE (ASK-3648, PR #656 review round 2, finding 3).
+  # The claim below is one condition-free slot (env-alert.claim), so a disk halt
+  # taking it would swallow a usage-limit page for up to ENV_OUTAGE_MAX_AGE.
+  # kipi-dispatch.sh pages the disk condition itself, once per episode.
+  case "$HALT_REASON" in
+    "the disk is under the worktree floor"*)
+      say "worker: disk-floor halt; the page is kipi-dispatch.sh's (page_once disk-floor), not filed here"
+      exit 9 ;;
+  esac
   # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
   # The alert above was already "one per run", and a run is the wrong unit for a
   # fact about the MACHINE: concurrent workers each meet the same dead account

@@ -583,7 +583,7 @@ def refuse_if_weaker(name, source_text, installed_text):
                     return ("%s: the installed hook DENIES `%s` and the source "
                             "does not (%s). A hook may be repaired, never "
                             "disarmed -- and this was found by comparing against "
-                            "what is running, not against a list someone wrote."
+                            "what is running, not against a hand-typed list."
                             % (name, detail, now))
     finally:
         shutil.rmtree(probe_home, ignore_errors=True)

@@ -734,6 +734,26 @@
       "rationale": "environmental-trigger: a missing binary. The loop cannot install its own tooling, and retrying a PATH lookup that just failed is the definition of a fake tier. It pages once; the healthy path calls page_clear so a recovery is silent and the next episode pages immediately."
     },
     {
+      "id": "dispatch-disk-floor",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "page_once disk-floor",
+      "sites": 1,
+      "what": "Free disk is under the worktree floor (refuse_worktree_below_gb) even after one worktree-reaper pass, so the tick dispatches nothing, claims nothing and spends no budget (ASK-3648). It pages once per episode as a notice, because a full disk stops the whole fleet.",
+      "consumer": "com.kipi.dispatch -- every tick measures again, runs worktree-reaper.py --apply, and dispatches as soon as free space is back over the floor",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "disk_floor_check() {",
+        "why": "The floor is measured at the top of every tick of the same job, before the turn lock. Nothing about the issue changed, so nothing is charged; the tick that finds space dispatches normally."
+      }
+    },
+    {
       "id": "dispatch-turn-lock-held",
       "source": "kipi-dispatch",
       "class": "transient",

@@ -470,7 +470,7 @@ def build_posts(signals, founder_brand_post, post_visuals):
         visual = visual_map.get("linkedin_draft") or visual_map.get("signals")
         needs_eyes = None
         if not visual:
-            needs_eyes = "Visual generation not available - post manually or regenerate"
+            needs_eyes = "Visual generation not available - post it without the visual, or regenerate"
 
         item = make_item(
             id_="POST-LI",
@@ -709,7 +709,7 @@ def build_sycophancy_alert_section(sycophancy_audit):
         findings.append(f"Harness override: {harness_override.get('reason', 'harness disagreed')}")
 
     info_notes = findings + [
-        "The most reliable fix is a conversation with someone who will push back.",
+        "The most reliable fix is a conversation with a reader who will push back.",
         "This is structural, not personal. The system might be filtering."
     ]
 
@@ -744,7 +744,7 @@ def build_sycophancy_watch_section(sycophancy_audit):
 
     info_notes = [
         f"<strong>Sycophancy watch:</strong> {', '.join(checks) if checks else 'review needed'}",
-        "Talk to someone who disagrees with a specific claim this week.",
+        "Talk this week with one reader who disagrees with a specific claim.",
     ]
     if harness_override:
         info_notes.append(f"Harness note: {harness_override.get('reason', 'harness flagged')}")

@@ -50,6 +50,10 @@ in the process table and has no length limit.
 
 import argparse
 import hashlib
+# notify_channel_configured() loads linear-sync.py through importlib.util. It
+# was never imported, so the NameError was swallowed by that function's own
+# except and the channel read as absent on every machine (ASK-4033).
+import importlib.util
 import json
 import os
 import shutil
