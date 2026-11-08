@@ -1344,12 +1344,19 @@ def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
     Mac. heartbeat.py publishes the row off the Mac, where a GitHub Actions check
     reads it, so a starved or silent night pages without the Mac's help.
     OPT-IN BY FLAG, NOT BY --apply: tests run the pass with --apply in-process, and
-    must never write the live ledger or publish a live repo variable. heartbeat.emit
-    never raises: a heartbeat must not cost the pass.
+    must never write the live ledger or publish a live repo variable.
+    NEVER RAISES, LOAD INCLUDED (PR #643 round 1): emit swallows its own errors, but
+    the _load before it did not, so an unloadable heartbeat.py killed the pass after
+    its Linear writes, and on an outage night it replaced the Linear error in the
+    launchd log with its own.
     """
-    mod = _load("heartbeat", "heartbeat.py")
-    res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue, error=error)
-    print(f"  heartbeat: in {n_in}, done {n_done}, {res['published']}")
+    try:
+        mod = _load("heartbeat", "heartbeat.py")
+        res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue, error=error)
+        print(f"  heartbeat: in {n_in}, done {n_done}, {res['published']}")
+    except Exception as exc:  # noqa: BLE001 - a heartbeat must never cost the pass
+        print(f"  heartbeat: not sent ({type(exc).__name__}); the outside checker will "
+              "read this job as missing", file=sys.stderr)
 
 
 def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
@@ -1359,7 +1366,10 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     prepass_only runs the no-model half alone: the founder's drain of the queue
     spends no subscription quota (ASK-3823). beat sends one heartbeat row for the
     pass: in is the batch handed to the model, done is what the model half wrote,
-    queue is what waits. MODEL HALF ONLY (PR #642 round 2): done is is_starved's only
+    queue is what waits, failed pre-pass closes included: run_prepass drops an alert
+    from the pool before its close, a failed one stays open for tomorrow, and without
+    it a night whose every close failed read in 0, done 0, queue 0, a quiet night
+    (PR #643 round 1). MODEL HALF ONLY (PR #642 round 2): done is is_starved's only
     input, and the pre-pass needs no model, so summing its closes into done (round 1)
     kept done above 0 while the model wrote 0 of 8, the 16-night scar this row exists
     to catch. A pre-pass-only drain never emits: it is not the nightly job, and its
@@ -1392,7 +1402,7 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     print(line)
     write_run_evidence(line)
     if beat:
-        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch))
+        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch) + pre["failed"])
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "

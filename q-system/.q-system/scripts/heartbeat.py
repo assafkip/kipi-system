@@ -271,7 +271,9 @@ def issue_title(v: dict) -> str:
 
 
 def issue_body(v: dict, table: dict) -> str:
-    producer = ((table.get("jobs") or {}).get(v["job"]) or {}).get("producer", "(not listed)")
+    spec = (table.get("jobs") or {}).get(v["job"]) or {}
+    producer = spec.get("producer", "(not listed)")
+    label = spec.get("launchd") or f"com.kipi.{v['job']}"
     what = {
         "missing": "The job did not report. It did not run, or it ran and could not publish.",
         "starved": "The job ran and did nothing while work was waiting.",
@@ -279,8 +281,16 @@ def issue_body(v: dict, table: dict) -> str:
         "unlisted": "A job reports, and nothing checks it.",
     }[v["kind"]]
     action = {
-        "missing": (f"Run `launchctl print gui/$(id -u)/com.kipi.{v['job']}` on the Mac and read "
-                    f"its last exit, then the job's log under `~/.config/kipi/`. Producer: `{producer}`."),
+        # A STALE INSTALLED PLIST IS A MISSING CAUSE (PR #643 round 1). install-plist.sh
+        # --missing never rewrites an installed job, so a plist installed before its
+        # --heartbeat flag runs green on the Mac and reads missing here, and launchctl
+        # and the .out log both show a healthy job. The Action names the reinstall.
+        "missing": (f"Run `launchctl print gui/$(id -u)/{label}` on the Mac and read "
+                    "its last exit, then the job's log under `~/.config/kipi/`. If it ran and "
+                    f"exited 0, the installed `~/Library/LaunchAgents/{label}.plist` may predate "
+                    "`--heartbeat`: diff it against the template in `q-system/.q-system/scripts/` "
+                    f"and reinstall with `bash q-system/.q-system/scripts/install-plist.sh {label}`. "
+                    f"Producer: `{producer}`."),
         "starved": (f"Read the failure lines of the job's last two runs in `~/.config/kipi/{v['job']}.out` "
                     f"and `.err`, and fix the cause. Producer: `{producer}`."),
         "unreadable": "Re-run the producer once; its next `heartbeat.py emit` overwrites the variable.",

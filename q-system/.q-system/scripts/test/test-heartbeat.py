@@ -287,6 +287,17 @@ check("it carries the label", all("heartbeat-red" in c for c in creates), True)
 check("the green one closes, the unrelated one is untouched", [c[3] for c in closes], ["6"])
 gh = FakeGh(rc=1)
 check("a gh that cannot list makes the run red", hb.file_issues(viol, {"jobs": {}}, run=gh), 1)
+# PR #643 round 1, major 1: install-plist.sh --missing (what the skeleton sync calls)
+# never rewrites an installed job, so a job whose installed plist predates --heartbeat
+# runs green on the Mac and reads missing off it. The Action named only launchctl and
+# the .out log, both of which show a healthy job. It has to name the stale plist and
+# the reinstall.
+real_table = hb.load_table(REPO / "q-system" / ".q-system" / "heartbeat-jobs.json")
+miss = hb.issue_body({"job": "linear-alert-triage", "kind": "missing", "detail": "d"}, real_table)
+check("a missing issue names the stale installed plist and its reinstall",
+      ("~/Library/LaunchAgents/com.kipi.linear-alert-triage.plist" in miss,
+       "install-plist.sh com.kipi.linear-alert-triage" in miss, "--heartbeat" in miss),
+      (True, True, True))
 check("...and opens nothing", [c for c in gh.calls if c[1:3] == ["issue", "create"]], [])
 
 print("-- wiring: every listed producer emits, and the reader is scheduled")
@@ -368,10 +379,10 @@ class _HbShim:
     """The real heartbeat.emit, forced onto a sandbox ledger and never published."""
 
     def __init__(self):
-        self.now = None
+        self.now, self.state = None, mh_state
 
     def emit(self, job, n_in, n_done, **kw):
-        kw.update(state_dir=mh_state, publish=False, now=self.now)
+        kw.update(state_dir=self.state, publish=False, now=self.now)
         return hb.emit(job, n_in, n_done, **kw)
 
 
@@ -399,6 +410,62 @@ check("night 2's row is the model half: in 8, done 0, queue 1249, streak 2",
       [(r.get("in"), r.get("done"), r.get("queue"), r.get("starved_streak")) for r in mh_rows],
       [(8, 0, 1249, 1), (8, 0, 1249, 2)])
 check("the check fires nothing on night 1 and starved on night 2", mh_kinds, [[], ["starved"]])
+
+# PR #643 round 1, major 2: run_prepass drops an alert from the pool BEFORE its close,
+# so when it takes the whole pool and every close fails the model batch is empty. The
+# row read in 0, done 0, queue 0, a quiet night, while the pass exited 1. A failed
+# close stays open for tomorrow, so it is work that waits: queue counts it.
+mh_shim.state = SANDBOX / "prepass-failed"
+mh.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
+mh.run_prepass = lambda _ls, pool, _apply, _pr=None: ([], _Counter(attempted=5, failed=5))
+pf_rows, pf_kinds, pf_rcs = [], [], []
+for night in (at("2026-11-20T10:30:00Z"), at("2026-11-21T10:30:00Z")):
+    mh_shim.now = night
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        pf_rcs.append(mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True))
+    pf_ledger = mh_shim.state / "linear-alert-triage.jsonl"
+    pf_rows = ([json.loads(x) for x in pf_ledger.read_text().splitlines()]
+               if pf_ledger.is_file() else [])
+    pf_kinds.append([v["kind"] for v in hb.evaluate(
+        {"linear-alert-triage": pf_rows[-1]} if pf_rows else {}, mh_table, night + timedelta(hours=1))
+        if v["job"] == "linear-alert-triage"])
+check("failed pre-pass closes are queued: in 0, done 0, queue 5, streak 1 then 2",
+      [(r.get("in"), r.get("done"), r.get("queue"), r.get("starved_streak")) for r in pf_rows],
+      [(0, 0, 5, 1), (0, 0, 5, 2)])
+check("...so two such nights fire starved, as the exit code already says", (pf_rcs, pf_kinds),
+      ([1, 1], [[], ["starved"]]))
+
+# PR #643 round 1, minor: the wrapper's own _load was unguarded. An unloadable
+# heartbeat.py killed the pass after its Linear writes (the exit code never ran), and
+# on an outage night it replaced the Linear error in the launchd log with its own.
+def _no_heartbeat(name, filename):
+    if name == "heartbeat":
+        raise FileNotFoundError("heartbeat.py unreadable")
+    return mh_real_load(name, filename)
+
+
+mh._load = _no_heartbeat
+try:
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        nb_rc = mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+except Exception as exc:  # noqa: BLE001 - the raise IS the finding
+    nb_rc = type(exc).__name__
+check("an unloadable heartbeat.py does not cost the pass: it still exits 1", nb_rc, 1)
+
+
+def _linear_down(_ls):
+    raise RuntimeError("linear is down")
+
+
+mh.lane_pool = _linear_down
+try:
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+    nb_raised = None
+except Exception as exc:  # noqa: BLE001 - which exception surfaces IS the check
+    nb_raised = type(exc).__name__
+check("...and an outage still surfaces the Linear error, not the heartbeat's", nb_raised,
+      "RuntimeError")
 
 print("-- emit coerces queue before it decides (PR #631 round 2, minor 1)")
 cq, tc = SANDBOX / "coerce", datetime(2026, 11, 8, 10, 30, tzinfo=timezone.utc)
