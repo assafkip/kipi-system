@@ -1010,6 +1010,15 @@ pool = [i for i in issues if ready(i)]
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
+# SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
+# branch_guard refused these because an open PR sits on a branch converge would
+# not commit into, and picking one again only repeats the refusal: on 2026-11-08
+# that repeated every tick until a person closed the PR. The dispatcher owns the
+# list and its expiry; this side only leaves them out of the fresh pick. Not
+# applied to an explicit --issue, which is a driver override (below).
+_set_aside = set((os.environ.get("KIPI_PICK_EXCLUDE") or "").split())
+if _set_aside:
+    pool = [i for i in pool if i["identifier"] not in _set_aside]
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
 # converge.sh and an explicit kipi-work invocation both name an issue the picker
 # already chose, and a rework round must be able to return to it. The job of the
@@ -1142,6 +1151,12 @@ def rework_hold(ident, url):
     i = by_ident.get(ident)
     if i is None:
         return hold("not-on-board", "ticket " + ident + " is not on the board")
+    # THE SECOND PICK PATH HONOURS THE SET-ASIDE LIST TOO (ASK-3993, PR #651 round 1,
+    # major). At the WIP ceiling this feed replaces the fresh pool, so a set-aside
+    # issue that left the pool above came straight back here, and the dispatcher
+    # refused it again every tick. Held as a wait: the list expires in a day.
+    if ident in _set_aside:
+        return hold("set-aside", "set aside for a day after a branch refusal (ASK-3993)")
     if ready(i):
         return "", ""
     if i["state"]["type"] == "started" and held_only_by(i, url):

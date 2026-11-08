@@ -1006,6 +1006,50 @@ FLEET_OPTED="$(fleet_candidates 2>/dev/null | awk -F'\t' -v h="$REPO" 'NF && $2 
 # line that only appears when something happens cannot say it.
 say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted in for cross-repo dispatch"
 
+# --- BRANCH REFUSAL EXIT (ASK-3993, sp-c0c71ad1) ------------------------------
+# A BRANCH REFUSAL COSTS ONE TICK, NOT EVERY TICK. branch_guard (ASK-358) refuses
+# a dispatch whose issue has an open PR on a branch converge would not commit
+# into. Before this block the refusal was `branch_guard || exit 0`, nothing in the
+# loop changed its condition, and the next tick picked the same thing again. On
+# 2026-11-08 from 15:02:43Z a stopped lane PR (#647, on sana/ask-3985-self-cap)
+# was offered as reviewer rework every tick, and the whole queue waited behind it
+# until a person closed the PR.
+#
+# THE EXIT IS TWO HALVES, BOTH ON THE TICK THAT REFUSES. A redrive that picked the
+# PR spends that PR one attempt at this head through its own atomic ledger
+# (mark-dispatched), so the selector stops offering it until the PR moves. And
+# the issue is set aside here for a day, so the next fresh pick goes past it.
+# After the day the guard re-tests it: a closed or renamed PR now passes, and a
+# PR still on the wrong branch is set aside for another day. One refused tick a
+# day, never a jam.
+#
+# NOTHING HERE TOUCHES THE PR OR ITS BRANCH. The lane that owns a branch owns its
+# PR; the open-pr board state carries the PR own exits (wip_release, ASK-3962).
+#
+# Job state, never a tracked file (separate-worktrees.md). One writer:
+# branch_refused_record, which rewrites the file through a temp and a rename and
+# drops entries older than the day as it goes.
+BRANCH_REFUSED_FILE="$HOME/.config/kipi/dispatch-branch-refused.tsv"
+BRANCH_REFUSED_TTL_S=86400
+branch_refused_active() {  # the issues set aside within the day, space-separated
+  awk -F'\t' -v now="$(date +%s)" -v ttl="$BRANCH_REFUSED_TTL_S" \
+    'NF >= 2 && $2 ~ /^[0-9]+$/ && now - $2 < ttl { print $1 }' \
+    "$BRANCH_REFUSED_FILE" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ *$//'
+}
+branch_refused_record() {  # branch_refused_record <issue>: the one writer
+  local now tmp
+  now="$(date +%s)"; tmp="$BRANCH_REFUSED_FILE.tmp.$$"
+  mkdir -p "$(dirname "$BRANCH_REFUSED_FILE")" 2>/dev/null || true
+  { awk -F'\t' -v now="$now" -v ttl="$BRANCH_REFUSED_TTL_S" -v id="$1" \
+      'NF >= 2 && $2 ~ /^[0-9]+$/ && now - $2 < ttl && $1 != id' \
+      "$BRANCH_REFUSED_FILE" 2>/dev/null
+    printf '%s\t%s\n' "$1" "$now"; } > "$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$BRANCH_REFUSED_FILE"
+}
+BRANCH_EXCLUDE="$(branch_refused_active)"
+[ -z "$BRANCH_EXCLUDE" ] || say "set aside for a day after a branch refusal, left out of the fresh pick and the WIP rework pick: $BRANCH_EXCLUDE (a redrive is kept off by its spent attempt, per PR head)"
+# --- END BRANCH REFUSAL EXIT ---
+
 # --- URGENT SLOT (ASK-3996, D25) ----------------------------------------------
 # ONE DISPATCH A DAY GOES TO AN URGENT TICKET, AHEAD OF THE ROTATION. Measured
 # 2026-11-08: the rotation walks home plus 7 opted-in repos, one per tick, and the
@@ -1038,8 +1082,9 @@ say "dispatch: ${FLEET_OPTED:-0} of ${FLEET_TOTAL:-0} registered repo(s) opted i
 #
 # WHAT IT COSTS, MEASURED. One worker dry pick per cleared repo until the first
 # Urgent hit, inside the turn lock, on one tick a day: 55s for 4 repos against
-# the live board on 2026-11-08 (PR #650 round 1 named it; accepted, since it is
-# once a day and well inside the 3600s stale-lock reap).
+# the live board on 2026-11-08, so about 110s on a day with no Urgent pick in any
+# of the 8 (PR #650 rounds 1 and 2 named it; accepted, since it is once a day and
+# well inside the 3600s stale-lock reap).
 #
 # KNOWN RESIDUAL. A reviewer or red-CI redrive in the slot repo still outranks a
 # fresh pick there, by design, so it can take the slot tick. Each redrive is one
@@ -1063,7 +1108,7 @@ urgent_slot_scan() {  # fills SLOT_NAME, SLOT_PATH, SLOT_ISSUE, or leaves them e
     # log a healthy "no Urgent" for the whole day.
     # shellcheck disable=SC2086  # unquoted on purpose: empty must expand to nothing
     out="$(if [ -n "$args" ]; then export KIPI_TARGET_REPO="$path"; fi
-           KIPI_PICK_PRIORITY=1 bash ./kipi work $args </dev/null 2>&1)"
+           KIPI_PICK_EXCLUDE="$BRANCH_EXCLUDE" KIPI_PICK_PRIORITY=1 bash ./kipi work $args </dev/null 2>&1)"
     issue="$(printf '%s' "$out" | grep -oE '\[dry\] would work ASK-[0-9]+' | grep -oE 'ASK-[0-9]+' | head -1)"
     [ -n "$issue" ] || continue
     pri="$(printf '%s\n' "$out" | grep -E "\[dry\] pick priority $issue [0-9]+\$" | head -1 | awk '{print $NF}')"
@@ -1233,7 +1278,7 @@ fi
 # The urgent slot is extra to the rotation, so it hands no turn on (ASK-3996).
 [ "$SLOT_TAKEN" = "1" ] || cursor_set "$TARGET_NAME"
 
-WORK_OUT="$(bash ./kipi work $WORK_ARGS 2>&1)"
+WORK_OUT="$(KIPI_PICK_EXCLUDE="$BRANCH_EXCLUDE" bash ./kipi work $WORK_ARGS 2>&1)"
 WORK_RC=$?
 
 # An infra error (Linear down, auth expired) is environmental: it will not
@@ -1587,7 +1632,22 @@ branch_guard() {
   page_once "$key" "kipi dispatch: $msg"
   return 1
 }
-branch_guard || exit 0
+# THE REFUSING TICK TAKES THE STATE OUT (ASK-3993): see BRANCH REFUSAL EXIT.
+if ! branch_guard; then
+  if [ -n "$REDRIVE_NEXT" ] && [ "$NEXT" = "$REDRIVE_NEXT" ] && [ -n "$REDRIVE_SIG" ]; then
+    python3 "$REDRIVE" mark-dispatched --issue "$NEXT" --signature "$REDRIVE_SIG" \
+      --head-sha "$REDRIVE_SHA" 2>>"$LOG" \
+      || say "branch refusal: could not spend the red-CI attempt for $NEXT; it may be offered again next tick"
+  elif [ -n "$REVIEW_ACTION" ] && [ "$NEXT" = "$REVIEW_NEXT" ]; then
+    python3 "$REVIEW_REDRIVE" mark-dispatched --issue "$NEXT" --action "$REVIEW_ACTION" \
+      --pr "$REVIEW_PR" --head-sha "$REVIEW_SHA" 2>>"$LOG" \
+      || say "branch refusal: could not spend the reviewer attempt for $NEXT PR #$REVIEW_PR; it may be offered again next tick"
+  fi
+  branch_refused_record "$NEXT" \
+    && say "branch refusal: $NEXT is set aside for a day, so the next tick picks other work; after that the guard re-tests it" \
+    || say "branch refusal: could not record $NEXT in $BRANCH_REFUSED_FILE; the next tick may pick it again"
+  exit 0
+fi
 
 # --- RED-CI REDRIVE: MARK-DISPATCHED (ASK-295) -------------------------------
 # Past every guard that can still abort, and immediately before the launch. This

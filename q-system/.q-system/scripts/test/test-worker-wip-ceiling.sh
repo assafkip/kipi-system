@@ -314,6 +314,17 @@ else
   bad "case 1e: an empty queue still drains the pile" "picks: $(picks "$WORK/s1e.out"). Output: $(flat "$WORK/s1e.out")"
 fi
 
+# 1f. THE SET-ASIDE LIST REACHES THE REWORK PICK (ASK-3993, PR #651 round 1,
+# major). The dispatcher sets an issue aside for a day after a branch refusal.
+# At the ceiling the rework feed replaces the fresh pool, so without this the
+# set-aside ASK-901 came straight back as the pick and was refused every tick.
+KIPI_PICK_EXCLUDE="ASK-901" run_worker "$WORKER" "$WORK/s1.prs" "$WORK/s1f.out" --limit 1
+if [ "$(picks "$WORK/s1f.out")" = "ASK-902 " ] && ! grep -q 'would work ASK-901' "$WORK/s1f.out"; then
+  ok "case 1f: at the ceiling a set-aside issue is passed over; the next oldest own PR #902 is the pick"
+else
+  bad "case 1f: the rework pick honours the set-aside list" "picks: $(picks "$WORK/s1f.out"). Output: $(flat "$WORK/s1f.out")"
+fi
+
 # ============================================================================
 # 2. TRAP 1, THE LANE RACE: the oldest own PR's ticket was started an hour ago
 # ============================================================================
