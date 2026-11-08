@@ -163,6 +163,19 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
     | head -1 | tr -d '\n' | cut -c1-120
 }
 
+# THE MARKER ALONE, NEVER ITS TAIL (ASK-3980). For output a model could have
+# written: a SUCCESSFUL `claude -p` exit, whose bytes an issue body can steer
+# through the prompt. The tail after a marker is matched word-led on purpose
+# (`resets .*`, see ENV_TAIL_BODY), so it is free text; the marker is the closed
+# vocabulary in ENV_MARKERS. The DoR drafter files this one on rc 0 and
+# environmental_reason on a failed exit. linear-worker.sh and pr-review-agent.sh
+# still post environmental_reason on rc 0; moving them is ASK-3981.
+environmental_marker() {  # environmental_marker <runner-output> -> the marker only
+  printf '%s' "${1:-}" \
+    | grep -iE "$ENV_LINE_RE" \
+    | head -1 | grep -oiE "$ENV_MARKERS" | head -1 | tr -d '\n' | cut -c1-120
+}
+
 # ---------------------------------------------------------------------------
 # CODEX PRINTS A TRANSCRIPT, NOT A REFUSAL (PR #421 round 8, major)
 # ---------------------------------------------------------------------------

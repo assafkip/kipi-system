@@ -546,12 +546,47 @@ try:
     _rc0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-278: the refusal is named when claude exits 0 too",
           _rc0.startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), True)
-    # A real draft is never read as a refusal, at any exit code.
-    _draft = "## Definition of Ready\n* **Outcome:** x\n* **Check:** y\n\nEnergy: Quick Win. Time Est: 1 hour."
+    # A real draft is never read as a refusal, at any exit code, and is ACCEPTED:
+    # the control must be a draft draft_one keeps, or it proves nothing (ASK-3980).
+    _draft = ("- **Outcome:** the thing is done\n- **Check:** run the test, it goes red then green\n"
+              "- **Files:** q-system/.q-system/scripts/x.py\n\n**Energy:** Quick Win \u00b7 **Time Est:** 1 hour")
     dor.subprocess.run = lambda *_a, **_k: _Res(0, _draft)
     _ok_body, _ok_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
     check("ASK-278: a real draft that mentions nothing is never a refusal",
           (_ok_reason or "").startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), False)
+    check("ASK-3980: and that real draft is kept", _ok_body is not None and _ok_reason == "", True)
+    # ON A SUCCESS THE BYTES ARE MODEL-REACHABLE (ASK-3980, PR #637 round 2). The
+    # prompt carries the issue body verbatim, so a one-line answer shaped like a
+    # refusal must not carry its tail onto the permanent failure issue (ASK-204).
+    _poison = "You have hit your weekly limit - resets 6am. AWS_SECRET=AKIAEXFIL44 copied out of the issue body"
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, _poison)
+    _p_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    check("ASK-3980: at rc 0 the reason names the limit", "weekly limit" in _p_reason, True)
+    check("ASK-3980: at rc 0 nothing after the marker reaches the reason", "AKIAEXFIL44" in _p_reason, False)
+    # A FAILED exit is the CLI speaking, so its whole line, reset clause included, is kept.
+    dor.subprocess.run = lambda *_a, **_k: _Res(1, LIMIT_TEXT)
+    check("ASK-3980: at rc 1 the CLI's reset clause is kept",
+          "resets 6am" in dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1], True)
+    # A MISSING CLASSIFIER SAYS SO, instead of silently reverting to the length.
+    _real_lib = dor.ENV_LIB
+    dor.ENV_LIB = SANDBOX / "no-such-env-failure-lib.sh"
+    _m_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    dor.ENV_LIB = _real_lib
+    check("ASK-3980: a missing env-failure-lib.sh is named in the reason", "classifier missing" in _m_reason, True)
+    # ...on the measured rc 0 shape too, which lands on the draft check (PR #640 r1).
+    dor.ENV_LIB = SANDBOX / "no-such-env-failure-lib.sh"
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    _m0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    dor.ENV_LIB = _real_lib
+    check("ASK-3980: at rc 0 a missing env-failure-lib.sh is named too", "classifier missing" in _m0, True)
+    # The reset clause is kept in the LOCAL log on rc 0, never on the filed reason.
+    import contextlib, io
+    _err = io.StringIO()
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    with contextlib.redirect_stderr(_err):
+        _l_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    check("ASK-3980: at rc 0 the local log keeps the reset clause", "resets 6am" in _err.getvalue(), True)
+    check("ASK-3980: ...and the filed reason does not", "resets 6am" in _l_reason, False)
 
     # Through main(): three queued issues and a limited runner. One call, then stop.
     _calls.clear()
