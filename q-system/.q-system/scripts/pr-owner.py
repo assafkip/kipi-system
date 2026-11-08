@@ -41,8 +41,9 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
   * a lessons PR whose every ledger entry is already on its base: close as
     superseded. Decided by content, the way the 4 weekly batches (#515, #518, #536,
     #539) were measured and closed on 2026-11-08, not by age or branch name.
-  * kipi/reviewer-approved green and GitHub says mergeable and clean:
-    `gh pr merge --squash --match-head-commit <sha>`.
+  * kipi/reviewer-approved green, every CI check green, and GitHub says
+    mergeable and CLEAN: `gh pr merge --squash --match-head-commit <sha>`. Never
+    on UNSTABLE: that is GitHub saying a check is not green (PR #659 round 1).
   * CI green and never reviewed: `kipi review <n> --repo <path> --post`, at most one
     per run, at most one per head.
   * red (CI failure, conflict, REQUEST CHANGES or BLOCK or no verdict, review cap,
@@ -54,6 +55,15 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
       - no ticket, or a closed one: close with a comment.
   * checks still running, or GitHub has not computed mergeability: wait.
 A close never deletes the branch. Reopening the PR undoes it.
+
+A FORK IS NEVER ACTED ON (PR #659 round 1, major). On a public repo the branch
+name and the title are strings the PR's author chose, and both bind a PR to a
+ticket here. A stranger's PR on `sana/ask-2540` would have moved a live lane's
+ticket to Backlog 48 hours later. So provenance is read before anything else,
+through ci-redrive.py's head_provenance (the rule review-redrive.py imports too),
+and a fork or an unstated head gets `outside`: no read of Linear, no comment, no
+close. An outside contribution is the founder's call, not the fleet's; the run
+output lists it.
 
 A LIVE LANE IS NEVER CLOSED. A ticket started inside linear-sync.py's
 STARTED_STALE_HOURS window, or with a live worker claim, holds its PR. Same rule
@@ -101,8 +111,6 @@ AGE_S = 48 * 3600
 QUIET_S = 12 * 3600
 
 REVIEWER_CONTEXT = "kipi/reviewer-approved"
-# Engine slots, not CI. Each is a verdict, read separately below.
-ENGINE_CONTEXTS = ("kipi/reviewer-approved", "kipi/codex-approved")
 LEDGER = "lesson-candidates/.processed.json"
 OWN_PREFIX = "sana/"
 # The board's only team (audit 2026-11-08: 2382 open ASK issues). A prefix list,
@@ -112,7 +120,7 @@ AGENT = "pr-owner"
 
 GREEN_RUN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RUNNING_STATUS = {"PENDING", "EXPECTED", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED"}
-MERGE_READY = {"CLEAN", "HAS_HOOKS", "UNSTABLE"}
+MERGE_READY = {"CLEAN", "HAS_HOOKS"}
 
 
 def now_s() -> int:
@@ -257,20 +265,42 @@ def archived(path: str, label: str) -> bool:
 # ---------------------------------------------------------------- reading a PR
 
 PR_FIELDS = ("number,title,url,headRefName,headRefOid,baseRefName,createdAt,isDraft,"
-             "mergeable,mergeStateStatus,statusCheckRollup")
+             "isCrossRepository,mergeable,mergeStateStatus,statusCheckRollup")
 # Read per aged PR, never in the list. Measured 2026-11-08, first live dry run:
 # `commits` in a 200-PR list traverses the authors connection and GitHub refuses the
 # whole query ("requesting up to 1,000,000 possible nodes"), so every repo read as
 # unreadable and the run owned nothing.
-DETAIL_FIELDS = "commits,files"
+# mergeable and mergeStateStatus again, because the list answers UNKNOWN for an old
+# PR until something asks GitHub to compute it, and a per-PR view is that ask.
+# Measured 2026-11-08: #526 read UNKNOWN from the list and MERGEABLE from a view,
+# and without this it would have waited forever.
+DETAIL_FIELDS = "commits,files,mergeable,mergeStateStatus"
+
+
+_CI = None
+
+
+def ci_redrive():
+    # IMPORTED, NOT COPIED, as review-redrive.py does it. Which contexts are an
+    # engine's verdict slot (is_reviewer_slot) and whether a head is a fork
+    # (head_provenance) each cost a defect to get right in ci-redrive.py. The first
+    # cut here hardcoded two slot names, so a third engine's slot read as red CI
+    # and would have closed a green PR (PR #659 round 1, minor).
+    global _CI
+    if _CI is None:
+        spec = importlib.util.spec_from_file_location("ci_redrive", SCRIPTS / "ci-redrive.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _CI = mod
+    return _CI
 
 
 def ci_state(rollup) -> tuple[str, list]:
-    """("green"|"running"|"red", names). Engine verdict contexts are not CI."""
+    """("green"|"running"|"red", names). Engine verdict slots are not CI."""
     red, running = [], []
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "?"
-        if name in ENGINE_CONTEXTS:
+        if ci_redrive().is_reviewer_slot(name):
             continue
         if c.get("__typename") == "CheckRun" or "conclusion" in c:
             if (c.get("status") or "COMPLETED") != "COMPLETED":
@@ -373,6 +403,7 @@ def normalize(slug: str, name: str, path: str, raw: dict) -> dict:
         "merge_state": raw.get("mergeStateStatus") or "UNKNOWN",
         "ci": ci, "ci_names": ci_names,
         "touches_ledger": any((f.get("path") or "") == LEDGER for f in raw.get("files") or []),
+        "provenance": ci_redrive().head_provenance(raw),
     }
 
 
@@ -431,12 +462,15 @@ def resolve_ticket(pr: dict, load):
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?}. Actions: skip, young, wait, hold,
-    merge, review, close-superseded, rework, close-requeue, close-comment.
+    Returns {"action", "reason", "ticket"?}. Actions: skip, outside, young, wait,
+    hold, merge, review, close-superseded, rework, close-requeue, close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
     if key in skip or f"{pr['slug'].split('/')[-1]}#{pr['number']}" in skip:
         return {"action": "skip", "reason": "named by --skip"}
+    if pr.get("provenance") != ci_redrive().SAME_REPO:
+        return {"action": "outside",
+                "reason": f"head provenance is {pr.get('provenance') or 'unstated'}: its branch and title are its author's, so it binds no ticket and pr-owner does not act on it"}
     age = now - (pr["created"] or now)
     if age < AGE_S:
         return {"action": "young", "reason": f"open {hours(age)}, under the {hours(AGE_S)} age; whatever opened it still owns it"}
@@ -452,10 +486,11 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
 
     if pr["mergeable"] == "UNKNOWN":
         return {"action": "wait", "reason": "GitHub has not computed mergeability yet"}
-    if rv == "approved" and pr["mergeable"] == "MERGEABLE" and pr["merge_state"] in MERGE_READY and not pr["draft"]:
-        return {"action": "merge", "reason": f"approved ({rv_desc}), mergeable, merge state {pr['merge_state']}"}
     if pr["ci"] == "running":
         return {"action": "wait", "reason": "checks still running: " + ", ".join(pr["ci_names"][:4])}
+    if (rv == "approved" and pr["ci"] == "green" and pr["mergeable"] == "MERGEABLE"
+            and pr["merge_state"] in MERGE_READY and not pr["draft"]):
+        return {"action": "merge", "reason": f"approved ({rv_desc}), CI green, mergeable, merge state {pr['merge_state']}"}
     if rv == "pending":
         return {"action": "wait", "reason": f"reviewer status pending: {rv_desc}"}
 
@@ -662,7 +697,7 @@ def main(argv=None) -> int:
     if not rows:
         print("REFUSED: fleet_candidates returned no repo at all, not even home", file=sys.stderr)
         return 3
-    counts = {k: 0 for k in ("skip", "young", "wait", "hold") + WRITES}
+    counts = {k: 0 for k in ("skip", "outside", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
     for name, path, _remote in rows:
@@ -694,7 +729,7 @@ def main(argv=None) -> int:
             n_prs += 1
             pr = normalize(slug, name, path, item)
             tag = f"{slug}#{pr['number']} ({pr['branch']})"
-            if now - (pr["created"] or now) >= AGE_S:
+            if pr["provenance"] == ci_redrive().SAME_REPO and now - (pr["created"] or now) >= AGE_S:
                 try:
                     detail = gh_json(["pr", "view", str(pr["number"]), "-R", slug, "--json", DETAIL_FIELDS])
                     pr = normalize(slug, name, path, {**item, **(detail or {})})

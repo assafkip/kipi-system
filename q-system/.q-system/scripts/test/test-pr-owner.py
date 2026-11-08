@@ -96,7 +96,7 @@ def pr(**kw):
             "branch": "fix/fleet-scan-runner-trees-drain-ask-2540", "head": "a6de9861" + "0" * 32,
             "base": "main", "created": NOW - 32 * 24 * H, "pushed": NOW - 32 * 24 * H,
             "draft": False, "mergeable": "MERGEABLE", "merge_state": "BLOCKED",
-            "ci": "green", "ci_names": [], "touches_ledger": False,
+            "ci": "green", "ci_names": [], "touches_ledger": False, "provenance": "same-repo",
             "reviewer": ("rejected", "delta fa5dab03..a6de9861: REQUEST CHANGES")}
     base.update(kw)
     return base
@@ -192,6 +192,38 @@ check("lessons batch all on base -> close-superseded", act_of(sup)["action"], "c
 check("lessons batch with one entry not on base -> not superseded",
       act_of({**sup, "lessons": {"batch": 19, "on_base": 18}})["action"] != "close-superseded", True)
 
+print("-- forks are never acted on (PR #659 round 1, major 1)")
+LOOKED: list[str] = []
+
+
+def watching(ident):
+    LOOKED.append(ident)
+    return ticket(ident, "started", started_h=400)
+
+
+fork = pr(provenance="fork", branch="sana/ask-2540", title="looks like ours")
+check("a fork on sana/ask-2540, its ticket started long ago -> outside",
+      po.decide(fork, NOW, {}, watching, 1, set())["action"], "outside")
+check("... and Linear is never read for it", LOOKED, [])
+check("an unstated head -> outside", act_of(pr(provenance="unstated"))["action"], "outside")
+check("provenance comes from ci-redrive's head_provenance",
+      [po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": v})["provenance"] for v in (False, True, None)],
+      ["same-repo", "fork", "unstated"])
+
+print("-- merge needs green CI and CLEAN (PR #659 round 1, major 2)")
+ok_rv = ("approved", "APPROVE")
+check("approved, UNSTABLE, CI red -> not a merge",
+      act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE", ci="red", ci_names=["lint=FAILURE"]),
+             {"ASK-2540": ticket("ASK-2540")})["action"], "close-requeue")
+check("approved, UNSTABLE, CI green -> not a merge",
+      act_of(pr(reviewer=ok_rv, merge_state="UNSTABLE"), {"ASK-2540": ticket("ASK-2540")})["action"] != "merge", True)
+check("approved, CLEAN, CI still running -> wait",
+      act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="running", ci_names=["validate"]))["action"], "wait")
+check("approved, CLEAN, but our read of CI is red -> not a merge (the two reads can disagree)",
+      act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="red", ci_names=["scan=ACTION_REQUIRED"]),
+             {"ASK-2540": ticket("ASK-2540")})["action"], "close-requeue")
+check("approved, HAS_HOOKS, CI green -> merge", act_of(pr(reviewer=ok_rv, merge_state="HAS_HOOKS"))["action"], "merge")
+
 # ---------------------------------------------------------------- readers
 print("-- readers")
 check("the floor description is read from reviewer-floor.sh", FLOOR.startswith("no reviewer verdict at this head"), True)
@@ -210,6 +242,8 @@ check("CI: a failed check run -> red",
       po.ci_state([{"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "FAILURE"}])[0], "red")
 check("CI: the reviewer context is not CI",
       po.ci_state([{"__typename": "StatusContext", "context": "kipi/reviewer-approved", "state": "FAILURE"}])[0], "green")
+check("CI: a third engine's slot is not CI either (PR #659 round 1, minor 1)",
+      po.ci_state([{"__typename": "StatusContext", "context": "kipi/gemini-approved", "state": "FAILURE"}])[0], "green")
 check("ticket from a fix/ branch", po.ticket_candidates("fix/fleet-scan-runner-trees-drain-ask-2540", ""), ["ASK-2540"])
 check("ticket from a title", po.ticket_candidates("feature", "fix(ASK-142): stop-hook routing"), ["ASK-142"])
 check("lessons/weekly-2026-10-19 names no ticket", po.ticket_candidates("lessons/weekly-2026-10-19", "weekly distill 2026-10-19"), [])
@@ -230,14 +264,14 @@ check("'--delete-branch' appears only in the refusal", src.count('"--delete-bran
 # ---------------------------------------------------------------- apply and dry, end to end
 print("-- --apply and the dry run, end to end on a faked fleet")
 SLUG = "o/fx"
-SHA = {n: f"{n:02d}" + "ab" * 19 for n in range(1, 9)}
+SHA = {n: f"{n:02d}" + "ab" * 19 for n in range(1, 10)}
 OLD, FRESH = "2026-10-01T00:00:00Z", "2026-11-08T20:00:00Z"
 ROLL_OK = [{"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}]
 
 
 def raw(n, branch, title="t", **kw):
     r = {"number": n, "title": title, "url": f"https://github.com/{SLUG}/pull/{n}", "headRefName": branch,
-         "headRefOid": SHA[n], "baseRefName": "main", "createdAt": OLD, "isDraft": False,
+         "headRefOid": SHA[n], "baseRefName": "main", "createdAt": OLD, "isDraft": False, "isCrossRepository": False,
          "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED", "statusCheckRollup": ROLL_OK}
     r.update(kw)
     return r
@@ -245,11 +279,12 @@ def raw(n, branch, title="t", **kw):
 
 PRS = [raw(1, "fix/thing-ask-2540"), raw(2, "sana/ask-3036"), raw(3, "feat/ok", mergeStateStatus="CLEAN"),
        raw(4, "feat/a"), raw(5, "feat/b"), raw(6, "feat/fresh"), raw(7, "lessons/weekly-2026-10-19"),
-       raw(8, "sana/ask-142")]
+       raw(8, "sana/ask-142"), raw(9, "sana/ask-3036", title="fork (ASK-2540)", isCrossRepository=True)]
 PUSHED = {n: (FRESH if n == 6 else OLD) for n in SHA}
 REVIEWER = {1: ("failure", "delta x..y: REQUEST CHANGES"), 2: ("failure", "unstated: no verdict parsed from the review"),
             3: ("success", "APPROVE"), 4: ("failure", FLOOR), 5: ("failure", FLOOR), 6: ("failure", FLOOR),
-            7: ("failure", FLOOR), 8: ("failure", "delta x..y: REQUEST CHANGES")}
+            7: ("failure", FLOOR), 8: ("failure", "delta x..y: REQUEST CHANGES"),
+            9: ("failure", "delta x..y: REQUEST CHANGES")}
 LEDGERS = {SHA[7]: {"k1": {"status": "published"}, "k2": {"status": "published"}}, "mb7": {}, "main": {"k1": {}, "k2": {}, "k0": {}}}
 TICKETS = {"ASK-2540": ticket("ASK-2540", "backlog"), "ASK-3036": ticket("ASK-3036", "started", started_h=400),
            "ASK-142": ticket("ASK-142", "started", started_h=200)}
@@ -340,6 +375,8 @@ check("#5 waits: the run's one review is spent", sent_for(5, "close") + sent_for
 check("#6 (pushed an hour ago) gets nothing", sent_for(6, "close") + sent_for(6, "comment"), [])
 check("#7 (lessons batch on main) is closed as superseded", len(sent_for(7, "close")), 1)
 check("#8 (--skip) gets nothing", [a for a in writes() if "8" in a[3:4] or "ASK-142" in a], [])
+check("#9 (a fork on sana/ask-3036) gets nothing, not even a read of its head",
+      [a for a in SENT if "9" in a[3:4] or any(SHA[9] in x for x in a)], [])
 st = json.loads(po.state_path().read_text())
 check("the strike on #2 is recorded at its head", st["strikes"]["o/fx#2"]["head"], SHA[2])
 check("the review on #4 is recorded at its head", st["reviews"]["o/fx#4"]["head"], SHA[4])

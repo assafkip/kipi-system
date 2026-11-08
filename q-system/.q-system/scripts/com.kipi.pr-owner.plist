@@ -16,8 +16,9 @@
      shared checkout a human works in (founder, 2026-11-08, separate worktrees).
 
      HOURLY, NOT DAILY. Each run writes at most one review and acts only on PRs 48h
-     old with 12h of quiet, so most runs read and do nothing. An hour bounds how long
-     an approved, mergeable PR waits for its merge.
+     old with 12h of quiet, so most runs read and do nothing. The hour is the delay
+     AFTER a PR crosses those two bars, not the whole wait: an approved PR that its
+     own pipeline did not merge still waits 48h for this job (PR #659 round 1).
 
      PATH, USER AND LOGNAME, because the review step runs `claude -p` through
      pr-review-agent.sh: a bash login shell does not put ~/.local/bin on PATH
