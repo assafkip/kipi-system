@@ -161,6 +161,13 @@ def _emit(job, n_in, n_done, queue, error, state_dir, repo_root, publish, run, n
     state.mkdir(parents=True, exist_ok=True)
     ledger = state / f"{job}.jsonl"
     prev = _last_row(ledger) or {}
+    # COERCED ONCE, BEFORE THE DECISION (PR #631 round 2, minor 1). A producer that
+    # passes "32" must neither kill the emit nor publish a row whose queue
+    # disagrees with the starved decision taken on it. Unreadable reads as unknown.
+    try:
+        queue = None if queue is None else int(queue)
+    except (TypeError, ValueError):
+        queue = None
     starved = is_starved(int(n_in), int(n_done), error, queue)
     streak = int(prev.get("starved_streak") or 0) + 1 if starved else 0
     row = {"job": job, "at": _iso(now or _now()), "in": int(n_in), "done": int(n_done),
@@ -264,7 +271,9 @@ def issue_title(v: dict) -> str:
 
 
 def issue_body(v: dict, table: dict) -> str:
-    producer = ((table.get("jobs") or {}).get(v["job"]) or {}).get("producer", "(not listed)")
+    spec = (table.get("jobs") or {}).get(v["job"]) or {}
+    producer = spec.get("producer", "(not listed)")
+    label = spec.get("launchd") or f"com.kipi.{v['job']}"
     what = {
         "missing": "The job did not report. It did not run, or it ran and could not publish.",
         "starved": "The job ran and did nothing while work was waiting.",
@@ -272,8 +281,16 @@ def issue_body(v: dict, table: dict) -> str:
         "unlisted": "A job reports, and nothing checks it.",
     }[v["kind"]]
     action = {
-        "missing": (f"Run `launchctl print gui/$(id -u)/com.kipi.{v['job']}` on the Mac and read "
-                    f"its last exit, then the job's log under `~/.config/kipi/`. Producer: `{producer}`."),
+        # A STALE INSTALLED PLIST IS A MISSING CAUSE (PR #643 round 1). install-plist.sh
+        # --missing never rewrites an installed job, so a plist installed before its
+        # --heartbeat flag runs green on the Mac and reads missing here, and launchctl
+        # and the .out log both show a healthy job. The Action names the reinstall.
+        "missing": (f"Run `launchctl print gui/$(id -u)/{label}` on the Mac and read "
+                    "its last exit, then the job's log under `~/.config/kipi/`. If it ran and "
+                    f"exited 0, the installed `~/Library/LaunchAgents/{label}.plist` may predate "
+                    "`--heartbeat`: diff it against the template in `q-system/.q-system/scripts/` "
+                    f"and reinstall with `bash q-system/.q-system/scripts/install-plist.sh {label}`. "
+                    f"Producer: `{producer}`."),
         "starved": (f"Read the failure lines of the job's last two runs in `~/.config/kipi/{v['job']}.out` "
                     f"and `.err`, and fix the cause. Producer: `{producer}`."),
         "unreadable": "Re-run the producer once; its next `heartbeat.py emit` overwrites the variable.",

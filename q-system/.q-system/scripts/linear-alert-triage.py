@@ -1333,14 +1333,56 @@ def _pass_exit_code(tally: Counter, batch: int, apply: bool) -> int:
     return 0
 
 
+HEARTBEAT_JOB = "linear-alert-triage"
+
+
+def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
+    """One heartbeat row for this pass (ASK-3965). Only the launchd job asks for it.
+
+    WHY. This job wrote 0 on 16 nights in a row (2026-10-23 to 11-07) while its
+    queue grew from 701 to 1269, and the only record was its own .out file on the
+    Mac. heartbeat.py publishes the row off the Mac, where a GitHub Actions check
+    reads it, so a starved or silent night pages without the Mac's help.
+    OPT-IN BY FLAG, NOT BY --apply: tests run the pass with --apply in-process, and
+    must never write the live ledger or publish a live repo variable.
+    NEVER RAISES, LOAD INCLUDED (PR #643 round 1): emit swallows its own errors, but
+    the _load before it did not, so an unloadable heartbeat.py killed the pass after
+    its Linear writes, and on an outage night it replaced the Linear error in the
+    launchd log with its own.
+    """
+    try:
+        mod = _load("heartbeat", "heartbeat.py")
+        res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue, error=error)
+        print(f"  heartbeat: in {n_in}, done {n_done}, {res['published']}")
+    except Exception as exc:  # noqa: BLE001 - a heartbeat must never cost the pass
+        print(f"  heartbeat: not sent ({type(exc).__name__}); the outside checker will "
+              "read this job as missing", file=sys.stderr)
+
+
 def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
-               prepass_only: bool = False) -> int:
+               prepass_only: bool = False, beat: bool = False) -> int:
     """One bounded unattended pass. Returns the process exit code.
 
     prepass_only runs the no-model half alone: the founder's drain of the queue
-    spends no subscription quota (ASK-3823)."""
+    spends no subscription quota (ASK-3823). beat sends one heartbeat row for the
+    pass: in is the batch handed to the model, done is what the model half wrote,
+    queue is what waits, failed pre-pass closes included: run_prepass drops an alert
+    from the pool before its close, a failed one stays open for tomorrow, and without
+    it a night whose every close failed read in 0, done 0, queue 0, a quiet night
+    (PR #643 round 1). MODEL HALF ONLY (PR #642 round 2): done is is_starved's only
+    input, and the pre-pass needs no model, so summing its closes into done (round 1)
+    kept done above 0 while the model wrote 0 of 8, the 16-night scar this row exists
+    to catch. A pre-pass-only drain never emits: it is not the nightly job, and its
+    row would land in the nightly job's ledger."""
     decider = decider or decide
-    pool, refused = lane_pool(ls)
+    beat = beat and apply and not prepass_only
+    try:
+        pool, refused = lane_pool(ls)
+    except Exception:
+        # The outage night says so, instead of reading "missing" two days later.
+        if beat:
+            heartbeat(0, 0, error="linear-unreachable")
+        raise
     pool, pre = run_prepass(ls, pool, apply, pr_state)
     batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
@@ -1359,6 +1401,8 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
             + _prepass_part(pre, apply))
     print(line)
     write_run_evidence(line)
+    if beat:
+        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch) + pre["failed"])
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
@@ -1399,6 +1443,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--prepass-only", action="store_true",
                     help="run: only the no-model pre-pass; no model call, no quota")
     ap.add_argument("--apply", action="store_true", help="write to Linear")
+    ap.add_argument("--heartbeat", action="store_true",
+                    help="run: report in/done to heartbeat.py (the launchd plist passes this)")
     return ap
 
 
@@ -1422,7 +1468,8 @@ def main() -> int:
         if a.limit < 1:
             print("--limit must be at least 1", file=sys.stderr)
             return 2
-        return run_triage(ls, a.limit, a.apply, prepass_only=a.prepass_only)
+        return run_triage(ls, a.limit, a.apply, prepass_only=a.prepass_only,
+                          beat=a.heartbeat)
 
     if a.verb == "list":
         issues = [i for i in fetch_open(ls, a.project)

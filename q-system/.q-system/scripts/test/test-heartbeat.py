@@ -13,6 +13,8 @@ GREEN means:
   * a healthy series fires nothing, and a good run resets the streak;
   * every listed producer calls heartbeat, the plist passes --heartbeat, and the
     drafter's real main() emits only when asked;
+  * an alert-triage night whose model half writes 0 is starved, whatever the
+    no-model pre-pass closed (PR #642 round 2), through the real emit and evaluate;
   * fleet-health mirrors heartbeat-red issues, and a blind gh is a finding.
 MUTANTS: the same invariant cases run against a copy of heartbeat.py with the
 starved rule removed, the missing rule removed, and the queue term of
@@ -37,7 +39,7 @@ import plistlib
 import re
 import sys
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -285,6 +287,17 @@ check("it carries the label", all("heartbeat-red" in c for c in creates), True)
 check("the green one closes, the unrelated one is untouched", [c[3] for c in closes], ["6"])
 gh = FakeGh(rc=1)
 check("a gh that cannot list makes the run red", hb.file_issues(viol, {"jobs": {}}, run=gh), 1)
+# PR #643 round 1, major 1: install-plist.sh --missing (what the skeleton sync calls)
+# never rewrites an installed job, so a job whose installed plist predates --heartbeat
+# runs green on the Mac and reads missing off it. The Action named only launchctl and
+# the .out log, both of which show a healthy job. It has to name the stale plist and
+# the reinstall.
+real_table = hb.load_table(REPO / "q-system" / ".q-system" / "heartbeat-jobs.json")
+miss = hb.issue_body({"job": "linear-alert-triage", "kind": "missing", "detail": "d"}, real_table)
+check("a missing issue names the stale installed plist and its reinstall",
+      ("~/Library/LaunchAgents/com.kipi.linear-alert-triage.plist" in miss,
+       "install-plist.sh com.kipi.linear-alert-triage" in miss, "--heartbeat" in miss),
+      (True, True, True))
 check("...and opens nothing", [c for c in gh.calls if c[1:3] == ["issue", "create"]], [])
 
 print("-- wiring: every listed producer emits, and the reader is scheduled")
@@ -297,14 +310,172 @@ wf = (REPO / ".github" / "workflows" / "heartbeat.yml").read_text()
 for needle in ("schedule:", "cron:", "issues: write", "toJSON(vars)",
                "heartbeat.py check --file-issues"):
     check(f"the workflow carries {needle!r}", needle in wf, True)
-tmpl = (SCRIPTS / "com.kipi.linear-dor.plist").read_text()
-rendered = tmpl.replace("__KIPI_REPO__", "/r").replace("__HOME__", "/h").encode()
+# EVERY listed job's plist passes --heartbeat (ASK-3965): a producer that emits only
+# when asked, run by a plist that never asks, is the silent job this table exists for.
+for job, spec in sorted(table["jobs"].items()):
+    tmpl_path = SCRIPTS / f"{spec.get('launchd', '')}.plist"
+    tmpl = tmpl_path.read_text() if tmpl_path.is_file() else ""
+    rendered = tmpl.replace("__KIPI_REPO__", "/r").replace("__HOME__", "/h").encode()
+    try:
+        args = plistlib.loads(rendered)["ProgramArguments"]
+    except Exception as exc:  # noqa: BLE001 - a parse failure IS the finding
+        args = [f"unparseable: {type(exc).__name__}"]
+    check(f"{job}: its plist parses strictly and passes --heartbeat",
+          "--heartbeat" in (args[-1] if args else "").split(), True)
+
+print("-- wiring: the alert-triage pass emits only when asked, and only when it writes")
+tri = load(SCRIPTS / "linear-alert-triage.py", "triage_under_test")
+tbeats: list = []
+tri.heartbeat = lambda n_in, n_done, queue=None, error=None: tbeats.append((n_in, n_done, queue, error))
+tri.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
+tri.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool, __import__("collections").Counter())
+tri._prepass_part = lambda _pre, _apply: ""
+tri.write_run_evidence = lambda _line: None
+tri._triage_one = lambda _ls, issue, _d, _apply: "written" if issue["identifier"] == "ASK-0" else "skipped"
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True)
+check("alert-triage without the flag emits nothing", tbeats, [])
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, False, beat=True)
+check("alert-triage dry run emits nothing, flag or not", tbeats, [])
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True)
+check("alert-triage with --heartbeat emits in 2, done 1, queue 3", tbeats, [(2, 1, 3, None)])
+# The no-model pre-pass's closes are NOT model work (PR #642 round 2): 3 examined and
+# 2 closed beside 1 written still reports in 2, done 1. Counting them in done kept
+# done above 0 on a model-silent night, and done is is_starved's only input.
+tbeats.clear()
+tri.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool, __import__("collections").Counter(attempted=3, closed=2))
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True)
+check("pre-pass closes stay out of the row: in 2, done 1", tbeats, [(2, 1, 3, None)])
+tbeats.clear()
+with redirect_stdout(io.StringIO()):
+    tri.run_triage(None, 2, True, beat=True, prepass_only=True)
+check("a pre-pass-only drain never emits into the nightly job's ledger", tbeats, [])
+def _down(_ls):
+    raise RuntimeError("linear is down")
+tri.lane_pool = _down
 try:
-    args = plistlib.loads(rendered)["ProgramArguments"]
-except Exception as exc:  # noqa: BLE001 - a parse failure IS the finding
-    args = [f"unparseable: {type(exc).__name__}"]
-check("the linear-dor plist parses strictly and passes --heartbeat",
-      "--heartbeat" in (args[-1] if args else "").split(), True)
+    with redirect_stdout(io.StringIO()):
+        tri.run_triage(None, 2, True, beat=True)
+except RuntimeError:
+    pass
+check("an outage night emits an errored row, not silence", tbeats, [(0, 0, None, "linear-unreachable")])
+check("the parser carries --heartbeat",
+      tri.build_parser().parse_args(["run", "--apply", "--heartbeat"]).heartbeat, True)
+
+print("-- the model half's silence fires starved, whatever the pre-pass closed (PR #642 round 2)")
+# The 16-night scar, replayed through the real wrapper, emit and evaluate: the pool at
+# 1269, the no-model pre-pass closing 12, every model decision failing, two nights.
+# Round 1 summed the closes into done, so done read 12, the streak stayed 0 and the
+# check stayed green on exactly the failure this heartbeat exists to catch.
+from collections import Counter as _Counter
+mh = load(SCRIPTS / "linear-alert-triage.py", "triage_model_half")
+mh_state = SANDBOX / "model-half"
+
+
+class _HbShim:
+    """The real heartbeat.emit, forced onto a sandbox ledger and never published."""
+
+    def __init__(self):
+        self.now, self.state = None, mh_state
+
+    def emit(self, job, n_in, n_done, **kw):
+        kw.update(state_dir=self.state, publish=False, now=self.now)
+        return hb.emit(job, n_in, n_done, **kw)
+
+
+mh_shim = _HbShim()
+mh_real_load = mh._load
+mh._load = lambda name, filename: mh_shim if name == "heartbeat" else mh_real_load(name, filename)
+mh.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(1269)], [])
+mh.run_prepass = lambda _ls, pool, _apply, _pr=None: (pool[12:], _Counter(attempted=12, closed=12))
+mh.write_run_evidence = lambda _line: None  # the live ~/.config/kipi/*.out, never from a test
+mh_table = hb.load_table(REPO / "q-system" / ".q-system" / "heartbeat-jobs.json")
+mh_kinds = []
+for night in (at("2026-11-09T10:30:00Z"), at("2026-11-10T10:30:00Z")):
+    mh_shim.now = night
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        mh_rc = mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+    # No ledger is a FAIL line below, not a crash that skips every later check.
+    mh_ledger = mh_state / "linear-alert-triage.jsonl"
+    mh_rows = ([json.loads(x) for x in mh_ledger.read_text().splitlines()]
+               if mh_ledger.is_file() else [])
+    mh_kinds.append([v["kind"] for v in hb.evaluate(
+        {"linear-alert-triage": mh_rows[-1]} if mh_rows else {}, mh_table, night + timedelta(hours=1))
+        if v["job"] == "linear-alert-triage"])
+check("a model-silent pass exits red", mh_rc, 1)
+check("night 2's row is the model half: in 8, done 0, queue 1249, streak 2",
+      [(r.get("in"), r.get("done"), r.get("queue"), r.get("starved_streak")) for r in mh_rows],
+      [(8, 0, 1249, 1), (8, 0, 1249, 2)])
+check("the check fires nothing on night 1 and starved on night 2", mh_kinds, [[], ["starved"]])
+
+# PR #643 round 1, major 2: run_prepass drops an alert from the pool BEFORE its close,
+# so when it takes the whole pool and every close fails the model batch is empty. The
+# row read in 0, done 0, queue 0, a quiet night, while the pass exited 1. A failed
+# close stays open for tomorrow, so it is work that waits: queue counts it.
+mh_shim.state = SANDBOX / "prepass-failed"
+mh.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
+mh.run_prepass = lambda _ls, pool, _apply, _pr=None: ([], _Counter(attempted=5, failed=5))
+pf_rows, pf_kinds, pf_rcs = [], [], []
+for night in (at("2026-11-20T10:30:00Z"), at("2026-11-21T10:30:00Z")):
+    mh_shim.now = night
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        pf_rcs.append(mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True))
+    pf_ledger = mh_shim.state / "linear-alert-triage.jsonl"
+    pf_rows = ([json.loads(x) for x in pf_ledger.read_text().splitlines()]
+               if pf_ledger.is_file() else [])
+    pf_kinds.append([v["kind"] for v in hb.evaluate(
+        {"linear-alert-triage": pf_rows[-1]} if pf_rows else {}, mh_table, night + timedelta(hours=1))
+        if v["job"] == "linear-alert-triage"])
+check("failed pre-pass closes are queued: in 0, done 0, queue 5, streak 1 then 2",
+      [(r.get("in"), r.get("done"), r.get("queue"), r.get("starved_streak")) for r in pf_rows],
+      [(0, 0, 5, 1), (0, 0, 5, 2)])
+check("...so two such nights fire starved, as the exit code already says", (pf_rcs, pf_kinds),
+      ([1, 1], [[], ["starved"]]))
+
+# PR #643 round 1, minor: the wrapper's own _load was unguarded. An unloadable
+# heartbeat.py killed the pass after its Linear writes (the exit code never ran), and
+# on an outage night it replaced the Linear error in the launchd log with its own.
+def _no_heartbeat(name, filename):
+    if name == "heartbeat":
+        raise FileNotFoundError("heartbeat.py unreadable")
+    return mh_real_load(name, filename)
+
+
+mh._load = _no_heartbeat
+try:
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        nb_rc = mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+except Exception as exc:  # noqa: BLE001 - the raise IS the finding
+    nb_rc = type(exc).__name__
+check("an unloadable heartbeat.py does not cost the pass: it still exits 1", nb_rc, 1)
+
+
+def _linear_down(_ls):
+    raise RuntimeError("linear is down")
+
+
+mh.lane_pool = _linear_down
+try:
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        mh.run_triage(None, 8, True, decider=lambda _issue: None, beat=True)
+    nb_raised = None
+except Exception as exc:  # noqa: BLE001 - which exception surfaces IS the check
+    nb_raised = type(exc).__name__
+check("...and an outage still surfaces the Linear error, not the heartbeat's", nb_raised,
+      "RuntimeError")
+
+print("-- emit coerces queue before it decides (PR #631 round 2, minor 1)")
+cq, tc = SANDBOX / "coerce", datetime(2026, 11, 8, 10, 30, tzinfo=timezone.utc)
+hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False, now=tc)
+# Read through .get, so a regression is a FAIL line here, not a crash that skips
+# every check after it (PR #642 round 1).
+rq = (hb.emit("linear-dor", 0, 0, queue="32", state_dir=cq, publish=False,
+              now=tc + timedelta(hours=24)) or {}).get("row") or {}
+check("a string queue twice is a starved streak of 2, and the row says 32",
+      (rq.get("starved_streak"), rq.get("queue")), (2, 32))
 
 print("-- wiring: the drafter's real main() emits only when asked")
 sys.path.insert(0, str(SCRIPTS))
