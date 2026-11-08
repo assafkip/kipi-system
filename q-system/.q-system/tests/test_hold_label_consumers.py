@@ -41,6 +41,12 @@ REGISTRY_REL = "q-system/.q-system/hold-label-consumers.json"
 # consumer ships. Adding one here is a decision a reviewer sees, never a drift.
 MISSING_CEILING = frozenset({"owner:assaf", "blocked:capability", "triage:held"})
 
+# The labels allowed an `outside_consumer` row. This test cannot verify another repo's
+# code, so five non-empty strings would otherwise turn a `missing` row green and read
+# as the missing set shrinking (PR #666 review, minor). Adding a label here is an edit
+# to this file, so the reviewer reads the claim next to the row that makes it.
+OUTSIDE_ALLOWED = frozenset({"parked"})
+
 
 # --- the census ---------------------------------------------------------------
 
@@ -124,7 +130,8 @@ def kipi_case(kipi_text: str, verb: str) -> str:
 
 # --- the checker ----------------------------------------------------------------
 
-def problems(registry: dict, refused: dict, templates: dict, read, missing_ceiling) -> list:
+def problems(registry: dict, refused: dict, templates: dict, read, missing_ceiling,
+             outside_allowed=OUTSIDE_ALLOWED) -> list:
     """Every reason the registry fails its contract. [] means it holds.
 
     `read(rel)` returns a repo file's text or None; injected so the self-tests can
@@ -164,6 +171,9 @@ def problems(registry: dict, refused: dict, templates: dict, read, missing_ceili
             empty = [f for f in ("repo", "path", "marker", "job", "owner") if not oc.get(f)]
             if empty:
                 out.append(f"{label}: outside consumer lacks {empty}")
+            if label not in outside_allowed:
+                out.append(f"{label}: an outside consumer this test cannot verify; add it to "
+                           f"OUTSIDE_ALLOWED in the same PR so the claim is reviewed")
             continue
         c = row["consumer"]
         src = read(c.get("path", ""))
@@ -331,3 +341,15 @@ def test_a_row_with_two_dispositions_goes_red():
     reg = fixture_registry()
     reg["labels"]["parked"]["missing"] = {"ticket": "ASK-2"}
     assert any("exactly one" in p for p in run_fixture(registry=reg))
+
+
+def test_an_unlisted_outside_consumer_is_red():
+    """PR #666 review, minor: five arbitrary strings turned a missing row green."""
+    registry = json.loads(REGISTRY.read_text())
+    refused = refused_labels(ready_source(WORKER.read_text()))
+    row = registry["labels"]["owner:assaf"]
+    row.pop("missing")
+    row["outside_consumer"] = {"repo": "nowhere", "path": "nothing", "marker": "none",
+                               "job": "a desk", "owner": "not a script"}
+    got = problems(registry, refused, committed_templates(REPO), _read_repo, MISSING_CEILING)
+    assert any("owner:assaf: an outside consumer" in p for p in got)
