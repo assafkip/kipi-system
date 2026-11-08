@@ -57,6 +57,16 @@ QROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_COLLISION = 3
+# The write was already true when we got there: nothing was changed and nothing
+# failed. Distinct from EXIT_OK because "I did it" and "someone else did it"
+# lead to different reporting -- see cmd_unblock.
+EXIT_NOOP = 4
+
+# How long a writer waits for another process to finish ITS read-decide-write on
+# the same issue. Two graphql calls at timeout=30 each is the whole of that
+# critical section, so anything past this is a wedged holder rather than a busy
+# one, and the caller is told to try again instead of writing blind.
+LOCK_WAIT_SECONDS = 90
 
 MARKER_RE = re.compile(r"<!--\s*kipi-key:\s*([^\s>]+)\s*-->")
 PROJECT_SUFFIX = "__project__"
@@ -451,6 +461,16 @@ mutation($input: IssueCreateInput!) {
 ISSUE_UPDATE = """
 mutation($id: String!, $input: IssueUpdateInput!) {
   issueUpdate(id: $id, input: $input) { success issue { id identifier } }
+}
+"""
+
+# Removes ONE label, server-side. The alternative -- reading labelIds and
+# sending the survivors back through issueUpdate -- is a full-set overwrite that
+# drops whatever another actor added between the read and the write. See
+# cmd_unblock for why that window is routine on this board rather than rare.
+ISSUE_REMOVE_LABEL = """
+mutation($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) { success }
 }
 """
 
@@ -1063,6 +1083,210 @@ def cmd_label(args) -> int:
     return EXIT_OK
 
 
+def _lock_dir() -> str:
+    """Where the per-issue write locks live.
+
+    `~/.config/kipi` and not the system temp dir: the two processes that race
+    here are a launchd sweep and an interactive worker, and on macOS those get
+    DIFFERENT per-session TMPDIRs, so a lock taken there would be two locks and
+    no mutual exclusion at all. The override exists for tests, which must not
+    write into the operator's real config; production never sets it.
+    """
+    return os.environ.get("KIPI_LOCK_DIR") or os.path.expanduser("~/.config/kipi/locks")
+
+
+class _IssueLock:
+    """Serialise one issue's read-decide-write across processes on this host.
+
+    WHY A LOCK AND NOT A SMARTER READ (codex, PR #77 round 4). cmd_unblock reads
+    the labels, decides, and mutates. Two sweeps land in that window together --
+    the worker runs the expiry before every pick and a scheduled sweep runs it on
+    its own clock -- and then both see the label present, both call
+    issueRemoveLabel, and both are answered `success: true`, because the live
+    mutation is idempotent. Nothing in the answer distinguishes the process that
+    took the label off from the one that asked for a label already gone. So both
+    reported a recovery and both posted the permanent "the capability arrived"
+    comment. A Linear comment cannot be deleted; the duplicate is on the issue
+    forever. Round 3 fixed only the non-overlapping half of this, where the loser
+    arrives after the winner has finished.
+
+    Linear offers no conditional write to close it server-side, so it is closed
+    where the concurrency actually is: both racers are processes on one Mac.
+    flock is the right primitive rather than a lockfile-exists check because the
+    kernel releases it when the holder dies, so a crashed sweep cannot wedge the
+    recovery path permanently -- which would recreate the never-expiring block
+    this whole issue exists to remove.
+
+    BOTH failure directions refuse (codex, PR #77 round 5). Round 4 had the
+    can't-CREATE case run unlocked, reasoning that a lock refusing every unblock
+    is worse than the duplicate comment it prevents. That is wrong in the only
+    direction that matters here. The two racers share one home directory, so a
+    broken lock dir is not a coin flip that hits one of them -- it hits both, at
+    the same time, and hands back exactly the unserialised read-decide-write this
+    class exists to remove. The failure is silent and its damage is permanent:
+    Linear comments cannot be deleted. A refusal is loud, writes nothing, leaves
+    the issue in the state it was already in, and the sweep retries in 15 minutes.
+
+    NO FALLBACK DIRECTORY, deliberately. A second location only serialises the
+    two processes if both CHOSE it, and one process can fail on the primary
+    (ENOSPC, EMFILE, a transient perms change) while the other succeeds -- then
+    they hold two different locks, both believe they are serialised, and the
+    duplicate lands anyway. Exclusion theatre is worse than a refusal, because a
+    refusal is visible. And this is not the never-expiring block the issue
+    removes: that block needed a HUMAN to delete a label, while this one clears
+    itself the moment the directory works, which is a precondition every other
+    part of the loop already has.
+
+      - the lock cannot be CREATED (read-only home, a file where the dir goes):
+        refuse, naming the path, so the operator fixes the directory instead of
+        reading exit 1 as "Linear is down".
+      - the lock cannot be ACQUIRED within LOCK_WAIT_SECONDS: refuse. The holder
+        is past its own transport timeouts, and writing anyway is exactly the
+        duplicate this class is here to stop. The sweep runs again in 15 minutes.
+    """
+
+    def __init__(self, issue: str):
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", issue) or "issue"
+        self.path = os.path.join(_lock_dir(), f"unblock-{safe}.lock")
+        self.fh = None
+        self.held = False
+        self.error = None
+
+    def __enter__(self):
+        import fcntl
+        import time
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self.fh = open(self.path, "a+")
+        except OSError as exc:
+            self.error = exc
+            return self
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return self
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self.fh:
+            self.fh.close()
+        return False
+
+    @property
+    def refusal(self) -> str | None:
+        """Why this write must not go out, or None when the lock is held.
+
+        One property for both directions so the caller cannot handle one and
+        forget the other -- which is how the creation case shipped unlocked.
+        """
+        if self.held:
+            return None
+        if self.error is not None:
+            return (f"the unblock lock at {self.path} could not be created "
+                    f"({self.error}). Refusing to write without mutual exclusion: "
+                    f"a second sweep in the same window posts a second permanent "
+                    f"recovery comment, and Linear comments cannot be deleted. "
+                    f"Fix the directory (or set $KIPI_LOCK_DIR); the next sweep "
+                    f"clears the block with no human in the path.")
+        return (f"another process has held the unblock lock for longer than "
+                f"{LOCK_WAIT_SECONDS}s ({self.path}). Refusing to write blind -- "
+                f"that is how one removal becomes two recovery comments. "
+                f"The next sweep retries.")
+
+
+def cmd_unblock(args) -> int:
+    """Remove ONE label from an issue, keeping every other label on it.
+
+    THE INVERSE OF cmd_label, AND IT DID NOT EXIST (ASK-288). The worker could
+    apply `blocked:capability` and nothing in the fleet could take it off, so a
+    park was permanent: the label removes the issue from the picker, and the
+    Linear comment's "once it exists, remove this label" named a human as the
+    only actor who could. Ten issues sat at that state on 2026-08-01 while the
+    loop reported a healthy empty queue every 15 minutes.
+
+    A block worth applying automatically is a block worth clearing
+    automatically. capability_block_expiry.py is the caller: it re-tests the
+    recorded probe and calls this only on an affirmative pass.
+
+    NOT READ-MODIFY-WRITE (codex, PR #77). The first cut mirrored cmd_label:
+    read every label, drop one, send the rest back through issueUpdate, which
+    takes labelIds as the COMPLETE set. That makes the write a full-set
+    overwrite carrying a snapshot taken seconds earlier -- so any label another
+    actor added in between is silently deleted. This fleet runs a picker, a
+    worker and this expiry sweep against ONE board, so a concurrent labeller is
+    the normal case rather than a rare interleaving, and the label most likely
+    to be added in that window is the one a second worker uses to claim the
+    issue. Losing it would double-dispatch the issue that was just recovered.
+
+    issueRemoveLabel names the single label and lets the server do the set
+    arithmetic under its own lock. The read below is only to resolve the label
+    NAME to an id and to answer "was it even applied"; nothing read there is
+    written back.
+
+    THE READ AND THE WRITE ARE ONE CRITICAL SECTION (codex, PR #77 round 4).
+    Separating "did I remove it" from "was it already gone" only works if no
+    other process can remove it between the two, which is what _IssueLock buys.
+    See that class for why the lock is a host lock and why NEITHER failure
+    direction -- cannot create, cannot acquire -- is allowed to write anyway.
+    """
+    with _IssueLock(args.issue) as lock:
+        refusal = lock.refusal
+        if refusal:
+            print(f"BLOCK: {args.issue}: {refusal}", file=sys.stderr)
+            return EXIT_USAGE
+        return _unblock_locked(args)
+
+
+def _unblock_locked(args) -> int:
+    """cmd_unblock's body, running with this issue's write lock held."""
+    try:
+        issue = graphql(ISSUE_LABELS, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    current = {n["name"]: n["id"] for n in (issue.get("labels") or {}).get("nodes", [])}
+    if args.name not in current:
+        # Idempotent, matching cmd_label: two expiry sweeps can overlap, and the
+        # second must not be an error just because the first won.
+        #
+        # BUT IT IS NOT EXIT_OK EITHER (codex, PR #77 round 3). Returning 0 told
+        # the caller "the label is gone" and the caller cannot tell that from
+        # "the label is gone BECAUSE OF ME". capability_block_expiry counted the
+        # loser of an overlapping sweep as a clear and posted a second permanent
+        # "the capability arrived" comment onto an issue that already had one.
+        # Linear comments cannot be deleted, so every duplicate is forever.
+        #
+        # This branch is the only place that knows the difference -- it is the
+        # read that answered "was it even applied" -- so it reports the
+        # difference rather than making the caller take the same read again and
+        # race on it a second time. EXIT_NOOP is a success, not a failure: the
+        # world is in the state the caller asked for.
+        print(f"{issue['identifier']}: not labelled {args.name}, nothing to remove")
+        return EXIT_NOOP
+
+    result = graphql(ISSUE_REMOVE_LABEL,
+                     {"id": issue["id"], "labelId": current[args.name]})
+    updated = (result or {}).get("issueRemoveLabel") or {}
+    # CHECK THE MUTATION RESULT (codex 2026-07-29, the same defect twice above):
+    # a discarded return value here reports an un-parked issue that is still
+    # parked, so the caller logs a recovery the picker will never see.
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not remove {args.name} from {issue['identifier']}. "
+              f"Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"{issue['identifier']}: removed {args.name}")
+    return EXIT_OK
+
+
 def cmd_comments(args) -> int:
     """Print an issue's comment thread so an agent can READ what the other said.
 
@@ -1476,6 +1700,11 @@ def main() -> int:
     p.add_argument("--why", default="", help="one line of detail, e.g. rc=1, attempt 2 of 3")
     p.add_argument("--agent", help="who is reporting (default: $KIPI_AGENT or sana)")
     p.set_defaults(func=cmd_requeue)
+
+    p = sub.add_parser("unblock", help="remove one label from an issue, keeping the rest")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-288")
+    p.add_argument("name", help="label to remove, e.g. blocked:capability")
+    p.set_defaults(func=cmd_unblock)
 
     p = sub.add_parser("comments", help="read an issue's comment thread")
     p.add_argument("issue", help="issue identifier, e.g. ASK-221")
