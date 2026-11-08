@@ -420,8 +420,9 @@ def case_worker() -> None:
     hold, dry = code.find('get "$ISSUE" ladder_hold'), code.find('[dry] would work $ISSUE')
     check("worker: skips a ticket holding ladder_hold before the dry pick", hold != -1 and hold < dry)
     m = re.search(r"^ladder_runner_for\(\) \{.*?^\}", src, re.S | re.M)
-    check("worker: ladder_runner_for exists and the launch uses PRIMARY_CMD",
-          bool(m) and "$PRIMARY_CMD </dev/null" in code)
+    check("worker: ladder_runner_for exists and the primary launch branches on it",
+          bool(m) and "primary_run()" in code and 'ladder_runner_for "$ISSUE")" = "codex"' in code
+          and "if primary_run; then" in code)
     if m:
         with tempfile.TemporaryDirectory() as td:
             led_path = Path(td) / "a.json"

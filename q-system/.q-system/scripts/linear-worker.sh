@@ -3165,14 +3165,19 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
-  PRIMARY_CMD="KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"}"
-  if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
-    # Codex takes no --settings; it runs in its own workspace-write sandbox, the
-    # same shape the second-runner path below already runs it in.
-    PRIMARY_CMD="$CODEX_CMD \"\$1\""
-    say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
-  fi
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $PRIMARY_CMD </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
+  # The ladder's runner change (rung 2) picks the launch; the claude launch keeps
+  # its literal shape and its guard set, so test-worker-guard-settings.sh's
+  # census still sees it. Codex takes no --settings; it runs in its own
+  # workspace-write sandbox, the shape the second-runner path already uses.
+  primary_run() {
+    if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
+      say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
+    else
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"
+    fi
+  }
+  if primary_run; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
