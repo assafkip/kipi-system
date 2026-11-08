@@ -3057,7 +3057,13 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # as an ordinary silent agent. Classifying only on failure would leave the
     # exact measured outage unhandled.
     if is_environmental "$AGENT_OUT"; then
-      ENV_FAIL="$(environmental_reason "$AGENT_OUT")"
+      # ON A SUCCESSFUL EXIT THE BYTES ARE THE AGENT'S (ASK-3981). An issue body
+      # can steer what a successful agent prints, so a one-line answer shaped like
+      # a limit line would carry its tail into the Slack page and the Linear halt
+      # note. Only the closed-vocabulary marker leaves the Mac; this log keeps the
+      # whole line. A failed exit (below) is the CLI speaking and keeps its line.
+      say "$ISSUE: runner refusal read on a successful exit: $(environmental_reason "$AGENT_OUT")"
+      ENV_FAIL="$(environmental_marker "$AGENT_OUT") (read on a successful exit; the rest of the line is not copied)"
     else
       : > "$RUNNER_OK_FILE" 2>/dev/null || true
       python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
