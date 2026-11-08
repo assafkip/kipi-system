@@ -1,0 +1,80 @@
+{
+  "_doc": [
+    "Every label that holds a ticket out of a worker's queue, and the code that takes it out again (ASK-4011).",
+    "Founder, 2026-11-08: \"We cannot have these things get stuck again on rules that are not being enforced and then tickets don't get done because they're waiting for someone that doesn't exist.\"",
+    "",
+    "Read by q-system/.q-system/tests/test_hold_label_consumers.py (CI) and by the stall sweep (ASK-4019, stall-sweep.py) to name the next consumer of a held ticket.",
+    "",
+    "`labels` must hold EXACTLY the labels linear-worker.sh ready() refuses, read from its source by AST, plus every `lane_holds` label another lane refuses. A new refusal fails CI until it has a row here.",
+    "`refused_when`: `present` (the label holds the ticket) or `absent` (missing the label holds it, as with owner:sana).",
+    "Each row has exactly one of:",
+    "  `consumer`: an in-repo script (`path`) whose source carries the label literal, run by a committed, non-retired com.kipi template (`job`) whose ProgramArguments reach the script, directly or through `via` (a `./kipi <verb>` case).",
+    "  `outside_consumer`: code another repo owns (`repo`, `path`, `marker`, `job`, `owner`). Named, not verified here; that repo's own suite owns it.",
+    "  `missing`: no consumer exists yet. It names the ticket that builds one. The set of missing labels may only shrink: the test pins its ceiling.",
+    "A person is never a consumer. A row that names one is a missing row."
+  ],
+  "labels": {
+    "owner:sana": {
+      "refused_when": "absent",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "consumer": {
+        "path": "q-system/.q-system/scripts/linear-owner-sweep.py",
+        "job": "com.kipi.linear-owner-sweep",
+        "what": "Nightly at 02:00: any open fleet ticket with no owner:* label gets owner:sana and one comment naming its next consumer (ASK-4010)."
+      }
+    },
+    "owner:assaf": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "missing": {
+        "ticket": "ASK-3961",
+        "what": "Nothing moves an owner:assaf ticket. ASK-3961 relabels the error-path ones owner:sana and lists the true spend, scope or reach questions for the founder in one place a job writes."
+      }
+    },
+    "needs-scope": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "terminal_state": "needs-scope",
+      "consumer": {
+        "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
+        "job": "com.kipi.linear-dor",
+        "via": "dor",
+        "what": "Nightly at 03:00: selects on the label, rewrites the DoR, drops the label so ready() offers it again, up to 3 redrafts."
+      }
+    },
+    "blocked:capability": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "missing": {
+        "ticket": "ASK-3960",
+        "what": "Nothing re-tests the block, so the label never clears. ASK-3960 records a probe per ticket and re-runs it nightly."
+      }
+    },
+    "parked": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "outside_consumer": {
+        "repo": "assafkip/chief",
+        "path": "bots/triage/skills/__init__.py",
+        "marker": "park_expired",
+        "job": "chief triage bot, [jobs.act] in bots/triage/bot.toml (09:05 Mon-Fri)",
+        "owner": "the chief rebuild project",
+        "what": "E2 closes an expired park, reversibly, at its next sweep. ready() refuses exactly the set E2 closes (ASK-3995)."
+      }
+    },
+    "triage:held": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "missing": {
+        "ticket": "ASK-4014",
+        "what": "lane_pool skips a held alert forever, and the hold keeps needs-triage, so chief's triage never reaches its park rule either. ASK-4014 builds the re-test."
+      }
+    }
+  },
+  "lane_holds": {
+    "triage:held": {
+      "path": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "marker": "def is_held"
+    }
+  }
+}
