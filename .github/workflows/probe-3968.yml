@@ -117,7 +117,8 @@ jobs:
           PUSH_BEFORE: ''
           DC_REQUIRE_REAL_PRODUCERS: "1"
           PROBE_SNAP: ${{ runner.temp }}/h-snap.txt
-        run: python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "$BASE" 2>&1 | grep -E 'change-size|tests: ran|RED|FAIL|passed,|capability-gate:' | cut -c1-300
+        run: |
+          python3 q-system/.q-system/scripts/capability-gate.py --repo-root . --diff-base "$BASE" 2>&1 | grep -E 'change-size|tests: ran|RED|FAIL|passed,|capability-gate:' | cut -c1-300
       - name: what section H saw inside the gate
         if: always()
         run: |
