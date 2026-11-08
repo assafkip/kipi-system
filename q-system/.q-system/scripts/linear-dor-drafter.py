@@ -851,6 +851,7 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             [binary, "-p", prompt],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, env=_subscription_env(),
+            job="dor-drafting",  # the model is the routing table's row (ASK-4013)
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"

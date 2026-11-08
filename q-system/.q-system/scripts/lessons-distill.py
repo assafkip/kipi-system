@@ -185,7 +185,8 @@ def distill_with_claude(title, cause):
         f"Learning: {title}\nDetail:\n{cause[:1800]}"
     )
     try:
-        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=120)
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=120,
+                          job="lesson-distill")  # the routing table's row (ASK-4013)
         m = re.search(r"\{.*\}", r.stdout, re.S)
         obj = json.loads(m.group(0)) if m else None
     except Exception:
@@ -204,7 +205,8 @@ def llm_verify_clean(text, mode):
     prompt = ("Does the text contain ANY specific real client, product, person, company, matter, or "
               "identifying number/codename? Reply exactly CLEAN or HELD.\n\n" + text[:2000])
     try:
-        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=90)
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=90,
+                          job="lesson-verify")  # the routing table's row (ASK-4013)
         return r.stdout.strip().upper().startswith("CLEAN")
     except Exception:
         return False  # fail-closed: cannot verify -> hold

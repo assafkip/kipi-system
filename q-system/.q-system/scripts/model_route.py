@@ -87,7 +87,9 @@ def wired_hooks(root) -> set:
     missed 38 of the 50 that .claude/settings.json wires."""
     root = Path(root)
     out = set()
-    cfgs = [(root / ".claude" / "settings.json", None)]
+    # settings-template.json too (PR #664 round 2, minor): it is what instances
+    # install, so a hook wired only there is still a hook the fleet runs.
+    cfgs = [(root / ".claude" / "settings.json", None), (root / "settings-template.json", None)]
     cfgs += [(p, p.parent.parent) for p in sorted(root.glob("plugins/*/hooks/hooks.json"))]
     for cfg, plugin in cfgs:
         try:
