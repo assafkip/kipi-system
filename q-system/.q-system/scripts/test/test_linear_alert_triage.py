@@ -706,8 +706,12 @@ def alert(ident, project="kipi-system", labels=("owner:sana", "needs-triage"),
           created="2026-08-01T00:00:00Z", desc=None):
     return {"id": f"uuid-{ident}", "identifier": ident, "title": f"alert {ident}",
             "url": "", "createdAt": created,
+            # ONE MESSAGE PER IDENT (ASK-3823): the pre-pass closes an older alert
+            # whose message repeats a newer one, so a shared message would turn
+            # every multi-alert fixture into duplicates before the model ran.
             "description": desc if desc is not None
-            else ALERT_DESC.replace("6f1a2b3c4d5e", f"fp-{ident}"),
+            else ALERT_DESC.replace("6f1a2b3c4d5e", f"fp-{ident}")
+                           .replace("is still live\n", f"is still live ({ident})\n"),
             "state": {"name": "Backlog", "type": "backlog"},
             "project": {"name": project} if project else None,
             "labels": {"nodes": [{"id": f"lid-{n}", "name": n} for n in labels]}}
@@ -1285,6 +1289,488 @@ class TestB1ClaudeIsFoundUnderLaunchd(unittest.TestCase):
         self.assertEqual(env.get("HOME"), "__HOME__", env)
         self.assertEqual(env.get("USER"), "__USER__", env)
         self.assertEqual(env.get("LOGNAME"), "__USER__", env)
+
+
+# ---------------------------------------------------------------------------
+# ASK-3823: the no-model pre-pass. It closes an alert only on a fact read from
+# Linear or GitHub, never on a model's word. alert_triage_mutants.py reverts each
+# fix below and requires its class to go RED.
+# ---------------------------------------------------------------------------
+import json
+
+REPO = SCRIPTS.parent.parent.parent
+
+# THE DEDUP STATE IS A SCRATCH DIR FOR THE WHOLE MODULE. The pre-pass reads
+# alert-to-linear's fingerprint state, and the real one lives under ~/.cache.
+# A test that read it would pass or fail on whatever the fleet filed last night.
+SHIPPED_DEDUP_STATE_DIR = getattr(triage, "DEDUP_STATE_DIR", None)
+_DEDUP_TMP = tempfile.TemporaryDirectory(prefix="alert-triage-dedup-")
+triage.DEDUP_STATE_DIR = _DEDUP_TMP.name
+
+
+def dedup_state(fp, **state):
+    """Write alert-to-linear's state file for one fingerprint, in the scratch dir."""
+    Path(_DEDUP_TMP.name, f"{fp}.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def clear_dedup_state():
+    for p in Path(_DEDUP_TMP.name).glob("*.json"):
+        p.unlink()
+
+
+def state_alert(ident, msg, created="2026-08-01T00:00:00Z", fp=None, count=1,
+                project="kipi-system", tag="kipi-system"):
+    """An alert the way alert-to-linear.py writes one: the message in a fence,
+    behind the filing checkout's tag. `count` is what the dedup state says this
+    ticket has counted; None writes no state file at all."""
+    fp = fp or f"fp-{ident}"
+    if count is not None:
+        dedup_state(fp, issue_id=f"uuid-{ident}", identifier=ident, count=count)
+    return alert(ident, created=created, project=project, desc=(
+        "Filed automatically by the fleet alert path.\n\n"
+        f"```\n[{tag}] {msg}\n```\n\n"
+        f"<!-- kipi-alert-fingerprint: {fp} -->"))
+
+
+def still_firing(count, msg, tag="kipi-system"):
+    """The repeat comment alert-to-linear.py posts (at most once per 12 hours)."""
+    return (f"Still firing. {count} occurrence(s) since this ticket opened.\n\n"
+            f"Most recent:\n```\n[{tag}] {msg}\n```")
+
+
+def work(ident, state_type, name=None):
+    """An ordinary, non-alert issue: the SUBJECT an alert can be about."""
+    return {"id": f"uuid-{ident}", "identifier": ident, "title": f"work {ident}",
+            "url": "", "createdAt": "2026-07-01T00:00:00Z", "description": "real work",
+            "state": {"name": name or state_type.title(), "type": state_type},
+            "project": {"name": "kipi-system"},
+            "labels": {"nodes": [{"id": "lid-owner:sana", "name": "owner:sana"}]}}
+
+
+def closes(board):
+    return [v["id"] for q, v in board.mutations()
+            if "issueUpdate" in q and v["input"].get("stateId") == "c"]
+
+
+def lane(board, apply=True, pr_state=None, prepass_only=False):
+    seen = []
+    out, err = io.StringIO(), io.StringIO()
+    kw = {"prepass_only": True} if prepass_only else {}
+    with patch.object(triage, "write_run_evidence", lambda line: None), \
+         redirect_stdout(out), redirect_stderr(err):
+        rc = triage.run_triage(board, limit=8, apply=apply,
+                               decider=lambda i: (seen.append(i["identifier"]), None)[1],
+                               pr_state=pr_state or (lambda repo, n: None), **kw)
+    return rc, seen, out.getvalue(), err.getvalue()
+
+
+STUCK = "kipi worker: ASK-50 is STUCK after 3 attempts and the loop has stopped picking it up."
+
+
+def stuck(ident):
+    return STUCK.replace("ASK-50", ident)
+
+
+class DedupScratch(unittest.TestCase):
+    """Empty dedup state before AND after: the D-tests file same-message alerts,
+    and a state file left behind would turn them into duplicates."""
+
+    def setUp(self):
+        clear_dedup_state()
+
+    def tearDown(self):
+        clear_dedup_state()
+
+
+class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
+
+    def test_a_stuck_alert_whose_issue_is_done_is_closed_without_the_model(self):
+        b = Board([work("ASK-50", "completed", "Done"), state_alert("ASK-1", STUCK)])
+        rc, seen, out, err = lane(b)
+        self.assertEqual(closes(b), ["ASK-1"], out + err)
+        self.assertEqual(seen, [], "the model was asked about an alert the pre-pass owns")
+        note = b.comments["uuid-ASK-1"][0]
+        self.assertIn("ASK-50 is Done", note)
+        self.assertIn("no model", note)
+        self.assertIn("Nothing was deleted", note)
+        self.assertIn("pre-pass (no model): 1 closed", out)
+        self.assertEqual(rc, 0, err)
+
+    def test_negative_control_an_open_subject_goes_to_the_model(self):
+        b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", STUCK)])
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_canceled_or_duplicate_subject_counts_as_ended(self):
+        for state_type in ("canceled", "duplicate"):
+            b = Board([work("ASK-50", state_type), state_alert("ASK-1", STUCK)])
+            lane(b)
+            self.assertEqual(closes(b), ["ASK-1"], state_type)
+
+    def test_spillover_is_never_closed_even_when_its_pr_merged(self):
+        """Merging is how a spillover finding comes to exist. The second message
+        quotes a converge page mid-text: only an ANCHORED pattern skips it."""
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", "spillover sp-1a2b (major) from ASK-50: PR #7 "
+                               "review, nonblocking major: x https://github.com/o/r/pull/7"),
+                   state_alert("ASK-2", "spillover sp-3c4d (major) from ASK-50: PR #7 "
+                               "review, nonblocking major: converge ASK-50: hit 3-round cap")])
+        _, seen, _, _ = lane(b, pr_state=lambda repo, n: "MERGED")
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2"])
+
+    def test_naming_a_closed_issue_is_not_being_about_it(self):
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", "ASK-50 recurred on consulting PR #7: codex again"),
+                   state_alert("ASK-2", "Follow-up for consulting PR #7 (merged on APPROVE "
+                               "WITH NITS): ASK-50")])
+        _, seen, _, _ = lane(b, pr_state=lambda repo, n: "MERGED")
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2"])
+
+    def test_a_pr_counts_only_through_an_explicit_url(self):
+        asked = []
+
+        def pr_state(repo, n):
+            asked.append((repo, n))
+            return "MERGED"
+        msg = "review-redrive: ASK-50 PR #10 still has kipi/reviewer-approved failing"
+        b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", msg)])
+        lane(b, pr_state=pr_state)
+        self.assertEqual((closes(b), asked), ([], []),
+                         "a PR number with no repo was looked up somewhere")
+        b = Board([work("ASK-50", "backlog"), state_alert(
+            "ASK-1", msg + " https://github.com/o/other/pull/10")])
+        lane(b, pr_state=pr_state)
+        self.assertEqual(closes(b), ["ASK-1"])
+        self.assertEqual(asked, [("o/other", 10)])
+
+    def test_an_open_pr_or_an_unreadable_one_does_not_close(self):
+        msg = ("ci-redrive: ASK-50 PR #10 is still red on validate "
+               "https://github.com/o/r/pull/10")
+        for state in ("OPEN", "CLOSED", None):
+            b = Board([work("ASK-50", "backlog"), state_alert("ASK-1", msg)])
+            lane(b, pr_state=lambda repo, n, s=state: s)
+            self.assertEqual(closes(b), [], state)
+
+    def test_an_unreadable_subject_never_closes(self):
+        b = Board([state_alert("ASK-1", STUCK)])        # ASK-50 is not on the board
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_dry_run_writes_nothing_and_says_would_close(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)])
+        rc, seen, out, _ = lane(b, apply=False)
+        self.assertEqual(b.mutations(), [])
+        self.assertEqual(seen, [], "a dry run must preview the pass the real one runs")
+        self.assertIn("WOULD CLOSE", out)
+        self.assertIn("pre-pass (no model): 1 would close", out)
+
+    def test_a_failed_close_is_counted_and_fails_the_pass(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)],
+                  comment_ok=False)
+        rc, seen, out, err = lane(b)
+        self.assertEqual(closes(b), [], "closed with no recorded reason")
+        self.assertIn("1 failed", out.split("pre-pass")[1])
+        self.assertNotEqual(rc, 0, err)
+        self.assertEqual(seen, [])
+
+    def test_one_read_per_subject_for_a_cluster(self):
+        b = Board([work("ASK-50", "completed"),
+                   state_alert("ASK-1", STUCK, created="2026-08-01"),
+                   state_alert("ASK-2", "kipi dispatch: ASK-50 was launched but died "
+                               "immediately -- the loop is spending budget",
+                               created="2026-08-02")])
+        lane(b)
+        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2"])
+        reads = [v for q, v in b.calls if q == triage.ISSUE_Q and v == {"id": "ASK-50"}]
+        self.assertEqual(len(reads), 1)
+
+    def test_the_cap_bounds_the_closes(self):
+        issues = [work("ASK-50", "completed")] + [
+            state_alert(f"ASK-{n}", STUCK, created=f"2026-08-0{n}") for n in (1, 2, 3)]
+        b = Board(issues)
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, cap=2)
+        self.assertEqual(tally["closed"], 2)
+        self.assertEqual([i["identifier"] for i in left], ["ASK-3"])
+
+    def test_converge_pages_that_outlive_the_issue_are_not_closed(self):
+        """#606 review r1 major 1: a bare "converge ASK-N: " prefix closed a
+        machine-wide fault and unreviewed-code pages on "ASK-N is Done"."""
+        pages = [
+            "converge ASK-50: attempts ledger unwritable -- the retry cap is not "
+            "enforceable until it is fixed",
+            "converge ASK-50: PR #7 is 'APPROVE' but only the degraded Opus fallback "
+            "reviewed it (codex was down) - held, armed. Needs a real review",
+            "converge ASK-50: PR #7 is 'APPROVE' at abc but its head def was never "
+            "reviewed, and round 2 changed nothing",
+            "worker: ASK-50 PR #7 is approved at abc but its head def is still "
+            "unreviewed after 2 re-review rounds",
+        ]
+        b = Board([work("ASK-50", "completed", "Done")]
+                  + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4"])
+
+    def test_converge_pages_about_the_run_still_close(self):
+        """Negative control for the narrowing."""
+        pages = ["converge ASK-50: stopped, no PR after round 1",
+                 "converge ASK-50: APPROVE WITH NITS after 1 round(s), PR #7 approved",
+                 "converge ASK-50: review produced no verdict on round 2",
+                 "converge ASK-50: stalled at 'REQUEST CHANGES', no code change in round 2",
+                 "converge ASK-50: hit 3-round cap, still REQUEST CHANGES. Parked"]
+        b = Board([work("ASK-50", "completed", "Done")]
+                  + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
+        lane(b)
+        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
+
+    def test_every_converge_page_is_classified(self):
+        src = (REPO / "q-system/.q-system/scripts/converge.sh").read_text(encoding="utf-8")
+        pages = [l for l in src.splitlines()
+                 if '"converge $ISSUE: ' in l and not l.lstrip().startswith("#")]
+        listed = [text for _, producer, text, _ in triage.SUBJECT_SHAPES
+                  if producer.endswith("converge.sh")]
+        listed += [text for text, _ in triage.CONVERGE_NOT_SUBJECT]
+        self.assertGreaterEqual(len(pages), 8, "converge.sh pages were not found")
+        for line in pages:
+            hits = [text for text in listed if text in line]
+            self.assertEqual(len(hits), 1, f"unclassified or doubly classified: {line.strip()}")
+
+    def test_reads_are_bounded_even_when_nothing_closes(self):
+        """#606 review r1 major 3: open subjects cost a read each and never hit
+        the close cap."""
+        b = Board([work(f"ASK-{50 + n}", "backlog") for n in range(5)]
+                  + [state_alert(f"ASK-{n + 1}", stuck(f"ASK-{50 + n}"),
+                                 created=f"2026-08-0{n + 1}") for n in range(5)])
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, max_lookups=2)
+        subject_reads = [v for q, v in b.calls if q == triage.ISSUE_Q
+                         and v["id"] in {f"ASK-{50 + n}" for n in range(5)}]
+        self.assertEqual(len(subject_reads), 2)
+        self.assertEqual(tally["unchecked"], 3)
+        self.assertEqual(len(left), 5, "an unchecked alert must still reach the model")
+
+    def test_the_deadline_hands_the_rest_to_the_model(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK)])
+        pool, _ = triage.lane_pool(b)
+        with redirect_stdout(io.StringIO()):
+            left, tally = triage.run_prepass(b, pool, True, lambda r, n: None, deadline_s=0)
+        self.assertEqual(([i["identifier"] for i in left], tally["unchecked"]), (["ASK-1"], 1))
+        self.assertEqual(closes(b), [])
+
+    def test_every_shape_still_matches_what_its_producer_writes(self):
+        """A filer reworded is a shape that silently stops matching."""
+        for shape, producer, text, _ in triage.SUBJECT_SHAPES:
+            src = (REPO / producer).read_text(encoding="utf-8")
+            self.assertIn(text, src, f"{shape}: {producer} no longer writes {text!r}")
+
+
+class TestB3AStandingTicketClosesOnlyWhenEverySubjectEnded(DedupScratch):
+    """#606 review r3 (2026-11-06 12:22), the blocker. alert-to-linear.py strips
+    every digit before it fingerprints, so "ASK-50 is STUCK" and "ASK-60 is
+    STUCK" are ONE fingerprint and count on ONE ticket. Measured on the live
+    queue 2026-11-07: of the 10 alerts the first pre-pass would have closed, 5
+    carried repeats naming other subjects (ASK-1511 named 6, among them ASK-3064,
+    whose PR #560 is still open), and 7 had no dedup state to count against."""
+
+    LIVE = stuck("ASK-60")
+
+    def board(self, *extra):
+        return Board([work("ASK-50", "completed", "Done"), work("ASK-60", "backlog"),
+                      work("ASK-70", "completed", "Done"), *extra])
+
+    def test_a_repeat_naming_a_live_issue_keeps_the_standing_ticket_open(self):
+        b = self.board(state_alert("ASK-1", STUCK, count=2))
+        b.comments["uuid-ASK-1"] = [still_firing(2, self.LIVE)]
+        _, seen, out, err = lane(b)
+        self.assertEqual(closes(b), [], "closed the only ticket counting ASK-60, still stuck")
+        self.assertEqual(seen, ["ASK-1"], out + err)
+
+    def test_a_counted_repeat_with_no_comment_keeps_it_open(self):
+        """A repeat inside 12 hours of the last comment is counted, not written:
+        its subject is unknown, so it cannot be proven ended."""
+        b = self.board(state_alert("ASK-1", STUCK, count=2))
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_with_no_dedup_state_every_written_repeat_is_still_read(self):
+        """7 of the 10 measured tickets predate the 2026-10-27 dedup cache. With
+        no counter, the written record is what the ticket stands for, so a live
+        subject in it keeps the ticket open (ASK-1511 named ASK-3064)."""
+        b = self.board(state_alert("ASK-1", STUCK, count=None))
+        b.comments["uuid-ASK-1"] = [still_firing(2, self.LIVE)]
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_newer_ticket_holding_the_fingerprint_does_not_free_a_live_repeat(self):
+        b = self.board(state_alert("ASK-1", STUCK, count=None))
+        dedup_state("fp-ASK-1", issue_id="uuid-ASK-9", identifier="ASK-9", count=1)
+        b.comments["uuid-ASK-1"] = [still_firing(2, self.LIVE)]
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_negative_control_a_ticket_no_longer_counted_on_closes_on_its_record(self):
+        """The alert path never counts on it again, so nothing unseen can arrive."""
+        for state in (None, {"issue_id": "uuid-ASK-9", "identifier": "ASK-9", "count": 3}):
+            clear_dedup_state()
+            b = self.board(state_alert("ASK-1", STUCK, count=None))
+            if state:
+                dedup_state("fp-ASK-1", **state)
+            _, _, out, err = lane(b)
+            self.assertEqual(closes(b), ["ASK-1"], (state, out + err))
+            self.assertIn("no longer counts on this ticket", b.comments["uuid-ASK-1"][-1])
+
+    def test_a_full_comment_page_may_hide_a_repeat(self):
+        b = self.board(state_alert("ASK-1", STUCK, count=101))
+        b.comments["uuid-ASK-1"] = [still_firing(n + 2, stuck("ASK-70")) for n in range(100)]
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_negative_control_every_counted_subject_ended_so_it_closes(self):
+        b = self.board(state_alert("ASK-1", STUCK, count=2))
+        b.comments["uuid-ASK-1"] = [still_firing(2, stuck("ASK-70"))]
+        _, seen, out, err = lane(b)
+        self.assertEqual(closes(b), ["ASK-1"], out + err)
+        self.assertEqual(seen, [])
+        note = b.comments["uuid-ASK-1"][-1]
+        self.assertIn("ASK-50 is Done", note)
+        self.assertIn("ASK-70 is Done", note)
+
+    def test_a_repeat_of_another_shape_is_not_judged(self):
+        b = self.board(state_alert("ASK-1", STUCK, count=2))
+        b.comments["uuid-ASK-1"] = [still_firing(2, "something else entirely")]
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_the_state_dir_is_the_one_alert_to_linear_writes(self):
+        """Two readers of one file layout: pin the path, so a move cannot leave
+        the pre-pass reading an empty directory and refusing everything forever."""
+        atl = _load("atl_for_dedup_dir", "alert-to-linear.py")
+        with tempfile.TemporaryDirectory() as home, \
+                patch.dict(os.environ, {"HOME": home}):
+            self.assertEqual(os.path.expanduser(SHIPPED_DEDUP_STATE_DIR),
+                             atl._default_state_dir())
+
+
+DUP = "critic engine does not accept `capture` (likely reverted by a fleet sync)"
+
+
+class TestB4ExactDuplicatesCloseIntoTheNewest(DedupScratch):
+    """Measured 2026-11-07 on the 1288 queued alerts: 75 older tickets repeat the
+    message of a newer open ticket in the same project, 47 of them the critic
+    alert filed from 48 differently named worktrees. The fingerprint keys on the
+    checkout tag, so each worktree opened its own ticket."""
+
+    def test_the_older_duplicates_close_and_the_newest_stays(self):
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01", tag="wt"),
+                   state_alert("ASK-2", DUP, created="2026-09-02", tag="land-wt-1"),
+                   state_alert("ASK-3", DUP, created="2026-09-03", tag="consulting")])
+        _, seen, out, err = lane(b)
+        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2"], out + err)
+        self.assertEqual(seen, ["ASK-3"], "the kept ticket must still reach the model")
+        note = b.comments["uuid-ASK-1"][0]
+        self.assertIn("Duplicate of ASK-3", note)
+        self.assertIn("Nothing was deleted", note)
+
+    def test_the_same_message_in_another_project_is_not_a_duplicate(self):
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01", project="Chief"),
+                   state_alert("ASK-2", DUP, created="2026-09-02")])
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_a_different_message_is_not_a_duplicate(self):
+        b = Board([state_alert("ASK-1", DUP + " again", created="2026-09-01"),
+                   state_alert("ASK-2", DUP, created="2026-09-02")])
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_ids_are_part_of_the_message(self):
+        """The fingerprint erases ASK-50 vs ASK-60. This key must not."""
+        b = Board([work("ASK-50", "backlog"), work("ASK-60", "backlog"),
+                   state_alert("ASK-1", stuck("ASK-50"), created="2026-09-01"),
+                   state_alert("ASK-2", stuck("ASK-60"), created="2026-09-02")])
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_an_older_ticket_carrying_another_subject_stays_open(self):
+        """Round-3 blocker, duplicate side: a repeat on the older ticket that the
+        kept one does not carry would be lost with it."""
+        b = Board([work("ASK-50", "backlog"), work("ASK-60", "backlog"),
+                   state_alert("ASK-1", stuck("ASK-50"), created="2026-09-01",
+                               fp="fp-shared", count=None),
+                   state_alert("ASK-2", stuck("ASK-50"), created="2026-09-02",
+                               fp="fp-shared", count=1)])
+        b.comments["uuid-ASK-1"] = [still_firing(2, stuck("ASK-60"))]
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_an_older_ticket_the_state_no_longer_names_closes_on_its_record(self):
+        """The newer ticket took the fingerprint over, so the older one is
+        counted on no more and stands for what is written on it."""
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01", fp="fp-shared",
+                               count=None),
+                   state_alert("ASK-2", DUP, created="2026-09-02", fp="fp-shared",
+                               count=4)])
+        lane(b)
+        self.assertEqual(closes(b), ["ASK-1"])
+
+    def test_a_standing_older_ticket_with_unseen_repeats_stays_open(self):
+        """It still holds its own fingerprint and has counted 3 with 2 written:
+        the third is unknown, so it cannot be shown to be the kept message."""
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01", tag="wt", count=3),
+                   state_alert("ASK-2", DUP, created="2026-09-02", tag="consulting")])
+        b.comments["uuid-ASK-1"] = [still_firing(2, DUP, tag="wt")]
+        lane(b)
+        self.assertEqual(closes(b), [])
+
+    def test_negative_control_a_pre_cache_ticket_closes_on_its_record(self):
+        """The 47 critic tickets predate the dedup cache: no counter names them."""
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01", tag="wt", count=None),
+                   state_alert("ASK-2", DUP, created="2026-09-02", tag="consulting")])
+        lane(b)
+        self.assertEqual(closes(b), ["ASK-1"])
+
+    def test_a_kept_ticket_closed_meanwhile_closes_nothing(self):
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01"),
+                   state_alert("ASK-2", DUP, created="2026-09-02")])
+        pool, _ = triage.lane_pool(b)
+        b.issues["ASK-2"]["state"] = {"name": "Canceled", "type": "canceled"}
+        with redirect_stdout(io.StringIO()):
+            triage.run_prepass(b, pool, True, lambda r, n: None)
+        self.assertEqual(closes(b), [])
+
+    def test_a_dry_run_names_the_duplicates_and_writes_nothing(self):
+        b = Board([state_alert("ASK-1", DUP, created="2026-09-01"),
+                   state_alert("ASK-2", DUP, created="2026-09-02")])
+        _, _, out, _ = lane(b, apply=False)
+        self.assertEqual(b.mutations(), [])
+        self.assertIn("WOULD CLOSE", out)
+        self.assertIn("duplicate 1", out)
+
+
+class TestB5PrepassOnlyCallsNoModel(DedupScratch):
+    """The founder's drain runs the pre-pass alone, so it spends no quota."""
+
+    def test_prepass_only_closes_and_asks_no_model(self):
+        b = Board([work("ASK-50", "completed"), state_alert("ASK-1", STUCK),
+                   alert("ASK-2")])
+        rc, seen, out, err = lane(b, prepass_only=True)
+        self.assertEqual(closes(b), ["ASK-1"], out + err)
+        self.assertEqual(seen, [])
+        self.assertIn("1 still queued", out)
+        self.assertEqual(rc, 0, err)
+
+    def test_the_cli_has_the_flag(self):
+        a = triage.build_parser().parse_args(["run", "--prepass-only"])
+        self.assertTrue(a.prepass_only)
 
 
 if __name__ == "__main__":
