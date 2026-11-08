@@ -48,6 +48,13 @@ def part2():
     rows = []
     for f in sorted(glob.glob(os.path.join(EVAL, 'part2', 'results-*.jsonl'))):
         rows += [json.loads(l) for l in open(f)]
+    # a judge that ran later (judge_missing.py) amends its arm; results stay append-only
+    amend = os.path.join(EVAL, 'part2', 'judge-amend.jsonl')
+    fixes = {(a['ticket'], a['arm']): a for a in map(json.loads, open(amend))} if os.path.exists(amend) else {}
+    for r in rows:
+        a = fixes.get((r['ticket'], r['arm']))
+        if a:
+            r['verdict'], r['findings'] = a['verdict'], a['findings']
     per = {}
     for r in rows:
         d = per.setdefault(r['cls'], {}).setdefault(r['arm'], {'runs': 0, 'committed': 0, 'tests_pass': 0, 'tests_fail': 0,

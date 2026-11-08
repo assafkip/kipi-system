@@ -44,8 +44,9 @@ def mem_free_frac():
 
 
 def resources_ok():
-    if shutil.disk_usage(os.path.expanduser('~')).free / 2**30 < 5:
-        print('STOP: under the 5 GB disk floor', flush=True)
+    floor = float(os.environ.get('EVAL_DISK_FLOOR_GB', '5'))
+    if shutil.disk_usage(os.path.expanduser('~')).free / 2**30 < floor:
+        print(f'STOP: under the {floor:g} GB disk floor', flush=True)
         return False
     for _ in range(30):
         if mem_free_frac() >= 0.30:
