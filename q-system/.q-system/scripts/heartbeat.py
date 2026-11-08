@@ -16,6 +16,11 @@ So a row carries what came IN and what got DONE, not "it ran". And the reader ru
 on GitHub's runners, so a Mac that is off, a launchd that never fires, or a queue
 nobody drains still raises an alarm.
 
+WHO REPORTS. Only the consumers listed in q-system/.q-system/heartbeat-jobs.json,
+each one calling `emit`. Today that is linear-dor alone (ASK-3947). The others,
+the alert triage among them, are wired one by one (follow-up ticket), and a
+listed job that never reports is itself a `missing` alarm.
+
 TWO HALVES, ONE FILE, so the row's shape has exactly one definition:
 
   emit   (Mac)     append the row to <state>/<job>.jsonl and publish the latest row
@@ -30,7 +35,8 @@ TWO HALVES, ONE FILE, so the row's shape has exactly one definition:
 
 The kinds:
   missing     no row for more than 2 periods (or never, 2 periods after `since`)
-  starved     done = 0 while in > 0 (or the run errored) on 2 runs in a row
+  starved     done = 0 while work waited (in > 0, queue > 0, or the run errored),
+              on 2 runs in a row
   unreadable  a KIPI_HB_* value that is not a row
   unlisted    a row for a job heartbeat-jobs.json does not list, so nobody checks it
 
@@ -52,7 +58,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[2]
+# parents[2] of q-system/.q-system/scripts is the repo root. A copy loaded from a
+# shallow temp dir has fewer parents: the test's mutants live in /tmp/<dir> on the
+# Linux runner, and an import-time IndexError there turned validate red on PR #631
+# while macOS's deep /var/folders temp dir hid it. Fall back to HERE, never raise.
+REPO_ROOT = HERE.parents[2] if len(HERE.parents) > 2 else HERE
 JOBS_FILE = REPO_ROOT / "q-system" / ".q-system" / "heartbeat-jobs.json"
 WORKFLOW = Path(".github") / "workflows" / "heartbeat.yml"
 VAR_PREFIX = "KIPI_HB_"
@@ -115,10 +125,19 @@ def _last_row(path: Path) -> dict | None:
     return None
 
 
-def is_starved(n_in: int, n_done: int, error: str | None) -> bool:
-    # A run that errored before it could count did no work either. Counting only
-    # in > 0 would let "Linear unreachable at start" read as a quiet night.
-    return n_done == 0 and (n_in > 0 or bool(error))
+# The reason classes a row may carry. A closed list, not a sanitizer: the value
+# reaches a public repo's variable and a public issue body, and a sanitizer that
+# keeps any 40 alphanumerics of caller text still publishes caller text
+# ("Linear <b>down</b> token=abc" came out as "linearbdownbtokenabc", PR #631 R1).
+ERROR_CLASSES = ("linear-unreachable",)
+
+
+def is_starved(n_in: int, n_done: int, error: str | None, queue: int | None = None) -> bool:
+    # Work waited if the run took some on, if some is still queued, or if the run
+    # errored before it could count. Counting only in > 0 read a night that drafted
+    # nothing with 32 issues queued as green (PR #631 R1, major), and counting only
+    # in and queue would let "Linear unreachable at start" read as a quiet night.
+    return n_done == 0 and (n_in > 0 or (queue or 0) > 0 or bool(error))
 
 
 def emit(job: str, n_in: int, n_done: int, queue: int | None = None,
@@ -142,14 +161,13 @@ def _emit(job, n_in, n_done, queue, error, state_dir, repo_root, publish, run, n
     state.mkdir(parents=True, exist_ok=True)
     ledger = state / f"{job}.jsonl"
     prev = _last_row(ledger) or {}
-    starved = is_starved(int(n_in), int(n_done), error)
+    starved = is_starved(int(n_in), int(n_done), error, queue)
     streak = int(prev.get("starved_streak") or 0) + 1 if starved else 0
     row = {"job": job, "at": _iso(now or _now()), "in": int(n_in), "done": int(n_done),
            "queue": None if queue is None else int(queue), "starved_streak": streak}
     if error:
-        # A short reason class, never free text: the variable is read in a public
-        # repo's workflow, and arbitrary remote text must not cross into it (ASK-204).
-        row["error"] = re.sub(r"[^a-z0-9-]", "", str(error).lower())[:40] or "error"
+        # One of ERROR_CLASSES or "other", never caller text (ASK-204).
+        row["error"] = error if error in ERROR_CLASSES else "other"
     # One writer per ledger: the consumer itself, and launchd runs one instance of
     # a job at a time. Append-only, so a crash mid-run loses one row, never history.
     with ledger.open("a") as fh:

@@ -15,7 +15,8 @@ GREEN means:
     drafter's real main() emits only when asked;
   * fleet-health mirrors heartbeat-red issues, and a blind gh is a finding.
 MUTANTS: the same invariant cases run against a copy of heartbeat.py with the
-starved rule removed, then with the missing rule removed. Each must go red. A
+starved rule removed, the missing rule removed, and the queue term of
+is_starved removed (PR #631 R1). Each must go red. A
 test that stays green on a mutant could not have failed.
 
 NEVER A LIVE PATH. Every emit gets a scratch state dir and a scratch repo root,
@@ -170,6 +171,14 @@ def core_cases(hb) -> list[str]:
     expect("an errored run counts as starved", (e1["starved_streak"], e2["starved_streak"]) == (1, 2))
     idle = hb.emit("linear-dor", 0, 0, state_dir=SANDBOX / f"i-{id(hb)}", publish=False, now=t0)["row"]
     expect("an empty queue with no error is not starved", idle["starved_streak"] == 0)
+    # PR #631 R1 major: nothing taken on, 32 still queued, twice. That is starved.
+    state = SANDBOX / f"q-{id(hb)}"
+    hb.emit("linear-dor", 0, 0, queue=32, state_dir=state, publish=False, now=t0)
+    q2 = hb.emit("linear-dor", 0, 0, queue=32, state_dir=state, publish=False,
+                 now=t0 + timedelta(days=1))["row"]
+    expect("a night that did nothing while 32 waited is starved, twice fires",
+           (q2["starved_streak"], dor_kinds({"linear-dor": q2}, t0 + timedelta(days=1, hours=1)))
+           == (2, ["starved"]))
 
     # Missing: 2 periods is the line.
     now = at("2026-11-10T12:00:00Z")
@@ -238,8 +247,10 @@ check("a repo without the workflow does not publish", (res["published"].startswi
 check("a bad job name returns, never raises", hb.emit("Bad Name!", 1, 1, publish=False)["row"], None)
 row = hb.emit("linear-dor", 0, 0, error="Linear <b>down</b>: token=abc", state_dir=SANDBOX / "err",
               publish=False)["row"]
-check("the error is a short class, not free text", re.fullmatch(r"[a-z0-9-]{1,40}", row["error"])
-      is not None, True)
+check("caller text becomes the class 'other', never published", row["error"], "other")
+row = hb.emit("linear-dor", 0, 0, error="linear-unreachable", state_dir=SANDBOX / "err",
+              publish=False)["row"]
+check("a known class is kept", row["error"], "linear-unreachable")
 
 print("-- the reader on GitHub")
 rows, bad = hb.rows_from_vars({"KIPI_HB_JUNK": "not json", "SECRET_THING": "topsecret"})
@@ -364,13 +375,23 @@ check("a gh that fails is a blind finding, never zero",
       ["heartbeat-red-blind"])
 check("a repo without the workflow is not asked", fh.heartbeat_red_findings(repo_root=bare, run=fake), [])
 
+print("-- a copy at a shallow path still imports (validate on PR #631: /tmp/x on Linux)")
+shallow = Path(tempfile.mkdtemp(dir=SANDBOX)) / "heartbeat.py"
+shallow.write_text(UNDER_TEST.read_text().replace(
+    "REPO_ROOT = HERE.parents[2] if len(HERE.parents) > 2 else HERE",
+    "REPO_ROOT = HERE.parents[2] if len(HERE.parents) > 99 else HERE"))
+check("the root falls back instead of raising when parents run out",
+      str(load(shallow, "heartbeat_shallow").REPO_ROOT), str(shallow.parent.resolve()))
+
 print("-- mutants: the invariant must go red without each rule")
 src = UNDER_TEST.read_text()
-for label, needle in (("starved rule removed", "        if streak >= STARVED_RUNS:\n"),
-                      ("missing rule removed", "        if age > limit:\n")):
+for label, needle, swap in (
+        ("starved rule removed", "        if streak >= STARVED_RUNS:\n", "        if False:\n"),
+        ("missing rule removed", "        if age > limit:\n", "        if False:\n"),
+        ("queue term removed", "(queue or 0) > 0 or ", "")):
     check(f"mutant anchor present once: {label}", src.count(needle), 1)
     mutant = SANDBOX / f"mutant-{label.split()[0]}.py"
-    mutant.write_text(src.replace(needle, needle.split("if ")[0] + "if False:\n", 1))
+    mutant.write_text(src.replace(needle, swap, 1))
     broken = core_cases(load(mutant, f"mutant_{label.split()[0]}"))
     check(f"the invariant goes red with the {label}", bool(broken), True)
 

@@ -1,9 +1,10 @@
 name: Heartbeat
 
-# THE READER THAT DOES NOT RUN ON THE MAC (ASK-3947). Every consumer on the Mac
-# publishes its latest run to a repo variable, KIPI_HB_<JOB>, through
-# `heartbeat.py emit`. This job reads them on GitHub's runners and opens one
-# `heartbeat-red` issue per (job, kind): missing (no report for 2 periods) or
+# THE READER THAT DOES NOT RUN ON THE MAC (ASK-3947). Each consumer listed in
+# q-system/.q-system/heartbeat-jobs.json (today: linear-dor) publishes its latest
+# run to a repo variable, KIPI_HB_<JOB>, through `heartbeat.py emit`. This job
+# reads them on GitHub's runners and opens one `heartbeat-red` issue per
+# (job, kind): missing (no report for 2 periods) or
 # starved (done 0 while work waited, 2 runs in a row). A green run closes it.
 #
 # Why off the Mac: every earlier watcher ran on the same Mac, under the same
