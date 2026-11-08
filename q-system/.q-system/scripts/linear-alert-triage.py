@@ -321,7 +321,7 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> Outcome:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     desc = fresh.get("description") or ""
     refusal = promotion_refusal(fresh)
     if refusal:
@@ -728,7 +728,7 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> Outcome:
         return Outcome(False, f"{ident}: WOULD HOLD ({reason[:70]})")
     fresh = reread(ls, ident)
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     # STILL AN ALERT? (R2.) A promotion can land during the model call; holding
     # it afterwards would stamp worker-ready work as parked.
     if not is_alert_ticket(fresh.get("description") or ""):
@@ -1285,8 +1285,9 @@ def _prepass_part(pre: Counter, apply: bool) -> str:
     bound = f", {pre['unchecked']} unchecked (read bound)" if pre["unchecked"] else ""
     if not apply:
         return f"; pre-pass (no model): {pre['would_close']} would close{by}{held}{bound}"
+    waits = f" ({pre['skipped_waits']} wait for tomorrow)" if pre["skipped_waits"] else ""
     return (f"; pre-pass (no model): {pre['closed']} closed{by}, {pre['skipped']} "
-            f"skipped, {pre['failed']} failed{held}{bound}")
+            f"skipped{waits}, {pre['failed']} failed{held}{bound}")
 
 
 def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
@@ -1314,6 +1315,8 @@ def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
     print(out.line)
     if out.wrote:
         return "written"
+    if apply and out.waits:
+        return "skipped_waits"      # folded back into skipped by run_triage (ASK-3986)
     return "skipped" if apply else "previewed"
 
 
@@ -1393,12 +1396,21 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     tally = Counter()
     for issue in batch:
         tally[_triage_one(ls, issue, decider, apply)] += 1
+    # A waiting skip is still a skip for the pass line and the exit code; it is
+    # counted apart only so the queue can hold it (ASK-3986, PR #657 round 1).
+    tally["skipped"] += tally["skipped_waits"]
+    # ONE QUEUE NUMBER FOR BOTH CHANNELS (PR #657 round 1, minor 3). The .out line
+    # and the heartbeat row described the same night with different queues; both
+    # now count what stays open for tomorrow: the unbatched pool, failed and
+    # waiting pre-pass closes, and waiting model-half skips.
+    queued = (len(pool) - len(batch) + pre["failed"] + pre["skipped_waits"]
+              + tally["skipped_waits"])
     reasons = Counter(why.split(";")[0] for _, why in refused)
     line = (("" if apply else "DRY RUN, nothing sent: ")
             + ("pre-pass only, no model: " if prepass_only else "")
             + f"triage pass: {tally['written']} written, "
             + (f"{tally['skipped']} skipped, " if apply else f"{tally['previewed']} previewed, ")
-            + f"{tally['failed']} failed; {len(pool) - len(batch)} still queued; "
+            + f"{tally['failed']} failed; {queued} still queued; "
             + f"{len(refused)} refused"
             + (" (" + ", ".join(f"{n} {r}" for r, n in reasons.most_common()) + ")"
                if refused else "")
@@ -1407,12 +1419,18 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     print(line)
     write_run_evidence(line)
     if beat:
-        heartbeat(len(batch), tally["written"],
-                  queue=len(pool) - len(batch) + pre["failed"] + pre["skipped_waits"])
+        heartbeat(len(batch), tally["written"], queue=queued)
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
               "tomorrow", file=sys.stderr)
+        rc = rc or 1
+    # The exit code reads a waiting skip the way it reads a failed close (PR #657
+    # round 1, minor 1): Linear did not answer, the alert stays open, and launchd
+    # must not record a successful night that closed nothing.
+    if pre["skipped_waits"]:
+        print(f"  PRE-PASS: {pre['skipped_waits']} close(s) skipped on a failed re-read; "
+              "they stay open for tomorrow", file=sys.stderr)
         rc = rc or 1
     return rc
 
