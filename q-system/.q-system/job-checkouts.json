@@ -67,6 +67,12 @@
       "since": "2026-11-08",
       "expires": "2026-12-08"
     },
+    "com.kipi.linear-owner-sweep": {
+      "reason": "Reads instance-registry.json to tell fleet projects from outside ones; pinned, it read origin's copy, which lacks infohawk, and left infohawk tickets unowned with exit 0 (PR #654 review, major).",
+      "ticket": "ASK-3967",
+      "since": "2026-11-08",
+      "expires": "2026-12-08"
+    },
     "com.kipi.dispatch": {
       "reason": "Already does its work from its own pinned checkout (kipi-dispatch-pinned.sh, ASK-812); only that wrapper is read from the shared checkout. It is the critical job, so it moves after kipi-job-pinned.sh has run one night on the others.",
       "ticket": "ASK-3967",
