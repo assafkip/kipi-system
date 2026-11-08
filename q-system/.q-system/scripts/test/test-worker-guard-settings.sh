@@ -13,7 +13,8 @@
 # shape of test-worker-default-branch.sh):
 #   E. tree without settings: the agent is started with --settings, a JSON set
 #      whose hooks run from this skeleton and carry no excluded hook.
-#   F. tree WITH settings: no --settings (no double-firing).
+#   F. tree whose settings run every guard: no --settings (no double-firing).
+#   F2. tree whose settings predate guards: --settings carries exactly those (ASK-3957).
 #   G. the set cannot be built: no agent is started, the reason is said, and
 #      nothing is charged to the issue (fail closed, not "run unguarded").
 #   H. census by code: every agent-session call site in the worker passes it.
@@ -84,7 +85,7 @@ chmod +x "$STUB/python3"
 export PATH="$STUB:$PATH"
 [ "$(command -v git)" = "$REAL_GIT" ] || fail "git was shadowed by a stub; real remotes are the subject"
 
-# run_case <name> <settings:yes|no> [GUARD_FAIL]
+# run_case <name> <settings:yes|no|parity> [GUARD_FAIL]
 run_case() {
   local name="$1" withset="$2" gfail="${3:-}" tgt="$WORK/target-$1"
   mkrepo "$tgt" "target$1"
@@ -92,6 +93,22 @@ run_case() {
     mkdir -p "$tgt/.claude"
     printf '{"hooks":{}}\n' > "$tgt/.claude/settings.json"
     G -C "$tgt" add .claude/settings.json && G -C "$tgt" commit -qm settings && git -C "$tgt" push -q origin main
+  elif [ "$withset" = "parity" ]; then
+    # Settings that run every guard the skeleton set carries, each script present:
+    # the set itself, written back as $CLAUDE_PROJECT_DIR hooks (ASK-3957).
+    "$REAL_PY" - "$ROOT" "$tgt" <<'PY' || fail "could not build the parity fixture"
+import json, os, re, subprocess, sys
+root, tgt = sys.argv[1], sys.argv[2]
+full = subprocess.run([sys.executable, root + "/q-system/.q-system/scripts/skeleton-guard-settings.py"],
+                      capture_output=True, text=True, check=True).stdout
+txt = json.dumps({"hooks": json.loads(full)["hooks"]}).replace(root + "/", "$CLAUDE_PROJECT_DIR/")
+os.makedirs(tgt + "/.claude", exist_ok=True)
+open(tgt + "/.claude/settings.json", "w").write(txt)
+for rel in set(re.findall(r"\$CLAUDE_PROJECT_DIR/([\w./-]+\.(?:py|sh))", txt)):
+    os.makedirs(os.path.dirname(os.path.join(tgt, rel)), exist_ok=True)
+    open(os.path.join(tgt, rel), "w").write("# fixture\n")
+PY
+    G -C "$tgt" add -A && G -C "$tgt" commit -qm parity && git -C "$tgt" push -q origin main
   fi
   cat > "$WORK/skel/instance-registry.json" <<JSON
 {"instances":[{"name":"targetproj","path":"$tgt","has_git":true,
@@ -131,13 +148,44 @@ print("  argv: -p <prompt> --settings <%d hook commands, %d deny rules>" % (len(
 PY
 ok "E: a tree without project settings starts the agent with the skeleton's guard set"
 
-# --- F. project settings present: nothing supplied ---------------------------
-run_case F yes
+# --- F. project settings that run every guard: nothing supplied ---------------
+run_case F parity
 [ -f "$WORK/argv-F" ] || fail "F: the agent was never started. Output:
 $(tail -12 "$WORK/run-F.out")"
-tr '\0' '\n' < "$WORK/argv-F" | grep -qx -- '--settings' \
-  && fail "F: a tree WITH .claude/settings.json was also given --settings; every guard would fire twice"
-ok "F: a tree with project settings gets no --settings (no double-firing)"
+# NOT grep -q (ASK-3957): under pipefail, grep -q exits at the first match, tr dies
+# of SIGPIPE on the multi-KB prompt, the pipeline returns 141 and `&& fail` never
+# ran. The original check could not fail; a mutant that double-supplied passed it.
+if tr '\0' '\n' < "$WORK/argv-F" | grep -x -- '--settings' >/dev/null; then
+  fail "F: a tree whose settings already run every guard was also given --settings; every guard would fire twice"
+fi
+ok "F: a tree whose settings run every guard gets no --settings (no double-firing)"
+
+# --- F2. project settings that predate the guards: the missing ones supplied --
+# ASK-3957. Before it, F asserted that THIS tree (settings that run no guard at all)
+# gets nothing, which is the gap: every client tree cut from origin lacked
+# agent-brief-one-job-guard.py on 2026-11-08 and ran without it.
+run_case F2 yes
+[ -f "$WORK/argv-F2" ] || fail "F2: the agent was never started. Output:
+$(tail -12 "$WORK/run-F2.out")"
+"$REAL_PY" - "$WORK/argv-F2" "$ROOT" <<'PY' || fail "F2: see above. Output: $(tail -8 "$WORK/run-F2.out")"
+import json, sys
+argv = [a.decode() for a in open(sys.argv[1], "rb").read().split(b"\0")[:-1]]
+root = sys.argv[2]
+if "--settings" not in argv:
+    sys.exit("F2: a tree whose settings run no guard was started with NO --settings: the guards never run")
+s = json.loads(argv[argv.index("--settings") + 1])
+cmds = [h["command"] for arr in s["hooks"].values() for m in arr for h in m["hooks"]]
+if not any("agent-brief-one-job-guard.py" in c for c in cmds):
+    sys.exit("F2: the overlay does not carry agent-brief-one-job-guard.py")
+if not all(root + "/" in c for c in cmds):
+    sys.exit("F2: a supplied hook does not run from this skeleton")
+if any("stop-logger.sh" in c for c in cmds):
+    sys.exit("F2: an excluded hook reached the agent")
+print("  argv: -p <prompt> --settings <%d hook commands the tree lacks>" % len(cmds))
+PY
+grep -q 'lacks skeleton guard hooks' "$WORK/run-F2.out" || fail "F2: the run does not say it supplied guards. Output:
+$(tail -8 "$WORK/run-F2.out")"
+ok "F2: a tree whose settings predate the guards gets exactly the ones it lacks"
 
 # --- G. the set cannot be built: fail closed --------------------------------
 run_case G no 1
