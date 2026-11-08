@@ -768,6 +768,57 @@ rotation() {
   done
 }
 
+# THE CONSUMER OF A REFUSAL THAT DOES NOT HEAL (ASK-3958). Before this, a refused
+# repo got one log line per tick and nothing else: 469 identical lines for one repo
+# in one run, and no ticket. dispatch-refusals.py keeps each repo+check's
+# first-refused time (its only writer) and says DUE once the check has been refused
+# for 12h, above the 7.6h longest transient measured. page_once files ONE alert
+# ticket per repo+check through slack-notify.sh, which pages nobody. A pass clears
+# the key, so a recurrence files again.
+#
+# Called with the preflight output to record a refusal, or with an empty third
+# argument to record a pass. EVERY LINE GOES TO THE LOG OR NOWHERE, never stdout:
+# pick_list's stdout IS the rotation, so a stray line here would become a repo.
+REFUSALS_PY="$REPO/q-system/.q-system/scripts/dispatch-refusals.py"
+REFUSALS_FILE="${KIPI_DISPATCH_REFUSALS:-$HOME/.config/kipi/dispatch-refusals.tsv}"
+refusal_note() {  # refusal_note <name> <path> <preflight-output-or-empty>
+  local name="$1" path="$2" out="$3" key tag check detail
+  if [ ! -f "$REFUSALS_PY" ]; then
+    # Said on the refused path only. A silent return here is how the first test
+    # run of this consumer passed 11h and filed nothing at 13h: the helper was
+    # missing and nothing said so.
+    [ -z "$out" ] || say "refusal consumer MISSING at $REFUSALS_PY; $name's refusal is logged but nothing will file it"
+    return 0
+  fi
+  # page_once keys are file names: a registry name may hold a space.
+  key="$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
+  if [ -z "$out" ]; then
+    # The healthy path runs on every pass of every tick, so stay out of python
+    # unless this repo has a refusal on record.
+    [ -f "$REFUSALS_FILE" ] && grep -qF "$name	" "$REFUSALS_FILE" 2>/dev/null || return 0
+    while read -r tag check; do
+      [ "$tag" = CLEARED ] && page_clear "preflight-$key-$check"
+    done < <(KIPI_DISPATCH_REFUSALS="$REFUSALS_FILE" python3 "$REFUSALS_PY" passed "$name" 2>>"$LOG")
+    return 0
+  fi
+  local -a checks=()
+  while read -r check; do [ -n "$check" ] && checks+=("$check"); done \
+    < <(printf '%s\n' "$out" | sed -n 's/^FAIL \([A-Za-z0-9_-]*\):.*/\1/p' | sort -u)
+  [ "${#checks[@]}" -gt 0 ] || checks=("unnamed")
+  while read -r tag check; do
+    case "$tag" in
+      CLEARED) page_clear "preflight-$key-$check" ;;
+      DUE)
+        detail="$(printf '%s\n' "$out" | grep -m1 "^FAIL $check:" | cut -c1-300)"
+        # No hour count in the text: page_once keys its dedupe on a hash of the
+        # message, and a number that grows each tick would file a new ticket each tick.
+        page_once "preflight-$key-$check" "kipi dispatch: preflight has refused $name ($path) on check '$check' for ${KIPI_DISPATCH_REFUSAL_HOURS:-12}h or more, so no ticket in that repo can be picked until it passes. ${detail:-FAIL $check}. Do: fix that check in $path (the FAIL text says what is wrong), or turn the repo's dispatch row off with a reason. The first tick that passes clears this."
+        ;;
+    esac
+  done < <(KIPI_DISPATCH_REFUSALS="$REFUSALS_FILE" python3 "$REFUSALS_PY" refused "$name" "${checks[@]}" 2>>"$LOG")
+  return 0
+}
+
 # The rotation with every refused repo removed. Emits `name<TAB>path`.
 #
 # A REFUSED REPO IS SKIPPED, NOT A WALL. It drops out of the list and the rotation
@@ -790,8 +841,10 @@ pick_list() {
     # gives is the only thing that makes the gate legible.
     if out="$(bash "$PREFLIGHT" "$path" "$remote" 2>&1)"; then
       printf '%s\t%s\n' "$name" "$path"
+      refusal_note "$name" "$path" "" >/dev/null
     else
       say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
+      refusal_note "$name" "$path" "${out:-FAIL unnamed: preflight exited non-zero with no output}" >/dev/null
     fi
   done < <(rotation)
   # The counted "REFUSED as client engagement repos" line that used to follow is

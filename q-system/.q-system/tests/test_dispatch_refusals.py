@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""ASK-3958: a refusal that does not heal gets one consumer, at 12h, per repo+check.
+
+RED BEFORE GREEN. Written before dispatch-refusals.py existed, so the first run is
+a missing file. Every case runs the script as the dispatcher does (a subprocess,
+stdout as its input) against a tmp state file and a fixed clock. None of them can
+reach the live ~/.config/kipi/dispatch-refusals.tsv: the script refuses that path
+under pytest, and test_refuses_the_live_path_under_pytest proves the refusal.
+"""
+from __future__ import annotations
+
+import os
+import pathlib
+import subprocess
+import sys
+
+import pytest
+
+HERE = pathlib.Path(__file__).resolve().parent
+SCRIPT = HERE.parent / "scripts" / "dispatch-refusals.py"
+H = 3600
+T0 = 1_800_000_000
+
+
+def run(state, *args, at=T0, hours=None, env_extra=None):
+    env = dict(os.environ, KIPI_DISPATCH_REFUSALS=str(state), KIPI_DISPATCH_NOW=str(at))
+    if hours is not None:
+        env["KIPI_DISPATCH_REFUSAL_HOURS"] = str(hours)
+    if env_extra:
+        env.update(env_extra)
+    res = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
+                         text=True, env=env)
+    return res.returncode, res.stdout.split("\n")[:-1] if res.stdout else []
+
+
+@pytest.fixture()
+def state(tmp_path):
+    return tmp_path / "dispatch-refusals.tsv"
+
+
+def test_a_first_refusal_files_nothing(state):
+    assert run(state, "refused", "ktlyst", "hooks") == (0, [])
+
+
+def test_eleven_hours_files_nothing(state):
+    """The mutant: a consumer that fires early would file every measured transient."""
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 11 * H) == (0, [])
+
+
+def test_twelve_hours_is_due(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 12 * H) == (0, ["DUE hooks"])
+
+
+def test_a_new_check_does_not_inherit_the_old_clock(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    rc, out = run(state, "refused", "ktlyst", "hooks", "remote", at=T0 + 12 * H)
+    assert out == ["DUE hooks"]
+    # `remote` started failing at +12h, so it is not due until +24h.
+    assert run(state, "refused", "ktlyst", "remote", at=T0 + 20 * H)[1] == ["CLEARED hooks"]
+    assert run(state, "refused", "ktlyst", "remote", at=T0 + 24 * H)[1] == ["DUE remote"]
+
+
+def test_a_check_that_stops_failing_is_cleared_and_its_clock_reset(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "remote", at=T0 + H)[1] == ["CLEARED hooks"]
+    # hooks fails again: a new episode, a new clock.
+    run(state, "refused", "ktlyst", "hooks", at=T0 + 2 * H)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 13 * H)[1] == []
+
+
+def test_a_pass_clears_every_check(state):
+    run(state, "refused", "ktlyst", "hooks", "remote", at=T0)
+    rc, out = run(state, "passed", "ktlyst", at=T0 + H)
+    assert sorted(out) == ["CLEARED hooks", "CLEARED remote"]
+    assert state.read_text() == ""
+
+
+def test_a_pass_on_a_clean_repo_writes_nothing(state):
+    assert run(state, "passed", "ktlyst") == (0, [])
+    assert not state.exists()
+
+
+def test_other_repos_keep_their_clocks(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    run(state, "refused", "brag", "hooks", at=T0 + 6 * H)
+    run(state, "passed", "brag", at=T0 + 7 * H)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 12 * H)[1] == ["DUE hooks"]
+
+
+def test_the_threshold_is_read_from_the_env(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0, hours=1)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + H, hours=1)[1] == ["DUE hooks"]
+
+
+def test_a_malformed_row_costs_its_clock_not_the_run(state):
+    state.write_text("garbage\nktlyst\thooks\tnot-a-number\t1\n")
+    assert run(state, "refused", "ktlyst", "hooks", at=T0) == (0, [])
+    assert state.read_text() == f"ktlyst\thooks\t{T0}\t{T0}\n"
+
+
+def test_usage_errors_exit_2(state):
+    # Python exits 2 on a missing script too, so without this the case is green on
+    # a branch that never shipped the file.
+    assert SCRIPT.is_file()
+    assert run(state)[0] == 2
+    assert run(state, "refused", "ktlyst")[0] == 2
+    assert run(state, "bogus", "ktlyst")[0] == 2
+
+
+def test_refuses_the_live_path_under_pytest(tmp_path):
+    """The chokepoint, proven. PYTEST_CURRENT_TEST is set by pytest itself."""
+    assert os.environ.get("PYTEST_CURRENT_TEST")
+    # HOME is the tmp dir, so even a broken chokepoint writes nowhere real. The
+    # default path is then tmp's, and the refusal must still fire on it.
+    env = {k: v for k, v in os.environ.items() if k != "KIPI_DISPATCH_REFUSALS"}
+    env["HOME"] = str(tmp_path)
+    res = subprocess.run([sys.executable, str(SCRIPT), "refused", "ktlyst", "hooks"],
+                         capture_output=True, text=True, env=env)
+    assert res.returncode == 4
+    assert not (tmp_path / ".config" / "kipi" / "dispatch-refusals.tsv").exists()
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
