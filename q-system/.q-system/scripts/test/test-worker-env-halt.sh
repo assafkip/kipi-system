@@ -266,10 +266,12 @@ if grep -qi 'weekly limit' <<<"$ALERT_A5" && ! grep -q 'XYZ123' <<<"$ALERT_A5"; 
 else
   bad "on rc 0 the alert carries only the marker" "alert text: '${ALERT_A5:-<empty>}'"
 fi
-if grep -q 'XYZ123' "$STATE_A5/linear-worker.log" 2>/dev/null; then
-  ok "...and this Mac's own log keeps the whole line"
+# The worker's OWN say line, not the agent output it tees: the tee alone would
+# pass this with the say line deleted (PR #644 round 1).
+if grep -q 'runner refusal read on a successful exit: .*XYZ123' "$STATE_A5/linear-worker.log" 2>/dev/null; then
+  ok "...and the worker logs the whole line on this Mac"
 else
-  bad "this Mac's own log keeps the whole line" "no full line in $STATE_A5/linear-worker.log"
+  bad "the worker logs the whole line on this Mac" "no say line in $STATE_A5/linear-worker.log"
 fi
 
 # ============================================================================

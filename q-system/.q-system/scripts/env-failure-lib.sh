@@ -167,10 +167,13 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
 # written: a SUCCESSFUL `claude -p` exit, whose bytes an issue body can steer
 # through the prompt. The tail after a marker is matched word-led on purpose
 # (`resets .*`, see ENV_TAIL_BODY), so it is free text; the marker is the closed
-# vocabulary in ENV_MARKERS. The DoR drafter and linear-worker.sh file this one
-# on rc 0 and environmental_reason on a failed exit (ASK-3980, ASK-3981).
-# pr-review-agent.sh prints its reason to its own stderr only, never to a ticket,
-# so it keeps the whole line. The `-hour` alternative is bounded to 1 to 3 digits
+# vocabulary in ENV_MARKERS. Every consumer that files a reason onto a ticket,
+# a page or a PR files this one; the whole line goes to that consumer's own log:
+#   linear-dor-drafter.py   rc 0 only; a failed exit keeps the CLI line (ASK-3980)
+#   linear-worker.sh        both exits: a timeout kill is non-zero too (ASK-3981)
+#   open-loops-heartbeat.sh failed exits, the only ones it reads (ASK-3981)
+#   pr-review-agent.sh      prints to its own stderr only, never to a ticket, so
+#                           it keeps the whole line. The `-hour` alternative is bounded to 1 to 3 digits
 # (the real shape is "5-hour"): unbounded, it let a model answer put a long digit
 # run into the marker that reaches Linear (PR #640 round 2).
 environmental_marker() {  # environmental_marker <runner-output> -> the marker only
