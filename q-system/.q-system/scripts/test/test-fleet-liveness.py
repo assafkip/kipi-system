@@ -174,7 +174,8 @@ print("-- mutants: each must go red")
 mutant("a row deleted", lambda m: m["ticket_states"]["rows"].pop("blocked-capability"),
        "blocked-capability (durable-queue) holds tickets")
 mutant("a debt of 31 days",
-       lambda m: m["ticket_states"]["rows"]["owner-assaf"]["exits"][0].update(expires="2026-12-09"),
+       # Any row that still carries a debt (owner-assaf's debt became a consumer, ASK-3961).
+       lambda m: m["ticket_states"]["rows"]["no-project"]["exits"][0].update(expires="2026-12-09"),
        "this one 31")
 mutant("a consumer marker that is not in its file",
        lambda m: m["ticket_states"]["rows"]["started-dormant"]["exits"][0].update(marker="def no_such_function"),
