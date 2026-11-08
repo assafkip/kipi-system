@@ -175,7 +175,7 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
         out.append({"id": str(g.get("id") or ""),
                     "channel": "group", "name": g.get("name") or "(unnamed group)",
                     "who": ("author unreadable" if unreadable
-                            else preview.get("nickname") or "someone"),
+                            else preview.get("nickname") or "(unknown sender)"),
                     "unreadable": unreadable,
                     "text": (preview.get("text") or "")[:160], "at": created})
 
@@ -201,7 +201,7 @@ def waiting(now: dt.datetime, token: str, opener=None) -> list[dict]:
         if allow is not None and peer not in allow:
             continue
         if created >= cutoff and sender and sender != me:
-            who = (c.get("other_user") or {}).get("name") or "someone"
+            who = (c.get("other_user") or {}).get("name") or "(unknown sender)"
             out.append({"id": str(c.get("other_user", {}).get("id") or ""),
                         "channel": "dm", "name": who, "who": who,
                         "text": (last.get("text") or "")[:160], "at": created})

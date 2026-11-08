@@ -1215,7 +1215,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     if [ -n "$RECEIPT_MISS" ]; then
       MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. Nothing proves it was reviewed. By hand: $RECEIPT_FIX"
       case "$AUTOMERGE" in
-        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Needs a human: $RECEIPT_FIX" ;;
+        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Fix: $RECEIPT_FIX (the page files an alert ticket that linear-alert-triage.py (com.kipi.linear-alert-triage, 02:30) promotes or holds)" ;;
         *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so nothing proves it was reviewed: $RECEIPT_FIX" ;;
       esac
     fi
@@ -1268,7 +1268,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
     if [ "$GATE" = "40" ]; then
       STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
-      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
+      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head. wip_release (linear-worker.sh) closes this PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it"
     fi
     say "$STALL_LOG"
     bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true

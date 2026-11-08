@@ -390,7 +390,7 @@ def phase_claude_md(ctx):
 
     claude_path = ctx.p("CLAUDE.md")
     if not os.path.exists(claude_path):
-        ctx.warn("No CLAUDE.md - cannot fix imports. Create one manually.")
+        ctx.warn("No CLAUDE.md - cannot fix imports. Skipped; the next kipi migrate run retries this step once a CLAUDE.md exists.")
         return
 
     with open(claude_path) as f:

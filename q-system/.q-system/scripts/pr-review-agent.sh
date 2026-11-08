@@ -94,6 +94,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DISK_FLOOR_PY="$SCRIPT_DIR/worktree-disk-floor.py"   # ASK-3648, read by review_worktree
 SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
@@ -766,6 +767,22 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   else
+    # DISK FLOOR (ASK-3648, PR #656 review). A NEW tree is cut from shell, so the
+    # PreToolUse floor never sees it. Under the floor this bails like any failed
+    # add, and the caller's documented fallback (tree search, with its WARN)
+    # reviews without allocating. Re-detaching an existing tree, above, costs no
+    # disk and is never refused. ${DISK_FLOOR_PY:-} is empty when a test lifts
+    # this function out alone; empty or missing means proceed, as does exit 2.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      local floor_line
+      floor_line="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      case "$?" in
+        1) echo "  WARN: $floor_line; no new review tree for PR #$PR." >&2
+           _wt_bail "$wt" || return 1
+           return 1 ;;
+        2) echo "  WARN: $floor_line; proceeding without the floor." >&2 ;;
+      esac
+    fi
     git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
@@ -848,6 +865,20 @@ if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}
     echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
     HEAD_SHA_ISOLATED=1
   else
+    # UNDER THE DISK FLOOR IS THE MACHINE, NOT THE REVIEW (ASK-3648, PR #656
+    # review round 2, finding 1). review_worktree refused a new tree; that runs in
+    # a subshell, so the floor is read again here. Exit 9 is this script's code
+    # for a machine condition (see the runner-unavailable exits below), and
+    # linear-worker.sh reads 9 as env_halt: no charge, no "reviewer failed" line.
+    # The fallback below would refuse anyway, with no tree at this sha, and blame
+    # the clone.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      FLOOR_LINE="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      if [ "$?" -eq 1 ]; then
+        echo "  ENV: $FLOOR_LINE; no review tree for PR #$PR, so no review this run. A condition of the machine (exit 9), not of the PR; the next run reviews it once space is back." >&2
+        exit 9
+      fi
+    fi
     # Say it out loud rather than quietly reviewing the live tree. A degraded run
     # that nobody knows is degraded is how the original defect stayed invisible.
     echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2
@@ -1149,7 +1180,7 @@ Be specifically suspicious of:
 - **Claims of enforcement.** 'This ensures X' in a comment is not enforcement. Find
   the code path that refuses, or call it a finding.
 - **Error paths, retries, partial failure.** What is left behind when this dies
-  halfway? What does the operator see?
+  halfway? What does Sana's alert triage see?
 
 ## The operational bar (this is the Meta staff part)
 
@@ -1158,7 +1189,7 @@ BE DELETED, in a PUBLIC repo. So judge it that way:
 - What happens at 3am when this fires and nobody is watching?
 - What is the blast radius of it being wrong? What is permanent and unrecoverable?
 - What pages a human, and is that signal or noise? A checker that cries wolf trains
-  the operator to ignore it, which costs the real alert later.
+  the alert triage to ignore it, which costs the real alert later.
 - Can this be rolled back? If not, say so loudly.
 - Concurrency: two of these running at once. What breaks?
 
@@ -1172,9 +1203,9 @@ anchors is a real event on this fleet, so calibrate against them directly:
   a Linear object that cannot be deleted. Destroys or overwrites founder work.
   Silently disables the very detector the change adds, forever. If the honest
   answer to 'can we undo this after it fires?' is no, it is a blocker.
-- **major** — wrong behavior unattended that a human must clean up, but CAN clean
-  up. Files duplicate permanent issues. Cries wolf on every run (a checker the
-  operator learns to ignore costs the real alert later, which is why false alarms
+- **major** — wrong behavior unattended that leaves a cleanup behind, and the cleanup
+  is possible. Files duplicate permanent issues. Cries wolf on every run (a checker the
+  alert triage learns to ignore costs the real alert later, which is why false alarms
   rank here and not below). Reports success for work that did not happen.
 - **minor** — real, reproducible, and bounded. Log or help text that misstates
   what the code does. A narrow false negative on an input shape nobody hits yet.
@@ -1182,7 +1213,7 @@ anchors is a real event on this fleet, so calibrate against them directly:
 - **nit** — style, naming, formatting, preference. Never gates anything.
 
 Two calibration checks before you assign a severity:
-1. If you cannot name what a human has to DO about it at 3am, it is not a blocker
+1. If you cannot name what has to be DONE about it at 3am, it is not a blocker
    or a major.
 2. If your reproducer only fails under inputs you had to construct and no producer
    in this repo emits, drop the severity a level and say so.

@@ -77,7 +77,7 @@ AXES = [
      "The property is that CONTROLS RESPOND, and it holds tightly across the set: figma "
      "0.95, notion 1.12, squarespace 1.15, calendly 1.58, stripe 5.15 transitions per "
      "control. A ratio transfers to a site of any size; an absolute count is a measure of "
-     "how big somebody's navigation is."),
+     "how big one site's navigation is."),
     ("transitioned", "elements that respond to the pointer",
      lambda d: _n(d, "motion", "transitioned"), False,
      "NOT FLOORED, and this floor was REMOVED AFTER IT FAILED A PAGE, which is the "
