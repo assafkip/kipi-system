@@ -1110,8 +1110,21 @@ def ticket_is_live(i):
     # rests on that function prose. A PR in this state is never released, not even
     # by the backstop: on a ceiling of old PRs, converge reworking one of them
     # holds a live claim, and closing it mid-run would throw away that round.
+    # An unreadable start stamp reads live here: a PR is never closed on a guess.
+    if ls._parse_stamp(i.get("startedAt")) is None:
+        return True
+    return live_evidence(i)
+
+
+def live_evidence(i):
+    # True only on POSITIVE evidence that someone is on the ticket now: a start
+    # stamp that parses and is inside the lane window, or a live worker claim.
+    # The live-first check in refusal() asks this, not ticket_is_live (PR #671
+    # round 1, major): an unreadable stamp reads live forever, and live-first
+    # would then mask the no-dor, off-repo, label and alert exits forever, while
+    # ticket-live has no backstop, so that PR would never leave the ceiling.
     began = ls._parse_stamp(i.get("startedAt"))
-    if began is None or (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+    if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
         return True
     return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
 
@@ -1123,7 +1136,7 @@ def refusal(i):
     # last, PR #664 was closed as no-dor while ASK-4013 was In Progress with a lane
     # on it, two minutes before its DoR was written. A missing DoR, project or label
     # on a live ticket is fixed on the ticket; it is never a reason to close the PR.
-    if i["state"]["type"] == "started" and ticket_is_live(i):
+    if i["state"]["type"] == "started" and live_evidence(i):
         return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
@@ -1138,6 +1151,8 @@ def refusal(i):
     if "Definition of Ready" not in (i.get("description") or ""):
         return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
+        if ticket_is_live(i):
+            return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
         return hold("ticket-held", "ticket held: " + (started_hold(i) or "not released"))
     name = "ticket is " + (i["state"].get("name") or i["state"]["type"])
     if i["state"]["type"] in ("completed", "canceled"):
