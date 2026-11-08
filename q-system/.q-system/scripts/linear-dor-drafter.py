@@ -326,6 +326,24 @@ def _linear():
     return mod
 
 
+HEARTBEAT_JOB = "linear-dor"
+
+
+def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
+    """One heartbeat row for this run (ASK-3947). Only main() under --heartbeat calls it.
+
+    OPT-IN BY FLAG, NOT BY --apply. test-linear-dor-failure-reporting.py runs main()
+    with --apply in-process under the real HOME, so keying this on --apply would make
+    that test write the live ledger and publish a live repo variable. Only the plist
+    passes --heartbeat. heartbeat.emit never raises: a heartbeat must not cost the run.
+    """
+    spec = importlib.util.spec_from_file_location("heartbeat", HERE / "heartbeat.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    res = mod.emit(HEARTBEAT_JOB, n_in, n_done, queue=queue, error=error)
+    print(f"  heartbeat: in {n_in}, done {n_done}, {res['published']}")
+
+
 # `labels` is new (needs-scope-redrive). Before it this query selected no labels
 # at all, so a label-driven selection was not merely unimplemented, it had no data
 # to run on. The IDs come with the names because the write needs the id of the one
@@ -1260,6 +1278,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true", help="write to Linear")
     ap.add_argument("--project", help="only this project")
     ap.add_argument("--timeout", type=int, default=300, help="seconds per claude call")
+    ap.add_argument("--heartbeat", action="store_true",
+                    help="report in/done to heartbeat.py (the launchd plist passes this)")
     args = ap.parse_args()
 
     ls = _linear()
@@ -1285,6 +1305,8 @@ def main() -> int:
                    f"{START_UNREACHABLE_REPING_NIGHTS} nights if it stays down.")
         print(f"dor-drafter: SKIPPED, Linear unreachable at start "
               f"(night {nights}); {len(held)} failure(s) still held")
+        if args.heartbeat:
+            heartbeat(0, 0, error="linear-unreachable")
         return 0
 
     todo = fetch_draftable(ls, tid)
@@ -1406,6 +1428,10 @@ def main() -> int:
     print(f"dor-drafter: drafted {drafted}, {len(failed)} failed ({reported})"
           f"{carried_note}{held_note}{elsewhere_note}, {remaining} still queued: "
           f"{queue_breakdown(remaining, remaining_redrives)}")
+    if args.heartbeat:
+        # in = the runs that reached a verdict. A skip (another writer finished it)
+        # is neither work done nor work refused, so it is in neither count.
+        heartbeat(drafted + len(failed), drafted, queue=remaining)
     return 0
 
 

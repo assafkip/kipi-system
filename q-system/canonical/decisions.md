@@ -501,3 +501,17 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-11-07
 - **Held by:** `wip_release` in `q-system/.q-system/scripts/linear-worker.sh`, called once from the WIP ceiling block where "Starting nothing" used to print, keyed on hold kinds through its exit table `wip_release.kinds` in `q-system/.q-system/terminal-states.json`, with the age backstop. Wired live by the `WIP-RELEASE-APPLY` block in `kipi-dispatch.sh` (launchd `com.kipi.dispatch`): when the dry pick names a release, it runs `kipi work --release-only --apply`. Test: `q-system/.q-system/scripts/test/test-worker-wip-liveness.sh` (red on d65ac5d5; coverage lint L11; mutants L12 and L13c). Lane adoption with the round count carried: ASK-3938.
 - **Revisit:** Only on a founder order.
+
+## The stuck-work program, decided by Sana (2026-11-07)
+
+### RULE-2026-11-07-C: Stuck-work program decisions, taken by Sana on the founder's delegation
+- **Origin:** [USER-DIRECTED] (founder, verbatim: "Iwant sana to read the call and decide on the option and decisions and start autonomously"). The decisions themselves are Sana's, with the measurements below. Full record: `q-system/output/analyses/stuck-work-synthesis-2026-11-07.md`, section "Decisions taken 2026-11-07".
+- **Decision:**
+  - F1, steady triage spend: 30 decisions a night once a healthy pass is measured (written above 0, failed at most 10 percent of attempted), else 8. Tonight's check stays at 100 (the founder's choice).
+  - F2, a paid GitHub plan for branch protection: no. F3, token access to client orgs: no. Neither unblocks a ticket today, so nothing goes to the founder.
+  - The drafter plist login fix (NEW-2) is not shipped. ASK-278 is re-scoped to name claude's output in its failure reason and to stop the run on a usage-limit message.
+  - The outside checker is `.github/workflows/heartbeat.yml` reading the repo variables `KIPI_HB_<JOB>`, one writer per variable, with `heartbeat-red` GitHub issues mirrored into Linear by `fleet-health-daily.py`. No Linear secret goes into GitHub.
+- **Reason:** Measured 2026-11-07. A real launchd probe job had HOME, USER and LOGNAME, and `claude -p` returned OK; the 63-char drafter failure was "You've hit your weekly limit" (15 claude session files, 02:00 to 07:00). In 24,499 dispatch log lines, branch-protection refusals stop on 2026-08-22, and "the current gh token cannot see" appears 0 times; today's 6 refused repos all fail hook parity. The repo holds no Actions secrets.
+- **Date:** 2026-11-07
+- **Held by:** the heartbeat: `q-system/.q-system/scripts/heartbeat.py` (emit, check), `.github/workflows/heartbeat.yml`, `q-system/.q-system/heartbeat-jobs.json`, the `heartbeat-red` detector in `fleet-health-daily.py`, and `--heartbeat` in `com.kipi.linear-dor.plist`. Test: `q-system/.q-system/scripts/test/test-heartbeat.py` (red on c6734f01, two mutants). F1: the `--limit` in `com.kipi.linear-alert-triage.plist`, changed by ticket after the 02:30 pass is read. F2 and F3 change no code. ASK-278 carries the drafter change.
+- **Revisit:** F2 when a check-7 refusal appears again (the NEW-13 class ticket names the repo). F3 after NEW-13 clones the no-checkout repos. F1 when NEW-3's heartbeat has two weeks of triage rows.
