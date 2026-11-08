@@ -529,6 +529,10 @@ try:
         _calls.append(1)
         return _Res(1, LIMIT_TEXT)
 
+    def _limited_rc0(*_a, **_k):
+        _calls.append(1)
+        return _Res(0, LIMIT_TEXT)
+
     dor.subprocess.run = _limited
     _lim_body, _lim_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
     check("ASK-278: a usage-limit refusal is named in the reason", "weekly limit" in _lim_reason, True)
@@ -537,6 +541,17 @@ try:
     dor.subprocess.run = lambda *_a, **_k: _Res(1, "Traceback: secret=abc123 in the issue body\n")
     _other = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-278: any other output stays a length, never its text", "secret" in _other, False)
+    # THE MEASURED SHAPE EXITS 0 (ASK-873, PR #637 round 1): the same line, rc 0.
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    _rc0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
+    check("ASK-278: the refusal is named when claude exits 0 too",
+          _rc0.startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), True)
+    # A real draft is never read as a refusal, at any exit code.
+    _draft = "## Definition of Ready\n* **Outcome:** x\n* **Check:** y\n\nEnergy: Quick Win. Time Est: 1 hour."
+    dor.subprocess.run = lambda *_a, **_k: _Res(0, _draft)
+    _ok_body, _ok_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
+    check("ASK-278: a real draft that mentions nothing is never a refusal",
+          (_ok_reason or "").startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), False)
 
     # Through main(): three queued issues and a limited runner. One call, then stop.
     _calls.clear()
@@ -552,6 +567,12 @@ try:
     check("ASK-278: a limited runner costs ONE claude call, not one per queued issue", len(_calls), 1)
     _saved = json.loads((SANDBOX / "state-278.json").read_text())
     check("ASK-278: the issues it did not reach stay queued", _saved.get("remaining"), 3)
+    # And through main() at rc 0, the shape the fleet actually saw.
+    _calls.clear()
+    dor.subprocess.run = _limited_rc0
+    dor.STATE = SANDBOX / "state-278-rc0.json"
+    dor.main()
+    check("ASK-278: at rc 0 a limited runner still costs ONE call", len(_calls), 1)
 finally:
     dor.subprocess.run, dor.shutil.which = _real_run2, _real_which2
     dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv

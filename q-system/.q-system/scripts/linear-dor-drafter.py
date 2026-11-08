@@ -833,12 +833,20 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
     out = (res.stdout or "").strip()
+    # READ FOR A REFUSAL ON EVERY EXIT CODE, BEFORE THE LENGTH CHECK (PR #637 round 1).
+    # The measured shape of this outage EXITS 0 (ASK-873: on 2026-08-15 every
+    # `claude -p` printed the weekly-limit line and succeeded), and at 63 chars it
+    # also passes the length check, so it reached the draft validator and blamed
+    # each issue for a malformed draft. linear-worker.sh and pr-review-agent.sh read
+    # the success branch for the same reason. A real draft cannot match:
+    # is_environmental refuses any output with one line that is not a machine marker.
+    refusal = runner_refusal(out + "\n" + (res.stderr or ""))
+    if refusal:
+        reason = RUNNER_REFUSED + refusal
+        print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
+        return None, reason
     if res.returncode != 0 or len(out) < 60:
-        # Only a call the CLI itself failed is read for a refusal: a success that is
-        # merely short is the model's text, which may well mention limits.
-        refusal = runner_refusal(out + "\n" + (res.stderr or "")) if res.returncode != 0 else ""
-        reason = (RUNNER_REFUSED + refusal if refusal
-                  else f"claude exited rc={res.returncode} with {len(out)} chars of output")
+        reason = f"claude exited rc={res.returncode} with {len(out)} chars of output"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
     # Strip any stray fencing the model added despite instructions.
