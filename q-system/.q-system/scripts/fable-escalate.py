@@ -640,7 +640,7 @@ DECISION: exactly one line, one of:
   DECISION: BLOCKED-ON https://github.com/<owner>/<repo>/pull/<n>
   DECISION: BLOCKED-ON FOUNDER-DECISION: <spend|access|outside>: <one line>
 For SPLIT, then one line per sub-ticket: SUBTICKET: <title> :: <one-sentence outcome>.
-BLOCKED-ON must name an OPEN ticket or PR that someone owns; FOUNDER-DECISION is
+BLOCKED-ON must name an OPEN ticket with an owner:* label or an OPEN fleet PR; FOUNDER-DECISION is
 only for spend, access or reach outside the fleet. Anything else is refused.""",
     "split-close": """
 DECISION: exactly one line, SPLIT or CLOSE only:

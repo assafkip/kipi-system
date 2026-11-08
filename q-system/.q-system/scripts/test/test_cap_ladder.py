@@ -506,6 +506,39 @@ def case_review_fixes() -> None:
     check("review: the morning brief registers founder_asks.py", '"founder_asks.py"' in src)
 
 
+def case_review_round2() -> None:
+    """PR #662 review round 2, each finding pinned."""
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: grant token A\n",
+                              RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve plan B\n"])
+    ladder(env, "--apply")                                  # hold 1, ask A
+    ladder(env, "--resolve", "ASK-1")                       # A resolved
+    at(env, 4)
+    ladder(env, "--apply")                                  # re-enters on A
+    at(env, 5)
+    led(env, "record-capout", "ASK-1", "fifth cap")
+    ladder(env, "--apply")                                  # hold 2, ask B
+    reset(env)
+    at(env, 6)
+    out = ladder(env, "--apply")
+    check("round 2 major: a resolved earlier ask does NOT release a later founder hold on the same issue",
+          ledger_row(env, "ASK-1").get("ladder_hold") is True and not log(env, "sync"), out)
+    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
+    check("round 2 minor: two distinct asks on one issue are both listed, each with its own id",
+          len({r["id"] for r in rows}) == 2 and sum(1 for r in rows if not r["resolved"]) == 1, rows)
+    ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: a third thing")
+    ladder(env, "--resolve", "ASK-1", "--note", "only the newest")
+    rows = [json.loads(l) for l in Path(env["CAP_LADDER_STATUS"]).read_text().splitlines()]
+    check("round 2 minor: --resolve ISSUE resolves only its newest open ask",
+          sum(1 for r in rows if not r["resolved"]) == 1 and [r["note"] for r in rows if r.get("note")] == ["only the newest"] or
+          sum(1 for r in rows if r.get("note") == "only the newest") == 1, rows)
+    td.cleanup()
+    e = dict(os.environ, PYTEST_CURRENT_TEST="x")
+    e.pop("CAP_LADDER_STATE", None)
+    p2 = subprocess.run([sys.executable, str(LADDER), "--resolve", "ASK-1"], env=e, capture_output=True, text=True)
+    check("round 2 minor: --resolve under pytest without CAP_LADDER_STATE is refused before it writes",
+          p2.returncode == 4, p2.stdout + p2.stderr)
+
+
 def case_owns() -> None:
     """ladder_owns() is the one rule pr-owner.py asks (ASK-3962), so it is pinned here."""
     import importlib.util
@@ -577,6 +610,7 @@ def main() -> int:
         case_edges()
         case_owns()
         case_review_fixes()
+        case_review_round2()
         case_mutant()
     case_worker()
     case_sites()

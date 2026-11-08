@@ -310,8 +310,10 @@ OPEN_TYPES = ("backlog", "unstarted", "started", "triage")
 # --- THE MORNING STATUS FILE: this script is its one writer ------------------
 # Founder rulings: spend, access and outside reach are "parked with its reason
 # and listed in the morning status file. It is not a page." founder_asks.py
-# renders the unresolved entries into the 07:00 morning brief, and each line
-# carries the one command that releases the hold: `cap-ladder.py --resolve ASK-n`.
+# renders the unresolved entries as a section of /q-morning (the brief runs when
+# the founder types it; its schedule was retired 2026-09-11), the stall sweep
+# (ASK-4019) reads the same file, and each line carries the one command that
+# releases the hold: `cap-ladder.py --resolve <ask id>`.
 # Other jobs add asks through `cap-ladder.py --founder-ask`, never by appending.
 
 def _status_rows() -> list:
@@ -336,31 +338,46 @@ def _status_locked(fn):
         return fn()
 
 
-def status_add(issue: str, kind: str, ask: str, rca: str = "", source: str = JOB) -> bool:
-    """Append one unresolved ask, unless this issue already has one of this kind."""
+def status_add(issue: str, kind: str, ask: str, rca: str = "", source: str = JOB) -> str:
+    """Append one unresolved ask; return its id ("" when the same ask is already open).
+
+    EACH ASK HAS ITS OWN ID, and a hold names the id it waits on (PR #662 review
+    round 2, major). Keyed on the issue alone, a resolved ask stayed on disk and
+    released every LATER founder hold on that issue: a ticket re-entered on a
+    decision nobody made. Dedupe is on the ask text too, so a second distinct
+    ask on one issue is listed, not dropped (round 2, minor).
+    """
     def go():
         rows = _status_rows()
-        if any(r.get("issue") == issue and r.get("kind") == kind and not r.get("resolved") for r in rows):
-            return False
-        rows.append({"at": now().isoformat(), "issue": issue, "kind": kind, "ask": ask[:300],
+        if any(r.get("issue") == issue and r.get("kind") == kind and r.get("ask") == ask[:300]
+               and not r.get("resolved") for r in rows):
+            return ""
+        ask_id = f"{issue}:{hashlib.sha256((kind + ask + now().isoformat()).encode()).hexdigest()[:10]}"
+        rows.append({"id": ask_id, "at": now().isoformat(), "issue": issue, "kind": kind, "ask": ask[:300],
                      "source": source, "rca": rca, "resolved": False,
-                     "resolve": f"python3 q-system/.q-system/scripts/cap-ladder.py --resolve {issue}"})
+                     "resolve": f"python3 q-system/.q-system/scripts/cap-ladder.py --resolve {ask_id}"})
         _status_write(rows)
-        return True
+        return ask_id
     return _status_locked(go)
 
 
-def status_resolve(issue: str, note: str = "") -> int:
-    """Mark every unresolved ask for this issue resolved. Returns how many."""
+def status_resolve(ref: str, note: str = "") -> int:
+    """Resolve ONE ask: by its id, or, given an issue, its newest unresolved ask
+    (round 2, minor: resolving every ask on the issue stamped one note on all)."""
     def go():
-        rows, n = _status_rows(), 0
-        for r in rows:
-            if r.get("issue") == issue and not r.get("resolved"):
-                r.update(resolved=True, resolved_at=now().isoformat(), note=note[:300])
-                n += 1
+        rows = _status_rows()
+        open_rows = [r for r in rows if not r.get("resolved") and (r.get("id") == ref or r.get("issue") == ref)]
+        if not open_rows:
+            return 0
+        target = next((r for r in open_rows if r.get("id") == ref), None) or max(open_rows, key=lambda r: r.get("at") or "")
+        target.update(resolved=True, resolved_at=now().isoformat(), note=note[:300])
         _status_write(rows)
-        return n
+        return 1
     return _status_locked(go)
+
+
+def ask_resolved(ask_id: str) -> bool:
+    return bool(ask_id) and any(r.get("id") == ask_id and r.get("resolved") for r in _status_rows())
 
 
 def write_json(path: Path, data) -> None:
@@ -674,7 +691,7 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
     if d["target_kind"] == "ticket":
         lin("relate", blocker=target, blocked=issue)
     if d["target_kind"] == "founder":
-        status_add(issue, "founder-decision", target.split(":", 1)[1].strip(), rca_ref)
+        d["ask_id"] = status_add(issue, "founder-decision", target.split(":", 1)[1].strip(), rca_ref)
     if pr:
         close_pr(slug, pr, f"Closed by {JOB}: {issue} is BLOCKED-ON {target}. Branch "
                            f"{pr['headRefName']} is kept; the ladder reopens work from it when the blocker moves.")
@@ -704,8 +721,7 @@ def event_for(issue: str, row: dict, t: dict, slug: str) -> str:
             if rc == 0 and st.strip() != "OPEN":
                 return f"(a) blocker {target} closed"
     elif d.get("target_kind") == "founder":
-        if any(r.get("issue") == issue and r.get("kind") == "founder-decision" and r.get("resolved")
-               for r in _status_rows()):
+        if ask_resolved(d.get("ask_id", "")):
             return "(a) the founder decision is resolved in the status file"
     hit = sorted(set(changed_on_main(slug, snap.get("main_sha", ""))) & set(snap.get("files") or []))
     if hit:
@@ -818,23 +834,25 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="write; without it, print the plan")
     ap.add_argument("--limit", type=int, default=5, help="caps climbed per run (bounds RCA spend)")
-    ap.add_argument("--resolve", metavar="ISSUE", help="mark the founder asks for ISSUE resolved, then exit")
+    ap.add_argument("--resolve", metavar="ASK_ID|ISSUE", help="resolve one founder ask (by id, or the newest for an issue), then exit")
     ap.add_argument("--note", default="", help="with --resolve: what was decided")
     ap.add_argument("--founder-ask", nargs=3, metavar=("ISSUE", "KIND", "ASK"),
                     help="add one ask to the morning status file (other jobs call this), then exit")
     args = ap.parse_args(argv)
+    # FIRST, before any verb that writes (round 2, minor: --resolve and
+    # --founder-ask ran above this and wrote the real status file under pytest).
+    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("CAP_LADDER_STATE"):
+        print("cap-ladder: REFUSED under pytest without CAP_LADDER_STATE (live data path)", file=sys.stderr)
+        return 4
     if args.resolve:
         print(f"cap-ladder: {status_resolve(args.resolve, args.note)} ask(s) for {args.resolve} resolved; "
               "a held ticket re-enters at the next nightly run")
         return 0
     if args.founder_ask:
         i, k, a = args.founder_ask
-        print("cap-ladder: ask added" if status_add(i, k, a, source="cap-ladder.py --founder-ask")
-              else "cap-ladder: an unresolved ask of this kind is already listed")
+        got = status_add(i, k, a, source="cap-ladder.py --founder-ask")
+        print(f"cap-ladder: ask added ({got})" if got else "cap-ladder: the same ask is already listed")
         return 0
-    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("CAP_LADDER_STATE"):
-        print("cap-ladder: REFUSED under pytest without CAP_LADDER_STATE (live data path)", file=sys.stderr)
-        return 4
 
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}
