@@ -150,7 +150,15 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 # against a specific bar, and a weaker model drops exactly the subtle findings
 # that earn this thing its keep. Env-overridable so a model bump is a config
 # change, not an edit to a script that gates every PR in the repo.
-CLAUDE_MODEL="${KIPI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
+#
+# THE PIN IS THE ROUTING TABLE NOW (ASK-4013, founder 2026-11-08: "make that a
+# rule in code"). It was an env var the dispatch plist set to Sonnet and the
+# hosted workflow copied, so the table could not have decided anything. Nothing
+# reads that var any more. This first read is the table's answer for a PR whose
+# files are not known yet (class unknown, Opus); the class pick after pr.diff
+# below replaces it. Empty only if python itself is broken: the opus alias then.
+CLAUDE_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review 2>/dev/null)"
+CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
@@ -1061,6 +1069,13 @@ if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTE
   command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
   exit 9
 fi
+# THE REVIEWER'S MODEL, BY THE PR'S CLASS (ASK-4013). The WHOLE PR's file list,
+# not pr.diff: a delta round's diff holds only the new commits, and a test-only
+# delta on a dispatcher PR is still a dispatcher review. A failed list leaves the
+# class unknown, which the table routes to Opus.
+gh pr diff "$PR" $KIPI_GH_REPO_ARGS --name-only > "$PR_CONTEXT_DIR/pr.files" 2>>"$PR_CONTEXT_DIR/err" || : > "$PR_CONTEXT_DIR/pr.files"
+_ROUTED="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review --files-from "$PR_CONTEXT_DIR/pr.files" --repo "$REVIEW_SLUG" --tree "$REVIEW_REPO" 2>>"$PR_CONTEXT_DIR/err")"
+[ -n "$_ROUTED" ] && CLAUDE_MODEL="$_ROUTED"
 if [ "$ROUND" -gt 1 ]; then
   gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
   # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the

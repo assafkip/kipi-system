@@ -35,6 +35,16 @@ def load_fixture(skill):
     return fx
 
 
+def _routed_model(job="on-demand"):
+    """The routing table's model for an on-demand run (ASK-4013): no fleet call
+    rides the CLI default."""
+    import importlib.util as _u
+    spec = _u.spec_from_file_location("model_route", os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_route.py"))
+    mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.pick(job)
+
+
 def _subscription_env():
     """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
 
@@ -48,7 +58,7 @@ def _subscription_env():
 def run_case(prompt):
     # Run claude -p from the REPO ROOT so the .claude/rules auto-invoke path loads.
     try:
-        r = subprocess.run([CLAUDE, "-p", prompt], cwd=REPO_ROOT, env=_subscription_env(),
+        r = subprocess.run([CLAUDE, "-p", prompt, "--model", _routed_model()], cwd=REPO_ROOT, env=_subscription_env(),
                            capture_output=True, text=True, timeout=180)
         return r.stdout or ""
     except Exception:

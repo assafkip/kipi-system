@@ -131,7 +131,10 @@ CODEX_OUTAGE_MAX_AGE=86400
 # to disable it (tests that pin the both-down hold do).
 # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
 # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
+# The stand-in's model is the routing table's second-runner row (ASK-4013). If the
+# read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
+SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -2560,6 +2563,10 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE MODEL THE RUN WOULD GET (ASK-4013), on its own line for the same reason
+    # as the priority line below. The same read the real run makes, so a dry run
+    # shows the routing table's answer before any session is spent on it.
+    say "[dry] model $ISSUE $(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
     # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
@@ -3192,7 +3199,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
+  # $3 is the model the routing table gives this issue's class (ASK-4013): before
+  # it, this run named no model and took whatever ANTHROPIC_MODEL its parent
+  # exported. Empty only when the read itself fails; then no --model, as before.
+  WORK_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the

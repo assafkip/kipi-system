@@ -1,0 +1,212 @@
+{
+ "_": "ASK-4013. Which model each fleet job class runs on, with the evidence per row. Read ONLY by q-system/.q-system/scripts/model_route.py; pinned by q-system/.q-system/tests/test_model_routing.py. Classes match in list order, first match wins, so the risky classes come first. A model bump or a re-route is an edit to this file, never to a call site.",
+ "founder": [
+  "2026-11-08, verbatim: \"I want you to evaluate what kind of tickets can go to sonnet and what kind of tickets can stay on Opus and make that a rule in code\"",
+  "2026-11-08, verbatim: \"it's probably not going to create as good as code solutions for open PRS and tickets\"",
+  "2026-09-28 (automation audit): reviewer on Sonnet, set as KIPI_REVIEW_CLAUDE_MODEL in com.kipi.dispatch.plist. Superseded for review by the 2026-11-08 ruling above: this table now decides, and nothing reads that env var."
+ ],
+ "default": "claude-opus-5",
+ "known_models": [
+  "claude-opus-5",
+  "claude-opus-5-5",
+  "claude-sonnet-5",
+  "claude-sonnet-5-5"
+ ],
+ "client_path_markers": [
+  "/consulting/projects/",
+  "/intel/projects/"
+ ],
+ "classes": [
+  {
+   "name": "guards-hooks",
+   "match": {
+    "wired_hooks": true,
+    "path": "(^|/)(hooks|\\.githooks)/|(^|/)settings(\\.local)?\\.json$|destructive|break-glass|branch-protect",
+    "code_basename": "(^|[-_.])(guard|gate|deny|tripwire|protect|lint|check|door|validator)s?([-_.]|$)"
+   },
+   "why": "Any script a hook config runs (.claude/settings.json, plugins/*/hooks/hooks.json), plus name tokens. PR #664 round 1: names alone missed 38 of 50 wired hooks."
+  },
+  {
+   "name": "dispatcher-worker",
+   "match": {
+    "path": "(^|/)(kipi|kipi-dispatch[^/]*\\.sh|kipi-job-pinned\\.sh|linear-worker\\.sh|converge\\.sh|linear-claim\\.py|linear-queue\\.py|pr-review-agent\\.sh|pr-verdict-lib\\.sh|repo-preflight\\.sh|env-failure-lib\\.sh|reviewer-token-lib\\.sh|repo-slug-lib\\.sh|cloud_worker\\.py|attempts-ledger\\.py|worktree-reaper[^/]*|model_route\\.py|model-routing\\.json)$"
+   }
+  },
+  {
+   "name": "concurrency-locks",
+   "match": {
+    "text": "\\b(flock|lockfile|lock file|races?|racing|concurren\\w*|atomic\\w*|single[- ]writer|mutex|deadlock)\\b",
+    "code_basename": "(^|[-_.])(lock|claim|mutex)s?([-_.]|$)"
+   }
+  },
+  {
+   "name": "client-repo",
+   "match": {
+    "repo": [
+     "client-path"
+    ]
+   }
+  },
+  {
+   "name": "multi-code-file",
+   "match": {
+    "code_files": [
+     2,
+     100000
+    ]
+   }
+  },
+  {
+   "name": "single-code-file",
+   "match": {
+    "code_files": [
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "name": "test-only",
+   "match": {
+    "all": "(^|/)(tests?|__tests__)/|(^|/)test[_-][^/]*$|_test\\.py$"
+   }
+  },
+  {
+   "name": "config-data",
+   "match": {
+    "all": "\\.(json|jsonl|ya?ml|plist|toml|csv|ini|cfg)$"
+   }
+  },
+  {
+   "name": "docs-text",
+   "match": {
+    "all": "\\.(md|mdx|txt|rst)$"
+   }
+  }
+ ],
+ "jobs": {
+  "worker": {
+   "classes": {
+    "guards-hooks": {
+     "model": "claude-opus-5",
+     "evidence": "No-go for Sonnet: risk class. Opus 5 (worker) 24 PRs, first-round approve 42%, 2.21 rounds, merged 67%. Opus 5.5 13 PRs, 69%, merged 100%. Sonnet 5.5 5 PRs, 60%, merged 100%: under 10."
+    },
+    "dispatcher-worker": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR in this class. Opus 5 (worker) 11 PRs, approve 36%, 3.00 rounds. Opus 5.5 20 PRs, approve 80%."
+    },
+    "concurrency-locks": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR. Opus 5.5 2 PRs, both approved first round."
+    },
+    "client-repo": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR in an engagement repo. Opus 5 (worker) 8 PRs, approve 75%, 1.00 rounds, merged 100%."
+    },
+    "multi-code-file": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5.5 5 PRs, approve 40%, 2.40 rounds, merged 100%, under 10. Opus 5 (worker) 17 PRs, 24%. Opus 5.5 10 PRs, 60%."
+    },
+    "single-code-file": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5.5 2 PRs, approve 50%, merged 50%. Opus 5 (worker) 29 PRs, 34%, merged 69%. Opus 5.5 14 PRs, 43%, merged 79%."
+    },
+    "test-only": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR. Opus 5 (worker) 2 PRs, Opus 5.5 1 PR."
+    },
+    "config-data": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR. Opus 5 (worker) 2 PRs, Opus 5.5 1 PR."
+    },
+    "docs-text": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet-authored PR. Opus 5 (worker) 1 PR, approved first round."
+    },
+    "unknown": {
+     "model": "claude-opus-5",
+     "evidence": "No-go for Sonnet: no file list means the class cannot be read, so the risk cannot be ruled out. Opus 5 (worker) 11 PRs, approve 45%. Sonnet 5.5 2 PRs."
+    }
+   }
+  },
+  "review": {
+   "classes": {
+    "guards-hooks": {
+     "model": "claude-opus-5",
+     "evidence": "No-go for Sonnet: risk class. Sonnet 5 8 full rounds: approve 75%, gating 0.25/round, majors 0.38, all findings 1.00. Opus 5 120 rounds: 72%, 0.33, 0.60, 3.29."
+    },
+    "dispatcher-worker": {
+     "model": "claude-opus-5",
+     "evidence": "No-go for Sonnet: risk class. Sonnet 5 4 rounds: approve 100%, gating 0, majors 0, findings 0.25. Opus 5 52 rounds: 85%, 0.21, 0.46, 2.63."
+    },
+    "concurrency-locks": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet review round. Opus 5 7 rounds: approve 86%, majors 0.29."
+    },
+    "client-repo": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5 8 rounds, under 10: approve 75%, gating 0.25, majors 0.38, findings 0.88. Opus 5 7 rounds: 71%, 0.14, 0.43, 2.86. Closest class to the bar; re-measure at 10."
+    },
+    "multi-code-file": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5 5 rounds: approve 80%, gating 0.20, majors 0.40, findings 0.60. Opus 5 151 rounds: 87%, 0.17, 0.51, 3.30."
+    },
+    "single-code-file": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5 5 rounds: approve 100%, gating 0, majors 0.40, findings 0.80. Opus 5 152 rounds: 88%, 0.09, 0.34, 3.05."
+    },
+    "test-only": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet review round. Opus 5 12 rounds: approve 100%."
+    },
+    "config-data": {
+     "model": "claude-opus-5",
+     "evidence": "No evidence for Sonnet: no Sonnet review round. Opus 5 6 rounds: approve 67%, gating 0.50."
+    },
+    "docs-text": {
+     "model": "claude-opus-5",
+     "evidence": "Thin: Sonnet 5 2 rounds. Opus 5 10 rounds: approve 90%."
+    },
+    "unknown": {
+     "model": "claude-opus-5",
+     "evidence": "No-go for Sonnet: class unreadable. Sonnet 5 4 rounds. Opus 5 42 rounds: approve 95%."
+    }
+   },
+   "note": "Across all classes Sonnet 5 reviewed 36 full rounds (37 PRs had a Sonnet round), approve 83% vs Opus 5 84% over 559, gating 0.14 vs 0.17 per round, but 0.75 findings per round vs 3.06. Zero PRs had a Sonnet approval later re-reviewed by Opus, so how many defects Sonnet misses cannot be read from history. The founder's stated risk is exactly that."
+  },
+  "second-runner": {
+   "model": "claude-opus-5",
+   "evidence": "No evidence for Sonnet: the Codex stand-in has only ever run on Opus 5. linear-worker.log: 2 stand-in runs, both CONTINUED the work."
+  },
+  "alert-triage": {
+   "model": "claude-opus-5",
+   "evidence": "No evidence for Sonnet: TRIAGE_MODEL was claude-opus-5 from the lane's first commit (eac46553, 2026-10-21); no triage pass ever ran on Sonnet. Measured 2026-11-08 (ASK-4038 Part 3), decide() on 10 queued alerts: same decision 9 of 10; the miss (ASK-1592) was Sonnet promoting an alert whose finding text is cut off mid-sentence, where Opus held it. Opus needed."
+  },
+  "dor-drafting": {
+   "model": "claude-opus-5-5",
+   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. Measured 2026-11-08 (ASK-4038 Part 3), draft_one on 10 past Done tickets with the DoR cut out: blind Opus judge preferred Opus 7 of 9, Sonnet 2, never equal; real paths named Opus 8/11, Sonnet 3/7 (Sonnet invents paths). Opus needed."
+  },
+  "fleet-triage": {
+   "model": "claude-opus-5-5",
+   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. Measured 2026-11-08 (ASK-4038 Part 3), judge_batch on 10 open kipi-system issues: same category 9 of 10; the miss (ASK-4051) was Sonnet calling do-now on a ticket whose Files line names a file the disk evidence says is missing. Opus needed."
+  },
+  "lesson-distill": {
+   "model": "claude-opus-5-5",
+   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. Measured 2026-11-08 (ASK-4038 Part 3), distill_with_claude on 30 published sources: scrub gate and lesson validator Sonnet 30/30, Opus 29/30; blind Opus judge on 29 pairs preferred Opus 18, Sonnet 9, equal 2. Sonnet passes every gate but is not rated equal: Opus needed."
+  },
+  "lesson-verify": {
+   "model": "claude-opus-5-5",
+   "evidence": "Before ASK-4013 this call passed no --model and ran on the CLI default with no settings loaded, measured 2026-11-08 as claude-opus-5-5; the row keeps that model. No evidence for Sonnet: the CLEAN/HELD check has never run on Sonnet."
+  },
+  "on-demand": {
+   "model": "claude-opus-5-5",
+   "evidence": "probe_hook_envelope.py and skill-trigger-eval.py: founder-launched probes that ran on the settings default (the opus alias, claude-opus-5-5) with no --model; the row keeps that model. No evidence for Sonnet."
+  }
+ },
+ "decision_rule": "A class goes to Sonnet only when ALL hold, else Opus: (1) it is not a risk class (guards-hooks, dispatcher-worker, concurrency-locks, unknown); (2) history holds at least 10 Sonnet samples of that class for that job; (3) Sonnet is no worse than Opus in the same class: authoring first-round approve and merged rate each within 10 points, review gating findings and majors per round each at least 80% of Opus. Measured 2026-11-08: no class meets (2), so every row is Opus. Re-measure with the method below before moving a row.",
+ "method": "History only, no model runs. Review rounds: ~/.config/kipi/pr-reviews/*.md (FINDINGS block severities, VERDICT), 1338 round files, 613 with a known model (the review-tree transcript that started 0-50 min before the file, or the verdict.json reviewed_by for the last round). Authoring model: the model that ran most of a ticket's `git commit` calls in ~/.claude/projects transcripts, or claude-opus-5 for tickets linear-worker.log started (ANTHROPIC_MODEL under dispatch since 2026-08-01). Classes from each PR's changed files via model_route.classify. Delta rounds excluded from review rates; authoring uses the first full round. Script posted on ASK-4013.",
+ "interactive": "Interactive Sana subagents take their model from ~/.claude/agents/sana.md frontmatter `model: opus` (the harness reads it; it resolves to claude-opus-5-5). Sonnet 5.5 authored 14 PRs interactively, approve 57% vs Opus 5.5 63 PRs at 67%, merged 86% both: not shown to hold, so no sana-light agent type. Frontmatter stays `opus`.",
+ "not_routed_here": "Jobs with no reader of this table yet, and no Sonnet history either: DoR drafting, fleet triage and lesson distilling (lean_call.run passes no --model, so they ride the CLI default), RCA writing (interactive), lessons-daily.sh (exports claude-opus-5).",
+ "client_path_markers_why": "A repo is a client engagement when its checkout sits under one of these roots. Path, not slug: this repo is public and never names a client.",
+ "decision_rule_status": "Interim. With fewer than 10 Sonnet samples per class this table reads 'unknown', and unknown routes to Opus. ASK-4038 measures Sonnet for real (reviewer recall on 12 PRs, worker replay on 3 low-risk classes) and makes model_route read that evidence, so a row moves from data, not from an edit (PR #664 round 1, finding 2; spillover sp-24fc6463)."
+}

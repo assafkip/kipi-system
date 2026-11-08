@@ -402,7 +402,8 @@ def judge_batch(batch: list, timeout: int) -> tuple:
     try:
         res = lean_call.run([binary, "-p", prompt],
                              capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL, env=_subscription_env())
+                             stdin=subprocess.DEVNULL, env=_subscription_env(),
+                             job="fleet-triage")  # the routing table's row (ASK-4013)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"claude call failed ({type(exc).__name__} after {timeout}s)"
     if res.returncode != 0:
