@@ -818,6 +818,74 @@ rmdir "$TL" 2>/dev/null || true
   && ok "a second dispatcher is DENIED while the turn is held ($A then $B)" \
   || bad "the turn lock is not exclusive ($A then $B)"
 
+# THE SAME CASE UNDER uutils mkdir (ASK-3915, the ASK-3968 race). On Ubuntu 26.04
+# mkdir is uutils coreutils, which treats EEXIST as success inside its check-then-
+# create window. A shim mkdir that says yes to an existing directory is that window
+# made permanent, so the case is deterministic on any OS: a held turn (lock dir plus
+# its owner marker, which sits BESIDE the dir) must still DENY the second dispatcher.
+UUMKDIR="$WORK/uumkdir"; mkdir -p "$UUMKDIR"
+printf '#!/bin/sh\n/bin/mkdir "$@" 2>/dev/null\nexit 0\n' > "$UUMKDIR/mkdir"; chmod +x "$UUMKDIR/mkdir"
+mkdir -p "$TL"; printf 'pid=1\n' > "$TL.owner"
+C="$(PATH="$UUMKDIR:$PATH" KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+[ "$C" = "DENIED" ] \
+  && ok "a mkdir that says yes to a held turn still DENIES the second dispatcher" \
+  || bad "under a uutils-style mkdir a held turn was taken again ($C): two dispatchers share one turn"
+# A stale lock that carries its owner marker is still reaped, or every later turn
+# is denied forever.
+touch -t 202601010000 "$TL" "$TL.owner"
+D="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+[ "$D" = "GOT" ] \
+  && ok "a stale turn lock with its owner marker is reaped and taken" \
+  || bad "a stale turn lock with an owner marker was never reaped ($D): the dispatcher wedges"
+{ [ -e "$TL" ] || [ -e "$TL.owner" ]; } && bad "the turn lock outlived the shell that held it" || ok "the turn lock is released, marker and all"
+
+# A ROLLBACK MUST NOT WEDGE THE FLEET (PR #635 round 1, major). Every copy before
+# ASK-3915 reaps with a bare rmdir, which refuses a directory that is not empty,
+# and pinned checkouts let an old and a new copy share this path. A holder killed
+# mid-turn runs no EXIT trap, so what it leaves is what an old reaper meets: the
+# lock directory has to be EMPTY, the marker beside it.
+LOCKK="$WORK/lockk.sh"
+{ echo 'set -uo pipefail'; echo 'say() { :; }'
+  awk '/^turn_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'turn_lock && { echo GOT; kill -9 $$; }'; } > "$LOCKK"
+K="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKK" 2>/dev/null)"
+{ [ "$K" = "GOT" ] && [ -d "$TL" ] && [ -z "$(ls -A "$TL")" ] && rmdir "$TL"; } \
+  && ok "a holder killed mid-turn leaves an empty lock dir, so an older copy's rmdir can still reap it" \
+  || bad "a killed holder left a lock an older reaper cannot clear ($K; contents: $(ls -A "$TL" 2>/dev/null | tr '\n' ' ')): a rollback wedges dispatch"
+# What that older reaper leaves behind is a marker with no directory. It ages out,
+# or this copy is the one that wedges.
+[ -e "$TL.owner" ] || printf 'pid=1\n' > "$TL.owner"
+S1="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+touch -t 202601010000 "$TL.owner"; rmdir "$TL" 2>/dev/null || true
+S2="$(KIPI_DISPATCH_TURNLOCK="$TL" bash "$LOCKH" 2>/dev/null)"
+{ [ "$S1" = "DENIED" ] && [ "$S2" = "GOT" ]; } \
+  && ok "a fresh marker alone still holds the turn, and a stale one alone is reaped ($S1 then $S2)" \
+  || bad "a marker with no lock dir is misjudged ($S1 then $S2; want DENIED then GOT)"
+{ [ -e "$TL" ] || [ -e "$TL.owner" ]; } && bad "the reaped-marker turn was not released" || true
+
+# RELEASED ONLY BY ITS OWNER (PR #635 round 1, minor). A turn can outlive the
+# 3600s reap window, because kipi work runs inside it. When a second dispatcher
+# reaps that holder and takes the turn, the first one exiting must not delete the
+# second one's lock, or a third walks in mid-turn.
+LOCKW="$WORK/lockw.sh"
+{ echo 'set -uo pipefail'; echo 'say() { :; }'
+  awk '/^turn_lock\(\) \{/,/^\}/' "$DISPATCH"
+  echo 'if turn_lock; then echo GOT; while [ ! -e "$REL" ]; do sleep 0.1; done; else echo DENIED; fi'; } > "$LOCKW"
+wait_got() { local i; for i in $(seq 1 50); do [ "$(cat "$1" 2>/dev/null)" = "GOT" ] && return 0; sleep 0.1; done; return 1; }
+TL3="$WORK/turnlock3.d"
+REL="$WORK/rel1" KIPI_DISPATCH_TURNLOCK="$TL3" bash "$LOCKW" > "$WORK/p1.out" 2>/dev/null & P1=$!
+wait_got "$WORK/p1.out"
+touch -t 202601010000 "$TL3" "$TL3.owner"
+REL="$WORK/rel2" KIPI_DISPATCH_TURNLOCK="$TL3" bash "$LOCKW" > "$WORK/p2.out" 2>/dev/null & P2=$!
+wait_got "$WORK/p2.out"
+: > "$WORK/rel1"; wait "$P1" 2>/dev/null
+P3="$(KIPI_DISPATCH_TURNLOCK="$TL3" bash "$LOCKH" 2>/dev/null)"
+: > "$WORK/rel2"; wait "$P2" 2>/dev/null
+{ [ "$(cat "$WORK/p2.out")" = "GOT" ] && [ "$P3" = "DENIED" ]; } \
+  && ok "a reaped holder exiting leaves the new holder's lock alone (third dispatcher $P3)" \
+  || bad "a reaped holder released a lock it no longer owned (second $(cat "$WORK/p2.out"), third $P3): two dispatchers share a turn"
+{ [ -e "$TL3" ] || [ -e "$TL3.owner" ]; } && bad "the new holder's lock outlived it" || ok "the new holder releases its own lock on exit"
+
 # THE SAME CASE UNDER GNU stat. This is the CI failure, reproduced on purpose.
 # The BSD form `stat -f %m` is valid on macOS and means --file-system on GNU,
 # where %m is read as a FILE operand: stat errors on it, still prints a block for
