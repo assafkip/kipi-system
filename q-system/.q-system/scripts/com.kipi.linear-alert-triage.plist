@@ -14,8 +14,12 @@
 
      FLEET-WIDE ON PURPOSE (R5): no project flag. The script refuses one on `run`.
 
-     02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00: a promoted ticket
-     already carries a DoR, so the drafter skips it instead of spending a slot.
+     02:30, half an hour AHEAD of com.kipi.linear-dor at 03:00. At 60 model calls a
+     night, each bounded at 300 seconds, the pass can still be running at 03:00, so
+     the head start is no longer a guarantee. It does not need to be: the drafter
+     skips every alert ticket (is_alert_ticket), the only kind this lane decides, and
+     a ticket this lane promotes already carries a DoR, so the two never spend a
+     slot on the same ticket (PR #645 round 1).
 
      stdout goes to .log, not .out: .out is the run-evidence file the script itself
      appends one line to per pass, and pointing stdout there would double it.
@@ -31,14 +35,23 @@
      claude login lives in the keychain, and the lookup needs them: without them
      `claude -p` answers "Not logged in", rc 1, on every row (ASK-1178 measured the
      same 2026-08-30). launchd's default environment for this job is PATH alone.
-     Same four keys as com.kipi.weekly-improve. -->
+     Same four keys as com.kipi.weekly-improve.
+
+     60 A NIGHT, NOT 8 (ASK-3964, decision D1 of the stuck-work synthesis
+     2026-11-07). Open needs-triage inflow measured 316 in the last full week, about
+     45 a day, so 8 a night let the queue grow from 701 to 1269 while 30 would still
+     let it grow. 60 drains it, at about 12 dollars a night (0.42 percent of the
+     weekly limit). D1's rule: 60 while a pass is healthy (written above 0, failed at
+     most 10 percent of attempted), else 8 until it is. The 2026-11-08 pass was run
+     at 100 as the check. test_linear_alert_triage.py pins the number, so a change
+     to it is a decision with a reason, not a drift. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.kipi.linear-alert-triage</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string><string>-lc</string>
-    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 8 --apply --heartbeat</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; ./kipi alert-triage run --limit 60 --apply --heartbeat</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>30</integer></dict>
   <key>EnvironmentVariables</key>

@@ -62,8 +62,8 @@ inside it, and rebuilt against all ten recorded defects; test_linear_alert_triag
 pins each one (D1..D10) and alert_triage_mutants.py shows each pin going RED
 without its fix.
 
-THE NO-MODEL PRE-PASS (ASK-3823). The queue reached 1288 while the lane decides 8
-a night. Part of it is settled by a fact, not a judgment: the one subject an alert
+THE NO-MODEL PRE-PASS (ASK-3823). The queue reached 1288 while the lane decided 8
+a night (60 a night since ASK-3964, D1). Part of it is settled by a fact, not a judgment: the one subject an alert
 reports on has ended, or a newer open ticket in the same project carries the same
 message. `run` closes those first through do_close (the reason goes on the ticket
 first, cancel never delete) and spends the model only on what is left, at the
