@@ -112,7 +112,7 @@ run_worker() {  # run_worker <limit>
   env KIPI_SKEL="$ROOT" KIPI_STATE_DIR="$WORK/state" \
       KIPI_LINEAR_API_URL="http://127.0.0.1:$PORT/graphql" \
       KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" KIPI_NOTIFY="/usr/bin/true" \
-      bash "$WORKER" --limit "$1" 2>&1
+      bash "$WORKER" --limit "$@" 2>&1
 }
 picks() { printf '%s\n' "$1" | grep -o '\[dry\] would work ASK-[0-9]*' | sed 's/.*would work //' | tr '\n' ' '; }
 
@@ -146,6 +146,18 @@ printf '%s\n' "$OUTP" | grep -qE '\[dry\] pick priority ASK-955 1$' \
 printf '%s\n' "$(run_worker 1)" | grep -q 'pick priority' \
   && bad "unasked, the worker prints no pick priority line" "it printed one" \
   || ok "unasked, the worker prints no pick priority line"
+
+# THE DISPATCHER SET-ASIDE LIST (ASK-3993). After a branch refusal the dispatcher
+# hands the issue to the next picks as KIPI_PICK_EXCLUDE: the fresh pick goes past
+# it, and an explicit --issue (a driver override) still reaches it.
+GOTX="$(picks "$(KIPI_PICK_EXCLUDE="ASK-955" run_worker 1)")"
+[ "$GOTX" = "ASK-956 " ] \
+  && ok "a set-aside issue is left out of the fresh pick, so the next one is worked" \
+  || bad "a set-aside issue is left out of the fresh pick" "got [$GOTX], want [ASK-956 ]"
+GOTO="$(picks "$(KIPI_PICK_EXCLUDE="ASK-955" run_worker 1 --issue ASK-955)")"
+[ "$GOTO" = "ASK-955 " ] \
+  && ok "an explicit --issue still reaches a set-aside issue (driver override)" \
+  || bad "an explicit --issue reaches a set-aside issue" "got [$GOTO], want [ASK-955 ]"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
