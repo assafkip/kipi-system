@@ -1154,8 +1154,15 @@ def refusal(i):
     if "Definition of Ready" not in (i.get("description") or ""):
         return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
-        if ticket_is_live(i):
-            return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
+        # NOT LIVE HERE, WHATEVER THE STAMP SAYS (ASK-4068, PR #671 delta major). The
+        # live-first check above already returned for positive evidence. What is
+        # left is a stale start, or a stamp that cannot be read. The second used to
+        # read as ticket-live, which has no backstop, so such a PR left the ceiling
+        # by no coded exit while the run log said the wait ends on its own. It is
+        # ticket-held now: it waits, and the backstop takes it past the age bar,
+        # with a page. Lanes keep their own rule (lane_hold).
+        if ls._parse_stamp(i.get("startedAt")) is None:
+            return hold("ticket-held", "ticket held: its start stamp cannot be read, so nothing shows anyone is on it; the backstop takes it past the age bar")
         return hold("ticket-held", "ticket held: " + (started_hold(i) or "not released"))
     name = "ticket is " + (i["state"].get("name") or i["state"]["type"])
     if i["state"]["type"] in ("completed", "canceled"):
