@@ -2,15 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Nightly owner sweep: every open fleet ticket gets an owner label (ASK-4010).
      TEMPLATE, not a loadable plist: install-plist.sh renders __KIPI_REPO__ and __HOME__.
-     Install: install-plist.sh with its pinned flag (from the primary
-     checkout), or the single label from anywhere.
+     Install: install-plist.sh with the single label, from the primary checkout.
 
      WHY A JOB AND NOT A RULE. Founder, 2026-11-08: "Everything must be enforced with
      code." 88 of 2374 open tickets had no owner:* label that day, and ready() refuses
      every one of them. A rule that says "label it" is read by nobody at 02:00.
 
-     PINNED (job-checkouts.json): it runs from its own worktree at origin/main, so a
-     fast-forward of the shared checkout never lands mid-run.
+     SHARED, NOT PINNED (job-checkouts.json shared_exceptions, ASK-3967). It reads
+     instance-registry.json relative to its own tree. Pinned at origin/main, that copy
+     lacked infohawk on 2026-11-08 while the shared checkout had it, so infohawk tickets
+     were classed outside the fleet and never owned, exit 0 (PR #654 review, major).
 
      02:00, ahead of com.kipi.linear-alert-triage (02:30) and com.kipi.linear-dor
      (03:00), so the tickets it labels are in the queue those jobs and the dispatcher

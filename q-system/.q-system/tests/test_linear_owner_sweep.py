@@ -150,6 +150,11 @@ def test_the_comment_names_the_next_consumer(issue, named):
     assert body.startswith(f"<!-- {sweep.SWEEP_MARKER}:")
     assert named in body
     assert not [w for w in BANNED if w in body.lower()]
+    # PR #654 review, minor: the comment once said the run evidence keeps the
+    # ticket visible. last-run.json is overwritten nightly and no script reads it,
+    # so the sentence named an artifact where it owed a consumer, on up to 44
+    # permanent Linear comments.
+    assert "evidence" not in body.lower()
 
 
 # --- the write path, against a fake transport -------------------------------
@@ -243,8 +248,20 @@ def test_evidence_is_written_atomically(tmp_path):
 # --- the wiring ---------------------------------------------------------------
 
 @needs_sweep
-def test_the_job_runs_the_sweep_with_apply_from_a_pinned_tree():
+def test_the_job_runs_the_sweep_with_apply_from_the_shared_checkout():
+    """PR #654 review, major. The sweep reads instance-registry.json relative to its
+    own tree (linear_registry.default_registry_path). Pinned, that tree is
+    origin/main, whose registry lacked infohawk on 2026-11-08 while the shared
+    checkout had it, so infohawk tickets were classed "outside" and never owned,
+    exit 0. Its three registry-reading siblings are shared exceptions for the same
+    reason; ASK-3967 moves all four once the registry stops drifting.
+    """
     plist = (SCRIPTS / "com.kipi.linear-owner-sweep.plist").read_text()
     assert "q-system/.q-system/scripts/linear-owner-sweep.py --apply" in plist
+    src = SWEEP_PATH.read_text()
+    assert "linear_registry.default_registry_path()" in src, \
+        "the sweep no longer reads the tree-relative registry; re-decide pinned vs shared"
     table = json.loads((HERE.parent / "job-checkouts.json").read_text())
-    assert "com.kipi.linear-owner-sweep" in table["pinned"]
+    assert "com.kipi.linear-owner-sweep" not in table["pinned"]
+    exc = table["shared_exceptions"]["com.kipi.linear-owner-sweep"]
+    assert "instance-registry.json" in exc["reason"] and exc["ticket"] == "ASK-3967"

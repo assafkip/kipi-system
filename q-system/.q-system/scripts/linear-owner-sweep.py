@@ -167,10 +167,10 @@ def next_step(issue: dict) -> str:
             return ("It has no project, so ready() refuses it in every repo. "
                     "linear-route.py (run by com.kipi.linear-triage-health at 09:00) "
                     "sets the project from the Files: line of its Definition of Ready.")
+        # PR #654 review, minor: a clause here once said the run evidence keeps the
+        # ticket visible. No script reads last-run.json, so it named no consumer.
         return ("It has no project and no Definition of Ready, so nothing picks this up "
-                "until ASK-3959 ships the router that stamps a project at creation. "
-                "This comment and the nightly count in linear-owner-sweep.py's run "
-                "evidence keep it visible until then.")
+                "until ASK-3959 ships the router that stamps a project at creation.")
     if ALERT_MARKER in desc:
         return ("It is a fleet alert, so linear-alert-triage.py (com.kipi.linear-alert-triage, "
                 "02:30) decides promote or close.")
