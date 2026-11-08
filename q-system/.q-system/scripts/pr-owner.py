@@ -58,7 +58,8 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
       - open ticket on any other branch: close, then the same resume note.
       - no ticket, or a closed one: close with a comment.
   * checks still running, or GitHub has not computed mergeability: wait.
-A close never deletes the branch. Reopening the PR undoes it.
+A close never deletes the branch. Reopening the PR undoes it: a PR open at the
+head pr-owner closed it at is left alone until a new push (state["closed"]).
 
 A FORK IS NEVER ACTED ON (PR #659 round 1, major). On a public repo the branch
 name and the title are strings the PR's author chose, and both bind a PR to a
@@ -659,13 +660,23 @@ def filed_ticket(out: str) -> str:
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?}. Actions: skip, young, wait, outside,
+    Returns {"action", "reason", "ticket"?}. Actions: skip, reopened, young, wait, outside,
     outside-filed, ladder, hold, merge, review, close-superseded, rework,
     close-requeue, close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
     if key in skip or f"{pr['slug'].split('/')[-1]}#{pr['number']}" in skip:
         return {"action": "skip", "reason": "named by --skip"}
+    # A REOPEN IS THE UNDO (PR #659 round 6, major). The close comment says
+    # "Reopen this PR to undo", and state["closed"] was written and never read,
+    # so the next hourly run closed a reopened PR again at the same head. A PR
+    # open at the head pr-owner closed it at was reopened on purpose, by whoever
+    # reopened it; it is theirs until a new push, then it is decided again.
+    shut = (state.get("closed") or {}).get(key) or {}
+    if shut.get("head") and shut["head"] == pr["head"]:
+        return {"action": "reopened",
+                "reason": f"pr-owner closed it at {pr['head'][:8]} at {iso(shut['at'])} and it was reopened; "
+                          f"a reopen is the undo, so pr-owner leaves it until a new push"}
     # THE GATES COME BEFORE PROVENANCE (PR #659 round 3, minor). They act on
     # nothing and bind no ticket, so a fork reaches them safely, and before this
     # order a fork opened a minute ago was alerted on the next hourly tick.
@@ -953,7 +964,7 @@ def _run(argv=None) -> int:
     if not rows:
         print("REFUSED: fleet_candidates returned no repo at all, not even home", file=sys.stderr)
         return 3
-    counts = {k: 0 for k in ("skip", "outside-filed", "ladder", "young", "wait", "hold") + WRITES}
+    counts = {k: 0 for k in ("skip", "reopened", "outside-filed", "ladder", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
     for name, path, _remote in rows:

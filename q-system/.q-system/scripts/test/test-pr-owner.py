@@ -162,6 +162,11 @@ check("strike on an older head (the worker pushed) -> rework again", act_of(brag
 # ---------------------------------------------------------------- every other rule
 print("-- the rest of the rules")
 check("open 47h -> young", act_of(pr(created=NOW - 47 * H, pushed=NOW - 47 * H))["action"], "young")
+closed_here = {"closed": {"assafkip/kipi-system#526": {"head": "a6de9861" + "0" * 32, "at": NOW - 5 * H, "action": "close-requeue"}}}
+check("closed by pr-owner at this head, now open again -> reopened, never closed again (PR #659 round 6, major)",
+      act_of(pr(), {"ASK-2540": ticket("ASK-2540", "backlog")}, closed_here)["action"], "reopened")
+check("closed at an older head, pushed since -> decided again",
+      act_of(pr(head="b" * 40), {"ASK-2540": ticket("ASK-2540", "backlog")}, closed_here)["action"], "close-requeue")
 check("--skip owner/repo#n -> skip", act_of(pr(), skip={"assafkip/kipi-system#526"})["action"], "skip")
 check("--skip repo#n -> skip", act_of(pr(), skip={"kipi-system#526"})["action"], "skip")
 check("mergeability not computed -> wait", act_of(pr(mergeable="UNKNOWN"))["action"], "wait")
@@ -628,10 +633,12 @@ check("the strike on #2 is recorded at its head", st["strikes"]["o/fx#2"]["head"
 check("the review on #4 is recorded at its head", st["reviews"]["o/fx#4"]["head"], SHA[4])
 
 SENT.clear()
-PRS[:] = [p for p in PRS if p["number"] in (2, 4, 9, 11)]
+PRS[:] = [p for p in PRS if p["number"] in (1, 2, 4, 9, 11)]
 os.environ["KIPI_PR_OWNER_NOW"] = str(NOW + 49 * H)
 po.main(["--apply"])
 check("49h later, #2 still red at the same head is closed", len(sent_for(2, "close")), 1)
+check("49h later, #1, reopened at the head pr-owner closed, gets no second close or comment",
+      sent_for(1, "close") + sent_for(1, "comment"), [])
 check("49h later, neither fork's alert is filed a second time",
       ([a for a in writes() if a[1].endswith("slack-notify.sh")], len(linear_db()["issues"]), linear_db()["comments"]),
       ([], 2, []))
