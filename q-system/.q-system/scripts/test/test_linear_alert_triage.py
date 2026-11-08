@@ -897,20 +897,43 @@ class TestD1SelfCapAfterAnUnhealthyPass(unittest.TestCase):
     HEALTHY = "alert-triage 2026-11-08T10:30:00Z: triage pass: 40 written, 15 skipped, 2 failed; 900 still queued"
     PREPASS = "alert-triage 2026-11-08T00:54:41Z: pre-pass only, no model: triage pass: 0 written, 0 skipped, 0 failed; 1207 still queued"
 
-    def _run(self, *lines):
-        ev = Path(tempfile.mkdtemp()) / "linear-alert-triage.out"
-        if lines:
+    def _run(self, *lines, raw=None):
+        d = Path(tempfile.mkdtemp())
+        ev = d / "linear-alert-triage.out"
+        if raw is not None:
+            ev.write_bytes(raw)
+        elif lines:
             ev.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rec = d / "alerts"
+        stub = d / "alert.sh"
+        stub.write_text(f'#!/bin/sh\necho "$1" >> "{rec}"\n')
         b = Board([alert(f"ASK-{n}", created=f"2026-08-{n + 1:02d}") for n in range(12)])
         seen = []
-        _rc, out, _ = run_lane(b, lambda i: (seen.append(i["identifier"]), None)[1],
-                               limit=60, evidence=ev)
+        with patch.object(triage, "ALERT", str(stub)):
+            _rc, out, _ = run_lane(b, lambda i: (seen.append(i["identifier"]), None)[1],
+                                   limit=60, evidence=ev)
+        self.alerts = rec.read_text().splitlines() if rec.exists() else []
         return len(seen), out
 
     def test_an_unhealthy_last_pass_caps_this_one_at_8_and_says_so(self):
         n, out = self._run(self.UNHEALTHY)
         self.assertEqual(n, 8)
         self.assertIn("self-capped at 8", out)
+        self.assertEqual(len(self.alerts), 1, "a capped night files one alert, or the cap is silent")
+
+    def test_a_capped_night_with_one_failure_lifts_the_cap(self):
+        # PR #647 round 1, major: 10 percent of 8 is 0.8, so the plain ratio latched.
+        n, _ = self._run(self.UNHEALTHY, "alert-triage y: self-capped at 8, the last pass was unhealthy (D1): triage pass: 7 written, 0 skipped, 1 failed; 1261 still queued")
+        self.assertEqual(n, 12)
+        self.assertEqual(self.alerts, [])
+
+    def test_a_small_spot_check_by_hand_is_not_the_verdict(self):
+        n, _ = self._run(self.HEALTHY, "alert-triage z: triage pass: 0 written, 0 skipped, 2 failed; 1 still queued")
+        self.assertEqual(n, 12, "a --limit 2 run is a spot-check; the healthy nightly pass before it decides")
+
+    def test_an_undecodable_evidence_file_is_no_evidence(self):
+        n, _ = self._run(raw=b"alert-triage \xff\xfe broken\n")
+        self.assertEqual(n, 12)
 
     def test_a_pre_pass_only_drain_is_not_the_pass_it_reads(self):
         n, _ = self._run(self.UNHEALTHY, self.PREPASS)

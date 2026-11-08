@@ -1368,17 +1368,27 @@ def heartbeat(n_in: int, n_done: int, queue=None, error=None) -> None:
 RUN_EVIDENCE = Path(os.path.expanduser("~/.config/kipi/linear-alert-triage.out"))
 UNHEALTHY_LIMIT = 8
 _PASS_LINE = re.compile(r"triage pass: (\d+) written, (\d+) skipped, (\d+) failed")
+# The fleet alert path: one Linear ticket for Sana, repeats counted on it, pages
+# nobody (slack-notify.sh's own header). Tests point it at a recorder.
+ALERT = os.environ.get("KIPI_NOTIFY") or str(HERE / "slack-notify.sh")
 
 
 def last_pass_health(path: Path | None = None) -> bool | None:
     """D1's test on the newest MODEL pass in the run evidence: True healthy, False not.
 
-    None when there is no evidence either way: no file, no model pass yet, or a pass
-    that handed the model nothing. A pre-pass-only drain and a dry run asked no
-    model, so they are skipped, not counted."""
+    None when there is no evidence either way: no file or an unreadable one, or no
+    model pass yet. A pre-pass-only drain and a dry run asked no model, and a pass
+    that took on fewer than UNHEALTHY_LIMIT is a spot-check, not the nightly job, so
+    all three are skipped and the reader looks further back (PR #647 round 1: a
+    `--limit 2` check by hand decided the next night's cap).
+
+    THE FAILURE BUDGET HAS A FLOOR OF 1 (PR #647 round 1, major). Ten percent of the
+    capped batch of 8 is 0.8, so the plain ratio allowed no failure at all, and one
+    unparseable verdict, which _triage_one treats as a normal night, latched the lane
+    at 8 for good. At 10 or more taken on the floor changes nothing."""
     try:
         lines = (path or RUN_EVIDENCE).read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return None
     for ln in reversed(lines):
         if "pre-pass only" in ln or "DRY RUN" in ln:
@@ -1388,9 +1398,9 @@ def last_pass_health(path: Path | None = None) -> bool | None:
             continue
         written, skipped, failed = (int(g) for g in m.groups())
         attempted = written + skipped + failed
-        if attempted == 0:
-            return None
-        return written > 0 and failed <= 0.10 * attempted
+        if attempted < UNHEALTHY_LIMIT:
+            continue
+        return written > 0 and failed <= max(1, 0.10 * attempted)
     return None
 
 
@@ -1423,6 +1433,18 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     if apply and not prepass_only and limit > UNHEALTHY_LIMIT and last_pass_health() is False:
         limit = UNHEALTHY_LIMIT
         capped = f"self-capped at {UNHEALTHY_LIMIT}, the last pass was unhealthy (D1): "
+        # SAID, NOT ONLY WRITTEN (PR #647 round 1). A capped night exits 0 and its
+        # heartbeat is green, so without this the only trace is the .out prefix, the
+        # human read this change exists to remove. One alert ticket; each further
+        # capped night is counted on it by the alert path, never a new one.
+        try:
+            subprocess.run(["bash", ALERT, "alert-triage: the nightly pass self-capped at "
+                            f"{UNHEALTHY_LIMIT} because its last model pass was unhealthy (D1: wrote "
+                            "nothing, or failed more than 10 percent). Read the newest line in "
+                            "~/.config/kipi/linear-alert-triage.out; one healthy pass lifts the cap."],
+                           capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            pass
     batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
     for issue in batch:
