@@ -1020,6 +1020,12 @@
         "what": "The ticket is in a state the picker does not take (for example Triage).",
         "consumer": "Linear triage moves it; the backstop past the age bar."
       },
+      "set-aside": {
+        "exit": "wait",
+        "backstop": true,
+        "what": "Its ticket was set aside for a day after a dispatcher branch refusal (ASK-3993): reworking it would only be refused again.",
+        "consumer": "kipi-dispatch.sh BRANCH REFUSAL EXIT: the set-aside row expires after a day and the guard re-tests the ticket; the backstop past the age bar."
+      },
       "walk": {
         "exit": "wait",
         "backstop": true,

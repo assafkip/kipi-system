@@ -1151,6 +1151,12 @@ def rework_hold(ident, url):
     i = by_ident.get(ident)
     if i is None:
         return hold("not-on-board", "ticket " + ident + " is not on the board")
+    # THE SECOND PICK PATH HONOURS THE SET-ASIDE LIST TOO (ASK-3993, PR #651 round 1,
+    # major). At the WIP ceiling this feed replaces the fresh pool, so a set-aside
+    # issue that left the pool above came straight back here, and the dispatcher
+    # refused it again every tick. Held as a wait: the list expires in a day.
+    if ident in _set_aside:
+        return hold("set-aside", "set aside for a day after a branch refusal (ASK-3993)")
     if ready(i):
         return "", ""
     if i["state"]["type"] == "started" and held_only_by(i, url):

@@ -1047,7 +1047,7 @@ branch_refused_record() {  # branch_refused_record <issue>: the one writer
     && mv -f "$tmp" "$BRANCH_REFUSED_FILE"
 }
 BRANCH_EXCLUDE="$(branch_refused_active)"
-[ -z "$BRANCH_EXCLUDE" ] || say "set aside for a day after a branch refusal, not picked: $BRANCH_EXCLUDE"
+[ -z "$BRANCH_EXCLUDE" ] || say "set aside for a day after a branch refusal, left out of the fresh pick and the WIP rework pick: $BRANCH_EXCLUDE (a redrive is kept off by its spent attempt, per PR head)"
 # --- END BRANCH REFUSAL EXIT ---
 
 # --- URGENT SLOT (ASK-3996, D25) ----------------------------------------------
