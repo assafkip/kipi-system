@@ -1358,10 +1358,12 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
 
     prepass_only runs the no-model half alone: the founder's drain of the queue
     spends no subscription quota (ASK-3823). beat sends one heartbeat row for the
-    whole pass: in is what both halves took on, done is what both halves wrote
-    (pre-pass closes count: a night that closed 12 did work, PR #642 round 1), queue
-    is what waits. A pre-pass-only drain never emits: it is not the nightly job, and
-    its row would land in the nightly job's ledger."""
+    pass: in is the batch handed to the model, done is what the model half wrote,
+    queue is what waits. MODEL HALF ONLY (PR #642 round 2): done is is_starved's only
+    input, and the pre-pass needs no model, so summing its closes into done (round 1)
+    kept done above 0 while the model wrote 0 of 8, the 16-night scar this row exists
+    to catch. A pre-pass-only drain never emits: it is not the nightly job, and its
+    row would land in the nightly job's ledger."""
     decider = decider or decide
     beat = beat and apply and not prepass_only
     try:
@@ -1390,8 +1392,7 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     print(line)
     write_run_evidence(line)
     if beat:
-        heartbeat(len(batch) + pre["attempted"], tally["written"] + pre["closed"],
-                  queue=len(pool) - len(batch))
+        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch))
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
