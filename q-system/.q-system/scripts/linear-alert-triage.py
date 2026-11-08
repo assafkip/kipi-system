@@ -56,10 +56,18 @@ in this script that removes an issue.
 
 TWO HALVES. The TRANSITION verbs (list, promote, close) are driven deliberately
 by a person or an agent (ASK-1127). The UNATTENDED lane (`run`, ASK-1133) decides
-promote-or-hold on its own, nightly, and NEVER closes. It was split out of PR
-#268 after nine review rounds put seven of that PR's eight majors inside it, and
-rebuilt against all ten recorded defects; test_linear_alert_triage.py pins each
-one (D1..D10) and alert_triage_mutants.py shows each pin going RED without its fix.
+promote-or-hold on its own, nightly, and never closes on a model's word. It was
+split out of PR #268 after nine review rounds put seven of that PR's eight majors
+inside it, and rebuilt against all ten recorded defects; test_linear_alert_triage.py
+pins each one (D1..D10) and alert_triage_mutants.py shows each pin going RED
+without its fix.
+
+THE NO-MODEL PRE-PASS (ASK-3823). The queue reached 1288 while the lane decides 8
+a night. Part of it is settled by a fact, not a judgment: the one subject an alert
+reports on has ended, or a newer open ticket in the same project carries the same
+message. `run` closes those first through do_close (the reason goes on the ticket
+first, cancel never delete) and spends the model only on what is left, at the
+same cap. `run --prepass-only` does the first half alone and calls no model.
 """
 from __future__ import annotations
 
@@ -71,6 +79,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -472,9 +481,12 @@ def _reopen(ls, ident: str) -> bool:
 # ===========================================================================
 # THE UNATTENDED LANE (ASK-1133): one bounded nightly pass, promote-or-hold.
 #
-# NEVER CLOSES. A promotion is reversible and visible: the issue stays open and a
-# wrong one costs a dispatch. A close is the direction nobody sees afterwards, so
-# it stays the explicit `close` verb. There is no close arm below to reach.
+# THE MODEL NEVER CLOSES. A promotion is reversible and visible: the issue stays
+# open and a wrong one costs a dispatch. A close is the direction nobody sees
+# afterwards, so no verdict of the model reaches do_close. The one close arm in
+# the lane is the no-model pre-pass below (ASK-3823), which closes only on a fact
+# read from Linear, GitHub or alert-to-linear's own counter, and writes that fact
+# on the ticket first.
 #
 # THE RECURRING CLASS, stated once: every refuse path must be distinguishable
 # from a success where the count and the exit code are computed. Four of PR
@@ -784,6 +796,494 @@ def lane_pool(ls) -> tuple[list, list]:
     return [i for i, _ in eligible], refused
 
 
+# ===========================================================================
+# THE NO-MODEL PRE-PASS (ASK-3823): close what a fact already settles, before a
+# model call is spent on it. Two rules, one close arm (do_close), one set of caps.
+#
+# RULE 1, SUBJECT ENDED. Some alerts report the pipeline state of ONE subject
+# ("worker: ASK-N is STUCK", and ASK-N is Done). Whether ASK-N is Done is a fact
+# Linear answers, not a judgment.
+#
+# AN ALLOWLIST OF FILER SHAPES, NOT "ANY ALERT THAT NAMES A CLOSED ISSUE".
+# Measured on the live queue 2026-11-06: 609 of 1274 open alerts name some ASK id
+# or PR number, and most are not reports of that subject's state. "ASK-N recurred
+# on consulting PR #N", "Follow-up for consulting PR #N (merged on APPROVE WITH
+# NITS)" and "Land the site work to main (same lane as ASK-N / PR #N)" each name a
+# subject that is closed or merged and are still real work. So a shape is listed
+# only when its producer pages about ONE subject's pipeline state, and the test
+# reads each producer to prove its text is still there.
+#
+# SPILLOVER IS NOT A SUBJECT ALERT. Its PR merging is how a spillover finding came
+# to exist, not its resolution. Every pattern is anchored at the start of the
+# filer's message, so none can match one.
+#
+# A PR COUNTS ONLY THROUGH AN EXPLICIT URL. The "[kipi-system]" tag names the
+# checkout that FILED the alert, not the PR's repo: review-redrive filed
+# "[kipi-system] ... ASK-3633 PR #10" about PR #10 in another repo. So a PR
+# subject is used only when the message carries github.com/<owner>/<repo>/pull/<n>
+# for that same n.
+#
+# RULE 2, EXACT DUPLICATE. Two open alerts in one project with the same message
+# are the same work for every reader here: the model sees the same text and the
+# worker routes by project, never by the checkout tag. Measured 2026-11-07: 75
+# older tickets repeat a newer open one, 47 of them one critic alert filed from 48
+# differently named worktrees, because the fingerprint keys on the checkout tag.
+# The newest is kept and the older ones close with a link to it.
+#
+# WHAT A TICKET STANDS FOR (#606 review r3, the blocker both rules answer).
+# alert-to-linear.py strips EVERY digit before it fingerprints, so "ASK-50 is
+# STUCK" and "ASK-60 is STUCK" are one fingerprint, and the second is counted on
+# the first one's ticket. Most repeats are counted only: a "Still firing" comment
+# is written at most once per 12 hours. Measured 2026-11-07 on the 10 alerts the
+# first cut would have closed: 5 carried repeats naming other subjects (ASK-1511
+# named 6, ASK-3064 among them, whose PR #560 is still open), and ASK-3639 had
+# counted 21 occurrences with 7 written. Closing on the first subject alone would
+# have cancelled the only ticket for issues that are still stuck. So a ticket
+# closes only when EVERYTHING it stands for is over: ended (rule 1) or the kept
+# ticket's message (rule 2). What it stands for (what_it_counted):
+#   - while alert-to-linear's dedup state names it, it is the STANDING ticket:
+#     every occurrence that state counted. The written ones must add up to that
+#     counter, or the unseen rest is unknown and the ticket stays with the model;
+#   - once the state no longer names it, exactly what is written on it. The alert
+#     path never counts on it again (a newer ticket took the fingerprint, or no
+#     state exists). Measured 2026-11-07: the dedup cache starts 2026-10-27, and
+#     7 of those 10 tickets are older, so any count they held was lost with the
+#     old cache. Nothing records what those repeats said, so no reader, model or
+#     human, can learn more from the open ticket than from the closed one. The
+#     written repeats are still read, and one naming a live subject (ASK-1511's
+#     ASK-3064) keeps the ticket open.
+# ===========================================================================
+
+_SUBJECT_ISSUE = rf"(?P<issue>{TEAM_KEY}-\d+)"
+# (shape, producer file relative to the repo root, literal text the producer
+#  writes, pattern over the filer's message with the checkout tag removed)
+SUBJECT_SHAPES = (
+    ("worker-stuck", "q-system/.q-system/scripts/linear-worker.sh", "is STUCK after",
+     re.compile(rf"^kipi worker: {_SUBJECT_ISSUE} is STUCK after \d+ attempts")),
+    ("worker-stuck-legacy", "q-system/.q-system/scripts/linear-worker.sh",
+     "stuck after $MAX_ATTEMPTS attempts",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} stuck after \d+ attempts")),
+    ("worker-not-armed", "q-system/.q-system/scripts/linear-worker.sh", "is NOT armed",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is NOT armed")),
+    ("worker-worktree", "q-system/.q-system/scripts/linear-worker.sh",
+     "worktree does not hold PR",
+     re.compile(rf"^worker: {_SUBJECT_ISSUE} worktree does not hold PR #(?P<pr>\d+)")),
+    ("dispatch-died", "kipi-dispatch.sh", "was launched but died immediately",
+     re.compile(rf"^kipi dispatch: {_SUBJECT_ISSUE} was launched but died immediately")),
+    ("converge-no-pr", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stopped, no PR after round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stopped, no PR after round \d+")),
+    ("converge-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: $VERDICT after $ROUND round(s), ",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: [A-Z][A-Z ]* after \d+ round\(s\), ")),
+    ("converge-no-verdict", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: review produced no verdict on round",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: review produced no verdict on round \d+")),
+    ("converge-stalled", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: stalled at '$VERDICT', no code change",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: stalled at '[^']*', no code change")),
+    ("converge-cap", "q-system/.q-system/scripts/converge.sh",
+     "converge $ISSUE: hit $MAX_ROUNDS-round cap",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \d+-round cap")),
+    ("review-redrive", "q-system/.q-system/scripts/review-redrive.py",
+     "review-redrive: %s PR #%s still has ",
+     re.compile(rf"^review-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) still has ")),
+    ("ci-redrive", "q-system/.q-system/scripts/ci-redrive.py",
+     "ci-redrive: %s PR #%s is still red on ",
+     re.compile(rf"^ci-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) is still red on ")),
+)
+# SAME PREFIX, NOT THE SAME SUBJECT (PR #606 review r1, major 1). The first cut
+# listed converge as the bare prefix "converge ASK-N: ", and converge.sh writes
+# eight pages behind it. These three do not end when ASK-N ends, so closing them
+# on "ASK-N is Done" cancelled the only ticket for a machine-wide fault or for
+# unreviewed code. linear-worker.sh's "approved at X but its head Y is still
+# unreviewed" is the same class and is not listed either. The test classifies
+# every converge page into SUBJECT_SHAPES or this list, so a new page cannot
+# arrive unclassified.
+CONVERGE_NOT_SUBJECT = (
+    ("attempts ledger unwritable", "a machine-wide fault, first seen on this issue"),
+    ("only the degraded Opus fallback reviewed it", "unreviewed code at the head"),
+    ("was never reviewed", "unreviewed code at the head"),
+)
+# "duplicate" is its own state type on this team, and fetch_open does not filter
+# it out.
+SUBJECT_CLOSED_TYPES = ("completed", "canceled", "duplicate")
+# A blast-radius bound, not a throughput knob. A pattern that someday matches too
+# much cancels at most this many a night, each with its reason on the ticket,
+# each undone by reopening it.
+PREPASS_MAX_CLOSES = 40
+# READS ARE BOUNDED TOO (PR #606 review r1, major 3). An alert whose subject is
+# still open costs a read every night, and the close cap never counts it. A slow
+# gh would then hold the model batch behind it, which is the stall this file
+# exists to end. So the pass stops reading after PREPASS_MAX_LOOKUPS distinct
+# reads or PREPASS_DEADLINE_S seconds, and whatever it did not finish goes to the
+# model exactly as it did before the pre-pass existed.
+PREPASS_MAX_LOOKUPS = 80
+PREPASS_DEADLINE_S = 300
+# WHERE THE LAST BOUNDED PASS STOPPED (PR #630 review r1, major 2). The pool is
+# oldest first, and an alert whose subject is still open costs a read and closes
+# nothing. With 80 such alerts at the front, every pass spent its whole bound on
+# them and the closable ones behind were never examined, every night, forever.
+# So a pass that stops on a bound records the last alert it examined, and the
+# next pass starts after it and wraps. One writer: run_prepass, on --apply only,
+# so a dry run previews the pass the real one will run.
+PREPASS_CURSOR_FILE = os.path.join("~", ".config", "kipi",
+                                   "linear-alert-triage.prepass-cursor.json")
+GH_TIMEOUT_S = 20
+GH_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin")
+# alert-to-linear.py's fingerprint -> ticket map, read and never written here.
+# Its writer is _write_state there; the test pins this path to that file's
+# _default_state_dir(), so a move cannot leave the pre-pass refusing everything.
+DEDUP_STATE_DIR = os.path.join("~", ".cache", "kipi", "alert-to-linear")
+# The opening of the repeat comment alert-to-linear.py writes.
+REPEAT_PREFIX = "Still firing."
+# COMMENTS_Q reads first:100. A full page may hide a repeat, so it proves nothing.
+COMMENTS_PAGE = 100
+_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)\n```", re.S)
+_TAG_RE = re.compile(r"^\[[^\]\n]*\]\s*")
+# A fingerprint names a file. Anything else is not one alert-to-linear wrote.
+_FP_RE = re.compile(r"[\w-]{1,64}")
+
+
+def fenced_message(issue: dict) -> str | None:
+    """The filer's message as written, the first fenced block of the body."""
+    m = _FENCE_RE.search(issue.get("description") or "")
+    return m.group(1) if m else None
+
+
+def untag(msg: str) -> str:
+    """The message without the "[checkout]" tag alert-to-linear puts in front."""
+    return _TAG_RE.sub("", (msg or "").strip())
+
+
+def alert_message(issue: dict) -> str:
+    """The filer's message without its tag, else the title."""
+    msg = fenced_message(issue)
+    return untag(msg if msg is not None else (issue.get("title") or ""))
+
+
+def subject_of(msg: str) -> dict | None:
+    """The one subject this message reports the state of, or None."""
+    for shape, producer, _text, pattern in SUBJECT_SHAPES:
+        m = pattern.match(msg)
+        if not m:
+            continue
+        subject = {"shape": shape, "producer": producer, "issue": m.group("issue"),
+                   "pr": None, "repo": None, "carries_pr": "pr" in pattern.groupindex}
+        pr = m.groupdict().get("pr")
+        url = pr and re.search(rf"github\.com/([\w.-]+/[\w.-]+)/pull/{pr}\b", msg)
+        if url:
+            subject["pr"], subject["repo"] = int(pr), url.group(1)
+        return subject
+    return None
+
+
+def alert_subject(issue: dict) -> dict | None:
+    return subject_of(alert_message(issue))
+
+
+def gh_pr_state(repo: str, number: int) -> str | None:
+    """MERGED, OPEN or CLOSED, or None when it could not be read. None never closes."""
+    gh = shutil.which("gh") or next(
+        (f"{d}/gh" for d in GH_DIRS if os.access(f"{d}/gh", os.X_OK)), None)
+    if not gh:
+        return None
+    try:
+        res = subprocess.run([gh, "pr", "view", str(number), "-R", repo,
+                              "--json", "state", "-q", ".state"],
+                             capture_output=True, text=True, timeout=GH_TIMEOUT_S,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (res.stdout or "").strip() or None if res.returncode == 0 else None
+
+
+def dedup_state(fp: str) -> dict:
+    """alert-to-linear's state for one fingerprint, or {} when there is none."""
+    if not fp or not _FP_RE.fullmatch(fp):
+        return {}
+    path = os.path.join(os.path.expanduser(DEDUP_STATE_DIR), f"{fp}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _standing_state(issue: dict) -> dict | None:
+    """The dedup state when it names THIS ticket, else None. A local file read."""
+    state = dedup_state(alert_fingerprint(issue.get("description") or ""))
+    if state.get("identifier") == issue["identifier"] or (
+            state.get("issue_id") and state.get("issue_id") == issue.get("id")):
+        return state
+    return None
+
+
+def _count_is(state: dict, n: int) -> bool:
+    try:
+        return int(state.get("count")) == n
+    except (TypeError, ValueError):
+        return False
+
+
+def read_comment_bodies(ls, issue_id: str) -> list | None:
+    """Every comment body, or None when the read failed. None never closes."""
+    try:
+        issue = (ls.graphql(COMMENTS_Q, {"id": issue_id}) or {}).get("issue") or {}
+    except Exception as exc:  # noqa: BLE001 - a failed read is a refusal, not a crash
+        print(f"  {issue_id}: could not read comments: {str(exc)[:120]}", file=sys.stderr)
+        return None
+    nodes = (issue.get("comments") or {}).get("nodes")
+    return None if nodes is None else [n.get("body") or "" for n in nodes]
+
+
+def written_occurrences(issue: dict, bodies: list | None) -> list | None:
+    """Every filer message written on this ticket, untagged: the one it was filed
+    with, then one per repeat comment. None when the list may be incomplete."""
+    if bodies is None or len(bodies) >= COMMENTS_PAGE:
+        return None
+    msgs = [alert_message(issue)]
+    for body in bodies:
+        if not body.startswith(REPEAT_PREFIX):
+            continue
+        m = _FENCE_RE.search(body)
+        if not m:
+            return None
+        msgs.append(untag(m.group(1)))
+    return msgs
+
+
+class _Spent(Exception):
+    """The pass's read bound is used up."""
+
+
+class _Reads:
+    """Every network read of the pre-pass, cached and bounded in one place."""
+
+    def __init__(self, max_reads: int, deadline_s: float, clock):
+        self.cache, self.max_reads, self.clock = {}, max_reads, clock
+        self.stop_at = clock() + deadline_s
+
+    def get(self, key, fetch):
+        if key in self.cache:
+            return self.cache[key]
+        if len(self.cache) >= self.max_reads or self.clock() >= self.stop_at:
+            raise _Spent
+        self.cache[key] = fetch()
+        return self.cache[key]
+
+
+def _issue_over(ls, ident: str, reads: _Reads) -> str | None:
+    state = (reads.get(ident, lambda: reread(ls, ident)) or {}).get("state") or {}
+    if state.get("type") in SUBJECT_CLOSED_TYPES:
+        return f"{ident} is {state.get('name') or state['type']} (state type {state['type']})"
+    return None
+
+
+def subject_ended(ls, subject: dict, reads: _Reads, pr_state) -> str | None:
+    """Why this subject is over, or None. An unreadable subject is None: a read
+    that failed is not permission to close (do_close's own rule, PR #275 r4)."""
+    if not subject["carries_pr"]:
+        return _issue_over(ls, subject["issue"], reads)
+    # A PR SHAPE PAGES ABOUT THE PR (PR #630 review r1, major 1). "PR #10 is still
+    # red" and "PR #10 is NOT armed" outlive "ASK-50 is Done": the first cut closed
+    # them on the issue alone while the PR sat open and red, the class
+    # CONVERGE_NOT_SUBJECT already carves out. So the PR decides: merged ends it,
+    # closed unmerged ends it once the issue has ended too, and a PR that cannot
+    # be read (no URL, gh failed) ends nothing.
+    if not (subject["pr"] and subject["repo"]):
+        return None
+    key = f"{subject['repo']}#{subject['pr']}"
+    pr = reads.get(key, lambda: pr_state(subject["repo"], subject["pr"]))
+    if pr == "MERGED":
+        return f"{key} is merged"
+    if pr == "CLOSED":
+        issue = _issue_over(ls, subject["issue"], reads)
+        return f"{key} is closed unmerged and {issue}" if issue else None
+    return None
+
+
+def what_it_counted(ls, issue: dict, reads: _Reads) -> tuple[list | None, str]:
+    """(every occurrence this ticket stands for, untagged, and how that is known),
+    or (None, "") when the list may be incomplete. See WHAT A TICKET STANDS FOR."""
+    msgs = written_occurrences(
+        issue, reads.get(f"comments:{issue['id']}",
+                         lambda: read_comment_bodies(ls, issue["id"])))
+    if msgs is None:
+        return None, ""
+    standing = _standing_state(issue)
+    if standing is None:
+        return msgs, "alert-to-linear no longer counts on this ticket"
+    if not _count_is(standing, len(msgs)):
+        return None, ""
+    return msgs, "alert-to-linear's own counter agrees"
+
+
+def _why_subjects_ended(ls, issue: dict, subject: dict, reads: _Reads,
+                        pr_state) -> tuple[str | None, str]:
+    """(close reason, "") or (None, tally bucket). Rule 1."""
+    first = subject_ended(ls, subject, reads, pr_state)
+    if not first:
+        return None, "live"
+    msgs, known = what_it_counted(ls, issue, reads)
+    if msgs is None:
+        return None, "unproven"
+    whys = [first]
+    for msg in msgs[1:]:
+        other = subject_of(msg)
+        if other is None:
+            return None, "unproven"
+        why = subject_ended(ls, other, reads, pr_state)
+        if not why:
+            return None, "live"
+        if why not in whys:
+            whys.append(why)
+    return ("; ".join(whys) + f". This alert reports the pipeline state of that "
+            f"subject (shape {subject['shape']}, written by {subject['producer']}), and "
+            f"every occurrence it stands for ({len(msgs)}; {known}) names a subject "
+            "that is over, so the condition it describes cannot still hold."), ""
+
+
+def _dup_key(issue: dict) -> tuple | None:
+    """(project, message) for the duplicate rule. The fenced message only: a title
+    is cut at 110 characters, so two different alerts can share one."""
+    msg, project = fenced_message(issue), (issue.get("project") or {}).get("name")
+    return (project, " ".join(untag(msg).split())) if msg and project else None
+
+
+def duplicates_by_kept(pool: list) -> dict:
+    """{older identifier: the newest open alert with the same project and message}."""
+    groups = {}
+    for issue in pool:
+        key = _dup_key(issue)
+        if key:
+            groups.setdefault(key, []).append(issue)
+    out = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        kept = max(members, key=lambda i: (i.get("createdAt") or "", i["identifier"]))
+        out.update({i["identifier"]: kept for i in members if i is not kept})
+    return out
+
+
+def _why_duplicate(ls, issue: dict, kept: dict, reads: _Reads) -> tuple[str | None, str]:
+    """(close reason, "") or (None, tally bucket). Rule 2."""
+    msgs, known = what_it_counted(ls, issue, reads)
+    if msgs is None or any(" ".join(m.split()) != _dup_key(kept)[1] for m in msgs):
+        return None, "unproven"
+    now = reads.get(kept["identifier"], lambda: reread(ls, kept["identifier"])) or {}
+    if not now or ((now.get("state") or {}).get("type") or "") in SUBJECT_CLOSED_TYPES:
+        return None, "live"
+    return (f"Duplicate of {kept['identifier']} {kept.get('url') or ''}".rstrip()
+            + ": the same alert message in the same project, on a newer ticket that "
+            f"is still open. {kept['identifier']} stands for this condition from now "
+            f"on. Every occurrence this ticket stands for ({len(msgs)}; {known}) is "
+            "that same message."), ""
+
+
+def _pool_key(issue: dict) -> tuple:
+    return (issue.get("createdAt") or "", issue.get("identifier") or "")
+
+
+def read_cursor() -> tuple | None:
+    try:
+        with open(os.path.expanduser(PREPASS_CURSOR_FILE), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return (str(data["createdAt"]), str(data["identifier"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def write_cursor(issue: dict | None) -> None:
+    """The single writer of the cursor. None means start from the oldest."""
+    path = os.path.expanduser(PREPASS_CURSOR_FILE)
+    data = {} if issue is None else dict(zip(("createdAt", "identifier"), _pool_key(issue)))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print(f"  pre-pass: could not save where it stopped ({exc.strerror}); the "
+              "next pass starts from the oldest alert", file=sys.stderr)
+
+
+def run_prepass(ls, pool: list, apply: bool, pr_state=None,
+                cap: int = PREPASS_MAX_CLOSES, max_lookups: int = PREPASS_MAX_LOOKUPS,
+                deadline_s: float = PREPASS_DEADLINE_S,
+                clock=time.monotonic) -> tuple[list, Counter]:
+    """(the alerts left for the model, tally). No model is called in here.
+
+    An alert whose close was attempted is never handed to the model in the same
+    pass: closed is done, and a failed close stays open with its rationale and is
+    retried tomorrow rather than also promoted or held tonight."""
+    pr_state = pr_state or gh_pr_state
+    reads, tally, done = _Reads(max_lookups, deadline_s, clock), Counter(), set()
+    dup_of = duplicates_by_kept(pool)
+    cursor = read_cursor()
+    start = next((n for n, i in enumerate(pool) if cursor and _pool_key(i) > cursor), 0)
+    last_examined = None
+    for issue in pool[start:] + pool[:start]:
+        subject, kept = alert_subject(issue), dup_of.get(issue["identifier"])
+        if not (subject or kept):
+            continue
+        if tally["attempted"] >= cap:
+            tally["unchecked"] += 1
+            continue
+        why, bucket, rule = None, "", ""
+        try:
+            if subject:
+                (why, bucket), rule = (_why_subjects_ended(ls, issue, subject, reads,
+                                                           pr_state), subject["shape"])
+            # A live subject can still be an exact duplicate of a newer ticket.
+            if not why and kept:
+                (why, bucket), rule = _why_duplicate(ls, issue, kept, reads), "duplicate"
+        except _Spent:
+            why, bucket = None, "unchecked"
+        # Only up to the FIRST alert left unchecked: a later one that rode on a
+        # cached read must not carry the cursor past the ones skipped before it.
+        if bucket != "unchecked" and not tally["unchecked"]:
+            last_examined = issue
+        if not why:
+            tally[bucket] += 1
+            continue
+        tally["attempted"] += 1
+        done.add(issue["identifier"])
+        reason = (f"{why} Closed by the no-model pre-pass of the nightly triage lane "
+                  "(ASK-3823); no model was asked. Reopen this issue if that is "
+                  "wrong. Nothing was deleted.")
+        try:
+            out = do_close(ls, issue, reason, apply)
+        except Exception as exc:  # noqa: BLE001 - one bad close must not stop the pass
+            print(f"  {issue['identifier']}: pre-pass close FAILED {str(exc)[:160]}",
+                  file=sys.stderr)
+            tally["failed"] += 1
+            continue
+        print(out.line)
+        tally["closed" if out.wrote else ("skipped" if apply else "would_close")] += 1
+        if out.wrote or not apply:
+            tally[f"rule:{rule}"] += 1
+    if apply and (tally["unchecked"] == 0 or last_examined is not None):
+        write_cursor(last_examined if tally["unchecked"] else None)
+    return [i for i in pool if i["identifier"] not in done], tally
+
+
+def _prepass_part(pre: Counter, apply: bool) -> str:
+    rules = sorted(((k[5:], n) for k, n in pre.items() if k.startswith("rule:") and n),
+                   key=lambda kv: (-kv[1], kv[0]))
+    by = (" (" + ", ".join(f"{r} {n}" for r, n in rules) + ")") if rules else ""
+    held = (f", {pre['live'] + pre['unproven']} kept open (a counted subject is live "
+            "or unseen)" if pre["live"] + pre["unproven"] else "")
+    bound = f", {pre['unchecked']} unchecked (read bound)" if pre["unchecked"] else ""
+    if not apply:
+        return f"; pre-pass (no model): {pre['would_close']} would close{by}{held}{bound}"
+    return (f"; pre-pass (no model): {pre['closed']} closed{by}, {pre['skipped']} "
+            f"skipped, {pre['failed']} failed{held}{bound}")
+
+
 def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
     """One issue through the lane. Returns the tally bucket it belongs in."""
     ident = issue["identifier"]
@@ -833,26 +1333,38 @@ def _pass_exit_code(tally: Counter, batch: int, apply: bool) -> int:
     return 0
 
 
-def run_triage(ls, limit: int, apply: bool, decider=None) -> int:
-    """One bounded unattended pass. Returns the process exit code."""
+def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
+               prepass_only: bool = False) -> int:
+    """One bounded unattended pass. Returns the process exit code.
+
+    prepass_only runs the no-model half alone: the founder's drain of the queue
+    spends no subscription quota (ASK-3823)."""
     decider = decider or decide
     pool, refused = lane_pool(ls)
-    batch = pool[:max(limit, 0)]
+    pool, pre = run_prepass(ls, pool, apply, pr_state)
+    batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
     for issue in batch:
         tally[_triage_one(ls, issue, decider, apply)] += 1
     reasons = Counter(why.split(";")[0] for _, why in refused)
     line = (("" if apply else "DRY RUN, nothing sent: ")
+            + ("pre-pass only, no model: " if prepass_only else "")
             + f"triage pass: {tally['written']} written, "
             + (f"{tally['skipped']} skipped, " if apply else f"{tally['previewed']} previewed, ")
             + f"{tally['failed']} failed; {len(pool) - len(batch)} still queued; "
             + f"{len(refused)} refused"
             + (" (" + ", ".join(f"{n} {r}" for r, n in reasons.most_common()) + ")"
                if refused else "")
-            + " fleet-wide")
+            + " fleet-wide"
+            + _prepass_part(pre, apply))
     print(line)
     write_run_evidence(line)
-    return _pass_exit_code(tally, len(batch), apply)
+    rc = _pass_exit_code(tally, len(batch), apply)
+    if pre["failed"]:
+        print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
+              "tomorrow", file=sys.stderr)
+        rc = rc or 1
+    return rc
 
 
 def write_run_evidence(line: str) -> None:
@@ -884,6 +1396,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--reason", help="why this is not worth executing (close)")
     ap.add_argument("--limit", type=int, default=8,
                     help="run: at most this many alerts per pass (default 8)")
+    ap.add_argument("--prepass-only", action="store_true",
+                    help="run: only the no-model pre-pass; no model call, no quota")
     ap.add_argument("--apply", action="store_true", help="write to Linear")
     return ap
 
@@ -908,7 +1422,7 @@ def main() -> int:
         if a.limit < 1:
             print("--limit must be at least 1", file=sys.stderr)
             return 2
-        return run_triage(ls, a.limit, a.apply)
+        return run_triage(ls, a.limit, a.apply, prepass_only=a.prepass_only)
 
     if a.verb == "list":
         issues = [i for i in fetch_open(ls, a.project)
