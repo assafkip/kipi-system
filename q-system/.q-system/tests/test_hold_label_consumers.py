@@ -45,7 +45,9 @@ MISSING_CEILING = frozenset({"owner:assaf", "blocked:capability", "triage:held"}
 # code, so five non-empty strings would otherwise turn a `missing` row green and read
 # as the missing set shrinking (PR #666 review, minor). Adding a label here is an edit
 # to this file, so the reviewer reads the claim next to the row that makes it.
-OUTSIDE_ALLOWED = frozenset({"parked"})
+# Empty since #663 (ASK-4031): ready() no longer refuses an expired park, so `parked`
+# left the registry with it, and nothing else names an outside consumer.
+OUTSIDE_ALLOWED = frozenset()
 
 
 # --- the census ---------------------------------------------------------------
@@ -287,10 +289,15 @@ def fixture_registry():
     }}
 
 
+# The fixture keeps its own outside row (`parked`), so it carries its own allowlist and
+# does not lean on the live one, which is empty since #663.
+FIXTURE_OUTSIDE_ALLOWED = frozenset({"parked"})
+
+
 def run_fixture(registry=None, src=FIXTURE_READY, templates=None, files=None, ceiling=frozenset()):
     return problems(registry or fixture_registry(), refused_labels(src),
                     FIXTURE_TEMPLATES if templates is None else templates,
-                    (files or FIXTURE_FILES).get, ceiling)
+                    (files or FIXTURE_FILES).get, ceiling, FIXTURE_OUTSIDE_ALLOWED)
 
 
 def test_fixture_baseline_is_green():

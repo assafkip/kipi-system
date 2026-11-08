@@ -50,18 +50,6 @@
         "what": "Nothing re-tests the block, so the label never clears. ASK-3960 records a probe per ticket and re-runs it nightly."
       }
     },
-    "parked": {
-      "refused_when": "present",
-      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
-      "outside_consumer": {
-        "repo": "assafkip/chief",
-        "path": "bots/triage/skills/__init__.py",
-        "marker": "park_expired",
-        "job": "chief triage bot, [jobs.act] in bots/triage/bot.toml (09:05 Mon-Fri)",
-        "owner": "the chief rebuild project",
-        "what": "E2 closes an expired park, reversibly, at its next sweep. ready() refuses exactly the set E2 closes (ASK-3995)."
-      }
-    },
     "triage:held": {
       "refused_when": "present",
       "refused_by": "q-system/.q-system/scripts/linear-alert-triage.py",
