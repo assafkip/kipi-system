@@ -170,7 +170,8 @@ def decide(job: str, cls: str, table: dict, evidence: dict | None) -> tuple:
         s, o = arms.get("sonnet"), arms.get("opus")
         r = rule.get("worker") or {}
         if not s or not o or min(s["runs"], o["runs"]) < r.get("min_tickets", 10**9):
-            return None, f"worker/{cls}: {s['runs'] if s else 0} Sonnet replays, under {r.get('min_tickets')}"
+            return None, (f"worker/{cls}: {s['runs'] if s else 0} Sonnet and {o['runs'] if o else 0} Opus replays, "
+                          f"under {r.get('min_tickets')} each")
         worse = [k for k in ("committed", "tests_pass", "r1_approve") if s[k] < o[k]] + \
                 [k for k in ("gating", "tests_fail") if s[k] > o[k]]
         if worse:

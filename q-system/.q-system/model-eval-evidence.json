@@ -107,19 +107,54 @@
      "runs": 1,
      "tests_fail": 0,
      "tests_pass": 0
+    },
+    "sonnet": {
+     "committed": 1,
+     "gating": 0,
+     "majors": 1,
+     "minors": 3,
+     "r1_approve": 1,
+     "refused": 0,
+     "runs": 1,
+     "tests_fail": 0,
+     "tests_pass": 1
+    }
+   },
+   "single-code-file": {
+    "opus": {
+     "committed": 1,
+     "gating": 0,
+     "majors": 1,
+     "minors": 3,
+     "r1_approve": 1,
+     "refused": 0,
+     "runs": 1,
+     "tests_fail": 0,
+     "tests_pass": 1
     }
    },
    "test-only": {
-    "sonnet": {
-     "committed": 0,
+    "opus": {
+     "committed": 1,
      "gating": 0,
      "majors": 0,
-     "minors": 0,
-     "r1_approve": 0,
-     "refused": 1,
-     "runs": 1,
+     "minors": 1,
+     "r1_approve": 1,
+     "refused": 0,
+     "runs": 2,
      "tests_fail": 0,
-     "tests_pass": 0
+     "tests_pass": 1
+    },
+    "sonnet": {
+     "committed": 1,
+     "gating": 0,
+     "majors": 1,
+     "minors": 0,
+     "r1_approve": 1,
+     "refused": 1,
+     "runs": 3,
+     "tests_fail": 0,
+     "tests_pass": 1
     }
    }
   }
