@@ -179,7 +179,9 @@ promise("P49", "no check reported is not CI green: no workflow merges on the rev
 promise("P50", "an approved, green, conflict-free PR that is only BEHIND is updated once per head, never closed for it; "
         "a failed call is retried, never read as a rebase that did not take",
         "BEHIND IS UPDATED, NOT CLOSED", "once per head", "update-branch was asked at",
-        "A FAILED CALL IS NOT A FAILED REBASE", "so the PR holds and the run exits 2, as every red PR does")
+        "A FAILED CALL IS NOT A FAILED REBASE", "so the PR holds and the run exits 2, as every red PR does",
+        "failed {fails} of {UPDATE_TRIES} times at this head", "is asked again at most this many times at one head",
+        "but update-branch failed {tried['fails']} times")
 promise("P51", "the merge is asked of merge-bypass-gate.py first, re-read as the same PR at the same head, and read back",
         "ASKED OF THE GATE, NOT HIDDEN FROM IT", "a deny or no answer is no merge", "neither merged nor armed",
         "merge-bypass-gate.py refused it",
@@ -268,7 +270,7 @@ ARMED: set = set()
 NEITHER: set = set()
 MERGED_DONE: set = set()
 CWD_ENVS: list = []
-UPDATE_ENVS: list = []
+WRITE_ENVS: list = []
 CWD_MARK = "(cwd "
 
 
@@ -316,8 +318,8 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
     SENT.append(argv + ([f"{CWD_MARK}{cwd})"] if cwd is not None else []))
     if cwd is not None:
         CWD_ENVS.append(env)
-    if argv[:3] == ["gh", "pr", "update-branch"]:
-        UPDATE_ENVS.append(env)
+    if argv[:2] == ["gh", "pr"] and len(argv) > 2 and argv[2] in WRITE_VERBS:
+        WRITE_ENVS.append(env)
     ok = lambda obj: (0, json.dumps(obj), "")  # noqa: E731
     slug = slug_in(SENT[-1])
     if argv[:3] == ["gh", "pr", "list"]:
@@ -1147,18 +1149,37 @@ sp = fresh_state("F4c")
 BH = repo("o/behind", "behind")
 add(BH, 1, "feat/behind", verdict=APPROVE, mergeStateStatus="BEHIND")
 WRITE_RC[("update-branch", BH, 1)] = (1, "HTTP 502: Bad Gateway")
-UPDATE_ENVS.clear()
+WRITE_ENVS.clear()
 os.environ["GH_HOST"] = "evil.example"
 rc, F4c = run_main("F4c", ["--apply"], NOW)
 os.environ.pop("GH_HOST", None)
 WRITE_RC.clear()
-holds("P50", "a 502 on update-branch: the run exits 2 and records no update",
-      (rc, sorted((json.loads(sp.read_text()).get("updates") or {}))), (2, []))
+holds("P50", "a 502 on update-branch: the run exits 2 and records one failed attempt, not an accepted call",
+      (rc, {k: v.get("fails") for k, v in (json.loads(sp.read_text()).get("updates") or {}).items()}),
+      (2, {f"{BH}#1": 1}))
 holds("P51", "GH_HOST in the job's env does not reach the update-branch write either",
-      (len(UPDATE_ENVS), [e for e in UPDATE_ENVS if e is None or {"GH_REPO", "GH_HOST"} & set(e)]), (1, []))
+      (len(WRITE_ENVS), [e for e in WRITE_ENVS if e is None or {"GH_REPO", "GH_HOST"} & set(e)]), (1, []))
 rc, F4d = run_main("F4d", ["--apply"], NOW + H)
 holds("P50", "an hour later the update is asked again, not closed (a failed call is not a failed rebase)",
       ([a[2] for a in gh_writes(F4d, BH, 1)], rc), (["update-branch"], 0))
+# PR #693 round 2, major: a call that fails every time gets an exit, not an hourly retry forever.
+fresh_state("F4e")
+WRITE_RC[("update-branch", BH, 1)] = (1, "HTTP 403: Resource not accessible by integration")
+WRITE_ENVS.clear()
+os.environ.update({"GH_REPO": "o/evil", "GH_HOST": "evil.example"})
+tries = [run_main(f"F4e-{h}", ["--apply"], NOW + h * H) for h in range(4)]
+for k in ("GH_REPO", "GH_HOST"):
+    os.environ.pop(k, None)
+WRITE_RC.clear()
+holds("P50", "a 403 every hour: update-branch is sent 3 times, then the 4th run sends it to the red table",
+      ([[a[2] for a in gh_writes(run, BH, 1)] for _rc, run in tries], [r for r, _run in tries]),
+      ([["update-branch"], ["update-branch"], ["update-branch"], ["close"]], [2, 2, 2, 0]))
+c4e = gh_writes(tries[3][1], BH, 1, "close")
+holds("P50", "... and that close names the failures and GitHub's error",
+      bool(c4e) and "update-branch failed 3 times at this head" in body_of(c4e[0]) and "HTTP 403" in body_of(c4e[0]), True)
+holds("P51", "GH_REPO and GH_HOST reach no gh write, the close included",
+      (sorted({a[2] for _rc, run in tries for a in gh_writes(run)}),
+       [e for e in WRITE_ENVS if e is None or {"GH_REPO", "GH_HOST"} & set(e)]), (["close", "update-branch"], []))
 
 # F5: the merge is the gate's one shape, asked of the gate, re-read, and read back.
 REPOS.clear()

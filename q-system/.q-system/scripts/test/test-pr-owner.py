@@ -272,6 +272,14 @@ check("gh omitted mergeStateStatus on an approved green PR -> wait, not a rework
 tried = {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H}}}
 check("approved, BEHIND, update-branch already asked at this head -> red (the update did not move it)",
       act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540, tried)["action"], "close-requeue")
+check("approved, BEHIND, update-branch failed twice at this head -> update again (PR #693 round 2)",
+      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
+             {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "fails": 2, "err": "HTTP 502"}}})["action"],
+      "update")
+check("approved, BEHIND, update-branch failed 3 times at this head -> red, naming the error",
+      [(d["action"], "HTTP 403" in d["reason"]) for d in [act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
+       {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "fails": 3, "err": "HTTP 403"}}})]],
+      [("close-requeue", True)])
 check("approved, BEHIND, an update asked at an older head -> update again",
       act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
              {"updates": {"assafkip/kipi-system#526": {"head": "c" * 40, "at": NOW - H}}})["action"], "update")

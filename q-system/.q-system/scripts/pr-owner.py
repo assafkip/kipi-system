@@ -146,6 +146,10 @@ QUIET_S = 12 * 3600
 KEEP_DAYS = 30
 KEEP_S = KEEP_DAYS * 86400
 LIST_LIMIT = 200
+# A failed update-branch is asked again at most this many times at one head: a 502
+# passes in an hour, a 403 does not (PR #693 round 2), so the third failure goes
+# to the red table with GitHub's error in the reason.
+UPDATE_TRIES = 3
 PER_PR_MAPS = ("closed", "strikes", "reviews", "outside", "updates")
 
 REVIEWER_CONTEXT = "kipi/reviewer-approved"
@@ -239,6 +243,7 @@ def run_logged(argv, log: Path, timeout=2700):
 # made from Python. So the refusal lives at the chokepoint, not in each caller.
 # The merge gate is asked here too, for the same reason (merge_gate_verdict).
 def gh_write(argv, cwd=None, env=None):
+    env = gh_env() if env is None else env
     if argv[:2] in (["pr", "close"], ["pr", "merge"]) and ("--delete-branch" in argv or "-d" in argv):
         raise SystemExit("REFUSED: pr-owner never deletes a branch: " + " ".join(argv))
     if argv[:2] == ["pr", "merge"]:
@@ -252,11 +257,12 @@ MERGE_GATE = SCRIPTS / "merge-bypass-gate.py"
 
 
 def gh_env() -> dict:
-    # GH_REPO and GH_HOST never reach a gh call made from a checkout, nor the
-    # update-branch write. The checkout
-    # is what names the repo there, and it is what the merge gate judges: the gate
-    # denies those two as an env prefix because they retarget gh without changing
-    # one argument, and an env passed from Python is the same retarget, unseen.
+    # GH_REPO and GH_HOST never reach a gh write or a gh call made from a checkout.
+    # Both retarget gh without changing one argument: GH_HOST moves even a `-R`
+    # call to another host, and from a checkout GH_REPO outranks the checkout,
+    # which is what names the repo there and what the merge gate judges. The gate
+    # denies the two as an env prefix; an env inherited by a child is the same
+    # retarget, unseen. gh_write() applies this to every write (PR #693 round 2).
     return {k: v for k, v in os.environ.items() if k not in ("GH_REPO", "GH_HOST")}
 
 
@@ -885,9 +891,12 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         tried = (state.get("updates") or {}).get(key) or {}
         if pr["merge_state"] != "BEHIND":
             red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
-        elif tried.get("head") == pr["head"]:
+        elif tried.get("head") == pr["head"] and "fails" not in tried:
             red.append(f"approved and only BEHIND {pr['base']}, but update-branch was asked at {iso(tried['at'])} "
                        f"and the head did not move")
+        elif tried.get("head") == pr["head"] and tried["fails"] >= UPDATE_TRIES:
+            red.append(f"approved and only BEHIND {pr['base']}, but update-branch failed {tried['fails']} times "
+                       f"at this head (last at {iso(tried['at'])}: {tried.get('err') or '?'})")
         else:
             behind = True
     if not red and rv == "unreviewed":
@@ -1114,9 +1123,19 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         # "the head did not move" and sent an approved, green PR down the rework
         # ladder to a close. Now the record is written after GitHub accepts the call. A failed
         # one is asked again next hour, and this run counts the failure.
-        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug], env=gh_env())
+        # A COUNTED FAILURE HAS AN EXIT (PR #693 round 2, major). With no record
+        # for a failure, a 403 was asked every hour for good and the job's exit code
+        # stayed at 2. Now a failure is recorded with a count, and decide()
+        # sends the PR to the red table when the count reaches UPDATE_TRIES.
+        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug])
         if rc != 0:
-            return False, f"update-branch failed: {' '.join((err or out).split())[:160]}; not recorded, the next hourly run asks again"
+            prev = (state.get("updates") or {}).get(key) or {}
+            fails = (prev.get("fails") or 0) + 1 if prev.get("head") == head and "fails" in prev else 1
+            msg = " ".join((err or out).split())[:160]
+            state.setdefault("updates", {})[key] = {"head": head, "at": now, "fails": fails, "err": msg}
+            save_state(state_path(), state)
+            nxt = "the next hourly run asks again" if fails < UPDATE_TRIES else "the next run sends it to the red table"
+            return False, f"update-branch failed {fails} of {UPDATE_TRIES} times at this head: {msg}; {nxt}"
         state.setdefault("updates", {})[key] = {"head": head, "at": now}
         save_state(state_path(), state)
         return True, (f"update-branch asked; GitHub writes a new head, and pr-owner decides it again after "
