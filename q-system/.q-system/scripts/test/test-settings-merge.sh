@@ -504,8 +504,9 @@ EOF
 # the same event and matcher, `test -f X || { echo ...; exit 2; }`, that fails
 # loud. It only works if the merge keeps it beside the gate's own hook. Scar: the
 # merge keys hooks by the script they invoke, so a guard spelled like the hook
-# reads as a duplicate and is dropped. The braces make this spelling a distinct
-# key; the bare `[ -f X ] || exit 2` form does not, and is the negative control.
+# reads as a duplicate and is dropped. The guard's echo message repeats the script
+# basename, which adds a second key element; the bare `[ -f X ] || exit 2` form has
+# no such element, and is the negative control.
 cat > "$FIXTURE/template4.json" <<'EOF'
 {"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [
   {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""}]}]}}
