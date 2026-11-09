@@ -3579,8 +3579,19 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # Sana, where the Opus stand-in is DEGRADED by construction (same lab).
       # Skipped entirely when no second account is configured, so with none the
       # chain below is byte-for-byte what it was before.
-      if [ -n "$CODEX_CMD_2" ] && codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
+      # THE PRIMARY'S HEALTH IS RECORDED EITHER WAY, AND BEFORE THE NEXT RUNG
+      # (PR #701 review, major, one layer out). This used to be noted only inside
+      # the `[ -n "$CODEX_CMD_2" ]` branch below and only on a failure, so with no
+      # second account configured the worker recorded no outage at all -- and a
+      # SUCCESS never cleared one. A day stamp nothing clears is a day-long
+      # "the reviewer is down to Opus" issue over a 03:00 transient, which is the
+      # finding fleet-health-daily.py's reader half fixes. Both halves or neither.
+      if codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
         reviewer_note_codex_outage "$REVIEWER_PRIMARY_ACCOUNT" "$ISSUE: $(codex_env_marker "$CODEX_OUT" "$crc")"
+      else
+        reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"
+      fi
+      if [ -n "$CODEX_CMD_2" ] && codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
         say "$ISSUE Codex is unavailable on the $REVIEWER_PRIMARY_ACCOUNT account; trying the '$CODEX_ACCOUNT_2' account before any stand-in"
         : > "$RUN_OUT_FILE" 2>/dev/null || true
         if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD_2 \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then

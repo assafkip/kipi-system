@@ -176,6 +176,18 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 . "$SCRIPT_DIR/reviewer-resolve.sh"
 . "$SCRIPT_DIR/reviewer-token-lib.sh"
 
+# THE ROLE THIS SCRIPT STAMPS, in one place (PR #701 review, minor 4). It is
+# `adversarial`, which is what this script is: line 2 calls it adversarial, the
+# prompt tells the reviewer it is "ADVERSARIAL by default", and the provenance
+# block above records reviews as `claude-adversarial`. Every call site passed
+# `review` instead, so `reviewer_stamp`'s refusal of an UNKNOWN role was
+# protecting a value that was always the wrong KNOWN one -- and the stamp is what
+# tells a later reader which bar the code was held to. Both
+# `plugins/prd-os/scripts/findings_writer.py` REVIEWER_SOURCES and
+# `plugins/kipi-dsse/scripts/issue_findings.py` SOURCES accept
+# codex-adversarial / claude-adversarial, so the honest token already existed.
+REVIEWER_ROLE="adversarial"
+
 
 
 # CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
@@ -1744,7 +1756,7 @@ elif run_engine codex "$REVIEW" "$REVIEWER_PRIMARY_ACCOUNT"; then
     note_degraded_transition 0
     reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"
     RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$REVIEWER_PRIMARY_ACCOUNT"
-    RESOLVED_STAMP="$(reviewer_stamp codex review)"
+    RESOLVED_STAMP="$(reviewer_stamp codex "$REVIEWER_ROLE")"
     echo "$(TS) review written: $REVIEW"
   else
     # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
@@ -1794,7 +1806,7 @@ else
         REVIEW_UNUSABLE=1
         reviewer_note_codex_ok "$CODEX_SECOND"
         RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$CODEX_SECOND"
-        RESOLVED_STAMP="$(reviewer_stamp codex review)"
+        RESOLVED_STAMP="$(reviewer_stamp codex "$REVIEWER_ROLE")"
         SECOND_OK=1
         echo "$(TS) codex on '$CODEX_SECOND' answered with no complete FINDINGS block; verdict stays UNSTATED. Output kept at: $REVIEW" >&2
       fi
@@ -1809,7 +1821,7 @@ else
     note_degraded_transition 0
     reviewer_note_codex_ok "$CODEX_SECOND"
     RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$CODEX_SECOND"
-    RESOLVED_STAMP="$(reviewer_stamp codex review)"
+    RESOLVED_STAMP="$(reviewer_stamp codex "$REVIEWER_ROLE")"
     echo "$(TS) review written by codex on the '$CODEX_SECOND' account (the $REVIEWER_PRIMARY_ACCOUNT account was down): $REVIEW"
     echo "  NOTE: still an independent second opinion -- NOT degraded."
   fi
@@ -1830,7 +1842,7 @@ else
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
     RESOLVED_ENGINE="claude"; RESOLVED_ACCOUNT="-"
-    RESOLVED_STAMP="$(reviewer_stamp claude review)"
+    RESOLVED_STAMP="$(reviewer_stamp claude "$REVIEWER_ROLE")"
     if review_is_usable "$REVIEW"; then
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
@@ -1847,7 +1859,7 @@ fi
 # THE LAST RUNG IS THE DEFAULT, never an empty string. Every branch above sets
 # these, but a future branch that forgets would write a record with no engine on
 # it, and a reader cannot tell "nobody recorded it" from "nobody reviewed it".
-[ -n "$RESOLVED_ENGINE" ] || { RESOLVED_ENGINE="$ENGINE"; RESOLVED_STAMP="$(reviewer_stamp "$ENGINE" review 2>/dev/null)"; }
+[ -n "$RESOLVED_ENGINE" ] || { RESOLVED_ENGINE="$ENGINE"; RESOLVED_STAMP="$(reviewer_stamp "$ENGINE" "$REVIEWER_ROLE" 2>/dev/null)"; }
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
 # a findings block, and only read from prose when it did not. The prompt's

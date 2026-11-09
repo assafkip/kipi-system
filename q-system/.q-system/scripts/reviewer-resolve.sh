@@ -149,7 +149,14 @@ reviewer_codex_cmd() {
     if [ -n "${KIPI_CODEX_RUNNER_2:-}" ]; then
       printf '%s' "$KIPI_CODEX_RUNNER_2"
     else
-      printf 'CODEX_HOME=%s %s' "$home" "${KIPI_CODEX_RUNNER:-codex exec}"
+      # %q, NOT %s (PR #701 review, minor 2). What this returns is spliced into a
+      # `bash -c "<string>"` that bash RE-PARSES -- pr-review-agent.sh run_engine
+      # and linear-worker.sh's CODEX_CMD_2 both do that. A home with a space in it
+      # split there: bash read `CODEX_HOME=/Users/x/codex` and then tried to run
+      # `home`, exit 127. `is_environmental` reads 127 as the machine refusing, so
+      # a correctly configured second account was recorded as that account's
+      # OUTAGE and the chain fell to Opus. %q is quoting for exactly that reuse.
+      printf 'CODEX_HOME=%q %s' "$home" "${KIPI_CODEX_RUNNER:-codex exec}"
     fi
     return 0
   fi
@@ -185,22 +192,56 @@ reviewer_outage_state_path() {
   printf '%s/codex-account-health.json' "$REVIEWER_RESOLVE_STATE_DIR"
 }
 
+reviewer_outage_lock_path() {
+  printf '%s.lock' "$(reviewer_outage_state_path)"
+}
+
 _reviewer_day() { date -u +%Y-%m-%d; }
 _reviewer_ts()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# reviewer_note_codex_outage <account> <reason>
+# _reviewer_write_health <fail|ok> <account> [reason]
 #
-# Records that this account could not produce a review. Appends ONE event per
-# account per UTC day; later calls the same day update nothing and print nothing.
+# THE ONE WRITER of both the state file and the event log, and the only holder of
+# the lock. Both public notes below delegate here.
+#
+# IT USED TO BE TWO WRITERS, EACH UNLOCKED (PR #701 review, minor 3). A
+# fleet-wide credit outage fails every live review in the same instant -- the
+# worker's second runner plus every open PR's reviewer -- and each process read
+# "no event filed today" before any of them wrote one, so the file whose header
+# promises ONE event per account per UTC day held N, and the health finding's
+# "first seen" line came from whichever row landed first. Two writers of one file
+# is also two chances for the next change to serialise only one of them.
+#
 # Always exits 0: a reviewer must never die because its own bookkeeping failed.
-reviewer_note_codex_outage() {
-  local account="${1:-unknown}" reason="${2:-}" day
-  day="$(_reviewer_day)"
+_reviewer_write_health() {
+  local mode="${1:-fail}" account="${2:-unknown}" reason="${3:-}"
   mkdir -p "$REVIEWER_RESOLVE_STATE_DIR" 2>/dev/null || return 0
   python3 - "$(reviewer_outage_state_path)" "$(reviewer_outage_events_path)" \
-           "$account" "$reason" "$day" "$(_reviewer_ts)" <<'PY' 2>/dev/null || true
-import json, os, sys
-state_path, events_path, account, reason, day, ts = sys.argv[1:7]
+           "$(reviewer_outage_lock_path)" "$mode" "$account" "$reason" \
+           "$(_reviewer_day)" "$(_reviewer_ts)" <<'PY' 2>/dev/null || true
+import fcntl, json, os, sys, time
+(state_path, events_path, lock_path, mode, account, reason,
+ day, ts) = sys.argv[1:9]
+
+# flock, not a lock FILE. The kernel releases it when the holder dies, so a
+# reviewer killed by its own timeout mid-write cannot wedge the next one -- which
+# a pid-file or an O_EXCL marker would. Non-blocking with a deadline rather than a
+# plain blocking acquire: past 5s of contention this files the event UNSERIALISED,
+# because a duplicate health line is recoverable and a lost outage is not.
+lock = None
+try:
+    lock = open(lock_path, "a+")
+    deadline = time.time() + 5
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() >= deadline:
+                break
+            time.sleep(0.02)
+except Exception:
+    lock = None   # no locking available on this filesystem: proceed unserialised
 
 # A CORRUPT LEDGER MUST NOT SILENCE THE EVENT. Read failure is treated as "no
 # event filed yet today", which errs toward one extra health line rather than
@@ -214,17 +255,36 @@ except Exception:
     state = {}
 
 row = state.get(account) if isinstance(state.get(account), dict) else {}
-already = row.get("outage_day") == day
-row.update({"outage_day": day, "last_fail": ts, "last_reason": reason})
-row["fails"] = int(row.get("fails") or 0) + 1
+append = False
+if mode == "ok":
+    # The day stamp comes OFF, so the next outage earns its own event and the
+    # health consumer can tell a recovered transient from a live outage. The
+    # event already on disk is never rewritten: the log is append-only, and
+    # `last_ok` is what says the account answered after it.
+    row.pop("outage_day", None)
+    row["last_ok"] = ts
+    row["fails"] = 0
+else:
+    append = row.get("outage_day") != day
+    row.update({"outage_day": day, "last_fail": ts, "last_reason": reason})
+    row["fails"] = int(row.get("fails") or 0) + 1
 state[account] = row
 
-tmp = state_path + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(state, fh, indent=2, sort_keys=True)
-os.replace(tmp, state_path)
+# A PID-UNIQUE TEMP. One shared `.tmp` name is safe under the lock and collides
+# on the degraded unserialised path above, which would publish a half-written
+# state file through os.replace.
+tmp = "%s.tmp.%d" % (state_path, os.getpid())
+try:
+    with open(tmp, "w") as fh:
+        json.dump(state, fh, indent=2, sort_keys=True)
+    os.replace(tmp, state_path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
 
-if not already:
+if append:
     with open(events_path, "a") as fh:
         fh.write(json.dumps({"kind": "codex-outage", "account": account,
                              "day": day, "ts": ts, "reason": reason},
@@ -233,38 +293,35 @@ PY
   return 0
 }
 
+# reviewer_note_codex_outage <account> <reason>
+#
+# Records that this account could not produce a review. Appends ONE event per
+# account per UTC day; later calls the same day update nothing and print nothing.
+reviewer_note_codex_outage() {
+  _reviewer_write_health fail "${1:-unknown}" "${2:-}"
+}
+
 # reviewer_note_codex_ok <account>
 #
 # This account answered. Clears its day stamp so the NEXT outage earns its own
 # event: an operator who hears nothing after a recovery cannot tell a live
 # second opinion from a stand-in wearing its context.
+#
+# THIS IS THE HALF THE HEALTH CONSUMER READS. fleet-health-daily.py reads the
+# append-only event log AND this state, because the log alone cannot say that an
+# account which failed at 03:00 answered at 03:01 (PR #701 review, major).
+# Every call site that gets a usable answer out of codex calls this.
 reviewer_note_codex_ok() {
-  local account="${1:-unknown}"
-  mkdir -p "$REVIEWER_RESOLVE_STATE_DIR" 2>/dev/null || return 0
-  python3 - "$(reviewer_outage_state_path)" "$account" "$(_reviewer_ts)" <<'PY' 2>/dev/null || true
-import json, os, sys
-state_path, account, ts = sys.argv[1:4]
-try:
-    with open(state_path) as fh:
-        state = json.load(fh)
-    if not isinstance(state, dict):
-        state = {}
-except Exception:
-    state = {}
-row = state.get(account) if isinstance(state.get(account), dict) else {}
-row.pop("outage_day", None)
-row["last_ok"] = ts
-row["fails"] = 0
-state[account] = row
-tmp = state_path + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(state, fh, indent=2, sort_keys=True)
-os.replace(tmp, state_path)
-PY
-  return 0
+  _reviewer_write_health ok "${1:-unknown}" ""
 }
 
-# reviewer_outage_events_today -> today's event rows, one JSON object per line.
+# reviewer_outage_events_today -> today's RAW event rows, one JSON object per line.
+#
+# RAW, AND NOT A LIST OF WHO IS DOWN. The log is append-only, so a row here only
+# says an account failed at some point today; whether it is still down is the
+# state file's answer. The health consumer joins the two
+# (fleet-health-daily.py `codex_outage_findings`); this accessor deliberately
+# does not, so there is one place that decides "down" and one that reports events.
 reviewer_outage_events_today() {
   local ev day
   ev="$(reviewer_outage_events_path)"
