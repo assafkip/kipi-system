@@ -184,12 +184,18 @@ promise("P50", "an approved, green, conflict-free PR that is only BEHIND is upda
         "BEHIND IS UPDATED, NOT CLOSED", "update-branch was asked at", "A FAILED CALL IS NOT A FAILED REBASE",
         "so the PR holds and the run exits 2, as every red PR does", "and the head did not move",
         "update-branch failed {fails} time(s) at this head", "until GitHub moves the head")
-promise("P52", "a write of pr-owner's own that fails or does not take never closes the PR: it is held, asked again, the "
-        "run exits 2, and one alert per PR and head goes through the sink, recorded only when the sink names a ticket",
+promise("P52", "a write of pr-owner's own that fails or does not take never closes the PR: the run exits 2, and one "
+        "alert per PR, head and failed write goes through the sink, recorded only when the sink names a ticket",
         "THE RED TABLE READS THE PR, NEVER OUR OWN WRITES", "never pr-owner's record of its own writes",
         "never closes a PR because its own write failed",
-        "one alert per PR and head", "HELD IS NOT RED", "the run exits 2, and main() files the PR's one alert",
-        "it is recorded only when the sink's line names a ticket")
+        "one alert per PR, head and failed write", "HELD IS NOT RED", "the run exits 2, and main() files the PR's one alert",
+        "it is recorded only when the sink's line names a ticket", "ONE ALERT PER FAILED WRITE")
+promise("P53", "a rework's requeue and its note are two results: the 48h start once the note lands, and a requeue "
+        "that failed while its note landed is surfaced once by the alert and never asked again",
+        "TWO WRITES, TWO RESULTS", "each ask would post the note again")
+promise("P54", "the note after a close is never asked again, since a closed PR leaves the open list; its alert names "
+        "the ticket, carries the resume line, and names the write that did not take",
+        "a closed PR leaves the open list", "carries the resume line")
 promise("P51", "the merge is asked of merge-bypass-gate.py first, re-read as the same PR at the same head, and read back",
         "ASKED OF THE GATE, NOT HIDDEN FROM IT", "a deny or no answer is no merge", "neither merged nor armed",
         "merge-bypass-gate.py refused it",
@@ -1019,7 +1025,7 @@ fresh_state("E-capture")
 lone = {"slug": "o/fx", "number": 13, "url": "https://github.com/o/fx/pull/13", "head": "13" * 20,
         "branch": "feat/x", "pushed": None}
 lone_state: dict = {}
-ok_, what = po.act(lone, {"action": "outside", "reason": "head provenance is fork"}, lone_state, NOW)
+ok_, what, _write = po.act(lone, {"action": "outside", "reason": "head provenance is fork"}, lone_state, NOW)
 os.environ.pop("KIPI_ALERT_CAPTURE", None)
 holds("P23", "the sink exits 0 and names no ticket (its capture hatch): not ok, not recorded, but the sink took it",
       (ok_, "o/fx#13" in (lone_state.get("outside") or {}),
@@ -1416,6 +1422,143 @@ holds("P52", "a sink that takes the alert and names no ticket (its capture hatch
       (len(sink_calls(G8a, 1)), "PR #1 (" in (cap8.read_text() if cap8.is_file() else ""), held8,
        len(sink_calls(G8b, 1)), bool(re.fullmatch(r"ASK-\d+", held8b.get("ticket") or ""))),
       (1, True, None, 1, True))
+
+# ================================================================ scenario H: PR #693 round 5
+# Round 4's tests failed the requeue and the note together (G4), so the case of one
+# half failing was never run, and a requeue that failed while its note posted
+# re-posted that note every hour (round 4, major). The input class here is every
+# outcome of each Linear half, plus two different failed writes at one head.
+print("-- scenario H: a rework's requeue and its note are two writes with two results")
+REQ_FAIL = (2, "", "BLOCK: HTTP 422 from Linear")
+NOTE_FAIL = (2, "", "BLOCK: HTTP 500 from Linear")
+
+
+def per_hour(tries, fn):
+    return [fn(run) for _rc, run in tries]
+
+
+REPOS.clear()
+sp = fresh_state("H1")
+HA = repo("o/hreq", "hreq")
+add(HA, 1, "sana/ask-7301", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS["ASK-7301"] = tk("ASK-7301", "started", "In Progress", 400)
+LS_RC["requeue"] = REQ_FAIL
+tries = [run_main(f"H1-{h}", ["--apply"], NOW + h * H) for h in range(6)]
+strikeH1 = (json.loads(sp.read_text()).get("strikes") or {}).get(f"{HA}#1") or {}
+holds("P53", "a requeue that fails while its note posts: one PR comment, one note, one requeue in 6 hours, "
+             "exit 2 once, one alert, and the 48h start at that note",
+      (sum(len(gh_writes(run, HA, 1, "comment")) for _rc, run in tries),
+       sum(len(ls_calls(run, "progress", "ASK-7301")) for _rc, run in tries),
+       sum(len(ls_calls(run, "requeue", "ASK-7301")) for _rc, run in tries),
+       [r for r, _run in tries], sum(len(sink_calls(run, 1)) for _rc, run in tries),
+       (strikeH1.get("noted"), strikeH1.get("at"))),
+      (1, 1, 1, [2, 0, 0, 0, 0, 0], 1, (True, NOW)))
+rc47, H1_47 = run_main("H1-47", ["--apply"], NOW + 47 * H)
+rc49, H1_49 = run_main("H1-49", ["--apply"], NOW + 49 * H)
+LS_RC.clear()
+holds("P53", "... so the close ladder is reachable: open at hour 47, closed at hour 49",
+      ([a[2] for a in gh_writes(H1_47, HA, 1)], [a[2] for a in gh_writes(H1_49, HA, 1)]), ([], ["close"]))
+
+REPOS.clear()
+sp = fresh_state("H2")
+HB = repo("o/hboth", "hboth")
+add(HB, 1, "sana/ask-7302", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS["ASK-7302"] = tk("ASK-7302", "started", "In Progress", 400)
+LS_RC.update({"requeue": REQ_FAIL, "progress": NOTE_FAIL})
+tries = [run_main("H2-0", ["--apply"], NOW)]
+LS_RC.pop("progress")
+tries += [run_main("H2-1", ["--apply"], NOW + H)]
+LS_RC.clear()
+tries += [run_main(f"H2-{h}", ["--apply"], NOW + h * H) for h in (2, 48, 49)]
+# Every Linear write per hour, not only progress: a requeue that moves posts the
+# resume line too, so a re-asked requeue is a re-posted note.
+holds("P53", "both halves fail, then the note posts while the requeue still fails, then Linear recovers: the note "
+             "is asked until it lands and never after, the 48h start at hour 1, closed at hour 49",
+      (per_hour(tries, lambda run: [a[2] for a in ls_calls(run, ident="ASK-7302")]),
+       per_hour(tries, lambda run: [a[2] for a in gh_writes(run, HB, 1)]), [r for r, _run in tries]),
+      ([["requeue", "progress"], ["requeue", "progress"], [], [], ["requeue"]],
+       [["comment"], [], [], [], ["close"]], [2, 2, 0, 0, 0]))
+holds("P52", "... one alert per failed write: the two halves at hour 0, the requeue alone at hour 1",
+      per_hour(tries, lambda run: len(sink_calls(run, 1))), [1, 1, 0, 0, 0])
+
+REPOS.clear()
+fresh_state("H3")
+HC = repo("o/hnote", "hnote")
+add(HC, 1, "sana/ask-7303", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS["ASK-7303"] = tk("ASK-7303", "backlog")
+LS_RC["progress"] = NOTE_FAIL
+tries = [run_main("H3-0", ["--apply"], NOW)]
+LS_RC.clear()
+tries += [run_main(f"H3-{h}", ["--apply"], NOW + h * H) for h in (1, 2)]
+holds("P53", "a ticket in Backlog has no requeue: a note that fails is asked again next hour, and once it lands "
+             "it is not asked again",
+      (per_hour(tries, lambda run: len(ls_calls(run, "progress", "ASK-7303"))),
+       sum(len(ls_calls(run, "requeue")) for _rc, run in tries), [r for r, _run in tries]),
+      ([1, 1, 0], 0, [2, 0, 0]))
+
+REPOS.clear()
+fresh_state("H4")
+HD = repo("o/hmoved", "hmoved")
+add(HD, 1, "sana/ask-7304", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS["ASK-7304"] = tk("ASK-7304", "started", "In Progress", 400)
+tries = [run_main(f"H4-{h}", ["--apply"], NOW + h * H) for h in (0, 1)]
+holds("P53", "a requeue that moves the ticket posts the resume line itself: no second note, no alert, exit 0",
+      (per_hour(tries, lambda run: [a[2] for a in ls_calls(run, ident="ASK-7304")]),
+       sum(len(sink_calls(run, 1)) for _rc, run in tries), [r for r, _run in tries]),
+      ([["requeue"], []], 0, [0, 0]))
+
+# Round 4, minor: the held alert was keyed on PR and head only, so a second,
+# different write failing at that head filed nothing.
+REPOS.clear()
+fresh_state("H5")
+HE = repo("o/htwo", "htwo")
+add(HE, 1, "sana/ask-7305")
+TICKETS["ASK-7305"] = tk("ASK-7305", "backlog")
+REVIEW_RC[0] = 1
+tries = [run_main("H5-0", ["--apply"], NOW)]
+REVIEW_RC[0] = 0
+REPOS[HE]["verdict"][1] = CHANGES
+WRITE_RC[("comment", HE, 1)] = (1, "HTTP 502: Bad Gateway")
+tries += [run_main(f"H5-{h}", ["--apply"], NOW + h * H) for h in (1, 2)]
+WRITE_RC.clear()
+holds("P52", "a review that crashes, then a rework comment GitHub refuses, at one head: two alerts, "
+             "and the comment's retry files no third",
+      (per_hour(tries, lambda run: len(sink_calls(run, 1))), [r for r, _run in tries]), ([1, 1, 0], [2, 2, 2]))
+
+REPOS.clear()
+fresh_state("H6")
+HF = repo("o/hsame", "hsame")
+add(HF, 1, "sana/ask-7306", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS["ASK-7306"] = tk("ASK-7306", "started", "In Progress", 400)
+WRITE_RC[("comment", HF, 1)] = (1, "HTTP 502: Bad Gateway")
+tries = [run_main("H6-0", ["--apply"], NOW)]
+WRITE_RC.clear()
+LS_RC["requeue"] = REQ_FAIL
+tries += [run_main(f"H6-{h}", ["--apply"], NOW + h * H) for h in (1, 2)]
+LS_RC.clear()
+holds("P52", "one rework at one head: the comment fails, then the requeue fails: an alert for each, none at hour 2",
+      (per_hour(tries, lambda run: len(sink_calls(run, 1))), [r for r, _run in tries]), ([1, 1, 0], [2, 2, 0]))
+
+# Round 4, minor: the docstring said a note Linear does not take is asked again;
+# after a close it never is. Now it says so, and the alert carries what was lost.
+REPOS.clear()
+fresh_state("H7")
+HG = repo("o/hclose", "hclose")
+add(HG, 1, "fix/x-ask-7307", statusCheckRollup=RED)
+TICKETS["ASK-7307"] = tk("ASK-7307", "started", "In Progress", 400)
+LS_RC.update({"requeue": REQ_FAIL, "progress": NOTE_FAIL})
+rc0, H7a = run_main("H7-0", ["--apply"], NOW)
+del REPOS[HG]["prs"][1]  # GitHub took the close: the PR leaves the open list
+rc1, H7b = run_main("H7-1", ["--apply"], NOW + H)
+LS_RC.clear()
+alert7 = " ".join(a[2] for a in sink_calls(H7a, 1))
+holds("P54", "a close whose note does not land: closed, exit 2, one alert naming the ticket and carrying the "
+             "resume line; the next run asks no note",
+      ([a[2] for a in gh_writes(H7a, HG, 1)], rc0, len(sink_calls(H7a, 1)), "ASK-7307" in alert7,
+       f"resume from branch fix/x-ask-7307 at {head_of(HG, 1)[:8]}" in alert7, ls_calls(H7b), rc1),
+      (["close"], 2, 1, True, True, [], 0))
+holds("P54", "... and the alert names the write that did not take (the note), not the close, which took",
+      ("its close-requeue did not take" in alert7, "(requeue and note)" in alert7), (False, True))
 
 # ================================================================ across every run
 print("-- across every run")

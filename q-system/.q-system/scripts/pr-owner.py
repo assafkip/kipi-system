@@ -72,10 +72,15 @@ THE RED TABLE READS THE PR, NEVER OUR OWN WRITES (PR #693, its round-3 RCA). It
 reads what GitHub says about the PR, never pr-owner's record of its own writes. A
 write of pr-owner's own that fails or does not take (a gh call that errors, an
 update-branch GitHub accepts while the head stays, a review whose verdict does not
-land, a ticket note Linear does not take) is environmental, .claude/rules/self-healing-retry.md
-rule 5: it says nothing about the PR. So it is held and asked again on a later
-run, the run exits 2, and one alert per PR and head goes to slack-notify.sh
-(HELD IS NOT RED, at held_alert()). pr-owner never closes a PR because its own write failed.
+land, a requeue or note Linear does not take) is environmental,
+.claude/rules/self-healing-retry.md rule 5: it says nothing about the PR. So the
+run exits 2, one alert per PR, head and failed write goes to slack-notify.sh
+(HELD IS NOT RED, at held_alert()), and pr-owner never closes a PR because its own write failed.
+Asked again on a later run: a gh write, an update-branch, a review (after 48h),
+and a rework's note until it lands. Not asked again, so its alert is the record:
+a requeue that failed while its note landed (TWO WRITES, TWO RESULTS, at
+ticket_note()), and the note after a close, since a closed PR leaves the open
+list; that alert names the ticket and carries the resume line.
 A close never deletes the branch. Reopening the PR undoes it: a PR open at the
 head pr-owner closed it at is left alone until a new push (state["closed"]).
 The close comment says "Reopen this PR within 30 days to undo", and the ticket
@@ -804,18 +809,21 @@ def filed_ticket(out: str) -> str:
     return ""
 
 
-def held_text(pr: dict, d: dict, what: str) -> str:
+def held_text(pr: dict, d: dict, what: str, write: str) -> str:
+    # The resume line rides in the alert because the note after a close is not
+    # asked again (a closed PR leaves the open list): this is where it survives.
     key = f"{pr['slug']}#{pr['number']}"
     t = d.get("ticket")
-    return (f"pr-owner: {pr['slug']} PR #{pr['number']} ({pr['url']}) at {pr['head'][:8]}: its {d['action']} "
-            f"did not take: {what}. Why it was asked: {d['reason']}." + (f" Ticket {t['id']}." if t else "")
+    return (f"pr-owner: {pr['slug']} PR #{pr['number']} ({pr['url']}) at {pr['head'][:8]}, decision {d['action']}: "
+            f"a write of pr-owner's own did not take ({write}): {what}. Why it was asked: {d['reason']}."
+            + (f" Ticket {t['id']}: resume from branch {pr['branch']} at {pr['head'][:8]}." if t else "")
             + " pr-owner never closes a PR because its own write failed. "
             f"Decide what fixes the cause (the GitHub token or its scope, Linear, the reviewer), "
             f"then record why on this ticket. Dedup key {alert_ref(key)}.")
 
 
-def held_alert(pr: dict, d: dict, what: str, state: dict, now: int) -> str:
-    """File one alert per PR and head for a write of ours that did not take; say what happened.
+def held_alert(pr: dict, d: dict, what: str, write: str, state: dict, now: int) -> str:
+    """File one alert per PR, head and failed write for a write of ours that did not take; say what happened.
 
     HELD IS NOT RED (PR #693 round 4). A held PR's exit 2 alone is read by
     launchd-health-check.py, which keys one Linear issue per job, so a second
@@ -825,20 +833,31 @@ def held_alert(pr: dict, d: dict, what: str, state: dict, now: int) -> str:
     for 24 hours is one alert, not 24, because a filed alert is recorded per
     head; it is recorded only when the sink's line names a ticket (filed_ticket()),
     so a sink that did not file is asked again at the next failure.
+
+    ONE ALERT PER FAILED WRITE (PR #693 round 4, minor). The record was keyed on
+    the PR and head, so a review that crashed and then a rework comment that failed
+    at one head filed one alert between them, and Sana's ticket named the first.
+    Now the key is the action and the write that did not take: a second, different
+    failure at that head files its own, and the same failure asked again files none.
+    "filed" holds the few action/write pairs of the current head; a new head starts it empty.
     """
     key = f"{pr['slug']}#{pr['number']}"
+    tag = f"{d['action']}/{write or '?'}"
     rec = (state.get("held") or {}).get(key) or {}
-    if rec.get("head") == pr["head"]:
-        return f"its alert {rec.get('ticket') or '?'} is filed at this head already"
+    filed = dict(rec.get("filed") or {}) if rec.get("head") == pr["head"] else {}
+    if tag in filed:
+        return f"its alert {filed[tag] or '?'} is filed for this write ({write}) at this head already"
     notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
-    rc, out, err = run(["bash", notify, held_text(pr, d, what)])
+    rc, out, err = run(["bash", notify, held_text(pr, d, what, write)])
     ident = filed_ticket(out) if rc == 0 else ""
     if not ident:
         return (f"its alert did not file ({' '.join((err or out).split())[-160:]}); "
                 f"not recorded, the next failure asks again")
-    state.setdefault("held", {})[key] = {"head": pr["head"], "at": now, "action": d["action"], "ticket": ident}
+    filed[tag] = ident
+    state.setdefault("held", {})[key] = {"head": pr["head"], "at": now, "action": d["action"], "ticket": ident,
+                                         "filed": filed}
     save_state(state_path(), state)
-    return f"alert filed on {ident} (one alert per PR and head)"
+    return f"alert filed on {ident} (one alert per PR, head and failed write)"
 
 
 # ---------------------------------------------------------------- the decision
@@ -846,8 +865,10 @@ def held_alert(pr: dict, d: dict, what: str, state: dict, now: int) -> str:
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?, "held"?}. "held" names a write of ours at
-    this head that did not take; main() counts it failed and files its alert. Actions: skip, reopened, young, wait, outside,
+    Returns {"action", "reason", "ticket"?, "held"?, "held_write"?}. "held" names a write
+    of ours at this head that did not take; main() counts it failed and files its alert.
+    "held_write" names that write by the name act() gives its failure, so a review that
+    crashed and then gave no verdict is one alert, not two. Actions: skip, reopened, young, wait, outside,
     outside-filed, ladder, hold, merge, update, review, close-superseded, rework,
     close-requeue, close-comment.
     """
@@ -965,7 +986,8 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         if review_left <= 0:
             return {"action": "wait", "reason": (f"{held}, but " if held else "")
                     + f"{ci_said} and never reviewed; this run's one review is spent"}
-        return {"action": "review", "held": held, "reason": held or f"{ci_said}, no reviewer verdict at this head"}
+        return {"action": "review", "held": held, "held_write": "review",
+                "reason": held or f"{ci_said}, no reviewer verdict at this head"}
     why = "; ".join(red) if red else f"approved, {ci_said}, conflict-free, BEHIND {pr['base']}"
     word = "behind" if behind else "red"
 
@@ -987,7 +1009,8 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
             return {"action": "wait", "ticket": ticket, "reason": f"{word} ({why}), but {ticket['id']} has {ticket['claim']}"}
     if behind:
         more = held or why_more
-        return {"action": "update", "ticket": ticket, "held": held, "reason": f"{why}; {more}" if more else why}
+        return {"action": "update", "ticket": ticket, "held": held, "held_write": "update-branch",
+                "reason": f"{why}; {more}" if more else why}
     if open_ticket:
         if worker_branch_issue(pr["branch"]) == ticket["id"]:
             # A REWORK IS PROMISED ONLY TO A TICKET THE WORKER PICKS (ASK-4099). The
@@ -1095,8 +1118,19 @@ def latest_findings(slug: str, number: int) -> str:
     return ""
 
 
-def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
-    """(ok, what). Requeue a started ticket (linear-sync's one state writer), else a progress note.
+def ticket_note(ticket: dict, line: str) -> tuple[bool | None, bool, str]:
+    """(requeued, noted, what). Requeue a started ticket (linear-sync's one state writer), else a progress note.
+
+    requeued is None when no requeue was asked (the ticket is not started). A
+    requeue that moves the ticket posts the resume line as its own comment, so it
+    is the note too.
+
+    TWO WRITES, TWO RESULTS (PR #693 round 4, major). This returned one bool for
+    both halves. Its one reader was the run's exit code, until round 4 also stored
+    it as the strike's "noted": a requeue that failed while its note posted then
+    read as "the note did not land", the note was posted again every hour, and the
+    48h had no start, so the PR could not close. act() starts the 48h on noted and
+    counts a failure on requeued.
 
     A FAILED REQUEUE IS NOT OK (PR #659 round 4, minor). It fell back to a
     progress note and act() still said "rework asked": the ticket stayed In
@@ -1106,17 +1140,25 @@ def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
     launchd-health-check.py reads.
     """
     sync = str(SCRIPTS / "linear-sync.py")
-    lost = ""
+    requeued, lost = None, ""
     if ticket["state_type"] == "started":
         rc, out, err = run([sys.executable, sync, "requeue", ticket["id"], "--exit", AGENT,
                             "--why", line, "--agent", AGENT])
         if rc == 0:
-            return True, out.strip() or "requeued"
+            return True, True, out.strip() or "requeued"
+        requeued = False
         lost = f"WARN requeue failed, {ticket['id']} is still {ticket['state_name'] or 'started'} ({' '.join((err or out).split())[-120:]}); "
     rc, out, err = run([sys.executable, sync, "progress", ticket["id"], line, "--agent", AGENT])
     if rc != 0:
-        return False, lost + f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
-    return not lost, lost + "note posted"
+        return requeued, False, lost + f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
+    return requeued, True, lost + "note posted"
+
+
+def note_write(requeued, noted) -> str:
+    """The Linear write that did not take, as its held alert names it, or "" when both did."""
+    if requeued is False:
+        return "requeue" if noted else "requeue and note"
+    return "" if noted else "note"
 
 
 def merge(pr: dict) -> tuple[bool, str]:
@@ -1164,8 +1206,8 @@ def merge(pr: dict) -> tuple[bool, str]:
     return False, f"gh exited 0, but the PR is neither merged nor armed (state {after.get('state') or '?'})"
 
 
-def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
-    """Apply one decision. (ok, what happened)."""
+def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str, str]:
+    """Apply one decision. (ok, what happened, the write that did not take or "")."""
     slug, n, head, branch = pr["slug"], str(pr["number"]), pr["head"], pr["branch"]
     key = f"{slug}#{n}"
     short = head[:8]
@@ -1173,16 +1215,17 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
         rc, out, err = run(["bash", notify, outside_alert(pr, d["reason"])])
         if rc != 0:
-            return False, f"alert did not file: {' '.join((err or out).split())[-160:]}"
+            return False, f"alert did not file: {' '.join((err or out).split())[-160:]}", "alert"
         ident = filed_ticket(out)
         if not ident:
             return False, (f"the alert sink exited 0 but named no ticket "
-                           f"({' '.join((out or err).split())[-160:]}); not recorded, the next hourly run asks again")
+                           f"({' '.join((out or err).split())[-160:]}); not recorded, the next hourly run asks again"), "alert"
         state.setdefault("outside", {})[key] = {"head": head, "at": now, "ticket": ident}
         save_state(state_path(), state)
-        return True, f"alert filed on {ident} (once per PR)"
+        return True, f"alert filed on {ident} (once per PR)", ""
     if d["action"] == "merge":
-        return merge(pr)
+        ok, what = merge(pr)
+        return ok, what, "" if ok else "merge"
     if d["action"] == "update":
         # A FAILED CALL IS NOT A FAILED REBASE (PR #693 round 1, major). The record
         # was written before the call, as a review's is, so a 502 read next hour as
@@ -1207,9 +1250,9 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         save_state(state_path(), state)
         if rc != 0:
             return False, (f"update-branch failed {fails} time(s) at this head: {msg}; held, not closed: "
-                           f"the next run asks again until GitHub moves the head")
+                           f"the next run asks again until GitHub moves the head"), "update-branch"
         return True, (f"update-branch asked; GitHub writes a new head, and pr-owner decides it again after "
-                      f"{hours(QUIET_S)} of quiet (a new head needs its own review)")
+                      f"{hours(QUIET_S)} of quiet (a new head needs its own review)"), ""
     if d["action"] == "review":
         argv = ["bash", str(ROOT / "kipi"), "review", n, "--repo", pr["path"], "--post"]
         ticket, _ = resolve_ticket(pr, read_ticket)
@@ -1225,8 +1268,10 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
             state["reviews"].pop(key, None)
             save_state(state_path(), state)
             return False, (f"the reviewer exited {rc}, its code for a machine condition (no review ran, no status "
-                           f"posted); not recorded as asked, so the next run asks again (log {log}): {tail}")
-        return rc == 0, "review posted" if rc == 0 else f"review exited {rc} (log {log}): {tail}"
+                           f"posted); not recorded as asked, so the next run asks again (log {log}): {tail}"), "review"
+        if rc == 0:
+            return True, "review posted", ""
+        return False, f"review exited {rc} (log {log}): {tail}", "review"
     if d["action"] == "rework":
         ticket = d["ticket"]
         line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962): PR #{n} is red ({d['reason']}). "
@@ -1244,17 +1289,27 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
                     f"If the head is still {short} after {hours(AGE_S)}, this PR closes with the branch kept.")
             rc, out, err = gh_write(["pr", "comment", n, "-R", slug, "--body", body])
             if rc != 0:
-                return False, f"comment failed: {' '.join(err.split())[:160]}; no strike, the next run asks again"
+                return False, f"comment failed: {' '.join(err.split())[:160]}; no strike, the next run asks again", "comment"
             # Saved before the note, so a run that dies here asks the note, not a second comment.
             strike = {"head": head, "at": now, "why": d["reason"][:200], "noted": False}
             state.setdefault("strikes", {})[key] = strike
             save_state(state_path(), state)
-        noted, what = ticket_note(ticket, line)
+        requeued, noted, what = ticket_note(ticket, line)
+        write = note_write(requeued, noted)
         if noted:
             strike.update({"at": now, "noted": True})
             save_state(state_path(), state)
-            return True, f"rework asked; {what}"
-        return False, f"rework asked; {what}; the 48h start when the note lands, so the next run asks the note again"
+        if not write:
+            return True, f"rework asked; {what}", ""
+        if noted:
+            # The note landed, so the 48h start here. A requeue asked again would post
+            # the note again each hour (round 4, major), so its one alert is the exit:
+            # it names the ticket that is still started. A sink that cannot file it
+            # queues it, and alert-to-linear.py's next filing retries it (_queue_for_retry).
+            return False, (f"rework asked; {what}; the note landed, so the 48h start now. The requeue is not "
+                           f"asked again, since each ask would post the note again"), write
+        return False, (f"rework asked; {what}; the 48h start when the note lands, "
+                       f"so the next run asks the note again"), write
     if d["action"] in ("close-superseded", "close-requeue", "close-comment"):
         ticket = d.get("ticket")
         findings = latest_findings(slug, pr["number"])
@@ -1267,18 +1322,25 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
             body += "\n\nLast review findings:\n```\n" + findings + "\n```"
         rc, out, err = gh_write(["pr", "close", n, "-R", slug, "--comment", body])
         if rc != 0:
-            return False, f"close failed: {' '.join(err.split())[:160]}"
+            return False, f"close failed: {' '.join(err.split())[:160]}", "close"
         (state.setdefault("strikes", {})).pop(key, None)
         state.setdefault("closed", {})[key] = {"head": head, "at": now, "action": d["action"]}
         save_state(state_path(), state)
-        what, noted = "closed, branch kept", True
+        what, write = "closed, branch kept", ""
         if ticket and d["action"] == "close-requeue":
             line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962) closed PR #{n} ({d['reason']}). "
                     f"Branch kept; reopen the PR within {KEEP_DAYS} days to undo.")
-            noted, note = ticket_note(ticket, line)
+            requeued, noted, note = ticket_note(ticket, line)
+            write = note_write(requeued, noted)
             what += "; " + note
-        return noted, what
-    return True, "nothing to do"
+            if write:
+                # A closed PR leaves the open list, so no later run decides it and this is
+                # not asked again (round 4, minor: the docstring said it was). Its alert
+                # is the record: held_text() names the ticket and the resume line, and a
+                # sink that cannot file it queues it for alert-to-linear.py's next filing.
+                what += "; not asked again, the PR is closed: its alert carries the resume line"
+        return not write, what, write
+    return True, "nothing to do", ""
 
 
 # ---------------------------------------------------------------- main
@@ -1425,14 +1487,14 @@ def _run(argv=None) -> int:
             if mode == "dry":
                 print(f"[dry] would {d['action']} {tag}: {d['reason']}")
                 continue
-            ok, what = act(pr, d, state, now)
+            ok, what, write = act(pr, d, state, now)
             if d.get("held"):
                 # decide() saw a write of ours that did not take; asking again can land, but this run did not prove it.
-                ok, what = False, f"held, not closed (the reason says why); {what}"
+                ok, what, write = False, f"held, not closed (the reason says why); {what}", write or d.get("held_write") or "held"
             if not ok:
                 n_failed += 1
                 if d["action"] != "outside":  # a fork's alert failing is its own retry, at act()
-                    what += "; " + held_alert(pr, d, what, state, now)
+                    what += "; " + held_alert(pr, d, what, write, state, now)
             print(f"{d['action'].upper()} {tag}: {d['reason']} -> {what}")
 
     # A dry run prunes a copy, so it can say what --apply would drop and still write nothing.

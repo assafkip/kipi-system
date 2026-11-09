@@ -74,9 +74,9 @@ One row was blind on the first try. H2 counted `progress` calls only and passed 
 - New state late in a capped cycle. Round 4 added `strike.noted` and the `held` map in round 4 of a 3-round cap. The new state is where all three findings live.
 - The round-4 reviewer's process note: three rounds went to update-branch, a path with no live producer (no fleet repo has strict protection, so BEHIND is never emitted). The live path, a red `sana/` PR whose Linear note half-fails, took the regression.
 
-## Fixes (the next commit on this branch)
+## Fixes shipped
 
-sana-4099c ships these on sana/ask-4099 in the commit after this one, before round 5:
+Shipped by sana-4099c on sana/ask-4099, in the commit after this RCA, before round 5:
 - Surface fix: `ticket_note()` returns `(requeued, noted, what)`. The 48h start once `noted` is true. A requeue that failed while its note landed counts one failure, so the run exits 2 and one alert is filed. It is never asked again, because each ask would post the note again.
 - Structural fix: each write gets its own result and its own alert. `act()` names the write that did not take (merge, update-branch, review, comment, close, requeue, note, or "requeue and note"). `held_alert()` dedups on PR, head, action and that write. A second different failure at one head files its own alert, and a retry of the same failure files none.
 - Finding 3: the docstring now lists what is asked again and what is not. The note after a close is not, since a closed PR leaves the open list. That alert names the ticket, carries the resume line, and names the write that did not take.
@@ -84,10 +84,10 @@ sana-4099c ships these on sana/ask-4099 in the commit after this one, before rou
 
 ## Action items
 
-- [ ] `ticket_note()` returns the requeue and the note as two results; the 48h start on the note. Red first: H1 and H2 fail on 5160fe29. Owner: sana-4099c. Type: code + test
-- [ ] Held alert keyed per PR, head, action and failed write. Red first: H2, H5 and H6 fail on 5160fe29. Owner: sana-4099c. Type: code + test
-- [ ] Docstring true for the close path; the alert carries the resume line and names the failed write. Red first: H7 fails on 5160fe29. Owner: sana-4099c. Type: doc + code + test
-- [ ] Negative self-test: a mutant that restores `return not lost` (one bool) turns H1 red. Owner: sana-4099c. Type: test
+- [x] `ticket_note()` returns the requeue and the note as two results; the 48h start on the note. Red first: H1 and H2 fail on 5160fe29. Owner: sana-4099c. Type: code + test
+- [x] Held alert keyed per PR, head, action and failed write. Red first: H2, H5 and H6 fail on 5160fe29. Owner: sana-4099c. Type: code + test
+- [x] Docstring true for the close path; the alert carries the resume line and names the failed write. Red first: H7 fails on 5160fe29. Owner: sana-4099c. Type: doc + code + test
+- [x] Negative self-test: six mutants, each red on its own promise. M1 restores the one bool (`noted = not lost`): 5 rows red. M2 keys the alert on PR and head: 3 red. M3 drops the resume line: 1 red. M4 reports a failed close note as ok: 3 red. M5 does not start the 48h when the requeue failed: 4 red. M6 names a held review apart from its crash: 1 red (a second alert for one failed review). Owner: sana-4099c. Type: test
 - [ ] Round 5, delta only, `KIPI_REVIEW_MAX_ROUNDS=5`, from the pinned checkout. Owner: sana-4099c, after the PR comment. Type: process
 - [ ] On APPROVE at the head with validate green: merge pinned to that head commit, reinstall com.kipi.pr-owner from a fresh origin/main tree, dry run, kickstart, read the log. Owner: sana-4099c. Type: process
 
