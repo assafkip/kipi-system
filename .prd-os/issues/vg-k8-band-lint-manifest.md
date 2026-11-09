@@ -1,7 +1,7 @@
 ---
 id: vg-k8-band-lint-manifest
 title: Band lint reads the instance voice-check.json; the engine still gets x or threads
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
