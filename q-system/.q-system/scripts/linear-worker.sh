@@ -1135,15 +1135,17 @@ def ticket_is_live(i):
     return live_evidence(i)
 
 
-def live_evidence(i):
+def live_evidence(i, stamp_counts=True):
     # The evidence, as prose, only when it is POSITIVE that someone is on the
     # ticket now: a start stamp that parses and is inside the lane window, a
     # lane-mark.py marker, or a live worker claim. Else "". The WIP walk asks
     # this, not ticket_is_live (PR #671 round 1, major): an unreadable stamp reads
     # live forever, so a PR on it would sit outside the count and outside every
     # exit for good. The prose is what the run log names for a left-out PR.
+    # stamp_counts False skips the stamp: live_ticket passes it for a ticket the
+    # fleet itself ran, whose fresh stamp is the worker own start.
     began = ls._parse_stamp(i.get("startedAt"))
-    if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+    if stamp_counts and began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
         return "started %.1fh ago, inside the %dh lane window" % (
             (now - began).total_seconds() / 3600.0, ls.STARTED_STALE_HOURS)
     # A lane-mark.py marker is positive evidence too, and it outlives the 24h
@@ -1154,13 +1156,26 @@ def live_evidence(i):
     return ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"])
 
 
-def live_ticket(ident):
+def live_ticket(ident, worker_issue):
     # live_evidence for the ticket a PR branch names. A ticket missing from the
     # board has no start stamp to read, and its lane marker or worker claim still
     # counts, so it is asked with the identifier alone. No ticket, no evidence.
+    #
+    # THE WORKER OWN START IS NOT A LANE (PR #692 round 1, major). Linear moves a
+    # ticket to In Progress when the worker branch or PR appears (BACK TO BACKLOG
+    # below), so every PR the worker pushed in the last day has a fresh stamp.
+    # Read as lane evidence, round 1 counted five such PRs as 0 and a sixth issue
+    # started: the ceiling held for nobody. On a worker branch (sana/<id>) whose
+    # ticket has a row in the attempts ledger, the fleet ran it, so the stamp is
+    # the worker own and only a lane marker or a live claim leaves the PR out.
+    # ls.worker_history is the proof started_hold_reason uses to tell a fleet-run
+    # ticket from a lane. A lane branch is never the worker pile, so any evidence
+    # counts there. Limit: a lane on a sana/<id> ticket the fleet also ran (PR
+    # #666, a redrive at 23:25Z) is seen only through its lane-mark.py marker.
     if not ident:
         return ""
-    return live_evidence(by_ident.get(ident) or {"identifier": ident})
+    fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""
+    return live_evidence(by_ident.get(ident) or {"identifier": ident}, stamp_counts=not fleet_ran)
 
 
 def refusal(i):
@@ -1278,7 +1293,7 @@ if os.environ.get("WIP_OWN_RC", "") != "":
         r["issue"] = worker_branch_issue(r["branch"])
         # The ticket a release comments on: the worker issue, or the lane ticket.
         r["ticket"] = r["issue"] or lane_branch_issue(r["branch"])
-        r["live"] = live_ticket(r["ticket"])
+        r["live"] = live_ticket(r["ticket"], r["issue"])
     # ONLY PRs A WORKER ROUND COULD OWN COUNT (ASK-4111). 16 of 34 kipi-system
     # runs from 2026-11-02 to 2026-11-09 started nothing over a median of 11 open
     # sana/ PRs, and at 01:07:45Z all 12 were lane work with a live ticket: no

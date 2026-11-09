@@ -97,7 +97,12 @@ TICKETS.append(issue("ASK-986", "started", None))
 # L16 (ASK-4111): PR #666 as it was at 2026-11-09T00:36:40Z. Its ticket ASK-4011
 # was in Backlog (a failed run put it there at 23:55:28Z) and Linear kept its
 # start stamp, 6.5h old. Ready by the picker, so the PR-side kinds judged it.
+# Three shapes of it: ASK-991 a lane started and the fleet never ran (no ledger
+# row); ASK-992 a redrive ran too (a ledger row, as on #666 at 23:25Z) and the
+# lane holds a lane-mark.py marker; ASK-993 the worker ran and nobody marked.
 TICKETS.append(issue("ASK-991", "backlog", 6.6))
+TICKETS.append(issue("ASK-992", "backlog", 6.6))
+TICKETS.append(issue("ASK-993", "backlog", 6.6))
 for n in (901, 902, 903, 904, 905, 961, 962, 963, 964, 965):
     TICKETS.append(issue("ASK-%d" % n, "started", MONTH))
 BOARD = {i["identifier"]: i for i in TICKETS}
@@ -184,13 +189,15 @@ ledger_seed() {  # ledger_seed <path>
   python3 - "$1" <<'LEDGER'
 import json, sys
 rows = {"ASK-%d" % n: {"rounds": 1, "count": 1}
-        for n in (2810, 2058, 901, 902, 903, 904, 905, 961, 962, 963, 964, 965, 991)}
+        for n in (2810, 2058, 901, 902, 903, 904, 905, 961, 962, 963, 964, 965, 992, 993)}
 json.dump(rows, open(sys.argv[1], "w"), indent=2)
 LEDGER
 }
 ledger_seed "$STATE/linear-worker-attempts.json"
 # Lane markers are fixtures too: lane_marker reads ~/.config/kipi/lanes otherwise.
+# Written by the real producer, lane-mark.py.
 LANES="$WORK/lanes"; mkdir -p "$LANES"
+KIPI_LANES_DIR="$LANES" python3 "$REPO_SCRIPTS/lane-mark.py" start ASK-992 --agent fixture-lane --hours 6 >/dev/null
 
 # --- review records, keyed the way the worker keys them ----------------------------
 # shellcheck disable=SC1091
@@ -230,7 +237,7 @@ for n in 618 621; do review "$n" "REQUEST CHANGES" 2 DIRTY; done
 review 971 "REQUEST CHANGES" 1 CLEAN
 for n in 901 902 903 904 905; do review "$n" "REQUEST CHANGES" 1 CLEAN; done
 for n in 961 962 963 964 965; do review "$n" "APPROVE" 1 BLOCKED; done   # CI pending
-review 991 "APPROVE WITH NITS" 3 CLEAN moved   # PR #666: at the cap, verdict at an old head
+for n in 991 992 993; do review "$n" "APPROVE WITH NITS" 3 CLEAN moved; done   # PR #666: at the cap, verdict at an old head
 
 CAPPED=0
 for f in "$STATE/pr-reviews/$(artifact_key "$SLUG" 543)-"*.md; do
@@ -727,6 +734,32 @@ else
   bad "L16 (ASK-4111 check 3): a live ticket's capped PR is never released" \
       "THE DEFECT: releases: ${REL16:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16.out" | head -3 | cut -c1-400 | tr '\n' '|')"
 fi
+# L16b. #666 had a ledger row too: the red-CI redrive ran converge on it at
+# 23:25Z while the lane worked it by hand. Once the fleet has run a sana/<id>
+# ticket its start stamp proves nothing about a lane (PR #692 round 1, major), so
+# a lane says so with lane-mark.py (ASK-4095). Marked, it is left out.
+prs "$WORK/pr666b.prs" "992:sana/ask-992:2026-10-01T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/pr666b.prs" "$WORK/l16b.out" --limit 1
+REL16B="$(releases "$WORK/l16b.out")"
+if [ "$REL16B" = "[dry] would release PR #543 (cap);" ] \
+   && grep -q 'left out as lane-live: #992 (ASK-992): lane marker: fixture-lane holds ASK-992 until' "$WORK/l16b.out"; then
+  ok "L16b: the #666 shape with a ledger row and a lane marker is left out by the marker, not released"
+else
+  bad "L16b: a marked lane's capped PR is never released" \
+      "releases: ${REL16B:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16b.out" | head -3 | cut -c1-400 | tr '\n' '|')"
+fi
+# L16c (NEGATIVE). The worker's own capped PR: a ledger row, no marker, no claim.
+# The fresh stamp is the worker's own start, so the PR counts and takes its cap
+# exit (ASK-3866), as it should.
+prs "$WORK/pr666c.prs" "993:sana/ask-993:2026-10-01T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/pr666c.prs" "$WORK/l16c.out" --limit 1
+REL16C="$(releases "$WORK/l16c.out")"
+if [ "$REL16C" = "[dry] would release PR #993 (cap);" ] && ! grep -q '#993 (ASK-993): started' "$WORK/l16c.out"; then
+  ok "L16c (negative): the worker's own capped PR is counted and released as cap; its own start is not a lane"
+else
+  bad "L16c (negative): the worker's own capped PR takes its cap exit" \
+      "releases: ${REL16C:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16c.out" | head -3 | cut -c1-400 | tr '\n' '|')"
+fi
 
 # ============================================================================
 # L17. NEGATIVE SELF-TESTS for L15 and L16 (ASK-4111 check 4)
@@ -772,7 +805,7 @@ fi
 # ASK-4111, and refusal() no longer asks liveness. L15 must go red: the live
 # no-DoR #981 is the oldest and is released as no-dor.
 restore
-L17B='r["live"] = live_ticket(r["ticket"])'
+L17B='r["live"] = live_ticket(r["ticket"], r["issue"])'
 if mutate "$L17B" 'r["live"] = ""'; then
   run_worker "$MUT/linear-worker.sh" "$WORK/live.prs" "$WORK/m17b.out" --limit 1
   [ "$(releases "$WORK/m17b.out")" = "[dry] would release PR #981 (no-dor);" ] \

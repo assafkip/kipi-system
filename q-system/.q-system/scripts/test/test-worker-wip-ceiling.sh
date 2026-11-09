@@ -92,11 +92,17 @@ TICKETS.append(issue("ASK-921", "started", 1))       # a lane on a slug branch
 TICKETS.append(issue("ASK-942", "started", MONTH, labels=("owner:sana", "needs-scope")))
 TICKETS.append(issue("ASK-922", "started", MONTH))     # a STALE lane: a month old, no ledger row
 # ASK-4111, 2026-11-09T01:07:45Z: 12 open sana/ PRs, every one lane work. Six on
-# sana/<id> branches whose tickets started 2h ago, five lanes started 2h ago, and
-# one lane started a month ago that a lane-mark.py marker holds (case 10).
+# sana/<id> branches whose tickets a lane started 2h ago (no attempts-ledger row:
+# the fleet never ran them), five lanes started 2h ago, and one lane started a
+# month ago that a lane-mark.py marker holds (case 10).
 for n in (1101, 1102, 1103, 1104, 1105, 1106, 1121, 1122, 1123, 1124, 1125):
     TICKETS.append(issue("ASK-%d" % n, "started", 2))
 TICKETS.append(issue("ASK-1126", "started", MONTH))
+# PR #692 round 1, major: the worker's OWN fresh PRs. Linear moves a ticket to In
+# Progress when the worker's PR appears, so each carries a start 0.5h old, and
+# each has a ledger row (case 12).
+for n in (1201, 1202, 1203, 1204, 1205):
+    TICKETS.append(issue("ASK-%d" % n, "started", 0.5))
 BOARD = {i["identifier"]: i for i in TICKETS}
 ATTACH = {"uuid-ASK-%d" % n: [pr("sana/ask-%d" % n, n)]
           for n in (901, 902, 903, 904, 905, 911, 931, 932, 933, 941, 942, 951, 952)}
@@ -185,7 +191,8 @@ KIPI_LANES_DIR="$LANES" python3 "$REPO_SCRIPTS/lane-mark.py" start ASK-1126 --ag
 python3 - "$STATE/linear-worker-attempts.json" <<'LEDGER'
 import json, sys
 rows = {"ASK-%d" % n: {"rounds": 1, "count": 1}
-        for n in (901, 902, 903, 904, 905, 907, 931, 932, 933, 942, 951, 952)}
+        for n in (901, 902, 903, 904, 905, 907, 931, 932, 933, 942, 951, 952,
+                  1201, 1202, 1203, 1204, 1205)}
 rows["ASK-941"] = {"rounds": 3, "count": 3, "why": "fixture: three failed runs"}
 json.dump(rows, open(sys.argv[1], "w"), indent=2)
 LEDGER
@@ -304,6 +311,9 @@ prs "$WORK/s10.prs" "1101:sana/ask-1101:01" "1102:sana/ask-1102:02" "1103:sana/a
 prs "$WORK/s11.prs" "1101:sana/ask-1101:01" "1121:sana/ask-1121-gate:02" "1126:sana/ask-1126-marker:03" \
                     "901:sana/ask-901:04" "902:sana/ask-902:05" "903:sana/ask-903:06" \
                     "904:sana/ask-904:07" "905:sana/ask-905:08"
+# PR #692 round 1, major: five worker-own PRs whose tickets the worker started.
+prs "$WORK/s12.prs" "1201:sana/ask-1201:01" "1202:sana/ask-1202:02" "1203:sana/ask-1203:03" \
+                    "1204:sana/ask-1204:04" "1205:sana/ask-1205:05"
 prs "$WORK/s7.prs"  "951:sana/ask-951:01" "952:sana/ask-952:02" "907:sana/ask-907:03" \
                     "903:sana/ask-903:04" "904:sana/ask-904:05"
 
@@ -589,6 +599,23 @@ grep -q '\[dry\] would work ASK-901 .*-- WIP ceiling: rework PR #901, the oldest
   || bad "case 11b: the rework pick is #901" "picks: $(picks "$WORK/s11.out"). Output: $(flat "$WORK/s11.out")"
 
 # ============================================================================
+# 12. THE WORKER'S OWN START IS NOT A LANE (PR #692 round 1, major)
+# ============================================================================
+# Linear moves a ticket to In Progress when the worker's branch or PR appears
+# (linear-worker.sh BACK TO BACKLOG), so every PR the worker pushed in the last
+# day has a fresh start stamp. Round 1 of this PR read that as lane evidence:
+# five such PRs counted 0, and a sixth issue started. A ledger row on a sana/<id>
+# ticket is the proof the fleet ran it, so the stamp is the worker's own.
+run_worker "$WORKER" "$WORK/s12.prs" "$WORK/s12.out" --limit 1
+if grep -q 'WIP ceiling: 5 open own PRs in x/kipi-system, 0 more left out as lane-live (ceiling 5). No new issue starts' "$WORK/s12.out" \
+   && ! grep -q '\[dry\] would work ASK-900 ' "$WORK/s12.out"; then
+  ok "case 12: five worker-own PRs on tickets the worker started 0.5h ago hold the ceiling at 5; no sixth issue starts"
+else
+  bad "case 12: the worker's own fresh PRs count toward the ceiling" \
+      "picks: $(picks "$WORK/s12.out"). $(grep 'WIP' "$WORK/s12.out" | head -2 | cut -c1-400 | tr '\n' '|')"
+fi
+
+# ============================================================================
 # 9. NEGATIVE SELF-TESTS: each rule above can fail
 # ============================================================================
 MUT="$WORK/mut/scripts"; mkdir -p "$WORK/mut"
@@ -732,6 +759,21 @@ if mutate 'wip["count"] = len(counted)' 'wip["count"] = len(own)'; then
   fi
 else
   bad "mutant 9j: anchor" "the lane-live count moved"
+fi
+restore
+
+# 9k. PR #692 round 1: a mutant that reads the worker's own start stamp as lane
+# evidence again turns case 12 red.
+if mutate 'fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""' 'fleet_ran = False'; then
+  run_worker "$MUT/linear-worker.sh" "$WORK/s12.prs" "$WORK/m.out" --limit 1
+  if grep -q 'WIP: 0 open own PRs in x/kipi-system, 5 more left out as lane-live' "$WORK/m.out" \
+     && grep -q '\[dry\] would work ASK-900 ' "$WORK/m.out"; then
+    ok "mutant killed: with the worker's own start read as a lane, its 5 PRs count 0 and ASK-900 starts, so case 12 can go red"
+  else
+    bad "mutant 9k survived" "picks: $(picks "$WORK/m.out"). $(grep 'WIP' "$WORK/m.out" | head -1 | cut -c1-300)"
+  fi
+else
+  bad "mutant 9k: anchor" "the worker-history check moved"
 fi
 restore
 
