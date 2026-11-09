@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPTS = Path(os.environ.get("CAP_LADDER_TEST_ROOT") or Path(__file__).resolve().parent.parent)
@@ -929,19 +931,18 @@ def case_mutant() -> None:
 
 # Runtime bound (ASK-4264). The file spawns about 400 child pythons (171 of them
 # cap-ladder.py --apply, each with its own fake gh/sync/fable), one after the
-# other. Measured 72 s on a laptop, over the capability gate's 60 s default, and
-# 3 of 4 CI runs on 2026-11-09 printed `RED: test-timeout (60s)`. Every case
-# builds its own temp world, so the cases share nothing and now run in threads.
-# After the split the file takes 30 to 35 s on a laptop (case_review_687 is the
-# longest single case). The bound is 45 s: above that measurement, under the 60 s
-# gate default, so a file that creeps back up fails here by name first. The
-# env override is how the red side was shown (bound 30 failed at 35 s).
-RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "45"))
+# other. It outgrew the gate's 60 s default (72 s serial on a laptop; CI timed
+# out), and #703 gave it timeout_s 180 in its manifest entry. Every case builds
+# its own temp world and shares nothing, so the cases now run in threads: 29 to
+# 44 s cold-to-warm on an idle 10-core laptop. Wall time now tracks the longest
+# single case, so this bound does NOT see suite growth; it only guards against
+# the threading being lost (serial is 72 s+). It sits at 120 s so normal CI
+# variance cannot trip it and it stays under the manifest's 180 s ceiling, which
+# is the real limit. CAP_LADDER_RUNTIME_BOUND_S shows the red side.
+RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "120"))
 
 
 def main() -> int:
-    import time
-    from concurrent.futures import ThreadPoolExecutor
     t0 = time.monotonic()
     print("test_cap_ladder.py")
     cases = [case_worker, case_sites]
