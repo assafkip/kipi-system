@@ -138,8 +138,9 @@ def find_specific_proper_nouns(text):
     return found
 
 
-def lint(text):
-    if SKIP_MARKER in text:
+def lint(text, honour_marker=True):
+    """honour_marker=False in an instance that keeps voice-suppressions.json (K7)."""
+    if honour_marker and SKIP_MARKER in text:
         return []
     prose = strip_code_for_prose_check(text)
     total_words = word_count(prose)
@@ -213,6 +214,36 @@ def _load_is_published_path():
 _is_published_path = _load_is_published_path()
 
 
+def _suppression_decision(file_path):
+    """K7: voice_suppressions.py decides; this lint never parses the file itself.
+    (None, notes) when the reader did not load: markers behave as before, said aloud."""
+    try:
+        name = "_voice_suppressions_k7"
+        module = sys.modules.get(name)
+        if module is None:
+            target = Path(__file__).resolve().parent / "voice_suppressions.py"
+            spec = importlib.util.spec_from_file_location(name, target)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            sys.modules[name] = module
+        decision = module.check(file_path)
+        return decision, list(decision.notes)
+    except Exception as exc:
+        return None, [f"voice_suppressions.py did not load ({type(exc).__name__}); "
+                      "in-file markers behave as before K7."]
+
+
+def _judge(file_path, text):
+    """(violations, notes) with the suppression file applied."""
+    decision, notes = _suppression_decision(file_path)
+    if decision is not None and decision.skip:
+        return [], notes
+    honour = decision is None or not decision.present
+    if not honour and SKIP_MARKER in text:
+        notes.append(decision.marker_ignored(SKIP_MARKER))
+    return lint(text, honour_marker=honour), notes
+
+
 def hook_mode():
     """PostToolUse entrypoint: self-scope to published content, exit 2 on violation."""
     try:
@@ -228,10 +259,13 @@ def hook_mode():
         text = Path(file_path).read_text(encoding="utf-8")
     except Exception:
         sys.exit(0)
-    violations = lint(text)
+    violations, notes = _judge(file_path, text)
+    said = [f"voice-substance-lint: {note}" for note in notes]
     blocking, warnings = _partition(violations)
     if blocking:
         print(format_report(file_path, blocking), file=sys.stderr)
+        for line in said:
+            print(line, file=sys.stderr)
         sys.exit(2)
     if warnings:
         print(
@@ -239,6 +273,12 @@ def hook_mode():
             + format_report(file_path, warnings),
             file=sys.stderr,
         )
+    if said:
+        # On exit 0 stderr reaches nobody; a skip that is not said is a silent bypass.
+        for line in said:
+            print(line, file=sys.stderr)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                 "additionalContext": "\n".join(said)}}))
     sys.exit(0)
 
 
@@ -252,7 +292,9 @@ def main():
     except Exception as e:
         sys.stderr.write(f"voice-substance-lint: read error: {e}\n")
         sys.exit(0)
-    violations = lint(text)
+    violations, notes = _judge(file_path, text)
+    for note in notes:
+        print(f"voice-substance-lint: {note}")
     blocking, warnings = _partition(violations)
     if blocking:
         print(format_report(file_path, blocking))

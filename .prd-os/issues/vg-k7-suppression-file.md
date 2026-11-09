@@ -1,7 +1,7 @@
 ---
 id: vg-k7-suppression-file
 title: One bounded per-instance voice suppression file, read by every voice marker reader
-status: open
+status: closed
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
@@ -36,8 +36,8 @@ Row contract and discovery as in the PRD sections 'K7 row contract' and 'Shared 
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Red first: a file-listed path is skipped by voice-lint.py; an expired row does not skip
-- [ ] A bad file or row suppresses nothing, is reported by name and never exits 1: malformed JSON, missing owner, missing reason, bad date, expires equal to today, expires more than 30 days after created, a glob path, an absolute path
-- [ ] voice-lint.py, voice-substance-lint.py and voiceloop-band-lint.py call the reader; every skip prints owner, reason and expiry
-- [ ] In an instance that has the file, in-file voice markers no longer skip and the lint says so; without the file, markers behave as today
-- [ ] Census test: every script under q-system/.q-system/scripts that defines a voice skip marker imports the reader
+- [x] Red first: a file-listed path is skipped by voice-lint.py; an expired row does not skip
+- [x] A bad file or row suppresses nothing, is reported by name and never exits 1: malformed JSON, missing owner, missing reason, bad date, expires equal to today, expires more than 30 days after created, a glob path, an absolute path
+- [x] voice-lint.py, voice-substance-lint.py and voiceloop-band-lint.py call the reader; every skip prints owner, reason and expiry
+- [x] In an instance that has the file, in-file voice markers no longer skip and the lint says so; without the file, markers behave as today
+- [x] Census test: every script under q-system/.q-system/scripts that defines a voice skip marker imports the reader
