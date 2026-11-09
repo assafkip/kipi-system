@@ -51,10 +51,16 @@ def part2():
     # a judge that ran later (judge_missing.py) amends its arm; results stay append-only
     amend = os.path.join(EVAL, 'part2', 'judge-amend.jsonl')
     fixes = {(a['ticket'], a['arm']): a for a in map(json.loads, open(amend))} if os.path.exists(amend) else {}
+    import part2_run as P2
     for r in rows:
         a = fixes.get((r['ticket'], r['arm']))
         if a:
             r['verdict'], r['findings'] = a['verdict'], a['findings']
+        # re-read the saved review with the current parser: a heading-form verdict
+        # ("## Verdict / APPROVE WITH NITS.") was recorded as none by the first one
+        rv = os.path.join(EVAL, 'part2', 'ctx', r['token'], 'review.txt')
+        if not a and r['committed'] and os.path.exists(rv) and os.path.getsize(rv):
+            r['findings'], r['verdict'], _ok = P2.findings(open(rv, errors='replace').read())
     per = {}
     for r in rows:
         d = per.setdefault(r['cls'], {}).setdefault(r['arm'], {'runs': 0, 'committed': 0, 'tests_pass': 0, 'tests_fail': 0,

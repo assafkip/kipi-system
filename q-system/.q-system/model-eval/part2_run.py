@@ -114,7 +114,8 @@ def findings(text):
         q = [x.strip() for x in l.strip().split('|')]
         if len(q) >= 3 and q[0] in ('blocker', 'major', 'minor', 'nit'):
             rows.append({'sev': q[0], 'claim': q[1], 'loc': q[2], 'nonblocking': q[-1] == 'nonblocking'})
-    v = re.findall(r'VERDICT:?\**\s*:?\s*\**\s*(APPROVE WITH NITS|APPROVE|REQUEST CHANGES|BLOCK)', text or '')
+    # any casing and markup: "**VERDICT: X**", "## Verdict\n\nX.", "Verdict: **X**" (a heading form read as none)
+    v = re.findall(r'(?i)verdict\W{0,12}(APPROVE WITH NITS|APPROVE|REQUEST CHANGES|BLOCK)', text or '')
     return rows, (v[-1] if v else None), bool(fb)
 
 

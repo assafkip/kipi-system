@@ -32,7 +32,8 @@ def findings(md):
         p = [x.strip() for x in l.strip().split('|')]
         if len(p) >= 3 and p[0] in ('blocker', 'major', 'minor', 'nit'):
             rows.append({'sev': p[0], 'claim': p[1], 'loc': p[2], 'nonblocking': p[-1] == 'nonblocking'})
-    v = re.findall(r'VERDICT:?\**\s*:?\s*\**\s*(APPROVE WITH NITS|APPROVE|REQUEST CHANGES|BLOCK)', t)
+    # any casing and markup: "**VERDICT: X**", "## Verdict\n\nX.", "Verdict: **X**" (a heading form read as none)
+    v = re.findall(r'(?i)verdict\W{0,12}(APPROVE WITH NITS|APPROVE|REQUEST CHANGES|BLOCK)', t)
     return rows, (v[-1] if v else None), bool(fb)
 
 
