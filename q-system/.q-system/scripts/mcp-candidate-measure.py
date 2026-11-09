@@ -9,9 +9,7 @@ runs the checker on that. The live hook is READ, never written.
     python3 q-system/.q-system/scripts/mcp-candidate-measure.py [--report]
 """
 import importlib.util
-import json
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,20 +20,19 @@ _spec = importlib.util.spec_from_file_location(
 checker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checker)
 
-PROPOSAL = HERE.parent / "proposals" / "mcp-denylist-operation-split.json"
-
-
 def candidate(into):
-    """A copy of the live guard with the proposal's insert applied."""
-    hook = checker.resolve_hook()
-    text = hook.read_text(encoding="utf-8")
-    (edit,) = json.loads(PROPOSAL.read_text(encoding="utf-8"))["edits"]
-    if text.count(edit["anchor"]) != 1:
-        raise SystemExit("anchor hits the guard %d times, not once"
-                         % text.count(edit["anchor"]))
+    """A copy of the live guard with the proposal's insert applied EXACTLY once.
+
+    Strips first. This script used to apply the insert to the guard as found, so
+    the day the founder applies the proposal it would have measured a guard
+    carrying the insert TWICE -- doubled grep rules, a doubled early `exit 0`,
+    and a measurement of something nobody will ever run (PR #686 review, minor).
+    The suite already stripped; this one did not, which is two readers of one
+    input with different semantics. Both read `checker.baseline_text` now.
+    """
+    text = checker.baseline_text(checker.resolve_hook())
     out = pathlib.Path(into) / "candidate.sh"
-    out.write_text(text.replace(edit["anchor"], edit["insert"] + edit["anchor"], 1),
-                   encoding="utf-8")
+    out.write_text(checker.apply_insert(text), encoding="utf-8")
     return out
 
 

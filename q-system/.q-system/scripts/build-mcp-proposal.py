@@ -77,14 +77,45 @@ MCP_READ_OP='(^|[_-])(list|get|read|search|query|fetch|describe|status|check|fin
 # still run -- a gate that refuses every query is a gate someone switches off.
 # The separator alternation includes `\\n` because TOOL_INPUT is compact JSON,
 # where a newline is the two characters backslash and n.
+#
+# NO OBJECT KEYWORD LIST, ON PURPOSE. Two review rounds found the same defect in
+# two different spellings of one list: round 4 of PR #390 found `TRUNCATE users;`
+# and `ALTER TABLE users DROP email;` allowed because the list made the
+# PostgreSQL object keyword mandatory, and PR #686 found `TRUNCATE users;`,
+# `DROP CONSTRAINT` and `DROP TRIGGER` allowed for the same reason after the list
+# grew. A list of the objects SQL can destroy is a list that is wrong until
+# someone meets the entry it is missing, so the second occurrence is treated as
+# the wrong SHAPE rather than a third missing word: the rule now keys on the
+# destructive VERB at a word boundary and names no objects at all.
+#
+# THAT IS FAIL-CLOSED AND IT OVER-REFUSES. Said out loud rather than discovered:
+# this gate parses no SQL. It cannot tell a `DELETE FROM` that runs from one
+# sitting in a trigger body an additive migration is defining, and it refuses
+# both (PR #390 review round 4, minor). The word boundary is what keeps the
+# over-refusal narrow: a column named `raindrop` or a migration named
+# `drop_email` carries no match, because `drop` there is not a word. The
+# asymmetry is emit_deny's own -- a miss costs a production table, a false
+# positive costs one approval -- and the deny message says the gate refused on a
+# keyword rather than claiming it understood the statement.
 MCP_SQL_OP='(^|[_-])(execute[_-]?sql|apply[_-]?migration|run[_-]?sql|sql)([_-]|$)'
-MCP_DESTRUCTIVE_SQL='(drop|truncate)([[:space:]]|\\n)+(table|database|schema|view|index|type|function|sequence|column|policy|role|extension|publication)|delete([[:space:]]|\\n)+from'
+MCP_DESTRUCTIVE_SQL='(^|[^a-zA-Z_])(drop|truncate)([^a-zA-Z_]|$)|(^|[^a-zA-Z_])delete([[:space:]]|\\n)+from([^a-zA-Z_]|$)'
 # Servers where EVERY non-read op is denied, not only a destructive verb
 # (founder CLAUDE.md: "Vercel mutating ops"). Matched case-INSENSITIVELY against
 # the server segment: the registered connector is mcp__claude_ai_Vercel__, with
 # a capital V, and a case-sensitive match missed it -- the same server-name miss
 # this whole insert exists to fix (PR #390 review).
 MCP_MUTATION_SCOPED_SERVER='(^|_)vercel(_|$)'
+# Auth is how you EARN the connection, so it is never blocked. The block below
+# carves it out as `*authenticate*` against the WHOLE TOOL NAME, which is two
+# holes: it matched any server (not the 7 it names), and `*auth*`-shaped
+# substrings anywhere in an operation name walked past every rule after it (PR
+# #390 review round 4, minor). `mcp__claude_ai_Vercel__update_auth_settings` is
+# a mutating op on a mutation-scoped server and a substring carve-out hands it
+# over. So this is an ANCHORED ALLOWLIST of whole operation names, taken from the
+# operations that actually load. A new auth operation has to be added by name --
+# correct for a carve-out in a security gate, where the cost of guessing wide is
+# a bypass and the cost of guessing narrow is one approval.
+MCP_AUTH_OP='^(authenticate|authorize|re[_-]?auth|re[_-]?authenticate|setup[_-]auth|auth[_-]setup|complete[_-]authentication|notion-complete-mcp-setup)$'
 
 case "$TOOL_NAME" in
   mcp__*)
@@ -113,19 +144,20 @@ case "$TOOL_NAME" in
     [ -n "$_mcp_scope" ] || _mcp_scope="$(printf '%s' "${TOOL_INPUT:-}" | sha256sum 2>/dev/null | cut -d' ' -f1)"
     [ -n "$_mcp_scope" ] || _mcp_scope="${TOOL_INPUT:-}"
     COMMAND="$TOOL_NAME $_mcp_scope"
-    # Auth is how you EARN the connection, so it is never blocked. Kept from the
-    # block below so a fix cannot quietly drop it.
-    case "$TOOL_NAME" in
-      *authenticate*|*complete_authentication*)
-        log_decision "allow" "mcp auth operation"
-        exit 0 ;;
-    esac
     if echo "$_mcp_op" | grep -Eqi "$MCP_DESTRUCTIVE_OP"; then
       emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' matches a destructive-operation verb. This gate cannot see whether the state it removes is at the vendor or on this machine, so it refuses either way: the miss costs production data, the false positive costs one approval. Keyed on the operation, not the server name (ASK-1923)"
     fi
     if echo "$_mcp_op" | grep -Eqi "$MCP_SQL_OP" \
        && echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then
-      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' carries a destructive SQL statement in its payload (DROP / TRUNCATE / DELETE FROM). Keyed on the statement, so a SELECT and an additive migration still run (ASK-1923)"
+      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' carries the SQL keyword DROP, TRUNCATE or DELETE FROM in its payload. This gate does not parse SQL: it refused on the keyword, and it cannot tell a statement that runs from one being defined. Keyed on the keyword at a word boundary, so a SELECT, an additive migration and a column named 'raindrop' still run (ASK-1923)"
+    fi
+    # AFTER the destructive checks, never before them. The carve-out is an
+    # anchored allowlist now, so no destructive name can reach it either way --
+    # the order is the second layer, kept so widening the allowlist later cannot
+    # silently reopen the hole the substring match opened (PR #390 round 4).
+    if echo "$_mcp_op" | grep -Eqi "$MCP_AUTH_OP"; then
+      log_decision "allow" "mcp auth operation '$_mcp_op'"
+      exit 0
     fi
     if echo "$_mcp_server" | grep -Eqi "$MCP_MUTATION_SCOPED_SERVER" \
        && ! echo "$_mcp_op" | grep -Eqi "$MCP_READ_OP"; then

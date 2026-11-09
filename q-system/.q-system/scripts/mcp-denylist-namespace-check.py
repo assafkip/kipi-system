@@ -52,6 +52,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 FIXTURE = REPO / "q-system/.q-system/tests/fixtures/destructive-op-deny.reference.sh"
 LIVE = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-deny.sh"
+PROPOSAL = HERE.parent / "proposals" / "mcp-denylist-operation-split.json"
 
 # Same resolution order as probe_hook.py and test_destructive_op_deny_anchor.py,
 # so all three suites agree about what "the guard" is on any given machine.
@@ -62,6 +63,58 @@ def resolve_hook():
     if LIVE.is_file():
         return LIVE
     return FIXTURE
+
+
+def fixture_hook():
+    """The FROZEN pre-fix guard committed to this repo.
+
+    `resolve_hook()` answers "what guard is installed here", which is a moving
+    target: between 2026-09-20 and 2026-11-08 the installed guard lost its
+    server-name wildcards and scoped its approval token, so six cases written as
+    "observed red today" against it went red as tests instead (PR #686 review,
+    major). Anything that needs a guard KNOWN to carry the two ASK-1923 defects
+    -- a negative control, a mutant -- reads this instead, and says so.
+    """
+    return FIXTURE
+
+
+# --- one owner for "the guard with / without this proposal applied" ----------
+# Three callers needed this (the suite, mcp-candidate-measure.py, the
+# reproducer) and two of them wrote their own: the suite stripped an
+# already-applied insert before building its variants and the measure script did
+# not, so after the founder applies the proposal that script measured a guard
+# carrying the insert TWICE (PR #686 review, minor). Derived from one place now.
+def proposal_edit(proposal=None):
+    """The single edit this proposal makes, validated."""
+    path = pathlib.Path(proposal) if proposal else PROPOSAL
+    (edit,) = json.loads(path.read_text(encoding="utf-8"))["edits"]
+    assert edit["file"] == ".claude/hooks/destructive-op-deny.sh", edit["file"]
+    assert edit["op"] == "insert_before", edit["op"]
+    return edit
+
+
+def strip_insert(text, edit):
+    """`text` without this proposal's insert, whether or not it was applied."""
+    return text.replace(edit["insert"], "", 1)
+
+
+def baseline_text(hook, edit=None):
+    """The guard at `hook` with the insert removed -- the un-patched baseline."""
+    edit = edit or proposal_edit()
+    text = strip_insert(pathlib.Path(hook).read_text(encoding="utf-8"), edit)
+    if edit["insert"] in text:
+        raise SystemExit("the guard carries the insert more than once; "
+                         "stripping one copy left another")
+    if text.count(edit["anchor"]) != 1:
+        raise SystemExit("the proposal's anchor hits the guard %d times, not "
+                         "once" % text.count(edit["anchor"]))
+    return text
+
+
+def apply_insert(text, edit=None):
+    """`text` with the insert placed once, before the anchor."""
+    edit = edit or proposal_edit()
+    return text.replace(edit["anchor"], edit["insert"] + edit["anchor"], 1)
 
 
 # --- the oracle -------------------------------------------------------------
@@ -91,6 +144,22 @@ CASES = [
      "input": {"name": "drop_email",
                "query": "ALTER TABLE users DROP COLUMN email;"},
      "why": "a migration that drops a column is a schema deletion"},
+    # The object-keyword list is what the rule used to be keyed on, and it was
+    # wrong in two different spellings one review round apart: `TRUNCATE users;`
+    # takes no object keyword at all, and CONSTRAINT / TRIGGER were simply not on
+    # the list (PR #390 review round 4, major; PR #686 review, major). These rows
+    # are the three statements that walked through, kept so a list can never come
+    # back without going red.
+    {"tool": "mcp__supabase__execute_sql", "expect": "deny", "source": "session",
+     "input": {"query": "TRUNCATE users;"},
+     "why": "TRUNCATE takes no object keyword, so an object list allowed it"},
+    {"tool": "mcp__supabase__execute_sql", "expect": "deny", "source": "session",
+     "input": {"query": "DROP TRIGGER audit_trigger ON users;"},
+     "why": "TRIGGER was not on the object list"},
+    {"tool": "mcp__supabase__apply_migration", "expect": "deny", "source": "session",
+     "input": {"name": "unique_email_off",
+               "query": "ALTER TABLE users DROP CONSTRAINT users_email_key;"},
+     "why": "CONSTRAINT was not on the object list"},
 
     # ---- a destructive verb the gate cannot place ---------------------------
     # Local plugin state, not vendor state. Denied ON PURPOSE and fail-closed:
@@ -120,6 +189,14 @@ CASES = [
     # Vercel connector is `mcp__claude_ai_Vercel__`, with a CAPITAL V, so a
     # server matcher that is case-sensitive misses it -- the same server-name
     # miss this issue exists to fix (PR #390 review, minor).
+    # The *authenticate* carve-out used to match the WHOLE TOOL NAME as a
+    # substring and ran before every other rule, so any operation name carrying
+    # `auth` anywhere skipped the gate -- including a mutating op on the one
+    # server where every non-read op is denied (PR #390 review round 4, minor).
+    {"tool": "mcp__claude_ai_Vercel__update_auth_settings", "expect": "deny",
+     "source": "synthetic-op-real-server",
+     "why": "a substring carve-out on `auth` handed over a mutating op on a "
+            "mutation-scoped server; the carve-out is an anchored allowlist now"},
     {"tool": "mcp__claude_ai_Vercel__update_project", "expect": "deny",
      "source": "synthetic-op-real-server",
      "why": "the SERVER segment is real (the claude.ai Vercel connector, seen "
@@ -148,6 +225,21 @@ CASES = [
     {"tool": "mcp__supabase__apply_migration", "expect": "allow", "source": "session",
      "input": {"name": "add_nickname",
                "query": "ALTER TABLE users ADD COLUMN nickname text"}},
+    # Dropping the object-keyword list widened the verb match, so the WORD
+    # BOUNDARY is what keeps it from refusing every query. These two rows are
+    # that boundary: `raindrop` and `drop_email` contain the verb and are not it.
+    {"tool": "mcp__supabase__execute_sql", "expect": "allow", "source": "session",
+     "input": {"query": "SELECT id FROM products WHERE name = 'raindrop'"},
+     "why": "`drop` inside a longer word is not the verb"},
+    {"tool": "mcp__supabase__apply_migration", "expect": "allow", "source": "session",
+     "input": {"name": "drop_email_later",
+               "query": "ALTER TABLE users ADD COLUMN email_backup text"},
+     "why": "a migration NAME carrying the verb is not a destructive statement"},
+    # The anchored auth allowlist. `notion-complete-mcp-setup` is the real
+    # operation name; the old `*complete_authentication*` carve-out never matched
+    # it, because it spells its words with hyphens.
+    {"tool": "mcp__claude_ai_Notion__notion-complete-mcp-setup", "expect": "allow",
+     "source": "session", "why": "auth setup is how the connection is earned"},
     # A drag-and-drop GESTURE. `drop` reads as a destructive SQL verb and is not
     # one here; it was on the destructive list and denied a mouse move with a
     # message about vendor-side deletion (PR #390 review, minor).

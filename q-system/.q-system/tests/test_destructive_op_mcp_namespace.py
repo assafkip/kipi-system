@@ -1,17 +1,39 @@
 """ASK-1923: the MCP denylist, watched flipping in both directions.
 
-The guard's MCP block matches SERVER-NAME wildcards. Read it as two defects that
+The guard's MCP block matched SERVER-NAME wildcards. Read it as two defects that
 hide each other, and note that neither is visible from the other's side:
 
-  OVER-BROAD   the wildcards deny read-only queries on the namespaces they name.
-  UNDER-BROAD  the namespaces they name are not the ones that load, so the
-               destructive operations on the REGISTERED namespaces walk through.
-               This is the serious half, and it reads exactly like protection.
+Both halves are measured by running the matcher, never read off its source: the
+executable is q-system/.q-system/scripts/mcp-denylist-namespace-check.py and
+every case below drives it.
 
-These cases drive the CURRENT guard and a CANDIDATE built by applying
-`proposals/mcp-denylist-operation-split.json` to a copy of it. Every case is
-observed RED on the current guard and GREEN on the candidate, so nothing here is
-a test that has never been seen failing.
+  OVER-BROAD   a wildcard refuses read-only queries on the namespace it names.
+  UNDER-BROAD  the namespaces those wildcards name are not the ones that load,
+               so destructive operations on the REGISTERED namespaces walk
+               through. The serious half, and it reads exactly like protection.
+
+TWO GUARDS, AND WHICH ONE EACH CASE MEASURES IS THE POINT OF THIS HEADER.
+
+  REFERENCE  `checker.fixture_hook()` -- the FROZEN pre-fix guard committed at
+             tests/fixtures/destructive-op-deny.reference.sh. Every negative
+             control and every mutant reads this one.
+  HOOK       `checker.resolve_hook()` -- whatever guard is INSTALLED on this
+             machine. The oracle cases and the apply-time controls read this one,
+             because this is the file the founder patches.
+
+They were one thing until PR #686's review. Cases written as "observed red on
+the guard today" were asserted against the INSTALLED guard, and between
+2026-09-20 and 2026-11-08 that guard changed underneath them: it lost its
+server-name wildcards and scoped its approval token. So six cases claiming a
+defect existed went red as TESTS when the defect was actually gone -- the suite
+reported good news by failing, and was green only where the installed guard was
+absent and the fixture stood in for it. A negative control has to show the
+oracle can go red, which needs a guard that cannot move; tracking the installed
+guard is a different job. The blocker for that job is one executable case in
+this file -- q-system/.q-system/tests/test_destructive_op_mcp_namespace.py
+::TestTheInstalledGuardToday::test_the_installed_guard_still_needs_this_proposal
+-- which goes red, with instructions in its own message, the day the installed
+guard stops needing this proposal.
 
 READ-ONLY ON ~/.claude, like test_destructive_op_deny_anchor.py. The guard is
 copied into tmp, the copy is patched, and both copies are driven with HOME
@@ -19,10 +41,12 @@ redirected. Nothing here writes the live hook, and nothing proposes that an
 agent apply the patch: the founder applies it. This delivers the diff and the
 measurement.
 
-The case list and the denylist parser both live in
+The case list, the denylist parser AND the strip/apply pair all live in
 `scripts/mcp-denylist-namespace-check.py` and are READ from there, never
-restated -- a second copy of either would agree with itself on the day it was
-written and stop describing the system on the day one changed.
+restated -- a second copy of any of them would agree with itself on the day it
+was written and stop describing the system on the day one changed. That is not
+hypothetical here: mcp-candidate-measure.py kept its own apply, skipped the
+strip this file did, and measured a doubly-patched guard (PR #686 review, minor).
 """
 import json
 import pathlib
@@ -46,58 +70,40 @@ PROPOSAL = (pathlib.Path(__file__).resolve().parents[1]
             / "proposals" / "mcp-denylist-operation-split.json")
 
 HOOK = checker.resolve_hook()
+REFERENCE = checker.fixture_hook()
 
 pytestmark = pytest.mark.skipif(
     not HOOK.is_file(),
     reason="destructive-op-deny.sh is machine-local and the repo fixture is "
            "missing too; there is no guard here to measure")
 
+needs_reference = pytest.mark.skipif(
+    not REFERENCE.is_file(),
+    reason="the committed pre-fix reference guard is missing; the negative "
+           "controls have no guard with the ASK-1923 defects to measure")
+
 
 def proposal_edit():
-    proposal = json.loads(PROPOSAL.read_text(encoding="utf-8"))
-    (edit,) = proposal["edits"]
-    assert edit["file"] == ".claude/hooks/destructive-op-deny.sh"
-    assert edit["op"] == "insert_before"
-    return edit
+    return checker.proposal_edit(PROPOSAL)
 
 
-def strip_insert(text, insert):
-    """The guard WITHOUT this proposal's insert, applied or not."""
-    return text.replace(insert, "", 1)
+def variants(tmp_path, hook=None):
+    """(current copy, candidate copy) for one guard. The guard is READ, never written.
 
-
-def baseline():
-    """(guard text with the insert removed, the edit).
-
-    The founder APPLIES this proposal to the live guard. Once they do, `HOOK` is
+    `current` is the guard with this proposal's insert STRIPPED, applied or not.
+    The founder APPLIES this proposal to the live guard; once they do, `HOOK` is
     the patched guard, and a suite that treated it as the `current` baseline
-    measured the patch against itself: 6 of these 55 cases went red, the
-    negative control and two mutants included (PR #390 review round 3, major).
-    Stripping first makes every case below say the same thing before and after
-    application, which is the only way this suite survives its own fix landing.
+    measured the patch against itself: 6 of 55 cases went red, the negative
+    control and two mutants included (PR #390 review round 3, major).
     """
     edit = proposal_edit()
-    text = strip_insert(HOOK.read_text(encoding="utf-8"), edit["insert"])
-    assert edit["insert"] not in text, (
-        "the guard carries the insert more than once; stripping one copy left "
-        "another, and the baseline is not a baseline")
-    assert text.count(edit["anchor"]) == 1, (
-        "the proposal's anchor does not hit the guard exactly once; "
-        "applying it would land in the wrong place or not at all")
-    return text, edit
-
-
-def variants(tmp_path):
-    """(current copy, candidate copy). The guard is READ, never written."""
-    text, edit = baseline()
+    text = checker.baseline_text(hook or HOOK, edit)
     tmp_path = pathlib.Path(tmp_path)
     tmp_path.mkdir(parents=True, exist_ok=True)
     current = tmp_path / "current.sh"
     current.write_text(text, encoding="utf-8")
     candidate = tmp_path / "candidate.sh"
-    candidate.write_text(
-        text.replace(edit["anchor"], edit["insert"] + edit["anchor"], 1),
-        encoding="utf-8")
+    candidate.write_text(checker.apply_insert(text, edit), encoding="utf-8")
     return current, candidate
 
 
@@ -109,13 +115,27 @@ def test_the_derivations_returned_something():
     """A parse that came back empty would turn every case below into a no-op."""
     assert len(DESTRUCTIVE) >= 10
     assert len(SAFE) >= 10
-    assert checker.denylist_namespaces(HOOK.read_text(encoding="utf-8")), (
-        "no mcp__ patterns parsed out of the guard's MCP block: the block was "
-        "restructured and this suite is measuring nothing")
+    # The installed guard has to be readable and the anchor has to hit it once,
+    # or nothing below measures anything. baseline_text raises on either.
+    assert checker.baseline_text(HOOK)
 
 
+@needs_reference
+def test_the_reference_guard_still_carries_the_wildcards():
+    """The negative controls below rest on this, so it is asserted, not assumed.
+
+    If someone regenerates the fixture from a fixed guard, every control turns
+    into decoration and this is the case that says so first.
+    """
+    assert checker.denylist_namespaces(REFERENCE.read_text(encoding="utf-8")), (
+        "no mcp__ patterns parsed out of the reference guard's MCP block: the "
+        "frozen pre-fix guard no longer carries the defect this suite controls "
+        "against, so the controls are measuring nothing")
+
+
+@pytest.mark.parametrize("hook_name", ["installed", "reference"])
 def test_this_suite_says_the_same_thing_after_the_founder_applies_the_patch(
-        tmp_path, monkeypatch):
+        tmp_path, hook_name):
     """The whole variants() pair, not the strip in isolation.
 
     Built from a guard that ALREADY carries the insert, the pair must equal the
@@ -123,43 +143,48 @@ def test_this_suite_says_the_same_thing_after_the_founder_applies_the_patch(
     the negative control and two mutants red, because `current` silently became
     the patched guard (PR #390 review round 3, major).
     """
-    text, edit = baseline()
+    hook = HOOK if hook_name == "installed" else REFERENCE
+    if not hook.is_file():
+        pytest.skip("no %s guard here" % hook_name)
+    edit = proposal_edit()
     applied = tmp_path / "applied.sh"
     applied.write_text(
-        text.replace(edit["anchor"], edit["insert"] + edit["anchor"], 1),
+        checker.apply_insert(checker.baseline_text(hook, edit), edit),
         encoding="utf-8")
 
-    before = [p.read_text(encoding="utf-8") for p in variants(tmp_path / "before")]
-    monkeypatch.setattr(sys.modules[__name__], "HOOK", applied)
-    after = [p.read_text(encoding="utf-8") for p in variants(tmp_path / "after")]
+    before = [p.read_text(encoding="utf-8")
+              for p in variants(tmp_path / "before", hook)]
+    after = [p.read_text(encoding="utf-8")
+             for p in variants(tmp_path / "after", applied)]
     assert before == after
 
 
-# ---------------------------------------------------------------- RED (current)
-class TestTheGuardIsWrongInBothDirectionsToday:
-    """Observed failing. If one of these goes green, the defect is gone: delete
-    the case and say so, do not quietly relax it."""
+# -------------------------------------------------- RED (the frozen pre-fix guard)
+@needs_reference
+class TestTheGuardTheIssueWasFiledAgainst:
+    """Observed failing against the FROZEN reference guard, never the installed
+    one. These prove the oracle discriminates: a guard carrying the ASK-1923
+    defects must fail these cases. They cannot report what is installed today --
+    that is `TestTheInstalledGuardToday` below, deliberately separated after the
+    PR #686 review found these six asserting defects the live guard had already
+    lost."""
 
     def test_a_destructive_op_on_a_registered_namespace_is_allowed(self, tmp_path):
-        current, _ = variants(tmp_path)
+        current, _ = variants(tmp_path, REFERENCE)
         allowed = [c["tool"] for c in DESTRUCTIVE
                    if checker.decide(current, c["tool"], tmp_path,
                                      c.get("input")) == "allow"]
-        assert allowed, (
-            "every destructive MCP tool is already denied; the under-broad half "
-            "of ASK-1923 is fixed and this case has outlived it")
+        assert allowed
         assert "mcp__linear__delete_issue" in allowed, (
             "the founder's global CLAUDE.md names Linear *delete* as hook-blocked "
             "regardless of mode, and it is the case this issue was filed on")
 
     def test_a_read_only_query_is_denied(self, tmp_path):
-        current, _ = variants(tmp_path)
+        current, _ = variants(tmp_path, REFERENCE)
         denied = [c["tool"] for c in SAFE
                   if checker.decide(current, c["tool"], tmp_path,
                                     c.get("input")) == "deny"]
-        assert denied, (
-            "no read-only MCP query is denied any more; the over-broad half of "
-            "ASK-1923 is fixed and this case has outlived it")
+        assert denied, "the over-broad half is not visible in the reference guard"
 
     def test_one_mcp_approval_token_unlocks_a_different_destructive_op(self, tmp_path):
         """The widest of the four, and invisible to every case above.
@@ -174,24 +199,60 @@ class TestTheGuardIsWrongInBothDirectionsToday:
         would encode this test's idea of how a grant is scoped, and how a grant
         is scoped is the thing under measurement.
         """
-        current, _ = variants(tmp_path)
+        current, _ = variants(tmp_path, REFERENCE)
         verdict = checker.grant_leak(current, tmp_path)
         if verdict == "no-token-script":
             pytest.skip("no capability-token.sh on this machine to measure with")
-        assert verdict == "LEAK", (
-            "one MCP approval no longer unlocks another; that half of ASK-1923 "
-            "is fixed and this case has outlived it")
+        assert verdict == "LEAK"
 
     def test_the_denylist_wildcards_name_namespaces_nothing_registers(self, tmp_path):
         """The mechanism behind the under-broad half, not just its symptom."""
-        current, _ = variants(tmp_path)
+        current, _ = variants(tmp_path, REFERENCE)
         registered = checker.registered_namespaces(
             checker.default_configs(), checker.CASES)
         dead = checker.dead_wildcards(
             current.read_text(encoding="utf-8"), registered)
-        assert dead, (
-            "every denylist wildcard now names a registered namespace; the "
-            "premise of this issue no longer holds")
+        assert dead
+
+    def test_a_read_verb_does_not_let_a_write_past_the_wildcard(self, tmp_path):
+        """The inserted comment claims the read list reaches no write on the
+        namespaces the block below wildcards. `resolve` was on it, and
+        `resolve_diff_thread` WRITES -- it resolves a review thread at the vendor
+        side (PR #390 review). Pinned to the reference guard because the probe
+        needs a wildcard to get past, and the installed guard has none left."""
+        _, candidate = variants(tmp_path, REFERENCE)
+        probe = "mcp__plugin_linear_linear__resolve_diff_thread"
+        assert checker.decide(candidate, probe, tmp_path) == "deny", (
+            "a write on a wildcarded namespace took the read-only exit")
+
+    def test_the_checker_fails_on_the_unpatched_reference_guard(self, tmp_path):
+        """Negative control for `test_the_checker_agrees_end_to_end`. A checker
+        that passed both would be measuring nothing."""
+        current, _ = variants(tmp_path, REFERENCE)
+        assert checker.failures(current) != []
+
+
+# ------------------------------------------------ the guard installed right now
+class TestTheInstalledGuardToday:
+    """The one place this suite talks about the machine it runs on.
+
+    Kept to two cases on purpose. Everything else here is pinned to a frozen
+    artifact, so this is the only part that can change when the guard changes --
+    and when it does, these say which way.
+    """
+
+    def test_the_installed_guard_still_needs_this_proposal(self, tmp_path):
+        current, _ = variants(tmp_path)
+        assert checker.failures(current) != [], (
+            "the INSTALLED guard already satisfies every oracle case. This "
+            "proposal is obsolete: do not relax a case to make this pass. "
+            "Close ASK-1923, delete the proposal and this suite, and say in the "
+            "closeout which change fixed it.")
+
+    def test_the_patch_fixes_every_oracle_case_on_the_installed_guard(self, tmp_path):
+        """The script the founder will run, on the guard they will run it on."""
+        _, candidate = variants(tmp_path)
+        assert checker.failures(candidate) == []
 
 
 # ------------------------------------------------------------ GREEN (candidate)
@@ -226,6 +287,17 @@ class TestTheOperationKeyedSplitFixesBothDirections:
         assert "vendor side" not in reason
         assert "cannot see whether the state it removes is at the vendor" in reason
 
+    def test_the_sql_deny_message_does_not_claim_it_parsed_the_statement(self, tmp_path):
+        """The object-keyword list came back wrong twice, so the rule now keys on
+        the keyword alone and OVER-refuses. The message has to say that rather
+        than imply the gate understood the SQL (PR #686 review, major)."""
+        _, candidate = variants(tmp_path)
+        reason = checker.deny_reason(candidate, "mcp__supabase__execute_sql",
+                                     tmp_path, {"query": "TRUNCATE users;"})
+        assert reason is not None
+        assert "does not parse SQL" in reason
+        assert "refused on the keyword" in reason
+
     def test_the_audit_log_keeps_a_digest_and_not_the_payload(self, tmp_path):
         """Binding the grant to the verbatim tool_input also wrote every MCP
         argument into $HOME/.claude/audit/destructive-op-deny.log in plaintext
@@ -255,18 +327,6 @@ class TestTheOperationKeyedSplitFixesBothDirections:
             "the patch scopes $COMMAND to the tool name plus its tool_input, so "
             "either that assignment is gone or it lands after the first deny")
 
-    def test_a_read_verb_does_not_let_a_write_past_the_wildcard(self, tmp_path):
-        """The inserted comment claims the read list reaches no write on the
-        namespaces the block below wildcards. `resolve` was on it, and
-        `resolve_diff_thread` WRITES -- it resolves a review thread at the vendor
-        side (PR #390 review). The probe composes a real wildcarded namespace
-        with that real operation; it is a probe of the matcher, not a claim that
-        this exact tool is registered."""
-        _, candidate = variants(tmp_path)
-        probe = "mcp__plugin_linear_linear__resolve_diff_thread"
-        assert checker.decide(candidate, probe, tmp_path) == "deny", (
-            "a write on a wildcarded namespace took the read-only exit")
-
     def test_the_proposal_json_is_what_its_generator_builds(self):
         """The insert is shell inside a JSON string; a hand edit there is how a
         quoting defect reaches a security gate. One writer: build-mcp-proposal.py."""
@@ -277,27 +337,46 @@ class TestTheOperationKeyedSplitFixesBothDirections:
         assert proc.returncode == 0, proc.stderr or proc.stdout
 
     def test_the_checker_agrees_end_to_end(self, tmp_path):
-        """The script the founder will run, run the way they will run it."""
-        _, candidate = variants(tmp_path)
+        """On the reference guard, where the result cannot move under us."""
+        if not REFERENCE.is_file():
+            pytest.skip("no reference guard here")
+        _, candidate = variants(tmp_path, REFERENCE)
         assert checker.failures(candidate) == []
 
-    def test_the_checker_fails_on_the_unpatched_guard(self, tmp_path):
-        """Negative control for the case above. A checker that passed both would
-        be measuring nothing -- this is the mutation that proves it can go red."""
-        current, _ = variants(tmp_path)
-        assert checker.failures(current) != []
+    def test_the_candidate_measure_script_applies_the_insert_exactly_once(
+            self, tmp_path, monkeypatch):
+        """mcp-candidate-measure.py built its candidate from the guard AS FOUND,
+        so once the founder applies the proposal it measured a guard carrying
+        the insert twice (PR #686 review, minor). Driven here against an
+        already-applied guard, which is the state that broke it."""
+        import importlib.util as _util
+        edit = proposal_edit()
+        applied = tmp_path / "applied.sh"
+        applied.write_text(
+            checker.apply_insert(checker.baseline_text(HOOK, edit), edit),
+            encoding="utf-8")
+        monkeypatch.setenv("KIPI_DESTRUCTIVE_HOOK", str(applied))
+
+        spec = _util.spec_from_file_location(
+            "mcp_candidate_measure", SCRIPTS / "mcp-candidate-measure.py")
+        measure = _util.module_from_spec(spec)
+        spec.loader.exec_module(measure)
+        out = measure.candidate(tmp_path)
+        assert out.read_text(encoding="utf-8").count(edit["insert"]) == 1
 
 
 class TestEachFixCanGoRed:
-    """One mutant per decision point the PR #390 review added.
+    """One mutant per decision point the reviews added, all against the FROZEN
+    reference guard so a mutant's verdict cannot move with the machine.
 
     A check that has never been seen failing is decoration. Each case below
     breaks exactly one clause of the insert and watches the corresponding
     decision flip back to what the reviewer found.
     """
 
-    def mutant(self, tmp_path, old, new):
-        text, edit = baseline()
+    def mutant(self, tmp_path, old, new, hook=None):
+        edit = proposal_edit()
+        text = checker.baseline_text(hook or REFERENCE, edit)
         assert edit["insert"].count(old) == 1, (
             "the mutation target moved; this mutant is no longer breaking what "
             "it claims to break: %r" % old)
@@ -313,6 +392,27 @@ class TestEachFixCanGoRed:
                              'grep -Eqi "zzz-this-mutation-matches-nothing"')
         assert checker.decide(broken, "mcp__supabase__execute_sql", tmp_path,
                               {"query": "DROP TABLE users;"}) == "allow"
+
+    def test_with_the_object_keyword_list_back_a_truncate_walks_through(self, tmp_path):
+        """The regression this round exists for: an object keyword list allows
+        `TRUNCATE users;`, `DROP CONSTRAINT` and `DROP TRIGGER` (PR #686 review,
+        major; the same defect in a different spelling one round earlier)."""
+        broken = self.mutant(tmp_path, "(drop|truncate)([^a-zA-Z_]|$)",
+                             "(drop|truncate)([[:space:]])+(table|column)")
+        for statement in ("TRUNCATE users;",
+                          "DROP TRIGGER audit_trigger ON users;",
+                          "ALTER TABLE users DROP CONSTRAINT users_email_key;"):
+            assert checker.decide(broken, "mcp__supabase__execute_sql", tmp_path,
+                                  {"query": statement}) == "allow", statement
+
+    def test_with_the_auth_carve_out_unanchored_a_mutating_op_walks_through(self, tmp_path):
+        """`*authenticate*` matched the whole tool name, so any operation whose
+        name carried `auth` skipped every rule after it (PR #390 review round 4,
+        minor)."""
+        broken = self.mutant(tmp_path, "notion-complete-mcp-setup)$'",
+                             "notion-complete-mcp-setup)$|auth'")
+        assert checker.decide(broken, "mcp__claude_ai_Vercel__update_auth_settings",
+                              tmp_path) == "allow"
 
     def test_without_the_digest_the_payload_lands_in_the_audit_log(self, tmp_path):
         broken = self.mutant(tmp_path, 'COMMAND="$TOOL_NAME $_mcp_scope"',
