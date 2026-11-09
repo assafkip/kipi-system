@@ -7,6 +7,11 @@
 name: verify
 on:
   pull_request:
+    # edited: a PR body is checked again when it changes (ASK-4079). The WHOLE
+    # job runs on an edit, suites included: a run that skipped them would post a
+    # green `verify` that graded nothing, over a red one on the same head (PR #677
+    # round 1, major).
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 jobs:
@@ -108,3 +113,20 @@ jobs:
       # same reason as the two above: discovered by nothing else.
       - name: changed suite (push runs only the owning tests, never nothing)
         run: bash q-system/.q-system/test_verify_changed.sh q-system/.q-system/verify.sh
+      # LAST, so a refusal here never hides a suite result (PR #677 round 1).
+      # NO CLOSING KEYWORD AIMED AT ANOTHER OPEN PR (ASK-4079). 2026-11-08 22:57Z:
+      # merging #671 closed the live #664, because #671's body said "the WIP
+      # release closed #664" and GitHub reads that as a closing keyword. The body
+      # comes from the event file, never through an expression, so a body cannot
+      # inject shell.
+      - name: no closing keyword aimed at another open PR (ASK-4079)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"])); open("pr-body.tmp","w").write(e["pull_request"].get("body") or "")'
+          gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '.[].commit.message' > pr-commits.tmp
+          python3 q-system/.q-system/scripts/pr-closing-keyword-check.py --repo "$REPO" --pr "$PR" \
+            --body-file pr-body.tmp --commits-file pr-commits.tmp

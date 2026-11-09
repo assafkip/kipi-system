@@ -131,7 +131,10 @@ CODEX_OUTAGE_MAX_AGE=86400
 # to disable it (tests that pin the both-down hold do).
 # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
 # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
+# The stand-in's model is the routing table's second-runner row (ASK-4013). If the
+# read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
+SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -765,27 +768,20 @@ def started_hold(i):
 def started_open(i, d):
     return i["state"]["type"] == "started" and "Definition of Ready" in d and started_hold(i) == ""
 
-# AN EXPIRED PARK IS FOR E2 TO CLOSE, NOT FOR THIS LOOP TO WORK (ASK-3995, D24).
-# A park is the triage bot countdown to a close, not a hold: Backlog idle 30 days
-# gets a review date 30 days out, and at that date E2 closes it, reversibly. On
-# 2026-11-08 the first dispatch of the day went to ASK-834, a No-priority park 25
-# days past its date, while an Urgent ticket waited, and 227 of 502 parks were
-# expired. Two costs: one of three daily dispatches spent on a ticket the board
-# already ruled closed by age, and a race, because Linear moves a ticket to In
-# Progress only when its branch or PR appears, so until the first push E2 can
-# close it under a live run.
+# AN EXPIRED PARK IS WORKED LAST (ASK-3995 D24, changed by the D32 audit).
+# A park is the triage bot countdown to a close: Backlog idle 30 days gets a
+# review date 30 days out, and at that date chief E2 closes it, reversibly. On
+# 2026-11-08 2 of the day 3 dispatches went to expired parks while an Urgent
+# ticket waited, so D24 refused them. Then E2 was measured closing 0, starved
+# behind the 200 write cap, so a refused park went nowhere at all, and the daily
+# cap that made a dispatch scarce was lifted (D28). So the pool sort puts an
+# expired park after every live ticket: it never takes a slot from live work, and
+# it is still worked when nothing else is ready. The predicate below says which
+# tickets are expired parks; it no longer decides whether one is pickable.
 #
-# A PARK WITH ITS DATE AHEAD STAYS PICKABLE. Oldest first (ASK-248) exists to work
-# old tickets before they decay, and working one is the rescue.
-#
-# THE REFUSAL IS EXACTLY THE SET E2 CLOSES, NEVER WIDER. Mirrored from chief
-# bots/triage/skills/__init__.py, park_expired (the parked label, a due date
-# strictly before the LOCAL date, Backlog only, none of NEVER_AUTO_CLOSE) and its
-# open-PR rail, which runs first. Anything refused here that E2 will not close
-# has no exit at all. The open-PR half reads the heads this run already listed for
-# the WIP ceiling; a PR this worker cannot see (a human branch, another repo) is
-# the accepted residual on ASK-3995, and its exit is that PR merge. The two
-# copies drift in silence, so test-worker-expired-park.sh pins every arm.
+# THE SET IS E2 OWN (chief bots/triage/skills/__init__.py, park_expired: the
+# parked label, a due date strictly before the LOCAL date, Backlog only, none of
+# NEVER_AUTO_CLOSE, and no open PR). test-worker-expired-park.sh pins every arm.
 PARK_LABEL = "parked"
 PARK_NEVER_CLOSED = frozenset({"frozen", "security", "data-loss", "ready"})
 TODAY_LOCAL = now.astimezone().date().isoformat()
@@ -823,7 +819,6 @@ def ready(i):
     # runner lacks something it cannot grant itself (a harness permission, a
     # missing tool). Excluded for the same reason, routed somewhere different.
     if "blocked:capability" in labels: return False
-    if expired_park(i):              return False   # ASK-3995, E2 closes it
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
@@ -845,7 +840,6 @@ def ready_ignoring_project(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     return ("owner:assaf" not in labels and "owner:sana" in labels
             and "needs-scope" not in labels and "blocked:capability" not in labels
-            and not expired_park(i)
             and not is_fleet_alert(i)
             and "Definition of Ready" in (i.get("description") or "")
             and (i["state"]["type"] in QUEUE_STATES
@@ -991,10 +985,8 @@ founder_routed = held_with("owner:assaf", founder_scope)
 # claim about the ENVIRONMENT, and averaging it into "held" would hide the one
 # number that says the loop is starving for a capability nobody has granted.
 blocked_cap = held_with("blocked:capability")
-# Counted for the same reason (ASK-3995): a pool that shrinks by 200 overnight must
-# say why. These wait for E2, which closes them at its next sweep, 50 a day.
-expired_parks = [i for i in issues if in_this_repo(i) and expired_park(i)
-                 and "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}]
+# Expired parks are counted too (ASK-3995), after the pool is built, below: they
+# sort last rather than wait for E2 (ASK-4031, PR #663 round 1).
 
 pool = [i for i in issues if ready(i)]
 # PRIORITY, THEN OLDEST FIRST (ASK-248, NEW-6). The query has no orderBy, and
@@ -1008,7 +1000,16 @@ pool = [i for i in issues if ready(i)]
 # lower bands leave by age through the park and its close (chief, E2), not by
 # this order. Linear priority 0 means No priority and sorts after Low (4).
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
-pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
+# AN EXPIRED PARK SORTS LAST, IT IS NOT REFUSED (D32 audit, 2026-11-08). D24
+# (ASK-3995) refused it on the grounds that E2 closes it, but E2 was measured
+# closing 0 on Monday, starved behind the 200 write cap, so refused and not
+# closed was a hang: work that goes nowhere, against the founder direction. And
+# its budget argument went with the daily cap (D28). So it stays in the pool,
+# after every live ticket, and is worked when nothing else is ready: the queue
+# drains it instead of holding it. expired_park() still mirrors E2 own set, but
+# only to say which tickets sort last; it refuses nothing (PR #663 round 1).
+pool.sort(key=lambda i: (1 if expired_park(i) else 0,
+                         PRIORITY_RANK.get(i.get("priority"), 4),
                          i.get("createdAt") or "9999", i["identifier"]))
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
@@ -1019,6 +1020,11 @@ pool.sort(key=lambda i: (PRIORITY_RANK.get(i.get("priority"), 4),
 _set_aside = set((os.environ.get("KIPI_PICK_EXCLUDE") or "").split())
 if _set_aside:
     pool = [i for i in pool if i["identifier"] not in _set_aside]
+# Counted from the POOL, so the run line names only parks that will be worked
+# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()),
+# and after the set-aside filter, since a park the dispatcher set aside for the
+# day is not worked this run either (ASK-4043).
+expired_parks = [i for i in pool if expired_park(i)]
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
 # converge.sh and an explicit kipi-work invocation both name an issue the picker
 # already chose, and a rework round must be able to return to it. The job of the
@@ -1110,14 +1116,38 @@ def ticket_is_live(i):
     # rests on that function prose. A PR in this state is never released, not even
     # by the backstop: on a ceiling of old PRs, converge reworking one of them
     # holds a live claim, and closing it mid-run would throw away that round.
+    # An unreadable start stamp reads live here: a PR is never closed on a guess.
+    if ls._parse_stamp(i.get("startedAt")) is None:
+        return True
+    return live_evidence(i)
+
+
+def live_evidence(i):
+    # True only on POSITIVE evidence that someone is on the ticket now: a start
+    # stamp that parses and is inside the lane window, or a live worker claim.
+    # The live-first check in refusal() asks this, not ticket_is_live (PR #671
+    # round 1, major): an unreadable stamp reads live forever, and live-first
+    # would then mask the no-dor, off-repo, label and alert exits forever, while
+    # ticket-live has no backstop, so that PR would never leave the ceiling.
     began = ls._parse_stamp(i.get("startedAt"))
-    if began is None or (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+    if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+        return True
+    # A lane-mark.py marker is positive evidence too, and it outlives the 24h
+    # window for a long lane (ASK-4095).
+    if ls.lane_marker(i["identifier"]):
         return True
     return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
 
 
 def refusal(i):
     # (kind, why) for the run log and the release. It never decides: ready() does.
+    # LIVE FIRST (ASK-4057, D34). A started ticket someone may be on right now
+    # waits, whatever else is missing from it. 2026-11-08 21:58:58Z: with this check
+    # last, PR #664 was closed as no-dor while ASK-4013 was In Progress with a lane
+    # on it, two minutes before its DoR was written. A missing DoR, project or label
+    # on a live ticket is fixed on the ticket; it is never a reason to close the PR.
+    if i["state"]["type"] == "started" and live_evidence(i):
+        return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
         if held in labels:
@@ -1151,12 +1181,6 @@ def rework_hold(ident, url):
     i = by_ident.get(ident)
     if i is None:
         return hold("not-on-board", "ticket " + ident + " is not on the board")
-    # THE SECOND PICK PATH HONOURS THE SET-ASIDE LIST TOO (ASK-3993, PR #651 round 1,
-    # major). At the WIP ceiling this feed replaces the fresh pool, so a set-aside
-    # issue that left the pool above came straight back here, and the dispatcher
-    # refused it again every tick. Held as a wait: the list expires in a day.
-    if ident in _set_aside:
-        return hold("set-aside", "set aside for a day after a branch refusal (ASK-3993)")
     if ready(i):
         return "", ""
     if i["state"]["type"] == "started" and held_only_by(i, url):
@@ -1239,6 +1263,7 @@ if os.environ.get("WIP_OWN_RC", "") != "":
 print(json.dumps({
     "ready": [{"id": i["identifier"], "title": i["title"], "project": project_of(i),
                "state": i["state"]["type"], "priority": i.get("priority"),
+               "expired_park": expired_park(i),
                "why": pick_why(i)}
               for i in pool],
     "started_held": started_held,
@@ -1620,7 +1645,7 @@ EXPIRED_IDS="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(" ".joi
 # them, so the sentence would be false. Nothing is picked wrongly in those runs:
 # --issue replaces the pool, and a failed list starts nothing this tick.
 if [ "${EXPIRED_PARKS:-0}" != "0" ] && [ -z "$ONLY_ISSUE" ] && [ "${WIP_OWN_RC:-}" = "0" ]; then
-  say "worker: $EXPIRED_PARKS issue(s) not picked: parked past the review date, so chief E2 closes them, reversibly (ASK-3995; first ids: $EXPIRED_IDS)"
+  say "worker: $EXPIRED_PARKS issue(s) parked past the review date sort last: worked after every live ticket (D32; first ids: $EXPIRED_IDS)"
 fi
 
 # AN EMPTY QUEUE DOES NOT END THE RUN WHILE THE CEILING HOLDS (PR #613 review
@@ -2088,6 +2113,11 @@ done
 REVIEW_MAX_ROUNDS="${KIPI_REVIEW_MAX_ROUNDS:-3}"
 case "$REVIEW_MAX_ROUNDS" in ''|*[!0-9]*) REVIEW_MAX_ROUNDS=3 ;; esac
 
+wip_set_aside() {  # wip_set_aside <issue>: is it on the dispatcher set-aside list (ASK-3993)
+  case " ${KIPI_PICK_EXCLUDE:-} " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
 wip_move_why() {  # wip_move_why <issue> <pr> -> "" when a round would move it, else "<kind>|<why>"
   local issue="$1" pr="$2" n rounds=0 f rec verdict latest merge reviewed current gate
   n="$(attempts_for "$issue")"
@@ -2347,6 +2377,15 @@ if [ -n "$WIP_ROWS" ]; then
         w_why="$w_kind|$w_hold"
       else
         w_why="$(wip_move_why "$w_issue" "$w_pr")"
+        # THE REWORK PICK HONOURS THE SET-ASIDE LIST (ASK-3993, PR #651 round 1,
+        # major). At the ceiling this feed replaces the fresh pool, so a set-aside
+        # issue came straight back as the pick and the dispatcher refused it every
+        # tick. Asked LAST, of a PR every other check calls movable (PR #651 round
+        # 2, minor): a cap, a drift, an attempts limit or a refusal label keeps its
+        # own kind and its own exit instead of waiting a day behind this one.
+        if [ -z "$w_why" ] && wip_set_aside "$w_issue"; then
+          w_why="$(printf 'set-aside|%s' "set aside for a day after a branch refusal (ASK-3993)")"
+        fi
       fi
       if [ -n "$w_why" ]; then
         w_kind="${w_why%%|*}"
@@ -2528,13 +2567,19 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE MODEL THE RUN WOULD GET (ASK-4013), on its own line for the same reason
+    # as the priority line below. The same read the real run makes, so a dry run
+    # shows the routing table's answer before any session is spent on it.
+    say "[dry] model $ISSUE $(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
     # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
     # Linear priority: 1 Urgent, 2 High, 3 Medium, 4 Low, 0 or none No priority.
+    # An expired park reports 0: it sorts after all live work, so it must not win
+    # the once-a-day Urgent slot ahead of a live Urgent ticket (PR #663 round 1).
     if [ "${KIPI_PICK_PRIORITY:-0}" = "1" ]; then
       say "[dry] pick priority $ISSUE $(printf '%s' "$PICKED" | python3 -c 'import json,sys
-p = [i.get("priority") for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]]
+p = [0 if i.get("expired_park") else i.get("priority") for i in json.load(sys.stdin).get("ready", []) if i.get("id") == sys.argv[1]]
 print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
     DONE=$((DONE+1)); continue
@@ -2667,9 +2712,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # rebase prompt would tell the agent to force-push a diff nobody reviewed.
       DR="$(drift_rounds_for "$ISSUE")"
       if [ "$DR" -ge "$MAX_DRIFT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' recorded at $REVIEWED_SHA but the head is $CURRENT_SHA, still never reviewed after $DR/$MAX_DRIFT_ROUNDS drift round(s) -- review-redrive.py re-offers it for review against the live head on a later com.kipi.dispatch tick."
         if page_once "$ISSUE" drift_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head, needs a human" 2>/dev/null || true
+          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved at $REVIEWED_SHA but its head $CURRENT_SHA is still unreviewed after $MAX_DRIFT_ROUNDS re-review round(s) - unreviewed code sits at the head; review-redrive.py re-offers it against the live head on a later com.kipi.dispatch tick" 2>/dev/null || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR head still unreviewed after $DR of $MAX_DRIFT_ROUNDS drift rounds"
         continue
@@ -2747,6 +2792,34 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     fi
   fi
   if [ ! -d "$TREE" ]; then
+    # DISK FLOOR (ASK-3648). This tree is cut from shell, so the PreToolUse floor
+    # never sees it; on 2026-11-08 trees like it took the disk to 0 bytes free.
+    # Under the floor no issue gets a tree, so stop the whole run, not just this
+    # issue. Nothing was claimed yet (the claim is step 2, inside the tree).
+    #
+    # IT IS AN ENVIRONMENTAL HALT, AND IT IS MARKED LIKE ONE (PR #656 review,
+    # finding 1, major). A bare `break` ended the run with rc 0, no PR and an
+    # unmoved counter, which converge.sh reads as "Sana could not open one": it
+    # charged an attempt at exit-7 and paged, and three ticks took a healthy issue
+    # to TERMINAL. The env_halt flag is what converge reads (converge.sh, the
+    # ENV_HALT_MARK branch) to exit 9 with nothing charged and no page, and
+    # $ENV_HALT_FILE sends this run to the halt block after the loop and exit 9.
+    # Same two markers as step 4a. That block files NO page or note for a disk
+    # halt: kipi-dispatch.sh owns the disk page (page_once disk-floor), and the
+    # shared env-alert claim holds one slot for every condition, so taking it here
+    # would silence a usage-limit page for up to a day (PR #656 review round 2,
+    # finding 3).
+    # kipi-dispatch.sh holds the same floor every heartbeat, runs the worktree
+    # reaper, and resumes once space is back. Exit 2 (could not measure)
+    # proceeds: `git worktree add` below fails loudly.
+    FLOOR_LINE="$(python3 "$SCRIPT_DIR/worktree-disk-floor.py" --check </dev/null 2>>"$LOG")"; FLOOR_RC=$?
+    if [ "$FLOOR_RC" -eq 1 ]; then
+      say "INFRA: $FLOOR_LINE; no worktree for $ISSUE and no further issue this run (not counted against the issue). kipi-dispatch.sh re-checks the floor every heartbeat."
+      python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
+      printf '%s|%s|%s' "$ISSUE" "$DONE" "the disk is under the worktree floor: $FLOOR_LINE" > "$ENV_HALT_FILE" 2>/dev/null || true
+      break
+    fi
+    [ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (git worktree add below still fails loudly on a full disk)"
     mkdir -p "$(dirname "$TREE")"
     if ! git -C "$TARGET_REPO" worktree add -q -B "$BRANCH" "$TREE" "$BASE" 2>>"$LOG"; then
       # A concurrent worker on the SAME issue can create this tree between the
@@ -2824,9 +2897,9 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
   # tree and the claim is what says this session owns it.
   if [ -n "$EXISTING_PR" ] && ! tree_holds_pr_head "$TREE" "$BRANCH"; then
     if ! position_tree_on_pr_head "$TREE" "$BRANCH"; then
-      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. A human resolves this one: $TREE"
+      say "skip $ISSUE: $TREE is missing PR #$EXISTING_PR's commits and cannot be moved onto them -- $POSITION_REFUSAL. Refusing a round that would force-push over the PR. wip_release (this file) closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it. Tree: $TREE"
       if page_once "$ISSUE" tree_paged; then
-        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE needs a human" 2>/dev/null || true
+        bash "$NOTIFY" "worker: $ISSUE worktree does not hold PR #$EXISTING_PR's commits and has local work - $TREE. wip_release closes the PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it" 2>/dev/null || true
       fi
       # Release before skipping: a claim held by a run that did nothing wedges
       # this issue for every later run, which is the failure this refusal exists
@@ -2968,7 +3041,7 @@ So:
      commit, tests that no longer pass -- fix exactly that, and nothing else.
      Run this PR's tests before you push.
 
-Someone else may have pushed those commits (a founder push, GitHub's 'Update
+Another writer may have pushed those commits (a founder push, GitHub's 'Update
 branch'). Treat them as work you did not write and must not silently rewrite.
 
 Push to the SAME branch $BRANCH. Do not open a second PR."
@@ -3021,7 +3094,7 @@ earlier PR (ASK-113) hit it on both of its review rounds:
 
   round 1: the detector had no update path      -> the fix added one
   round 2: the update path rewrote a CLOSED issue and never reopened it,
-           so the detector went permanently dark after the operator did the
+           so the detector went permanently dark after the issue was closed, the
            right thing -- WORSE than before the fix
   round 2 also: 'the fix landed on the detector and not on the report'
 
@@ -3036,7 +3109,7 @@ ask what each now does with it:
 - is there a SECOND code path doing the same job that I did not touch? Two readers
   of the same input with different semantics is a defect even when each is
   individually defensible.
-- what does the operator SEE when this fires at 3am, and is that signal or noise?
+- what does Sana's alert triage SEE when this fires at 3am, and is that signal or noise?
 
 If a fix makes any downstream thing quieter, say so explicitly on the PR and
 justify it. Silence bought by a fix is the most expensive kind.
@@ -3130,7 +3203,11 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
+  # $3 is the model the routing table gives this issue's class (ASK-4013): before
+  # it, this run named no model and took whatever ANTHROPIC_MODEL its parent
+  # exported. Empty only when the read itself fails; then no --model, as before.
+  WORK_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
+  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -3292,7 +3369,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_OUTAGE_NEW=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_ENV_FILED=""; CODEX_OUTAGE_NEW=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -3351,10 +3428,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         crc=$?
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
-      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""
+      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
       # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
       # is refused too (a Claude limit) does the outage path below apply.
       if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        CODEX_DOWN_MARK="$(codex_env_marker "$CODEX_OUT" "$crc")"
         CODEX_STOOD_IN=1
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
@@ -3373,6 +3451,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # the every-line rule never matched a real Codex outage (PR #421 round 8).
       if CODEX_ENV="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
         [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
+        # WHAT IS FILED IS THE MARKER (ASK-3988, sp-762d494b): CODEX_ENV is the
+        # whole line Codex printed, for the log; the page and the ticket note
+        # carry CODEX_ENV_FILED, the closed vocabulary only.
+        CODEX_ENV_FILED="$(codex_env_marker "$CODEX_OUT" "$crc")"
+        [ -n "$CODEX_ENV_FILED" ] || CODEX_ENV_FILED="the second runner refused for a machine reason"
       else
         CODEX_ENV=""
         # Only CODEX answering ends a Codex outage. When Opus stood in, Codex
@@ -3425,6 +3508,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       if [ -n "$CODEX_STOOD_IN" ] && [ -z "$CODEX_ENV" ] \
          && ! { [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; }; then
         CODEX_ENV="Codex unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the Opus stand-in did not finish it either${CODEX_WHY:+: $(printf '%s' "$CODEX_WHY" | head -c 200)}"
+        CODEX_ENV_FILED="Codex unavailable (${CODEX_DOWN_MARK:-a machine refusal}); the Opus stand-in did not finish it either"
         CODEX_WHY=""
       fi
       # CHECKED FIRST, before any of the outcomes below. A runner that could not
@@ -3477,7 +3561,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # A day: nothing but a capability refusal ever reaches Codex, so nothing
         # else would release this claim (see env_alert_claim's max age).
         if env_alert_claim "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
-          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
+          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV_FILED). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
@@ -3536,7 +3620,7 @@ Sana stopped here:
 
 $SCOPE_WHY
 
-The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
+The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV_FILED\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
 
 **Next:** nothing per issue, and no founder decision. The next run tries both runners again; if Codex is genuinely not equipped either, it parks then with both refusals named."
     elif [ "$REFUSE_KIND" = "capability" ]; then
@@ -3741,13 +3825,26 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
+    REVIEW_LOG_FROM=$(( $(wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
     KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
     REVIEW_RC=$?
     if [ "$REVIEW_RC" = "9" ]; then
       # The reviewer's RUNNER refused (PR #421 round 16, minor): the same account
       # Sana just used ran out between the two calls. env_halt makes converge exit
       # 9 with no charge and no "review produced no verdict" page.
-      say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      # NAME THE CAUSE (ASK-4039, PR #656 round 3, minor 2): exit 9 is the reviewer's code
+      # for any machine condition, and since ASK-3648 that includes the disk floor. The
+      # line says which one it was, from the REVIEWER'S OWN reason (its "ENV: disk-floor"
+      # line in this run's part of the log), not from a second measurement that could
+      # disagree with what the reviewer saw (PR #674 review round 1, minor 3).
+      # The match names THIS PR: workers share the log, and another worker's line can
+      # land inside the window (PR #674 review round 2, minor). Two workers never review
+      # one PR at once (the claim lock), so the PR number makes the line this run's.
+      if tail -n "+${REVIEW_LOG_FROM:-1}" "$LOG" 2>/dev/null | grep -qE "ENV: disk-floor:.*no review tree for PR #${PR_NUM}([^0-9]|\$)"; then
+        say "$ISSUE: the reviewer stopped because the disk is under the worktree floor -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until kipi-dispatch.sh finds space again"
+      else
+        say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      fi
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
     elif [ "$REVIEW_RC" != "0" ]; then
       say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"
@@ -3934,6 +4031,15 @@ print(max(0, min(behind, budget)))
   # run's own log has to say why it stopped, or a reader tracing a quiet exit 9
   # finds nothing at all.
   say "worker: HALTED on $HALT_ISSUE -- the runner itself is unavailable ($HALT_REASON). $UNATTEMPTED issue(s) not attempted."
+  # A DISK HALT FILES NOTHING HERE (ASK-3648, PR #656 review round 2, finding 3).
+  # The claim below is one condition-free slot (env-alert.claim), so a disk halt
+  # taking it would swallow a usage-limit page for up to ENV_OUTAGE_MAX_AGE.
+  # kipi-dispatch.sh pages the disk condition itself, once per episode.
+  case "$HALT_REASON" in
+    "the disk is under the worktree floor"*)
+      say "worker: disk-floor halt; the page is kipi-dispatch.sh's (page_once disk-floor), not filed here"
+      exit 9 ;;
+  esac
   # ONE PAGE PER CONDITION, NOT ONE PER RUN (Codex round 5 on PR #200, major).
   # The alert above was already "one per run", and a run is the wrong unit for a
   # fact about the MACHINE: concurrent workers each meet the same dead account

@@ -129,7 +129,7 @@ run_dispatch() {
     && HOME="$WORK/home" KIPI_REPO="$HOMEREPO" \
        KIPI_DISPATCH_REGISTRY="$REG" \
        KIPI_DISPATCH_CURSOR="$WORK/cursor" \
-       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" \
+       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_DISPATCH_LIVE_PATTERN="kipi-fixture-no-such-converge" KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv" \
        KIPI_NOTIFY="/usr/bin/true" \
        bash "$DISPATCH" ) >>"$WORK/stdout.txt" 2>&1
 }

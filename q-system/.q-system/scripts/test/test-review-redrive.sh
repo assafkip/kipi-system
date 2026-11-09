@@ -17,6 +17,10 @@ SEL="$REPO_ROOT/q-system/.q-system/scripts/review-redrive.py"
 SEL="${REVIEW_REDRIVE_UNDER_TEST:-$SEL}"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ok   - $1"; }
@@ -84,6 +88,18 @@ select_all() {
 action_for() {   # action_for <pr>
   select_all | awk -F'\t' -v pr="$1" '$3 == pr {print $1}'
 }
+
+
+# --- lane cases (ASK-4095) helpers -------------------------------------------
+iso_ago() { python3 -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
+lane_marker() {  # lane_marker <id> <hours-from-now, negative = expired>
+  python3 -c 'import datetime,json,sys; u=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[2])); json.dump({"issue":sys.argv[1],"agent":"rules-to-code","since":"2026-11-08T20:00:00Z","until":u.strftime("%Y-%m-%dT%H:%M:%SZ")}, open(sys.argv[3],"w"))' "$1" "$2" "$KIPI_LANES_DIR/$1.json"
+}
+lane_ticket() {  # lane_ticket <id> <state> <started-hours-ago> | lane_ticket UNREADABLE
+  if [ "$1" = "UNREADABLE" ]; then printf '"UNREADABLE"' > "$KIPI_LANE_TICKETS"; return; fi
+  python3 -c 'import json,sys; json.dump({sys.argv[1]: {"state": sys.argv[2], "startedAt": sys.argv[3]}}, open(sys.argv[4],"w"))' "$1" "$2" "$(iso_ago "$3")" "$KIPI_LANE_TICKETS"
+}
+lane_reset() { printf '{}' > "$KIPI_LANE_TICKETS"; find "$KIPI_LANES_DIR" -name '*.json' -exec mv {} "$KIPI_LANES_DIR/.." \; 2>/dev/null; }
 
 echo "== review-redrive =="
 
@@ -228,6 +244,26 @@ PICK1="$(select_one)"
 LEDGER_AFTER="$(cat "$LEDGER")"
 [ "$LEDGER_AFTER" = '{}' ] && ok "select wrote NOTHING to the ledger -- the offer is not the claim" \
   || bad "select mutated the ledger: $LEDGER_AFTER"
+
+# A LIVE LANE IS NOT REDRIVEN, EITHER ACTION (ASK-4095). The same REQUEST CHANGES
+# candidate as above: with a lane on it nothing is offered and the log names the
+# lane; with the lane gone it is offered again.
+lane_reset; lane_marker ASK-298 6
+select_err() {
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
+      KIPI_NOTIFY="$BIN/notify.sh" \
+    python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>&1 >/dev/null
+}
+LANE_ERR="$(select_err)"
+[ -z "$(select_one)" ] && printf '%s' "$LANE_ERR" | grep -q 'a lane is on it (lane marker: rules-to-code holds ASK-298' \
+  && ok "a REQUEST CHANGES PR with a live lane marker is not redriven, and the log names the lane" \
+  || bad "a live lane's PR was offered: '$(select_one)' $(select_err | tail -2)"
+lane_reset; lane_ticket ASK-298 started 2
+[ -z "$(select_one)" ] && ok "a non-fleet ticket started 2h ago is a lane: not redriven" \
+  || bad "a 2h-old non-fleet ticket was redriven: '$(select_one)'"
+lane_reset
+[ "$(printf '%s' "$(select_one)" | cut -f1)" = "rework" ] && ok "the same PR with no lane is redriven" \
+  || bad "with the lane gone the PR was not offered: '$(select_one)'"
 
 # Read-only means REPEATABLE. A select that claimed on the way past would offer
 # once and then go silent forever, which is how the defect hid: the first run

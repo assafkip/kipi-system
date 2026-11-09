@@ -98,7 +98,10 @@ PROMOTED_MARKER = "kipi-alert-promoted"
 # to infer success from "the call did not raise", and one did exactly that and
 # counted a refusal as a write. The status now travels WITH the line, so a call
 # site cannot forget to ask.
-Outcome = namedtuple("Outcome", "wrote line")
+# WAITS (ASK-3986): a refusal that leaves the alert open for tomorrow, because it
+# could not be re-read, is work that waits; the heartbeat queue counts it. A
+# refusal because the ticket is not an alert, or was promoted, is terminal here.
+Outcome = namedtuple("Outcome", "wrote line waits", defaults=(False,))
 TRIAGE_LABEL = "needs-triage"
 OWNER_LABEL = "owner:sana"
 FOUNDER_LABEL = "owner:assaf"
@@ -318,7 +321,7 @@ def do_promote(ls, issue: dict, dor: str, why: str, apply: bool) -> Outcome:
     ident = issue["identifier"]
     fresh = reread(ls, ident) if apply else issue
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     desc = fresh.get("description") or ""
     refusal = promotion_refusal(fresh)
     if refusal:
@@ -363,7 +366,7 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     # equally careful; only one of them was.
     fresh = reread(ls, ident)
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     if not is_alert_ticket(fresh.get("description") or ""):
         return Outcome(False, f"{ident}: SKIPPED (not an alert ticket; this verb "
                               "closes alerts, and closing anything else is not "
@@ -429,7 +432,7 @@ def do_close(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     latest = reread(ls, ident)
     if latest is None:
         return Outcome(False, f"{ident}: SKIPPED (could not confirm it is still an "
-                              "alert immediately before closing)")
+                              "alert immediately before closing)", True)
     if not is_alert_ticket(latest.get("description") or ""):
         return Outcome(False, f"{ident}: SKIPPED (promoted while this close was "
                               "being prepared)")
@@ -508,7 +511,12 @@ VERDICTS = ("PROMOTE", "HOLD")
 # PINNED, not inherited (batch-jobs-pin-model): an unpinned headless `claude -p`
 # rides whatever the interactive default is that night, and the fleet has paid
 # for that once already. The caller's ANTHROPIC_MODEL is overwritten on purpose.
-TRIAGE_MODEL = "claude-opus-5"
+# The pin is the routing table's alert-triage row (ASK-4013), not a literal here:
+# one table says which job runs on which model, with the evidence beside it.
+_mr_spec = importlib.util.spec_from_file_location("model_route", HERE / "model_route.py")
+model_route = importlib.util.module_from_spec(_mr_spec)
+_mr_spec.loader.exec_module(model_route)
+TRIAGE_MODEL = model_route.pick("alert-triage")
 MODEL_TIMEOUT = 300
 
 HELD_LABEL_Q = """query($n:String!){issueLabels(filter:{name:{eq:$n}}){
@@ -519,7 +527,7 @@ LABEL_CREATE_M = """mutation($input:IssueLabelCreateInput!){
 
 TRIAGE_PROMPT = """You are triaging ONE fleet alert ticket in a software repo.
 
-Decide whether it describes real, scoped engineering work someone should execute.
+Decide whether it describes real, scoped engineering work the fleet worker (linear-worker.sh) can execute.
 
 Reply with EITHER:
   PROMOTE
@@ -725,7 +733,7 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> Outcome:
         return Outcome(False, f"{ident}: WOULD HOLD ({reason[:70]})")
     fresh = reread(ls, ident)
     if fresh is None:
-        return Outcome(False, f"{ident}: SKIPPED (could not re-read)")
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
     # STILL AN ALERT? (R2.) A promotion can land during the model call; holding
     # it afterwards would stamp worker-ready work as parked.
     if not is_alert_ticket(fresh.get("description") or ""):
@@ -1264,6 +1272,8 @@ def run_prepass(ls, pool: list, apply: bool, pr_state=None,
             continue
         print(out.line)
         tally["closed" if out.wrote else ("skipped" if apply else "would_close")] += 1
+        if apply and not out.wrote and out.waits:
+            tally["skipped_waits"] += 1
         if out.wrote or not apply:
             tally[f"rule:{rule}"] += 1
     if apply and (tally["unchecked"] == 0 or last_examined is not None):
@@ -1280,8 +1290,9 @@ def _prepass_part(pre: Counter, apply: bool) -> str:
     bound = f", {pre['unchecked']} unchecked (read bound)" if pre["unchecked"] else ""
     if not apply:
         return f"; pre-pass (no model): {pre['would_close']} would close{by}{held}{bound}"
+    waits = f" ({pre['skipped_waits']} wait for tomorrow)" if pre["skipped_waits"] else ""
     return (f"; pre-pass (no model): {pre['closed']} closed{by}, {pre['skipped']} "
-            f"skipped, {pre['failed']} failed{held}{bound}")
+            f"skipped{waits}, {pre['failed']} failed{held}{bound}")
 
 
 def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
@@ -1309,6 +1320,8 @@ def _triage_one(ls, issue: dict, decider, apply: bool) -> str:
     print(out.line)
     if out.wrote:
         return "written"
+    if apply and out.waits:
+        return "skipped_waits"      # folded back into skipped by run_triage (ASK-3986)
     return "skipped" if apply else "previewed"
 
 
@@ -1388,12 +1401,21 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     tally = Counter()
     for issue in batch:
         tally[_triage_one(ls, issue, decider, apply)] += 1
+    # A waiting skip is still a skip for the pass line and the exit code; it is
+    # counted apart only so the queue can hold it (ASK-3986, PR #657 round 1).
+    tally["skipped"] += tally["skipped_waits"]
+    # ONE QUEUE NUMBER FOR BOTH CHANNELS (PR #657 round 1, minor 3). The .out line
+    # and the heartbeat row described the same night with different queues; both
+    # now count what stays open for tomorrow: the unbatched pool, failed and
+    # waiting pre-pass closes, and waiting model-half skips.
+    queued = (len(pool) - len(batch) + pre["failed"] + pre["skipped_waits"]
+              + tally["skipped_waits"])
     reasons = Counter(why.split(";")[0] for _, why in refused)
     line = (("" if apply else "DRY RUN, nothing sent: ")
             + ("pre-pass only, no model: " if prepass_only else "")
             + f"triage pass: {tally['written']} written, "
             + (f"{tally['skipped']} skipped, " if apply else f"{tally['previewed']} previewed, ")
-            + f"{tally['failed']} failed; {len(pool) - len(batch)} still queued; "
+            + f"{tally['failed']} failed; {queued} still queued; "
             + f"{len(refused)} refused"
             + (" (" + ", ".join(f"{n} {r}" for r, n in reasons.most_common()) + ")"
                if refused else "")
@@ -1402,11 +1424,18 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     print(line)
     write_run_evidence(line)
     if beat:
-        heartbeat(len(batch), tally["written"], queue=len(pool) - len(batch) + pre["failed"])
+        heartbeat(len(batch), tally["written"], queue=queued)
     rc = _pass_exit_code(tally, len(batch), apply)
     if pre["failed"]:
         print(f"  PRE-PASS: {pre['failed']} close(s) failed; they stay open for "
               "tomorrow", file=sys.stderr)
+        rc = rc or 1
+    # The exit code reads a waiting skip the way it reads a failed close (PR #657
+    # round 1, minor 1): Linear did not answer, the alert stays open, and launchd
+    # must not record a successful night that closed nothing.
+    if pre["skipped_waits"]:
+        print(f"  PRE-PASS: {pre['skipped_waits']} close(s) skipped on a failed re-read; "
+              "they stay open for tomorrow", file=sys.stderr)
         rc = rc or 1
     return rc
 

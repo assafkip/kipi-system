@@ -216,6 +216,34 @@ def job_status(label):
     return classify_status(result.returncode, result.stdout)
 
 
+def load_stopped_labels():
+    """Every label deliberately stopped, by EITHER source: the pause ledgers above,
+    or launchd-intent.json declaring it disabled (ASK-4055, PR #676 round 1).
+
+    The union, not the manifest's resolution. launchd-intent-verify resolves a
+    disagreement in the manifest's favour, which is right for a writer deciding
+    what to re-arm, and wrong for a reporter: a job paused in a ledger and marked
+    enabled in the manifest would be paged as dark, with a body saying it is not
+    in the ledger. Either source stopping a job is a deliberate stop; the
+    disagreement itself is launchd-intent-verify's conflict report to raise. An
+    unreadable manifest leaves the ledgers, so this never reads wider than today.
+    """
+    stopped = load_paused_labels()
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "iv_for_stopped", Path(__file__).resolve().parent / "launchd-intent-verify.py")
+        iv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iv)
+        texts = [t for t in (iv.read_text(q) for q in iv.LEGACY_PAUSED_FILES) if t]
+        intent, _conflicts = iv.load_intent(iv.read_text(iv.INTENT_MANIFEST), texts)
+        stopped |= {k for k, v in intent.items() if v == iv.DISABLED}
+    except Exception:  # noqa: BLE001 - an unreadable manifest leaves the ledgers
+        pass
+    return stopped
+
+
 def status_problem(label, paused):
     """The (label, kind, detail) for one job, or None when it is healthy."""
     kind, code = job_status(label)
@@ -236,7 +264,7 @@ def discover_problems():
     denylisted families; a watched prefix beats the denylist."""
     problems = []
     unwatched = {}
-    paused = load_paused_labels()
+    paused = load_stopped_labels()
     watched = load_watched_prefixes()
     ignored = load_ignored_prefixes()
     for plist in sorted(LAUNCH_AGENTS.glob("*.plist")):

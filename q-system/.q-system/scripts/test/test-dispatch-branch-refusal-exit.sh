@@ -30,6 +30,10 @@ bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; [ -n "${2:-}" ] && printf '       
 
 [ -f "$DISPATCH" ] || { echo "FATAL: kipi-dispatch.sh not found at $DISPATCH"; exit 1; }
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 export KIPI_NOTIFY=/usr/bin/true
 
@@ -146,7 +150,7 @@ run_dispatch() {
   ( cd "$HOMEREPO" \
     && PATH="$STUB:$PATH" HOME="$WORK/home" KIPI_REPO="$HOMEREPO" \
        KIPI_DISPATCH_REGISTRY="$REG" KIPI_DISPATCH_CURSOR="$WORK/cursor" \
-       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_NOTIFY="/usr/bin/true" \
+       KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" KIPI_DISPATCH_LIVE_PATTERN="kipi-fixture-no-such-converge" KIPI_DISPATCH_LIVE_LEDGER="$WORK/live.tsv" KIPI_NOTIFY="/usr/bin/true" \
        bash "$DISPATCH" ) >> "$WORK/stdout.txt" 2>&1
 }
 new_tick() {  # new_tick <ledger rows...>: fresh home state carrying this ledger

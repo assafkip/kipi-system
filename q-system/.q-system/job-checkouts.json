@@ -22,6 +22,7 @@
     "com.kipi.launchd-health",
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",
+    "com.kipi.linear-not-done-reopen",
     "com.kipi.pr-owner",
     "com.kipi.worktree-reaper"
   ],
@@ -64,6 +65,12 @@
     },
     "com.kipi.linear-triage-health": {
       "reason": "Reads instance-registry.json, which is ahead of origin in the shared checkout (infohawk).",
+      "ticket": "ASK-3967",
+      "since": "2026-11-08",
+      "expires": "2026-12-08"
+    },
+    "com.kipi.linear-owner-sweep": {
+      "reason": "Reads instance-registry.json to tell fleet projects from outside ones; pinned, it read origin's copy, which lacks infohawk, and left infohawk tickets unowned with exit 0 (PR #654 review, major).",
       "ticket": "ASK-3967",
       "since": "2026-11-08",
       "expires": "2026-12-08"

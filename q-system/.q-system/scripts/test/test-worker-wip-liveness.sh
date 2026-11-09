@@ -60,12 +60,12 @@ def ago(hours):
     return (NOW - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
 
 
-def issue(ident, state, started_hours=None, alert=False):
+def issue(ident, state, started_hours=None, alert=False, dor=True, project="kipi-system"):
     return {"id": "uuid-" + ident, "identifier": ident, "title": "fixture " + ident,
-            "description": "## Definition of Ready\nOutcome: x" + (ALERT if alert else ""),
+            "description": ("## Definition of Ready\nOutcome: x" if dor else "Outcome: x") + (ALERT if alert else ""),
             "state": {"name": NAMES[state], "type": state},
             "startedAt": ago(started_hours) if started_hours is not None else None,
-            "project": {"name": "kipi-system"}, "team": {"id": "team-fixture"},
+            "project": {"name": project} if project else None, "team": {"id": "team-fixture"},
             "labels": {"nodes": [{"id": "lab-owner", "name": "owner:sana"}]}}
 
 
@@ -83,6 +83,13 @@ TICKETS.append(issue("ASK-3574", "completed", MONTH))             # PR 584
 for n in (3823, 3821, 3827, 3830, 3829):                          # the 5 lanes
     TICKETS.append(issue("ASK-%d" % n, "backlog"))
 TICKETS.append(issue("ASK-971", "started", 1))                    # a LIVE lane
+# L15 (ASK-4057): live tickets a lane is on, one with no DoR, one with no project.
+TICKETS.append(issue("ASK-981", "started", 1, dor=False))
+TICKETS.append(issue("ASK-982", "started", 1, project=None))
+TICKETS.append(issue("ASK-983", "started", 1))
+TICKETS.append(issue("ASK-984", "started", 1))
+# L15c (PR #671 round 1, major): started, start stamp unreadable, no DoR.
+TICKETS.append(issue("ASK-985", "started", None, dor=False))
 for n in (901, 902, 903, 904, 905, 961, 962, 963, 964, 965):
     TICKETS.append(issue("ASK-%d" % n, "started", MONTH))
 BOARD = {i["identifier"]: i for i in TICKETS}
@@ -589,7 +596,7 @@ make_kipi() {  # make_kipi <release|norelease>
   cat > "$DREPO/kipi" <<SH
 printf '%s\n' "\$*" >> "$DROOT/kipi-calls.log"
 case "\$1 \$*" in
-  *--release-only*) echo "release PR #543 (cap): closed" ;;
+  *--release-only*) printf 'apply-excl=[%s]\n' "\${KIPI_PICK_EXCLUDE:-}" >> "$DROOT/kipi-calls.log"; echo "release PR #543 (cap): closed" ;;
   work*) if [ "$1" = "release" ]; then echo "[dry] would release PR #543 (cap): close it"; else echo "nothing ready."; fi ;;
 esac
 exit 0
@@ -599,15 +606,25 @@ SH
 run_dispatch() {  # run_dispatch <dispatch-script>
   rm -rf "$DROOT/home/.config/kipi"; mkdir -p "$DROOT/home/.config/kipi"
   date -u +%s > "$DROOT/home/.config/kipi/dispatch-lastbeat"; : > "$DROOT/kipi-calls.log"
+  [ -z "${SEED_SET_ASIDE:-}" ] || printf '%s\t%s\n' "$SEED_SET_ASIDE" "$(date +%s)" \
+    > "$DROOT/home/.config/kipi/dispatch-branch-refused.tsv"
   ( cd "$DREPO" && HOME="$DROOT/home" PATH="$DROOT/bin:$PATH" \
       KIPI_REPO="$DREPO" KIPI_NOTIFY="$DROOT/notify.sh" \
       KIPI_DISPATCH_DAILY_MAX=9 KIPI_DISPATCH_MAX=999 \
+      KIPI_DISPATCH_MEM_READING="free=90 procs=0" \
       bash "$1" >/dev/null 2>&1 )
 }
 make_kipi release; run_dispatch "$DISPATCH"
 grep -q -- 'work --release-only --apply' "$DROOT/kipi-calls.log" \
   && ok "L13: a dry pick that names a release makes the dispatcher run kipi work --release-only --apply" \
   || bad "L13: the dispatcher applies the named release" "kipi calls: $(tr '\n' '|' < "$DROOT/kipi-calls.log")"
+# L13c. THE APPLY PASS SEES THE SAME SET-ASIDE LIST AS THE DRY PICK (ASK-3993
+# follow-up, PR #651 round 2, major). Without it the apply pass recomputes the
+# hold kinds without the list and closes a different PR than the log names.
+make_kipi release; SEED_SET_ASIDE="ASK-931" run_dispatch "$DISPATCH"
+grep -q '^apply-excl=\[ASK-931\]$' "$DROOT/kipi-calls.log" \
+  && ok "L13c: the release-apply pass carries the set-aside list the dry pick used" \
+  || bad "L13c: the release-apply pass carries the set-aside list" "kipi calls: $(tr '\n' '|' < "$DROOT/kipi-calls.log")"
 make_kipi norelease; run_dispatch "$DISPATCH"
 grep -q -- '--release-only' "$DROOT/kipi-calls.log" \
   && bad "L13b (negative): no release named, no apply pass" "$(tr '\n' '|' < "$DROOT/kipi-calls.log")" \
@@ -621,6 +638,71 @@ else
     && bad "mutant L13c survived" "the apply pass ran with its block cut out" \
     || ok "mutant killed: without the dispatcher block the release is never applied live, so L13 can go red"
 fi
+
+# ============================================================================
+# L15. A LIVE TICKET'S PR IS NEVER A RELEASE TARGET (ASK-4057, D34)
+# ============================================================================
+# 2026-11-08 21:58:58Z: the release closed PR #664 as kind no-dor while ASK-4013
+# was In Progress with a lane on it, because refusal() read the DoR and project
+# before it asked whether the ticket was live. Two live tickets, older than every
+# PR in today's set: one with no DoR, one with no project. Neither is released;
+# the tick passes over both as ticket-live and releases the oldest real one.
+prs "$WORK/live.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "982:sana/ask-982:2026-10-02T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/live.prs" "$WORK/l15.out" --limit 1
+REL15="$(releases "$WORK/l15.out")"
+[ "$REL15" = "[dry] would release PR #543 (cap);" ] \
+  && ok "L15: live tickets with no DoR or no project are passed over; the release is the oldest real one, PR #543 (cap)" \
+  || bad "L15: a live ticket's PR is never a release target" "releases: ${REL15:-none}. Output: $(flat "$WORK/l15.out")"
+grep -q '#981 (ASK-981): ticket held' "$WORK/l15.out" && grep -q '#982 (ASK-982): ticket held' "$WORK/l15.out" \
+  && ok "L15b: both live PRs are named as passed over, ticket held" \
+  || bad "L15b: both live PRs are named as passed over" "$(grep 'passed over' "$WORK/l15.out" | cut -c1-600)"
+# L15c. An unreadable start stamp is not evidence anyone is on the ticket, so it
+# never masks a close exit: with no DoR the PR is released as no-dor, as before
+# ASK-4057. Read as live, it would wait forever, since ticket-live has no backstop.
+prs "$WORK/nostamp.prs" "985:sana/ask-985:2026-09-30T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/nostamp.prs" "$WORK/l15c.out" --limit 1
+REL15C="$(releases "$WORK/l15c.out")"
+[ "$REL15C" = "[dry] would release PR #985 (no-dor);" ] \
+  && ok "L15c: a started ticket with an unreadable start stamp and no DoR is still released (no-dor)" \
+  || bad "L15c: an unreadable stamp never masks a close exit" "releases: ${REL15C:-none}. $(grep 'passed over' "$WORK/l15c.out" | cut -c1-300)"
+# L15d. THE KIND IS ticket-live, NOT ticket-held: the backstop takes an old
+# ticket-held PR past the age bar, and never a ticket-live one (PR #671 round 1,
+# minor: same prose, same wait exit, so only the backstop tells them apart). Five
+# live PRs, all far past the 3-day bar, and nothing is released.
+prs "$WORK/alllive.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "982:sana/ask-982:2026-10-02T12:00:00Z" \
+    "983:sana/ask-983:2026-10-03T12:00:00Z" "984:sana/ask-984:2026-10-04T12:00:00Z" "971:sana/ask-971:2026-10-05T12:00:00Z"
+run_worker "$WORKER" "$WORK/alllive.prs" "$WORK/l15d.out" --limit 1
+REL15D="$(releases "$WORK/l15d.out")"
+[ -z "$REL15D" ] && grep -q 'WIP ceiling: 5 open own PRs' "$WORK/l15d.out" \
+  && ok "L15d: five old live PRs at the ceiling: the backstop releases none (their kind is ticket-live)" \
+  || bad "L15d: the backstop never takes a live PR" "releases: ${REL15D:-none}. $(grep 'WIP ceiling' "$WORK/l15d.out" | head -1 | cut -c1-300)"
+# Mutants run from the copied scripts tree (L12), beside the libraries the worker
+# sources; a mutant that crashes must not count as killed, so each one must reach
+# its WIP line first.
+sed 's/return hold("ticket-live", "ticket held: "/return hold("ticket-held", "ticket held: "/' "$WORKER" > "$MUT/linear-worker.sh"
+run_worker "$MUT/linear-worker.sh" "$WORK/alllive.prs" "$WORK/l15dm.out" --limit 1
+grep -q 'WIP ceiling: 5 open own PRs' "$WORK/l15dm.out" && [ -n "$(releases "$WORK/l15dm.out")" ] \
+  && ok "mutant killed: with the live kind renamed ticket-held, the backstop releases a live PR, so L15d can go red" \
+  || bad "mutant L15d survived" "renaming the kind released nothing: $(flat "$WORK/l15dm.out")"
+python3 - "$WORKER" "$MUT/linear-worker.sh" <<'MUT'
+import sys
+s = open(sys.argv[1]).read()
+a = '    if i["state"]["type"] == "started" and live_evidence(i):\n        return hold("ticket-live",'
+if s.count(a) != 1:
+    sys.exit("anchor")
+k = s.index(a)
+end = s.index("\n", s.index("\n", k) + 1) + 1
+open(sys.argv[2], "w").write(s[:k] + s[end:])
+MUT
+if cmp -s "$WORKER" "$MUT/linear-worker.sh"; then
+  bad "mutant L15: anchor" "refusal() has no live-first check to cut"
+else
+  run_worker "$MUT/linear-worker.sh" "$WORK/live.prs" "$WORK/l15m.out" --limit 1
+  [ "$(releases "$WORK/l15m.out")" = "[dry] would release PR #981 (no-dor);" ] \
+    && ok "mutant killed: without the live-first check the live no-DoR PR #981 is released, so L15 can go red" \
+    || bad "mutant L15 survived" "releases: $(releases "$WORK/l15m.out") $(flat "$WORK/l15m.out" | cut -c1-300)"
+fi
+cp "$WORKER" "$MUT/linear-worker.sh"
 
 # ============================================================================
 # L14. --release-only stops before the issue loop

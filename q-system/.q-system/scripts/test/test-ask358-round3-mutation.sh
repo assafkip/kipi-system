@@ -43,6 +43,10 @@ for f in "$SRC" "$SCRIPTS_SRC/attempts-ledger.py" "$SCRIPTS_SRC/review-redrive.p
 done
 
 TMP="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$TMP/lane-tickets.json"; mkdir -p "$TMP/lanes"
+export KIPI_LANE_TICKETS="$TMP/lane-tickets.json" KIPI_LANES_DIR="$TMP/lanes"
 cleanup() { [ -n "${TMP:-}" ] && [ -d "$TMP" ] && /bin/rm -r -f "$TMP"; }
 trap cleanup EXIT
 export PYTHONDONTWRITEBYTECODE=1
@@ -78,6 +82,8 @@ mkdir -p "$TMP/f-control" "$TMP/f-mutant"
 for d in f-control f-mutant; do
   cp "$SRC" "$TMP/$d/ci-redrive.py"
   cp "$SCRIPTS_SRC/attempts-ledger.py" "$TMP/$d/attempts-ledger.py"
+  # The lane rule (ASK-4095) loads linear-sync.py beside ci-redrive.py.
+  cp "$SCRIPTS_SRC/linear-sync.py" "$SCRIPTS_SRC/linear-claim.py" "$TMP/$d/"
 done
 check "the fork-gate mutation applied to the copy" \
   "$(mutate "$TMP/f-mutant/ci-redrive.py" \
@@ -143,6 +149,7 @@ FSCRIPTS="$FAKE/q-system/.q-system/scripts"
 mkdir -p "$FSCRIPTS" "$ROOT/home/.config/kipi" "$ROOT/bin"
 cp "$SRC" "$FSCRIPTS/ci-redrive.py"
 cp "$SCRIPTS_SRC/attempts-ledger.py" "$FSCRIPTS/attempts-ledger.py"
+cp "$SCRIPTS_SRC/linear-sync.py" "$SCRIPTS_SRC/linear-claim.py" "$FSCRIPTS/"
 # PRESENT ON PURPOSE: it is the file that makes the fail-open re-query reachable.
 # Without it branch_guard's fallback arm never runs and the mutant looks fixed.
 cp "$SCRIPTS_SRC/review-redrive.py" "$FSCRIPTS/review-redrive.py"

@@ -199,4 +199,48 @@ fi
 # FUTURE break pages at once rather than inheriting this outage's 24h window.
 clear_page_marks
 
-exec env KIPI_REPO="$PINNED" bash "$PINNED/kipi-dispatch.sh" "$@"
+# --- FILL EVERY FREE REPO (ASK-4008, D29) -------------------------------------
+# One pass of kipi-dispatch.sh enters one repo. On 2026-11-08 that capped the
+# fleet at one dispatch per 15-minute tick, 4 an hour across 7 repos, while runs
+# took 4 to 13 minutes, and the founder asked whether the limit "actually stops
+# us". It did not need to. So each tick runs a pass per rotation repo, each a full
+# and fresh run with every guard: the turn lock, preflight, one run per repo, the
+# memory gate, the daily count. The 900s tick stays, so GAP_MINUTES and the lock
+# timeouts keep their meaning.
+#
+# THE LOOP STOPS ON THE PASS VERDICT, NOT ON A GUESS. Each pass writes one line to
+# PASS_FILE from its turn lock EXIT trap (pass_verdict_write in kipi-dispatch.sh):
+# the repo it entered and how many repos the rotation holds. No verdict means the
+# pass stopped before taking the turn (daily cap, memory gate, stale checkout, a
+# busy turn): stop. An empty "entered" means no free repo: stop. A non-zero exit
+# is an infra failure: stop and hand the code on. Otherwise run the next pass,
+# until the passes reach the rotation size or FILL_MAX.
+PASS_FILE="$(dirname "$LOG")/dispatch-pass.verdict"
+FILL_MAX="${KIPI_DISPATCH_FILL_MAX:-16}"
+pass=0; rc=0; started=0; started_pids=""
+while :; do
+  pass=$((pass + 1))
+  rm -f "$PASS_FILE" 2>/dev/null || true
+  # KIPI_DISPATCH_RESERVED_RUNS and _PIDS: the runs this tick already started, which
+  # the memory gate counts until the process table can see them (PR #660 round 1;
+  # by pid, so a run ps already sees counts once: ASK-4042).
+  env KIPI_REPO="$PINNED" KIPI_DISPATCH_PASS_FILE="$PASS_FILE" KIPI_DISPATCH_PASS="$pass" \
+      KIPI_DISPATCH_RESERVED_RUNS="$started" KIPI_DISPATCH_RESERVED_PIDS="$started_pids" \
+    bash "$PINNED/kipi-dispatch.sh" "$@"
+  rc=$?
+  [ "$rc" = "0" ] || break
+  verdict="$(cat "$PASS_FILE" 2>/dev/null)"
+  entered="$(printf '%s' "$verdict" | sed -n 's/.*entered=\([^ ]*\).*/\1/p')"
+  repos="$(printf '%s' "$verdict" | sed -n 's/.*repos=\([0-9]*\).*/\1/p')"
+  case "$verdict" in
+    *dispatched=ASK-*)
+      started=$((started + 1))
+      run_pid="$(printf '%s' "$verdict" | sed -n 's/.* pid=\([0-9][0-9]*\).*/\1/p')"
+      [ -z "$run_pid" ] || started_pids="${started_pids:+$started_pids }$run_pid" ;;
+  esac
+  [ -n "$entered" ] || break
+  [ "$pass" -lt "${repos:-1}" ] || break
+  [ "$pass" -lt "$FILL_MAX" ] || break
+done
+[ "$pass" -le 1 ] || say "fill: $pass pass(es) this tick"
+exit "$rc"

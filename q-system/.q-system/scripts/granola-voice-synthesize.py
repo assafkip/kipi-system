@@ -31,7 +31,18 @@ import subprocess
 import sys
 import os
 
-MODEL = os.environ.get("VOICE_SYNTH_MODEL", "")  # empty = CLI default; set to pin
+def _routed_model(job="on-demand"):
+    """The routing table's model (ASK-4013). PR #664 round 4, minor: an empty
+    default here meant no --model, so the run rode the CLI default."""
+    import importlib.util as _u
+    spec = _u.spec_from_file_location("model_route", os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_route.py"))
+    mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.pick(job)
+
+
+# VOICE_SYNTH_MODEL still overrides for a hand run; unset, it is the table's on-demand row
+MODEL = os.environ.get("VOICE_SYNTH_MODEL") or _routed_model()
 
 
 def _subscription_env():
@@ -94,8 +105,8 @@ CORPUS:
 
 CRITIC_INSTRUCTIONS = """\
 You are an ADVERSARIAL critic protecting a person's voice-DNA reference from
-generic slop. Below is a JSON array of claimed DURABLE voice patterns for a person
-named Assaf, each with evidence quotes.
+generic slop. Below is a JSON array of claimed DURABLE voice patterns for
+Assaf, each with evidence quotes.
 
 For EACH pattern decide: is it genuinely DISTINCTIVE to Assaf, or is it something
 any articulate tech founder would say or do (generic)? Default to "reject" when
