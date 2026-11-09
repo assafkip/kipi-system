@@ -57,10 +57,14 @@ $(_rfl_sourced_names "$src/$name")"
 # agent itself: call sites place that themselves, several of them from a
 # REPRO_REF commit, and staging it here would overwrite the version under test.
 #
-# A lib the agent names but that is absent from the source dir is REPORTED, not
-# silently skipped. An old REPRO_REF agent naming a since-deleted lib is the
-# legitimate case; a typo in the scripts dir is the other one, and a fixture that
-# refuses with "0 calls" is exactly how this class hides.
+# A lib the agent names but that is absent from the source dir REFUSES BY NAME.
+# That is the semantic the inline derivation in test-review-dry-run-labelled.sh
+# and test-review-artifact-repo-keyed.sh already chose (PR #701 round 4), and
+# this helper took it over rather than shipping a second, softer one: two readers
+# of one input with different semantics is a defect even when each is defensible.
+# Both REPRO_REF call sites parse the WORKING-TREE agent, never the ref-pinned
+# copy, so no caller today needs a tolerant mode. One that does adds the flag
+# then, visibly, instead of inheriting silence now.
 stage_reviewer_libs() {
   local agent="$1" dest="$2" src="${3:-}"
   if [ -z "$src" ]; then
@@ -74,7 +78,8 @@ stage_reviewer_libs() {
       cp "$src/$name" "$dest/$name" || { echo "stage_reviewer_libs: cannot copy $name" >&2; return 1; }
       staged=$((staged+1))
     else
-      echo "stage_reviewer_libs: $agent sources $name, which is not in $src -- not staged" >&2
+      echo "stage_reviewer_libs: $agent sources $name, which does not exist in $src" >&2
+      return 1
     fi
   done
   [ "$staged" -gt 0 ] || { echo "stage_reviewer_libs: staged NOTHING from $agent; the source-line parse matched no library, which makes every fixture below vacuous" >&2; return 1; }

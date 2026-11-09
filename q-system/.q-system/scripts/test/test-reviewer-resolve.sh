@@ -888,8 +888,11 @@ echo "== the agent REFUSES BY NAME when the resolver is absent =="
 MISSING_SKEL="$WORK/missing-resolver"
 mkdir -p "$MISSING_SKEL/q-system/.q-system/scripts"
 git init -q "$MISSING_SKEL"
-_agent_libs() { awk -F'"' '/^\. "\$SCRIPT_DIR\//{ sub(/\$SCRIPT_DIR\//,"",$2); print $2 }' \
-                  "$SCRIPTS/pr-review-agent.sh"; }
+# The LIST comes from the one reader (round 6). This file still does its own
+# copying, because its case is "build the skeleton MINUS one lib" and that skip
+# belongs to the case, not to the staging helper every other fixture calls.
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+_agent_libs() { reviewer_fixture_libs "$SCRIPTS/pr-review-agent.sh" "$SCRIPTS"; }
 has "the agent sources the resolver at all" "$(_agent_libs | tr '\n' ' ')" "reviewer-resolve.sh"
 _build_skel() {  # _build_skel <skip-lib-or-empty>
   rm -rf "$MISSING_SKEL/q-system/.q-system/scripts"
@@ -920,6 +923,79 @@ PRESENT_OUT="$(cd "$MISSING_SKEL" && HOME="$MISSING_SKEL/home" \
                  bash "$MISSING_SKEL/q-system/.q-system/scripts/pr-review-agent.sh" 1 2>&1)"
 hasnt "control: with the resolver present the refusal does not fire" \
   "$PRESENT_OUT" "reviewer-resolve.sh is missing"
+
+
+# --- ONE reader of the reviewer's dependency list (round 6) -------------------
+# Round 4 fixed two fixtures by writing an awk derivation INTO each of them, and
+# round 6 found eight more that still typed the list by hand. Three readers of one
+# input. These cases pin the single reader, the engine behind it, and the
+# requirement that a fixture staging the reviewer uses it.
+echo
+echo "== the fixture staging helper (round 6) =="
+FIXLIB="$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+eq "the helper exists" "$([ -f "$FIXLIB" ] && echo yes || echo no)" "yes"
+# ENGINE: the derived set is exactly what the shipping agent sources. Compared
+# against an independent expression of the same property, not against a typed
+# list -- a typed list here is the ninth copy.
+DERIVED="$(reviewer_fixture_libs "$SCRIPTS/pr-review-agent.sh" "$SCRIPTS" | tr '\n' ' ')"
+SOURCED="$(grep -oE '^[[:space:]]*\.[[:space:]]+"\$SCRIPT_DIR/[A-Za-z0-9._-]+\.sh"' \
+             "$SCRIPTS/pr-review-agent.sh" | grep -oE '[A-Za-z0-9._-]+\.sh' | sort -u | tr '\n' ' ')"
+eq "the derived set is the agent's own source lines" "$DERIVED" "$SOURCED"
+# NEGATIVE SELF-TEST on the parse: a derivation that matched nothing would make
+# every case above vacuous, and an agent with one more source line must change
+# the answer.
+MUT="$WORK/parse-mutant"; mkdir -p "$MUT"
+cp "$SCRIPTS/pr-review-agent.sh" "$MUT/a.sh"
+printf '%s\n' '. "$SCRIPT_DIR/zzz-fake-lib.sh"' >> "$MUT/a.sh"
+has "an added source line is picked up" \
+  "$(reviewer_fixture_libs "$MUT/a.sh" "$SCRIPTS" | tr '\n' ' ')" "zzz-fake-lib.sh"
+# And staging that mutant REFUSES BY NAME rather than staging four of five libs:
+# the one semantic, taken over from round 4's inline derivation.
+MUT_OUT="$(stage_reviewer_libs "$MUT/a.sh" "$MUT/dest" "$SCRIPTS" 2>&1)"
+MUT_RC=$?
+eq "staging an unsatisfiable source refuses" "$([ "$MUT_RC" -ne 0 ] && echo yes || echo no)" "yes"
+has "and names the lib it could not find" "$MUT_OUT" "zzz-fake-lib.sh"
+# An agent that sources nothing must fail too: a parse that silently matches zero
+# lines reads exactly like a clean file (the lesson this PR already learned twice).
+printf '%s\n' '#!/usr/bin/env bash' 'echo hi' > "$MUT/empty.sh"
+stage_reviewer_libs "$MUT/empty.sh" "$MUT/dest2" "$SCRIPTS" >/dev/null 2>&1
+eq "a parse that matched no library refuses" "$([ $? -ne 0 ] && echo yes || echo no)" "yes"
+
+# SINGLE READER: no other file under test/ derives the list itself.
+INLINE="$(grep -lE 'SCRIPT_DIR\\?/\{? ?sub|sub\(/\\\$SCRIPT_DIR' \
+            "$(dirname "${BASH_SOURCE[0]}")"/*.sh 2>/dev/null | tr '\n' ' ')"
+eq "no fixture carries its own derivation" "$INLINE" ""
+
+# COVERAGE: every fixture that copies the agent either stages through the helper
+# or DECLARES why it must not. A declared posture, never inferred -- the one
+# fixture that must omit a lib (this file's missing-resolver case) is otherwise
+# indistinguishable from a fixture that forgot. Walked, not counted: a count was
+# wrong three times on this PR already.
+_unwired_fixtures() {  # <dir-of-fixtures>
+  local f out=""
+  for f in "$1"/*.sh; do
+    [ -f "$f" ] || continue
+    grep -qE 'cp .*pr-review-agent\.sh|for f in pr-review-agent' "$f" || continue
+    grep -q 'reviewer-fixture-lib.sh' "$f" && continue
+    grep -q 'reviewer-fixture-no-stage:' "$f" && continue
+    out="$out $(basename "$f")"
+  done
+  printf '%s' "$out"
+}
+eq "every reviewer fixture stages through the one helper" \
+  "$(_unwired_fixtures "$(dirname "${BASH_SOURCE[0]}")")" ""
+# BOTH DIRECTIONS of that scan, on synthetic files: a scan whose grep stopped
+# matching reads exactly like a clean directory, and the declared hatch is the
+# only reason the pin can stay count-free. No file in this repo needs the hatch
+# today, so without these two cases its branch would never be executed.
+SYN="$WORK/syn-fixtures"; mkdir -p "$SYN"
+printf '%s\n' 'cp "$SRC/pr-review-agent.sh" "$D/"' > "$SYN/test-syn-forgot.sh"
+printf '%s\n' 'cp "$SRC/pr-review-agent.sh" "$D/"' \
+  '# reviewer-fixture-no-stage: this case proves the refusal when a lib is absent' \
+  > "$SYN/test-syn-declared.sh"
+SYN_OUT="$(_unwired_fixtures "$SYN")"
+has "a fixture that stages neither way is listed" "$SYN_OUT" "test-syn-forgot.sh"
+hasnt "a fixture that DECLARES why it must not is exempt" "$SYN_OUT" "test-syn-declared.sh"
 
 echo
 echo "pass=$PASS fail=$FAIL"

@@ -66,11 +66,14 @@ cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
 # `. "$SCRIPT_DIR/..."` lines out of the shipping script means the next source
 # needs no edit in this file, and a source this harness cannot satisfy fails by
 # name instead of by symptom.
-for _lib in $(awk -F'"' '/^\. "\$SCRIPT_DIR\//{ sub(/\$SCRIPT_DIR\//,"",$2); print $2 }' \
-                "$SRC_DIR/pr-review-agent.sh"); do
-  [ -f "$SRC_DIR/$_lib" ] || { echo "FAIL: pr-review-agent.sh sources $_lib, which does not exist in $SRC_DIR" >&2; exit 1; }
-  cp "$SRC_DIR/$_lib" "$WORK/skel/q-system/.q-system/scripts/"
-done
+#
+# THE DERIVATION MOVED OUT OF THIS FILE (round 6). It was written here and in
+# test-review-artifact-repo-keyed.sh, two copies with one semantic, while eight
+# OTHER fixtures still typed the list by hand and all eight went red at once.
+# reviewer-fixture-lib.sh is the single reader now; this file keeps the assertion
+# below, which is what makes the derivation falsifiable from here.
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
 [ -f "$WORK/skel/q-system/.q-system/scripts/reviewer-resolve.sh" ] \
   || { echo "FAIL: the derivation copied no reviewer-resolve.sh, so it is not reading the agent's sources" >&2; exit 1; }
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"

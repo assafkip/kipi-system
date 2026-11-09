@@ -60,11 +60,13 @@ cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
 # and same reason as test-review-dry-run-labelled.sh: a hand-written list of four
 # went stale the moment the agent gained a fifth source, and the run then died
 # mid-review on an unbound variable instead of naming the missing file.
-for _lib in $(awk -F'"' '/^\. "\$SCRIPT_DIR\//{ sub(/\$SCRIPT_DIR\//,"",$2); print $2 }' \
-                "$SRC_DIR/pr-review-agent.sh"); do
-  [ -f "$SRC_DIR/$_lib" ] || { echo "FAIL: pr-review-agent.sh sources $_lib, which does not exist in $SRC_DIR" >&2; exit 1; }
-  cp "$SRC_DIR/$_lib" "$WORK/skel/q-system/.q-system/scripts/"
-done
+#
+# THE DERIVATION MOVED OUT OF THIS FILE (round 6): it lived here and in
+# test-review-dry-run-labelled.sh while eight other fixtures typed the list by
+# hand. reviewer-fixture-lib.sh is the single reader; the assertion below is what
+# keeps it falsifiable from here.
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
 [ -f "$WORK/skel/q-system/.q-system/scripts/reviewer-resolve.sh" ] \
   || { echo "FAIL: the derivation copied no reviewer-resolve.sh, so it is not reading the agent's sources" >&2; exit 1; }
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
