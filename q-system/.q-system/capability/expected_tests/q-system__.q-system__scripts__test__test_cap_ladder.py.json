@@ -1,4 +1,5 @@
 {
  "path": "q-system/.q-system/scripts/test/test_cap_ladder.py",
- "runner": "python3"
+ "runner": "python3",
+ "timeout_s": 180
 }
