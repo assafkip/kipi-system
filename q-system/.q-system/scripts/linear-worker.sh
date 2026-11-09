@@ -1172,9 +1172,17 @@ def live_ticket(ident, worker_issue):
     # ticket from a lane. A lane branch is never the worker pile, so any evidence
     # counts there. Limit: a lane on a sana/<id> ticket the fleet also ran (PR
     # #666, a redrive at 23:25Z) is seen only through its lane-mark.py marker.
+    #
+    # ONLY A READ THAT FOUND NO ROW MEANS A LANE (PR #692 round 2, major). The
+    # first form asked for "" (a row), so an absent, unreadable or non-object
+    # ledger read as "never ran" and the worker own pile left the count again.
+    # worker_history says "no worker history" only after it read the ledger and
+    # found no row; its other answers are read failures and prove nothing, so
+    # they count the PR, the way the ceiling read before ASK-4111. Ceiling cases
+    # 10 and 12-corrupt pin this prefix from both sides.
     if not ident:
         return ""
-    fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""
+    fleet_ran = bool(worker_issue) and not ls.worker_history(state_dir, ident).startswith("no worker history")
     return live_evidence(by_ident.get(ident) or {"identifier": ident}, stamp_counts=not fleet_ran)
 
 

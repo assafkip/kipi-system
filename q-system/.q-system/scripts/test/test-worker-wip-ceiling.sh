@@ -312,8 +312,14 @@ prs "$WORK/s11.prs" "1101:sana/ask-1101:01" "1121:sana/ask-1121-gate:02" "1126:s
                     "901:sana/ask-901:04" "902:sana/ask-902:05" "903:sana/ask-903:06" \
                     "904:sana/ask-904:07" "905:sana/ask-905:08"
 # PR #692 round 1, major: five worker-own PRs whose tickets the worker started.
-prs "$WORK/s12.prs" "1201:sana/ask-1201:01" "1202:sana/ask-1202:02" "1203:sana/ask-1203:03" \
-                    "1204:sana/ask-1204:04" "1205:sana/ask-1205:05"
+# Created 30 minutes ago, as the worker's PR and Linear's In Progress move come
+# together (PR #692 round 2, minor: day-of-October dates made them 39 days old,
+# so the run took the backstop branch instead of the hold the case narrates).
+FRESH="$(python3 -c 'import datetime as d;print((d.datetime.now(d.timezone.utc)-d.timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+: > "$WORK/s12.prs"
+for n in 1201 1202 1203 1204 1205; do
+  printf '%s\tsana/ask-%s\t%s\thttps://github.com/x/kipi-system/pull/%s\n' "$n" "$n" "$FRESH" "$n" >> "$WORK/s12.prs"
+done
 prs "$WORK/s7.prs"  "951:sana/ask-951:01" "952:sana/ask-952:02" "907:sana/ask-907:03" \
                     "903:sana/ask-903:04" "904:sana/ask-904:05"
 
@@ -608,12 +614,31 @@ grep -q '\[dry\] would work ASK-901 .*-- WIP ceiling: rework PR #901, the oldest
 # ticket is the proof the fleet ran it, so the stamp is the worker's own.
 run_worker "$WORKER" "$WORK/s12.prs" "$WORK/s12.out" --limit 1
 if grep -q 'WIP ceiling: 5 open own PRs in x/kipi-system, 0 more left out as lane-live (ceiling 5). No new issue starts' "$WORK/s12.out" \
-   && ! grep -q '\[dry\] would work ASK-900 ' "$WORK/s12.out"; then
-  ok "case 12: five worker-own PRs on tickets the worker started 0.5h ago hold the ceiling at 5; no sixth issue starts"
+   && grep -q 'Nothing is released this tick' "$WORK/s12.out" \
+   && ! grep -q '\[dry\] would work ASK-900 ' "$WORK/s12.out" && ! grep -q 'would release' "$WORK/s12.out"; then
+  ok "case 12: five worker-own PRs on tickets the worker started 0.5h ago hold the ceiling at 5; nothing starts, nothing is released"
 else
   bad "case 12: the worker's own fresh PRs count toward the ceiling" \
-      "picks: $(picks "$WORK/s12.out"). $(grep 'WIP' "$WORK/s12.out" | head -2 | cut -c1-400 | tr '\n' '|')"
+      "picks: $(picks "$WORK/s12.out"). $(grep 'WIP\|release' "$WORK/s12.out" | head -3 | cut -c1-400 | tr '\n' '|')"
 fi
+# 12b, 12c. A LEDGER THAT CANNOT PROVE ANYTHING COUNTS THE PR (PR #692 round 2,
+# major). worker_history answers "no worker history" only when it read the
+# ledger and found no row; an unreadable, non-object or absent ledger proves
+# nothing either way. Read as a lane, those cases dropped the worker's own pile
+# from the count again, and a sixth issue started with no page.
+for shape in corrupt absent; do
+  LST="$WORK/state-ledger-$shape"; mkdir -p "$LST"
+  ln -s "$STATE/worktrees" "$LST/worktrees"; ln -s "$STATE/pr-reviews" "$LST/pr-reviews"
+  [ "$shape" = "corrupt" ] && printf '%s' '{not json' > "$LST/linear-worker-attempts.json"
+  WIP_STATE="$LST" run_worker "$WORKER" "$WORK/s12.prs" "$WORK/s12-$shape.out" --limit 1
+  if grep -q 'WIP ceiling: 5 open own PRs in x/kipi-system, 0 more left out as lane-live (ceiling 5)' "$WORK/s12-$shape.out" \
+     && ! grep -q '\[dry\] would work ASK-900 ' "$WORK/s12-$shape.out"; then
+    ok "case 12-$shape: with a $shape attempts ledger the worker-own PRs still count; the ceiling holds at 5"
+  else
+    bad "case 12-$shape: a $shape ledger never drops worker-own PRs from the count" \
+        "picks: $(picks "$WORK/s12-$shape.out"). $(grep 'WIP' "$WORK/s12-$shape.out" | head -2 | cut -c1-400 | tr '\n' '|')"
+  fi
+done
 
 # ============================================================================
 # 9. NEGATIVE SELF-TESTS: each rule above can fail
@@ -764,7 +789,8 @@ restore
 
 # 9k. PR #692 round 1: a mutant that reads the worker's own start stamp as lane
 # evidence again turns case 12 red.
-if mutate 'fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""' 'fleet_ran = False'; then
+FLEET_RAN='fleet_ran = bool(worker_issue) and not ls.worker_history(state_dir, ident).startswith("no worker history")'
+if mutate "$FLEET_RAN" 'fleet_ran = False'; then
   run_worker "$MUT/linear-worker.sh" "$WORK/s12.prs" "$WORK/m.out" --limit 1
   if grep -q 'WIP: 0 open own PRs in x/kipi-system, 5 more left out as lane-live' "$WORK/m.out" \
      && grep -q '\[dry\] would work ASK-900 ' "$WORK/m.out"; then
@@ -774,6 +800,21 @@ if mutate 'fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident
   fi
 else
   bad "mutant 9k: anchor" "the worker-history check moved"
+fi
+restore
+
+# 9l. PR #692 round 2: a mutant that calls the fleet-ran proof missing whenever
+# the ledger cannot be read (the round-2 code) turns case 12-corrupt red.
+if mutate "$FLEET_RAN" 'fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""'; then
+  WIP_STATE="$WORK/state-ledger-corrupt" run_worker "$MUT/linear-worker.sh" "$WORK/s12.prs" "$WORK/m.out" --limit 1
+  if grep -q 'WIP: 0 open own PRs in x/kipi-system, 5 more left out as lane-live' "$WORK/m.out" \
+     && grep -q '\[dry\] would work ASK-900 ' "$WORK/m.out"; then
+    ok "mutant killed: with an unreadable ledger read as no history, the worker-own PRs count 0 and ASK-900 starts, so case 12-corrupt can go red"
+  else
+    bad "mutant 9l survived" "picks: $(picks "$WORK/m.out"). $(grep 'WIP' "$WORK/m.out" | head -1 | cut -c1-300)"
+  fi
+else
+  bad "mutant 9l: anchor" "the worker-history check moved"
 fi
 restore
 
