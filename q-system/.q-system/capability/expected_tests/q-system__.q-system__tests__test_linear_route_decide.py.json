@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_linear_route_decide.py",
+ "runner": "pytest"
+}

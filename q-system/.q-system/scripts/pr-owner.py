@@ -41,25 +41,51 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
   * a lessons PR whose every ledger entry is already on its base: close as
     superseded. Decided by content, the way the 4 weekly batches (#515, #518, #536,
     #539) were measured and closed on 2026-11-08, not by age or branch name.
-  * kipi/reviewer-approved green, every CI check green by our read, and GitHub
-    says mergeable and CLEAN, HAS_HOOKS or UNSTABLE: `gh pr merge --squash
-    --match-head-commit <sha>`. UNSTABLE is allowed ONLY because our read of CI
+  * kipi/reviewer-approved green, our read of CI green (or no workflow file on
+    the base, logged as that and never as CI green), and GitHub says mergeable
+    and CLEAN, HAS_HOOKS or UNSTABLE: `gh pr merge --auto --squash <n>`, run from the
+    repo's own checkout: the shape automerge_arm in pr-verdict-lib.sh runs, and
+    the shape merge-bypass-gate.py permits, asked of that gate first. On those
+    three states gh merges at once (gh 2.103.2, isImmediatelyMergeable). UNSTABLE is allowed ONLY because our read of CI
     must be green first: round 1 of PR #659 caught a merge on UNSTABLE with CI red,
     and round 2 caught the over-fix, where dropping UNSTABLE sent an approved PR
     whose only non-green status was the advisory kipi/codex-approved to rework
     and then close. The CI read is the guard; GitHub's merge state is not.
+  * approved, CI green and conflict-free, but BEHIND its base: `gh pr
+    update-branch`, asked again each run until GitHub moves the head (BEHIND IS
+    UPDATED, NOT CLOSED, in decide()).
   * CI green and never reviewed: `kipi review <n> --repo <path> --post`, at most one
-    per run, at most one per head.
+    per run, at most one per head per 48 hours.
   * red (CI failure, conflict, REQUEST CHANGES or BLOCK or no verdict, review cap,
-    draft, approved but not mergeable):
-      - open ticket whose worker branch sana/<id> this is: rework. A PR comment,
-        the ticket back to Backlog with "resume from branch X at sha Y", the PR left
-        open once. Still red at the same head one age (48h) later: close.
+    draft, approved but not mergeable, no check at a head whose base has workflows):
+      - open ticket whose worker branch sana/<id> this is, in a state the worker
+        picks: rework. A PR comment, the ticket back to Backlog with "resume
+        from branch X at sha Y", the PR left
+        open once. Still red at the same head one age (48h) after its ticket
+        note lands: close.
+      - the same, in a state linear-worker.sh does not pick (Triage): close with
+        the resume note, as below. A rework round would wait 48h on nobody.
       - open ticket on any other branch: close, then the same resume note.
       - no ticket, or a closed one: close with a comment.
   * checks still running, or GitHub has not computed mergeability: wait.
+THE RED TABLE READS THE PR, NEVER OUR OWN WRITES (PR #693, its round-3 RCA). It
+reads what GitHub says about the PR, never pr-owner's record of its own writes. A
+write of pr-owner's own that fails or does not take (a gh call that errors, an
+update-branch GitHub accepts while the head stays, a review whose verdict does not
+land, a requeue or note Linear does not take) is environmental,
+.claude/rules/self-healing-retry.md rule 5: it says nothing about the PR. So the
+run exits 2, one alert per PR, head and failed write goes to slack-notify.sh
+(HELD IS NOT RED, at held_alert()), and pr-owner never closes a PR because its own write failed.
+Asked again on a later run: a gh write, an update-branch, a review (after 48h),
+and a rework's note until it lands. Not asked again, so its alert is the record:
+a requeue that failed while its note landed (TWO WRITES, TWO RESULTS, at
+ticket_note()), and the note after a close, since a closed PR leaves the open
+list; that alert names the ticket and carries the resume line.
 A close never deletes the branch. Reopening the PR undoes it: a PR open at the
 head pr-owner closed it at is left alone until a new push (state["closed"]).
+The close comment says "Reopen this PR within 30 days to undo", and the ticket
+note says "reopen the PR within 30 days to undo": after that the record is pruned
+(THE STATE FILE STAYS BOUNDED, at prune_state()).
 
 A FORK IS NEVER ACTED ON (PR #659 round 1, major). On a public repo the branch
 name and the title are strings the PR's author chose, and both bind a PR to a
@@ -88,11 +114,11 @@ as linear-worker.sh lane_hold, same race (ASK-3826 trap 1): the orchestrator mov
 a lane's ticket to In Progress by hand, and a lane reworking an old PR can go hours
 before its first push.
 
-ONE WRITER. The state file ~/.local/state/kipi/pr-owner/state.json (strikes and
-review attempts, per PR and head) is written only here, under a lock, as a temp
+ONE WRITER. The state file ~/.local/state/kipi/pr-owner/state.json (strikes,
+review attempts, closes, fork alerts, updates and held alerts, per PR and head) is written only here, under a lock, as a temp
 file plus rename. Linear writes go through linear-sync.py requeue and progress,
-the same two writers wip_release uses, and a fork's one alert goes through
-slack-notify.sh to alert-to-linear.py.
+the same two writers wip_release uses, and a fork's one alert and a held PR's one
+alert go through slack-notify.sh to alert-to-linear.py.
 
 NOT IN THIS JOB: LGTM's 14-day stale close in chief (stale_close_scope still names
 kipi-system). Chief is out of the dispatch set and the worker cannot reach a Chief
@@ -113,8 +139,10 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +156,17 @@ ROOT = Path(os.environ.get("KIPI_REPO") or SCRIPTS.parents[2])
 # close: a PR somebody pushed to this morning is somebody's live work.
 AGE_S = 48 * 3600
 QUIET_S = 12 * 3600
+# 30 days: how long a record outlives its PR's last appearance in an open list.
+# The close comment says this number in words; the contract test reads both.
+KEEP_DAYS = 30
+KEEP_S = KEEP_DAYS * 86400
+LIST_LIMIT = 200
+PER_PR_MAPS = ("closed", "strikes", "reviews", "outside", "updates", "held")
+# EXIT 9 IS THE MACHINE, NOT THE PR. pr-review-agent.sh exits 9 when no review ran
+# for a reason of the machine (disk floor, GitHub unreachable, the runner out of
+# usage) and says "the next run reviews it". Read as a crash, it was not asked
+# again at that head, and 48h later the PR closed as "no verdict landed".
+REVIEW_ENV_RC = 9
 
 REVIEWER_CONTEXT = "kipi/reviewer-approved"
 LEDGER = "lesson-candidates/.processed.json"
@@ -218,10 +257,63 @@ def run_logged(argv, log: Path, timeout=2700):
 # THE ONE DOOR FOR A GITHUB WRITE. A close or merge that deletes the branch loses
 # the only copy of the work, and the destructive-op hook does not see a gh call
 # made from Python. So the refusal lives at the chokepoint, not in each caller.
-def gh_write(argv):
+# The merge gate is asked here too, for the same reason (merge_gate_verdict).
+def gh_write(argv, cwd=None, env=None):
+    env = gh_env() if env is None else env
     if argv[:2] in (["pr", "close"], ["pr", "merge"]) and ("--delete-branch" in argv or "-d" in argv):
         raise SystemExit("REFUSED: pr-owner never deletes a branch: " + " ".join(argv))
-    return run(["gh"] + argv)
+    if argv[:2] == ["pr", "merge"]:
+        why = merge_gate_verdict(argv, cwd or os.getcwd())
+        if why:
+            return 3, "", f"merge-bypass-gate.py refused it: {why}"
+    return run(["gh"] + argv, env=env, cwd=cwd)
+
+
+MERGE_GATE = SCRIPTS / "merge-bypass-gate.py"
+
+
+def gh_env() -> dict:
+    # GH_REPO and GH_HOST never reach a gh write or a gh call made from a checkout.
+    # Both retarget gh without changing one argument: GH_HOST moves even a `-R`
+    # call to another host, and from a checkout GH_REPO outranks the checkout,
+    # which is what names the repo there and what the merge gate judges. The gate
+    # denies the two as an env prefix; an env inherited by a child is the same
+    # retarget, unseen. gh_write() applies this to every write (PR #693 round 2).
+    return {k: v for k, v in os.environ.items() if k not in ("GH_REPO", "GH_HOST")}
+
+
+def merge_gate_verdict(gh_args, cwd) -> str:
+    """"" when merge-bypass-gate.py allows `gh <gh_args>` from cwd, else why not.
+
+    ASKED OF THE GATE, NOT HIDDEN FROM IT (PR #659 round 7, minor). The merge was
+    `gh pr merge <n> -R <slug> --squash --match-head-commit <sha>`, a shape the
+    gate denies (measured 2026-11-09: the real gate denies that exact argv), and
+    a gh call from Python reaches no PreToolUse hook, so the fleet's one
+    merge gate could not see the one merge it would deny. Now the merge is the
+    gate's own shape, and the gate is run on it through its hook contract (stdin
+    payload; silent exit 0 allows; a deny line denies). a deny or no answer is no merge:
+    a crashed or missing gate is not an allow, the rule archived() keeps for the
+    archive hook.
+    """
+    payload = json.dumps({"tool_name": "Bash", "cwd": str(cwd),
+                          "tool_input": {"command": shlex.join(["gh"] + [str(a) for a in gh_args])}})
+    try:
+        p = subprocess.run([sys.executable, str(MERGE_GATE)], input=payload, capture_output=True,
+                           text=True, timeout=30, env=gh_env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"the gate could not answer ({exc})"
+    tail = " ".join((p.stderr or p.stdout or "").split())[-160:]
+    if p.returncode != 0:
+        return f"the gate exited {p.returncode} ({tail})"
+    if not p.stdout.strip():
+        return ""
+    try:
+        out = (json.loads(p.stdout) or {}).get("hookSpecificOutput") or {}
+    except (ValueError, AttributeError):
+        return f"the gate printed something outside its contract ({tail})"
+    if out.get("permissionDecision") == "deny":
+        return " ".join(str(out.get("permissionDecisionReason") or "deny").split())[:240]
+    return f"the gate answered neither allow nor deny ({tail})"
 
 
 def gh_json(argv):
@@ -354,12 +446,19 @@ def ci_redrive():
 
 
 def ci_state(rollup) -> tuple[str, list]:
-    """("green"|"running"|"red", names). Engine verdict slots are not CI."""
-    red, running = [], []
+    """("green"|"running"|"red"|"none", names). Engine verdict slots are not CI.
+
+    NO CHECK IS NOT GREEN (PR #659 round 7, minor). An empty or null rollup, or
+    one whose every entry is an engine slot, came out "green": every check of none passed.
+    So in a repo with no CI the merge gate was one agent review, logged as "CI
+    green". "none" makes main() ask whether the base has a workflow file at all.
+    """
+    red, running, seen = [], [], 0
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "?"
         if ci_redrive().is_reviewer_slot(name):
             continue
+        seen += 1
         if c.get("__typename") == "CheckRun" or "conclusion" in c:
             if (c.get("status") or "COMPLETED") != "COMPLETED":
                 running.append(name)
@@ -375,7 +474,49 @@ def ci_state(rollup) -> tuple[str, list]:
         return "red", red
     if running:
         return "running", running
-    return "green", []
+    return ("green", []) if seen else ("none", [])
+
+
+def no_workflows(slug: str, base: str) -> bool:
+    """True when the base branch has no Actions workflow file. Raises RuntimeError when GitHub cannot say.
+
+    Asked for a PR with no check at its head. No workflow file (brag on
+    2026-11-09) means the review is the repo's one check by design, and the log
+    says exactly that. A workflow file with no check at this head means CI should
+    have run and did not, which is red, not a merge.
+    """
+    rc, out, err = run(["gh", "api", f"repos/{slug}/contents/.github/workflows?ref={urllib.parse.quote(base, safe='')}"])
+    if rc != 0:
+        if "404" in err or "Not Found" in err:
+            return True
+        raise RuntimeError(f"workflows on {base}: {' '.join(err.split())[:160]}")
+    try:
+        items = json.loads(out or "[]")
+    except ValueError as exc:
+        raise RuntimeError(f"workflows on {base}: not JSON ({exc})") from exc
+    if not isinstance(items, list):
+        raise RuntimeError(f"workflows on {base}: .github/workflows is not a directory")
+    return not any(str((i or {}).get("name") or "").endswith((".yml", ".yaml")) for i in items if isinstance(i, dict))
+
+
+# ONE SOURCE, the floor_desc() rule. linear-worker.sh picks a ticket in these state
+# types and no other (plus a started one it releases), so a rework round promised to any
+# other state is a promise to nobody. Read from the worker's own line; a copy here
+# would drift the day the worker learns a new state. () when it cannot be read.
+WORKER_SH = SCRIPTS / "linear-worker.sh"
+_QUEUE_RE = re.compile(r"^QUEUE_STATES = \(([^)]*)\)", re.M)
+_QUEUE: dict = {}
+
+
+def worker_queue_states() -> tuple:
+    key = str(WORKER_SH)
+    if key not in _QUEUE:
+        try:
+            m = _QUEUE_RE.search(WORKER_SH.read_text())
+        except OSError:
+            m = None
+        _QUEUE[key] = tuple(re.findall(r'"([a-z_]+)"', m.group(1))) if m else ()
+    return _QUEUE[key]
 
 
 def reviewer_state(statuses, floor: str) -> tuple[str, str]:
@@ -668,13 +809,67 @@ def filed_ticket(out: str) -> str:
     return ""
 
 
+def held_text(pr: dict, d: dict, what: str, write: str) -> str:
+    # The resume line rides in the alert because the note after a close is not
+    # asked again (a closed PR leaves the open list): this is where it survives.
+    key = f"{pr['slug']}#{pr['number']}"
+    t = d.get("ticket")
+    return (f"pr-owner: {pr['slug']} PR #{pr['number']} ({pr['url']}) at {pr['head'][:8]}, decision {d['action']}: "
+            f"a write of pr-owner's own did not take ({write}): {what}. Why it was asked: {d['reason']}."
+            + (f" Ticket {t['id']}: resume from branch {pr['branch']} at {pr['head'][:8]}." if t else "")
+            + " pr-owner never closes a PR because its own write failed. "
+            f"Decide what fixes the cause (the GitHub token or its scope, Linear, the reviewer), "
+            f"then record why on this ticket. Dedup key {alert_ref(key)}.")
+
+
+def held_alert(pr: dict, d: dict, what: str, write: str, state: dict, now: int) -> str:
+    """File one alert per PR, head and failed write for a write of ours that did not take; say what happened.
+
+    HELD IS NOT RED (PR #693 round 4). A held PR's exit 2 alone is read by
+    launchd-health-check.py, which keys one Linear issue per job, so a second
+    held PR deduped into the first one's issue unseen (round 2's finding). So
+    each held PR gets its own alert: slack-notify.sh, which alert-to-linear.py
+    turns into a Sana ticket that linear-alert-triage.py takes nightly. A 403
+    for 24 hours is one alert, not 24, because a filed alert is recorded per
+    head; it is recorded only when the sink's line names a ticket (filed_ticket()),
+    so a sink that did not file is asked again at the next failure.
+
+    ONE ALERT PER FAILED WRITE (PR #693 round 4, minor). The record was keyed on
+    the PR and head, so a review that crashed and then a rework comment that failed
+    at one head filed one alert between them, and Sana's ticket named the first.
+    Now the key is the action and the write that did not take: a second, different
+    failure at that head files its own, and the same failure asked again files none.
+    "filed" holds the few action/write pairs of the current head; a new head starts it empty.
+    """
+    key = f"{pr['slug']}#{pr['number']}"
+    tag = f"{d['action']}/{write or '?'}"
+    rec = (state.get("held") or {}).get(key) or {}
+    filed = dict(rec.get("filed") or {}) if rec.get("head") == pr["head"] else {}
+    if tag in filed:
+        return f"its alert {filed[tag] or '?'} is filed for this write ({write}) at this head already"
+    notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
+    rc, out, err = run(["bash", notify, held_text(pr, d, what, write)])
+    ident = filed_ticket(out) if rc == 0 else ""
+    if not ident:
+        return (f"its alert did not file ({' '.join((err or out).split())[-160:]}); "
+                f"not recorded, the next failure asks again")
+    filed[tag] = ident
+    state.setdefault("held", {})[key] = {"head": pr["head"], "at": now, "action": d["action"], "ticket": ident,
+                                         "filed": filed}
+    save_state(state_path(), state)
+    return f"alert filed on {ident} (one alert per PR, head and failed write)"
+
+
 # ---------------------------------------------------------------- the decision
 
 def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=()) -> dict:
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
-    Returns {"action", "reason", "ticket"?}. Actions: skip, reopened, young, wait, outside,
-    outside-filed, ladder, hold, merge, review, close-superseded, rework,
+    Returns {"action", "reason", "ticket"?, "held"?, "held_write"?}. "held" names a write
+    of ours at this head that did not take; main() counts it failed and files its alert.
+    "held_write" names that write by the name act() gives its failure, so a review that
+    crashed and then gave no verdict is one alert, not two. Actions: skip, reopened, young, wait, outside,
+    outside-filed, ladder, hold, merge, update, review, close-superseded, rework,
     close-requeue, close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
@@ -719,9 +914,18 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         return {"action": "wait", "reason": "GitHub has not computed mergeability yet"}
     if pr["ci"] == "running":
         return {"action": "wait", "reason": "checks still running: " + ", ".join(pr["ci_names"][:4])}
-    if (rv == "approved" and pr["ci"] == "green" and pr["mergeable"] == "MERGEABLE"
+    # NO CHECK IS NOT GREEN (see ci_state). main() reads the base's workflow files
+    # for a "none" PR; without that read there is nothing true to say about its CI.
+    no_ci = pr.get("no_ci")
+    if pr["ci"] == "none" and no_ci is None:
+        return {"action": "hold",
+                "reason": f"no CI check at this head, and pr-owner could not tell whether {pr['base']} has a workflow file"}
+    ci_ok = pr["ci"] == "green" or (pr["ci"] == "none" and no_ci is True)
+    ci_said = ("CI green" if pr["ci"] == "green"
+               else f"no CI check at this head and no workflow file on {pr['base']}, so the review is this repo's one check")
+    if (rv == "approved" and ci_ok and pr["mergeable"] == "MERGEABLE"
             and pr["merge_state"] in MERGE_READY and not pr["draft"]):
-        return {"action": "merge", "reason": f"approved ({rv_desc}), CI green, mergeable, merge state {pr['merge_state']}"}
+        return {"action": "merge", "reason": f"approved ({rv_desc}), {ci_said}, mergeable, merge state {pr['merge_state']}"}
     if rv == "pending":
         return {"action": "wait", "reason": f"reviewer status pending: {rv_desc}"}
 
@@ -730,48 +934,111 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         red.append("draft")
     if pr["ci"] == "red":
         red.append("CI red: " + ", ".join(pr["ci_names"][:4]))
+    if pr["ci"] == "none" and no_ci is False:
+        red.append(f"no CI check reported at this head, though {pr['base']} has a workflow file")
     if pr["mergeable"] == "CONFLICTING" or pr["merge_state"] == "DIRTY":
         red.append("conflicts with " + pr["base"])
     if rv == "rejected":
         red.append(f"review: {rv_desc}")
     if rv == "cap":
         red.append(f"review cap: {rv_desc}")
+    behind = False
+    held = why_more = ""
     if not red and rv == "approved":
         gate = approved_gate(pr["merge_state"])
         if gate == 10:
             return {"action": "wait",
-                    "reason": f"approved and CI green, but GitHub says merge state {pr['merge_state']}; "
+                    "reason": f"approved and {ci_said}, but GitHub says merge state {pr['merge_state']}; "
                               f"pr-verdict-lib.sh rework_gate calls that terminal, so it is never reworked or closed for it. "
                               f"pr-owner reads it again next hour; a mover for it is ASK-4061"}
         if gate != 30:
             return {"action": "hold", "reason": f"pr-verdict-lib.sh rework_gate could not answer (rc {gate}) for merge state {pr['merge_state']}"}
-        red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
+        # BEHIND IS UPDATED, NOT CLOSED (PR #659 round 7, minor). rework_gate's 30
+        # is a rebase round, and with no open ticket the red table closed an
+        # approved, green, conflict-free PR whose one defect was its base moving,
+        # with a close comment naming no rebase actor. GitHub can do that rebase
+        # itself: `gh pr update-branch`, asked until GitHub moves the head.
+        # Rounds 1 to 3 of PR #693 sent an update that did not take to the red
+        # table: a close, then an hourly ask with no exit, then a close after 3
+        # tries (the round-3 RCA). Each is a write of ours, so it is held instead:
+        # a call that failed is asked again and act() says why; a call GitHub
+        # accepted while the head stayed is held here, and asked again.
+        if pr["merge_state"] != "BEHIND":
+            red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
+        else:
+            behind = True
+            tried = (state.get("updates") or {}).get(key) or {}
+            if tried.get("head") == pr["head"] and tried.get("accepted"):
+                held = (f"update-branch was asked at {iso(tried['accepted'])}, GitHub accepted it, "
+                        f"and the head did not move")
+            elif tried.get("head") == pr["head"] and tried.get("fails"):
+                # Named here too, so a dry run says why the PR is still BEHIND.
+                why_more = (f"update-branch failed {tried['fails']} time(s) at this head, last at "
+                            f"{iso(tried['at'])}: {tried.get('err') or '?'}; asked again")
     if not red and rv == "unreviewed":
         past = (state.get("reviews") or {}).get(key) or {}
         if past.get("head") == pr["head"]:
             if now - past.get("at", now) < AGE_S:
                 return {"action": "wait", "reason": f"a review was asked at this head at {iso(past['at'])}; waiting for its verdict"}
-            red.append(f"a review was asked at this head at {iso(past['at'])} and no verdict landed")
-        elif review_left <= 0:
-            return {"action": "wait", "reason": "CI green and never reviewed; this run's one review is spent"}
-        else:
-            return {"action": "review", "reason": "CI green, no reviewer verdict at this head"}
-    why = "; ".join(red)
+            # A review that crashed or did not land is a write of ours (HELD IS
+            # NOT RED). It went to the red table, and a green PR closed 48h later.
+            held = f"a review was asked at this head at {iso(past['at'])} and no verdict landed; asked again"
+        if review_left <= 0:
+            return {"action": "wait", "reason": (f"{held}, but " if held else "")
+                    + f"{ci_said} and never reviewed; this run's one review is spent"}
+        return {"action": "review", "held": held, "held_write": "review",
+                "reason": held or f"{ci_said}, no reviewer verdict at this head"}
+    why = "; ".join(red) if red else f"approved, {ci_said}, conflict-free, BEHIND {pr['base']}"
+    word = "behind" if behind else "red"
 
+    # A BEHIND PR READS ITS TICKET TOO (PR #693 round 1, minor, kept on purpose).
+    # update-branch writes a commit onto the PR's branch, and a lane inside its
+    # window may be working that branch, so the lane hold below applies to it.
+    # With Linear down that hold cannot be asked, and could not look is not
+    # "there is none", so the PR holds and the run exits 2, as every red PR does.
     ticket, err = resolve_ticket(pr, load_ticket)
     if err:
         return {"action": "hold", "reason": err}
-    if ticket and ticket["state_type"] not in ("completed", "canceled"):
-        if ticket["state_type"] == "started":
-            lane_s = ticket["lane_hours"] * 3600
-            if ticket.get("started") and now - ticket["started"] < lane_s:
-                return {"action": "wait", "ticket": ticket,
-                        "reason": f"red ({why}), but {ticket['id']} started {hours(now - ticket['started'])} ago, inside the {ticket['lane_hours']}h lane window"}
-            if ticket.get("claim"):
-                return {"action": "wait", "ticket": ticket, "reason": f"red ({why}), but {ticket['id']} has {ticket['claim']}"}
+    open_ticket = bool(ticket) and ticket["state_type"] not in ("completed", "canceled")
+    if open_ticket and ticket["state_type"] == "started":
+        lane_s = ticket["lane_hours"] * 3600
+        if ticket.get("started") and now - ticket["started"] < lane_s:
+            return {"action": "wait", "ticket": ticket,
+                    "reason": f"{word} ({why}), but {ticket['id']} started {hours(now - ticket['started'])} ago, inside the {ticket['lane_hours']}h lane window"}
+        if ticket.get("claim"):
+            return {"action": "wait", "ticket": ticket, "reason": f"{word} ({why}), but {ticket['id']} has {ticket['claim']}"}
+    if behind:
+        more = held or why_more
+        return {"action": "update", "ticket": ticket, "held": held, "held_write": "update-branch",
+                "reason": f"{why}; {more}" if more else why}
+    if open_ticket:
         if worker_branch_issue(pr["branch"]) == ticket["id"]:
+            # A REWORK IS PROMISED ONLY TO A TICKET THE WORKER PICKS (ASK-4099). The
+            # rework comment says "so the worker reworks it", and for a Triage
+            # ticket nothing did: linear-worker.sh ready() returns False for it, and
+            # linear-sync.py requeue leaves every state but started alone. Waiting a rework
+            # round there is 48 hours on nobody, so it closes now with the resume
+            # note, the route a lane branch takes for the same reason.
+            queue = worker_queue_states()
+            if not queue:
+                return {"action": "hold", "ticket": ticket,
+                        "reason": f"{why}; no QUEUE_STATES in linear-worker.sh, so pr-owner cannot tell "
+                                  f"whether the worker picks {ticket['id']}"}
+            if ticket["state_type"] not in queue and not (ticket["state_type"] == "started" and "backlog" in queue):
+                return {"action": "close-requeue", "ticket": ticket,
+                        "reason": f"{why}; {ticket['id']} is {ticket['state_name'] or ticket['state_type']}, "
+                                  f"which linear-worker.sh does not pick (it picks {', '.join(queue)}), "
+                                  f"so no rework round is asked"}
             strike = (state.get("strikes") or {}).get(key) or {}
             if strike.get("head") == pr["head"]:
+                if strike.get("noted") is False:
+                    # THE 48 HOURS START WHEN THE NOTE LANDS (PR #693 round 4). The
+                    # rework round is the worker's, and a note Linear did not take told no
+                    # worker, so the 48h ran on nobody and ended in a close. The PR
+                    # comment is up already; only the note is asked again.
+                    return {"action": "rework", "ticket": ticket,
+                            "reason": f"{why}; the rework comment went up at {iso(strike['at'])}, but "
+                                      f"{ticket['id']}'s ticket note did not land, so the note is asked again"}
                 if now - strike.get("at", now) < AGE_S:
                     return {"action": "wait", "ticket": ticket,
                             "reason": f"rework asked at {iso(strike['at'])}; waiting one age for a push"}
@@ -803,6 +1070,33 @@ def save_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def prune_state(state: dict, listed: dict, now: int) -> int:
+    """Drop per-PR records whose PR left its repo's open list 30 days ago. Returns how many.
+
+    THE STATE FILE STAYS BOUNDED (ASK-4099). Every map here gained a key per PR;
+    strikes lost theirs on a close and the rest kept theirs for good, so the file
+    grew with every PR the fleet ever had. A record is dropped when its repo was listed in full this run,
+    its PR is not in that list, and the record is KEEP_DAYS old. Open PRs are
+    never pruned, so a reopened PR keeps its undo for as long as it stays open; a
+    PR closed by pr-owner keeps it for 30 days, which is what its close comment
+    says. A repo that was not read, or whose list reached LIST_LIMIT, is
+    never pruned: absent from a list nobody read is not gone. A repo dropped from the
+    fleet keeps its records, a bounded set, since nothing new is written for it.
+    """
+    dropped = 0
+    for name in PER_PR_MAPS:
+        entries = state.get(name)
+        if not isinstance(entries, dict):
+            continue
+        for key in list(entries):
+            slug = key.rpartition("#")[0]
+            at = (entries[key] or {}).get("at") if isinstance(entries[key], dict) else None
+            if slug in listed and key not in listed[slug] and now - int(at or 0) >= KEEP_S:
+                del entries[key]
+                dropped += 1
+    return dropped
+
+
 # ---------------------------------------------------------------- acting
 
 def latest_findings(slug: str, number: int) -> str:
@@ -824,8 +1118,19 @@ def latest_findings(slug: str, number: int) -> str:
     return ""
 
 
-def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
-    """(ok, what). Requeue a started ticket (linear-sync's one state writer), else a progress note.
+def ticket_note(ticket: dict, line: str) -> tuple[bool | None, bool, str]:
+    """(requeued, noted, what). Requeue a started ticket (linear-sync's one state writer), else a progress note.
+
+    requeued is None when no requeue was asked (the ticket is not started). A
+    requeue that moves the ticket posts the resume line as its own comment, so it
+    is the note too.
+
+    TWO WRITES, TWO RESULTS (PR #693 round 4, major). This returned one bool for
+    both halves. Its one reader was the run's exit code, until round 4 also stored
+    it as the strike's "noted": a requeue that failed while its note posted then
+    read as "the note did not land", the note was posted again every hour, and the
+    48h had no start, so the PR could not close. act() starts the 48h on noted and
+    counts a failure on requeued.
 
     A FAILED REQUEUE IS NOT OK (PR #659 round 4, minor). It fell back to a
     progress note and act() still said "rework asked": the ticket stayed In
@@ -835,21 +1140,74 @@ def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
     launchd-health-check.py reads.
     """
     sync = str(SCRIPTS / "linear-sync.py")
-    lost = ""
+    requeued, lost = None, ""
     if ticket["state_type"] == "started":
         rc, out, err = run([sys.executable, sync, "requeue", ticket["id"], "--exit", AGENT,
                             "--why", line, "--agent", AGENT])
         if rc == 0:
-            return True, out.strip() or "requeued"
+            return True, True, out.strip() or "requeued"
+        requeued = False
         lost = f"WARN requeue failed, {ticket['id']} is still {ticket['state_name'] or 'started'} ({' '.join((err or out).split())[-120:]}); "
     rc, out, err = run([sys.executable, sync, "progress", ticket["id"], line, "--agent", AGENT])
     if rc != 0:
-        return False, lost + f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
-    return not lost, lost + "note posted"
+        return requeued, False, lost + f"WARN note did not post: {' '.join((err or out).split())[-160:]}"
+    return requeued, True, lost + "note posted"
 
 
-def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
-    """Apply one decision. (ok, what happened)."""
+def note_write(requeued, noted) -> str:
+    """The Linear write that did not take, as its held alert names it, or "" when both did."""
+    if requeued is False:
+        return "requeue" if noted else "requeue and note"
+    return "" if noted else "note"
+
+
+def merge(pr: dict) -> tuple[bool, str]:
+    """`gh pr merge --auto --squash <n>` from the repo's checkout. (ok, what happened).
+
+    The gate's shape has no -R, so the checkout names the repo, as it does for
+    automerge_arm. Before the merge, the PR is read from that same checkout: the
+    same URL proves gh resolves this repo there, and the same head stands in for
+    the --match-head-commit pin the gate does not allow. That pin was atomic and
+    this read is about a second early; on a protected repo a head pushed in that
+    second is held by GitHub, whose kipi/reviewer-approved is per head. After the
+    merge, the PR is read back: --auto arms auto-merge on any state gh does not
+    call mergeable now, and gh prints nothing either way when no terminal is
+    attached, so the log says merged, armed, or neither merged nor armed (a failure).
+    """
+    n, cwd, env = str(pr["number"]), pr["path"], gh_env()
+
+    def view(fields):
+        rc, out, err = run(["gh", "pr", "view", n, "--json", fields], env=env, cwd=cwd)
+        if rc != 0:
+            raise RuntimeError(" ".join((err or out).split())[:160] or f"gh exited {rc}")
+        got = json.loads(out or "{}")
+        return got if isinstance(got, dict) else {}
+
+    try:
+        seen = view("url,headRefOid")
+    except (RuntimeError, ValueError) as exc:
+        return False, f"the pre-merge read from {cwd} failed ({exc}); not merged"
+    if seen.get("url") != pr["url"]:
+        return False, f"gh in {cwd} reads PR #{n} as {seen.get('url') or '?'}, not {pr['url']}; not merged"
+    if seen.get("headRefOid") != pr["head"]:
+        return False, (f"the head moved from {pr['head'][:8]} to {(seen.get('headRefOid') or '?')[:8]} since the read; "
+                       f"not merged, and the new head is decided on its own")
+    rc, out, err = gh_write(["pr", "merge", "--auto", "--squash", n], cwd=cwd, env=env)
+    if rc != 0:
+        return False, f"merge failed: {' '.join((err or out).split())[:200]}"
+    try:
+        after = view("state,autoMergeRequest")
+    except (RuntimeError, ValueError) as exc:
+        return False, f"the merge exited 0 but its read-back failed ({exc})"
+    if after.get("state") == "MERGED":
+        return True, "merged"
+    if after.get("autoMergeRequest"):
+        return True, "auto-merge armed; GitHub merges it when its required checks pass"
+    return False, f"gh exited 0, but the PR is neither merged nor armed (state {after.get('state') or '?'})"
+
+
+def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str, str]:
+    """Apply one decision. (ok, what happened, the write that did not take or "")."""
     slug, n, head, branch = pr["slug"], str(pr["number"]), pr["head"], pr["branch"]
     key = f"{slug}#{n}"
     short = head[:8]
@@ -857,17 +1215,44 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         notify = os.environ.get("KIPI_NOTIFY") or str(SCRIPTS / "slack-notify.sh")
         rc, out, err = run(["bash", notify, outside_alert(pr, d["reason"])])
         if rc != 0:
-            return False, f"alert did not file: {' '.join((err or out).split())[-160:]}"
+            return False, f"alert did not file: {' '.join((err or out).split())[-160:]}", "alert"
         ident = filed_ticket(out)
         if not ident:
             return False, (f"the alert sink exited 0 but named no ticket "
-                           f"({' '.join((out or err).split())[-160:]}); not recorded, the next hourly run asks again")
+                           f"({' '.join((out or err).split())[-160:]}); not recorded, the next hourly run asks again"), "alert"
         state.setdefault("outside", {})[key] = {"head": head, "at": now, "ticket": ident}
         save_state(state_path(), state)
-        return True, f"alert filed on {ident} (once per PR)"
+        return True, f"alert filed on {ident} (once per PR)", ""
     if d["action"] == "merge":
-        rc, out, err = gh_write(["pr", "merge", n, "-R", slug, "--squash", "--match-head-commit", head])
-        return rc == 0, "merged" if rc == 0 else f"merge failed: {' '.join(err.split())[:160]}"
+        ok, what = merge(pr)
+        return ok, what, "" if ok else "merge"
+    if d["action"] == "update":
+        # A FAILED CALL IS NOT A FAILED REBASE (PR #693 round 1, major). The record
+        # was written before the call, as a review's is, so a 502 read next hour as
+        # "the head did not move" and sent an approved, green PR down the rework
+        # ladder to a close. Now the call's outcome is recorded after the call: a
+        # failure as a count, an accepted call as "accepted".
+        # A FAILURE IS HELD, NOT COUNTED TO A CLOSE (PR #693 rounds 2 to 4). Round 2
+        # left a failure unrecorded, round 3 counted 3 and closed. A failure is a
+        # write of ours (HELD IS NOT RED): it is recorded with its count and error,
+        # the run exits 2, and main() files the PR's one alert. "accepted" is when
+        # GitHub last took the call, which decide() reads to tell a call that did
+        # not take from one that is still to land.
+        prev = (state.get("updates") or {}).get(key) or {}
+        prev = prev if prev.get("head") == head else {}
+        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug])
+        fails, msg, accepted = prev.get("fails") or 0, prev.get("err") or "", prev.get("accepted")
+        if rc != 0:
+            fails, msg = fails + 1, " ".join((err or out).split())[:160]
+        else:
+            accepted = now
+        state.setdefault("updates", {})[key] = {"head": head, "at": now, "fails": fails, "err": msg, "accepted": accepted}
+        save_state(state_path(), state)
+        if rc != 0:
+            return False, (f"update-branch failed {fails} time(s) at this head: {msg}; held, not closed: "
+                           f"the next run asks again until GitHub moves the head"), "update-branch"
+        return True, (f"update-branch asked; GitHub writes a new head, and pr-owner decides it again after "
+                      f"{hours(QUIET_S)} of quiet (a new head needs its own review)"), ""
     if d["action"] == "review":
         argv = ["bash", str(ROOT / "kipi"), "review", n, "--repo", pr["path"], "--post"]
         ticket, _ = resolve_ticket(pr, read_ticket)
@@ -879,7 +1264,14 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         save_state(state_path(), state)
         log = state_path().parent / "reviews" / f"{slug.replace('/', '_')}-pr-{n}.log"
         rc, tail = run_logged(argv, log, timeout=2700)
-        return rc == 0, "review posted" if rc == 0 else f"review exited {rc} (log {log}): {tail}"
+        if rc == REVIEW_ENV_RC:
+            state["reviews"].pop(key, None)
+            save_state(state_path(), state)
+            return False, (f"the reviewer exited {rc}, its code for a machine condition (no review ran, no status "
+                           f"posted); not recorded as asked, so the next run asks again (log {log}): {tail}"), "review"
+        if rc == 0:
+            return True, "review posted", ""
+        return False, f"review exited {rc} (log {log}): {tail}", "review"
     if d["action"] == "rework":
         ticket = d["ticket"]
         line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962): PR #{n} is red ({d['reason']}). "
@@ -888,47 +1280,72 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         # started ticket is requeued. A Backlog or Todo one is already in the
         # worker's queue and gets the resume note; "goes back to Backlog" on a Todo
         # ticket was a sentence nothing made true.
-        where = (f"{ticket['id']} goes back to Backlog" if ticket["state_type"] == "started"
-                 else f"{ticket['id']} stays {ticket['state_name'] or ticket['state_type']} and gets a resume note")
-        body = (f"pr-owner (ASK-3962): this PR is red and nothing has pushed for {hours(now - (pr['pushed'] or now))}.\n\n"
-                f"Why: {d['reason']}\n\n{where} so the worker reworks it on {branch}. "
-                f"If the head is still {short} after {hours(AGE_S)}, this PR closes with the branch kept.")
-        rc, out, err = gh_write(["pr", "comment", n, "-R", slug, "--body", body])
-        if rc != 0:
-            return False, f"comment failed: {' '.join(err.split())[:160]}"
-        state.setdefault("strikes", {})[key] = {"head": head, "at": now, "why": d["reason"][:200]}
-        save_state(state_path(), state)
-        noted, what = ticket_note(ticket, line)
-        return noted, f"rework asked; {what}"
+        strike = (state.get("strikes") or {}).get(key) or {}
+        if not (strike.get("head") == head and strike.get("noted") is False):
+            where = (f"{ticket['id']} goes back to Backlog" if ticket["state_type"] == "started"
+                     else f"{ticket['id']} stays {ticket['state_name'] or ticket['state_type']} and gets a resume note")
+            body = (f"pr-owner (ASK-3962): this PR is red and nothing has pushed for {hours(now - (pr['pushed'] or now))}.\n\n"
+                    f"Why: {d['reason']}\n\n{where} so the worker reworks it on {branch}. "
+                    f"If the head is still {short} after {hours(AGE_S)}, this PR closes with the branch kept.")
+            rc, out, err = gh_write(["pr", "comment", n, "-R", slug, "--body", body])
+            if rc != 0:
+                return False, f"comment failed: {' '.join(err.split())[:160]}; no strike, the next run asks again", "comment"
+            # Saved before the note, so a run that dies here asks the note, not a second comment.
+            strike = {"head": head, "at": now, "why": d["reason"][:200], "noted": False}
+            state.setdefault("strikes", {})[key] = strike
+            save_state(state_path(), state)
+        requeued, noted, what = ticket_note(ticket, line)
+        write = note_write(requeued, noted)
+        if noted:
+            strike.update({"at": now, "noted": True})
+            save_state(state_path(), state)
+        if not write:
+            return True, f"rework asked; {what}", ""
+        if noted:
+            # The note landed, so the 48h start here. A requeue asked again would post
+            # the note again each hour (round 4, major), so its one alert is the exit:
+            # it names the ticket that is still started. A sink that cannot file it
+            # queues it, and alert-to-linear.py's next filing retries it (_queue_for_retry).
+            return False, (f"rework asked; {what}; the note landed, so the 48h start now. The requeue is not "
+                           f"asked again, since each ask would post the note again"), write
+        return False, (f"rework asked; {what}; the 48h start when the note lands, "
+                       f"so the next run asks the note again"), write
     if d["action"] in ("close-superseded", "close-requeue", "close-comment"):
         ticket = d.get("ticket")
         findings = latest_findings(slug, pr["number"])
         body = (f"Closed by pr-owner (ASK-3962), the hourly owner of every open fleet PR.\n\n"
                 f"Why: {d['reason']}.\n\n"
-                f"Branch {branch} is kept at {short}. Nothing was deleted. Reopen this PR to undo.")
+                f"Branch {branch} is kept at {short}. Nothing was deleted. Reopen this PR within {KEEP_DAYS} days to undo.")
         if d["action"] == "close-requeue":
             body += f"\n\n{ticket['id']} gets a resume note: resume from branch {branch} at {short}."
         if findings:
             body += "\n\nLast review findings:\n```\n" + findings + "\n```"
         rc, out, err = gh_write(["pr", "close", n, "-R", slug, "--comment", body])
         if rc != 0:
-            return False, f"close failed: {' '.join(err.split())[:160]}"
+            return False, f"close failed: {' '.join(err.split())[:160]}", "close"
         (state.setdefault("strikes", {})).pop(key, None)
         state.setdefault("closed", {})[key] = {"head": head, "at": now, "action": d["action"]}
         save_state(state_path(), state)
-        what, noted = "closed, branch kept", True
+        what, write = "closed, branch kept", ""
         if ticket and d["action"] == "close-requeue":
             line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962) closed PR #{n} ({d['reason']}). "
-                    f"Branch kept; reopen the PR to undo.")
-            noted, note = ticket_note(ticket, line)
+                    f"Branch kept; reopen the PR within {KEEP_DAYS} days to undo.")
+            requeued, noted, note = ticket_note(ticket, line)
+            write = note_write(requeued, noted)
             what += "; " + note
-        return noted, what
-    return True, "nothing to do"
+            if write:
+                # A closed PR leaves the open list, so no later run decides it and this is
+                # not asked again (round 4, minor: the docstring said it was). Its alert
+                # is the record: held_text() names the ticket and the resume line, and a
+                # sink that cannot file it queues it for alert-to-linear.py's next filing.
+                what += "; not asked again, the PR is closed: its alert carries the resume line"
+        return not write, what, write
+    return True, "nothing to do", ""
 
 
 # ---------------------------------------------------------------- main
 
-WRITES = ("outside", "merge", "review", "rework", "close-superseded", "close-requeue", "close-comment")
+WRITES = ("outside", "merge", "update", "review", "rework", "close-superseded", "close-requeue", "close-comment")
 
 
 def main(argv=None) -> int:
@@ -986,6 +1403,8 @@ def _run(argv=None) -> int:
     counts = {k: 0 for k in ("skip", "reopened", "outside-filed", "ladder", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
+    listed: dict = {}   # slug -> every open PR key, for repos listed in full (prune_state)
+    no_ci_at: dict = {}  # (slug, base) -> no_workflows(), one read per base per run
     for name, path, _remote in rows:
         n_repos += 1
         try:
@@ -1018,11 +1437,13 @@ def _run(argv=None) -> int:
             print(f"EXCLUDED {name} ({slug}): the archive guard refuses it; not read")
             continue
         try:
-            raw = gh_json(["pr", "list", "-R", slug, "--state", "open", "--limit", "200", "--json", PR_FIELDS])
+            raw = gh_json(["pr", "list", "-R", slug, "--state", "open", "--limit", str(LIST_LIMIT), "--json", PR_FIELDS])
         except (RuntimeError, ValueError) as exc:
             n_unreadable += 1
             print(f"UNREADABLE {name} ({slug}): gh pr list failed: {exc}")
             continue
+        if len(raw or []) < LIST_LIMIT:
+            listed[slug] = {f"{slug}#{int(r['number'])}" for r in raw or []}
         for item in sorted(raw or [], key=lambda r: int(r["number"])):
             n_prs += 1
             pr = normalize(slug, name, path, item)
@@ -1036,6 +1457,10 @@ def _run(argv=None) -> int:
                         pr["reviewer"] = reviewer_state((st or {}).get("statuses"), floor)
                         if pr["touches_ledger"]:
                             pr["lessons"] = lessons_verdict(slug, pr)
+                        if pr["ci"] == "none":
+                            if (slug, pr["base"]) not in no_ci_at:
+                                no_ci_at[(slug, pr["base"])] = no_workflows(slug, pr["base"])
+                            pr["no_ci"] = no_ci_at[(slug, pr["base"])]
                         pr["ladder"] = ladder_check(pr)
                     else:
                         # A fork's commits and nothing else: the 12h quiet gate needs
@@ -1062,11 +1487,21 @@ def _run(argv=None) -> int:
             if mode == "dry":
                 print(f"[dry] would {d['action']} {tag}: {d['reason']}")
                 continue
-            ok, what = act(pr, d, state, now)
+            ok, what, write = act(pr, d, state, now)
+            if d.get("held"):
+                # decide() saw a write of ours that did not take; asking again can land, but this run did not prove it.
+                ok, what, write = False, f"held, not closed (the reason says why); {what}", write or d.get("held_write") or "held"
             if not ok:
                 n_failed += 1
+                if d["action"] != "outside":  # a fork's alert failing is its own retry, at act()
+                    what += "; " + held_alert(pr, d, what, write, state, now)
             print(f"{d['action'].upper()} {tag}: {d['reason']} -> {what}")
 
+    # A dry run prunes a copy, so it can say what --apply would drop and still write nothing.
+    pruned = prune_state(state if args.apply else json.loads(json.dumps(state)), listed, now)
+    if pruned:
+        print(f"{'pruned' if args.apply else 'would prune'} {pruned} state entr{'y' if pruned == 1 else 'ies'}: "
+              f"their PRs left a fully listed repo's open list at least {KEEP_DAYS} days ago")
     if args.apply:
         state["last_run"] = {"at": iso(now), "repos": n_repos, "prs": n_prs, "failed": n_failed,
                              "counts": {k: v for k, v in counts.items() if v}}

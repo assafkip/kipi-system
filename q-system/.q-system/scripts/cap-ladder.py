@@ -721,34 +721,64 @@ def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
     return "free", f"'{arg[:80]}' is free text, not an owned ticket, a fleet PR or a FOUNDER-DECISION"
 
 
-def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: list) -> dict | None:
-    """One validated decision, or None when Fable answered nothing at all."""
-    path, text = rca(issue, kind, why, pr, slug, decide="any")
+def validated_decision(ask, parse, label: str, again_for: str, default, say_fn=None) -> dict | None:
+    """THE ONE VALIDATED-DECISION LOOP. Ask, validate, ask once more, then default.
+
+    Two callers: decide() below, and linear-route-decide.py (ASK-3959 stage 2),
+    which loads this file for it. ONE LOOP ON PURPOSE: the brief for stage 2 said
+    "do not write a second one", because two copies of "refuse, ask again, then
+    default" drift, and the founder's rule they both carry ("what happens if
+    nothing changed? the ticket just stays?") is the part that must not drift.
+
+    ask(attempt, refused) -> (path, text). Attempt 1 is the open question,
+      attempt 2 the narrowed one. An empty text on attempt 1 means no answer at
+      all, and returns None: that is a failed call, never a decision.
+    parse(text, attempt) -> (decision dict, "") when valid, else (None, why).
+    default(path, text, refused) -> the decision two refusals land on.
+    say_fn: the caller's own log line, so another job's log does not read "cap-ladder".
+    """
+    say_fn = say_fn or say
+    path, text = ask(1, [])
     if not text:
         return None
     refused = []
     for attempt in (1, 2):
+        d, no = parse(text, attempt)
+        if d is not None:
+            return {**d, "rca": path, "text": text, "refused": refused}
+        refused.append(no)
+        say_fn(f"{label}: decision refused ({no}); asking again for {again_for} only")
+        if attempt == 1:
+            path2, text2 = ask(2, refused)
+            if text2:
+                path, text = path2, text2
+    return default(path, text, refused)
+
+
+def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: list) -> dict | None:
+    """One validated decision, or None when Fable answered nothing at all."""
+    def ask(attempt: int, _refused: list) -> tuple[str, str]:
+        return rca(issue, kind, why, pr, slug, decide="any" if attempt == 1 else "split-close")
+
+    def parse(text: str, attempt: int) -> tuple[dict | None, str]:
         m = DECISION_RE.search(text)
         d = m.group(1) if m else ""
         if d in ("SPLIT", "CLOSE"):
-            return {"kind": d, "rca": path, "text": text, "refused": refused}
+            return {"kind": d}, ""
         if d == "BLOCKED-ON" and attempt == 2:
-            refused.append("BLOCKED-ON again, when only SPLIT or CLOSE was asked")
-        elif d == "BLOCKED-ON":
+            return None, "BLOCKED-ON again, when only SPLIT or CLOSE was asked"
+        if d == "BLOCKED-ON":
             bkind, no = check_blocker(m.group(2), tgts)
             if not no:
-                return {"kind": d, "target": m.group(2).strip(), "target_kind": bkind,
-                        "rca": path, "text": text, "refused": refused}
-            refused.append(no)
-        elif d != "BLOCKED-ON":
-            refused.append("no DECISION line")
-        say(f"{issue}: decision refused ({refused[-1]}); asking again for SPLIT or CLOSE only")
-        if attempt == 1:
-            path2, text2 = rca(issue, kind, why, pr, slug, decide="split-close")
-            if text2:
-                path, text = path2, text2
+                return {"kind": d, "target": m.group(2).strip(), "target_kind": bkind}, ""
+            return None, no
+        return None, "no DECISION line"
+
     # Two invalid answers in a row: SPLIT on the RCA's own findings.
-    return {"kind": "SPLIT", "rca": path, "text": text, "refused": refused, "defaulted": True}
+    return validated_decision(
+        ask, parse, issue, "SPLIT or CLOSE",
+        lambda path, text, refused: {"kind": "SPLIT", "rca": path, "text": text,
+                                     "refused": refused, "defaulted": True})
 
 
 def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: int, row: dict) -> str:
