@@ -1071,17 +1071,11 @@
         "what": "A started ticket held by the ASK-3825 rule for a reason other than a live run.",
         "consumer": "linear-sync.py started_hold_reason releases it when its hold ends; the backstop past the age bar."
       },
-      "ticket-live": {
-        "exit": "wait",
-        "backstop": false,
-        "what": "A started ticket inside the lane window or under a live worker claim: someone may be on it now.",
-        "consumer": "The 24h lane window (linear-sync.py STARTED_STALE_HOURS) or the claim ends, and the PR is judged again. Never the backstop: closing it would throw away a live round."
-      },
       "lane-live": {
         "exit": "wait",
         "backstop": false,
-        "what": "A lane branch whose ticket is inside the lane window or under a live claim.",
-        "consumer": "The 24h lane window ends, then kind lane and its exit. Never the backstop: a supervised lane may be on it."
+        "what": "A lane branch on a started ticket whose start stamp cannot be read. A PR whose ticket has live evidence (a start inside the lane window, a lane-mark.py marker, a live worker claim) never gets a kind: since ASK-4111 the WIP walk leaves it out of the count and the release loop skips it first.",
+        "consumer": "Nothing releases it yet: ASK-4124 builds that exit. Never the backstop: a supervised lane may be on it."
       },
       "ticket-state": {
         "exit": "wait",
