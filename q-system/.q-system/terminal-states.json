@@ -1332,11 +1332,12 @@
             "what": "At the WIP ceiling each tick releases one PR no round can move (RULE-2026-11-07-A)."
           },
           {
-            "kind": "debt",
-            "ticket": "ASK-3962",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E11: the age backstop covers every open PR, below the ceiling too."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/pr-owner.py",
+            "marker": "def decide(",
+            "test": "q-system/.q-system/scripts/test/test-pr-owner.py",
+            "what": "com.kipi.pr-owner, hourly: every open PR in a dispatch repo, any branch, below the ceiling too. At 48h old and 12h quiet it merges, reviews, reworks once, or closes with the branch kept (ASK-3962)."
           }
         ]
       },

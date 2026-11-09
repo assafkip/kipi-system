@@ -24,6 +24,7 @@
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",
     "com.kipi.linear-not-done-reopen",
+    "com.kipi.pr-owner",
     "com.kipi.worktree-reaper"
   ],
   "shared_exceptions": {
