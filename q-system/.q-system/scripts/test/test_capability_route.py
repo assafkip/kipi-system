@@ -65,7 +65,13 @@ def load(td: Path, ladder: bool = True):
     for f in ("capability_block_expiry.py", "attempts-ledger.py", "linear-sync.py"):
         shutil.copy(HERE / f, td / f)
     if ladder:
+        # The fake carries the REAL ladder's JOB and DEAD_TYPES lines, copied from
+        # the real file, because the module reads both from cap-ladder.py's source
+        # (PR #668 round 2, finding 1). A hand-typed copy here would test the copy.
+        consts = "".join(l + "\n" for l in (HERE / "cap-ladder.py").read_text().splitlines()
+                         if l.startswith(("JOB = ", "DEAD_TYPES = ")))
         (td / "cap-ladder.py").write_text(
+            consts +
             "import json, sys, os\n"
             "open(os.environ['W'] + '/ladder.log', 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
             "print('cap-ladder: ask added')\n")
@@ -179,6 +185,191 @@ def review_round1(td: Path) -> None:
               ok, (out, calls))
 
 
+def real_ladder(td: Path):
+    """The REAL cap-ladder.py, imported in-process, every path it writes inside td.
+    Its Linear read goes through its own CAP_LADDER_LINEAR_FIXTURE seam."""
+    for v, f in (("CAP_LADDER_STATE", "ladder-state.json"), ("CAP_LADDER_REPORT", "ladder-report.json"),
+                 ("CAP_LADDER_BLOCKERS", "ladder-blockers.json"), ("CAP_LADDER_ATTEMPTS", "attempts.json"),
+                 ("CAP_LADDER_LINEAR_LOG", "ladder-linear.log"), ("CAP_LADDER_LINEAR_FIXTURE", "linear.json")):
+        os.environ[v] = str(td / f)
+    os.environ["CAP_LADDER_NOW"] = "2026-11-08T04:40:00+00:00"
+    spec = importlib.util.spec_from_file_location("cap_ladder_real", str(HERE / "cap-ladder.py"))
+    lad = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lad)
+    return lad
+
+
+class MainFake(FakeLinear):
+    """Enough of Linear for main(): the team, the board, the park history, the comments."""
+    EXIT_NOOP = 4
+
+    def __init__(self, bodies, board):
+        super().__init__(bodies)
+        self.board = board
+
+    def graphql(self, query, variables):
+        if "teams(" in query:
+            return {"teams": {"nodes": [{"id": "t"}]}}
+        if "issues(filter" in query:
+            return {"issues": {"nodes": self.board, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+        if "history(" in query:
+            return {"issue": {"history": {"nodes": [{"createdAt": OLD, "addedLabelIds": ["l-b"]}]}}}
+        return super().graphql(query, variables)
+
+
+RACE_CHILD = r'''
+import importlib.util, json, os, sys, time
+def mod(name, path):
+    s = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m); return m
+td, op, ident = sys.argv[1], sys.argv[2], sys.argv[3]
+t = mod("trt", os.environ["ROUTE_TEST"])
+m = mod("cbe_child", os.environ["ROUTE_MODULE"])
+if op == "route":
+    def sync(*a):
+        if a[0] == "unblock":
+            time.sleep(0.6)               # the unblock's network round-trip
+        with open(td + "/race.log", "a") as fh:
+            fh.write(json.dumps(list(a)) + "\n")
+        return 0, "ok"
+    m._sync = sync
+    body = t.park_comment("the Write tool refuses .claude/settings.json", "same")
+    print(m.route_unprobeable(t.FakeLinear({ident: [body]}), ident, t.OLD, True, t.NOW))
+else:
+    import json as _j
+    class Slow:
+        def __getattr__(self, n):
+            return getattr(_j, n)
+        def load(self, fh):
+            d = _j.load(fh); time.sleep(1.0); return d   # widen read-to-write
+    m.json = Slow()
+    from datetime import datetime, timezone
+    m._seen(ident, datetime(2026, 11, 8, tzinfo=timezone.utc), True)
+'''
+
+
+def race(td: Path, module: Path, op: str, idents) -> list:
+    """Run one child per ident AT ONCE, each a real process. Returns their stdout."""
+    import subprocess
+    (td / "race_child.py").write_text(RACE_CHILD)
+    env = dict(os.environ, ROUTE_TEST=str(Path(__file__).resolve()), ROUTE_MODULE=str(module))
+    procs = [subprocess.Popen([sys.executable, str(td / "race_child.py"), str(td), op, i], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for i in idents]
+    return [p.communicate(timeout=60)[0].strip() for p in procs]
+
+
+def review_round2(td: Path) -> None:
+    """PR #668 round 2, each finding in the reviewer's reproducer shape. Red at 798279fb."""
+    from datetime import datetime, timezone
+    m, calls = load(td)
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    cred = park_comment("the vendor API key is not set in this environment", "no token for the vendor")
+
+    # FINDING 1 (major). The REAL producers: cap-ladder's status_add files the
+    # ask, its sweep_dead_asks resolves it as moot because the ticket closed.
+    lad = real_ladder(td)
+    ask = m.credential_ask("ASK-66")
+    (td / "linear.json").write_text(json.dumps({"ASK-66": {"state_type": "completed"}}))
+    (td / "status.jsonl").write_text("")
+    lad.status_add("ASK-66", "founder-decision", ask, source="cap-ladder.py --founder-ask")
+    swept = lad.sweep_dead_asks(True)
+    row = lines(td, "status.jsonl")[-1]
+    check("finding 1 setup: the real sweep resolved the ask as moot, by its own job name",
+          swept == 1 and row.get("resolved") and row.get("resolved_by") == lad.JOB
+          and str(row.get("note")).startswith("moot:"), row)
+    got = m.answered("ASK-66", ask, start)
+    check("finding 1: answered() does not read cap-ladder's own moot resolution as the founder's answer",
+          got is None, got)
+    # The ticket was reopened and is still parked: the moot row must not unblock
+    # it, and must not sign the founder's name to a permanent comment.
+    calls.clear()
+    (td / "ladder.log").write_text("")
+    out = m.route_unprobeable(FakeLinear({"ASK-66": [cred]}), "ASK-66", OLD, True, NOW)
+    asked = any(a[:2] == ["--founder-ask", "ASK-66"] for a in lines(td, "ladder.log"))
+    check("finding 1: a moot ask unblocks nothing, posts no 'founder answered' note, and a fresh ask is filed",
+          not any(c[0] in ("unblock", "progress", "requeue") for c in calls) and asked, (out, calls))
+    # Control: the founder's own --resolve, through the real writer, still counts.
+    (td / "linear.json").write_text(json.dumps({"ASK-67": {"state_type": "started"}}))
+    aid = lad.status_add("ASK-67", "founder-decision", m.credential_ask("ASK-67"))
+    lad.status_resolve(aid, "token exported to the runner env", by="assaf")
+    got = m.answered("ASK-67", m.credential_ask("ASK-67"), start)
+    check("finding 1 control: the founder's own --resolve is still his answer",
+          bool(got) and got.get("id") == aid, got)
+
+    # PR #695 (merged as 11548797): `cap-ladder.py --founder-ask` exits 1 on a
+    # closed ticket. A closed ticket is not routed at all, so it never reads as
+    # a failed ask. Proven through main(), which must pass the state through.
+    for ident, body, kind in (("ASK-68", cred, "credential"),
+                              ("ASK-69", park_comment("the Write tool refuses .claude/x.md", "same"), "claude-write"),
+                              ("ASK-71", park_comment("the build tool is not installed", "same"), "unknown")):
+        calls.clear()
+        (td / "ladder.log").write_text("")
+        board = [{"id": ident, "identifier": ident, "title": "t", "state": {"name": "Done", "type": "completed"},
+                  "project": {"name": "kipi-system"},
+                  "labels": {"nodes": [{"id": "l-b", "name": "blocked:capability"}]}}]
+        fake = MainFake({ident: [body]}, board)
+        m._load_linear_sync = lambda fake=fake: fake
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = m.main(["--repo-project", "kipi-system", "--apply"])
+        said = buf.getvalue()
+        check(f"closed ticket ({kind}) through main(): not routed; no ask, no unblock, no note, no capout",
+              rc == 0 and not calls and not lines(td, "ladder.log") and not ledger(td).get(ident)
+              and "completed" in said and "not routed" in said, (said, calls, lines(td, "ladder.log")))
+
+    # FINDING 2 (major). Two real processes, one claude-write park, a 0.6s
+    # unblock. Exactly one permanent "Unblocked" comment and one requeue.
+    (td / "race.log").write_text("")
+    outs = race(td, td / "capability_block_expiry.py", "route", ["ASK-70", "ASK-70"])
+    log = lines(td, "race.log")
+    posted = [c for c in log if c[0] == "progress" and "Unblocked by" in c[2]]
+    requeued = [c for c in log if c[0] == "requeue"]
+    check("finding 2: two concurrent runs post ONE permanent 'Unblocked' comment and requeue once",
+          len(posted) == 1 and len(requeued) == 1, (outs, len(posted), len(requeued)))
+    check("finding 2: the run that lost the claim says so", any("concurrent run" in o for o in outs), outs)
+
+    # FINDING 3 (minor). The sentinel is up to 1500 bytes of agent text.
+    two = park_comment("the deploy step stopped.\nIt needs the vendor API key, which is not set here", "same")
+    para = park_comment("the deploy step stopped.\n\nIt needs the vendor API key, which is not set here", "same")
+    check("finding 3: a credential named on line 2 of the runner's sentinel is credential",
+          m.classify(two) == "credential", m.classify(two))
+    check("finding 3: a credential named in paragraph 2 of the runner's sentinel is credential",
+          m.classify(para) == "credential", m.classify(para))
+    check("finding 3: a multi-line runner block still stops before the boilerplate",
+          m.classify(park_comment("the build tool\n\nis not installed", "nor here")) == "unknown")
+
+    # FINDING 4 (minor). Two concurrent first sights, a slowed read.
+    (td / "first-seen.json").write_text("{}")
+    race(td, td / "capability_block_expiry.py", "seen", ["ASK-801", "ASK-802"])
+    stamps = json.loads((td / "first-seen.json").read_text())
+    check("finding 4: two concurrent first sights keep both stamps",
+          "ASK-801" in stamps and "ASK-802" in stamps, stamps)
+
+    # MUTANTS, one per major: restore the old behavior in a copy, and the same
+    # assertion must go red, or the test above could not fail.
+    src = (td / "capability_block_expiry.py").read_text()
+    mut1 = src.replace('if (r.get("resolved_by") or "") == job[:80]:', "if False:", 1)
+    # Discards the claim's exit code, as 798279fb did: crc is forced to 0, so
+    # the `crc != 0` branch cannot catch the loser either.
+    mut2 = src.replace("if crc == 1:", "if (crc := 0):", 1)
+    check("mutant: both mutant copies really differ from the module", mut1 != src and mut2 != src)
+    (td / "mut1.py").write_text(mut1)
+    spec = importlib.util.spec_from_file_location("cbe_mut1", str(td / "mut1.py"))
+    mm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mm)
+    mm.LADDER_SCRIPT = m.LADDER_SCRIPT
+    check("mutant 1: an answered() that counts the ladder's moot row returns it (finding 1 can fail)",
+          mm.answered("ASK-66", ask, start) is not None)
+    (td / "mut2.py").write_text(mut2)
+    (td / "race.log").write_text("")
+    race(td, td / "mut2.py", "route", ["ASK-72", "ASK-72"])
+    posted = [c for c in lines(td, "race.log") if c[0] == "progress" and "Unblocked by" in c[2]]
+    check("mutant 2: a claude-write route that ignores the claim's verdict posts twice (finding 2 can fail)",
+          len(posted) == 2, len(posted))
+
+
 def main() -> int:
     print("test_capability_route.py")
     if not SRC.exists():
@@ -253,6 +444,8 @@ def main() -> int:
               "2026-11-15" not in out, out)
     with tempfile.TemporaryDirectory() as t:
         review_round1(Path(t))
+    with tempfile.TemporaryDirectory() as t:
+        review_round2(Path(t))
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
     return 1 if FAILS else 0
 

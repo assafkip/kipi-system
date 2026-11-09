@@ -69,6 +69,8 @@ Dry by default: says what it would clear and mutates nothing.
 from __future__ import annotations
 
 import argparse
+import ast
+import fcntl
 import importlib.util
 import json
 import os
@@ -169,14 +171,25 @@ CLEARING = ("pass", ROTATED)
 ROUTE_AFTER_DAYS = 14
 CLAUDE_WRITE_RE = re.compile(r"\.claude/|sensitive[- ]path|settings(\.local)?\.json|harness (guard|permission)", re.I)
 CREDENTIAL_RE = re.compile(r"credential|\btoken\b|api[ _-]?key|log ?in\b|logged in|oauth|password|\baccount\b|secret", re.I)
-# The runner lines of a park comment, the only part a runner wrote about THIS block.
-RUNNER_LINE_RE = re.compile(r"^- \*\*(?:Sana|Codex)\b[^\n]*", re.M)
+# The runner blocks of a park comment, the only part a runner wrote about THIS
+# block. A BLOCK, NOT A LINE (PR #668 round 2, minor 3): the Sana line carries
+# `head -c 1500` of the runner's sentinel (linear-worker.sh), newlines and all,
+# so a credential named on its line 2 read as unknown and took the capout. A
+# block runs to the next runner line or to the template's next fixed paragraph,
+# so the boilerplate after the runner list is still never read.
+RUNNER_BLOCK_RE = re.compile(
+    r"^- \*\*(?:Sana|Codex)\b.*?(?=^- \*\*(?:Sana|Codex)\b|^\*\*(?:The Definition of Ready|Next:)|\Z)",
+    re.M | re.S)
 ATTEMPTS_FILE = os.environ.get("KIPI_ATTEMPTS") or os.path.expanduser(
     "~/.config/kipi/linear-worker-attempts.json")
 LEDGER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attempts-ledger.py")
 LADDER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap-ladder.py")
-# This job's one state file: when it first saw a park it could not date. One
-# writer (route_unprobeable, under --apply), temp file and rename.
+# This job's one state file: when it first saw a park it could not date. ONE
+# WRITER FUNCTION, MANY PROCESSES (PR #668 round 2, minor 4): the nightly job and
+# a hand run both write it, two first sights read the same file, and the second
+# rename dropped the first's stamp, so that park's 14 days restarted. Every
+# read-modify-write holds SEEN_FILE.lock, the shape the attempts ledger and
+# cap-ladder.py's status file already use. Then temp file and rename.
 SEEN_FILE = os.environ.get("CAPABILITY_EXPIRY_SEEN") or os.path.expanduser(
     "~/.local/state/kipi/capability-expiry/first-seen.json")
 EPOCH = "1970-01-01T00:00:00Z"
@@ -220,7 +233,7 @@ def classify(text: str) -> str:
     runner wrote about this block. A park comment without them (an older format)
     is read whole, minus its **Next:** paragraph, which is the same boilerplate.
     """
-    lines = RUNNER_LINE_RE.findall(text or "")
+    lines = RUNNER_BLOCK_RE.findall(text or "")
     body = "\n".join(lines) if lines else "\n\n".join(
         p for p in (text or "").split("\n\n") if not p.lstrip().startswith("**Next:**"))
     if CLAUDE_WRITE_RE.search(body):
@@ -270,6 +283,27 @@ def credential_ask(identifier: str) -> str:
     return f"access: {identifier} needs a credential or account the fleet cannot grant itself"
 
 
+def ladder_const(name: str):
+    """A top-level literal of cap-ladder.py (JOB, DEAD_TYPES), or None.
+
+    READ FROM THAT FILE, not restated here, for the reason ls_exit_noop reads
+    EXIT_NOOP: a second copy of the ladder's job name drifts from the one it
+    stamps on its rows. PARSED, NOT IMPORTED: an import runs the whole script to
+    read one literal."""
+    try:
+        tree = ast.parse(pathlib.Path(LADDER_SCRIPT).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name):
+            try:
+                return ast.literal_eval(node.value)
+            except ValueError:
+                return None
+    return None
+
+
 def answered(identifier: str, ask: str, after) -> dict | None:
     """The founder's resolved answer to `ask`, resolved after `after`, or None.
 
@@ -279,8 +313,20 @@ def answered(identifier: str, ask: str, after) -> dict | None:
     came back every morning, and the ticket never moved. Read-only: cap-ladder.py
     is the file's one writer. An answer older than this park belongs to an
     earlier park and does not count.
+
+    THE LADDER'S OWN RESOLUTION IS NOT AN ANSWER (PR #668 round 2, major 1).
+    cap-ladder.py sweep_dead_asks resolves an open ask by itself once the ticket
+    closes, with resolved_by=JOB and a "moot:" note. Read as an answer, a
+    reopened ticket was unblocked under a permanent comment saying the founder
+    answered an ask he never saw. Every resolution the ladder makes on its own
+    carries its JOB name; a person's --resolve carries his --by. With no JOB to
+    compare against, nothing counts: an answer this job cannot tell from the
+    janitor's never un-parks.
     """
     from datetime import datetime
+    job = ladder_const("JOB")
+    if not (isinstance(job, str) and job):
+        return None
     path = os.environ.get("CAP_LADDER_STATUS") or os.path.expanduser("~/.local/state/kipi/morning-status.jsonl")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -291,6 +337,9 @@ def answered(identifier: str, ask: str, after) -> dict | None:
     for r in rows:
         if not (r.get("issue") == identifier and r.get("kind") == "founder-decision"
                 and r.get("resolved") and r.get("ask") == ask):
+            continue
+        # [:80]: status_resolve stores resolved_by clipped to 80 characters.
+        if (r.get("resolved_by") or "") == job[:80]:
             continue
         try:
             if datetime.fromisoformat((r.get("resolved_at") or "").replace("Z", "+00:00")) >= after:
@@ -304,29 +353,41 @@ def _seen(identifier: str, now, apply: bool, forget: bool = False):
     """When this job first saw an undated park (stamped at first sight, under
     --apply), or drop the stamp once the ticket has taken its route."""
     from datetime import datetime
-    try:
-        with open(SEEN_FILE, encoding="utf-8") as fh:
-            data = json.load(fh)
-        data = data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        data = {}
-    if forget:
-        if identifier not in data:
-            return None
-        data.pop(identifier)
-    else:
+
+    def read() -> dict:
         try:
-            return datetime.fromisoformat(data[identifier])
+            with open(SEEN_FILE, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    if not (apply or forget):
+        # A dry run stamps nothing, so it takes no lock: the rename keeps every
+        # read a whole file.
+        try:
+            return datetime.fromisoformat(read()[identifier])
         except (KeyError, TypeError, ValueError):
-            pass
-        if not apply:
             return now
-        data[identifier] = now.isoformat()
     os.makedirs(os.path.dirname(SEEN_FILE), exist_ok=True)
-    tmp = f"{SEEN_FILE}.tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=1, sort_keys=True)
-    os.replace(tmp, SEEN_FILE)
+    # The lock file is never unlinked: two inodes at one path are two locks.
+    with open(f"{SEEN_FILE}.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = read()
+        if forget:
+            if identifier not in data:
+                return None
+            data.pop(identifier)
+        else:
+            try:
+                return datetime.fromisoformat(data[identifier])
+            except (KeyError, TypeError, ValueError):
+                pass
+            data[identifier] = now.isoformat()
+        tmp = f"{SEEN_FILE}.tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1, sort_keys=True)
+        os.replace(tmp, SEEN_FILE)
     return now
 
 
@@ -358,13 +419,25 @@ def _fixture_run() -> bool:
                                and os.environ.get("CAPABILITY_EXPIRY_SEEN"))
 
 
-def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_iso: str = "") -> str:
+def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_iso: str = "",
+                      state_type: str = "") -> str:
     """One line: what happened to an unprobeable block. Writes only with apply."""
     if apply and _fixture_run():
         return ("unprobeable; REFUSED to route: a fixture Linear with the live ledger, status "
                 "file or first-seen file (set KIPI_ATTEMPTS, CAP_LADDER_STATUS and CAPABILITY_EXPIRY_SEEN)")
     from datetime import datetime, timedelta, timezone
     now = datetime.fromisoformat(now_iso) if now_iso else datetime.now(timezone.utc)
+    # A CLOSED TICKET TAKES NO ROUTE (PR #668 round 2, with PR #695). The listing
+    # keeps closed tickets that still carry the label. The picker never offers
+    # one, so an unblock or a requeue moves nothing, a capout sends the ladder
+    # after a finished ticket, and since #695 `--founder-ask` refuses it with exit
+    # 1, which read here as a failed ask every night. Closed is cap-ladder.py's
+    # DEAD_TYPES, the set its sweep calls an ask moot on. The first-seen stamp is
+    # dropped, so the file holds only tickets that can still route.
+    if state_type and state_type in (ladder_const("DEAD_TYPES") or ()):
+        if apply:
+            _seen(identifier, now, apply, forget=True)
+        return f"unprobeable; {state_type} in Linear, so not routed (the picker never offers a closed ticket)"
     try:
         parked = datetime.fromisoformat((since or "").replace("Z", "+00:00"))
     except ValueError:
@@ -400,9 +473,25 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
             if not _landed(urc):
                 return (f"unprobeable claude-write; the unblock did NOT land (rc {urc}: {detail[:120]}); "
                         "no flag, no note, the next run retries")
-            subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, flag],
-                           capture_output=True, text=True)
+            # The label is off, so this park's stamp goes whatever the claim says:
+            # a stale stamp would route an undated re-park the night it is seen.
             _seen(identifier, now, apply, forget=True)
+            # THE CLAIM'S VERDICT GATES THE PERMANENT NOTE (PR #668 round 2, major
+            # 2). claim-flag is the atomic one-shot (attempts-ledger.py: exit 0
+            # claimed here first, 1 already claimed) and its exit code was
+            # discarded: two runs both read the flag unset with `get`, both
+            # unblocked, and both posted the "Unblocked" comment, which Linear
+            # cannot delete. `get` only picks the route; the claim picks the one
+            # writer. The codex P2 order still holds: the claim comes only after
+            # a landed unblock, so a refused unblock never leaves the flag set.
+            crc = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, flag],
+                                 capture_output=True, text=True).returncode
+            if crc == 1:
+                return (f"unprobeable claude-write; unblocked (rc {urc}), but a concurrent run claimed this "
+                        "route first and posts its note, so none here")
+            if crc != 0:
+                return (f"unprobeable claude-write; unblocked (rc {urc}), but the one-shot claim did not land "
+                        f"(ledger rc {crc}), so no note was posted; if it parks again this route runs again")
             _sync("progress", identifier,
                   "**Unblocked by capability_block_expiry.py (ASK-3960).** The block was a .claude/ write the "
                   "Write tool refuses. That is not a missing capability: the fleet lands .claude/ edits through "
@@ -972,7 +1061,8 @@ def main(argv=None) -> int:
 
         if status == "unprobeable":
             print(f"capability-expiry: {ident} "
-                  + route_unprobeable(ls, ident, parked_at(ls, ident, block_label_id), args.apply))
+                  + route_unprobeable(ls, ident, parked_at(ls, ident, block_label_id), args.apply,
+                                      state_type=(issue.get("state") or {}).get("type") or ""))
             continue
         if status not in CLEARING:
             reason = {"unprobeable": "no recorded probe -- stays parked, nothing to re-test",
