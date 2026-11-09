@@ -28,6 +28,10 @@ ok()   { PASS=$((PASS + 1)); echo "  ok: $1"; }
 REAL_GIT="$(command -v git)" || fail "git not on PATH"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 unset KIPI_TARGET_REPO KIPI_REVIEW_ENGINE KIPI_REVIEW_PRIMARY_ENGINE KIPI_REVIEW_MAX_ROUNDS 2>/dev/null || true
 

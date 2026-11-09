@@ -61,6 +61,10 @@ REDRIVE="$REPO_ROOT/q-system/.q-system/scripts/ci-redrive.py"
 [ -f "$REDRIVE" ] || { echo "FATAL: ci-redrive.py not found at $REDRIVE" >&2; exit 1; }
 
 TMP="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$TMP/lane-tickets.json"; mkdir -p "$TMP/lanes"
+export KIPI_LANE_TICKETS="$TMP/lane-tickets.json" KIPI_LANES_DIR="$TMP/lanes"
 trap 'rm -rf "$TMP"' EXIT
 
 # --- the gh seam -------------------------------------------------------------
@@ -155,7 +159,67 @@ fresh_state() {
 
 pages() { wc -l < "$NOTIFY_LOG" | tr -d ' '; }
 
+# --- lane cases (ASK-4095) helpers -------------------------------------------
+iso_ago() { python3 -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
+lane_marker() {  # lane_marker <id> <hours-from-now, negative = expired>
+  python3 -c 'import datetime,json,sys; u=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[2])); json.dump({"issue":sys.argv[1],"agent":"rules-to-code","since":"2026-11-08T20:00:00Z","until":u.strftime("%Y-%m-%dT%H:%M:%SZ")}, open(sys.argv[3],"w"))' "$1" "$2" "$KIPI_LANES_DIR/$1.json"
+}
+lane_ticket() {  # lane_ticket <id> <state> <started-hours-ago> | lane_ticket UNREADABLE
+  if [ "$1" = "UNREADABLE" ]; then printf '"UNREADABLE"' > "$KIPI_LANE_TICKETS"; return; fi
+  python3 -c 'import json,sys; json.dump({sys.argv[1]: {"state": sys.argv[2], "startedAt": sys.argv[3]}}, open(sys.argv[4],"w"))' "$1" "$2" "$(iso_ago "$3")" "$KIPI_LANE_TICKETS"
+}
+lane_reset() { printf '{}' > "$KIPI_LANE_TICKETS"; find "$KIPI_LANES_DIR" -name '*.json' -exec mv {} "$KIPI_LANES_DIR/.." \; 2>/dev/null; }
+
 echo "== ci-redrive =="
+
+# --- 0. A LIVE LANE IS NEVER HANDED BACK (ASK-4095) --------------------------
+# 2026-11-08 23:25:01Z: "red-CI redrive: handing ASK-4011 back to its agent", and
+# a converge started on #666 while the rules-to-code agent was working it by hand.
+LANE_PR='[{"number":74,"headRefName":"sana/ask-296","isDraft":false,
+  "headRefOid":"dddddddddddddddddddddddddddddddddddddddd",
+  "url":"https://x/74","title":"t (ASK-296)",
+  "statusCheckRollup":[
+    {"__typename":"CheckRun","name":"validate","status":"COMPLETED",
+     "conclusion":"FAILURE","workflowName":"Skeleton Validation"}]}]'
+lane_case() {  # lane_case <label> <want-rc> [err-substring]
+  local rc
+  run redrive >/dev/null; rc=$?
+  check "$1" "$rc" "$2"
+  [ -z "${3:-}" ] || contains "$1: the log names the lane" "$(cat "$TMP/err")" "$3"
+}
+fresh_state lane0; fixture "$LANE_PR"; lane_reset
+lane_case "lane 0: the red PR with no lane is offered" 0
+fresh_state lane1; fixture "$LANE_PR"; lane_reset; lane_marker ASK-296 6
+lane_case "lane 1: an unexpired lane marker keeps it from the redrive" 1 "lane marker: rules-to-code holds ASK-296"
+fresh_state lane2; fixture "$LANE_PR"; lane_reset; lane_marker ASK-296 -1
+lane_case "lane 2: an expired marker does not" 0
+fresh_state lane3; fixture "$LANE_PR"; lane_reset; lane_ticket ASK-296 started 2
+lane_case "lane 3: no fleet run and started 2h ago (the ASK-4011 shape) is a lane" 1 "inside the 24h lane window"
+fresh_state lane4; fixture "$LANE_PR"; lane_reset; lane_ticket ASK-296 started 2
+printf '{"ASK-296": {"count": 1, "rounds": 1}}' > "$LEDGER"
+lane_case "lane 4: the same ticket, run by the fleet worker, is redriven" 0
+fresh_state lane5; fixture "$LANE_PR"; lane_reset; lane_ticket ASK-296 started 30
+lane_case "lane 5: a non-fleet ticket started 30h ago is past the lane window" 0
+fresh_state lane6; fixture "$LANE_PR"; lane_reset; lane_ticket UNREADABLE
+lane_case "lane 6: a ticket that cannot be read fails closed" 1 "could not be read"
+fresh_state lane7; fixture "$LANE_PR"; lane_reset; lane_ticket ASK-296 started 2
+printf '{"ASK-296": {"ci_redrive_x": true}}' > "$LEDGER"
+lane_case "lane 7: a ledger row of redrive flags only is not a fleet run" 1 "inside the 24h lane window"
+# MUTANT: the lane gate cut out of a copy beside its libraries goes red on lane 1.
+MUTDIR="$TMP/mut-scripts"; mkdir -p "$MUTDIR"
+cp "$(dirname "$REDRIVE")"/*.py "$MUTDIR/"
+python3 - "$MUTDIR/ci-redrive.py" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+a = '        lane = lane_live(cand["issue"], path)\n        if lane:\n'
+assert s.count(a) == 1, "anchor"
+open(p, "w").write(s.replace(a, '        lane = ""\n        if lane:\n'))
+PY
+fresh_state lanem; fixture "$LANE_PR"; lane_reset; lane_marker ASK-296 6
+REAL_REDRIVE="$REDRIVE"; REDRIVE="$MUTDIR/ci-redrive.py"
+run redrive >/dev/null; MRC=$?
+REDRIVE="$REAL_REDRIVE"; lane_reset
+check "mutant killed: without the lane gate the marked lane IS offered, so lane 1 can go red" "$MRC" "0"
 
 # --- 1. attribution ----------------------------------------------------------
 fresh_state attr
@@ -527,6 +591,10 @@ mkdir -p "$SCRIPTS" "$DROOT/home/.config/kipi" "$DROOT/bin"
 # attempts-ledger.py off its own directory. Both real, both copied.
 cp "$REDRIVE" "$SCRIPTS/ci-redrive.py"
 cp "$REPO_ROOT/q-system/.q-system/scripts/attempts-ledger.py" "$SCRIPTS/attempts-ledger.py"
+# The lane rule (ASK-4095) reads linear-sync.py beside ci-redrive.py; without it
+# the redrive refuses every hand-back, which is the fail-closed answer.
+cp "$REPO_ROOT/q-system/.q-system/scripts/linear-sync.py" "$SCRIPTS/linear-sync.py"
+cp "$REPO_ROOT/q-system/.q-system/scripts/linear-claim.py" "$SCRIPTS/linear-claim.py"
 # review-redrive.py is STAGED, not installed. branch_guard's fallback arm is
 # `[ -f "$REVIEW_REDRIVE" ]`, so without that file the arm is DEAD here and case
 # 14k below would pass against the UNFIXED dispatcher -- a green test measuring

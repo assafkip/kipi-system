@@ -843,6 +843,16 @@ def cmd_select(cands, show_all):
         # hazard those gates exist for.
         if CI.capout_skip(path, c["issue"], "review-redrive", c["pr"]):
             continue
+        # A LIVE LANE, BOTH ACTIONS (ASK-4095). A rework would put a second writer
+        # on the lane's branch; a re-review would spend a round of the lane's own
+        # review cap. The rule is ci-redrive's lane_live, so the two redrives
+        # cannot disagree about whose PR it is.
+        lane = CI.lane_live(c["issue"], path)
+        if lane:
+            sys.stderr.write(
+                "review-redrive: %s PR #%s needs %s but a lane is on it (%s) -- not "
+                "offering it.\n" % (c["issue"], c["pr"], c["action"], lane))
+            continue
         # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
         # launches a different long-running process, so each needs its own
         # liveness question -- but the reason is one reason, and the ledger read
