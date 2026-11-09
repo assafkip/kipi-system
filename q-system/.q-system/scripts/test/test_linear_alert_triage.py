@@ -1530,6 +1530,9 @@ class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
         pages = [
             "converge ASK-50: attempts ledger unwritable -- the retry cap is not "
             "enforceable until it is fixed",
+            "converge ASK-50: refused: this run is under a test and /x/attempts.json "
+            "is the live ledger; set KIPI_STATE_DIR in the test -- the retry cap is "
+            "not enforceable until it is fixed",
             "converge ASK-50: PR #7 is 'APPROVE' but only the degraded Opus fallback "
             "reviewed it (codex was down) - held, armed. Needs a real review",
             "converge ASK-50: PR #7 is 'APPROVE' at abc but its head def was never "
@@ -1541,7 +1544,7 @@ class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
                   + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
         _, seen, _, _ = lane(b)
         self.assertEqual(closes(b), [])
-        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4"])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
 
     def test_converge_pages_about_the_run_still_close(self):
         """Negative control for the narrowing."""
