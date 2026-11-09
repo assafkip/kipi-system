@@ -65,11 +65,12 @@ def load(td: Path, ladder: bool = True):
     for f in ("capability_block_expiry.py", "attempts-ledger.py", "linear-sync.py"):
         shutil.copy(HERE / f, td / f)
     if ladder:
-        # The fake carries the REAL ladder's JOB and DEAD_TYPES lines, copied from
-        # the real file, because the module reads both from cap-ladder.py's source
-        # (PR #668 round 2, finding 1). A hand-typed copy here would test the copy.
+        # The fake carries the REAL ladder's JOB, DEAD_TYPES and FOUNDER_RESOLVE_CTX
+        # lines, copied from the real file, because the module reads them from
+        # cap-ladder.py's source (PR #668 rounds 2 and 3). A hand-typed copy here
+        # would test the copy.
         consts = "".join(l + "\n" for l in (HERE / "cap-ladder.py").read_text().splitlines()
-                         if l.startswith(("JOB = ", "DEAD_TYPES = ")))
+                         if l.startswith(("JOB = ", "DEAD_TYPES = ", "FOUNDER_RESOLVE_CTX = ")))
         (td / "cap-ladder.py").write_text(
             consts +
             "import json, sys, os\n"
@@ -107,6 +108,18 @@ def park_comment(sana: str, codex: str) -> str:
             "is sound.** Do NOT re-scope this.\n\n**Next:** the capability above has to be granted or built. "
             "A harness permission is an authorization decision and belongs to whoever owns the config. "
             "Once it exists, the loop clears this itself.\n\n<!-- capability-probe: none -->")
+
+
+# What cap-ladder.py resolve_ctx() records for a --resolve typed into the
+# founder's own terminal: stdin is a tty and no agent runner's marker is set.
+TERMINAL_CTX = {"tty": True, "agent_env": [], "launchd": "", "user": "founder"}
+
+# One park per route, for the round-3 races (two real processes per site).
+RACE_PARKS = {
+    "route-claude": park_comment("the Write tool refuses .claude/settings.json", "same"),
+    "route-cred": park_comment("the vendor API key is not set in this environment", "no token for the vendor"),
+    "route-capout": park_comment("the build tool is not installed", "same"),
+}
 
 
 def review_round1(td: Path) -> None:
@@ -169,9 +182,13 @@ def review_round1(td: Path) -> None:
                                ("answered before this park", True, "2026-09-01T00:00:00+00:00")):
         calls.clear()
         (td / "ladder.log").write_text("")
+        # resolved_ctx is what cap-ladder.py's resolve_ctx() records for a run in
+        # the founder's own terminal; review_round3 makes that row through the
+        # real writer under a pty (PR #668 round 3, finding 2).
         (td / "status.jsonl").write_text(json.dumps({"id": "ASK-65:a", "issue": "ASK-65", "kind": "founder-decision",
                                                      "ask": ask, "resolved": resolved, "note": "token exported",
-                                                     "resolved_at": at, "resolved_by": "founder"}) + "\n")
+                                                     "resolved_at": at, "resolved_by": "founder",
+                                                     "resolved_ctx": TERMINAL_CTX}) + "\n")
         out = m.route_unprobeable(FakeLinear({"ASK-65": [cred]}), "ASK-65", OLD, True, NOW)
         asked = any(a[:2] == ["--founder-ask", "ASK-65"] for a in lines(td, "ladder.log"))
         unblocked = ["unblock", "ASK-65", "blocked:capability"] in calls
@@ -197,6 +214,32 @@ def real_ladder(td: Path):
     lad = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(lad)
     return lad
+
+
+def resolve_cli(lad, aid: str, note: str, terminal: bool, agent: bool = False) -> dict:
+    """`cap-ladder.py --resolve`, the REAL writer as its own process, so the row
+    carries the context its resolve_ctx() really sees (PR #668 round 3, finding 2).
+    terminal: stdin is a pty, as when the founder types it in his own terminal.
+    agent: CLAUDECODE is set, as in every Claude Code tool shell. --by is "assaf"
+    either way: it is free text, so it must not be what decides. Returns the row."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if k not in lad.AGENT_ENV}
+    env["CAP_LADDER_NOW"] = "2026-11-08T04:40:00+00:00"
+    if agent:
+        env["CLAUDECODE"] = "1"
+    fds = os.openpty() if terminal else ()
+    try:
+        p = subprocess.run([sys.executable, str(HERE / "cap-ladder.py"), "--resolve", aid, "--note", note,
+                            "--by", "assaf"], env=env, stdin=fds[1] if fds else subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=60)
+    finally:
+        for fd in fds:
+            os.close(fd)
+    status = Path(os.environ["CAP_LADDER_STATUS"])
+    row = next((r for r in lines(status.parent, status.name) if r.get("id") == aid), {})
+    check(f"setup: the real --resolve wrote the row (terminal={terminal}, agent={agent})",
+          p.returncode == 0 and bool(row.get("resolved")), p.stdout + p.stderr)
+    return row
 
 
 class MainFake(FakeLinear):
@@ -272,7 +315,14 @@ def review_round2(td: Path) -> None:
     (td / "linear.json").write_text(json.dumps({"ASK-66": {"state_type": "completed"}}))
     (td / "status.jsonl").write_text("")
     lad.status_add("ASK-66", "founder-decision", ask, source="cap-ladder.py --founder-ask")
+    # The sweep run BY HAND FROM A TERMINAL: its moot row then carries a terminal
+    # context, and the JOB check is the only thing that refuses it. Without this
+    # the row's context is whatever shell runs the test, and an agent shell would
+    # refuse it on context alone, so mutant 1 below could not go red (round 3).
+    real_ctx = lad.resolve_ctx
+    lad.resolve_ctx = lambda: dict(TERMINAL_CTX)
     swept = lad.sweep_dead_asks(True)
+    lad.resolve_ctx = real_ctx
     row = lines(td, "status.jsonl")[-1]
     check("finding 1 setup: the real sweep resolved the ask as moot, by its own job name",
           swept == 1 and row.get("resolved") and row.get("resolved_by") == lad.JOB
@@ -291,7 +341,7 @@ def review_round2(td: Path) -> None:
     # Control: the founder's own --resolve, through the real writer, still counts.
     (td / "linear.json").write_text(json.dumps({"ASK-67": {"state_type": "started"}}))
     aid = lad.status_add("ASK-67", "founder-decision", m.credential_ask("ASK-67"))
-    lad.status_resolve(aid, "token exported to the runner env", by="assaf")
+    resolve_cli(lad, aid, "token exported to the runner env", terminal=True)
     got = m.answered("ASK-67", m.credential_ask("ASK-67"), start)
     check("finding 1 control: the founder's own --resolve is still his answer",
           bool(got) and got.get("id") == aid, got)
@@ -370,6 +420,300 @@ def review_round2(td: Path) -> None:
           len(posted) == 2, len(posted))
 
 
+# PR #668 ROUND 3: ONE CHOKEPOINT FOR "UNBLOCK, THEN THE PERMANENT NOTE"
+# RCA q-system/output/rca/rca-capability-expiry-round-3-2026-11-09.md. Rounds 2
+# and 3 each found the duplicate-comment race at ONE site, and each fix went to
+# that site. So the sites are counted from the source, not from memory, and each
+# one gets its own two-process race.
+HELPER = "unblock_then_post"
+# Every call of the helper in capability_block_expiry.py: the function that makes
+# it, the verbs it posts (each one a comment Linear cannot delete), its one-shot
+# claim as written in the source, the race op that drives it, and how many
+# permanent comments the WINNER of two concurrent runs posts. census() compares
+# the source against this table, so a new site is red until it has a row, and a
+# row has a race because the race loop below runs every row.
+SITES = (
+    ("clear_block", ("progress",), "", "clear", 1),
+    ("route_unprobeable", ("progress", "requeue"), "flag", "route-claude", 2),
+    ("route_unprobeable", ("progress", "requeue"), "", "route-cred", 2),
+    ("route_unprobeable", (), "", "route-capout", 0),
+)
+# What the module may touch on the linear-sync module object: reads only.
+LS_READS = ("graphql", "LinearAPIError", "EXIT_NOOP")
+
+
+def census(src: str) -> list:
+    """Every way the module can write to Linear outside the SITES table. [] when clean."""
+    import ast
+    import re
+    tree = ast.parse(src)
+    owner = {}
+    for fn in tree.body:
+        if isinstance(fn, ast.FunctionDef):
+            for n in ast.walk(fn):
+                owner[id(n)] = fn.name
+    # A bare string statement is a docstring: prose about linear-sync, not a call.
+    prose = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    bad, found = [], []
+    for n in ast.walk(tree):
+        where = owner.get(id(n), "<module>")
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_sync" and where != HELPER:
+            bad.append(f"_sync called in {where} line {n.lineno}: a Linear write outside {HELPER}")
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == HELPER:
+            posts = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "posts"), None)
+            claim = next((k.value for k in n.keywords if k.arg == "claim"), None)
+            if not (isinstance(posts, ast.List) and all(
+                    isinstance(e, ast.Tuple) and e.elts and isinstance(e.elts[0], ast.Constant) for e in posts.elts)):
+                bad.append(f"{HELPER} in {where} line {n.lineno}: posts is not a literal list of (verb, ...) tuples")
+                continue
+            found.append((where, tuple(e.elts[0].value for e in posts.elts), ast.unparse(claim) if claim else ""))
+        if (isinstance(n, ast.Attribute) and n.attr not in LS_READS
+                and ((isinstance(n.value, ast.Name) and n.value.id == "ls")
+                     or (isinstance(n.value, ast.Call) and getattr(n.value.func, "id", "") == "_load_linear_sync"))):
+            bad.append(f"linear-sync's {n.attr} used in {where} line {n.lineno}: only {LS_READS} are reads")
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in prose:
+            if re.match(r"\s*mutation\b", n.value):
+                bad.append(f"a GraphQL mutation in {where} line {n.lineno}")
+            if "linear-sync.py" in n.value and where not in ("_sync", "_load_linear_sync"):
+                bad.append(f"linear-sync.py named in {where} line {n.lineno}: a second way to run its verbs")
+    want = sorted(r[:3] for r in SITES)
+    if sorted(found) != want:
+        bad.append(f"{HELPER} call sites {sorted(found)} are not SITES {want}")
+    return bad
+
+
+class LoopLinear:
+    """A loopback Linear for the REAL linear-sync.py, label state and comments kept.
+
+    The round-2 race swapped _sync for a function that answered 0 to both
+    unblocks, which is not what production does: linear-sync holds a host lock
+    and answers EXIT_NOOP to the run that finds the label gone. This serves the
+    queries linear-sync's unblock, progress and requeue send, and holds the label
+    read for half a second so the two runs are in flight together."""
+
+    def __init__(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        self.lock = threading.Lock()
+        self.issues, self.comments, self.removals = {}, {}, {}
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                out = json.dumps({"data": outer.answer(body["query"], body.get("variables") or {})}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/graphql"
+
+    def issue(self, ident):
+        with self.lock:
+            i = self.issues.setdefault(ident, {"labels": {"owner:sana", BLOCK}, "state": "started"})
+            return {"id": ident, "identifier": ident, "title": "t", "team": {"id": "t"},
+                    "state": {"id": "s-" + i["state"], "name": i["state"], "type": i["state"]},
+                    "labels": {"nodes": [{"id": "l-" + n, "name": n} for n in sorted(i["labels"])]}}
+
+    def answer(self, q, v):
+        import time
+        if "issueRemoveLabel" in q:
+            with self.lock:
+                self.issues[v["id"]]["labels"].discard(v["labelId"][2:])
+                self.removals[v["id"]] = self.removals.get(v["id"], 0) + 1
+            return {"issueRemoveLabel": {"success": True}}
+        if "commentCreate" in q:
+            with self.lock:
+                self.comments.setdefault(v["input"]["issueId"], []).append(v["input"]["body"])
+            return {"commentCreate": {"success": True, "comment": {"id": "c"}}}
+        if "issueUpdate" in q:
+            with self.lock:
+                self.issues[v["id"]]["state"] = "backlog"
+            return {"issueUpdate": {"success": True, "issue": {"id": v["id"], "identifier": v["id"]}}}
+        if "states(" in q:
+            return {"team": {"states": {"nodes": [{"id": "s-backlog", "name": "backlog", "type": "backlog",
+                                                   "position": 0}]}}}
+        if "issue(" in q:
+            if "labels" in q:
+                time.sleep(0.5)
+            return {"issue": self.issue(v["id"])}
+        return {}
+
+
+BLOCK = "blocked:capability"
+RACE3_CHILD = r'''
+import importlib.util, os, sys
+def mod(name, path):
+    s = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m); return m
+op, ident = sys.argv[1], sys.argv[2]
+t = mod("trt3", os.environ["ROUTE_TEST"])
+m = mod("cbe_r3", os.environ["ROUTE_MODULE"])
+if op == "clear":
+    print(m.clear_block(ident, "path:/fixture", "fixture evidence"))
+else:
+    print(m.route_unprobeable(t.FakeLinear({ident: [t.RACE_PARKS[op]]}), ident, t.OLD, True, t.NOW))
+'''
+
+
+def race3(td: Path, module: Path, op: str, ident: str, loop: LoopLinear) -> list:
+    """Two real processes on one site at once, each running the REAL linear-sync.py."""
+    import subprocess
+    (td / "race3_child.py").write_text(RACE3_CHILD)
+    env = dict(os.environ, ROUTE_TEST=str(Path(__file__).resolve()), ROUTE_MODULE=str(module),
+               KIPI_LINEAR_API_URL=loop.url, KIPI_LINEAR_API_KEY="fixture-key-not-a-secret",
+               KIPI_LOCK_DIR=str(td / "locks"), PYTHONDONTWRITEBYTECODE="1")
+    procs = [subprocess.Popen([sys.executable, str(td / "race3_child.py"), op, ident], env=env,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) for _ in range(2)]
+    return [p.communicate(timeout=120)[0].strip() for p in procs]
+
+
+def mutant(td: Path, src: str, name: str, edits) -> Path | None:
+    """A copy of the module with each (anchor, replacement) applied. An anchor that
+    does not match exactly once is a FAILED experiment, reported red, never run."""
+    out = src
+    for anchor, repl in edits:
+        if out.count(anchor) != 1:
+            check(f"mutant {name}: its anchor matches exactly once", False, f"{out.count(anchor)}: {anchor[:120]}")
+            return None
+        out = out.replace(anchor, repl, 1)
+    check(f"mutant {name}: the copy really differs from the module", out != src)
+    path = td / f"{name}.py"
+    path.write_text(out)
+    return path
+
+
+def load_copy(path: Path, ladder_script: str):
+    spec = importlib.util.spec_from_file_location(path.stem, str(path))
+    mm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mm)
+    mm.LADDER_SCRIPT = ladder_script
+    calls = []
+    mm._sync = lambda *a: (calls.append(list(a)) or (0, "ok"))
+    return mm, calls
+
+
+def review_round3(td: Path) -> None:
+    """PR #668 round 3, the class not the site. Red at 9df54729."""
+    from datetime import datetime, timezone
+    m, calls = load(td)
+    start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    src = (td / "capability_block_expiry.py").read_text()
+
+    # FINDING 1 (major), THE CLASS. Every Linear write goes through one helper,
+    # and its call sites are exactly the SITES table.
+    got = census(src)
+    check(f"census: every Linear write goes through {HELPER}; its call sites are SITES "
+          f"({len(SITES)} rows, {sum(1 for r in SITES if r[1])} that post)", not got, got)
+    for name, extra, want in (
+            ("a _sync('progress') outside the helper", '\ndef _rogue(i):\n    return _sync("progress", i, "x")\n',
+             "_sync called in _rogue"),
+            ("a helper call with no SITES row", '\ndef _rogue(i):\n    return unblock_then_post(i, [("progress", "x")])\n',
+             "('_rogue', ('progress',), '')"),
+            ("a write through the linear-sync module", '\ndef _rogue(ls, i):\n    return ls.requeue_issue(i, "x")\n',
+             "requeue_issue"),
+            ("a subprocess straight to linear-sync.py",
+             '\ndef _rogue(i):\n    return subprocess.run(["python3", "linear-sync.py", "progress", i, "x"])\n',
+             "linear-sync.py named in _rogue")):
+        got = census(src + extra)
+        check(f"census can fail: {name} is reported", any(want in g for g in got), got)
+
+    # FINDING 1, ONE RACE PER SITE: two real processes, the real linear-sync.py.
+    loop = LoopLinear()
+    lad = real_ladder(td)
+
+    def answered_row(ident):
+        aid = lad.status_add(ident, "founder-decision", m.credential_ask(ident))
+        resolve_cli(lad, aid, "token exported to the runner env", terminal=True)
+
+    def run_race(module, op, ident):
+        if op == "route-cred":
+            answered_row(ident)
+        return race3(td, module, op, ident, loop), loop.comments.get(ident, [])
+
+    for n, (fn, _verbs, _claim, op, posts) in enumerate(SITES):
+        ident = f"ASK-95{n}"
+        outs, said = run_race(td / "capability_block_expiry.py", op, ident)
+        check(f"race {op} ({fn}): two concurrent runs remove the label once and post {posts} permanent "
+              "comment(s), the winner's only", loop.removals.get(ident) == 1 and len(said) == posts, (outs, said))
+        loser = "'noop'" if op == "clear" else "concurrent run"
+        check(f"race {op}: the run that lost says so", sum(loser in o for o in outs) == 1, outs)
+
+    # MUTANT M1: the helper posts on EXIT_NOOP, the round-1 `_landed` rule. The
+    # credential race and the clear race must post twice, or they could not fail.
+    m1 = mutant(td, src, "mut_landed", (
+        ("    if rc == ls_exit_noop():\n        return NOOP, rc, detail\n", ""),
+        ("    if rc != 0:\n        return FAILED, rc, detail\n",
+         "    if rc not in (0, ls_exit_noop()):\n        return FAILED, rc, detail\n")))
+    if m1:
+        for ident, op, posts in (("ASK-960", "route-cred", 2), ("ASK-961", "clear", 1)):
+            outs, said = run_race(m1, op, ident)
+            check(f"mutant M1: a helper that posts on EXIT_NOOP makes the {op} race post twice (it can fail)",
+                  len(said) > posts, (outs, said))
+    loop.srv.shutdown()
+
+    # FINDING 2 (major, nonblocking). Who may answer a founder ask, through the
+    # REAL writer: only a resolve run in a terminal with no agent marker counts.
+    cases = (("an agent shell with no terminal (the reviewer's repro)", False, True, False),
+             ("an agent shell inside a pty", True, True, False),
+             ("a terminal with no agent marker", True, False, True))
+    for n, (name, terminal, agent, counts) in enumerate(cases):
+        ident = f"ASK-97{n}"
+        aid = lad.status_add(ident, "founder-decision", m.credential_ask(ident))
+        row = resolve_cli(lad, aid, "token exported", terminal=terminal, agent=agent)
+        got = m.answered(ident, m.credential_ask(ident), start)
+        check(f"finding 2: a resolve from {name} {'counts' if counts else 'does NOT count'} as the founder's answer",
+              bool(got) == counts, (got, row.get("resolved_ctx")))
+    calls.clear()
+    (td / "ladder.log").write_text("")
+    out = m.route_unprobeable(FakeLinear({"ASK-970": [RACE_PARKS["route-cred"]]}), "ASK-970", OLD, True, NOW)
+    asked = any(a[:2] == ["--founder-ask", "ASK-970"] for a in lines(td, "ladder.log"))
+    check("finding 2: an agent-shell resolve un-parks nothing, posts nothing, asks again and says why",
+          not any(c[0] in ("unblock", "progress", "requeue") for c in calls) and asked and "terminal" in out,
+          (out, calls))
+    with open(td / "status.jsonl", "a") as fh:
+        fh.write(json.dumps({"id": "ASK-975:a", "issue": "ASK-975", "kind": "founder-decision",
+                             "ask": m.credential_ask("ASK-975"), "resolved": True, "note": "x",
+                             "resolved_at": "2026-11-01T00:00:00+00:00", "resolved_by": "founder"}) + "\n")
+    check("finding 2: a resolve that recorded no context does not count (fail closed)",
+          m.answered("ASK-975", m.credential_ask("ASK-975"), start) is None)
+    m2 = mutant(td, src, "mut_anyctx", (('if not _founder_ctx(r.get("resolved_ctx"), want):', "if False:"),))
+    if m2:
+        mm, _ = load_copy(m2, m.LADDER_SCRIPT)
+        check("mutant M2: an answered() that ignores the context counts the agent resolve (finding 2 can fail)",
+              mm.answered("ASK-970", m.credential_ask("ASK-970"), start) is not None)
+
+    # FINDING 3 (minor). No readable cap-ladder.py means no closed-ticket guard,
+    # so nothing routes this run, open or closed, and the line says why.
+    for name, ladder_src in (("missing", None), ("unparsable", "JOB = (\n")):
+        with tempfile.TemporaryDirectory() as t3:
+            m3, calls3 = load(Path(t3), ladder=False)
+            if ladder_src is not None:
+                (Path(t3) / "cap-ladder.py").write_text(ladder_src)
+            outs = [m3.route_unprobeable(FakeLinear({"ASK-980": [RACE_PARKS["route-claude"]]}), "ASK-980", OLD, True,
+                                         NOW, state_type=st) for st in ("completed", "started")]
+            check(f"finding 3: cap-ladder.py {name}: a completed and a started ticket both take no route, and say why",
+                  not calls3 and not ledger(Path(t3)).get("ASK-980") and all("fail closed" in o for o in outs),
+                  (outs, calls3))
+            m3m = mutant(Path(t3), (Path(t3) / "capability_block_expiry.py").read_text(), "mut_open", (
+                ("    if not (isinstance(dead, (tuple, list)) and dead and all(isinstance(s, str) for s in dead)):",
+                 "    if False:"),
+                ("if state_type and state_type in dead:", "if state_type and state_type in (dead or ()):")))
+            if m3m:
+                mm, c3 = load_copy(m3m, str(Path(t3) / "cap-ladder.py"))
+                mm.route_unprobeable(FakeLinear({"ASK-981": [RACE_PARKS["route-claude"]]}), "ASK-981", OLD, True,
+                                     NOW, state_type="completed")
+                check(f"mutant M3 ({name}): a guard that fails open routes the completed ticket (finding 3 can fail)",
+                      any(c[0] == "unblock" for c in c3), c3)
+
+
 def main() -> int:
     print("test_capability_route.py")
     if not SRC.exists():
@@ -446,6 +790,8 @@ def main() -> int:
         review_round1(Path(t))
     with tempfile.TemporaryDirectory() as t:
         review_round2(Path(t))
+    with tempfile.TemporaryDirectory() as t:
+        review_round3(Path(t))
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
     return 1 if FAILS else 0
 

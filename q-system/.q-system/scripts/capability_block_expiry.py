@@ -279,8 +279,10 @@ def park_text(ls, identifier: str, since: str | None) -> str:
 
 def credential_ask(identifier: str) -> str:
     """The one ask the credential route files. answered() matches on it, so the
-    two can never disagree about which ask is this ticket's."""
-    return f"access: {identifier} needs a credential or account the fleet cannot grant itself"
+    two can never disagree about which ask is this ticket's. Its second sentence
+    is the one place the founder sees the resolve rule (see answered())."""
+    return (f"access: {identifier} needs a credential or account the fleet cannot grant itself. "
+            "Run the resolve in your own terminal: one run from an agent shell does not un-park it")
 
 
 def ladder_const(name: str):
@@ -304,7 +306,12 @@ def ladder_const(name: str):
     return None
 
 
-def answered(identifier: str, ask: str, after) -> dict | None:
+def _founder_ctx(ctx, want: dict) -> bool:
+    """A resolve's recorded context matches every key of FOUNDER_RESOLVE_CTX."""
+    return isinstance(ctx, dict) and all(ctx.get(k) == v for k, v in want.items())
+
+
+def answered(identifier: str, ask: str, after, refused: list | None = None) -> dict | None:
     """The founder's resolved answer to `ask`, resolved after `after`, or None.
 
     THE ANSWERED ASK WAS ASKED AGAIN. cap-ladder.py dedupes only against OPEN
@@ -322,10 +329,20 @@ def answered(identifier: str, ask: str, after) -> dict | None:
     carries its JOB name; a person's --resolve carries his --by. With no JOB to
     compare against, nothing counts: an answer this job cannot tell from the
     janitor's never un-parks.
+
+    ONLY A RESOLVE FROM THE FOUNDER'S TERMINAL IS HIS ANSWER (PR #668 round 3,
+    finding 2; the decision and its reason sit on FOUNDER_RESOLVE_CTX in
+    cap-ladder.py). The JOB check above was a denylist: a --resolve run in an
+    agent shell (resolved_ctx.agent_env ['CLAUDECODE'], resolved_by "unnamed")
+    passed it and un-parked the ticket under "the founder answered". The rule is
+    now the allowlist the ladder already records the evidence for. A row with no
+    context, or no rule to compare against, does not count. A refused row is
+    appended to `refused`, so the route line can say why the ask came back.
     """
     from datetime import datetime
     job = ladder_const("JOB")
-    if not (isinstance(job, str) and job):
+    want = ladder_const("FOUNDER_RESOLVE_CTX")
+    if not (isinstance(job, str) and job and isinstance(want, dict) and want):
         return None
     path = os.environ.get("CAP_LADDER_STATUS") or os.path.expanduser("~/.local/state/kipi/morning-status.jsonl")
     try:
@@ -342,10 +359,15 @@ def answered(identifier: str, ask: str, after) -> dict | None:
         if (r.get("resolved_by") or "") == job[:80]:
             continue
         try:
-            if datetime.fromisoformat((r.get("resolved_at") or "").replace("Z", "+00:00")) >= after:
-                hits.append(r)
+            if datetime.fromisoformat((r.get("resolved_at") or "").replace("Z", "+00:00")) < after:
+                continue
         except (TypeError, ValueError):
             continue
+        if not _founder_ctx(r.get("resolved_ctx"), want):
+            if refused is not None:
+                refused.append(r)
+            continue
+        hits.append(r)
     return hits[-1] if hits else None
 
 
@@ -402,11 +424,6 @@ def _founder_ask(identifier: str, ask: str) -> tuple[bool, str]:
     return p.returncode == 0, (p.stdout or p.stderr).strip()
 
 
-def _landed(rc: int) -> bool:
-    """unblock's two success codes: removed it, or it was already gone."""
-    return rc in (0, ls_exit_noop())
-
-
 def _fixture_run() -> bool:
     """A run against a loopback Linear (a test fixture) that has NOT redirected the
     ledger and the status file. The first test run of this route wrote two capout
@@ -434,7 +451,17 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
     # 1, which read here as a failed ask every night. Closed is cap-ladder.py's
     # DEAD_TYPES, the set its sweep calls an ask moot on. The first-seen stamp is
     # dropped, so the file holds only tickets that can still route.
-    if state_type and state_type in (ladder_const("DEAD_TYPES") or ()):
+    #
+    # NO DEAD_TYPES, NO ROUTE (PR #668 round 3, minor 3). This read `or ()`, so
+    # with no readable cap-ladder.py nothing counted as closed and a completed
+    # ticket got the full claude-write route and its permanent comment. The
+    # file's header rule is fail closed for anything that un-parks, and answered()
+    # already fails closed on the same file. So no ticket routes this run.
+    dead = ladder_const("DEAD_TYPES")
+    if not (isinstance(dead, (tuple, list)) and dead and all(isinstance(s, str) for s in dead)):
+        return (f"unprobeable; NOT routed this run (fail closed): DEAD_TYPES is unreadable in {LADDER_SCRIPT}, "
+                "so a closed ticket cannot be told from an open one; the next run with a readable ladder routes it")
+    if state_type and state_type in dead:
         if apply:
             _seen(identifier, now, apply, forget=True)
         return f"unprobeable; {state_type} in Linear, so not routed (the picker never offers a closed ticket)"
@@ -465,66 +492,66 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
         if once != "True":
             if not apply:
                 return "unprobeable claude-write; would unblock and requeue it through apply-claude-changes.sh"
-            # THE UNBLOCK FIRST, THE ONE-SHOT FLAG ONLY AFTER IT LANDED (codex, PR
-            # #668, P2). The flag went on first, so a refused unblock left the label
-            # on, posted "Unblocked" anyway, and the next run saw the flag and sent
-            # the ticket down the capout route instead of retrying this one.
-            urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
-            if not _landed(urc):
+            # `get` only picks the route. unblock_then_post picks the one writer:
+            # the removal this run made, then the claim-flag one-shot (PR #668
+            # round 2, major 2), then the notes.
+            outcome, urc, detail = unblock_then_post(identifier, [
+                ("progress", "**Unblocked by capability_block_expiry.py (ASK-3960).** The block was a .claude/ "
+                 "write the Write tool refuses. That is not a missing capability: the fleet lands .claude/ edits "
+                 "through `bash q-system/.q-system/scripts/apply-claude-changes.sh <proposal.json>`, which an "
+                 "agent may run. Write the change as a proposal and apply it with that command. If this parks "
+                 "again, cap-ladder.py takes it.", "--agent", "sana"),
+                ("requeue", "--exit", "capability-route", "--why",
+                 ".claude/ write routed through apply-claude-changes.sh", "--agent", "sana"),
+            ], claim=flag)
+            if outcome == FAILED:
                 return (f"unprobeable claude-write; the unblock did NOT land (rc {urc}: {detail[:120]}); "
                         "no flag, no note, the next run retries")
-            # The label is off, so this park's stamp goes whatever the claim says:
-            # a stale stamp would route an undated re-park the night it is seen.
+            # The label is off, so this park's stamp goes whoever removed it: a
+            # stale stamp would route an undated re-park the night it is seen.
             _seen(identifier, now, apply, forget=True)
-            # THE CLAIM'S VERDICT GATES THE PERMANENT NOTE (PR #668 round 2, major
-            # 2). claim-flag is the atomic one-shot (attempts-ledger.py: exit 0
-            # claimed here first, 1 already claimed) and its exit code was
-            # discarded: two runs both read the flag unset with `get`, both
-            # unblocked, and both posted the "Unblocked" comment, which Linear
-            # cannot delete. `get` only picks the route; the claim picks the one
-            # writer. The codex P2 order still holds: the claim comes only after
-            # a landed unblock, so a refused unblock never leaves the flag set.
-            crc = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, flag],
-                                 capture_output=True, text=True).returncode
-            if crc == 1:
-                return (f"unprobeable claude-write; unblocked (rc {urc}), but a concurrent run claimed this "
-                        "route first and posts its note, so none here")
-            if crc != 0:
-                return (f"unprobeable claude-write; unblocked (rc {urc}), but the one-shot claim did not land "
-                        f"(ledger rc {crc}), so no note was posted; if it parks again this route runs again")
-            _sync("progress", identifier,
-                  "**Unblocked by capability_block_expiry.py (ASK-3960).** The block was a .claude/ write the "
-                  "Write tool refuses. That is not a missing capability: the fleet lands .claude/ edits through "
-                  "`bash q-system/.q-system/scripts/apply-claude-changes.sh <proposal.json>`, which an agent may "
-                  "run. Write the change as a proposal and apply it with that command. If this parks again, "
-                  "cap-ladder.py takes it.", "--agent", "sana")
-            _sync("requeue", identifier, "--exit", "capability-route", "--why",
-                  ".claude/ write routed through apply-claude-changes.sh", "--agent", "sana")
-            return f"unprobeable claude-write; unblocked (rc {urc}) and requeued through apply-claude-changes.sh"
+            return "unprobeable claude-write; " + {
+                NOOP: "a concurrent run removed the label first and posts its note, so none here",
+                CLAIM_LOST: f"unblocked (rc {urc}), but a concurrent run claimed this route first and posts "
+                            "its note, so none here",
+                CLAIM_FAILED: f"unblocked (rc {urc}), but the one-shot claim did not land ({detail[:120]}), so "
+                              "no note was posted; if it parks again this route runs again",
+                CLEARED_SILENT: f"unblocked (rc {urc}), but a note did NOT post ({detail[:160]})",
+            }.get(outcome, f"unblocked (rc {urc}) and requeued through apply-claude-changes.sh")
         kind = "unknown"
     if kind == "credential":
         ask = credential_ask(identifier)
-        done = answered(identifier, ask, start)
+        refused: list = []
+        done = answered(identifier, ask, start, refused)
         if done:
             if not apply:
                 return f"unprobeable credential; the founder answered {done.get('id')}; would unblock and requeue"
-            urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
-            if not _landed(urc):
+            # THROUGH THE ONE HELPER (PR #668 round 3, major 1). This branch
+            # gated its note on "landed", which let EXIT_NOOP through, so the run
+            # that LOST the unblock race posted a second "the founder answered".
+            outcome, urc, detail = unblock_then_post(identifier, [
+                ("progress", f"**Unblocked by capability_block_expiry.py (ASK-3960).** The founder answered the "
+                 f"credential ask ({done.get('id')}, resolved by {done.get('resolved_by') or 'unnamed'} from a "
+                 f"terminal): \"{(done.get('note') or 'no note given')[:300]}\". The next attempt runs with that "
+                 "answer. If it parks again, the 14 days start over and a new ask is filed.", "--agent", "sana"),
+                ("requeue", "--exit", "capability-route", "--why",
+                 f"credential ask {done.get('id')} answered by the founder", "--agent", "sana"),
+            ])
+            if outcome == FAILED:
                 return (f"unprobeable credential; answered, but the unblock did NOT land (rc {urc}: "
                         f"{detail[:120]}); the next run retries")
             _seen(identifier, now, apply, forget=True)
-            _sync("progress", identifier,
-                  f"**Unblocked by capability_block_expiry.py (ASK-3960).** The founder answered the credential "
-                  f"ask ({done.get('id')}, resolved by {done.get('resolved_by') or 'unnamed'}): "
-                  f"\"{(done.get('note') or 'no note given')[:300]}\". The next attempt runs with that answer. "
-                  "If it parks again, the 14 days start over and a new ask is filed.", "--agent", "sana")
-            _sync("requeue", identifier, "--exit", "capability-route", "--why",
-                  f"credential ask {done.get('id')} answered by the founder", "--agent", "sana")
-            return f"unprobeable credential; the founder answered {done.get('id')}: unblocked and requeued"
+            return f"unprobeable credential; the founder answered {done.get('id')}: " + {
+                NOOP: "a concurrent run removed the label first and posts the note, so none here",
+                CLEARED_SILENT: f"unblocked, but a note did NOT post ({detail[:160]})",
+            }.get(outcome, "unblocked and requeued")
+        why = (f"; {len(refused)} resolve(s) of this ask ran outside the founder's terminal "
+               f"({refused[-1].get('resolved_ctx') or 'no context recorded'}), which does not count as his answer"
+               if refused else "")
         if not apply:
-            return "unprobeable credential; would add one line to the morning status list"
+            return f"unprobeable credential; would add one line to the morning status list{why}"
         ok, detail = _founder_ask(identifier, ask)
-        return f"unprobeable credential; {'ask listed' if ok else 'ask NOT listed'} ({detail})"
+        return f"unprobeable credential; {'ask listed' if ok else 'ask NOT listed'} ({detail}){why}"
     # A CAPOUT NEEDS ITS CONSUMER ON THIS TREE (PR #668 round 1, major 1). Written
     # with no cap-ladder.py to read it, the capout was a record nothing acts on and
     # the unblock sent the ticket back into the pool with no RCA. The ladder runs
@@ -539,12 +566,15 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
                         capture_output=True, text=True).returncode
     if rc != 0:
         return "unprobeable, kind unknown; the capout did NOT record, so it stays parked and the next run retries"
-    urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
-    if not _landed(urc):
+    # No note, so a lost race costs nothing here; it still goes through the one
+    # helper, so the census can say every Linear write in this file is in one place.
+    outcome, urc, detail = unblock_then_post(identifier, [])
+    if outcome == FAILED:
         return (f"unprobeable, kind unknown; capout recorded, but the unblock did NOT land (rc {urc}: "
                 f"{detail[:120]}); the next run retries the unblock")
     _seen(identifier, now, apply, forget=True)
-    return f"unprobeable, kind unknown; handed to cap-ladder.py (capout recorded, unblock rc {urc})"
+    return (f"unprobeable, kind unknown; handed to cap-ladder.py (capout recorded, unblock rc {urc})"
+            + ("; a concurrent run removed the label first" if outcome == NOOP else ""))
 
 # Each returns (passed, evidence). The evidence string goes onto the Linear issue
 # verbatim: "I ran X and got Y" is this repo's bar, and an unblock that says only
@@ -916,6 +946,59 @@ def _sync(*args) -> tuple[int, str]:
 # tell apart. CLEARED_SILENT is a real recovery whose EVIDENCE did not land --
 # see clear_block for why that is its own word and not a warning inside CLEARED.
 CLEARED, CLEARED_SILENT, NOOP, FAILED = "cleared", "cleared_no_evidence", "noop", "failed"
+# This run removed the label, but the route's one-shot claim went to another run
+# (CLAIM_LOST) or did not land (CLAIM_FAILED). Nothing was posted either way.
+CLAIM_LOST, CLAIM_FAILED = "claim_lost", "claim_failed"
+
+
+def unblock_then_post(identifier: str, posts: list, claim: str = "") -> tuple[str, int, str]:
+    """Remove the block label, then post the notes, ONLY when this run is the one
+    writer. The one function in this file that writes to Linear.
+
+    ONE PLACE, NOT THREE (PR #668 round 3; RCA
+    q-system/output/rca/rca-capability-expiry-round-3-2026-11-09.md). Three paths
+    unblocked and then posted a comment Linear cannot delete: clear_block, the
+    claude-write route and the credential route. Each decided for itself when to
+    post. clear_block gated on exit 0 since PR #77 round 3. The two routes gated
+    on "landed" (0 or EXIT_NOOP), and EXIT_NOOP is the run that LOST the race, so
+    the loser posted a second permanent note. Round 2 fixed one route, round 3
+    found the other. test_capability_route.py census() reads every _sync call and
+    every call of this function from the source and checks them against its
+    SITES table, and races two real processes on each site.
+
+    Posts only when both hold:
+      - unblock exits 0: THIS run removed the label. linear-sync takes a host
+        lock around its read-decide-write (_IssueLock), so of two racers exactly
+        one gets 0 and the other gets EXIT_NOOP.
+      - with a `claim`, the attempts ledger's claim-flag exits 0: the one-shot
+        record across parks (attempts-ledger.py: 0 claimed here, 1 already
+        claimed). Claimed only AFTER a removal, so a refused unblock never leaves
+        the flag set (codex, PR #668, P2).
+    REMOVE FIRST, POST SECOND: a failed removal must not leave a permanent "it
+    came back" note on an issue still parked (PR #77). Every post's exit code is
+    read (PR #77 round 5): one that did not land makes CLEARED_SILENT, because
+    the label is off either way and only the record is missing.
+
+    Returns (outcome, unblock rc, detail).
+    """
+    rc, detail = _sync("unblock", identifier, BLOCK_LABEL)
+    if rc == ls_exit_noop():
+        return NOOP, rc, detail
+    if rc != 0:
+        return FAILED, rc, detail
+    if claim:
+        crc = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, claim],
+                             capture_output=True, text=True).returncode
+        if crc == 1:
+            return CLAIM_LOST, rc, detail
+        if crc != 0:
+            return CLAIM_FAILED, rc, f"ledger rc {crc}"
+    rejected = []
+    for verb, *args in posts:
+        prc, pdetail = _sync(verb, identifier, *args)
+        if prc != 0:
+            rejected.append(f"{verb} comment REJECTED (rc {prc}): {pdetail}")
+    return (CLEARED_SILENT, rc, f"{detail}; " + "; ".join(rejected)) if rejected else (CLEARED, rc, detail)
 
 
 def clear_block(identifier: str, probe: str, evidence: str,
@@ -941,11 +1024,6 @@ def clear_block(identifier: str, probe: str, evidence: str,
     itself may claim the first. See probe_env: a rotated credential is a real
     reason to retry and is not evidence that the new credential works.
     """
-    rc, detail = _sync("unblock", identifier, BLOCK_LABEL)
-    if rc == ls_exit_noop():
-        return NOOP, detail
-    if rc != 0:
-        return FAILED, detail
     # The comment is how a reader learns why the issue reappeared. Posted only
     # on a state CHANGE -- a re-test that changes nothing must not write a
     # comment, or a 15-minute loop becomes a comment every 15 minutes on an
@@ -971,30 +1049,17 @@ def clear_block(identifier: str, probe: str, evidence: str,
             f"**Next:** normal dispatch. If the new value is dead too, the run parks it "
             f"again with a fresh fingerprint and no human is in the path either way."
         )
-    # THE COMMENT'S EXIT CODE IS READ (codex, PR #77 round 5). It used to be
-    # discarded, so a rejected commentCreate -- which linear-sync already
-    # detects and exits nonzero on -- left the issue un-parked with NO record of
-    # which probe cleared it. The recorded probe is the only evidence the
-    # un-park was legitimate, and the run still reported an ordinary recovery:
-    # silent loss of the only durable evidence, counted as success.
-    #
-    # The removal still counts. The label really did come off and the picker
-    # will offer the issue again; reporting no recovery would be the opposite
-    # lie, and it would also strand the issue -- a second sweep finds the label
-    # already gone (NOOP) and never comments either. What changes is that the
-    # missing evidence gets its own word, which travels into the run line and
-    # the summary.
-    #
-    # ORDER IS DELIBERATE: remove first, comment second. Commenting first would
-    # mean a failed removal leaves a permanent "the capability arrived" comment
-    # on an issue that is still parked -- a false claim that cannot be deleted,
-    # which is worse than a true recovery with no note attached.
-    note_rc, note_detail = _sync("progress", identifier, note,
-                                 "--agent", "capability-expiry",
-                                 "--evidence", f"{probe} -> {evidence}")
-    if note_rc != 0:
-        return CLEARED_SILENT, f"{detail}; recovery COMMENT REJECTED: {note_detail}"
-    return CLEARED, detail
+    # THE COMMENT'S EXIT CODE IS READ (codex, PR #77 round 5): a rejected
+    # commentCreate left the issue un-parked with NO record of which probe
+    # cleared it, reported as an ordinary recovery. The removal still counts (the
+    # label did come off, and a second sweep would find it gone and never
+    # comment), so the missing evidence gets its own word, CLEARED_SILENT, which
+    # travels into the run line and the summary. The order (remove, then post)
+    # and the read of every exit code live in unblock_then_post.
+    outcome, _rc, detail = unblock_then_post(identifier, [
+        ("progress", note, "--agent", "capability-expiry", "--evidence", f"{probe} -> {evidence}"),
+    ])
+    return outcome, detail
 
 
 def main(argv=None) -> int:

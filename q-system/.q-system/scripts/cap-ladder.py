@@ -393,6 +393,18 @@ def status_add(issue: str, kind: str, ask: str, rca: str = "", source: str = JOB
 # CODEX_SANDBOX in its sandboxed shells.
 AGENT_ENV = ("CLAUDECODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED")
 
+# THE CONTEXT A RESOLVE MUST SHOW TO COUNT AS THE FOUNDER'S ANSWER (Sana's
+# decision, PR #668 round 3, finding 2). A terminal on stdin and no agent marker.
+# A --resolve from an agent shell (CLAUDECODE set, no tty) un-parked a ticket
+# under a permanent comment saying the founder answered; --by is free text, so
+# it cannot decide. Refusing a real answer costs one morning line asked again;
+# accepting a false one is a comment Linear cannot delete. So it fails closed.
+# launchd is not a key: a job has no terminal, and a GUI app's terminal carries
+# XPC_SERVICE_NAME, so that field cannot tell a person from a job.
+# capability_block_expiry.answered() reads this line (one line, a literal: it is
+# parsed, not imported). ask_resolved() below does not use it yet: ASK-4221.
+FOUNDER_RESOLVE_CTX = {"tty": True, "agent_env": []}
+
 
 def resolve_ctx() -> dict:
     """The process context a resolve ran in, recorded beside its --by name.
