@@ -24,10 +24,15 @@ STATUS = Path(os.environ.get("CAP_LADDER_STATUS")
 
 
 def collect(now, sources: dict, status: Path | None = None):
-    """(rows, error), the registry contract. One row per unresolved ask."""
+    """(rows, error), the registry contract. One row per unresolved ask.
+
+    None when the file does not exist: the registry's OFF signal, the same one
+    board_rows.py uses (PR #687 review, minor 3). This returned ([], None), and
+    every instance where cap-ladder.py never ran got a permanent "Decisions only
+    you can make / nothing" section through `kipi update`."""
     path = Path(status or STATUS)
     if not path.exists():
-        return [], None          # nothing has ever been asked: an empty section
+        return None              # this instance never asked anything: off, not rendered
     try:
         rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
     except (OSError, ValueError) as exc:
@@ -36,5 +41,8 @@ def collect(now, sources: dict, status: Path | None = None):
     for r in rows:
         if r.get("resolved"):
             continue
-        out.append(f"{r.get('issue')}: {r.get('ask')}. When done: {r.get('resolve') or 'cap-ladder.py --resolve ' + str(r.get('issue'))}")
+        ask = r.get("ask")
+        if r.get("clipped"):     # cap-ladder.py status_add clips at ASK_CHARS; the RCA holds the rest
+            ask = f"{ask} [clipped, full text in {r.get('rca') or 'the ticket RCA'}]"
+        out.append(f"{r.get('issue')}: {ask}. When done: {r.get('resolve') or 'cap-ladder.py --resolve ' + str(r.get('issue'))}")
     return out, None

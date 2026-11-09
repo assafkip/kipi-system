@@ -650,6 +650,134 @@ def case_ask_lifecycle() -> None:
         td.cleanup()
 
 
+def _status_rows(env: dict) -> list:
+    st = Path(env["CAP_LADDER_STATUS"])
+    return [json.loads(l) for l in st.read_text().splitlines() if l.strip()] if st.exists() else []
+
+
+def _founder_asks():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fa_687", str(SCRIPTS / "founder_asks.py"))
+    fa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fa)
+    return fa
+
+
+# Every live path and outside writer cap-ladder.py can reach. Kept HERE, apart
+# from the script's own list, so a script that drops one from its guard goes red.
+LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
+             "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER")
+
+
+def case_review_687() -> None:
+    """PR #687 review round 1 (ASK-4069), each finding pinned. Red on f5e58a54."""
+    fa = _founder_asks()
+    # major 1: a FOUNDER-DECISION with one sentence of reasoning past 300 chars.
+    ask = ("spend: a paid seat on the vendor dashboard is required before this ticket can "
+           "proceed, because the endpoint the Definition of Ready names is gated behind the paid tier "
+           "and the free tier refuses it outright, so no attempt can verify the acceptance check "
+           "without the seat, and three attempts have now failed for that single reason")
+    line = f"DECISION: BLOCKED-ON FOUNDER-DECISION: {ask}\n"
+    td, env = decision_world([RCA + line, RCA + line])
+    out = ladder(env, "--apply")
+    w = writes(env)
+    rows = _status_rows(env)
+    check("687 major 1: a 347-char FOUNDER-DECISION is accepted, never refused as free text",
+          len(ask) > 301 and "free text" not in out and "refused" not in out, out)
+    check("687 major 1: no sub-ticket is filed and the parent is not closed",
+          not any(x["op"] in ("create", "state") for x in w), w)
+    check("687 major 1: the whole ask reaches the status file and the hold is set",
+          [r["ask"] for r in rows] == [ask] and ledger_row(env, "ASK-1").get("ladder_hold") is True, rows)
+    td.cleanup()
+    # The bound that remains: a runaway ask is clipped in storage, MARKED, and still
+    # dedupes on its clipped text, so a re-cap never opens a second row.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: access: " + "x" * 3000 + "\n"])
+    ladder(env, "--apply")
+    rows = _status_rows(env)
+    rendered, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    out = ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: " + "x" * 3000)
+    check("687 major 1: a runaway ask is held, clipped in storage, marked in the brief with its RCA, and dedupes",
+          len(rows) == 1 and rows[0].get("clipped") is True and len(rows[0]["ask"]) < 3000
+          and rendered and "[clipped" in rendered[0] and "rca-ASK-1" in rendered[0]
+          and "already listed" in out and len(_status_rows(env)) == 1, (rows, rendered, out))
+    td.cleanup()
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: legal: sign the NDA\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    out = ladder(env, "--apply")
+    check("687 major 1: a FOUNDER-DECISION of the wrong kind is refused by name, not as free text",
+          "spend, access or outside" in out and "free text" not in out, out)
+    td.cleanup()
+
+    # major 2 (nonblocking): a held ticket closed in Linear takes its ask with it.
+    for door in ("held loop", "caps loop"):
+        td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the 900 dollar plan\n"])
+        ladder(env, "--apply")
+        at(env, 4)
+        edit_ticket(env, "ASK-1", state_type="canceled")
+        if door == "caps loop":
+            led(env, "record-capout", "ASK-1", "capped again, then canceled")
+        ladder(env)                                                  # dry: writes nothing
+        dry_open = [r for r in _status_rows(env) if not r["resolved"]]
+        ladder(env, "--apply")
+        rows = _status_rows(env)
+        rendered, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+        check(f"687 major 2 ({door}): a canceled held ticket's ask is resolved as moot, by the ladder, "
+              "and the brief drops it; a dry run resolves nothing",
+              len(dry_open) == 1 and len(rows) == 1 and rows[0]["resolved"] is True
+              and "canceled" in rows[0].get("note", "") and "cap-ladder" in rows[0].get("resolved_by", "")
+              and rendered == [], (dry_open, rows, rendered))
+        td.cleanup()
+
+    # minor 3: an absent status file is the registry's OFF signal, not an empty section.
+    with tempfile.TemporaryDirectory() as td:
+        got = fa.collect(None, {}, status=Path(td) / "never-written.jsonl")
+        (Path(td) / "all-resolved.jsonl").write_text(json.dumps({"id": "A:1", "resolved": True}) + "\n")
+        got2 = fa.collect(None, {}, status=Path(td) / "all-resolved.jsonl")
+    check("687 minor 3: no status file returns None (OFF); a file with nothing open is an empty section",
+          got is None and got2 == ([], None), (got, got2))
+
+    # minor 4: the pytest guard keys on EVERY live path, not on CAP_LADDER_STATE alone.
+    for var in LIVE_VARS:
+        for verb in (["--founder-ask", "ASK-7", "founder-decision", "spend: x"], ["--apply"]):
+            with tempfile.TemporaryDirectory() as td:
+                env = make_world(Path(td))
+                env.pop(var)
+                env["PYTEST_CURRENT_TEST"] = "x"
+                p = subprocess.run([sys.executable, str(LADDER), *verb], env=env, capture_output=True,
+                                   text=True, timeout=60, stdin=subprocess.DEVNULL)
+                touched = [str(x) for x in (Path(td) / ".local", Path(td) / ".config") if x.exists()]
+                check(f"687 minor 4: under pytest with {var} unset, {verb[0]} is refused and writes no default path",
+                      p.returncode == 4 and var in p.stderr and not touched and not log(env, "gh"),
+                      (p.returncode, p.stdout + p.stderr, touched))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        env["PYTEST_CURRENT_TEST"] = "x"
+        p = subprocess.run([sys.executable, str(LADDER), "--founder-ask", "ASK-7", "founder-decision", "spend: x"],
+                           env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        check("687 minor 4: with every live path redirected the guard lets the run through (it can pass)",
+              p.returncode == 0 and "ask added" in p.stdout, p.stdout + p.stderr)
+
+    # minor 5: --resolve records who answered, and the process context it ran in.
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        env.pop("CLAUDECODE", None)
+        ladder(env, "--founder-ask", "ASK-1", "founder-decision", "spend: one")
+        ladder(env, "--founder-ask", "ASK-2", "founder-decision", "spend: two")
+        p1 = subprocess.run([sys.executable, str(LADDER), "--resolve", "ASK-1", "--by", "founder"], env=env,
+                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        p2 = subprocess.run([sys.executable, str(LADDER), "--resolve", "ASK-2"], env=dict(env, CLAUDECODE="1"),
+                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        by = {r["issue"]: r for r in _status_rows(env)}
+        a, b = by.get("ASK-1", {}), by.get("ASK-2", {})
+        check("687 minor 5: --resolve records --by and the context; an agent session is marked, a plain one is not",
+              p1.returncode == 0 and p2.returncode == 0
+              and a.get("resolved_by") == "founder" and (a.get("resolved_ctx") or {}).get("agent_env") == []
+              and (a.get("resolved_ctx") or {}).get("tty") is False
+              and b.get("resolved_by") == "unnamed" and "CLAUDECODE" in (b.get("resolved_ctx") or {}).get("agent_env", []),
+              (a, b))
+
+
 def case_owns() -> None:
     """ladder_owns() is the one rule pr-owner.py asks (ASK-3962), so it is pinned here."""
     import importlib.util
@@ -724,6 +852,7 @@ def main() -> int:
         case_review_round2()
         case_ask_lifecycle()
         case_pytest_refusal()
+        case_review_687()
         case_mutant()
     case_worker()
     case_sites()
