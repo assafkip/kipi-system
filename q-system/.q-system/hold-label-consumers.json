@@ -1,0 +1,84 @@
+{
+  "_doc": [
+    "Every label that holds a ticket out of a worker's queue, and the code that takes it out again (ASK-4011).",
+    "Founder, 2026-11-08: \"We cannot have these things get stuck again on rules that are not being enforced and then tickets don't get done because they're waiting for someone that doesn't exist.\"",
+    "",
+    "Read by q-system/.q-system/tests/test_hold_label_consumers.py (CI). stall-sweep.py (ASK-4019, stacked on this PR) reads it once it lands, to name the next consumer of a held ticket.",
+    "",
+    "`labels` must hold EXACTLY the labels linear-worker.sh ready() refuses, read from its source by AST, plus every `lane_holds` label. A new ready() refusal fails CI until it has a row here: the test is declared to the capability gate with no `covers`, so it runs on every PR, including one that only touches linear-worker.sh (PR #666 round 2). `lane_holds` is DECLARED, not discovered: each row's marker must exist in its path, but a new lane refusal is caught only when its author adds the row (PR #666 review, minor). The census that cannot be fooled covers ready() only.",
+    "`refused_when`: `present` (the label holds the ticket) or `absent` (missing the label holds it, as with owner:sana).",
+    "Each row has exactly one of:",
+    "  `consumer`: an in-repo script (`path`) whose source carries the label literal, run by a committed, non-retired com.kipi template (`job`) whose ProgramArguments reach the script, directly or through `via` (a `./kipi <verb>` case).",
+    "  `outside_consumer`: code another repo owns (`repo`, `path`, `marker`, `job`, `owner`). Named, not verified here; that repo's own suite owns it. Its label must be in the test's OUTSIDE_ALLOWED, so adding one is a reviewed edit.",
+    "  `missing`: no consumer exists yet. It names the ticket that builds one. The set of missing labels may only shrink: the test pins its ceiling.",
+    "A person is never a consumer. A row that names one is a missing row.",
+    "`caps`: a consumer that stops is not an exit. Every `*_CAP` constant the consumer's source defines is classified here, both directions, so a new cap fails CI until somebody says whether reaching it strands the ticket. `per_ticket: true` needs an `after_cap` ticket that builds the next consumer, and puts the label in the test's CAP_GAP_CEILING, which may only shrink. `per_ticket: false` needs a `what` (a batch bound strands nothing). PR #666 round 1, major 2: needs-scope read as covered while the drafter keeps the label ON at REDRAFT_CAP.",
+    "The census reads ready() at ANY depth: a refusal nested in an inner block, or reached through `not helper(i)`, is counted, and `not` inverts the polarity (PR #666 round 1, major 1)."
+  ],
+  "labels": {
+    "owner:sana": {
+      "refused_when": "absent",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "consumer": {
+        "path": "q-system/.q-system/scripts/linear-owner-sweep.py",
+        "job": "com.kipi.linear-owner-sweep",
+        "what": "Nightly at 02:00: any open fleet ticket with no owner:* label gets owner:sana and one comment naming its next consumer (ASK-4010)."
+      }
+    },
+    "owner:assaf": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "missing": {
+        "ticket": "ASK-3961",
+        "what": "Nothing moves an owner:assaf ticket. ASK-3961 relabels the error-path ones owner:sana and lists the true spend, scope or reach questions for the founder in one place a job writes."
+      }
+    },
+    "needs-scope": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "terminal_state": "needs-scope",
+      "consumer": {
+        "path": "q-system/.q-system/scripts/linear-dor-drafter.py",
+        "job": "com.kipi.linear-dor",
+        "via": "dor",
+        "what": "Nightly at 03:00: selects on the label, rewrites the DoR, drops the label so ready() offers it again, up to 3 redrafts.",
+        "caps": {
+          "REDRAFT_CAP": {
+            "per_ticket": true,
+            "what": "At 3 of 3 the drafter writes TERMINAL_NOTE and keeps needs-scope ON deliberately (linear-dor-drafter.py:1182-1193), so this consumer stops and ready() keeps refusing the ticket.",
+            "after_cap": {
+              "ticket": "ASK-4092",
+              "what": "Nothing selects on a capped needs-scope ticket. ASK-4092 builds the next consumer: a different strategy, a recorded reversible close, or an age sweep. Until it lands this label is in CAP_GAP_CEILING, which may only shrink."
+            }
+          },
+          "PENDING_CAP": {
+            "per_ticket": false,
+            "what": "How many issues one nightly run drafts. A ticket over the batch bound is offered again the next night, so it strands nothing."
+          }
+        }
+      }
+    },
+    "blocked:capability": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-worker.sh",
+      "missing": {
+        "ticket": "ASK-3960",
+        "what": "Nothing re-tests the block, so the label never clears. ASK-3960 records a probe per ticket and re-runs it nightly."
+      }
+    },
+    "triage:held": {
+      "refused_when": "present",
+      "refused_by": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "missing": {
+        "ticket": "ASK-4014",
+        "what": "lane_pool skips a held alert forever, and the hold keeps needs-triage, so chief's triage never reaches its park rule either. ASK-4014 builds the re-test."
+      }
+    }
+  },
+  "lane_holds": {
+    "triage:held": {
+      "path": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "marker": "def is_held"
+    }
+  }
+}
