@@ -27,7 +27,9 @@
 # head with CI pending and 1 hour old is not released by the backstop (L4); a
 # live lane is never released (L6); a mutant without the wip_release call goes
 # red (L12); the coverage lint goes red on a hold kind with no exit row (L11);
-# the dispatcher hook goes red without its apply pass (L13).
+# the dispatcher hook goes red without its apply pass (L13); a mutant that
+# judges the PR-side kinds before live-first releases the #666 shape (L17a);
+# a mutant with no live check releases a live no-DoR PR (L17b).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,6 +94,15 @@ TICKETS.append(issue("ASK-984", "started", 1))
 TICKETS.append(issue("ASK-985", "started", None, dor=False))
 # L15e (ASK-4068): started, start stamp unreadable, nothing else wrong.
 TICKETS.append(issue("ASK-986", "started", None))
+# L16 (ASK-4111): PR #666 as it was at 2026-11-09T00:36:40Z. Its ticket ASK-4011
+# was in Backlog (a failed run put it there at 23:55:28Z) and Linear kept its
+# start stamp, 6.5h old. Ready by the picker, so the PR-side kinds judged it.
+# Three shapes of it: ASK-991 a lane started and the fleet never ran (no ledger
+# row); ASK-992 a redrive ran too (a ledger row, as on #666 at 23:25Z) and the
+# lane holds a lane-mark.py marker; ASK-993 the worker ran and nobody marked.
+TICKETS.append(issue("ASK-991", "backlog", 6.6))
+TICKETS.append(issue("ASK-992", "backlog", 6.6))
+TICKETS.append(issue("ASK-993", "backlog", 6.6))
 for n in (901, 902, 903, 904, 905, 961, 962, 963, 964, 965):
     TICKETS.append(issue("ASK-%d" % n, "started", MONTH))
 BOARD = {i["identifier"]: i for i in TICKETS}
@@ -178,11 +189,15 @@ ledger_seed() {  # ledger_seed <path>
   python3 - "$1" <<'LEDGER'
 import json, sys
 rows = {"ASK-%d" % n: {"rounds": 1, "count": 1}
-        for n in (2810, 2058, 901, 902, 903, 904, 905, 961, 962, 963, 964, 965)}
+        for n in (2810, 2058, 901, 902, 903, 904, 905, 961, 962, 963, 964, 965, 992, 993)}
 json.dump(rows, open(sys.argv[1], "w"), indent=2)
 LEDGER
 }
 ledger_seed "$STATE/linear-worker-attempts.json"
+# Lane markers are fixtures too: lane_marker reads ~/.config/kipi/lanes otherwise.
+# Written by the real producer, lane-mark.py.
+LANES="$WORK/lanes"; mkdir -p "$LANES"
+KIPI_LANES_DIR="$LANES" python3 "$REPO_SCRIPTS/lane-mark.py" start ASK-992 --agent fixture-lane --hours 6 >/dev/null
 
 # --- review records, keyed the way the worker keys them ----------------------------
 # shellcheck disable=SC1091
@@ -222,6 +237,7 @@ for n in 618 621; do review "$n" "REQUEST CHANGES" 2 DIRTY; done
 review 971 "REQUEST CHANGES" 1 CLEAN
 for n in 901 902 903 904 905; do review "$n" "REQUEST CHANGES" 1 CLEAN; done
 for n in 961 962 963 964 965; do review "$n" "APPROVE" 1 BLOCKED; done   # CI pending
+for n in 991 992 993; do review "$n" "APPROVE WITH NITS" 3 CLEAN moved; done   # PR #666: at the cap, verdict at an old head
 
 CAPPED=0
 for f in "$STATE/pr-reviews/$(artifact_key "$SLUG" 543)-"*.md; do
@@ -283,7 +299,7 @@ run_worker() {  # run_worker <worker-script> <prs-file> <out-file> [worker args.
     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
     KIPI_CODEX_RUNNER="bash $WORK/fake-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
-    KIPI_USAGE_BREAKER_CMD="true" KIPI_NOTIFY="$WORK/notify.sh" \
+    KIPI_USAGE_BREAKER_CMD="true" KIPI_NOTIFY="$WORK/notify.sh" KIPI_LANES_DIR="$LANES" \
     WIP_GH_DIR="$GHDIR" WIP_PRS_FILE="$prsf" \
     bash "$w" "$@" > "$out" 2>&1
 }
@@ -401,9 +417,12 @@ fi
 # ============================================================================
 # L6. NEGATIVE: a live lane (ticket started an hour ago) is never released
 # ============================================================================
+# #621 makes five counted lanes: since ASK-4111 the live #971 is left out of the
+# count, so without it the ceiling would not hold and nothing would be released.
 prs "$WORK/live.prs" "971:sana/ask-971-live-lane:2026-10-01T12:00:00Z" \
     "606:sana/ask-3823-promoter:2026-11-06T10:00:00Z" "609:sana/ask-3821-kipi-update:2026-11-06T11:00:00Z" \
-    "614:sana/ask-3827-slot-status:2026-11-06T12:00:00Z" "618:sana/ask-3830-live-receipt:2026-11-06T13:00:00Z"
+    "614:sana/ask-3827-slot-status:2026-11-06T12:00:00Z" "618:sana/ask-3830-live-receipt:2026-11-06T13:00:00Z" \
+    "621:sana/ask-3829-fragments:2026-11-06T14:00:00Z"
 run_worker "$WORKER" "$WORK/live.prs" "$WORK/l6.out" --limit 1
 REL="$(releases "$WORK/l6.out")"
 [ "$REL" = "[dry] would release PR #606 (lane);" ] \
@@ -642,95 +661,165 @@ else
 fi
 
 # ============================================================================
-# L15. A LIVE TICKET'S PR IS NEVER A RELEASE TARGET (ASK-4057, D34)
+# L15. A LIVE TICKET'S PR IS NEVER A RELEASE TARGET (ASK-4057, D34; ASK-4111)
 # ============================================================================
 # 2026-11-08 21:58:58Z: the release closed PR #664 as kind no-dor while ASK-4013
 # was In Progress with a lane on it, because refusal() read the DoR and project
 # before it asked whether the ticket was live. Two live tickets, older than every
-# PR in today's set: one with no DoR, one with no project. Neither is released;
-# the tick passes over both as ticket-live and releases the oldest real one.
+# PR in today's set: one with no DoR, one with no project. Since ASK-4111 the WIP
+# walk leaves both out before any kind is judged, so neither is released and the
+# tick releases the oldest real one.
 prs "$WORK/live.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "982:sana/ask-982:2026-10-02T12:00:00Z" "${TODAY[@]}"
 run_worker "$WORKER" "$WORK/live.prs" "$WORK/l15.out" --limit 1
 REL15="$(releases "$WORK/l15.out")"
 [ "$REL15" = "[dry] would release PR #543 (cap);" ] \
-  && ok "L15: live tickets with no DoR or no project are passed over; the release is the oldest real one, PR #543 (cap)" \
+  && ok "L15: live tickets with no DoR or no project are left out; the release is the oldest real one, PR #543 (cap)" \
   || bad "L15: a live ticket's PR is never a release target" "releases: ${REL15:-none}. Output: $(flat "$WORK/l15.out")"
-grep -q '#981 (ASK-981): ticket held' "$WORK/l15.out" && grep -q '#982 (ASK-982): ticket held' "$WORK/l15.out" \
-  && ok "L15b: both live PRs are named as passed over, ticket held" \
-  || bad "L15b: both live PRs are named as passed over" "$(grep 'passed over' "$WORK/l15.out" | cut -c1-600)"
+grep -q 'left out as lane-live: #981 (ASK-981): started 1.0h ago' "$WORK/l15.out" \
+  && grep -q '#982 (ASK-982): started 1.0h ago' "$WORK/l15.out" \
+  && ok "L15b: both live PRs are named as left out as lane-live, with their start" \
+  || bad "L15b: both live PRs are named as left out" "$(grep 'lane-live' "$WORK/l15.out" | cut -c1-600)"
 # L15c. An unreadable start stamp is not evidence anyone is on the ticket, so it
 # never masks a close exit: with no DoR the PR is released as no-dor, as before
-# ASK-4057. Read as live, it would wait forever, since ticket-live has no backstop.
+# ASK-4057. Read as live, it would sit outside the count with no exit forever.
 prs "$WORK/nostamp.prs" "985:sana/ask-985:2026-09-30T12:00:00Z" "${TODAY[@]}"
 run_worker "$WORKER" "$WORK/nostamp.prs" "$WORK/l15c.out" --limit 1
 REL15C="$(releases "$WORK/l15c.out")"
 [ "$REL15C" = "[dry] would release PR #985 (no-dor);" ] \
   && ok "L15c: a started ticket with an unreadable start stamp and no DoR is still released (no-dor)" \
   || bad "L15c: an unreadable stamp never masks a close exit" "releases: ${REL15C:-none}. $(grep 'passed over' "$WORK/l15c.out" | cut -c1-300)"
-# L15d. THE KIND IS ticket-live, NOT ticket-held: the backstop takes an old
-# ticket-held PR past the age bar, and never a ticket-live one (PR #671 round 1,
-# minor: same prose, same wait exit, so only the backstop tells them apart). Five
-# live PRs, all far past the 3-day bar, and nothing is released.
-prs "$WORK/alllive.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "982:sana/ask-982:2026-10-02T12:00:00Z" \
-    "983:sana/ask-983:2026-10-03T12:00:00Z" "984:sana/ask-984:2026-10-04T12:00:00Z" "971:sana/ask-971:2026-10-05T12:00:00Z"
+# L15d. THE BACKSTOP NEVER TAKES A LIVE PR (PR #671 round 1, minor). The oldest
+# open PR is live and far past the 3-day age bar; five young approved PRs hold
+# the ceiling and wait under it. Before ASK-4111 the live one was held as kind
+# ticket-live, the one wait kind with no backstop. Now it never reaches the
+# release selection: nothing is released, and the wait names a counted PR.
+prs "$WORK/alllive.prs" "981:sana/ask-981:2026-10-01T12:00:00Z" "961:sana/ask-961:$H1" "962:sana/ask-962:$H1" \
+    "963:sana/ask-963:$H1" "964:sana/ask-964:$H1" "965:sana/ask-965:$H1"
 run_worker "$WORKER" "$WORK/alllive.prs" "$WORK/l15d.out" --limit 1
 REL15D="$(releases "$WORK/l15d.out")"
-[ -z "$REL15D" ] && grep -q 'WIP ceiling: 5 open own PRs' "$WORK/l15d.out" \
-  && ok "L15d: five old live PRs at the ceiling: the backstop releases none (their kind is ticket-live)" \
+[ -z "$REL15D" ] && grep -q 'WIP ceiling: 5 open own PRs in x/kipi-system, 1 more left out as lane-live (ceiling 5)' "$WORK/l15d.out" \
+  && grep -q 'backstop releases PR #961' "$WORK/l15d.out" \
+  && ok "L15d: a live PR past the age bar is never the backstop's pick; the wait names the oldest counted PR, #961" \
   || bad "L15d: the backstop never takes a live PR" "releases: ${REL15D:-none}. $(grep 'WIP ceiling' "$WORK/l15d.out" | head -1 | cut -c1-300)"
-# Mutants run from the copied scripts tree (L12), beside the libraries the worker
-# sources; a mutant that crashes must not count as killed, so each one must reach
-# its WIP line first.
-sed 's/return hold("ticket-live", "ticket held: "/return hold("ticket-held", "ticket held: "/' "$WORKER" > "$MUT/linear-worker.sh"
-run_worker "$MUT/linear-worker.sh" "$WORK/alllive.prs" "$WORK/l15dm.out" --limit 1
-grep -q 'WIP ceiling: 5 open own PRs' "$WORK/l15dm.out" && [ -n "$(releases "$WORK/l15dm.out")" ] \
-  && ok "mutant killed: with the live kind renamed ticket-held, the backstop releases a live PR, so L15d can go red" \
-  || bad "mutant L15d survived" "renaming the kind released nothing: $(flat "$WORK/l15dm.out")"
 # L15e (ASK-4068, PR #671 delta major). A started ticket whose start stamp cannot
 # be read, with nothing else wrong, is held, not live: past the age bar the
-# backstop takes it, so it never sits at the ceiling with no coded exit.
-prs "$WORK/stampless.prs" "986:sana/ask-986:2026-09-29T12:00:00Z" "981:sana/ask-981:2026-10-01T12:00:00Z" \
-    "982:sana/ask-982:2026-10-02T12:00:00Z" "983:sana/ask-983:2026-10-03T12:00:00Z" "984:sana/ask-984:2026-10-04T12:00:00Z"
+# backstop takes it, so it never sits at the ceiling with no coded exit. Four
+# young approved PRs hold the ceiling with it (live ones are left out since
+# ASK-4111, so they no longer can).
+prs "$WORK/stampless.prs" "986:sana/ask-986:2026-09-29T12:00:00Z" "961:sana/ask-961:$H1" \
+    "962:sana/ask-962:$H1" "963:sana/ask-963:$H1" "964:sana/ask-964:$H1"
 run_worker "$WORKER" "$WORK/stampless.prs" "$WORK/l15e.out" --limit 1
 REL15E="$(releases "$WORK/l15e.out")"
 [ "$REL15E" = "[dry] would release PR #986 (backstop: ticket-held);" ] \
   && ok "L15e: a stampless started ticket past the age bar is taken by the backstop (ticket-held)" \
   || bad "L15e: an unreadable stamp has a bounded exit" "releases: ${REL15E:-none}. $(grep 'WIP ceiling' "$WORK/l15e.out" | head -2 | cut -c1-400)"
-# THE PYTHON MUTANT STARTS FROM THE REAL WORKER (PR #671 delta minor): $MUT still
-# held the sed mutant above, so a missed anchor wrote nothing and the cmp below
-# ran the sed mutant and reported "survived" instead of "anchor".
-cp "$WORKER" "$MUT/linear-worker.sh"
-python3 - "$WORKER" "$MUT/linear-worker.sh" <<'MUT'
-import sys
-s = open(sys.argv[1]).read()
-a = '    if i["state"]["type"] == "started" and live_evidence(i):\n        return hold("ticket-live",'
-if s.count(a) != 1:
-    sys.exit("anchor")
-k = s.index(a)
-end = s.index("\n", s.index("\n", k) + 1) + 1
-open(sys.argv[2], "w").write(s[:k] + s[end:])
-MUT
-L15_MUT_RC=$?
-if [ "$L15_MUT_RC" != "0" ] || cmp -s "$WORKER" "$MUT/linear-worker.sh"; then
-  bad "mutant L15: anchor" "refusal() has no live-first check to cut"
+
+# ============================================================================
+# L16. ASK-4111 CHECK 3: PR #666, closed as cap while its lane was coming
+# ============================================================================
+# 2026-11-09T00:36:40Z the release closed PR #666 as kind cap. Its ticket was in
+# Backlog after a failed run, so the picker called it ready and the PR-side kinds
+# (wip_move_why: attempts, codex, cap, conflict, drift) judged it; the ASK-4057
+# live check sits in refusal() and never ran. The start stamp was 6.5h old, and a
+# lane moved the ticket back to In Progress 14 minutes later. The same shape here
+# is the oldest PR, at the cap: it is left out as lane-live, and the release goes
+# to the oldest counted PR instead.
+prs "$WORK/pr666.prs" "991:sana/ask-991:2026-10-01T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/pr666.prs" "$WORK/l16.out" --limit 1
+REL16="$(releases "$WORK/l16.out")"
+if [ "$REL16" = "[dry] would release PR #543 (cap);" ] \
+   && grep -q 'left out as lane-live: #991 (ASK-991): started 6.6h ago, inside the 24h lane window' "$WORK/l16.out"; then
+  ok "L16 (ASK-4111 check 3): the #666 shape at the cap is not released; it is listed as lane-live and #543 goes instead"
 else
-  run_worker "$MUT/linear-worker.sh" "$WORK/live.prs" "$WORK/l15m.out" --limit 1
-  [ "$(releases "$WORK/l15m.out")" = "[dry] would release PR #981 (no-dor);" ] \
-    && ok "mutant killed: without the live-first check the live no-DoR PR #981 is released, so L15 can go red" \
-    || bad "mutant L15 survived" "releases: $(releases "$WORK/l15m.out") $(flat "$WORK/l15m.out" | cut -c1-300)"
-  # ...and the anchor branch can fire: the same cut, applied to the already-cut
-  # copy, finds no line and says so.
-  cp "$MUT/linear-worker.sh" "$WORK/worker-cut.sh"
-  python3 - "$WORK/worker-cut.sh" "$WORK/worker-cut2.sh" 2>/dev/null <<'MUT2'
-import sys
-s = open(sys.argv[1]).read()
-a = '    if i["state"]["type"] == "started" and live_evidence(i):\n        return hold("ticket-live",'
-sys.exit("anchor" if s.count(a) != 1 else 0)
-MUT2
-  [ "$?" != "0" ] && ok "the L15 mutant's anchor check fires on a worker without the live-first line" \
-    || bad "the L15 anchor check can fire" "a cut copy still matched the anchor"
+  bad "L16 (ASK-4111 check 3): a live ticket's capped PR is never released" \
+      "THE DEFECT: releases: ${REL16:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16.out" | head -3 | cut -c1-400 | tr '\n' '|')"
 fi
-cp "$WORKER" "$MUT/linear-worker.sh"
+# L16b. #666 had a ledger row too: the red-CI redrive ran converge on it at
+# 23:25Z while the lane worked it by hand. Once the fleet has run a sana/<id>
+# ticket its start stamp proves nothing about a lane (PR #692 round 1, major), so
+# a lane says so with lane-mark.py (ASK-4095). Marked, it is left out.
+prs "$WORK/pr666b.prs" "992:sana/ask-992:2026-10-01T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/pr666b.prs" "$WORK/l16b.out" --limit 1
+REL16B="$(releases "$WORK/l16b.out")"
+if [ "$REL16B" = "[dry] would release PR #543 (cap);" ] \
+   && grep -q 'left out as lane-live: #992 (ASK-992): lane marker: fixture-lane holds ASK-992 until' "$WORK/l16b.out"; then
+  ok "L16b: the #666 shape with a ledger row and a lane marker is left out by the marker, not released"
+else
+  bad "L16b: a marked lane's capped PR is never released" \
+      "releases: ${REL16B:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16b.out" | head -3 | cut -c1-400 | tr '\n' '|')"
+fi
+# L16c (NEGATIVE). The worker's own capped PR: a ledger row, no marker, no claim.
+# The fresh stamp is the worker's own start, so the PR counts and takes its cap
+# exit (ASK-3866), as it should.
+prs "$WORK/pr666c.prs" "993:sana/ask-993:2026-10-01T12:00:00Z" "${TODAY[@]}"
+run_worker "$WORKER" "$WORK/pr666c.prs" "$WORK/l16c.out" --limit 1
+REL16C="$(releases "$WORK/l16c.out")"
+if [ "$REL16C" = "[dry] would release PR #993 (cap);" ] && ! grep -q '#993 (ASK-993): started' "$WORK/l16c.out"; then
+  ok "L16c (negative): the worker's own capped PR is counted and released as cap; its own start is not a lane"
+else
+  bad "L16c (negative): the worker's own capped PR takes its cap exit" \
+      "releases: ${REL16C:-none}. $(grep 'lane-live\|WIP ceiling' "$WORK/l16c.out" | head -3 | cut -c1-400 | tr '\n' '|')"
+fi
+
+# ============================================================================
+# L17. NEGATIVE SELF-TESTS for L15 and L16 (ASK-4111 check 4)
+# ============================================================================
+# Each mutant is one exact replacement in a copy of the worker inside the copied
+# scripts tree (L12), beside the libraries it sources. A missed anchor is its own
+# failure, never a kill.
+mutate() {  # mutate <old> <new>: one exact replacement in the mutant worker
+  python3 - "$MUT/linear-worker.sh" "$1" "$2" <<'PY'
+import sys
+p, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+if s.count(old) != 1:
+    sys.exit("mutation anchor not found exactly once: " + old[:80])
+open(p, "w").write(s.replace(old, new))
+PY
+}
+restore() { cp "$WORKER" "$MUT/linear-worker.sh"; }
+
+# L17a. JUDGES THE KINDS BEFORE LIVE-FIRST: the release loop skips a live row
+# only when wip_move_why found no kind. L16 must go red (the capped #991 is
+# released as cap), and L15d too (the old live #981 is the backstop pick).
+restore
+L17A_SKIP='      [ "$w_live" != "-" ] && continue
+'
+L17A_AT='      if [ -n "$w_why" ]; then
+        w_kind="${w_why%%|*}"'
+if mutate "$L17A_SKIP" "" && mutate "$L17A_AT" '      [ "$w_live" != "-" ] && [ -z "$w_why" ] && continue
+'"$L17A_AT"; then
+  run_worker "$MUT/linear-worker.sh" "$WORK/pr666.prs" "$WORK/m17a.out" --limit 1
+  [ "$(releases "$WORK/m17a.out")" = "[dry] would release PR #991 (cap);" ] \
+    && ok "mutant killed: judging cap before live-first releases the live #991 as cap, so L16 can go red" \
+    || bad "mutant L17a survived on L16" "releases: $(releases "$WORK/m17a.out") $(grep 'WIP ceiling' "$WORK/m17a.out" | head -1 | cut -c1-300)"
+  run_worker "$MUT/linear-worker.sh" "$WORK/alllive.prs" "$WORK/m17a-d.out" --limit 1
+  [ "$(releases "$WORK/m17a-d.out")" = "[dry] would release PR #981 (backstop: unreviewed);" ] \
+    && ok "mutant killed: judging the kinds before live-first lets the backstop take the live #981, so L15d can go red" \
+    || bad "mutant L17a survived on L15d" "releases: $(releases "$WORK/m17a-d.out") $(grep 'WIP ceiling' "$WORK/m17a-d.out" | head -1 | cut -c1-300)"
+else
+  bad "mutant L17a: anchor" "the release loop live-first skip or the w_why block moved"
+fi
+
+# L17b. NO LIVE EVIDENCE AT ALL: every PR is counted and judged as before
+# ASK-4111, and refusal() no longer asks liveness. L15 must go red: the live
+# no-DoR #981 is the oldest and is released as no-dor.
+restore
+L17B='r["live"] = live_ticket(r["ticket"], r["issue"])'
+if mutate "$L17B" 'r["live"] = ""'; then
+  run_worker "$MUT/linear-worker.sh" "$WORK/live.prs" "$WORK/m17b.out" --limit 1
+  [ "$(releases "$WORK/m17b.out")" = "[dry] would release PR #981 (no-dor);" ] \
+    && ok "mutant killed: without the live check the live no-DoR PR #981 is released, so L15 can go red" \
+    || bad "mutant L17b survived" "releases: $(releases "$WORK/m17b.out") $(flat "$WORK/m17b.out" | cut -c1-300)"
+  # ...and the anchor branch can fire: the same cut on the already-cut copy
+  # finds no line and says so, so a moved anchor reads as "anchor", not a kill.
+  mutate "$L17B" 'r["live"] = ""' 2>/dev/null \
+    && bad "the L17b anchor check can fire" "a cut copy still matched the anchor" \
+    || ok "the L17b mutant's anchor check fires on a worker without the live line"
+else
+  bad "mutant L17b: anchor" "the WIP walk has no live check to cut"
+fi
+restore
 
 # ============================================================================
 # L14. --release-only stops before the issue loop

@@ -1135,32 +1135,58 @@ def ticket_is_live(i):
     return live_evidence(i)
 
 
-def live_evidence(i):
-    # True only on POSITIVE evidence that someone is on the ticket now: a start
-    # stamp that parses and is inside the lane window, or a live worker claim.
-    # The live-first check in refusal() asks this, not ticket_is_live (PR #671
-    # round 1, major): an unreadable stamp reads live forever, and live-first
-    # would then mask the no-dor, off-repo, label and alert exits forever, while
-    # ticket-live has no backstop, so that PR would never leave the ceiling.
+def live_evidence(i, stamp_counts=True):
+    # The evidence, as prose, only when it is POSITIVE that someone is on the
+    # ticket now: a start stamp that parses and is inside the lane window, a
+    # lane-mark.py marker, or a live worker claim. Else "". The WIP walk asks
+    # this, not ticket_is_live (PR #671 round 1, major): an unreadable stamp reads
+    # live forever, so a PR on it would sit outside the count and outside every
+    # exit for good. The prose is what the run log names for a left-out PR.
+    # stamp_counts False skips the stamp: live_ticket passes it for a ticket the
+    # fleet itself ran, whose fresh stamp is the worker own start.
     began = ls._parse_stamp(i.get("startedAt"))
-    if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
-        return True
+    if stamp_counts and began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
+        return "started %.1fh ago, inside the %dh lane window" % (
+            (now - began).total_seconds() / 3600.0, ls.STARTED_STALE_HOURS)
     # A lane-mark.py marker is positive evidence too, and it outlives the 24h
     # window for a long lane (ASK-4095).
-    if ls.lane_marker(i["identifier"]):
-        return True
-    return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
+    marker = ls.lane_marker(i["identifier"])
+    if marker:
+        return marker
+    return ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"])
+
+
+def live_ticket(ident, worker_issue):
+    # live_evidence for the ticket a PR branch names. A ticket missing from the
+    # board has no start stamp to read, and its lane marker or worker claim still
+    # counts, so it is asked with the identifier alone. No ticket, no evidence.
+    #
+    # THE WORKER OWN START IS NOT A LANE (PR #692 round 1, major). Linear moves a
+    # ticket to In Progress when the worker branch or PR appears (BACK TO BACKLOG
+    # below), so every PR the worker pushed in the last day has a fresh stamp.
+    # Read as lane evidence, round 1 counted five such PRs as 0 and a sixth issue
+    # started: the ceiling held for nobody. On a worker branch (sana/<id>) whose
+    # ticket has a row in the attempts ledger, the fleet ran it, so the stamp is
+    # the worker own and only a lane marker or a live claim leaves the PR out.
+    # ls.worker_history is the proof started_hold_reason uses to tell a fleet-run
+    # ticket from a lane. A lane branch is never the worker pile, so any evidence
+    # counts there. Limit: a lane on a sana/<id> ticket the fleet also ran (PR
+    # #666, a redrive at 23:25Z) is seen only through its lane-mark.py marker.
+    if not ident:
+        return ""
+    fleet_ran = bool(worker_issue) and ls.worker_history(state_dir, ident) == ""
+    return live_evidence(by_ident.get(ident) or {"identifier": ident}, stamp_counts=not fleet_ran)
 
 
 def refusal(i):
     # (kind, why) for the run log and the release. It never decides: ready() does.
-    # LIVE FIRST (ASK-4057, D34). A started ticket someone may be on right now
-    # waits, whatever else is missing from it. 2026-11-08 21:58:58Z: with this check
-    # last, PR #664 was closed as no-dor while ASK-4013 was In Progress with a lane
-    # on it, two minutes before its DoR was written. A missing DoR, project or label
-    # on a live ticket is fixed on the ticket; it is never a reason to close the PR.
-    if i["state"]["type"] == "started" and live_evidence(i):
-        return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
+    # LIVE FIRST LIVES IN THE WIP WALK NOW (ASK-4111). ASK-4057 (D34) put it here,
+    # first in this function, after PR #664 was closed as no-dor at 2026-11-08
+    # 21:58:58Z while a lane was on ASK-4013. That still let PR #666 go at
+    # 2026-11-09T00:36:40Z: ASK-4011 was in Backlog after a failed run, so ready()
+    # said yes, this function never ran, and wip_move_why judged it cap. The walk
+    # leaves out every PR whose ticket has live evidence before any kind is asked,
+    # so no ticket that reaches this function has any.
     labels = {l["name"] for l in i["labels"]["nodes"]}
     for held in ("owner:assaf", "needs-scope", "blocked:capability"):
         if held in labels:
@@ -1175,8 +1201,8 @@ def refusal(i):
         return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
         # NOT LIVE HERE, WHATEVER THE STAMP SAYS (ASK-4068, PR #671 delta major). The
-        # live-first check above already returned for positive evidence. What is
-        # left is a stale start, or a stamp that cannot be read. The second used to
+        # WIP walk already left out every ticket with positive evidence (ASK-4111).
+        # What is left is a stale start, or a stamp that cannot be read. The second used to
         # read as ticket-live, which has no backstop, so such a PR left the ceiling
         # by no coded exit while the run log said the wait ends on its own. It is
         # ticket-held now: it waits, and the backstop takes it past the age bar,
@@ -1233,6 +1259,9 @@ def lane_hold(ident):
     # ceiling held. Closing one of those mid-review is the lane race of
     # ASK-3826 trap 1 with a worse outcome, so a lane ticket started inside the
     # same window is held. A lane on a closed or missing ticket takes that exit.
+    # Since ASK-4111 the WIP walk leaves out a lane with live evidence before
+    # this runs, so the lane-live kind here is a started ticket whose start stamp
+    # cannot be read: ticket_is_live reads that as live, never a close on a guess.
     i = by_ident.get(ident)
     if i is None:
         return hold("not-on-board", LANE_WHY + "; its ticket " + (ident or "(none in the branch name)") + " is not on the board")
@@ -1240,7 +1269,7 @@ def lane_hold(ident):
     if st in ("completed", "canceled"):
         return hold("ticket-closed", LANE_WHY + "; its ticket is " + (i["state"].get("name") or st))
     if st == "started" and ticket_is_live(i):
-        return hold("lane-live", LANE_WHY + "; its ticket started inside the " + str(ls.STARTED_STALE_HOURS) + "h lane window or holds a live claim, so a lane may be on it")
+        return hold("lane-live", LANE_WHY + "; its started ticket has no readable start stamp, so a lane may be on it and nothing shows otherwise")
     return hold("lane", LANE_WHY)
 
 
@@ -1260,15 +1289,26 @@ if os.environ.get("WIP_OWN_RC", "") != "":
         rows.append({"pr": int(parts[0]), "branch": parts[1], "created_at": parts[2], "url": parts[3]})
     own = sorted([r for r in rows if r["branch"].startswith(OWN_PREFIX)],
                  key=lambda r: (r["created_at"], r["pr"]))
-    wip["known"] = not wip["error"]
-    wip["count"] = len(own)
-    wip["at_ceiling"] = wip["known"] and len(own) >= WIP_CEILING
-    walked = 0
     for r in own:
         r["issue"] = worker_branch_issue(r["branch"])
         # The ticket a release comments on: the worker issue, or the lane ticket.
         r["ticket"] = r["issue"] or lane_branch_issue(r["branch"])
-        if not wip["at_ceiling"]:
+        r["live"] = live_ticket(r["ticket"], r["issue"])
+    # ONLY PRs A WORKER ROUND COULD OWN COUNT (ASK-4111). 16 of 34 kipi-system
+    # runs from 2026-11-02 to 2026-11-09 started nothing over a median of 11 open
+    # sana/ PRs, and at 01:07:45Z all 12 were lane work with a live ticket: no
+    # worker round could move one, so the ceiling held for PRs nobody here owned.
+    # A PR whose ticket has live evidence is left out of the count, never judged
+    # and never a release candidate; the release loop skips it before any kind
+    # (see LIVE FIRST there). The ceiling of 5 still holds for the rest.
+    counted = [r for r in own if not r["live"]]
+    wip["known"] = not wip["error"]
+    wip["count"] = len(counted)
+    wip["lane_live"] = len(own) - len(counted)
+    wip["at_ceiling"] = wip["known"] and wip["count"] >= WIP_CEILING
+    walked = 0
+    for r in own:
+        if r["live"] or not wip["at_ceiling"]:
             r["kind"], r["hold"] = "", ""
         elif not r["issue"]:
             r["kind"], r["hold"] = lane_hold(r["ticket"])
@@ -2369,16 +2409,25 @@ if not w.get("asked"):
     raise SystemExit(0)
 clean = lambda v: " ".join(str(v).split()) or "-"
 print("\t".join(["meta", clean(w.get("known")), clean(w.get("at_ceiling")),
-                 clean(w.get("count", 0)), clean(w.get("ceiling", 5)), clean(w.get("error") or "-")]))
+                 clean(w.get("count", 0)), clean(w.get("ceiling", 5)), clean(w.get("error") or "-"),
+                 clean(w.get("lane_live", 0))]))
 for r in w.get("own") or []:
     print("\t".join(["pr", clean(r["pr"]), clean(r.get("issue") or "-"), clean(r.get("state") or "-"),
                      clean(r["branch"]), clean(r.get("kind") or "-"), clean(r.get("ticket") or "-"),
-                     clean(r.get("created_at") or "-"), clean(r.get("hold") or "-")]))
+                     clean(r.get("created_at") or "-"), clean(r.get("hold") or "-"),
+                     clean(r.get("live") or "-")]))
 ' 2>/dev/null)"
 WIP_REPLACE=0; WIP_FEED=""
 if [ -n "$WIP_ROWS" ]; then
-  IFS=$'\t' read -r _wk WIP_KNOWN WIP_AT WIP_COUNT WIP_CEIL WIP_ERR <<<"$(printf '%s\n' "$WIP_ROWS" | head -1)"
+  IFS=$'\t' read -r _wk WIP_KNOWN WIP_AT WIP_COUNT WIP_CEIL WIP_ERR WIP_LIVE <<<"$(printf '%s\n' "$WIP_ROWS" | head -1)"
   WIP_WHERE="${TARGET_SLUG:-$REPO_PROJECT}"
+  # The PRs left out as lane-live (ASK-4111), oldest first, each with the
+  # evidence that left it out: column 10 of a pr row.
+  WIP_LIVE_SAID="${WIP_LIVE:-0} more left out as lane-live"
+  WIP_LIVE_LIST="$(printf '%s\n' "$WIP_ROWS" | awk -F'\t' '$1 == "pr" && $10 != "-" {
+    label = ($3 == "-") ? "#" $2 " (" $5 ")" : "#" $2 " (" $3 ")"
+    out = out (out == "" ? "" : "; ") label ": " $10
+  } END { print out }')"
   if [ "$WIP_KNOWN" != "True" ]; then
     say "WIP ceiling: could not count the open own PRs in $WIP_WHERE ($WIP_ERR). Starting nothing this run: an uncounted pile is not a pile under the ceiling."
     # A STOP NOBODY IS TOLD ABOUT IS A SILENT HALT (PR #613 review round 1,
@@ -2394,7 +2443,8 @@ if [ -n "$WIP_ROWS" ]; then
     fi
     WIP_REPLACE=1
   elif [ "$WIP_AT" != "True" ]; then
-    say "WIP: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL)"
+    say "WIP: $WIP_COUNT open own PRs in $WIP_WHERE, $WIP_LIVE_SAID (ceiling $WIP_CEIL)"
+    [ -n "$WIP_LIVE_LIST" ] && say "WIP: left out as lane-live: $WIP_LIVE_LIST"
   else
     WIP_REPLACE=1
     WIP_PICKED=0; WIP_FIRST=""; WIP_PASSED=""
@@ -2405,8 +2455,15 @@ if [ -n "$WIP_ROWS" ]; then
     # this tick. WIP_OLD: the oldest passed-over PR with no exit the backstop may
     # take. One row each, tab-separated: pr ticket kind exit branch state why created.
     WIP_REL=""; WIP_OLD=""
-    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_kind w_ticket w_created w_hold; do
+    while IFS=$'\t' read -r _wk w_pr w_issue w_state w_branch w_kind w_ticket w_created w_hold w_live; do
       [ "$_wk" = "pr" ] || continue
+      # LIVE FIRST, BEFORE ANY KIND (ASK-4111). A PR whose ticket has live
+      # evidence is not a candidate for a rework or a release, whatever its
+      # PR-side kind. 2026-11-09T00:36:40Z: PR #666 was closed here as cap, with
+      # its ticket in Backlog after a failed run and its start stamp 6.5h old; a
+      # lane moved it back to In Progress 14 minutes later. The ticket-side
+      # live check (ASK-4057) never ran, because wip_move_why judged the PR.
+      [ "$w_live" != "-" ] && continue
       [ "$WIP_PICKED" -ge "$LIMIT" ] && break
       if [ "$w_issue" = "-" ]; then w_label="#$w_pr ($w_branch)"; else w_label="#$w_pr ($w_issue)"; fi
       if [ "$w_hold" != "-" ]; then
@@ -2464,7 +2521,9 @@ if [ -n "$WIP_ROWS" ]; then
           WIP_NEXT="the backstop releases PR #$b_pr ($b_kind) once it has been open $((b_bar / 3600))h, the larger of 10 x the merged p85 cycle time and 3 days (open since $b_created)"
         fi
       else
-        WIP_NEXT="every one is live (a lane window or a live worker claim), and that ends on its own"
+        # Live PRs never reach this loop since ASK-4111, so the one kind with no
+        # backstop left is lane-live from lane_hold: an unreadable start stamp.
+        WIP_NEXT="every one is a lane branch whose started ticket has no readable start stamp (lane-live, no backstop); nothing releases those yet, ASK-4124 builds that exit"
       fi
     fi
     WIP_REL_PR=""; r_label=""
@@ -2474,13 +2533,14 @@ if [ -n "$WIP_ROWS" ]; then
     fi
     WIP_STUCK="$WIP_CAPPED at the review round cap; $WIP_LANE on lane branches; $WIP_HELD held; $WIP_WAIT waiting on a review or a merge"
     if [ "$WIP_PICKED" -gt 0 ]; then
-      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST${WIP_REL_PR:+, and releases PR #$WIP_REL_PR ($r_label)}."
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE, $WIP_LIVE_SAID (ceiling $WIP_CEIL). No new issue starts; this run reworks the oldest one a worker round can move: $WIP_FIRST${WIP_REL_PR:+, and releases PR #$WIP_REL_PR ($r_label)}."
     elif [ -n "$WIP_REL_PR" ]; then
-      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). This run releases the oldest one through its exit: PR #$WIP_REL_PR ($r_label)."
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE, $WIP_LIVE_SAID (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). This run releases the oldest one through its exit: PR #$WIP_REL_PR ($r_label)."
     else
-      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). Nothing is released this tick: each one waits on a consumer with an expiry, and $WIP_NEXT."
+      say "WIP ceiling: $WIP_COUNT open own PRs in $WIP_WHERE, $WIP_LIVE_SAID (ceiling $WIP_CEIL). No new issue starts, and none of the $WIP_COUNT can be moved by a worker round now ($WIP_STUCK). Nothing is released this tick: each one waits on a consumer with an expiry, and $WIP_NEXT."
     fi
     [ -n "$WIP_PASSED" ] && say "WIP ceiling: passed over, oldest first: $WIP_PASSED"
+    [ -n "$WIP_LIVE_LIST" ] && say "WIP ceiling: left out as lane-live: $WIP_LIVE_LIST"
     # ONE CALL SITE, AFTER THE LOOP: the loop reads $WIP_ROWS on stdin, and a
     # release reads gh and Linear. test-worker-wip-liveness.sh L12 cuts this
     # call and must go red.
