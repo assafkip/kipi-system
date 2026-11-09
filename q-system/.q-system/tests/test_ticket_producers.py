@@ -308,8 +308,9 @@ class Registry(unittest.TestCase):
         OWN text scans the tree (PR #705 review, minor 1: that rested on one
         incidental listdir call). Pinned here, with the reviewer's reproducer.
         An edit to this file always selects this file, so removing the scan
-        turns this red in that same PR. The scan is also deliberate: the
-        cross-check below runs git ls-files itself."""
+        turns this red in that same PR. What the detector matches is the
+        glob walk below, a real read of the scripts directory, not a mention
+        (PR #705 round 2: a list-form git call is invisible to its regex)."""
         import importlib.util
         spec = importlib.util.spec_from_file_location("change_size", SCRIPTS / "change-size.py")
         cs = importlib.util.module_from_spec(spec)
@@ -323,9 +324,10 @@ class Registry(unittest.TestCase):
         v = cs.plan(changed=[(unnamed, 3)],
                     declared={me: text}, code_texts={}, diff_text="+X = 1\n")
         self.assertIn(me, v["selected_tests"])
-        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
-                                text=True, check=True).stdout.split("\n")
-        self.assertTrue(set(tp.tracked_filers(str(ROOT))) <= set(listed))
+        on_disk = {str(p.relative_to(ROOT)) for p in (ROOT / "q-system/.q-system/scripts").glob("*.py")}
+        script_filers = [f for f in tp.tracked_filers(str(ROOT))
+                         if f.startswith("q-system/.q-system/scripts/") and f.count("/") == 3]
+        self.assertTrue(script_filers and set(script_filers) <= on_disk, script_filers)
 
     def test_test_paths_are_anchored_not_substrings(self):
         for name in ("q-system/.q-system/scripts/latest-filer.py",
