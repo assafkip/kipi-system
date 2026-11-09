@@ -1129,6 +1129,10 @@ def live_evidence(i):
     began = ls._parse_stamp(i.get("startedAt"))
     if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
         return True
+    # A lane-mark.py marker is positive evidence too, and it outlives the 24h
+    # window for a long lane (ASK-4095).
+    if ls.lane_marker(i["identifier"]):
+        return True
     return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
 
 

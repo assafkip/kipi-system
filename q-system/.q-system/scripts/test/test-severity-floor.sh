@@ -44,6 +44,10 @@ ok()   { PASS=$((PASS + 1)); echo "  ok: $1"; }
 . "$LIB"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 
 # --- fixture: VERBATIM slice, real PR #11 round-2 review (2026-07-26) --------
