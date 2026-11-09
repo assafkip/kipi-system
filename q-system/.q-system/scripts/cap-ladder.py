@@ -697,6 +697,12 @@ def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
     # with a marker instead of refusing.
     if re.fullmatch(r"FOUNDER-DECISION:\s*(spend|access|outside):\s*\S.*", arg, re.I):
         return "founder", ""
+    # TWO FAULTS, TWO MESSAGES (PR #687 round 2, minor). "spend:" with nothing
+    # after it, or "spend approve" with no colon, names an allowed kind; calling
+    # it "no allowed kind" sent the reader to the wrong fix.
+    if re.match(r"FOUNDER-DECISION:\s*(spend|access|outside)\b", arg, re.I):
+        return "free", (f"'{arg[:80]}' names its kind but no ask: write "
+                        "FOUNDER-DECISION: <kind>: <the one-line ask>")
     if re.match(r"FOUNDER-DECISION:", arg, re.I):
         return "free", f"'{arg[:80]}' is a FOUNDER-DECISION of no allowed kind: it must name spend, access or outside"
     return "free", f"'{arg[:80]}' is free text, not an owned ticket, a fleet PR or a FOUNDER-DECISION"
@@ -1009,7 +1015,15 @@ def main(argv=None) -> int:
             done += 1
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
-            if not row.get("held") or issue in caps:
+            # A RELEASED ROW WITH AN OPEN ASK IS STILL READ (PR #687 round 2, major).
+            # Event (b), (c) or (d) releases a founder hold with its ask open, on
+            # purpose: the question is still real until the ticket re-caps (and
+            # dedupes to the same id, lifecycle 4) or dies. This loop skipped any
+            # row not held, so a released ticket that then closed kept its ask in
+            # /q-morning forever.
+            ask_id = (row.get("decision") or {}).get("ask_id", "")
+            ask_open = bool(ask_id) and not ask_resolved(ask_id)
+            if issue in caps or not (row.get("held") or ask_open):
                 continue
             t = ticket(issue)
             if t is None:
@@ -1017,6 +1031,8 @@ def main(argv=None) -> int:
             if t.get("state_type") in DEAD_TYPES:
                 drop_dead(issue, state, t["state_type"], args.apply)
                 continue
+            if not row.get("held"):
+                continue        # released and alive: its ask waits on the founder, a re-cap or the ticket's end
             d = row.get("decision") or {}
             slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
             # UNREADABLE IS NOT OWNERLESS (PR #662 round 4, minor). ticket() is None on a

@@ -729,6 +729,38 @@ def case_review_687() -> None:
               and rendered == [], (dry_open, rows, rendered))
         td.cleanup()
 
+    # Round 2 major (nonblocking): the third door. Event (b) releases a founder
+    # hold with the ask still open (lifecycle 3 pins that), and the ticket then
+    # closes. The held loop skipped the released row, so the ask outlived it.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the 900 dollar seat\n"])
+    ladder(env, "--apply")
+    at(env, 4)
+    world(env, main_sha="m2", changed=["q-system/a.py"])
+    released = "re-entered" in ladder(env, "--apply")
+    world(env, changed=[])
+    still_open = [r for r in _status_rows(env) if not r["resolved"]]
+    edit_ticket(env, "ASK-1", state_type="completed")
+    at(env, 5)
+    ladder(env, "--apply")
+    rows = _status_rows(env)
+    rendered, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    check("687 round 2 major: a released founder hold keeps its ask while the ticket lives, "
+          "and the ask is resolved as moot when the ticket closes",
+          released and len(still_open) == 1 and len(rows) == 1 and rows[0]["resolved"] is True
+          and "completed" in rows[0].get("note", "") and rendered == [], (released, still_open, rows, rendered))
+    td.cleanup()
+    # Round 2 minor: a FOUNDER-DECISION that names its kind but no ask says THAT.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend:\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    out = ladder(env, "--apply")
+    td.cleanup()
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend approve the seat\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    out2 = ladder(env, "--apply")
+    td.cleanup()
+    check("687 round 2 minor: a FOUNDER-DECISION with its kind but no ask is refused for the missing ask",
+          "no ask" in out and "no ask" in out2 and "no allowed kind" not in out + out2, (out, out2))
+
     # minor 3: an absent status file is the registry's OFF signal, not an empty section.
     with tempfile.TemporaryDirectory() as td:
         got = fa.collect(None, {}, status=Path(td) / "never-written.jsonl")
