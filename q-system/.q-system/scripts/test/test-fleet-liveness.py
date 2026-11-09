@@ -173,10 +173,23 @@ def mutant(label, change, expect):
 print("-- mutants: each must go red")
 mutant("a row deleted", lambda m: m["ticket_states"]["rows"].pop("blocked-capability"),
        "blocked-capability (durable-queue) holds tickets")
-mutant("a debt of 31 days",
-       # Any row that still carries a debt (owner-assaf's debt became a consumer, ASK-3961).
-       lambda m: m["ticket_states"]["rows"]["no-project"]["exits"][0].update(expires="2026-12-09"),
-       "this one 31")
+def _first_debt(m):
+    """The first exit of KIND debt in any row, found by kind, never by position.
+    A fixed row and index broke twice: owner-assaf's debt became a consumer
+    (ASK-3961), then no-project gained an exit ahead of its debt."""
+    for row in m["ticket_states"]["rows"].values():
+        for e in row.get("exits") or []:
+            if e.get("kind") == "debt":
+                return e
+    raise SystemExit("FAIL: no row carries a debt, so the 31-day mutant has nothing to stretch")
+
+
+def _stretch_31(e):
+    import datetime as _dt
+    e["expires"] = (_dt.date.fromisoformat(e["since"]) + _dt.timedelta(days=31)).isoformat()
+
+
+mutant("a debt of 31 days", lambda m: _stretch_31(_first_debt(m)), "this one 31")
 mutant("a consumer marker that is not in its file",
        lambda m: m["ticket_states"]["rows"]["started-dormant"]["exits"][0].update(marker="def no_such_function"),
        "is not in")

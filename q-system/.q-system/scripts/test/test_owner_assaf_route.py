@@ -116,6 +116,33 @@ def main() -> int:
             check(f"founder ask {case}: " + ("relabelled owner:sana with the answer, never asked again"
                                              if want_answered else "asked (deduped by the ladder), label kept"),
                   ok, (out, logged(td, "ladder"), note))
+    # END TO END with the REAL cap-ladder.py: its --founder-ask writes the ask, its
+    # --resolve answers it, and this script's answered() must find that exact row.
+    # A fake ladder cannot catch the two disagreeing on the ask text.
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        env = world(td)
+        env.pop("OWNER_ROUTE_LADDER")
+        for v in ("CAP_LADDER_STATE", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS", "CAP_LADDER_ATTEMPTS",
+                  "CAP_LADDER_LINEAR_LOG"):
+            env[v] = str(td / f"{v.lower()}.json")
+        for v in ("CAP_LADDER_GH", "CAP_LADDER_SYNC", "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER"):
+            env[v] = "/usr/bin/false"
+        env["CAP_LADDER_LINEAR_FIXTURE"] = str(td / "no-tickets.json")
+        (td / "no-tickets.json").write_text("{}")
+        run(env, SCRIPT, "--apply")
+        rows = [json.loads(l) for l in (td / "status.jsonl").read_text().splitlines()] if (td / "status.jsonl").exists() else []
+        ask_id = next((r["id"] for r in rows if r.get("issue") == "ASK-2"), "")
+        p = subprocess.run([sys.executable, str(SCRIPT.parent / "cap-ladder.py"), "--resolve", ask_id or "none",
+                            "--note", "keep it", "--by", "founder"], env=env, capture_output=True, text=True, timeout=60)
+        (td / "sync.log").write_text("")
+        out = run(env, SCRIPT, "--apply")
+        note = [c for c in logged(td, "sync") if c[:2] == ["progress", "ASK-2"]]
+        check("end to end: the real cap-ladder.py lists the ask, --resolve answers it, and the next run "
+              "relabels the ticket with that answer",
+              bool(ask_id) and p.returncode == 0 and note and "keep it" in note[0][2]
+              and "relabelled owner:sana (the founder answered its ask)" in out, (rows, p.stdout + p.stderr, out))
+
     # Codex PR #670 findings, each pinned.
     with tempfile.TemporaryDirectory() as t:
         td = Path(t)
