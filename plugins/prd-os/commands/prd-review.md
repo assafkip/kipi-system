@@ -52,7 +52,24 @@ Capture the `prd_id` and `spec_path` from the JSON output. If no PRD is active, 
    | Codex | `codex-review` | `codex-adversarial` |
    | Claude senior-staff-engineer subagent | `claude-review` | `claude-adversarial` |
 
-   Pick the row for the reviewer that ACTUALLY ran. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. If one reviewer is unavailable (no credits, missing auth), use another row and stamp what ran. Do NOT hardcode an outage into this file: a stale availability note outlives the outage and sends every later session to the wrong reviewer. `manual` and `plan` are the author's own words and the writer refuses them here by design.
+   Pick the row for the reviewer that ACTUALLY ran. Stamping `codex-*` for a pass Codex did not run puts a false provenance record in the findings ledger — worse than being blocked, in a repo whose whole thesis is receipts. Do NOT hardcode an outage into this file: a stale availability note outlives the outage and sends every later session to the wrong reviewer. `manual` and `plan` are the author's own words and the writer refuses them here by design.
+
+   **When a reviewer is unavailable (no credits, missing auth), the ORDER is not yours to choose.** It lives in `q-system/.q-system/scripts/reviewer-resolve.sh`, the one chain every review call site in this fleet reads (ASK-3831). Walk it top to bottom:
+
+   ```bash
+   RR="$(git rev-parse --show-toplevel)/q-system/.q-system/scripts/reviewer-resolve.sh"
+   bash -c ". \"$RR\" && reviewer_candidates review"
+   ```
+
+   It prints `<engine>  <account>  <stamp>`, one rung per line: Codex on the primary account, Codex on the other account when one is configured, then Opus. The stamp on the rung you land on is the stamp you write — you do not compose it yourself. Resolve `$RR` from the repo you are reviewing in, not from `${CLAUDE_PLUGIN_ROOT}`: plugins run from the marketplace clone, so a plugin-relative path reads a different copy than the one this repo's tests pin.
+
+   **Record the outage there, not here.** Before moving down a rung:
+
+   ```bash
+   bash -c ". \"$RR\" && reviewer_note_codex_outage <account> \"<the refusal line Codex printed>\""
+   ```
+
+   That writes at most ONE event per account per UTC day, which `fleet-health-daily.py` turns into one line for Sana. The reason this is a function call and not a note in your own output: Codex ran out of credits on 2026-09-16 and every call site recorded it privately, per PR — 24 cap tickets, every "Codex" round for seven weeks a degraded Opus stand-in, and no single line anywhere saying the fleet was down to one reviewer.
 
    Without the stamp, `/prd-approve` will refuse to advance the PRD — that is the intended behavior. Do not try to work around it.
 

@@ -78,7 +78,14 @@ done
 block="$(sed -n '/^# codex-sandbox-begin/,/^# codex-sandbox-end/p' "$AGENT")"
 sb="$(HEAD_SHA_ISOLATED=1; eval "$block"; echo "$CODEX_SANDBOX")"
 [ "$sb" = "-s read-only" ] && ok "codex sandbox is read-only (no network) even in the isolated tree" || bad "codex sandbox is '$sb'"
-grep -qE '"codex exec [^"]*\$CODEX_SANDBOX' "$AGENT" && ok "codex exec uses CODEX_SANDBOX" || bad "codex exec ignores CODEX_SANDBOX"
+# ASK-3831: the invocation's BASE now comes from reviewer-resolve.sh, because
+# four call sites each typed their own `codex exec` and none of them had heard of
+# a second Codex account. The property this line protects is unchanged -- the
+# codex dispatch passes $CODEX_SANDBOX -- so only the spelling moved. Pinning
+# the literal `codex exec` here would now pin it in the WRONG file: the resolver
+# owns the command, this script owns the sandbox flag.
+grep -qE '"\$CODEX_BASE [^"]*\$CODEX_SANDBOX' "$AGENT" && ok "the codex dispatch uses CODEX_SANDBOX" || bad "the codex dispatch ignores CODEX_SANDBOX"
+grep -qE 'CODEX_BASE="\$\(reviewer_codex_cmd ' "$AGENT" && ok "the codex base comes from the one resolver" || bad "pr-review-agent.sh builds its own codex invocation again"
 grep -q 'network_access=true' "$AGENT" && bad "a network grant is still in pr-review-agent.sh" || ok "no network grant anywhere in the script"
 grep -qE '^if ! gh pr view "\$PR" \$KIPI_GH_REPO_ARGS > "\$PR_CONTEXT_DIR/pr.txt"' "$AGENT" && ok "the script fetches the PR before the review" || bad "no PR fetch before the review"
 grep -q 'PR_CONTEXT_DIR/pr.diff' "$AGENT" && ok "the prompt points at the fetched diff" || bad "the prompt does not point at the fetched diff"

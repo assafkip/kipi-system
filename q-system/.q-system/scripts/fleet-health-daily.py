@@ -1050,6 +1050,86 @@ def detect_open_spillover(_ctx) -> list:
     }]
 
 
+def _codex_outage_rows(events_path=None) -> list:
+    """Today's rows from the resolver's outage ledger (ASK-3831).
+
+    The WRITER is `reviewer_note_codex_outage` in reviewer-resolve.sh, which
+    appends at most one row per account per UTC day. This is the only reader.
+    A missing or unreadable file is NO outage, not an error: the common case is
+    a fleet whose Codex accounts are both healthy, which writes nothing at all.
+    """
+    path = Path(events_path) if events_path else (
+        Path(os.environ.get("KIPI_STATE_DIR") or (Path.home() / ".config/kipi"))
+        / "codex-outage-events.jsonl")
+    if not path.is_file():
+        return []
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = []
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("day") == day \
+                and row.get("kind") == "codex-outage":
+            rows.append(row)
+    return rows
+
+
+def codex_outage_findings(rows: list) -> list:
+    """ONE finding for the day, naming every account that could not review.
+
+    WHY ONE AND NOT ONE PER ACCOUNT. The defect this replaces is noise, not
+    silence: Codex ran out of credits on 2026-09-16 and every call site recorded
+    it PER PR -- 24 cap tickets, every "Codex" round since then a degraded Opus
+    stand-in -- while no single line ever said the fleet had been down to one
+    reviewer for seven weeks. A finding per account would start the same slide.
+
+    `subject` is deliberately NOT keyed on the account list. The accounts in an
+    outage change as the second one is configured or recovers, and an unstable
+    subject files a NEW permanent Linear issue every morning -- the exact thing
+    the dedup contract at the top of this file warns about.
+    """
+    if not rows:
+        return []
+    accounts = sorted({str(r.get("account") or "unknown") for r in rows})
+    reasons = "\n".join(
+        f"- `{r.get('account')}`: {r.get('reason') or 'no reason recorded'} "
+        f"(first seen {r.get('ts') or '?'})"
+        for r in sorted(rows, key=lambda r: str(r.get("account"))))
+    return [{
+        "subject": "codex-reviewer-outage",
+        "title": f"No Codex review available on {len(accounts)} account(s): the reviewer is down to Opus",
+        "body": (
+            f"**{', '.join(accounts)}** could not produce a review today.\n\n"
+            "Every review that lands while this is true is the Opus stand-in, "
+            "marked `degraded` on its verdict record. That is the SAFE direction "
+            "(a required check that nobody fills wedges every PR in the repo) and "
+            "it is not an independent second opinion: the reviewer and the author "
+            "are the same lab until a Codex account answers.\n\n"
+            f"{reasons}\n\n"
+            "## Action\n"
+            "- Restore credits on a listed account, or configure the other one: "
+            "`KIPI_CODEX_SECONDARY_HOME` is the second account's `CODEX_HOME` "
+            "(`KIPI_CODEX_SECONDARY_LABEL` names it on the verdict record).\n"
+            "- The chain lives in ONE place now: "
+            "`q-system/.q-system/scripts/reviewer-resolve.sh`.\n"
+            "- Verify with `bash q-system/.q-system/scripts/test/test-reviewer-resolve.sh`."
+        ),
+    }]
+
+
+def detect_codex_outage(_ctx) -> list:
+    return codex_outage_findings(_codex_outage_rows())
+
+
 # ---------------------------------------------------------------------------
 # The registry. `action` and the learning leg are REQUIRED.
 # ---------------------------------------------------------------------------
@@ -2436,6 +2516,13 @@ DETECTORS = [
         "detect": detect_promoted_audit,
         "action": "file_issue",
         "lesson": "a-gate-that-cannot-run-must-not-pass",
+    },
+    {
+        "id": "codex-reviewer-outage",
+        "description": "no Codex account could produce a review today: every review is the Opus stand-in",
+        "detect": detect_codex_outage,
+        "action": "file_issue",
+        "lesson": "reviewers-at-capacity-are-an-environment-failure-not-a-reason-to-skip-review",
     },
     {
         "id": "plist-drift",
