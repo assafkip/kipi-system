@@ -38,6 +38,14 @@ The ask lives in one file (the status file). Whether it is still real was comput
 - Asks from other jobs (`--founder-ask`, used by PRs #668 and #670) have no ladder row at all, so no row-keyed fix could ever end them.
 - `test_off_switches.py` was red at f5e58a54, fcb93497 and bec6b382, and review found it, not a run. The capability gate CI runs takes about 30 minutes, and this lane pushed without running the suites under `q-system/.q-system/tests/` that read a changed file.
 
+## Recurrence
+
+This recurs `rca-pr662-three-review-rounds-2026-11-08.md`. Two of its items were meant to prevent it:
+- Action item "Add one lifecycle property test for an ask" shipped (`case_ask_lifecycle`). It walked create, dedupe, hold, resolve by id and by issue, release, and a second ask, all through the CLI. It never walked the ladder's own SPLIT or CLOSE after a release, or an ask whose ticket closes. So the action was done to the letter and missed the path that failed.
+- Lesson "test the whole lifecycle of that code before the next push, not only the named scenario" was not applied in rounds 1 and 2 here. Each fix pinned the door the reviewer named.
+
+What is different this time: the fix is keyed on the ticket, not on a path, so a new path is not a new door. The test is one check per known door through the one sweep, plus a mutant that removes the sweep.
+
 ## Fixes shipped
 
 - `sweep_dead_asks()` in `cap-ladder.py`, called once per run after the caps and held loops. For every issue with an open ask it reads the ticket. If the ticket is completed, canceled or duplicate, each open ask on it is resolved as moot (`resolved_by` the ladder), under `--apply` only. An unreadable ticket is read again at the next run.

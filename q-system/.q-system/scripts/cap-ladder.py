@@ -464,6 +464,7 @@ def sweep_dead_asks(apply: bool) -> int:
         for ask_id in ids:
             if not apply:
                 say(f"[dry] {issue}: is {st}; would resolve its founder ask {ask_id} as moot")
+                done += 1
             elif status_resolve(ask_id, f"moot: {issue} is {st} in Linear", by=JOB):
                 say(f"{issue}: is {st}; its founder ask {ask_id} is resolved as moot")
                 done += 1
@@ -968,6 +969,13 @@ def main(argv=None) -> int:
         return 0
     if args.founder_ask:
         i, k, a = args.founder_ask
+        # A CLOSED TICKET ASKS NOTHING (PR #687 round 4, major). The ask was listed,
+        # and the next nightly sweep resolved it as moot, often before the founder
+        # saw it. An unreadable ticket is not refused: the sweep reads it again.
+        t = ticket(i)
+        if t and t.get("state_type") in DEAD_TYPES:
+            print(f"cap-ladder: {i} is {t['state_type']} in Linear; no ask listed", file=sys.stderr)
+            return 1
         before = {r.get("id") for r in _status_rows()}
         got = status_add(i, k, a, source="cap-ladder.py --founder-ask")
         print(f"cap-ladder: the same ask is already listed ({got})" if got in before else f"cap-ladder: ask added ({got})")
@@ -1031,13 +1039,18 @@ def main(argv=None) -> int:
             # A release keeps its ask open on purpose: the question is still real
             # until the ticket re-caps (and dedupes to the same id, lifecycle 4) or
             # dies, and sweep_dead_asks below ends it then.
-            if not row.get("held") or issue in caps:
+            # A RELEASED ROW IS STILL READ FOR ITS END (PR #687 round 4, minor). It
+            # stays while the ticket lives, because its rung counts the next cap,
+            # and it was never dropped once the ticket closed.
+            if issue in caps or not (row.get("held") or row.get("reentered_on")):
                 continue
             t = ticket(issue)
             if t is None:
                 continue
             if t.get("state_type") in DEAD_TYPES:
                 state.pop(issue, None)      # its ask ends in sweep_dead_asks
+                continue
+            if not row.get("held"):
                 continue
             d = row.get("decision") or {}
             slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
@@ -1057,7 +1070,7 @@ def main(argv=None) -> int:
             report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
                            "waiting_on": wait, "red": red,
                            "note": "the blocker lost its owner, so it is a dead end" if red else ""})
-        sweep_dead_asks(args.apply)
+        moot = sweep_dead_asks(args.apply)
         blockers: dict = {}
         for row in state.values():
             d = row.get("decision") or {}
@@ -1068,7 +1081,8 @@ def main(argv=None) -> int:
             write_json(BLOCKERS, blockers)
             write_json(REPORT, {"at": now().isoformat(), "rows": report})
     say(f"run complete: {len(caps)} capped, {done} climbed, "
-        f"{sum(1 for r in state.values() if r.get('held'))} held{'' if args.apply else ' (dry)'}")
+        f"{sum(1 for r in state.values() if r.get('held'))} held, "
+        f"{moot} ask{'' if moot == 1 else 's'} resolved as moot{'' if args.apply else ' (dry)'}")
     return 0
 
 

@@ -779,6 +779,27 @@ def case_review_687() -> None:
           and rendered is None, (split, rows, rendered))
     td.cleanup()
 
+    # Round 4 (approved with nits), each pinned.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the 900 dollar seat\n"])
+    p = subprocess.run([sys.executable, str(LADDER), "--founder-ask", "ASK-3", "founder-decision", "spend: x"],
+                       env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    check("687 round 4 major: --founder-ask on a closed ticket is refused (exit 1) and lists nothing",
+          p.returncode == 1 and "completed" in p.stderr and not _status_rows(env), (p.returncode, p.stdout + p.stderr))
+    ladder(env, "--apply")
+    at(env, 4)
+    world(env, main_sha="m2", changed=["q-system/a.py"])
+    ladder(env, "--apply")                                       # released, ask open
+    world(env, changed=[])
+    edit_ticket(env, "ASK-1", state_type="completed")
+    at(env, 5)
+    out = ladder(env, "--apply")
+    st = json.loads(Path(env["CAP_LADDER_STATE"]).read_text())
+    check("687 round 4 minor: a released row whose ticket closed leaves the state file",
+          "ASK-1" not in st, st)
+    check("687 round 4 nit: the run summary counts the asks the sweep resolved",
+          "1 ask resolved as moot" in out, out)
+    td.cleanup()
+
     # Round 2 minor: a FOUNDER-DECISION that names its kind but no ask says THAT.
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend:\n",
                               RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
