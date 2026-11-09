@@ -774,7 +774,8 @@ rotation() {
 # first-refused time (its only writer) and says DUE once the check has been refused
 # for 12h, above the 7.6h longest transient measured. page_once files ONE alert
 # ticket per repo+check through slack-notify.sh, which pages nobody. A pass clears
-# the key, so a recurrence files again.
+# the key, so a recurrence files again. A `kill-switch` refusal is a decision, not
+# a fault, so dispatch-refusals.py records and files nothing for it (PR #681 r1).
 #
 # Called with the preflight output to record a refusal, or with an empty third
 # argument to record a pass. EVERY LINE GOES TO THE LOG OR NOWHERE, never stdout:

@@ -89,6 +89,54 @@ def test_other_repos_keep_their_clocks(state):
     assert run(state, "refused", "ktlyst", "hooks", at=T0 + 12 * H)[1] == ["DUE hooks"]
 
 
+def test_a_kill_switch_refusal_is_never_due(state):
+    """PR #681 r1 major. `.kipi-no-dispatch` is a decision (D35 and the usage
+    pacer write it on purpose tonight), so a ticket asking Sana to fix it is noise
+    that argues against the one gate that protects client work."""
+    for h in (0, 13, 37, 61):
+        assert run(state, "refused", "ktlyst", "kill-switch", at=T0 + h * H) == (0, [])
+    assert not state.exists() or "kill-switch" not in state.read_text()
+
+
+def test_a_kill_switch_tick_is_not_an_observation(state):
+    """Preflight stops at the kill switch, so that tick says nothing about hooks.
+    It must neither clear the hooks clock nor advance it."""
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "kill-switch", at=T0 + 6 * H)[1] == []
+    assert state.read_text() == f"ktlyst\thooks\t{T0}\t{T0}\n"
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 12 * H)[1] == ["DUE hooks"]
+
+
+def test_a_long_gap_restarts_the_clock(state):
+    """PR #681 r1 minor. Two refusals 30 days apart are not 30 days of refusal:
+    the row left the rotation, came back, and refused once."""
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 30 * 24 * H)[1] == []
+    t1 = T0 + 30 * 24 * H
+    assert state.read_text() == f"ktlyst\thooks\t{t1}\t{t1}\n"
+    assert run(state, "refused", "ktlyst", "hooks", at=t1 + 12 * H)[1] == ["DUE hooks"]
+
+
+def test_just_past_the_gap_bound_restarts(state):
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 49 * H)[1] == []
+
+
+def test_the_daily_cap_gap_keeps_the_clock(state):
+    """The mutant a tight gap bound would be. Measured on dispatch.log: the daily
+    cap stops pick_list ~23.3h a day (max 24.1h, one 34.5h outlier), so a bound
+    under that restarts every clock daily and nothing is ever filed."""
+    run(state, "refused", "ktlyst", "hooks", at=T0)
+    run(state, "refused", "ktlyst", "hooks", at=T0 + H)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + H + int(34.5 * H))[1] == ["DUE hooks"]
+
+
+def test_the_gap_bound_is_read_from_the_env(state):
+    env = {"KIPI_DISPATCH_REFUSAL_GAP_HOURS": "2"}
+    run(state, "refused", "ktlyst", "hooks", at=T0, env_extra=env)
+    assert run(state, "refused", "ktlyst", "hooks", at=T0 + 13 * H, env_extra=env)[1] == []
+
+
 def test_the_threshold_is_read_from_the_env(state):
     run(state, "refused", "ktlyst", "hooks", at=T0, hours=1)
     assert run(state, "refused", "ktlyst", "hooks", at=T0 + H, hours=1)[1] == ["DUE hooks"]

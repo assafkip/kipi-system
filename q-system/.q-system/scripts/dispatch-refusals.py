@@ -19,6 +19,24 @@ fixes: pick_list re-tests the repo every tick, so the pass itself is the event
 that puts them back. A `repo-refused` park would need its own unpark consumer,
 which is a new dead end.
 
+WHY A KILL SWITCH IS NOT A REFUSAL HERE (PR #681 r1 major). `.kipi-no-dispatch`
+is a decision: D35 and usage-pacer.py write it for usage pauses, and a repo's own
+permanent one is the client's "stay out". Clocking it filed a ticket at 12h, and
+again every 24h, telling Sana to undo the gate that protects client work. So it
+records nothing and files nothing. preflight stops at the kill switch, so that
+tick says nothing about any other check either: the repo's other rows are left
+as they were, neither cleared nor advanced.
+
+WHY A 48H GAP BOUND (PR #681 r1 minor). The threshold reads `first`, so two
+refusals 30 days apart (a row off and on again, a dispatcher down) looked like
+30 days of refusal. A row whose `last` is older than the gap bound restarts its
+clock. The bound is 48h, not a tick or two, because pick_list does not run every
+tick: measured on dispatch.log (2026-08-14 to 2026-11-09, 1971 pick_list runs),
+the daily cap stops it ~23.3h a day (max 24.1h, one 34.5h outlier). A bound under
+that restarts every clock daily and nothing is ever filed. The cost: a check that
+heals and breaks again inside an unobserved day still counts as one episode. That
+is one ticket, cleared by the next pass.
+
 Usage (stdout is the dispatcher's input, one line per action):
   dispatch-refusals.py refused <repo> <check> [<check> ...]
       Records this tick's refused checks for <repo>. Prints `DUE <check>` for each
@@ -28,7 +46,8 @@ Usage (stdout is the dispatcher's input, one line per action):
       The repo cleared preflight. Drops its rows and prints `CLEARED <check>` for each.
 
 Env: KIPI_DISPATCH_REFUSALS (state path), KIPI_DISPATCH_REFUSAL_HOURS (default
-12), KIPI_DISPATCH_NOW (epoch seconds; the test clock).
+12), KIPI_DISPATCH_REFUSAL_GAP_HOURS (default 48), KIPI_DISPATCH_NOW (epoch
+seconds; the test clock).
 """
 from __future__ import annotations
 
@@ -40,6 +59,9 @@ import time
 
 DEFAULT_PATH = os.path.expanduser("~/.config/kipi/dispatch-refusals.tsv")
 DEFAULT_HOURS = 12.0
+DEFAULT_GAP_HOURS = 48.0
+# Checks that are a decision, not a fault. See the docstring.
+DELIBERATE = frozenset({"kill-switch"})
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -55,11 +77,19 @@ def now() -> int:
     return int(raw) if raw.isdigit() else int(time.time())
 
 
-def threshold_seconds() -> float:
+def hours_env(name: str, default: float) -> float:
     try:
-        return float(os.environ.get("KIPI_DISPATCH_REFUSAL_HOURS", DEFAULT_HOURS)) * 3600
+        return float(os.environ.get(name, default)) * 3600
     except ValueError:
-        return DEFAULT_HOURS * 3600
+        return default * 3600
+
+
+def threshold_seconds() -> float:
+    return hours_env("KIPI_DISPATCH_REFUSAL_HOURS", DEFAULT_HOURS)
+
+
+def gap_seconds() -> float:
+    return hours_env("KIPI_DISPATCH_REFUSAL_GAP_HOURS", DEFAULT_GAP_HOURS)
 
 
 def read_rows(path: str) -> list:
@@ -95,8 +125,11 @@ def write_rows(path: str, rows: list) -> None:
         raise
 
 
-def apply(rows: list, op: str, repo: str, checks: list, t: int, limit: float):
+def apply(rows: list, op: str, repo: str, checks: list, t: int, limit: float,
+          gap: float = DEFAULT_GAP_HOURS * 3600):
     """Pure: the new rows and the action lines. Other repos are never touched."""
+    if op == "refused" and DELIBERATE.intersection(checks):
+        return rows, []
     mine = {r[1]: r for r in rows if r[0] == repo}
     others = [r for r in rows if r[0] != repo]
     out = []
@@ -107,7 +140,8 @@ def apply(rows: list, op: str, repo: str, checks: list, t: int, limit: float):
     for check in wanted:
         # A check keeps its OWN first-seen time. A repo refused on `hooks` for 11h
         # that starts failing `remote` has not been refused on `remote` for 11h.
-        first = mine[check][2] if check in mine else t
+        prev = mine.get(check)
+        first = prev[2] if prev and t - prev[3] <= gap else t
         keep.append((repo, check, first, t))
         if t - first >= limit:
             out.append(f"DUE {check}")
@@ -133,7 +167,7 @@ def main(argv: list) -> int:
     with open(path + ".lock", "a") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         rows = read_rows(path)
-        new, out = apply(rows, op, repo, checks, now(), threshold_seconds())
+        new, out = apply(rows, op, repo, checks, now(), threshold_seconds(), gap_seconds())
         if new != rows:
             write_rows(path, new)
     for line in out:

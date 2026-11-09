@@ -209,4 +209,23 @@ ok "a pass clears the refusal row and the page key"
 grep -qE "entering (DUE|CLEARED)" "$DLOG" && { ctx; fail "a refusal_note line leaked into pick_list's stdout"; }
 ok "no refusal_note output reached the rotation"
 
+# --- 7. a kill-switched repo is off by decision: no alert, ever ---------------
+# PR #681 r1 major. D35 and usage-pacer.py write .kipi-no-dispatch on purpose, and
+# a repo's own permanent one is a decision too. The pin is correct here, so the
+# ONLY refusal is the kill switch. Before the fix this filed at 13h and re-filed
+# every 24h, telling Sana to undo the gate that protects client work.
+KMARK="$WORK/home/.config/kipi/paged-preflight-plainrepo-kill-switch"
+touch "$PLAIN/.kipi-no-dispatch"
+BEFORE="$(wc -l < "$DLOG")"
+for h in 16 29 41 54; do run_dispatch "$((T0 + h * 3600))"; done
+tail -n +"$((BEFORE + 1))" "$DLOG" | grep -q "FAIL kill-switch" \
+  || { ctx; fail "the kill-switched repo was not refused on kill-switch, so nothing here tests it"; }
+tail -n +"$((BEFORE + 1))" "$DLOG" | grep -q "entering plainrepo" \
+  && { ctx; fail "the kill-switched repo was entered"; }
+grep -q "on check 'kill-switch'" "$NOTES" && { ctx; fail "a kill-switch refusal filed an alert"; }
+[ -f "$KMARK" ] && { ctx; fail "a kill-switch refusal left a page key at $KMARK"; }
+grep -q "kill-switch" "$STATE" 2>/dev/null && { ctx; fail "a kill-switch refusal started a clock in $STATE"; }
+ok "a kill-switched repo refused for 38h files nothing and starts no clock"
+rm -f "$PLAIN/.kipi-no-dispatch"
+
 echo "PASS ($PASS checks) test-dispatch-refusal-consumer.sh"
