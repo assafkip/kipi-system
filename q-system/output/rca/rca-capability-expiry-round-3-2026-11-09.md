@@ -2,8 +2,8 @@
 
 **Date:** 2026-11-09
 **Trigger:** round-3 delta review of PR #668 (ASK-3960), `798279fb..0840df26`, verdict REQUEST CHANGES. Review: `~/.config/kipi/pr-reviews/assafkip_kipi-system__pr-668-20261109-102226.md`
-**Surface-fix commit:** pending
-**Structural-fix commit:** pending
+**Surface-fix commit:** a39bc395
+**Structural-fix commit:** a39bc395
 
 ## What happened
 
@@ -63,6 +63,7 @@ The file's header rule is "FAIL CLOSED, ALWAYS: every ambiguity leaves the block
 - Round 3 confirmed the round-2 fixes against the pre-delta module: a two-line sentinel was `unknown` and is now `credential`; the first-sight race kept only ASK-802 and now keeps both.
 - At 0840df26, with KIPI_TEST=1: `test_capability_route.py` 40 ok, 0 failed (red at 798279fb: 10 of 16 new checks failed; 2 mutants red as required); `test-capability-block-expiry.sh` 61 passed; `test_linear_sync_permanence.py` 5 passed; `test_cap_ladder.py` 107 ok.
 - The round-3 findings are NOT fixed in this lane. Their fix and its verification are the first action items below.
+- Fixed in a39bc395 (fresh Sana agent, round 4). The new tests at 9df54729: 14 failed. At a39bc395, KIPI_TEST=1: `test_capability_route.py` 75 ok, 0 failed; `test-capability-block-expiry.sh` 61 passed; `test_linear_sync_permanence.py` 5 passed; `test_cap_ladder.py` 107 ok. The credential race, run as two real processes through the real linear-sync.py on a loopback Linear, posted 2 progress comments at 9df54729 and posts 1 at a39bc395.
 
 ## Contributing factors
 
@@ -73,8 +74,8 @@ The file's header rule is "FAIL CLOSED, ALWAYS: every ambiguity leaves the block
 
 ## Fixes shipped
 
-- Surface fix: pending. Owned by the fresh Sana agent below; this lane stopped at round 3 by rule.
-- Structural fix: pending. One chokepoint for unblock-then-note (action 1) plus a site table the test checks against (action 2).
+- Surface fix: a39bc395. The credential route posts only on unblock exit 0.
+- Structural fix: a39bc395. `unblock_then_post()` is the one function that writes to Linear; all 4 unblock sites call it and `_landed()` is gone. `test_capability_route.py` `census()` checks every write path against a 4-row SITES table and races two processes per row.
 
 ## Recurrence
 
@@ -82,12 +83,12 @@ The file's header rule is "FAIL CLOSED, ALWAYS: every ambiguity leaves the block
 
 ## Action items
 
-- [ ] Route every permanent note through one helper used by `clear_block`, the claude-write route and the credential route: post and requeue only when unblock exits 0 (this run removed the label); EXIT_NOOP posts nothing. Keep `claim-flag` as the claude-write one-shot record; owner: fresh Sana agent the orchestrator starts from this RCA; type: code
-- [ ] One two-process race case per permanent-note site, driven from one table, plus a check that the count of `_sync("progress"` sites equals the table length, so a new site without a race case goes red; owner: same fresh Sana agent; type: test
-- [ ] Closed-ticket guard fails closed: when `DEAD_TYPES` is unreadable, route nothing and print why; owner: same fresh Sana agent; type: code
-- [ ] Decide finding 2's policy (does a resolve whose `resolved_ctx.agent_env` is non-empty count as the founder's answer), record the decision and reason in cap-ladder.py and `answered()`, pin it with a test through the real writer. Nonblocking for #668; if it does not land in #668, the same agent files it as an owner:sana Linear issue for the fleet worker; owner: same fresh Sana agent; type: code
+- [x] Route every permanent note through one helper used by `clear_block`, the claude-write route and the credential route: post and requeue only when unblock exits 0 (this run removed the label); EXIT_NOOP posts nothing. Keep `claim-flag` as the claude-write one-shot record; owner: fresh Sana agent the orchestrator starts from this RCA; type: code
+- [x] One two-process race case per permanent-note site, driven from one table, plus a check that the count of `_sync("progress"` sites equals the table length, so a new site without a race case goes red; owner: same fresh Sana agent; type: test
+- [x] Closed-ticket guard fails closed: when `DEAD_TYPES` is unreadable, route nothing and print why; owner: same fresh Sana agent; type: code
+- [x] Decide finding 2's policy (does a resolve whose `resolved_ctx.agent_env` is non-empty count as the founder's answer), record the decision and reason in cap-ladder.py and `answered()`, pin it with a test through the real writer. Nonblocking for #668; if it does not land in #668, the same agent files it as an owner:sana Linear issue for the fleet worker; owner: same fresh Sana agent; type: code. Done: only a resolve from a terminal with no agent marker counts (`FOUNDER_RESOLVE_CTX` in cap-ladder.py, read by `answered()`); cap-ladder's own `ask_resolved()` is ASK-4221
 - [ ] Round 4 delta review of PR #668 from the pinned checkout, merge on APPROVE with validate green, install `com.kipi.capability-expiry`, kickstart it, read `~/.config/kipi/capability-expiry.out`; owner: same fresh Sana agent; type: process
-- [ ] Before fixing a finding, grep the file for every site of the finding's class and list the sites in the commit message; owner: every Sana lane, starting with the fresh agent's round-3 fix commit; type: process
+- [x] Before fixing a finding, grep the file for every site of the finding's class and list the sites in the commit message; owner: every Sana lane, starting with the fresh agent's round-3 fix commit; type: process
 
 ## Lessons
 
