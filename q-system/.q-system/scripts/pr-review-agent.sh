@@ -2048,6 +2048,18 @@ record = {"pr": int(pr), "issue": issue, "verdict": verdict,
            # name, or "-" for the Opus stand-in, which has no account.
            "account": resolved_account,
            # codex-review | codex-adversarial | claude-review | claude-adversarial
+           #
+           # RECORD-ONLY, DELIBERATELY, like `review_base` below: no gate reads
+           # it, and the PR #701 review was right that nothing in the repo does.
+           # Its CONSUMER lives on the other review path -- findings_writer.py's
+           # REVIEWER_SOURCES and issue_findings.py's SOURCES, which the DSSE and
+           # prd-os commands feed from `reviewer_candidates`, not from this file.
+           # Here it is the audit trail of which BAR the round was held to, which
+           # `engine` and `account` do not carry: this script's REVIEWER_ROLE is
+           # `adversarial`, and a reader cannot otherwise tell an adversarial
+           # round from an ordinary one. Kept rather than dropped because the
+           # round-2 finding above was that the value was WRONG on the degraded
+           # path, which is an argument for recording it correctly.
            "stamp": resolved_stamp,
            # reviewed_by is the MODEL that produced the prose, where engine is
            # the family. Both are kept: a model id moves with the routing table.
@@ -2215,6 +2227,18 @@ post_reviewer_status() {
   # this marker a green kipi/codex-approved is indistinguishable from a real
   # second opinion, and the whole point of this engine is that it is not Claude.
   [ "$DEGRADED" = "1" ] && desc="DEGRADED (codex down, Opus fallback): $desc"
+  # WHICH CODEX LOGIN ANSWERED, in the slot too (ASK-3831). The second account is
+  # a new rung and it is NOT degraded, so the marker above correctly never fires
+  # for it -- which left a review from a different account reading on the PR
+  # exactly like one from the primary. A record key that no report reads tells
+  # the truth to a machine and nothing to the human: this is the reader for the
+  # verdict record's `account`. Mutually exclusive with DEGRADED (degraded means
+  # no codex account answered at all), so the two prefixes never compete for the
+  # 140-char budget below.
+  case "${RESOLVED_ACCOUNT:-}" in
+    ""|-|"$REVIEWER_PRIMARY_ACCOUNT") ;;
+    *) desc="codex[$RESOLVED_ACCOUNT]: $desc" ;;
+  esac
   # A delta approval covers the commits since the base, not the whole PR; the
   # required check says so rather than reading like a full read (ASK-3884).
   [ -n "${REVIEW_BASE:-}" ] && desc="delta ${REVIEW_BASE:0:8}..${sha:0:8}: $desc"

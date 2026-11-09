@@ -241,7 +241,12 @@ reviewer_outage_code() {
     *"hit your session limit"*|*"hour limit"*)        printf 'usage-limit' ;;
     *"invalid api key"*|*authentication_error*|*"please run /login"*) printf 'auth' ;;
     *overloaded*|*529*)                              printf 'overloaded' ;;
-    *exit\ [0-9]*|*timed\ out*|*timeout*)            printf 'exec-failure' ;;
+    # BOTH SPELLINGS OF "the process died". This fleet writes the exit status
+    # two ways and the bucket missed one until a test caught it: pr-review-agent.sh
+    # passes `exit $rc on PR #N`, while the worker's and the suite's wording is
+    # `rc=N`. A bucket that knows one spelling reports the other as
+    # `unclassified`, which loses the one distinction the health line is for.
+    *exit\ [0-9]*|*rc=[0-9]*|*rc\ [0-9]*|*timed\ out*|*timeout*) printf 'exec-failure' ;;
     *)                                               printf 'unclassified' ;;
   esac
 }

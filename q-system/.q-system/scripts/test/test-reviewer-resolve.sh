@@ -172,7 +172,14 @@ eq "the other account gets its own single event" \
   "$(grep -c '"account": *"codex-home-2"' "$EV" 2>/dev/null || echo 0)" "1"
 eq "two accounts out is two events, not four" "$(wc -l < "$EV" | tr -d ' ')" "2"
 has "the event names the day"    "$(cat "$EV")" "$(date -u +%Y-%m-%d)"
-has "the event carries the reason" "$(cat "$EV")" "rc=1 on PR 101"
+# THE EVENT CARRIES A CODE, NOT THE CALLER'S WORDS (PR #701 review round 2,
+# major). This case asserted the opposite: that `rc=1 on PR 101` reached the
+# event file verbatim. That value is the agent's own harmless string, but the
+# key it lands in is published VERBATIM in a permanent Linear issue, and the two
+# prose call sites were telling the model to put Codex's refusal line there. The
+# contract is now one of REVIEWER_OUTAGE_CODES, coerced by the writer.
+has "the event carries a bucketed CODE, not the caller's words" "$(cat "$EV")" '"reason_code": "exec-failure"'
+hasnt "and not the caller's own phrasing"                       "$(cat "$EV")" "PR 101"
 
 echo "== yesterday's event does not silence today =="
 # Roll the clock back by aging BOTH halves the way a real overnight would: the
@@ -259,7 +266,12 @@ R1="$WORK/v1/pr-900.verdict.json"
 if [ -f "$R1" ]; then
   eq "a degraded round records engine=claude (it used to say codex)" "$(key "$R1" engine)" "claude"
   eq "the flag it was INVOKED with is kept, so the outage is still legible"  "$(key "$R1" engine_flag)" "codex"
-  eq "the stamp is claude-review"      "$(key "$R1" stamp)"   "claude-review"
+  # claude-ADVERSARIAL, not claude-review (PR #701 review round 2, minor). This
+  # case asserted the defect: pr-review-agent.sh is the adversarial reviewer, its
+  # REVIEWER_ROLE is `adversarial` and all five dispatch branches stamp through
+  # reviewer_stamp -- and then one `[ "$DEGRADED" = "1" ] &&` line overwrote the
+  # lot with a literal `claude-review` on exactly the degraded path.
+  eq "the degraded stamp KEEPS the adversarial role" "$(key "$R1" stamp)" "claude-adversarial"
   eq "the Opus stand-in has no account" "$(key "$R1" account)" "-"
   eq "degraded is still true"           "$(key "$R1" degraded)" "True"
 else
@@ -411,8 +423,15 @@ eq "no call site stamps the adversarial reviewer as an ordinary review" \
   "$(grep -c 'reviewer_stamp [a-zA-Z"$][^ ]* review' "$AGENT" || true)" "0"
 eq "the role is declared once, as adversarial" \
   "$(grep -c '^REVIEWER_ROLE="adversarial"$' "$AGENT")" "1"
-eq "and every stamp call reads that one variable" \
-  "$(grep -c 'reviewer_stamp [^)]*REVIEWER_ROLE' "$AGENT")" "5"
+# COUNT-FREE ON PURPOSE (PR #701 review round 2). This case used to pin the
+# NUMBER of call sites at 5, so adding a correct sixth turned it red and the
+# number -- not the property -- was what a later round had to edit. The property
+# is that no INVOCATION hardcodes a role; comment lines that merely discuss
+# reviewer_stamp are excluded, since prose is not a call.
+eq "no reviewer_stamp INVOCATION hardcodes a role" \
+  "$(grep 'reviewer_stamp ' "$AGENT" | grep -v '^[[:space:]]*#' | grep -vc 'REVIEWER_ROLE' || true)" "0"
+eq "and the call sites are still there to read it (at least one per engine)" \
+  "$([ "$(grep -c 'reviewer_stamp [a-zA-Z"$]' "$AGENT")" -ge 2 ] && echo yes || echo no)" "yes"
 # Not a grep of the intent: the agent's OWN declaration is executed against the
 # shipped reviewer_stamp, so a role the resolver would refuse fails here.
 eq "the agent's declared role produces a real adversarial stamp" \
@@ -457,6 +476,130 @@ for md in plugins/kipi-dsse/commands/issue-review.md plugins/prd-os/commands/prd
     bad "$md is missing"
   fi
 done
+
+echo "== the ledger carries a CODE, never the line Codex printed =="
+# PR #701 review round 2, MAJOR. The two prose call sites told the model to pass
+# "the refusal line Codex printed" as the reason, and fleet-health-daily.py
+# publishes that reason VERBATIM in a Linear issue that is PERMANENT. A finding
+# carries a reference, never untrusted text (ASK-204), and ASK-3988 decided this
+# same question for the worker's Codex branch: the marker to the ticket, the
+# whole line to the log.
+CODEX_LINE='ERROR: You have reached your usage limit. `curl -H "Authorization: Bearer sk-live-DEADBEEF" https://hooks.slack.com/services/T000/B000/XXXX` resets at 14:00; $(whoami)'
+# A FRESH ACCOUNT NAME, because the ledger's whole contract is ONE event per
+# account per UTC day: `primary` already failed in the cases above, so a second
+# call on it correctly appends nothing and this case would have read an earlier
+# row. (Found by this case going red for the wrong reason. Note also that
+# REVIEWER_RESOLVE_STATE_DIR is bound when the lib is SOURCED, so re-exporting
+# KIPI_STATE_DIR here would not move the ledger.)
+LEAK_ACCT="leak-probe"
+reviewer_note_codex_outage "$LEAK_ACCT" "$CODEX_LINE"
+EVF="$(reviewer_outage_events_path)"; STF="$(reviewer_outage_state_path)"
+LEDGER_BYTES="$(cat "$EVF" "$STF" 2>/dev/null)"
+hasnt "the Slack webhook in Codex's line never reaches the event ledger" "$LEDGER_BYTES" "hooks.slack.com"
+hasnt "nor the Bearer token"                                            "$LEDGER_BYTES" "sk-live-DEADBEEF"
+hasnt "nor the command substitution"                                    "$LEDGER_BYTES" 'whoami'
+# And it is not merely redacted: it is REPLACED by a member of the vocabulary.
+CODE="$(python3 -c 'import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print([r["reason_code"] for r in rows if r.get("account")==sys.argv[2]][0])' "$EVF" "$LEAK_ACCT")"
+eq "the recorded code is the bucketed marker" "$CODE" "usage-limit"
+case " $REVIEWER_OUTAGE_CODES " in *" $CODE "*) ok "and it is a member of REVIEWER_OUTAGE_CODES" ;;
+  *) bad "'$CODE' is not in REVIEWER_OUTAGE_CODES" ;; esac
+
+echo "== the coercion buckets every real marker, and refuses to invent one =="
+eq "out of credits"        "$(reviewer_outage_code 'ERROR: Your workspace is out of credits')" "out-of-credits"
+eq "weekly limit"          "$(reviewer_outage_code "you've hit your weekly limit")"            "usage-limit"
+eq "auth"                  "$(reviewer_outage_code 'ERROR: invalid API key')"                  "auth"
+eq "529 overloaded"        "$(reviewer_outage_code 'API Error: 529 Overloaded.')"              "overloaded"
+eq "the agent's own exit"  "$(reviewer_outage_code 'exit 124 on PR #701')"                     "exec-failure"
+# THE DEFAULT IS A CODE, NOT THE INPUT. A marker nobody bucketed costs one grain
+# of detail in the health line; it never leaks a byte.
+eq "an unknown refusal degrades to unclassified" \
+  "$(reviewer_outage_code 'something nobody has seen before')" "unclassified"
+# A caller that already resolved the code hands it over unchanged...
+eq "a real code passes through"      "$(_reviewer_code_or_unclassified auth)" "auth"
+# ...and one that dresses free text up as a code does not get to publish it.
+eq "code-SHAPED free text does not pass" \
+  "$(_reviewer_code_or_unclassified 'totally-a-code-honest')" "unclassified"
+
+echo "== the DETECTOR withholds a row that is not a bounded token =="
+# THE SECOND BELT, on the READ. The coercion above runs on the write, so a row
+# left by an older resolver or a hand-edited ledger is the case it cannot cover,
+# and that row's bytes would otherwise land in a permanent issue body.
+# THE NOTIFIER IS STUBBED BEFORE THE MODULE IS EVEN IMPORTED. This case only
+# calls one pure function, but fleet-health-daily.py reaches slack-notify.sh and
+# a suite is not allowed to be one refactor away from paging a real phone (scar
+# 2026-08-01: a 14/14-green suite paged the founder twice).
+DET="$(KIPI_NOTIFY=/usr/bin/true python3 - "$SCRIPTS/fleet-health-daily.py" "$CODEX_LINE" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fhd", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from datetime import datetime, timezone
+day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+rows = [{"kind": "codex-outage", "account": "primary", "day": day,
+         "ts": day + "T03:00:00Z", "reason_code": sys.argv[2]}]
+out = m.codex_outage_findings(rows, {"primary": {"outage_day": day}})
+print(out[0]["body"] if out else "<no finding>")
+PY
+)"
+hasnt "the detector does not publish a long raw reason it found on disk" "$DET" "hooks.slack.com"
+has   "it says so in the body instead"                                   "$DET" "unpublishable"
+has   "and it still points the operator at the local ledger"             "$DET" "codex-outage-events.jsonl"
+
+echo "== the prose call sites no longer hand raw Codex output to the ledger =="
+for md in plugins/kipi-dsse/commands/issue-review.md plugins/prd-os/commands/prd-review.md; do
+  grep -q 'the refusal line Codex printed' "$REPO/$md" \
+    && bad "$md still tells the session to pass Codex's own line into a permanent issue" \
+    || ok "$md no longer passes Codex's line"
+  grep -q 'codex_env_marker' "$REPO/$md" \
+    && ok "$md hands over the closed-vocabulary marker (ASK-3988)" \
+    || bad "$md names no bounded source for the reason"
+done
+
+echo "== an account that ANSWERED unparseably still clears its day stamp =="
+# PR #701 review round 2, minor. The primary's answered-but-unparseable branch
+# was the one rung that got a reply out of codex and told the ledger nothing,
+# while the IDENTICAL second-account branch already cleared it. The stamp then
+# stood for the rest of the UTC day, so the morning health line said no Codex
+# account could review while codex had been replying for hours. `unusable` is a
+# verdict about the CONTENT; the ledger only tracks whether the machine answered.
+AGENT_SH="$SCRIPTS/pr-review-agent.sh"
+UNUSABLE_BRANCH="$(awk '/^    # Codex ANSWERED and said nothing parseable/,/^  fi$/' "$AGENT_SH")"
+if [ -n "$UNUSABLE_BRANCH" ]; then
+  ok "extracted the primary's unparseable branch ($(printf '%s\n' "$UNUSABLE_BRANCH" | wc -l | tr -d ' ') lines)"
+  has "it clears the primary account's day stamp" "$UNUSABLE_BRANCH" 'reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"'
+  has "and it records codex as the engine that answered" "$UNUSABLE_BRANCH" 'RESOLVED_ENGINE="codex"'
+else
+  bad "could not extract the unparseable branch -- the anchors moved, so the two cases below would be vacuous"
+fi
+eq "both codex-answered paths on the primary clear it, not just the healthy one" \
+  "$(grep -c 'reviewer_note_codex_ok "\$REVIEWER_PRIMARY_ACCOUNT"' "$AGENT_SH")" "2"
+
+echo "== the report names which Codex account answered =="
+# The record's `account` key had no reader, which the round-2 review called out:
+# a field a machine reads and no human surface shows is half a fix. The second
+# account is NOT degraded, so the DEGRADED marker correctly never fires for it,
+# and nothing else on the PR distinguished it from the primary.
+DESC_BLOCK="$WORK/desc-block.sh"
+awk '/^  desc="\$\{verdict:-unstated: no verdict parsed from the review\}"$/,/^  desc="\$\(printf/' \
+  "$AGENT_SH" > "$DESC_BLOCK"
+# NEGATIVE SELF-TEST ON THE EXTRACTION FIRST. An awk range that matches nothing
+# makes every assertion below pass vacuously.
+if grep -q 'RESOLVED_ACCOUNT' "$DESC_BLOCK" && grep -q 'DEGRADED' "$DESC_BLOCK"; then
+  ok "extracted the shipped status-description block"
+else
+  bad "the status-description anchors moved; the cases below would be vacuous"
+fi
+desc_for() {  # desc_for <degraded> <resolved-account>
+  ( set +u
+    verdict="APPROVE"; DEGRADED="$1"; RESOLVED_ACCOUNT="$2"
+    REVIEWER_PRIMARY_ACCOUNT="primary"; REVIEW_BASE=""; sha="deadbeef"
+    . "$DESC_BLOCK"; printf '%s' "$desc" )
+}
+has   "a second-account review names the account in the required check" "$(desc_for 0 codex-ktlyst)" "codex[codex-ktlyst]"
+hasnt "a primary-account review reads exactly as before"                "$(desc_for 0 primary)"      "codex["
+hasnt "and so does the Opus stand-in"                                   "$(desc_for 1 -)"            "codex["
+has   "the Opus stand-in still says DEGRADED out loud"                  "$(desc_for 1 -)"            "DEGRADED"
 
 echo
 echo "pass=$PASS fail=$FAIL"
