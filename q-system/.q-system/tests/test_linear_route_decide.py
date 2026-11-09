@@ -67,8 +67,8 @@ def facts(tmp_path):
 
 
 def ticket(ident="ASK-7", body="Fix `q-system/.q-system/scripts/x.py` so it stops failing.",
-           state="backlog", labels=("owner:sana",), comments=()):
-    return {"id": f"uuid-{ident}", "identifier": ident, "title": f"title {ident}",
+           state="backlog", labels=("owner:sana",), comments=(), title=None):
+    return {"id": f"uuid-{ident}", "identifier": ident, "title": title or f"title {ident}",
             "description": body, "state": {"name": state.title(), "type": state},
             "project": None, "labels": {"nodes": [{"id": f"l-{n}", "name": n} for n in labels]},
             "comments": {"nodes": [{"body": b} for b in comments], "pageInfo": {"hasNextPage": False}}}
@@ -129,6 +129,16 @@ def test_a_ticket_the_rules_can_route_is_never_put_to_the_model(facts, tmp_path)
     left = ticket("ASK-2")
     pop = decide.population([routed, left], facts)
     assert [i["identifier"] for i in pop] == ["ASK-2"]
+
+
+def test_a_route_the_rules_name_off_the_board_falls_to_the_model(facts):
+    """linear-route.py refuses a deterministic route to a project the board does
+    not have (ASK-4089, #679). That ticket is then routed by nothing, so this
+    pass has to be its consumer, which it is only if it hands the router the
+    board. Without the board, the router's plan still says "routed"."""
+    t = ticket("ASK-8", body="no paths here", title="[cole-GTM] the site footer is broken")
+    on_board = {"kipi-system", "ask consulting"}
+    assert decide.population([t], facts, on_board) == [t]
 
 
 def test_todo_comes_first_then_oldest_and_last_time_failures_go_last():

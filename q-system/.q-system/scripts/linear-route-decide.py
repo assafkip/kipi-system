@@ -100,15 +100,20 @@ def now() -> str:
 # who is asked, and in what order
 # ---------------------------------------------------------------------------
 
-def population(issues: list, facts) -> list:
+def population(issues: list, facts, board_lower: set | None = None) -> list:
     """Pending tickets with no project that the deterministic rules cannot route.
 
     plan_actions is the same call linear-route.py makes, so "the rules cannot
     route it" means exactly what the 09:00 router means by it.
+
+    THE BOARD GOES IN. linear-route.py refuses a route to a project the board
+    lacks (ASK-4089, #679), and that ticket is then routed by nothing. Without
+    the board the plan still says "routed", so this pass skipped it too, and the
+    ticket had no consumer at all (test_a_route_the_rules_name_off_the_board_...).
     """
     by_id = {i.get("id"): i for i in issues}
     out = []
-    for row in route.plan_actions(issues, facts):
+    for row in route.plan_actions(issues, facts, board_lower):
         if row["project"] or row["set_project"]:
             continue
         issue = by_id.get(row["id"])
@@ -488,7 +493,7 @@ def run(args) -> int:
         return EXIT_INCOMPLETE
 
     names = target_names(ladder.targets(), board_lower)
-    pop = order(population(issues, facts), failed_before())
+    pop = order(population(issues, facts, board_lower), failed_before())
     batch = pop[:args.limit] if args.limit else pop
     print(f"linear-route-decide: {len(pop)} ticket(s) with no project that no rule routes; "
           f"{len(names)} target project(s) on the board; deciding {0 if args.no_model else len(batch)}.")
