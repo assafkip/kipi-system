@@ -487,8 +487,12 @@ for md in plugins/kipi-dsse/commands/issue-review.md plugins/prd-os/commands/prd
   if [ -f "$REPO/$md" ]; then
     grep -q 'reviewer-resolve.sh' "$REPO/$md" \
       && ok "$md names the resolver" || bad "$md does not name the resolver"
-    grep -q 'reviewer_note_codex_outage' "$REPO/$md" \
-      && ok "$md records an outage through the one ledger" \
+    # The function name moved in round 3: `reviewer_note_codex_result` is the one
+    # entry point a call site with an rc in hand uses, and it is what reaches the
+    # one ledger. The property is unchanged -- the outage is recorded through the
+    # resolver and not in the session's own narrative.
+    grep -q 'reviewer_note_codex_result' "$REPO/$md" \
+      && ok "$md records the run's outcome through the one ledger" \
       || bad "$md records an outage privately again"
     grep -q 'use another row and stamp what ran' "$REPO/$md" \
       && bad "$md still carries the free-choice prose the resolver replaced" \
@@ -599,6 +603,20 @@ for md in plugins/kipi-dsse/commands/issue-review.md plugins/prd-os/commands/prd
   grep -q 'codex_env_marker' "$REPO/$md" \
     && ok "$md hands over the closed-vocabulary marker (ASK-3988)" \
     || bad "$md names no bounded source for the reason"
+  # ROUND 3: and it does not ask the SESSION to decide what a failed run means.
+  # A prose site that files an outage on any non-zero exit is the agent's major
+  # finding wearing a markdown file, and no hook watches a command's prose.
+  grep -q 'reviewer_note_codex_result' "$REPO/$md" \
+    && ok "$md routes the run's result through the resolver's one decision" \
+    || bad "$md still asks the session to classify the failure itself"
+  grep -q 'reviewer_note_codex_outage' "$REPO/$md" \
+    && bad "$md still names the bare outage writer as the thing to call" \
+    || ok "$md no longer calls the bare outage writer"
+  # The one-event claim this file's header makes is now TRUE on a flapping day,
+  # so the prose that repeats the claim says which day it means.
+  grep -q 'recovers and fails again' "$REPO/$md" \
+    && ok "$md's one-event-per-day claim covers a flapping day" \
+    || bad "$md repeats the one-event claim without the flap it used to break on"
 done
 
 echo "== an account that ANSWERED unparseably still clears its day stamp =="
@@ -743,26 +761,34 @@ done
 # The property that can actually fail: on a FAILED codex exit, the first health
 # note the script reaches is the resolver's one decision, never a bare ok or a
 # bare outage. Both failure branches are anchored on the `rc=$?` that opens them.
-_first_note_after() {  # _first_note_after <anchor-regex>
+# The anchor is compared as a WHOLE LINE, not as a regex: `rc=$?` is three
+# regex metacharacters in a row and the first draft of this case went red on its
+# own escaping rather than on the code.
+_first_note_after() {  # _first_note_after <exact-anchor-line>
   awk -v a="$1" '
-    $0 ~ a { on = 1 }
+    $0 == a { on = 1 }
     on && /reviewer_note_codex_[a-z]+/ {
       match($0, /reviewer_note_codex_[a-z]+/)
       print substr($0, RSTART, RLENGTH); exit
     }' "$SCRIPTS/pr-review-agent.sh"
 }
+_anchor_count() {  # _anchor_count <exact-anchor-line>
+  awk -v a="$1" '$0 == a { n++ } END { print n + 0 }' "$SCRIPTS/pr-review-agent.sh"
+}
+# NEGATIVE SELF-TEST ON BOTH ANCHORS FIRST. An anchor that matches nothing makes
+# _first_note_after print nothing, which `eq` would catch -- but an anchor that
+# matched the WRONG line could still print the right token by luck.
+# `  rc=$?` is NOT the anchor for the primary: it opens the claude engine's
+# failure branch too, and that earlier match walked forward into the codex
+# SUCCESS branch and read its (correct) `ok` call. Found by this case going red
+# for the wrong reason. The codex-down block's own opening comment is unique.
+PRIMARY_DOWN='  # Codex is DOWN. If nothing filled $STATUS_CONTEXT and it were a required'
+eq "anchor check: the codex-down block opens once"  "$(_anchor_count "$PRIMARY_DOWN")" "1"
+eq "anchor check: the second account's branch too"  "$(_anchor_count '      src=$?')" "1"
 eq "after a failed codex exit on the primary, the one decision runs" \
-  "$(_first_note_after '^  rc=\$\?$')" "reviewer_note_codex_result"
+  "$(_first_note_after "$PRIMARY_DOWN")" "reviewer_note_codex_result"
 eq "and the same after a failed exit on the second account" \
-  "$(_first_note_after '^      src=\$\?$')" "reviewer_note_codex_result"
-# NEGATIVE SELF-TEST on both anchors: an awk range that matches nothing prints
-# nothing, and `eq` against an empty string would have failed loudly -- but an
-# anchor that matched the WRONG line could still print the right token by luck.
-# So assert each anchor exists exactly once.
-for anchor in '^  rc=\$\?$' '^      src=\$\?$'; do
-  eq "anchor check: $anchor appears once in the agent" \
-    "$({ grep -c "$anchor" "$SCRIPTS/pr-review-agent.sh" || true; } | head -1)" "1"
-done
+  "$(_first_note_after '      src=$?')" "reviewer_note_codex_result"
 
 echo "== the detector, end to end, over a ledger a timeout wrote =="
 # The producer/consumer pair again, on the finding's own scenario: the shipped

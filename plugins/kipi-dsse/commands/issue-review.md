@@ -52,16 +52,18 @@ Run the required reviews for the active DSSE issue. Execute in order:
 
    It prints `<engine>  <account>  <stamp>`, one rung per line: Codex on the primary account, Codex on the other account when one is configured, then Opus. The stamp on the rung you land on is the stamp you write — you do not compose it yourself. Resolve `$RR` from the repo you are reviewing in, not from `${CLAUDE_PLUGIN_ROOT}`: plugins run from the marketplace clone, so a plugin-relative path reads a different copy than the one this repo's tests pin.
 
-   **Record the outage there, not here.** Before moving down a rung:
+   **Record the result there, not here, and do not classify it yourself.** After every finished codex run, whichever rung it was on:
 
    ```bash
    EFL="$(git rev-parse --show-toplevel)/q-system/.q-system/scripts/env-failure-lib.sh"
-   bash -c ". \"$EFL\" && . \"$RR\" && reviewer_note_codex_outage <account> \"$(codex_env_marker \"$CODEX_OUT\" \"$CODEX_RC\")\""
+   bash -c ". \"$EFL\" && . \"$RR\" && reviewer_note_codex_result <account> \"$CODEX_RC\" \"$CODEX_OUT\""
    ```
 
-   That writes at most ONE event per account per UTC day, which `fleet-health-daily.py` turns into one line for Sana. The reason this is a function call and not a note in your own output: Codex ran out of credits on 2026-09-16 and every call site recorded it privately, per PR — 24 cap tickets, every "Codex" round for seven weeks a degraded Opus stand-in, and no single line anywhere saying the fleet was down to one reviewer.
+   You hand over the exit status and the output. The resolver decides what they mean: `rc` 0 is an answer, a machine refusal (credits, usage, auth, overload) is that account's outage, and any other non-zero exit — a timeout, a crash, a bad flag — is **neither** and records nothing. Deciding that in your own narrative is how one reviewer timeout came to file a permanent "the reviewer is down to Opus" issue (PR #701 review round 3): an outage is a per-account condition that persists until someone restores credits, where a timeout is a property of one run.
 
-   **Never pass Codex's own refusal line, or any prose of yours, as that second argument.** What you pass lands in a PERMANENT Linear issue body, and a finding carries a reference, never untrusted text (ASK-204; ASK-3988 settled the same question for the worker's Codex branch). `codex_env_marker` is the fleet's closed vocabulary for this and is the only thing you hand over; the resolver coerces whatever arrives to one of `REVIEWER_OUTAGE_CODES` anyway, so free text does not reach the issue — it just arrives as `unclassified` and the operator loses the one grain of detail the marker would have carried. Codex's full output belongs in the review artifact on disk, which is where you already keep it.
+   An outage writes at most ONE event per account per UTC day — a day where the account fails, recovers and fails again included — which `fleet-health-daily.py` turns into one line for Sana. The reason this is a function call and not a note in your own output: Codex ran out of credits on 2026-09-16 and every call site recorded it privately, per PR — 24 cap tickets, every "Codex" round for seven weeks a degraded Opus stand-in, and no single line anywhere saying the fleet was down to one reviewer.
+
+   **Never pass Codex's own refusal line, or any prose of yours, into that ledger.** What lands there is published in a PERMANENT Linear issue body, and a finding carries a reference, never untrusted text (ASK-204; ASK-3988 settled the same question for the worker's Codex branch). This is why you pass `$CODEX_OUT` to `reviewer_note_codex_result` rather than composing a reason: it resolves the marker through `codex_env_marker`, the fleet's closed vocabulary, and coerces the result to one of `REVIEWER_OUTAGE_CODES`. Free text cannot reach the issue through this path at all. Codex's full output belongs in the review artifact on disk, which is where you already keep it.
 
    **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
 
