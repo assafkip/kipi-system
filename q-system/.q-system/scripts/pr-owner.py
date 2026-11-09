@@ -252,7 +252,8 @@ MERGE_GATE = SCRIPTS / "merge-bypass-gate.py"
 
 
 def gh_env() -> dict:
-    # GH_REPO and GH_HOST never reach a gh call made from a checkout. The checkout
+    # GH_REPO and GH_HOST never reach a gh call made from a checkout, nor the
+    # update-branch write. The checkout
     # is what names the repo there, and it is what the merge gate judges: the gate
     # denies those two as an env prefix because they retarget gh without changing
     # one argument, and an env passed from Python is the same retarget, unseen.
@@ -902,6 +903,11 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
     why = "; ".join(red) if red else f"approved, {ci_said}, conflict-free, BEHIND {pr['base']}"
     word = "behind" if behind else "red"
 
+    # A BEHIND PR READS ITS TICKET TOO (PR #693 round 1, minor, kept on purpose).
+    # update-branch writes a commit onto the PR's branch, and a lane inside its
+    # window may be working that branch, so the lane hold below applies to it.
+    # With Linear down that hold cannot be asked, and could not look is not
+    # "there is none", so the PR holds and the run exits 2, as every red PR does.
     ticket, err = resolve_ticket(pr, load_ticket)
     if err:
         return {"action": "hold", "reason": err}
@@ -1103,13 +1109,16 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
     if d["action"] == "merge":
         return merge(pr)
     if d["action"] == "update":
-        # Recorded BEFORE the call, as a review is: an update that fails must not
-        # be asked again every hour at the same head (decide() reads this record).
+        # A FAILED CALL IS NOT A FAILED REBASE (PR #693 round 1, major). The record
+        # was written before the call, as a review's is, so a 502 read next hour as
+        # "the head did not move" and sent an approved, green PR down the rework
+        # ladder to a close. Now the record is written after GitHub accepts the call. A failed
+        # one is asked again next hour, and this run counts the failure.
+        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug], env=gh_env())
+        if rc != 0:
+            return False, f"update-branch failed: {' '.join((err or out).split())[:160]}; not recorded, the next hourly run asks again"
         state.setdefault("updates", {})[key] = {"head": head, "at": now}
         save_state(state_path(), state)
-        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug])
-        if rc != 0:
-            return False, f"update-branch failed: {' '.join((err or out).split())[:160]}"
         return True, (f"update-branch asked; GitHub writes a new head, and pr-owner decides it again after "
                       f"{hours(QUIET_S)} of quiet (a new head needs its own review)")
     if d["action"] == "review":

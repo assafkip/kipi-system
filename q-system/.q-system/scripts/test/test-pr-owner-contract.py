@@ -176,8 +176,10 @@ promise("P48", "the state file stays bounded: a PR gone from a fully listed repo
         "THE STATE FILE STAYS BOUNDED", "never pruned", "Reopen this PR within 30 days to undo")
 promise("P49", "no check reported is not CI green: no workflow merges on the review and says so, workflows is red, unread holds",
         "NO CHECK IS NOT GREEN", "logged as that and never as CI green", "could not tell whether")
-promise("P50", "an approved, green, conflict-free PR that is only BEHIND is updated once per head, never closed for it",
-        "BEHIND IS UPDATED, NOT CLOSED", "once per head", "update-branch was asked at")
+promise("P50", "an approved, green, conflict-free PR that is only BEHIND is updated once per head, never closed for it; "
+        "a failed call is retried, never read as a rebase that did not take",
+        "BEHIND IS UPDATED, NOT CLOSED", "once per head", "update-branch was asked at",
+        "A FAILED CALL IS NOT A FAILED REBASE", "so the PR holds and the run exits 2, as every red PR does")
 promise("P51", "the merge is asked of merge-bypass-gate.py first, re-read as the same PR at the same head, and read back",
         "ASKED OF THE GATE, NOT HIDDEN FROM IT", "a deny or no answer is no merge", "neither merged nor armed",
         "merge-bypass-gate.py refused it",
@@ -266,6 +268,7 @@ ARMED: set = set()
 NEITHER: set = set()
 MERGED_DONE: set = set()
 CWD_ENVS: list = []
+UPDATE_ENVS: list = []
 CWD_MARK = "(cwd "
 
 
@@ -313,6 +316,8 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
     SENT.append(argv + ([f"{CWD_MARK}{cwd})"] if cwd is not None else []))
     if cwd is not None:
         CWD_ENVS.append(env)
+    if argv[:3] == ["gh", "pr", "update-branch"]:
+        UPDATE_ENVS.append(env)
     ok = lambda obj: (0, json.dumps(obj), "")  # noqa: E731
     slug = slug_in(SENT[-1])
     if argv[:3] == ["gh", "pr", "list"]:
@@ -1136,6 +1141,24 @@ rc, F4b = run_main("F4b", ["--apply"], NOW + H)
 c4 = gh_writes(F4b, BH, 1)
 holds("P50", "an hour later at the same head: no second update; it goes red naming the update that did not move it",
       ([a[2] for a in c4], bool(c4) and "update-branch was asked at" in body_of(c4[0])), (["close"], True))
+# PR #693 round 1, major: a 502 on the call must not read as a rebase that did not take.
+REPOS.clear()
+sp = fresh_state("F4c")
+BH = repo("o/behind", "behind")
+add(BH, 1, "feat/behind", verdict=APPROVE, mergeStateStatus="BEHIND")
+WRITE_RC[("update-branch", BH, 1)] = (1, "HTTP 502: Bad Gateway")
+UPDATE_ENVS.clear()
+os.environ["GH_HOST"] = "evil.example"
+rc, F4c = run_main("F4c", ["--apply"], NOW)
+os.environ.pop("GH_HOST", None)
+WRITE_RC.clear()
+holds("P50", "a 502 on update-branch: the run exits 2 and records no update",
+      (rc, sorted((json.loads(sp.read_text()).get("updates") or {}))), (2, []))
+holds("P51", "GH_HOST in the job's env does not reach the update-branch write either",
+      (len(UPDATE_ENVS), [e for e in UPDATE_ENVS if e is None or {"GH_REPO", "GH_HOST"} & set(e)]), (1, []))
+rc, F4d = run_main("F4d", ["--apply"], NOW + H)
+holds("P50", "an hour later the update is asked again, not closed (a failed call is not a failed rebase)",
+      ([a[2] for a in gh_writes(F4d, BH, 1)], rc), (["update-branch"], 0))
 
 # F5: the merge is the gate's one shape, asked of the gate, re-read, and read back.
 REPOS.clear()
