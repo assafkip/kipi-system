@@ -792,7 +792,9 @@ def failure_tail(text):
 
 def run_tests(root, manifest, mode, errors, notes, only=None):
     skeleton_only = set(manifest.get("skeleton_only", []))
-    env = dict(os.environ, QROOT=str(root / "q-system"))
+    # KIPI_TEST=1: the shell suites' "under a test" signal (pytest sets its own).
+    # attempts-ledger.py refuses a live-ledger write while it is set (ASK-4052).
+    env = dict(os.environ, QROOT=str(root / "q-system"), KIPI_TEST="1")
     ran = quarantined = skipped = not_selected = 0
     for entry in manifest.get("expected_tests", []):
         path = entry.get("path", "")

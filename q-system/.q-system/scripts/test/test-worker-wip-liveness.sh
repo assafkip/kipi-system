@@ -90,6 +90,8 @@ TICKETS.append(issue("ASK-983", "started", 1))
 TICKETS.append(issue("ASK-984", "started", 1))
 # L15c (PR #671 round 1, major): started, start stamp unreadable, no DoR.
 TICKETS.append(issue("ASK-985", "started", None, dor=False))
+# L15e (ASK-4068): started, start stamp unreadable, nothing else wrong.
+TICKETS.append(issue("ASK-986", "started", None))
 for n in (901, 902, 903, 904, 905, 961, 962, 963, 964, 965):
     TICKETS.append(issue("ASK-%d" % n, "started", MONTH))
 BOARD = {i["identifier"]: i for i in TICKETS}
@@ -684,6 +686,20 @@ run_worker "$MUT/linear-worker.sh" "$WORK/alllive.prs" "$WORK/l15dm.out" --limit
 grep -q 'WIP ceiling: 5 open own PRs' "$WORK/l15dm.out" && [ -n "$(releases "$WORK/l15dm.out")" ] \
   && ok "mutant killed: with the live kind renamed ticket-held, the backstop releases a live PR, so L15d can go red" \
   || bad "mutant L15d survived" "renaming the kind released nothing: $(flat "$WORK/l15dm.out")"
+# L15e (ASK-4068, PR #671 delta major). A started ticket whose start stamp cannot
+# be read, with nothing else wrong, is held, not live: past the age bar the
+# backstop takes it, so it never sits at the ceiling with no coded exit.
+prs "$WORK/stampless.prs" "986:sana/ask-986:2026-09-29T12:00:00Z" "981:sana/ask-981:2026-10-01T12:00:00Z" \
+    "982:sana/ask-982:2026-10-02T12:00:00Z" "983:sana/ask-983:2026-10-03T12:00:00Z" "984:sana/ask-984:2026-10-04T12:00:00Z"
+run_worker "$WORKER" "$WORK/stampless.prs" "$WORK/l15e.out" --limit 1
+REL15E="$(releases "$WORK/l15e.out")"
+[ "$REL15E" = "[dry] would release PR #986 (backstop: ticket-held);" ] \
+  && ok "L15e: a stampless started ticket past the age bar is taken by the backstop (ticket-held)" \
+  || bad "L15e: an unreadable stamp has a bounded exit" "releases: ${REL15E:-none}. $(grep 'WIP ceiling' "$WORK/l15e.out" | head -2 | cut -c1-400)"
+# THE PYTHON MUTANT STARTS FROM THE REAL WORKER (PR #671 delta minor): $MUT still
+# held the sed mutant above, so a missed anchor wrote nothing and the cmp below
+# ran the sed mutant and reported "survived" instead of "anchor".
+cp "$WORKER" "$MUT/linear-worker.sh"
 python3 - "$WORKER" "$MUT/linear-worker.sh" <<'MUT'
 import sys
 s = open(sys.argv[1]).read()
@@ -694,13 +710,25 @@ k = s.index(a)
 end = s.index("\n", s.index("\n", k) + 1) + 1
 open(sys.argv[2], "w").write(s[:k] + s[end:])
 MUT
-if cmp -s "$WORKER" "$MUT/linear-worker.sh"; then
+L15_MUT_RC=$?
+if [ "$L15_MUT_RC" != "0" ] || cmp -s "$WORKER" "$MUT/linear-worker.sh"; then
   bad "mutant L15: anchor" "refusal() has no live-first check to cut"
 else
   run_worker "$MUT/linear-worker.sh" "$WORK/live.prs" "$WORK/l15m.out" --limit 1
   [ "$(releases "$WORK/l15m.out")" = "[dry] would release PR #981 (no-dor);" ] \
     && ok "mutant killed: without the live-first check the live no-DoR PR #981 is released, so L15 can go red" \
     || bad "mutant L15 survived" "releases: $(releases "$WORK/l15m.out") $(flat "$WORK/l15m.out" | cut -c1-300)"
+  # ...and the anchor branch can fire: the same cut, applied to the already-cut
+  # copy, finds no line and says so.
+  cp "$MUT/linear-worker.sh" "$WORK/worker-cut.sh"
+  python3 - "$WORK/worker-cut.sh" "$WORK/worker-cut2.sh" 2>/dev/null <<'MUT2'
+import sys
+s = open(sys.argv[1]).read()
+a = '    if i["state"]["type"] == "started" and live_evidence(i):\n        return hold("ticket-live",'
+sys.exit("anchor" if s.count(a) != 1 else 0)
+MUT2
+  [ "$?" != "0" ] && ok "the L15 mutant's anchor check fires on a worker without the live-first line" \
+    || bad "the L15 anchor check can fire" "a cut copy still matched the anchor"
 fi
 cp "$WORKER" "$MUT/linear-worker.sh"
 
