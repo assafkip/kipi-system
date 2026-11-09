@@ -55,10 +55,13 @@ Run the required reviews for the active DSSE issue. Execute in order:
    **Record the outage there, not here.** Before moving down a rung:
 
    ```bash
-   bash -c ". \"$RR\" && reviewer_note_codex_outage <account> \"<the refusal line Codex printed>\""
+   EFL="$(git rev-parse --show-toplevel)/q-system/.q-system/scripts/env-failure-lib.sh"
+   bash -c ". \"$EFL\" && . \"$RR\" && reviewer_note_codex_outage <account> \"$(codex_env_marker \"$CODEX_OUT\" \"$CODEX_RC\")\""
    ```
 
    That writes at most ONE event per account per UTC day, which `fleet-health-daily.py` turns into one line for Sana. The reason this is a function call and not a note in your own output: Codex ran out of credits on 2026-09-16 and every call site recorded it privately, per PR — 24 cap tickets, every "Codex" round for seven weeks a degraded Opus stand-in, and no single line anywhere saying the fleet was down to one reviewer.
+
+   **Never pass Codex's own refusal line, or any prose of yours, as that second argument.** What you pass lands in a PERMANENT Linear issue body, and a finding carries a reference, never untrusted text (ASK-204; ASK-3988 settled the same question for the worker's Codex branch). `codex_env_marker` is the fleet's closed vocabulary for this and is the only thing you hand over; the resolver coerces whatever arrives to one of `REVIEWER_OUTAGE_CODES` anyway, so free text does not reach the issue — it just arrives as `unclassified` and the operator loses the one grain of detail the marker would have carried. Codex's full output belongs in the review artifact on disk, which is where you already keep it.
 
    **Immediately pipe the standard-review findings to disk** (compaction hardening: if the conversation compacts after this point, the findings survive because they are on disk, not in narrative memory). Translate Codex's free-form verdict into `[{severity, body, affected_path}]`. The writer assigns sequential ids, stamps `created_at`, marks `out_of_scope=true` for paths outside `$ALLOWED`, and sets `disposition=pending`:
 

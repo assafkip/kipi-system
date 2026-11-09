@@ -199,6 +199,66 @@ reviewer_outage_lock_path() {
 _reviewer_day() { date -u +%Y-%m-%d; }
 _reviewer_ts()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# ---------------------------------------------------------------------------
+# WHAT THE LEDGER MAY CARRY: a code, never the line Codex printed
+# ---------------------------------------------------------------------------
+#
+# A FINDING CARRIES A REFERENCE, NEVER UNTRUSTED TEXT (ASK-204, and ASK-3988 /
+# sp-762d494b already decided this exact question one layer over). The reason
+# written here is read by fleet-health-daily.py and published VERBATIM in a
+# Linear issue body, and a Linear issue filed by that script is PERMANENT. The
+# PR #701 review found the hole in the prose half: issue-review.md and
+# prd-review.md told the model to pass "the refusal line Codex printed", which
+# is model-adjacent output of unbounded length and arbitrary syntax -- the
+# denylist-against-shell-syntax shape whose nine consecutive bypasses are what
+# ASK-204 exists to end.
+#
+# So the ledger carries a CODE out of a closed vocabulary, coerced HERE rather
+# than trusted from the caller. A caller cannot opt out: prose, a shell call
+# site and a future one all land on the same coercion.
+#
+# WHAT IS LOST, AND WHERE IT STILL LIVES. The PR number, the issue id and
+# Codex's own wording drop out of the ledger. Each already goes to its caller's
+# own log, which is ASK-3988's rule in one line -- the marker to the ticket, the
+# whole line to the log: pr-review-agent.sh prints it to stderr, linear-worker.sh
+# to the worker log. Nothing an operator needs is only here.
+REVIEWER_OUTAGE_CODES="usage-limit out-of-credits auth overloaded exec-failure unclassified"
+
+# reviewer_outage_code <text> -> exactly one code from REVIEWER_OUTAGE_CODES.
+#
+# COARSE ON PURPOSE, AND IT DEGRADES TOWARD `unclassified`, never toward
+# publishing the input. These patterns are a bucketing of the markers
+# env-failure-lib.sh already owns in ENV_MARKERS / CODEX_OUTAGE_MARKERS; that
+# file stays the single reader of "is this the machine refusing". A marker added
+# there that is not bucketed here falls to `unclassified`, which costs one grain
+# of detail in the health line and never leaks a byte.
+reviewer_outage_code() {
+  local t
+  t="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$t" in
+    *"out of credits"*|*"credit balance is too low"*) printf 'out-of-credits' ;;
+    *"usage limit"*|*"hit your weekly limit"*|*"hit your usage limit"*|\
+    *"hit your session limit"*|*"hour limit"*)        printf 'usage-limit' ;;
+    *"invalid api key"*|*authentication_error*|*"please run /login"*) printf 'auth' ;;
+    *overloaded*|*529*)                              printf 'overloaded' ;;
+    *exit\ [0-9]*|*timed\ out*|*timeout*)            printf 'exec-failure' ;;
+    *)                                               printf 'unclassified' ;;
+  esac
+}
+
+# _reviewer_code_or_unclassified <text> -> the text when it is ALREADY a code,
+# else the bucketed code. Both shapes reach the writer: linear-worker.sh hands
+# it a marker line, and a caller that resolved the code itself hands the code.
+# Membership is checked against the list rather than assumed, so a caller cannot
+# smuggle free text through by making it look code-shaped.
+_reviewer_code_or_unclassified() {
+  local want="${1:-}" c
+  for c in $REVIEWER_OUTAGE_CODES; do
+    [ "$want" = "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  reviewer_outage_code "$want"
+}
+
 # _reviewer_write_health <fail|ok> <account> [reason]
 #
 # THE ONE WRITER of both the state file and the event log, and the only holder of
@@ -215,6 +275,13 @@ _reviewer_ts()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # Always exits 0: a reviewer must never die because its own bookkeeping failed.
 _reviewer_write_health() {
   local mode="${1:-fail}" account="${2:-unknown}" reason="${3:-}"
+  # THE COERCION IS HERE AND NOWHERE ELSE (PR #701 review round 2, major). This
+  # is the single writer of both files, so it is the only place a caller's text
+  # can be stopped before it becomes a permanent Linear issue body. Doing it at
+  # the two public notes below would leave a third caller free to bypass it, and
+  # doing it in the detector would leave the untrusted bytes on disk for anything
+  # else that reads the ledger later.
+  reason="$(_reviewer_code_or_unclassified "$reason")"
   mkdir -p "$REVIEWER_RESOLVE_STATE_DIR" 2>/dev/null || return 0
   python3 - "$(reviewer_outage_state_path)" "$(reviewer_outage_events_path)" \
            "$(reviewer_outage_lock_path)" "$mode" "$account" "$reason" \
@@ -266,7 +333,10 @@ if mode == "ok":
     row["fails"] = 0
 else:
     append = row.get("outage_day") != day
-    row.update({"outage_day": day, "last_fail": ts, "last_reason": reason})
+    # `last_reason_code`, not `last_reason`: the key name says what the value is
+    # allowed to be, so a later reader cannot mistake it for the line Codex
+    # printed and publish it (ASK-204).
+    row.update({"outage_day": day, "last_fail": ts, "last_reason_code": reason})
     row["fails"] = int(row.get("fails") or 0) + 1
 state[account] = row
 
@@ -287,16 +357,22 @@ except Exception:
 if append:
     with open(events_path, "a") as fh:
         fh.write(json.dumps({"kind": "codex-outage", "account": account,
-                             "day": day, "ts": ts, "reason": reason},
+                             "day": day, "ts": ts, "reason_code": reason},
                             sort_keys=True) + "\n")
 PY
   return 0
 }
 
-# reviewer_note_codex_outage <account> <reason>
+# reviewer_note_codex_outage <account> <code-or-marker>
 #
 # Records that this account could not produce a review. Appends ONE event per
 # account per UTC day; later calls the same day update nothing and print nothing.
+#
+# THE SECOND ARGUMENT IS NOT FREE TEXT and a caller cannot make it so: whatever
+# arrives is coerced to one of REVIEWER_OUTAGE_CODES before it is written,
+# because what is written lands verbatim in a permanent Linear issue. Pass a
+# code, or pass `codex_env_marker`'s closed-vocabulary output and let the
+# coercion bucket it. Codex's own line belongs in your log, never here.
 reviewer_note_codex_outage() {
   _reviewer_write_health fail "${1:-unknown}" "${2:-}"
 }

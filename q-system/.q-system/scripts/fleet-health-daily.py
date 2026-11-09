@@ -1111,6 +1111,30 @@ def _codex_outage_rows(events_path=None) -> list:
     return rows
 
 
+_SAFE_CODE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9 :_.-]{0,39}\Z")
+
+
+def _safe_code(value) -> str:
+    """A ledger value, or `unpublishable` when its SHAPE is not a bounded token.
+
+    THE SECOND BELT, AND IT IS A SHAPE RULE, NOT A SECOND VOCABULARY (PR #701
+    review round 2, major). `reviewer_note_codex_outage` coerces every reason to
+    one of REVIEWER_OUTAGE_CODES, so in a healthy fleet nothing here ever trips.
+    This exists because that coercion runs on the WRITE and this function runs on
+    a READ of a file on disk: a row written by an older resolver, a hand-edited
+    ledger or a future caller that reaches the file some other way would
+    otherwise publish its bytes verbatim into a PERMANENT Linear issue, which is
+    the one thing ASK-204 forbids.
+
+    Deliberately NOT a copy of REVIEWER_OUTAGE_CODES. Two places listing the
+    vocabulary is the derivation split this fleet keeps paying for; the resolver
+    stays its single owner, and this only asks whether the value is short and
+    tokenish. Every real Codex refusal line fails it on length or punctuation.
+    """
+    text = "" if value is None else str(value)
+    return text if _SAFE_CODE_RE.match(text) else "unpublishable"
+
+
 def codex_outage_findings(rows: list, health=None) -> list:
     """ONE finding for the day, naming every account that is STILL down.
 
@@ -1160,16 +1184,20 @@ def codex_outage_findings(rows: list, health=None) -> list:
     if not down_rows:
         return []
 
-    accounts = sorted({str(r.get("account") or "unknown") for r in down_rows})
+    # Guarded like the reason codes: an account NAME is operator-set
+    # (KIPI_CODEX_SECONDARY_LABEL, else a directory basename), so it is not model
+    # output -- but it is still external text crossing into a permanent record,
+    # and the cost of guarding it is one function call.
+    accounts = sorted({_safe_code(r.get("account") or "unknown") for r in down_rows})
     # Accounts that ANSWERED today and are not currently down. While one of these
     # exists the reviewer is still a second lab, so the headline must not say the
     # fleet is down to Opus.
-    answering = sorted(a for a, v in health.items()
+    answering = sorted(_safe_code(a) for a, v in health.items()
                        if v.get("outage_day") != day
                        and str(v.get("last_ok") or "").startswith(day))
     reasons = "\n".join(
-        f"- `{r.get('account')}`: {r.get('reason') or 'no reason recorded'} "
-        f"(first seen {r.get('ts') or '?'})"
+        f"- `{_safe_code(r.get('reason_code'))}` on `{_safe_code(r.get('account'))}` "
+        f"(first seen {_safe_code(r.get('ts'))})"
         for r in sorted(down_rows, key=lambda r: str(r.get("account"))))
 
     if answering:
@@ -1204,6 +1232,13 @@ def codex_outage_findings(rows: list, health=None) -> list:
             "(`KIPI_CODEX_SECONDARY_LABEL` names it on the verdict record).\n"
             "- The chain lives in ONE place now: "
             "`q-system/.q-system/scripts/reviewer-resolve.sh`.\n"
+            "- The codes above are the WHOLE of what this issue may carry "
+            "(ASK-204): what Codex actually printed stays on the machine that "
+            "ran it, in `~/.config/kipi/linear-worker.log` and the reviewer's "
+            "own stderr, with the per-account ledger at "
+            "`$KIPI_STATE_DIR/codex-outage-events.jsonl`. `unclassified` means "
+            "the refusal matched no known marker; `unpublishable` means a row on "
+            "disk was not a bounded token and was withheld.\n"
             "- An account that recovers drops off this finding on the next run "
             "(`reviewer_note_codex_ok` clears its day stamp). Closing the issue "
             "while an account is still down reopens it tomorrow, by design.\n"

@@ -1765,6 +1765,20 @@ elif run_engine codex "$REVIEW" "$REVIEWER_PRIMARY_ACCOUNT"; then
     # over it would invent a verdict for a review that said nothing. It falls
     # through UNSTATED, and unstated posts state=failure a few lines below.
     REVIEW_UNUSABLE=1
+    # THE ACCOUNT ANSWERED, SO ITS DAY STAMP COMES OFF (PR #701 review round 2,
+    # minor). This branch used to be the one place in the chain that got a reply
+    # out of codex and told the ledger nothing, while the IDENTICAL
+    # second-account branch below already cleared it. The asymmetry was silent
+    # and it survived a whole UTC day: an account that failed at 03:00 and then
+    # answered unparseably at 04:00 kept `outage_day` = today, so the morning
+    # health line said no Codex account could review while codex had been
+    # replying for hours. Unusable is a verdict about the CONTENT; the ledger
+    # only ever claimed to track whether the machine answered at all.
+    reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"
+    # ...and the record names who answered, for the same reason: codex ran, so
+    # the round is not an Opus stand-in and must not read like one.
+    RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$REVIEWER_PRIMARY_ACCOUNT"
+    RESOLVED_STAMP="$(reviewer_stamp codex "$REVIEWER_ROLE")"
     note_degraded_transition 1 \
       "it answered with no complete FINDINGS block (empty or truncated), so the status is UNSTATED rather than a fabricated APPROVE"
     echo "$(TS) codex answered with no complete FINDINGS block (empty or truncated); verdict stays UNSTATED. Output kept at: $REVIEW" >&2
@@ -1970,8 +1984,23 @@ RESOLVED_ENGINE="${RESOLVED_ENGINE:-$ENGINE}"
 [ "$DEGRADED" = "1" ] && RESOLVED_ENGINE="claude"
 RESOLVED_ACCOUNT="${RESOLVED_ACCOUNT:--}"
 [ "$RESOLVED_ENGINE" = "claude" ] && RESOLVED_ACCOUNT="-"
-RESOLVED_STAMP="${RESOLVED_STAMP:-$RESOLVED_ENGINE-review}"
-[ "$DEGRADED" = "1" ] && RESOLVED_STAMP="claude-review"
+# THE ROLE SURVIVES THE DEGRADED OVERRIDE (PR #701 review round 2, minor). Both
+# lines used to hardcode `-review`, so this script -- whose own REVIEWER_ROLE is
+# `adversarial` and whose five dispatch branches all stamp `codex-adversarial` or
+# `claude-adversarial` through reviewer_stamp -- wrote the literal `claude-review`
+# on exactly the degraded path, overwriting the correct stamp the Opus branch had
+# already set. That is the role argument reviewer_stamp refuses unknown values to
+# protect, defeated by a string two lines later: the record would say the code
+# was held to the ordinary-review bar when an adversarial round had run.
+RESOLVED_STAMP="${RESOLVED_STAMP:-$(reviewer_stamp "$RESOLVED_ENGINE" "${REVIEWER_ROLE:-adversarial}" 2>/dev/null)}"
+[ "$DEGRADED" = "1" ] && RESOLVED_STAMP="$(reviewer_stamp claude "${REVIEWER_ROLE:-adversarial}" 2>/dev/null)"
+# LAST RESORT, AND IT STILL CARRIES THE ROLE. reviewer_stamp is a function from
+# reviewer-resolve.sh, and test-review-degraded-provenance.sh executes this block
+# in a BARE SUBSHELL by awk range, where a sourcing change upstream could leave
+# the function undefined. An empty stamp on the record cannot be told from "no
+# round ran", so compose the one value reviewer_stamp would have returned rather
+# than fall back to a role-less literal and reintroduce the defect above.
+[ -n "$RESOLVED_STAMP" ] || RESOLVED_STAMP="$RESOLVED_ENGINE-${REVIEWER_ROLE:-adversarial}"
 # `set -e` IS OFF IN THIS SCRIPT (line 64 is `set -uo pipefail`) and these two
 # lines depend on that. Under `set -e` a false `[ ... ] && assign` is an AND-list
 # whose final status is 1, which exits the shell -- so turning on -e here would
