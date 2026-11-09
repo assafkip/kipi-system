@@ -62,6 +62,15 @@ EXIT_COLLISION = 3
 # failed. Distinct from EXIT_OK because "I did it" and "someone else did it"
 # lead to different reporting -- see cmd_unblock.
 EXIT_NOOP = 4
+# The creation gate said no (ASK-4205): an unregistered producer, a producer
+# whose registry row has no consumer or no exit, or a plan that would land an
+# issue with no project. Its own code so a caller can tell "refused on purpose"
+# from a crash or a Linear outage, and log the reason it was given.
+EXIT_REFUSED = 5
+
+# The registry key a plan from `plan` carries. One producer for this path today:
+# the capability-map rollout (kipi linear plan, then kipi linear create).
+CAPABILITY_PRODUCER = "linear-sync-capability"
 
 # How long a writer waits for another process to finish ITS read-decide-write on
 # the same issue. Two graphql calls at timeout=30 each is the whole of that
@@ -1428,8 +1437,39 @@ def cmd_remote(args) -> int:
     return EXIT_OK
 
 
+def _producer_refusal(cli_producer, plan_producer) -> str:
+    """An empty string when the named producer may create through this file, else the reason.
+
+    The registry and its reader live beside this file
+    (q-system/.q-system/ticket-producers.json, ticket_producers.py). Loaded by
+    path, lazily, because other scripts import THIS file by path for its graphql
+    client and must not need the gate's module on sys.path to do so. A reader
+    that cannot be loaded refuses: the gate fails closed.
+    """
+    if cli_producer and plan_producer and cli_producer != plan_producer:
+        return (f"--producer {cli_producer} and the plan's producer {plan_producer} disagree. "
+                f"Name one.")
+    producer = cli_producer or plan_producer or ""
+    try:
+        import importlib.util
+        here = os.path.dirname(os.path.abspath(__file__))
+        spec = importlib.util.spec_from_file_location(
+            "ticket_producers", os.path.join(here, "ticket_producers.py"))
+        tp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tp)
+    except Exception as exc:  # noqa: BLE001 - any failure to load is a refusal
+        return f"cannot load the gate's reader ticket_producers.py: {exc}. The gate fails closed."
+    root = tp.repo_root()
+    me = os.path.relpath(os.path.abspath(__file__), root).replace(os.sep, "/")
+    return tp.refusal(producer, me, root) or ""
+
+
 def cmd_create(args) -> int:
-    """Apply a plan against live Linear. Dry by default; --apply to write."""
+    """Apply a plan against live Linear. Dry by default; --apply to write.
+
+    Gated (ASK-4205): the plan's producer must be registered with a consumer and
+    an exit, and an issue is never created with no project. A refusal exits
+    EXIT_REFUSED with the reason on stderr, before any write."""
     try:
         with open(args.plan, "r", encoding="utf-8") as fh:
             plan = json.load(fh)
@@ -1451,6 +1491,17 @@ def cmd_create(args) -> int:
         return EXIT_USAGE
     repo = plan["repo"]
 
+    # THE CREATION GATE (ASK-4205), before any network call, dry run included.
+    # Founder, 2026-11-09: "What's the point of tickets that nothing can close?"
+    # The audit that day measured 72.5 filed a day against 20 closed. A plan
+    # names its producer, and the producer must have a registry row with a
+    # consumer and an exit, or nothing is created. Dry runs are gated too: a dry
+    # run that passes and an --apply that refuses would be two answers.
+    why = _producer_refusal(getattr(args, "producer", None), plan.get("producer"))
+    if why:
+        print(f"REFUSED (creation gate): {why}", file=sys.stderr)
+        return EXIT_REFUSED
+
     try:
         team_id, project, remote_keys = fetch_remote_state(args.team, repo)
     except LinearAPIError as exc:
@@ -1465,6 +1516,21 @@ def cmd_create(args) -> int:
         want_project = None  # already exists remotely; never make a second one
     issues = [i for i in (plan.get("create_issues") or []) if i["key"] not in known]
     skipped = len(plan.get("create_issues") or []) - len(issues)
+
+    # NO PROJECT, NO CREATE (ASK-4205, folding the inflow audit's R7). With no
+    # project in Linear and none in the plan, the loop below sent issueCreate with
+    # no projectId. The worker, the DoR drafter and the alert lane all skip a
+    # ticket with no project, so it is one nothing picks up: 261 of 619 open
+    # hand-filed tickets were that shape on 2026-11-09. The MCP path already
+    # refuses it (linear_gate.py, RULE-2026-11-08-PROJECT); this is the API path.
+    if issues and not project and not want_project:
+        print(
+            f"REFUSED (creation gate): {len(issues)} issue(s) for {repo} would be created with "
+            f"no Linear project (none named {repo} on the board, and the plan has no "
+            f"create_project). Re-run `plan`, which adds one, or create the project first.",
+            file=sys.stderr,
+        )
+        return EXIT_REFUSED
 
     print(
         f"{repo}: would create project={'yes' if want_project else 'exists'}, "
@@ -1624,6 +1690,9 @@ def cmd_plan(args) -> int:
 
     plan = {
         "repo": repo,
+        # Read by `create`'s creation gate (ASK-4205): this plan's tickets come
+        # from the capability rollout, whose registry row names their consumer.
+        "producer": CAPABILITY_PRODUCER,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "create_project": create_project,
         "create_issues": create_issues,
@@ -1754,6 +1823,9 @@ def main() -> int:
     # (no delete or archive mutation, module docstring), so this tool cannot take
     # back an accidental run.
     p.add_argument("--apply", action="store_true", help="actually write to Linear")
+    p.add_argument("--producer",
+                   help="registry id of who is filing (q-system/.q-system/ticket-producers.json); "
+                        "default: the plan's `producer` field")
     p.set_defaults(func=cmd_create)
 
     p = sub.add_parser("status", help="which repos are rolled out")
