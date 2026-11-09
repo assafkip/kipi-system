@@ -12,14 +12,32 @@ every case below drives it.
                so destructive operations on the REGISTERED namespaces walk
                through. The serious half, and it reads exactly like protection.
 
-TWO GUARDS, AND WHICH ONE EACH CASE MEASURES IS THE POINT OF THIS HEADER.
+THREE GUARDS, AND WHICH ONE EACH CASE MEASURES IS THE POINT OF THIS HEADER.
 
   REFERENCE  `checker.fixture_hook()` -- the FROZEN pre-fix guard committed at
              tests/fixtures/destructive-op-deny.reference.sh. Every negative
-             control and every mutant reads this one.
-  HOOK       `checker.resolve_hook()` -- whatever guard is INSTALLED on this
-             machine. The oracle cases and the apply-time controls read this one,
-             because this is the file the founder patches.
+             control and most mutants read this one.
+  CURRENT    `checker.current_fixture()` -- a committed copy of the CURRENT
+             generation, tests/fixtures/destructive-op-deny.current.sh. The
+             reference predates ASK-1144 (which made the guard's own MCP block
+             operation-keyed), PR #279 and ASK-3361, and it was also what
+             `resolve_hook()` fell back to, so a runner with no installed guard
+             measured a two-generations-old shape and reported green through all
+             three (PR #686 review round 5, major). The fallback is this file
+             now, and test_the_current_fixture_still_matches_the_installed_guard
+             fails LOUDLY when the founder's guard moves past it.
+  HOOK       `checker.resolve_hook()` -- the guard INSTALLED on this machine,
+             falling back to CURRENT. The oracle cases and the apply-time
+             controls read this one, because this is the file the founder
+             patches.
+
+THE INSERT RUNS FIRST, SO EVERY RULING BELOW IT IS ITS TO HONOR. Two were
+overturned -- Gmail trash (founder, 2026-10-29, ASK-3361) and reset_session (PR
+#279) -- while the oracle pinned the reversal as correct, so nothing went red.
+`test_the_patch_honors_every_ruling_the_guard_makes_below_it` DERIVES the rulings
+out of the guard at run time (`checker.ruled_allow_probes`) rather than restating
+them, so a ruling added below the anchor later turns that case red instead of
+being discovered when a founder's bot stops working.
 
 They were one thing until PR #686's review. Cases written as "observed red on
 the guard today" were asserted against the INSTALLED guard, and between
@@ -71,6 +89,7 @@ PROPOSAL = (pathlib.Path(__file__).resolve().parents[1]
 
 HOOK = checker.resolve_hook()
 REFERENCE = checker.fixture_hook()
+CURRENT = checker.current_fixture()
 
 pytestmark = pytest.mark.skipif(
     not HOOK.is_file(),
@@ -118,6 +137,59 @@ def test_the_derivations_returned_something():
     # The installed guard has to be readable and the anchor has to hit it once,
     # or nothing below measures anything. baseline_text raises on either.
     assert checker.baseline_text(HOOK)
+    # The ruling derivation has the same floor: an empty parse would turn
+    # test_the_patch_honors_every_ruling_the_guard_makes_below_it green while
+    # checking nothing, which is the shape of the defect it exists for.
+    assert checker.ruled_allow_probes(
+        CURRENT.read_text(encoding="utf-8")), (
+        "no ALLOW rulings parsed out of the current-generation guard; the "
+        "ruling case below would then assert nothing")
+
+
+def test_the_current_fixture_is_the_post_ask_1144_generation():
+    """The fallback guard for a machine with none installed, checked IN CI.
+
+    `resolve_hook()` used to fall back to the pre-fix reference, so a runner
+    with no installed guard measured a two-generations-old shape and reported
+    green through ASK-1144, PR #279 and ASK-3361 (PR #686 review round 5,
+    major). The marker is the operation-keyed block ASK-1144 introduced.
+    """
+    assert CURRENT.is_file(), (
+        "the current-generation fixture is missing, so every runner without an "
+        "installed guard falls back to the pre-fix reference")
+    text = CURRENT.read_text(encoding="utf-8")
+    assert "MCP_OP_LOWER" in text, (
+        "the current fixture does not carry ASK-1144's operation-keyed MCP "
+        "block, so it is not the current generation")
+    assert "ASK-3361" in text, (
+        "the current fixture predates the Gmail-trash founder ruling")
+
+
+def test_the_current_fixture_still_matches_the_installed_guard():
+    """A LOUD divergence check, which is the honest second best.
+
+    The fixture is a copy of a file this repo does not own, so it cannot be
+    derived at run time -- the founder's guard is the owner and it moves. A copy
+    that silently goes stale is exactly what round 5 found, so the staleness
+    fails here with the refresh command rather than being read as agreement.
+    Skipped where no guard is installed, which is every CI runner.
+    """
+    if not checker.LIVE.is_file():
+        pytest.skip("no installed guard here to compare the fixture against")
+    installed = checker.LIVE.read_text(encoding="utf-8")
+    if CURRENT.read_text(encoding="utf-8") == installed:
+        return
+    pytest.fail(
+        "the installed guard has moved since %s was captured. Refresh it and "
+        "re-run the oracle:\n"
+        "  python3 -c \"import importlib.util as u, pathlib; "
+        "s=u.spec_from_file_location('c', "
+        "'q-system/.q-system/scripts/mcp-denylist-namespace-check.py'); "
+        "m=u.module_from_spec(s); s.loader.exec_module(m); "
+        "m.CURRENT.write_text(m.LIVE.read_text())\"\n"
+        "Then read the diff before trusting any case in this file: a ruling "
+        "added below the anchor is a ruling this proposal's insert runs ahead "
+        "of." % CURRENT.name)
 
 
 @needs_reference
@@ -274,6 +346,71 @@ class TestTheOperationKeyedSplitFixesBothDirections:
             "the patch blocks a read: %s. A gate that blocks reads is a gate "
             "someone switches off." % case["tool"])
 
+    @pytest.mark.parametrize("hook_name", ["installed", "current-fixture"])
+    def test_the_patch_honors_every_ruling_the_guard_makes_below_it(
+            self, tmp_path, hook_name):
+        """The insert runs FIRST, so a ruling further down is its to honor.
+
+        Two were overturned: Gmail trash, allowed by the FOUNDER on 2026-10-29
+        (ASK-3361, so his inbox bots work), and reset_session, allowed by PR
+        #279 because clearing a conversation destroys no data. The insert's
+        `trash` and `reset` verbs denied both, and this PR's oracle pinned the
+        reversal as correct, so nothing went red (PR #686 review round 5,
+        major).
+
+        The ruling list is DERIVED from the guard here, never restated: a
+        restated copy agrees with itself on the day it is written and stops
+        describing the guard the day someone adds a ruling.
+        """
+        hook = HOOK if hook_name == "installed" else CURRENT
+        if not hook.is_file():
+            pytest.skip("no %s guard here" % hook_name)
+        rulings = checker.ruled_allow_probes(hook.read_text(encoding="utf-8"))
+        if not rulings:
+            # The PRE-FIX guard makes no ALLOW rulings at all -- its only
+            # carve-out was a `*authenticate*` wildcard, which names a class and
+            # not a callable name. A guard with no rulings has none to reverse,
+            # so this arm has nothing to say; the `current-fixture` arm is where
+            # the coverage lives and its floor is in
+            # test_the_derivations_returned_something.
+            pytest.skip("the %s guard makes no ALLOW rulings to honor" % hook_name)
+        _, candidate = variants(tmp_path, hook)
+        overturned = [p for p in rulings
+                      if checker.decide(candidate, p, tmp_path) == "deny"]
+        assert overturned == [], (
+            "the patch reverses %d ruling(s) the guard makes below the insert: "
+            "%s. The insert runs first, so each of these needs an entry in its "
+            "MCP_RULED_ALLOW_TOOL / MCP_RULED_ALLOW_OP carve-out -- not a "
+            "relaxed case here." % (len(overturned), ", ".join(overturned)))
+
+    def test_the_checker_claims_only_the_properties_it_measured(self, tmp_path,
+                                                                monkeypatch):
+        """The OK line printed "the approval token is scoped, and the audit log
+        keeps no payload" on runs where DIRECTION 3 and 4 had both printed n/a
+        two lines above (PR #686 review round 5, minor). Driven with no
+        capability-token.sh reachable, which is the state that produced it.
+
+        One case covers both consumers: mcp-candidate-measure.py prints no
+        summary of its own, it returns `checker.main`, so the claim has one
+        writer and this is it.
+        """
+        import contextlib
+        import io
+        _, candidate = variants(tmp_path)
+        monkeypatch.setenv("KIPI_CAPABILITY_TOKEN",
+                           str(tmp_path / "no-such-capability-token.sh"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = checker.main(["--hook", str(candidate)])
+        out = buf.getvalue()
+        assert code == 0, out
+        assert "no capability-token.sh on this machine" in out, (
+            "this case needs the unmeasurable state to exercise the claim")
+        ok = [l for l in out.splitlines() if l.startswith("OK:")]
+        assert len(ok) == 1, out
+        assert "the approval token is scoped" not in ok[0], ok[0]
+        assert "the approval token was NOT measured" in ok[0], ok[0]
+
     def test_the_deny_message_claims_only_what_the_gate_knows(self, tmp_path):
         """A local plugin's `loop_force_close` was refused with a message saying
         it deletes state AT THE VENDOR SIDE. Same shape as the `browser_drop`
@@ -374,13 +511,22 @@ class TestEachFixCanGoRed:
     decision flip back to what the reviewer found.
     """
 
-    def mutant(self, tmp_path, old, new, hook=None):
+    def mutant(self, tmp_path, old, new, hook=None, occurrences=1):
+        """Break exactly one clause of the insert, `occurrences` copies of it.
+
+        The count is DECLARED rather than assumed. One clause legitimately
+        appears twice: the destructive SQL verb group, once for a statement that
+        starts with the verb and once for a verb reached through an ALTER. A
+        mutant that silently patched one of two would leave the other enforcing
+        and report the mutation as survived.
+        """
         edit = proposal_edit()
         text = checker.baseline_text(hook or REFERENCE, edit)
-        assert edit["insert"].count(old) == 1, (
+        assert edit["insert"].count(old) == occurrences, (
             "the mutation target moved; this mutant is no longer breaking what "
-            "it claims to break: %r" % old)
-        insert = edit["insert"].replace(old, new, 1)
+            "it claims to break: %r appears %d time(s), expected %d"
+            % (old, edit["insert"].count(old), occurrences))
+        insert = edit["insert"].replace(old, new, occurrences)
         broken = tmp_path / "mutant.sh"
         broken.write_text(
             text.replace(edit["anchor"], insert + edit["anchor"], 1),
@@ -394,16 +540,63 @@ class TestEachFixCanGoRed:
                               {"query": "DROP TABLE users;"}) == "allow"
 
     def test_with_the_object_keyword_list_back_a_truncate_walks_through(self, tmp_path):
-        """The regression this round exists for: an object keyword list allows
-        `TRUNCATE users;`, `DROP CONSTRAINT` and `DROP TRIGGER` (PR #686 review,
-        major; the same defect in a different spelling one round earlier)."""
-        broken = self.mutant(tmp_path, "(drop|truncate)([^a-zA-Z_]|$)",
-                             "(drop|truncate)([[:space:]])+(table|column)")
+        """An object keyword list allows `TRUNCATE users;`, `DROP CONSTRAINT`
+        and `DROP TRIGGER` (PR #686 review round 4, major; the same defect in a
+        different spelling one round earlier). Two copies of the verb group now,
+        so the mutation declares both."""
+        broken = self.mutant(tmp_path, r"(drop|truncate)([[:space:]]|\\n)",
+                             "(drop|truncate)([[:space:]])+(table|column)",
+                             occurrences=2)
         for statement in ("TRUNCATE users;",
                           "DROP TRIGGER audit_trigger ON users;",
                           "ALTER TABLE users DROP CONSTRAINT users_email_key;"):
             assert checker.decide(broken, "mcp__supabase__execute_sql", tmp_path,
                                   {"query": statement}) == "allow", statement
+        # Narrow mutation: the statement the object list DOES cover still
+        # denies, so this breaks the list's shape and not the whole rule.
+        assert checker.decide(broken, "mcp__supabase__execute_sql", tmp_path,
+                              {"query": "DROP TABLE users;"}) == "deny"
+
+    def test_with_the_operation_name_gate_back_a_notebook_walks_through(self, tmp_path):
+        """The round-5 regression: the payload rule was gated on an
+        operation-NAME list (execute_sql / apply_migration / run_sql), which is
+        the object list's defect one layer out. `run_notebook` was not on it, so
+        its DROP TABLE ran (PR #686 review round 5, minor)."""
+        broken = self.mutant(
+            tmp_path,
+            'if echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then',
+            'if echo "$_mcp_op" | grep -Eqi '
+            "'(^|[_-])(execute[_-]?sql|apply[_-]?migration|run[_-]?sql|sql)([_-]|$)'"
+            ' && echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then')
+        assert checker.decide(broken, "mcp__supabase__run_notebook", tmp_path,
+                              {"cells": ["DROP TABLE users;"]}) == "allow"
+        # The listed operation still denies, which is why the hole read as safe.
+        assert checker.decide(broken, "mcp__supabase__execute_sql", tmp_path,
+                              {"query": "DROP TABLE users;"}) == "deny"
+
+    @pytest.mark.parametrize("probe", [
+        "mcp__claude_ai_Gmail__trash_thread",
+        "mcp__claude_ai_Gmail__trash_message",
+        "mcp__plugin_kipi-notebooklm_notebooklm__reset_session"])
+    def test_without_the_ruling_carve_out_the_insert_reverses_a_founder_ruling(
+            self, tmp_path, probe):
+        """Gmail trash is a FOUNDER ruling (2026-10-29, ASK-3361) and a session
+        reset is a review ruling (PR #279). The insert runs before both, so with
+        its carve-out removed its `trash` and `reset` verbs overturn them (PR
+        #686 review round 5, major).
+
+        Driven against the CURRENT-generation guard, because the pre-fix
+        reference carries no rulings to overturn -- which is the other half of
+        the same finding.
+        """
+        if not CURRENT.is_file():
+            pytest.skip("no current-generation guard here")
+        broken = self.mutant(
+            tmp_path,
+            'if echo "$TOOL_NAME" | grep -Eq "$MCP_RULED_ALLOW_TOOL" \\\n'
+            '       || echo "$_mcp_op" | grep -Eqi "$MCP_RULED_ALLOW_OP"; then',
+            "if false; then", hook=CURRENT)
+        assert checker.decide(broken, probe, tmp_path) == "deny"
 
     def test_with_the_auth_carve_out_unanchored_a_mutating_op_walks_through(self, tmp_path):
         """`*authenticate*` matched the whole tool name, so any operation whose

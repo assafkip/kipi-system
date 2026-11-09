@@ -78,27 +78,42 @@ MCP_READ_OP='(^|[_-])(list|get|read|search|query|fetch|describe|status|check|fin
 # The separator alternation includes `\\n` because TOOL_INPUT is compact JSON,
 # where a newline is the two characters backslash and n.
 #
-# NO OBJECT KEYWORD LIST, ON PURPOSE. Two review rounds found the same defect in
-# two different spellings of one list: round 4 of PR #390 found `TRUNCATE users;`
-# and `ALTER TABLE users DROP email;` allowed because the list made the
-# PostgreSQL object keyword mandatory, and PR #686 found `TRUNCATE users;`,
-# `DROP CONSTRAINT` and `DROP TRIGGER` allowed for the same reason after the list
-# grew. A list of the objects SQL can destroy is a list that is wrong until
-# someone meets the entry it is missing, so the second occurrence is treated as
-# the wrong SHAPE rather than a third missing word: the rule now keys on the
-# destructive VERB at a word boundary and names no objects at all.
+# NO LIST OF NAMES ON EITHER SIDE OF THIS RULE, ON PURPOSE, AND THAT TOOK THREE
+# ROUNDS. The same shape was found wrong three times in three spellings:
+#   PR #390 round 4   an OBJECT keyword list made the PostgreSQL object
+#                     mandatory, so `TRUNCATE users;` and
+#                     `ALTER TABLE users DROP email;` allowed.
+#   PR #686 round 4   the same list, grown, still allowed `TRUNCATE users;`,
+#                     `DROP CONSTRAINT` and `DROP TRIGGER`.
+#   PR #686 round 5   with the objects gone, the OPERATION-NAME gate
+#                     (`MCP_SQL_OP`: execute_sql / apply_migration / run_sql)
+#                     was the same defect one layer out:
+#                     `mcp__supabase__run_notebook` carrying `DROP TABLE`
+#                     allowed, because nobody had listed that name.
+# A list of the things that can carry a destructive statement is wrong until
+# someone meets the entry it is missing, so the operation gate is GONE. The
+# payload of EVERY MCP call is read. The destruction is in the statement, and the
+# statement is the only place this rule looks.
 #
-# THAT IS FAIL-CLOSED AND IT OVER-REFUSES. Said out loud rather than discovered:
-# this gate parses no SQL. It cannot tell a `DELETE FROM` that runs from one
-# sitting in a trigger body an additive migration is defining, and it refuses
-# both (PR #390 review round 4, minor). The word boundary is what keeps the
-# over-refusal narrow: a column named `raindrop` or a migration named
-# `drop_email` carries no match, because `drop` there is not a word. The
-# asymmetry is emit_deny's own -- a miss costs a production table, a false
-# positive costs one approval -- and the deny message says the gate refused on a
-# keyword rather than claiming it understood the statement.
-MCP_SQL_OP='(^|[_-])(execute[_-]?sql|apply[_-]?migration|run[_-]?sql|sql)([_-]|$)'
-MCP_DESTRUCTIVE_SQL='(^|[^a-zA-Z_])(drop|truncate)([^a-zA-Z_]|$)|(^|[^a-zA-Z_])delete([[:space:]]|\\n)+from([^a-zA-Z_]|$)'
+# WHAT KEEPS THAT FROM REFUSING ORDINARY PROSE IS STATEMENT POSITION, NOT A LIST.
+# Dropping the operation gate points this rule at Gmail bodies, Linear
+# descriptions and Notion pages, where the English word "drop" is ordinary. So
+# the verb has to sit where a SQL statement starts: at the beginning of a JSON
+# string value, after a `;`, or after a newline -- or be reached through an
+# `ALTER`, which is how a column, a constraint and a trigger are destroyed. SQL's
+# top-level statement verbs are a closed set in the grammar; the vendor's object
+# types are not, which is the difference between this and the list it replaces.
+#
+# IT STILL OVER-REFUSES, AND HERE IS EXACTLY WHERE. Said out loud rather than
+# discovered next round: this gate parses no SQL. A message body that BEGINS
+# "Drop the legacy flag" is refused, and so is a search for the literal phrase
+# "drop table". It cannot tell a `DELETE FROM` that runs from one sitting in a
+# trigger body an additive migration is defining, and it refuses both (PR #390
+# review round 4, minor). The asymmetry is emit_deny's own -- a miss costs a
+# production table, a false positive costs one approval -- and the deny message
+# says the gate refused on a keyword in statement position rather than claiming
+# it understood the statement.
+MCP_DESTRUCTIVE_SQL='(^|[;"]|\\n)[[:space:]]*(drop|truncate)([[:space:]]|\\n)|(^|[;"]|\\n)[[:space:]]*delete([[:space:]]|\\n)+from([^a-zA-Z_]|$)|(^|[;"]|\\n)[[:space:]]*alter([[:space:]]|\\n)[^;"]*[^a-zA-Z_](drop|truncate)([[:space:]]|\\n)'
 # Servers where EVERY non-read op is denied, not only a destructive verb
 # (founder CLAUDE.md: "Vercel mutating ops"). Matched case-INSENSITIVELY against
 # the server segment: the registered connector is mcp__claude_ai_Vercel__, with
@@ -116,6 +131,38 @@ MCP_MUTATION_SCOPED_SERVER='(^|_)vercel(_|$)'
 # correct for a carve-out in a security gate, where the cost of guessing wide is
 # a bypass and the cost of guessing narrow is one approval.
 MCP_AUTH_OP='^(authenticate|authorize|re[_-]?auth|re[_-]?authenticate|setup[_-]auth|auth[_-]setup|complete[_-]authentication|notion-complete-mcp-setup)$'
+# RULINGS MADE BELOW THIS INSERT ARE NOT THIS INSERT'S TO REVERSE.
+#
+# This block runs FIRST, before the guard's own MCP section, which is the whole
+# point of the read-only exit. The cost of running first is that every ALLOW
+# ruling further down the file is one this block can silently overturn, and it
+# overturned two (PR #686 review round 5, major):
+#
+#   GMAIL TRASH    allowed by the FOUNDER on 2026-10-29 (ASK-3361). He asked for
+#                  bots that clean his inbox, was shown this hook denying the
+#                  connector's trash in every bot run, was offered three fixes
+#                  and picked lifting it here. Trash is not deletion: Gmail keeps
+#                  it 30 days and untrash_thread / untrash_message restore it.
+#                  The `trash` verb above denied it anyway, and this PR's oracle
+#                  pinned that reversal as correct, which is the worse half.
+#   SESSION RESET  allowed by review (PR #279): `..._notebooklm__reset_session`
+#                  clears a conversation and destroys no data. The `reset` verb
+#                  above denied it with a destructive-operation message and an
+#                  approval-token instruction, which is how a gate gets switched
+#                  off. `reset_branch` is a database branch and keeps its deny.
+#
+# EXACT NAMES ON BOTH, and the Gmail one on the WHOLE TOOL NAME rather than the
+# operation, because `trash_thread` is shared: Drive's trash_file and any other
+# server's trash_* keep the verb rule's deny. The founder ruled on one server.
+#
+# This is a mirror of a decision whose owner is the guard, so it is a second
+# source of truth and it is covered as one: the suite DERIVES every ruling out of
+# the installed guard at run time and requires the patched guard to still allow
+# each (test_the_patch_honors_every_ruling_the_guard_makes_below_it). A new
+# ruling landing below with no entry here turns that case red instead of being
+# discovered by the founder when his bot stops working.
+MCP_RULED_ALLOW_TOOL='^mcp__claude_ai_Gmail__trash_(thread|message)$'
+MCP_RULED_ALLOW_OP='^(reset[_-]?session|reset[_-]?chat|reset[_-]?conversation)$'
 
 case "$TOOL_NAME" in
   mcp__*)
@@ -144,12 +191,19 @@ case "$TOOL_NAME" in
     [ -n "$_mcp_scope" ] || _mcp_scope="$(printf '%s' "${TOOL_INPUT:-}" | sha256sum 2>/dev/null | cut -d' ' -f1)"
     [ -n "$_mcp_scope" ] || _mcp_scope="${TOOL_INPUT:-}"
     COMMAND="$TOOL_NAME $_mcp_scope"
+    # The guard's own ALLOW rulings, honored BEFORE any rule here can refuse
+    # them. First, because that is where the guard itself puts them and because
+    # a ruling that only survives when no other rule matches is not a ruling.
+    if echo "$TOOL_NAME" | grep -Eq "$MCP_RULED_ALLOW_TOOL" \
+       || echo "$_mcp_op" | grep -Eqi "$MCP_RULED_ALLOW_OP"; then
+      log_decision "allow" "ruled allowed by the guard below this insert and honored here: gmail trash (founder, 2026-10-29, ASK-3361) / a session reset clears a conversation and not data (PR #279)"
+      exit 0
+    fi
     if echo "$_mcp_op" | grep -Eqi "$MCP_DESTRUCTIVE_OP"; then
       emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' matches a destructive-operation verb. This gate cannot see whether the state it removes is at the vendor or on this machine, so it refuses either way: the miss costs production data, the false positive costs one approval. Keyed on the operation, not the server name (ASK-1923)"
     fi
-    if echo "$_mcp_op" | grep -Eqi "$MCP_SQL_OP" \
-       && echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then
-      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' carries the SQL keyword DROP, TRUNCATE or DELETE FROM in its payload. This gate does not parse SQL: it refused on the keyword, and it cannot tell a statement that runs from one being defined. Keyed on the keyword at a word boundary, so a SELECT, an additive migration and a column named 'raindrop' still run (ASK-1923)"
+    if echo "${TOOL_INPUT:-}" | grep -Eqi "$MCP_DESTRUCTIVE_SQL"; then
+      emit_deny "MCP operation '$_mcp_op' on server '$_mcp_server' carries DROP, TRUNCATE or DELETE FROM in STATEMENT POSITION in its payload. This gate does not parse SQL: it refused on the keyword where a statement starts, and it cannot tell a statement that runs from one being defined. No operation-name list, because run_notebook was missing from the last one: every MCP payload is read. So a SELECT, an additive migration, a column named 'raindrop' and the word 'drop' mid-sentence still run, while a value that BEGINS 'Drop ...' is refused (ASK-1923)"
     fi
     # AFTER the destructive checks, never before them. The carve-out is an
     # anchored allowlist now, so no destructive name can reach it either way --

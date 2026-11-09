@@ -50,19 +50,38 @@ import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[2]
-FIXTURE = REPO / "q-system/.q-system/tests/fixtures/destructive-op-deny.reference.sh"
+FIXTURES = REPO / "q-system/.q-system/tests/fixtures"
+FIXTURE = FIXTURES / "destructive-op-deny.reference.sh"
+CURRENT = FIXTURES / "destructive-op-deny.current.sh"
 LIVE = pathlib.Path(os.environ.get("HOME", "")) / ".claude/hooks/destructive-op-deny.sh"
 PROPOSAL = HERE.parent / "proposals" / "mcp-denylist-operation-split.json"
 
-# Same resolution order as probe_hook.py and test_destructive_op_deny_anchor.py,
-# so all three suites agree about what "the guard" is on any given machine.
+# Same resolution order as probe_hook.py and test_destructive_op_deny_anchor.py
+# where a guard IS installed, so all three suites agree about what "the guard" is
+# on the founder's machine.
+#
+# WHERE NONE IS INSTALLED, WHICH IS EVERY CI RUNNER, THE FALLBACK IS THE CURRENT
+# GENERATION AND NOT THE PRE-FIX ONE. `FIXTURE` is the guard ASK-1923 was filed
+# against; ASK-1144 then rewrote the guard's MCP block to be operation-keyed and
+# PR #279 / ASK-3361 added rulings to it. Falling back to `FIXTURE` meant a
+# runner with no installed guard measured a two-generations-old shape and
+# reported green through everything those three changes did (PR #686 review
+# round 5, major). `CURRENT` is a committed copy of the installed guard, kept
+# honest by test_the_current_fixture_still_matches_the_installed_guard.
 def resolve_hook():
     override = os.environ.get("KIPI_DESTRUCTIVE_HOOK")
     if override:
         return pathlib.Path(override)
     if LIVE.is_file():
         return LIVE
+    if CURRENT.is_file():
+        return CURRENT
     return FIXTURE
+
+
+def current_fixture():
+    """The committed copy of the CURRENT-generation guard."""
+    return CURRENT
 
 
 def fixture_hook():
@@ -160,6 +179,32 @@ CASES = [
      "input": {"name": "unique_email_off",
                "query": "ALTER TABLE users DROP CONSTRAINT users_email_key;"},
      "why": "CONSTRAINT was not on the object list"},
+    # The OPERATION-NAME gate was the same wrong shape one layer out: the payload
+    # rule only ran for execute_sql / apply_migration / run_sql, so an operation
+    # that can carry a statement under a name nobody listed walked through (PR
+    # #686 review round 5, minor). The gate is gone; every MCP payload is read.
+    {"tool": "mcp__supabase__run_notebook", "expect": "deny", "source": "session",
+     "input": {"cells": ["DROP TABLE users;"]},
+     "why": "`run_notebook` was on no operation-name list, so its DROP ran"},
+    {"tool": "mcp__supabase__execute_sql", "expect": "deny", "source": "session",
+     "input": {"query": "SELECT 1; DROP TABLE users;"},
+     "why": "a second statement after a `;` is still statement position"},
+    {"tool": "mcp__supabase__execute_sql", "expect": "deny", "source": "session",
+     "input": {"query": "DELETE FROM users WHERE id = 1"}},
+    # THE STATED OVER-REFUSALS. Dropping the operation gate points the payload
+    # rule at every server, so these two are refused and that is declared here
+    # rather than met next round. Both cost one approval; the rule's miss costs a
+    # production table.
+    {"tool": "mcp__linear__save_issue", "expect": "deny",
+     "source": "over-refusal-declared",
+     "input": {"description": "Drop the legacy flag"},
+     "why": "a value that BEGINS with the verb is statement position to this "
+            "gate, which parses no SQL; refusing an issue description is the "
+            "declared cost of having no operation-name list"},
+    {"tool": "mcp__claude_ai_Notion__notion-search", "expect": "deny",
+     "source": "over-refusal-declared",
+     "input": {"query": "drop table"},
+     "why": "searching for the literal phrase is refused; same declared cost"},
 
     # ---- a destructive verb the gate cannot place ---------------------------
     # Local plugin state, not vendor state. Denied ON PURPOSE and fail-closed:
@@ -176,7 +221,9 @@ CASES = [
     {"tool": "mcp__claude_ai_Gmail__delete_draft", "expect": "deny", "source": "session"},
     {"tool": "mcp__claude_ai_Gmail__unlabel_thread", "expect": "deny",
      "source": "founder-claude-md"},
-    {"tool": "mcp__claude_ai_Gmail__trash_thread", "expect": "deny", "source": "session"},
+    # Gmail trash is NOT here. It is a founder ruling and it lives with the other
+    # allow rows below; `trash_file` on Drive stays denied right here, which is
+    # what makes the ruling one server wide and not one verb wide.
     {"tool": "mcp__claude_ai_Notion__notion-move-pages", "expect": "deny",
      "source": "founder-claude-md"},
     {"tool": "mcp__claude_ai_Google_Calendar__delete_event", "expect": "deny",
@@ -245,6 +292,38 @@ CASES = [
     # message about vendor-side deletion (PR #390 review, minor).
     {"tool": "mcp__playwright__browser_drop", "expect": "allow", "source": "session"},
     {"tool": "mcp__playwright__browser_drag", "expect": "allow", "source": "session"},
+    # THE GUARD'S OWN ALLOW RULINGS. The insert runs BEFORE the guard's MCP
+    # section, so every ruling down there is one it can silently overturn, and it
+    # overturned both of these while this oracle pinned the reversal as correct
+    # (PR #686 review round 5, major). They are oracle rows now, and the suite
+    # also DERIVES them out of the installed guard so a NEW ruling cannot be
+    # missed the same way.
+    {"tool": "mcp__claude_ai_Gmail__trash_thread", "expect": "allow",
+     "source": "founder-ruling-ask-3361",
+     "why": "founder ruling 2026-10-29: he asked for inbox-cleaning bots, was "
+            "shown this hook denying the connector's trash in every run, and "
+            "lifted it here. Gmail keeps trash 30 days and untrash restores it"},
+    {"tool": "mcp__claude_ai_Gmail__trash_message", "expect": "allow",
+     "source": "founder-ruling-ask-3361"},
+    {"tool": "mcp__claude_ai_Gmail__untrash_thread", "expect": "allow",
+     "source": "session",
+     "why": "the `un` guard: a RESTORE contains the verb `trash` and must not "
+            "be refused, whichever generation of the guard is installed"},
+    {"tool": "mcp__plugin_kipi-notebooklm_notebooklm__reset_session",
+     "expect": "allow", "source": "session",
+     "why": "PR #279 ruling: clearing a conversation destroys no data. "
+            "mcp__supabase__reset_branch above keeps its deny, which is what "
+            "makes this an operation ruling and not the `reset` verb coming off"},
+    # The other side of dropping the operation-name gate: the payload rule now
+    # reads Gmail bodies and Linear descriptions, so the English word has to
+    # survive it. Statement position is what does that, not a list of servers.
+    {"tool": "mcp__claude_ai_Gmail__send_message", "expect": "allow",
+     "source": "session",
+     "input": {"body": "I'll drop you a line once the migration lands"},
+     "why": "`drop` mid-sentence is not statement position"},
+    {"tool": "mcp__supabase__run_notebook", "expect": "allow", "source": "session",
+     "input": {"cells": ["SELECT 1"]},
+     "why": "the same operation the DROP row denies still runs a SELECT"},
     # On the read list, and it WRITES: it resolves a review thread at the vendor
     # side. Not destructive, so `allow` is the right decision either way -- the
     # defect the reviewer named was the claim that the read list opens nothing
@@ -282,6 +361,40 @@ def denylist_namespaces(hook_text):
     if not block:
         return []
     return sorted(set(re.findall(r"mcp__[A-Za-z0-9_*-]+", block.group(0))))
+
+
+RULING_ARM = re.compile(
+    r"^[ \t]*([A-Za-z0-9_|*#&;:.<>=/-]+)\)[ \t]*\n?(.*?);;", re.S | re.M)
+
+
+def ruled_allow_probes(hook_text, anchor="# ---- MCP destructive tool denials ----"):
+    """Tool names the guard ITSELF rules ALLOWED inside its own MCP section.
+
+    DERIVED, never restated. The proposal's insert lands before the anchor, so
+    every allow ruling after it is a decision the insert runs ahead of and can
+    silently overturn. It overturned two -- Gmail trash (founder, ASK-3361) and
+    reset_session (PR #279) -- and the oracle pinned the reversal as correct, so
+    nothing went red (PR #686 review round 5, major). A restated list here would
+    agree with itself on the day it was written; this reads the guard.
+
+    An arm counts as a ruling when its body logs an allow or is the bare `: ;;`
+    fall-through that skips the verb rules. Wildcard labels are skipped: they
+    name a class, not a call that can be probed. A bare operation label becomes
+    `mcp__ruledprobe__<op>`, because the rules under test key on the operation.
+    """
+    tail = hook_text.split(anchor, 1)[-1]
+    probes = []
+    for label, body in RULING_ARM.findall(tail):
+        allows = 'log_decision "allow"' in body or body.strip() in (":", ": ")
+        if not allows:
+            continue
+        for name in label.split("|"):
+            name = name.strip()
+            if not name or "*" in name:
+                continue
+            probes.append(name if name.startswith("mcp__")
+                          else "mcp__ruledprobe__" + name)
+    return sorted(set(probes))
 
 
 def registered_namespaces(mcp_configs, cases):
@@ -572,14 +685,23 @@ def main(argv=None):
                   % (case["tool"], decision, case["expect"],
                      " -- " + case["why"] if case.get("why") else ""))
         return 1
-    # Say what a pass covers. This script exited 0 and printed OK on a guard
-    # that allowed `execute_sql` running DROP TABLE, because the oracle held no
-    # case for it (PR #390 review round 3). A clean run means the cases below
-    # agree, never that the guard is complete.
-    print("\nOK: all %d oracle case(s) agree, the approval token is scoped, and "
-          "the audit log keeps no payload.\n"
+    # Say what a pass covers, and CLAIM ONLY WHAT THIS RUN MEASURED. This script
+    # exited 0 and printed OK on a guard that allowed `execute_sql` running DROP
+    # TABLE, because the oracle held no case for it (PR #390 review round 3). It
+    # then printed "the approval token is scoped, and the audit log keeps no
+    # payload" on a run where DIRECTION 3 and DIRECTION 4 had both printed n/a
+    # two lines above -- no capability-token.sh to mint with, no audit row to
+    # read -- so the summary asserted the two properties the body had just said
+    # it could not see (PR #686 review round 5, minor). Both lines are derived
+    # from the same values the body printed now.
+    claims = ["all %d oracle case(s) agree" % len(CASES)]
+    claims.append("the approval token is scoped" if leak == "scoped"
+                  else "the approval token was NOT measured (%s)" % leak)
+    claims.append("the audit log keeps no payload" if logged == "digest"
+                  else "the audit log was NOT measured (%s)" % logged)
+    print("\nOK: %s.\n"
           "    This is the coverage of the case list above, not a proof that "
-          "every destructive MCP operation is denied." % len(CASES))
+          "every destructive MCP operation is denied." % ", ".join(claims))
     return 0
 
 
