@@ -51,9 +51,16 @@ runner's harness. The most common real block -- Claude Code's sensitive-path
 guard refusing Edit/Write under `.claude/**` -- is not liftable by
 `permissions.allow` and cannot be observed from a plain Python process, so a
 `write:` probe against `.claude/` would pass here and un-park an issue Sana
-still cannot do. That class has no probe: the park records `none`, this script
-reports it as unprobeable, and it stays parked. Reporting an unprobeable block
-every run is the correct outcome, not a gap to paper over with a guess.
+still cannot do. That class has no probe: the park records `none`, and this
+script never guesses a probe for it.
+
+FAIL CLOSED COVERS THE PROBES, NOT THE CALENDAR (ASK-3960, PR #668 round 1).
+An unprobeable block is never cleared by a guess. It is not left parked
+forever either: at day 14 it takes ONE route by the capability its runner
+lines name (see route_unprobeable), and every route has a named consumer:
+apply-claude-changes.sh, the founder's morning list, or cap-ladder.py. A route
+whose consumer is missing, or whose write did not land, leaves the block alone
+and the next run retries.
 
 Usage:
   capability_block_expiry.py [--repo-project NAME] [--apply] [--team ASK]
@@ -154,14 +161,25 @@ CLEARING = ("pass", ROTATED)
 #   credential    a credential or account. One line on the morning status list.
 #   unknown       neither. Handed to cap-ladder.py as a capout and unblocked, so
 #                 the ladder's RCA, runner change, re-scope and decision move it.
-# Both founder lines go to the status file the stall sweep reads; nothing pages.
+#                 Only when cap-ladder.py is on this tree: a capout with no
+#                 consumer is a ticket unblocked into nothing (PR #668 round 1).
+# The credential line goes to the morning status file through cap-ladder.py,
+# and founder_asks.py lists it in /q-morning; nothing pages. Once he resolves
+# it, the next run unblocks the ticket with his answer quoted.
 ROUTE_AFTER_DAYS = 14
 CLAUDE_WRITE_RE = re.compile(r"\.claude/|sensitive[- ]path|settings(\.local)?\.json|harness (guard|permission)", re.I)
 CREDENTIAL_RE = re.compile(r"credential|\btoken\b|api[ _-]?key|log ?in\b|logged in|oauth|password|\baccount\b|secret", re.I)
+# The runner lines of a park comment, the only part a runner wrote about THIS block.
+RUNNER_LINE_RE = re.compile(r"^- \*\*(?:Sana|Codex)\b[^\n]*", re.M)
 ATTEMPTS_FILE = os.environ.get("KIPI_ATTEMPTS") or os.path.expanduser(
     "~/.config/kipi/linear-worker-attempts.json")
 LEDGER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attempts-ledger.py")
-PARK_TEXT_Q = """query($id:String!){issue(id:$id){comments(first:100){nodes{body createdAt}}}}"""
+LADDER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap-ladder.py")
+# This job's one state file: when it first saw a park it could not date. One
+# writer (route_unprobeable, under --apply), temp file and rename.
+SEEN_FILE = os.environ.get("CAPABILITY_EXPIRY_SEEN") or os.path.expanduser(
+    "~/.local/state/kipi/capability-expiry/first-seen.json")
+EPOCH = "1970-01-01T00:00:00Z"
 
 
 def dispatch_projects() -> list:
@@ -193,34 +211,139 @@ def dispatch_projects() -> list:
 
 
 def classify(text: str) -> str:
-    """The capability an unprobeable block lacks, from its park comment."""
-    if CLAUDE_WRITE_RE.search(text or ""):
+    """The capability an unprobeable block lacks, from its park comment.
+
+    ONLY THE RUNNER LINES ARE READ (codex, PR #668, P1). Every park comment ends
+    with "A harness permission is an authorization decision", which matched
+    `harness permission`, so every block classified as claude-write and a
+    credential block got the .claude/ route. The runner lines are the only text a
+    runner wrote about this block. A park comment without them (an older format)
+    is read whole, minus its **Next:** paragraph, which is the same boilerplate.
+    """
+    lines = RUNNER_LINE_RE.findall(text or "")
+    body = "\n".join(lines) if lines else "\n\n".join(
+        p for p in (text or "").split("\n\n") if not p.lstrip().startswith("**Next:**"))
+    if CLAUDE_WRITE_RE.search(body):
         return "claude-write"
-    if CREDENTIAL_RE.search(text or ""):
+    if CREDENTIAL_RE.search(body):
         return "credential"
     return "unknown"
 
 
-def park_text(ls, identifier: str) -> str:
-    """The newest comment that parked the issue on a missing capability."""
-    nodes = (((ls.graphql(PARK_TEXT_Q, {"id": identifier}) or {}).get("issue") or {})
-             .get("comments") or {}).get("nodes") or []
-    parks = [n for n in nodes if "missing capability" in (n.get("body") or "")
-             or BLOCK_LABEL in (n.get("body") or "")]
-    parks.sort(key=lambda n: n.get("createdAt") or "")
+def _park_comments(ls, identifier: str, since: str) -> list:
+    """Every comment created at or after `since`, every page, oldest first.
+
+    One loop for both readers (recorded_probe, park_text). park_text read
+    `comments(first:100)` with no cursor and no date (PR #668 round 1 minor, and
+    codex P2): a chatty ticket pushed its park comment off the only page read, and
+    a park whose own comment failed to post was classified from an OLDER park's.
+    """
+    nodes, after, seen_cursors = [], None, set()
+    while True:
+        conn = ((ls.graphql(PARK_COMMENTS, {"id": identifier, "s": since, "a": after})
+                 .get("issue") or {}).get("comments")) or {}
+        nodes += conn.get("nodes") or []
+        info = conn.get("pageInfo") or {}
+        cursor = info.get("endCursor")
+        # Normal exit is hasNextPage. The other two guards are for the ways a
+        # remote connection hands back a loop with no end: a missing cursor,
+        # or one that stops advancing.
+        if not info.get("hasNextPage") or not cursor or cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
+        after = cursor
+    nodes.sort(key=lambda n: n.get("createdAt") or "")
+    return [n for n in nodes if (n.get("createdAt") or "") >= since]
+
+
+def park_text(ls, identifier: str, since: str | None) -> str:
+    """The newest comment of THIS park that names the missing capability.
+    Undated, every comment is read: there is no older park to tell apart."""
+    parks = [n for n in _park_comments(ls, identifier, since or EPOCH)
+             if "missing capability" in (n.get("body") or "") or BLOCK_LABEL in (n.get("body") or "")]
     return (parks[-1].get("body") if parks else "") or ""
+
+
+def credential_ask(identifier: str) -> str:
+    """The one ask the credential route files. answered() matches on it, so the
+    two can never disagree about which ask is this ticket's."""
+    return f"access: {identifier} needs a credential or account the fleet cannot grant itself"
+
+
+def answered(identifier: str, ask: str, after) -> dict | None:
+    """The founder's resolved answer to `ask`, resolved after `after`, or None.
+
+    THE ANSWERED ASK WAS ASKED AGAIN. cap-ladder.py dedupes only against OPEN
+    asks, and the label stays on a credential block, so once the founder ran
+    --resolve the next night filed the same ask as a new row: a decision he made
+    came back every morning, and the ticket never moved. Read-only: cap-ladder.py
+    is the file's one writer. An answer older than this park belongs to an
+    earlier park and does not count.
+    """
+    from datetime import datetime
+    path = os.environ.get("CAP_LADDER_STATUS") or os.path.expanduser("~/.local/state/kipi/morning-status.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+    except (OSError, ValueError):
+        return None
+    hits = []
+    for r in rows:
+        if not (r.get("issue") == identifier and r.get("kind") == "founder-decision"
+                and r.get("resolved") and r.get("ask") == ask):
+            continue
+        try:
+            if datetime.fromisoformat((r.get("resolved_at") or "").replace("Z", "+00:00")) >= after:
+                hits.append(r)
+        except (TypeError, ValueError):
+            continue
+    return hits[-1] if hits else None
+
+
+def _seen(identifier: str, now, apply: bool, forget: bool = False):
+    """When this job first saw an undated park (stamped at first sight, under
+    --apply), or drop the stamp once the ticket has taken its route."""
+    from datetime import datetime
+    try:
+        with open(SEEN_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        data = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    if forget:
+        if identifier not in data:
+            return None
+        data.pop(identifier)
+    else:
+        try:
+            return datetime.fromisoformat(data[identifier])
+        except (KeyError, TypeError, ValueError):
+            pass
+        if not apply:
+            return now
+        data[identifier] = now.isoformat()
+    os.makedirs(os.path.dirname(SEEN_FILE), exist_ok=True)
+    tmp = f"{SEEN_FILE}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True)
+    os.replace(tmp, SEEN_FILE)
+    return now
 
 
 def _founder_ask(identifier: str, ask: str) -> tuple[bool, str]:
     """Hand one ask to the morning status file through its ONE writer,
     cap-ladder.py --founder-ask (ASK-3824). Never appended here: two writers on
     one file is the race the ladder's lock exists to prevent."""
-    ladder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap-ladder.py")
-    if not os.path.isfile(ladder):
+    if not os.path.isfile(LADDER_SCRIPT):
         return False, "cap-ladder.py is not on this tree, so the ask has no writer yet"
-    p = subprocess.run([sys.executable, ladder, "--founder-ask", identifier, "founder-decision", ask],
+    p = subprocess.run([sys.executable, LADDER_SCRIPT, "--founder-ask", identifier, "founder-decision", ask],
                        capture_output=True, text=True, timeout=60)
     return p.returncode == 0, (p.stdout or p.stderr).strip()
+
+
+def _landed(rc: int) -> bool:
+    """unblock's two success codes: removed it, or it was already gone."""
+    return rc in (0, ls_exit_noop())
 
 
 def _fixture_run() -> bool:
@@ -231,24 +354,31 @@ def _fixture_run() -> bool:
     not. So a fixture run may only write local state it was pointed at."""
     url = os.environ.get("KIPI_LINEAR_API_URL") or ""
     loop = re.search(r"//(localhost|127\.\d+\.\d+\.\d+|\[::1\])[:/]", url)
-    return bool(loop) and not (os.environ.get("KIPI_ATTEMPTS") and os.environ.get("CAP_LADDER_STATUS"))
+    return bool(loop) and not (os.environ.get("KIPI_ATTEMPTS") and os.environ.get("CAP_LADDER_STATUS")
+                               and os.environ.get("CAPABILITY_EXPIRY_SEEN"))
 
 
 def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_iso: str = "") -> str:
     """One line: what happened to an unprobeable block. Writes only with apply."""
     if apply and _fixture_run():
-        return ("unprobeable; REFUSED to route: a fixture Linear with the live ledger and status "
-                "file (set KIPI_ATTEMPTS and CAP_LADDER_STATUS)")
+        return ("unprobeable; REFUSED to route: a fixture Linear with the live ledger, status "
+                "file or first-seen file (set KIPI_ATTEMPTS, CAP_LADDER_STATUS and CAPABILITY_EXPIRY_SEEN)")
     from datetime import datetime, timedelta, timezone
     now = datetime.fromisoformat(now_iso) if now_iso else datetime.now(timezone.utc)
     try:
         parked = datetime.fromisoformat((since or "").replace("Z", "+00:00"))
     except ValueError:
         parked = None
-    if parked and now - parked < timedelta(days=ROUTE_AFTER_DAYS):
-        due = (parked + timedelta(days=ROUTE_AFTER_DAYS)).date().isoformat()
-        return f"unprobeable; routed by kind on {due} (day {ROUTE_AFTER_DAYS})"
-    text = park_text(ls, identifier)
+    # UNDATED IS NOT OLD (PR #668 round 1, major 2). With no park time this
+    # skipped the 14 days and routed the same night. parked_at() reads the first
+    # 100 history entries, so a busy ticket's park can sit outside them. The 14
+    # days then count from the first night this job saw the park.
+    start = parked or _seen(identifier, now, apply)
+    if now - start < timedelta(days=ROUTE_AFTER_DAYS):
+        due = (start + timedelta(days=ROUTE_AFTER_DAYS)).date().isoformat()
+        return (f"unprobeable; routed by kind on {due} (day {ROUTE_AFTER_DAYS})"
+                + ("" if parked else ", counted from the first night this job saw it (no park time on record)"))
+    text = park_text(ls, identifier, since if parked else None)
     kind = classify(text)
     if kind == "claude-write":
         # NOT A MISSING CAPABILITY. apply_claude_changes.py is built to be run by
@@ -262,9 +392,17 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
         if once != "True":
             if not apply:
                 return "unprobeable claude-write; would unblock and requeue it through apply-claude-changes.sh"
+            # THE UNBLOCK FIRST, THE ONE-SHOT FLAG ONLY AFTER IT LANDED (codex, PR
+            # #668, P2). The flag went on first, so a refused unblock left the label
+            # on, posted "Unblocked" anyway, and the next run saw the flag and sent
+            # the ticket down the capout route instead of retrying this one.
+            urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
+            if not _landed(urc):
+                return (f"unprobeable claude-write; the unblock did NOT land (rc {urc}: {detail[:120]}); "
+                        "no flag, no note, the next run retries")
             subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "claim-flag", identifier, flag],
                            capture_output=True, text=True)
-            urc, _d = _sync("unblock", identifier, BLOCK_LABEL)
+            _seen(identifier, now, apply, forget=True)
             _sync("progress", identifier,
                   "**Unblocked by capability_block_expiry.py (ASK-3960).** The block was a .claude/ write the "
                   "Write tool refuses. That is not a missing capability: the fleet lands .claude/ edits through "
@@ -276,11 +414,35 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
             return f"unprobeable claude-write; unblocked (rc {urc}) and requeued through apply-claude-changes.sh"
         kind = "unknown"
     if kind == "credential":
+        ask = credential_ask(identifier)
+        done = answered(identifier, ask, start)
+        if done:
+            if not apply:
+                return f"unprobeable credential; the founder answered {done.get('id')}; would unblock and requeue"
+            urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
+            if not _landed(urc):
+                return (f"unprobeable credential; answered, but the unblock did NOT land (rc {urc}: "
+                        f"{detail[:120]}); the next run retries")
+            _seen(identifier, now, apply, forget=True)
+            _sync("progress", identifier,
+                  f"**Unblocked by capability_block_expiry.py (ASK-3960).** The founder answered the credential "
+                  f"ask ({done.get('id')}, resolved by {done.get('resolved_by') or 'unnamed'}): "
+                  f"\"{(done.get('note') or 'no note given')[:300]}\". The next attempt runs with that answer. "
+                  "If it parks again, the 14 days start over and a new ask is filed.", "--agent", "sana")
+            _sync("requeue", identifier, "--exit", "capability-route", "--why",
+                  f"credential ask {done.get('id')} answered by the founder", "--agent", "sana")
+            return f"unprobeable credential; the founder answered {done.get('id')}: unblocked and requeued"
         if not apply:
             return "unprobeable credential; would add one line to the morning status list"
-        ok, detail = _founder_ask(identifier, f"access: {identifier} needs a credential or account the "
-                                              "fleet cannot grant itself")
+        ok, detail = _founder_ask(identifier, ask)
         return f"unprobeable credential; {'ask listed' if ok else 'ask NOT listed'} ({detail})"
+    # A CAPOUT NEEDS ITS CONSUMER ON THIS TREE (PR #668 round 1, major 1). Written
+    # with no cap-ladder.py to read it, the capout was a record nothing acts on and
+    # the unblock sent the ticket back into the pool with no RCA. The ladder runs
+    # at 04:40, after this job's 04:20, and takes rung 1 on the capout.
+    if not os.path.isfile(LADDER_SCRIPT):
+        return ("unprobeable, kind unknown; cap-ladder.py is not on this tree, so nothing would consume "
+                "a capout: it stays parked and this job routes it once the ladder is here")
     if not apply:
         return "unprobeable, kind unknown; would hand to cap-ladder.py (capout) and unblock"
     rc = subprocess.run([sys.executable, LEDGER_SCRIPT, ATTEMPTS_FILE, "record-capout", identifier,
@@ -288,7 +450,11 @@ def route_unprobeable(ls, identifier: str, since: str | None, apply: bool, now_i
                         capture_output=True, text=True).returncode
     if rc != 0:
         return "unprobeable, kind unknown; the capout did NOT record, so it stays parked and the next run retries"
-    urc, _detail = _sync("unblock", identifier, BLOCK_LABEL)
+    urc, detail = _sync("unblock", identifier, BLOCK_LABEL)
+    if not _landed(urc):
+        return (f"unprobeable, kind unknown; capout recorded, but the unblock did NOT land (rc {urc}: "
+                f"{detail[:120]}); the next run retries the unblock")
+    _seen(identifier, now, apply, forget=True)
     return f"unprobeable, kind unknown; handed to cap-ladder.py (capout recorded, unblock rc {urc})"
 
 # Each returns (passed, evidence). The evidence string goes onto the Linear issue
@@ -628,26 +794,8 @@ def recorded_probe(ls, identifier: str, since: str | None) -> str | None:
     """
     if not since:
         return None
-    nodes, after, seen_cursors = [], None, set()
-    while True:
-        conn = ((ls.graphql(PARK_COMMENTS, {"id": identifier, "s": since, "a": after})
-                 .get("issue") or {}).get("comments")) or {}
-        nodes += conn.get("nodes") or []
-        info = conn.get("pageInfo") or {}
-        cursor = info.get("endCursor")
-        # Normal exit is hasNextPage. The other two guards are for the ways a
-        # remote connection hands back a loop with no end -- a missing cursor,
-        # or one that stops advancing -- and this runs unattended before every
-        # pick, where a spin costs the whole pick rather than one issue.
-        if not info.get("hasNextPage") or not cursor or cursor in seen_cursors:
-            break
-        seen_cursors.add(cursor)
-        after = cursor
-    nodes.sort(key=lambda n: n.get("createdAt") or "")
     found = None
-    for node in nodes:
-        if (node.get("createdAt") or "") < since:
-            continue
+    for node in _park_comments(ls, identifier, since):
         for match in PROBE_MARKER.findall(node.get("body") or ""):
             found = match
     return found
