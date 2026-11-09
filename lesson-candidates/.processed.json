@@ -1145,5 +1145,17 @@
     "status": "published",
     "date": "2026-11-07",
     "lesson_id": "review-later-rounds-against-the-delta-not-the-whole-diff"
+  },
+  "838641d49d30f5c4": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "assert-the-coverage-invariant-not-each-failure-case"
+  },
+  "4a4f33cbafab41c0": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "gating-externally-published-claims-truth-handling-provenance"
   }
 }
