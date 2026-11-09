@@ -149,12 +149,12 @@ def _manifest_channel(file_path, table_channel, notes):
         ledger = _load_evidence_ledger()
         q_dir = ledger.instance_root(root, allow_unregistered=True)
     except Exception as exc:
-        named = [p.name for p in root.glob("q-*")
-                 if p.is_dir() and p.name != "q-system" and (p / "canonical").is_dir()]
-        if len(named) > 1:
-            notes.append(f"voice-check.json NOT READ under {root}: {len(named)} instance "
-                         f"dirs hold canonical/ ({', '.join(sorted(named))}); using the "
-                         "path table.")
+        # Say why the resolver refused, but only where a manifest exists to be ignored:
+        # a non-instance draft has none, and that is the no-manifest case (review K8:
+        # the registry/filesystem disagreement was dropped silently, 6 of 25 instances).
+        if any(root.glob("q-*/config/voice-check.json")):
+            notes.append(f"voice-check.json NOT READ under {root}: {exc}; "
+                         "using the path table.")
         # Anything else (not an instance, no canonical/) is the no-manifest case.
         return None
     manifest = q_dir / "config" / "voice-check.json"
@@ -175,7 +175,9 @@ def _manifest_channel(file_path, table_channel, notes):
         notes.append(f"{manifest}: surface {table_channel!r} names lane {lane!r} with no "
                      "engine_channel (lane nowhere in lanes); using the path table.")
         return None
-    if channel not in TABLE_CHANNELS:
+    # isinstance first: a list or object is unhashable and `in frozenset` raises, which
+    # would exit 1 from a hook that promises exit 0 (review K8, reproduced live).
+    if not isinstance(channel, str) or channel not in TABLE_CHANNELS:
         notes.append(f"{manifest}: lane {lane!r} engine_channel {channel!r} is not a "
                      f"channel the engine takes ({', '.join(sorted(TABLE_CHANNELS))}); "
                      "using the path table.")
