@@ -131,7 +131,9 @@ REFUSALS_PATH = EVIDENCE_PATH.parent / "refusals.json"
 # linear-sync.py words that mean "could not look", never "nothing moves it" (PR #689
 # review, major 2). test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap
 # pins both against the real module with real ledger files.
-NO_HISTORY_PREFIX = "no worker history:"
+# No row, and no ledger file at all, are both facts: the fleet never ran it (PR #689
+# review r2, minor 2). A torn ledger or a non-object is a failed read.
+NO_HISTORY_PREFIXES = ("no worker history:", "no attempts ledger here")
 PR_UNREAD_PREFIX = "its PRs could not be read"
 
 # Every reason that is not a hold label. `builder` is the ticket building the
@@ -171,8 +173,8 @@ REASONS = {
     },
     "alert-lane-refused": {
         "builder": None,
-        "what": "A fleet alert that linear-alert-triage.py refuses (no project, or already "
-                "started), and ready() refuses every alert (audit row 50).",
+        "what": "A fleet alert that linear-alert-triage.py promotion_refusal refuses (each "
+                "item names its refusal), and ready() refuses every alert (audit row 50).",
     },
     "other-owner": {
         "builder": None,
@@ -253,8 +255,12 @@ def named(text: str) -> tuple:
     return ("consumer", text)
 
 
-def gap(reason: str, builder, what: str) -> tuple:
-    return ("gap", {"reason": reason, "builder": builder, "what": what})
+def gap(reason: str, builder, what: str, why=None) -> tuple:
+    """`why`, when given, is this item's own cause, shown on its line in the gap comment."""
+    val = {"reason": reason, "builder": builder, "what": what}
+    if why:
+        val["why"] = why
+    return ("gap", val)
 
 
 def from_registry_row(label: str, row: dict) -> tuple:
@@ -310,12 +316,22 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
             # The owner sweep labels an ownerless ticket owner:sana first, so the lane
             # is asked about the ticket as the owner sweep will leave it.
             nodes = list(((issue.get("labels") or {}).get("nodes")) or []) + [{"name": OWNER_LABEL}]
-            if refuse(dict(issue, labels={"nodes": nodes})) is None:
+            why = refuse(dict(issue, labels={"nodes": nodes}))
+            if why is None:
                 first = from_registry_row(OWNER_LABEL, rows[OWNER_LABEL])[1]
                 return named(f"{first}, then linear-alert-triage.py (com.kipi.linear-alert-triage)")
-        elif refuse(issue) is None:
-            return named("linear-alert-triage.py (com.kipi.linear-alert-triage)")
-        return gap("alert-lane-refused", None, REASONS["alert-lane-refused"]["what"])
+        else:
+            why = refuse(issue)
+            if why is None:
+                return named("linear-alert-triage.py (com.kipi.linear-alert-triage)")
+        # PR #689 review r2, minor 3: a hold label whose row is a known gap keeps that
+        # row's builder (ASK-3960, ASK-3961), and every other refusal carries the
+        # lane's own words to the item line, so the gap ticket names the real blocker.
+        for label in READY_LABEL_ORDER:
+            row = rows.get(label) or {}
+            if row.get("missing") and row.get("refused_when") == "present" and label in labels:
+                return from_registry_row(label, row)
+        return gap("alert-lane-refused", None, REASONS["alert-lane-refused"]["what"], why=why)
     for label in READY_LABEL_ORDER:
         row = rows.get(label)
         if row is None:
@@ -421,7 +437,8 @@ def plan(tickets: list, prs: list, ctx: dict, now: datetime) -> dict:
             g = out["gaps"].setdefault(val["reason"], {"builder": val["builder"],
                                                        "what": val["what"], "items": [],
                                                        "refs": []})
-            g["items"].append(line)
+            # The digest is over refs, so a cause on the line never rewrites the comment.
+            g["items"].append(f"{line}: {val['why'][:120]}" if val.get("why") else line)
             g["refs"].append(ref)
     for g in out["gaps"].values():
         g["items"].sort()
@@ -495,21 +512,31 @@ def track_refusals(prev, refusal: dict, now: datetime) -> tuple:
 
     The clock runs while a project stays refused, whatever the reason: an expired
     token that turns into a hook-parity gap is still a project nobody enters. It
-    stops only when the project is seen reachable. A project not preflighted this
-    run keeps its clock, because not checked is not recovered. A row that cannot be
-    read starts the clock now, the safe side: the gap waits, it is never minted.
+    stops when the project is seen reachable. A project not preflighted this run
+    keeps its clock, because not checked is not recovered, but only while it was
+    seen refused within IDLE_HOURS (PR #689 review r2, minor 1): a project with no
+    idle ticket is never preflighted, so a carried row froze its `since`, and the
+    next one-hour blip read as 121h and filed at once. A row that cannot be read,
+    or was not seen lately, starts the clock now: the gap waits, it is never minted.
     """
     prev = prev if isinstance(prev, dict) else {}
-    state = {p: r for p, r in prev.items() if p not in refusal and isinstance(r, dict)}
+
+    def recent(row) -> bool:
+        seen = _ts(row.get("last_seen")) if isinstance(row, dict) else None
+        return seen is not None and timedelta(0) <= now - seen <= timedelta(hours=IDLE_HOURS)
+
+    prev = {p: r for p, r in prev.items() if recent(r)}
+    state = {p: r for p, r in prev.items() if p not in refusal}
     hours = {}
+    stamp = now.isoformat(timespec="seconds")
     for proj, why in refusal.items():
         if not why:
             continue
         row = prev.get(proj)
-        since = _ts(row.get("since")) if isinstance(row, dict) else None
+        since = _ts(row.get("since")) if row else None
         if since is None or since > now:
             since = now
-        state[proj] = {"since": since.isoformat(timespec="seconds"), "why": why}
+        state[proj] = {"since": since.isoformat(timespec="seconds"), "last_seen": stamp, "why": why}
         hours[proj] = (now - since).total_seconds() / 3600.0
     return state, hours
 
@@ -554,8 +581,8 @@ def started_classes(sync, issues: list, state_dir: str) -> dict:
     be: "" released it, worker_history's text is no history, live_claim's text is a
     live run, open_prs' line is an open PR. Two answers mean "could not look" and
     are "unread", skipped and reported, never a gap (PR #689 review, major 2): a
-    worker_history answer that is not its no-row answer (no ledger, a torn ledger),
-    and a failed PR read, which started_hold_reason folds into its own prose.
+    worker_history answer that is neither no row nor no ledger file (a torn ledger,
+    a non-object), and a failed PR read, which started_hold_reason folds into prose.
     """
     out = {}
     for i in issues:
@@ -566,7 +593,7 @@ def started_classes(sync, issues: list, state_dir: str) -> dict:
         if why == "":
             out[ident] = ("released", "")
         elif why == sync.worker_history(state_dir, ident):
-            out[ident] = ("history" if why.startswith(NO_HISTORY_PREFIX) else "unread", why)
+            out[ident] = ("history" if why.startswith(NO_HISTORY_PREFIXES) else "unread", why)
         elif why == sync.live_claim(os.path.join(state_dir, "worktrees"), ident):
             out[ident] = ("claim", why)
         elif why.startswith("open PR "):

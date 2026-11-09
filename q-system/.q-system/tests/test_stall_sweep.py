@@ -129,8 +129,8 @@ def test_each_reason_names_its_consumer_or_its_gap(t, want):
 @pytest.mark.parametrize("labels,want", [
     (("owner:sana",), ("consumer", "linear-alert-triage.py")),
     (("owner:sana", "needs-scope"), ("gap", "alert-lane-refused")),
-    (("owner:sana", "blocked:capability"), ("gap", "alert-lane-refused")),
-    (("owner:assaf",), ("gap", "alert-lane-refused")),
+    (("owner:sana", "blocked:capability"), ("gap", "label-blocked-capability")),
+    (("owner:assaf",), ("gap", "label-owner-assaf")),
     (("owner:cole",), ("gap", "alert-lane-refused")),
     ((), ("consumer", "linear-owner-sweep.py")),
     (("needs-scope",), ("gap", "alert-lane-refused")),
@@ -144,6 +144,19 @@ def test_an_alert_is_decided_before_the_hold_labels_as_ready_does(labels, want):
     kind, val = sweep.classify_ticket(ticket(desc=ALERT, labels=labels), ctx())
     assert kind == want[0]
     assert want[1] in (val["reason"] if kind == "gap" else val)
+
+
+@needs_sweep
+def test_an_alert_gap_names_its_builder_and_the_lanes_own_reason():
+    """PR #689 review r2, minor 3. A label refusal with a registry builder keeps that
+    builder (ASK-3960, ASK-3961), and every other refusal carries promotion_refusal's
+    own words on its item line, so the gap ticket names the real blocker."""
+    _, g = sweep.classify_ticket(ticket(desc=ALERT, labels=("owner:sana", "blocked:capability")), ctx())
+    assert g["builder"] == HOLD["blocked:capability"]["missing"]["ticket"]
+    p = sweep.plan([ticket(desc=ALERT, labels=("owner:sana", "needs-scope"))], [], ctx(), NOW)
+    line = p["gaps"]["alert-lane-refused"]["items"][0]
+    want = ALERT_TRIAGE.promotion_refusal(ticket(desc=ALERT, labels=("owner:sana", "needs-scope")))
+    assert want and want[:40] in line
 
 
 @needs_sweep
@@ -167,10 +180,11 @@ def test_a_refusal_younger_than_24h_is_a_blip_not_a_gap():
 @needs_sweep
 def test_a_refusal_clock_runs_while_refused_and_resets_on_recovery():
     t0 = (NOW - timedelta(hours=30)).isoformat()
-    prev = {"ktlyst": {"since": t0, "why": "preflight refuses: credentials"},
-            "brag": {"since": t0, "why": "preflight refuses: hooks"},
+    seen = (NOW - timedelta(hours=1)).isoformat()
+    prev = {"ktlyst": {"since": t0, "last_seen": seen, "why": "preflight refuses: credentials"},
+            "brag": {"since": t0, "last_seen": seen, "why": "preflight refuses: hooks"},
             "alice": "not a row",
-            "zeta": {"since": t0, "why": "preflight refuses: remote"}}
+            "zeta": {"since": t0, "last_seen": seen, "why": "preflight refuses: remote"}}
     state, hours = sweep.track_refusals(
         prev, {"ktlyst": "preflight refuses: hooks", "brag": "", "alice": "x", "new": "y"}, NOW)
     assert state["ktlyst"]["since"] == t0 and hours["ktlyst"] == 30  # continuous, any reason
@@ -178,6 +192,22 @@ def test_a_refusal_clock_runs_while_refused_and_resets_on_recovery():
     assert hours["alice"] == 0 and hours["new"] == 0                  # corrupt or new: starts now
     assert state["zeta"]["since"] == t0                               # not checked is not recovered
     assert sweep.track_refusals(["not", "a", "dict"], {"k": "x"}, NOW)[1] == {"k": 0}
+
+
+@needs_sweep
+def test_a_refusal_not_seen_for_24h_is_forgotten_not_carried():
+    """PR #689 review r2, minor 1. A project with no idle ticket is not preflighted, so
+    its row was carried with a frozen `since`, and the next single blip read as 121h
+    and filed at once. A row must be re-seen refused within 24h to keep its clock."""
+    t0 = (NOW - timedelta(hours=121)).isoformat()
+    stale = (NOW - timedelta(hours=116)).isoformat()
+    prev = {"ktlyst": {"since": t0, "last_seen": stale, "why": "preflight refuses: remote"},
+            "quiet": {"since": t0, "last_seen": stale, "why": "preflight refuses: remote"},
+            "legacy": {"since": t0, "why": "no last_seen"}}
+    state, hours = sweep.track_refusals(prev, {"ktlyst": "preflight refuses: remote"}, NOW)
+    assert hours["ktlyst"] == 0 and state["ktlyst"]["since"] == NOW.isoformat(timespec="seconds")
+    assert state["ktlyst"]["last_seen"] == NOW.isoformat(timespec="seconds")
+    assert "quiet" not in state and "legacy" not in state
 
 
 @needs_sweep
@@ -350,8 +380,10 @@ def test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap(tmp_path,
     monkeypatch.setattr(sync, "open_prs", boom)
     row = json.dumps({"ASK-9001": {"count": 1}})
     assert sweep.started_classes(sync, [t], ledger("pr-read-fails", row))["ASK-9001"][0] == "unread"
-    assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "unread"
     assert sweep.started_classes(sync, [t], ledger("torn-ledger", "{x"))["ASK-9001"][0] == "unread"
+    assert sweep.started_classes(sync, [t], ledger("not-an-object", "[]"))["ASK-9001"][0] == "unread"
+    # PR #689 review r2, minor 2: no ledger file is a fact, the fleet never ran it.
+    assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "history"
     other = json.dumps({"ASK-1": {"count": 1}})
     assert sweep.started_classes(sync, [t], ledger("no-row", other))["ASK-9001"][0] == "history"
 
