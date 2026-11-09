@@ -545,6 +545,23 @@ assert "DROPPED" in sys.argv[4] and "|| exit 2" in sys.argv[4], f"the drop was n
 EOF
 echo "ok: exit-2 existence guard survives the merge twice; the bare [ -f ] form is dropped and reported"
 
+# PR #704 review: the survivor is the basename in the message, not the braces. A
+# braced guard whose message omits the script name keys like the hook and is dropped.
+cp "$FIXTURE/instance4.json" "$FIXTURE/instance4-nameless.json"
+python3 - "$FIXTURE/instance4-nameless.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["hooks"]["PostToolUse"][0]["hooks"][1]["command"] = 'test -f "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py" || { echo "gate script missing: the gate cannot run" >&2; exit 2; }'
+json.dump(d, open(sys.argv[1], "w"))
+EOF
+OUTN=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4-nameless.json")
+python3 - "$FIXTURE/instance4-nameless.json" "$OUTN" <<'EOF'
+import json, sys
+cmds = [h["command"] for h in json.load(open(sys.argv[1]))["hooks"]["PostToolUse"][0]["hooks"]]
+assert len(cmds) == 1 and "DROPPED" in sys.argv[2], f"a braced guard that omits the basename must be dropped: {cmds}"
+EOF
+echo "ok: a braced guard whose message omits the script name is dropped (the basename is the survivor)"
+
 # Shell contract of the guard itself, on a temp tree: exit 2 with its message
 # on stderr when the script is missing, exit 0 when present. Run through bash -c
 # as the harness runs a hook command, with CLAUDE_PROJECT_DIR pointing at the tree.

@@ -188,8 +188,10 @@ def hook_key(command):
     invokes (see hook_script_names), or the raw string when none is recognizable.
     Contract (ASK-4249): an instance PostToolUse gate may carry a SEPARATE entry
     `test -f "$CLAUDE_PROJECT_DIR/<p>" || { echo ...; exit 2; }` beside its own
-    hook. It survives only in that braced spelling; the bare `[ -f X ] || exit 2`
-    keys like the hook and is dropped. Pinned by test-settings-merge.sh."""
+    hook. What keeps it is the script basename repeated in the echo message,
+    which adds a second key element; the braces do not. A guard whose message
+    omits the basename keys like the hook and is dropped. Pinned by
+    test-settings-merge.sh."""
     names = hook_script_names(command)
     return names if names else command
 
