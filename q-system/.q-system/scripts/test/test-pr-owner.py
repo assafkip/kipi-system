@@ -181,8 +181,13 @@ check("CI green, never reviewed, run's review spent -> wait", act_of(unrev, revi
 rv_key = "assafkip/kipi-system#526"
 check("review asked at this head 3h ago -> wait",
       act_of(unrev, state={"reviews": {rv_key: {"head": unrev["head"], "at": NOW - 3 * H}}})["action"], "wait")
-check("review asked at this head 49h ago, no verdict -> red, closes with no ticket",
-      act_of(unrev, state={"reviews": {rv_key: {"head": unrev["head"], "at": NOW - 49 * H}}})["action"], "close-comment")
+# PR #693 round 4: a review that did not land is our write, not a verdict on the PR.
+check("review asked at this head 49h ago, no verdict -> review again, held, never a close",
+      [(d["action"], bool(d.get("held"))) for d in
+       [act_of(unrev, state={"reviews": {rv_key: {"head": unrev["head"], "at": NOW - 49 * H}}})]], [("review", True)])
+check("... and with the run's one review spent -> wait, still never a close",
+      act_of(unrev, state={"reviews": {rv_key: {"head": unrev["head"], "at": NOW - 49 * H}}}, review_left=0)["action"],
+      "wait")
 check("CI red, no ticket -> close-comment",
       act_of(pr(ci="red", ci_names=["validate=FAILURE"], branch="feat/x", title="x", reviewer=("unreviewed", FLOOR)))["action"],
       "close-comment")
@@ -269,17 +274,18 @@ check("approved, CI green, MERGEABLE, merge state UNKNOWN -> wait",
 no_field = po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": False, "mergeable": "MERGEABLE"})["merge_state"]
 check("gh omitted mergeStateStatus on an approved green PR -> wait, not a rework (round 5 minor)",
       act_of(pr(reviewer=ok_rv, merge_state=no_field), t2540)["action"], "wait")
-tried = {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H}}}
-check("approved, BEHIND, update-branch already asked at this head -> red (the update did not move it)",
-      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540, tried)["action"], "close-requeue")
+tried = {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "accepted": NOW - H}}}
+check("approved, BEHIND, GitHub accepted update-branch at this head and the head did not move -> update again, held",
+      [(d["action"], bool(d.get("held"))) for d in [act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540, tried)]],
+      [("update", True)])
 check("approved, BEHIND, update-branch failed twice at this head -> update again (PR #693 round 2)",
       act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
              {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "fails": 2, "err": "HTTP 502"}}})["action"],
       "update")
-check("approved, BEHIND, update-branch failed 3 times at this head -> red, naming the error",
+check("approved, BEHIND, update-branch failed 30 times at this head -> update again, never red, naming the error",
       [(d["action"], "HTTP 403" in d["reason"]) for d in [act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
-       {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "fails": 3, "err": "HTTP 403"}}})]],
-      [("close-requeue", True)])
+       {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H, "fails": 30, "err": "HTTP 403"}}})]],
+      [("update", True)])
 check("approved, BEHIND, an update asked at an older head -> update again",
       act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
              {"updates": {"assafkip/kipi-system#526": {"head": "c" * 40, "at": NOW - H}}})["action"], "update")
@@ -668,12 +674,15 @@ po.main(["--apply"])
 check("49h later, #2 still red at the same head is closed", len(sent_for(2, "close")), 1)
 check("49h later, #1, reopened at the head pr-owner closed, gets no second close or comment",
       sent_for(1, "close") + sent_for(1, "comment"), [])
+fork_alert = lambda a: a[1].endswith("slack-notify.sh") and ("PR #9 (" in a[2] or "PR #11 (" in a[2])  # noqa: E731
 check("49h later, neither fork's alert is filed a second time",
-      ([a for a in writes() if a[1].endswith("slack-notify.sh")], len(linear_db()["issues"]), linear_db()["comments"]),
-      ([], 2, []))
+      ([a for a in writes() if fork_alert(a)], len([i for i in linear_db()["issues"] if names(i) and names(i)[0] in ("9", "11")]),
+       linear_db()["comments"]), ([], 2, []))
+check("49h later, #4's review that never landed files its one held alert (PR #693 round 4)",
+      len([a for a in writes() if a[1].endswith("slack-notify.sh") and "PR #4 (" in a[2]]), 1)
 check("... and its ticket gets the resume note", any(a[3] == "ASK-3036" for a in writes() if a[1].endswith("linear-sync.py")), True)
-check("49h later, #4 reviewed at this head with no verdict is closed, not reviewed again",
-      (len(sent_for(4, "close")), len([a for a in writes() if len(a) > 2 and a[2] == "review"])), (1, 0))
+check("49h later, #4 reviewed at this head with no verdict is reviewed again, never closed (PR #693 round 4)",
+      (len(sent_for(4, "close")), len([a for a in writes() if len(a) > 2 and a[2] == "review"])), (0, 1))
 
 print("-- a failed requeue and a refusal are loud (PR #659 round 4, minors)")
 # linear-sync.py's own failure shape: "BLOCK: ..." on stderr and its EXIT_USAGE.

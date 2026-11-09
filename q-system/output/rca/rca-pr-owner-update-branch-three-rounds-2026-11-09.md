@@ -67,16 +67,23 @@ Reviewed sound in all three rounds, with mutants that each go red on their own p
 
 ## Fixes shipped
 
-- Surface fix: none yet. This lane stops at the round cap, and the fresh Sana agent ships it on branch sana/ask-4099.
-- Structural fix: none yet. Action item 1 is the structural fix (a write failure is classed as environmental and never reaches the content table). Action item 3 removes the false sentences the anchor check could not see.
+Shipped by sana-4099b (the fresh agent) on sana/ask-4099, round 4:
+- Surface fix: decide() no longer sends a failed or unmoved update-branch to `red`. It holds, asks again next run, exits 2, and files one alert per PR and head (held_alert()).
+- Structural fix: every write pr-owner makes was checked against rule 5, not only update-branch. The red table now reads what GitHub says about the PR, never pr-owner's record of its own writes:
+  - `gh pr merge`, `gh pr comment`, `gh pr close`: already held and retried with exit 2. They now also file the one alert.
+  - `gh pr update-branch`, failed or accepted with the head unmoved: held (was a close).
+  - `kipi review` with no verdict after 48h, or crashed: asked again after 48h (was a close). The reviewer's exit 9, its own machine code, is asked again next run.
+  - linear-sync note after a rework comment: the 48h start when the note lands, and only the note is asked again (was a close on a 48h clock no worker saw).
+  - linear-sync note after a close: the alert names the ticket (was a lost note).
+- Tests from the input class: contract promise P52 (scenario G) runs a failure, a permanent failure and a recovery for each write. The contract suite is now 52 promises, 152 assertions. Red first: 23 checks failed on head e5f7e459. Ten mutants each fail on their own promise.
 
 ## Action items
 
-- [ ] A failed update-branch never enters `red`. The PR holds. The first failure at a head files one alert through slack-notify.sh, recorded only when `filed_ticket()` names a ticket, and linear-alert-triage.py takes it nightly. The run exits 2, and the next hour retries, so an outage heals itself. Red-first: a 502 for 4 hours then success gives no close and the update lands; a 403 for 24 hours gives no close and 1 alert, not 24. — owner: fresh Sana agent (launched by the orchestrator on this lane's report) — type: code + test
-- [ ] Decide the accepted-call-but-head-unmoved case on purpose: keep red with a reason in code, or hold it like the item above. — owner: fresh Sana agent — type: code
-- [ ] Make the promise sentences true: the docstring at pr-owner.py:55, decide()'s comment at :889, and P50's `says` in test-pr-owner-contract.py. — owner: fresh Sana agent — type: doc + test
-- [ ] Review the delta only (rule 11): `KIPI_REVIEW_EXPECT_HEAD=<head> bash q-system/.q-system/scripts/pr-review-agent.sh 693 --issue ASK-4099 --post --delta` from the pinned checkout. Merge on kipi/reviewer-approved success plus validate green: `gh pr merge 693 --repo assafkip/kipi-system --squash --match-head-commit <head>`. — owner: fresh Sana agent — type: process
-- [ ] After merge, reinstall com.kipi.pr-owner from a fresh worktree at origin/main (`install-plist.sh com.kipi.pr-owner`), dry run from the pinned tree, `launchctl kickstart gui/501/com.kipi.pr-owner`, read ~/.config/kipi/pr-owner.log. — owner: fresh Sana agent — type: process
+- [x] A failed update-branch never enters `red`. The PR holds. The first failure at a head files one alert through slack-notify.sh, recorded only when `filed_ticket()` names a ticket, and linear-alert-triage.py takes it nightly. The run exits 2, and the next hour retries, so an outage heals itself. Red-first: a 502 for 4 hours then success gives no close and the update lands; a 403 for 24 hours gives no close and 1 alert, not 24. Owner: fresh Sana agent (launched by the orchestrator on this lane's report). Type: code + test
+- [x] (decided: held, like the item above) Decide the accepted-call-but-head-unmoved case on purpose: keep red with a reason in code, or hold it like the item above. Owner: fresh Sana agent. Type: code
+- [x] Make the promise sentences true: the docstring at pr-owner.py:55, decide()'s comment at :889, and P50's `says` in test-pr-owner-contract.py. Owner: fresh Sana agent. Type: doc + test
+- [ ] Review the delta only (rule 11): `KIPI_REVIEW_EXPECT_HEAD=<head> bash q-system/.q-system/scripts/pr-review-agent.sh 693 --issue ASK-4099 --post --delta` from the pinned checkout. Merge on kipi/reviewer-approved success plus validate green: `gh pr merge 693 --repo assafkip/kipi-system --squash --match-head-commit <head>`. Owner: fresh Sana agent. Type: process
+- [ ] After merge, reinstall com.kipi.pr-owner from a fresh worktree at origin/main (`install-plist.sh com.kipi.pr-owner`), dry run from the pinned tree, `launchctl kickstart gui/501/com.kipi.pr-owner`, read ~/.config/kipi/pr-owner.log. Owner: fresh Sana agent. Type: process
 
 ## Lessons
 
