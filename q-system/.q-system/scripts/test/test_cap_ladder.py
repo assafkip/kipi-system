@@ -927,24 +927,35 @@ def case_mutant() -> None:
               held_stays_quiet(LADDER) is True and held_stays_quiet(mut) is False)
 
 
+# Runtime bound (ASK-4264). The file spawns about 400 child pythons (171 of them
+# cap-ladder.py --apply, each with its own fake gh/sync/fable), one after the
+# other. Measured 72 s on a laptop, over the capability gate's 60 s default, and
+# 3 of 4 CI runs on 2026-11-09 printed `RED: test-timeout (60s)`. Every case
+# builds its own temp world, so the cases share nothing and now run in threads.
+# After the split the file takes 30 to 35 s on a laptop (case_review_687 is the
+# longest single case). The bound is 45 s: above that measurement, under the 60 s
+# gate default, so a file that creeps back up fails here by name first. The
+# env override is how the red side was shown (bound 30 failed at 35 s).
+RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "45"))
+
+
 def main() -> int:
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    t0 = time.monotonic()
     print("test_cap_ladder.py")
+    cases = [case_worker, case_sites]
     if not LADDER.exists():
         check("cap-ladder.py exists", False, f"no {LADDER}: every cap still ends in a page and a park")
     else:
-        case_rungs()
-        case_decisions()
-        case_events()
-        case_edges()
-        case_owns()
-        case_review_fixes()
-        case_review_round2()
-        case_ask_lifecycle()
-        case_pytest_refusal()
-        case_review_687()
-        case_mutant()
-    case_worker()
-    case_sites()
+        cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
+                 case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
+                 case_mutant] + cases
+    # list() re-raises any exception a case threw, so a crash still fails the file.
+    with ThreadPoolExecutor(max_workers=len(cases)) as pool:
+        list(pool.map(lambda f: f(), cases))
+    took = time.monotonic() - t0
+    check(f"runtime: whole file in {took:.0f}s, bound {RUNTIME_BOUND_S:.0f}s", took <= RUNTIME_BOUND_S)
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
     return 1 if FAILS else 0
 
