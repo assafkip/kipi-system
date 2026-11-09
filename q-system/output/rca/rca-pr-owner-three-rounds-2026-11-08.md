@@ -76,6 +76,7 @@ Written by the round-7 agent (a fresh Sana), per iteration-speed rule 6.
   - Green: test-pr-owner-contract.py, 46 promises and 97 assertions, PASS. test-pr-owner.py still has 140 checks, PASS.
   - Mutants: 16, each a mutated pr-owner.py in a temp dir run against the contract test. 15 were killed on the first pass. The no-age-gate mutant lived: every young fixture was also under the 12h quiet gate. A 30h-old PR now covers that, and 16 of 16 are killed.
   - The coverage rule caught 4 promise-shaped lines in this fix's own comments before they had rows.
+  - Stopped before round 7 by D35 (usage at 80%, about 40h to the reset). The push of 38ccdc46 failed twice on the network to github.com (HTTP/2 framing error, then connection reset, with GitHub API TLS timeouts in between). Not tried a third time. The commits are on the local branch in the worktree.
 
 ## Recurrence
 
