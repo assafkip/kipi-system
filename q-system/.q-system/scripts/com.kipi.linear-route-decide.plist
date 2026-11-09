@@ -8,9 +8,10 @@
      Install: install-plist.sh com.kipi.linear-route-decide.
 
      05:20 after cap-ladder (04:40), so the two model passes never overlap.
-     The limit bounds the model calls a night. Measured 2026-11-09: the board walk
-     takes 18s and one decision about 11s, so 20 is about 4 minutes, and the 350
-     tickets no rule routes clear in about 18 nights.
+     The limit bounds the model calls a night. Measured 2026-11-09 02:36Z, 20
+     report-only asks: the board walk 18s, a median decision 9s, and 2 asks hit
+     the 180s timeout, so 20 took 10.5 minutes. The 350 tickets no rule routes
+     clear in about 18 nights. A SPLIT files no ticket (ASK-4133).
      No double hyphen in this comment: XML forbids one there. -->
 <plist version="1.0">
 <dict>

@@ -1172,7 +1172,7 @@
             "path": "q-system/.q-system/scripts/linear-route-decide.py",
             "marker": "def decide_one",
             "test": "q-system/.q-system/tests/test_linear_route_decide.py",
-            "what": "Nightly (com.kipi.linear-route-decide, 05:20, 20 a night): what no rule routes gets one validated decision, ROUTE to a dispatch target on the board, CLOSE (Canceled with the reason, reversible) or SPLIT. Two refused answers land on CLOSE, no fleet repo owns this. No park (ASK-3959 stage 2). Measured 2026-11-09: 350 tickets in its population."
+            "what": "Nightly (com.kipi.linear-route-decide, 05:20, 20 a night): what no rule routes gets one validated decision, ROUTE to a dispatch target on the board, CLOSE (Canceled with the reason, reversible) or SPLIT (a route to its first part, the parts in the record, no ticket filed). A write that was undone is never made again; a reopened close is routed instead (ASK-4133). Two refused answers land on CLOSE, no fleet repo owns this. No park (ASK-3959 stage 2). Measured 2026-11-09: 350 tickets in its population."
           }
         ]
       },

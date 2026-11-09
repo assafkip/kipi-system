@@ -3,7 +3,7 @@
 **Date:** 2026-11-08
 **Trigger:** iteration-speed rule 6 and the lane's stop rule: 3 review rounds without approval on kipi-system PR #690 (ASK-3959 stage 2). The sana-route lane stops here and starts no round 4.
 **Surface-fix commit:** ca5ebd41 (round 2 fix; round 3 findings still open)
-**Structural-fix commit:** none yet. ASK-4133 owns it.
+**Structural-fix commit:** the ASK-4133 commit on this branch, after 67c0035f. It removes the create path and adds one `undone()` read that the parse and the write both consult.
 
 ## What happened
 
@@ -61,12 +61,14 @@ Every SPLIT test proved one night, or two nights with no change in between. No t
 ## Fixes shipped
 
 - Surface fix: round 1 and round 2 duplicate paths closed (a33e07b4, ca5ebd41), pinned by tests and mutants.
-- Structural fix: not shipped. ASK-4133 holds the design: one state-aware `split_state()` read that every branch consults, or remove the creates from v1 after measuring how often SPLIT is chosen.
+- Structural fix (ASK-4133), decided by measuring first. 20 report-only asks on the live board (2026-11-09 02:36Z): ROUTE 15, CLOSE 3, SPLIT 0, 2 timeouts. The rule, set before the run: 4 SPLITs or fewer means drop the creates.
+  - A SPLIT now routes the ticket to its first part and lists the parts in the record. The pass files no ticket.
+  - The class is wider than SPLIT: any write this pass made, then undone, must not be made again. A reopened CLOSE was the same defect on another branch. `undone(issue, landed)` reads it from the board record and the decisions log. The parse refuses a repeat, and `apply_decision` refuses it too.
 
 ## Action items
 
-- [ ] Measure SPLIT frequency with a 20-ticket report-only run, then build ASK-4133 on the chosen shape. Run the next review with KIPI_REVIEW_MAX_ROUNDS=4 and a PR comment that says why. — owner: the fresh Sana agent the orchestrator starts on ASK-4133 after this lane's report — type: code
-- [ ] Add a multi-night state test: split, then a failed record, then a reopen and a cancel of the children, then nights 2 and 3. Assert no duplicate child and no re-cancel of a reopened parent. — owner: the same agent, inside ASK-4133 — type: test
+- [x] Measure SPLIT frequency with a 20-ticket report-only run, then build ASK-4133 on the chosen shape. Run the next review with KIPI_REVIEW_MAX_ROUNDS=4 and a PR comment that says why. — owner: the fresh Sana agent the orchestrator starts on ASK-4133 after this lane's report — type: code
+- [x] Add a multi-night state test. Shipped as 8 tests that run `one_ticket()` over a board that keeps state, with an undo between nights, covering every write (CLOSE, ROUTE, SPLIT) and both sources (board, log). — owner: the same agent, inside ASK-4133 — type: test
 - [ ] Do not install com.kipi.linear-route-decide until #690 merges. It is not installed now, so the round 3 defect cannot run. — owner: the agent that merges #690 installs it from a fresh origin/main tree — type: process
 
 ## Lessons
