@@ -24,6 +24,7 @@
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",
     "com.kipi.linear-not-done-reopen",
+    "com.kipi.stall-sweep",
     "com.kipi.worktree-reaper"
   ],
   "shared_exceptions": {
@@ -71,12 +72,6 @@
     },
     "com.kipi.linear-owner-sweep": {
       "reason": "Reads instance-registry.json to tell fleet projects from outside ones; pinned, it read origin's copy, which lacks infohawk, and left infohawk tickets unowned with exit 0 (PR #654 review, major).",
-      "ticket": "ASK-3967",
-      "since": "2026-11-08",
-      "expires": "2026-12-08"
-    },
-    "com.kipi.stall-sweep": {
-      "reason": "Reads instance-registry.json to tell fleet projects and repos from outside ones; origin's copy lags the shared checkout's, so a pinned copy would skip an instance (PR #654 review, major).",
       "ticket": "ASK-3967",
       "since": "2026-11-08",
       "expires": "2026-12-08"

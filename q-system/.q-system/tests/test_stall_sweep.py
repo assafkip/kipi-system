@@ -146,6 +146,89 @@ def test_a_started_ticket_that_was_not_read_is_never_a_gap():
     assert sweep.classify_ticket(ticket(state="started"), ctx(started={}))[0] == "skip"
 
 
+# --- the interactive lane (ASK-4095) ------------------------------------------------
+
+@needs_sweep
+def test_a_live_lane_is_the_consumer_not_a_gap():
+    """A lane writes no attempts-ledger row, so started_hold_reason reads its ticket
+    as no worker history. Without the marker that is a false started-no-history gap."""
+    live = ("live", "lane marker: sana-1 holds ASK-9001 until 2026-11-09T18:00:00Z")
+    c = ctx(started={"ASK-9001": ("history", "no worker history")}, lanes={"ASK-9001": live})
+    kind, val = sweep.classify_ticket(ticket(state="started"), c)
+    assert kind == "consumer" and "sana-1" in val
+    # Todo too: a lane can hold a ticket it has not moved yet.
+    c = ctx(lanes={"ASK-9001": live})
+    assert sweep.classify_ticket(ticket(labels=("owner:sana", "blocked:capability")), c)[0] == "consumer"
+
+
+@needs_sweep
+def test_a_marker_that_cannot_be_read_holds_forever_so_it_is_a_gap():
+    c = ctx(lanes={"ASK-9001": ("unreadable", "its lane marker /l/ASK-9001.json names no expiry")})
+    kind, val = sweep.classify_ticket(ticket(state="started"), c)
+    assert kind == "gap" and val["reason"] == "lane-marker-unreadable"
+
+
+@needs_sweep
+def test_lane_answers_are_read_from_the_real_lane_marker(tmp_path, monkeypatch):
+    """The live/unreadable split rests on linear-sync.py's own wording, so it is
+    pinned against that function with real marker files, never a copy of it."""
+    monkeypatch.setenv("KIPI_LANES_DIR", str(tmp_path))
+    (tmp_path / "ASK-1.json").write_text(json.dumps({"agent": "a", "until": "2099-01-01T00:00:00Z"}))
+    (tmp_path / "ASK-2.json").write_text(json.dumps({"agent": "a", "until": "2000-01-01T00:00:00Z"}))
+    (tmp_path / "ASK-3.json").write_text("{not json")
+    (tmp_path / "ASK-4.json").write_text(json.dumps({"agent": "a"}))
+    got = sweep.lane_classes(sweep._load_sync(), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
+    assert got["ASK-1"][0] == "live"
+    assert "ASK-2" not in got and "ASK-5" not in got  # expired and absent: no lane
+    assert got["ASK-3"][0] == "unreadable" and got["ASK-4"][0] == "unreadable"
+
+
+@needs_sweep
+def test_main_reads_the_lane_for_every_idle_ticket(tmp_path, monkeypatch, capsys):
+    """The wiring, report only: main() asks lane_marker and hands the answer to the
+    classifier. The pure tests above cannot see main() drop it."""
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat().replace("+00:00", "Z")
+    t = dict(ticket(state="started"), updatedAt=stamp, startedAt=stamp)
+
+    class MainSync:
+        def linear_api_key(self): return "k"
+        def graphql(self, q, v):
+            if "teams(filter" in q:
+                return {"teams": {"nodes": [{"id": "T"}]}}
+            return {"issues": {"nodes": [t], "pageInfo": {"hasNextPage": False}}}
+        def started_hold_reason(self, i, state_dir=""): return "no worker history: x"
+        def worker_history(self, d, ident): return "no worker history: x"
+        def live_claim(self, d, ident): return ""
+        def lane_marker(self, ident):
+            return f"lane marker: sana-1 holds {ident} until 2099-01-01T00:00:00Z"
+
+    reg = tmp_path / "instance-registry.json"
+    reg.write_text(json.dumps({"skeleton": {"name": "kipi-system", "path": str(tmp_path)},
+                               "instances": []}))
+    monkeypatch.setenv("KIPI_DISPATCH_TARGETS", str(tmp_path / "no-overlay.json"))
+    monkeypatch.setenv("KIPI_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(sweep, "_load_sync", lambda: MainSync())
+    monkeypatch.setattr(sweep, "archived", lambda path, label, run=None: False)
+    monkeypatch.setattr(sweep, "reachability", lambda facts, projects, run=None: {})
+    monkeypatch.setattr(sweep, "fleet_repos", lambda facts, run=None, is_archived=None: ([], []))
+    monkeypatch.setattr(sweep, "pr_owner_set", lambda: None)
+    assert sweep.main(["--json", "--registry", str(reg)]) == sweep.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["gaps"] == {} and "interactive lane" in out["named"][0]
+
+
+@needs_sweep
+def test_the_sweep_walks_exactly_the_labels_ready_refuses():
+    """READY_LABEL_ORDER is the sweep's copy of ready()'s order. A label ready() starts
+    refusing gets a registry row (test_hold_label_consumers.py), and this fails until
+    the sweep walks it too, so a new hold is never read as "no hold"."""
+    census = _load("hold_label_census_for_stall_sweep", HERE / "test_hold_label_consumers.py")
+    worker = (SCRIPTS / "linear-worker.sh").read_text()
+    assert set(sweep.READY_LABEL_ORDER) == set(census.refused_labels(census.ready_source(worker)))
+    lane_holds = json.loads((QDIR / "hold-label-consumers.json").read_text())["lane_holds"]
+    assert set(lane_holds) == {sweep.LANE_HOLD}
+
+
 @needs_sweep
 def test_started_classes_read_by_equality_with_the_modules_own_answers():
     class S:
@@ -399,18 +482,19 @@ def test_refuses_apply_under_pytest():
 # --- the wiring -------------------------------------------------------------------
 
 @needs_sweep
-def test_the_job_runs_hourly_from_the_shared_checkout():
-    """Shared, not pinned: it reads instance-registry.json relative to its own tree,
-    and origin's copy lags the shared one (PR #654 review, major; ASK-3967)."""
+def test_the_job_runs_hourly_from_its_pinned_checkout():
+    """Pinned, per the DoR and the 2026-11-07 worktree ruling. It reads the registry
+    of its own tree, which is the copy the pinned dispatcher reads (kipi-dispatch.sh
+    $REPO/instance-registry.json), so it never names a consumer that cannot see the
+    project. A row only the shared checkout carries is invisible to both (ASK-3967)."""
     import plistlib
     raw = (SCRIPTS / "com.kipi.stall-sweep.plist").read_text()
     assert "q-system/.q-system/scripts/stall-sweep.py --apply" in raw
     rendered = plistlib.loads(raw.replace("__KIPI_REPO__", "/r").replace("__HOME__", "/h").encode())
     assert rendered["StartInterval"] == 3600
     table = json.loads((QDIR / "job-checkouts.json").read_text())
-    assert "com.kipi.stall-sweep" not in table["pinned"]
-    exc = table["shared_exceptions"]["com.kipi.stall-sweep"]
-    assert "instance-registry.json" in exc["reason"] and exc["ticket"] == "ASK-3967"
+    assert "com.kipi.stall-sweep" in table["pinned"]
+    assert "com.kipi.stall-sweep" not in table["shared_exceptions"]
 
 
 @needs_sweep

@@ -25,6 +25,14 @@ THE POPULATION
     has no machine-readable end record, so the end state that can be read is the
     ticket's (state, attempts-ledger row, tree claim, open PR), which is what
     linear-sync.py started_hold_reason already decides. It is asked, not copied.
+    The attempts ledger is a set of counters with no start/end pair, so it cannot
+    answer this on its own. An interactive lane holds no claim and writes no ledger
+    row; its lane marker (ASK-4095) is read first, through linear-sync.py lane_marker.
+
+WHERE IT RUNS. Pinned (job-checkouts.json), from its own tree at origin/main. Its
+registry is that tree's instance-registry.json, the copy the pinned dispatcher reads
+(kipi-dispatch.sh), so a project the dispatcher cannot see is reported as the gap it
+is, never named as reachable. A row only the shared checkout carries is ASK-3967's.
 
 THE CONSUMER, IN ready()'s ORDER (linear-worker.sh). A label ready() refuses maps
 through hold-label-consumers.json (ASK-4011), the one table of hold labels. Every
@@ -139,6 +147,12 @@ REASONS = {
         "what": "Started and held by linear-sync.py started_hold_reason for a reason no "
                 "job acts on.",
     },
+    "lane-marker-unreadable": {
+        "builder": None,
+        "what": "Its lane marker (~/.config/kipi/lanes, lane-mark.py) cannot be read or names "
+                "no expiry. linear-sync.py lane_marker fails closed on it, so the redrives "
+                "hold the ticket with no end, and no lane is behind it.",
+    },
     "alert-lane-refused": {
         "builder": None,
         "what": "A fleet alert that linear-alert-triage.py refuses (no project, or already "
@@ -244,7 +258,8 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
 
     ctx keys: rows (hold-label table rows), fleet (board names), home (the skeleton's
     board name), refusal {project: "" reachable | why not}, started {identifier:
-    (class, text)} for started tickets.
+    (class, text)} for started tickets, lanes {identifier: ("live" | "unreadable",
+    text)} from lane_classes.
     """
     labels = label_names(issue)
     proj = project_of(issue)
@@ -252,6 +267,14 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
         return ("skip", "Chief: the chief rebuild owns it (audit C6)")
     if proj is not None and proj in ctx.get("archived", ()):
         return ("skip", "the archived engagement (RULE-2026-10-23-B)")
+    # Before every label: a live lane moves the ticket whatever it carries. A lane
+    # writes no attempts-ledger row, so without this its started ticket reads as
+    # started-no-history and files a ticket to build a consumer that is already on it.
+    lane = (ctx.get("lanes") or {}).get(issue.get("identifier"))
+    if lane:
+        if lane[0] == "live":
+            return named(f"the interactive lane that holds it ({lane[1]})")
+        return gap("lane-marker-unreadable", None, REASONS["lane-marker-unreadable"]["what"])
     if proj is not None and proj not in ctx["fleet"]:
         return gap("outside-fleet-project", None, REASONS["outside-fleet-project"]["what"])
     rows = ctx["rows"]
@@ -491,6 +514,26 @@ def started_classes(sync, issues: list, state_dir: str) -> dict:
     return out
 
 
+LANE_LIVE_PREFIX = "lane marker: "
+
+
+def lane_classes(sync, identifiers) -> dict:
+    """{identifier: ("live" | "unreadable", text)} for tickets a lane marker names.
+
+    Asked of linear-sync.py lane_marker, the reader the redrives use (ASK-4095), so
+    the sweep and the redrives agree on which lanes are live. "" (no marker, or an
+    expired one) is no lane. Its live answer opens with LANE_LIVE_PREFIX and every
+    fail-closed answer does not; test_lane_answers_are_read_from_the_real_lane_marker
+    pins that split against the function itself, with real marker files.
+    """
+    out = {}
+    for ident in identifiers:
+        why = sync.lane_marker(ident)
+        if why:
+            out[ident] = ("live" if why.startswith(LANE_LIVE_PREFIX) else "unreadable", why)
+    return out
+
+
 class ArchiveGuardMissing(RuntimeError):
     """No hook to ask, so nothing may be read: the same refusal pr-owner.py makes."""
 
@@ -710,6 +753,7 @@ def main(argv: list) -> int:
     except Exception as exc:
         incomplete.append(f"started tickets: {str(exc)[:160]}")
         started = {}
+    lanes = lane_classes(sync, [t.get("identifier") or "" for t in idle])
     local = linear_registry.local_by_project(facts)
     try:
         arch = {p for p in {project_of(t) for t in idle} - {None}
@@ -735,7 +779,8 @@ def main(argv: list) -> int:
             incomplete.append(f"PRs {slug}: {str(exc)[:160]}")
 
     ctx = {"rows": hold, "fleet": fleet, "home": facts["skeleton_project"] or HOME_PROJECT,
-           "refusal": refusal, "started": started, "archived": arch, "pr_owned": owned}
+           "refusal": refusal, "started": started, "lanes": lanes, "archived": arch,
+           "pr_owned": owned}
     p = plan(tickets, prs, ctx, now)
 
     handed, unhanded = {}, {}

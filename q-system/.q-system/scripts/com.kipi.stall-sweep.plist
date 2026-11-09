@@ -2,15 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- Hourly stall sweep: every work item idle 24h names its next consumer (ASK-4019).
      TEMPLATE, not a loadable plist: install-plist.sh renders __KIPI_REPO__ and __HOME__.
-     Install: install-plist.sh with the single label, from the primary checkout.
+     Install: install-plist.sh com.kipi.stall-sweep (the single label).
 
      WHY A JOB. Founder, 2026-11-08: "make sure that we still don't have tickets, PRs or
      any work that goes to someone and stalls or stalls anywhere." The dead-end audit that
      day found 22 of 56 exit sites with no consumer; a sweep finds the 23rd.
 
-     SHARED, NOT PINNED (job-checkouts.json shared_exceptions, ASK-3967). It reads
-     instance-registry.json relative to its own tree, and origin's copy lags the shared
-     checkout's (PR #654 review, major). It writes nothing in the checkout.
+     PINNED (job-checkouts.json), so it runs from its own tree at origin/main, never from
+     the shared checkout. Its registry is that tree's, the copy the pinned dispatcher
+     reads, so it never names a consumer that cannot see the project. It writes nothing
+     in any checkout: evidence goes to ~/.local/state/kipi/stall-sweep/.
 
      HOURLY, so a gap is seen within the hour it crosses 24h. The comment it keeps on a
      gap ticket is rewritten only when the item set changes, so hourly is not an hourly
