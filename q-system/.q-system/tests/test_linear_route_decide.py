@@ -306,41 +306,13 @@ def test_a_split_routes_to_its_first_part_and_names_every_part_in_the_record(fac
     sync = FakeSync()
     t = sync.put(ticket(labels=()))
     decide.apply_decision(decide.Board(sync, "team-1"), t, d, set())
-    assert [k for k, _ in sync.writes] == ["update", "update", "update", "comment"]
-    assert list(sync.writes[0][1]["input"]) == ["description"]
-    assert sync.writes[1][1]["input"] == {"projectId": "p-kipi"}
-    body = sync.writes[3][1]["input"]["body"]
+    assert [k for k, _ in sync.writes] == ["update", "update", "comment"]
+    assert sync.writes[0][1]["input"] == {"projectId": "p-kipi"}
+    body = sync.writes[2][1]["input"]["body"]
     assert "fix the hook" in body and "fix the crm" in body and "files none" in body
+    # Round 5: the record says only what is true, and names the parts' consumer.
+    assert "no job reads this list yet" in body and "ASK-4155" in body
     assert not writes_of(sync, "update", "stateId")
-
-
-def test_a_split_s_parts_reach_the_dor_drafter_through_the_description(facts):
-    """PR #690 review r4, major 2: the parts were only in a comment, and the DoR
-    drafter builds from project, title and the first 4000 characters of the
-    description. With a 5000-character description, part 2 must still be in
-    the drafter's own prompt, built by the drafter's own PROMPT."""
-    drafter = _load("linear_dor_drafter_for_decide_test", "linear-dor-drafter.py")
-    d, _ = decide.make_parse(names())(SPLIT_ANSWER, 1)
-    sync = FakeSync()
-    sync.put(ticket(body="x" * 5000))
-    decide.apply_decision(decide.Board(sync, "team-1"), sync.view("ASK-7"), d, set())
-    t = sync.view("ASK-7")
-    prompt = drafter.PROMPT.format(project=t["project"]["name"], title=t["title"],
-                                   description=t["description"][:4000])
-    assert "fix the crm" in prompt and "ASK Consulting" in prompt
-    assert t["description"].endswith("x" * 5000)
-
-
-def test_the_parts_section_is_replaced_not_stacked_and_any_other_decision_removes_it():
-    d1, _ = decide.make_parse(names())(SPLIT_ANSWER, 1)
-    d2 = dict(d1, project="ASK Consulting", children=list(reversed(d1["children"])))
-    once = decide.with_parts("the original text", d1)
-    twice = decide.with_parts(once, d2)
-    assert twice.count(decide.PARTS_OPEN) == 1 and "the original text" in twice
-    assert "fix the crm. the crm loads (this ticket)" in twice
-    for other in ({"kind": "ROUTE", "project": "kipi-system"}, {"kind": "CLOSE"}):
-        assert decide.with_parts(twice, other) == "the original text"
-    assert decide.with_parts("plain", {"kind": "ROUTE", "project": "x"}) == "plain"
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +393,7 @@ def test_split_then_failed_record_then_undo_files_nothing_and_repeats_nothing_ov
     sync.put(ticket(body=QUIET))
     rec1, _ = night(sync, facts, SPLIT_ANSWER)
     assert rec1["outcome"] == "write-failed"
-    assert rec1["writes"] == ["description", "project=kipi-system"]
+    assert rec1["writes"] == ["project=kipi-system"]
     assert not [c for c in sync.view("ASK-7")["comments"]["nodes"]]
     unset_project(sync)
     reopen(sync)
@@ -432,8 +404,8 @@ def test_split_then_failed_record_then_undo_files_nothing_and_repeats_nothing_ov
     assert night(sync, facts, SPLIT_ANSWER) == (None, None)
     assert not writes_of(sync, "create") and not writes_of(sync, "update", "stateId")
     assert [v["input"]["projectId"] for v in writes_of(sync, "update", "projectId")] == ["p-kipi", "p-ask"]
-    desc = sync.view("ASK-7")["description"]
-    assert desc.count(decide.PARTS_OPEN) == 1 and "ASK Consulting: fix the hook. the hook stops failing (this ticket)" in desc
+    assert not writes_of(sync, "update", "description")
+    assert sync.view("ASK-7")["description"] == QUIET
 
 
 def test_a_project_that_landed_before_its_label_failed_is_still_known(facts):
@@ -517,11 +489,13 @@ def test_the_record_names_its_write_so_a_later_night_reads_it_back(d):
     assert decide.undone(t, {}) == {decide.write_key(d)}
 
 
-def test_this_pass_has_no_path_that_files_a_ticket():
-    """ASK-4133: the create path is gone, not guarded. A later edit that brings
-    one back has to delete this test in the open."""
+def test_this_pass_has_no_path_that_files_a_ticket_or_writes_a_description():
+    """ASK-4133: the create path is gone, not guarded. PR #690 round 5: so is the
+    description writer (ASK-4155 owns the parts' consumer). A later edit that
+    brings either back has to delete this test in the open."""
     src = (SCRIPTS / "linear-route-decide.py").read_text()
     assert "issueCreate" not in src and "parentId" not in src
+    assert '"description":' not in src and "set_description" not in src
 
 
 def _run_report_only(monkeypatch, facts, answers, n=20):
