@@ -76,18 +76,53 @@ def label_id(g, name: str) -> str:
     return nodes[0]["id"] if nodes else ""
 
 
-def route(t: dict, g, apply: bool, ladder: list, sync: list) -> str:
+def ask_text(t: dict) -> str:
+    """The one ask this job files for a ticket. answered() matches on it, so the two
+    can never disagree about which ask is this ticket's."""
+    return f"{t['identifier']} asks: {(t.get('title') or '')[:200]}"
+
+
+def answered(t: dict, status: Path) -> dict | None:
+    """The founder's resolved answer to THIS job's ask for this ticket, or None.
+
+    THE ANSWERED ASK WAS ASKED AGAIN (ASK-3961). cap-ladder.py dedupes only against
+    OPEN asks, so once the founder ran --resolve, the ticket was still owner:assaf,
+    still matched, and the next night filed the same ask as a new row: a decision
+    he made came back every morning. Read-only: cap-ladder.py is the file's one
+    writer. Matched on the issue AND this job's ask text, so a resolve of some other
+    ask on the same ticket (a cap-ladder decision) is not taken as this answer."""
+    try:
+        rows = [json.loads(l) for l in status.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        return None
+    want = ask_text(t)
+    hits = [r for r in rows if r.get("issue") == t["identifier"] and r.get("kind") == "founder-decision"
+            and r.get("resolved") and r.get("ask") == want]
+    return hits[-1] if hits else None
+
+
+def route(t: dict, g, apply: bool, ladder: list, sync: list, status: Path) -> str:
     ident = t["identifier"]
     hit = asks_founder(t)
-    if hit:
+    done = answered(t, status) if hit else None
+    if hit and not done:
         if not apply:
             return f"{ident}: asks a founder question ({hit!r}); would list it for the founder"
-        p = subprocess.run(ladder + ["--founder-ask", ident, "founder-decision",
-                                     f"{ident} asks: {(t.get('title') or '')[:200]}"],
+        p = subprocess.run(ladder + ["--founder-ask", ident, "founder-decision", ask_text(t)],
                            capture_output=True, text=True, timeout=60)
-        return f"{ident}: asks a founder question ({hit!r}); {(p.stdout or p.stderr).strip()[:160]}"
+        said = (p.stdout or p.stderr).strip()[:160]
+        return f"{ident}: asks a founder question ({hit!r}); " + (said if p.returncode == 0 else f"ask NOT listed ({said})")
+    if done:
+        why = (f"**Relabelled owner:sana by owner-assaf-route.py (ASK-3961).** The founder answered this "
+               f"ticket's ask ({done.get('id')}, resolved by {done.get('resolved_by') or 'unnamed'}): "
+               f"\"{(done.get('note') or 'no note given')[:300]}\". The fleet works it from that answer.")
+    else:
+        why = ("**Relabelled owner:sana by owner-assaf-route.py (ASK-3961).** owner:assaf is an error "
+               "path, and this ticket asks no spend, scope or outside-reach question, so the fleet works "
+               "it: the worker picks it once it has a Definition of Ready, and linear-dor-drafter.py "
+               "writes one if it has none.")
     if not apply:
-        return f"{ident}: no founder question; would relabel owner:sana"
+        return f"{ident}: " + ("the founder answered its ask" if done else "no founder question") + "; would relabel owner:sana"
     sana, founder = label_id(g, SANA), next((l["id"] for l in t["labels"]["nodes"] if l["name"] == FOUNDER), "")
     # issueAddLabel and issueRemoveLabel name ONE label each, so a label another
     # actor adds in between is never overwritten (the PR #77 lesson).
@@ -96,12 +131,8 @@ def route(t: dict, g, apply: bool, ladder: list, sync: list) -> str:
     if not ok:
         return f"{ident}: could not add owner:sana; left as is, the next run retries"
     g('mutation($i:String!,$l:String!){issueRemoveLabel(id:$i,labelId:$l){success}}', {"i": t["id"], "l": founder})
-    subprocess.run(sync + ["progress", ident,
-                           "**Relabelled owner:sana by owner-assaf-route.py (ASK-3961).** owner:assaf is an error "
-                           "path, and this ticket asks no spend, scope or outside-reach question, so the fleet works "
-                           "it: the worker picks it once it has a Definition of Ready, and linear-dor-drafter.py "
-                           "writes one if it has none.", "--agent", "sana"], capture_output=True, text=True)
-    return f"{ident}: relabelled owner:sana"
+    subprocess.run(sync + ["progress", ident, why, "--agent", "sana"], capture_output=True, text=True)
+    return f"{ident}: relabelled owner:sana" + (" (the founder answered its ask)" if done else "")
 
 
 def main(argv=None) -> int:
@@ -117,9 +148,11 @@ def main(argv=None) -> int:
         g = _ls().graphql
     ladder = (os.environ.get("OWNER_ROUTE_LADDER") or f"{sys.executable} {HERE / 'cap-ladder.py'}").split()
     sync = (os.environ.get("OWNER_ROUTE_SYNC") or f"{sys.executable} {HERE / 'linear-sync.py'}").split()
+    # The path cap-ladder.py writes (its STATUS); read here, never written.
+    status = Path(os.environ.get("CAP_LADDER_STATUS") or Path.home() / ".local/state/kipi/morning-status.jsonl")
     rows = tickets(g)
     for t in rows:
-        print("owner-assaf-route: " + route(t, g, args.apply, ladder, sync))
+        print("owner-assaf-route: " + route(t, g, args.apply, ladder, sync, status))
     print(f"owner-assaf-route: {len(rows)} owner:assaf ticket(s){'' if args.apply else ' (dry)'}")
     return 0
 

@@ -52,7 +52,10 @@ def world(td: Path, script: Path = SCRIPT):
          "description": "fix the guard", "labels": {"nodes": lab()}},
         {"id": "u2", "identifier": "ASK-2", "title": "renew the vendor subscription",
          "description": "costs $40 a month; should we keep it", "labels": {"nodes": lab()}}]))
-    return dict(os.environ, W=str(td), OWNER_ROUTE_FIXTURE=str(td / "fake_linear.py"),
+    # HOME and CAP_LADDER_STATUS point into the temp dir: the script READS the
+    # status file, and a test reads no live path either.
+    return dict(os.environ, W=str(td), HOME=str(td), CAP_LADDER_STATUS=str(td / "status.jsonl"),
+                OWNER_ROUTE_FIXTURE=str(td / "fake_linear.py"),
                 OWNER_ROUTE_LADDER=f"{sys.executable} {td / 'ladder.py'}",
                 OWNER_ROUTE_SYNC=f"{sys.executable} {td / 'sync.py'}")
 
@@ -87,6 +90,32 @@ def main() -> int:
         check("a spend question: listed for the founder through cap-ladder.py --founder-ask, label kept",
               any(c[:2] == ["--founder-ask", "ASK-2"] for c in logged(td, "ladder"))
               and not any(c[:2] == ["progress", "ASK-2"] for c in logged(td, "sync")), out)
+    # THE ANSWERED ASK (ASK-3961). The founder resolved the ask; the ticket was
+    # still owner:assaf and still matched, so the next night filed the same ask
+    # again, forever. Answered means the fleet works it now.
+    for case, rows, want_answered in (
+            ("resolved", [{"id": "ASK-2:a", "issue": "ASK-2", "kind": "founder-decision",
+                           "ask": "ASK-2 asks: renew the vendor subscription", "resolved": True,
+                           "note": "approved, keep it", "resolved_by": "founder"}], True),
+            ("open", [{"id": "ASK-2:a", "issue": "ASK-2", "kind": "founder-decision",
+                       "ask": "ASK-2 asks: renew the vendor subscription", "resolved": False}], False),
+            ("another ask resolved", [{"id": "ASK-2:b", "issue": "ASK-2", "kind": "founder-decision",
+                                       "ask": "spend: some other thing", "resolved": True}], False)):
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            env = world(td)
+            (td / "status.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            out = run(env, SCRIPT, "--apply")
+            asked = any(c[:2] == ["--founder-ask", "ASK-2"] for c in logged(td, "ladder"))
+            note = [c for c in logged(td, "sync") if c[:2] == ["progress", "ASK-2"]]
+            removed = any(e["v"].get("i") == "u2" and e["v"].get("l") == "L-owner:assaf" for e in logged(td, "linear"))
+            if want_answered:
+                ok = not asked and removed and note and "approved, keep it" in note[0][2]
+            else:
+                ok = asked and not removed and not note
+            check(f"founder ask {case}: " + ("relabelled owner:sana with the answer, never asked again"
+                                             if want_answered else "asked (deduped by the ladder), label kept"),
+                  ok, (out, logged(td, "ladder"), note))
     with tempfile.TemporaryDirectory() as t:
         td = Path(t)
         mut = td / "owner-assaf-route.py"
