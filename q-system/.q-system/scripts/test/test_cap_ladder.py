@@ -506,7 +506,7 @@ def case_review_fixes() -> None:
     check("review: founder_asks.py renders the ask with the command that resolves it",
           err is None and any("ASK-1" in r and "--resolve ASK-1" in r for r in rows), (rows, err))
     out = ladder(env, "--resolve", "ASK-1", "--note", "token granted")
-    rows2, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    rows2 = (fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"])) or ([], None))[0]   # None is OFF: nothing open
     reset(env)
     at(env, 4)
     out2 = ladder(env, "--apply")
@@ -721,7 +721,7 @@ def case_review_687() -> None:
         dry_open = [r for r in _status_rows(env) if not r["resolved"]]
         ladder(env, "--apply")
         rows = _status_rows(env)
-        rendered, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+        rendered = (fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"])) or ([], None))[0]   # None is OFF: nothing open
         check(f"687 major 2 ({door}): a canceled held ticket's ask is resolved as moot, by the ladder, "
               "and the brief drops it; a dry run resolves nothing",
               len(dry_open) == 1 and len(rows) == 1 and rows[0]["resolved"] is True
@@ -743,12 +743,42 @@ def case_review_687() -> None:
     at(env, 5)
     ladder(env, "--apply")
     rows = _status_rows(env)
-    rendered, _ = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    rendered = (fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"])) or ([], None))[0]   # None is OFF: nothing open
     check("687 round 2 major: a released founder hold keeps its ask while the ticket lives, "
           "and the ask is resolved as moot when the ticket closes",
           released and len(still_open) == 1 and len(rows) == 1 and rows[0]["resolved"] is True
           and "completed" in rows[0].get("note", "") and rendered == [], (released, still_open, rows, rendered))
     td.cleanup()
+    # Round 3 major, and the class behind rounds 1 to 3 (RCA
+    # rca-founder-ask-outlives-ticket-three-rounds-2026-11-09.md): a released row
+    # re-caps, rung 5 answers SPLIT, the ladder closes the ticket itself, and the
+    # new decision row carries no ask_id. And an ask the ladder never made
+    # (--founder-ask, as #668 and #670 file them) whose ticket is canceled.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend: approve the 900 dollar seat\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: part one :: it works\n"])
+    ladder(env, "--apply")
+    at(env, 4)
+    world(env, main_sha="m2", changed=["q-system/a.py"])
+    ladder(env, "--apply")
+    world(env, changed=[])
+    at(env, 5)
+    led(env, "record-capout", "ASK-1", "fifth cap")
+    split = "SPLIT into" in ladder(env, "--apply")
+    edit_ticket(env, "ASK-1", state_type="completed")
+    ladder(env, "--founder-ask", "ASK-2", "founder-decision", "access: grant the vendor seat")
+    edit_ticket(env, "ASK-2", state_type="canceled")
+    at(env, 6)
+    ladder(env, "--apply")
+    rows = _status_rows(env)
+    rendered = fa.collect(None, {}, status=Path(env["CAP_LADDER_STATUS"]))
+    check("687 round 3 major: an ask dies with its ticket on every path: SPLIT after a release, "
+          "and an ask the ladder never made",
+          split and len(rows) == 2 and all(r["resolved"] for r in rows)
+          and {r["issue"]: r.get("note", "") for r in rows} == {"ASK-1": "moot: ASK-1 is completed in Linear",
+                                                                 "ASK-2": "moot: ASK-2 is canceled in Linear"}
+          and rendered is None, (split, rows, rendered))
+    td.cleanup()
+
     # Round 2 minor: a FOUNDER-DECISION that names its kind but no ask says THAT.
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: spend:\n",
                               RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
@@ -758,16 +788,22 @@ def case_review_687() -> None:
                               RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
     out2 = ladder(env, "--apply")
     td.cleanup()
-    check("687 round 2 minor: a FOUNDER-DECISION with its kind but no ask is refused for the missing ask",
-          "no ask" in out and "no ask" in out2 and "no allowed kind" not in out + out2, (out, out2))
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON FOUNDER-DECISION: outside reach: email the vendor\n",
+                              RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    out3 = ladder(env, "--apply")
+    td.cleanup()
+    check("687 rounds 2 and 3 minor: an allowed kind in the wrong form is refused for its form, "
+          "never as 'no allowed kind' or 'no ask'",
+          all("not in the form" in o for o in (out, out2, out3))
+          and "no allowed kind" not in out + out2 + out3 and "but no ask" not in out + out2 + out3, (out, out2, out3))
 
     # minor 3: an absent status file is the registry's OFF signal, not an empty section.
     with tempfile.TemporaryDirectory() as td:
         got = fa.collect(None, {}, status=Path(td) / "never-written.jsonl")
         (Path(td) / "all-resolved.jsonl").write_text(json.dumps({"id": "A:1", "resolved": True}) + "\n")
         got2 = fa.collect(None, {}, status=Path(td) / "all-resolved.jsonl")
-    check("687 minor 3: no status file returns None (OFF); a file with nothing open is an empty section",
-          got is None and got2 == ([], None), (got, got2))
+    check("687 minor 3 and round 3 minor: no status file, or nothing open, returns None (OFF)",
+          got is None and got2 is None, (got, got2))
 
     # minor 4: the pytest guard keys on EVERY live path, not on CAP_LADDER_STATE alone.
     for var in LIVE_VARS:

@@ -13,9 +13,9 @@ retired 2026-09-11); nothing reads the file on a schedule.
 Registered in morning-brief.py OPTIONAL_SECTIONS. Read-only: the one writer is
 cap-ladder.py (status_add, status_resolve).
 
-OFF switch: no status file. An instance where cap-ladder.py never asked anything
-has none, and collect() returns None, so the brief renders no section at all
-(test_off_switches.py pins it).
+OFF switch: no open ask. With no status file (cap-ladder.py never asked
+anything) or with every ask resolved, collect() returns None, so the brief
+renders no section at all (test_off_switches.py pins both).
 """
 from __future__ import annotations
 
@@ -49,4 +49,7 @@ def collect(now, sources: dict, status: Path | None = None):
         if r.get("clipped"):     # cap-ladder.py status_add clips at ASK_CHARS; the RCA holds the rest
             ask = f"{ask} [clipped, full text in {r.get('rca') or 'the ticket RCA'}]"
         out.append(f"{r.get('issue')}: {ask}. When done: {r.get('resolve') or 'cap-ladder.py --resolve ' + str(r.get('issue'))}")
-    return out, None
+    # NOTHING OPEN IS OFF TOO (PR #687 round 3, minor). Once any ask was written
+    # and resolved, the file exists, and ([], None) rendered "nothing" every
+    # morning: the steady state of every instance that uses this channel.
+    return (out, None) if out else None

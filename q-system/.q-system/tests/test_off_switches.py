@@ -56,6 +56,12 @@ def test_founder_asks_with_no_status_file_is_off_and_writes_nothing(tmp_path):
     out = fa.collect(NOW, {}, status=status)
     assert out is None, "off must be None (no section), not an empty section"
     assert not (tmp_path / "state").exists(), "the off state created the status file's directory"
+    # Every ask resolved is off too (PR #687 round 3): no permanent "nothing" section.
+    done = tmp_path / "done.jsonl"
+    done.write_text('{"id": "ASK-1:a", "issue": "ASK-1", "ask": "spend: x", "resolved": true}\n')
+    before = done.read_text()
+    assert fa.collect(NOW, {}, status=done) is None, "a file with no open ask must be off, not 'nothing'"
+    assert done.read_text() == before, "the reader wrote the status file"
 
 
 def test_weekly_runner_dry_run_writes_nothing(tmp_path):

@@ -440,23 +440,34 @@ def ask_resolved(ask_id: str) -> bool:
     return bool(ask_id) and any(r.get("id") == ask_id and r.get("resolved") for r in _status_rows())
 
 
-def drop_dead(issue: str, state: dict, state_type: str, apply: bool) -> None:
-    """A ticket closed in Linear leaves the ladder, and the ask it waited on goes with it.
+def sweep_dead_asks(apply: bool) -> int:
+    """Every OPEN ask whose ticket is closed in Linear is resolved as moot. Returns how many.
 
-    BOTH POP SITES CALL THIS (PR #687 review, major 2). They popped the ladder's
-    row and left its ask open, and founder_asks.py filters only on `resolved`, so
-    /q-morning listed a decision for a dead ticket every morning with no exit but
-    a hand-run --resolve. The ask is resolved whether or not the hold was still on:
-    a hold released by event (b) leaves its ask open too (lifecycle 3)."""
-    row = state.pop(issue, None) or {}
-    ask_id = (row.get("decision") or {}).get("ask_id", "")
-    if not ask_id or ask_resolved(ask_id) or not any(r.get("id") == ask_id for r in _status_rows()):
-        return
-    if not apply:
-        say(f"[dry] {issue}: is {state_type}; would resolve its founder ask {ask_id} as moot")
-        return
-    status_resolve(ask_id, f"moot: {issue} is {state_type} in Linear", by=JOB)
-    say(f"{issue}: is {state_type}; its founder ask {ask_id} is resolved as moot")
+    ONE PLACE OWNS AN ASK'S END, keyed on the asks themselves (PR #687 rounds 1 to
+    3, RCA q-system/output/rca/rca-founder-ask-outlives-ticket-three-rounds-2026-11-09.md).
+    Each round tied the ask's end to a ladder code path, and each round found a
+    path that dropped it: the two state.pop sites (round 1), a release by event
+    (b), (c) or (d) (round 2), and a SPLIT or CLOSE that replaced the decision row
+    and its ask_id (round 3). The ticket is the truth, so the ticket is read. This
+    also ends asks the ladder never made (--founder-ask callers). An unreadable
+    ticket is read again at the next run; a dry run only says what it would do."""
+    open_by_issue: dict = {}
+    for r in _status_rows():
+        if not r.get("resolved") and r.get("id") and r.get("issue"):
+            open_by_issue.setdefault(r["issue"], []).append(r["id"])
+    done = 0
+    for issue, ids in sorted(open_by_issue.items()):
+        t = ticket(issue)
+        st = (t or {}).get("state_type")
+        if st not in DEAD_TYPES:
+            continue
+        for ask_id in ids:
+            if not apply:
+                say(f"[dry] {issue}: is {st}; would resolve its founder ask {ask_id} as moot")
+            elif status_resolve(ask_id, f"moot: {issue} is {st} in Linear", by=JOB):
+                say(f"{issue}: is {st}; its founder ask {ask_id} is resolved as moot")
+                done += 1
+    return done
 
 
 def write_json(path: Path, data) -> None:
@@ -700,9 +711,11 @@ def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
     # TWO FAULTS, TWO MESSAGES (PR #687 round 2, minor). "spend:" with nothing
     # after it, or "spend approve" with no colon, names an allowed kind; calling
     # it "no allowed kind" sent the reader to the wrong fix.
+    # "names its kind but no ask" was wrong for "outside reach: email the vendor"
+    # (round 3 nit): the ask is there, the kind is mistyped. The form is the fault.
     if re.match(r"FOUNDER-DECISION:\s*(spend|access|outside)\b", arg, re.I):
-        return "free", (f"'{arg[:80]}' names its kind but no ask: write "
-                        "FOUNDER-DECISION: <kind>: <the one-line ask>")
+        return "free", (f"'{arg[:80]}' starts with an allowed kind but is not in the form "
+                        "FOUNDER-DECISION: <spend|access|outside>: <the one-line ask>")
     if re.match(r"FOUNDER-DECISION:", arg, re.I):
         return "free", f"'{arg[:80]}' is a FOUNDER-DECISION of no allowed kind: it must name spend, access or outside"
     return "free", f"'{arg[:80]}' is free text, not an owned ticket, a fleet PR or a FOUNDER-DECISION"
@@ -994,7 +1007,7 @@ def main(argv=None) -> int:
             if t is None:
                 continue
             if t.get("state_type") in DEAD_TYPES:
-                drop_dead(issue, state, t["state_type"], args.apply)
+                state.pop(issue, None)      # its ask, if any, ends in sweep_dead_asks
                 continue
             pr = prs_by_issue.get(issue)
             slug = slug_by_pr.get((issue, pr["number"])) if pr else project_slug.get(t.get("project", ""))
@@ -1015,24 +1028,17 @@ def main(argv=None) -> int:
             done += 1
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
-            # A RELEASED ROW WITH AN OPEN ASK IS STILL READ (PR #687 round 2, major).
-            # Event (b), (c) or (d) releases a founder hold with its ask open, on
-            # purpose: the question is still real until the ticket re-caps (and
-            # dedupes to the same id, lifecycle 4) or dies. This loop skipped any
-            # row not held, so a released ticket that then closed kept its ask in
-            # /q-morning forever.
-            ask_id = (row.get("decision") or {}).get("ask_id", "")
-            ask_open = bool(ask_id) and not ask_resolved(ask_id)
-            if issue in caps or not (row.get("held") or ask_open):
+            # A release keeps its ask open on purpose: the question is still real
+            # until the ticket re-caps (and dedupes to the same id, lifecycle 4) or
+            # dies, and sweep_dead_asks below ends it then.
+            if not row.get("held") or issue in caps:
                 continue
             t = ticket(issue)
             if t is None:
                 continue
             if t.get("state_type") in DEAD_TYPES:
-                drop_dead(issue, state, t["state_type"], args.apply)
+                state.pop(issue, None)      # its ask ends in sweep_dead_asks
                 continue
-            if not row.get("held"):
-                continue        # released and alive: its ask waits on the founder, a re-cap or the ticket's end
             d = row.get("decision") or {}
             slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
             # UNREADABLE IS NOT OWNERLESS (PR #662 round 4, minor). ticket() is None on a
@@ -1051,6 +1057,7 @@ def main(argv=None) -> int:
             report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
                            "waiting_on": wait, "red": red,
                            "note": "the blocker lost its owner, so it is a dead end" if red else ""})
+        sweep_dead_asks(args.apply)
         blockers: dict = {}
         for row in state.values():
             d = row.get("decision") or {}
