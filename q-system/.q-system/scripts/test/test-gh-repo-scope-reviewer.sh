@@ -67,10 +67,9 @@ mkrepo "$WORK/skel"   homerepo   HOME_REPO_CODE
 mkrepo "$WORK/target" targetrepo TARGET_REPO_CODE
 cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
 stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
-# The new shared derivation, if it exists yet, must travel with the copy.
-[ -f "$SRC_DIR/repo-slug-lib.sh" ] && cp "$SRC_DIR/repo-slug-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/reviewer-token-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+# The three hand copies that stood here are gone: stage_reviewer_libs above
+# already staged them from the agent's own source lines, and leaving redundant
+# names behind is how the list drifts back in one lib at a time.
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" push -q origin main
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
