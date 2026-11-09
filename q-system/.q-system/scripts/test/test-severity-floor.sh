@@ -2592,7 +2592,11 @@ ok "codex is invoked with --skip-git-repo-check"
 grep -qE '"\$CODEX_BASE ' "$REVIEWER" \
   || fail "no \"\$CODEX_BASE dispatch line in pr-review-agent.sh, so the redirect assertion
       below would be vacuous. Either the dispatch was renamed or the resolver was bypassed."
-grep -qE '"\$CODEX_BASE [^"]*</dev/null' "$REVIEWER" \
+# `.*` and not `[^"]*`: the dispatch passes the prompt as \"\$1\", so a
+# no-quotes class stops dead before the redirect and reports a missing redirect
+# that is right there. grep is line-oriented, and exactly one line opens with
+# "$CODEX_BASE, so `.*` cannot wander into a different statement.
+grep -qE '"\$CODEX_BASE .*</dev/null' "$REVIEWER" \
   || fail "the codex dispatch has no </dev/null. codex exec reads stdin and hangs without it;
       at 3am that is a review that never returns until the 2400s bound kills it."
 ok "the codex dispatch redirects stdin from /dev/null"
