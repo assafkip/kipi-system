@@ -205,35 +205,44 @@ class Usage(Exception):
 class LedgerUnusable(Exception):
     """The ledger exists and cannot be used as a dict. Exit 2, nothing written.
 
-    `copy` is where its bytes are kept (None when they could not be read), and
-    `fresh` is True only on the run that made that copy, so the alert fires once.
+    `copy` is where its bytes are kept (None when they could not be read).
+    `alert_key` is the record whose presence means this state's alert was FILED.
     """
 
-    def __init__(self, msg, copy=None, fresh=False):
+    def __init__(self, msg, copy=None, alert_key=None):
         Exception.__init__(self, msg)
         self.copy = copy
-        self.fresh = fresh
+        self.alert_key = alert_key
+
+
+# The record that an alert was filed, beside what it is about. Never matched as
+# a kept copy: an empty ledger and an empty record would compare equal.
+ALERTED = ".alerted"
+
+
+def _unreadable_key(path):
+    return path + ".unreadable" + ALERTED
 
 
 def _keep_corrupt_copy(path, raw):
-    """Copy the bad bytes to <ledger>.corrupt-<UTC stamp> ONCE; return (path, fresh).
+    """Copy the bad bytes to <ledger>.corrupt-<UTC stamp> ONCE; return its path.
 
     ONCE PER DISTINCT CONTENT. The worker writes every 15 minutes and every write
     is refused while the file stays bad, so a copy per refusal would fill the
     folder with one fact. A sibling copy holding the same bytes means this
-    corruption is already kept (and already alerted). Runs under the ledger lock,
-    and nothing else writes these names, so the check and the create cannot race.
+    corruption is already kept. Runs under the ledger lock, and nothing else
+    writes these names, so the check and the create cannot race.
     """
     parent = os.path.dirname(path) or "."
     stem = os.path.basename(path) + ".corrupt-"
     for name in sorted(os.listdir(parent)):
-        if not name.startswith(stem):
+        if not name.startswith(stem) or name.endswith(ALERTED):
             continue
         kept = os.path.join(parent, name)
         try:
             with open(kept, "rb") as fh:
                 if fh.read() == raw:
-                    return kept, False
+                    return kept
         except OSError:
             continue
     base = os.path.join(parent, stem + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
@@ -252,7 +261,7 @@ def _keep_corrupt_copy(path, raw):
             except OSError:
                 pass
             raise
-        return target, True
+        return target
     raise OSError("no free %s.corrupt-* name after 100 tries" % path)
 
 
@@ -277,14 +286,21 @@ def _read_for_write(path):
         with open(path, "rb") as fh:
             raw = fh.read()
     except FileNotFoundError:
+        _rearm_unreadable_alert(path)
         return {}
     except OSError as exc:
-        # A failed READ, not bad content: there are no bytes to keep, and the
-        # next run that can read the file proceeds, so nothing is copied.
+        # A failed READ, not bad content: there are no bytes to keep. A one-off
+        # read error clears on the next run, but a permission or ownership fault
+        # refuses every write until it is fixed, so it is alerted too (PR #709
+        # round 1, minor 2): silence here was the same permanent refusal with
+        # nothing filed.
         raise LedgerUnusable(
             "the ledger at %s could not be read (%s: %s). It is never written over "
-            "on a failed read (ASK-4143); nothing was written, and the next run retries."
-            % (path, type(exc).__name__, exc))
+            "on a failed read (ASK-4143); nothing was written. A one-off read error "
+            "clears on the next run; a permission or ownership fault refuses every "
+            "write until it is fixed." % (path, type(exc).__name__, exc),
+            alert_key=_unreadable_key(path))
+    _rearm_unreadable_alert(path)
     try:
         d = json.loads(raw)
         why = None if isinstance(d, dict) else "it is a JSON %s, not an object" % type(d).__name__
@@ -293,7 +309,7 @@ def _read_for_write(path):
     if why is None:
         return d
     try:
-        copy, fresh = _keep_corrupt_copy(path, raw)
+        copy = _keep_corrupt_copy(path, raw)
     except OSError as exc:
         raise LedgerUnusable(
             "the ledger at %s cannot be parsed (%s), and copying it aside failed (%s). "
@@ -303,43 +319,83 @@ def _read_for_write(path):
         "the ledger at %s cannot be parsed (%s). It is never overwritten (ASK-4143); "
         "nothing was written. Its bytes are kept at %s. Writes resume once %s parses "
         "again, or once it is moved out of the way (a fresh ledger then starts)."
-        % (path, why, copy, path), copy=copy, fresh=fresh)
+        % (path, why, copy, path), copy=copy, alert_key=copy + ALERTED)
+
+
+def _rearm_unreadable_alert(path):
+    """The file reads again, so the NEXT unreadable episode is owed its own alert.
+
+    Only the unreadable record needs this: each corrupt content gets its own copy
+    and its own record, so a later corruption is a new key by construction.
+    """
+    key = _unreadable_key(path)
+    if os.path.exists(key):
+        try:
+            os.unlink(key)
+        except OSError:
+            pass
 
 
 def _alert_unusable(path, exc):
-    """File the ONE alert a newly kept corrupt ledger is owed. Outside the lock.
+    """File the ONE alert a refused ledger state is owed. Outside the lock.
 
     THE CONSUMER, because the callers do not all have one. linear-worker.sh
     bump_attempt ignores the exit code and only page_once routes 2 to an alert,
-    so a corrupt ledger could refuse every attempt count with nothing filed.
+    so a refused ledger could block every attempt count with nothing filed.
     The refusal is decided here, so the alert is sent here: slack-notify.sh files
     a Sana ticket and linear-alert-triage.py takes it.
+
+    ONCE MEANS FILED, NOT ATTEMPTED (PR #709 round 1, major). The first cut keyed
+    "once" on the corrupt copy existing, and the copy is made before the alert
+    runs. One failed filing (slack-notify.sh exits 3 when no Linear key is set,
+    a setup state that persists) then suppressed every later try, so the one
+    alert this refusal exists to send was lost for good while every cap read 0.
+    The record is written only after the notifier exits 0; until then each
+    refused write tries again. Two refusals racing past the missing record can
+    both file: alert-to-linear.py folds a repeat shape into the open ticket.
 
     A test never reaches the live alert path (same class as ASK-4052): under
     KIPI_TEST=1 or pytest, only an explicit KIPI_NOTIFY stub is called.
     """
-    if not exc.fresh:
+    key = exc.alert_key
+    if not key or os.path.exists(key):
         return
     notify = os.environ.get("KIPI_NOTIFY") or ""
     if not notify:
         if _under_test():
-            sys.stderr.write("attempts-ledger: corrupt-ledger alert not sent under a test "
+            sys.stderr.write("attempts-ledger: refused-ledger alert not sent under a test "
                              "(set KIPI_NOTIFY to a stub to see it)\n")
             return
         notify = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack-notify.sh")
-    msg = ("attempts ledger refused: %s cannot be parsed, so every attempt count, cap and "
-           "once-only flag write is refused until it is fixed (ASK-4143). Its bytes are "
-           "kept at %s. linear-alert-triage.py takes this ticket. Fix: repair the JSON in "
-           "place from that copy, or move %s out of the way so the next write starts a "
-           "fresh ledger." % (path, exc.copy, path))
+    if exc.copy:
+        msg = ("attempts ledger refused: %s cannot be parsed, so every attempt count, cap "
+               "and once-only flag write is refused until it is fixed (ASK-4143). Its bytes "
+               "are kept at %s. linear-alert-triage.py takes this ticket. Fix: repair the "
+               "JSON in place from that copy, or move %s out of the way so the next write "
+               "starts a fresh ledger." % (path, exc.copy, path))
+    else:
+        msg = ("attempts ledger refused: %s exists but this process cannot read it, so every "
+               "attempt count, cap and once-only flag write is refused until it can "
+               "(ASK-4143). linear-alert-triage.py takes this ticket. Fix: restore read and "
+               "write access for the account the fleet runs as." % path)
+    # EXEC THE NOTIFIER, never `bash <notify>` (PR #709 round 1, minor 3): the
+    # fleet's stub value is /usr/bin/true, which bash cannot run (exit 126), so a
+    # stubbed suite read as a lost alert. slack-notify.sh has a shebang.
     try:
-        rc = subprocess.run(["bash", notify, msg], capture_output=True, text=True,
+        rc = subprocess.run([notify, msg], capture_output=True, text=True,
                             timeout=120).returncode
     except Exception as err:
         rc = "%s" % type(err).__name__
     if rc != 0:
-        sys.stderr.write("attempts-ledger: the corrupt-ledger alert did not file (%s); "
-                         "the refusal above is the only record\n" % rc)
+        sys.stderr.write("attempts-ledger: the refused-ledger alert did not file (%s); the "
+                         "next refused write tries again\n" % rc)
+        return
+    try:
+        with open(key, "w") as fh:
+            fh.write(time.strftime("%Y-%m-%dT%H:%M:%SZ\n", time.gmtime()))
+    except OSError as err:
+        sys.stderr.write("attempts-ledger: the alert filed, but %s could not be written (%s); "
+                         "the next refused write files it again\n" % (key, err))
 
 
 def _same_file(fh, lock):

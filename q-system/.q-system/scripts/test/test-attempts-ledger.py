@@ -553,7 +553,7 @@ def case_write_failure_is_not_already_claimed(tmp: str) -> None:
     ok(f"a hard write failure exits {proc.returncode}, not 1 ('already claimed'), and records nothing")
 
 
-# CASES 14 TO 18. A LEDGER THAT CANNOT BE READ IS NEVER OVERWRITTEN (ASK-4143)
+# CASES 14 TO 20. A LEDGER THAT CANNOT BE READ IS NEVER OVERWRITTEN (ASK-4143)
 # `_mutate` used to set d = {} on ANY read failure, apply the one change, and
 # os.replace the result over the file. One unreadable read therefore replaced
 # every row with a single row: every attempt count, codex_outage_noted,
@@ -573,8 +573,12 @@ def notify_stub(tmp: str) -> tuple:
     Never the real slack-notify.sh: that files a live Linear ticket."""
     log = os.path.join(tmp, "notified.log")
     stub = os.path.join(tmp, "notify-stub.sh")
+    # Exits with the code in notify-rc (0 when absent), so a case can make the
+    # filing fail and then succeed.
+    rcfile = os.path.join(tmp, "notify-rc")
     with open(stub, "w") as fh:
-        fh.write('#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' % log)
+        fh.write('#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n'
+                 % (log, rcfile))
     os.chmod(stub, 0o755)
     return stub, log
 
@@ -590,7 +594,8 @@ def alerts(log: str) -> list:
 def corrupt_copies(path: str) -> list:
     folder = os.path.dirname(path)
     stem = os.path.basename(path) + ".corrupt-"
-    return sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.startswith(stem))
+    return sorted(os.path.join(folder, n) for n in os.listdir(folder)
+                  if n.startswith(stem) and not n.endswith(".alerted"))
 
 
 def rows_in(path: str) -> str:
@@ -647,6 +652,8 @@ def case_corrupt_ledger_is_never_overwritten(tmp: str) -> None:
     sent = alerts(log)
     if len(sent) != 1 or path not in sent[0] or copies[0] not in sent[0]:
         fail(f"wanted one alert naming the ledger and its copy, got {sent!r}")
+    if not os.path.exists(copies[0] + ".alerted"):
+        fail("the alert filed (stub exit 0) and no record of it was written")
 
     # ONCE. The worker runs every 15 minutes; a copy and an alert per run would
     # fill the folder and the alert lane with one fact.
@@ -690,8 +697,9 @@ def case_unreadable_ledger_is_never_overwritten(tmp: str) -> None:
     """The literal title of ASK-4143: ONE READ FAILS. No parse error at all.
 
     A ledger the process may not read is replaced the same way an unparseable one
-    is. Nothing can be copied (the bytes cannot be read), so nothing is, and no
-    alert fires: the next run that can read the file just proceeds.
+    is. Nothing can be copied (the bytes cannot be read), so nothing is. It is
+    alerted once per episode (PR #709 round 1, minor 2): a permission fault
+    persists, and silence would be a permanent refusal with nothing filed.
     """
     if os.geteuid() == 0:
         ok("unreadable-ledger case skipped: root reads a 000 file")
@@ -699,15 +707,21 @@ def case_unreadable_ledger_is_never_overwritten(tmp: str) -> None:
     folder = os.path.join(tmp, "unreadable")
     os.mkdir(folder)
     path = os.path.join(folder, "attempts.json")
+    key = path + ".unreadable.alerted"
     with open(path, "w") as fh:
         json.dump(THREE_ROWS, fh)
     stub, log = notify_stub(folder)
-    os.chmod(path, 0o000)
-    try:
-        proc = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
-    finally:
-        os.chmod(path, 0o600)
 
+    def refused_twice() -> subprocess.CompletedProcess:
+        os.chmod(path, 0o000)
+        try:
+            first = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
+            run_env(path, {"KIPI_NOTIFY": stub}, "claim-flag", "ASK-2", "stuck_paged")
+        finally:
+            os.chmod(path, 0o600)
+        return first
+
+    proc = refused_twice()
     if rows_in(path) != rows_in_dict(THREE_ROWS):
         fail("THE DEFECT: one failed read of the ledger replaced it. It now holds "
              f"{rows_in(path)}, it held {rows_in_dict(THREE_ROWS)}. rc={proc.returncode}")
@@ -715,15 +729,86 @@ def case_unreadable_ledger_is_never_overwritten(tmp: str) -> None:
         fail(f"wanted exit 2, got {proc.returncode}: {proc.stderr!r}")
     if "could not be read" not in proc.stderr:
         fail(f"the refusal must say the read failed: {proc.stderr!r}")
-    if corrupt_copies(path) or alerts(log):
-        fail(f"an unreadable file has no bytes to keep; got {corrupt_copies(path)} {alerts(log)!r}")
-    # And it is not a wedge: once the file reads again, the write goes through.
+    if corrupt_copies(path):
+        fail(f"an unreadable file has no bytes to keep; got {corrupt_copies(path)}")
+    sent = alerts(log)
+    if len(sent) != 1 or path not in sent[0] or "cannot read" not in sent[0]:
+        fail(f"two refused writes on an unreadable ledger wanted ONE alert naming it, got {sent!r}")
+    if not os.path.exists(key):
+        fail(f"the filed alert left no record at {key}")
+    # And it is not a wedge: once the file reads again, the write goes through,
+    # and the record is cleared so the next episode is heard.
     after = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
     if after.returncode != 0 or read_ledger(path).get("ASK-1", {}).get("count") != 3:
         fail(f"the next readable run must count: rc={after.returncode} {rows_in(path)}")
     if set(read_ledger(path)) != set(THREE_ROWS):
         fail(f"the recovered write lost rows: {rows_in(path)}")
-    ok("a ledger that one read cannot open keeps every row; the next readable run counts")
+    if os.path.exists(key):
+        fail("a good read did not clear the unreadable record, so the next episode is silent")
+    refused_twice()
+    if len(alerts(log)) != 2:
+        fail(f"a second unreadable episode must alert again, once: {alerts(log)!r}")
+    ok("an unreadable ledger keeps every row, alerts once per episode, and the next readable run counts")
+
+
+def case_failed_alert_is_retried(tmp: str) -> None:
+    """PR #709 round 1, major: ONCE means FILED, not attempted.
+
+    The first cut keyed the alert on the copy existing. One failed filing then
+    suppressed every later try, so a corrupt ledger could block every cap with
+    nothing filed. slack-notify.sh exits 3 with no Linear key, which persists.
+    """
+    folder = os.path.join(tmp, "alert-retry")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        fh.write("{not json")
+    stub, log = notify_stub(folder)
+    rcfile = os.path.join(folder, "notify-rc")
+    with open(rcfile, "w") as fh:
+        fh.write("3")
+    env = {"KIPI_NOTIFY": stub}
+
+    one = run_env(path, env, "bump-attempt", "ASK-1", "why")
+    two = run_env(path, env, "bump-attempt", "ASK-1", "why")
+    if len(alerts(log)) != 2:
+        fail(f"THE DEFECT: the alert failed once and was never tried again: {len(alerts(log))} "
+             "attempt(s) over two refused writes")
+    if "did not file (3)" not in one.stderr or "did not file (3)" not in two.stderr:
+        fail(f"a failed filing must say so: {one.stderr!r} {two.stderr!r}")
+    copies = corrupt_copies(path)
+    if len(copies) != 1 or os.path.exists(copies[0] + ".alerted"):
+        fail(f"a failed filing must leave one copy and no alerted record: {os.listdir(folder)}")
+
+    with open(rcfile, "w") as fh:
+        fh.write("0")
+    run_env(path, env, "bump-attempt", "ASK-1", "why")
+    run_env(path, env, "bump-attempt", "ASK-1", "why")
+    if len(alerts(log)) != 3:
+        fail(f"once it files, it must stop: wanted 3 attempts in all, got {len(alerts(log))}")
+    if not os.path.exists(copies[0] + ".alerted"):
+        fail("the alert filed and no record of it was written")
+    ok("a failed alert is tried again on the next refused write, and stops once it files")
+
+
+def case_bare_binary_stub_works(tmp: str) -> None:
+    """PR #709 round 1, minor 3: KIPI_NOTIFY=/usr/bin/true is the fleet's stub.
+
+    `bash /usr/bin/true` exits 126, so a stubbed suite printed a lost alert."""
+    folder = os.path.join(tmp, "true-stub")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        fh.write("{not json")
+    proc = run_env(path, {"KIPI_NOTIFY": "/usr/bin/true"}, "bump-attempt", "ASK-1", "why")
+    if proc.returncode != 2:
+        fail(f"wanted exit 2, got {proc.returncode}: {proc.stderr!r}")
+    if "did not file" in proc.stderr:
+        fail(f"KIPI_NOTIFY=/usr/bin/true must file cleanly: {proc.stderr!r}")
+    copies = corrupt_copies(path)
+    if len(copies) != 1 or not os.path.exists(copies[0] + ".alerted"):
+        fail(f"wanted one copy with an alerted record: {os.listdir(folder)}")
+    ok("KIPI_NOTIFY=/usr/bin/true files the alert cleanly")
 
 
 def rows_in_dict(d: dict) -> str:
@@ -791,6 +876,8 @@ def main() -> int:
         case_unreadable_ledger_is_never_overwritten(tmp)
         case_absent_ledger_is_a_first_run(tmp)
         case_no_live_alert_under_test(tmp)
+        case_failed_alert_is_retried(tmp)
+        case_bare_binary_stub_works(tmp)
     print(f"PASS ({PASSED} cases)")
     return 0
 
