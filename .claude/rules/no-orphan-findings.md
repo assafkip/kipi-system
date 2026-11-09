@@ -4,20 +4,6 @@ Anything you find that is real but out of scope for the current work is CAPTURED
 never just mentioned. A mention in chat is a silent drop. The operator has ADHD
 and will not revisit a backlog that lives only in a scrolled-past message.
 
-## The rule
-
-When you notice a real issue you are not fixing right now (adjacent bug, missing
-filter, a `deferred` review finding, a "we should also..."), the next action is a
-capture, not a sentence:
-
-```bash
-python3 plugins/prd-os/scripts/prd_runner.py spillover add \
-  --source <prd-or-issue-id> --severity <medium|high|major|blocker> --desc "<what it is, concretely>"
-```
-
-Capture (medium and up) = a ledger row in `.prd-os/spillover.jsonl` AND one Linear issue for Sana
-(via `alert-to-linear.py`, id on the row). A NEW minor is never queued: fix it now or reject it with a reason.
-
 ## How items leave the ledger (only two ways)
 
 - **Fixed:** build it through the normal reproducer-first issue flow, close that
