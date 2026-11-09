@@ -275,5 +275,19 @@ def test_apply_under_pytest_is_refused_before_any_read(monkeypatch):
     assert decide.main(["--apply"]) == decide.EXIT_REFUSED_FIXTURE
 
 
+def test_a_bare_binary_name_becomes_the_path_the_wrapper_can_check(tmp_path, monkeypatch):
+    """run_model refuses a binary that os.path.exists cannot see, and the shared
+    lookup returns a bare "claude". The first live run lost every answer to it."""
+    fake = tmp_path / "bin" / "claude"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake.parent))
+    assert decide.absolute_binary("claude") == str(fake)
+    assert decide.absolute_binary(str(fake)) == str(fake)
+    assert decide.absolute_binary(str(tmp_path / "nope")) is None
+    assert decide.absolute_binary(None) is None
+
+
 def test_the_model_comes_from_the_routing_table_not_a_literal():
     assert decide.MODEL == decide.model_route.pick("fleet-triage")

@@ -34,9 +34,7 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
-import tempfile
 from datetime import datetime, timezone
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -283,37 +281,47 @@ def build_prompt(issue: dict, names: dict, facts, refused: list) -> str:
         history=history(issue), again=again, max_split=MAX_SPLIT)
 
 
+def absolute_binary(name: str | None) -> str | None:
+    """The binary as an absolute path, or None.
+
+    WHY. linear-alert-triage.py's lookup returns the bare name "claude" when it is
+    on PATH, and run_model checks os.path.exists(binary), which a bare name never
+    passes. The first live run through the wrapper (2026-11-09 02:10Z) got "no
+    answer from the model" in 14s for exactly that reason.
+    """
+    if not name:
+        return None
+    if os.path.isabs(name):
+        return name if os.path.exists(name) else None
+    import shutil
+    return shutil.which(name)
+
+
 def ask_model(prompt: str) -> str:
     """The model's answer, or "" on any failure. "" is a failed call, never a decision.
 
-    The capability bound is linear-alert-triage.py's, for its reason: the prompt
-    carries text anyone who can open a ticket chose, so the call gets no tools and
-    no MCP servers, runs outside every repo, and on the subscription only.
+    THROUGH THE FLEET WRAPPER, not a claude -p of its own. The first cut shelled
+    the model directly and test_model_call_sites.py refused it: a direct call is
+    invisible to the usage ledger and to model_gate's daily cap (ASK-2008), and
+    that inventory only shrinks. bare=True is the classifier bound: no tools, no
+    MCP servers, no settings, an empty cwd, the subscription only. The prompt
+    carries text anyone who can open a ticket chose, so the call gets nothing.
+    The binary comes from linear-alert-triage.py's lookup, so there is one.
     """
     try:
         triage = _load("linear_alert_triage_for_decide", "linear-alert-triage.py")
-        binary = triage.claude_binary()
-        env = triage._subscription_env()
+        binary = absolute_binary(triage.claude_binary())
+        sys.path.insert(0, str(HERE.parents[2] / "plugins" / "kipi-core"))
+        from voiceloop import prompt_render
     except Exception as exc:  # noqa: BLE001 - an unloadable helper is one failed ask
         print(f"  model helper could not load ({type(exc).__name__})", file=sys.stderr)
         return ""
     if not binary:
         print("  no working claude binary", file=sys.stderr)
         return ""
-    env["ANTHROPIC_MODEL"] = MODEL
-    try:
-        with tempfile.TemporaryDirectory(prefix="kipi-route-decide-") as cwd:
-            res = subprocess.run([binary, "-p", prompt, "--model", MODEL,
-                                  "--strict-mcp-config", "--tools", ""],
-                                 capture_output=True, text=True, timeout=MODEL_TIMEOUT,
-                                 stdin=subprocess.DEVNULL, env=env, cwd=cwd)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"  model call failed ({type(exc).__name__})", file=sys.stderr)
-        return ""
-    if res.returncode != 0:
-        print(f"  model exited rc={res.returncode}", file=sys.stderr)
-        return ""
-    return (res.stdout or "").strip()
+    out = prompt_render.run_model(prompt, binary, timeout=MODEL_TIMEOUT,
+                                  caller="linear-route-decide.py", model=MODEL, bare=True)
+    return (out or "").strip()
 
 
 def decide_one(issue: dict, names: dict, facts, ask=None) -> dict | None:
