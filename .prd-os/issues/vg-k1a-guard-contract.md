@@ -1,7 +1,7 @@
 ---
 id: vg-k1a-guard-contract
 title: Pin the instance existence-guard contract through apply and the settings merge
-status: open
+status: closed
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
@@ -33,8 +33,8 @@ The guard shape is: test -f "$CLAUDE_PROJECT_DIR/<p>" || { echo "<basename> miss
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Merge test: the guard beside an if-test-f hook for the same instance script survives merge_settings twice with no DROPPED line
-- [ ] Negative self-test: the bare [ -f X ] || exit 2 form keys like the real hook and is dropped with a DROPPED line, proving the test sees a drop
-- [ ] Apply test: an instance-mode proposal inserting the guard into a temp instance settings.json applies, ratchet growth only
-- [ ] Shell test: on a temp tree the guard exits 2 with its message on stderr when the script is missing and exits 0 when present
-- [ ] The lesson on fail-closed hooks gains its limit: the no-op existence guard is for hooks that run before the action; a PostToolUse gate uses the separate exit-2 guard
+- [x] Merge test: the guard beside an if-test-f hook for the same instance script survives merge_settings twice with no DROPPED line
+- [x] Negative self-test: the bare [ -f X ] || exit 2 form keys like the real hook and is dropped with a DROPPED line, proving the test sees a drop
+- [x] Apply test: an instance-mode proposal inserting the guard into a temp instance settings.json applies, ratchet growth only
+- [x] Shell test: on a temp tree the guard exits 2 with its message on stderr when the script is missing and exits 0 when present
+- [x] The lesson on fail-closed hooks gains its limit: the no-op existence guard is for hooks that run before the action; a PostToolUse gate uses the separate exit-2 guard

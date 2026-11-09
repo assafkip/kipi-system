@@ -1,0 +1,6 @@
+{
+  "command": "bash q-system/.q-system/scripts/test/test-settings-merge.sh",
+  "output": "ok: stale token-guard variants retired, template form wins, instance hooks/MCP/permissions survive\nok: instance-owned scripts keep their hooks even when a basename collides\nok: ownership reads the leading path component, after shell quotes\nok: a cd-relative spelling of a template script dedupes (codex round 3)\nok: canonical instance hooks keep identity with a dotted name, a '.' argument or a cd (codex round 4, fleet review 2)\nok: retired names are dropped only in the canonical q-system/ spelling; every other spelling is kept and named (ASK-3876)\nok: an exact copy of a kept hook drops quietly (ASK-3876)\nok: path identity only for the canonical $CLAUDE_PROJECT_DIR/<plain path> form\nok: all 123 template hook script references lead with q-system/\nok: exit-2 existence guard survives the merge twice; the bare [ -f ] form is dropped and reported\nok: guard exits 2 with its message when the script is missing, 0 when present\nok: the exit-2 guard is scoped to PostToolUse\nPASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string\n",
+  "exit_code": 0,
+  "ran_at": "2026-11-09T20:38:16+00:00"
+}
