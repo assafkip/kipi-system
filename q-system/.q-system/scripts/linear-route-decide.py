@@ -81,7 +81,7 @@ NUM_RE = re.compile(r"-(\d+)$")
 
 STATES_QUERY = """query($t:String!){team(id:$t){states{nodes{id name type}}}}"""
 CHILDREN_QUERY = """query($id:String!){issue(id:$id){children(first:50){
- nodes{identifier title description}}}}"""
+ nodes{identifier title description project{name}}}}}"""
 # On every child this pass files, so the next night can find it on the board.
 SPLIT_MARKER = "kipi-route-split-of"
 ISSUE_CREATE = """mutation($input:IssueCreateInput!){
@@ -377,6 +377,10 @@ def decision_comment(d: dict, made: list | None = None) -> str:
         return (head + f"**Canceled** by linear-route-decide.py (ASK-3959). Reason: {why}. "
                 f"To undo, reopen it; with no project it comes back to this pass." + tail)
     kids = ", ".join(made or []) or "none"
+    if d.get("resumed"):
+        return (head + f"**Split finished** by linear-route-decide.py (ASK-3959). Its children "
+                f"were filed on an earlier run: {kids}. This run filed no new ones. To undo, "
+                f"reopen this ticket and cancel the children." + tail)
     return (head + f"**Split into {kids}** by linear-route-decide.py (ASK-3959). Reason: {why}. "
             f"Each child has its own project. To undo, reopen this ticket and cancel the "
             f"children." + tail)
@@ -395,8 +399,26 @@ def split_children(sync, parent: dict) -> list:
     data = sync.graphql(CHILDREN_QUERY, {"id": parent["id"]}) or {}
     nodes = (((data.get("issue") or {}).get("children") or {}).get("nodes")) or []
     mark = f"<!-- {SPLIT_MARKER}: {parent.get('identifier')} -->"
-    return [{"identifier": n.get("identifier"), "title": n.get("title") or ""}
+    return [{"identifier": n.get("identifier"), "title": n.get("title") or "",
+             "project": (n.get("project") or {}).get("name") or ""}
             for n in nodes if mark in (n.get("description") or "")]
+
+
+def resume_decision(issue: dict) -> dict | None:
+    """The split already happened, when this ticket has children this pass filed.
+
+    ANY MARKED CHILD MEANS DONE, NOT A TITLE MATCH (PR #690 review r2, major). The
+    model's SUBTICKET titles are free text, so night 2 rewords them and a title
+    match files a second set. So a ticket with filed children is not asked
+    again: the run finishes the split it already made (record, then cancel).
+    The cost, chosen on purpose: if night 1 died after only some of its
+    creates, the missing child's work stays in the parent, which is Canceled
+    and reopenable. A duplicate issue is permanent; a canceled parent is not.
+    """
+    if not issue.get("split_children"):
+        return None
+    return {"kind": "SPLIT", "children": [], "resumed": True,
+            "reason": "finishing a split this pass filed on an earlier run"}
 
 
 class Board:
@@ -481,12 +503,18 @@ def apply_decision(board: Board, issue: dict, d: dict) -> list:
         board.comment(issue, decision_comment(d))
         board.cancel(issue)
         return ["comment", "canceled"]
-    filed = {c["title"].strip().lower(): c["identifier"] for c in board.split_children(issue)}
+    filed = board.split_children(issue)
+    if filed:
+        # resume_decision()'s rule, applied at the write too: whatever this
+        # answer says, a ticket with filed children gets no new ones.
+        kids = [f"{c['identifier']} ({c['project'] or 'no project'})" for c in filed]
+        board.comment(issue, decision_comment(dict(d, resumed=True), kids))
+        board.cancel(issue)
+        return [f"child={c['identifier']}" for c in filed] + ["comment", "canceled"]
     made = []
     try:
         for child in d["children"]:
-            have = filed.get(child["title"].strip().lower())
-            made.append(have or board.create_child(issue, child))
+            made.append(board.create_child(issue, child))
     finally:
         if made and len(made) < len(d["children"]):
             # The parent stays open; history() shows this record to the next ask.
@@ -564,7 +592,7 @@ def run(args) -> int:
         except Exception as exc:  # noqa: BLE001 - the prompt goes without; apply re-reads and raises
             print(f"  {ident}: children not read ({str(exc)[:80]}); a SPLIT re-reads them before filing",
                   file=sys.stderr)
-        d = decide_one(issue, names, facts)
+        d = resume_decision(issue) or decide_one(issue, names, facts)
         rec = {"ts": now(), "id": ident, "applied": False}
         if d is None:
             failures += 1

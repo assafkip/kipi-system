@@ -98,8 +98,10 @@ class FakeSync:
 
     def graphql(self, query, variables):
         if "children(" in query:
+            by_id = {v: k for k, v in BOARD.items()}
             return {"issue": {"children": {"nodes": [
-                {"identifier": c["id"], "title": c["title"], "description": c["description"]}
+                {"identifier": c["id"], "title": c["title"], "description": c["description"],
+                 "project": {"name": by_id.get(c["projectId"], "")}}
                 for c in self.children if c["parentId"] == variables["id"]]}}}
         if "projects(first" in query:
             return {"team": {"projects": {"nodes": [{"id": v, "name": k} for k, v in BOARD.items()]}}}
@@ -285,17 +287,33 @@ SPLIT = {"kind": "SPLIT", "reason": "two repos",
 
 
 def test_a_split_whose_record_failed_files_no_second_set_of_children(facts):
-    """PR #690 round 1, major. Night 1: both children land, then the record
-    comment raises (a 429). Night 2, same answer: the children already on the
-    board are reused, so nothing is filed twice. Linear issues cannot be deleted."""
+    """PR #690 rounds 1 and 2, major. Night 1: both children land, then the record
+    comment raises (a 429). Night 2 answers with REWORDED titles and a different
+    project for one child. Any marked child means the split already happened, so
+    nothing new is filed. Linear issues cannot be deleted."""
     sync = FakeSync(fail_on="comment", fail_times=1)
     board = decide.Board(sync, "team-1")
     with pytest.raises(RuntimeError):
         decide.apply_decision(board, ticket(), SPLIT)
     assert len(sync.children) == 2
-    done = decide.apply_decision(board, ticket(), SPLIT)
+    reworded = dict(SPLIT, children=[
+        {"project": "ASK Consulting", "title": "a, reworded", "outcome": "b"},
+        {"project": "ASK Consulting", "title": "c, reworded", "outcome": "d"}])
+    done = decide.apply_decision(board, ticket(), reworded)
     assert len(sync.children) == 2, [c["title"] for c in sync.children]
     assert done[-1] == "canceled" and "child=ASK-900" in done and "child=ASK-901" in done
+    record = [v["input"]["body"] for k, v in sync.writes if k == "comment"][-1]
+    # Round 2 minor: the record names what is on the board, projects included,
+    # not the new answer's children.
+    assert "filed on an earlier run" in record and "kipi-system" in record
+
+
+def test_a_ticket_with_filed_children_is_finished_without_asking_the_model(facts):
+    t = dict(ticket(), split_children=[{"identifier": "ASK-900", "title": "a", "project": "kipi-system"}])
+    ask = Asker("DECISION: CLOSE")
+    d = decide.resume_decision(t) or decide.decide_one(t, names(), facts, ask=ask)
+    assert d["kind"] == "SPLIT" and d.get("resumed") and ask.prompts == []
+    assert decide.resume_decision(ticket()) is None
 
 
 def test_a_split_child_carries_the_marker_that_finds_it_again(facts):
