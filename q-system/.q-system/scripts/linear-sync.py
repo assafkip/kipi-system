@@ -1207,7 +1207,7 @@ class _IssueLock:
         return False
 
     @property
-    def refusal(self) -> str | None:
+    def refusal(self) -> "str | None":
         """Why this write must not go out, or None when the lock is held.
 
         One property for both directions so the caller cannot handle one and
