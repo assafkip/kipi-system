@@ -28,6 +28,10 @@ ok()   { PASS=$((PASS + 1)); echo "  ok: $1"; }
 REAL_GIT="$(command -v git)" || fail "git not on PATH"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 unset KIPI_TARGET_REPO KIPI_REVIEW_ENGINE KIPI_REVIEW_PRIMARY_ENGINE KIPI_REVIEW_MAX_ROUNDS 2>/dev/null || true
 
@@ -136,7 +140,7 @@ ok "round 4 exited 0"
 
 grep -q 'pr comment' "$GH_LOG" || fail "round 4 posted no PR comment:
 $(cat "$GH_LOG")"
-grep -q 'review cap reached (3); needs a human decision' "$WORK/r4.out" \
+grep -q 'review cap reached (3); cap-ladder.py takes this PR at its next nightly run' "$WORK/r4.out" \
   || fail "round 4 output does not carry the cap message:
 $(tail -20 "$WORK/r4.out")"
 ok "round 4 posted the cap comment"
@@ -148,10 +152,14 @@ grep "statuses/$SHA" "$GH_LOG" | grep -q 'context=kipi/reviewer-approved' \
   || fail "the pending status is not on kipi/reviewer-approved"
 ok "round 4 set kipi/reviewer-approved=pending on the head sha"
 
-[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "1" ] \
-  || fail "the cap did not alert the engineering queue exactly once:
+# THE MARKER IS THE HAND-OFF, AND NOTHING PAGES (ASK-3824). The cap used to file
+# a ticket into a 1054-deep alert lane asking a person to "decide merge, rework
+# or close"; cap-ladder.py now reads this marker on the open PR and moves it on.
+MARKS="$(find "$WORK/home" -name '.round-cap-*')"
+[ -n "$MARKS" ] || fail "round 4 left no cap marker, so cap-ladder.py cannot see this cap"
+[ -s "$NOTIFY_LOG" ] && fail "the cap still filed a ticket; cap-ladder.py owns it now:
 $(cat "$NOTIFY_LOG")"
-ok "round 4 alerted the engineering queue once"
+ok "round 4 left the marker cap-ladder.py reads, and filed no ticket"
 
 # Round 5: still capped, still 0 calls, and the comment is not repeated.
 : > "$GH_LOG"
@@ -159,55 +167,21 @@ before="$(calls)"
 run_reviewer "$WORK/r5.out" --post
 [ "$(calls)" = "$before" ] || fail "round 5 called the model past the cap"
 grep -q 'pr comment' "$GH_LOG" && fail "round 5 posted the cap comment again; it must be posted once per PR"
-[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "1" ] || fail "round 5 alerted again"
-ok "round 5: 0 model calls, no repeat comment or alert"
+[ -s "$NOTIFY_LOG" ] && fail "round 5 paged"
+ok "round 5: 0 model calls, no repeat comment, no page"
 
-# The ticket must survive alert-to-linear's dedup PER PR. Its fingerprint strips
-# every digit, so a bare "PR #1" and "PR #2" were one ticket and a second capped
-# PR only bumped the first one's counter (PR #501 review).
-grep -q 'PR #1 (ref pr-b)' "$NOTIFY_LOG" || fail "the cap ticket does not carry the PR as letters:
-$(cat "$NOTIFY_LOG")"
-A2L="$ROOT/q-system/.q-system/scripts/alert-to-linear.py"  # fable-discipline-lint-skip: loads fingerprint() only; main() never runs, nothing is filed
-python3 - "$A2L" "$(grep 'review round cap' "$NOTIFY_LOG")" <<'PY' \
-  || fail "two capped PRs share one alert fingerprint, so the second never files a ticket"
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("a2l", sys.argv[1]); m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-one = sys.argv[2]; two = one.replace("PR #1 (ref pr-b)", "PR #2 (ref pr-c)")
-sys.exit(0 if two != one and m.fingerprint(one) != m.fingerprint(two) else 1)
-PY
-ok "two capped PRs file two tickets"
-
-# A failed cap comment must not re-fire the ticket on every later call: the
-# marker used to be written only when the comment succeeded.
-MARKS="$(find "$WORK/home" -name '.round-cap-*')"
-[ -n "$MARKS" ] || fail "no cap marker found under the fixture HOME, so this case is vacuous"
+# A failed cap comment must not re-fire on every later call: the marker goes
+# down before the comment, so the second call finds it and stays quiet.
 for _m in $MARKS; do rm -f "$_m"; done
-echo 1 > "$WORK/comment-fails"; tickets="$(grep -c 'review round cap' "$NOTIFY_LOG")"
+echo 1 > "$WORK/comment-fails"; : > "$GH_LOG"
 run_reviewer "$WORK/r5d.out" --post
 run_reviewer "$WORK/r5e.out" --post
 : > "$WORK/comment-fails"
-[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 1))" ] \
-  || fail "a failed cap comment re-fired the ticket (or none filed):
-$(cat "$NOTIFY_LOG")"
-ok "a failed cap comment files one ticket, never a retry"
-
-# A failed cap ticket is retried ONCE, then logged and dropped (ASK-2428): the
-# pending status takes the PR out of review-redrive, so one Linear blip must not
-# leave it with no signal, and a dead sink must not be hammered.
-for _m in $(find "$WORK/home" -name '.round-cap-*'); do rm -f "$_m"; done
-echo 1 > "$WORK/notify-fails"; tickets="$(grep -c 'review round cap' "$NOTIFY_LOG")"
-run_reviewer "$WORK/r5f.out" --post
-[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 2))" ] \
-  || fail "a failed cap ticket was not tried exactly twice (send + one retry):
-$(cat "$NOTIFY_LOG")"
-grep -q 'after one retry; giving up' "$WORK/r5f.out" || fail "the given-up ticket was not logged:
-$(tail -20 "$WORK/r5f.out")"
-run_reviewer "$WORK/r5g.out" --post
-[ "$(grep -c 'review round cap' "$NOTIFY_LOG")" = "$((tickets + 2))" ] \
-  || fail "a later call re-tried the given-up ticket"
-: > "$WORK/notify-fails"
-ok "a failed cap ticket: one retry, logged, then never again"
+[ "$(grep -c 'pr comment' "$GH_LOG")" = "1" ] \
+  || fail "a failed cap comment was retried on a later call (or never tried):
+$(cat "$GH_LOG")"
+[ -n "$(find "$WORK/home" -name '.round-cap-*')" ] || fail "a failed comment left no marker for cap-ladder.py"
+ok "a failed cap comment is tried once and the marker still lands"
 
 # An approved sha is never downgraded by the cap (PR review round 1, major 2).
 echo success > "$WORK/cur-state"; : > "$GH_LOG"

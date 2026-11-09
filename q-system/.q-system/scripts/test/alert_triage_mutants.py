@@ -154,6 +154,25 @@ MUTANTS = [
      [("    batch = [] if prepass_only else pool[:max(limit, 0)]",
        "    batch = pool[:max(limit, 0)]")],
      {}, "TestB5PrepassOnlyCallsNoModel"),
+    # ASK-4014: the hold's exit.
+    ("H1", "a held alert re-enters by age, not on an event",
+     [("    if repeats or counted:", "    if True:")],
+     {}, "TestH1AHeldAlertReentersOnlyOnAnEvent"),
+    ("H2", "the baseline is the FIRST hold note, so a re-held alert loops",
+     [("    baseline = notes[-1][0]", "    baseline = notes[0][0]")],
+     {}, "TestH2AReheldAlertDoesNotLoop"),
+    ("H3", "held alerts skip the pre-pass, so an ended subject never closes them",
+     [("run_prepass(ls, sorted(pool + held, key=by_age), apply, pr_state)",
+       "run_prepass(ls, sorted(pool, key=by_age), apply, pr_state)")],
+     {}, "TestH3AHeldAlertWhoseSubjectEndedIsClosed"),
+    ("H4", "re-entry ignores its note's result and removes the label anyway",
+     [('        raise RuntimeError(f"{ident}: re-entry note did not post; the hold stays")',
+       '        pass')],
+     {}, "TestH4AReentryNeverRemovesTheLabelWithoutItsNote"),
+    ("H5", "the hold note still asks for a hand edit",
+     [('"nightly lane re-tests this hold every pass: it returns the alert to the "',
+       '"Remove the label to return it. nightly lane: it returns the alert to the "')],
+     {}, "TestH5TheHoldNoteNamesItsConsumer"),
 ]
 
 

@@ -810,10 +810,14 @@ def escalate(path, cand):
     """
     if not CI.ledger_claim(path, cand["issue"], escalate_flag(cand)):
         return False
-    CI.notify(
-        "review-redrive: %s PR #%s still has %s failing after the machine tier. "
-        "What the machine tried: one %s at %s. The reviewer's record now reads "
-        "%s. %s"
+    # THE FLAG IS THE HAND-OFF, THE PAGE IS GONE (ASK-3824). cap-ladder.py reads
+    # this review_escalated_* flag on an open PR and moves it on: an RCA, a new PR
+    # on the same branch, the next rung. The page went into a 1054-deep alert
+    # lane and nothing there could act on a PR.
+    sys.stderr.write(
+        "review-redrive: %s PR #%s still has %s failing after the machine tier "
+        "(one %s at %s; the reviewer's record reads %s). cap-ladder.py takes it "
+        "at its next nightly run. %s\n"
         % (cand["issue"], cand["pr"], (", ".join(cand["slots"]) or "(never posted)"), cand["action"],
            (cand["head_sha"] or "an unknown head")[:8], cand["reason"],
            cand["url"]))
@@ -842,6 +846,16 @@ def cmd_select(cands, show_all):
         # it ahead of the in-flight gates does not reintroduce the false-page
         # hazard those gates exist for.
         if CI.capout_skip(path, c["issue"], "review-redrive", c["pr"]):
+            continue
+        # A LIVE LANE, BOTH ACTIONS (ASK-4095). A rework would put a second writer
+        # on the lane's branch; a re-review would spend a round of the lane's own
+        # review cap. The rule is ci-redrive's lane_live, so the two redrives
+        # cannot disagree about whose PR it is.
+        lane = CI.lane_live(c["issue"], path)
+        if lane:
+            sys.stderr.write(
+                "review-redrive: %s PR #%s needs %s but a lane is on it (%s) -- not "
+                "offering it.\n" % (c["issue"], c["pr"], c["action"], lane))
             continue
         # IN-FLIGHT GATES, BOTH ACTIONS, BEFORE THE LEDGER IS READ. Each action
         # launches a different long-running process, so each needs its own

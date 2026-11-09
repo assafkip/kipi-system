@@ -139,8 +139,8 @@ def message(path: str) -> str:
     gets worked around rather than satisfied."""
     return (
         f"linear-filer-label-lint: {path} creates Linear issues "
-        f"(constructs `issueCreate`) but never declares whether a human decides "
-        f"they should exist.\n\n"
+        f"(constructs `issueCreate`) but never declares whether each issue is "
+        f"hand-filed or automated inflow.\n\n"
         f"Automated inflow has to be a filterable set -- inflow here is automated "
         f"and outflow is manual, so an unmarked filer is indistinguishable from "
         f"backlog nobody can drain. Pick ONE and put it in the file:\n\n"
@@ -149,8 +149,8 @@ def message(path: str) -> str:
         f"       if label_ids:\n"
         f"           payload[\"labelIds\"] = label_ids\n"
         f"     (worked reference: q-system/.q-system/scripts/alert-to-linear.py)\n\n"
-        f"  2. A human decides each issue -> declare it, with a reason:\n"
-        f"       # linear-filer: human-in-the-loop -- <why a person decides each one>\n\n"
+        f"  2. Each issue is decided by hand -> declare it, with a reason:\n"
+        f"       # linear-filer: human-in-the-loop -- <why each one is decided by hand>\n\n"
         f"Rule: .claude/rules/automated-filer-marking.md\n"
         f"Last resort, one file only: {SKIP_MARKER}"
     )

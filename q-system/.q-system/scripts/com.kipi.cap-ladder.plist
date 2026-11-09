@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly cap ladder (ASK-3824): every capped ticket or PR climbs one rung.
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. Pinned (job-checkouts.json), so it runs from its own tree at
+     origin/main, never from the shared checkout.
+     Install: install-plist.sh com.kipi.cap-ladder, with its pinned flag.
+
+     04:40 on purpose: after the DoR drafter (03:00) and the worktree reaper (04:10),
+     and before the 07:00 budget reset, so a cap re-entered tonight is in the first
+     dispatches of the next budget day. The limit bounds the Fable RCA calls a night.
+     No double hyphen in this comment: XML forbids one there. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.cap-ladder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/cap-ladder.py --apply --limit 5</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>40</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/cap-ladder.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/cap-ladder.err</string>
+</dict>
+</plist>

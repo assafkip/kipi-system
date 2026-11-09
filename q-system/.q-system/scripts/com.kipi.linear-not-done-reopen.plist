@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hourly: a Done ticket the worker held as NOT done goes back to Backlog (ASK-4020).
+     TEMPLATE, not a loadable plist: install-plist.sh renders __KIPI_REPO__ and __HOME__.
+     Install: install-plist.sh with its pinned flag, from the primary checkout.
+
+     WHY A JOB. On 2026-11-08 ASK-297 was held at needs-scope while its PR was open,
+     auto-merge landed the PR, and Linear's GitHub integration closed it Done. Done
+     hid it from the DoR drafter, so the unfinished half had no consumer.
+
+     PINNED (job-checkouts.json): it reads Linear and the worker log under
+     ~/.config/kipi, never instance-registry.json, so its own tree at origin/main is
+     enough and a fast-forward of the shared checkout never lands mid-run.
+
+     HOURLY, so a ticket closed by an afternoon merge is back in the queue before the
+     drafter's 03:00 run. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-not-done-reopen</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/linear-not-done-reopen.py --apply</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/linear-not-done-reopen.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/linear-not-done-reopen.err.log</string>
+</dict>
+</plist>

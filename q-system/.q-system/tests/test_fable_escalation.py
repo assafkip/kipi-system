@@ -826,6 +826,10 @@ def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path)
     # from the caller's environment -- so an operator running the suite with a
     # capture set turned this red while the code was fine. Measured 2026-08-14.
     e["KIPI_ALERT_CAPTURE"] = ""
+    # And the Linear key (ASK-4033). This case passed on keyed machines only
+    # because notify_channel_configured() could never answer True; with that
+    # fixed, an operator's exported key would turn it red while the code is fine.
+    e["KIPI_LINEAR_API_KEY"] = ""
     e["KIPI_FABLE_CAP"] = "1"
     os.makedirs(e["HOME"], exist_ok=True)
 
@@ -1502,3 +1506,30 @@ def test_the_main_actor_still_sends_its_session_transcript(actor, env, tmp_path)
     run_guard(payload, guard_env(env))
     call = settled_calls(env["_dump"])[0]
     assert ORCHESTRATOR_MARK in " ".join(call["argv"]) + call["stdin"]
+
+
+def _channel_answer(monkeypatch, tmp_path, key):
+    """notify_channel_configured() with every input pinned: no override, no
+    capture, HOME redirected, and the Linear key either set or absent."""
+    monkeypatch.delenv("KIPI_FABLE_NOTIFY_CMD", raising=False)
+    monkeypatch.setenv("KIPI_ALERT_CAPTURE", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if key:
+        monkeypatch.setenv("KIPI_LINEAR_API_KEY", key)
+    else:
+        monkeypatch.delenv("KIPI_LINEAR_API_KEY", raising=False)
+    return _escalate_module().notify_channel_configured()
+
+
+def test_a_configured_channel_answers_true(monkeypatch, tmp_path):
+    """ASK-4033 REPRODUCER. The function used importlib without importing it, so
+    the NameError was swallowed by its own except and it answered False on every
+    machine since 2026-08-13 (#145). launchd-health-check.py send_ping() returns
+    before the notifier whenever this is False, so the watchdog never pinged.
+    Red on main: a configured key still reads as no channel."""
+    assert _channel_answer(monkeypatch, tmp_path, "lin_api_test_fixture") is True
+
+
+def test_no_key_still_answers_false(monkeypatch, tmp_path):
+    """The paired negative: the fix must not turn every machine into a channel."""
+    assert _channel_answer(monkeypatch, tmp_path, "") is False

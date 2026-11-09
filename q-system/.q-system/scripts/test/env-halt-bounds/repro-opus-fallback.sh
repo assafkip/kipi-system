@@ -64,8 +64,9 @@ cat > "$STUB/claude" <<'SH'
 #!/usr/bin/env bash
 # Called as the worker's DEFAULT stand-in (no KIPI_SECOND_RUNNER_FALLBACK):
 # record the exact argv, then do the work (PR #425 review: the default command
-# had no coverage).
-case " $* " in *" --model "*)
+# had no coverage). Told apart from Sana's main run by the second-runner prompt,
+# not by `--model`: since ASK-4013 the main run passes a model too.
+case " $* " in *"the SECOND runner"*)
   echo "DEFAULT-ARGV $*" >> "$TEST_OPUS_LOG"
   echo "fallback work" > opus-did-this.txt; git add opus-did-this.txt
   git -c user.email=t@t -c user.name=t commit -qm "opus stand-in"; echo "Done."; exit 0 ;;

@@ -50,9 +50,23 @@ PATH) and, against the real model, by its LIVE case behind KIPI_LIVE_MODEL_TEST=
 """
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+
+def _route():
+    """model_route, loaded from beside this file, on first use only."""
+    mod = sys.modules.get("model_route")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "model_route", Path(__file__).resolve().parent / "model_route.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["model_route"] = mod
+        spec.loader.exec_module(mod)
+    return mod
 
 LEAN_FLAGS = ("--setting-sources", "--tools", "--mcp-config", "--no-session-persistence",
               "--strict-mcp-config", "--system-prompt")
@@ -105,8 +119,15 @@ def declared(needs_tools=None, needs_settings=False, cwd=None, needs_mcp=False,
 
 
 def run(argv, *, needs_tools=None, needs_settings=False, cwd=None,
-        needs_mcp=False, system_prompt=LEAN_SYSTEM_PROMPT, **kwargs):
-    """subprocess.run with the lean contract. Same return and exceptions."""
+        needs_mcp=False, system_prompt=LEAN_SYSTEM_PROMPT, job=None, **kwargs):
+    """subprocess.run with the lean contract. Same return and exceptions.
+
+    `job` names this call's row in q-system/.q-system/model-routing.json and adds
+    `--model` from it (ASK-4013). Before it, every lean call passed no --model and
+    ran on whatever the CLI defaulted to with no settings loaded: measured
+    2026-11-08, that was claude-opus-5-5, chosen by nobody."""
+    if job and "--model" not in argv:
+        argv = [*argv, "--model", _route().pick(job)]
     full = lean_argv(argv, needs_tools=needs_tools, needs_settings=needs_settings,
                      needs_mcp=needs_mcp, system_prompt=system_prompt)
     note = declared(needs_tools, needs_settings, cwd, needs_mcp, system_prompt)

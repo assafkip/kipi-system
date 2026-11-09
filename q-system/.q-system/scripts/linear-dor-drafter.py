@@ -851,6 +851,7 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             [binary, "-p", prompt],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL, env=_subscription_env(),
+            job="dor-drafting",  # the model is the routing table's row (ASK-4013)
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"
@@ -1350,6 +1351,11 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=5, help="issues per run (default 5)")
     ap.add_argument("--apply", action="store_true", help="write to Linear")
     ap.add_argument("--project", help="only this project")
+    # ONE NAMED ISSUE (ASK-3824). cap-ladder.py rung 3 re-scopes a capped ticket
+    # through this job in the same run that labels it needs-scope, so the ticket
+    # is never pickable without a fresh spec and an open PR. Selection rules are
+    # unchanged: the issue must still pass selection_mode.
+    ap.add_argument("--issue", help="only this issue identifier, e.g. ASK-3824")
     ap.add_argument("--timeout", type=int, default=300, help="seconds per claude call")
     ap.add_argument("--heartbeat", action="store_true",
                     help="report in/done to heartbeat.py (the launchd plist passes this)")
@@ -1386,6 +1392,9 @@ def main() -> int:
     if args.project:
         todo = [i for i in todo
                 if ((i.get("project") or {}).get("name") or "") == args.project]
+
+    if args.issue:
+        todo = [i for i in todo if i.get("identifier") == args.issue]
 
     plan = prioritise(todo)
     redrives = sum(1 for mode, _ in plan if mode in ("redraft", "terminal"))

@@ -16,6 +16,9 @@
 # linear-worker.sh because it drives that script rather than reimplementing it.
 #
 # EXITS (audited against .claude/rules/loop-exits.md)
+#   0 already landed  -> no open PR, but a PR THIS run opened on the branch has
+#                        merged (ASK-4112). Past goal met: nothing is left to
+#                        review, arm or receipt. Also --dry, which does nothing.
 #   1 goal met        -> verdict record reads APPROVE / APPROVE WITH NITS
 #   2 turn cap        -> MAX_ROUNDS (default 4), the ceiling on rounds
 #   5 no progress     -> same verdict AND no new commit on the branch two rounds
@@ -135,6 +138,56 @@ KIPI_GH_REPO_ARGS="$(gh_repo_args "$TARGET_SLUG")"
 export KIPI_GH_REPO_ARGS
 # shellcheck disable=SC2086
 pr_for_branch() { gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null; }
+# THE MERGED HALF OF THE SAME QUESTION, asked only when pr_for_branch finds no
+# open PR (ASK-4112). pr_for_branch uses gh's default state, which is OPEN, so a
+# PR that merged before converge looked read as "no PR": 7 of 29 exit-7 stops
+# from 2026-11-02 to 2026-11-09 were merged PRs (the ASK-796 PR opened
+# 15:29:40Z, merged 15:31:13Z, STOP exit-7 at 15:34:05Z). Each charged an
+# attempt and paged on a run whose work had landed. pr_for_branch is left
+# byte-identical so an open PR keeps today's path.
+#
+# ONLY A PR THIS RUN OPENED COUNTS. The branch name is reused (sana/<id>), so a
+# reopened ticket can carry an old merged PR. Counting that one would report a
+# run that produced nothing as landed. The worker spends minutes before any PR
+# exists, so a few seconds of skew between this clock and GitHub's cannot move a
+# real PR to the wrong side of the start.
+#
+# Prints "number<TAB>mergedAt" of the latest such merge, or nothing. Any gh or
+# parse failure prints nothing, which falls back to today's exit-7: an unknown
+# is not a merge.
+# shellcheck disable=SC2086
+merged_pr_for_branch_since() {
+  MERGED_JSON="$(gh pr list $KIPI_GH_REPO_ARGS --head "$BRANCH" --state merged \
+      --json number,createdAt,mergedAt 2>/dev/null)" python3 - "$1" <<'PY' 2>/dev/null
+import json, os, sys
+from datetime import datetime
+
+def stamp(value):
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+start = stamp(sys.argv[1])
+try:
+    rows = json.loads(os.environ.get("MERGED_JSON") or "[]")
+except ValueError:
+    rows = []
+if start is None or not isinstance(rows, list):
+    raise SystemExit(0)
+best = None
+for row in rows:
+    if not isinstance(row, dict) or not isinstance(row.get("number"), int):
+        continue
+    created, merged = stamp(row.get("createdAt")), stamp(row.get("mergedAt"))
+    if created is None or merged is None or created < start:
+        continue
+    if best is None or merged > best[1]:
+        best = (row["number"], merged, row.get("mergedAt"))
+if best:
+    print("%d\t%s" % (best[0], best[2]))
+PY
+}
 # The head sha comes from pr_head_sha in the shared lib, not a local copy of the
 # same `gh pr view`: this driver and linear-worker.sh now BOTH compare it against
 # the sha a review pinned, and two private readers of one input is how those two
@@ -937,6 +990,9 @@ receipt_transaction() {
   return 0
 }
 
+# Stamped once, before round 1, so "a PR this run opened" has one meaning in
+# every round (ASK-4112, merged_pr_for_branch_since).
+RUN_START="$(TS)"
 LAST_VERDICT=""; LAST_SHA=""; ROUND=0
 while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   ROUND=$((ROUND + 1))
@@ -1010,6 +1066,18 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
 
   PR="$(pr_for_branch)"
   if [ -z "$PR" ]; then
+    # A MERGED PR IS THE WORK LANDING, NOT A MISSING PR (ASK-4112). Read before
+    # the attempt logic below, because that logic charges the ledger and pages.
+    # Charging here is what turned 7 landed runs into failures in one week.
+    # No page: nothing is left for anyone to do, and GitHub's merge already
+    # closed the ticket through Linear's integration.
+    MERGED_ROW="$(merged_pr_for_branch_since "$RUN_START")"
+    if [ -n "$MERGED_ROW" ]; then
+      MERGED_PR="$(printf '%s' "$MERGED_ROW" | cut -f1)"
+      MERGED_AT="$(printf '%s' "$MERGED_ROW" | cut -f2)"
+      say "DONE exit-0: PR #$MERGED_PR on $BRANCH already MERGED at $MERGED_AT, opened by this run (started $RUN_START). Round $ROUND, worker rc=$WRC. No attempt charged and no page: the work landed."
+      exit 0
+    fi
     # CHARGE THE ATTEMPT ONLY IF THE WORKER DID NOT (ASK-833). Comparing the
     # counter across the run is what makes this idempotent: the worker's own
     # "exited 0 but opened no PR" bump already moved it, and charging a second
@@ -1038,11 +1106,17 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
       # success. An attempt that was not PERSISTED did not happen, so the run
       # says so and stops on its own exit code rather than blending into the
       # ordinary no-PR case that the dispatcher expects to see repeatedly.
-      if ! python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+      BUMP_RC=0
+      python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
            "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
-           >>"$LOG" 2>&1; then
-        say "STOP exit-8: could not record the attempt in $ATTEMPTS. The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
-        bash "$NOTIFY" "converge $ISSUE: attempts ledger unwritable -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+           >>"$LOG" 2>&1 || BUMP_RC=$?
+      if [ "$BUMP_RC" -ne 0 ]; then
+        # Exit 5 is a test aiming at the live ledger (ASK-4052), not an unwritable
+        # file, so the page names that cause (PR #669 review round 2, same class).
+        if [ "$BUMP_RC" -eq 5 ]; then _why="refused: this run is under a test and $ATTEMPTS is the live ledger; set KIPI_STATE_DIR in the test"
+        else _why="attempts ledger unwritable"; fi
+        say "STOP exit-8: could not record the attempt in $ATTEMPTS ($_why). The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
+        bash "$NOTIFY" "converge $ISSUE: $_why -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
         exit 8
       fi
     fi
@@ -1215,7 +1289,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     if [ -n "$RECEIPT_MISS" ]; then
       MERGE_LOG="$MERGE_LOG -- BUT no prd-os receipt covers the head: $RECEIPT_MISS. Nothing proves it was reviewed. By hand: $RECEIPT_FIX"
       case "$AUTOMERGE" in
-        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Needs a human: $RECEIPT_FIX" ;;
+        armed) MERGE_PAGE="PR #$PR approved and auto-merge armed, but NO prd-os receipt covers the head ($RECEIPT_MISS). Nothing proves it was reviewed: if the receipt gate in validate is live this sits red, and if it is not GitHub lands it anyway. Fix: $RECEIPT_FIX (the page files an alert ticket that linear-alert-triage.py (com.kipi.linear-alert-triage, 02:30) promotes or holds)" ;;
         *)     MERGE_PAGE="$MERGE_PAGE. AND no prd-os receipt covers the head ($RECEIPT_MISS), so nothing proves it was reviewed: $RECEIPT_FIX" ;;
       esac
     fi
@@ -1268,7 +1342,7 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     STALL_PAGE="converge $ISSUE: stalled at '$VERDICT', no code change in round $ROUND"
     if [ "$GATE" = "40" ]; then
       STALL_LOG="STOP exit-5: round $ROUND changed no code, and PR #$PR is STILL approved at $REVIEWED_SHA with an unreviewed head of $SHA. Re-reviewing it is not working; not burning another round."
-      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head, needs a human"
+      STALL_PAGE="converge $ISSUE: PR #$PR is '$VERDICT' at $REVIEWED_SHA but its head $SHA was never reviewed, and round $ROUND changed nothing - unreviewed code is sitting at the head. wip_release (linear-worker.sh) closes this PR and requeues the ticket at the WIP ceiling; ASK-3962 builds the exit below it"
     fi
     say "$STALL_LOG"
     bash "$NOTIFY" "$STALL_PAGE" 2>/dev/null || true
@@ -1294,13 +1368,21 @@ say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree pe
 # no page. If the ledger refuses (a lock timeout, a read-only disk) the run says
 # so and still pages, because a cap-out the founder never hears about is the
 # 29-hour park with the alarm removed.
-CAPOUT_NOTE=""
-if ! python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
-  CAPOUT_NOTE=" WARNING: the cap-out could NOT be recorded in $ATTEMPTS, so the redrives may re-enter this issue -- check that file."
-  say "WARNING: record-capout failed for $ISSUE; the redrives cannot see this cap-out."
+#
+# THE RECORD IS NOW A HAND-OFF, NOT A PARK (ASK-3824). cap-ladder.py reads this
+# capout, writes a fresh RCA, closes the PR (branch kept), opens a new PR on the
+# same branch and clears the record, so the redrives re-enter it on purpose and
+# under the ladder's own count. The page that used to follow went into a
+# 1054-deep alert lane and asked a person to clear the record; nothing else read
+# it. Only a FAILED record still pages, because then the ladder cannot see this
+# cap and the alert lane is the one consumer left.
+if python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG"; then
+  say "cap-out recorded for $ISSUE; cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes it next: a fresh RCA, then the work continues on a new PR from $BRANCH."
+else
+  say "WARNING: record-capout failed for $ISSUE; cap-ladder.py cannot see this cap-out."
+  bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT, and the cap-out could NOT be recorded in $ATTEMPTS, so cap-ladder.py cannot see it. linear-alert-triage.py takes this ticket; the fix is the ledger write." 2>/dev/null || true
 fi
-bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT. Parked -- no redrive will re-enter it until you clear it: python3 q-system/.q-system/scripts/attempts-ledger.py $ATTEMPTS clear-capout $ISSUE$CAPOUT_NOTE" 2>/dev/null || true
-# The `exit 2` on the line BELOW this comment -- not the `bash "$NOTIFY"` above it --
+# The `exit 2` on the line BELOW this comment -- not the record-capout block above it --
 # is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay
 # unconditional: it is what stops bash from ever reading this file again. See the
 # header. Nothing may be added between it and the closing brace, and nothing may be

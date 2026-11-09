@@ -287,12 +287,15 @@ def mark_read_incomplete(issue: dict) -> bool:
 
 
 def is_pending(issue: dict) -> bool:
-    """Carries a DoR, is open and unheld, and still cannot be picked up.
+    """Open, unheld, and cannot be picked up for a reason a ROUTER can fix.
 
-    The population `ready()` refuses for a reason a ROUTER can fix: a missing
-    project or a missing owner label. An issue whose project simply names no
-    checkout is the sibling check's population
-    (`linear-route-reachability-check.py`), not this one.
+    Two populations. A ticket WITH a DoR that lacks a project or the owner label
+    (the original ASK-1887 class). And, since ASK-3959, ANY ticket with no project
+    at all, DoR or not, fleet alert or not: measured 2026-11-08, 351 open owner:sana
+    tickets had no project and only 13 carried a DoR, because agents file through
+    the Linear MCP and no fleet chokepoint stamps them. The drafter skips a ticket
+    with no project and the alert lane refuses one, so without a project here it
+    has no consumer at all.
     """
     labels = labels_of(issue)
     if FOUNDER_LABEL in labels:
@@ -301,11 +304,9 @@ def is_pending(issue: dict) -> bool:
         return False
     if (issue.get("state") or {}).get("type") not in OPEN_STATE_TYPES:
         return False
-    if "Definition of Ready" not in (issue.get("description") or ""):
-        return False
-    if is_fleet_alert(issue):
-        return False
-    return not project_of(issue) or OWNER_LABEL not in labels
+    if "Definition of Ready" in (issue.get("description") or "") and not is_fleet_alert(issue):
+        return not project_of(issue) or OWNER_LABEL not in labels
+    return not project_of(issue)
 
 
 # ---------------------------------------------------------------------------
@@ -438,22 +439,31 @@ def _route_one(path: str, facts: RoutingFacts) -> Decision:
     return Decision(None, None, f"no rule fired for {path}")
 
 
-def route_paths(paths: list, facts: RoutingFacts) -> Decision:
-    """One decision for the whole **Files:** list. Disagreement refuses."""
+def route_paths(paths: list, facts: RoutingFacts, source: str = "the DoR",
+                rules: tuple = ("R1", "R2", "R3")) -> Decision:
+    """One decision for a list of paths. Disagreement refuses.
+
+    `rules` narrows which rules may route (PR #675 review, major): in a ticket
+    with no DoR, R3 is too weak. Generic root names and every kipi-update-shipped
+    path exist in EVERY instance, so "skeleton-managed and present" says nothing
+    about which repo the ticket is for. Free text routes on R1 and R2 only.
+    """
     if not facts.ok:
         return Decision(None, None,
                         "UNKNOWN: instance-registry.json or kipi-update.sh could "
                         "not be read; nothing classified")
     if not paths:
-        return Decision(None, None, "the DoR names no files")
+        return Decision(None, None, f"{source} names no files")
     hits, misses = [], []
     for path in paths:
         decision = _route_one(path, facts)
+        if decision.project and decision.rule not in rules:
+            decision = Decision(None, None, f"{path} matched only {decision.rule}, which {source} cannot route on")
         (hits if decision.project else misses).append(decision)
     named = sorted({d.project for d in hits})
     if len(named) > 1:
         return Decision(None, None,
-                        "the DoR's files disagree: " + ", ".join(named))
+                        f"{source}'s files disagree: " + ", ".join(named))
     if named:
         return hits[0]
     return misses[0] if misses else Decision(None, None, "no path resolved")
@@ -463,14 +473,86 @@ def route_paths(paths: list, facts: RoutingFacts) -> Decision:
 # the plan
 # ---------------------------------------------------------------------------
 
-def plan_actions(issues: list, facts: RoutingFacts) -> list:
-    """One row per pending issue: what a run WOULD write, and why. Pure."""
+_TITLE_LABEL = re.compile(r"^\[([^\]]+)\]")
+
+
+def text_file_paths(description: str) -> list:
+    """Backticked path tokens anywhere in a ticket with NO DoR (ASK-3959).
+
+    Wider than dor_file_paths, which stays bounded to **Files:** for a DoR
+    ticket, so the rules that may route on them are narrower: R1 (an absolute
+    path inside a checkout) and R2 (an instance's own q-dir prefix), never R3.
+    route_paths still refuses when two paths disagree.
+    """
+    return [t.strip() for t in _BACKTICKED.findall(description or "") if _looks_like_a_path(t)]
+
+
+def title_project(issue: dict, facts: RoutingFacts):
+    """The project the filer's own `[label]` title prefix names, or None.
+
+    Matched to a board project name, or to the basename of that project's
+    checkout (alert-to-linear.py labels by checkout directory). Never a guess:
+    an unknown label is None.
+    """
+    m = _TITLE_LABEL.match((issue.get("title") or "").strip())
+    if not m:
+        return None
+    label = m.group(1).strip().lower()
+    for proj, row in (facts.rows_by_project or {}).items():
+        base = os.path.basename(os.path.normpath(_expand(row.get("path") or ""))).lower()
+        if label in (proj.lower(), base):
+            return proj
+    skel = os.path.basename(os.path.normpath(_expand(facts.skeleton_path or ""))).lower()
+    if facts.skeleton_project and label in (facts.skeleton_project.lower(), skel):
+        return facts.skeleton_project
+    return None
+
+
+def evidence_decision(issue: dict, facts: RoutingFacts) -> Decision:
+    """The route for one pending issue, from the evidence its own text carries."""
+    desc = issue.get("description") or ""
+    if "Definition of Ready" in desc and not is_fleet_alert(issue):
+        return route_paths(dor_file_paths(desc), facts)
+    tp = title_project(issue, facts)
+    # A fleet alert's body is a raw alert line that may name any repo's files,
+    # so it routes on the filer's own label only.
+    d = Decision(None, None, "a fleet alert routes on its title label only") if is_fleet_alert(issue) \
+        else route_paths(text_file_paths(desc), facts, source="the text", rules=("R1", "R2"))
+    if tp and d.project and tp != d.project:
+        return Decision(None, None, f"the title label names {tp} and the text's paths name {d.project}")
+    if d.project:
+        return Decision(d.project, d.rule, d.reason)
+    if tp:
+        return Decision(tp, "title", f"no DoR; the title's own label names {tp}")
+    return d
+
+
+def plan_actions(issues: list, facts: RoutingFacts, board_projects: set | None = None) -> list:
+    """One row per pending issue: what a run WOULD write, and why. Pure.
+
+    `board_projects`, when given, is the board's project names (lowercased). A
+    route naming a project the board does not have is REFUSED HERE, before it can
+    take a write slot (ASK-4089): measured on the router's first real run, a
+    `[label]` naming a registry row with no board project failed its write every
+    night and spent 1 of the 10 slots. The ticket stays unrouted, and
+    linear-triage-health.py raises the board gap as a named breach.
+    """
     rows = []
     for issue in issues:
         if not is_pending(issue):
             continue
-        decision = route_paths(dor_file_paths(issue.get("description")), facts)
+        decision = evidence_decision(issue, facts)
         current = project_of(issue)
+        off_board = None
+        # Only a route that WOULD be written is checked: a ticket that already has
+        # a project never gets set_project, so its evidence naming an off-board
+        # project refuses nothing (PR #679 review, minor 2).
+        if (decision.project and not current and board_projects is not None
+                and decision.project.lower() not in board_projects):
+            off_board = decision.project
+            decision = Decision(None, None,
+                                f"the evidence names {off_board!r}, which is not a project on the "
+                                "board; linear-triage-health.py files the board gap as an alert")
         labels = labels_of(issue)
         set_project = decision.project if (not current and decision.project) else None
         will_have_project = bool(current or set_project)
@@ -487,12 +569,25 @@ def plan_actions(issues: list, facts: RoutingFacts) -> list:
             "project": current,
             "set_project": set_project,
             "add_label": add_label,
+            # The route-unknown comment stays for the DoR class only. The no-DoR
+            # class (ASK-3959) is hundreds of tickets, and a comment nobody reads
+            # is not a consumer; what stays unrouted goes to the model decision.
+            # Not for an off-board route either: that ticket IS routable, and the
+            # comment would tell its reader the DoR is the problem when the board is.
+            # It would also spend the write slot ASK-4089 exists to save.
             "mark_unroutable": bool(not will_have_project
+                                    and not off_board
+                                    and "Definition of Ready" in (issue.get("description") or "")
+                                    and not is_fleet_alert(issue)
                                     and not is_marked_unroutable(issue)),
+            # Not for an off-board route: this meter means "the comment page ran
+            # out", and an off-board ticket's problem is the board (PR #679, minor 3).
             "mark_unknown": bool(not will_have_project
+                                 and not off_board
                                  and mark_read_incomplete(issue)),
             "rule": decision.rule,
             "reason": decision.reason,
+            "not_on_board": off_board,
             "label_ids": sorted({n["id"] for n in
                                  ((issue.get("labels") or {}).get("nodes") or [])
                                  if n.get("id")}),
@@ -505,9 +600,11 @@ def rows_with_work(rows: list) -> list:
             if r["set_project"] or r["add_label"] or r["mark_unroutable"]]
 
 
-def measure(issues: list, facts: RoutingFacts) -> dict:
-    rows = plan_actions(issues, facts)
+def measure(issues: list, facts: RoutingFacts, board_projects: set | None = None) -> dict:
+    rows = plan_actions(issues, facts, board_projects)
     routable = [r for r in rows if r["set_project"] or r["project"]]
+    refused = [{"id": r["identifier"], "project": r["not_on_board"]}
+               for r in rows if r["not_on_board"]]
     return {
         "registry_ok": facts.ok,
         "pending": len(rows),
@@ -516,6 +613,17 @@ def measure(issues: list, facts: RoutingFacts) -> dict:
         # Named on purpose: these tickets were skipped because their comment page
         # ran out, not because they are fine. An unnamed skip is a silent one.
         "mark_unknown": sum(1 for r in rows if r["mark_unknown"]),
+        # Routes refused because the named project is not on the board (ASK-4089).
+        # Each row names the ticket AND the name, so the nightly log says which
+        # registry row lacks a board project, not only that one does.
+        "not_on_board": len(refused),
+        "not_on_board_ids": refused,
+        # The report lines travel in the JSON so linear-triage-health.py prints
+        # the same text without importing this file (it runs it as a subprocess).
+        "not_on_board_lines": not_on_board_lines(refused),
+        # 0 refused is also what a check that never ran reports. Saying which is
+        # the difference between a pass and silence (PR #679 review r2, minor).
+        "board_check_ran": board_projects is not None,
         "with_work": len(rows_with_work(rows)),
         "by_rule": {rule: sum(1 for r in rows if r["rule"] == rule)
                     for rule in sorted({r["rule"] for r in rows if r["rule"]})},
@@ -632,15 +740,33 @@ def apply_row(sync, row: dict, projects: dict, labels: dict) -> list:
     return done
 
 
+def not_on_board_lines(refused: list, sample: int = 3) -> list:
+    """One line per refused PROJECT, not per ticket: the count is bounded by the
+    registry rows, so 60 off-board tickets cannot become 60 log lines twice over
+    (PR #679 review, nit). Shared with linear-triage-health.py's report."""
+    by_project: dict = {}
+    for off in refused:
+        by_project.setdefault(off.get("project") or "?", []).append(off.get("id") or "?")
+    out = []
+    for project in sorted(by_project):
+        ids = by_project[project]
+        eg = ", ".join(ids[:sample]) + (", ..." if len(ids) > sample else "")
+        out.append(f"route refused: {project!r} is not a project on the board, so no "
+                   f"project write for {len(ids)} ticket(s) ({eg})")
+    return out
+
+
 def render(m: dict, rows: list) -> str:
     if not m["registry_ok"]:
         return ("linear-route: UNKNOWN -- instance-registry.json or kipi-update.sh "
                 "could not be read. Nothing classified; this is not a pass.")
-    lines = [f"linear-route: {m['pending']} pending (DoR, unheld, not pickable); "
+    lines = [f"linear-route: {m['pending']} pending (unheld, not pickable: no project, or a DoR with no owner); "
              f"{m['routable']} routable, {m['unroutable']} unroutable, "
              f"{m['with_work']} with a write to make."]
     if m["by_rule"]:
         lines.append("  routed by: " + ", ".join(f"{k}={v}" for k, v in m["by_rule"].items()))
+    for line in m.get("not_on_board_lines", []):
+        lines.append("  " + line)
     for row in rows_with_work(rows):
         acts = [a for a in (
             f"project={row['set_project']}" if row["set_project"] else "",
@@ -687,12 +813,27 @@ def main(argv: list) -> int:
         print(f"board walk failed ({exc}); nothing measured", file=sys.stderr)
         return EXIT_INCOMPLETE
 
-    rows = plan_actions(issues, facts)
-    m = measure(issues, facts)
+    # The board's projects, read BEFORE the plan, dry run too, so a route naming
+    # a project the board lacks is refused in the plan and counted in the report
+    # (ASK-4089). A dry run with an unreadable list runs with the check off. An
+    # --apply run re-raises, as it did before this check moved up: with no list
+    # every project write would fail as no-such-project, and the caller would
+    # read a board problem that is really a read problem.
+    projects, board = {}, None
+    if facts.ok:
+        try:
+            projects = _name_id_map(sync, PROJECTS_QUERY, team_id, "projects")
+            board = set(projects)
+        except Exception as exc:  # noqa: BLE001
+            if args.apply:
+                raise
+            print(f"project list unreadable ({exc}); the board-name check is off this run",
+                  file=sys.stderr)
+    rows = plan_actions(issues, facts, board)
+    m = measure(issues, facts, board)
 
     written, failed = [], []
     if args.apply and facts.ok:
-        projects = _name_id_map(sync, PROJECTS_QUERY, team_id, "projects")
         labels = _name_id_map(sync, TEAM_LABELS_QUERY, team_id, "labels")
         for row in select_to_write(rows_with_work(rows), args.limit):
             try:

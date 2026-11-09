@@ -294,16 +294,6 @@
       "rationale": "A notification is not work, so refusing it here is the correct end and not a dead end. The body is a raw alert line, not a spec anyone scoped; drafting a DoR onto one would only make it READY-SHAPED and admit it to this queue. Measured on the live board 2026-08-15: 81 open alert tickets, and all 19 already drafted onto sat in the permanently-UNREACHABLE bucket. The consumer of an alert is the operator who reads it; the paired refusal in linear-dor-drafter.py stops the conversion at source. Registered with its own marker rather than left under state-not-open, whose row it would otherwise silently inflate to two sites -- which is exactly how this was caught."
     },
     {
-      "id": "expired-park",
-      "source": "linear-worker",
-      "class": "selection-filter",
-      "marker": "if expired_park(i):",
-      "sites": 1,
-      "what": "The ticket is parked, its review date is before the local date, it sits in Backlog, it carries none of frozen, security, data-loss or ready, and no open sana PR names it: exactly the set chief's triage E2 (park_expired) closes, reversibly, at its next sweep (ASK-3995).",
-      "terminal": true,
-      "rationale": "Leaving it is the correct end here, not a dead end: a park is chief's countdown to a close, and at the date E2 closes it. Working it spent 1 of 3 daily dispatches on a ticket the board had already ruled closed by age (ASK-834 on 2026-11-08, 25 days past its date, while an Urgent ticket waited), and raced E2 until the first push. The refusal is held to E2's set exactly, because anything refused here that E2 will not close has no exit; test-worker-expired-park.sh pins every arm. The exit is chief's, so the ticket_states row carries it as a dated debt until the table can name a cross-repo consumer (ASK-3973)."
-    },
-    {
       "id": "out-of-repo",
       "source": "linear-worker",
       "class": "selection-filter",
@@ -319,13 +309,40 @@
       "class": "exhausted-counter",
       "marker": "stuck_paged",
       "sites": 1,
-      "what": "MAX_ATTEMPTS spent. Paged once (not per heartbeat), with a Linear comment naming the three options and the last recorded reason.",
-      "terminal": true,
-      "rationale": "STILL TERMINAL, and this is the row that shows what the method is for. A successor DID become real after the PRD archived: fable-escalate.py (ASK-311, 715895e, 2026-08-03) -- when Opus is stuck, Fable triages in a fresh session. It exists in code. It is not wired to this state: its only non-test callers are token-guard.py (a PreToolUse hook inside a live session) and launchd-health-check.py (which imports two helper functions and never escalates). Neither is a re-entrant driver that reads persisted stuck state, and the constraint filed on this issue is explicit that a liveness_check may never name a process the finishing agent spawned. So the honest answer is: the successor is real and UNWIRED, wiring it is ASK-311 and is excluded by this issue's Not-doing line, and until it is wired this state does not continue. The residual is unchanged: the named human is the founder, who does not work on code.",
-      "evidence": {
-        "path": "q-system/.q-system/token-guard.py",
-        "marker": "\"scripts\", \"fable-escalate.py\")",
-        "why": "The only non-test caller of the would-be successor. It is a per-session hook, not a driver that re-enters a persisted stuck state."
+      "what": "MAX_ATTEMPTS spent. One Linear comment (stuck_paged keeps it to one) names cap-ladder.py as the next step; no page.",
+      "consumer": "cap-ladder.py -- reads the attempt count this branch tests and climbs one rung: RCA and continue, other runner, re-scope, a recorded decision",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"attempts:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket, a fleet PR or a FOUNDER-DECISION. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
+      }
+    },
+    {
+      "id": "ladder-hold",
+      "source": "linear-worker",
+      "class": "durable-queue",
+      "marker": "ladder_hold",
+      "sites": 1,
+      "what": "cap-ladder.py set ladder_hold: the RCA agent decided BLOCKED-ON an owned ticket, a fleet PR or a FOUNDER-DECISION. The worker skips it before the dry pick.",
+      "consumer": "cap-ladder.py -- clears the hold the night an event lands: the blocker closed, a file the last attempt touched or the RCA names changed on origin/main, the description changed, or the worker model config changed. No event, no run, one line naming what it waits on",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "def event_for",
+        "why": "The event check is the only thing that releases a hold. The blocker itself was validated as owned when the decision was written (check_blocker), and a blocker that later loses its owner is RED in the report, so a held ticket always waits on something that someone moves. Founder 2026-11-08: 'but what happens if nothing changed? the ticket just stays?'"
       }
     },
     {
@@ -374,13 +391,19 @@
       "class": "exhausted-counter",
       "marker": "conflict_paged",
       "sites": 1,
-      "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. Paged once.",
-      "terminal": true,
-      "rationale": "REFUSAL ON EVIDENCE, re-checked 2026-08-18 by the same method that moved drift-cap. Two redrives landed after the PRD archived and NEITHER can see this state: ci-redrive.py selects on failing CI checks, review-redrive.py selects on the reviewer's verdict slot, and a PR that is approved-and-green but conflicting has neither. Grepped the whole scripts tree for a reader of merge state: the only hits are a comment in linear-worker.sh and an advice string in blocked-claim-evidence-lint.py. Nothing selects on mergeable/mergeStateStatus, so there is no successor to wire, real or otherwise. The rebase rounds already ran and the conflict survived them; the remaining moves are which side of the conflict wins, which is a judgment, and force-pushing over a reviewed diff, which is destructive by construction.",
-      "evidence": {
-        "path": "q-system/.q-system/scripts/blocked-claim-evidence-lint.py",
-        "marker": "--json mergeStateStatus,mergeable,statusCheckRollup",
-        "why": "The only place merge state is named anywhere in the scripts tree, and it is advice text printed to an operator -- not a selector. That absence is the evidence."
+      "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. One comment names cap-ladder.py; no page.",
+      "consumer": "cap-ladder.py -- reads conflict_paged and moves the work to a new PR on the same branch after a fresh RCA",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"conflict:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket, a fleet PR or a FOUNDER-DECISION. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
       }
     },
     {
@@ -466,6 +489,21 @@
         "path": "plugins/kipi-core/voiceloop/usage_breaker.py",
         "marker": "TRIAL_AFTER_SECONDS = 24 * 3600",
         "why": "The breaker lets one trial run through 24h after a pause and clears the pause itself once usage drops, so the hold ends without anyone acting."
+      }
+    },
+    {
+      "id": "converge-pr-already-merged",
+      "source": "converge",
+      "class": "done",
+      "marker": "DONE exit-0: PR #$MERGED_PR on $BRANCH already MERGED",
+      "sites": 1,
+      "what": "exit 0. No open PR on the branch, but a PR this run opened (created at or after RUN_START) has already merged (ASK-4112). No attempt is charged and nothing pages.",
+      "terminal": true,
+      "rationale": "The work landed, so no kipi driver has anything left to do: there is no PR to review, arm or receipt, and GitHub's merge closes the ticket through Linear's integration. Before ASK-4112 this population fell into converge-no-pr-opened, which charged an attempt and paged 'stopped, no PR' on 7 of 29 exit-7 stops in the week to 2026-11-09. A merged PR created before the run started is not this run's work and still exits 7 there.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "created < start",
+        "why": "The filter that keeps an older merged PR on a reused branch from passing as this run's work. test-converge.sh mutates exactly this text and proves its case 2 goes red without it."
       }
     },
     {
@@ -555,13 +593,19 @@
       "class": "exhausted-counter",
       "marker": "record-capout",
       "sites": 1,
-      "what": "exit 2. MAX_ROUNDS spent without a terminal verdict. The cap-out is written to the attempts ledger so the redrives can read it.",
-      "terminal": true,
-      "rationale": "TERMINAL BY DESIGN AND BY THE MOST RECENT DECISION IN THIS AREA (ASK-871, cfa58133, 2026-08-16). This exit used to be invisible to machines, so ci-redrive.py and review-redrive.py correctly-by-their-own-rules re-entered a capped-out issue: ASK-830 capped out at 15:59:53Z and was handed back at 16:14:01Z, six rounds and five Opus reviews in one morning. The fix was to make the cap-out machine-readable so the redrives STOP. Giving this row a consumer would undo that fix two days after it landed. The founder clears it deliberately, and the page carries the exact command.",
-      "evidence": {
-        "path": "q-system/.q-system/scripts/converge.sh",
-        "marker": "record-capout",
-        "why": "The ledger write whose entire purpose is to stop every automated re-entry into this state."
+      "what": "exit 2. MAX_ROUNDS spent without a terminal verdict. The cap-out is written to the attempts ledger; the redrives skip it and cap-ladder.py consumes it.",
+      "consumer": "cap-ladder.py -- reads the capout record, writes an RCA, opens a new PR on the same branch and clears the record",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"capout:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket, a fleet PR or a FOUNDER-DECISION. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
       }
     },
     {
@@ -703,6 +747,26 @@
       "what": "The gh CLI is not on PATH and was not found in the usual install dirs, so no PR can be opened.",
       "terminal": true,
       "rationale": "environmental-trigger: a missing binary. The loop cannot install its own tooling, and retrying a PATH lookup that just failed is the definition of a fake tier. It pages once; the healthy path calls page_clear so a recovery is silent and the next episode pages immediately."
+    },
+    {
+      "id": "dispatch-disk-floor",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "page_once disk-floor",
+      "sites": 1,
+      "what": "Free disk is under the worktree floor (refuse_worktree_below_gb) even after one worktree-reaper pass, so the tick dispatches nothing, claims nothing and spends no budget (ASK-3648). It pages once per episode as a notice, because a full disk stops the whole fleet.",
+      "consumer": "com.kipi.dispatch -- every tick measures again, runs worktree-reaper.py --apply, and dispatches as soon as free space is back over the floor",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "disk_floor_check() {",
+        "why": "The floor is measured at the top of every tick of the same job, before the turn lock. Nothing about the issue changed, so nothing is charged; the tick that finds space dispatches normally."
+      }
     },
     {
       "id": "dispatch-turn-lock-held",
@@ -1022,17 +1086,11 @@
         "what": "A started ticket held by the ASK-3825 rule for a reason other than a live run.",
         "consumer": "linear-sync.py started_hold_reason releases it when its hold ends; the backstop past the age bar."
       },
-      "ticket-live": {
-        "exit": "wait",
-        "backstop": false,
-        "what": "A started ticket inside the lane window or under a live worker claim: someone may be on it now.",
-        "consumer": "The 24h lane window (linear-sync.py STARTED_STALE_HOURS) or the claim ends, and the PR is judged again. Never the backstop: closing it would throw away a live round."
-      },
       "lane-live": {
         "exit": "wait",
         "backstop": false,
-        "what": "A lane branch whose ticket is inside the lane window or under a live claim.",
-        "consumer": "The 24h lane window ends, then kind lane and its exit. Never the backstop: a supervised lane may be on it."
+        "what": "A lane branch on a started ticket whose start stamp cannot be read. A PR whose ticket has live evidence (a start inside the lane window, a lane-mark.py marker, a live worker claim) never gets a kind: since ASK-4111 the WIP walk leaves it out of the count and the release loop skips it first.",
+        "consumer": "Nothing releases it yet: ASK-4124 builds that exit. Never the backstop: a supervised lane may be on it."
       },
       "ticket-state": {
         "exit": "wait",
@@ -1110,6 +1168,14 @@
         "what": "A ready-shaped ticket with no Linear project or no owner label, so no worker owns it.",
         "exits": [
           {
+            "kind": "consumer",
+            "fires": "by-order",
+            "path": "q-system/.q-system/scripts/linear-route.py",
+            "marker": "def evidence_decision",
+            "test": "q-system/.q-system/tests/test_linear_route.py",
+            "what": "Nightly through linear-triage-health.py (09:00, 10 writes a run): a no-project ticket with path or title-label evidence gets its project, DoR or not (ASK-3959 stage 1). Measured 2026-11-08: 73 of 384 route."
+          },
+          {
             "kind": "debt",
             "ticket": "ASK-3959",
             "since": "2026-11-08",
@@ -1165,18 +1231,20 @@
         ]
       },
       "attempts-exhausted": {
-        "max_age_days": 1,
+        "max_age_days": 28,
         "covers": [
-          "attempts-cap-stuck"
+          "attempts-cap-stuck",
+          "ladder-hold"
         ],
-        "what": "A ticket whose 3 worker attempts are spent.",
+        "what": "A ticket whose 3 worker attempts are spent, or whose PR is capped (rounds, review rounds, rebase rounds, the review-redrive machine tier).",
         "exits": [
           {
-            "kind": "debt",
-            "ticket": "ASK-3824",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E9: Fable RCA, one Opus attempt, then park attempts-exhausted."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/cap-ladder.py",
+            "marker": "def climb",
+            "test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+            "what": "Nightly, one rung per cap: RCA and continue, other runner, re-scope, then one recorded decision (SPLIT, CLOSE or BLOCKED-ON an owned blocker). A held ticket re-enters on an event, never a timer (ASK-3824)."
           }
         ]
       },
@@ -1253,22 +1321,6 @@
           }
         ]
       },
-      "expired-park": {
-        "max_age_days": 14,
-        "covers": [
-          "expired-park"
-        ],
-        "what": "A Backlog ticket parked past its review date, left by the worker for E2 to close.",
-        "exits": [
-          {
-            "kind": "debt",
-            "ticket": "ASK-3973",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "chief's triage E2 (park_expired, chief #370, ASK-3955) closes it, reversibly, at its next sweep, 50 a day; recorded here once the table can name a cross-repo consumer."
-          }
-        ]
-      },
       "open-pr": {
         "max_age_days": 3,
         "covers": [
@@ -1290,11 +1342,12 @@
             "what": "At the WIP ceiling each tick releases one PR no round can move (RULE-2026-11-07-A)."
           },
           {
-            "kind": "debt",
-            "ticket": "ASK-3962",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E11: the age backstop covers every open PR, below the ceiling too."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/pr-owner.py",
+            "marker": "def decide(",
+            "test": "q-system/.q-system/scripts/test/test-pr-owner.py",
+            "what": "com.kipi.pr-owner, hourly: every open PR in a dispatch repo, any branch, below the ceiling too. At 48h old and 12h quiet it merges, reviews, reworks once, or closes with the branch kept (ASK-3962)."
           }
         ]
       },

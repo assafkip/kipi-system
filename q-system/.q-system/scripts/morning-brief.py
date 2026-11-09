@@ -653,6 +653,9 @@ OPTIONAL_SECTIONS = (
     ("groupme_inbox.py", "groupme", "GroupMe waiting on you"),
     ("unknown_terms.py", "unknown_terms", "Terms I do not know"),
     ("board_rows.py", "board_rows", "Notion board"),
+    # Spend, access and outside-reach asks the fleet parked (cap-ladder.py writes
+    # them, ASK-3824). The one place these reach him, and never as a page.
+    ("founder_asks.py", "founder_asks", "Decisions only you can make"),
     # notion_board.py is UNREGISTERED here, and the comment this replaces was wrong.
     # It claimed the module would fall quiet because `owed` had left the founder's
     # sections. It did not: `owed` is still COLLECTED in collect_all's fixed tuple, so
