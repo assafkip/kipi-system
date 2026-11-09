@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""founder_asks.py: the morning-brief section for decisions only the founder can make.
+
+Founder rulings, 2026-11-07 and 2026-11-08: anything the fleet cannot do itself,
+such as spend, access or reach outside the fleet, "is parked with its reason and
+listed in the morning status file. It is not a page." This is the reader that
+list was missing (PR #662 review, major 3): cap-ladder.py writes the file, this
+renders its unresolved entries as a section of /q-morning, and each line carries
+the one command that releases the held ticket. This section is the file's one
+reader. The brief runs when the founder types /q-morning (its 07:40 schedule was
+retired 2026-09-11); nothing reads the file on a schedule.
+
+Registered in morning-brief.py OPTIONAL_SECTIONS. Read-only: the one writer is
+cap-ladder.py (status_add, status_resolve).
+
+OFF switch: no open ask. With no status file (cap-ladder.py never asked
+anything) or with every ask resolved, collect() returns None, so the brief
+renders no section at all (test_off_switches.py pins both).
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+STATUS = Path(os.environ.get("CAP_LADDER_STATUS")
+              or Path.home() / ".local/state/kipi/morning-status.jsonl")
+
+
+def collect(now, sources: dict, status: Path | None = None):
+    """(rows, error), the registry contract. One row per unresolved ask.
+
+    None when the file does not exist: the registry's OFF signal, the same one
+    board_rows.py uses (PR #687 review, minor 3). This returned ([], None), and
+    every instance where cap-ladder.py never ran got a permanent "Decisions only
+    you can make / nothing" section through `kipi update`."""
+    path = Path(status or STATUS)
+    if not path.exists():
+        return None              # this instance never asked anything: off, not rendered
+    try:
+        rows = [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError) as exc:
+        return [], f"could not read {path}: {exc}"
+    out = []
+    for r in rows:
+        if r.get("resolved"):
+            continue
+        ask = r.get("ask")
+        if r.get("clipped"):     # cap-ladder.py status_add clips at ASK_CHARS; the RCA holds the rest
+            ask = f"{ask} [clipped, full text in {r.get('rca') or 'the ticket RCA'}]"
+        out.append(f"{r.get('issue')}: {ask}. When done: {r.get('resolve') or 'cap-ladder.py --resolve ' + str(r.get('issue'))}")
+    # NOTHING OPEN IS OFF TOO (PR #687 round 3, minor). Once any ask was written
+    # and resolved, the file exists, and ([], None) rendered "nothing" every
+    # morning: the steady state of every instance that uses this channel.
+    return (out, None) if out else None

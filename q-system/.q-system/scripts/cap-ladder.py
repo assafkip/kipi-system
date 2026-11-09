@@ -38,9 +38,8 @@ THE LADDER (one rung per cap event, per issue, counter kept)
                       SPLIT       sub-tickets filed (owner:sana, same project, a
                                   DoR each); the parent closes Done, "split into".
                       CLOSE       Canceled with the RCA path as the reason.
-                      BLOCKED-ON  an open owned ticket or an open fleet PR.
-                                  A FOUNDER-DECISION blocker is refused for now;
-                                  its channel ships in ASK-4069 (see check_blocker).
+                      BLOCKED-ON  an open owned ticket, an open fleet PR, or
+                                  FOUNDER-DECISION (spend, access, outside reach).
                     A BLOCKED-ON answer that names anything else is refused and
                     the agent is asked again for SPLIT or CLOSE only; two invalid
                     answers in a row default to SPLIT on the RCA's own findings.
@@ -122,6 +121,12 @@ SYNC = cmd("CAP_LADDER_SYNC", [sys.executable, str(HERE / "linear-sync.py")])
 FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")])
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
 PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
+
+# Every path this script writes and every outside writer it calls. Under pytest
+# main() refuses unless ALL are redirected (PR #687 review, minor 4).
+LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
+             "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER")
 
 
 def now() -> datetime:
@@ -307,7 +312,162 @@ def ladder_owns(slug: str, number: int, branch: str, state_dir: str) -> str:
 HOLD_FLAG = "ladder_hold"             # read by linear-worker.sh, issue loop
 BLOCKERS = env_path("CAP_LADDER_BLOCKERS", HOME / ".config/kipi/cap-ladder-blockers.json")
 REPORT = env_path("CAP_LADDER_REPORT", HOME / ".local/state/kipi/cap-ladder/report.json")
+STATUS = env_path("CAP_LADDER_STATUS", HOME / ".local/state/kipi/morning-status.jsonl")
 OPEN_TYPES = ("backlog", "unstarted", "started", "triage")
+DEAD_TYPES = ("completed", "canceled", "duplicate")
+ASK_CHARS = 1000                      # the one bound on a stored ask (status_add)
+
+
+# --- THE MORNING STATUS FILE: this script is its one writer ------------------
+# Founder rulings: spend, access and outside reach are "parked with its reason
+# and listed in the morning status file. It is not a page." founder_asks.py
+# renders the unresolved entries as a section of /q-morning, its one reader. The
+# brief runs when the founder types it (its schedule was retired 2026-09-11), and
+# each line carries the one command that releases the hold:
+# `cap-ladder.py --resolve <ask id>`. Nothing else reads this file on a schedule.
+# Other jobs add asks through `cap-ladder.py --founder-ask`, never by appending.
+
+def _status_rows() -> list:
+    try:
+        return [json.loads(l) for l in STATUS.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def _status_write(rows: list) -> None:
+    STATUS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATUS.with_suffix(f".tmp.{os.getpid()}")
+    tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    os.replace(tmp, STATUS)
+
+
+def _status_locked(fn):
+    lock = STATUS.with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        return fn()
+
+
+def status_add(issue: str, kind: str, ask: str, rca: str = "", source: str = JOB) -> str:
+    """Append one unresolved ask and return its id; the same ask, still open, returns ITS id.
+
+    EACH ASK HAS ITS OWN ID, and a hold names the id it waits on (PR #662 review
+    round 2, major). Keyed on the issue alone, a resolved ask stayed on disk and
+    released every LATER founder hold on that issue: a ticket re-entered on a
+    decision nobody made. Dedupe is on the ask text too, so a second distinct
+    ask on one issue is listed, not dropped (round 2, minor).
+
+    A DEDUPE RETURNS THE OPEN ROW'S ID, NEVER "" (round 3, major). It returned
+    "", the hold stored that as its ask_id, and ask_resolved("") is False by
+    construction: a ticket re-capped on the same ask stayed held after the
+    founder ran the printed --resolve, which reported success.
+
+    CLIPPED, NEVER REFUSED (PR #687 review, major 1). The stored ask is the first
+    ASK_CHARS characters, flagged `clipped` so founder_asks.py marks it and names
+    the RCA that holds the rest. The dedupe compares the clipped text, the same
+    form that is stored, so a re-cap on one long ask finds its open row.
+    """
+    stored = ask[:ASK_CHARS]
+
+    def go():
+        rows = _status_rows()
+        same = [r for r in rows if r.get("issue") == issue and r.get("kind") == kind
+                and r.get("ask") == stored and not r.get("resolved") and r.get("id")]
+        if same:
+            return same[-1]["id"]
+        ask_id = f"{issue}:{hashlib.sha256((kind + ask + now().isoformat()).encode()).hexdigest()[:10]}"
+        row = {"id": ask_id, "at": now().isoformat(), "issue": issue, "kind": kind, "ask": stored,
+               "source": source, "rca": rca, "resolved": False,
+               "resolve": f"python3 q-system/.q-system/scripts/cap-ladder.py --resolve {ask_id}"}
+        if len(ask) > ASK_CHARS:
+            row["clipped"] = True
+        rows.append(row)
+        _status_write(rows)
+        return ask_id
+    return _status_locked(go)
+
+
+# Env vars an agent runner sets in the shells it starts. Claude Code sets
+# CLAUDECODE in every tool shell, `claude -p` worker runs included; Codex sets
+# CODEX_SANDBOX in its sandboxed shells.
+AGENT_ENV = ("CLAUDECODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED")
+
+
+def resolve_ctx() -> dict:
+    """The process context a resolve ran in, recorded beside its --by name.
+
+    EVIDENCE, NOT PROOF (PR #687 review, minor 5). The channel's premise is that
+    only the founder decides, and a resolve recorded no actor, so an agent that ran
+    the printed command looked like the founder afterwards. --by is free text any
+    caller can type, so the row also keeps what the process can see of itself: a
+    terminal on stdin, the agent markers in its env, the launchd label. An agent
+    that scrubs its own env can still hide; the record makes that a choice, not
+    the default."""
+    try:
+        tty = os.isatty(sys.stdin.fileno())
+    except (OSError, ValueError, AttributeError):
+        tty = False
+    return {"tty": tty, "agent_env": [v for v in AGENT_ENV if os.environ.get(v)],
+            "launchd": os.environ.get("XPC_SERVICE_NAME", "") if os.environ.get("XPC_SERVICE_NAME") != "0" else "",
+            "user": os.environ.get("USER", "")}
+
+
+def status_resolve(ref: str, note: str = "", by: str = "") -> int:
+    """Resolve ONE ask: by its id, or, given an issue, its newest unresolved ask
+    (round 2, minor: resolving every ask on the issue stamped one note on all).
+
+    NEWEST IS THE LAST ROW IN THE FILE, not the largest `at`. Rows are appended
+    under the lock, so file order is write order; two asks written in the same
+    second tied on `at`, and max() then resolved the OLDER one (ASK-4069, found
+    by the lifecycle test with a fixed clock)."""
+    ctx = resolve_ctx()
+
+    def go():
+        rows = _status_rows()
+        open_rows = [r for r in rows if not r.get("resolved") and (r.get("id") == ref or r.get("issue") == ref)]
+        if not open_rows:
+            return 0
+        target = next((r for r in open_rows if r.get("id") == ref), None) or open_rows[-1]
+        target.update(resolved=True, resolved_at=now().isoformat(), note=note[:300],
+                      resolved_by=(by or "unnamed")[:80], resolved_ctx=ctx)
+        _status_write(rows)
+        return 1
+    return _status_locked(go)
+
+
+def ask_resolved(ask_id: str) -> bool:
+    return bool(ask_id) and any(r.get("id") == ask_id and r.get("resolved") for r in _status_rows())
+
+
+def sweep_dead_asks(apply: bool) -> int:
+    """Every OPEN ask whose ticket is closed in Linear is resolved as moot. Returns how many.
+
+    ONE PLACE OWNS AN ASK'S END, keyed on the asks themselves (PR #687 rounds 1 to
+    3, RCA q-system/output/rca/rca-founder-ask-outlives-ticket-three-rounds-2026-11-09.md).
+    Each round tied the ask's end to a ladder code path, and each round found a
+    path that dropped it: the two state.pop sites (round 1), a release by event
+    (b), (c) or (d) (round 2), and a SPLIT or CLOSE that replaced the decision row
+    and its ask_id (round 3). The ticket is the truth, so the ticket is read. This
+    also ends asks the ladder never made (--founder-ask callers). An unreadable
+    ticket is read again at the next run; a dry run only says what it would do."""
+    open_by_issue: dict = {}
+    for r in _status_rows():
+        if not r.get("resolved") and r.get("id") and r.get("issue"):
+            open_by_issue.setdefault(r["issue"], []).append(r["id"])
+    done = 0
+    for issue, ids in sorted(open_by_issue.items()):
+        t = ticket(issue)
+        st = (t or {}).get("state_type")
+        if st not in DEAD_TYPES:
+            continue
+        for ask_id in ids:
+            if not apply:
+                say(f"[dry] {issue}: is {st}; would resolve its founder ask {ask_id} as moot")
+            elif status_resolve(ask_id, f"moot: {issue} is {st} in Linear", by=JOB):
+                say(f"{issue}: is {st}; its founder ask {ask_id} is resolved as moot")
+                done += 1
+    return done
 
 
 def write_json(path: Path, data) -> None:
@@ -518,7 +678,7 @@ def section(text: str, name: str) -> str:
 
 
 def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
-    """(kind, why_refused). kind is ticket, pr, founder or free; why is "" when valid.
+    """(kind, why_refused). kind is ticket, pr or founder; why is "" when valid.
 
     THE FOUNDER'S QUESTION IS THE RULE: "what happens if nothing changed? the
     ticket just stays?" A blocker nobody owns is a ticket that just stays, so it
@@ -540,16 +700,25 @@ def check_blocker(arg: str, tgts: list) -> tuple[str, str]:
             return "pr", f"{m.group(1)} is not a fleet repo, so pr-owner.py (ASK-3962) does not own it"
         rc, st = run(GH + ["pr", "view", m.group(2), "-R", m.group(1), "--json", "state", "--jq", ".state"])
         return "pr", "" if rc == 0 and st.strip() == "OPEN" else f"PR {arg} is not open"
-    # FOUNDER-DECISION IS REFUSED UNTIL ITS CHANNEL SHIPS (ASK-4069). PR #662 spent
-    # three review rounds on the founder-ask channel (status file, resolve, hold
-    # release), and each fix caused the next round's major, so main split it out.
-    # Accepted here with no writer and no reader, the hold would wait on an ask
-    # nobody can see or resolve: the ticket that "just stays". So the agent is
-    # asked again for SPLIT or CLOSE, the same path a free-text blocker takes.
-    if re.match(r"\s*FOUNDER-DECISION\b", arg, re.I):
-        return "founder", ("FOUNDER-DECISION is not accepted until ASK-4069 ships its channel; "
-                           "pick SPLIT, CLOSE, or BLOCKED-ON an owned ticket or a fleet PR")
-    return "free", f"'{arg[:80]}' is free text, not an owned ticket or a fleet PR"
+    # NO LENGTH BOUND HERE (PR #687 review, major 1). This read `\S.{0,300}`, so a
+    # well-formed ask with one sentence of reasoning (347 chars) was refused as
+    # "free text", defaulted to SPLIT, filed a sub-ticket and closed the parent
+    # Completed, and the founder was never asked. DECISION_RE already holds the
+    # answer to one line; status_add's ASK_CHARS is the one bound, and it clips
+    # with a marker instead of refusing.
+    if re.fullmatch(r"FOUNDER-DECISION:\s*(spend|access|outside):\s*\S.*", arg, re.I):
+        return "founder", ""
+    # TWO FAULTS, TWO MESSAGES (PR #687 round 2, minor). "spend:" with nothing
+    # after it, or "spend approve" with no colon, names an allowed kind; calling
+    # it "no allowed kind" sent the reader to the wrong fix.
+    # "names its kind but no ask" was wrong for "outside reach: email the vendor"
+    # (round 3 nit): the ask is there, the kind is mistyped. The form is the fault.
+    if re.match(r"FOUNDER-DECISION:\s*(spend|access|outside)\b", arg, re.I):
+        return "free", (f"'{arg[:80]}' starts with an allowed kind but is not in the form "
+                        "FOUNDER-DECISION: <spend|access|outside>: <the one-line ask>")
+    if re.match(r"FOUNDER-DECISION:", arg, re.I):
+        return "free", f"'{arg[:80]}' is a FOUNDER-DECISION of no allowed kind: it must name spend, access or outside"
+    return "free", f"'{arg[:80]}' is free text, not an owned ticket, a fleet PR or a FOUNDER-DECISION"
 
 
 def decide(issue: str, kind: str, why: str, pr: dict | None, slug: str, tgts: list) -> dict | None:
@@ -627,6 +796,8 @@ def apply_decision(issue: str, d: dict, t: dict, pr: dict | None, slug: str, r: 
     target = d["target"]
     if d["target_kind"] == "ticket":
         lin("relate", blocker=target, blocked=issue)
+    if d["target_kind"] == "founder":
+        d["ask_id"] = status_add(issue, "founder-decision", target.split(":", 1)[1].strip(), rca_ref)
     if pr:
         close_pr(slug, pr, f"Closed by {JOB}: {issue} is BLOCKED-ON {target}. Branch "
                            f"{pr['headRefName']} is kept; the ladder reopens work from it when the blocker moves.")
@@ -655,6 +826,9 @@ def event_for(issue: str, row: dict, t: dict, slug: str) -> str:
             rc, st = run(GH + ["pr", "view", m.group(2), "-R", m.group(1), "--json", "state", "--jq", ".state"])
             if rc == 0 and st.strip() != "OPEN":
                 return f"(a) blocker {target} closed"
+    elif d.get("target_kind") == "founder":
+        if ask_resolved(d.get("ask_id", "")):
+            return "(a) the founder decision is resolved in the status file"
     hit = sorted(set(changed_on_main(slug, snap.get("main_sha", ""))) & set(snap.get("files") or []))
     if hit:
         return f"(b) {hit[0]} changed on origin/main"
@@ -766,12 +940,38 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true", help="write; without it, print the plan")
     ap.add_argument("--limit", type=int, default=5, help="caps climbed per run (bounds RCA spend)")
+    ap.add_argument("--resolve", metavar="ASK_ID|ISSUE", help="resolve one founder ask (by id, or the newest for an issue), then exit")
+    ap.add_argument("--note", default="", help="with --resolve: what was decided")
+    ap.add_argument("--by", default="", help="with --resolve: who decided (kept with the process context)")
+    ap.add_argument("--founder-ask", nargs=3, metavar=("ISSUE", "KIND", "ASK"),
+                    help="add one ask to the morning status file (other jobs call this), then exit")
     args = ap.parse_args(argv)
-    # FIRST, before anything reads or writes a live path (PR #662 round 2, minor:
-    # two verbs once ran above this check and wrote a real state file under pytest).
-    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("CAP_LADDER_STATE"):
-        print("cap-ladder: REFUSED under pytest without CAP_LADDER_STATE (live data path)", file=sys.stderr)
+    # FIRST, before any verb that writes (round 2, minor: --resolve and
+    # --founder-ask ran above this and wrote the real status file under pytest).
+    # EVERY LIVE PATH, NOT ONE PROXY (PR #687 review, minor 4). This keyed on
+    # CAP_LADDER_STATE alone, which does not control the status file, so a test
+    # that redirected state but not status wrote the founder's real
+    # morning-status.jsonl. It held only because the suite also sets HOME.
+    missing = [v for v in LIVE_VARS if not os.environ.get(v)]
+    if os.environ.get("PYTEST_CURRENT_TEST") and missing:
+        print(f"cap-ladder: REFUSED under pytest: {', '.join(missing)} not redirected (live data path)",
+              file=sys.stderr)
         return 4
+    if args.resolve:
+        # NEVER "resolved" WHEN NOTHING WAS (round 3: the command the brief prints
+        # said success while the hold stayed). No open match is exit 1.
+        if not status_resolve(args.resolve, args.note, by=args.by):
+            print(f"cap-ladder: no open ask matches {args.resolve}; nothing was resolved", file=sys.stderr)
+            return 1
+        print(f"cap-ladder: 1 ask for {args.resolve} resolved; a hold that waits on it re-enters "
+              f"at {JOB}'s next run")
+        return 0
+    if args.founder_ask:
+        i, k, a = args.founder_ask
+        before = {r.get("id") for r in _status_rows()}
+        got = status_add(i, k, a, source="cap-ladder.py --founder-ask")
+        print(f"cap-ladder: the same ask is already listed ({got})" if got in before else f"cap-ladder: ask added ({got})")
+        return 0
 
     tgts = targets()
     project_slug = {t["project"]: t["slug"] for t in tgts if t.get("project")}
@@ -806,8 +1006,8 @@ def main(argv=None) -> int:
             t = ticket(issue)
             if t is None:
                 continue
-            if t.get("state_type") in ("completed", "canceled", "duplicate"):
-                state.pop(issue, None)
+            if t.get("state_type") in DEAD_TYPES:
+                state.pop(issue, None)      # its ask, if any, ends in sweep_dead_asks
                 continue
             pr = prs_by_issue.get(issue)
             slug = slug_by_pr.get((issue, pr["number"])) if pr else project_slug.get(t.get("project", ""))
@@ -828,13 +1028,16 @@ def main(argv=None) -> int:
             done += 1
         # THE HELD TICKETS: no event, no run, one line naming what it waits on.
         for issue, row in sorted(state.items()):
+            # A release keeps its ask open on purpose: the question is still real
+            # until the ticket re-caps (and dedupes to the same id, lifecycle 4) or
+            # dies, and sweep_dead_asks below ends it then.
             if not row.get("held") or issue in caps:
                 continue
             t = ticket(issue)
             if t is None:
                 continue
-            if t.get("state_type") in ("completed", "canceled", "duplicate"):
-                state.pop(issue, None)
+            if t.get("state_type") in DEAD_TYPES:
+                state.pop(issue, None)      # its ask ends in sweep_dead_asks
                 continue
             d = row.get("decision") or {}
             slug = project_slug.get(t.get("project", "")) or (tgts[0]["slug"] if tgts else "")
@@ -854,6 +1057,7 @@ def main(argv=None) -> int:
             report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
                            "waiting_on": wait, "red": red,
                            "note": "the blocker lost its owner, so it is a dead end" if red else ""})
+        sweep_dead_asks(args.apply)
         blockers: dict = {}
         for row in state.values():
             d = row.get("decision") or {}
