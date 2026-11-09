@@ -92,10 +92,15 @@ class Asker:
 class FakeSync:
     """Linear by query shape. Records (kind, variables) for every write, in order."""
 
-    def __init__(self, fail_on=None):
-        self.writes, self.fail_on = [], fail_on
+    def __init__(self, fail_on=None, fail_times=None):
+        self.writes, self.fail_on, self.fail_times = [], fail_on, fail_times
+        self.children = []   # what issueCreate filed, so the children query can see it
 
     def graphql(self, query, variables):
+        if "children(" in query:
+            return {"issue": {"children": {"nodes": [
+                {"identifier": c["id"], "title": c["title"], "description": c["description"]}
+                for c in self.children if c["parentId"] == variables["id"]]}}}
         if "projects(first" in query:
             return {"team": {"projects": {"nodes": [{"id": v, "name": k} for k, v in BOARD.items()]}}}
         if "labels(first" in query:
@@ -106,14 +111,18 @@ class FakeSync:
                                                   {"id": "s-can", "name": "Canceled", "type": "canceled"}]}}}
         kind = ("comment" if "commentCreate" in query else "create" if "issueCreate" in query
                 else "update")
-        if self.fail_on == kind:
-            return {}
+        if self.fail_on == kind and (self.fail_times is None or self.fail_times > 0):
+            if self.fail_times is not None:
+                self.fail_times -= 1
+            # The transport raises on a 429, as linear-sync.graphql does.
+            raise RuntimeError("HTTP 429: rate limited")
         self.writes.append((kind, variables))
         if kind == "comment":
             return {"commentCreate": {"success": True}}
         if kind == "create":
-            return {"issueCreate": {"success": True,
-                                    "issue": {"identifier": f"ASK-90{len(self.writes)}"}}}
+            ident = f"ASK-90{len(self.children)}"
+            self.children.append({"id": ident, **variables["input"]})
+            return {"issueCreate": {"success": True, "issue": {"identifier": ident}}}
         return {"issueUpdate": {"success": True, "issue": {"identifier": "x"}}}
 
 
@@ -268,6 +277,44 @@ def test_split_files_each_child_in_its_own_project_then_cancels_the_parent(facts
     assert all(c["parentId"] == "uuid-ASK-7" and "l-triage" in c["labelIds"] for c in creates)
     assert [k for k, _ in sync.writes][-2:] == ["comment", "update"]
     assert done[-1] == "canceled"
+
+
+SPLIT = {"kind": "SPLIT", "reason": "two repos",
+         "children": [{"project": "kipi-system", "title": "a", "outcome": "b"},
+                      {"project": "ASK Consulting", "title": "c", "outcome": "d"}]}
+
+
+def test_a_split_whose_record_failed_files_no_second_set_of_children(facts):
+    """PR #690 round 1, major. Night 1: both children land, then the record
+    comment raises (a 429). Night 2, same answer: the children already on the
+    board are reused, so nothing is filed twice. Linear issues cannot be deleted."""
+    sync = FakeSync(fail_on="comment", fail_times=1)
+    board = decide.Board(sync, "team-1")
+    with pytest.raises(RuntimeError):
+        decide.apply_decision(board, ticket(), SPLIT)
+    assert len(sync.children) == 2
+    done = decide.apply_decision(board, ticket(), SPLIT)
+    assert len(sync.children) == 2, [c["title"] for c in sync.children]
+    assert done[-1] == "canceled" and "child=ASK-900" in done and "child=ASK-901" in done
+
+
+def test_a_split_child_carries_the_marker_that_finds_it_again(facts):
+    sync = FakeSync()
+    decide.apply_decision(decide.Board(sync, "team-1"), ticket(), SPLIT)
+    assert all("<!-- kipi-route-split-of: ASK-7 -->" in c["description"] for c in sync.children)
+
+
+def test_the_prompt_lists_the_children_already_filed(facts):
+    t = dict(ticket(), split_children=[{"identifier": "ASK-900", "title": "a"}])
+    prompt = decide.build_prompt(t, names(), facts, [])
+    assert "ASK-900" in prompt and "do not file them again" in prompt
+
+
+def test_a_truncated_comment_page_is_said_not_read_as_none(facts):
+    """PR #690 round 1, minor: 50 comments is a page, not the thread."""
+    t = ticket(comments=["x"] * 3)
+    t["comments"]["pageInfo"]["hasNextPage"] = True
+    assert "not read" in decide.history(t)
 
 
 def test_apply_under_pytest_is_refused_before_any_read(monkeypatch):

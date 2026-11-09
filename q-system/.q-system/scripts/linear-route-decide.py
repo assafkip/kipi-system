@@ -80,6 +80,10 @@ REASON_RE = re.compile(r"^\s*REASON:\s*(.+?)\s*$", re.M)
 NUM_RE = re.compile(r"-(\d+)$")
 
 STATES_QUERY = """query($t:String!){team(id:$t){states{nodes{id name type}}}}"""
+CHILDREN_QUERY = """query($id:String!){issue(id:$id){children(first:50){
+ nodes{identifier title description}}}}"""
+# On every child this pass files, so the next night can find it on the board.
+SPLIT_MARKER = "kipi-route-split-of"
 ISSUE_CREATE = """mutation($input:IssueCreateInput!){
  issueCreate(input:$input){success issue{identifier}}}"""
 
@@ -230,6 +234,8 @@ description:
 {description}
 earlier decisions recorded on this ticket by this pass:
 {history}
+children this pass already filed for this ticket (they exist; do not file them again):
+{children}
 </ticket>
 {again}
 Answer with exactly one DECISION line, then one REASON line, and nothing else:
@@ -261,9 +267,16 @@ def history(issue: dict) -> str:
     the board and the parent open. Without its own record in view, the next
     night's ask could split the same ticket again and file the children twice.
     """
-    bodies = [n.get("body") or "" for n in ((issue.get("comments") or {}).get("nodes") or [])]
+    comments = issue.get("comments") or {}
+    bodies = [n.get("body") or "" for n in (comments.get("nodes") or [])]
     mine = [b for b in bodies if f"<!-- {DECISION_MARKER}:" in b]
-    return "\n".join("- " + " ".join(b.split())[:300] for b in mine[-3:]) or "(none)"
+    out = "\n".join("- " + " ".join(b.split())[:300] for b in mine[-3:]) or "(none)"
+    # A PAGE IS NOT THE THREAD (PR #690 review r1, minor). The board walk reads 50
+    # comments; a record past them is unknown, not absent, and the prompt says so.
+    # The duplicate guard does not rest on this: split_children() reads the board.
+    if (comments.get("pageInfo") or {}).get("hasNextPage"):
+        out += "\n(this ticket has more comments than were read; older records were not read)"
+    return out
 
 
 def build_prompt(issue: dict, names: dict, facts, refused: list) -> str:
@@ -278,7 +291,10 @@ def build_prompt(issue: dict, names: dict, facts, refused: list) -> str:
         state=(issue.get("state") or {}).get("name") or "",
         labels=", ".join(sorted(route.labels_of(issue))) or "(none)",
         description=(issue.get("description") or "(empty)")[:DESC_CAP],
-        history=history(issue), again=again, max_split=MAX_SPLIT)
+        history=history(issue),
+        children="\n".join(f"- {c.get('identifier')}: {c.get('title')}"
+                           for c in issue.get("split_children") or []) or "(none)",
+        again=again, max_split=MAX_SPLIT)
 
 
 def absolute_binary(name: str | None) -> str | None:
@@ -366,6 +382,23 @@ def decision_comment(d: dict, made: list | None = None) -> str:
             f"children." + tail)
 
 
+def split_children(sync, parent: dict) -> list:
+    """[{identifier, title}] of the children this pass filed for `parent`, from the BOARD.
+
+    THE BOARD IS THE RECORD FOR CHILDREN (PR #690 review r1, major). A split whose
+    children all land and whose record comment then fails left no trace anywhere
+    the next night read, so the same answer filed a second set, and Linear issues
+    cannot be deleted. The marker on each child is what this reads, so a failed
+    comment cannot hide a child. Raises on a failed read: an unknown set of
+    children is not "none", so the caller files nothing.
+    """
+    data = sync.graphql(CHILDREN_QUERY, {"id": parent["id"]}) or {}
+    nodes = (((data.get("issue") or {}).get("children") or {}).get("nodes")) or []
+    mark = f"<!-- {SPLIT_MARKER}: {parent.get('identifier')} -->"
+    return [{"identifier": n.get("identifier"), "title": n.get("title") or ""}
+            for n in nodes if mark in (n.get("description") or "")]
+
+
 class Board:
     """The writes, through linear-sync's graphql. Every mutation's success is read."""
 
@@ -405,13 +438,17 @@ class Board:
                                     if n.get("id")})}
         return route.apply_row(self.sync, row, self.projects, self.labels)
 
+    def split_children(self, parent: dict) -> list:
+        return split_children(self.sync, parent)
+
     def create_child(self, parent: dict, child: dict) -> str:
         pid = self.projects.get(child["project"].lower())
         if not pid:
             raise RuntimeError(f"no board project named {child['project']!r}")
         lids = [self.labels[n] for n in (route.OWNER_LABEL, TRIAGE_LABEL) if n in self.labels]
         body = (f"Split from {parent.get('identifier')} by linear-route-decide.py (ASK-3959).\n\n"
-                f"**Outcome:** {child['outcome']}\n")
+                f"**Outcome:** {child['outcome']}\n\n"
+                f"<!-- {SPLIT_MARKER}: {parent.get('identifier')} -->")
         res = self.sync.graphql(ISSUE_CREATE, {"input": {
             "teamId": self.team_id, "title": child["title"], "description": body,
             "projectId": pid, "parentId": parent["id"], "labelIds": lids}}) or {}
@@ -431,8 +468,10 @@ def apply_decision(board: Board, issue: dict, d: dict) -> list:
     ROUTE: the project first. A "Routed to X" record on a ticket the write never
       reached would be a false statement; a project with no record is still
       visible on the ticket, and the decisions log has the reason.
-    SPLIT: children, then the record, then the cancel. A partial split is said on
-      the parent, which stays open, and history() puts that record in the next ask.
+    SPLIT: children, then the record, then the cancel. A child already on the
+      board under this parent with the same title is reused, never filed again,
+      so a run that died after its creates repeats nothing. The parent stays open
+      until the cancel lands, and the next ask sees the filed children.
     """
     if d["kind"] == "ROUTE":
         done = board.set_project(issue, d["project"])
@@ -442,10 +481,12 @@ def apply_decision(board: Board, issue: dict, d: dict) -> list:
         board.comment(issue, decision_comment(d))
         board.cancel(issue)
         return ["comment", "canceled"]
+    filed = {c["title"].strip().lower(): c["identifier"] for c in board.split_children(issue)}
     made = []
     try:
         for child in d["children"]:
-            made.append(board.create_child(issue, child))
+            have = filed.get(child["title"].strip().lower())
+            made.append(have or board.create_child(issue, child))
     finally:
         if made and len(made) < len(d["children"]):
             # The parent stays open; history() shows this record to the next ask.
@@ -518,6 +559,11 @@ def run(args) -> int:
     rows, failures = [], 0
     for issue in batch:
         ident = issue.get("identifier")
+        try:
+            issue["split_children"] = split_children(sync, issue)
+        except Exception as exc:  # noqa: BLE001 - the prompt goes without; apply re-reads and raises
+            print(f"  {ident}: children not read ({str(exc)[:80]}); a SPLIT re-reads them before filing",
+                  file=sys.stderr)
         d = decide_one(issue, names, facts)
         rec = {"ts": now(), "id": ident, "applied": False}
         if d is None:
