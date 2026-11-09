@@ -62,6 +62,21 @@ All on fixtures. test-pr-owner.py asserts its state path and worker state dir ar
 - Same change, found by the Sonnet vs Opus agent: the review runs through run_logged(), with its output in a file under ~/.local/state/kipi/pr-owner/reviews/. A pipe would wait on pr-review-agent.sh's watchdog `sleep` (line 334) for up to 40 minutes after the review ended.
 - Same change, from the handoff: decide() yields every PR cap-ladder.py's ladder_owns() claims (`ladder`, no write). With no cap-ladder.py in the checkout (PR #662 not merged), pr-owner yields a superset: any review-cap marker for the PR, or any worker-attempts record for a sana/ask-N ticket. So the two jobs never both write one PR.
 
+## Rounds 4 to 6 (the handoff agent's three)
+
+Written by the round-7 agent (a fresh Sana), per iteration-speed rule 6.
+
+- **What happened.** Round 4 found a failed requeue reported as ok and refusals exiting 1. Round 5 found an approved PR that GitHub calls BLOCKED sent to rework and close. Round 6 found that a reopened PR was closed again the next hour. Each fix was correct and red-first. Each next round still found new surface.
+- **Surface cause.** Every finding was a sentence the file itself says, which the code did not do. Round 6 is the plain case: the close comment says "Reopen this PR to undo", and `state["closed"]` was written and never read, from the first commit (ce463a10) on.
+- **Structural cause (type: missing-test).** Nobody listed what pr-owner.py promises and tested each one. The tests followed the code paths each finding named. A promise no finding named had no test, so the suite could not fail on it. Rounds 1 to 3 had the same shape against outside contracts; rounds 4 to 6 had it against the file's own words.
+- **Fix.** test-pr-owner-contract.py. It lists every promise in the docstrings, comments, posted PR comments, ticket notes and log lines. Each promise gets one assertion that runs the real decide(), act() and main() on a faked fleet. A coverage check fails when a promise-shaped line in pr-owner.py (never, only, at most, once, undo, refuse, exit N, nothing else) has no promise row or written exemption. So a new claim cannot land untested.
+- **Verification.**
+  - Red on f4748e76 (pr-owner.py unchanged): 5 checks failed. Two are real defects. P06: an archive hook that exits 1 with no output read as an allow, so the repo was listed and its PR closed, exit 0, while the comment said "a guard that cannot answer is a deny". P14: the rework comment told a Todo ticket it "goes back to Backlog", but only a started ticket is requeued. A third failure was P06 cascading. The last two were anchors of mine that split across a wrapped line.
+  - Fixed red-first. archived() raises on any non-answer, and main() counts that repo unread, so the run exits 2. The rework comment says "goes back to Backlog" only for a started ticket. The docstring now names the fork alert as the second Linear write path.
+  - Green: test-pr-owner-contract.py, 46 promises and 97 assertions, PASS. test-pr-owner.py still has 140 checks, PASS.
+  - Mutants: 16, each a mutated pr-owner.py in a temp dir run against the contract test. 15 were killed on the first pass. The no-age-gate mutant lived: every young fixture was also under the 12h quiet gate. A 30h-old PR now covers that, and 16 of 16 are killed.
+  - The coverage rule caught 4 promise-shaped lines in this fix's own comments before they had rows.
+
 ## Recurrence
 
 <!-- rca-recurrence-skip -->
@@ -69,6 +84,7 @@ No earlier RCA in this directory covers pr-owner.py or the alert sink's fingerpr
 
 ## Action items
 
+- [x] Every promise pr-owner.py makes has one assertion that drives the real code, and a new promise-shaped line with no row fails CI (test-pr-owner-contract.py); owner: Sana (ASK-3962 round-7 agent); type: test
 - [x] The fork alert carries the PR's identity in a token alert-to-linear.py's normalizer keeps, and pr-owner records it filed only when the sink's stdout names a ticket; owner: Sana (ASK-3962 handoff agent); type: code
 - [x] The fork branch sits behind the 48h age and 12h quiet gates; owner: Sana (ASK-3962 handoff agent); type: code
 - [x] test-pr-owner.py drives the real slack-notify.sh and alert-to-linear.py main() (fake transport only) and the real cap-ladder.py ladder_owns(); no hand model of either sink; owner: Sana (ASK-3962 handoff agent); type: test

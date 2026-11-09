@@ -91,7 +91,8 @@ before its first push.
 ONE WRITER. The state file ~/.local/state/kipi/pr-owner/state.json (strikes and
 review attempts, per PR and head) is written only here, under a lock, as a temp
 file plus rename. Linear writes go through linear-sync.py requeue and progress,
-the same two writers wip_release uses.
+the same two writers wip_release uses, and a fork's one alert goes through
+slack-notify.sh to alert-to-linear.py.
 
 NOT IN THIS JOB: LGTM's 14-day stale close in chief (stale_close_scope still names
 kipi-system). Chief is out of the dispatch set and the worker cannot reach a Chief
@@ -297,13 +298,25 @@ def archive_guard() -> Path:
 
 
 def archived(path: str, label: str) -> bool:
+    """True when ps-archive-deny.sh denies a read of this repo.
+
+    A GUARD THAT CANNOT ANSWER IS NOT AN ALLOW (PR #659 contract test). The hook
+    allows by exiting 0 with no output and denies by exiting 0 with a deny line,
+    so any other exit is no answer. The first cut read only a missing or hung
+    guard as a deny; a guard that crashed (jq gone, a syntax error) read as an
+    allow, and the run read and closed PRs in what may be the archive, exit 0.
+    Now every non-answer raises, and main() leaves the repo unread and exits 2.
+    """
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": f"ls {path} {label}"}})
     env = {k: v for k, v in os.environ.items() if k != "ALLOW_PS_ARCHIVE"}
     try:
         p = subprocess.run(["bash", str(archive_guard())], input=payload, capture_output=True,
                            text=True, timeout=30, env=env)
-    except (OSError, subprocess.TimeoutExpired):
-        return True  # a guard that cannot answer is a deny: never read what may be the archive
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"the archive guard could not answer ({exc})") from exc
+    if p.returncode != 0:
+        raise RuntimeError(f"the archive guard exited {p.returncode} "
+                           f"({' '.join((p.stderr or p.stdout).split())[-120:]})")
     return '"permissionDecision":"deny"' in p.stdout.replace(" ", "")
 
 
@@ -871,8 +884,14 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         ticket = d["ticket"]
         line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962): PR #{n} is red ({d['reason']}). "
                 f"It stays open once; still red at {short} after {hours(AGE_S)}, it closes with the branch kept.")
+        # THE COMMENT SAYS WHAT ticket_note() DOES (PR #659 contract test). Only a
+        # started ticket is requeued. A Backlog or Todo one is already in the
+        # worker's queue and gets the resume note; "goes back to Backlog" on a Todo
+        # ticket was a sentence nothing made true.
+        where = (f"{ticket['id']} goes back to Backlog" if ticket["state_type"] == "started"
+                 else f"{ticket['id']} stays {ticket['state_name'] or ticket['state_type']} and gets a resume note")
         body = (f"pr-owner (ASK-3962): this PR is red and nothing has pushed for {hours(now - (pr['pushed'] or now))}.\n\n"
-                f"Why: {d['reason']}\n\n{ticket['id']} goes back to Backlog so the worker reworks it on {branch}. "
+                f"Why: {d['reason']}\n\n{where} so the worker reworks it on {branch}. "
                 f"If the head is still {short} after {hours(AGE_S)}, this PR closes with the branch kept.")
         rc, out, err = gh_write(["pr", "comment", n, "-R", slug, "--body", body])
         if rc != 0:
@@ -969,7 +988,13 @@ def _run(argv=None) -> int:
     review_left = 1
     for name, path, _remote in rows:
         n_repos += 1
-        if archived(path, name):
+        try:
+            denied = archived(path, name)
+        except RuntimeError as exc:
+            n_unreadable += 1
+            print(f"UNREADABLE {name}: {exc}; not read")
+            continue
+        if denied:
             n_excluded += 1
             print(f"EXCLUDED {name}: the archive guard refuses it (RULE-2026-10-23-B); not read")
             continue
@@ -982,7 +1007,13 @@ def _run(argv=None) -> int:
             n_unreadable += 1
             print(f"UNREADABLE {name}: no GitHub slug for {path}")
             continue
-        if archived(path, slug):
+        try:
+            denied = archived(path, slug)
+        except RuntimeError as exc:
+            n_unreadable += 1
+            print(f"UNREADABLE {name} ({slug}): {exc}; not read")
+            continue
+        if denied:
             n_excluded += 1
             print(f"EXCLUDED {name} ({slug}): the archive guard refuses it; not read")
             continue
