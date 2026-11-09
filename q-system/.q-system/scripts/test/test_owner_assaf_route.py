@@ -95,10 +95,10 @@ def main() -> int:
     # again, forever. Answered means the fleet works it now.
     for case, rows, want_answered in (
             ("resolved", [{"id": "ASK-2:a", "issue": "ASK-2", "kind": "founder-decision",
-                           "ask": "ASK-2 asks: renew the vendor subscription", "resolved": True,
+                           "ask": "ASK-2 asks: renew the vendor subscription: costs $40 a month; should we keep it", "resolved": True,
                            "note": "approved, keep it", "resolved_by": "founder"}], True),
             ("open", [{"id": "ASK-2:a", "issue": "ASK-2", "kind": "founder-decision",
-                       "ask": "ASK-2 asks: renew the vendor subscription", "resolved": False}], False),
+                       "ask": "ASK-2 asks: renew the vendor subscription: costs $40 a month; should we keep it", "resolved": False}], False),
             ("another ask resolved", [{"id": "ASK-2:b", "issue": "ASK-2", "kind": "founder-decision",
                                        "ask": "spend: some other thing", "resolved": True}], False)):
         with tempfile.TemporaryDirectory() as t:
@@ -116,6 +116,32 @@ def main() -> int:
             check(f"founder ask {case}: " + ("relabelled owner:sana with the answer, never asked again"
                                              if want_answered else "asked (deduped by the ladder), label kept"),
                   ok, (out, logged(td, "ladder"), note))
+    # Codex PR #670 findings, each pinned.
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        env = world(td)
+        tk = json.loads((td / "tickets.json").read_text())
+        tk.append({"id": "u3", "identifier": "ASK-3", "title": "Fix client synchronization",
+                   "description": "the vendor webhook drops events; see the contract test", "labels": tk[0]["labels"]})
+        tk.append({"id": "u4", "identifier": "ASK-4", "title": "Renew service",
+                   "description": "It lapses Friday. Should we pay the $40 invoice? The old card expired.",
+                   "labels": tk[0]["labels"]})
+        (td / "tickets.json").write_text(json.dumps(tk))
+        out = run(env, SCRIPT, "--apply")
+        asks = {c[1]: c[3] for c in logged(td, "ladder") if c[:1] == ["--founder-ask"]}
+        check("codex P2: a ticket that only names a client, vendor or contract asks nothing: it is relabelled",
+              "ASK-3" not in asks and any(c[:2] == ["progress", "ASK-3"] for c in logged(td, "sync")), (out, asks))
+        check("codex P2: a question only in the description reaches the ask, amount and all",
+              "Should we pay the $40 invoice?" in asks.get("ASK-4", ""), asks)
+    with tempfile.TemporaryDirectory() as t:
+        td = Path(t)
+        env = world(td)
+        (td / "fake_linear.py").write_text(FAKE_LINEAR.replace(
+            'return {"issueRemoveLabel": {"success": True}}', 'return {"issueRemoveLabel": {"success": False}}'))
+        out = run(env, SCRIPT, "--apply")
+        check("codex P2: a refused owner:assaf removal is not reported as relabelled and posts no comment",
+              "ASK-1: relabelled" not in out and "retries" in out
+              and not any(c[:2] == ["progress", "ASK-1"] for c in logged(td, "sync")), out)
     with tempfile.TemporaryDirectory() as t:
         td = Path(t)
         mut = td / "owner-assaf-route.py"

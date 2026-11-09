@@ -37,11 +37,16 @@ FOUNDER = "owner:assaf"
 SANA = "owner:sana"
 # Spend, scope and outside reach (no-idle-escalate-to-sana.md: those, and only
 # those, reach the founder). Words, not a judgment.
+# NO BARE NOUNS (codex, PR #670). `client`, `vendor`, `contract` and `legal`
+# matched "Fix client synchronization", which asks nothing, and kept it on the
+# founder's list: the exact false ask this closed list exists to prevent. Every
+# entry is now money, a decision phrase, or an act only he can do.
 QUESTION_RE = re.compile(
     r"\$\s?\d|\bbudget\b|\bspend\b|\bpay(ment)?\b|\bpurchase\b|\bsubscription\b|\bpricing\b|\binvoice\b"
     r"|\bscope decision\b|\bshould we\b|\bdo we want\b|\bpriority call\b"
-    r"|\bclient\b|\bvendor\b|\bcontract\b|\blegal\b|\bgrant (him |me |us )?access\b",
+    r"|\bsign (the |a )?(contract|agreement)\b|\bgrant (him |me |us )?access\b",
     re.I)
+SENTENCE_END = ".?!\n"
 OPEN_Q = """query($a:String){issues(first:100,after:$a,filter:{team:{key:{eq:"ASK"}},
   labels:{name:{eq:"owner:assaf"}},state:{type:{nin:["completed","canceled"]}}}){
   pageInfo{hasNextPage endCursor} nodes{id identifier title description labels{nodes{id name}}}}}"""
@@ -76,10 +81,26 @@ def label_id(g, name: str) -> str:
     return nodes[0]["id"] if nodes else ""
 
 
+def question(t: dict) -> str:
+    """The sentence that asks, from the description first, else the title.
+
+    THE TITLE ALONE DROPPED THE QUESTION (codex, PR #670). "Renew service" with
+    "Should we pay the $40 invoice?" in the description reached the founder as
+    "asks: Renew service", without the decision or the amount."""
+    for text in (t.get("description") or "", t.get("title") or ""):
+        m = QUESTION_RE.search(text)
+        if m:
+            start = max(text.rfind(c, 0, m.start()) for c in SENTENCE_END) + 1
+            ends = [i for i in (text.find(c, m.end()) for c in SENTENCE_END) if i != -1]
+            return text[start:(min(ends) + 1 if ends else len(text))].strip()
+    return ""
+
+
 def ask_text(t: dict) -> str:
     """The one ask this job files for a ticket. answered() matches on it, so the two
     can never disagree about which ask is this ticket's."""
-    return f"{t['identifier']} asks: {(t.get('title') or '')[:200]}"
+    title, q = (t.get("title") or "")[:200], question(t)
+    return f"{t['identifier']} asks: {title}" + (f": {q[:300]}" if q and q != title.strip() else "")
 
 
 def answered(t: dict, status: Path) -> dict | None:
@@ -130,7 +151,14 @@ def route(t: dict, g, apply: bool, ladder: list, sync: list, status: Path) -> st
                            {"i": t["id"], "l": sana}).get("issueAddLabel") or {}).get("success")
     if not ok:
         return f"{ident}: could not add owner:sana; left as is, the next run retries"
-    g('mutation($i:String!,$l:String!){issueRemoveLabel(id:$i,labelId:$l){success}}', {"i": t["id"], "l": founder})
+    # THE REMOVAL IS CHECKED TOO (codex, PR #670). A refused removal left both
+    # labels on, the worker still excluded the ticket, and this line said
+    # "relabelled". Nothing is said or posted until both writes landed; the next
+    # run finds it under owner:assaf again and retries (the add is idempotent).
+    removed = bool(founder) and (g('mutation($i:String!,$l:String!){issueRemoveLabel(id:$i,labelId:$l){success}}',
+                                   {"i": t["id"], "l": founder}).get("issueRemoveLabel") or {}).get("success")
+    if not removed:
+        return f"{ident}: owner:sana added, but owner:assaf was not removed; no comment, the next run retries"
     subprocess.run(sync + ["progress", ident, why, "--agent", "sana"], capture_output=True, text=True)
     return f"{ident}: relabelled owner:sana" + (" (the founder answered its ask)" if done else "")
 
