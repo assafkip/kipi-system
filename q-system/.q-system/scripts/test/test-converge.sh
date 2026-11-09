@@ -616,10 +616,29 @@ if src.count(anchor) != 1:
     raise SystemExit(1)
 open(sys.argv[2], "w", encoding="utf-8").write(src.replace(anchor, ""))
 PY
+# rc 0 AND converge's own DONE exit-0 line. "rc is not 7" also passed a mutant
+# that crashed before any converge logic ran (PR #691 review round 1, minor).
+mutant_took_merged_path() { [ "$RC" = "0" ] && grep -q 'DONE exit-0: PR #7 on sana/ask-t411[45] already MERGED' "$WORK/out"; }
 KIPI_SKEL="$ROOT" merged_case "$MUT/converge.sh" ASK-T4114
-[ "$RC" = "7" ] \
-  && fail "ASK-4112 self-test: converge with the created-after-start filter REMOVED still exits 7 on case 2, so case 2 cannot catch that filter going missing"
+mutant_took_merged_path \
+  || fail "ASK-4112 self-test: converge with the created-after-start filter REMOVED did not take the merged branch on case 2 (rc=$RC), so case 2 cannot catch that filter going missing
+$(sed 's/^/        /' "$WORK/out")"
 ok "ASK-4112 self-test: dropping the created-after-start filter turns case 2 red (mutant rc=$RC)"
+
+# The self-test's own negative: a mutant that dies before any converge logic
+# runs must NOT read as "took the merged branch".
+python3 - "$MUT/converge.sh" "$MUT/converge-crash.sh" <<'PY' || fail "ASK-4112 self-test: the crash-mutant anchor is not in the mutant"
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+anchor = "set -uo pipefail\n"
+if src.count(anchor) != 1:
+    raise SystemExit(1)
+open(sys.argv[2], "w", encoding="utf-8").write(src.replace(anchor, anchor + "exit 1\n"))
+PY
+KIPI_SKEL="$ROOT" merged_case "$MUT/converge-crash.sh" ASK-T4115
+mutant_took_merged_path \
+  && fail "ASK-4112 self-test: a mutant that crashed before any converge logic (rc=$RC) passed as having taken the merged branch, so the self-test above cannot tell a real catch from a crash"
+ok "ASK-4112 self-test: a mutant that crashes early does not pass the self-test (rc=$RC)"
 unset FAKE_CREATED_AT
 cp "$WORK/bin/gh.orig4112" "$WORK/bin/gh"
 
