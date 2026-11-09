@@ -1,0 +1,4 @@
+{
+  "surfaces": {"x": {"lane": "long"}, "threads": {"lane": "short"}},
+  "lanes": {"long": {"engine_channel": "medium"}, "short": {"engine_channel": "threads"}}
+}
