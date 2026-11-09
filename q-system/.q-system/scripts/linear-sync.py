@@ -725,6 +725,34 @@ def _parse_stamp(stamp):
         return None
 
 
+def lane_marker(identifier: str, now=None) -> str:
+    """Why an interactive lane holds this issue right now, or "" (ASK-4095).
+
+    A lane writes ~/.config/kipi/lanes/<ID>.json with lane-mark.py; it is live
+    until its "until" stamp. The fleet cannot otherwise see an interactive
+    session: it holds no worker claim and writes no attempts-ledger row, and on
+    2026-11-08 23:25Z the red-CI redrive put a second writer on #666 for that
+    reason. FAIL CLOSED: a marker that exists but cannot be read is respected.
+    """
+    base = os.environ.get("KIPI_LANES_DIR") or os.path.expanduser("~/.config/kipi/lanes")
+    path = os.path.join(base, f"{identifier}.json")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return f"its lane marker {path} is unreadable ({str(exc)[:80]})"
+    until = _parse_stamp(record.get("until")) if isinstance(record, dict) else None
+    if until is None:
+        return f"its lane marker {path} names no expiry"
+    now = now or datetime.now(timezone.utc)
+    if until <= now:
+        return ""
+    return (f"lane marker: {record.get('agent') or 'an agent'} holds {identifier} "
+            f"until {record.get('until')}")
+
+
 def _claim_module():
     """linear-claim.py, loaded once. Its holder_death_reason is THE liveness rule.
 

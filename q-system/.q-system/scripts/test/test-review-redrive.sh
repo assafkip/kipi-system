@@ -17,6 +17,10 @@ SEL="$REPO_ROOT/q-system/.q-system/scripts/review-redrive.py"
 SEL="${REVIEW_REDRIVE_UNDER_TEST:-$SEL}"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ok   - $1"; }
@@ -84,6 +88,18 @@ select_all() {
 action_for() {   # action_for <pr>
   select_all | awk -F'\t' -v pr="$1" '$3 == pr {print $1}'
 }
+
+
+# --- lane cases (ASK-4095) helpers -------------------------------------------
+iso_ago() { python3 -c 'import datetime,sys; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=float(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
+lane_marker() {  # lane_marker <id> <hours-from-now, negative = expired>
+  python3 -c 'import datetime,json,sys; u=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=float(sys.argv[2])); json.dump({"issue":sys.argv[1],"agent":"rules-to-code","since":"2026-11-08T20:00:00Z","until":u.strftime("%Y-%m-%dT%H:%M:%SZ")}, open(sys.argv[3],"w"))' "$1" "$2" "$KIPI_LANES_DIR/$1.json"
+}
+lane_ticket() {  # lane_ticket <id> <state> <started-hours-ago> | lane_ticket UNREADABLE
+  if [ "$1" = "UNREADABLE" ]; then printf '"UNREADABLE"' > "$KIPI_LANE_TICKETS"; return; fi
+  python3 -c 'import json,sys; json.dump({sys.argv[1]: {"state": sys.argv[2], "startedAt": sys.argv[3]}}, open(sys.argv[4],"w"))' "$1" "$2" "$(iso_ago "$3")" "$KIPI_LANE_TICKETS"
+}
+lane_reset() { printf '{}' > "$KIPI_LANE_TICKETS"; find "$KIPI_LANES_DIR" -name '*.json' -exec mv {} "$KIPI_LANES_DIR/.." \; 2>/dev/null; }
 
 echo "== review-redrive =="
 
@@ -229,6 +245,26 @@ LEDGER_AFTER="$(cat "$LEDGER")"
 [ "$LEDGER_AFTER" = '{}' ] && ok "select wrote NOTHING to the ledger -- the offer is not the claim" \
   || bad "select mutated the ledger: $LEDGER_AFTER"
 
+# A LIVE LANE IS NOT REDRIVEN, EITHER ACTION (ASK-4095). The same REQUEST CHANGES
+# candidate as above: with a lane on it nothing is offered and the log names the
+# lane; with the lane gone it is offered again.
+lane_reset; lane_marker ASK-298 6
+select_err() {
+  env PATH="$BIN:$PATH" BOARD="$WORK/board.json" KIPI_ATTEMPTS="$LEDGER" \
+      KIPI_NOTIFY="$BIN/notify.sh" \
+    python3 "$SEL" --repo-dir "$WORK" --records-dir "$RECORDS" select 2>&1 >/dev/null
+}
+LANE_ERR="$(select_err)"
+[ -z "$(select_one)" ] && printf '%s' "$LANE_ERR" | grep -q 'a lane is on it (lane marker: rules-to-code holds ASK-298' \
+  && ok "a REQUEST CHANGES PR with a live lane marker is not redriven, and the log names the lane" \
+  || bad "a live lane's PR was offered: '$(select_one)' $(select_err | tail -2)"
+lane_reset; lane_ticket ASK-298 started 2
+[ -z "$(select_one)" ] && ok "a non-fleet ticket started 2h ago is a lane: not redriven" \
+  || bad "a 2h-old non-fleet ticket was redriven: '$(select_one)'"
+lane_reset
+[ "$(printf '%s' "$(select_one)" | cut -f1)" = "rework" ] && ok "the same PR with no lane is redriven" \
+  || bad "with the lane gone the PR was not offered: '$(select_one)'"
+
 # Read-only means REPEATABLE. A select that claimed on the way past would offer
 # once and then go silent forever, which is how the defect hid: the first run
 # looked fine in isolation.
@@ -257,18 +293,28 @@ env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
 # the page for THIS pr/action/sha is expected to be spent by now. Asserting an
 # absolute count of 1 here would be asserting the order the cases happen to run
 # in; the property is that the sink saw the page exactly once in total.
+# THE HAND-OFF IS THE FLAG, NOT A PAGE (ASK-3824). cap-ladder.py reads the
+# review_escalated_* flag on an open PR and moves it on; the page went into the
+# alert lane, where nothing could act on a PR. So the escalation is counted in
+# the ledger, and the notify sink must stay empty.
+esc_keys() { python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print("\n".join(k for v in d.values() for k in v if k.startswith("review_escalated_")))' "$LEDGER"; }
+esc_count() { esc_keys | grep -c . ; }
 select_one >/dev/null
-[ "$(pages_count)" = "1" ] && ok "a spent attempt still failing pages once" \
-  || bad "spent attempt produced $(pages_count) pages, want 1"
-grep -q "PR #98" "$PAGES" && grep -q "rework" "$PAGES" \
-  && ok "the page names the PR and which action was already spent" \
-  || bad "the page does not name the PR and the spent action: $(cat "$PAGES")"
+[ "$(esc_count)" = "1" ] && ok "a spent attempt still failing hands off to cap-ladder.py once" \
+  || bad "spent attempt claimed $(esc_count) escalation flags, want 1: $(esc_keys)"
+esc_keys | grep -q "rework_pr98_" \
+  && ok "the flag names the PR and which action was already spent" \
+  || bad "the flag does not name PR 98 and rework: $(esc_keys)"
+[ "$(pages_count)" = "0" ] && ok "the escalation pages nobody" \
+  || bad "the escalation still paged: $(cat "$PAGES")"
 
 # The dispatcher hits this state every heartbeat for as long as the PR sits
-# failing. A page per run is a page every 15 minutes about one unchanged fact.
+# failing. One flag per PR per action per sha, however many passes.
 select_one >/dev/null
-[ "$(pages_count)" = "1" ] && ok "a second pass does NOT page again -- once per PR per action per sha" \
-  || bad "escalation paged $(pages_count) times across two passes"
+[ "$(esc_count)" = "1" ] && ok "a second pass claims nothing new -- once per PR per action per sha" \
+  || bad "escalation claimed $(esc_count) flags across two passes"
 
 # A new head sha is new information and earns its own attempt AND its own page.
 # Without this the cap is permanent: a PR that pushes a real fix could never be
@@ -365,21 +411,22 @@ PICK4="$(select_ps "$WORK/ps-idle.txt")"
 # breath before the reviewer starts, which is the state that produced the bug.
 env KIPI_ATTEMPTS="$LEDGER" python3 "$SEL" mark-dispatched \
   --issue ASK-301 --action re-review --pr 101 --head-sha ffff9999 >/dev/null 2>&1
-PAGES_BEFORE="$(pages_count)"
+ESC_BEFORE="$(esc_count)"
 select_ps "$WORK/ps-live.txt" >/dev/null
-[ "$(pages_count)" = "$PAGES_BEFORE" ] \
-  && ok "a spent flag while the reviewer is STILL RUNNING does not page" \
-  || bad "escalated mid-review: pages went $PAGES_BEFORE -> $(pages_count)"
+[ "$(esc_count)" = "$ESC_BEFORE" ] \
+  && ok "a spent flag while the reviewer is STILL RUNNING does not escalate" \
+  || bad "escalated mid-review: flags went $ESC_BEFORE -> $(esc_count)"
 
-# And once the reviewer is gone the escalation still fires. Asserted on the page
-# TEXT as well as the count: an increment alone is satisfied by any page at all.
+# And once the reviewer is gone the escalation still fires. Asserted on the flag
+# KEY as well as the count: an increment alone is satisfied by any flag at all.
 select_ps "$WORK/ps-idle.txt" >/dev/null
-[ "$(pages_count)" = "$((PAGES_BEFORE+1))" ] \
-  && ok "once the reviewer exits, the spent attempt escalates -- the alarm survived" \
-  || bad "reviewer gone and no page fired: pages went $PAGES_BEFORE -> $(pages_count)"
-grep -q "PR #101" "$PAGES" && grep -q "re-review" "$PAGES" \
-  && ok "that page names PR #101 and the re-review that was spent" \
-  || bad "the page does not name PR #101 and re-review: $(cat "$PAGES")"
+[ "$(esc_count)" = "$((ESC_BEFORE+1))" ] \
+  && ok "once the reviewer exits, the spent attempt escalates -- the hand-off survived" \
+  || bad "reviewer gone and no escalation: flags went $ESC_BEFORE -> $(esc_count)"
+esc_keys | grep -q "rereview_pr101_" \
+  && ok "that flag names PR 101 and the re-review that was spent" \
+  || bad "the flag does not name PR 101 and re-review: $(esc_keys)"
+[ "$(pages_count)" = "0" ] && ok "and nothing paged" || bad "a page fired: $(cat "$PAGES")"
 
 # An UNREADABLE table is a THIRD answer and must resolve to "live". Reading "I
 # cannot see the process table" as "nothing is running" is the direction that

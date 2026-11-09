@@ -11,11 +11,21 @@ Contract: PreToolUse hook JSON on stdin. Deny = permissionDecision JSON on
 stdout, exit 0. Allow = no output, exit 0. A crash on a command that names a
 worktree add denies (the gate fails closed in its own jurisdiction); a crash on
 anything else allows, so this can never block unrelated work.
+
+`--check` (ASK-3648): the same floor for the shell producers that cut trees with
+no tool call, so this hook never sees them: kipi-dispatch.sh before a tick and
+linear-worker.sh before `git worktree add`. On 2026-11-08 those producers took the
+disk to 0 bytes free while this hook stood guard over a door nobody used.
+Prints one line. Exit 0 = at or over the floor, 1 = under it, 2 = could not
+measure. The callers proceed on 2: a full disk makes `git worktree add` fail
+loudly anyway, while refusing on a broken measurement would hold every tick
+with nothing that clears it.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -52,7 +62,48 @@ def deny(reason: str) -> None:
     }}))
 
 
+def floor_of(cfg: dict, reaper) -> tuple:
+    """(floor_gb, note). A value that is not a finite number >= 0 ("5 GB", "nan", -1,
+    missing) falls back to the reaper's default, so a hand-edit cannot turn the floor
+    off. 0 stays legal: it is the explicit off. PR #674 review round 1, minors 1-2."""
+    raw = cfg.get("refuse_worktree_below_gb")
+    try:
+        floor = float(raw)
+        if math.isfinite(floor) and floor >= 0:
+            return floor, ""
+    except (TypeError, ValueError):
+        pass
+    return (float(reaper.DEFAULTS["refuse_worktree_below_gb"]),
+            f" (refuse_worktree_below_gb {raw!r} is not a usable number; using the default)")
+
+
+def check() -> int:
+    # The floor read and the comparison sit INSIDE the try (PR #656 review,
+    # finding 2): exit 1 holds the whole fleet, so a crash after the measure (a
+    # hand-edited "5 GB" in the config) must read as "could not measure", not as
+    # "under the floor".
+    #
+    # A MALFORMED FLOOR VALUE KEEPS THE FLOOR ON (PR #656 review round 2, finding
+    # 2). The one config error a person makes is a hand-edited value like "5 GB".
+    # Exit 2 would turn the floor off in all three producers, so the value falls
+    # back to the reaper's default and the line says so. Only a failure to
+    # measure free space itself is exit 2.
+    try:
+        reaper = _reaper()
+        cfg = reaper.load_config()
+        free = float(reaper.free_gb())
+    except Exception as exc:  # noqa: BLE001
+        print(f"disk-floor: could not measure free disk space ({exc!r})")
+        return 2
+    floor, note = floor_of(cfg, reaper)
+    under = free < floor
+    print(f"disk-floor: {free:.1f} GB free, floor {floor:g} GB -> {'UNDER' if under else 'OK'}{note}")
+    return 1 if under else 0
+
+
 def main() -> int:
+    if "--check" in sys.argv[1:]:
+        return check()   # never reads stdin: a caller inside `while read` keeps its input
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw) if raw.strip() else {}
@@ -69,9 +120,12 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         deny(f"could not measure free disk space ({exc!r}); refusing the worktree")
         return 0
-    floor = cfg["refuse_worktree_below_gb"]
+    # A MALFORMED FLOOR KEEPS THE FLOOR ON (ASK-4039, PR #656 round 3, minor 1): the
+    # hook path used to compare outside the try, so a hand-edited "5 GB" raised and the
+    # hook exited 1 with no deny, failing OPEN. Same default fallback as --check.
+    floor, note = floor_of(cfg, reaper)   # the bound module, never a second load
     if free < floor:
-        deny(f"{free:.1f} GB free, under the {floor} GB floor. A worktree is "
+        deny(f"{free:.1f} GB free, under the {floor:g} GB floor{note}. A worktree is "
              f"~0.4 GB. Free space first: python3 {HERE}/worktree-reaper.py "
              f"lists finished worktrees, and --apply removes them.")
     return 0

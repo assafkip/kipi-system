@@ -237,6 +237,64 @@ def test_the_failure_kinds_survive_the_subprocess(monkeypatch):
     assert out["failure_kinds"] == ["no-such-label"]
 
 
+def test_the_off_board_refusals_survive_the_subprocess(monkeypatch):
+    """ASK-4089: the router names the ticket and the project; the log must too."""
+    refused = [{"id": "ASK-40", "project": "cole-GTM"}]
+    payload = json.dumps({"registry_ok": True, "pending": 4, "unroutable": 1,
+                          "written": 0, "write_failures": 0,
+                          "not_on_board": 1, "not_on_board_ids": refused})
+
+    class Res:
+        stdout = payload
+
+    monkeypatch.setattr(health.subprocess, "run", lambda *a, **k: Res())
+    out = health.route_pending()
+    assert out["not_on_board"] == refused
+    assert out["write_failures"] == 0
+
+
+def test_a_route_to_a_project_not_on_the_board_raises_a_named_breach():
+    """PR #679 review, major: the refusal removed the no-such-project write failure
+    that used to raise this. Without a breach the only consumer was a log line."""
+    base = {"unrouted": 0, "needs_triage": 0, "oldest_triage_days": 0.0,
+            "oldest_triage_id": ""}
+    assert health.breaches(dict(base, route_not_on_board=[])) == []
+    refused = [{"id": "ASK-40", "project": "cole-GTM"},
+               {"id": "ASK-41", "project": "cole-GTM"},
+               {"id": "ASK-50", "project": "openwitness"}]
+    line = health.breaches(dict(base, route_not_on_board=refused))[0]
+    assert line.startswith("3 route(s) name a project not on the board")
+    assert "linear-route.py --json" in line
+
+
+def test_the_off_board_breach_is_one_ticket_whatever_the_names(monkeypatch):
+    """PR #679 review r2, major: the line goes through alert-to-linear's REAL
+    fingerprint. Three name subsets of one condition must be one ticket."""
+    a2l = _load("alert-to-linear.py", "alert_to_linear_for_fingerprint")
+    base = {"unrouted": 0, "needs_triage": 0, "oldest_triage_days": 0.0,
+            "oldest_triage_id": ""}
+    subsets = ([{"id": "ASK-1", "project": "cole-GTM"}, {"id": "ASK-2", "project": "openwitness"}],
+               [{"id": "ASK-2", "project": "openwitness"}],
+               [{"id": "ASK-1", "project": "cole-GTM"}])
+    prints = {a2l.fingerprint("[kipi-system] linear-triage-health: "
+                              + "; ".join(health.breaches(dict(base, route_not_on_board=s))))
+              for s in subsets}
+    assert len(prints) == 1, prints
+
+
+def test_the_board_check_flag_survives_the_subprocess(monkeypatch):
+    """PR #679 review r2, minor: a check that did not run is not a clean board."""
+    for ran in (True, False):
+        payload = json.dumps({"registry_ok": True, "pending": 0, "unroutable": 0,
+                              "written": 0, "write_failures": 0, "board_check_ran": ran})
+
+        class Res:
+            stdout = payload
+
+        monkeypatch.setattr(health.subprocess, "run", lambda *a, **k: Res())
+        assert health.route_pending()["board_check_ran"] is ran
+
+
 def test_dormancy_default_can_actually_fire_on_this_board():
     """A threshold the population can never reach reads as protection and is not.
 

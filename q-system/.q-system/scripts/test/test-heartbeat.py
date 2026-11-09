@@ -337,7 +337,24 @@ for job, spec in sorted(table["jobs"].items()):
           "--heartbeat" in (args[-1] if args else "").split(), True)
 
 print("-- wiring: the alert-triage pass emits only when asked, and only when it writes")
+
+
+def pools_follow_pool_stub(mod):
+    """run_triage reads lane_pools (eligible, refused, held) since ASK-4014. The stubs
+    below replace lane_pool, so lane_pools follows whatever lane_pool is now, with no
+    held alerts. The real lane_pool is kept for the unstubbed case."""
+    real_pools, real_pool = mod.lane_pools, mod.lane_pool
+
+    def pools(ls):
+        if mod.lane_pool is real_pool:
+            return real_pools(ls)
+        eligible, refused = mod.lane_pool(ls)
+        return eligible, refused, []
+    mod.lane_pools = pools
+
+
 tri = load(SCRIPTS / "linear-alert-triage.py", "triage_under_test")
+pools_follow_pool_stub(tri)
 tbeats: list = []
 tri.heartbeat = lambda n_in, n_done, queue=None, error=None: tbeats.append((n_in, n_done, queue, error))
 tri.lane_pool = lambda _ls: ([{"identifier": f"ASK-{n}"} for n in range(5)], [])
@@ -385,6 +402,7 @@ print("-- the model half's silence fires starved, whatever the pre-pass closed (
 # check stayed green on exactly the failure this heartbeat exists to catch.
 from collections import Counter as _Counter
 mh = load(SCRIPTS / "linear-alert-triage.py", "triage_model_half")
+pools_follow_pool_stub(mh)
 mh_state = SANDBOX / "model-half"
 
 

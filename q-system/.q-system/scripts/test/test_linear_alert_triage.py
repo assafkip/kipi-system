@@ -85,17 +85,6 @@ def _worker_ready(repo_project="kipi-system"):
           "project_of": lambda i: ((i.get("project") or {}).get("name") or "")}
     exec(compile("def in_this_repo(i):\n    return project_of(i) == repo_project\n",
                  "worker:in_this_repo", "exec"), ns)
-    # ready() asks expired_park() since ASK-3995. Lifted verbatim with its
-    # constants, never stubbed: a stub here is the hand-written subset the
-    # docstring above warns about. Its inputs are the picker clock and the
-    # environment, so both are handed in.
-    pm = re.search(r"^PARK_LABEL = .*?^            and not has_open_own_pr\(i\[\"identifier\"\]\)\)$",
-                   src, re.S | re.M)
-    if not pm:
-        raise AssertionError("could not locate the expired_park block in linear-worker.sh")
-    import datetime as _dt
-    ns.update({"now": _dt.datetime.now(_dt.timezone.utc), "os": os})
-    exec(compile(pm.group(0), "linear-worker.sh:expired_park", "exec"), ns)
     exec(compile(m.group(0), "linear-worker.sh:ready", "exec"), ns)
     return ns["ready"]
 
@@ -746,6 +735,10 @@ class Board:
         self.issues = {i["identifier"]: i for i in issues}
         self.team_labels = {n: f"lid-{n}" for n in team_labels}
         self.comments = {}
+        # createdAt per comment, parallel to self.comments (ASK-4014: the hold's
+        # exit orders comments). A comment seeded without a time reads as `now`.
+        self.comment_at = {}
+        self.now = "2026-11-08T03:00:00Z"
         self.calls = []
         self.before = {}
         self.comment_ok = comment_ok
@@ -791,11 +784,15 @@ class Board:
             if self.comment_ok:
                 self.comments.setdefault(v["input"]["issueId"], []).append(
                     v["input"]["body"])
+                self.comment_at.setdefault(v["input"]["issueId"], []).append(self.now)
             return {"commentCreate": {"success": self.comment_ok}}
         if "comments(first" in q:
             i = self._find(v["id"])
+            bodies = self.comments.get(i["id"], [])
+            times = self.comment_at.get(i["id"], [])
             return {"issue": {"comments": {"nodes": [
-                {"body": b} for b in self.comments.get(i["id"], [])]}}}
+                {"body": b, "createdAt": times[n] if n < len(times) else self.now}
+                for n, b in enumerate(bodies)]}}}
         if "issueUpdate" in q:
             return self._update(v)
         if "issues(" in q:
@@ -1530,6 +1527,9 @@ class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
         pages = [
             "converge ASK-50: attempts ledger unwritable -- the retry cap is not "
             "enforceable until it is fixed",
+            "converge ASK-50: refused: this run is under a test and /x/attempts.json "
+            "is the live ledger; set KIPI_STATE_DIR in the test -- the retry cap is "
+            "not enforceable until it is fixed",
             "converge ASK-50: PR #7 is 'APPROVE' but only the degraded Opus fallback "
             "reviewed it (codex was down) - held, armed. Needs a real review",
             "converge ASK-50: PR #7 is 'APPROVE' at abc but its head def was never "
@@ -1541,7 +1541,7 @@ class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
                   + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
         _, seen, _, _ = lane(b)
         self.assertEqual(closes(b), [])
-        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4"])
+        self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
 
     def test_converge_pages_about_the_run_still_close(self):
         """Negative control for the narrowing."""
@@ -1880,6 +1880,216 @@ class TestB5PrepassOnlyCallsNoModel(DedupScratch):
     def test_the_cli_has_the_flag(self):
         a = triage.build_parser().parse_args(["run", "--prepass-only"])
         self.assertTrue(a.prepass_only)
+
+
+# ---------------------------------------------------------------------------
+# ASK-4014: the hold's exit. A held alert re-enters on an EVENT since its hold,
+# never on age; one whose subject ended is closed by the pre-pass. Measured
+# 2026-11-08: 59 held alerts, none ever re-tested, because lane_pool skipped
+# every held alert and the rationale asked for a hand edit nothing made.
+# ---------------------------------------------------------------------------
+HOLD_AT = "2026-10-01T00:00:00Z"
+AFTER = "2026-10-05T00:00:00Z"
+BEFORE = "2026-09-20T00:00:00Z"
+
+
+def hold_note(desc="", model=None, basis=True):
+    """The rationale do_hold posts, with or without the basis marker (a hold from
+    before ASK-4014 has none)."""
+    body = f"{triage.HOLD_MARKER}\nTriage decision: not executable.\n\nwhy"
+    # getattr, so this fixture also builds against a script without the exit
+    # (the red run on main), and the cases fail on behaviour, not on a name.
+    if basis and hasattr(triage, "hold_basis"):
+        body += "\n" + triage.hold_basis(desc, model)
+    return body
+
+
+def held(ident, msg=None, comments=(), basis=True, model=None, **kw):
+    """A held alert, with the hold note dated HOLD_AT plus (time, body) comments."""
+    a = state_alert(ident, msg or f"lane-h-digest: something odd ({ident})", **kw)
+    a["labels"]["nodes"].append({"id": "lid-triage:held", "name": "triage:held"})
+    notes = [(HOLD_AT, hold_note(a["description"], model, basis))] + list(comments)
+    notes.sort(key=lambda c: c[0])
+    return a, notes
+
+
+def board_with(*helds, extra=()):
+    issues = [a for a, _ in helds] + list(extra)
+    b = Board(issues, team_labels=("owner:sana", "needs-triage", "triage:held"))
+    for a, notes in helds:
+        b.comments[a["id"]] = [body for _, body in notes]
+        b.comment_at[a["id"]] = [at for at, _ in notes]
+    return b
+
+
+def label_removals(board):
+    return [v["id"] for q, v in board.mutations()
+            if "issueUpdate" in q and "lid-triage:held" in (v["input"].get("removedLabelIds") or [])]
+
+
+class TestH1AHeldAlertReentersOnlyOnAnEvent(DedupScratch):
+
+    def test_an_unchanged_hold_stays_held_however_old(self):
+        """The mutant: re-entering by age. Held 13 months ago, nothing since."""
+        a, notes = held("ASK-1")
+        notes[0] = ("2025-10-01T00:00:00Z", notes[0][1])
+        b = board_with((a, notes))
+        b.comment_at[a["id"]] = ["2025-10-01T00:00:00Z"]
+        rc, seen, out, err = lane(b)
+        self.assertEqual(seen, [], "an unchanged hold went to the model")
+        self.assertEqual(label_removals(b), [])
+        self.assertIn("held: 1 after the pre-pass, 0 re-entered, 1 unchanged", out)
+        self.assertEqual(rc, 0, err)
+
+    def test_a_repeat_after_the_hold_reenters_it_with_the_evidence(self):
+        msg = "lane-h-digest: something odd (ASK-1)"
+        a, notes = held("ASK-1", msg, comments=[(AFTER, still_firing(2, msg))])
+        b = board_with((a, notes))
+        seen = []
+        out, err = io.StringIO(), io.StringIO()
+
+        def decider(issue):
+            seen.append(issue)
+            return None
+        with patch.object(triage, "write_run_evidence", lambda line: None), \
+             redirect_stdout(out), redirect_stderr(err):
+            triage.run_triage(b, limit=8, apply=True, decider=decider,
+                              pr_state=lambda r, n: None)
+        self.assertEqual([i["identifier"] for i in seen], ["ASK-1"], out.getvalue())
+        self.assertNotIn("triage:held", b.labels_of("ASK-1"))
+        self.assertIn("it recurred since the hold", triage.prompt_description(seen[0]))
+        note = b.comments["uuid-ASK-1"][-1]
+        self.assertIn(triage.REENTRY_MARKER, note)
+        self.assertIn("1 repeat comment(s)", note)
+
+    def test_a_repeat_from_before_the_hold_is_not_an_event(self):
+        msg = "lane-h-digest: something odd (ASK-1)"
+        a, notes = held("ASK-1", msg, comments=[(BEFORE, still_firing(2, msg))])
+        _, seen, _, _ = lane(board_with((a, notes)))
+        self.assertEqual(seen, [])
+
+    def test_alert_to_linear_counting_it_after_the_hold_reenters_it(self):
+        a, notes = held("ASK-1")
+        triage_dedup = {"issue_id": "uuid-ASK-1", "identifier": "ASK-1", "count": 3,
+                        "last_at": triage._epoch(AFTER)}
+        dedup_state("fp-ASK-1", **triage_dedup)
+        b = board_with((a, notes))
+        _, seen, _, _ = lane(b)
+        self.assertEqual(seen, ["ASK-1"])
+        self.assertIn("alert-to-linear counted it again", b.comments["uuid-ASK-1"][-1])
+
+    def test_a_changed_description_reenters_it(self):
+        a, notes = held("ASK-1")
+        a["description"] += "\nedited after the hold"
+        _, seen, _, _ = lane(board_with((a, notes)))
+        self.assertEqual(seen, ["ASK-1"])
+
+    def test_a_new_triage_model_reenters_it(self):
+        a, notes = held("ASK-1", model="claude-old-model")
+        b = board_with((a, notes))
+        _, seen, _, _ = lane(b)
+        self.assertEqual(seen, ["ASK-1"])
+        self.assertIn("claude-old-model to", b.comments["uuid-ASK-1"][-1])
+
+    def test_a_hold_with_no_basis_re_enters_only_on_recurrence(self):
+        """A hold from before ASK-4014: no digest, no model, so only (a) applies."""
+        a, notes = held("ASK-1", basis=False)
+        a["description"] += "\nedited"
+        _, seen, _, _ = lane(board_with((a, notes)))
+        self.assertEqual(seen, [])
+
+    def test_an_unreadable_comment_list_keeps_the_hold(self):
+        a, notes = held("ASK-1")
+        b = board_with((a, notes))
+        b.comments[a["id"]] += ["x"] * triage.COMMENTS_PAGE
+        _, seen, out, _ = lane(b)
+        self.assertEqual(seen, [])
+        self.assertIn("1 unreadable", out)
+
+    def test_a_dry_run_writes_nothing(self):
+        msg = "lane-h-digest: something odd (ASK-1)"
+        a, notes = held("ASK-1", msg, comments=[(AFTER, still_firing(2, msg))])
+        b = board_with((a, notes))
+        _, _, out, _ = lane(b, apply=False)
+        self.assertEqual(b.mutations(), [])
+        self.assertIn("WOULD RE-ENTER", out)
+
+
+class TestH2AReheldAlertDoesNotLoop(DedupScratch):
+    """The baseline is the LATEST hold or re-entry note. Keyed on the first hold,
+    an alert the model holds again re-enters every night on the same old repeat."""
+
+    def test_rehold_then_next_pass_stays_held(self):
+        msg = "lane-h-digest: something odd (ASK-1)"
+        a, notes = held("ASK-1", msg, comments=[(AFTER, still_firing(2, msg))])
+        b = board_with((a, notes))
+        b.now = "2026-11-08T03:00:00Z"
+        lane_holds = lambda i: ("HOLD", "still not executable")  # noqa: E731
+        with patch.object(triage, "write_run_evidence", lambda line: None), \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            triage.run_triage(b, limit=8, apply=True, decider=lane_holds,
+                              pr_state=lambda r, n: None)
+        self.assertIn("triage:held", b.labels_of("ASK-1"), "the model's re-hold did not land")
+        # The re-hold posted its own reason and basis after the re-entry note.
+        self.assertIn(triage.HOLD_MARKER, b.comments["uuid-ASK-1"][-1])
+        self.assertIn("still not executable", b.comments["uuid-ASK-1"][-1])
+        b.now = "2026-11-09T03:00:00Z"
+        _, seen, _, _ = lane(b)
+        self.assertEqual(seen, [], "the same old repeat re-entered it a second night")
+
+    def test_a_retried_hold_posts_its_rationale_once(self):
+        """R7 still holds: the latest note is this hold's, so nothing is re-posted."""
+        a = alert("ASK-1")
+        b = Board([a], team_labels=("owner:sana", "needs-triage", "triage:held"))
+        triage._post_hold_rationale(b, a["id"], "ASK-1", "why", a["description"])
+        triage._post_hold_rationale(b, a["id"], "ASK-1", "why", a["description"])
+        self.assertEqual(len(b.comments[a["id"]]), 1)
+
+
+class TestH3AHeldAlertWhoseSubjectEndedIsClosed(DedupScratch):
+
+    def test_the_pre_pass_closes_a_held_stuck_alert_whose_issue_is_done(self):
+        a, notes = held("ASK-1", STUCK)
+        b = board_with((a, notes), extra=[work("ASK-50", "completed", "Done")])
+        rc, seen, out, err = lane(b)
+        self.assertEqual(closes(b), ["ASK-1"], out + err)
+        self.assertEqual(seen, [])
+        self.assertIn("ASK-50 is Done", b.comments["uuid-ASK-1"][-1])
+        self.assertEqual(rc, 0, err)
+
+    def test_a_held_stuck_alert_whose_issue_is_open_stays_held(self):
+        a, notes = held("ASK-1", STUCK)
+        b = board_with((a, notes), extra=[work("ASK-50", "backlog")])
+        _, seen, _, _ = lane(b)
+        self.assertEqual(closes(b), [])
+        self.assertEqual(seen, [])
+
+
+class TestH4AReentryNeverRemovesTheLabelWithoutItsNote(DedupScratch):
+
+    def test_a_failed_note_keeps_the_hold_and_fails_the_pass(self):
+        msg = "lane-h-digest: something odd (ASK-1)"
+        a, notes = held("ASK-1", msg, comments=[(AFTER, still_firing(2, msg))])
+        b = board_with((a, notes))
+        b.comment_ok = False
+        rc, seen, _, err = lane(b)
+        self.assertEqual(label_removals(b), [])
+        self.assertIn("triage:held", b.labels_of("ASK-1"))
+        self.assertEqual(seen, [])
+        self.assertEqual(rc, 1, err)
+        self.assertIn("re-entry(ies) failed", err)
+
+
+class TestH5TheHoldNoteNamesItsConsumer(unittest.TestCase):
+
+    def test_the_hold_note_asks_for_no_hand_edit(self):
+        a = alert("ASK-1")
+        b = Board([a], team_labels=("owner:sana", "needs-triage", "triage:held"))
+        triage._post_hold_rationale(b, a["id"], "ASK-1", "why", a["description"])
+        note = b.comments[a["id"]][0]
+        self.assertNotIn("Remove the", note)
+        self.assertIn("re-tests this hold every pass", note)
+        self.assertTrue(triage.HOLD_BASIS_RE.search(note), note)
 
 
 if __name__ == "__main__":

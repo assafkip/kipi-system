@@ -69,13 +69,15 @@ LOG="$HOME/.config/kipi/dispatch.log"
 # number no longer decides whether two agents can collide on a file -- it decides
 # how many `claude -p` pairs may be in flight at once.
 #
-# 3 IS DERIVED, NOT PICKED. Measured from instance-registry.json 2026-08-14:
-# exactly two instances carry dispatch.enabled true, plus the home repo this
-# script runs out of, which the selection loop treats as its own dispatchable
-# target. Three repos, one run each, so a fourth slot could never be filled by a
-# conflict-free pick anyway. Raising it past the number of dispatchable repos
-# buys nothing and only loosens the spend bound.
-MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-3}"
+# DERIVED EVERY TICK, NOT A HARDCODED 3 (ASK-4008, D29). The 3 was counted on
+# 2026-08-14 from two opted-in repos plus home, one run each. On 2026-11-08 the
+# rotation held home plus 6, so by its own derivation the number was stale, and
+# the founder asked whether it "actually stops us". One run per repo is the rule
+# that matters, and the selection loop enforces it (a repo with a live run is
+# skipped). So the default is the number of rotation candidates, computed below
+# once fleet_candidates is defined; KIPI_DISPATCH_MAX still overrides it.
+# Memory, not this number, bounds how many run at once: see MEMORY GATE.
+MAX_CONCURRENT="${KIPI_DISPATCH_MAX:-}"
 MAX_ROUNDS="${KIPI_DISPATCH_ROUNDS:-3}"
 NOTIFY="${KIPI_NOTIFY:-$REPO/q-system/.q-system/scripts/slack-notify.sh}"
 # Founder decision 2026-08-01: the converge/worker claude -p calls inherit this;
@@ -531,6 +533,21 @@ compact_live_ledger() {
 # STALE LOCKS ARE REAPED, not waited on. A dispatcher killed mid-turn (launchd
 # reaping the group, a reboot) would otherwise wedge the whole fleet forever,
 # which is a worse failure than the duplicate turn this prevents.
+# THE PASS VERDICT (ASK-4008). kipi-dispatch-pinned.sh runs this script up to once
+# per rotation repo per tick, so every free repo gets work instead of one repo a
+# tick. It needs to know, after each pass, whether the pass entered a repo. One
+# writer, this function, called from the turn lock EXIT trap; one reader, the
+# loop. Written only when the loop asks (KIPI_DISPATCH_PASS_FILE), so a run by
+# hand writes nothing. An exit BEFORE the turn is taken (daily cap, memory gate,
+# stale checkout, a busy turn) writes no verdict, and the loop reads that as stop.
+PASS_ENTERED=""; PASS_DISPATCHED=""; PASS_REPOS=0; PASS_PID=""
+pass_verdict_write() {
+  [ -n "${KIPI_DISPATCH_PASS_FILE:-}" ] || return 0
+  # pid: the converge this pass started, so the next pass of the tick can tell
+  # whether ps already sees its claude (MEMORY GATE, ASK-4042 item 1).
+  printf 'entered=%s repos=%s dispatched=%s pid=%s\n' "$PASS_ENTERED" "$PASS_REPOS" "$PASS_DISPATCHED" "$PASS_PID" \
+    > "$KIPI_DISPATCH_PASS_FILE" 2>/dev/null || true
+}
 turn_lock() {
   local LOCK="${KIPI_DISPATCH_TURNLOCK:-$HOME/.config/kipi/dispatch-turn.lock}"
   # THE OWNER MARKER SITS BESIDE THE LOCK, NEVER INSIDE IT (ASK-3915, PR #635
@@ -621,7 +638,10 @@ turn_lock() {
   # window, because `kipi work` runs inside it. The holder reaped that way must not
   # delete the lock the reaper now holds, or a third dispatcher walks in mid-turn.
   # So the release reads the marker first and touches nothing that is not its own.
-  trap '[ "$(cat "$TURN_LOCK_DIR.owner" 2>/dev/null)" = "pid=$$" ] && { rm -f "$TURN_LOCK_DIR.owner" 2>/dev/null; rmdir "$TURN_LOCK_DIR" 2>/dev/null; }; true' EXIT
+  # The pass verdict rides the same trap (ASK-4008): bash keeps one EXIT trap,
+  # and every exit after the turn is taken is a repo-level outcome the fill loop
+  # in kipi-dispatch-pinned.sh must hear about.
+  trap 'pass_verdict_write; [ "$(cat "$TURN_LOCK_DIR.owner" 2>/dev/null)" = "pid=$$" ] && { rm -f "$TURN_LOCK_DIR.owner" 2>/dev/null; rmdir "$TURN_LOCK_DIR" 2>/dev/null; }; true' EXIT
   return 0
 }
 
@@ -748,6 +768,58 @@ rotation() {
   done
 }
 
+# THE CONSUMER OF A REFUSAL THAT DOES NOT HEAL (ASK-3958). Before this, a refused
+# repo got one log line per tick and nothing else: 469 identical lines for one repo
+# in one run, and no ticket. dispatch-refusals.py keeps each repo+check's
+# first-refused time (its only writer) and says DUE once the check has been refused
+# for 12h, above the 7.6h longest transient measured. page_once files ONE alert
+# ticket per repo+check through slack-notify.sh, which pages nobody. A pass clears
+# the key, so a recurrence files again. A `kill-switch` refusal is a decision, not
+# a fault, so dispatch-refusals.py records and files nothing for it (PR #681 r1).
+#
+# Called with the preflight output to record a refusal, or with an empty third
+# argument to record a pass. EVERY LINE GOES TO THE LOG OR NOWHERE, never stdout:
+# pick_list's stdout IS the rotation, so a stray line here would become a repo.
+REFUSALS_PY="$REPO/q-system/.q-system/scripts/dispatch-refusals.py"
+REFUSALS_FILE="${KIPI_DISPATCH_REFUSALS:-$HOME/.config/kipi/dispatch-refusals.tsv}"
+refusal_note() {  # refusal_note <name> <path> <preflight-output-or-empty>
+  local name="$1" path="$2" out="$3" key tag check detail
+  if [ ! -f "$REFUSALS_PY" ]; then
+    # Said on the refused path only. A silent return here is how the first test
+    # run of this consumer passed 11h and filed nothing at 13h: the helper was
+    # missing and nothing said so.
+    [ -z "$out" ] || say "refusal consumer MISSING at $REFUSALS_PY; $name's refusal is logged but nothing will file it"
+    return 0
+  fi
+  # page_once keys are file names: a registry name may hold a space.
+  key="$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_')"
+  if [ -z "$out" ]; then
+    # The healthy path runs on every pass of every tick, so stay out of python
+    # unless this repo has a refusal on record.
+    [ -f "$REFUSALS_FILE" ] && grep -qF "$name	" "$REFUSALS_FILE" 2>/dev/null || return 0
+    while read -r tag check; do
+      [ "$tag" = CLEARED ] && page_clear "preflight-$key-$check"
+    done < <(KIPI_DISPATCH_REFUSALS="$REFUSALS_FILE" python3 "$REFUSALS_PY" passed "$name" 2>>"$LOG")
+    return 0
+  fi
+  local -a checks=()
+  while read -r check; do [ -n "$check" ] && checks+=("$check"); done \
+    < <(printf '%s\n' "$out" | sed -n 's/^FAIL \([A-Za-z0-9_-]*\):.*/\1/p' | sort -u)
+  [ "${#checks[@]}" -gt 0 ] || checks=("unnamed")
+  while read -r tag check; do
+    case "$tag" in
+      CLEARED) page_clear "preflight-$key-$check" ;;
+      DUE)
+        detail="$(printf '%s\n' "$out" | grep -m1 "^FAIL $check:" | cut -c1-300)"
+        # No hour count in the text: page_once keys its dedupe on a hash of the
+        # message, and a number that grows each tick would file a new ticket each tick.
+        page_once "preflight-$key-$check" "kipi dispatch: preflight has refused $name ($path) on check '$check' for ${KIPI_DISPATCH_REFUSAL_HOURS:-12}h or more, so no ticket in that repo can be picked until it passes. ${detail:-FAIL $check}. Do: fix that check in $path (the FAIL text says what is wrong), or turn the repo's dispatch row off with a reason. The first tick that passes clears this."
+        ;;
+    esac
+  done < <(KIPI_DISPATCH_REFUSALS="$REFUSALS_FILE" python3 "$REFUSALS_PY" refused "$name" "${checks[@]}" 2>>"$LOG")
+  return 0
+}
+
 # The rotation with every refused repo removed. Emits `name<TAB>path`.
 #
 # A REFUSED REPO IS SKIPPED, NOT A WALL. It drops out of the list and the rotation
@@ -770,8 +842,10 @@ pick_list() {
     # gives is the only thing that makes the gate legible.
     if out="$(bash "$PREFLIGHT" "$path" "$remote" 2>&1)"; then
       printf '%s\t%s\n' "$name" "$path"
+      refusal_note "$name" "$path" "" >/dev/null
     else
       say "preflight REFUSED $name ($path); not entering it -- $(printf '%s' "$out" | grep '^FAIL' | tr '\n' ';' | sed 's/;$//')"
+      refusal_note "$name" "$path" "${out:-FAIL unnamed: preflight exited non-zero with no output}" >/dev/null
     fi
   done < <(rotation)
   # The counted "REFUSED as client engagement repos" line that used to follow is
@@ -814,6 +888,10 @@ else
 fi
 printf '%s' "$NOW_EPOCH" > "$BEAT_FILE"
 
+if [ -z "$MAX_CONCURRENT" ]; then
+  MAX_CONCURRENT="$(fleet_candidates 2>/dev/null | grep -c .)"
+fi
+case "$MAX_CONCURRENT" in ''|*[!0-9]*|0) MAX_CONCURRENT=1 ;; esac
 LIVE="$(live_converges)"; LIVE="${LIVE:-0}"
 if [ "$LIVE" -ge "$MAX_CONCURRENT" ]; then
   say "skip: $LIVE converge run(s) live, cap $MAX_CONCURRENT"
@@ -935,6 +1013,117 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   exit 0
 fi
 
+# --- MEMORY GATE (ASK-4008) --------------------------------------------------
+# FILLING EVERY FREE REPO NEEDS A MEMORY BOUND. On 2026-11-08 about 16 parallel
+# claude processes (300 to 500 MB each) pushed swap to about 10 GB and the disk to
+# 0 bytes free, and every job on the Mac failed. A pass that would add one more
+# converge (a worker claude plus a reviewer claude) therefore starts only while
+# the machine has room: the system's own memory-free percentage is at or above a
+# floor, and the claude processes already running are under a ceiling. Past
+# either, the tick stops filling, says why, and pages once; the next tick reads
+# again, so it clears by itself. KIPI_DISPATCH_MEM_READING ("free=N procs=M")
+# replaces the reading in tests only.
+MEM_FREE_MIN="${KIPI_DISPATCH_MEM_FREE_MIN:-20}"
+CLAUDE_PROCS_MAX="${KIPI_DISPATCH_CLAUDE_PROCS_MAX:-14}"
+mem_reading() {
+  if [ -n "${KIPI_DISPATCH_MEM_READING:-}" ]; then printf '%s' "$KIPI_DISPATCH_MEM_READING"; return; fi
+  local free procs
+  free="$(memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: *\([0-9][0-9]*\)%.*/\1/p' | head -1)"
+  procs="$(ps -ax -o comm= 2>/dev/null | grep -c -E '(^|/)claude$')"
+  printf 'free=%s procs=%s' "${free:-}" "${procs:-0}"
+}
+MEM_NOW="$(mem_reading)"
+MEM_FREE="$(printf '%s' "$MEM_NOW" | sed -n 's/.*free=\([0-9]*\).*/\1/p')"
+MEM_PROCS="$(printf '%s' "$MEM_NOW" | sed -n 's/.*procs=\([0-9]*\).*/\1/p')"
+# A RESERVATION FOR THE RUNS THIS TICK STARTED (PR #660 round 1, major). A converge
+# started by an earlier pass of the same tick is seconds old: its claude processes
+# may not exist yet and its memory is not spent yet, so the process table and the
+# free percentage both under-count it, and every free repo would be filled at once.
+# Each such run is counted as 2 claude processes (worker plus reviewer) and 5 points
+# of memory (about 800 MB of 16 GB).
+#
+# THE PROCESS RESERVATION ENDS WHEN ps SEES THE RUN (ASK-4042 item 1). Reserved on
+# top of the ps count, a run that ps already shows counted twice, and the gate held
+# at about half its ceiling. kipi-dispatch-pinned.sh passes the converge pids this
+# tick started; a pid with a claude anywhere under it is already in the process
+# count, a pid that is gone is in neither, and only the rest are reserved as
+# processes. Runs with no known pid (RESERVED_RUNS above the pid count) stay
+# reserved: the safe side.
+# THE MEMORY RESERVATION DOES NOT (PR #672 round 1, major). A claude that ps shows is
+# seconds old and has not spent its memory yet, so the free percentage still
+# under-counts it; releasing the 5 points on visibility let a fill burst pass the
+# floor. Every run this tick started keeps its memory reservation for the tick.
+# KIPI_DISPATCH_PS_TABLE is a PATH to a file of "pid ppid comm" lines that replaces
+# ps, in tests only.
+RESERVED_RUNS="${KIPI_DISPATCH_RESERVED_RUNS:-0}"
+case "$RESERVED_RUNS" in ''|*[!0-9]*) RESERVED_RUNS=0 ;; esac
+reserved_unseen() {
+  python3 - "$RESERVED_RUNS" "${KIPI_DISPATCH_RESERVED_PIDS:-}" "${KIPI_DISPATCH_PS_TABLE:-}" <<'PY' 2>/dev/null
+import subprocess, sys
+runs, pids, table = int(sys.argv[1] or 0), sys.argv[2].split(), sys.argv[3]
+if table:
+    text = open(table).read()
+else:
+    text = subprocess.run(["ps", "-ax", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=10).stdout
+kids, comm = {}, {}
+for line in text.splitlines():
+    parts = line.split(None, 2)
+    if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        continue
+    pid, ppid = int(parts[0]), int(parts[1])
+    comm[pid] = parts[2].strip()
+    kids.setdefault(ppid, []).append(pid)
+
+
+def claude_under(root):
+    todo = list(kids.get(root, []))
+    while todo:
+        p = todo.pop()
+        if comm.get(p, "").rsplit("/", 1)[-1] == "claude":
+            return True
+        todo.extend(kids.get(p, []))
+    return False
+
+
+known = [int(p) for p in pids if p.isdigit()]
+unseen = sum(1 for p in known if p in comm and not claude_under(p))
+print(unseen + max(0, runs - len(known)), end="")
+PY
+}
+UNSEEN_RUNS=0
+if [ "$RESERVED_RUNS" != "0" ] || [ -n "${KIPI_DISPATCH_RESERVED_PIDS:-}" ]; then
+  UNSEEN_RUNS="$(reserved_unseen)" || UNSEEN_RUNS=""
+  case "$UNSEEN_RUNS" in
+    ''|*[!0-9]*)
+      # Said, not silent (PR #672 round 1, minor): the fallback is the old count.
+      say "memory gate: could not read the process table, so all $RESERVED_RUNS run(s) this tick started are reserved as processes"
+      UNSEEN_RUNS="$RESERVED_RUNS" ;;
+  esac
+fi
+if [ -n "$MEM_PROCS" ]; then MEM_PROCS=$((MEM_PROCS + 2 * UNSEEN_RUNS)); fi
+if [ -n "$MEM_FREE" ]; then MEM_FREE=$((MEM_FREE - 5 * RESERVED_RUNS)); fi
+if { [ -n "$MEM_FREE" ] && [ "$MEM_FREE" -lt "$MEM_FREE_MIN" ]; } \
+   || { [ -n "$MEM_PROCS" ] && [ "$MEM_PROCS" -ge "$CLAUDE_PROCS_MAX" ]; }; then
+  # The adjusted values are what decided (ASK-4042 item 2): the raw reading alone
+  # can sit under both floors and read as a gate that should have filled.
+  say "memory gate: not filling a slot this tick (reading $MEM_NOW; adjusted free=${MEM_FREE:-?} procs=${MEM_PROCS:-?} for $UNSEEN_RUNS unseen run(s) of the $RESERVED_RUNS this tick started (memory reserved for all $RESERVED_RUNS); floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
+  # The page text carries no reading (PR #660 round 1, minor): page_once dedupes on
+  # the text, and a reading that moves one point a tick would page every tick.
+  page_once memory-gate "kipi dispatch: holding new runs, the Mac is short of memory. It resumes on its own when memory frees up; the reading is in dispatch.log."
+  exit 0
+fi
+# Cleared only with headroom past the floor, so a reading that hovers at the line
+# does not re-arm the page every other tick (PR #660 round 1, minor). A tick in the
+# band between the floor and floor + 10 fills but keeps the episode open: the Mac
+# never got its headroom back, so a drop under the floor again is the same episode
+# and does not page again (ASK-4042 item 4, test-dispatch-fill-verdict.sh 8a). The
+# daily re-ping in page_once still bounds a long episode.
+if { [ -z "$MEM_FREE" ] || [ "$MEM_FREE" -ge $((MEM_FREE_MIN + 10)) ]; } \
+   && { [ -z "$MEM_PROCS" ] || [ "$MEM_PROCS" -le $((CLAUDE_PROCS_MAX - 3)) ]; }; then
+  page_clear memory-gate
+fi
+# --- END MEMORY GATE ---
+
 # gh is what every downstream step needs; failing here with a clear page beats
 # dispatching an agent that dies opening its PR.
 #
@@ -960,6 +1149,46 @@ if ! command -v gh >/dev/null 2>&1; then
   page_once gh-missing "kipi dispatch: gh CLI is not on PATH and I could not find it in the usual install dirs, so no PR can be opened and the Linear loop is stalled. Do: install gh, or add its directory to PATH in com.kipi.dispatch.plist."
   exit 1
 fi
+
+# --- DISK FLOOR (ASK-3648) ----------------------------------------------
+# A tick can cut up to three worktrees (worker tree, review tree, the reviewer's
+# own copy) and start sessions whose swap lands on the same disk. On 2026-11-08
+# the disk reached 0 bytes free: every write on the Mac failed, this log
+# included. The PreToolUse floor (worktree-disk-floor.py) never fired, because
+# no tree in that run was cut by a tool call. The worker and reviewer cut them
+# from shell, and this dispatcher is what starts both, so the floor is held here.
+#
+# Under the floor: run the worktree reaper once (it removes only clean, idle
+# trees, never with --force), measure again, and if still under, dispatch
+# nothing. No ticket is claimed, counted or set aside, because a full disk is not
+# the ticket's fault. The next heartbeat (15 min) measures again and resumes by
+# itself. The page goes out once per episode (page_once) and clears when space
+# is back. A full disk stops the whole fleet, which is a build-killing break.
+# On a broken measurement (exit 2) the tick proceeds: `git worktree add` fails
+# loudly on a full disk anyway, and refusing on a bad reading would hold every
+# tick with nothing that clears it.
+DISK_FLOOR_PY="$REPO/q-system/.q-system/scripts/worktree-disk-floor.py"
+WORKTREE_REAPER="${KIPI_WORKTREE_REAPER:-$REPO/q-system/.q-system/scripts/worktree-reaper.py}"
+disk_floor_check() {
+  [ -f "$DISK_FLOOR_PY" ] || { echo "disk-floor: $DISK_FLOOR_PY missing"; return 2; }
+  python3 "$DISK_FLOOR_PY" --check </dev/null 2>>"$LOG"
+}
+FLOOR_LINE="$(disk_floor_check)"; FLOOR_RC=$?
+if [ "$FLOOR_RC" -eq 1 ]; then
+  say "disk floor: $FLOOR_LINE; running the worktree reaper once before deciding"
+  python3 "$WORKTREE_REAPER" --apply </dev/null >>"$LOG" 2>&1 || true
+  FLOOR_LINE="$(disk_floor_check)"; FLOOR_RC=$?
+fi
+if [ "$FLOOR_RC" -eq 1 ]; then
+  say "DISK FLOOR: $FLOOR_LINE after the reaper ran. No dispatch this tick and no ticket touched; the next heartbeat measures again."
+  # The page text is fixed, so page_once's hash holds across ticks: a free-space
+  # number in it would change every tick and page again each time. The number is
+  # in the say line above.
+  page_once disk-floor "kipi dispatch: free disk is under the worktree floor even after the worktree reaper ran. Dispatch is holding: no ticket is touched, it measures again every 15 min, and it resumes by itself once space is back. Do: free disk space. The numbers are in ~/.config/kipi/dispatch.log, and what the reaper kept is in ~/.config/kipi/worktree-reaper.out."
+  exit 0
+fi
+[ "$FLOOR_RC" -eq 2 ] && say "disk floor: $FLOOR_LINE; proceeding (a full disk still fails git worktree add loudly)"
+page_clear disk-floor
 
 # --- WHICH REPO GETS THIS TURN -------------------------------------------
 # pick_list() has already refused every candidate that failed its preflight, so
@@ -1066,7 +1295,9 @@ BRANCH_EXCLUDE="$(branch_refused_active)"
 # WHY ONE SLOT AND NOT STRICT PRIORITY. kipi-system alone held 3 Urgent and 62
 # High tickets, so priority-first across repos would starve the client repos for
 # weeks, against RULE-2026-10-30-A. One slot bounds an Urgent wait at one budget
-# day and leaves the rotation at least 2 of the 3 daily dispatches.
+# day. The numbers above are the day it was built, at a cap of 3; since D28 the
+# cap is 96 and ASK-4008 fills every free repo each tick, so the slot now mostly
+# decides which repo goes first on the day's first tick (PR #655 round 3, minor).
 #
 # WHY IT CANNOT JAM (the D23 scar: one refusal repeated every tick, all day). The
 # slot is decided ONCE per budget day, on a tick with no dispatch yet, and the
@@ -1282,6 +1513,8 @@ fi
 # pins the rotation and the fleet starves exactly as it does today.
 # The urgent slot is extra to the rotation, so it hands no turn on (ASK-3996).
 [ "$SLOT_TAKEN" = "1" ] || cursor_set "$TARGET_NAME"
+PASS_ENTERED="$TARGET_NAME"
+PASS_REPOS="$(printf '%s\n' "$PICKS" | grep -c .)"
 
 WORK_OUT="$(KIPI_PICK_EXCLUDE="$BRANCH_EXCLUDE" bash ./kipi work $WORK_ARGS 2>&1)"
 WORK_RC=$?
@@ -1690,6 +1923,7 @@ fi
 # hand out a free dispatch every heartbeat -- the budget must fail closed.
 printf '%s' "$((DISPATCHED_TODAY + 1))" > "$COUNT_FILE"
 
+PASS_DISPATCHED="$NEXT"
 say "${LANE_TAG}dispatching $NEXT (live=$LIVE cap=$MAX_CONCURRENT rounds=$MAX_ROUNDS budget=$((DISPATCHED_TODAY + 1))/$DAILY_MAX lane=$DISPATCH_LANE)"
 
 # THE CHILD NEEDS ITS OWN SESSION, AND THIS IS NOT A STYLE CHOICE.
@@ -1767,7 +2001,7 @@ RC=$?
 # the pid is gone.
 case "$CHILD_PID" in
   ''|*[!0-9]*) : ;;
-  *) record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
+  *) PASS_PID="$CHILD_PID"; record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
 esac
 compact_live_ledger
 if [ "$RC" -ne 0 ]; then

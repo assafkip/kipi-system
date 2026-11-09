@@ -94,6 +94,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DISK_FLOOR_PY="$SCRIPT_DIR/worktree-disk-floor.py"   # ASK-3648, read by review_worktree
 SKEL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # REFUSE unless SKEL is actually a repo root. `../../..` encodes "this script
@@ -149,7 +150,15 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 # against a specific bar, and a weaker model drops exactly the subtle findings
 # that earn this thing its keep. Env-overridable so a model bump is a config
 # change, not an edit to a script that gates every PR in the repo.
-CLAUDE_MODEL="${KIPI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
+#
+# THE PIN IS THE ROUTING TABLE NOW (ASK-4013, founder 2026-11-08: "make that a
+# rule in code"). It was an env var the dispatch plist set to Sonnet and the
+# hosted workflow copied, so the table could not have decided anything. Nothing
+# reads that var any more. This first read is the table's answer for a PR whose
+# files are not known yet (class unknown, Opus); the class pick after pr.diff
+# below replaces it. Empty only if python itself is broken: the opus alias then.
+CLAUDE_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review 2>/dev/null)"
+CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
@@ -415,30 +424,22 @@ for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
   [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
 done
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
-  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
+  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
-    # One comment and one alert per PR, not one per refused call: the loop may
-    # keep calling, and repeating them is the same waste moved elsewhere. The
-    # alert is what keeps a capped PR from parking silently: nothing machine-side
-    # consumes a pending status, so the decision goes to the engineering queue.
+    # One comment per PR, not one per refused call: the loop may keep calling.
+    # THE MARKER IS THE HAND-OFF (ASK-3824). cap-ladder.py reads this marker on
+    # an open PR, writes a fresh RCA, closes the PR (branch kept) and opens a new
+    # one on the same branch, so the round count starts again under the ladder's
+    # own count. The ticket this used to file went into a 1054-deep alert lane
+    # asking a person to "decide merge, rework or close", and the pending status
+    # below takes the PR out of review-redrive, so nothing else read it.
+    # The marker goes down BEFORE the comment: when it waited on the comment, a
+    # failed comment re-fired the send on every later call (PR #501 review).
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
-    # The marker goes down BEFORE the sends: when it waited on the comment, a
-    # failed comment re-fired the ticket on every later call (PR #501 review).
-    # The ticket send gets ONE retry, then a log line and nothing more (ASK-2428):
-    # the pending status below takes the PR out of review-redrive, so a single
-    # Linear blip left a capped PR with no signal anywhere (PR #501 round 5). A
-    # second failure is not a blip, and looping on it is the waste this cap stops.
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
-      # The PR number again, as LETTERS: alert-to-linear's dedup strips every
-      # digit, so "PR #501" and "PR #502" were one ticket and the second capped
-      # PR only bumped a counter on the first (PR #501 review).
-      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
-      bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
-        || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
-        || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.
@@ -766,6 +767,22 @@ review_worktree() {  # review_worktree <sha> -> prints path, or nothing
   if [ -d "$wt/.git" ] || [ -f "$wt/.git" ]; then
     git -C "$wt" checkout --detach --force "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   else
+    # DISK FLOOR (ASK-3648, PR #656 review). A NEW tree is cut from shell, so the
+    # PreToolUse floor never sees it. Under the floor this bails like any failed
+    # add, and the caller's documented fallback (tree search, with its WARN)
+    # reviews without allocating. Re-detaching an existing tree, above, costs no
+    # disk and is never refused. ${DISK_FLOOR_PY:-} is empty when a test lifts
+    # this function out alone; empty or missing means proceed, as does exit 2.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      local floor_line
+      floor_line="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      case "$?" in
+        1) echo "  WARN: $floor_line; no new review tree for PR #$PR." >&2
+           _wt_bail "$wt" || return 1
+           return 1 ;;
+        2) echo "  WARN: $floor_line; proceeding without the floor." >&2 ;;
+      esac
+    fi
     git -C "$REVIEW_REPO" worktree add --detach "$wt" "$sha" >/dev/null 2>&1 || _wt_bail "$wt" || return 1
   fi
   # Prove it landed where we asked. A worktree silently sitting at the wrong sha
@@ -848,6 +865,20 @@ if [ -n "$HEAD_SHA" ] && git -C "$REVIEW_REPO" cat-file -e "${HEAD_SHA}^{commit}
     echo "  tree: $REVIEW_ROOT (detached at ${HEAD_SHA:0:8}; isolated from any checkout in use)"
     HEAD_SHA_ISOLATED=1
   else
+    # UNDER THE DISK FLOOR IS THE MACHINE, NOT THE REVIEW (ASK-3648, PR #656
+    # review round 2, finding 1). review_worktree refused a new tree; that runs in
+    # a subshell, so the floor is read again here. Exit 9 is this script's code
+    # for a machine condition (see the runner-unavailable exits below), and
+    # linear-worker.sh reads 9 as env_halt: no charge, no "reviewer failed" line.
+    # The fallback below would refuse anyway, with no tree at this sha, and blame
+    # the clone.
+    if [ -n "${DISK_FLOOR_PY:-}" ] && [ -f "$DISK_FLOOR_PY" ]; then
+      FLOOR_LINE="$(python3 "$DISK_FLOOR_PY" --check </dev/null 2>/dev/null)"
+      if [ "$?" -eq 1 ]; then
+        echo "  ENV: $FLOOR_LINE; no review tree for PR #$PR, so no review this run. A condition of the machine (exit 9), not of the PR; the next run reviews it once space is back." >&2
+        exit 9
+      fi
+    fi
     # Say it out loud rather than quietly reviewing the live tree. A degraded run
     # that nobody knows is degraded is how the original defect stayed invisible.
     echo "  WARN: could not materialise an isolated worktree at ${HEAD_SHA:0:8}; falling back to tree search. A concurrent edit during this review would corrupt its provenance (sp-8f95bba0)." >&2
@@ -1030,6 +1061,13 @@ if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTE
   command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
   exit 9
 fi
+# THE REVIEWER'S MODEL, BY THE PR'S CLASS (ASK-4013). The WHOLE PR's file list,
+# not pr.diff: a delta round's diff holds only the new commits, and a test-only
+# delta on a dispatcher PR is still a dispatcher review. A failed list leaves the
+# class unknown, which the table routes to Opus.
+gh pr diff "$PR" $KIPI_GH_REPO_ARGS --name-only > "$PR_CONTEXT_DIR/pr.files" 2>>"$PR_CONTEXT_DIR/err" || : > "$PR_CONTEXT_DIR/pr.files"
+_ROUTED="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review --files-from "$PR_CONTEXT_DIR/pr.files" --repo "$REVIEW_SLUG" --tree "$REVIEW_REPO" 2>>"$PR_CONTEXT_DIR/err")"
+[ -n "$_ROUTED" ] && CLAUDE_MODEL="$_ROUTED"
 if [ "$ROUND" -gt 1 ]; then
   gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
   # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the
@@ -1149,7 +1187,7 @@ Be specifically suspicious of:
 - **Claims of enforcement.** 'This ensures X' in a comment is not enforcement. Find
   the code path that refuses, or call it a finding.
 - **Error paths, retries, partial failure.** What is left behind when this dies
-  halfway? What does the operator see?
+  halfway? What does Sana's alert triage see?
 
 ## The operational bar (this is the Meta staff part)
 
@@ -1158,7 +1196,7 @@ BE DELETED, in a PUBLIC repo. So judge it that way:
 - What happens at 3am when this fires and nobody is watching?
 - What is the blast radius of it being wrong? What is permanent and unrecoverable?
 - What pages a human, and is that signal or noise? A checker that cries wolf trains
-  the operator to ignore it, which costs the real alert later.
+  the alert triage to ignore it, which costs the real alert later.
 - Can this be rolled back? If not, say so loudly.
 - Concurrency: two of these running at once. What breaks?
 
@@ -1172,9 +1210,9 @@ anchors is a real event on this fleet, so calibrate against them directly:
   a Linear object that cannot be deleted. Destroys or overwrites founder work.
   Silently disables the very detector the change adds, forever. If the honest
   answer to 'can we undo this after it fires?' is no, it is a blocker.
-- **major** — wrong behavior unattended that a human must clean up, but CAN clean
-  up. Files duplicate permanent issues. Cries wolf on every run (a checker the
-  operator learns to ignore costs the real alert later, which is why false alarms
+- **major** — wrong behavior unattended that leaves a cleanup behind, and the cleanup
+  is possible. Files duplicate permanent issues. Cries wolf on every run (a checker the
+  alert triage learns to ignore costs the real alert later, which is why false alarms
   rank here and not below). Reports success for work that did not happen.
 - **minor** — real, reproducible, and bounded. Log or help text that misstates
   what the code does. A narrow false negative on an input shape nobody hits yet.
@@ -1182,7 +1220,7 @@ anchors is a real event on this fleet, so calibrate against them directly:
 - **nit** — style, naming, formatting, preference. Never gates anything.
 
 Two calibration checks before you assign a severity:
-1. If you cannot name what a human has to DO about it at 3am, it is not a blocker
+1. If you cannot name what has to be DONE about it at 3am, it is not a blocker
    or a major.
 2. If your reproducer only fails under inputs you had to construct and no producer
    in this repo emits, drop the severity a level and say so.

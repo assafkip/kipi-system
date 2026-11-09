@@ -47,6 +47,23 @@ def test_board_with_no_page_id_file_is_off_and_makes_no_request(tmp_path):
     assert calls == [], f"the off state reached the network: {calls}"
 
 
+def test_founder_asks_with_no_status_file_is_off_and_writes_nothing(tmp_path):
+    """ASK-4069: an instance where cap-ladder.py never ran has no status file.
+    The section is OFF (None, not an empty section), and reading it creates
+    nothing: the reader is read-only, cap-ladder.py is the file's one writer."""
+    fa = _load("founder_asks_off", SCRIPTS / "founder_asks.py")
+    status = tmp_path / "state" / "morning-status.jsonl"
+    out = fa.collect(NOW, {}, status=status)
+    assert out is None, "off must be None (no section), not an empty section"
+    assert not (tmp_path / "state").exists(), "the off state created the status file's directory"
+    # Every ask resolved is off too (PR #687 round 3): no permanent "nothing" section.
+    done = tmp_path / "done.jsonl"
+    done.write_text('{"id": "ASK-1:a", "issue": "ASK-1", "ask": "spend: x", "resolved": true}\n')
+    before = done.read_text()
+    assert fa.collect(NOW, {}, status=done) is None, "a file with no open ask must be off, not 'nothing'"
+    assert done.read_text() == before, "the reader wrote the status file"
+
+
 def test_weekly_runner_dry_run_writes_nothing(tmp_path):
     """Codex adversarial finding on this issue: watching tmp_path alone proves
     nothing about the host. HOME and cwd ARE tmp_path here, so the only
@@ -169,6 +186,8 @@ def test_every_new_script_declares_its_off_switch_in_its_docstring():
         "groupme_inbox.py": "OFF switch",
         "board_rows.py": "OFF switch",
         "unknown_terms.py": "never pulls anything",
+        # The founder-ask section, 2026-11-08 (ASK-4069): no status file, no section.
+        "founder_asks.py": "OFF switch",
         "weekly-improve.py": "trigger is weekly-improve.sh",
         "friction-note.sh": "instance-owned",
         "weekly-improve.sh": "--dry-run",

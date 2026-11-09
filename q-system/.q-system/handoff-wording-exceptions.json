@@ -1,0 +1,13 @@
+{
+  "_doc": [
+    "Machine messages that still hand work to nobody, each left to the ticket that replaces it with code (ASK-4012).",
+    "Read by q-system/.q-system/tests/test_no_handoff_to_nobody.py. A row excuses a hit when `path` is equal and the hit's banned word lies inside `contains` on that line.",
+    "No bypass marker exists, by design (coordinator ruling 2026-11-08). Every row must still match a hit, the count is capped by EXCEPTION_CEILING in the test, and a row absent from origin/main must carry `why`, the reason the reviewer reads in the PR that adds it.",
+    "The three rows left are the worker's not-armed branch (auto-merge not armed on a PR), which pr-owner.py (ASK-3962, PR #659) takes over. Rewording them before that code lands would name a consumer that does not exist yet. The four cap-site rows went with ASK-3824 (PR #662), where cap-ladder.py became the consumer."
+  ],
+  "exceptions": [
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "Needs a human to check: gh pr merge --auto --squash $pr", "ticket": "ASK-3962", "site": "not-armed branch, state unknown"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "unmerged until someone runs: gh pr merge --auto --squash $pr", "ticket": "ASK-3962", "site": "not-armed branch, log line"},
+    {"path": "q-system/.q-system/scripts/linear-worker.sh", "contains": "sits there forever. Needs a human: gh pr merge --auto --squash $pr", "ticket": "ASK-3962", "site": "not-armed branch, page"}
+  ]
+}

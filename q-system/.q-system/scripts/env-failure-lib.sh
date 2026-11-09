@@ -172,6 +172,8 @@ environmental_reason() {  # environmental_reason <runner-output> -> one line, <=
 #   linear-dor-drafter.py   rc 0 only; a failed exit keeps the CLI line (ASK-3980)
 #   linear-worker.sh        both exits: a timeout kill is non-zero too (ASK-3981)
 #   open-loops-heartbeat.sh failed exits, the only ones it reads (ASK-3981)
+#   linear-worker.sh Codex  codex_env_marker on the page and the ticket note; the
+#                           whole line goes to the worker log (ASK-3988)
 #   pr-review-agent.sh      prints to its own stderr only, never to a ticket, so
 #                           it keeps the whole line. The `-hour` alternative is bounded to 1 to 3 digits
 # (the real shape is "5-hour"): unbounded, it let a model answer put a long digit
@@ -238,6 +240,18 @@ codex_outage_reason() {  # codex_outage_reason <codex-output> <rc> -> the line; 
     }'
 }
 
+# THE MARKER ALONE, FOR CODEX TOO (ASK-3988, sp-762d494b). codex_outage_reason
+# prints Codex's own last ERROR line, and the text after the marker on that line
+# is whatever the run printed there (a token, a path). What reaches a page or a
+# ticket is the closed vocabulary only, as environmental_marker does for the
+# first runner.
+codex_outage_marker() {  # codex_outage_marker <codex-output> <rc> -> the marker only; 0 when the MACHINE refused
+  local line
+  line="$(codex_outage_reason "${1:-}" "${2:-0}")" || return 1
+  printf '%s' "$line" | grep -oiE "$CODEX_OUTAGE_MARKERS" | head -1 | tr -d '\n' | cut -c1-120
+  return 0
+}
+
 # THE ONE DECISION the Codex branch calls, so a replay of the fixture and the
 # worker cannot disagree. A runner that prints a bare limit line (the shape
 # the other runner uses) still reads as an outage through the first half.
@@ -247,6 +261,15 @@ codex_env_reason() {  # codex_env_reason <codex-output> <rc> -> the line; 0 when
     return 0
   fi
   codex_outage_reason "${1:-}" "${2:-0}"
+}
+
+# The same decision, answered with the marker only: what the Codex branch files.
+codex_env_marker() {  # codex_env_marker <codex-output> <rc> -> the marker only; 0 when the MACHINE refused
+  if is_environmental "${1:-}"; then
+    environmental_marker "${1:-}"
+    return 0
+  fi
+  codex_outage_marker "${1:-}" "${2:-0}"
 }
 
 # ---------------------------------------------------------------------------

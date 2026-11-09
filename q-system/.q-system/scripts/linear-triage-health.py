@@ -906,7 +906,16 @@ def route_pending(apply_writes: bool = False) -> dict:
                 # guess it shipped was "refused by Linear" for failures that
                 # never reached Linear (PR #461 review, minor).
                 "failure_kinds": out.get("write_failure_kinds", []),
-                "mark_unknown": out.get("mark_unknown", 0)}
+                "mark_unknown": out.get("mark_unknown", 0),
+                # ASK-4089. The ticket AND the name ride up, so the nightly log
+                # says which registry row has no board project, not only that one
+                # route was refused. The router's stderr is captured and dropped.
+                "not_on_board": out.get("not_on_board_ids", []),
+                "not_on_board_lines": out.get("not_on_board_lines", []),
+                # Whether the board-name check ran at all, so a report-only run
+                # whose project read failed does not read as a clean board
+                # (PR #679 review r2, minor).
+                "board_check_ran": out.get("board_check_ran", False)}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         # Never raises: a meter that crashes on a sibling meter reports nothing at
         # all, which is strictly worse than reporting one number short.
@@ -922,6 +931,19 @@ def breaches(m: dict) -> list:
     # .get, not [], because this key arrived after the callers did (ASK-1951).
     if m.get("route_unreachable", 0) > 0:
         out.append(f"{m['route_unreachable']} on a project no checkout backs")
+    # ASK-4089, the mirror of the line above: a registry row whose project is not
+    # on the board. The router refuses those routes before they take a write slot,
+    # which removed the no-such-project write failure that used to raise this. The
+    # alert ticket is now the consumer: create the project or fix the row.
+    # NO PROJECT NAMES IN THIS LINE (PR #679 review r2, major). alert-to-linear
+    # fingerprints the line with only digits and paths stripped, so a name set
+    # that changes run to run opened a new permanent ticket per subset. The line
+    # names the command that lists them instead; `linear-route.py` is stripped
+    # by the fingerprint as a file name, so the shape stays one ticket.
+    refused = m.get("route_not_on_board") or []
+    if refused:
+        out.append(f"{len(refused)} route(s) name a project not on the board "
+                   "(linear-route.py --json lists them in not_on_board_ids)")
     # ASK-1887. NOT a threshold on the pending count: the sweep beside it DRAINS
     # that count, so alerting on a number the same run is fixing is the cry-wolf
     # shape this file already refuses elsewhere. What earns a ticket is a write
@@ -1122,6 +1144,9 @@ def _run(args, holding_lock: bool) -> int:
     m["route_write_failures"] = sweep.get("write_failures", 0)
     m["route_failure_kinds"] = sweep.get("failure_kinds", [])
     m["route_mark_unknown"] = sweep.get("mark_unknown", 0)
+    m["route_not_on_board"] = sweep.get("not_on_board", [])
+    m["route_not_on_board_lines"] = sweep.get("not_on_board_lines", [])
+    m["route_board_check_ran"] = sweep.get("board_check_ran", False)
 
     say = human_writer(args.json)
 
@@ -1145,6 +1170,11 @@ def _run(args, holding_lock: bool) -> int:
             print(f"  DoR tickets nothing can pick up: {m['route_pending']} "
                   f"({m['route_unroutable']} unroutable), {m['route_written']} "
                   f"routed this run")
+            for line in m["route_not_on_board_lines"]:
+                print(f"    {line}")
+            if not m["route_board_check_ran"]:
+                print("    board-name check: NOT MEASURED (the project list could "
+                      "not be read; 0 refused here is not a clean board)")
         else:
             print("  DoR tickets nothing can pick up: NOT MEASURED "
                   "(router did not run or the registry was unreadable)")

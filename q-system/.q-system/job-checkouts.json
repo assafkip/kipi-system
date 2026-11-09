@@ -19,10 +19,14 @@
   "pinned": [
     "com.kipi.browser-session-deadman",
     "com.kipi.browser-session-health",
+    "com.kipi.cap-ladder",
     "com.kipi.capability-expiry",
     "com.kipi.launchd-health",
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",
+    "com.kipi.linear-not-done-reopen",
+    "com.kipi.pr-owner",
+    "com.kipi.stall-sweep",
     "com.kipi.worktree-reaper"
   ],
   "shared_exceptions": {
