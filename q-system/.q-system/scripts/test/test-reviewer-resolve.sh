@@ -132,7 +132,7 @@ mkdir -p "$RACE"
   wait
 )
 eq "20 concurrent outage notes write exactly ONE event" \
-  "$(grep -c '"account": *"primary"' "$RACE/codex-outage-events.jsonl" 2>/dev/null || echo 0)" "1"
+  "$({ grep -c '"account": *"primary"' "$RACE/codex-outage-events.jsonl" 2>/dev/null || echo 0; } | head -1)" "1"
 eq "and the state file is still valid JSON after the race" \
   "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("ok")' \
       "$RACE/codex-account-health.json" 2>/dev/null)" "ok"
@@ -165,11 +165,11 @@ reviewer_note_codex_outage primary "rc=1 on PR 101"
 reviewer_note_codex_outage primary "rc=1 on PR 102"
 reviewer_note_codex_outage primary "rc=1 on PR 103"
 eq "three failed PRs on one account write ONE event" \
-  "$(grep -c '"account": *"primary"' "$EV" 2>/dev/null || echo 0)" "1"
+  "$({ grep -c '"account": *"primary"' "$EV" 2>/dev/null || echo 0; } | head -1)" "1"
 reviewer_note_codex_outage codex-home-2 "rc=1 on PR 101"
 reviewer_note_codex_outage codex-home-2 "rc=1 on PR 102"
 eq "the other account gets its own single event" \
-  "$(grep -c '"account": *"codex-home-2"' "$EV" 2>/dev/null || echo 0)" "1"
+  "$({ grep -c '"account": *"codex-home-2"' "$EV" 2>/dev/null || echo 0; } | head -1)" "1"
 eq "two accounts out is two events, not four" "$(wc -l < "$EV" | tr -d ' ')" "2"
 has "the event names the day"    "$(cat "$EV")" "$(date -u +%Y-%m-%d)"
 # THE EVENT CARRIES A CODE, NOT THE CALLER'S WORDS (PR #701 review round 2,
@@ -872,6 +872,54 @@ has "the account that is down again is STILL reported"               "$FLAP_OUT"
 # account was actually out of credits.
 has "and the body carries the CURRENT reason, not the first one"     "$FLAP_OUT" "out-of-credits"
 hasnt "the superseded reason is not listed as if it were live"       "$FLAP_OUT" '`usage-limit`'
+
+echo "== the agent REFUSES BY NAME when the resolver is absent =="
+# FOUND BY CI, NOT BY A REVIEWER (PR #701, the validate check). ASK-3831 gave
+# pr-review-agent.sh a fifth sourced lib. A bare `.` on a missing file prints one
+# line and CONTINUES, so two harnesses that copy the lib set by hand kept running
+# an agent with no resolver: one reached the dispatch and died on
+# `REVIEWER_PRIMARY_ACCOUNT: unbound variable`, the other failed later for an
+# unrelated reason. Both failed CLOSED, which is the only reason this was a
+# legibility defect and not a green-on-nothing one. The real-world shape is a
+# partial install or an rsync filter.
+#
+# The harness derives the lib set the way the two tests now do, and omits exactly
+# one file, so this case cannot pass by failing to build the skeleton.
+MISSING_SKEL="$WORK/missing-resolver"
+mkdir -p "$MISSING_SKEL/q-system/.q-system/scripts"
+git init -q "$MISSING_SKEL"
+_agent_libs() { awk -F'"' '/^\. "\$SCRIPT_DIR\//{ sub(/\$SCRIPT_DIR\//,"",$2); print $2 }' \
+                  "$SCRIPTS/pr-review-agent.sh"; }
+has "the agent sources the resolver at all" "$(_agent_libs | tr '\n' ' ')" "reviewer-resolve.sh"
+_build_skel() {  # _build_skel <skip-lib-or-empty>
+  rm -rf "$MISSING_SKEL/q-system/.q-system/scripts"
+  mkdir -p "$MISSING_SKEL/q-system/.q-system/scripts"
+  cp "$SCRIPTS/pr-review-agent.sh" "$MISSING_SKEL/q-system/.q-system/scripts/"
+  local lib
+  for lib in $(_agent_libs); do
+    [ -n "$1" ] && [ "$lib" = "$1" ] && continue
+    [ -f "$SCRIPTS/$lib" ] && cp "$SCRIPTS/$lib" "$MISSING_SKEL/q-system/.q-system/scripts/"
+  done
+  cp "$SCRIPTS/model_route.py" "$MISSING_SKEL/q-system/.q-system/scripts/" 2>/dev/null || true
+  echo code > "$MISSING_SKEL/FILE.txt"
+  git -C "$MISSING_SKEL" -c user.email=t@t.t -c user.name=t add -A >/dev/null 2>&1
+  git -C "$MISSING_SKEL" -c user.email=t@t.t -c user.name=t commit -q -m c >/dev/null 2>&1 || true
+}
+_build_skel reviewer-resolve.sh
+MISSING_OUT="$(cd "$MISSING_SKEL" && HOME="$MISSING_SKEL/home" \
+                 bash "$MISSING_SKEL/q-system/.q-system/scripts/pr-review-agent.sh" 1 2>&1)"
+MISSING_RC=$?
+eq "a run with no resolver exits non-zero" "$([ "$MISSING_RC" -ne 0 ] && echo yes || echo no)" "yes"
+has "and the refusal NAMES the missing file" "$MISSING_OUT" "reviewer-resolve.sh is missing"
+hasnt "it never announces a review it cannot run" "$MISSING_OUT" "reviewer (bounded at"
+hasnt "and it does not die on an unbound variable instead" "$MISSING_OUT" "unbound variable"
+# CONTROL: the same harness WITH the resolver gets past that line, so the three
+# assertions above are about the missing file and not about a broken skeleton.
+_build_skel ""
+PRESENT_OUT="$(cd "$MISSING_SKEL" && HOME="$MISSING_SKEL/home" \
+                 bash "$MISSING_SKEL/q-system/.q-system/scripts/pr-review-agent.sh" 1 2>&1)"
+hasnt "control: with the resolver present the refusal does not fire" \
+  "$PRESENT_OUT" "reviewer-resolve.sh is missing"
 
 echo
 echo "pass=$PASS fail=$FAIL"

@@ -2582,10 +2582,27 @@ ok "codex is invoked with --skip-git-repo-check"
 # `codex exec` READS STDIN and hangs without a redirect (observed: "Reading
 # additional input from stdin..."). A stub cannot prove the redirect exists --
 # it would just inherit the suite's stdin -- so this is asserted on the source.
-grep -q 'codex exec.*</dev/null' "$REVIEWER" \
+#
+# The literal `codex exec` left this line in ASK-3831: the invocation is now
+# built by reviewer-resolve.sh and the dispatch spends it as "$CODEX_BASE ...".
+# The PROPERTY is unchanged -- that dispatch still redirects stdin -- so the
+# pattern moved to the new spelling rather than the assertion being dropped. A
+# pattern that matches nothing would pass this grep's negation trivially, so
+# the anchor is proven to exist first.
+grep -qE '"\$CODEX_BASE ' "$REVIEWER" \
+  || fail "no \"\$CODEX_BASE dispatch line in pr-review-agent.sh, so the redirect assertion
+      below would be vacuous. Either the dispatch was renamed or the resolver was bypassed."
+grep -qE '"\$CODEX_BASE [^"]*</dev/null' "$REVIEWER" \
   || fail "the codex dispatch has no </dev/null. codex exec reads stdin and hangs without it;
       at 3am that is a review that never returns until the 2400s bound kills it."
 ok "the codex dispatch redirects stdin from /dev/null"
+
+# And the base it redirects is the resolver's, not a second hand-typed codex
+# invocation that could reappear without the redirect.
+grep -qE 'CODEX_BASE="\$\(reviewer_codex_cmd ' "$REVIEWER" \
+  || fail "pr-review-agent.sh builds its own codex invocation again; the redirect above then
+      only covers one of two dispatch sites."
+ok "the redirected base is the one the resolver built"
 
 # --- Q9. the worker runs the PRIMARY engine as THE review ---------------------
 # A reviewer nobody invokes is text in a file. The worker is the only thing that

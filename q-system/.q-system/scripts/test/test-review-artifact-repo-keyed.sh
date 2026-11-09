@@ -55,10 +55,18 @@ mkrepo() {  # mkrepo <dir> <name> <marker>
 mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 mkrepo "$WORK/skel"  repo-alpha ALPHA_CODE
 mkrepo "$WORK/beta"  repo-beta  BETA_CODE
-cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-[ -f "$SRC_DIR/repo-slug-lib.sh" ] && cp "$SRC_DIR/repo-slug-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
-cp "$SRC_DIR/reviewer-token-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
+# THE LIB SET IS DERIVED FROM THE SCRIPT, NOT TYPED HERE (ASK-3831). Same change
+# and same reason as test-review-dry-run-labelled.sh: a hand-written list of four
+# went stale the moment the agent gained a fifth source, and the run then died
+# mid-review on an unbound variable instead of naming the missing file.
+for _lib in $(awk -F'"' '/^\. "\$SCRIPT_DIR\//{ sub(/\$SCRIPT_DIR\//,"",$2); print $2 }' \
+                "$SRC_DIR/pr-review-agent.sh"); do
+  [ -f "$SRC_DIR/$_lib" ] || { echo "FAIL: pr-review-agent.sh sources $_lib, which does not exist in $SRC_DIR" >&2; exit 1; }
+  cp "$SRC_DIR/$_lib" "$WORK/skel/q-system/.q-system/scripts/"
+done
+[ -f "$WORK/skel/q-system/.q-system/scripts/reviewer-resolve.sh" ] \
+  || { echo "FAIL: the derivation copied no reviewer-resolve.sh, so it is not reading the agent's sources" >&2; exit 1; }
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" push -q origin main
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"

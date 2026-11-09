@@ -173,6 +173,21 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # other account, Opus), the stamps, the only `codex exec` construction in this
 # directory, and the once-per-account-per-day outage ledger. This script used to
 # own its own two-rung version of all four; three other call sites owned theirs.
+#
+# AND ITS ABSENCE IS A NAMED REFUSAL, NOT AN UNBOUND VARIABLE 1,500 LINES LATER
+# (PR #701 review round 4, found by CI rather than by a reviewer). A bare `.` on a
+# missing file prints one line to stderr and CONTINUES, so the run announced
+# "running the codex reviewer", reached the dispatch, and died on
+# `REVIEWER_PRIMARY_ACCOUNT: unbound variable` -- an error that names neither the
+# missing file nor the fact that no review can happen. It failed closed, which is
+# the only reason this was a legibility defect and not a green-on-nothing one.
+# A partial install or an rsync filter that ships this script without the
+# resolver is the real-world shape; two test harnesses that copy the lib set by
+# hand are how it was observed.
+if [ ! -f "$SCRIPT_DIR/reviewer-resolve.sh" ]; then
+  echo "REFUSING: $SCRIPT_DIR/reviewer-resolve.sh is missing. It owns the reviewer chain, the stamps and the outage ledger, so this script cannot resolve an engine or record what answered. No review ran, no status posted." >&2
+  exit 1
+fi
 . "$SCRIPT_DIR/reviewer-resolve.sh"
 . "$SCRIPT_DIR/reviewer-token-lib.sh"
 
