@@ -100,6 +100,9 @@ class FakeSync:
         self.fail_when = fail_when
         self.issues = {}     # id -> the ticket dict the board walk would return
 
+    def linear_api_key(self):
+        return "fixture-key"
+
     def put(self, t: dict) -> dict:
         self.issues[t["id"]] = t
         return t
@@ -145,6 +148,8 @@ class FakeSync:
                 t["project"] = {"name": name}
             if "labelIds" in inp:
                 t["labels"]["nodes"] = [{"id": i, "name": i[2:]} for i in inp["labelIds"]]
+            if "description" in inp:
+                t["description"] = inp["description"]
         return {"issueUpdate": {"success": True, "issue": {"identifier": "x"}}}
 
 
@@ -301,11 +306,41 @@ def test_a_split_routes_to_its_first_part_and_names_every_part_in_the_record(fac
     sync = FakeSync()
     t = sync.put(ticket(labels=()))
     decide.apply_decision(decide.Board(sync, "team-1"), t, d, set())
-    assert [k for k, _ in sync.writes] == ["update", "update", "comment"]
-    assert sync.writes[0][1]["input"] == {"projectId": "p-kipi"}
-    body = sync.writes[2][1]["input"]["body"]
+    assert [k for k, _ in sync.writes] == ["update", "update", "update", "comment"]
+    assert list(sync.writes[0][1]["input"]) == ["description"]
+    assert sync.writes[1][1]["input"] == {"projectId": "p-kipi"}
+    body = sync.writes[3][1]["input"]["body"]
     assert "fix the hook" in body and "fix the crm" in body and "files none" in body
     assert not writes_of(sync, "update", "stateId")
+
+
+def test_a_split_s_parts_reach_the_dor_drafter_through_the_description(facts):
+    """PR #690 review r4, major 2: the parts were only in a comment, and the DoR
+    drafter builds from project, title and the first 4000 characters of the
+    description. With a 5000-character description, part 2 must still be in
+    the drafter's own prompt, built by the drafter's own PROMPT."""
+    drafter = _load("linear_dor_drafter_for_decide_test", "linear-dor-drafter.py")
+    d, _ = decide.make_parse(names())(SPLIT_ANSWER, 1)
+    sync = FakeSync()
+    sync.put(ticket(body="x" * 5000))
+    decide.apply_decision(decide.Board(sync, "team-1"), sync.view("ASK-7"), d, set())
+    t = sync.view("ASK-7")
+    prompt = drafter.PROMPT.format(project=t["project"]["name"], title=t["title"],
+                                   description=t["description"][:4000])
+    assert "fix the crm" in prompt and "ASK Consulting" in prompt
+    assert t["description"].endswith("x" * 5000)
+
+
+def test_the_parts_section_is_replaced_not_stacked_and_any_other_decision_removes_it():
+    d1, _ = decide.make_parse(names())(SPLIT_ANSWER, 1)
+    d2 = dict(d1, project="ASK Consulting", children=list(reversed(d1["children"])))
+    once = decide.with_parts("the original text", d1)
+    twice = decide.with_parts(once, d2)
+    assert twice.count(decide.PARTS_OPEN) == 1 and "the original text" in twice
+    assert "fix the crm. the crm loads (this ticket)" in twice
+    for other in ({"kind": "ROUTE", "project": "kipi-system"}, {"kind": "CLOSE"}):
+        assert decide.with_parts(twice, other) == "the original text"
+    assert decide.with_parts("plain", {"kind": "ROUTE", "project": "x"}) == "plain"
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +421,7 @@ def test_split_then_failed_record_then_undo_files_nothing_and_repeats_nothing_ov
     sync.put(ticket(body=QUIET))
     rec1, _ = night(sync, facts, SPLIT_ANSWER)
     assert rec1["outcome"] == "write-failed"
-    assert rec1["writes"] == ["project=kipi-system"]
+    assert rec1["writes"] == ["description", "project=kipi-system"]
     assert not [c for c in sync.view("ASK-7")["comments"]["nodes"]]
     unset_project(sync)
     reopen(sync)
@@ -397,6 +432,8 @@ def test_split_then_failed_record_then_undo_files_nothing_and_repeats_nothing_ov
     assert night(sync, facts, SPLIT_ANSWER) == (None, None)
     assert not writes_of(sync, "create") and not writes_of(sync, "update", "stateId")
     assert [v["input"]["projectId"] for v in writes_of(sync, "update", "projectId")] == ["p-kipi", "p-ask"]
+    desc = sync.view("ASK-7")["description"]
+    assert desc.count(decide.PARTS_OPEN) == 1 and "ASK Consulting: fix the hook. the hook stops failing (this ticket)" in desc
 
 
 def test_a_project_that_landed_before_its_label_failed_is_still_known(facts):
@@ -485,6 +522,42 @@ def test_this_pass_has_no_path_that_files_a_ticket():
     one back has to delete this test in the open."""
     src = (SCRIPTS / "linear-route-decide.py").read_text()
     assert "issueCreate" not in src and "parentId" not in src
+
+
+def _run_report_only(monkeypatch, facts, answers, n=20):
+    """run() end to end, report only, on n quiet tickets and a fixture model."""
+    import argparse
+    issues = [ticket(f"ASK-{100 + k}", body=QUIET) for k in range(n)]
+    monkeypatch.setattr(route.RoutingFacts, "load", lambda *a, **k: facts)
+    monkeypatch.setattr(route, "_load_sync", lambda: FakeSync())
+    monkeypatch.setattr(route, "fetch_board", lambda sync, team: (issues, "team-1"))
+    monkeypatch.setattr(decide.ladder, "targets", lambda: TARGETS)
+    monkeypatch.setattr(decide, "ask_model", Asker(*answers))
+    args = argparse.Namespace(registry="fixture", team="ASK", apply=False, limit=n,
+                              no_model=False, json=False, heartbeat=False)
+    return decide.run(args)
+
+
+def test_a_normal_night_with_two_timeouts_exits_zero(monkeypatch, facts):
+    """PR #690 review r4, major 1. Measured 2026-11-09: 2 of 20 asks hit the 180s
+    bound. launchd-health-check.py pages on any non-zero exit, so a night that
+    decided 18 of 20 must exit 0; the 2 are in the log and the heartbeat."""
+    ok = "DECISION: ROUTE kipi-system\nREASON: fleet."
+    answers = [ok] * 20
+    answers[5] = answers[15] = ""
+    assert _run_report_only(monkeypatch, facts, answers) == decide.EXIT_OK
+
+
+def test_a_night_where_most_asks_fail_exits_incomplete(monkeypatch, facts):
+    ok = "DECISION: ROUTE kipi-system\nREASON: fleet."
+    answers = [""] * 11 + [ok] * 9
+    assert _run_report_only(monkeypatch, facts, answers) == decide.EXIT_INCOMPLETE
+
+
+def test_a_ticket_with_no_write_left_is_not_a_run_failure():
+    rows = [{"outcome": decide.NOTHING_LEFT}] * 3 + [{"outcome": "applied"}]
+    assert decide.exit_code(rows) == decide.EXIT_OK
+    assert decide.exit_code([]) == decide.EXIT_OK
 
 
 def test_a_truncated_comment_page_is_said_not_read_as_none(facts):

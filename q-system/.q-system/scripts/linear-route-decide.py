@@ -521,8 +521,44 @@ def decision_comment(d: dict) -> str:
                 f"routed instead." + tail)
     parts = "\n".join(f"- {c['project']}: {c['title']}. {c['outcome']}" for c in d["children"])
     return (head + f"**Routed to {d['project']} as a split** by linear-route-decide.py (ASK-3959). "
-            f"Reason: {why}. The work spans these parts. This pass files none of them: the "
-            f"{d['project']} worker starts here and files the rest.\n{parts}\n\n" + undo_route + tail)
+            f"Reason: {why}. The work spans these parts. This pass files none of them; they are "
+            f"at the top of the description, where the DoR drafter and the {d['project']} "
+            f"worker read.\n{parts}\n\n" + undo_route + tail)
+
+
+PARTS_OPEN = "<!-- kipi-route-split-parts -->"
+PARTS_CLOSE = "<!-- /kipi-route-split-parts -->"
+
+
+def with_parts(description: str, d: dict) -> str:
+    """The description with the parts section matching decision `d`.
+
+    A SPLIT gets its section at the top, replaced in place. Any other decision
+    gets the description with no section, so one left by an earlier split whose
+    project write failed cannot name a route the ticket no longer has.
+
+    WHY THE DESCRIPTION, NOT ONLY THE RECORD (PR #690 review r4, major). The
+    record is a comment, and neither consumer reads comments for scope:
+    linear-dor-drafter.py builds the DoR from project, title and the first 4000
+    characters of the description, and linear-worker.sh works only what the DoR
+    scopes. So parts 2 to N reached nobody. At the TOP so the 4000-character cut
+    cannot drop them. REPLACED IN PLACE, between its two markers, so a later
+    split of the same ticket rewrites the section instead of stacking a second.
+    """
+    desc = description or ""
+    i, j = desc.find(PARTS_OPEN), desc.find(PARTS_CLOSE)
+    has = i != -1 and j > i
+    if d["kind"] != "SPLIT":
+        return (desc[:i] + desc[j + len(PARTS_CLOSE):]).strip() if has else desc
+    lines = "\n".join(f"- {c['project']}: {c['title']}. {c['outcome']}"
+                      + (" (this ticket)" if n == 0 else "")
+                      for n, c in enumerate(d["children"]))
+    section = (f"{PARTS_OPEN}\n**Split by linear-route-decide.py (ASK-3959).** This ticket is "
+               f"routed to {d['project']}, which starts the work. Its worker files each other "
+               f"part below as its own ticket in that part's project.\n{lines}\n{PARTS_CLOSE}")
+    if has:
+        return desc[:i] + section + desc[j + len(PARTS_CLOSE):]
+    return section + ("\n\n" + desc if desc.strip() else "")
 
 
 class WriteFailed(RuntimeError):
@@ -572,6 +608,12 @@ class Board:
         if not (res.get("issueUpdate") or {}).get("success"):
             raise RuntimeError(f"issueUpdate(state) refused for {issue.get('identifier')}")
 
+    def set_description(self, issue: dict, text: str) -> None:
+        res = self.sync.graphql(route.ISSUE_UPDATE, {"id": issue["id"],
+                                                     "input": {"description": text}}) or {}
+        if not (res.get("issueUpdate") or {}).get("success"):
+            raise RuntimeError(f"issueUpdate(description) refused for {issue.get('identifier')}")
+
     def set_project(self, issue: dict, project: str, landed: list) -> None:
         """The project, then the owner label, each its own apply_row call.
 
@@ -605,6 +647,7 @@ def apply_decision(board: Board, issue: dict, d: dict, gone: set) -> list:
     ROUTE and SPLIT: the project first. A "Routed to X" record on a ticket the
       write never reached would be a false statement; a project with no record
       is still visible on the ticket, and the log has the reason and the write.
+    Before either, the description's parts section is made to match (with_parts).
     """
     if d["kind"] not in ("ROUTE", "CLOSE", "SPLIT"):
         raise WriteFailed(f"{d['kind']} is not a decision this pass writes", [])
@@ -613,6 +656,13 @@ def apply_decision(board: Board, issue: dict, d: dict, gone: set) -> list:
                           "undone; this pass does not write it again", [])
     landed = []
     try:
+        # The parts section first, for every kind: once the project or the
+        # cancel lands, the ticket leaves this population for good, so a
+        # section write that failed after it could never be retried.
+        desc = with_parts(issue.get("description"), d)
+        if desc != (issue.get("description") or ""):
+            board.set_description(issue, desc)
+            landed.append("description")
         if d["kind"] == "CLOSE":
             board.comment(issue, decision_comment(d))
             landed.append("comment")
@@ -693,6 +743,25 @@ def one_ticket(issue: dict, names: dict, facts, board, landed: dict, ask=None) -
     return rec
 
 
+RUN_FAILURES = ("model-failed", "write-failed")
+
+
+def exit_code(rows: list) -> int:
+    """EXIT_INCOMPLETE only when more than half the asks failed, else EXIT_OK.
+
+    WHY NOT "ANY FAILURE" (PR #690 review r4, major). launchd-health-check.py
+    reads a non-zero LastExitStatus as a failing job and pages every 6 hours.
+    A normal night has timeouts: measured 2026-11-09, 2 of 20 asks hit the 180s
+    bound. Exiting 9 on those paged about a job that decided 18 of 20. Each
+    failed ticket is already in the log, goes to the back of the line, and is
+    counted in the heartbeat's error field. A run where most asks fail is the
+    model or Linear path being down, and that is what the exit code reports.
+    A ticket with no write left is a decision, not a failure, so it is not counted.
+    """
+    failed = sum(1 for r in rows if r.get("outcome") in RUN_FAILURES)
+    return EXIT_INCOMPLETE if rows and failed * 2 > len(rows) else EXIT_OK
+
+
 def run(args) -> int:
     registry = args.registry or route.linear_registry.default_registry_path()
     facts = route.RoutingFacts.load(registry)
@@ -740,6 +809,7 @@ def run(args) -> int:
         rows.append(rec)
     failures = sum(1 for r in rows if r.get("outcome") in FAILED_OUTCOMES)
     done = sum(1 for r in rows if r.get("applied"))
+    code = exit_code(rows)
     if args.json:
         print(json.dumps({"population": len(pop), "asked": len(batch), "applied": done,
                           "failures": failures, "rows": rows}, indent=2))
@@ -748,7 +818,11 @@ def run(args) -> int:
                   f"{failures} failed" if failures else None)
     if not args.apply:
         print("report only. --apply to write.")
-    return EXIT_INCOMPLETE if failures else EXIT_OK
+    if code != EXIT_OK:
+        failed = sum(1 for r in rows if r.get("outcome") in RUN_FAILURES)
+        print(f"linear-route-decide: INCOMPLETE: most asks failed ({failed} of {len(rows)}); "
+              "the model or Linear path is broken, not one ticket", file=sys.stderr)
+    return code
 
 
 def main(argv: list) -> int:
