@@ -1176,11 +1176,19 @@
             "what": "Nightly through linear-triage-health.py (09:00, 10 writes a run): a no-project ticket with path or title-label evidence gets its project, DoR or not (ASK-3959 stage 1). Measured 2026-11-08: 73 of 384 route."
           },
           {
+            "kind": "consumer",
+            "fires": "by-order",
+            "path": "q-system/.q-system/scripts/linear-route-decide.py",
+            "marker": "def decide_one",
+            "test": "q-system/.q-system/tests/test_linear_route_decide.py",
+            "what": "Nightly (com.kipi.linear-route-decide, 05:20, 20 a night): what no rule routes gets one validated decision, ROUTE to a dispatch target on the board, CLOSE (Canceled with the reason, reversible) or SPLIT (a route to its first part, the parts in the record, no ticket filed). A write that was undone is never made again; a reopened close is routed instead (ASK-4133). Two refused answers land on CLOSE, no fleet repo owns this. No park (ASK-3959 stage 2). Measured 2026-11-09: 350 tickets in its population."
+          },
+          {
             "kind": "debt",
             "ticket": "ASK-3959",
             "since": "2026-11-08",
             "expires": "2026-12-08",
-            "what": "E4: the router stamps a project at creation; unroutable parks no-project."
+            "what": "E4: the router stamps a project at creation; unroutable parks no-project. Both consumers drain by order, not by age, so the debt stays until ASK-3959 closes."
           }
         ]
       },

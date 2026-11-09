@@ -12,6 +12,12 @@
       "since": "2026-11-09",
       "producer": "q-system/.q-system/scripts/linear-alert-triage.py",
       "launchd": "com.kipi.linear-alert-triage"
+    },
+    "linear-route-decide": {
+      "period_hours": 24,
+      "since": "2026-11-09",
+      "producer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "launchd": "com.kipi.linear-route-decide"
     }
   }
 }
