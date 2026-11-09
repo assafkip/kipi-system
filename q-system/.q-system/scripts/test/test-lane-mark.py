@@ -31,8 +31,15 @@ with tempfile.TemporaryDirectory() as d:
     spec.loader.exec_module(ls)
 
     def mark(*args):
+        # KIPI_AGENT is lane-mark's fallback for --agent, and the fleet worker
+        # exports it (KIPI_AGENT=sana), so an inherited env made "start needs an
+        # agent" pass an agent and read exit 0. Measured 2026-11-09 on
+        # origin/main: rc 0 in the worker's shell, rc 64 in a bare one. The test
+        # runs in a shell of its own choosing, so it states the variable.
+        env = dict(os.environ)
+        env.pop("KIPI_AGENT", None)
         return subprocess.run([sys.executable, str(SCRIPTS / "lane-mark.py"), *args],
-                              capture_output=True, text=True, env=dict(os.environ)).returncode
+                              capture_output=True, text=True, env=env).returncode
 
     print("== lane-mark")
     check("no marker: no lane", ls.lane_marker("ASK-1"), "")
@@ -41,8 +48,16 @@ with tempfile.TemporaryDirectory() as d:
     check("a started lane is live and names its agent",
           ls.lane_marker("ASK-1").startswith("lane marker: rules-to-code holds ASK-1 until "), True)
     rec = json.load(open(Path(d) / "ASK-1.json"))
-    check("the marker records issue, agent, since and until",
-          sorted(rec), ["agent", "issue", "since", "until"])
+    # pr and worktree joined the marker with the lane watchdog (ASK-3932):
+    # lane-mark derives lanes.state from these fields, so they live on the
+    # marker rather than in a second file a lane could forget to write. Read
+    # linear-sync.lane_marker before changing this: it pulls "until" and "agent"
+    # by key and ignores the rest, which is why adding fields is safe there.
+    check("the marker records issue, agent, since, until, pr and worktree",
+          sorted(rec), ["agent", "issue", "pr", "since", "until", "worktree"])
+    check("pr defaults to - when the lane names none", rec["pr"], "-")
+    check("the state file skips lanes.state, which is not a marker",
+          ls.lane_marker("lanes.state"), "")
     check("end ends it", mark("end", "ASK-1"), 0)
     check("an ended lane is not live", ls.lane_marker("ASK-1"), "")
     check("touch with no marker is refused", mark("touch", "ASK-2"), 1)
