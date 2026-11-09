@@ -340,6 +340,116 @@ finally:
     fh.REPO_ROOT = _rr
 check("a checkout whose fetch fails is never treated as current", _cur, False)
 
+# ASK-4055 (PR #667 round 2, major): the deferred reinstall writes its result and
+# pages on failure. A fake installer exits 3; the wait is on a pid that exits now.
+_sh_dir = WORK / "selfheal"; _pages = WORK / "selfheal-pages.log"
+_fake_inst = WORK / "fake-install.sh"
+_fake_inst.write_text("#!/bin/bash\necho bootstrap failed for $1 >&2\nexit 3\n")
+_fake_notify = WORK / "fake-notify.sh"
+_fake_notify.write_text(f'#!/bin/bash\nprintf "%s\\n" "$*" >> "{_pages}"\n')
+_saved = (fh.SELF_HEAL_DIR, fh.PLIST_INSTALLER, fh.NOTIFY)
+fh.SELF_HEAL_DIR, fh.PLIST_INSTALLER, fh.NOTIFY = _sh_dir, _fake_inst, _fake_notify
+try:
+    _short = subprocess.Popen(["sleep", "0.2"])
+    _started = fh._self_heal_after_exit("com.kipi.fleet-health", wait_pid=_short.pid)
+    _short.wait()
+    import time as _time
+    _res = _sh_dir / "com.kipi.fleet-health.result"
+    for _ in range(100):
+        if _res.exists() and _pages.exists():
+            break
+        _time.sleep(0.1)
+    _text = _res.read_text() if _res.exists() else ""
+    check("the deferred reinstall writes its exit code and output",
+          (_started, _text.startswith("rc=3 "), "bootstrap failed" in _text), (True, True, True))
+    check("a failed deferred reinstall pages once, naming the job and the fix",
+          (_pages.read_text().count("\n") if _pages.exists() else 0,
+           "com.kipi.fleet-health" in (_pages.read_text() if _pages.exists() else "")), (1, True))
+    _os.environ["XPC_SERVICE_NAME"] = "com.kipi.fleet-health"
+    _drift_self = dict(_drift, subject="com.kipi.fleet-health")
+    try:
+        _left, _healed = fh.heal_plist_drift(
+            [_drift_self], install=lambda l: (0, ""), running=lambda _l: True,
+            paused=set(), current=lambda: True, recheck=lambda: [],
+            self_heal=lambda l: True)
+    finally:
+        _os.environ.pop("XPC_SERVICE_NAME", None)
+    check("the next run's finding carries the previous deferred reinstall's failure",
+          "The previous one: rc=3 " in _left[0]["body"], True)
+finally:
+    fh.SELF_HEAL_DIR, fh.PLIST_INSTALLER, fh.NOTIFY = _saved
+
+# ASK-4055 (PR #667 delta, minor): the report-only detectors read the same declared
+# intent as the heal. A job disabled ONLY in launchd-intent.json files no dark-job
+# and no never-installed finding; with intent unreadable they fall back to the ledgers.
+_ih2 = WORK / "intent-home-2"; (_ih2 / ".config" / "kipi").mkdir(parents=True, exist_ok=True)
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.never-installed", "intent": "disabled"}]}')
+_tpl = WORK / "tpl-4055"; _agt = WORK / "agents-4055"; _tpl.mkdir(); _agt.mkdir()
+(_tpl / "com.kipi.never-installed.plist").write_text("<plist/>")
+# PR #676 round 1, major: the CONFLICT case. A job paused in a ledger that the
+# manifest calls enabled stays stopped for the reporters (the union), and the dark
+# detector, run for real, files neither it nor the manifest-disabled job.
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.never-installed", "intent": "disabled"},'
+    ' {"label": "com.kipi.ledger-paused", "intent": "enabled"}]}')
+(_ih2 / ".config" / "kipi" / "launchd-paused.txt").write_text("com.kipi.ledger-paused\n")
+_saved_dark = (fh._launchd_labels, fh._is_loaded)
+fh._launchd_labels = lambda: ["com.kipi.never-installed", "com.kipi.ledger-paused", "com.kipi.truly-dark"]
+fh._is_loaded = lambda _l: False
+_os.environ["HOME"] = str(_ih2)
+try:
+    _stopped = fh._stopped_labels()
+    _ni = fh.never_installed_findings(template_dir=_tpl, launch_agents=_agt)
+    _dark = sorted(f["subject"] for f in fh.detect_dark_jobs({}))
+    (_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text("{not json")
+    _stopped_bad = fh._stopped_labels()
+finally:
+    _os.environ["HOME"] = _home_saved
+    fh._launchd_labels, fh._is_loaded = _saved_dark
+check("a job declared disabled only in launchd-intent.json is stopped for the detectors",
+      "com.kipi.never-installed" in _stopped, True)
+check("a ledger-paused job the manifest calls enabled is still stopped for the reporters",
+      "com.kipi.ledger-paused" in _stopped, True)
+check("...so never-installed files nothing for the manifest-disabled one", _ni, [])
+check("detect_dark_jobs, run for real, files only the job no source stopped",
+      [s for s in _dark if "never-installed" in s or "ledger-paused" in s or "truly-dark" in s],
+      [s for s in _dark if "truly-dark" in s])
+check("...and it does file that one", any("truly-dark" in s for s in _dark), True)
+check("an unreadable intent leaves the ledgers, never 'everything stopped'",
+      ("*" in _stopped_bad, "com.kipi.ledger-paused" in _stopped_bad), (False, True))
+# Negative control for the conflict case: with the heal's reader (round 1's choice)
+# the ledger-paused job IS filed as dark, so the check above can go red.
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.ledger-paused", "intent": "enabled"}]}')
+_real_stopped2 = fh._stopped_labels
+fh._stopped_labels = fh._disabled_labels
+fh._launchd_labels = lambda: ["com.kipi.ledger-paused"]
+fh._is_loaded = lambda _l: False
+_os.environ["HOME"] = str(_ih2)
+try:
+    _dark_r1 = [f["subject"] for f in fh.detect_dark_jobs({})]
+finally:
+    _os.environ["HOME"] = _home_saved
+    fh._stopped_labels = _real_stopped2
+    fh._launchd_labels, fh._is_loaded = _saved_dark
+check("negative control: the manifest-resolved reader files the ledger-paused job as dark",
+      any("ledger-paused" in s for s in _dark_r1), True)
+# Negative control: with the ledger-only reader (the old one) the same job IS filed,
+# so the check above can go red.
+_os.environ["HOME"] = str(_ih2)
+(_ih2 / ".config" / "kipi" / "launchd-intent.json").write_text(
+    '{"jobs": [{"label": "com.kipi.never-installed", "intent": "disabled"}]}')
+_real_stopped = fh._stopped_labels
+fh._stopped_labels = fh._paused_labels
+try:
+    _ni_old = fh.never_installed_findings(template_dir=_tpl, launch_agents=_agt)
+finally:
+    fh._stopped_labels = _real_stopped
+    _os.environ["HOME"] = _home_saved
+check("negative control: the ledger-only reader files the manifest-disabled job",
+      [f["subject"] for f in _ni_old], ["com.kipi.never-installed"])
+
 # Only the daily job own --apply run heals. A test or a dry read that calls the
 # detector must reload nothing: test-fleet-health-daily.py calls every detector.
 _saved = (fh.REPO_ROOT, fh.plist_drift_findings, fh.heal_plist_drift, fh.HEAL_APPLY)

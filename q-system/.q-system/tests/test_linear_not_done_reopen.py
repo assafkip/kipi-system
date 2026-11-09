@@ -338,3 +338,38 @@ def test_a_malformed_pending_row_is_dropped_not_a_crash(tmp_path):
     mod.write_pending(pend, {"ASK-1": {"attempts": "x"}, "ASK-2": "junk"})
     posted, left, dropped = mod.retry_pending(Fake(), pend)
     assert (posted, left) == ([], []) and len(dropped) == 2
+
+
+# --- ASK-4084: a non-object or corrupt acted.json --------------------------------
+
+@needs
+def test_a_non_object_record_is_corrupt_not_never_acted(tmp_path):
+    """PR #661 round 3, minor 1: `[]` read as {} and the reopen loop came back."""
+    p = tmp_path / "acted.json"
+    p.write_text("[]")
+    acted, recovered = mod.load_acted_or_recover(p)
+    assert recovered and acted == {}
+    assert not p.exists() and [q.name for q in tmp_path.iterdir() if "corrupt" in q.name]
+
+
+@needs
+def test_a_corrupt_record_unwedges_after_one_run_with_no_reopens(tmp_path):
+    """PR #661 round 3, minor 2: it exited 9 on every hourly run, forever."""
+    p = tmp_path / "acted.json"
+    p.write_text("{not json")
+    acted, recovered = mod.load_acted_or_recover(p)
+    assert recovered
+    issues = [ask297()]
+    decisions = [mod.decide(issues[0], {}, acted)]
+    assert decisions[0]["reopen"]                     # the decision alone would act...
+    plan, held = mod.plan_for_run(issues, decisions, recovered)
+    assert plan == [] and held == ["ASK-297"]         # ...the recovering run does not
+    acted2, recovered2 = mod.load_acted_or_recover(p)  # the next run is normal
+    assert (acted2, recovered2) == ({}, False)
+
+
+@needs
+def test_a_good_record_is_read_as_is(tmp_path):
+    p = tmp_path / "acted.json"
+    p.write_text(json.dumps({"ASK-297": [PR]}))
+    assert mod.load_acted_or_recover(p) == ({"ASK-297": [PR]}, False)

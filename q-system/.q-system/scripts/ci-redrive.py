@@ -176,6 +176,7 @@ and it is why a gh failure is exit 2 with no ledger write rather than exit 1.
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -370,6 +371,78 @@ def process_table():
     except OSError:
         return None
     return proc.stdout if proc.returncode == 0 else None
+
+
+def _linear_sync():
+    spec = importlib.util.spec_from_file_location("ls_for_lane", os.path.join(HERE, "linear-sync.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fleet_ran(path, issue):
+    """True when the attempts ledger shows the FLEET worker ran this issue: a row
+    with `count` or `rounds`. A row holding only redrive flags is not a run (ASK-4011
+    had exactly that the night a redrive put a second writer on its lane PR)."""
+    try:
+        data = json.load(open(path))
+    except (OSError, ValueError):
+        return False
+    row = data.get(issue) if isinstance(data, dict) else None
+    return isinstance(row, dict) and bool(row.get("count") or row.get("rounds"))
+
+
+LANE_TICKET_QUERY = """
+query($id: String!) { issue(id: $id) { identifier state { type } startedAt } }
+"""
+
+
+def lane_live(issue, path=None, now=None):
+    """Why an interactive lane may be on this issue now, or "" (ASK-4095).
+
+    ONE RULE FOR BOTH REDRIVES. 2026-11-08 23:25:01Z: this script handed ASK-4011
+    back to "its agent" and the dispatcher started a converge on #666 while the
+    rules-to-code agent was working it by hand: two writers on one branch. A lane
+    is live when (a) it says so, with an unexpired lane-mark.py marker, or (b) the
+    fleet never ran the issue and its ticket is In Progress, started inside the
+    24h window linear-sync gives a lane (STARTED_STALE_HOURS). A non-fleet ticket
+    that cannot be read is live: fail closed, a skipped tick is recoverable and a
+    second writer is not. KIPI_LANE_TICKETS (a JSON file, id -> {state,
+    startedAt}, or the string "UNREADABLE") replaces the Linear read in tests.
+    """
+    from datetime import datetime, timezone
+    try:
+        ls = _linear_sync()
+    except Exception as exc:  # noqa: BLE001 - no lane rule, no hand-back
+        return f"the lane rule could not load linear-sync.py ({str(exc)[:80]})"
+    marker = ls.lane_marker(issue, now=now)
+    if marker:
+        return marker
+    if fleet_ran(path or attempts_path(), issue):
+        return ""
+    fixture = os.environ.get("KIPI_LANE_TICKETS")
+    try:
+        if fixture:
+            tickets = json.load(open(fixture))
+            if tickets == "UNREADABLE" or tickets.get(issue) == "UNREADABLE":
+                raise RuntimeError("fixture: unreadable")
+            node = tickets.get(issue) or {}
+            state = node.get("state")
+        else:
+            node = ls.graphql(LANE_TICKET_QUERY, {"id": issue}).get("issue") or {}
+            state = (node.get("state") or {}).get("type")
+    except Exception as exc:  # noqa: BLE001 - fail closed on any read failure
+        return f"no fleet run on record and its ticket could not be read ({str(exc)[:80]})"
+    if state != "started":
+        return ""
+    began = ls._parse_stamp(node.get("startedAt"))
+    if began is None:
+        return "no fleet run on record and its start time is unknown"
+    hours = ((now or datetime.now(timezone.utc)) - began).total_seconds() / 3600.0
+    if hours < ls.STARTED_STALE_HOURS:
+        return (f"no fleet run on record, started {hours:.1f}h ago, inside the "
+                f"{ls.STARTED_STALE_HOURS}h lane window")
+    return ""
 
 
 def converge_live(issue):
@@ -631,10 +704,11 @@ def capout_skip(path, issue, who, pr):
     if not capout_notice_due(path, issue):
         return True
     sys.stderr.write(
-        "%s: %s PR #%s -- converge already gave up on this issue (%s). Not "
-        "re-entering it until a human clears the cap-out: %s  (said once per "
-        "cap-out; every parked issue: %s)\n"
-        % (who, issue, pr, why, CAPOUT_CLEAR % (path, issue), CAPOUT_LIST % path))
+        "%s: %s PR #%s -- converge capped this issue (%s). Not re-entering it: "
+        "cap-ladder.py (nightly 04:40, ASK-3824) takes the cap-out, writes an "
+        "RCA, moves the work to a new PR and clears the record  (said once per "
+        "cap-out; every capped issue: %s)\n"
+        % (who, issue, pr, why, CAPOUT_LIST % path))
     return True
 
 
@@ -690,7 +764,8 @@ def claim_unless_capped(path, issue, flag, who, pr=""):
         # clearing command because a park with no exit is the worse outage.
         sys.stderr.write(
             "%s: %s%s -- converge already gave up on this issue (%s). NOT "
-            "dispatching, and the attempt is NOT spent. Clear it with: %s\n"
+            "dispatching, and the attempt is NOT spent. cap-ladder.py clears it at "
+            "its next nightly run (the same clear by hand: %s)\n"
             % (who, issue, (" PR #%s" % pr) if pr else "",
                capout(path, issue) or "no reason recorded",
                CAPOUT_CLEAR % (path, issue)))
@@ -707,6 +782,14 @@ def cmd_redrive(cands):
     path = attempts_path()
     chosen = None
     for cand in cands:
+        # A LIVE LANE FIRST (ASK-4095): an interactive agent's PR is its own, and
+        # handing it "back to its agent" here put a second writer on #666.
+        lane = lane_live(cand["issue"], path)
+        if lane:
+            sys.stderr.write(
+                "ci-redrive: %s PR #%s is red but a lane is on it (%s) -- not offering "
+                "it and not escalating it\n" % (cand["issue"], cand["pr"], lane))
+            continue
         # BEFORE both the offer and the escalation, because a live converge
         # invalidates both: the dispatcher would discard its fresh pick for a
         # candidate it cannot launch, and the founder would be paged that a

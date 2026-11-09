@@ -73,11 +73,22 @@ def _subscription_env():
     return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
 
+
+def _routed_model(job: str = "on-demand") -> str:
+    """The routing table's model for an on-demand run (ASK-4013): no fleet call
+    rides the CLI default."""
+    import importlib.util as _u
+    spec = _u.spec_from_file_location("model_route", pathlib.Path(__file__).resolve().parent / "model_route.py")
+    mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.pick(job)
+
+
 def ask(root: pathlib.Path) -> str:
     env = _subscription_env()
     env["CLAUDE_PROJECT_DIR"] = str(root)
     try:
-        r = subprocess.run(["claude", "-p", PROMPT], cwd=str(root), env=env,
+        r = subprocess.run(["claude", "-p", PROMPT, "--model", _routed_model()], cwd=str(root), env=env,
                            capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return "RUN-FAILED: %s" % exc

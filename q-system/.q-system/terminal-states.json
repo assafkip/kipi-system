@@ -309,13 +309,40 @@
       "class": "exhausted-counter",
       "marker": "stuck_paged",
       "sites": 1,
-      "what": "MAX_ATTEMPTS spent. Paged once (not per heartbeat), with a Linear comment naming the three options and the last recorded reason.",
-      "terminal": true,
-      "rationale": "STILL TERMINAL, and this is the row that shows what the method is for. A successor DID become real after the PRD archived: fable-escalate.py (ASK-311, 715895e, 2026-08-03) -- when Opus is stuck, Fable triages in a fresh session. It exists in code. It is not wired to this state: its only non-test callers are token-guard.py (a PreToolUse hook inside a live session) and launchd-health-check.py (which imports two helper functions and never escalates). Neither is a re-entrant driver that reads persisted stuck state, and the constraint filed on this issue is explicit that a liveness_check may never name a process the finishing agent spawned. So the honest answer is: the successor is real and UNWIRED, wiring it is ASK-311 and is excluded by this issue's Not-doing line, and until it is wired this state does not continue. The residual is unchanged: the named human is the founder, who does not work on code.",
-      "evidence": {
-        "path": "q-system/.q-system/token-guard.py",
-        "marker": "\"scripts\", \"fable-escalate.py\")",
-        "why": "The only non-test caller of the would-be successor. It is a per-session hook, not a driver that re-enters a persisted stuck state."
+      "what": "MAX_ATTEMPTS spent. One Linear comment (stuck_paged keeps it to one) names cap-ladder.py as the next step; no page.",
+      "consumer": "cap-ladder.py -- reads the attempt count this branch tests and climbs one rung: RCA and continue, other runner, re-scope, a recorded decision",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"attempts:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket or a fleet PR. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
+      }
+    },
+    {
+      "id": "ladder-hold",
+      "source": "linear-worker",
+      "class": "durable-queue",
+      "marker": "ladder_hold",
+      "sites": 1,
+      "what": "cap-ladder.py set ladder_hold: the RCA agent decided BLOCKED-ON an owned ticket or a fleet PR. The worker skips it before the dry pick.",
+      "consumer": "cap-ladder.py -- clears the hold the night an event lands: the blocker closed, a file the last attempt touched or the RCA names changed on origin/main, the description changed, or the worker model config changed. No event, no run, one line naming what it waits on",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "def event_for",
+        "why": "The event check is the only thing that releases a hold. The blocker itself was validated as owned when the decision was written (check_blocker), and a blocker that later loses its owner is RED in the report, so a held ticket always waits on something that someone moves. Founder 2026-11-08: 'but what happens if nothing changed? the ticket just stays?'"
       }
     },
     {
@@ -364,13 +391,19 @@
       "class": "exhausted-counter",
       "marker": "conflict_paged",
       "sites": 1,
-      "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. Paged once.",
-      "terminal": true,
-      "rationale": "REFUSAL ON EVIDENCE, re-checked 2026-08-18 by the same method that moved drift-cap. Two redrives landed after the PRD archived and NEITHER can see this state: ci-redrive.py selects on failing CI checks, review-redrive.py selects on the reviewer's verdict slot, and a PR that is approved-and-green but conflicting has neither. Grepped the whole scripts tree for a reader of merge state: the only hits are a comment in linear-worker.sh and an advice string in blocked-claim-evidence-lint.py. Nothing selects on mergeable/mergeStateStatus, so there is no successor to wire, real or otherwise. The rebase rounds already ran and the conflict survived them; the remaining moves are which side of the conflict wins, which is a judgment, and force-pushing over a reviewed diff, which is destructive by construction.",
-      "evidence": {
-        "path": "q-system/.q-system/scripts/blocked-claim-evidence-lint.py",
-        "marker": "--json mergeStateStatus,mergeable,statusCheckRollup",
-        "why": "The only place merge state is named anywhere in the scripts tree, and it is advice text printed to an operator -- not a selector. That absence is the evidence."
+      "what": "MAX_CONFLICT_ROUNDS spent: the PR is approved but still does not merge. One comment names cap-ladder.py; no page.",
+      "consumer": "cap-ladder.py -- reads conflict_paged and moves the work to a new PR on the same branch after a fresh RCA",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"conflict:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket or a fleet PR. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
       }
     },
     {
@@ -545,13 +578,19 @@
       "class": "exhausted-counter",
       "marker": "record-capout",
       "sites": 1,
-      "what": "exit 2. MAX_ROUNDS spent without a terminal verdict. The cap-out is written to the attempts ledger so the redrives can read it.",
-      "terminal": true,
-      "rationale": "TERMINAL BY DESIGN AND BY THE MOST RECENT DECISION IN THIS AREA (ASK-871, cfa58133, 2026-08-16). This exit used to be invisible to machines, so ci-redrive.py and review-redrive.py correctly-by-their-own-rules re-entered a capped-out issue: ASK-830 capped out at 15:59:53Z and was handed back at 16:14:01Z, six rounds and five Opus reviews in one morning. The fix was to make the cap-out machine-readable so the redrives STOP. Giving this row a consumer would undo that fix two days after it landed. The founder clears it deliberately, and the page carries the exact command.",
-      "evidence": {
-        "path": "q-system/.q-system/scripts/converge.sh",
-        "marker": "record-capout",
-        "why": "The ledger write whose entire purpose is to stop every automated re-entry into this state."
+      "what": "exit 2. MAX_ROUNDS spent without a terminal verdict. The cap-out is written to the attempts ledger; the redrives skip it and cap-ladder.py consumes it.",
+      "consumer": "cap-ladder.py -- reads the capout record, writes an RCA, opens a new PR on the same branch and clears the record",
+      "consumer_test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.cap-ladder",
+        "run_evidence": "~/.config/kipi/cap-ladder.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/cap-ladder.py",
+        "marker": "f\"capout:{e.get(",
+        "why": "cap-ladder.py (ASK-3824) is the re-entrant driver this row lacked. Nightly it reads the persisted cap, has Fable write an RCA of the full packet, closes the capped PR with its branch kept, opens a new PR on the same branch, clears the record and requeues the ticket. Rung 2 runs the next attempt on the other runner, rung 3 re-scopes the DoR through linear-dor-drafter.py --issue, and rung 4 on is then a recorded decision: SPLIT into owned sub-tickets, CLOSE as Canceled with the RCA, or BLOCKED-ON an owned ticket or a fleet PR. A BLOCKED-ON ticket re-enters only on an event (its blocker closed, a touched file changed on main, its description changed, the model config changed), never on a timer. Founder 2026-11-08: 'What is gonna change in seven, fourteen or 28 days?'. The ladder's own per-issue rung count is the bound the ASK-830 scar asked for: the redrives still skip a capout until the ladder consumes it, and they never re-enter on their own. Founder 2026-11-08: a cap that ends in a park 'just hangs and goes nowhere'."
       }
     },
     {
@@ -1183,18 +1222,20 @@
         ]
       },
       "attempts-exhausted": {
-        "max_age_days": 1,
+        "max_age_days": 28,
         "covers": [
-          "attempts-cap-stuck"
+          "attempts-cap-stuck",
+          "ladder-hold"
         ],
-        "what": "A ticket whose 3 worker attempts are spent.",
+        "what": "A ticket whose 3 worker attempts are spent, or whose PR is capped (rounds, review rounds, rebase rounds, the review-redrive machine tier).",
         "exits": [
           {
-            "kind": "debt",
-            "ticket": "ASK-3824",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E9: Fable RCA, one Opus attempt, then park attempts-exhausted."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/cap-ladder.py",
+            "marker": "def climb",
+            "test": "q-system/.q-system/scripts/test/test_cap_ladder.py",
+            "what": "Nightly, one rung per cap: RCA and continue, other runner, re-scope, then one recorded decision (SPLIT, CLOSE or BLOCKED-ON an owned blocker). A held ticket re-enters on an event, never a timer (ASK-3824)."
           }
         ]
       },

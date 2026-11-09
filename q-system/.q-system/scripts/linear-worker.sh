@@ -131,7 +131,10 @@ CODEX_OUTAGE_MAX_AGE=86400
 # to disable it (tests that pin the both-down hold do).
 # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
 # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
+# The stand-in's model is the routing table's second-runner row (ASK-4013). If the
+# read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
+SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -1005,9 +1008,22 @@ PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 # after every live ticket, and is worked when nothing else is ready: the queue
 # drains it instead of holding it. expired_park() still mirrors E2 own set, but
 # only to say which tickets sort last; it refuses nothing (PR #663 round 1).
-pool.sort(key=lambda i: (1 if expired_park(i) else 0,
-                         PRIORITY_RANK.get(i.get("priority"), 4),
-                         i.get("createdAt") or "9999", i["identifier"]))
+# A TICKET THAT BLOCKS CAPPED WORK GOES FIRST IN ITS BAND (ASK-3824). cap-ladder.py
+# writes how many held tickets name each ticket as their BLOCKED-ON target; working
+# that ticket is what releases them. Inside a priority band only, so it reorders
+# peers and never jumps a band, and an expired park still sorts after every live
+# ticket. An unreadable file means no blockers. One key, both rules (#663, #662).
+try:
+    CAP_BLOCKERS = json.load(open(os.path.join(state_dir, "cap-ladder-blockers.json")))
+except Exception:
+    CAP_BLOCKERS = {}
+
+def pick_order_key(i):
+    return (1 if expired_park(i) else 0, PRIORITY_RANK.get(i.get("priority"), 4),
+            -int(CAP_BLOCKERS.get(i["identifier"], 0) or 0),
+            i.get("createdAt") or "9999", i["identifier"])
+
+pool.sort(key=pick_order_key)
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -1129,6 +1145,10 @@ def live_evidence(i):
     began = ls._parse_stamp(i.get("startedAt"))
     if began is not None and (now - began).total_seconds() < ls.STARTED_STALE_HOURS * 3600:
         return True
+    # A lane-mark.py marker is positive evidence too, and it outlives the 24h
+    # window for a long lane (ASK-4095).
+    if ls.lane_marker(i["identifier"]):
+        return True
     return bool(ls.live_claim(os.path.join(state_dir, "worktrees"), i["identifier"]))
 
 
@@ -1154,8 +1174,15 @@ def refusal(i):
     if "Definition of Ready" not in (i.get("description") or ""):
         return hold("no-dor", "ticket has no Definition of Ready")
     if i["state"]["type"] == "started":
-        if ticket_is_live(i):
-            return hold("ticket-live", "ticket held: " + (started_hold(i) or "not released"))
+        # NOT LIVE HERE, WHATEVER THE STAMP SAYS (ASK-4068, PR #671 delta major). The
+        # live-first check above already returned for positive evidence. What is
+        # left is a stale start, or a stamp that cannot be read. The second used to
+        # read as ticket-live, which has no backstop, so such a PR left the ceiling
+        # by no coded exit while the run log said the wait ends on its own. It is
+        # ticket-held now: it waits, and the backstop takes it past the age bar,
+        # with a page. Lanes keep their own rule (lane_hold).
+        if ls._parse_stamp(i.get("startedAt")) is None:
+            return hold("ticket-held", "ticket held: its start stamp cannot be read, so nothing shows anyone is on it; the backstop takes it past the age bar")
         return hold("ticket-held", "ticket held: " + (started_hold(i) or "not released"))
     name = "ticket is " + (i["state"].get("name") or i["state"]["type"])
     if i["state"]["type"] in ("completed", "canceled"):
@@ -1703,6 +1730,16 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # exactly that for one commit (codex round 2), which is why it now reads its exit
 # code through a `||` list instead of bracketing the call in `set +e`/`set -e`.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
+# THE LADDER'S RUNNER CHANGE (ASK-3824, rung 2). cap-ladder.py claims this flag
+# when a ticket caps a second time, so its next attempt runs on a different
+# model, not the same one again: a pattern that deadlocks one model deadlocks it
+# on the very next attempt too. A flag the worker reads, never a sentence in a
+# prompt, because the founder's ruling is that rules live in code. The ladder is
+# the only writer; it clears the flag on the rungs that run the default runner.
+ladder_runner_for() {  # ladder_runner_for <issue> -> "codex" when the ladder asked for it, else ""
+  [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$1" ladder_runner_codex "" 2>/dev/null)" = "True" ] && printf 'codex'
+  return 0
+}
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
@@ -2505,29 +2542,38 @@ while IFS= read -r ISSUE; do
       # loop burned its whole budget and cannot say what a human should do.
       STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
     fi
-    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
+    # The words "is STUCK after" stay: linear-alert-triage.py's worker-stuck shape
+    # reads them to close the old alert tickets this branch used to file. ASK-4014
+    # retires that shape once its file is free (PR #657).
+    say "skip $ISSUE: $ISSUE is STUCK after $N/$MAX_ATTEMPTS attempts. Last reason: $STUCK_WHY. cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+    # THE CAP HANDS OFF TO THE LADDER, IT DOES NOT PAGE (ASK-3824). This used to
+    # write "Human action needed" and page, and nothing read either: the issue
+    # was skipped here every tick, forever. cap-ladder.py reads the attempt count
+    # this branch tests, and moves the ticket on: a fresh RCA and a continue, then
+    # a different runner, then a re-scope, then one recorded decision. One comment so
+    # the ticket says who acts next; stuck_paged keeps it to one.
     if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
-        "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
+        "**Capped after $N/$MAX_ATTEMPTS attempts.** Last recorded reason: $STUCK_WHY
 
-Last recorded reason: $STUCK_WHY
-
-**Human action needed:** review the reason above and do ONE of:
-- fix the blocker, then clear the attempt count so the loop retries, or
-- rewrite the Definition of Ready so it is achievable from a non-interactive session, or
-- close the issue if it should not be built.
-
-A DoR that cannot be met from the environment the worker actually runs in is a defective spec, not a founder decision. Rewriting it is engineering work." \
+**Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA of the full packet, then the work continues. A second cap runs on the other runner, a third re-scopes the Definition of Ready, and the fourth ends in one recorded decision: split, close, or blocked on an owned blocker, which re-enters only when that blocker or the code moves." \
         --agent sana >/dev/null 2>&1 || true
-      # `bash "$NOTIFY"`, the shape used at five other sites in this file. There is
-      # no page() helper here -- calling one would have been a silent no-op under
-      # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
-      # pages nobody, which is the exact defect this block fixes.
-      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
     # Only when the picker saw it started: this skip fires on every tick, and a
     # Backlog ticket needs no Linear read to stay where it is.
     [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "$N of $MAX_ATTEMPTS attempts spent; last reason: $STUCK_WHY"
+    continue
+  fi
+
+  # HELD ON A RECORDED DECISION (ASK-3824). cap-ladder.py sets ladder_hold when
+  # a capped ticket's RCA agent decides BLOCKED-ON an owned ticket or a fleet PR,
+  # and clears it the night an event lands (the blocker
+  # closes, a file it touched changes on main, its description changes, the
+  # model config changes). Re-running it before then retries the same failure on
+  # an unchanged ticket, which is the timed retry the founder ruled out. Checked
+  # before the dry pick, so the dispatcher moves to the next ticket.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" ladder_hold "" 2>/dev/null)" = "True" ]; then
+    say "skip $ISSUE: held by cap-ladder.py on a recorded BLOCKED-ON decision; it re-enters on an event, not a clock (ASK-3824)"
     continue
   fi
 
@@ -2560,6 +2606,10 @@ A DoR that cannot be met from the environment the worker actually runs in is a d
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE MODEL THE RUN WOULD GET (ASK-4013), on its own line for the same reason
+    # as the priority line below. The same read the real run makes, so a dry run
+    # shows the routing table's answer before any session is spent on it.
+    say "[dry] model $ISSUE $(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
     # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
@@ -2724,9 +2774,13 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # permanent Linear comment on every round.
       CR="$(conflict_rounds_for "$ISSUE")"
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+        # conflict_paged is what cap-ladder.py reads, so the claim stays; the page
+        # it used to gate went to nobody and is now one comment naming the ladder.
         if page_once "$ISSUE" conflict_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+          python3 "$SYNC" progress "$ISSUE" \
+            "PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s). **Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA, then the work continues on a new PR from the same branch." \
+            --agent sana >/dev/null 2>&1 || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR still $MERGE_STATE after $CR of $MAX_CONFLICT_ROUNDS rebase rounds"
         continue
@@ -3192,7 +3246,23 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"; then
+  # $3 is the model the routing table gives this issue's class (ASK-4013): before
+  # it, this run named no model and took whatever ANTHROPIC_MODEL its parent
+  # exported. Empty only when the read itself fails; then no --model, as before.
+  WORK_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
+  # The ladder's runner change (rung 2) picks the launch; the claude launch keeps
+  # its literal shape and its guard set, so test-worker-guard-settings.sh's
+  # census still sees it. Codex takes no --settings or --model; it runs in its own
+  # workspace-write sandbox, the shape the second-runner path already uses.
+  primary_run() {
+    if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
+      say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
+    else
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
+    fi
+  }
+  if primary_run; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -3241,7 +3311,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      say "$ISSUE: stuck after $MAX_ATTEMPTS attempts; cap-ladder.py takes this cap at its next nightly run (ASK-3824)"
       requeue_issue "$ISSUE" cap "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
     else
       requeue_issue "$ISSUE" fail "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
@@ -3354,7 +3424,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # RESET PER ISSUE, like $REFUSED above: this loop reuses every variable across
     # iterations, so a $CODEX_WHY that survived would attach the previous issue's
     # Codex refusal to the next issue's Linear comment.
-    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_OUTAGE_NEW=""
+    CODEX_WHY=""; CODEX_CONTINUED=""; CODEX_ENV=""; CODEX_ENV_FILED=""; CODEX_OUTAGE_NEW=""
     if [ "$REFUSE_KIND" = "capability" ]; then
       # A stale sentinel from a previous run would be read as this run's refusal,
       # which is the same defect the Sana sentinel already has a comment about.
@@ -3413,10 +3483,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         crc=$?
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
-      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""
+      SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
       # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
       # is refused too (a Claude limit) does the outage path below apply.
       if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
+        CODEX_DOWN_MARK="$(codex_env_marker "$CODEX_OUT" "$crc")"
         CODEX_STOOD_IN=1
         SECOND_RUNNER="Opus, standing in for Codex (unavailable)"
         say "$ISSUE Codex is unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the second runner falls back to Opus (DEGRADED: the same lab as Sana)"
@@ -3435,6 +3506,11 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # the every-line rule never matched a real Codex outage (PR #421 round 8).
       if CODEX_ENV="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
         [ -n "$CODEX_ENV" ] || CODEX_ENV="the second runner refused for a machine reason"
+        # WHAT IS FILED IS THE MARKER (ASK-3988, sp-762d494b): CODEX_ENV is the
+        # whole line Codex printed, for the log; the page and the ticket note
+        # carry CODEX_ENV_FILED, the closed vocabulary only.
+        CODEX_ENV_FILED="$(codex_env_marker "$CODEX_OUT" "$crc")"
+        [ -n "$CODEX_ENV_FILED" ] || CODEX_ENV_FILED="the second runner refused for a machine reason"
       else
         CODEX_ENV=""
         # Only CODEX answering ends a Codex outage. When Opus stood in, Codex
@@ -3487,6 +3563,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       if [ -n "$CODEX_STOOD_IN" ] && [ -z "$CODEX_ENV" ] \
          && ! { [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; }; then
         CODEX_ENV="Codex unavailable (${CODEX_DOWN_WHY:-a machine refusal}); the Opus stand-in did not finish it either${CODEX_WHY:+: $(printf '%s' "$CODEX_WHY" | head -c 200)}"
+        CODEX_ENV_FILED="Codex unavailable (${CODEX_DOWN_MARK:-a machine refusal}); the Opus stand-in did not finish it either"
         CODEX_WHY=""
       fi
       # CHECKED FIRST, before any of the outcomes below. A runner that could not
@@ -3539,7 +3616,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         # A day: nothing but a capability refusal ever reaches Codex, so nothing
         # else would release this claim (see env_alert_claim's max age).
         if env_alert_claim "$STATE_DIR/codex-outage" "$CODEX_OUTAGE_MAX_AGE"; then
-          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
+          bash "$NOTIFY" "kipi worker: the second runner (Codex) is unavailable ($CODEX_ENV_FILED). Issues Sana could not do are held, not parked and not charged, until it answers again." 2>/dev/null || true
         fi
       elif [ "$crc" -eq 0 ] && [ -z "$CODEX_WHY" ] && [ -n "$CODEX_CHANGED_FILES" ]; then
         CODEX_CONTINUED="$CODEX_HEAD_AFTER"
@@ -3598,7 +3675,7 @@ Sana stopped here:
 
 $SCOPE_WHY
 
-The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
+The Codex runner is handed the issue before parking, and it could not answer: \`$CODEX_ENV_FILED\`. That is a condition of the MACHINE, identical for every issue, so it says nothing about whether Codex is equipped for THIS one. Parking on it would pull the issue out of the picker permanently for a state that clears itself.
 
 **Next:** nothing per issue, and no founder decision. The next run tries both runners again; if Codex is genuinely not equipped either, it parks then with both refusals named."
     elif [ "$REFUSE_KIND" = "capability" ]; then
@@ -3803,13 +3880,26 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # (sp-53aad86f). This is what makes a dispatcher-driven review distinguishable
     # from a hand run in the verdict record. It is set on the call rather than
     # exported once, so it cannot leak into an unrelated reviewer invocation.
+    REVIEW_LOG_FROM=$(( $(wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
     KIPI_REVIEW_INVOKER=worker $REVIEWER_CMD "$PR_NUM" --issue "$ISSUE" --post --engine claude >>"$LOG" 2>&1
     REVIEW_RC=$?
     if [ "$REVIEW_RC" = "9" ]; then
       # The reviewer's RUNNER refused (PR #421 round 16, minor): the same account
       # Sana just used ran out between the two calls. env_halt makes converge exit
       # 9 with no charge and no "review produced no verdict" page.
-      say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      # NAME THE CAUSE (ASK-4039, PR #656 round 3, minor 2): exit 9 is the reviewer's code
+      # for any machine condition, and since ASK-3648 that includes the disk floor. The
+      # line says which one it was, from the REVIEWER'S OWN reason (its "ENV: disk-floor"
+      # line in this run's part of the log), not from a second measurement that could
+      # disagree with what the reviewer saw (PR #674 review round 1, minor 3).
+      # The match names THIS PR: workers share the log, and another worker's line can
+      # land inside the window (PR #674 review round 2, minor). Two workers never review
+      # one PR at once (the claim lock), so the PR number makes the line this run's.
+      if tail -n "+${REVIEW_LOG_FROM:-1}" "$LOG" 2>/dev/null | grep -qE "ENV: disk-floor:.*no review tree for PR #${PR_NUM}([^0-9]|\$)"; then
+        say "$ISSUE: the reviewer stopped because the disk is under the worktree floor -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until kipi-dispatch.sh finds space again"
+      else
+        say "$ISSUE: the reviewer's runner is unavailable -- a condition of the machine; PR #$PR_NUM stands, unreviewed, until it answers"
+      fi
       python3 "$LEDGER" "$ATTEMPTS" claim-flag "$ISSUE" env_halt >/dev/null 2>&1 || true
     elif [ "$REVIEW_RC" != "0" ]; then
       say "WARN: the claude reviewer failed on PR #$PR_NUM (the PR stands, unreviewed)"

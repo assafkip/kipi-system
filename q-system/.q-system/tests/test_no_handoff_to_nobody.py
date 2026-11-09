@@ -51,8 +51,9 @@ REPO = QDIR.parents[1]
 EXCEPTIONS = QDIR / "handoff-wording-exceptions.json"
 EXCEPTIONS_REL = "q-system/.q-system/handoff-wording-exceptions.json"
 
-# The count of exceptions when this test was written. Lower it as ASK-3824 lands.
-EXCEPTION_CEILING = 7
+# The count of exceptions left. ASK-3824 (PR #662) removed its 4 cap-site rows; the 3
+# left are the worker's not-armed branch. Lower it as ASK-3962 (pr-owner.py) lands.
+EXCEPTION_CEILING = 3
 
 ACTION_NOUNS = (r"resolve|resolution|intervention|fix|review|step|action|edit|clean-?up|"
                 r"decision|merge|triage|re-?run|override|recovery|repair|work|follow-?up")

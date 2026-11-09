@@ -150,7 +150,15 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 # against a specific bar, and a weaker model drops exactly the subtle findings
 # that earn this thing its keep. Env-overridable so a model bump is a config
 # change, not an edit to a script that gates every PR in the repo.
-CLAUDE_MODEL="${KIPI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
+#
+# THE PIN IS THE ROUTING TABLE NOW (ASK-4013, founder 2026-11-08: "make that a
+# rule in code"). It was an env var the dispatch plist set to Sonnet and the
+# hosted workflow copied, so the table could not have decided anything. Nothing
+# reads that var any more. This first read is the table's answer for a PR whose
+# files are not known yet (class unknown, Opus); the class pick after pr.diff
+# below replaces it. Empty only if python itself is broken: the opus alias then.
+CLAUDE_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review 2>/dev/null)"
+CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
@@ -416,30 +424,22 @@ for _f in $(review_md_glob "$ENGINE_DIR" "$REVIEW_SLUG" "$PR"); do
   [ -f "$_f" ] && review_is_usable "$_f" && PRIOR_ROUNDS=$((PRIOR_ROUNDS + 1))
 done
 if [ "$PRIOR_ROUNDS" -ge "$MAX_ROUNDS" ]; then
-  CAP_MSG="review cap reached ($MAX_ROUNDS); needs a human decision"
+  CAP_MSG="review cap reached ($MAX_ROUNDS); cap-ladder.py takes this PR at its next nightly run"
   echo "  REFUSING: PR #$PR already has $PRIOR_ROUNDS $ENGINE review round(s). $CAP_MSG. No model call made."
   if [ "$POST" = "1" ]; then
-    # One comment and one alert per PR, not one per refused call: the loop may
-    # keep calling, and repeating them is the same waste moved elsewhere. The
-    # alert is what keeps a capped PR from parking silently: nothing machine-side
-    # consumes a pending status, so the decision goes to the engineering queue.
+    # One comment per PR, not one per refused call: the loop may keep calling.
+    # THE MARKER IS THE HAND-OFF (ASK-3824). cap-ladder.py reads this marker on
+    # an open PR, writes a fresh RCA, closes the PR (branch kept) and opens a new
+    # one on the same branch, so the round count starts again under the ladder's
+    # own count. The ticket this used to file went into a 1054-deep alert lane
+    # asking a person to "decide merge, rework or close", and the pending status
+    # below takes the PR out of review-redrive, so nothing else read it.
+    # The marker goes down BEFORE the comment: when it waited on the comment, a
+    # failed comment re-fired the send on every later call (PR #501 review).
     CAP_MARK="$ENGINE_DIR/.round-cap-${REVIEW_SLUG//\//_}-pr-$PR"
-    # The marker goes down BEFORE the sends: when it waited on the comment, a
-    # failed comment re-fired the ticket on every later call (PR #501 review).
-    # The ticket send gets ONE retry, then a log line and nothing more (ASK-2428):
-    # the pending status below takes the PR out of review-redrive, so a single
-    # Linear blip left a capped PR with no signal anywhere (PR #501 round 5). A
-    # second failure is not a blip, and looping on it is the waste this cap stops.
     if [ ! -f "$CAP_MARK" ] && : > "$CAP_MARK"; then
       gh pr comment "$PR" $KIPI_GH_REPO_ARGS --body "$CAP_MSG" >/dev/null 2>&1 \
         || echo "  WARN: could not post the cap comment on PR #$PR" >&2
-      # The PR number again, as LETTERS: alert-to-linear's dedup strips every
-      # digit, so "PR #501" and "PR #502" were one ticket and the second capped
-      # PR only bumped a counter on the first (PR #501 review).
-      CAP_TICKET="reviewer: PR #$PR (ref pr-$(printf '%s' "$PR" | tr 0-9 a-j)) hit the review round cap ($MAX_ROUNDS, $ENGINE). No more model reviews; decide merge, rework or close."
-      bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
-        || bash "$NOTIFY" "$CAP_TICKET" >/dev/null 2>&1 \
-        || echo "  WARN: could not file the cap ticket for PR #$PR after one retry; giving up" >&2
     fi
     # Never downgrade an approval. A cap is not a finding, so a sha that is
     # already green stays green; pending goes only over a non-success state.
@@ -1061,6 +1061,13 @@ if ! gh pr view "$PR" $KIPI_GH_REPO_ARGS > "$PR_CONTEXT_DIR/pr.txt" 2>"$PR_CONTE
   command rm -rf -- "$PR_CONTEXT_DIR"   # the EXIT trap is not installed yet
   exit 9
 fi
+# THE REVIEWER'S MODEL, BY THE PR'S CLASS (ASK-4013). The WHOLE PR's file list,
+# not pr.diff: a delta round's diff holds only the new commits, and a test-only
+# delta on a dispatcher PR is still a dispatcher review. A failed list leaves the
+# class unknown, which the table routes to Opus.
+gh pr diff "$PR" $KIPI_GH_REPO_ARGS --name-only > "$PR_CONTEXT_DIR/pr.files" 2>>"$PR_CONTEXT_DIR/err" || : > "$PR_CONTEXT_DIR/pr.files"
+_ROUTED="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review --files-from "$PR_CONTEXT_DIR/pr.files" --repo "$REVIEW_SLUG" --tree "$REVIEW_REPO" 2>>"$PR_CONTEXT_DIR/err")"
+[ -n "$_ROUTED" ] && CLAUDE_MODEL="$_ROUTED"
 if [ "$ROUND" -gt 1 ]; then
   gh pr view "$PR" $KIPI_GH_REPO_ARGS --comments > "$PR_CONTEXT_DIR/comments.txt" 2>/dev/null || true
   # A PUBLIC PR CARRIES ONLY COUNTS (ASK-2893, the post block below), so the

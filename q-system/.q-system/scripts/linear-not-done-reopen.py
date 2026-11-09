@@ -58,6 +58,14 @@ with it, so a re-closed ticket was reopened every hour. Right after the state mo
 merge is written to ACTED_PATH (this job is its only writer), before the comment is
 tried. decide() honours that record and the comment marker, either one.
 
+A RECORD THAT CANNOT BE READ IS MOVED ASIDE, AND THAT RUN REOPENS NOTHING (ASK-4084,
+PR #661 round 3). Refusing every run wedged the job at exit 9 hourly; reading `[]` as
+{} brought the reopen loop back. So a non-object or unparseable record is moved to
+acted.corrupt-<ts>.json, the run that finds it makes no reopen at all (it cannot tell
+which merges it acted on), and the next run starts empty and leans on the comment
+markers, the remote half of the record. Only a record that cannot even be moved
+still exits 9.
+
 Exit codes:
   0  ok (report, or every planned reopen landed)
   2  usage
@@ -270,17 +278,51 @@ def candidates(sync, team_id: str, log: dict, now: datetime) -> list:
     return sorted(names)
 
 
+class ActedCorrupt(RuntimeError):
+    """The record was not a JSON object. Moved aside; the run must not reopen."""
+
+
 def read_acted(path: pathlib.Path) -> dict:
-    """{identifier: [merged PR URLs this job moved it back for]}. {} when absent."""
+    """{identifier: [merged PR URLs this job moved it back for]}. {} when absent.
+
+    Raises ActedCorrupt for a record that is not a JSON object (never read as {}:
+    that is "never acted", and the reopen loop comes back), RuntimeError when the
+    file cannot be read at all.
+    """
     try:
-        data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else {}
+        text = path.read_text()
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError) as exc:
-        # Unreadable is not "never acted": refuse to decide on a guess. The caller
-        # treats this as a failed read and writes nothing (exit 9).
+    except OSError as exc:
         raise RuntimeError(f"{path} is unreadable ({exc}); cannot tell which merges were acted on")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise ActedCorrupt(f"{path} is not a JSON object")
+    return data
+
+
+def load_acted_or_recover(path: pathlib.Path) -> tuple:
+    """(record, recovered). A corrupt record is moved aside; recovered=True tells the
+    caller this run reopens nothing. RuntimeError still escapes (cannot even read)."""
+    try:
+        return read_acted(path), False
+    except ActedCorrupt as exc:
+        aside = path.with_name(f"acted.corrupt-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json")
+        os.replace(path, aside)
+        print(f"linear-not-done-reopen: {exc}; moved to {aside}. This run reopens nothing; "
+              f"the next run starts empty and relies on the comment markers.", file=sys.stderr)
+        return {}, True
+
+
+def plan_for_run(issues: list, decisions: list, recovered: bool) -> tuple:
+    """(the reopens this run makes, identifiers held back). A recovering run holds all."""
+    plan, capped = split_plan(issues, decisions)
+    if recovered:
+        return [], [d["identifier"] for _, d in plan] + capped
+    return plan, capped
 
 
 def record_acted(path: pathlib.Path, ident: str, url: str) -> None:
@@ -453,12 +495,12 @@ def main(argv: list) -> int:
         return EXIT_INCOMPLETE
 
     try:
-        acted = read_acted(ACTED_PATH)
+        acted, recovered = load_acted_or_recover(ACTED_PATH)
     except RuntimeError as exc:
         print(f"linear-not-done-reopen: {exc}; nothing written. Exit 9.", file=sys.stderr)
         return EXIT_INCOMPLETE
     decisions = [decide(i, log, acted) for i in issues]
-    plan, capped = split_plan(issues, decisions)
+    plan, capped = plan_for_run(issues, decisions, recovered)
     done, failed = [], []
     retried, still_pending, dropped = [], [], []
     if args.apply:

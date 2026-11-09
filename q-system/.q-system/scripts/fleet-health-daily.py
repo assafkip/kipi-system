@@ -224,9 +224,25 @@ def launchd_finding(detector_id: str, label: str, detail: str = "") -> dict:
     raise ValueError(f"no launchd rendering for detector id {detector_id!r}")
 
 
+def _stopped_labels() -> set:
+    """The labels the report-only detectors leave alone: the watchdog's
+    load_stopped_labels, the ledgers PLUS every job launchd-intent.json declares
+    disabled, so "deliberately stopped" has one definition for every reporter
+    (ASK-4055). Not `_disabled_labels`: that one resolves a ledger and manifest
+    disagreement in the manifest's favour, right for the heal deciding what to
+    re-arm, and it dropped a ledger-paused job the manifest calls enabled, which
+    these detectors then filed as dark (PR #676 round 1, major)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("wd_stopped", HERE / "launchd-health-check.py")
+    wd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(wd)
+    return wd.load_stopped_labels()
+
+
 def detect_dark_jobs(_ctx) -> list:
-    """A plist on disk, not loaded, and NOT in the paused ledger = silent death."""
-    paused = _paused_labels()
+    """A plist on disk, not loaded, and NOT declared stopped = silent death."""
+    paused = _stopped_labels()
     out = []
     for label in _launchd_labels():
         if not label.startswith(job_prefixes()):
@@ -1587,7 +1603,7 @@ def never_installed_findings(template_dir=None, launch_agents=None,
     # this detector on the day it shipped). Without it a template deliberately not
     # wanted on a machine files a permanent issue that the next daily run reopens
     # forever, which trains the operator to ignore the whole channel.
-    paused = set(paused_labels or _paused_labels())
+    paused = set(paused_labels or _stopped_labels())
     out = []
     for template in template_paths:
         label = template.stem
@@ -1707,15 +1723,44 @@ def _install_job(label: str) -> tuple:
     return res.returncode, (res.stdout + res.stderr)[-400:]
 
 
-def _self_heal_after_exit(label: str) -> bool:
+SELF_HEAL_DIR = Path.home() / ".config" / "kipi" / "fleet-health-selfheal"
+# THE DEFERRED REINSTALL REPORTS, OR NOTHING DOES (ASK-4055, PR #667 round 2, major).
+# It ran with its output sent nowhere, so a failed reinstall of the job running this
+# check left that job booted out, with no next run to notice and a Linear issue
+# saying the reinstall would run. It now writes rc and the output tail to
+# SELF_HEAL_DIR/<label>.result, and a non-zero rc pages through slack-notify, which
+# files a ticket for Sana: the job that would read the result may be the one gone.
+_SELF_HEAL_SH = (
+    'while kill -0 "$1" 2>/dev/null; do sleep 5; done; '
+    'out="$(bash "$2" "$3" 2>&1)"; rc=$?; '
+    'printf "rc=%s at=%s\\n%s\\n" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    '"$(printf "%s" "$out" | tail -c 400)" > "$4.tmp" && mv -f "$4.tmp" "$4"; '
+    '[ "$rc" = 0 ] || bash "$5" "fleet health: the deferred reinstall of $3 exited $rc, '
+    'so that job may be booted out and will not run again until it is reinstalled. '
+    'Do: bash $2 $3. Result: $4" >/dev/null 2>&1')
+
+
+def _self_heal_after_exit(label: str, wait_pid: int = None) -> bool:
+    result = SELF_HEAL_DIR / f"{label}.result"
     try:
+        SELF_HEAL_DIR.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(
-            ["bash", "-c", 'while kill -0 "$1" 2>/dev/null; do sleep 5; done; bash "$2" "$3"',
-             "self-heal", str(os.getpid()), str(PLIST_INSTALLER), label],
+            ["bash", "-c", _SELF_HEAL_SH, "self-heal", str(wait_pid or os.getpid()),
+             str(PLIST_INSTALLER), label, str(result), str(NOTIFY)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         return False
     return True
+
+
+def _last_self_heal(label: str) -> str:
+    """The last deferred reinstall's result line for this label, or ""."""
+    try:
+        text = (SELF_HEAL_DIR / f"{label}.result").read_text(errors="replace")
+    except OSError:
+        return ""
+    head, _, tail = text.partition("\n")
+    return head if head.startswith("rc=0 ") else f"{head}: {tail.strip()[:300]}"
 
 
 def heal_plist_drift(findings: list, install=None, running=None, paused=None,
@@ -1747,9 +1792,12 @@ def heal_plist_drift(findings: list, install=None, running=None, paused=None,
             # THE JOB RUNNING THIS CHECK (PR #667 round 1, minor). It always reads as
             # running, so "the next run retries" would never come true. A detached
             # reinstall waits for this process to exit, then runs install-plist.sh.
+            last = _last_self_heal(label)
             if self_heal(label):
                 notes[label] = ("it is the job running this check; a detached reinstall "
-                                "runs once this run exits")
+                                "runs once this run exits, writes its result to "
+                                f"{SELF_HEAL_DIR / (label + '.result')}, and pages if it fails"
+                                + (f". The previous one: {last}" if last else ""))
             else:
                 notes[label] = "it is the job running this check, and the deferred reinstall could not start"
             continue

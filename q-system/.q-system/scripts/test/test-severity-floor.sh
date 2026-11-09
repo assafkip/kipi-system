@@ -44,6 +44,10 @@ ok()   { PASS=$((PASS + 1)); echo "  ok: $1"; }
 . "$LIB"
 
 WORK="$(mktemp -d)"
+# THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
+# lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
+printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
+export KIPI_LANE_TICKETS="$WORK/lane-tickets.json" KIPI_LANES_DIR="$WORK/lanes"
 trap 'rm -rf "$WORK"' EXIT
 
 # --- fixture: VERBATIM slice, real PR #11 round-2 review (2026-07-26) --------
@@ -619,16 +623,19 @@ ok "at the cap the worker refuses to dispatch another rebase round"
 # worker declines, so on its own it cannot tell "the cap held" from "the fixture
 # was broken and it skipped as unreviewed" -- the exact vacuous-test defect the
 # round-3 review found in the prior art (finding 2).
-grep -q "conflict round(s) -- a human resolves this one" "$W2/cap1.out" \
+grep -q "conflict round(s) -- cap-ladder.py takes this cap" "$W2/cap1.out" \
   || fail "the cap run skipped for the WRONG REASON. It must stop at the conflict cap,
       not at gate 20 (unreviewed). The worker said: $(grep -i skip "$W2/cap1.out" | head -1)"
 ok "it stopped at the conflict cap, not as unreviewed"
 
-PAGES="$({ grep -c . "$W2/pages.txt" 2>/dev/null || echo 0; } | head -1)"
-[ "$PAGES" = "1" ] \
-  || fail "expected EXACTLY 1 page across 2 runs at the cap, got $PAGES: $(cat "$W2/pages.txt")"
-grep -q "needs a human" "$W2/pages.txt" || fail "the page does not say a human is needed"
-ok "exactly one page across two runs at the cap (no per-cycle noise)"
+# THE CAP HANDS OFF, IT DOES NOT PAGE (ASK-3824). conflict_paged is what
+# cap-ladder.py reads, so it must be set; the page it used to gate went into the
+# alert lane and asked a person to act, so there must be none.
+[ ! -s "$W2/pages.txt" ] \
+  || fail "the conflict cap still paged; cap-ladder.py owns it now: $(cat "$W2/pages.txt")"
+[ "$("$REAL_PY" -c "import json;print(json.load(open('$S_CAP/linear-worker-attempts.json'))['ASK-AAA'].get('conflict_paged',False))")" = "True" ] \
+  || fail "conflict_paged is not set, so cap-ladder.py cannot see this cap"
+ok "at the cap: no page across two runs, and conflict_paged is set for cap-ladder.py"
 
 # --- G. approved + CLEAN must still be left alone ----------------------------
 # The other half: this fix must not turn every approved PR into a rework loop.
@@ -2304,6 +2311,12 @@ cat "$Q3/codex-body.txt"
 EOF
 printf '%s' "$CODEX_NOISY_APPROVE" > "$Q3/codex-body.txt"
 chmod +x "$Q3/bin/codex"
+# THE ROUND CAP IS LIFTED FOR THE RECOVERY RUNS (ASK-3824). Q3 already holds 3
+# usable rounds, so with the default cap of 3 this 4th call refused at the cap
+# BEFORE codex was asked, and the cap's own ticket was the "second page" this
+# case counted. It passed without ever reaching the recovery path. The cap no
+# longer pages (cap-ladder.py reads its marker), which is what exposed it.
+export KIPI_REVIEW_MAX_ROUNDS=99
 run_engine_reviewer "$Q3" --post --engine codex
 [ "$(pages_in "$Q3")" = "2" ] \
   || fail "codex recovered and the founder was never told independence was restored (pages:
@@ -2314,6 +2327,10 @@ run_engine_reviewer "$Q3" --post --engine codex
 [ "$(pages_in "$Q3")" = "2" ] \
   || fail "a healthy run re-paged recovery: $(cat "$Q3/pages.txt")"
 ok "recovery pages once on the way out of degraded mode, then goes quiet"
+grep -q "independent" "$Q3/pages.txt" && ! grep -q "round cap" "$Q3/pages.txt" \
+  || fail "the second page is not the recovery page: $(cat "$Q3/pages.txt")"
+ok "the second page is the recovery page itself, not a cap ticket"
+unset KIPI_REVIEW_MAX_ROUNDS
 
 # --- Q7. the ADVISORY engine cannot answer for the gate -----------------------
 # The INVARIANT is direction-free and is the reason this case exists: whichever
