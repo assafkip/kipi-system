@@ -390,3 +390,134 @@ def test_a_real_finding_still_carries_the_skip_marker(tmp_path):
     ctx = _ctx(r)
     assert "sentence_mean" in ctx, ctx
     assert SKIP_HINT in ctx, ctx
+
+
+# --------------------------------------------------------------------------- K8
+# Instance voice-check.json (prd-voicegate-skeleton-2026-11-09, spec K8). The
+# manifest maps a surface to a LANE and a lane to an engine_channel. The engine
+# only knows the channels CHANNEL_BY_PATH emits (it defaults unknown ones to x
+# rules and applies length rules only to x and threads), so a lane name must
+# never reach argv: finding-6.
+import shutil
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "voice-check"
+TABLE_CHANNELS = {"comment", "linkedin", "x", "threads", "substack", "medium", "email", "dm"}
+
+
+def _instance(tmp_path, fixture=None, raw=None):
+    """A temp instance: <root>/q-consult/{canonical,config}. Never a live tree."""
+    root = tmp_path / "inst"
+    (root / "q-consult" / "canonical").mkdir(parents=True)
+    (root / "q-consult" / "config").mkdir()
+    target = root / "q-consult" / "config" / "voice-check.json"
+    if fixture:
+        shutil.copy(FIXTURES / fixture, target)
+    if raw is not None:
+        target.write_text(raw)
+    return root
+
+
+def _run_k8(tmp_path, root, rel_path="drafts/x-launch.md", *, rc=0,
+            stdout="0 finding(s) on channel x against 5 exemplar(s)"):
+    draft = root / rel_path
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("a draft\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    log = _argv_stub(bin_dir, rc, stdout)
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir(exist_ok=True)
+    env = dict(os.environ)
+    env["PATH"] = _sealed_path(bin_dir)
+    env["VOICE_LOOP_CORPUS"] = str(corpus_dir)
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    # Isolation: the resolver reads a registry; point it at nothing, never the live one.
+    env["KIPI_EVIDENCE_REGISTRY"] = str(tmp_path / "no-registry.json")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(draft)}}
+    r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, timeout=60)
+    argv = log.read_text().split() if log.exists() else []
+    return r, argv
+
+
+def test_manifest_lane_picks_the_engine_channel_for_an_x_draft(tmp_path):
+    """RED FIRST: today this runs channel x; the manifest says threads."""
+    root = _instance(tmp_path, "voice-check.json")
+    r, argv = _run_k8(tmp_path, root)
+    assert argv[:3] == ["review", "--channel", "threads"], argv
+
+
+def test_x_and_threads_each_read_their_own_surface_row(tmp_path):
+    """split.json gives the two surfaces different lanes, so a hook that read only
+    one row (or hard-coded a result) cannot satisfy both asserts."""
+    root = _instance(tmp_path, "split.json")
+    _, argv_x = _run_k8(tmp_path, root, "drafts/x-launch.md")
+    assert argv_x[:3] == ["review", "--channel", "medium"], argv_x
+    _, argv_t = _run_k8(tmp_path, root, "drafts/threads-post-1.md")
+    assert argv_t[:3] == ["review", "--channel", "threads"], argv_t
+
+
+def test_the_engine_never_receives_a_lane_name(tmp_path):
+    root = _instance(tmp_path, "voice-check.json")
+    r, argv = _run_k8(tmp_path, root)
+    assert argv[2] in TABLE_CHANNELS and argv[2] != "short", argv
+
+
+def test_no_manifest_leaves_the_table_result_unchanged(tmp_path):
+    root = _instance(tmp_path)
+    r, argv = _run_k8(tmp_path, root)
+    assert argv[:3] == ["review", "--channel", "x"], argv
+    assert r.stderr.strip() == "" and (r.stdout or "").strip() == ""
+
+
+@pytest.mark.parametrize("fixture, reason", [
+    # .txt, not .json: verify.sh json-parse fails the build on any invalid .json, and these two are invalid on purpose.
+    ("malformed.txt", "unreadable"),
+    ("bad-channel.json", "short"),
+    ("unknown-lane.json", "nowhere"),
+    ("list-channel.json", "not a channel"),
+    ("top-level-list.json", "top level"),
+    ("deep.txt", "unreadable"),
+    ("lane-list.json", "no lane"),
+])
+def test_a_bad_manifest_reports_one_line_then_uses_the_table(tmp_path, fixture, reason):
+    root = _instance(tmp_path, fixture)
+    r, argv = _run_k8(tmp_path, root)
+    assert r.returncode == 0
+    assert argv[:3] == ["review", "--channel", "x"], argv
+    notes = [l for l in _ctx(r).splitlines() if "voice-check.json" in l]
+    assert len(notes) == 1, _ctx(r)
+    assert reason in notes[0], notes[0]
+
+
+def test_a_draft_with_no_table_channel_ignores_the_manifest(tmp_path):
+    root = _instance(tmp_path, "voice-check.json")
+    r, argv = _run_k8(tmp_path, root, "outreach/some-note.md")
+    assert argv[0] == "score", argv
+
+
+def test_ambiguous_instance_dirs_are_reported_then_the_table_runs(tmp_path):
+    root = _instance(tmp_path, "voice-check.json")
+    (root / "q-other" / "canonical").mkdir(parents=True)
+    r, argv = _run_k8(tmp_path, root)
+    assert argv[:3] == ["review", "--channel", "x"], argv
+    assert "q-other" in _ctx(r) and "q-consult" in _ctx(r), _ctx(r)
+
+
+@pytest.mark.skipif(shutil.which("voiceloop") is None, reason="voiceloop not installed")
+def test_real_engine_an_overlength_x_draft_still_reports_its_length_row(tmp_path):
+    """With the real package: the manifest must not turn x into a lane the engine
+    does not know. Temp corpus only; the live corpus is never read."""
+    root = _instance(tmp_path, "voice-check.json")
+    draft = root / "drafts" / "x-long.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("word " * 400)
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    env = dict(os.environ)
+    env["VOICE_LOOP_CORPUS"] = str(corpus)
+    env["CLAUDE_PROJECT_DIR"] = str(root)
+    env["KIPI_EVIDENCE_REGISTRY"] = str(tmp_path / "no-registry.json")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(draft)}}
+    r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert "past-the-fold" in _ctx(r), r.stdout + r.stderr

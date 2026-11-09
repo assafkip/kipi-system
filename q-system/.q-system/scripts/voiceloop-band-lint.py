@@ -45,6 +45,7 @@ EXIT CONTRACT: 0 on every path. DETECTED means surfaces, never blocks.
 A crash must not wedge draft writes fleet-wide, so unexpected errors also exit 0
 -- but they SAY SO on stderr rather than passing quietly.
 """
+import atexit
 import importlib.util
 import json
 import os
@@ -103,11 +104,114 @@ def _infer_channel(file_path):
     return None
 
 
-def _engine_command(file_path):
+# The channels the table emits are the only ones the engine understands: it defaults an
+# unknown channel to x rules and applies short-form length rules only to x and threads
+# (PRD finding-6). A manifest may therefore pick among THESE, never name a lane.
+TABLE_CHANNELS = frozenset(channel for _, channel in CHANNEL_BY_PATH)
+
+
+def _load_evidence_ledger():
+    """Import the single instance_q_dir resolver; a second copy would drift (K8)."""
+    target = Path(__file__).resolve().parent / "evidence_ledger.py"
+    spec = importlib.util.spec_from_file_location("_evidence_ledger_for_bands", target)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses in the module need to find it
+    spec.loader.exec_module(module)
+    return module
+
+
+def _instance_root_for(file_path):
+    """$CLAUDE_PROJECT_DIR, else the git toplevel of the draft. No other env var:
+    hooks and launchd jobs see different environments (PRD, shared discovery rule)."""
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return Path(env)
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(Path(file_path).resolve().parent), "rev-parse",
+             "--show-toplevel"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return Path(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+
+
+def _manifest_channel(file_path, table_channel, notes):
+    """The engine channel the instance manifest assigns, or None for 'use the table'.
+
+    Reads surfaces.<table_channel>.lane then lanes.<lane>.engine_channel and nothing
+    else. Every failure appends ONE line naming the file and the reason to `notes`
+    and returns None, so a bad manifest degrades to today's behaviour out loud.
+    """
+    root = _instance_root_for(file_path)
+    if root is None:
+        return None
+    try:
+        ledger = _load_evidence_ledger()
+        q_dir = ledger.instance_root(root, allow_unregistered=True)
+    except Exception as exc:
+        # Say why the resolver refused, but only where a manifest exists to be ignored:
+        # a non-instance draft has none, and that is the no-manifest case (review K8:
+        # the registry/filesystem disagreement was dropped silently, 6 of 25 instances).
+        if any(root.glob("q-*/config/voice-check.json")):
+            notes.append(f"voice-check.json NOT READ under {root}: {exc}; "
+                         "using the path table.")
+        # Anything else (not an instance, no canonical/) is the no-manifest case.
+        return None
+    manifest = q_dir / "config" / "voice-check.json"
+    # lexists, not is_file: a broken symlink, a loop or a directory is PRESENT but
+    # unusable and must be reported, not read as "no manifest" (adversarial review K8).
+    try:
+        present = os.path.lexists(manifest)
+    except OSError as exc:  # unsearchable config/ raises on Python <= 3.13
+        notes.append(f"{manifest} unreadable ({type(exc).__name__}); using the path table.")
+        return None
+    if not present:
+        return None
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    # Exception, not (OSError, ValueError): deeply nested JSON raises RecursionError and
+    # a symlink loop raises OSError subclasses; either would exit 1 from a hook that
+    # promises 0.
+    except Exception as exc:
+        notes.append(f"{manifest} unreadable ({type(exc).__name__}); using the path table.")
+        return None
+    surfaces = data.get("surfaces") if isinstance(data, dict) else None
+    lanes = data.get("lanes") if isinstance(data, dict) else None
+    if not isinstance(surfaces, dict) or not isinstance(lanes, dict):
+        notes.append(f"{manifest}: top level must be an object with object keys "
+                     "surfaces and lanes; using the path table.")
+        return None
+    if table_channel not in surfaces:
+        return None  # this surface is not mapped: the table stands, nothing to say
+    row = surfaces[table_channel]
+    lane = row.get("lane") if isinstance(row, dict) else None
+    if not isinstance(lane, str) or not isinstance(lanes.get(lane), dict):
+        notes.append(f"{manifest}: surface {table_channel!r} has no lane that resolves "
+                     f"in lanes ({_short(lane)}); using the path table.")
+        return None
+    channel = lanes[lane].get("engine_channel")
+    # isinstance first: a list or object is unhashable and `in frozenset` raises, which
+    # would exit 1 from a hook that promises exit 0 (review K8, reproduced live).
+    if not isinstance(channel, str) or channel not in TABLE_CHANNELS:
+        notes.append(f"{manifest}: lane {_short(lane)} engine_channel {_short(channel)} "
+                     f"is not a channel the engine takes ({', '.join(sorted(TABLE_CHANNELS))}); "
+                     "using the path table.")
+        return None
+    return channel
+
+
+def _short(value, limit=60):
+    """repr bounded, so a hostile manifest cannot put megabytes in additionalContext."""
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _engine_command(file_path, notes=None):
     """`review --channel c` for a known channel, else `score`, plus a label."""
     channel = _infer_channel(file_path)
     if channel is None:
         return ["voiceloop", "score", file_path], "score"
+    channel = _manifest_channel(file_path, channel, notes if notes is not None else []) or channel
     return (["voiceloop", "review", "--channel", channel, file_path],
             f"review, channel {channel}")
 
@@ -158,10 +262,22 @@ def _emit(message):
     it costs nothing.
     """
     print(message, file=sys.stderr)
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PostToolUse",
-        "additionalContext": message,
-    }}))
+    _MESSAGES.append(message)
+
+
+# ONE JSON object on stdout, however many things were said (K8, 2026-11-09). A manifest
+# note and an engine finding can both fire in one run; two JSON lines on stdout is not
+# one hook result, and a reader that json.loads the whole stream would fail on it.
+_MESSAGES = []
+
+
+@atexit.register
+def _flush_context():
+    if _MESSAGES:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": "\n".join(_MESSAGES),
+        }}))
 
 
 def main():
@@ -225,7 +341,10 @@ def main():
 
     env = dict(os.environ)
     env["VOICE_LOOP_CORPUS"] = str(corpus)
-    command, engine_label = _engine_command(file_path)
+    notes = []
+    command, engine_label = _engine_command(file_path, notes)
+    for note in notes:
+        _emit("voiceloop-band-lint: " + note)
     try:
         result = subprocess.run(
             command,

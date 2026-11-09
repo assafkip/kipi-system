@@ -1,0 +1,5 @@
+{
+  "surfaces": {"x": {"lane": "short"}, "threads": {"lane": "short"}},
+  "lanes": {"short": {"engine_channel": "threads"}},
+  "unrelated_instance_key": {"the skeleton reads only surfaces.*.lane and lanes.*.engine_channel": true}
+}
