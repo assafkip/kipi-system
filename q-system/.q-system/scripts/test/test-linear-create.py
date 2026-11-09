@@ -136,6 +136,10 @@ def main() -> int:
     ledger = tmp / "ledger.jsonl"
     plan = {
         "repo": "demo-repo",
+        # The creation gate (ASK-4205) refuses a plan with no registered producer.
+        # test_ticket_producers.py owns the refusal cases; this suite tests the
+        # create path past the gate, so it names the producer `plan` stamps.
+        "producer": "linear-sync-capability",
         "create_project": {"key": "demo-repo/__project__", "name": "demo-repo", "summary": "s"},
         "create_issues": [
             {"key": "demo-repo/alpha", "title": "Alpha", "description": "a\n<!-- kipi-key: demo-repo/alpha -->"},
