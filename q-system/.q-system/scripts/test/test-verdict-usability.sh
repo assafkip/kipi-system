@@ -26,6 +26,10 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+# The reviewer's dependency list is DERIVED from the agent, in one place
+# (ASK-3831 round 6: eight fixtures each kept their own copy and one new hard
+# dependency turned all eight red at once).
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
 SCRIPT_REL="q-system/.q-system/scripts/pr-review-agent.sh"
 LIB_REL="q-system/.q-system/scripts/pr-verdict-lib.sh"
 
@@ -70,15 +74,17 @@ chmod +x "$AGENT"
 REPO_FIXTURE="$WORK/repo"
 mkdir -p "$REPO_FIXTURE/q-system/.q-system/scripts"
 git -C "$REPO_FIXTURE" init -q 2>/dev/null || { echo "FATAL: could not git-init the fixture repo" >&2; exit 1; }
+# Every lib the agent sources, from the ONE derived list. The two hand copies
+# this replaced were each added by a dependency that broke this fixture first
+# (repo-slug-lib.sh ASK-738, reviewer-token-lib.sh); round 6 of ASK-3831 was
+# the third, across eight fixtures at once.
+stage_reviewer_libs "$REPO_ROOT/$SCRIPT_REL" "$REPO_FIXTURE/q-system/.q-system/scripts" "$REPO_ROOT/q-system/.q-system/scripts"
 cp "$AGENT" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 cp "$LIB" "$REPO_FIXTURE/q-system/.q-system/scripts/pr-verdict-lib.sh"
 # The reviewer sources this too (ASK-738); without it every case refuses before
 # writing a record and the usable key reads as a constant rather than a bug here.
 # From the SCRIPTS DIR, not from $(dirname "$LIB"): $LIB is already a copy in a
 # temp dir, so deriving the sibling from it looks right and resolves to nothing.
-cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/repo-slug-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/repo-slug-lib.sh"
-cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/env-failure-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/env-failure-lib.sh"
-cp "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/reviewer-token-lib.sh" "$REPO_FIXTURE/q-system/.q-system/scripts/reviewer-token-lib.sh"
 AGENT="$REPO_FIXTURE/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # --- stubs: the engine and gh are the seams, and both are stubbed ------------

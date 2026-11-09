@@ -26,6 +26,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 SRC_DIR="$ROOT/q-system/.q-system/scripts"
+# The reviewer's dependency list is DERIVED from the agent, in one place
+# (ASK-3831 round 6: eight fixtures each kept their own copy and one new hard
+# dependency turned all eight red at once).
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
 
 PASS=0
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -61,7 +65,8 @@ mkrepo() {  # mkrepo <dir> <name> <marker-file>
 mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 mkrepo "$WORK/skel"   homerepo   HOME_REPO_CODE
 mkrepo "$WORK/target" targetrepo TARGET_REPO_CODE
-cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
 # The new shared derivation, if it exists yet, must travel with the copy.
 [ -f "$SRC_DIR/repo-slug-lib.sh" ] && cp "$SRC_DIR/repo-slug-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"
 cp "$SRC_DIR/env-failure-lib.sh" "$WORK/skel/q-system/.q-system/scripts/"

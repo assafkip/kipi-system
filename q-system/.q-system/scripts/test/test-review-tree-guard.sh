@@ -33,6 +33,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_SCRIPTS="$SCRIPT_DIR/.."
+# The reviewer's dependency list is DERIVED from the agent, in one place
+# (ASK-3831 round 6: eight fixtures each kept their own copy and one new hard
+# dependency turned all eight red at once).
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
 ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 REF="${KIPI_TEST_REVIEWER_REF:-}"
 
@@ -52,6 +56,10 @@ mkdir -p "$S/test" "$W/bin" "$W/home"
 # The two scripts under test, from the working tree or from a ref. Both come from
 # the SAME source: the reviewer sources the lib, and mixing an old reviewer with a
 # new lib would test a combination that never shipped.
+# Stage the derived lib set FIRST, so the ref-pinned copies below still win
+# for the files the hatch pins. Without this, a dependency added to the agent
+# after this loop was written is simply absent (ASK-3831 round 6).
+stage_reviewer_libs "$SRC_SCRIPTS/pr-review-agent.sh" "$S" "$SRC_SCRIPTS"
 for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh; do
   if [ -n "$REF" ]; then
     # repo-slug-lib.sh did not exist before ASK-738, so a ref older than it has

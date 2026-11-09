@@ -13,6 +13,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+# The reviewer's dependency list is DERIVED from the agent, in one place
+# (ASK-3831 round 6: eight fixtures each kept their own copy and one new hard
+# dependency turned all eight red at once).
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
 AGENT="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
@@ -29,6 +33,10 @@ run_at() {
   dir="$repo/$rel"
   mkdir -p "$dir"
   cp "$AGENT" "$dir/pr-review-agent.sh"
+  # The agent refuses without the libs it sources, so the POSITIVE case
+  # (canonical depth must not refuse) needs them beside it. The depth guard
+  # itself runs before any sourcing, so the negative cases are unaffected.
+  stage_reviewer_libs "$AGENT" "$dir"
   chmod +x "$dir/pr-review-agent.sh"
   set +e
   bash "$dir/pr-review-agent.sh" > "$OUTFILE" 2>&1

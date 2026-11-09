@@ -35,6 +35,10 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 SRC_DIR="$ROOT/q-system/.q-system/scripts"
+# The reviewer's dependency list is DERIVED from the agent, in one place
+# (ASK-3831 round 6: eight fixtures each kept their own copy and one new hard
+# dependency turned all eight red at once).
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
 
 PASS=0; BAD=0
 fail() { echo "FAIL: $1" >&2; exit 1; }   # fixture broken: nothing below means anything
@@ -56,9 +60,8 @@ STUB="$WORK/bin"; mkdir -p "$STUB"
 mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 git init -q "$WORK/skel"
 echo "code" > "$WORK/skel/FILE.txt"
-cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slug-lib.sh" \
-   "$SRC_DIR/env-failure-lib.sh" "$SRC_DIR/reviewer-token-lib.sh" "$SRC_DIR/client-name-guard.py" \
-   "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/client-name-guard.py" "$WORK/skel/q-system/.q-system/scripts/"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" branch -M main
 git -C "$WORK/skel" remote add origin "https://github.com/assafkip/homerepo.git"
