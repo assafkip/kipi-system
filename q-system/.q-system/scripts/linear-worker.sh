@@ -1008,9 +1008,22 @@ PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3}
 # after every live ticket, and is worked when nothing else is ready: the queue
 # drains it instead of holding it. expired_park() still mirrors E2 own set, but
 # only to say which tickets sort last; it refuses nothing (PR #663 round 1).
-pool.sort(key=lambda i: (1 if expired_park(i) else 0,
-                         PRIORITY_RANK.get(i.get("priority"), 4),
-                         i.get("createdAt") or "9999", i["identifier"]))
+# A TICKET THAT BLOCKS CAPPED WORK GOES FIRST IN ITS BAND (ASK-3824). cap-ladder.py
+# writes how many held tickets name each ticket as their BLOCKED-ON target; working
+# that ticket is what releases them. Inside a priority band only, so it reorders
+# peers and never jumps a band, and an expired park still sorts after every live
+# ticket. An unreadable file means no blockers. One key, both rules (#663, #662).
+try:
+    CAP_BLOCKERS = json.load(open(os.path.join(state_dir, "cap-ladder-blockers.json")))
+except Exception:
+    CAP_BLOCKERS = {}
+
+def pick_order_key(i):
+    return (1 if expired_park(i) else 0, PRIORITY_RANK.get(i.get("priority"), 4),
+            -int(CAP_BLOCKERS.get(i["identifier"], 0) or 0),
+            i.get("createdAt") or "9999", i["identifier"])
+
+pool.sort(key=pick_order_key)
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -1710,6 +1723,16 @@ print(d.get(sys.argv[1],{}).get('count',0))" "$1"; }
 # exactly that for one commit (codex round 2), which is why it now reads its exit
 # code through a `||` list instead of bracketing the call in `set +e`/`set -e`.
 bump_attempt() { python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$1" "$2"; }
+# THE LADDER'S RUNNER CHANGE (ASK-3824, rung 2). cap-ladder.py claims this flag
+# when a ticket caps a second time, so its next attempt runs on a different
+# model, not the same one again: a pattern that deadlocks one model deadlocks it
+# on the very next attempt too. A flag the worker reads, never a sentence in a
+# prompt, because the founder's ruling is that rules live in code. The ladder is
+# the only writer; it clears the flag on the rungs that run the default runner.
+ladder_runner_for() {  # ladder_runner_for <issue> -> "codex" when the ladder asked for it, else ""
+  [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$1" ladder_runner_codex "" 2>/dev/null)" = "True" ] && printf 'codex'
+  return 0
+}
 
 # --- conflict-round ledger (ASK-212) ----------------------------------------
 # Its own counter in the same file, deliberately NOT `count` (failed attempts)
@@ -2512,29 +2535,38 @@ while IFS= read -r ISSUE; do
       # loop burned its whole budget and cannot say what a human should do.
       STUCK_WHY="the worker recorded no reason, which means it never diagnosed why this fails"
     fi
-    say "skip $ISSUE: $N/$MAX_ATTEMPTS attempts. TERMINAL. Last reason: $STUCK_WHY"
+    # The words "is STUCK after" stay: linear-alert-triage.py's worker-stuck shape
+    # reads them to close the old alert tickets this branch used to file. ASK-4014
+    # retires that shape once its file is free (PR #657).
+    say "skip $ISSUE: $ISSUE is STUCK after $N/$MAX_ATTEMPTS attempts. Last reason: $STUCK_WHY. cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+    # THE CAP HANDS OFF TO THE LADDER, IT DOES NOT PAGE (ASK-3824). This used to
+    # write "Human action needed" and page, and nothing read either: the issue
+    # was skipped here every tick, forever. cap-ladder.py reads the attempt count
+    # this branch tests, and moves the ticket on: a fresh RCA and a continue, then
+    # a different runner, then a re-scope, then one recorded decision. One comment so
+    # the ticket says who acts next; stuck_paged keeps it to one.
     if page_once "$ISSUE" stuck_paged; then
       python3 "$SYNC" progress "$ISSUE" \
-        "**Stuck after $N/$MAX_ATTEMPTS attempts. The autonomous loop has stopped picking this up.**
+        "**Capped after $N/$MAX_ATTEMPTS attempts.** Last recorded reason: $STUCK_WHY
 
-Last recorded reason: $STUCK_WHY
-
-**Human action needed:** review the reason above and do ONE of:
-- fix the blocker, then clear the attempt count so the loop retries, or
-- rewrite the Definition of Ready so it is achievable from a non-interactive session, or
-- close the issue if it should not be built.
-
-A DoR that cannot be met from the environment the worker actually runs in is a defective spec, not a founder decision. Rewriting it is engineering work." \
+**Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA of the full packet, then the work continues. A second cap runs on the other runner, a third re-scopes the Definition of Ready, and the fourth ends in one recorded decision: split, close, or blocked on an owned blocker, which re-enters only when that blocker or the code moves." \
         --agent sana >/dev/null 2>&1 || true
-      # `bash "$NOTIFY"`, the shape used at five other sites in this file. There is
-      # no page() helper here -- calling one would have been a silent no-op under
-      # `set -uo pipefail` (command-not-found, no -e), i.e. a terminal state that
-      # pages nobody, which is the exact defect this block fixes.
-      bash "$NOTIFY" "kipi worker: $ISSUE is STUCK after $N attempts and the loop has stopped picking it up. Reason: $STUCK_WHY. Do: read the comment on $ISSUE -- it names the three options." 2>/dev/null || true
     fi
     # Only when the picker saw it started: this skip fires on every tick, and a
     # Backlog ticket needs no Linear read to stay where it is.
     [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "$N of $MAX_ATTEMPTS attempts spent; last reason: $STUCK_WHY"
+    continue
+  fi
+
+  # HELD ON A RECORDED DECISION (ASK-3824). cap-ladder.py sets ladder_hold when
+  # a capped ticket's RCA agent decides BLOCKED-ON an owned ticket or a fleet PR,
+  # and clears it the night an event lands (the blocker
+  # closes, a file it touched changes on main, its description changes, the
+  # model config changes). Re-running it before then retries the same failure on
+  # an unchanged ticket, which is the timed retry the founder ruled out. Checked
+  # before the dry pick, so the dispatcher moves to the next ticket.
+  if [ "$(python3 "$LEDGER" "$ATTEMPTS" get "$ISSUE" ladder_hold "" 2>/dev/null)" = "True" ]; then
+    say "skip $ISSUE: held by cap-ladder.py on a recorded BLOCKED-ON decision; it re-enters on an event, not a clock (ASK-3824)"
     continue
   fi
 
@@ -2735,9 +2767,13 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
       # permanent Linear comment on every round.
       CR="$(conflict_rounds_for "$ISSUE")"
       if [ "$CR" -ge "$MAX_CONFLICT_ROUNDS" ]; then
-        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- a human resolves this one."
+        say "skip $ISSUE: PR #$EXISTING_PR is '$PR_VERDICT' but $MERGE_STATE after $CR/$MAX_CONFLICT_ROUNDS conflict round(s) -- cap-ladder.py takes this cap at its next nightly run (ASK-3824)."
+        # conflict_paged is what cap-ladder.py reads, so the claim stays; the page
+        # it used to gate went to nobody and is now one comment naming the ladder.
         if page_once "$ISSUE" conflict_paged; then
-          bash "$NOTIFY" "worker: $ISSUE PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s) - needs a human" 2>/dev/null || true
+          python3 "$SYNC" progress "$ISSUE" \
+            "PR #$EXISTING_PR is approved but still $MERGE_STATE after $MAX_CONFLICT_ROUNDS rebase round(s). **Next:** cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes this cap: a fresh RCA, then the work continues on a new PR from the same branch." \
+            --agent sana >/dev/null 2>&1 || true
         fi
         [ "$PICK_STATE" = "started" ] && requeue_issue "$ISSUE" cap "PR #$EXISTING_PR still $MERGE_STATE after $CR of $MAX_CONFLICT_ROUNDS rebase rounds"
         continue
@@ -3207,7 +3243,19 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # it, this run named no model and took whatever ANTHROPIC_MODEL its parent
   # exported. Empty only when the read itself fails; then no --model, as before.
   WORK_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
-  if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"; then
+  # The ladder's runner change (rung 2) picks the launch; the claude launch keeps
+  # its literal shape and its guard set, so test-worker-guard-settings.sh's
+  # census still sees it. Codex takes no --settings or --model; it runs in its own
+  # workspace-write sandbox, the shape the second-runner path already uses.
+  primary_run() {
+    if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
+      say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
+    else
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
+    fi
+  }
+  if primary_run; then
     AGENT_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
     # THE OBSERVED SHAPE EXITS 0 (ASK-873). On 2026-08-15 every `claude -p` on
     # the machine printed the weekly-limit line and exited SUCCESSFULLY, so the
@@ -3256,7 +3304,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       "Worker run FAILED (attempt $N2 of $MAX_ATTEMPTS, rc=$rc). Log: ~/.config/kipi/linear-worker.log" \
       --agent "$AGENT" >/dev/null 2>&1 || true
     if [ "$N2" -ge "$MAX_ATTEMPTS" ]; then
-      bash "$NOTIFY" "worker: $ISSUE stuck after $MAX_ATTEMPTS attempts - needs a human" 2>/dev/null || true
+      say "$ISSUE: stuck after $MAX_ATTEMPTS attempts; cap-ladder.py takes this cap at its next nightly run (ASK-3824)"
       requeue_issue "$ISSUE" cap "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
     else
       requeue_issue "$ISSUE" fail "claude run failed rc=$rc, attempt $N2 of $MAX_ATTEMPTS"
