@@ -810,6 +810,117 @@ else
 fi
 
 # ============================================================================
+# RUN E2 -- WHAT A CODEX OUTAGE FILES IS THE MARKER, NOT CODEX'S LINE (ASK-3988)
+# ============================================================================
+# sp-762d494b: after #644 every filing consumer sends the refusal marker only,
+# but the Codex branch still put its whole line on the page and the ticket note.
+# Codex prints a transcript, and the text after the marker on its ERROR line is
+# whatever the run printed there. A secret-shaped token after the marker must
+# reach the worker log only.
+cat > "$WORK/credits-codex.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'user\nfix the thing\n'
+printf 'ERROR: Your workspace is out of credits - TOKEN=XYZ123\n'
+exit 1
+SH
+# Its own Linear: the shared fixture answers every read with the board, so the
+# worker's note never got past linear-sync's issue lookup. This one answers the
+# lookup, accepts the comment and records every write.
+cat > "$WORK/fixture-server-e2.py" <<'PY'
+import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+POSTS = os.environ["FIXTURE_POSTS"]
+def issue(ident):
+    return {"id": ident, "identifier": ident, "title": "fixture " + ident,
+            "description": "## Definition of Ready\nOutcome: x",
+            "state": {"name": "backlog", "type": "backlog"},
+            "project": {"name": "kipi-system"},
+            "labels": {"nodes": [{"name": "owner:sana"}]}}
+BOARD = [issue("ASK-811"), issue("ASK-812"), issue("ASK-813")]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"])).decode()
+        q = json.loads(body)
+        text = q.get("query", "")
+        if text.lstrip().startswith("mutation"):
+            open(POSTS, "a").write(body + "\n")
+            data = {"commentCreate": {"success": True, "comment": {"id": "c1"}},
+                    "issueUpdate": {"success": True, "issue": {"id": "x"}}}
+        elif "teams(" in text:
+            data = {"teams": {"nodes": [{"id": "t"}]}}
+        elif "issue(id" in text:
+            want = (q.get("variables") or {}).get("id")
+            data = {"issue": next((i for i in BOARD if want in (i["id"], i["identifier"])), BOARD[0])}
+        else:
+            data = {"issues": {"nodes": BOARD, "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+        out = json.dumps({"data": data}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out))); self.end_headers()
+        self.wfile.write(out)
+srv = HTTPServer(("127.0.0.1", 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PY
+run_e2() {  # run_e2 <worker> <tag>
+  local skel state port pid
+  skel="$(make_skel "$WORK/run-e2-$2")"; state="$WORK/state-e2-$2"
+  : > "$WORK/notify-e2-$2.log"; : > "$WORK/linear-posts-e2-$2.log"; : > "$WORK/port-e2"
+  FIXTURE_POSTS="$WORK/linear-posts-e2-$2.log" python3 "$WORK/fixture-server-e2.py" > "$WORK/port-e2" 2>> "$WORK/server.err" &
+  pid=$!
+  for _ in $(seq 1 100); do port="$(cat "$WORK/port-e2" 2>/dev/null)"; [ -n "${port:-}" ] && break; sleep 0.1; done
+  PATH="$STUB_E:$PATH" \
+     KIPI_SKEL="$skel" KIPI_STATE_DIR="$state" \
+     KIPI_LINEAR_API_URL="http://127.0.0.1:$port/graphql" \
+     KIPI_LINEAR_API_KEY="fixture-key-not-a-secret" \
+     KIPI_PR_REVIEWER="bash $WORK/fake-reviewer.sh" \
+     KIPI_CODEX_RUNNER="bash $WORK/credits-codex.sh" KIPI_SECOND_RUNNER_FALLBACK="" \
+     KIPI_NOTIFY="$WORK/recording-notify.sh" \
+     TEST_NOTIFY_LOG="$WORK/notify-e2-$2.log" \
+     bash "$1" --apply --limit 1 > "$WORK/run-e2-$2.out" 2>&1
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  cat "$state/linear-worker.log" >> "$WORK/run-e2-$2.out" 2>/dev/null
+}
+run_e2 "$WORKER" real
+if grep -qi 'second runner is unavailable' "$WORK/run-e2-real.out"; then
+  ok "positive self-test: run E2 classified the credits outage as the machine's"
+else
+  bad "positive self-test: run E2 reached the Codex outage branch" "$(grep -i codex "$WORK/run-e2-real.out" | tr '\n' '|' | cut -c1-400)"
+fi
+if grep -qi 'out of credits' "$WORK/notify-e2-real.log" && ! grep -q 'XYZ123' "$WORK/notify-e2-real.log"; then
+  ok "the Codex outage page carries the marker and not the text after it"
+else
+  bad "the Codex outage page carries the marker only" "$(cat "$WORK/notify-e2-real.log" | cut -c1-300)"
+fi
+if [ -s "$WORK/linear-posts-e2-real.log" ] && ! grep -q 'XYZ123' "$WORK/linear-posts-e2-real.log"; then
+  ok "no Linear write carries the text after the marker"
+else
+  bad "no Linear write carries the text after the marker" "posts: $(grep -c . "$WORK/linear-posts-e2-real.log" 2>/dev/null) with XYZ123: $(grep -c XYZ123 "$WORK/linear-posts-e2-real.log" 2>/dev/null)"
+fi
+grep -q 'XYZ123' "$WORK/run-e2-real.out" \
+  && ok "the whole line still reaches the worker log" \
+  || bad "the whole line reaches the worker log" "no XYZ123 in the log"
+# The mutant needs the whole repo shape: an --apply run builds its guard set from
+# the repo root above its scripts dir (skeleton-guard-settings.py ROOT), and a bare
+# scripts copy refused to start any agent, which read as a killed mutant. So: the
+# committed tree, with this working tree's scripts laid over it.
+MUTROOT="$WORK/mut-e2"; mkdir -p "$MUTROOT"
+git -C "$REPO_SCRIPTS/../../.." archive HEAD | tar -x -C "$MUTROOT"
+cp -R "$REPO_SCRIPTS/." "$MUTROOT/q-system/.q-system/scripts/"
+cp "$REPO_SCRIPTS/../terminal-states.json" "$MUTROOT/q-system/.q-system/terminal-states.json"
+MUT_E2="$MUTROOT/q-system/.q-system/scripts"
+sed 's/CODEX_ENV_FILED="$(codex_env_marker "$CODEX_OUT" "$crc")"/CODEX_ENV_FILED="$(codex_env_reason "$CODEX_OUT" "$crc")"/' \
+  "$WORKER" > "$MUT_E2/linear-worker.sh"
+if cmp -s "$WORKER" "$MUT_E2/linear-worker.sh"; then
+  bad "mutant E2: anchor" "the filing site no longer calls codex_env_marker"
+else
+  run_e2 "$MUT_E2/linear-worker.sh" mut
+  grep -qi 'second runner is unavailable' "$WORK/run-e2-mut.out" && grep -q 'XYZ123' "$WORK/notify-e2-mut.log" \
+    && ok "mutant killed: filing codex_env_reason puts XYZ123 on the page, so E2 can go red" \
+    || bad "mutant E2 survived" "notify: $(cut -c1-200 "$WORK/notify-e2-mut.log") | out: $(grep -iE 'codex|second runner|INFRA' "$WORK/run-e2-mut.out" | head -c 500 | tr '\n' '|')"
+fi
+
+# ============================================================================
 # RUN F -- NEGATIVE FIXTURE for run E: an honest Codex refusal STILL parks
 # ============================================================================
 # Without this, "never park on a Codex refusal" would be a silent way to pass
