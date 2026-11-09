@@ -3586,11 +3586,17 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # SUCCESS never cleared one. A day stamp nothing clears is a day-long
       # "the reviewer is down to Opus" issue over a 03:00 transient, which is the
       # finding fleet-health-daily.py's reader half fixes. Both halves or neither.
-      if codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
-        reviewer_note_codex_outage "$REVIEWER_PRIMARY_ACCOUNT" "$ISSUE: $(codex_env_marker "$CODEX_OUT" "$crc")"
-      else
-        reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"
-      fi
+      # ONE DECISION, IN THE RESOLVER (PR #701 review round 3, major). This used
+      # to be a two-way branch here: a refusal was an outage and EVERYTHING ELSE
+      # was `ok`, including a non-zero exit. `last_ok` is what the health detector
+      # reads to decide an account is still a live second opinion, so a timeout
+      # stamped "this account answered" on an account that answered nothing --
+      # the mirror image of the agent's bug, which recorded an outage on the same
+      # input. Two call sites, two semantics, one input: that is the defect class
+      # this resolver exists to remove, so the question moved into it. The issue
+      # id no longer goes along either: the ledger carries a bucketed code, and
+      # `ASK-529` read as the PROVIDER being overloaded (round-3 minor).
+      reviewer_note_codex_result "$REVIEWER_PRIMARY_ACCOUNT" "$crc" "$CODEX_OUT"
       if [ -n "$CODEX_CMD_2" ] && codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
         say "$ISSUE Codex is unavailable on the $REVIEWER_PRIMARY_ACCOUNT account; trying the '$CODEX_ACCOUNT_2' account before any stand-in"
         : > "$RUN_OUT_FILE" 2>/dev/null || true
@@ -3600,10 +3606,14 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
           crc=$?
         fi
         CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
-        if codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
-          reviewer_note_codex_outage "$CODEX_ACCOUNT_2" "$ISSUE: $(codex_env_marker "$CODEX_OUT" "$crc")"
-        else
-          reviewer_note_codex_ok "$CODEX_ACCOUNT_2"
+        # Same one decision for this account's health...
+        reviewer_note_codex_result "$CODEX_ACCOUNT_2" "$crc" "$CODEX_OUT"
+        # ...and the RUNNER label is a separate question with a separate answer:
+        # it names who produced the work, so only a run that actually came back
+        # (rc 0) may claim this account reviewed the issue. The old `else` branch
+        # claimed it on a timeout too, because it keyed the label off "was this a
+        # refusal" rather than off "did it answer".
+        if [ "$crc" = "0" ]; then
           SECOND_RUNNER="Codex on the '$CODEX_ACCOUNT_2' account"
           say "$ISSUE the '$CODEX_ACCOUNT_2' Codex account answered -- NOT degraded, still a different lab from Sana"
         fi

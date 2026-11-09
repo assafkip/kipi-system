@@ -1195,8 +1195,25 @@ def codex_outage_findings(rows: list, health=None) -> list:
     answering = sorted(_safe_code(a) for a, v in health.items()
                        if v.get("outage_day") != day
                        and str(v.get("last_ok") or "").startswith(day))
+    def _live_reason(row: dict) -> str:
+        """The account's CURRENT code, falling back to the one in the event row.
+
+        THE ROW HOLDS THE DAY'S FIRST REASON, NOT ITS LATEST (PR #701 review
+        round 3, minor 3). The ledger appends at most one event per account per
+        UTC day -- a flapping day included, as its header has always claimed and
+        as of that round actually does -- so an account that hit its usage limit
+        at 03:00, recovered, and then ran out of credits at 14:00 has one row
+        reading `usage-limit`. `last_reason_code` in the health state is rewritten
+        on every failure, so it is the live answer; the row's `ts` stays the
+        honest first-seen. Reporting the row's reason would name a condition that
+        is no longer the one blocking the reviewer.
+        """
+        account = str(row.get("account") or "unknown")
+        live = _state(account).get("last_reason_code")
+        return _safe_code(live if live else row.get("reason_code"))
+
     reasons = "\n".join(
-        f"- `{_safe_code(r.get('reason_code'))}` on `{_safe_code(r.get('account'))}` "
+        f"- `{_live_reason(r)}` on `{_safe_code(r.get('account'))}` "
         f"(first seen {_safe_code(r.get('ts'))})"
         for r in sorted(down_rows, key=lambda r: str(r.get("account"))))
 

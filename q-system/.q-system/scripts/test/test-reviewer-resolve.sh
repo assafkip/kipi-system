@@ -198,7 +198,12 @@ with open(ev, "w") as fh:
         fh.write(json.dumps(r, sort_keys=True) + "\n")
 state = json.load(open(state_path))
 for acct in state:
-    state[acct]["outage_day"] = "2000-01-01"
+    # BOTH day keys, because they answer different questions and the append is
+    # keyed on `event_day`: ageing only `outage_day` would leave today's event
+    # already filed and prove nothing about a day boundary.
+    for key in ("outage_day", "event_day"):
+        if key in state[acct]:
+            state[acct][key] = "2000-01-01"
 json.dump(state, open(state_path, "w"), indent=2, sort_keys=True)
 PY
 reviewer_note_codex_outage primary "rc=1 the next morning"
@@ -207,11 +212,22 @@ eq "a new day earns a new event" \
 eq "today's events are readable on their own" \
   "$(reviewer_outage_events_today | wc -l | tr -d ' ')" "1"
 
-echo "== recovery clears the account, so the NEXT outage pages again =="
+echo "== recovery clears the account, and the day's event stays ONE =="
+# THIS CASE USED TO ASSERT THE OPPOSITE and it was wrong (PR #701 review round 3,
+# minor 3). It expected a second event row after a recovery, which contradicted
+# the contract stated in this file's header, in the resolver's header and in both
+# prose call sites: at most ONE event per account per UTC day. The row count is
+# not what tells an operator the account is down again -- `outage_day` is, and the
+# detector reads it. The case now pins both halves, so a future change cannot buy
+# a quiet ledger by losing the live posture.
 reviewer_note_codex_ok primary
 reviewer_note_codex_outage primary "rc=1 after a recovery"
-eq "an outage after a recovery earns its own event in the same day" \
-  "$(reviewer_outage_events_today | grep -c '"account": *"primary"')" "2"
+eq "an outage after a recovery does NOT append a second row" \
+  "$(reviewer_outage_events_today | grep -c '"account": *"primary"')" "1"
+eq "and the account reads as down again, which is what the detector reads" \
+  "$(python3 -c 'import json,sys
+print(json.load(open(sys.argv[1]))["primary"].get("outage_day","<none>"))' \
+     "$(reviewer_outage_state_path)")" "$(date -u +%Y-%m-%d)"
 
 echo "== Done: the scripts dir has exactly one codex exec INVOCATION =="
 # The DoR's grep catches prose too (every scar comment in this fleet names the
@@ -443,8 +459,13 @@ eq "the agent's declared role produces a real adversarial stamp" \
 # recorded no outage at all, and a success never cleared a stale day stamp, so
 # the reader fix above would have reported a 03:00 transient all day.
 WORKER="$SCRIPTS/linear-worker.sh"
-eq "the worker clears the primary account when codex answers" \
-  "$(grep -c 'reviewer_note_codex_ok "\$REVIEWER_PRIMARY_ACCOUNT"' "$WORKER")" "1"
+# Round 3 moved that decision into the resolver: the worker hands over its rc and
+# its output, and `reviewer_note_codex_result` is what clears the account on rc 0.
+# Grepping for the old `ok` call would now assert the wiring this round removed.
+eq "the worker notes the primary account's result either way, before the next rung" \
+  "$(grep -c 'reviewer_note_codex_result "\$REVIEWER_PRIMARY_ACCOUNT" "\$crc" "\$CODEX_OUT"' "$WORKER")" "1"
+eq "and it no longer decides for itself what a failed run means" \
+  "$({ grep -c '^[^#]*reviewer_note_codex_\(ok\|outage\)' "$WORKER" || true; } | head -1)" "0"
 run_writer codex 0 "$WORK/v3" codex primary "$(reviewer_stamp codex adversarial)"
 R3="$WORK/v3/pr-900.verdict.json"
 if [ -f "$R3" ]; then
@@ -624,6 +645,207 @@ has   "a second-account review names the account in the required check" "$(desc_
 hasnt "a primary-account review reads exactly as before"                "$(desc_for 0 primary)"      "codex["
 hasnt "and so does the Opus stand-in"                                   "$(desc_for 1 -)"            "codex["
 has   "the Opus stand-in still says DEGRADED out loud"                  "$(desc_for 1 -)"            "DEGRADED"
+
+echo "== only a MACHINE REFUSAL is an outage; a timeout is not =="
+# PR #701 review round 3, MAJOR. pr-review-agent.sh recorded an outage on ANY
+# non-zero codex exit, with no `codex_env_reason` guard -- where linear-worker.sh
+# had asked that question since ASK-3988. So one reviewer timeout stamped
+# `outage_day` on the primary account and the next morning's health run filed the
+# PERMANENT "the reviewer is down to Opus" issue over a single slow review.
+#
+# THE DECISION IS NOW ONE FUNCTION IN THE RESOLVER, not a condition repeated at
+# four call sites. That is the same reason the chain, the stamps and the codex
+# exec construction live here: a second place that decides "is this the machine
+# refusing" is a second place for the two readers to disagree, which is exactly
+# what this finding was.
+# shellcheck source=/dev/null
+. "$SCRIPTS/env-failure-lib.sh"
+ENV_REFUSAL='You have hit your usage limit'
+TIMEOUT_TAIL='timeout: the codex reviewer exceeded 1800s and was killed'
+# Guard the fixtures themselves: if env-failure-lib stops reading these the way
+# production does, every case below proves nothing about the real decision.
+is_environmental "$ENV_REFUSAL"  && ok "fixture check: the refusal line reads as the machine refusing" \
+                                 || bad "fixture check: '$ENV_REFUSAL' no longer reads as environmental"
+is_environmental "$TIMEOUT_TAIL" && bad "fixture check: a timeout tail must NOT read as environmental" \
+                                 || ok "fixture check: the timeout tail is not a machine refusal"
+
+RESULT_EV="$(reviewer_outage_events_path)"
+RESULT_ST="$(reviewer_outage_state_path)"
+_acct_key() {  # _acct_key <account> <key> -> the state value, or <none>
+  python3 - "$RESULT_ST" "$1" "$2" <<'PY'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1]))
+except Exception:
+    state = {}
+print((state.get(sys.argv[2]) or {}).get(sys.argv[3], "<none>"))
+PY
+}
+# `|| true`, not `|| echo 0`: grep -c already PRINTS 0 when it matches nothing and
+# then exits 1, so the fallback printed a second line and every count read "0\n0".
+_ev_count() { { grep -c "\"account\": *\"$1\"" "$RESULT_EV" 2>/dev/null || true; } | head -1; }
+
+reviewer_note_codex_result timeout-acct 124 "$TIMEOUT_TAIL"
+eq "a timeout writes NO outage event"          "$(_ev_count timeout-acct)" "0"
+eq "and stamps no outage day on the account"   "$(_acct_key timeout-acct outage_day)" "<none>"
+# ...and it does not claim the account ANSWERED either. `last_ok` is what the
+# detector reads to decide a second account is still a live second opinion, so
+# stamping it on a crash would flip the headline from "down to Opus" to "still
+# answering" for an account that answered nothing. That is the same false-claim
+# class as the finding, in the opposite direction, and linear-worker.sh:3592 made
+# exactly that call before this round: `codex_env_reason` false meant `ok`, even
+# on a non-zero exit.
+eq "nor does it claim the account answered"    "$(_acct_key timeout-acct last_ok)" "<none>"
+
+reviewer_note_codex_result refusal-acct 1 "$ENV_REFUSAL"
+eq "a real machine refusal DOES write one event" "$(_ev_count refusal-acct)" "1"
+eq "with the bucketed code, never the line"      \
+  "$(python3 -c 'import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print([r["reason_code"] for r in rows if r.get("account")==sys.argv[2]][0])' "$RESULT_EV" refusal-acct)" \
+  "usage-limit"
+eq "and the account is stamped down today"       \
+  "$(_acct_key refusal-acct outage_day)" "$(date -u +%Y-%m-%d)"
+
+reviewer_note_codex_result ok-acct 0 "a perfectly ordinary review"
+eq "rc=0 clears the account"                   "$(_acct_key ok-acct outage_day)" "<none>"
+has "and records that it answered"             "$(_acct_key ok-acct last_ok)" "$(date -u +%Y-%m-%d)"
+eq "a success writes no event"                 "$(_ev_count ok-acct)" "0"
+
+# CANNOT TELL ERRS TOWARD REPORTING, NEVER TOWARD SILENCE. env-failure-lib owns
+# the refusal vocabulary; a caller that forgot to source it must not turn every
+# outage into nothing. Without the classifier a non-zero exit is still an
+# outage, bucketed `unclassified`.
+( unset -f codex_env_reason codex_env_marker is_environmental 2>/dev/null || true
+  reviewer_note_codex_result no-lib-acct 1 "$ENV_REFUSAL" )
+eq "with no classifier available the outage is still recorded" "$(_ev_count no-lib-acct)" "1"
+eq "bucketed unclassified rather than dropped" \
+  "$(python3 -c 'import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print([r["reason_code"] for r in rows if r.get("account")==sys.argv[2]][0])' "$RESULT_EV" no-lib-acct)" \
+  "unclassified"
+
+echo "== every shell call site routes through that ONE decision =="
+# The engine above is executed; this is the wiring half. A guard the resolver
+# owns and a call site bypasses is the four-implementations defect returning.
+_call_count() { { grep -c "^[^#]*$2" "$SCRIPTS/$1" 2>/dev/null || true; } | head -1; }
+for f in pr-review-agent.sh linear-worker.sh; do
+  eq "$f calls no bare reviewer_note_codex_outage" \
+    "$(_call_count "$f" reviewer_note_codex_outage)" "0"
+  grep -q 'reviewer_note_codex_result' "$SCRIPTS/$f" \
+    && ok "$f routes its codex outcome through reviewer_note_codex_result" \
+    || bad "$f does not call reviewer_note_codex_result"
+done
+# NOT A COUNT OF THE `ok` CALLS. pr-review-agent.sh has four and all four are
+# legitimate: each sits inside an `if run_engine codex ...; then` branch, where
+# codex exited 0 and only the CONTENT may be in question. A count pins a number
+# the next correct call site changes, which is the mistake round 2 made here.
+# The property that can actually fail: on a FAILED codex exit, the first health
+# note the script reaches is the resolver's one decision, never a bare ok or a
+# bare outage. Both failure branches are anchored on the `rc=$?` that opens them.
+_first_note_after() {  # _first_note_after <anchor-regex>
+  awk -v a="$1" '
+    $0 ~ a { on = 1 }
+    on && /reviewer_note_codex_[a-z]+/ {
+      match($0, /reviewer_note_codex_[a-z]+/)
+      print substr($0, RSTART, RLENGTH); exit
+    }' "$SCRIPTS/pr-review-agent.sh"
+}
+eq "after a failed codex exit on the primary, the one decision runs" \
+  "$(_first_note_after '^  rc=\$\?$')" "reviewer_note_codex_result"
+eq "and the same after a failed exit on the second account" \
+  "$(_first_note_after '^      src=\$\?$')" "reviewer_note_codex_result"
+# NEGATIVE SELF-TEST on both anchors: an awk range that matches nothing prints
+# nothing, and `eq` against an empty string would have failed loudly -- but an
+# anchor that matched the WRONG line could still print the right token by luck.
+# So assert each anchor exists exactly once.
+for anchor in '^  rc=\$\?$' '^      src=\$\?$'; do
+  eq "anchor check: $anchor appears once in the agent" \
+    "$({ grep -c "$anchor" "$SCRIPTS/pr-review-agent.sh" || true; } | head -1)" "1"
+done
+
+echo "== the detector, end to end, over a ledger a timeout wrote =="
+# The producer/consumer pair again, on the finding's own scenario: the shipped
+# resolver writes, the shipped detector reads, in a ledger of their own.
+TO_DIR="$WORK/timeout-pair"
+mkdir -p "$TO_DIR"
+TO_OUT="$(
+  KIPI_STATE_DIR="$TO_DIR" bash -c '
+    . "'"$SCRIPTS"'/env-failure-lib.sh"
+    . "'"$SCRIPTS"'/reviewer-resolve.sh"
+    reviewer_note_codex_result primary 124 "timeout: the codex reviewer exceeded 1800s and was killed"
+    KIPI_NOTIFY=/usr/bin/true python3 - "'"$SCRIPTS"'/fleet-health-daily.py" <<PY
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fh", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("after-timeout", len(m.detect_codex_outage(None)))
+PY
+    reviewer_note_codex_result primary 1 "You have hit your usage limit"
+    KIPI_NOTIFY=/usr/bin/true python3 - "'"$SCRIPTS"'/fleet-health-daily.py" <<PY
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fh", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("after-refusal", len(m.detect_codex_outage(None)))
+PY
+' 2>/dev/null)"
+has "one reviewer timeout files NO health finding" "$TO_OUT" "after-timeout 0"
+has "a real refusal files exactly one"             "$TO_OUT" "after-refusal 1"
+
+echo "== a number in the reason is not a 529 =="
+# PR #701 review round 3, minor. The bucket matched a bare `529` anywhere in the
+# text, and both live callers put an identifier in that text: the worker passes
+# "$ISSUE: <marker>" and the agent passed "exit $rc on PR #$PR". So ASK-529 and
+# PR #529 reported the provider as OVERLOADED -- a transient server-side
+# condition an operator waits out -- when the run had actually crashed.
+# The real marker is `API Error: 529 Overloaded`, which `*overloaded*` already
+# catches, so the bare-number arm bought nothing and cost a wrong bucket.
+eq "an issue id that happens to contain 529"  "$(reviewer_outage_code 'ASK-529: exit 1')"       "exec-failure"
+eq "a PR number that happens to contain 529"  "$(reviewer_outage_code 'exit 2 on PR #529')"     "exec-failure"
+eq "the real overload marker still buckets"   "$(reviewer_outage_code 'API Error: 529 Overloaded.')" "overloaded"
+eq "including with its full real tail"        \
+  "$(reviewer_outage_code 'API Error: 529 Overloaded. This is a server-side issue, usually temporary')" \
+  "overloaded"
+eq "and a bare 529 with no overload word is not a provider outage" \
+  "$(reviewer_outage_code 'ASK-529')" "unclassified"
+
+echo "== ONE event per account per UTC day, flap included =="
+# PR #701 review round 3, minor. The header, both prose call sites and the
+# writer's own docstring all promise at most ONE event per account per UTC day.
+# They were wrong on a flapping day: `reviewer_note_codex_ok` popped `outage_day`,
+# which was ALSO the append key, so fail/recover/fail appended a second row and
+# the health body carried the same account twice with two different "first seen"
+# times. The two questions are different and now have different keys:
+#   outage_day  is this account down RIGHT NOW (popped by a recovery)
+#   event_day   has today's one event already been filed (never popped)
+FLAP="$WORK/flap"
+mkdir -p "$FLAP"
+FLAP_OUT="$(
+  KIPI_STATE_DIR="$FLAP" bash -c '
+    . "'"$SCRIPTS"'/env-failure-lib.sh"
+    . "'"$SCRIPTS"'/reviewer-resolve.sh"
+    reviewer_note_codex_outage primary usage-limit
+    reviewer_note_codex_ok primary
+    reviewer_note_codex_outage primary out-of-credits
+    echo "events $(wc -l < "$(reviewer_outage_events_path)" | tr -d " ")"
+    KIPI_NOTIFY=/usr/bin/true python3 - "'"$SCRIPTS"'/fleet-health-daily.py" <<PY
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fh", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+f = m.detect_codex_outage(None)
+print("findings", len(f))
+print(f[0]["body"] if f else "<none>")
+PY
+' 2>/dev/null)"
+has "a fail/recover/fail day appends ONE row, as the header promises" "$FLAP_OUT" "events 1"
+# AND THE QUIET IS NOT BOUGHT WITH SILENCE. The account is down again, so the
+# detector must still report it -- suppressing the ROW must not suppress the
+# FINDING. This is the half that makes the change safe.
+has "the account that is down again is STILL reported"               "$FLAP_OUT" "findings 1"
+# The row is the FIRST failure of the day; the live reason is the state's. Taking
+# the reason from the stale row would have reported `usage-limit` while the
+# account was actually out of credits.
+has "and the body carries the CURRENT reason, not the first one"     "$FLAP_OUT" "out-of-credits"
+hasnt "the superseded reason is not listed as if it were live"       "$FLAP_OUT" '`usage-limit`'
 
 echo
 echo "pass=$PASS fail=$FAIL"

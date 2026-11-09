@@ -27,8 +27,13 @@
 #      --ignore-user-config flag or the account can be forgotten.
 #   3. THE STAMPS. codex-review / codex-adversarial / claude-review /
 #      claude-adversarial, so "which engine actually ran" is one vocabulary.
-#   4. THE OUTAGE LEDGER. At most ONE event per account per UTC day, which is
+#   4. THE OUTAGE LEDGER. At most ONE event per account per UTC day -- a flapping
+#      day included, keyed on `event_day`, which no recovery clears -- which is
 #      what turns 24 per-PR tickets into one health line.
+#   5. WHAT A FINISHED CODEX RUN MEANS. `reviewer_note_codex_result`: rc 0 is an
+#      answer, a MACHINE refusal is an outage, and any other non-zero exit is
+#      neither. Four call sites asking that question four ways is how one
+#      reviewer timeout came to file a day-long outage issue.
 #
 # WHAT IT DELIBERATELY DOES NOT OWN. It does not decide whether an answer is a
 # usable review -- `review_is_usable` in pr-verdict-lib.sh is the single reader
@@ -240,7 +245,14 @@ reviewer_outage_code() {
     *"usage limit"*|*"hit your weekly limit"*|*"hit your usage limit"*|\
     *"hit your session limit"*|*"hour limit"*)        printf 'usage-limit' ;;
     *"invalid api key"*|*authentication_error*|*"please run /login"*) printf 'auth' ;;
-    *overloaded*|*529*)                              printf 'overloaded' ;;
+    # `overloaded`, and NOT a bare `529` (PR #701 review round 3, minor). The
+    # real marker is `API Error: 529 Overloaded`, which this arm already catches
+    # by its word -- so matching the number alone bought nothing and cost a wrong
+    # bucket on every caller that puts an identifier in the text: the worker
+    # passes `$ISSUE: <marker>`, so ASK-529 reported the provider as OVERLOADED
+    # (a transient server-side condition an operator waits out) when the run had
+    # in fact crashed, and PR #529 did the same through the agent.
+    *overloaded*)                                    printf 'overloaded' ;;
     # BOTH SPELLINGS OF "the process died". This fleet writes the exit status
     # two ways and the bucket missed one until a test caught it: pr-review-agent.sh
     # passes `exit $rc on PR #N`, while the worker's and the suite's wording is
@@ -328,20 +340,30 @@ except Exception:
 
 row = state.get(account) if isinstance(state.get(account), dict) else {}
 append = False
+# TWO DAY KEYS, BECAUSE THEY ANSWER TWO QUESTIONS (PR #701 review round 3, minor).
+#   outage_day   is this account down RIGHT NOW. A recovery pops it, which is what
+#                lets the health consumer tell a recovered transient from a live
+#                outage.
+#   event_day    has today's ONE event already been filed. A recovery NEVER pops
+#                it, because the log is append-only and the row stays on disk.
+# One key did both jobs, so a fail/recover/fail day appended a second row: the
+# file's own header, the writer's docstring and both prose call sites all promise
+# at most one event per account per UTC day, and on a flapping day all four were
+# wrong. The health body then carried the same account twice with two different
+# "first seen" times. Suppressing the ROW does not suppress the FINDING: the
+# detector reads `outage_day`, which a later failure re-stamps.
 if mode == "ok":
-    # The day stamp comes OFF, so the next outage earns its own event and the
-    # health consumer can tell a recovered transient from a live outage. The
-    # event already on disk is never rewritten: the log is append-only, and
-    # `last_ok` is what says the account answered after it.
     row.pop("outage_day", None)
     row["last_ok"] = ts
     row["fails"] = 0
 else:
-    append = row.get("outage_day") != day
+    append = row.get("event_day") != day
     # `last_reason_code`, not `last_reason`: the key name says what the value is
     # allowed to be, so a later reader cannot mistake it for the line Codex
-    # printed and publish it (ASK-204).
-    row.update({"outage_day": day, "last_fail": ts, "last_reason_code": reason})
+    # printed and publish it (ASK-204). It is also the LIVE reason where the
+    # event row holds the day's first one, which is why the detector reads it.
+    row.update({"outage_day": day, "event_day": day,
+                "last_fail": ts, "last_reason_code": reason})
     row["fails"] = int(row.get("fails") or 0) + 1
 state[account] = row
 
@@ -370,8 +392,15 @@ PY
 
 # reviewer_note_codex_outage <account> <code-or-marker>
 #
-# Records that this account could not produce a review. Appends ONE event per
-# account per UTC day; later calls the same day update nothing and print nothing.
+# Records that this account REFUSED to review -- not merely that a run failed;
+# `reviewer_note_codex_result` above is what makes that distinction, and is what
+# a call site with an rc and an output in hand should call instead.
+#
+# Appends ONE event per account per UTC day, a flapping day included (the append
+# is keyed on `event_day`, which a recovery does not clear). Later calls the same
+# day still refresh the account's live state -- `outage_day`, `last_fail` and
+# `last_reason_code` -- so the detector reports the CURRENT reason against the
+# day's first-seen timestamp. They print nothing and append nothing.
 #
 # THE SECOND ARGUMENT IS NOT FREE TEXT and a caller cannot make it so: whatever
 # arrives is coerced to one of REVIEWER_OUTAGE_CODES before it is written,
@@ -394,6 +423,57 @@ reviewer_note_codex_outage() {
 # Every call site that gets a usable answer out of codex calls this.
 reviewer_note_codex_ok() {
   _reviewer_write_health ok "${1:-unknown}" ""
+}
+
+# reviewer_note_codex_result <account> <rc> <codex-output>
+#
+# THE ONE DECISION: what a finished codex run means for that account's health.
+#
+#   rc = 0                      the account answered            -> ok
+#   the MACHINE refused         credits, usage, auth, overload  -> outage
+#   any other non-zero exit     a timeout, a crash, a bad flag  -> NOTHING
+#
+# WHY THE THIRD ROW EXISTS (PR #701 review round 3, MAJOR). pr-review-agent.sh
+# recorded an outage on ANY non-zero codex exit. `outage_day` then stood for the
+# rest of the UTC day, so the next morning's fleet-health run filed the PERMANENT
+# "the reviewer is down to Opus" issue over one slow review. An outage is a
+# per-ACCOUNT condition that persists until someone restores credits; a timeout is
+# a property of one run. linear-worker.sh had been asking `codex_env_reason` since
+# ASK-3988 and the agent never did, which is the four-implementations defect this
+# whole file exists to end -- so the question is answered HERE, once, and every
+# call site hands over its rc and its output instead of its own condition.
+#
+# AND IT DOES NOT CLAIM THE ACCOUNT ANSWERED EITHER. The worker's version called
+# `reviewer_note_codex_ok` on anything that was not a refusal, including a crash.
+# `last_ok` is what the detector reads to decide an account is still a live second
+# opinion, so stamping it on a timeout flips the headline from "down to Opus" to
+# "still answering" for an account that answered nothing. A crash is evidence of
+# neither a refusal nor an answer, and the honest record is no record.
+#
+# NOTHING GOES QUIET. A run with no codex review still says so on its own
+# surface: `note_degraded_transition` in the agent, the stand-in line in the
+# worker. Those are per-CONDITION edges, not per-PR rows. The ledger loses a row
+# it should never have had; no operator loses a signal.
+#
+# CANNOT TELL ERRS TOWARD REPORTING. env-failure-lib.sh owns the refusal
+# vocabulary and every production call site sources it. If it is absent the
+# resolver cannot classify, so a non-zero exit is still recorded, bucketed
+# `unclassified` -- a caller that forgot one source line must not be able to turn
+# every outage in the fleet into silence.
+reviewer_note_codex_result() {
+  local account="${1:-unknown}" rc="${2:-0}" out="${3:-}"
+  if [ "$rc" = "0" ]; then
+    reviewer_note_codex_ok "$account"
+    return 0
+  fi
+  if ! command -v codex_env_reason >/dev/null 2>&1; then
+    reviewer_note_codex_outage "$account" unclassified
+    return 0
+  fi
+  if codex_env_reason "$out" "$rc" >/dev/null 2>&1; then
+    reviewer_note_codex_outage "$account" "$(codex_env_marker "$out" "$rc")"
+  fi
+  return 0
 }
 
 # reviewer_outage_events_today -> today's RAW event rows, one JSON object per line.

@@ -1794,7 +1794,17 @@ else
   # ONE HEALTH EVENT PER ACCOUNT PER DAY, not one record per PR (ASK-3831). The
   # per-PR version of this ran for seven weeks and produced 24 cap tickets while
   # no single line anywhere said the fleet was down to one reviewer.
-  reviewer_note_codex_outage "$REVIEWER_PRIMARY_ACCOUNT" "exit $rc on PR #$PR"
+  #
+  # AND ONLY WHEN THE MACHINE ACTUALLY REFUSED (PR #701 review round 3, major).
+  # This line used to record an outage on ANY non-zero exit, so one reviewer
+  # timeout stamped the account down for the rest of the UTC day and the morning
+  # health run filed the PERMANENT "the reviewer is down to Opus" issue over a
+  # single slow review. The resolver answers that question now, for every call
+  # site at once; this one hands over the rc and the output and nothing else. The
+  # round still says so out loud through note_degraded_transition below either
+  # way, which is the per-condition surface rather than a per-PR ledger row.
+  reviewer_note_codex_result "$REVIEWER_PRIMARY_ACCOUNT" "$rc" \
+    "$(cat "$REVIEW.codex-failed" 2>/dev/null)"
   echo "$(TS) codex failed or timed out on the $REVIEWER_PRIMARY_ACCOUNT account (rc=$rc). Partial output: $REVIEW.codex-failed" >&2
 
   # THE SECOND CODEX ACCOUNT, BEFORE OPUS. This rung is the whole point of the
@@ -1827,7 +1837,10 @@ else
     else
       src=$?
       mv -f "$REVIEW" "$REVIEW.codex-$CODEX_SECOND-failed" 2>/dev/null || true
-      reviewer_note_codex_outage "$CODEX_SECOND" "exit $src on PR #$PR"
+      # Same decision, same owner: a refusal on this account is its outage, a
+      # timeout on it is not (PR #701 review round 3, major).
+      reviewer_note_codex_result "$CODEX_SECOND" "$src" \
+        "$(cat "$REVIEW.codex-$CODEX_SECOND-failed" 2>/dev/null)"
       echo "$(TS) codex also failed on the '$CODEX_SECOND' account (rc=$src)." >&2
     fi
   fi
