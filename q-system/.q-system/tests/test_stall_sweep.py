@@ -211,6 +211,17 @@ def test_a_refusal_not_seen_for_24h_is_forgotten_not_carried():
 
 
 @needs_sweep
+def test_a_naive_stamp_in_the_state_file_does_not_kill_the_run():
+    """PR #689 review r3, nit. One timezone-naive stamp raised TypeError in an
+    unguarded call and the hourly run wrote nothing. A naive stamp reads as UTC."""
+    naive = (NOW - timedelta(hours=30)).replace(tzinfo=None).isoformat()
+    seen = (NOW - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+    prev = {"ktlyst": {"since": naive, "last_seen": seen, "why": "preflight refuses: remote"}}
+    _, hours = sweep.track_refusals(prev, {"ktlyst": "preflight refuses: remote"}, NOW)
+    assert hours["ktlyst"] == 30
+
+
+@needs_sweep
 def test_the_refusal_state_reads_back_and_a_corrupt_file_is_empty(tmp_path):
     p = tmp_path / "stall-sweep" / "refusals.json"
     assert sweep.load_json(p) == {}
@@ -382,8 +393,9 @@ def test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap(tmp_path,
     assert sweep.started_classes(sync, [t], ledger("pr-read-fails", row))["ASK-9001"][0] == "unread"
     assert sweep.started_classes(sync, [t], ledger("torn-ledger", "{x"))["ASK-9001"][0] == "unread"
     assert sweep.started_classes(sync, [t], ledger("not-an-object", "[]"))["ASK-9001"][0] == "unread"
-    # PR #689 review r2, minor 2: no ledger file is a fact, the fleet never ran it.
-    assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "history"
+    # PR #689 review r3, minor 1: no ledger file proves nothing (worker_history fails
+    # closed). Read as history it filed a gap whose text says the ledger has no row.
+    assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "unread"
     other = json.dumps({"ASK-1": {"count": 1}})
     assert sweep.started_classes(sync, [t], ledger("no-row", other))["ASK-9001"][0] == "history"
 
@@ -589,6 +601,20 @@ def test_a_changed_set_rewrites_the_one_comment():
     assert run_apply(fake, two)["other-owner"][2] == "comment written"
     assert fake.writes == ["create", "update"]
     assert len(fake.comments["ASK-101"]) == 1
+
+
+@needs_sweep
+def test_a_changed_cause_rewrites_the_comment():
+    """PR #689 review r3, minor 2. The digest covered refs only, so an item whose
+    blocker changed kept its first cause in the comment forever."""
+    fake = FakeSync()
+    first = ticket(desc=ALERT, labels=("owner:sana", "needs-scope"))
+    run_apply(fake, sweep.plan([first], [], ctx(), NOW))
+    moved = ticket(desc=ALERT, labels=("owner:cole",))
+    out = run_apply(fake, sweep.plan([moved], [], ctx(), NOW))
+    assert out["alert-lane-refused"][2] == "comment written"
+    item_lines = fake.comments["ASK-101"][0]["body"].rsplit("\n\n", 1)[1]
+    assert "no owner:sana" in item_lines and "needs-scope" not in item_lines
 
 
 @needs_sweep

@@ -60,6 +60,8 @@ Exit codes:
   9  incomplete: a read failed. A failed board walk, registry or archive hook
      writes nothing. Any other failed read is listed, and its items are skipped,
      never filed: "could not look" is not "nothing moves it"
+  Every non-zero exit is read by launchd-health-check.py (com.kipi.launchd-health),
+  which files a launchd-job-failing fleet alert from LastExitStatus.
 
 Usage:
     python3 stall-sweep.py            # report only
@@ -131,9 +133,12 @@ REFUSALS_PATH = EVIDENCE_PATH.parent / "refusals.json"
 # linear-sync.py words that mean "could not look", never "nothing moves it" (PR #689
 # review, major 2). test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap
 # pins both against the real module with real ledger files.
-# No row, and no ledger file at all, are both facts: the fleet never ran it (PR #689
-# review r2, minor 2). A torn ledger or a non-object is a failed read.
-NO_HISTORY_PREFIXES = ("no worker history:", "no attempts ledger here")
+# Only "no row" is a fact. No ledger file proves nothing: worker_history fails closed
+# on it (linear-sync.py), and read as history it filed a gap whose text says the
+# ledger "has no row for it" (PR #689 review r3, minor 1, reversing the r2 suggestion
+# on the producer's own docstring). Unread exits 9, which launchd-health-check.py
+# reads as a non-zero LastExitStatus and files as a fleet alert.
+NO_HISTORY_PREFIXES = ("no worker history:",)
 PR_UNREAD_PREFIX = "its PRs could not be read"
 
 # Every reason that is not a hold label. `builder` is the ticket building the
@@ -221,9 +226,12 @@ def _ts(stamp):
     if not stamp:
         return None
     try:
-        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+    # A naive stamp reads as UTC. Compared against an aware `now` it raised TypeError
+    # in an unguarded call, and the hourly run wrote nothing (PR #689 review r3, nit).
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
 
 
 def idle_hours(stamps, now: datetime):
@@ -437,9 +445,12 @@ def plan(tickets: list, prs: list, ctx: dict, now: datetime) -> dict:
             g = out["gaps"].setdefault(val["reason"], {"builder": val["builder"],
                                                        "what": val["what"], "items": [],
                                                        "refs": []})
-            # The digest is over refs, so a cause on the line never rewrites the comment.
             g["items"].append(f"{line}: {val['why'][:120]}" if val.get("why") else line)
             g["refs"].append(ref)
+            # The digest key is the ref plus its cause, never the line: the line's
+            # "idle Nh" ticks every run, while a changed cause must rewrite the comment
+            # (PR #689 review r3, minor 2: keyed on refs alone, it kept the first cause).
+            g.setdefault("keys", []).append(f"{ref}|{val.get('why') or ''}")
     for g in out["gaps"].values():
         g["items"].sort()
         g["refs"].sort()
@@ -453,12 +464,17 @@ def set_digest(refs: list) -> str:
     return hashlib.sha1("\n".join(sorted(refs)).encode()).hexdigest()[:12]
 
 
+def gap_digest(g: dict) -> str:
+    """The digest of a gap: its ref|cause keys, or its refs when no cause was kept."""
+    return set_digest(g.get("keys") or g["refs"])
+
+
 def gap_comment(reason: str, g: dict, ticket: str) -> str:
     """THE body on a gap ticket. One producer, so the marker lookup reads what it writes."""
     shown = g["items"][:MAX_LISTED]
     more = len(g["items"]) - len(shown)
     lines = "\n".join(f"- {i}" for i in shown) + (f"\n- and {more} more" if more > 0 else "")
-    return (f"<!-- {COMMENT_MARKER}: {reason} set={set_digest(g['refs'])} -->\n"
+    return (f"<!-- {COMMENT_MARKER}: {reason} set={gap_digest(g)} -->\n"
             f"**Stalled 24h or more with no consumer: {len(g['items'])}.** "
             f"stall-sweep.py (com.kipi.stall-sweep, hourly) lists them here and rewrites "
             f"this comment when the set changes.\n\n"
@@ -581,8 +597,9 @@ def started_classes(sync, issues: list, state_dir: str) -> dict:
     be: "" released it, worker_history's text is no history, live_claim's text is a
     live run, open_prs' line is an open PR. Two answers mean "could not look" and
     are "unread", skipped and reported, never a gap (PR #689 review, major 2): a
-    worker_history answer that is neither no row nor no ledger file (a torn ledger,
-    a non-object), and a failed PR read, which started_hold_reason folds into prose.
+    worker_history answer other than its no-row answer (no ledger file, a torn
+    ledger, a non-object), and a failed PR read, which started_hold_reason folds
+    into its own prose.
     """
     out = {}
     for i in issues:
@@ -772,7 +789,7 @@ def upsert_comment(sync, ticket: str, reason: str, g: dict, budget: dict) -> str
     comments = issue.get("comments") or {}
     found = marker_comment(comments.get("nodes") or [], reason)
     body = gap_comment(reason, g, ticket)
-    if found and f"set={set_digest(g['refs'])} -->" in (found.get("body") or ""):
+    if found and f"set={gap_digest(g)} -->" in (found.get("body") or ""):
         return "unchanged"
     if budget["comments"] <= 0:
         return "comment deferred: write cap"
