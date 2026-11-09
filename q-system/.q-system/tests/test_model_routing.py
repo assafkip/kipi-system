@@ -30,7 +30,8 @@ sys.path.insert(0, str(SCRIPTS))
 import model_route  # noqa: E402
 
 # The call sites the table governs. Each must read model_route.py and name no model.
-GOVERNED = ("linear-worker.sh", "pr-review-agent.sh", "linear-alert-triage.py")
+GOVERNED = ("linear-worker.sh", "pr-review-agent.sh", "linear-alert-triage.py",
+            "linear-route-decide.py")
 MODEL_ID = re.compile(r"claude-(?:opus|sonnet|haiku|fable)-\d")
 
 

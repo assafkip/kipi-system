@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly no-project decision pass (ASK-3959 stage 2): a ticket no rule can route
+     gets ROUTE, CLOSE or SPLIT, one validated model decision per ticket.
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. Pinned (job-checkouts.json), so it runs from its own tree at
+     origin/main, never from the shared checkout.
+     Install: install-plist.sh com.kipi.linear-route-decide.
+
+     05:20 after cap-ladder (04:40), so the two model passes never overlap.
+     The limit bounds the model calls a night. Measured 2026-11-09: the board walk
+     takes 18s and one decision about 11s, so 20 is about 4 minutes, and the 350
+     tickets no rule routes clear in about 18 nights.
+     No double hyphen in this comment: XML forbids one there. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.linear-route-decide</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/linear-route-decide.py --apply --limit 20 --heartbeat</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>5</integer><key>Minute</key><integer>20</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/linear-route-decide.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/linear-route-decide.err</string>
+</dict>
+</plist>
