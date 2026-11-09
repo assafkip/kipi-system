@@ -121,6 +121,8 @@ REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 # second Codex account. The worker-specific flags stay here because they are the
 # worker's: `-s workspace-write` is what lets the second runner do the Edit under
 # `.claude/**` that Sana is refused (probed live 2026-08-01).
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/reviewer-resolve.sh"
 CODEX_WORKER_FLAGS="--skip-git-repo-check -s workspace-write"
 CODEX_CMD="$(reviewer_codex_cmd "$REVIEWER_PRIMARY_ACCOUNT") $CODEX_WORKER_FLAGS"
 # The second account, empty when none is configured. `|| true` because
@@ -3571,8 +3573,33 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       fi
       CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
       SECOND_RUNNER="Codex"; CODEX_STOOD_IN=""; CODEX_DOWN_WHY=""; CODEX_DOWN_MARK=""
-      # CODEX DOWN IS NOT A BLOCKER: run the same prompt on Opus. Only if Opus
-      # is refused too (a Claude limit) does the outage path below apply.
+      # THE OTHER CODEX ACCOUNT, BEFORE THE OPUS STAND-IN (ASK-3831). A credit
+      # outage is per-ACCOUNT, so the rung that costs nothing in independence
+      # comes first: a second logged-in Codex is still a different lab from
+      # Sana, where the Opus stand-in is DEGRADED by construction (same lab).
+      # Skipped entirely when no second account is configured, so with none the
+      # chain below is byte-for-byte what it was before.
+      if [ -n "$CODEX_CMD_2" ] && codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
+        reviewer_note_codex_outage "$REVIEWER_PRIMARY_ACCOUNT" "$ISSUE: $(codex_env_marker "$CODEX_OUT" "$crc")"
+        say "$ISSUE Codex is unavailable on the $REVIEWER_PRIMARY_ACCOUNT account; trying the '$CODEX_ACCOUNT_2' account before any stand-in"
+        : > "$RUN_OUT_FILE" 2>/dev/null || true
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD_2 \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT"; then
+          crc=0
+        else
+          crc=$?
+        fi
+        CODEX_OUT="$(cat "$RUN_OUT_FILE" 2>/dev/null)"
+        if codex_env_reason "$CODEX_OUT" "$crc" >/dev/null; then
+          reviewer_note_codex_outage "$CODEX_ACCOUNT_2" "$ISSUE: $(codex_env_marker "$CODEX_OUT" "$crc")"
+        else
+          reviewer_note_codex_ok "$CODEX_ACCOUNT_2"
+          SECOND_RUNNER="Codex on the '$CODEX_ACCOUNT_2' account"
+          say "$ISSUE the '$CODEX_ACCOUNT_2' Codex account answered -- NOT degraded, still a different lab from Sana"
+        fi
+      fi
+      # BOTH CODEX ACCOUNTS DOWN IS NOT A BLOCKER: run the same prompt on Opus.
+      # Only if Opus is refused too (a Claude limit) does the outage path below
+      # apply.
       if [ -n "$SECOND_RUNNER_FALLBACK" ] && CODEX_DOWN_WHY="$(codex_env_reason "$CODEX_OUT" "$crc")"; then
         CODEX_DOWN_MARK="$(codex_env_marker "$CODEX_OUT" "$crc")"
         CODEX_STOOD_IN=1
