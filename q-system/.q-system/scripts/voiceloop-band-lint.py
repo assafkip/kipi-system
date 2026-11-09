@@ -158,31 +158,52 @@ def _manifest_channel(file_path, table_channel, notes):
         # Anything else (not an instance, no canonical/) is the no-manifest case.
         return None
     manifest = q_dir / "config" / "voice-check.json"
-    if not manifest.is_file():
+    # lexists, not is_file: a broken symlink, a loop or a directory is PRESENT but
+    # unusable and must be reported, not read as "no manifest" (adversarial review K8).
+    try:
+        present = os.path.lexists(manifest)
+    except OSError as exc:  # unsearchable config/ raises on Python <= 3.13
+        notes.append(f"{manifest} unreadable ({type(exc).__name__}); using the path table.")
+        return None
+    if not present:
         return None
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    # Exception, not (OSError, ValueError): deeply nested JSON raises RecursionError and
+    # a symlink loop raises OSError subclasses; either would exit 1 from a hook that
+    # promises 0.
+    except Exception as exc:
         notes.append(f"{manifest} unreadable ({type(exc).__name__}); using the path table.")
         return None
-    try:
-        lane = data["surfaces"][table_channel]["lane"]
-    except (KeyError, TypeError):
-        return None  # this surface is not mapped: nothing to say, the table stands
-    try:
-        channel = data["lanes"][lane]["engine_channel"]
-    except (KeyError, TypeError):
-        notes.append(f"{manifest}: surface {table_channel!r} names lane {lane!r} with no "
-                     "engine_channel (lane nowhere in lanes); using the path table.")
+    surfaces = data.get("surfaces") if isinstance(data, dict) else None
+    lanes = data.get("lanes") if isinstance(data, dict) else None
+    if not isinstance(surfaces, dict) or not isinstance(lanes, dict):
+        notes.append(f"{manifest}: top level must be an object with object keys "
+                     "surfaces and lanes; using the path table.")
         return None
+    if table_channel not in surfaces:
+        return None  # this surface is not mapped: the table stands, nothing to say
+    row = surfaces[table_channel]
+    lane = row.get("lane") if isinstance(row, dict) else None
+    if not isinstance(lane, str) or not isinstance(lanes.get(lane), dict):
+        notes.append(f"{manifest}: surface {table_channel!r} has no lane that resolves "
+                     f"in lanes ({_short(lane)}); using the path table.")
+        return None
+    channel = lanes[lane].get("engine_channel")
     # isinstance first: a list or object is unhashable and `in frozenset` raises, which
     # would exit 1 from a hook that promises exit 0 (review K8, reproduced live).
     if not isinstance(channel, str) or channel not in TABLE_CHANNELS:
-        notes.append(f"{manifest}: lane {lane!r} engine_channel {channel!r} is not a "
-                     f"channel the engine takes ({', '.join(sorted(TABLE_CHANNELS))}); "
+        notes.append(f"{manifest}: lane {_short(lane)} engine_channel {_short(channel)} "
+                     f"is not a channel the engine takes ({', '.join(sorted(TABLE_CHANNELS))}); "
                      "using the path table.")
         return None
     return channel
+
+
+def _short(value, limit=60):
+    """repr bounded, so a hostile manifest cannot put megabytes in additionalContext."""
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def _engine_command(file_path, notes=None):

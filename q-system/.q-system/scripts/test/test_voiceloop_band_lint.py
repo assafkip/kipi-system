@@ -474,6 +474,9 @@ def test_no_manifest_leaves_the_table_result_unchanged(tmp_path):
     ("bad-channel.json", "short"),
     ("unknown-lane.json", "nowhere"),
     ("list-channel.json", "not a channel"),
+    ("top-level-list.json", "top level"),
+    ("deep.json", "unreadable"),
+    ("lane-list.json", "no lane"),
 ])
 def test_a_bad_manifest_reports_one_line_then_uses_the_table(tmp_path, fixture, reason):
     root = _instance(tmp_path, fixture)
