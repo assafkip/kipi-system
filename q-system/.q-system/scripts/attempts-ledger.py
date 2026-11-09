@@ -106,6 +106,10 @@ drops a page:
      catch-all in main() -- ANY unanticipated failure, e.g. an OSError from
      mkstemp / os.replace / json.dump on a full or read-only filesystem.
   3  NOTHING WAS WRITTEN because the lock could not be taken.
+  4  claim-flag-uncapped ONLY: converge already gave up on this issue (parked).
+  5  NOTHING WAS WRITTEN because a test aimed the write at the live ledger
+     (PYTEST_CURRENT_TEST or KIPI_TEST=1 set, ASK-4052). The fix is in the test:
+     set KIPI_STATE_DIR. Production sets neither variable, so it never sees 5.
 
 READ 2 AS OPEN-ENDED, NOT AS "a typo in a call site" (codex round 4, minor).
 This line used to say only "usage error", which reads as a bounded, transient,
@@ -131,6 +135,7 @@ silent stall wearing the mechanism built to prevent it.
 import fcntl
 import json
 import os
+import pwd
 import sys
 import tempfile
 import time
@@ -149,6 +154,45 @@ LOCK_SLEEP = 0.1
 
 class LockUnavailable(Exception):
     """The lock could not be taken. NEVER swallowed: the caller writes nothing."""
+
+
+class RefusedUnderTest(Exception):
+    """A test aimed a write at the live ledger. Exit 5, nothing written."""
+
+
+# A TEST NEVER WRITES THE LIVE LEDGER (ASK-4052). Measured 2026-11-08: a ported
+# probe suite (PR #668) forgot KIPI_STATE_DIR and wrote real capouts for ASK-903
+# and ASK-908 into ~/.config/kipi/linear-worker-attempts.json; they would have
+# climbed the cap ladder that night. The class is any test that forgets the
+# variable, so the refusal is here, in the one writer, not in each test.
+#
+# "Under a test" is PYTEST_CURRENT_TEST (pytest sets it) or KIPI_TEST=1 (the shell
+# suites get it from capability-gate.py run_tests). "Live" is the ledger under this
+# process's HOME AND the one under the account's real home: a test that points HOME
+# at a temp folder and still forgets KIPI_STATE_DIR is refused too, so the fix it
+# is told to make is the one that holds (set KIPI_STATE_DIR). Reads stay allowed.
+LEDGER_NAME = "linear-worker-attempts.json"
+
+
+def _under_test():
+    return bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("KIPI_TEST") == "1"
+
+
+def _live_paths():
+    homes = {os.path.expanduser("~")}
+    try:
+        homes.add(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        pass
+    return {os.path.realpath(os.path.join(h, ".config", "kipi", LEDGER_NAME)) for h in homes}
+
+
+def refuse_live_write_under_test(path):
+    if _under_test() and os.path.realpath(path) in _live_paths():
+        raise RefusedUnderTest(
+            "refused: %s is the live ledger and this process runs under a test "
+            "(PYTEST_CURRENT_TEST or KIPI_TEST=1). Set KIPI_STATE_DIR to a temp folder "
+            "in the test. Nothing was written." % path)
 
 
 class Usage(Exception):
@@ -233,6 +277,7 @@ def _mutate(path, fn):
 
     Raises LockUnavailable rather than proceeding: see invariant 1 above.
     """
+    refuse_live_write_under_test(path)
     lock = path + ".lock"
     fh = _take_lock(lock)
     if fh is None:
@@ -405,6 +450,10 @@ def main(argv):
         # answering 1 would retire a page that never fired.
         sys.stderr.write("attempts-ledger: `%s` wrote nothing -- %s\n" % (op, exc))
         return 3
+    except RefusedUnderTest as exc:
+        # 5, its own code: 4 already means "parked" for claim-flag-uncapped.
+        sys.stderr.write("attempts-ledger: `%s` %s\n" % (op, exc))
+        return 5
     except Exception:
         # 2, and the catch-all is the point (codex round 2 on PR #67, minor 3).
         # This block used to name only the two exceptions above, so an OSError

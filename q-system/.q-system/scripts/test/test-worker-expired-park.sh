@@ -215,9 +215,11 @@ OUTU="$(FIXTURE_BOARD=urgent-park KIPI_PICK_PRIORITY=1 run_worker_board --limit 
 printf '%s\n' "$OUTU" | grep -qE '\[dry\] pick priority ASK-990 0$' \
   && ok "the urgent-slot scan (plain --limit 1) reads an expired Urgent park as priority 0" \
   || bad "the urgent-slot scan reads an expired Urgent park as 0" "$(printf '%s\n' "$OUTU" | grep -E 'pick priority|would work|ready issue' | head -3)"
-# The copy keeps the repo shape, scripts/ beside terminal-states.json, since the
-# worker reads its WIP exit table from $SCRIPT_DIR/../terminal-states.json (PR #673
-# round 1, nit).
+# What the copy guarantees, and only that (PR #673 delta, minor): the worker's own
+# libraries beside it and terminal-states.json one level up, so a missing table
+# is not why a mutant behaves differently. The pick this mutant runs is below the
+# WIP ceiling, so the table is never read on this path, and plugins/ still resolves
+# outside the copy; neither matters to a pick-priority line.
 MUTW="$WORK/mut/scripts"; mkdir -p "$WORK/mut"; cp -R "$REPO_SCRIPTS" "$MUTW"
 cp "$REPO_SCRIPTS/../terminal-states.json" "$WORK/mut/terminal-states.json"
 sed 's/p = \[0 if i.get("expired_park") else i.get("priority")/p = [i.get("priority")/' "$WORKER" > "$MUTW/linear-worker.sh"
