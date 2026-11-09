@@ -31,6 +31,7 @@ import json
 import os
 import posixpath
 import re
+import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -116,7 +117,9 @@ def row_problem(row, today):
     if not isinstance(reason, str) or not reason.strip():
         return "reason is missing or empty"
     owner = row.get("owner")
-    if owner not in OWNERS:
+    # isinstance first: a list or object is unhashable and `in frozenset` raises,
+    # which would void every valid row in the file (review finding-1).
+    if not isinstance(owner, str) or owner not in OWNERS:
         return f"owner {_short(owner, 30)} is not one of {', '.join(sorted(OWNERS))}"
     created, expires = _parse_date(row.get("created")), _parse_date(row.get("expires"))
     if created is None or expires is None:
@@ -137,7 +140,7 @@ def evaluate(data, rel_paths, today, source):
     if not isinstance(data, dict) or not isinstance(data.get("suppressions"), list):
         return None, [f"{source}: top level must be an object holding a \"suppressions\" "
                       "list; suppressing nothing."]
-    notes, bad, hit = [], 0, None
+    notes, bad, expired, hit = [], 0, 0, None
     for index, row in enumerate(data["suppressions"]):
         problem = row_problem(row, today)
         if problem:
@@ -151,10 +154,15 @@ def evaluate(data, rel_paths, today, source):
             continue
         expires = _parse_date(row["expires"])
         if today >= expires:
-            notes.append(f"{source}: row {index} for {row['path']} expired on {expires} "
-                         f"(today {today}); it no longer skips.")
+            expired += 1
+            if expired <= MAX_REPORTED:
+                notes.append(f"{source}: row {index} for {row['path']} expired on "
+                             f"{expires} (today {today}); it no longer skips.")
         elif hit is None:
             hit = row
+    if expired > MAX_REPORTED:
+        notes.append(f"{source}: and {expired - MAX_REPORTED} more expired rows for "
+                     "this path.")
     if bad > MAX_REPORTED:
         notes.append(f"{source}: and {bad - MAX_REPORTED} more invalid rows, each "
                      "suppressing nothing.")
@@ -204,7 +212,13 @@ def _rel_paths(file_path, root):
 def _read(path, today, file_path, root):
     source = str(path)
     try:
-        size = os.stat(path).st_size
+        info = os.stat(path)
+        # A FIFO reports size 0 and then blocks open() until the hook times out, and a
+        # PostToolUse timeout is non-blocking: the gate would fail open (finding-4).
+        if not stat.S_ISREG(info.st_mode):
+            return Decision(True, False, [f"{source} is not a regular file; suppressing "
+                                          "nothing."], source)
+        size = info.st_size
         if size > MAX_BYTES:
             return Decision(True, False, [f"{source} is too large ({size} bytes, limit "
                                           f"{MAX_BYTES}); suppressing nothing."], source)

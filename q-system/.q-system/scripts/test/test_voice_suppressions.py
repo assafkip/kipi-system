@@ -131,6 +131,7 @@ def test_an_expired_row_does_not_skip_and_the_path_is_reported(tmp_path):
 BAD_ROWS = [
     ("missing owner", [_row(owner=_DROP)], "owner"),
     ("unknown owner", [_row(owner="someone")], "owner"),
+    ("owner is a list", [_row(owner=["sana"])], "owner"),
     ("missing reason", [_row(reason=_DROP)], "reason"),
     ("empty reason", [_row(reason="   ")], "reason"),
     ("bad date", [_row(expires="2026-13-45")], "date"),
@@ -190,6 +191,25 @@ def test_a_bad_file_suppresses_nothing_is_named_and_never_exits_1(tmp_path, labe
     reports = [l for l in r.stderr.splitlines() if "voice-suppressions.json" in l]
     assert len(reports) == 1, r.stderr[-800:]
     assert reason in reports[0], reports[0]
+
+
+def test_one_unhashable_owner_does_not_void_the_valid_rows(tmp_path):
+    """Review finding-1: `[..] in frozenset` raised, and every row stopped skipping."""
+    root = _instance(tmp_path, rows=[_row(path="drafts/other.md", owner={"a": 1}), _row()])
+    r = _hook(VOICE_LINT, tmp_path, root, BLOCKING_BODY)
+    assert r.returncode == 0, r.stderr
+    bad = [l for l in r.stderr.splitlines() if "row 0" in l]
+    assert len(bad) == 1 and "owner" in bad[0], r.stderr
+
+
+def test_a_fifo_in_place_of_the_file_suppresses_nothing_and_does_not_hang(tmp_path):
+    """Review finding-4: open() on a FIFO blocks until the hook timeout, which is a
+    fail-open exit for a PostToolUse gate."""
+    root = _instance(tmp_path)
+    os.mkfifo(root / "q-consult" / "config" / "voice-suppressions.json")
+    r = _hook(VOICE_LINT, tmp_path, root, BLOCKING_BODY)
+    assert r.returncode == 2, r.stderr
+    assert any("not a regular file" in l for l in r.stderr.splitlines()), r.stderr
 
 
 def test_a_directory_in_place_of_the_file_suppresses_nothing(tmp_path):
@@ -342,6 +362,17 @@ def test_many_bad_rows_are_reported_in_a_bounded_number_of_lines(tmp_path, monke
     assert len(decision.notes) <= 6 and "35 more" in decision.notes[-1], decision.notes
 
 
+def test_many_expired_rows_are_reported_in_a_bounded_number_of_lines(tmp_path, monkeypatch):
+    """Review finding-5: one note per expired row put 600 KB into additionalContext."""
+    rows = [_row(created=_d(-20), expires=_d(-1)) for _ in range(40)]
+    root = _instance(tmp_path, rows=rows)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(root))
+    monkeypatch.setenv("KIPI_EVIDENCE_REGISTRY", str(tmp_path / "no-registry.json"))
+    decision = _reader().check(str(root / DRAFT))
+    assert not decision.skip
+    assert len(decision.notes) <= 6 and "35 more expired" in decision.notes[-1], decision.notes
+
+
 # --------------------------------------------------------------------- census
 
 _MARKER_RE = re.compile(r"\bvoice[\w-]*-skip\b")
@@ -367,9 +398,26 @@ def _marker_readers_missing_the_reader(scripts_dir):
         if not _MARKER_RE.search(text):
             continue
         definers.append(str(rel))
-        if path.name != "voice_suppressions.py" and "voice_suppressions.py" not in text:
+        if path.name != "voice_suppressions.py" and not _loads_the_reader(text):
             missing.append(str(rel))
     return definers, missing
+
+
+def _loads_the_reader(text):
+    """A real load, read from the AST: the string 'voice_suppressions.py' as code (a
+    comment is not in the AST) and a `.check(` call. Review finding-3: a substring test
+    passed a file that only named the reader in a comment. A shell script cannot load
+    a Python module, so a marker in one is always reported."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    names = {n.value for n in ast.walk(tree)
+             if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    calls = {n.func.attr for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    return "voice_suppressions.py" in names and "check" in calls
 
 
 def test_every_script_that_names_a_voice_skip_marker_loads_the_reader():
@@ -383,6 +431,9 @@ def test_every_script_that_names_a_voice_skip_marker_loads_the_reader():
 def test_the_census_catches_a_marker_reader_that_skips_the_reader(tmp_path):
     """Negative control: the census must be able to fail."""
     (tmp_path / "rogue-lint.py").write_text('SKIP = "voice-lint-skip"\n')
-    (tmp_path / "good-lint.py").write_text('SKIP = "voice-lint-skip"  # voice_suppressions.py\n')
+    (tmp_path / "comment-lint.py").write_text('SKIP = "voice-lint-skip"  # voice_suppressions.py\n')
+    (tmp_path / "rogue.sh").write_text('grep -q voice-lint-skip "$1" && exit 0\n')
+    (tmp_path / "good-lint.py").write_text(
+        'SKIP = "voice-lint-skip"\nTARGET = "voice_suppressions.py"\nm.check(path)\n')
     _, missing = _marker_readers_missing_the_reader(tmp_path)
-    assert missing == ["rogue-lint.py"], missing
+    assert missing == ["comment-lint.py", "rogue-lint.py", "rogue.sh"], missing
