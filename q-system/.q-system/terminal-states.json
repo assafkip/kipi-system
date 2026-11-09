@@ -492,6 +492,21 @@
       }
     },
     {
+      "id": "converge-pr-already-merged",
+      "source": "converge",
+      "class": "done",
+      "marker": "DONE exit-0: PR #$MERGED_PR on $BRANCH already MERGED",
+      "sites": 1,
+      "what": "exit 0. No open PR on the branch, but a PR this run opened (created at or after RUN_START) has already merged (ASK-4112). No attempt is charged and nothing pages.",
+      "terminal": true,
+      "rationale": "The work landed, so no kipi driver has anything left to do: there is no PR to review, arm or receipt, and GitHub's merge closes the ticket through Linear's integration. Before ASK-4112 this population fell into converge-no-pr-opened, which charged an attempt and paged 'stopped, no PR' on 7 of 29 exit-7 stops in the week to 2026-11-09. A merged PR created before the run started is not this run's work and still exits 7 there.",
+      "evidence": {
+        "path": "q-system/.q-system/scripts/converge.sh",
+        "marker": "created < start",
+        "why": "The filter that keeps an older merged PR on a reused branch from passing as this run's work. test-converge.sh mutates exactly this text and proves its case 2 goes red without it."
+      }
+    },
+    {
       "id": "converge-no-pr-opened",
       "source": "converge",
       "class": "counted-retry",

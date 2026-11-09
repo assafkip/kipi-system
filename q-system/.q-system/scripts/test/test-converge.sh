@@ -527,6 +527,102 @@ set -e
       Pages: $(cat "$FAKE_PAGES")"
 ok "ASK-2010: worker rc=3 -> converge exits 3, charges no attempt, pages nobody"
 
+# --- ASK-4112: a PR that already MERGED is the goal, not "no PR" --------------
+# THE MEASURED DEFECT. pr_for_branch lists OPEN PRs only (gh's default state).
+# From 2026-11-02 to 2026-11-09T01:30Z, 7 of the 29 exit-7 "no PR" stops had a PR
+# on that exact branch that had already merged. One of them: the ASK-796 PR
+# opened 15:29:40Z, merged 15:31:13Z, converge STOP exit-7 at 15:34:05Z. (The repo
+# is left unnamed: this file ships to every instance.)
+# Each one charged an attempt and paged "stopped, no PR" on a run whose work had
+# landed, and the fleet's yield read 3 merged PRs in 35 runs when it was 10.
+#
+# The fake gh answers the open list and the merged list separately, the way the
+# real one does, and returns gh's own JSON for the merged list so converge's
+# filter is what gets tested, not a pre-filtered answer.
+cp "$WORK/bin/gh" "$WORK/bin/gh.orig4112"
+cat > "$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_GHLOG"
+case "$*" in
+  "pr list"*"--state merged"*) cat "$FAKE_MERGED_FILE" 2>/dev/null ;;
+  "pr list"*) cat "$FAKE_PR_FILE" 2>/dev/null ;;
+  "pr view"*) cat "$FAKE_SHA_FILE" 2>/dev/null ;;
+esac
+exit 0
+EOF
+chmod +x "$WORK/bin/gh"
+# The worker opens PR 7 and it merges inside the round, which is the ASK-796
+# shape. createdAt is the worker's own clock unless the case pins it earlier.
+cat > "$WORK/bin/mergingworker" <<'EOF'
+#!/usr/bin/env bash
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '[{"number":7,"createdAt":"%s","mergedAt":"%s"}]\n' "${FAKE_CREATED_AT:-$NOW}" "$NOW" > "$FAKE_MERGED_FILE"
+exit 0
+EOF
+chmod +x "$WORK/bin/mergingworker"
+export FAKE_MERGED_FILE="$WORK/merged.json"
+
+# merged_case <converge.sh> <issue> -> RC, pages in $FAKE_PAGES, gh calls in $FAKE_GHLOG
+merged_case() {
+  rm -f "$ATT"; : > "$FAKE_PAGES"; : > "$FAKE_GHLOG"; : > "$FAKE_MERGED_FILE"
+  echo "" > "$FAKE_PR_FILE"; echo "0" > "$FAKE_ROUND_FILE"
+  set +e
+  KIPI_CONVERGE_WORKER="$WORK/bin/mergingworker" KIPI_NOTIFY="$WORK/bin/pagesink" \
+    bash "$1" --issue "$2" --max-rounds 4 >"$WORK/out" 2>&1
+  RC=$?
+  set -e
+}
+
+# Case 1: no open PR, PR 7 created AND merged after this run started.
+unset FAKE_CREATED_AT
+merged_case "$CONV" ASK-T4112
+[ "$RC" = "0" ] && [ "$(att_count ASK-T4112)" = "0" ] && [ ! -s "$FAKE_PAGES" ] \
+  || fail "ASK-4112 THE DEFECT: PR #7 on sana/ask-t4112 merged inside this run and converge called it 'no PR'.
+      want rc=0, attempts=0, no page
+      got  rc=$RC, attempts=$(att_count ASK-T4112), pages: $(cat "$FAKE_PAGES" 2>/dev/null)
+$(sed 's/^/        /' "$WORK/out")"
+grep -q 'MERGED' "$WORK/out" \
+  || fail "ASK-4112: exit 0 with no line saying the PR merged, so the run log cannot tell it from a dry run: $(cat "$WORK/out")"
+grep -q -- '--head sana/ask-t4112 --state merged' "$FAKE_GHLOG" \
+  || fail "ASK-4112: the merged lookup did not ask about THIS branch, so any merged PR in the repo could pass for this run's work.
+      gh calls:
+$(sed 's/^/        /' "$FAKE_GHLOG")"
+ok "ASK-4112: a PR this run opened that already merged -> exit 0, no attempt charged, no page"
+
+# Case 2: same, but PR 7 was created BEFORE this run started (an older PR on a
+# reused branch). It is not this run's work, so the stop stays as it is today.
+export FAKE_CREATED_AT="2026-01-01T00:00:00Z"
+merged_case "$CONV" ASK-T4113
+[ "$RC" = "7" ] \
+  || fail "ASK-4112: a PR created before this run started was taken as this run's work: rc=$RC, want 7
+$(sed 's/^/        /' "$WORK/out")"
+[ "$(att_count ASK-T4113)" = "1" ] \
+  || fail "ASK-4112: an older merged PR must leave today's exit-7 charge in place: attempts=$(att_count ASK-T4113), want 1"
+ok "ASK-4112: a merged PR created before the run started is not this run's -> exit 7 as before"
+
+# Case 3, NEGATIVE SELF-TEST: case 2 has to be able to fail. A mutant converge
+# with the created-after-start filter removed must turn case 2 red. The mutant
+# runs from a temp dir of symlinks to the real scripts, so nothing is written
+# into this checkout. The anchor is asserted first: a mutation that matched
+# nothing would run the real code and pass vacuously.
+MUT="$WORK/mut"; mkdir -p "$MUT"
+for f in "$ROOT/q-system/.q-system/scripts/"*; do ln -s "$f" "$MUT/"; done
+rm -f "$MUT/converge.sh"
+python3 - "$CONV" "$MUT/converge.sh" <<'PY' || fail "ASK-4112 self-test: the created-after-start filter anchor is not in converge.sh"
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+anchor = " or created < start"
+if src.count(anchor) != 1:
+    raise SystemExit(1)
+open(sys.argv[2], "w", encoding="utf-8").write(src.replace(anchor, ""))
+PY
+KIPI_SKEL="$ROOT" merged_case "$MUT/converge.sh" ASK-T4114
+[ "$RC" = "7" ] \
+  && fail "ASK-4112 self-test: converge with the created-after-start filter REMOVED still exits 7 on case 2, so case 2 cannot catch that filter going missing"
+ok "ASK-4112 self-test: dropping the created-after-start filter turns case 2 red (mutant rc=$RC)"
+unset FAKE_CREATED_AT
+cp "$WORK/bin/gh.orig4112" "$WORK/bin/gh"
+
 # --- wiring ------------------------------------------------------------------
 grep -q 'pr-verdict-lib.sh' "$CONV" || fail "converge.sh must use the shared verdict lib"
 grep -q 'rework_gate'       "$CONV" || fail "converge.sh must gate on rework_gate, not its own regex"
