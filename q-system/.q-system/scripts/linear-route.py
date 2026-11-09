@@ -621,6 +621,9 @@ def measure(issues: list, facts: RoutingFacts, board_projects: set | None = None
         # The report lines travel in the JSON so linear-triage-health.py prints
         # the same text without importing this file (it runs it as a subprocess).
         "not_on_board_lines": not_on_board_lines(refused),
+        # 0 refused is also what a check that never ran reports. Saying which is
+        # the difference between a pass and silence (PR #679 review r2, minor).
+        "board_check_ran": board_projects is not None,
         "with_work": len(rows_with_work(rows)),
         "by_rule": {rule: sum(1 for r in rows if r["rule"] == rule)
                     for rule in sorted({r["rule"] for r in rows if r["rule"]})},

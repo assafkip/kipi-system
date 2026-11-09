@@ -519,7 +519,11 @@ def test_no_board_list_leaves_the_check_off(board, tmp_path):
     """A dry run whose project read failed passes None here, and routes as before."""
     rows = route.plan_actions([_gtm_ticket(tmp_path)], board)
     assert rows[0]["set_project"] == "cole-GTM"
-    assert route.measure([_gtm_ticket(tmp_path)], board)["not_on_board"] == 0
+    m = route.measure([_gtm_ticket(tmp_path)], board)
+    assert m["not_on_board"] == 0
+    # ...and says the check did not run, so 0 is not read as a clean board.
+    assert m["board_check_ran"] is False
+    assert route.measure([_gtm_ticket(tmp_path)], board, ON_BOARD)["board_check_ran"] is True
 
 
 # --------------------------------------------------------------------------
