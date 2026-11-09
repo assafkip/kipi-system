@@ -20,6 +20,7 @@
     "com.kipi.browser-session-deadman",
     "com.kipi.browser-session-health",
     "com.kipi.cap-ladder",
+    "com.kipi.capability-expiry",
     "com.kipi.launchd-health",
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",

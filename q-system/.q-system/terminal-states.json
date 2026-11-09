@@ -240,12 +240,18 @@
         "REFUSE_LABEL=\"blocked:capability\""
       ],
       "sites": 2,
-      "terminal": true,
-      "rationale": "REFUSAL ON EVIDENCE, re-checked 2026-08-18 against the founder's reversal directive. The method this issue demands is: look for a successor that became real AFTER 2026-08-01, do not reason from the state name. Nothing did. Grepped the whole scripts tree for a reader of the blocked:capability label: linear-worker.sh applies it and counts it (held_with(\"blocked:capability\")), and no other file selects on it. ASK-288 (`a blocked:capability label never expires, nothing re-tests the block`) is still open and is the named owner of the re-test, and this issue's Not-doing line excludes building it. The underlying reason is unchanged and is not a naming problem: the runner lacks something it cannot grant itself, and an agent must never grant itself an authorization (2026-05-17 scar). Revised to a consumer when ASK-288's re-test ships and is proven, not when it merges.",
-      "evidence": {
-        "path": "q-system/.q-system/scripts/linear-worker.sh",
-        "marker": "blocked_cap = held_with(\"blocked:capability\")",
-        "why": "The only other reader of this label in the fleet is a COUNT in the same file that applies it. No selector re-enters the state."
+      "consumer": "capability_block_expiry.py (com.kipi.capability-expiry, nightly 04:20) -- re-runs the recorded probe and clears the label on a pass; a block with no probe takes a route at day 14 by the capability its park names: a .claude/ write goes back through apply-claude-changes.sh, a credential becomes one ask in the morning status file, anything else goes to cap-ladder.py as a capout",
+      "consumer_test": "q-system/.q-system/scripts/test/test_capability_route.py",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.capability-expiry",
+        "run_evidence": "~/.config/kipi/capability-expiry.out",
+        "max_age_s": 172800
+      },
+      "reentry": {
+        "path": "q-system/.q-system/scripts/capability_block_expiry.py",
+        "marker": "def route_unprobeable",
+        "why": "Measured 2026-11-08: 50 parked, 50 unprobeable, 0 clearable, so a probe alone moves none of them. The day-14 route is what gives every block an exit. Founder 2026-11-08: 'but what happens if nothing changed? the ticket just stays?'"
       }
     },
     {
@@ -1230,11 +1236,12 @@
         "what": "A ticket labelled blocked:capability.",
         "exits": [
           {
-            "kind": "debt",
-            "ticket": "ASK-3960",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E8: the nightly probe re-test clears the label when the probe passes."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/capability_block_expiry.py",
+            "marker": "ROUTE_AFTER_DAYS = 14",
+            "test": "q-system/.q-system/scripts/test/test_capability_route.py",
+            "what": "Nightly: a recorded probe that passes clears the label; at day 14 an unprobeable block is routed by kind (ASK-3960)."
           }
         ]
       },
