@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly owner:assaf route (ASK-3961). TEMPLATE: __KIPI_REPO__ and __HOME__ are
+     materialized by install-plist.sh. Pinned (job-checkouts.json). 04:30, after the
+     capability re-test and before cap-ladder.py (04:40), which writes the founder asks
+     this job hands it. No double hyphen in this comment: XML forbids one there. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.owner-assaf-route</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/owner-assaf-route.py --apply</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>30</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/owner-assaf-route.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/owner-assaf-route.err</string>
+</dict>
+</plist>

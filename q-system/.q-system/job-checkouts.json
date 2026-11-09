@@ -25,6 +25,7 @@
     "com.kipi.linear-dor",
     "com.kipi.linear-not-done-reopen",
     "com.kipi.linear-route-decide",
+    "com.kipi.owner-assaf-route",
     "com.kipi.pr-owner",
     "com.kipi.stall-sweep",
     "com.kipi.worktree-reaper"

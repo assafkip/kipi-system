@@ -1295,11 +1295,12 @@
         "what": "A ticket labelled owner:assaf; the founder has said he will not act on these.",
         "exits": [
           {
-            "kind": "debt",
-            "ticket": "ASK-3961",
-            "since": "2026-11-08",
-            "expires": "2026-12-08",
-            "what": "E10: relabel owner:sana unless it asks a spend, scope or reach question."
+            "kind": "consumer",
+            "fires": "by-age",
+            "path": "q-system/.q-system/scripts/owner-assaf-route.py",
+            "marker": "def route(",
+            "test": "q-system/.q-system/scripts/test/test_owner_assaf_route.py",
+            "what": "Nightly: relabel owner:sana with a comment, or one founder ask through cap-ladder.py --founder-ask when the text asks a spend, scope or reach question (ASK-3961)."
           }
         ]
       },
