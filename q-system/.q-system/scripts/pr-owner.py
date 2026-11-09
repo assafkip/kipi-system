@@ -41,25 +41,36 @@ an agent pushed it and held its review on purpose. So it gates every write. Then
   * a lessons PR whose every ledger entry is already on its base: close as
     superseded. Decided by content, the way the 4 weekly batches (#515, #518, #536,
     #539) were measured and closed on 2026-11-08, not by age or branch name.
-  * kipi/reviewer-approved green, every CI check green by our read, and GitHub
-    says mergeable and CLEAN, HAS_HOOKS or UNSTABLE: `gh pr merge --squash
-    --match-head-commit <sha>`. UNSTABLE is allowed ONLY because our read of CI
+  * kipi/reviewer-approved green, our read of CI green (or no workflow file on
+    the base, logged as that and never as CI green), and GitHub says mergeable
+    and CLEAN, HAS_HOOKS or UNSTABLE: `gh pr merge --auto --squash <n>`, run from the
+    repo's own checkout: the shape automerge_arm in pr-verdict-lib.sh runs, and
+    the shape merge-bypass-gate.py permits, asked of that gate first. On those
+    three states gh merges at once (gh 2.103.2, isImmediatelyMergeable). UNSTABLE is allowed ONLY because our read of CI
     must be green first: round 1 of PR #659 caught a merge on UNSTABLE with CI red,
     and round 2 caught the over-fix, where dropping UNSTABLE sent an approved PR
     whose only non-green status was the advisory kipi/codex-approved to rework
     and then close. The CI read is the guard; GitHub's merge state is not.
+  * approved, CI green and conflict-free, but BEHIND its base: `gh pr
+    update-branch`, once per head (BEHIND IS UPDATED, NOT CLOSED, in decide()).
   * CI green and never reviewed: `kipi review <n> --repo <path> --post`, at most one
     per run, at most one per head.
   * red (CI failure, conflict, REQUEST CHANGES or BLOCK or no verdict, review cap,
-    draft, approved but not mergeable):
-      - open ticket whose worker branch sana/<id> this is: rework. A PR comment,
-        the ticket back to Backlog with "resume from branch X at sha Y", the PR left
+    draft, approved but not mergeable, no check at a head whose base has workflows):
+      - open ticket whose worker branch sana/<id> this is, in a state the worker
+        picks: rework. A PR comment, the ticket back to Backlog with "resume
+        from branch X at sha Y", the PR left
         open once. Still red at the same head one age (48h) later: close.
+      - the same, in a state linear-worker.sh does not pick (Triage): close with
+        the resume note, as below. A rework round would wait 48h on nobody.
       - open ticket on any other branch: close, then the same resume note.
       - no ticket, or a closed one: close with a comment.
   * checks still running, or GitHub has not computed mergeability: wait.
 A close never deletes the branch. Reopening the PR undoes it: a PR open at the
 head pr-owner closed it at is left alone until a new push (state["closed"]).
+The close comment says "Reopen this PR within 30 days to undo", and the ticket
+note says "reopen the PR within 30 days to undo": after that the record is pruned
+(THE STATE FILE STAYS BOUNDED, at prune_state()).
 
 A FORK IS NEVER ACTED ON (PR #659 round 1, major). On a public repo the branch
 name and the title are strings the PR's author chose, and both bind a PR to a
@@ -88,8 +99,8 @@ as linear-worker.sh lane_hold, same race (ASK-3826 trap 1): the orchestrator mov
 a lane's ticket to In Progress by hand, and a lane reworking an old PR can go hours
 before its first push.
 
-ONE WRITER. The state file ~/.local/state/kipi/pr-owner/state.json (strikes and
-review attempts, per PR and head) is written only here, under a lock, as a temp
+ONE WRITER. The state file ~/.local/state/kipi/pr-owner/state.json (strikes,
+review attempts, closes, fork alerts and updates, per PR and head) is written only here, under a lock, as a temp
 file plus rename. Linear writes go through linear-sync.py requeue and progress,
 the same two writers wip_release uses, and a fork's one alert goes through
 slack-notify.sh to alert-to-linear.py.
@@ -113,8 +124,10 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -128,6 +141,12 @@ ROOT = Path(os.environ.get("KIPI_REPO") or SCRIPTS.parents[2])
 # close: a PR somebody pushed to this morning is somebody's live work.
 AGE_S = 48 * 3600
 QUIET_S = 12 * 3600
+# 30 days: how long a record outlives its PR's last appearance in an open list.
+# The close comment says this number in words; the contract test reads both.
+KEEP_DAYS = 30
+KEEP_S = KEEP_DAYS * 86400
+LIST_LIMIT = 200
+PER_PR_MAPS = ("closed", "strikes", "reviews", "outside", "updates")
 
 REVIEWER_CONTEXT = "kipi/reviewer-approved"
 LEDGER = "lesson-candidates/.processed.json"
@@ -218,10 +237,60 @@ def run_logged(argv, log: Path, timeout=2700):
 # THE ONE DOOR FOR A GITHUB WRITE. A close or merge that deletes the branch loses
 # the only copy of the work, and the destructive-op hook does not see a gh call
 # made from Python. So the refusal lives at the chokepoint, not in each caller.
-def gh_write(argv):
+# The merge gate is asked here too, for the same reason (merge_gate_verdict).
+def gh_write(argv, cwd=None, env=None):
     if argv[:2] in (["pr", "close"], ["pr", "merge"]) and ("--delete-branch" in argv or "-d" in argv):
         raise SystemExit("REFUSED: pr-owner never deletes a branch: " + " ".join(argv))
-    return run(["gh"] + argv)
+    if argv[:2] == ["pr", "merge"]:
+        why = merge_gate_verdict(argv, cwd or os.getcwd())
+        if why:
+            return 3, "", f"merge-bypass-gate.py refused it: {why}"
+    return run(["gh"] + argv, env=env, cwd=cwd)
+
+
+MERGE_GATE = SCRIPTS / "merge-bypass-gate.py"
+
+
+def gh_env() -> dict:
+    # GH_REPO and GH_HOST never reach a gh call made from a checkout. The checkout
+    # is what names the repo there, and it is what the merge gate judges: the gate
+    # denies those two as an env prefix because they retarget gh without changing
+    # one argument, and an env passed from Python is the same retarget, unseen.
+    return {k: v for k, v in os.environ.items() if k not in ("GH_REPO", "GH_HOST")}
+
+
+def merge_gate_verdict(gh_args, cwd) -> str:
+    """"" when merge-bypass-gate.py allows `gh <gh_args>` from cwd, else why not.
+
+    ASKED OF THE GATE, NOT HIDDEN FROM IT (PR #659 round 7, minor). The merge was
+    `gh pr merge <n> -R <slug> --squash --match-head-commit <sha>`, a shape the
+    gate denies (measured 2026-11-09: the real gate denies that exact argv), and
+    a gh call from Python reaches no PreToolUse hook, so the fleet's one
+    merge gate could not see the one merge it would deny. Now the merge is the
+    gate's own shape, and the gate is run on it through its hook contract (stdin
+    payload; silent exit 0 allows; a deny line denies). a deny or no answer is no merge:
+    a crashed or missing gate is not an allow, the rule archived() keeps for the
+    archive hook.
+    """
+    payload = json.dumps({"tool_name": "Bash", "cwd": str(cwd),
+                          "tool_input": {"command": shlex.join(["gh"] + [str(a) for a in gh_args])}})
+    try:
+        p = subprocess.run([sys.executable, str(MERGE_GATE)], input=payload, capture_output=True,
+                           text=True, timeout=30, env=gh_env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"the gate could not answer ({exc})"
+    tail = " ".join((p.stderr or p.stdout or "").split())[-160:]
+    if p.returncode != 0:
+        return f"the gate exited {p.returncode} ({tail})"
+    if not p.stdout.strip():
+        return ""
+    try:
+        out = (json.loads(p.stdout) or {}).get("hookSpecificOutput") or {}
+    except (ValueError, AttributeError):
+        return f"the gate printed something outside its contract ({tail})"
+    if out.get("permissionDecision") == "deny":
+        return " ".join(str(out.get("permissionDecisionReason") or "deny").split())[:240]
+    return f"the gate answered neither allow nor deny ({tail})"
 
 
 def gh_json(argv):
@@ -354,12 +423,19 @@ def ci_redrive():
 
 
 def ci_state(rollup) -> tuple[str, list]:
-    """("green"|"running"|"red", names). Engine verdict slots are not CI."""
-    red, running = [], []
+    """("green"|"running"|"red"|"none", names). Engine verdict slots are not CI.
+
+    NO CHECK IS NOT GREEN (PR #659 round 7, minor). An empty or null rollup, or
+    one whose every entry is an engine slot, came out "green": every check of none passed.
+    So in a repo with no CI the merge gate was one agent review, logged as "CI
+    green". "none" makes main() ask whether the base has a workflow file at all.
+    """
+    red, running, seen = [], [], 0
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "?"
         if ci_redrive().is_reviewer_slot(name):
             continue
+        seen += 1
         if c.get("__typename") == "CheckRun" or "conclusion" in c:
             if (c.get("status") or "COMPLETED") != "COMPLETED":
                 running.append(name)
@@ -375,7 +451,49 @@ def ci_state(rollup) -> tuple[str, list]:
         return "red", red
     if running:
         return "running", running
-    return "green", []
+    return ("green", []) if seen else ("none", [])
+
+
+def no_workflows(slug: str, base: str) -> bool:
+    """True when the base branch has no Actions workflow file. Raises RuntimeError when GitHub cannot say.
+
+    Asked for a PR with no check at its head. No workflow file (brag on
+    2026-11-09) means the review is the repo's one check by design, and the log
+    says exactly that. A workflow file with no check at this head means CI should
+    have run and did not, which is red, not a merge.
+    """
+    rc, out, err = run(["gh", "api", f"repos/{slug}/contents/.github/workflows?ref={urllib.parse.quote(base, safe='')}"])
+    if rc != 0:
+        if "404" in err or "Not Found" in err:
+            return True
+        raise RuntimeError(f"workflows on {base}: {' '.join(err.split())[:160]}")
+    try:
+        items = json.loads(out or "[]")
+    except ValueError as exc:
+        raise RuntimeError(f"workflows on {base}: not JSON ({exc})") from exc
+    if not isinstance(items, list):
+        raise RuntimeError(f"workflows on {base}: .github/workflows is not a directory")
+    return not any(str((i or {}).get("name") or "").endswith((".yml", ".yaml")) for i in items if isinstance(i, dict))
+
+
+# ONE SOURCE, the floor_desc() rule. linear-worker.sh picks a ticket in these state
+# types and no other (plus a started one it releases), so a rework round promised to any
+# other state is a promise to nobody. Read from the worker's own line; a copy here
+# would drift the day the worker learns a new state. () when it cannot be read.
+WORKER_SH = SCRIPTS / "linear-worker.sh"
+_QUEUE_RE = re.compile(r"^QUEUE_STATES = \(([^)]*)\)", re.M)
+_QUEUE: dict = {}
+
+
+def worker_queue_states() -> tuple:
+    key = str(WORKER_SH)
+    if key not in _QUEUE:
+        try:
+            m = _QUEUE_RE.search(WORKER_SH.read_text())
+        except OSError:
+            m = None
+        _QUEUE[key] = tuple(re.findall(r'"([a-z_]+)"', m.group(1))) if m else ()
+    return _QUEUE[key]
 
 
 def reviewer_state(statuses, floor: str) -> tuple[str, str]:
@@ -674,7 +792,7 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
     """What to do with one open PR. Pure apart from load_ticket, which a test fakes.
 
     Returns {"action", "reason", "ticket"?}. Actions: skip, reopened, young, wait, outside,
-    outside-filed, ladder, hold, merge, review, close-superseded, rework,
+    outside-filed, ladder, hold, merge, update, review, close-superseded, rework,
     close-requeue, close-comment.
     """
     key = f"{pr['slug']}#{pr['number']}"
@@ -719,9 +837,18 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         return {"action": "wait", "reason": "GitHub has not computed mergeability yet"}
     if pr["ci"] == "running":
         return {"action": "wait", "reason": "checks still running: " + ", ".join(pr["ci_names"][:4])}
-    if (rv == "approved" and pr["ci"] == "green" and pr["mergeable"] == "MERGEABLE"
+    # NO CHECK IS NOT GREEN (see ci_state). main() reads the base's workflow files
+    # for a "none" PR; without that read there is nothing true to say about its CI.
+    no_ci = pr.get("no_ci")
+    if pr["ci"] == "none" and no_ci is None:
+        return {"action": "hold",
+                "reason": f"no CI check at this head, and pr-owner could not tell whether {pr['base']} has a workflow file"}
+    ci_ok = pr["ci"] == "green" or (pr["ci"] == "none" and no_ci is True)
+    ci_said = ("CI green" if pr["ci"] == "green"
+               else f"no CI check at this head and no workflow file on {pr['base']}, so the review is this repo's one check")
+    if (rv == "approved" and ci_ok and pr["mergeable"] == "MERGEABLE"
             and pr["merge_state"] in MERGE_READY and not pr["draft"]):
-        return {"action": "merge", "reason": f"approved ({rv_desc}), CI green, mergeable, merge state {pr['merge_state']}"}
+        return {"action": "merge", "reason": f"approved ({rv_desc}), {ci_said}, mergeable, merge state {pr['merge_state']}"}
     if rv == "pending":
         return {"action": "wait", "reason": f"reviewer status pending: {rv_desc}"}
 
@@ -730,22 +857,38 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
         red.append("draft")
     if pr["ci"] == "red":
         red.append("CI red: " + ", ".join(pr["ci_names"][:4]))
+    if pr["ci"] == "none" and no_ci is False:
+        red.append(f"no CI check reported at this head, though {pr['base']} has a workflow file")
     if pr["mergeable"] == "CONFLICTING" or pr["merge_state"] == "DIRTY":
         red.append("conflicts with " + pr["base"])
     if rv == "rejected":
         red.append(f"review: {rv_desc}")
     if rv == "cap":
         red.append(f"review cap: {rv_desc}")
+    behind = False
     if not red and rv == "approved":
         gate = approved_gate(pr["merge_state"])
         if gate == 10:
             return {"action": "wait",
-                    "reason": f"approved and CI green, but GitHub says merge state {pr['merge_state']}; "
+                    "reason": f"approved and {ci_said}, but GitHub says merge state {pr['merge_state']}; "
                               f"pr-verdict-lib.sh rework_gate calls that terminal, so it is never reworked or closed for it. "
                               f"pr-owner reads it again next hour; a mover for it is ASK-4061"}
         if gate != 30:
             return {"action": "hold", "reason": f"pr-verdict-lib.sh rework_gate could not answer (rc {gate}) for merge state {pr['merge_state']}"}
-        red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
+        # BEHIND IS UPDATED, NOT CLOSED (PR #659 round 7, minor). rework_gate's 30
+        # is a rebase round, and with no open ticket the red table closed an
+        # approved, green, conflict-free PR whose one defect was its base moving,
+        # with a close comment naming no rebase actor. GitHub can do that rebase
+        # itself: `gh pr update-branch`, once per head. If the head did not move,
+        # the update failed, and the PR goes to the red table saying so.
+        tried = (state.get("updates") or {}).get(key) or {}
+        if pr["merge_state"] != "BEHIND":
+            red.append(f"approved, but GitHub says merge state {pr['merge_state']} (rework_gate: a rebase round)")
+        elif tried.get("head") == pr["head"]:
+            red.append(f"approved and only BEHIND {pr['base']}, but update-branch was asked at {iso(tried['at'])} "
+                       f"and the head did not move")
+        else:
+            behind = True
     if not red and rv == "unreviewed":
         past = (state.get("reviews") or {}).get(key) or {}
         if past.get("head") == pr["head"]:
@@ -753,23 +896,43 @@ def decide(pr: dict, now: int, state: dict, load_ticket, review_left: int, skip=
                 return {"action": "wait", "reason": f"a review was asked at this head at {iso(past['at'])}; waiting for its verdict"}
             red.append(f"a review was asked at this head at {iso(past['at'])} and no verdict landed")
         elif review_left <= 0:
-            return {"action": "wait", "reason": "CI green and never reviewed; this run's one review is spent"}
+            return {"action": "wait", "reason": f"{ci_said} and never reviewed; this run's one review is spent"}
         else:
-            return {"action": "review", "reason": "CI green, no reviewer verdict at this head"}
-    why = "; ".join(red)
+            return {"action": "review", "reason": f"{ci_said}, no reviewer verdict at this head"}
+    why = "; ".join(red) if red else f"approved, {ci_said}, conflict-free, BEHIND {pr['base']}"
+    word = "behind" if behind else "red"
 
     ticket, err = resolve_ticket(pr, load_ticket)
     if err:
         return {"action": "hold", "reason": err}
-    if ticket and ticket["state_type"] not in ("completed", "canceled"):
-        if ticket["state_type"] == "started":
-            lane_s = ticket["lane_hours"] * 3600
-            if ticket.get("started") and now - ticket["started"] < lane_s:
-                return {"action": "wait", "ticket": ticket,
-                        "reason": f"red ({why}), but {ticket['id']} started {hours(now - ticket['started'])} ago, inside the {ticket['lane_hours']}h lane window"}
-            if ticket.get("claim"):
-                return {"action": "wait", "ticket": ticket, "reason": f"red ({why}), but {ticket['id']} has {ticket['claim']}"}
+    open_ticket = bool(ticket) and ticket["state_type"] not in ("completed", "canceled")
+    if open_ticket and ticket["state_type"] == "started":
+        lane_s = ticket["lane_hours"] * 3600
+        if ticket.get("started") and now - ticket["started"] < lane_s:
+            return {"action": "wait", "ticket": ticket,
+                    "reason": f"{word} ({why}), but {ticket['id']} started {hours(now - ticket['started'])} ago, inside the {ticket['lane_hours']}h lane window"}
+        if ticket.get("claim"):
+            return {"action": "wait", "ticket": ticket, "reason": f"{word} ({why}), but {ticket['id']} has {ticket['claim']}"}
+    if behind:
+        return {"action": "update", "ticket": ticket, "reason": why}
+    if open_ticket:
         if worker_branch_issue(pr["branch"]) == ticket["id"]:
+            # A REWORK IS PROMISED ONLY TO A TICKET THE WORKER PICKS (ASK-4099). The
+            # rework comment says "so the worker reworks it", and for a Triage
+            # ticket nothing did: linear-worker.sh ready() returns False for it, and
+            # linear-sync.py requeue leaves every state but started alone. Waiting a rework
+            # round there is 48 hours on nobody, so it closes now with the resume
+            # note, the route a lane branch takes for the same reason.
+            queue = worker_queue_states()
+            if not queue:
+                return {"action": "hold", "ticket": ticket,
+                        "reason": f"{why}; no QUEUE_STATES in linear-worker.sh, so pr-owner cannot tell "
+                                  f"whether the worker picks {ticket['id']}"}
+            if ticket["state_type"] not in queue and not (ticket["state_type"] == "started" and "backlog" in queue):
+                return {"action": "close-requeue", "ticket": ticket,
+                        "reason": f"{why}; {ticket['id']} is {ticket['state_name'] or ticket['state_type']}, "
+                                  f"which linear-worker.sh does not pick (it picks {', '.join(queue)}), "
+                                  f"so no rework round is asked"}
             strike = (state.get("strikes") or {}).get(key) or {}
             if strike.get("head") == pr["head"]:
                 if now - strike.get("at", now) < AGE_S:
@@ -801,6 +964,33 @@ def save_state(path: Path, state: dict) -> None:
     tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(state, indent=1, sort_keys=True) + "\n")
     os.replace(tmp, path)
+
+
+def prune_state(state: dict, listed: dict, now: int) -> int:
+    """Drop per-PR records whose PR left its repo's open list 30 days ago. Returns how many.
+
+    THE STATE FILE STAYS BOUNDED (ASK-4099). Every map here gained a key per PR;
+    strikes lost theirs on a close and the rest kept theirs for good, so the file
+    grew with every PR the fleet ever had. A record is dropped when its repo was listed in full this run,
+    its PR is not in that list, and the record is KEEP_DAYS old. Open PRs are
+    never pruned, so a reopened PR keeps its undo for as long as it stays open; a
+    PR closed by pr-owner keeps it for 30 days, which is what its close comment
+    says. A repo that was not read, or whose list reached LIST_LIMIT, is
+    never pruned: absent from a list nobody read is not gone. A repo dropped from the
+    fleet keeps its records, a bounded set, since nothing new is written for it.
+    """
+    dropped = 0
+    for name in PER_PR_MAPS:
+        entries = state.get(name)
+        if not isinstance(entries, dict):
+            continue
+        for key in list(entries):
+            slug = key.rpartition("#")[0]
+            at = (entries[key] or {}).get("at") if isinstance(entries[key], dict) else None
+            if slug in listed and key not in listed[slug] and now - int(at or 0) >= KEEP_S:
+                del entries[key]
+                dropped += 1
+    return dropped
 
 
 # ---------------------------------------------------------------- acting
@@ -848,6 +1038,51 @@ def ticket_note(ticket: dict, line: str) -> tuple[bool, str]:
     return not lost, lost + "note posted"
 
 
+def merge(pr: dict) -> tuple[bool, str]:
+    """`gh pr merge --auto --squash <n>` from the repo's checkout. (ok, what happened).
+
+    The gate's shape has no -R, so the checkout names the repo, as it does for
+    automerge_arm. Before the merge, the PR is read from that same checkout: the
+    same URL proves gh resolves this repo there, and the same head stands in for
+    the --match-head-commit pin the gate does not allow. That pin was atomic and
+    this read is about a second early; on a protected repo a head pushed in that
+    second is held by GitHub, whose kipi/reviewer-approved is per head. After the
+    merge, the PR is read back: --auto arms auto-merge on any state gh does not
+    call mergeable now, and gh prints nothing either way when no terminal is
+    attached, so the log says merged, armed, or neither merged nor armed (a failure).
+    """
+    n, cwd, env = str(pr["number"]), pr["path"], gh_env()
+
+    def view(fields):
+        rc, out, err = run(["gh", "pr", "view", n, "--json", fields], env=env, cwd=cwd)
+        if rc != 0:
+            raise RuntimeError(" ".join((err or out).split())[:160] or f"gh exited {rc}")
+        got = json.loads(out or "{}")
+        return got if isinstance(got, dict) else {}
+
+    try:
+        seen = view("url,headRefOid")
+    except (RuntimeError, ValueError) as exc:
+        return False, f"the pre-merge read from {cwd} failed ({exc}); not merged"
+    if seen.get("url") != pr["url"]:
+        return False, f"gh in {cwd} reads PR #{n} as {seen.get('url') or '?'}, not {pr['url']}; not merged"
+    if seen.get("headRefOid") != pr["head"]:
+        return False, (f"the head moved from {pr['head'][:8]} to {(seen.get('headRefOid') or '?')[:8]} since the read; "
+                       f"not merged, and the new head is decided on its own")
+    rc, out, err = gh_write(["pr", "merge", "--auto", "--squash", n], cwd=cwd, env=env)
+    if rc != 0:
+        return False, f"merge failed: {' '.join((err or out).split())[:200]}"
+    try:
+        after = view("state,autoMergeRequest")
+    except (RuntimeError, ValueError) as exc:
+        return False, f"the merge exited 0 but its read-back failed ({exc})"
+    if after.get("state") == "MERGED":
+        return True, "merged"
+    if after.get("autoMergeRequest"):
+        return True, "auto-merge armed; GitHub merges it when its required checks pass"
+    return False, f"gh exited 0, but the PR is neither merged nor armed (state {after.get('state') or '?'})"
+
+
 def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
     """Apply one decision. (ok, what happened)."""
     slug, n, head, branch = pr["slug"], str(pr["number"]), pr["head"], pr["branch"]
@@ -866,8 +1101,17 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         save_state(state_path(), state)
         return True, f"alert filed on {ident} (once per PR)"
     if d["action"] == "merge":
-        rc, out, err = gh_write(["pr", "merge", n, "-R", slug, "--squash", "--match-head-commit", head])
-        return rc == 0, "merged" if rc == 0 else f"merge failed: {' '.join(err.split())[:160]}"
+        return merge(pr)
+    if d["action"] == "update":
+        # Recorded BEFORE the call, as a review is: an update that fails must not
+        # be asked again every hour at the same head (decide() reads this record).
+        state.setdefault("updates", {})[key] = {"head": head, "at": now}
+        save_state(state_path(), state)
+        rc, out, err = gh_write(["pr", "update-branch", n, "-R", slug])
+        if rc != 0:
+            return False, f"update-branch failed: {' '.join((err or out).split())[:160]}"
+        return True, (f"update-branch asked; GitHub writes a new head, and pr-owner decides it again after "
+                      f"{hours(QUIET_S)} of quiet (a new head needs its own review)")
     if d["action"] == "review":
         argv = ["bash", str(ROOT / "kipi"), "review", n, "--repo", pr["path"], "--post"]
         ticket, _ = resolve_ticket(pr, read_ticket)
@@ -905,7 +1149,7 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         findings = latest_findings(slug, pr["number"])
         body = (f"Closed by pr-owner (ASK-3962), the hourly owner of every open fleet PR.\n\n"
                 f"Why: {d['reason']}.\n\n"
-                f"Branch {branch} is kept at {short}. Nothing was deleted. Reopen this PR to undo.")
+                f"Branch {branch} is kept at {short}. Nothing was deleted. Reopen this PR within {KEEP_DAYS} days to undo.")
         if d["action"] == "close-requeue":
             body += f"\n\n{ticket['id']} gets a resume note: resume from branch {branch} at {short}."
         if findings:
@@ -919,7 +1163,7 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
         what, noted = "closed, branch kept", True
         if ticket and d["action"] == "close-requeue":
             line = (f"Resume from branch {branch} at {short}. pr-owner (ASK-3962) closed PR #{n} ({d['reason']}). "
-                    f"Branch kept; reopen the PR to undo.")
+                    f"Branch kept; reopen the PR within {KEEP_DAYS} days to undo.")
             noted, note = ticket_note(ticket, line)
             what += "; " + note
         return noted, what
@@ -928,7 +1172,7 @@ def act(pr: dict, d: dict, state: dict, now: int) -> tuple[bool, str]:
 
 # ---------------------------------------------------------------- main
 
-WRITES = ("outside", "merge", "review", "rework", "close-superseded", "close-requeue", "close-comment")
+WRITES = ("outside", "merge", "update", "review", "rework", "close-superseded", "close-requeue", "close-comment")
 
 
 def main(argv=None) -> int:
@@ -986,6 +1230,8 @@ def _run(argv=None) -> int:
     counts = {k: 0 for k in ("skip", "reopened", "outside-filed", "ladder", "young", "wait", "hold") + WRITES}
     n_repos = n_excluded = n_unreadable = n_prs = n_failed = 0
     review_left = 1
+    listed: dict = {}   # slug -> every open PR key, for repos listed in full (prune_state)
+    no_ci_at: dict = {}  # (slug, base) -> no_workflows(), one read per base per run
     for name, path, _remote in rows:
         n_repos += 1
         try:
@@ -1018,11 +1264,13 @@ def _run(argv=None) -> int:
             print(f"EXCLUDED {name} ({slug}): the archive guard refuses it; not read")
             continue
         try:
-            raw = gh_json(["pr", "list", "-R", slug, "--state", "open", "--limit", "200", "--json", PR_FIELDS])
+            raw = gh_json(["pr", "list", "-R", slug, "--state", "open", "--limit", str(LIST_LIMIT), "--json", PR_FIELDS])
         except (RuntimeError, ValueError) as exc:
             n_unreadable += 1
             print(f"UNREADABLE {name} ({slug}): gh pr list failed: {exc}")
             continue
+        if len(raw or []) < LIST_LIMIT:
+            listed[slug] = {f"{slug}#{int(r['number'])}" for r in raw or []}
         for item in sorted(raw or [], key=lambda r: int(r["number"])):
             n_prs += 1
             pr = normalize(slug, name, path, item)
@@ -1036,6 +1284,10 @@ def _run(argv=None) -> int:
                         pr["reviewer"] = reviewer_state((st or {}).get("statuses"), floor)
                         if pr["touches_ledger"]:
                             pr["lessons"] = lessons_verdict(slug, pr)
+                        if pr["ci"] == "none":
+                            if (slug, pr["base"]) not in no_ci_at:
+                                no_ci_at[(slug, pr["base"])] = no_workflows(slug, pr["base"])
+                            pr["no_ci"] = no_ci_at[(slug, pr["base"])]
                         pr["ladder"] = ladder_check(pr)
                     else:
                         # A fork's commits and nothing else: the 12h quiet gate needs
@@ -1067,6 +1319,11 @@ def _run(argv=None) -> int:
                 n_failed += 1
             print(f"{d['action'].upper()} {tag}: {d['reason']} -> {what}")
 
+    # A dry run prunes a copy, so it can say what --apply would drop and still write nothing.
+    pruned = prune_state(state if args.apply else json.loads(json.dumps(state)), listed, now)
+    if pruned:
+        print(f"{'pruned' if args.apply else 'would prune'} {pruned} state entr{'y' if pruned == 1 else 'ies'}: "
+              f"their PRs left a fully listed repo's open list at least {KEEP_DAYS} days ago")
     if args.apply:
         state["last_run"] = {"at": iso(now), "repos": n_repos, "prs": n_prs, "failed": n_failed,
                              "counts": {k: v for k, v in counts.items() if v}}

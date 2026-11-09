@@ -191,9 +191,9 @@ check("conflict, ticket Done -> close-comment",
 check("review cap -> red",
       act_of(pr(reviewer=("cap", "review cap reached (3); needs a human decision")),
              {"ASK-2540": ticket("ASK-2540", "backlog")})["action"], "close-requeue")
-check("approved but BEHIND -> red, not a merge",
+check("approved but BEHIND -> update-branch, not a merge and not a close (PR #659 round 7, minor 2)",
       act_of(pr(reviewer=("approved", "APPROVE"), merge_state="BEHIND"), {"ASK-2540": ticket("ASK-2540")})["action"],
-      "close-requeue")
+      "update")
 check("Linear cannot answer -> hold, never 'no ticket'",
       act_of(pr(), {"ASK-2540": RuntimeError("HTTP 500")})["action"], "hold")
 check("started long ago but a live claim -> wait",
@@ -269,8 +269,19 @@ check("approved, CI green, MERGEABLE, merge state UNKNOWN -> wait",
 no_field = po.normalize("o/r", "r", "/p", {"number": 1, "isCrossRepository": False, "mergeable": "MERGEABLE"})["merge_state"]
 check("gh omitted mergeStateStatus on an approved green PR -> wait, not a rework (round 5 minor)",
       act_of(pr(reviewer=ok_rv, merge_state=no_field), t2540)["action"], "wait")
-check("approved, BEHIND -> still red (rework_gate: a rebase round)",
-      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540)["action"], "close-requeue")
+tried = {"updates": {"assafkip/kipi-system#526": {"head": pr()["head"], "at": NOW - H}}}
+check("approved, BEHIND, update-branch already asked at this head -> red (the update did not move it)",
+      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540, tried)["action"], "close-requeue")
+check("approved, BEHIND, an update asked at an older head -> update again",
+      act_of(pr(reviewer=ok_rv, merge_state="BEHIND"), t2540,
+             {"updates": {"assafkip/kipi-system#526": {"head": "c" * 40, "at": NOW - H}}})["action"], "update")
+check("approved, no check at the head, base has no workflow -> merge, never logged as CI green",
+      [(d["action"], "CI green" in d["reason"]) for d in
+       [act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="none", no_ci=True))]], [("merge", False)])
+check("approved, no check at the head, base has a workflow -> red, not a merge",
+      act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="none", no_ci=False), t2540)["action"], "close-requeue")
+check("no check at the head and the workflow read never happened -> hold",
+      act_of(pr(reviewer=ok_rv, merge_state="CLEAN", ci="none"))["action"], "hold")
 _lib = getattr(po, "VERDICT_LIB", None)
 po.VERDICT_LIB = TMP / "no-such-lib.sh"
 check("rework_gate cannot answer -> hold, never a guess",
@@ -293,10 +304,13 @@ check("CI: a running check run -> running",
       po.ci_state([{"__typename": "CheckRun", "name": "validate", "status": "IN_PROGRESS", "conclusion": ""}])[0], "running")
 check("CI: a failed check run -> red",
       po.ci_state([{"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "FAILURE"}])[0], "red")
-check("CI: the reviewer context is not CI",
-      po.ci_state([{"__typename": "StatusContext", "context": "kipi/reviewer-approved", "state": "FAILURE"}])[0], "green")
+check("CI: the reviewer context is not CI, so alone it is no check at all (PR #659 round 7, minor 1)",
+      po.ci_state([{"__typename": "StatusContext", "context": "kipi/reviewer-approved", "state": "FAILURE"}])[0], "none")
 check("CI: a third engine's slot is not CI either (PR #659 round 1, minor 1)",
-      po.ci_state([{"__typename": "StatusContext", "context": "kipi/gemini-approved", "state": "FAILURE"}])[0], "green")
+      po.ci_state([{"__typename": "StatusContext", "context": "kipi/gemini-approved", "state": "FAILURE"}])[0], "none")
+check("CI: an engine slot red beside a passing check -> green",
+      po.ci_state([{"__typename": "StatusContext", "context": "kipi/gemini-approved", "state": "FAILURE"},
+                   {"__typename": "CheckRun", "name": "validate", "status": "COMPLETED", "conclusion": "SUCCESS"}])[0], "green")
 check("ticket from a fix/ branch", po.ticket_candidates("fix/fleet-scan-runner-trees-drain-ask-2540", ""), ["ASK-2540"])
 check("ticket from a title", po.ticket_candidates("feature", "fix(ASK-142): stop-hook routing"), ["ASK-142"])
 check("lessons/weekly-2026-10-19 names no ticket", po.ticket_candidates("lessons/weekly-2026-10-19", "weekly distill 2026-10-19"), [])
@@ -510,6 +524,7 @@ LEDGERS = {SHA[7]: {"k1": {"status": "published"}, "k2": {"status": "published"}
 TICKETS = {"ASK-2540": ticket("ASK-2540", "backlog"), "ASK-3036": ticket("ASK-3036", "started", started_h=400),
            "ASK-142": ticket("ASK-142", "started", started_h=200), "ASK-777": ticket("ASK-777", "backlog")}
 SENT: list[list[str]] = []
+MERGED: set = set()
 
 
 def fake_run(argv, timeout=120, env=None, cwd=None):
@@ -521,7 +536,9 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
     if argv[:3] == ["gh", "pr", "view"]:
         n = int(argv[3])
         files = [{"path": "lesson-candidates/.processed.json"}] if n == 7 else [{"path": "x.py"}]
-        return ok({"commits": [{"committedDate": PUSHED[n]}], "files": files})
+        return ok({"commits": [{"committedDate": PUSHED[n]}], "files": files,
+                   "url": f"https://github.com/{SLUG}/pull/{n}", "headRefOid": SHA[n],
+                   "state": "MERGED" if n in MERGED else "OPEN", "autoMergeRequest": None})
     if argv[:2] == ["gh", "api"]:
         path = argv[2]
         if "/status" in path:
@@ -534,6 +551,8 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
             ref = path.split("ref=")[1]
             return ok({"content": base64.b64encode(json.dumps(LEDGERS.get(ref, {})).encode()).decode()})
     if argv[:3] in (["gh", "pr", "close"], ["gh", "pr", "merge"], ["gh", "pr", "comment"]):
+        if argv[2] == "merge":
+            MERGED.add(int(argv[-1]))
         return 0, "", ""
     if len(argv) > 2 and argv[1].endswith("linear-sync.py"):
         return 0, f"{argv[3]}: In Progress -> Backlog (exit: pr-owner)" if argv[2] == "requeue" else "", ""
@@ -602,8 +621,10 @@ req = [a for a in writes() if a[1].endswith("linear-sync.py") and a[3] == "ASK-3
 check("#2's started ticket is requeued with the pr-owner exit and a resume line",
       bool(req) and req[0][2] == "requeue" and req[0][5] == "pr-owner" and req[0][7].startswith("Resume from branch sana/ask-3036 at"),
       True)
-merge3 = sent_for(3, "merge")
-check("#3 is merged pinned to its head", bool(merge3) and merge3[0][-2:] == ["--match-head-commit", SHA[3]], True)
+# The gate's shape puts the PR number last, not at argv[3] where sent_for() looks.
+merge3 = [a for a in writes() if a[:3] == ["gh", "pr", "merge"] and a[-1] == "3"]
+check("#3 is merged with the gate's one shape (PR #659 round 7, minor 3)",
+      merge3, [["gh", "pr", "merge", "--auto", "--squash", "3"]])
 rev = [a for a in writes() if len(a) > 2 and a[2] == "review"]
 check("one review this run, on #4", [a[3] for a in rev], ["4"])
 check("#5 waits: the run's one review is spent", sent_for(5, "close") + sent_for(5, "comment"), [])

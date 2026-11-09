@@ -102,7 +102,8 @@ promise("P07", "a PR younger than 48h belongs to whatever opened it",
         "A PR younger than 48 hours belongs to")
 promise("P08", "12h of quiet gates every write", "So it gates every write")
 promise("P09", "a lessons PR is superseded by its content, not its branch name", "Decided by content")
-promise("P10", "a merge is a squash pinned to the head", "--match-head-commit <sha>")
+promise("P10", "a merge is the fleet's one shape, gh pr merge --auto --squash <n>, from the repo's own checkout",
+        "`gh pr merge --auto --squash <n>`, run from the")
 promise("P11", "UNSTABLE merges only when our CI read is green",
         "UNSTABLE is allowed ONLY because", "whose only non-green status was the advisory")
 promise("P12", "at most one review per run and per head; a crashed review is not asked again",
@@ -121,7 +122,8 @@ promise("P18", "no write ever deletes a branch", "A close never deletes the bran
         "pr-owner never deletes a branch", "Nothing was deleted")
 promise("P19", "a reopen is the undo: no write of any kind until a new push",
         "Reopening the PR undoes it", "A REOPEN IS THE UNDO", "was written and never read",
-        "a reopen is the undo, so pr-owner leaves it until a new push", "reopen the PR to undo")
+        "a reopen is the undo, so pr-owner leaves it until a new push", "reopen the PR within 30 days to undo",
+        "reopen the PR within {KEEP_DAYS} days to undo")
 promise("P20", "a fork is never acted on: no Linear read, no ladder read, no comment, no close",
         "A FORK IS NEVER ACTED ON", "pr-owner never acts on it")
 promise("P21", "a fork waits behind the 48h age and the 12h quiet", "It waits behind the same 48h age and 12h quiet")
@@ -166,6 +168,20 @@ promise("P43", "only ASK-n names a ticket", "The board's only team")
 promise("P44", "kipi-dispatch.sh is read, never edited", "this reads those files and never edits them")
 promise("P45", "--skip leaves one PR alone for this run only", "leave one PR alone this run")
 promise("P46", "client repos are in: the dispatcher's overlay rows are owned", "Client repos are in")
+# ASK-4099: the three round-7 minors of PR #659 and the two follow-ups the round-7 contract test found.
+promise("P47", "a ticket linear-worker.sh does not pick (Triage) gets no rework round and no 'worker reworks it'",
+        "A REWORK IS PROMISED ONLY TO A TICKET THE WORKER PICKS", "which linear-worker.sh does not pick",
+        "no QUEUE_STATES in linear-worker.sh")
+promise("P48", "the state file stays bounded: a PR gone from a fully listed repo for 30 days loses its entries",
+        "THE STATE FILE STAYS BOUNDED", "never pruned", "Reopen this PR within 30 days to undo")
+promise("P49", "no check reported is not CI green: no workflow merges on the review and says so, workflows is red, unread holds",
+        "NO CHECK IS NOT GREEN", "logged as that and never as CI green", "could not tell whether")
+promise("P50", "an approved, green, conflict-free PR that is only BEHIND is updated once per head, never closed for it",
+        "BEHIND IS UPDATED, NOT CLOSED", "once per head", "update-branch was asked at")
+promise("P51", "the merge is asked of merge-bypass-gate.py first, re-read as the same PR at the same head, and read back",
+        "ASKED OF THE GATE, NOT HIDDEN FROM IT", "a deny or no answer is no merge", "neither merged nor armed",
+        "merge-bypass-gate.py refused it",
+        "GH_REPO and GH_HOST never reach")
 
 EXEMPT = [
     ("select `sana` branches only", "history: what the 2026-11-08 audit found in other scripts"),
@@ -239,6 +255,18 @@ LS_RC: dict = {}
 REVIEW_RC = [0]
 ALLOW_BASH_C = [False]
 SLUG_ASKED: list = []
+# ASK-4099 knobs. WORKFLOWS: slug -> workflow file names on its base (absent = a 404,
+# no CI configured). VIEW_HEAD / VIEW_URL: what the pre-merge re-read from the repo's
+# checkout answers instead of the truth. ARMED / NEITHER: what a merge leaves behind.
+WORKFLOWS: dict = {}
+WORKFLOWS_FAIL: set = set()
+VIEW_HEAD: dict = {}
+VIEW_URL: dict = {}
+ARMED: set = set()
+NEITHER: set = set()
+MERGED_DONE: set = set()
+CWD_ENVS: list = []
+CWD_MARK = "(cwd "
 
 
 def repo(slug, name, path=None, **kw):
@@ -269,21 +297,46 @@ def add(slug, n, branch, title="t", verdict=None, pushed=OLD, files=("x.py",), *
     return r
 
 
+def slug_in(a):
+    """The repo a recorded gh argv acts on: its -R, else the checkout it ran from."""
+    if "-R" in a:
+        return a[a.index("-R") + 1]
+    if a and a[-1].startswith(CWD_MARK):
+        path = a[-1][len(CWD_MARK):-1]
+        return next((s for s, R in REPOS.items() if R["path"] == path), "?cwd " + path)
+    return "?"
+
+
 def fake_run(argv, timeout=120, env=None, cwd=None):
     argv = [str(a) for a in argv]
-    SENT.append(argv)
+    # A call made from a checkout records which one: without -R, the checkout IS the repo.
+    SENT.append(argv + ([f"{CWD_MARK}{cwd})"] if cwd is not None else []))
+    if cwd is not None:
+        CWD_ENVS.append(env)
     ok = lambda obj: (0, json.dumps(obj), "")  # noqa: E731
+    slug = slug_in(SENT[-1])
     if argv[:3] == ["gh", "pr", "list"]:
         R = REPOS[argv[argv.index("-R") + 1]]
         return (1, "", "HTTP 502: bad gateway") if R["list_fails"] else ok(list(R["prs"].values()))
     if argv[:3] == ["gh", "pr", "view"]:
-        n, R = int(argv[3]), REPOS[argv[argv.index("-R") + 1]]
+        n, R = int(argv[3]), REPOS[slug]
         r = R["prs"][n]
+        done = (slug, n) in MERGED_DONE
         full = {"commits": [{"committedDate": R["pushed"][n]}], "files": [{"path": p} for p in R["files"][n]],
-                "mergeable": r["mergeable"], "mergeStateStatus": r["mergeStateStatus"]}
+                "mergeable": r["mergeable"], "mergeStateStatus": r["mergeStateStatus"],
+                "url": VIEW_URL.get((slug, n), r["url"]), "headRefOid": VIEW_HEAD.get((slug, n), r["headRefOid"]),
+                "state": "MERGED" if done and (slug, n) not in ARMED | NEITHER else "OPEN",
+                "autoMergeRequest": {"enabledAt": FRESH} if done and (slug, n) in ARMED else None}
         return ok({f: full[f] for f in argv[argv.index("--json") + 1].split(",")})
     if argv[:2] == ["gh", "api"]:
         path = argv[2]
+        m = re.match(r"repos/(.+)/contents/\.github/workflows\?ref=(.+)$", path)
+        if m:
+            if m.group(1) in WORKFLOWS_FAIL:
+                return 1, "", "HTTP 502: bad gateway"
+            if m.group(1) not in WORKFLOWS:
+                return 1, "", "gh: Not Found (HTTP 404)"
+            return ok([{"name": w, "type": "file"} for w in WORKFLOWS[m.group(1)]])
         m = re.match(r"repos/(.+)/commits/([0-9a-f]+)/status$", path)
         if m:
             R = REPOS[m.group(1)]
@@ -298,8 +351,11 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
             if led is None:
                 return 1, "", "HTTP 404: Not Found"
             return ok({"content": base64.b64encode(json.dumps(led).encode()).decode()})
-    if argv[:2] == ["gh", "pr"] and argv[2] in ("close", "merge", "comment"):
-        rc, err = WRITE_RC.get((argv[2], argv[argv.index("-R") + 1], int(argv[3])), (0, ""))
+    if argv[:2] == ["gh", "pr"] and argv[2] in WRITE_VERBS:
+        n = int(next(a for a in argv[3:] if a.isdigit()))
+        rc, err = WRITE_RC.get((argv[2], slug, n), (0, ""))
+        if rc == 0 and argv[2] == "merge":
+            MERGED_DONE.add((slug, n))
         return rc, "", err
     if len(argv) > 3 and argv[1].endswith("linear-sync.py"):
         default = (0, f"{argv[3]}: In Progress -> Backlog (exit: pr-owner)" if argv[2] == "requeue" else "", "")
@@ -327,11 +383,15 @@ po.run, po.run_logged, po.slug_for = fake_run, fake_run_logged, slug_lookup
 po.fleet_repos = lambda root=None: ([(R["name"], R["path"], "") for R in REPOS.values()], "")
 
 
+WRITE_VERBS = ("close", "merge", "comment", "update-branch")
+
+
 def gh_writes(sent, slug=None, n=None, verb=None):
     out = []
     for a in sent:
-        if a[:2] == ["gh", "pr"] and len(a) > 3 and a[2] in ("close", "merge", "comment"):
-            if ((slug is None or a[a.index("-R") + 1] == slug) and (n is None or a[3] == str(n))
+        if a[:2] == ["gh", "pr"] and len(a) > 3 and a[2] in WRITE_VERBS:
+            num = next((x for x in a[3:] if x.isdigit()), "")
+            if ((slug is None or slug_in(a) == slug) and (n is None or num == str(n))
                     and (verb is None or a[2] == verb)):
                 out.append(a)
     return out
@@ -600,8 +660,8 @@ rc, A = run_main("A", ["--apply", "--skip", "fx#45"], NOW)
 holds("P01", "the same fleet under --apply does write (so the dry check can fail)", len(all_writes(A)) > 10, True)
 holds("P32", "a clean --apply exits 0", rc, 0)
 
-holds("P10", "#3 is a squash merge pinned to its head, and nothing more",
-      gh_writes(A, FX, 3), [["gh", "pr", "merge", "3", "-R", FX, "--squash", "--match-head-commit", head_of(FX, 3)]])
+holds("P10", "#3 is `gh pr merge --auto --squash 3` from fx's own checkout, and nothing more",
+      gh_writes(A, FX, 3), [["gh", "pr", "merge", "--auto", "--squash", "3", f"{CWD_MARK}{REPOS[FX]['path']})"]])
 holds("P11", "approved and UNSTABLE with our CI read red -> no merge", gh_writes(A, FX, 20, "merge"), [])
 holds("P11", "approved and UNSTABLE only from the advisory codex slot -> merged",
       len(gh_writes(A, FX, 26, "merge")), 1)
@@ -622,6 +682,8 @@ holds("P15", "#1 (fix/ branch, ticket in Backlog) is closed, and its ticket gets
        bool(note1) and note1[0][4].startswith(f"Resume from branch fix/thing-ask-2540 at {head_of(FX, 1)[:8]}")),
       (1, ["progress"], True))
 c16 = gh_writes(A, FX, 16, "close")
+holds("P19", "#1's resume note says how long a reopen undoes the close",
+      bool(note1) and "reopen the PR within 30 days to undo" in note1[0][4], True)
 holds("P16", "#16 (red, no ticket) is closed with a comment that says so",
       [("--comment" in a, "no ticket named in the branch or title" in body_of(a)) for a in c16], [(True, True)])
 holds("P39", "#16's close comment carries the last review findings",
@@ -695,7 +757,7 @@ c2 = gh_writes(B49, FX, 2, "close")
 holds("P13", "49h after the rework, still red at the same head, #2 is closed", len(c2), 1)
 holds("P19", "the close comment says the branch is kept and how to undo",
       bool(c2) and f"Branch sana/ask-3036 is kept at {head_of(FX, 2)[:8]}" in body_of(c2[0])
-      and "Reopen this PR to undo" in body_of(c2[0]), True)
+      and "Reopen this PR within 30 days to undo" in body_of(c2[0]), True)
 holds("P22", "no fork alert is filed a second time", sink_calls(B1, 9) + sink_calls(B1, 11) + sink_calls(B2, 9)
       + sink_calls(B2, 11) + sink_calls(B49, 9) + sink_calls(B49, 11), [])
 rc, B200 = run_main("B200", ["--apply"], NOW + 200 * H)
@@ -966,6 +1028,162 @@ for k in ("KIPI_DISPATCH_REGISTRY", "KIPI_DISPATCH_TARGETS"):
 holds("P46", "the dispatcher's overlay row (a client repo) is in the set", "client" in [r[0] for r in rows], True)
 holds("P44", "reading the dispatcher leaves kipi-dispatch.sh byte for byte as it was",
       (fx_root / "kipi-dispatch.sh").read_bytes() == disp_before, True)
+
+# ================================================================ scenario F: ASK-4099
+print("-- scenario F: ASK-4099 (a ticket the worker does not pick, the bound, no checks, BEHIND, the merge)")
+DAY = 86400
+
+# F1: a Triage ticket is never promised a worker rework.
+REPOS.clear()
+fresh_state("F1")
+TR = repo("o/tri", "tri")
+add(TR, 1, "sana/ask-7001", verdict=CHANGES, statusCheckRollup=RED)
+add(TR, 2, "sana/ask-7002", verdict=CHANGES, statusCheckRollup=RED)
+TICKETS.update({"ASK-7001": tk("ASK-7001", "triage", "Triage"), "ASK-7002": tk("ASK-7002", "backlog")})
+rc, F1 = run_main("F1", ["--apply"], NOW)
+c1 = gh_writes(F1, TR, 1)
+holds("P47", "a red worker-branch PR whose ticket is in Triage: no 'worker reworks it' text in any write",
+      [a for a in c1 if "worker reworks it" in body_of(a)], [])
+holds("P47", "... it is closed (branch kept) saying why, and its ticket gets a resume note, not a requeue",
+      ([a[2] for a in c1], [a[2] for a in ls_calls(F1, ident="ASK-7001")],
+       bool(c1) and "which linear-worker.sh does not pick" in body_of(c1[0])), (["close"], ["progress"], True))
+holds("P47", "the same PR with its ticket in Backlog does get 'so the worker reworks it' (so the check can fail)",
+      ["so the worker reworks it" in body_of(a) for a in gh_writes(F1, TR, 2)], [True])
+holds("P47", "the queue states are read from linear-worker.sh itself",
+      tuple((getattr(po, "worker_queue_states", None) or (lambda: ("missing",)))()), ("backlog", "unstarted"))
+fresh_state("F1b")
+no_queue = TMP / "no-queue" / "linear-worker.sh"
+no_queue.parent.mkdir()
+no_queue.write_text("#!/bin/bash\necho no queue states here\n")
+_wsh = getattr(po, "WORKER_SH", None)
+po.WORKER_SH = no_queue
+rc, F1b = run_main("F1b", ["--apply"], NOW)
+po.WORKER_SH = _wsh
+holds("P47", "a linear-worker.sh with no QUEUE_STATES holds each worker-branch red PR: no write, exit 2",
+      (writes_for(F1b, TR, 1, "ASK-7001") + writes_for(F1b, TR, 2, "ASK-7002"), rc), ([], 2))
+
+# F2: 1,000 old closed entries are pruned on the next run; nothing a reopen or an unread repo needs is.
+REPOS.clear()
+sp = fresh_state("F2")
+PRN = repo("o/prune", "prune")
+DOWN = repo("o/down", "down", list_fails=True)
+BIG = repo("o/big", "big")
+for n in range(1, 201):
+    add(BIG, n, f"feat/b{n}", createdAt=FRESH, pushed=FRESH)
+add(PRN, 3, "feat/reopened", statusCheckRollup=RED)
+OLD_AT = NOW - 40 * DAY
+old = lambda h="f" * 40: {"head": h, "at": OLD_AT, "action": "close-comment"}  # noqa: E731
+st0 = {"closed": {f"{PRN}#{n}": old() for n in range(1000, 2000)}}
+st0["closed"].update({f"{PRN}#3": old(head_of(PRN, 3)), f"{PRN}#4000": {**old(), "at": NOW - 5 * DAY},
+                      f"{BIG}#9999": old(), **{f"{DOWN}#{n}": old() for n in range(1, 11)}})
+st0.update({"strikes": {f"{PRN}#5001": old()}, "reviews": {f"{PRN}#5002": old()},
+            "outside": {f"{PRN}#5003": {**old(), "ticket": "ASK-1"}}, "updates": {f"{PRN}#5004": old()}})
+sp.parent.mkdir(parents=True)
+sp.write_text(json.dumps(st0))
+before = sp.read_bytes()
+rc, _ = run_main("F2-dry", [], NOW)
+holds("P48", "a dry run leaves the state file byte for byte and says what it would prune",
+      (sp.read_bytes() == before, "would prune 1004 state entr" in OUT["F2-dry"]), (True, True))
+rc, F2 = run_main("F2", ["--apply"], NOW)
+st = json.loads(sp.read_text())
+holds("P48", "1,000 closed entries 40 days old for PRs gone from a listed repo are pruned; the rest stay",
+      sorted(st.get("closed") or {}),
+      sorted([f"{PRN}#3", f"{PRN}#4000", f"{BIG}#9999"] + [f"{DOWN}#{n}" for n in range(1, 11)]))
+holds("P48", "... and the same rule prunes strikes, reviews, fork alerts and updates",
+      [st.get(m) or {} for m in ("strikes", "reviews", "outside", "updates")], [{}, {}, {}, {}])
+holds("P48", "#3, reopened at the head pr-owner closed it at 40 days ago, keeps its undo: no write",
+      (writes_for(F2, PRN, 3), f"reopened {PRN}#3" in OUT["F2"]), ([], True))
+holds("P48", "the run says how many it pruned", "pruned 1004 state entr" in OUT["F2"], True)
+
+# F3: no check reported is not CI green.
+REPOS.clear()
+fresh_state("F3")
+NC, WF, WFF = repo("o/nochecks", "nochecks"), repo("o/withwf", "withwf"), repo("o/wffail", "wffail")
+SLOT_ONLY = [{"__typename": "StatusContext", "context": po.REVIEWER_CONTEXT, "state": "SUCCESS"}]
+add(NC, 1, "feat/a", verdict=APPROVE, mergeStateStatus="CLEAN", statusCheckRollup=None)
+add(NC, 2, "feat/b", verdict=APPROVE, mergeStateStatus="CLEAN", statusCheckRollup=SLOT_ONLY)
+add(WF, 1, "feat/a", verdict=APPROVE, mergeStateStatus="CLEAN", statusCheckRollup=None)
+add(WFF, 1, "feat/a", verdict=APPROVE, mergeStateStatus="CLEAN", statusCheckRollup=None)
+WORKFLOWS[WF] = ["ci.yml"]
+WORKFLOWS_FAIL.add(WFF)
+holds("P49", "ci_state: null, empty and slot-only rollups are 'none'; one passing check is 'green'",
+      [po.ci_state(r)[0] for r in (None, [], SLOT_ONLY, GREEN)], ["none", "none", "none", "green"])
+rc, F3 = run_main("F3", ["--apply"], NOW)
+mline = lambda tag, s, n: [ln for ln in OUT[tag].splitlines() if ln.startswith(f"MERGE {s}#{n} ")]  # noqa: E731
+holds("P49", "in a repo with no workflow file, both are merged, and neither log line says 'CI green'",
+      [(len(gh_writes(F3, NC, n, "merge")), [("CI green" in ln, "no workflow file" in ln) for ln in mline("F3", NC, n)])
+       for n in (1, 2)], [(1, [(False, True)])] * 2)
+holds("P49", "in a repo with workflows, no check at this head is red: no merge, a close that says so",
+      (gh_writes(F3, WF, 1, "merge"), ["no CI check reported" in body_of(a) for a in gh_writes(F3, WF, 1, "close")]),
+      ([], [True]))
+holds("P49", "a workflow read that fails holds the PR: no write, exit 2",
+      (writes_for(F3, WFF, 1), f"hold {WFF}#1" in OUT["F3"], rc), ([], True, 2))
+WORKFLOWS.clear()
+WORKFLOWS_FAIL.clear()
+
+# F4: an approved PR that is only BEHIND is updated, once per head, never closed for it.
+REPOS.clear()
+fresh_state("F4")
+BH = repo("o/behind", "behind")
+add(BH, 1, "feat/behind", verdict=APPROVE, mergeStateStatus="BEHIND")
+add(BH, 2, "sana/ask-7101", verdict=APPROVE, mergeStateStatus="BEHIND")
+TICKETS["ASK-7101"] = tk("ASK-7101", "started", "In Progress", 2)
+rc, F4 = run_main("F4", ["--apply"], NOW)
+holds("P50", "approved, green, MERGEABLE, only BEHIND, no ticket: one update-branch, no close, no comment, exit 0",
+      ([a[:4] for a in gh_writes(F4, BH, 1)], rc), ([["gh", "pr", "update-branch", "1"]], 0))
+holds("P50", "the same shape with a live lane on its ticket gets no write", writes_for(F4, BH, 2, "ASK-7101"), [])
+rc, F4b = run_main("F4b", ["--apply"], NOW + H)
+c4 = gh_writes(F4b, BH, 1)
+holds("P50", "an hour later at the same head: no second update; it goes red naming the update that did not move it",
+      ([a[2] for a in c4], bool(c4) and "update-branch was asked at" in body_of(c4[0])), (["close"], True))
+
+# F5: the merge is the gate's one shape, asked of the gate, re-read, and read back.
+REPOS.clear()
+MG = repo("o/mg", "mg")
+add(MG, 1, "feat/ok", verdict=APPROVE, mergeStateStatus="CLEAN")
+MG_PATH = REPOS[MG]["path"]
+gate_fn = getattr(po, "merge_gate_verdict", None)
+REAL_GATE = SCRIPTS / "merge-bypass-gate.py"
+holds("P51", "the real merge-bypass-gate.py allows the merge pr-owner sends, and denies its old shape (the check can fail)",
+      ((gate_fn(["pr", "merge", "--auto", "--squash", "1"], MG_PATH) if gate_fn else "missing"),
+       (bool(gate_fn(["pr", "merge", "1", "-R", MG, "--squash", "--match-head-commit", "a" * 40], MG_PATH))
+        if gate_fn else "missing")), ("", True))
+deny_gate, crash_gate = TMP / "gates" / "deny.py", TMP / "gates" / "crash.py"
+deny_gate.parent.mkdir()
+deny_gate.write_text("import json, sys\njson.load(sys.stdin)\nprint(json.dumps({'hookSpecificOutput': {'hookEventName': "
+                     "'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'stand-in'}}))\n")
+crash_gate.write_text("import sys\nsys.exit(1)\n")
+for tag, gate in (("denies", deny_gate), ("cannot answer", crash_gate)):
+    fresh_state("F5-" + tag.replace(" ", "-"))
+    po.MERGE_GATE = gate
+    rc, F5 = run_main("F5-" + tag, ["--apply"], NOW)
+    po.MERGE_GATE = REAL_GATE
+    holds("P51", f"a gate that {tag}: no merge is sent, exit 2", (gh_writes(F5, MG, 1, "merge"), rc), ([], 2))
+for tag, knob, val in (("its head moved", VIEW_HEAD, "9" * 40),
+                       ("the checkout resolves another repo", VIEW_URL, "https://github.com/o/other/pull/1")):
+    fresh_state("F5-" + tag)
+    knob[(MG, 1)] = val
+    rc, F5 = run_main("F5-" + tag, ["--apply"], NOW)
+    knob.clear()
+    holds("P51", f"the re-read from the checkout says {tag}: no merge is sent, exit 2",
+          (gh_writes(F5, MG, 1, "merge"), rc), ([], 2))
+for tag, mark, word, want_rc in (("merged", None, "-> merged", 0), ("armed", ARMED, "-> auto-merge armed", 0),
+                                 ("neither", NEITHER, "neither merged nor armed", 2)):
+    fresh_state("F5-" + tag)
+    MERGED_DONE.clear()
+    CWD_ENVS.clear()
+    if mark is not None:
+        mark.add((MG, 1))
+    os.environ.update({"GH_REPO": "o/evil", "GH_HOST": "evil.example"})
+    rc, F5 = run_main("F5-" + tag, ["--apply"], NOW)
+    for k in ("GH_REPO", "GH_HOST"):
+        os.environ.pop(k, None)
+    if mark is not None:
+        mark.clear()
+    holds("P51", f"read back as {tag}: the log says so and the run exits {want_rc}",
+          (len(gh_writes(F5, MG, 1, "merge")), word in OUT["F5-" + tag], rc), (1, True, want_rc))
+    holds("P51", f"({tag}) GH_REPO and GH_HOST in the job's env reach none of the checkout's gh calls",
+          (len(CWD_ENVS) >= 3, [e for e in CWD_ENVS if e is None or {"GH_REPO", "GH_HOST"} & set(e)]), (True, []))
 
 # ================================================================ across every run
 print("-- across every run")
