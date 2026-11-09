@@ -169,6 +169,11 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # The outage classifier the worker uses (PR #421 round 16): a limit refusal here
 # is the machine's, not an unusable review. See the claude dispatch below.
 . "$SCRIPT_DIR/env-failure-lib.sh"
+# THE ONE REVIEWER CHAIN (ASK-3831). The chain order (codex primary, codex on the
+# other account, Opus), the stamps, the only `codex exec` construction in this
+# directory, and the once-per-account-per-day outage ledger. This script used to
+# own its own two-rung version of all four; three other call sites owned theirs.
+. "$SCRIPT_DIR/reviewer-resolve.sh"
 . "$SCRIPT_DIR/reviewer-token-lib.sh"
 
 
@@ -313,6 +318,16 @@ fi
 # fact, and paging per-PR would turn one outage into a page per open PR.
 DEGRADED_STATE="$OUT_DIR/codex/degraded.state"
 DEGRADED=0
+# WHO ACTUALLY ANSWERED, from the resolver's chain (ASK-3831). `$ENGINE` is the
+# FLAG this run was invoked with and deliberately stays that; these three are the
+# rung of the chain that produced the review. Before this they did not exist, so
+# the record's `engine` key said `codex` on every degraded round -- measured on
+# PR #66 and #67 during the 2026-08-02 outage, and on EVERY round since
+# 2026-09-16, when codex ran out of credits and 24 cap tickets each recorded the
+# same fleet-wide outage privately.
+RESOLVED_ENGINE=""
+RESOLVED_ACCOUNT="-"
+RESOLVED_STAMP=""
 # Set when THE REVIEW IN THE PRIMARY SLOT is not parseable, whichever engine
 # produced it. It is a SEPARATE flag from the derived verdict because
 # verdict_from_findings reads an unclosed FINDINGS block as an EMPTY one and
@@ -1561,7 +1576,7 @@ reap_finished_review_trees
 # Follow-up ASK-2648: no gh token in the claude engine's environment, or no Bash.
 CODEX_SANDBOX="-s read-only"
 # codex-sandbox-end
-run_engine() {   # run_engine <claude|codex> <destination-file>
+run_engine() {   # run_engine <claude|codex> <destination-file> [codex-account]
   if [ -z "$REVIEW_SCRATCH" ]; then
     WT_BEFORE="$(_wt_rows | cut -d' ' -f1)"
     # A full disk is not "codex is down" (PR #495 review): stop here, named,
@@ -1581,8 +1596,17 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
               "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
-    codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+    # THE INVOCATION IS BUILT BY THE RESOLVER, NOT TYPED HERE (ASK-3831). $3 is
+    # the account; reviewer_codex_cmd returns the base command for it, pinning
+    # CODEX_HOME for the second account and nothing for the primary. It REFUSES
+    # an account it does not recognise, and that refusal must not become a run
+    # on the primary login -- a review recorded against an account that never
+    # saw the code is the sp-8379cd52 false-provenance shape.
+    codex)  CODEX_BASE="$(reviewer_codex_cmd "${3:-$REVIEWER_PRIMARY_ACCOUNT}")" || {
+              echo "$(TS) REFUSING: no codex invocation for account '${3:-}'. No review ran." >&2
+              return 1; }
+            run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "$CODEX_BASE --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
 }
 
@@ -1715,9 +1739,12 @@ if [ "$ENGINE" != "codex" ]; then
     echo "$(TS) reviewer failed or timed out (rc=$rc). Partial output: $REVIEW" >&2
     exit "$rc"
   fi
-elif run_engine codex "$REVIEW"; then
+elif run_engine codex "$REVIEW" "$REVIEWER_PRIMARY_ACCOUNT"; then
   if review_is_usable "$REVIEW"; then
     note_degraded_transition 0
+    reviewer_note_codex_ok "$REVIEWER_PRIMARY_ACCOUNT"
+    RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$REVIEWER_PRIMARY_ACCOUNT"
+    RESOLVED_STAMP="$(reviewer_stamp codex review)"
     echo "$(TS) review written: $REVIEW"
   else
     # Codex ANSWERED and said nothing parseable. Deliberately NOT the fallback
@@ -1737,17 +1764,73 @@ else
   # real hazard: both statuses would come from one model family and nobody would
   # know the independence this engine exists to buy had been lost.
   rc=$?
-  DEGRADED=1
   mv -f "$REVIEW" "$REVIEW.codex-failed" 2>/dev/null || true
-  echo "$(TS) codex failed or timed out (rc=$rc); running the Opus fallback so $STATUS_CONTEXT does not wedge. Partial codex output: $REVIEW.codex-failed" >&2
+  # ONE HEALTH EVENT PER ACCOUNT PER DAY, not one record per PR (ASK-3831). The
+  # per-PR version of this ran for seven weeks and produced 24 cap tickets while
+  # no single line anywhere said the fleet was down to one reviewer.
+  reviewer_note_codex_outage "$REVIEWER_PRIMARY_ACCOUNT" "exit $rc on PR #$PR"
+  echo "$(TS) codex failed or timed out on the $REVIEWER_PRIMARY_ACCOUNT account (rc=$rc). Partial output: $REVIEW.codex-failed" >&2
+
+  # THE SECOND CODEX ACCOUNT, BEFORE OPUS. This rung is the whole point of the
+  # resolver: a credit outage is per-ACCOUNT, and a second logged-in account is
+  # still a second lab's opinion, where Opus is not. It only exists when one is
+  # configured, so with none the behaviour below is byte-for-byte the July one.
+  #
+  # IT IS ONLY REACHED ON AN OUTAGE, never on an unusable answer. The branch
+  # above is deliberate: codex answering with nothing parseable is an attempted
+  # review whose CONTENT cannot be trusted, and running another engine over it
+  # would invent a verdict for a review that said nothing.
+  CODEX_SECOND="$(reviewer_secondary_account)"
+  SECOND_OK=0
+  if [ -n "$CODEX_SECOND" ]; then
+    echo "$(TS) trying codex on the '$CODEX_SECOND' account before the Opus fallback..." >&2
+    if run_engine codex "$REVIEW" "$CODEX_SECOND"; then
+      if review_is_usable "$REVIEW"; then
+        SECOND_OK=1
+      else
+        # Same rule as the primary: an answer with nothing parseable is not an
+        # outage of this account, so it earns no outage event. It falls through
+        # to UNSTATED, which posts state=failure -- absent is not consent.
+        REVIEW_UNUSABLE=1
+        reviewer_note_codex_ok "$CODEX_SECOND"
+        RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$CODEX_SECOND"
+        RESOLVED_STAMP="$(reviewer_stamp codex review)"
+        SECOND_OK=1
+        echo "$(TS) codex on '$CODEX_SECOND' answered with no complete FINDINGS block; verdict stays UNSTATED. Output kept at: $REVIEW" >&2
+      fi
+    else
+      src=$?
+      mv -f "$REVIEW" "$REVIEW.codex-$CODEX_SECOND-failed" 2>/dev/null || true
+      reviewer_note_codex_outage "$CODEX_SECOND" "exit $src on PR #$PR"
+      echo "$(TS) codex also failed on the '$CODEX_SECOND' account (rc=$src)." >&2
+    fi
+  fi
+  if [ "$SECOND_OK" = "1" ] && [ -z "$RESOLVED_ENGINE" ]; then
+    note_degraded_transition 0
+    reviewer_note_codex_ok "$CODEX_SECOND"
+    RESOLVED_ENGINE="codex"; RESOLVED_ACCOUNT="$CODEX_SECOND"
+    RESOLVED_STAMP="$(reviewer_stamp codex review)"
+    echo "$(TS) review written by codex on the '$CODEX_SECOND' account (the $REVIEWER_PRIMARY_ACCOUNT account was down): $REVIEW"
+    echo "  NOTE: still an independent second opinion -- NOT degraded."
+  fi
+  if [ "$SECOND_OK" != "1" ]; then
+  # BOTH CODEX ACCOUNTS ARE OUT. If nothing filled $STATUS_CONTEXT and it were a
+  # required check, every PR in the repo would wedge forever -- so the Opus
+  # reviewer fills the slot, and the status says DEGRADED out loud. A SILENT
+  # fallback is the real hazard: both statuses would come from one model family
+  # and nobody would know the independence this engine exists to buy was lost.
+  DEGRADED=1
+  echo "$(TS) no codex account produced a review; running the Opus fallback so $STATUS_CONTEXT does not wedge." >&2
   note_degraded_transition 1 \
-    "it exited $rc, so the Opus fallback filled the slot and the status is marked DEGRADED"
+    "codex exited $rc on every configured account, so the Opus fallback filled the slot and the status is marked DEGRADED"
   if run_engine claude "$REVIEW"; then
     # THE FALLBACK GETS THE SAME PARSEABILITY BAR AS CODEX. Exiting 0 is not
     # evidence it said anything: a truncated stream leaves an unclosed FINDINGS
     # block, which derives APPROVE and would post state=success on the REQUIRED
     # context. Filling the gate with an unread approval is worse than leaving it
     # unstated, because unstated holds the PR and green releases it.
+    RESOLVED_ENGINE="claude"; RESOLVED_ACCOUNT="-"
+    RESOLVED_STAMP="$(reviewer_stamp claude review)"
     if review_is_usable "$REVIEW"; then
       echo "$(TS) DEGRADED review written by the Opus fallback: $REVIEW"
     else
@@ -1759,7 +1842,12 @@ else
     echo "$(TS) the Opus fallback ALSO failed (rc=$rc). No status is posted at all; absent is not approved." >&2
     exit "$rc"
   fi
+  fi
 fi
+# THE LAST RUNG IS THE DEFAULT, never an empty string. Every branch above sets
+# these, but a future branch that forgets would write a record with no engine on
+# it, and a reader cannot tell "nobody recorded it" from "nobody reviewed it".
+[ -n "$RESOLVED_ENGINE" ] || { RESOLVED_ENGINE="$ENGINE"; RESOLVED_STAMP="$(reviewer_stamp "$ENGINE" review 2>/dev/null)"; }
 
 # The verdict is COMPUTED from the labelled severities when the reviewer emitted
 # a findings block, and only read from prose when it did not. The prompt's
@@ -1861,6 +1949,17 @@ if review_is_usable "$REVIEW"; then REVIEW_USABLE=1; else REVIEW_USABLE=0; fi
 REVIEWED_BY="$CODEX_MODEL"
 [ "$ENGINE" = "claude" ] && REVIEWED_BY="$CLAUDE_MODEL"
 [ "$DEGRADED" = "1" ] && REVIEWED_BY="$CLAUDE_MODEL"
+# THE RESOLVED RUNG, DEFAULTED INSIDE THIS RANGE ON PURPOSE (ASK-3831).
+# test-review-degraded-provenance.sh extracts this block by awk range and runs it
+# in a bare subshell, so anything it reads must either be set by that test or
+# default here. These default from $ENGINE and $DEGRADED, which the test already
+# provides, and the dispatch chain above overrides them with what actually ran.
+RESOLVED_ENGINE="${RESOLVED_ENGINE:-$ENGINE}"
+[ "$DEGRADED" = "1" ] && RESOLVED_ENGINE="claude"
+RESOLVED_ACCOUNT="${RESOLVED_ACCOUNT:--}"
+[ "$RESOLVED_ENGINE" = "claude" ] && RESOLVED_ACCOUNT="-"
+RESOLVED_STAMP="${RESOLVED_STAMP:-$RESOLVED_ENGINE-review}"
+[ "$DEGRADED" = "1" ] && RESOLVED_STAMP="claude-review"
 # `set -e` IS OFF IN THIS SCRIPT (line 64 is `set -uo pipefail`) and these two
 # lines depend on that. Under `set -e` a false `[ ... ] && assign` is an AND-list
 # whose final status is 1, which exits the shell -- so turning on -e here would
@@ -1878,19 +1977,39 @@ REVIEWED_BY="$CODEX_MODEL"
 # The record path comes from the ONE resolver (repo-slug-lib.sh), passed in as
 # argv 16 rather than rebuilt in python -- a second place that knows the naming
 # rule is a second writer, which is the defect class this repo keeps finding.
-python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${REVIEW_BASE:-}" <<'PY'
+python3 - "$PR" "$ISSUE" "$VERDICT" "$REVIEW" "$(TS)" "$STATED_VERDICT" "$DERIVED_VERDICT" "$ROUND" "$HEAD_SHA" "$VERDICT_DIR" "$ENGINE" "$INVOKER" "$REVIEW_USABLE" "$REVIEWED_BY" "$DEGRADED" "$(verdict_record_write_path "$VERDICT_DIR" "$REVIEW_SLUG" "$PR")" "${REVIEW_BASE:-}" "$RESOLVED_ENGINE" "$RESOLVED_ACCOUNT" "$RESOLVED_STAMP" <<'PY'
 import json, sys
 (pr, issue, verdict, review, ts, stated, derived, rnd, head_sha, verdict_dir,
  engine, invoker, usable, reviewed_by, degraded) = sys.argv[1:16]
 out = sys.argv[16]
 review_base = sys.argv[17] if len(sys.argv) > 17 else ""
+# ASK-3831: `engine` now names WHO ANSWERED, not which flag was passed. The old
+# meaning (the flag) moves to `engine_flag`, so no reader loses it. This is the
+# fix the sp-8379cd52 comment above asked for and could not make at the time:
+# `reviewed_by` carried the truth in a second key while `engine` kept claiming a
+# second lab had read code it never saw. Positional reads are guarded so a
+# pre-ASK-3831 caller still writes a valid record.
+resolved_engine = sys.argv[18] if len(sys.argv) > 18 else engine
+resolved_account = sys.argv[19] if len(sys.argv) > 19 else "-"
+resolved_stamp = sys.argv[20] if len(sys.argv) > 20 else ""
 record = {"pr": int(pr), "issue": issue, "verdict": verdict,
            "stated": stated, "derived": derived,
            "source": "findings" if derived else "prose",
-           "engine": engine,
-           # reviewed_by is the model that produced the prose; engine is the flag
-           # the run was asked for. On the fallback those disagree, and that
-           # disagreement IS the record of the outage.
+           # WHO ANSWERED (ASK-3831), resolved from the chain in
+           # reviewer-resolve.sh. On a degraded round this says `claude`, where
+           # before it said `codex` on a review codex never ran.
+           "engine": resolved_engine,
+           # WHICH FLAG THE RUN WAS ASKED FOR. Kept as its own key rather than
+           # dropped: `engine_flag: codex` beside `engine: claude` IS the record
+           # of the outage, and the two disagreeing is the signal.
+           "engine_flag": engine,
+           # Which Codex account produced it: "primary", the second account's
+           # name, or "-" for the Opus stand-in, which has no account.
+           "account": resolved_account,
+           # codex-review | codex-adversarial | claude-review | claude-adversarial
+           "stamp": resolved_stamp,
+           # reviewed_by is the MODEL that produced the prose, where engine is
+           # the family. Both are kept: a model id moves with the routing table.
            "reviewed_by": reviewed_by,
            "degraded": degraded == "1",
            "invoker": invoker,

@@ -115,7 +115,20 @@ REVIEWER_CMD="${KIPI_PR_REVIEWER:-bash $SCRIPT_DIR/pr-review-agent.sh}"
 # parking. Injectable for the same reason REVIEWER_CMD is: otherwise every test
 # case of "what if the second runner is also refused" bills a real model run, so
 # the branch stays untested, which is how the single-runner assumption shipped.
-CODEX_CMD="${KIPI_CODEX_RUNNER:-codex exec --skip-git-repo-check -s workspace-write}"
+# THE INVOCATION COMES FROM THE ONE RESOLVER (ASK-3831). This line used to type
+# `codex exec` itself, which made the worker the second of four places that each
+# knew how to reach Codex and the second of four that had never heard of a
+# second Codex account. The worker-specific flags stay here because they are the
+# worker's: `-s workspace-write` is what lets the second runner do the Edit under
+# `.claude/**` that Sana is refused (probed live 2026-08-01).
+CODEX_WORKER_FLAGS="--skip-git-repo-check -s workspace-write"
+CODEX_CMD="$(reviewer_codex_cmd "$REVIEWER_PRIMARY_ACCOUNT") $CODEX_WORKER_FLAGS"
+# The second account, empty when none is configured. `|| true` because
+# reviewer_codex_cmd refuses an account it does not know, and "no second account"
+# is the normal state, not an error.
+CODEX_ACCOUNT_2="$(reviewer_secondary_account)"
+CODEX_CMD_2=""
+[ -n "$CODEX_ACCOUNT_2" ] && CODEX_CMD_2="$(reviewer_codex_cmd "$CODEX_ACCOUNT_2" || true) $CODEX_WORKER_FLAGS"
 # How long one Codex outage announcement stands (PR #421 rounds 8 and 9). Nothing
 # but a capability refusal ever reaches Codex, so nothing else would end it: past
 # this the claim may be taken over (one page a day at most) and an issue held
