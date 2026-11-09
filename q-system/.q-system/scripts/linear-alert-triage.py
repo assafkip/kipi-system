@@ -72,6 +72,7 @@ same cap. `run --prepass-only` does the first half alone and calls no model.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 from collections import namedtuple
 import subprocess
@@ -84,6 +85,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -579,12 +581,184 @@ def held_label_id(ls) -> str:
     res = ls.graphql(LABEL_CREATE_M, {"input": {
         "name": HELD_LABEL, "teamId": teams[0]["id"], "color": "#bec2c8",
         "description": ("linear-alert-triage.py held this alert: not executable as "
-                        "written. Not a close. Remove it to return the alert to the "
-                        "nightly pool.")}})
+                        "written. Not a close. The nightly lane returns it to the "
+                        "pool when it recurs, its description changes or the "
+                        "triage model changes, and closes it when its subject ends.")}})
     node = (((res or {}).get("issueLabelCreate") or {}).get("issueLabel") or {})
     if not node.get("id"):
         raise RuntimeError(f"could not create the {HELD_LABEL!r} label")
     return node["id"]
+
+
+# ===========================================================================
+# THE HOLD'S EXIT (ASK-4014). A hold used to be a permanent exclusion: lane_pool
+# skipped every held alert and the rationale asked for the label to be removed
+# by hand, which nothing did. Measured 2026-11-08: 59 held alerts, none ever
+# re-tested.
+#
+# NO TIMED RETRY (founder, 2026-11-08: "What's gonna change in seven, fourteen or
+# 28 days?"). A held alert re-enters only on an EVENT since its hold:
+#   - it recurred: a "Still firing." comment, or alert-to-linear's dedup state
+#     counting it, after the hold;
+#   - its description changed (digest recorded in the hold's basis marker);
+#   - the triage model changed (also in the basis marker).
+# A hold written before this change carries no basis, so only recurrence can
+# re-enter it. Treating "no basis" as "the model changed" would spend a whole
+# night's 60 model calls re-triaging 59 tickets that nothing new is known about.
+#
+# NO RECURRENCE IS EVIDENCE TOO. Held alerts go through the no-model pre-pass
+# with the rest, so one whose subject ended, or that duplicates a newer ticket,
+# is closed with its reason on the ticket, reversibly.
+#
+# THE BASELINE IS THE LATEST HOLD OR RE-ENTRY NOTE, never the first hold. A
+# re-entered alert the model holds again would otherwise see the old repeat that
+# re-entered it, re-enter every night, and spend a model call each time.
+# ===========================================================================
+REENTRY_MARKER = "<!-- kipi-alert-hold-reentry -->"
+HOLD_BASIS_RE = re.compile(r"<!-- kipi-alert-hold-basis model=(?P<model>[^\s>]+) "
+                           r"desc=(?P<desc>[0-9a-f]{12}) -->")
+HELD_COMMENTS_Q = """query($id:String!){issue(id:$id){
+  comments(first:100){nodes{body createdAt}}}}"""
+# One comment read per held alert. A bound, like the pre-pass's, so a slow Linear
+# cannot hold the model batch behind 59 reads; what is not read stays held tonight.
+REENTRY_MAX_READS = 80
+
+
+def desc_digest(description: str) -> str:
+    return hashlib.sha256((description or "").encode("utf-8")).hexdigest()[:12]
+
+
+def hold_basis(description: str, model: str | None = None) -> str:
+    """The marker a hold records: what the decision was made on."""
+    return (f"<!-- kipi-alert-hold-basis model={model or TRIAGE_MODEL} "
+            f"desc={desc_digest(description)} -->")
+
+
+def _epoch(iso: str | None) -> float | None:
+    try:
+        return datetime.fromisoformat((iso or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def read_held_comments(ls, issue_id: str) -> list | None:
+    """[(createdAt epoch, body)] oldest first, or None when it may be incomplete."""
+    try:
+        issue = (ls.graphql(HELD_COMMENTS_Q, {"id": issue_id}) or {}).get("issue") or {}
+    except Exception as exc:  # noqa: BLE001 - a failed read keeps the hold
+        print(f"  {issue_id}: could not read comments: {str(exc)[:120]}", file=sys.stderr)
+        return None
+    nodes = (issue.get("comments") or {}).get("nodes")
+    if nodes is None or len(nodes) >= COMMENTS_PAGE:
+        return None
+    out = []
+    for n in nodes:
+        at = _epoch(n.get("createdAt"))
+        if at is None:
+            return None             # an undatable comment cannot be placed before or after
+        out.append((at, n.get("body") or ""))
+    return sorted(out, key=lambda c: c[0])
+
+
+def hold_events(issue: dict, comments: list | None, standing: dict | None,
+                model: str | None = None) -> list | None:
+    """What changed since the latest hold, as reasons. [] is "nothing", None is
+    "cannot tell", and both keep the hold. Pure."""
+    if comments is None:
+        return None
+    notes = [(at, body) for at, body in comments
+             if HOLD_MARKER in body or REENTRY_MARKER in body]
+    if not notes:
+        return None
+    baseline = notes[-1][0]
+    holds = [body for _, body in notes if HOLD_MARKER in body]
+    basis = HOLD_BASIS_RE.search(holds[-1]) if holds else None
+    events = []
+    repeats = sum(1 for at, body in comments
+                  if at > baseline and body.startswith(REPEAT_PREFIX))
+    last_at = (standing or {}).get("last_at")
+    counted = isinstance(last_at, (int, float)) and last_at > baseline
+    if repeats or counted:
+        events.append(f"it recurred since the hold ({repeats} repeat comment(s)"
+                      + (", and alert-to-linear counted it again" if counted else "")
+                      + ")")
+    if basis and basis.group("desc") != desc_digest(issue.get("description") or ""):
+        events.append("its description changed since the hold")
+    if basis and basis.group("model") != (model or TRIAGE_MODEL):
+        events.append(f"the triage model changed since the hold "
+                      f"({basis.group('model')} to {model or TRIAGE_MODEL})")
+    return events
+
+
+def do_reenter(ls, issue: dict, events: list, apply: bool) -> Outcome:
+    """Return a held alert to the pool. The note FIRST, and its result read: the
+    note is the new baseline, and a label removed with no note would re-enter the
+    same alert again tomorrow on the same event."""
+    ident = issue["identifier"]
+    why = "; ".join(events)
+    if not apply:
+        return Outcome(False, f"{ident}: WOULD RE-ENTER ({why[:90]})")
+    fresh = reread(ls, ident)
+    if fresh is None:
+        return Outcome(False, f"{ident}: SKIPPED (could not re-read)", True)
+    if not is_alert_ticket(fresh.get("description") or "") or not is_held(fresh):
+        return Outcome(False, f"{ident}: SKIPPED (no longer a held alert)")
+    res = ls.graphql(COMMENT_M, {"input": {"issueId": fresh["id"], "body":
+        f"{REENTRY_MARKER}\nlinear-alert-triage.py returned this alert from "
+        f"{HELD_LABEL} to the nightly pool: {why}. The lane triages it again in this "
+        "pass, with that evidence in front of the model."}})
+    if not (((res or {}).get("commentCreate") or {}).get("success")):
+        raise RuntimeError(f"{ident}: re-entry note did not post; the hold stays")
+    upd = ls.graphql(UPDATE_M, {"id": ident, "input": {
+        "removedLabelIds": label_ids(fresh, HELD_LABEL)}})
+    if not (((upd or {}).get("issueUpdate") or {}).get("success")):
+        raise RuntimeError(f"{ident}: hold label removal failed after the note posted")
+    return Outcome(True, f"{ident}: RE-ENTERED ({why[:90]})")
+
+
+def run_reentry(ls, held: list, apply: bool,
+                max_reads: int = REENTRY_MAX_READS) -> tuple[list, Counter]:
+    """(alerts returned to the pool, tally). No model is called in here."""
+    back, tally = [], Counter()
+    for issue in held:
+        if tally["read"] >= max_reads:
+            tally["unread"] += 1
+            continue
+        tally["read"] += 1
+        events = hold_events(issue, read_held_comments(ls, issue["id"]),
+                             _standing_state(issue))
+        if events is None:
+            tally["unknown"] += 1
+            continue
+        if not events:
+            tally["stay"] += 1
+            continue
+        try:
+            out = do_reenter(ls, issue, events, apply)
+        except Exception as exc:  # noqa: BLE001 - one bad re-entry must not stop the pass
+            print(f"  {issue['identifier']}: re-entry FAILED {str(exc)[:160]}",
+                  file=sys.stderr)
+            tally["failed"] += 1
+            continue
+        print(out.line)
+        if out.wrote or not apply:
+            tally["reentered" if apply else "would_reenter"] += 1
+            back.append(dict(issue, _reentry="; ".join(events)))
+        else:
+            tally["skipped"] += 1
+    return back, tally
+
+
+def _reentry_part(re_tally: Counter, n_held: int, apply: bool) -> str:
+    if not n_held:
+        return ""
+    moved = re_tally["reentered"] if apply else re_tally["would_reenter"]
+    verb = "re-entered" if apply else "would re-enter"
+    extra = "".join(f", {re_tally[k]} {label}" for k, label in (
+        ("unknown", "unreadable"), ("unread", "unread (read bound)"),
+        ("failed", "failed")) if re_tally[k])
+    return (f"; held: {n_held} after the pre-pass, {moved} {verb}, "
+            f"{re_tally['stay']} unchanged since the hold{extra}")
 
 
 # WHERE CLAUDE LIVES, MEASURED 2026-11-06 (ASK-3823). The installer puts it at
@@ -692,6 +866,19 @@ def _subscription_env() -> dict:
     return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
 
+def prompt_description(issue: dict) -> str:
+    """The alert text the model reads, plus the event that re-entered it, if any.
+
+    The event is the new evidence (ASK-4014): without it the model sees exactly the
+    text it already held on, and holds again. It sits inside the alert block, where
+    everything is data to classify, never an instruction."""
+    description = (issue.get("description") or "(empty)")[:4000]
+    if issue.get("_reentry"):
+        description = (description[:3500] + "\n\n[This alert was held before. It "
+                       f"returned to triage because {issue['_reentry'][:400]}.]")
+    return description
+
+
 def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
     """Ask the pinned, tool-less model. None is a FAILURE, never a verdict."""
     ident = issue.get("identifier")
@@ -702,7 +889,7 @@ def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
     prompt = TRIAGE_PROMPT.format(
         project=(issue.get("project") or {}).get("name") or "unassigned",
         title=issue.get("title") or "",
-        description=(issue.get("description") or "(empty)")[:4000])
+        description=prompt_description(issue))
     env = _subscription_env()
     env["ANTHROPIC_MODEL"] = TRIAGE_MODEL
     try:
@@ -741,27 +928,43 @@ def do_hold(ls, issue: dict, reason: str, apply: bool) -> Outcome:
     if is_held(fresh):
         return Outcome(False, f"{ident}: SKIPPED (already held)")
     label_id = held_label_id(ls)            # R7: before ANY write
-    _post_hold_rationale(ls, fresh["id"], ident, reason)
+    _post_hold_rationale(ls, fresh["id"], ident, reason, fresh.get("description") or "")
     upd = ls.graphql(UPDATE_M, {"id": ident, "input": {"addedLabelIds": [label_id]}})
     if not (((upd or {}).get("issueUpdate") or {}).get("success")):
         raise RuntimeError(f"{ident}: hold label write failed")
     return _verify_hold(ls, fresh["id"], ident, label_id)
 
 
-def _post_hold_rationale(ls, issue_id: str, ident: str, reason: str) -> None:
+def _hold_rationale_current(ls, issue_id: str) -> bool:
+    """Whether THIS hold's rationale is already posted: the latest hold or
+    re-entry note is a hold. Keyed this way, not on "any hold note exists", so a
+    retry after a failed label write posts nothing (R7) while a re-hold after a
+    re-entry posts its own reason and basis. A failed read returns False, the side
+    that leaves a record (see _rationale_already_posted)."""
+    comments = read_held_comments(ls, issue_id)
+    if comments is None:
+        return _rationale_already_posted(ls, issue_id, HOLD_MARKER)
+    notes = [body for _, body in comments if HOLD_MARKER in body or REENTRY_MARKER in body]
+    return bool(notes) and HOLD_MARKER in notes[-1]
+
+
+def _post_hold_rationale(ls, issue_id: str, ident: str, reason: str,
+                         description: str = "") -> None:
     """Rationale FIRST, and its result READ (R2: do_close's defect, copied).
 
     The label is what removes an alert from every future pass, so a label with
     no recorded reason is a permanent silent exclusion. Keyed on HOLD_MARKER so a
     retry after a failed label write does not post a second copy (R7).
     """
-    if _rationale_already_posted(ls, issue_id, HOLD_MARKER):
+    if _hold_rationale_current(ls, issue_id):
         return
     res = ls.graphql(COMMENT_M, {"input": {"issueId": issue_id, "body":
         f"{HOLD_MARKER}\nTriage decision by linear-alert-triage.py (nightly lane): "
-        f"not executable as written.\n\n{reason}\n\nThis is NOT a close. Remove the "
-        f"{HELD_LABEL} label to return it to the nightly pool, or promote it by "
-        "hand with a real DoR."}})
+        f"not executable as written.\n\n{reason}\n\nThis is NOT a close. The "
+        "nightly lane re-tests this hold every pass: it returns the alert to the "
+        "pool when it recurs, its description changes or the triage model changes, "
+        "and its no-model pre-pass closes it when its subject ends (ASK-4014).\n"
+        f"{hold_basis(description)}"}})
     if not (((res or {}).get("commentCreate") or {}).get("success")):
         raise RuntimeError(f"{ident}: refusing to hold -- the rationale comment did "
                            "not post, and a hold with no recorded reason is a silent "
@@ -788,20 +991,33 @@ def _verify_hold(ls, issue_id: str, ident: str, label_id: str) -> Outcome:
 
 
 def lane_pool(ls) -> tuple[list, list]:
+    """(eligible, refused); the held alerts are lane_pools()'s third list."""
+    eligible, refused, _held = lane_pools(ls)
+    return eligible, refused
+
+
+def lane_pools(ls) -> tuple[list, list, list]:
     """(eligible oldest-first, refused), FLEET-WIDE (R5: one project was 55 of 151).
 
     Refused = an open, unheld alert that promotion_refusal would never let
     through (no project, no owner:sana, ...). Filtered through that SAME function
     (R9), before a model call is spent on an issue the lane could only strand.
     """
-    eligible, refused = [], []
+    eligible, refused, held = [], [], []
     for i in fetch_open(ls, None):
-        if not is_alert_ticket(i.get("description")) or is_held(i):
+        if not is_alert_ticket(i.get("description")):
             continue
         why = promotion_refusal(i)
+        if is_held(i):
+            # The SAME refusal filter: a held alert the lane could only strand is
+            # not re-tested either (R9).
+            if not why:
+                held.append(i)
+            continue
         (refused if why else eligible).append((i, why))
     eligible.sort(key=lambda pair: pair[0].get("createdAt") or "")
-    return [i for i, _ in eligible], refused
+    held.sort(key=lambda i: i.get("createdAt") or "")
+    return [i for i, _ in eligible], refused, held
 
 
 # ===========================================================================
@@ -1390,13 +1606,22 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     decider = decider or decide
     beat = beat and apply and not prepass_only
     try:
-        pool, refused = lane_pool(ls)
+        pool, refused, held = lane_pools(ls)
     except Exception:
         # The outage night says so, instead of reading "missing" two days later.
         if beat:
             heartbeat(0, 0, error="linear-unreachable")
         raise
-    pool, pre = run_prepass(ls, pool, apply, pr_state)
+    # Held alerts ride through the pre-pass with the rest (ASK-4014): an ended
+    # subject or a newer duplicate closes a held alert the same way. What is left
+    # held then re-enters only on an event since its hold.
+    held_ids = {i["identifier"] for i in held}
+    by_age = lambda i: i.get("createdAt") or ""  # noqa: E731
+    left, pre = run_prepass(ls, sorted(pool + held, key=by_age), apply, pr_state)
+    pool = [i for i in left if i["identifier"] not in held_ids]
+    held_left = [i for i in left if i["identifier"] in held_ids]
+    back, re_tally = run_reentry(ls, held_left, apply)
+    pool = sorted(pool + back, key=by_age)
     batch = [] if prepass_only else pool[:max(limit, 0)]
     tally = Counter()
     for issue in batch:
@@ -1420,7 +1645,8 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
             + (" (" + ", ".join(f"{n} {r}" for r, n in reasons.most_common()) + ")"
                if refused else "")
             + " fleet-wide"
-            + _prepass_part(pre, apply))
+            + _prepass_part(pre, apply)
+            + _reentry_part(re_tally, len(held_left), apply))
     print(line)
     write_run_evidence(line)
     if beat:
@@ -1436,6 +1662,10 @@ def run_triage(ls, limit: int, apply: bool, decider=None, pr_state=None,
     if pre["skipped_waits"]:
         print(f"  PRE-PASS: {pre['skipped_waits']} close(s) skipped on a failed re-read; "
               "they stay open for tomorrow", file=sys.stderr)
+        rc = rc or 1
+    if re_tally["failed"]:
+        print(f"  HOLDS: {re_tally['failed']} re-entry(ies) failed; they stay held and "
+              "are re-tested tomorrow", file=sys.stderr)
         rc = rc or 1
     return rc
 
