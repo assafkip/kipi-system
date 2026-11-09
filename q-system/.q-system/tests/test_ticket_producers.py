@@ -161,6 +161,25 @@ class Gate(unittest.TestCase):
         self.assertEqual(len(FakeLinear.creates), 1)
         self.assertTrue(FakeLinear.creates[0].get("projectId"), "created with no projectId")
 
+    def test_a_plan_from_plan_carries_its_producer_and_create_takes_it(self):
+        # Day one for the one live producer of this path: `kipi linear plan`
+        # then `kipi linear create`. The plan must name the producer itself, or
+        # every capability rollout after this PR would be refused.
+        cmap = self.tmp / "cap-map.json"
+        cmap.write_text(json.dumps({"repo": "gate-demo", "capabilities": [
+            {"name": "alpha engine", "status": "BROKEN", "path": "x.py"}]}))
+        remote = self.tmp / "remote.json"
+        remote.write_text(json.dumps({"project": None, "issues": []}))
+        out = self.tmp / "made-plan.json"
+        env = dict(os.environ, KIPI_LINEAR_LEDGER=str(self.tmp / "plan-ledger.jsonl"), KIPI_TEST="1")
+        p = subprocess.run([sys.executable, str(SYNC), "plan", "--map", str(cmap), "--remote",
+                            str(remote), "--out", str(out)], capture_output=True, text=True, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(out.read_text()).get("producer"), "linear-sync-capability")
+        r = self.run_create(out, "--apply")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(FakeLinear.creates), 1)
+
     def test_cli_producer_names_the_producer_for_an_old_plan(self):
         r = self.run_create(plan_for(self.tmp, "cli"), "--apply", "--producer", "linear-sync-capability")
         self.assertEqual(r.returncode, 0, r.stderr)
