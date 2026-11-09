@@ -1145,5 +1145,65 @@
     "status": "published",
     "date": "2026-11-07",
     "lesson_id": "review-later-rounds-against-the-delta-not-the-whole-diff"
+  },
+  "838641d49d30f5c4": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "test-the-coverage-invariant-not-each-escape-case"
+  },
+  "4a4f33cbafab41c0": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "gate-externally-published-claims-on-truth-handling-and-credi"
+  },
+  "ea8709b063a21ed9": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "check-liveness-at-the-source-of-truth-not-at-each-exit-path"
+  },
+  "f025b7318502297e": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "trace-every-new-output-to-its-consumer-before-calling-a-fix-"
+  },
+  "ca1eed5ce09a1290": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "read-the-other-side-of-every-contract-you-depend-on"
+  },
+  "0e0ddc0eda957fa9": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "stop-designing-inside-the-review-loop"
+  },
+  "c91c06e628096078": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "replace-reclaimable-userspace-locks-with-kernel-released-loc"
+  },
+  "a58d92f146ebaa96": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "gate-automated-review-rounds-on-mergeability-and-verify-revi"
+  },
+  "64f2bfd85548a3f7": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "every-admission-cap-needs-a-coded-exit-path"
+  },
+  "1fb0d473a5873762": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-09",
+    "lesson_id": "review-third-party-code-through-your-own-fork"
   }
 }
