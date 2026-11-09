@@ -627,6 +627,10 @@ ok "ASK-4112 self-test: dropping the created-after-start filter turns case 2 red
 
 # The self-test's own negative: a mutant that dies before any converge logic
 # runs must NOT read as "took the merged branch".
+# The link goes first: every name in $MUT is a symlink into the real scripts
+# dir, so a write to a linked name lands in the repo (PR #691 review round 2).
+rm -f "$MUT/converge-crash.sh"
+[ ! -e "$MUT/converge-crash.sh" ] || fail "ASK-4112 self-test: $MUT/converge-crash.sh still exists, and writing it could reach a repo file"
 python3 - "$MUT/converge.sh" "$MUT/converge-crash.sh" <<'PY' || fail "ASK-4112 self-test: the crash-mutant anchor is not in the mutant"
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
