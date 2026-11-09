@@ -228,6 +228,25 @@ def _load_voice_lint():
     return module
 
 
+def _suppression_decision(file_path):
+    """K7: voice_suppressions.py decides; this lint never parses the file itself.
+    (None, notes) when the reader did not load: markers behave as before, said aloud."""
+    try:
+        name = "_voice_suppressions_k7"
+        module = sys.modules.get(name)
+        if module is None:
+            target = Path(__file__).resolve().parent / "voice_suppressions.py"
+            spec = importlib.util.spec_from_file_location(name, target)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            sys.modules[name] = module
+        decision = module.check(file_path)
+        return decision, list(decision.notes)
+    except Exception as exc:
+        return None, [f"voice_suppressions.py did not load ({type(exc).__name__}); "
+                      "in-file markers behave as before K7."]
+
+
 def _corpus_dir():
     raw = os.environ.get("VOICE_LOOP_CORPUS") or "~/projects/consulting/q-consult/voice"
     return Path(os.path.expanduser(raw))
@@ -322,8 +341,15 @@ def main():
               f"{file_path} as UTF-8, so bands, templated shapes and corpus "
               "echo were NOT checked on it.")
         sys.exit(0)
-    if SKIP_MARKER in text:
+    decision, k7_notes = _suppression_decision(file_path)
+    for note in k7_notes:
+        _emit("voiceloop-band-lint: " + note)
+    if decision is not None and decision.skip:
         sys.exit(0)
+    if SKIP_MARKER in text:
+        if decision is None or not decision.present:
+            sys.exit(0)
+        _emit("voiceloop-band-lint: " + decision.marker_ignored(SKIP_MARKER))
     if not text.strip():
         sys.exit(0)
 

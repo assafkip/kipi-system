@@ -1,7 +1,7 @@
 ---
 id: vg-k7-suppression-file
 title: One bounded per-instance voice suppression file, read by every voice marker reader
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
