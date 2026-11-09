@@ -20,12 +20,20 @@ that puts them back. A `repo-refused` park would need its own unpark consumer,
 which is a new dead end.
 
 WHY A KILL SWITCH IS NOT A REFUSAL HERE (PR #681 r1 major). `.kipi-no-dispatch`
-is a decision: D35 and usage-pacer.py write it for usage pauses, and a repo's own
-permanent one is the client's "stay out". Clocking it filed a ticket at 12h, and
-again every 24h, telling Sana to undo the gate that protects client work. So it
-records nothing and files nothing. preflight stops at the kill switch, so that
-tick says nothing about any other check either: the repo's other rows are left
-as they were, neither cleared nor advanced.
+is a decision. Its writers live outside this repo: ~/.config/kipi/usage-pacer.py
+writes one starting "PACER usage pause", and the 2026-11-08 usage pause wrote
+ones starting "D35 usage pause" (~/.config/kipi/d35-resume.sh lifts those). A
+repo's own permanent one is the client's "stay out". Clocking it filed a ticket
+at 12h, and again every 24h, telling Sana to undo the gate that protects client
+work. So it records nothing and files nothing. preflight stops at the kill
+switch, so that tick says nothing about any other check either: the repo's other
+rows are left as they were, neither cleared nor advanced.
+
+That last step leans on preflight printing the kill switch as its ONLY FAIL line
+(repo-preflight.sh exits right after it). test-repo-preflight.sh case 2a pins it
+(PR #681 r2): a kill-switched repo that would also fail `remote` must print one
+FAIL line. If that shape ever changes, case 2a goes red before a real fault
+sharing a tick with the kill switch can lose its clock here.
 
 WHY A 48H GAP BOUND (PR #681 r1 minor). The threshold reads `first`, so two
 refusals 30 days apart (a row off and on again, a dispatcher down) looked like

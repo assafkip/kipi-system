@@ -281,6 +281,14 @@ OUT="$(run_preflight "$KS")"
 { [ "$(pf_rc "$KS")" != "0" ] && echo "$OUT" | grep -q 'kill-switch'; } \
   && ok "kill-switch: a .kipi-no-dispatch file refuses the repo by name" \
   || bad "kill-switch did not refuse or did not name itself: $OUT"
+# The kill switch is the ONLY FAIL line, even on a repo that would fail another
+# check. dispatch-refusals.py drops a whole kill-switch tick on that promise; if
+# the kill switch ever joined the other FAIL lines, a real fault sharing the tick
+# would lose its 12h clock there (PR #681 r2). A wrong pin makes `remote` fail.
+OUT="$(run_preflight "$KS" "https://github.com/assafkip/not-killswitch.git")"
+{ [ "$(printf '%s\n' "$OUT" | grep -c '^FAIL ')" = "1" ] && printf '%s\n' "$OUT" | grep -q '^FAIL kill-switch:'; } \
+  && ok "kill-switch: it short-circuits, so it is the only FAIL line even with a wrong pin" \
+  || bad "kill-switch is not the only FAIL line, so dispatch-refusals.py would drop a real fault: $OUT"
 
 # 2b. control-code is RETIRED (ASK-3526), so the target's worker copy is never a
 # reason to refuse. The dispatcher runs the pinned skeleton's worker against

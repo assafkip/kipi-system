@@ -90,9 +90,10 @@ def test_other_repos_keep_their_clocks(state):
 
 
 def test_a_kill_switch_refusal_is_never_due(state):
-    """PR #681 r1 major. `.kipi-no-dispatch` is a decision (D35 and the usage
-    pacer write it on purpose tonight), so a ticket asking Sana to fix it is noise
-    that argues against the one gate that protects client work."""
+    """PR #681 r1 major. `.kipi-no-dispatch` is a decision (written on purpose by
+    ~/.config/kipi/usage-pacer.py and the 2026-11-08 usage pause, both outside this
+    repo), so a ticket asking Sana to fix it is noise that argues against the one
+    gate that protects client work."""
     for h in (0, 13, 37, 61):
         assert run(state, "refused", "ktlyst", "kill-switch", at=T0 + h * H) == (0, [])
     assert not state.exists() or "kill-switch" not in state.read_text()

@@ -210,7 +210,8 @@ grep -qE "entering (DUE|CLEARED)" "$DLOG" && { ctx; fail "a refusal_note line le
 ok "no refusal_note output reached the rotation"
 
 # --- 7. a kill-switched repo is off by decision: no alert, ever ---------------
-# PR #681 r1 major. D35 and usage-pacer.py write .kipi-no-dispatch on purpose, and
+# PR #681 r1 major. ~/.config/kipi/usage-pacer.py and the 2026-11-08 usage pause
+# (both outside this repo) write .kipi-no-dispatch on purpose, and
 # a repo's own permanent one is a decision too. The pin is correct here, so the
 # ONLY refusal is the kill switch. Before the fix this filed at 13h and re-filed
 # every 24h, telling Sana to undo the gate that protects client work.
