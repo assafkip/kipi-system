@@ -42,6 +42,10 @@ needs_sweep = pytest.mark.skipif(sweep is None, reason="stall-sweep.py not on th
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
 DOR = "## Definition of Ready\n\n* **Outcome:** x.\n"
 HOLD = json.loads((QDIR / "hold-label-consumers.json").read_text())["labels"]
+# The real alert lane's refusal, never a copy: an alert is classified by what
+# linear-alert-triage.py would actually do with it (PR #689 review, minor 3).
+ALERT_TRIAGE = _load("alert_triage_for_stall_sweep_test", SCRIPTS / "linear-alert-triage.py")
+ALERT = "<!-- kipi-alert-fingerprint: ab -->"
 
 
 def ago(hours):
@@ -58,7 +62,9 @@ def ticket(ident="ASK-9001", *, hours=25, labels=("owner:sana",), project="kipi-
 
 def ctx(**over):
     base = {"rows": HOLD, "fleet": {"kipi-system", "brag", "ktlyst"}, "home": "kipi-system",
-            "refusal": {"brag": "", "ktlyst": "preflight refuses: remote"}, "started": {}}
+            "refusal": {"brag": "", "ktlyst": "preflight refuses: remote"},
+            "refused_hours": {"ktlyst": 30}, "started": {},
+            "alert_refusal": ALERT_TRIAGE.promotion_refusal}
     base.update(over)
     return base
 
@@ -117,6 +123,71 @@ def test_each_reason_names_its_consumer_or_its_gap(t, want):
     assert kind == want[0]
     text = val["reason"] if kind == "gap" else val
     assert want[1] in text
+
+
+@needs_sweep
+@pytest.mark.parametrize("labels,want", [
+    (("owner:sana",), ("consumer", "linear-alert-triage.py")),
+    (("owner:sana", "needs-scope"), ("gap", "alert-lane-refused")),
+    (("owner:sana", "blocked:capability"), ("gap", "alert-lane-refused")),
+    (("owner:assaf",), ("gap", "alert-lane-refused")),
+    (("owner:cole",), ("gap", "alert-lane-refused")),
+    ((), ("consumer", "linear-owner-sweep.py")),
+    (("needs-scope",), ("gap", "alert-lane-refused")),
+    (("owner:sana", "triage:held"), ("gap", "label-triage-held")),
+])
+def test_an_alert_is_decided_before_the_hold_labels_as_ready_does(labels, want):
+    """PR #689 review, minor 3. ready() refuses an alert before any label, so an alert's
+    consumer is the alert lane or nothing. needs-scope used to name the drafter, which
+    refuses alerts too: a false green. With no owner label the owner sweep labels it
+    first, and the lane is asked about the ticket as the sweep will leave it."""
+    kind, val = sweep.classify_ticket(ticket(desc=ALERT, labels=labels), ctx())
+    assert kind == want[0]
+    assert want[1] in (val["reason"] if kind == "gap" else val)
+
+
+@needs_sweep
+def test_an_alert_lane_that_was_not_read_is_never_a_gap():
+    assert sweep.classify_ticket(ticket(desc=ALERT), ctx(alert_refusal=None))[0] == "skip"
+
+
+@needs_sweep
+def test_a_refusal_younger_than_24h_is_a_blip_not_a_gap():
+    """PR #689 review, major 1. repo-preflight.sh fails closed, so an expired gh token
+    or one GitHub 5xx refuses. Filed at once, that is a permanent ticket for a project
+    that was never unreachable. A refusal is a gap only once it has held 24h, the
+    same bar the sweep sets for an idle item."""
+    kind, why = sweep.classify_ticket(ticket(project="ktlyst"), ctx(refused_hours={"ktlyst": 2}))
+    assert kind == "skip" and "24h" in why
+    kind, val = sweep.classify_ticket(ticket(project="ktlyst"), ctx(refused_hours={"ktlyst": 25}))
+    assert kind == "gap" and val["reason"] == "unreachable-project"
+    assert sweep.classify_ticket(ticket(project="ktlyst"), ctx(refused_hours={}))[0] == "skip"
+
+
+@needs_sweep
+def test_a_refusal_clock_runs_while_refused_and_resets_on_recovery():
+    t0 = (NOW - timedelta(hours=30)).isoformat()
+    prev = {"ktlyst": {"since": t0, "why": "preflight refuses: credentials"},
+            "brag": {"since": t0, "why": "preflight refuses: hooks"},
+            "alice": "not a row",
+            "zeta": {"since": t0, "why": "preflight refuses: remote"}}
+    state, hours = sweep.track_refusals(
+        prev, {"ktlyst": "preflight refuses: hooks", "brag": "", "alice": "x", "new": "y"}, NOW)
+    assert state["ktlyst"]["since"] == t0 and hours["ktlyst"] == 30  # continuous, any reason
+    assert "brag" not in state and "brag" not in hours                # recovered: clock gone
+    assert hours["alice"] == 0 and hours["new"] == 0                  # corrupt or new: starts now
+    assert state["zeta"]["since"] == t0                               # not checked is not recovered
+    assert sweep.track_refusals(["not", "a", "dict"], {"k": "x"}, NOW)[1] == {"k": 0}
+
+
+@needs_sweep
+def test_the_refusal_state_reads_back_and_a_corrupt_file_is_empty(tmp_path):
+    p = tmp_path / "stall-sweep" / "refusals.json"
+    assert sweep.load_json(p) == {}
+    sweep.write_json(p, {"ktlyst": {"since": "s", "why": "w"}})
+    assert sweep.load_json(p) == {"ktlyst": {"since": "s", "why": "w"}}
+    p.write_text("{torn")
+    assert sweep.load_json(p) == {}
 
 
 @needs_sweep
@@ -183,12 +254,12 @@ def test_lane_answers_are_read_from_the_real_lane_marker(tmp_path, monkeypatch):
     assert got["ASK-3"][0] == "unreadable" and got["ASK-4"][0] == "unreadable"
 
 
-@needs_sweep
-def test_main_reads_the_lane_for_every_idle_ticket(tmp_path, monkeypatch, capsys):
-    """The wiring, report only: main() asks lane_marker and hands the answer to the
-    classifier. The pure tests above cannot see main() drop it."""
+def _main(tmp_path, monkeypatch, *, hold="no worker history: x", lane="", project="kipi-system",
+          stub_guard=True):
+    """main() report-only over one started ticket idle 25h, every network seam faked.
+    HOME is the sandbox, so the refusal state and the archive hook are never live."""
     stamp = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat().replace("+00:00", "Z")
-    t = dict(ticket(state="started"), updatedAt=stamp, startedAt=stamp)
+    t = dict(ticket(state="started", project=project), updatedAt=stamp, startedAt=stamp)
 
     class MainSync:
         def linear_api_key(self): return "k"
@@ -196,25 +267,53 @@ def test_main_reads_the_lane_for_every_idle_ticket(tmp_path, monkeypatch, capsys
             if "teams(filter" in q:
                 return {"teams": {"nodes": [{"id": "T"}]}}
             return {"issues": {"nodes": [t], "pageInfo": {"hasNextPage": False}}}
-        def started_hold_reason(self, i, state_dir=""): return "no worker history: x"
+        def started_hold_reason(self, i, state_dir=""): return hold
         def worker_history(self, d, ident): return "no worker history: x"
         def live_claim(self, d, ident): return ""
-        def lane_marker(self, ident):
-            return f"lane marker: sana-1 holds {ident} until 2099-01-01T00:00:00Z"
+        def lane_marker(self, ident): return lane
 
     reg = tmp_path / "instance-registry.json"
     reg.write_text(json.dumps({"skeleton": {"name": "kipi-system", "path": str(tmp_path)},
                                "instances": []}))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KIPI_DISPATCH_TARGETS", str(tmp_path / "no-overlay.json"))
     monkeypatch.setenv("KIPI_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(sweep, "REFUSALS_PATH", tmp_path / "refusals.json")
     monkeypatch.setattr(sweep, "_load_sync", lambda: MainSync())
-    monkeypatch.setattr(sweep, "archived", lambda path, label, run=None: False)
+    if stub_guard:
+        monkeypatch.setattr(sweep, "archived", lambda path, label, run=None: False)
     monkeypatch.setattr(sweep, "reachability", lambda facts, projects, run=None: {})
-    monkeypatch.setattr(sweep, "fleet_repos", lambda facts, run=None, is_archived=None: ([], []))
+    if stub_guard:
+        monkeypatch.setattr(sweep, "fleet_repos", lambda facts, run=None, is_archived=None: ([], []))
     monkeypatch.setattr(sweep, "pr_owner_set", lambda: None)
-    assert sweep.main(["--json", "--registry", str(reg)]) == sweep.EXIT_OK
+    return sweep.main(["--json", "--registry", str(reg)])
+
+
+@needs_sweep
+def test_main_reads_the_lane_for_every_idle_ticket(tmp_path, monkeypatch, capsys):
+    """The wiring, report only: main() asks lane_marker and hands the answer to the
+    classifier. The pure tests above cannot see main() drop it."""
+    lane = "lane marker: sana-1 holds ASK-9001 until 2099-01-01T00:00:00Z"
+    assert _main(tmp_path, monkeypatch, lane=lane) == sweep.EXIT_OK
     out = json.loads(capsys.readouterr().out)
     assert out["gaps"] == {} and "interactive lane" in out["named"][0]
+    assert not (tmp_path / "refusals.json").exists()  # report only writes nothing
+
+
+@needs_sweep
+def test_main_reports_an_unread_started_ticket_as_incomplete(tmp_path, monkeypatch, capsys):
+    assert _main(tmp_path, monkeypatch, hold="its PRs could not be read (502)") == sweep.EXIT_INCOMPLETE
+    out = json.loads(capsys.readouterr().out)
+    assert out["gaps"] == {} and any("ASK-9001" in line for line in out["incomplete"])
+
+
+@needs_sweep
+def test_a_missing_guard_refuses_when_no_idle_ticket_has_a_project(tmp_path, monkeypatch, capsys):
+    """PR #689 review, minor 4. With no project to ask about, only fleet_repos asks the
+    archive hook, and its refusal escaped main() as a traceback and exit 1."""
+    rc = _main(tmp_path, monkeypatch, project=None, stub_guard=False)
+    assert rc == sweep.EXIT_INCOMPLETE
+    assert "REFUSED" in capsys.readouterr().err
 
 
 @needs_sweep
@@ -227,6 +326,34 @@ def test_the_sweep_walks_exactly_the_labels_ready_refuses():
     assert set(sweep.READY_LABEL_ORDER) == set(census.refused_labels(census.ready_source(worker)))
     lane_holds = json.loads((QDIR / "hold-label-consumers.json").read_text())["lane_holds"]
     assert set(lane_holds) == {sweep.LANE_HOLD}
+
+
+@needs_sweep
+def test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap(tmp_path, monkeypatch):
+    """PR #689 review, major 2. started_hold_reason folds a failed read into its answer,
+    so "could not look" reached the sweep as a hold and filed a started-held ticket.
+    Driven through the real linear-sync.py with real ledger files: the split between
+    a fact and a failed read rests on that module's wording, so it is pinned here."""
+    sync = sweep._load_sync()
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat().replace("+00:00", "Z")
+    t = dict(ticket(state="started"), startedAt=stamp, updatedAt=stamp)
+
+    def ledger(name, text):
+        d = tmp_path / name
+        d.mkdir()
+        if text is not None:
+            (d / sync.ATTEMPTS_LEDGER_NAME).write_text(text)
+        return str(d)
+
+    def boom(_issue):
+        raise RuntimeError("502 Bad Gateway")
+    monkeypatch.setattr(sync, "open_prs", boom)
+    row = json.dumps({"ASK-9001": {"count": 1}})
+    assert sweep.started_classes(sync, [t], ledger("pr-read-fails", row))["ASK-9001"][0] == "unread"
+    assert sweep.started_classes(sync, [t], ledger("no-ledger", None))["ASK-9001"][0] == "unread"
+    assert sweep.started_classes(sync, [t], ledger("torn-ledger", "{x"))["ASK-9001"][0] == "unread"
+    other = json.dumps({"ASK-1": {"count": 1}})
+    assert sweep.started_classes(sync, [t], ledger("no-row", other))["ASK-9001"][0] == "history"
 
 
 @needs_sweep

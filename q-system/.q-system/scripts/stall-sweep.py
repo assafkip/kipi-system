@@ -37,7 +37,10 @@ is, never named as reachable. A row only the shared checkout carries is ASK-3967
 THE CONSUMER, IN ready()'s ORDER (linear-worker.sh). A label ready() refuses maps
 through hold-label-consumers.json (ASK-4011), the one table of hold labels. Every
 other reason maps through REASONS below. Reachability is repo-preflight.sh, run once
-per project, the same gate the worker runs (linear-worker.sh, ASK-840).
+per project, the same gate the worker runs (linear-worker.sh, ASK-840). That gate
+fails closed, so a refusal is a gap only once it has held 24h (refusals.json); a
+token blip is never a ticket. An alert goes to the alert lane first, as in ready(),
+and is judged by linear-alert-triage.py promotion_refusal itself.
 
 ONE TICKET PER GAP, NOT PER ITEM. On 2026-11-08, 44 idle tickets had no project. One
 ticket each is 44 tickets for one missing router, and volume from one detector is a
@@ -54,7 +57,9 @@ Exit codes:
   2  usage
   3  no Linear key
   4  --apply refused under pytest
-  9  incomplete: the board walk or the registry failed; nothing written
+  9  incomplete: a read failed. A failed board walk, registry or archive hook
+     writes nothing. Any other failed read is listed, and its items are skipped,
+     never filed: "could not look" is not "nothing moves it"
 
 Usage:
     python3 stall-sweep.py            # report only
@@ -117,6 +122,17 @@ READY_LABEL_ORDER = ("owner:assaf", "owner:sana", "needs-scope", "blocked:capabi
 
 # Job state lives outside every checkout (separate-worktrees.md).
 EVIDENCE_PATH = pathlib.Path.home() / ".local" / "state" / "kipi" / "stall-sweep" / "last-run.json"
+# {project: {"since", "why"}}: when each project's preflight refusal began. One
+# writer, this script under --apply. PR #689 review, major 1: repo-preflight.sh
+# fails closed, so an expired gh token or one GitHub 5xx refuses every project,
+# and filed at once that is a permanent ticket for a project never unreachable.
+REFUSALS_PATH = EVIDENCE_PATH.parent / "refusals.json"
+
+# linear-sync.py words that mean "could not look", never "nothing moves it" (PR #689
+# review, major 2). test_a_read_failure_inside_started_hold_reason_is_unread_not_a_gap
+# pins both against the real module with real ledger files.
+NO_HISTORY_PREFIX = "no worker history:"
+PR_UNREAD_PREFIX = "its PRs could not be read"
 
 # Every reason that is not a hold label. `builder` is the ticket building the
 # missing consumer, or None when nothing is, in which case the sweep files one.
@@ -134,7 +150,7 @@ REASONS = {
     "unreachable-project": {
         "builder": None,
         "what": "Its project has no checkout the fleet worker may enter: no local checkout, "
-                "or repo-preflight.sh refuses it. No rotation reaches it.",
+                "or repo-preflight.sh has refused it for 24h or more. No rotation reaches it.",
     },
     "started-no-history": {
         "builder": None,
@@ -191,7 +207,7 @@ COMMENT_CREATE = """mutation($input:CommentCreateInput!){commentCreate(input:$in
 COMMENT_UPDATE = """mutation($id:String!,$input:CommentUpdateInput!){commentUpdate(id:$id,input:$input){success}}"""
 
 GITHUB_SLUG = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
-PR_FIELDS = "number,url,headRefName,isDraft,createdAt,commits,reviews,statusCheckRollup"
+PR_FIELDS = "number,url,headRefName,createdAt,commits,reviews,statusCheckRollup"
 PR_LIMIT = 30
 
 
@@ -259,7 +275,8 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
     ctx keys: rows (hold-label table rows), fleet (board names), home (the skeleton's
     board name), refusal {project: "" reachable | why not}, started {identifier:
     (class, text)} for started tickets, lanes {identifier: ("live" | "unreadable",
-    text)} from lane_classes.
+    text)} from lane_classes, refused_hours {project: hours refused}, alert_refusal
+    (linear-alert-triage.py promotion_refusal, or None when it could not be loaded).
     """
     labels = label_names(issue)
     proj = project_of(issue)
@@ -279,6 +296,26 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
         return gap("outside-fleet-project", None, REASONS["outside-fleet-project"]["what"])
     rows = ctx["rows"]
     owners = {l for l in labels if l.lower().startswith(OWNER_PREFIX)}
+    # ready() refuses an alert before it reads any label (linear-worker.sh
+    # is_fleet_alert), so an alert's only consumer is the alert lane. PR #689 review,
+    # minor 3: walked after the labels, an alert with needs-scope named the DoR
+    # drafter, which refuses alerts too. The lane is asked, never copied.
+    if is_alert(issue):
+        if LANE_HOLD in labels and LANE_HOLD in rows:
+            return from_registry_row(LANE_HOLD, rows[LANE_HOLD])
+        refuse = ctx.get("alert_refusal")
+        if refuse is None:
+            return ("skip", "alert: linear-alert-triage.py promotion_refusal not read this run")
+        if not owners and (rows.get(OWNER_LABEL) or {}).get("consumer"):
+            # The owner sweep labels an ownerless ticket owner:sana first, so the lane
+            # is asked about the ticket as the owner sweep will leave it.
+            nodes = list(((issue.get("labels") or {}).get("nodes")) or []) + [{"name": OWNER_LABEL}]
+            if refuse(dict(issue, labels={"nodes": nodes})) is None:
+                first = from_registry_row(OWNER_LABEL, rows[OWNER_LABEL])[1]
+                return named(f"{first}, then linear-alert-triage.py (com.kipi.linear-alert-triage)")
+        elif refuse(issue) is None:
+            return named("linear-alert-triage.py (com.kipi.linear-alert-triage)")
+        return gap("alert-lane-refused", None, REASONS["alert-lane-refused"]["what"])
     for label in READY_LABEL_ORDER:
         row = rows.get(label)
         if row is None:
@@ -291,12 +328,6 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
             return gap("other-owner", REASONS["other-owner"]["builder"],
                        REASONS["other-owner"]["what"])
         return from_registry_row(label, row)
-    if is_alert(issue):
-        if LANE_HOLD in labels and LANE_HOLD in rows:
-            return from_registry_row(LANE_HOLD, rows[LANE_HOLD])
-        if proj is None or (issue.get("state") or {}).get("type") == "started":
-            return gap("alert-lane-refused", None, REASONS["alert-lane-refused"]["what"])
-        return named("linear-alert-triage.py (com.kipi.linear-alert-triage)")
     desc = issue.get("description") or ""
     if proj is None:
         if DOR_HEADING in desc:
@@ -306,6 +337,10 @@ def classify_ticket(issue: dict, ctx: dict) -> tuple:
     if proj != ctx["home"]:
         refusal = ctx["refusal"].get(proj)
         if refusal is None or refusal:
+            hours = (ctx.get("refused_hours") or {}).get(proj)
+            if hours is None or hours < IDLE_HOURS:
+                return ("skip", f"{proj}: refused under {IDLE_HOURS}h, so it may be a blip "
+                                f"({refusal or 'not preflighted'})")
             return gap("unreachable-project", None, REASONS["unreachable-project"]["what"])
     if (issue.get("state") or {}).get("type") == "started":
         cls, text = ctx["started"].get(issue.get("identifier"), ("unread", ""))
@@ -455,6 +490,30 @@ def repo_slug(remote: str):
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def track_refusals(prev, refusal: dict, now: datetime) -> tuple:
+    """(new state, {project: hours refused}) from the last state and this run's refusals.
+
+    The clock runs while a project stays refused, whatever the reason: an expired
+    token that turns into a hook-parity gap is still a project nobody enters. It
+    stops only when the project is seen reachable. A project not preflighted this
+    run keeps its clock, because not checked is not recovered. A row that cannot be
+    read starts the clock now, the safe side: the gap waits, it is never minted.
+    """
+    prev = prev if isinstance(prev, dict) else {}
+    state = {p: r for p, r in prev.items() if p not in refusal and isinstance(r, dict)}
+    hours = {}
+    for proj, why in refusal.items():
+        if not why:
+            continue
+        row = prev.get(proj)
+        since = _ts(row.get("since")) if isinstance(row, dict) else None
+        if since is None or since > now:
+            since = now
+        state[proj] = {"since": since.isoformat(timespec="seconds"), "why": why}
+        hours[proj] = (now - since).total_seconds() / 3600.0
+    return state, hours
+
+
 def preflight_refusal(rc: int, output: str) -> str:
     """"" when the gate lets a dispatcher in, else the failed check names, as the
     worker reports them (linear-worker.sh REFUSED_IN)."""
@@ -491,9 +550,12 @@ def fetch_board(sync, team_key: str) -> tuple:
 def started_classes(sync, issues: list, state_dir: str) -> dict:
     """{identifier: (class, text)} for started tickets, asked of started_hold_reason.
 
-    The class is read by equality with the same module's own answers, never by
-    matching its prose: "" released it, worker_history's text is no history,
-    live_claim's text is a live run, open_prs' line is an open PR.
+    The class is read by equality with the same module's own answers where it can
+    be: "" released it, worker_history's text is no history, live_claim's text is a
+    live run, open_prs' line is an open PR. Two answers mean "could not look" and
+    are "unread", skipped and reported, never a gap (PR #689 review, major 2): a
+    worker_history answer that is not its no-row answer (no ledger, a torn ledger),
+    and a failed PR read, which started_hold_reason folds into its own prose.
     """
     out = {}
     for i in issues:
@@ -504,14 +566,25 @@ def started_classes(sync, issues: list, state_dir: str) -> dict:
         if why == "":
             out[ident] = ("released", "")
         elif why == sync.worker_history(state_dir, ident):
-            out[ident] = ("history", why)
+            out[ident] = ("history" if why.startswith(NO_HISTORY_PREFIX) else "unread", why)
         elif why == sync.live_claim(os.path.join(state_dir, "worktrees"), ident):
             out[ident] = ("claim", why)
         elif why.startswith("open PR "):
             out[ident] = ("pr", why[len("open PR "):])
+        elif why.startswith(PR_UNREAD_PREFIX):
+            out[ident] = ("unread", why)
         else:
             out[ident] = ("held", why)
     return out
+
+
+def _load_alert_triage():
+    """linear-alert-triage.py, for promotion_refusal: the alert lane's own refusal."""
+    spec = importlib.util.spec_from_file_location("alert_triage_for_stall_sweep",
+                                                  HERE / "linear-alert-triage.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 LANE_LIVE_PREFIX = "lane marker: "
@@ -690,13 +763,23 @@ def upsert_comment(sync, ticket: str, reason: str, g: dict, budget: dict) -> str
     return "comment written" if ok else "comment refused"
 
 
-def write_evidence(path: pathlib.Path, payload: dict) -> None:
-    """One writer, atomic rename. Audit only: no job reads it, and nothing here says one does."""
+def write_json(path: pathlib.Path, payload: dict) -> None:
+    """One writer (this script under --apply), atomic rename. last-run.json is audit
+    only, no job reads it; refusals.json is read back by the next run of this script."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".last-run.", suffix=".json")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem}.", suffix=".json")
     with os.fdopen(fd, "w") as fh:
         json.dump(payload, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
+
+
+def load_json(path: pathlib.Path) -> dict:
+    """{} when missing, torn or not an object: the refusal clocks then start now."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def main(argv: list) -> int:
@@ -753,19 +836,31 @@ def main(argv: list) -> int:
     except Exception as exc:
         incomplete.append(f"started tickets: {str(exc)[:160]}")
         started = {}
+    unread_started = sorted(k for k, (cls, _) in started.items() if cls == "unread")
+    if unread_started:
+        incomplete.append(f"started tickets not read ({len(unread_started)}), skipped: "
+                          + ", ".join(unread_started[:20]))
     lanes = lane_classes(sync, [t.get("identifier") or "" for t in idle])
+    try:
+        alert_refusal = _load_alert_triage().promotion_refusal
+    except Exception as exc:
+        incomplete.append(f"linear-alert-triage.py: {str(exc)[:160]}")
+        alert_refusal = None
     local = linear_registry.local_by_project(facts)
+    # Both readers of the archive hook sit under one handler (PR #689 review, minor 4):
+    # with no idle ticket in a project, fleet_repos is the only one that asks it.
     try:
         arch = {p for p in {project_of(t) for t in idle} - {None}
                 if archived((local.get(p) or {}).get("path") or p, p)}
+        slugs, unlisted = fleet_repos(facts, is_archived=archived)
     except ArchiveGuardMissing as exc:
         print(f"stall-sweep: REFUSED, {exc}; the archived engagement cannot be told apart, "
               f"so nothing is read. Exit 9.", file=sys.stderr)
         return EXIT_INCOMPLETE
     projects = {project_of(t) for t in idle} - {None, CHIEF_PROJECT, facts["skeleton_project"]} - arch
     refusal = reachability(facts, projects & fleet)
+    refusal_state, refused_hours = track_refusals(load_json(REFUSALS_PATH), refusal, now)
 
-    slugs, unread = fleet_repos(facts, is_archived=archived)
     try:
         owned = pr_owner_set()
     except Exception as exc:
@@ -779,8 +874,8 @@ def main(argv: list) -> int:
             incomplete.append(f"PRs {slug}: {str(exc)[:160]}")
 
     ctx = {"rows": hold, "fleet": fleet, "home": facts["skeleton_project"] or HOME_PROJECT,
-           "refusal": refusal, "started": started, "lanes": lanes, "archived": arch,
-           "pr_owned": owned}
+           "refusal": refusal, "refused_hours": refused_hours, "started": started,
+           "lanes": lanes, "alert_refusal": alert_refusal, "archived": arch, "pr_owned": owned}
     p = plan(tickets, prs, ctx, now)
 
     handed, unhanded = {}, {}
@@ -802,12 +897,13 @@ def main(argv: list) -> int:
               "status": p["status"], "tickets_read": len(tickets), "prs_read": len(prs),
               "fresh": p["fresh"], "skipped": p["skipped"], "named": p["named"],
               "gaps": p["gaps"], "handed": handed, "unhanded": unhanded,
-              "repos_unlisted": unread, "incomplete": incomplete}
+              "repos_unlisted": unlisted, "refusals": refusal_state, "incomplete": incomplete}
     if args.apply:
-        try:
-            write_evidence(EVIDENCE_PATH, result)
-        except OSError as exc:
-            print(f"stall-sweep: evidence not written ({exc})", file=sys.stderr)
+        for path, payload in ((REFUSALS_PATH, refusal_state), (EVIDENCE_PATH, result)):
+            try:
+                write_json(path, payload)
+            except OSError as exc:
+                print(f"stall-sweep: {path.name} not written ({exc})", file=sys.stderr)
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
