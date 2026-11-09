@@ -44,6 +44,10 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n     %s\n' "$1" "${2:-}"; }
 
 WORK="$(mktemp -d)"
+# attempts-ledger.py files an alert when it refuses a corrupt ledger (ASK-4143),
+# so every direct ledger call below needs a notifier stub too. Calls that set
+# their own KIPI_NOTIFY still override this.
+export KIPI_NOTIFY=/usr/bin/true
 trap 'kill "${SRV_PID:-}" 2>/dev/null; rm -rf "$WORK"' EXIT
 
 # --- fixture Linear: reads answered from the board below, writes logged -----------

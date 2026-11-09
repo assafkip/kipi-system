@@ -101,9 +101,11 @@ drops a page:
 
   0  the op succeeded. For claim-flag: claimed HERE, first time -- go page.
   1  claim-flag ONLY: already claimed on an earlier run -- stay quiet.
-  2  NOTHING WAS WRITTEN, and the cause is not contention. Two populations:
-     a usage error (unknown op, wrong arity), and -- since the round-3
-     catch-all in main() -- ANY unanticipated failure, e.g. an OSError from
+  2  NOTHING WAS WRITTEN, and the cause is not contention. Three populations:
+     a usage error (unknown op, wrong arity); a ledger that exists but cannot
+     be read, parsed, or used as an object, which is never written over
+     (ASK-4143, see _read_for_write); and, since the round-3
+     catch-all in main(), ANY unanticipated failure, e.g. an OSError from
      mkstemp / os.replace / json.dump on a full or read-only filesystem.
   3  NOTHING WAS WRITTEN because the lock could not be taken.
   4  claim-flag-uncapped ONLY: converge already gave up on this issue (parked).
@@ -136,6 +138,7 @@ import fcntl
 import json
 import os
 import pwd
+import subprocess
 import sys
 import tempfile
 import time
@@ -197,6 +200,146 @@ def refuse_live_write_under_test(path):
 
 class Usage(Exception):
     """Wrong op or wrong arity. Exits 2, never 1: see the exit-code table above."""
+
+
+class LedgerUnusable(Exception):
+    """The ledger exists and cannot be used as a dict. Exit 2, nothing written.
+
+    `copy` is where its bytes are kept (None when they could not be read), and
+    `fresh` is True only on the run that made that copy, so the alert fires once.
+    """
+
+    def __init__(self, msg, copy=None, fresh=False):
+        Exception.__init__(self, msg)
+        self.copy = copy
+        self.fresh = fresh
+
+
+def _keep_corrupt_copy(path, raw):
+    """Copy the bad bytes to <ledger>.corrupt-<UTC stamp> ONCE; return (path, fresh).
+
+    ONCE PER DISTINCT CONTENT. The worker writes every 15 minutes and every write
+    is refused while the file stays bad, so a copy per refusal would fill the
+    folder with one fact. A sibling copy holding the same bytes means this
+    corruption is already kept (and already alerted). Runs under the ledger lock,
+    and nothing else writes these names, so the check and the create cannot race.
+    """
+    parent = os.path.dirname(path) or "."
+    stem = os.path.basename(path) + ".corrupt-"
+    for name in sorted(os.listdir(parent)):
+        if not name.startswith(stem):
+            continue
+        kept = os.path.join(parent, name)
+        try:
+            with open(kept, "rb") as fh:
+                if fh.read() == raw:
+                    return kept, False
+        except OSError:
+            continue
+    base = os.path.join(parent, stem + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()))
+    for n in range(100):
+        target = base if n == 0 else "%s-%d" % (base, n)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(raw)
+        except Exception:
+            try:
+                os.unlink(target)
+            except OSError:
+                pass
+            raise
+        return target, True
+    raise OSError("no free %s.corrupt-* name after 100 tries" % path)
+
+
+def _read_for_write(path):
+    """The ledger as a dict, {} when absent, else LedgerUnusable. NEVER {} on a fault.
+
+    THE WIPE (ASK-4143, PR #692 round 2 review). This read used to end in
+    `except Exception: d = {}` plus `if not isinstance(d, dict): d = {}`. The
+    caller then applied ONE change and os.replace'd the result over the file, so a
+    single failed read replaced every row with one row: each issue's attempt
+    count, codex_outage_noted, wip_released_pr* and why. MAX_ATTEMPTS restarted
+    at 0 for the whole fleet, and linear-sync.py worker_history read every
+    fleet-run ticket as "no worker history". Measured on main with a 3-row
+    fixture: one bump-attempt over `{not json` exited 0 and left 1 row.
+
+    Only an ABSENT file is a first run. A file that exists and cannot be read,
+    parsed, or used as an object is never written over: the write is refused,
+    and the bad bytes are copied aside once so the recovery needs no one to
+    find them.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        # A failed READ, not bad content: there are no bytes to keep, and the
+        # next run that can read the file proceeds, so nothing is copied.
+        raise LedgerUnusable(
+            "the ledger at %s could not be read (%s: %s). It is never written over "
+            "on a failed read (ASK-4143); nothing was written, and the next run retries."
+            % (path, type(exc).__name__, exc))
+    try:
+        d = json.loads(raw)
+        why = None if isinstance(d, dict) else "it is a JSON %s, not an object" % type(d).__name__
+    except ValueError as exc:
+        why = "%s: %s" % (type(exc).__name__, str(exc)[:120])
+    if why is None:
+        return d
+    try:
+        copy, fresh = _keep_corrupt_copy(path, raw)
+    except OSError as exc:
+        raise LedgerUnusable(
+            "the ledger at %s cannot be parsed (%s), and copying it aside failed (%s). "
+            "It is left as it is; nothing was written, and the next run tries the copy "
+            "again." % (path, why, exc))
+    raise LedgerUnusable(
+        "the ledger at %s cannot be parsed (%s). It is never overwritten (ASK-4143); "
+        "nothing was written. Its bytes are kept at %s. Writes resume once %s parses "
+        "again, or once it is moved out of the way (a fresh ledger then starts)."
+        % (path, why, copy, path), copy=copy, fresh=fresh)
+
+
+def _alert_unusable(path, exc):
+    """File the ONE alert a newly kept corrupt ledger is owed. Outside the lock.
+
+    THE CONSUMER, because the callers do not all have one. linear-worker.sh
+    bump_attempt ignores the exit code and only page_once routes 2 to an alert,
+    so a corrupt ledger could refuse every attempt count with nothing filed.
+    The refusal is decided here, so the alert is sent here: slack-notify.sh files
+    a Sana ticket and linear-alert-triage.py takes it.
+
+    A test never reaches the live alert path (same class as ASK-4052): under
+    KIPI_TEST=1 or pytest, only an explicit KIPI_NOTIFY stub is called.
+    """
+    if not exc.fresh:
+        return
+    notify = os.environ.get("KIPI_NOTIFY") or ""
+    if not notify:
+        if _under_test():
+            sys.stderr.write("attempts-ledger: corrupt-ledger alert not sent under a test "
+                             "(set KIPI_NOTIFY to a stub to see it)\n")
+            return
+        notify = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack-notify.sh")
+    msg = ("attempts ledger refused: %s cannot be parsed, so every attempt count, cap and "
+           "once-only flag write is refused until it is fixed (ASK-4143). Its bytes are "
+           "kept at %s. linear-alert-triage.py takes this ticket. Fix: repair the JSON in "
+           "place from that copy, or move %s out of the way so the next write starts a "
+           "fresh ledger." % (path, exc.copy, path))
+    try:
+        rc = subprocess.run(["bash", notify, msg], capture_output=True, text=True,
+                            timeout=120).returncode
+    except Exception as err:
+        rc = "%s" % type(err).__name__
+    if rc != 0:
+        sys.stderr.write("attempts-ledger: the corrupt-ledger alert did not file (%s); "
+                         "the refusal above is the only record\n" % rc)
 
 
 def _same_file(fh, lock):
@@ -286,13 +429,7 @@ def _mutate(path, fn):
             "a run that cannot take the lock writes nothing rather than racing the "
             "run that can." % lock)
     try:
-        try:
-            with open(path) as fp:
-                d = json.load(fp)
-        except Exception:
-            d = {}
-        if not isinstance(d, dict):
-            d = {}
+        d = _read_for_write(path)
         if not fn(d):
             return False
         parent = os.path.dirname(path) or "."
@@ -454,6 +591,14 @@ def main(argv):
         # 5, its own code: 4 already means "parked" for claim-flag-uncapped.
         sys.stderr.write("attempts-ledger: `%s` %s\n" % (op, exc))
         return 5
+    except LedgerUnusable as exc:
+        # 2 and not a new code (ASK-4143). 2 already means "nothing was written,
+        # not contention, may persist", which is exactly a corrupt ledger, and
+        # every write caller (seven scripts) already routes 2 as a fault. A new
+        # code would need a new branch in each of them; 2 needs none.
+        sys.stderr.write("attempts-ledger: `%s` wrote nothing: %s\n" % (op, exc))
+        _alert_unusable(path, exc)
+        return 2
     except Exception:
         # 2, and the catch-all is the point (codex round 2 on PR #67, minor 3).
         # This block used to name only the two exceptions above, so an OSError

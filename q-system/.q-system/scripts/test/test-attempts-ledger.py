@@ -553,6 +553,223 @@ def case_write_failure_is_not_already_claimed(tmp: str) -> None:
     ok(f"a hard write failure exits {proc.returncode}, not 1 ('already claimed'), and records nothing")
 
 
+# CASES 14 TO 18. A LEDGER THAT CANNOT BE READ IS NEVER OVERWRITTEN (ASK-4143)
+# `_mutate` used to set d = {} on ANY read failure, apply the one change, and
+# os.replace the result over the file. One unreadable read therefore replaced
+# every row with a single row: every attempt count, codex_outage_noted,
+# wip_released_pr* and why, for every issue. MAX_ATTEMPTS restarted at 0 and
+# linear-sync.py worker_history read every fleet-run ticket as "no history".
+# Found in the PR #692 round 2 review (ASK-4111 finding 1).
+THREE_ROWS = {
+    "ASK-1": {"count": 2, "why": "first two runs failed"},
+    "ASK-2": {"count": 1, "codex_outage_noted": True},
+    "ASK-3": {"wip_released_pr7": True},
+}
+
+
+def notify_stub(tmp: str) -> tuple:
+    """A KIPI_NOTIFY stand-in that records each alert, one line per call.
+
+    Never the real slack-notify.sh: that files a live Linear ticket."""
+    log = os.path.join(tmp, "notified.log")
+    stub = os.path.join(tmp, "notify-stub.sh")
+    with open(stub, "w") as fh:
+        fh.write('#!/bin/sh\nprintf "%%s\\n" "$1" >> "%s"\n' % log)
+    os.chmod(stub, 0o755)
+    return stub, log
+
+
+def alerts(log: str) -> list:
+    try:
+        with open(log) as fh:
+            return [ln for ln in fh.read().splitlines() if ln]
+    except FileNotFoundError:
+        return []
+
+
+def corrupt_copies(path: str) -> list:
+    folder = os.path.dirname(path)
+    stem = os.path.basename(path) + ".corrupt-"
+    return sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.startswith(stem))
+
+
+def rows_in(path: str) -> str:
+    """What the ledger holds now, for a failure message."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except Exception as exc:
+        return "unparseable (%s)" % type(exc).__name__
+    return "%d row(s): %s" % (len(d), sorted(d)) if isinstance(d, dict) else "a %s" % type(d).__name__
+
+
+def run_env(path: str, extra: dict, *args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["KIPI_ATTEMPTS_LOCK_TRIES"] = "3"
+    env.update(extra)
+    return subprocess.run([sys.executable, str(LEDGER), path, *args],
+                          capture_output=True, text=True, env=env)
+
+
+def case_corrupt_ledger_is_never_overwritten(tmp: str) -> None:
+    folder = os.path.join(tmp, "corrupt")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        json.dump(THREE_ROWS, fh)
+    with open(path, "w") as fh:
+        fh.write("{not json")
+    stub, log = notify_stub(folder)
+
+    proc = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
+
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if raw != b"{not json":
+        fail("THE DEFECT: bump-attempt read a ledger it could not parse and wrote over it. "
+             f"The file now holds {rows_in(path)}; every other row is gone (ASK-4143). "
+             f"rc={proc.returncode} stderr={proc.stderr.strip()[-200:]!r}")
+    if proc.returncode in (0, 1):
+        fail(f"the refused write exited {proc.returncode}, which the caller reads as success "
+             "('recorded' or 'already claimed'). Nothing was written, so it must be 2")
+    if proc.returncode != 2:
+        fail(f"the refused write exited {proc.returncode}, wanted 2 (nothing written, not "
+             f"contention): stderr={proc.stderr!r}")
+    copies = corrupt_copies(path)
+    if len(copies) != 1:
+        fail(f"wanted exactly one {os.path.basename(path)}.corrupt-<stamp> copy, found {copies}")
+    with open(copies[0], "rb") as fh:
+        if fh.read() != b"{not json":
+            fail(f"the copy at {copies[0]} does not hold the bad bytes it was made to keep")
+    if "cannot be parsed" not in proc.stderr or copies[0] not in proc.stderr:
+        fail("the refusal must say why and where the bad bytes are kept, so the caller's log "
+             f"carries the reason: stderr={proc.stderr!r}")
+    sent = alerts(log)
+    if len(sent) != 1 or path not in sent[0] or copies[0] not in sent[0]:
+        fail(f"wanted one alert naming the ledger and its copy, got {sent!r}")
+
+    # ONCE. The worker runs every 15 minutes; a copy and an alert per run would
+    # fill the folder and the alert lane with one fact.
+    again = run_env(path, {"KIPI_NOTIFY": stub}, "claim-flag", "ASK-2", "stuck_paged")
+    if again.returncode != 2:
+        fail(f"the second refused write exited {again.returncode}, wanted 2: {again.stderr!r}")
+    if corrupt_copies(path) != copies:
+        fail(f"the same bad bytes were copied aside twice: {corrupt_copies(path)}")
+    if len(alerts(log)) != 1:
+        fail(f"the same corruption alerted twice: {alerts(log)!r}")
+    if copies[0] not in again.stderr:
+        fail(f"a repeat refusal must still name the kept copy: {again.stderr!r}")
+    with open(path, "rb") as fh:
+        if fh.read() != b"{not json":
+            fail("the second write overwrote the corrupt ledger")
+    ok("a ledger that cannot be parsed is left as it is, copied aside once, alerted once, exit 2")
+
+
+def case_non_object_ledger_is_refused(tmp: str) -> None:
+    folder = os.path.join(tmp, "non-object")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        fh.write("[1, 2]")
+    stub, log = notify_stub(folder)
+
+    proc = run_env(path, {"KIPI_NOTIFY": stub}, "bump-drift", "ASK-4")
+
+    with open(path) as fh:
+        if fh.read() != "[1, 2]":
+            fail(f"THE DEFECT: a ledger that is valid JSON but not an object was overwritten; "
+                 f"it now holds {rows_in(path)}")
+    if proc.returncode != 2:
+        fail(f"wanted exit 2, got {proc.returncode}: {proc.stderr!r}")
+    if len(corrupt_copies(path)) != 1 or len(alerts(log)) != 1:
+        fail(f"wanted one copy and one alert, got {corrupt_copies(path)} and {alerts(log)!r}")
+    ok("a ledger that parses to a non-object is refused the same way")
+
+
+def case_unreadable_ledger_is_never_overwritten(tmp: str) -> None:
+    """The literal title of ASK-4143: ONE READ FAILS. No parse error at all.
+
+    A ledger the process may not read is replaced the same way an unparseable one
+    is. Nothing can be copied (the bytes cannot be read), so nothing is, and no
+    alert fires: the next run that can read the file just proceeds.
+    """
+    if os.geteuid() == 0:
+        ok("unreadable-ledger case skipped: root reads a 000 file")
+        return
+    folder = os.path.join(tmp, "unreadable")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        json.dump(THREE_ROWS, fh)
+    stub, log = notify_stub(folder)
+    os.chmod(path, 0o000)
+    try:
+        proc = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
+    finally:
+        os.chmod(path, 0o600)
+
+    if rows_in(path) != rows_in_dict(THREE_ROWS):
+        fail("THE DEFECT: one failed read of the ledger replaced it. It now holds "
+             f"{rows_in(path)}, it held {rows_in_dict(THREE_ROWS)}. rc={proc.returncode}")
+    if proc.returncode != 2:
+        fail(f"wanted exit 2, got {proc.returncode}: {proc.stderr!r}")
+    if "could not be read" not in proc.stderr:
+        fail(f"the refusal must say the read failed: {proc.stderr!r}")
+    if corrupt_copies(path) or alerts(log):
+        fail(f"an unreadable file has no bytes to keep; got {corrupt_copies(path)} {alerts(log)!r}")
+    # And it is not a wedge: once the file reads again, the write goes through.
+    after = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-1", "why")
+    if after.returncode != 0 or read_ledger(path).get("ASK-1", {}).get("count") != 3:
+        fail(f"the next readable run must count: rc={after.returncode} {rows_in(path)}")
+    if set(read_ledger(path)) != set(THREE_ROWS):
+        fail(f"the recovered write lost rows: {rows_in(path)}")
+    ok("a ledger that one read cannot open keeps every row; the next readable run counts")
+
+
+def rows_in_dict(d: dict) -> str:
+    return "%d row(s): %s" % (len(d), sorted(d))
+
+
+def case_absent_ledger_is_a_first_run(tmp: str) -> None:
+    """The guard against an over-strict fix: no file is a first run, not a fault."""
+    folder = os.path.join(tmp, "absent")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    stub, log = notify_stub(folder)
+    proc = run_env(path, {"KIPI_NOTIFY": stub}, "bump-attempt", "ASK-5", "first")
+    if proc.returncode != 0:
+        fail(f"a first run with no ledger must write: rc={proc.returncode} {proc.stderr!r}")
+    if read_ledger(path).get("ASK-5", {}).get("count") != 1:
+        fail(f"the first-run write did not land: {rows_in(path)}")
+    if corrupt_copies(path) or alerts(log):
+        fail(f"an absent ledger is not corrupt: {corrupt_copies(path)} {alerts(log)!r}")
+    ok("an absent ledger is a first run: the write goes on, nothing is copied or alerted")
+
+
+def case_no_live_alert_under_test(tmp: str) -> None:
+    """A test that forgets KIPI_NOTIFY never reaches the live alert path.
+
+    Same class as ASK-4052 and the 2026-08-01 slack-notify scar: a guard that
+    lives in each test protects only the tests someone remembered. The loopback
+    Linear URL is a second fence: if this guard ever broke, slack-notify.sh
+    would refuse the call as a fixture run rather than file a live ticket.
+    """
+    folder = os.path.join(tmp, "under-test")
+    os.mkdir(folder)
+    path = os.path.join(folder, "attempts.json")
+    with open(path, "w") as fh:
+        fh.write("{not json")
+    extra = {"KIPI_TEST": "1", "KIPI_NOTIFY": "",
+             "KIPI_LINEAR_API_URL": "http://127.0.0.1:9/graphql"}
+    proc = run_env(path, extra, "bump-attempt", "ASK-6", "why")
+    if proc.returncode != 2:
+        fail(f"wanted exit 2, got {proc.returncode}: {proc.stderr!r}")
+    if "not sent under a test" not in proc.stderr:
+        fail(f"under a test with no KIPI_NOTIFY the alert must be skipped and say so: "
+             f"{proc.stderr!r}")
+    ok("under a test with no KIPI_NOTIFY stub, the corrupt-ledger alert is skipped, not sent")
+
+
 def main() -> int:
     print("test-attempts-ledger: the lock around the attempts counter (ASK-286)")
     with tempfile.TemporaryDirectory() as tmp:
@@ -569,6 +786,11 @@ def main() -> int:
         case_usage_errors_exit_two(tmp)
         case_timeout_is_the_documented_budget(tmp)
         case_write_failure_is_not_already_claimed(tmp)
+        case_corrupt_ledger_is_never_overwritten(tmp)
+        case_non_object_ledger_is_refused(tmp)
+        case_unreadable_ledger_is_never_overwritten(tmp)
+        case_absent_ledger_is_a_first_run(tmp)
+        case_no_live_alert_under_test(tmp)
     print(f"PASS ({PASSED} cases)")
     return 0
 
