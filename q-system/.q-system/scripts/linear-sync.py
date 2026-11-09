@@ -24,7 +24,8 @@ two guards.
 WHY THE DEDUP KEY IS LOAD-BEARING: nothing in this file can take back what it
 creates. Its GraphQL mutations create and update, never delete or archive, and
 test_linear_sync_permanence.py derives that set from this source instead of
-trusting this sentence. A duplicate it mints stays until a person removes it
+trusting this sentence. The one exception it allows by name is issueRemoveLabel:
+a single-label detach on an issue that stays, which removes no object. A duplicate it mints stays until a person removes it
 outside this flow. So there are two independent guards, and the remote one is
 the truth:
 

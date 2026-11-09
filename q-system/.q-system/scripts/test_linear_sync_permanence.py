@@ -46,6 +46,16 @@ PASSES = []
 # A root field whose name carries one of these removes or hides a Linear object.
 REMOVING_FIELD_RE = re.compile(r"delete|archive|trash|remove|purge", re.I)
 
+# Root fields the pattern above matches by name that remove no object. Each is
+# exempt by its exact name, with its reason; every other `remove` stays flagged.
+#   issueRemoveLabel: detaches one label from an issue that stays. It replaces a
+#   full-set labelIds overwrite, so it is the narrower write (ASK-3960, PR #668).
+NON_REMOVING_FIELDS = {"issueRemoveLabel"}
+
+
+def removing_fields(roots):
+    return [f for f in roots if REMOVING_FIELD_RE.search(f) and f not in NON_REMOVING_FIELDS]
+
 # `mutation`, optional operation name, optional variable list, then the first
 # field inside the selection set. Anchored on the `{` right after the variable
 # list so prose that merely says "mutation" never matches.
@@ -92,12 +102,23 @@ def module_docstring(source: str) -> str:
 
 def check_derivation_can_fail():
     planted = 'X = """\nmutation($id: String!) {\n  issueArchive(id: $id) { success }\n}\n"""'
-    flagged = [f for f in mutation_roots(planted) if REMOVING_FIELD_RE.search(f)]
+    flagged = removing_fields(mutation_roots(planted))
     if flagged == ["issueArchive"]:
         ok("the derivation flags a planted issueArchive mutation")
     else:
         fail(f"the derivation missed a planted issueArchive mutation, got {flagged}; "
              "check 1 below cannot fail and proves nothing")
+    # The exemption is one exact name, not the word: a planted commentRemove (it
+    # deletes a comment) must still be flagged next to the exempt detach.
+    planted = ('X = """\nmutation($id: String!) {\n  commentRemove(id: $id) { success }\n}\n"""\n'
+               'Y = """\nmutation($id: String!, $l: String!) {\n'
+               '  issueRemoveLabel(id: $id, labelId: $l) { success }\n}\n"""')
+    flagged = removing_fields(mutation_roots(planted))
+    if flagged == ["commentRemove"]:
+        ok("the exemption is exact: a planted commentRemove is flagged, issueRemoveLabel is not")
+    else:
+        fail(f"the issueRemoveLabel exemption is wider than its name: expected "
+             f"['commentRemove'] flagged, got {flagged}")
 
 
 def check_no_removing_mutation(source: str):
@@ -106,7 +127,7 @@ def check_no_removing_mutation(source: str):
         fail(f"derivation floor: issueCreate not found among mutations {roots}; the "
              "regex no longer reads this file, so an empty result would pass silently")
         return
-    removing = [f for f in roots if REMOVING_FIELD_RE.search(f)]
+    removing = removing_fields(roots)
     if removing:
         fail(f"linear-sync.py sends a removing mutation {removing}; the docstring's "
              "claim that this file cannot take back a create is now false")

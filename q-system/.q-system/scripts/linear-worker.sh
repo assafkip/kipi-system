@@ -3270,7 +3270,7 @@ Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the foun
         printf '%s' \"path:</abs/path>\" > $TREE/.sana-blocked-capability.probe  # a file or dir that must exist
         printf '%s' \"write:</abs/dir>\" > $TREE/.sana-blocked-capability.probe  # a directory that must be writable
       Those four kinds are the whole allowlist; anything else is refused and the block
-      becomes hand-clear-only. Write NO probe when nothing a plain process runs could
+      has no probe: it never un-parks on a pass and takes a route at day 14. Write NO probe when nothing a plain process runs could
       tell the difference -- a Claude Code harness guard is the standing example, since
       a probe run outside the harness would pass and un-park an issue still blocked.
       A wrong probe is worse than no probe: it un-parks the issue, spends a dispatch,
@@ -3497,9 +3497,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
     # THE PROBE THAT MAKES THE PARK EXPIRABLE (ASK-288).
     #
     # Read BEFORE the sentinels are consumed, because it lives beside them and
-    # is deleted with them. A capability block with no probe can never expire:
-    # capability_block_expiry.py has nothing to re-test, so it reports the issue
-    # as unprobeable every run and leaves it parked. That is the honest outcome
+    # is deleted with them. A capability block with no probe cannot un-park on a
+    # pass: capability_block_expiry.py has nothing to re-test, so it reports the
+    # issue as unprobeable each night and at day 14 routes it by the capability
+    # it lacks. That is the honest outcome
     # for the classes that genuinely cannot be probed from an unattended process
     # (the Claude Code sensitive-path guard is the standing example), and it is
     # pure loss for the ones that can -- a missing binary, an unset credential,
@@ -3655,7 +3656,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
       # handoff -- so the file Codex is told to write, four paragraphs earlier
       # in its own prompt, was read before it could exist and deleted a line
       # later. Every Codex-recorded probe was dropped and its park stored
-      # `none`: hand-clear-only, which is the state this issue exists to
+      # `none`: unprobeable, never un-parked on a pass, which is the state this issue exists to
       # remove. The deletion also stopped covering it, leaving an untracked
       # `.probe` behind, and the position guard refuses to reposition a dirty
       # tree.
@@ -3828,7 +3829,7 @@ BOTH runners were tried. Neither is equipped:
 
 **The Definition of Ready is sound.** Do NOT re-scope this: the spec is achievable, neither runner is equipped. Rewriting it would burn a drafter pass and return the same blocked issue.
 
-**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, THE LOOP CLEARS THIS ITSELF -- capability_block_expiry.py re-tests the probe below before every pick and removes the label the run after it passes. Nobody has to remember to come back.
+**Next:** the capability above has to be granted or built. A harness permission is an authorization decision and belongs to whoever owns the config -- it is the one thing an agent must not grant itself. Once it exists, THE LOOP CLEARS THIS ITSELF -- capability_block_expiry.py re-tests the probe below every night at 04:20 and removes the label the night it passes. Nobody has to remember to come back.
 
 <!-- capability-probe: $CAP_PROBE -->"
       # The marker is machine-readable and deliberately invisible in the
@@ -3840,9 +3841,9 @@ BOTH runners were tried. Neither is equipped:
       # parked before probes existed" -- same distinction, different evidence
       # about whether the record step ran.
       if [ "$CAP_PROBE" = "none" ]; then
-        say "$ISSUE parked with NO probe -- it can only be cleared by hand (the runner recorded no way to re-test)"
+        say "$ISSUE parked with NO probe -- nothing can re-test it, so at day 14 it takes a route by the capability it lacks (the runner recorded no way to re-test)"
       else
-        say "$ISSUE parked with probe '$CAP_PROBE' -- the loop re-tests it before every pick and un-parks itself"
+        say "$ISSUE parked with probe '$CAP_PROBE' -- the nightly 04:20 re-test un-parks it the night it passes"
       fi
     else
       REFUSE_NOTE="**Refused as unexecutable by the autonomous worker.** Labelled \`needs-scope\`; the picker will not offer it again until it is re-scoped.
