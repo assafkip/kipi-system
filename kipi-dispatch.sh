@@ -540,10 +540,12 @@ compact_live_ledger() {
 # loop. Written only when the loop asks (KIPI_DISPATCH_PASS_FILE), so a run by
 # hand writes nothing. An exit BEFORE the turn is taken (daily cap, memory gate,
 # stale checkout, a busy turn) writes no verdict, and the loop reads that as stop.
-PASS_ENTERED=""; PASS_DISPATCHED=""; PASS_REPOS=0
+PASS_ENTERED=""; PASS_DISPATCHED=""; PASS_REPOS=0; PASS_PID=""
 pass_verdict_write() {
   [ -n "${KIPI_DISPATCH_PASS_FILE:-}" ] || return 0
-  printf 'entered=%s repos=%s dispatched=%s\n' "$PASS_ENTERED" "$PASS_REPOS" "$PASS_DISPATCHED" \
+  # pid: the converge this pass started, so the next pass of the tick can tell
+  # whether ps already sees its claude (MEMORY GATE, ASK-4042 item 1).
+  printf 'entered=%s repos=%s dispatched=%s pid=%s\n' "$PASS_ENTERED" "$PASS_REPOS" "$PASS_DISPATCHED" "$PASS_PID" \
     > "$KIPI_DISPATCH_PASS_FILE" 2>/dev/null || true
 }
 turn_lock() {
@@ -979,27 +981,89 @@ mem_reading() {
 MEM_NOW="$(mem_reading)"
 MEM_FREE="$(printf '%s' "$MEM_NOW" | sed -n 's/.*free=\([0-9]*\).*/\1/p')"
 MEM_PROCS="$(printf '%s' "$MEM_NOW" | sed -n 's/.*procs=\([0-9]*\).*/\1/p')"
-# A RESERVATION FOR THIS TICK OWN RUNS (PR #660 round 1, major). A converge started
-# by an earlier pass of the same tick is seconds old: its claude processes may not
-# exist yet and its memory is not spent yet, so the process table and the free
-# percentage both under-count it, and every free repo would be filled at once.
-# kipi-dispatch-pinned.sh passes how many runs this tick already started; each is
-# counted as 2 claude processes (worker plus reviewer) and 5 points of memory
-# (about 800 MB of 16 GB).
+# A RESERVATION FOR THE RUNS THIS TICK STARTED (PR #660 round 1, major). A converge
+# started by an earlier pass of the same tick is seconds old: its claude processes
+# may not exist yet and its memory is not spent yet, so the process table and the
+# free percentage both under-count it, and every free repo would be filled at once.
+# Each such run is counted as 2 claude processes (worker plus reviewer) and 5 points
+# of memory (about 800 MB of 16 GB).
+#
+# THE PROCESS RESERVATION ENDS WHEN ps SEES THE RUN (ASK-4042 item 1). Reserved on
+# top of the ps count, a run that ps already shows counted twice, and the gate held
+# at about half its ceiling. kipi-dispatch-pinned.sh passes the converge pids this
+# tick started; a pid with a claude anywhere under it is already in the process
+# count, a pid that is gone is in neither, and only the rest are reserved as
+# processes. Runs with no known pid (RESERVED_RUNS above the pid count) stay
+# reserved: the safe side.
+# THE MEMORY RESERVATION DOES NOT (PR #672 round 1, major). A claude that ps shows is
+# seconds old and has not spent its memory yet, so the free percentage still
+# under-counts it; releasing the 5 points on visibility let a fill burst pass the
+# floor. Every run this tick started keeps its memory reservation for the tick.
+# KIPI_DISPATCH_PS_TABLE is a PATH to a file of "pid ppid comm" lines that replaces
+# ps, in tests only.
 RESERVED_RUNS="${KIPI_DISPATCH_RESERVED_RUNS:-0}"
 case "$RESERVED_RUNS" in ''|*[!0-9]*) RESERVED_RUNS=0 ;; esac
-if [ -n "$MEM_PROCS" ]; then MEM_PROCS=$((MEM_PROCS + 2 * RESERVED_RUNS)); fi
+reserved_unseen() {
+  python3 - "$RESERVED_RUNS" "${KIPI_DISPATCH_RESERVED_PIDS:-}" "${KIPI_DISPATCH_PS_TABLE:-}" <<'PY' 2>/dev/null
+import subprocess, sys
+runs, pids, table = int(sys.argv[1] or 0), sys.argv[2].split(), sys.argv[3]
+if table:
+    text = open(table).read()
+else:
+    text = subprocess.run(["ps", "-ax", "-o", "pid=,ppid=,comm="], capture_output=True, text=True, timeout=10).stdout
+kids, comm = {}, {}
+for line in text.splitlines():
+    parts = line.split(None, 2)
+    if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        continue
+    pid, ppid = int(parts[0]), int(parts[1])
+    comm[pid] = parts[2].strip()
+    kids.setdefault(ppid, []).append(pid)
+
+
+def claude_under(root):
+    todo = list(kids.get(root, []))
+    while todo:
+        p = todo.pop()
+        if comm.get(p, "").rsplit("/", 1)[-1] == "claude":
+            return True
+        todo.extend(kids.get(p, []))
+    return False
+
+
+known = [int(p) for p in pids if p.isdigit()]
+unseen = sum(1 for p in known if p in comm and not claude_under(p))
+print(unseen + max(0, runs - len(known)), end="")
+PY
+}
+UNSEEN_RUNS=0
+if [ "$RESERVED_RUNS" != "0" ] || [ -n "${KIPI_DISPATCH_RESERVED_PIDS:-}" ]; then
+  UNSEEN_RUNS="$(reserved_unseen)" || UNSEEN_RUNS=""
+  case "$UNSEEN_RUNS" in
+    ''|*[!0-9]*)
+      # Said, not silent (PR #672 round 1, minor): the fallback is the old count.
+      say "memory gate: could not read the process table, so all $RESERVED_RUNS run(s) this tick started are reserved as processes"
+      UNSEEN_RUNS="$RESERVED_RUNS" ;;
+  esac
+fi
+if [ -n "$MEM_PROCS" ]; then MEM_PROCS=$((MEM_PROCS + 2 * UNSEEN_RUNS)); fi
 if [ -n "$MEM_FREE" ]; then MEM_FREE=$((MEM_FREE - 5 * RESERVED_RUNS)); fi
 if { [ -n "$MEM_FREE" ] && [ "$MEM_FREE" -lt "$MEM_FREE_MIN" ]; } \
    || { [ -n "$MEM_PROCS" ] && [ "$MEM_PROCS" -ge "$CLAUDE_PROCS_MAX" ]; }; then
-  say "memory gate: not filling a slot this tick ($MEM_NOW, plus $RESERVED_RUNS run(s) this tick started; floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
+  # The adjusted values are what decided (ASK-4042 item 2): the raw reading alone
+  # can sit under both floors and read as a gate that should have filled.
+  say "memory gate: not filling a slot this tick (reading $MEM_NOW; adjusted free=${MEM_FREE:-?} procs=${MEM_PROCS:-?} for $UNSEEN_RUNS unseen run(s) of the $RESERVED_RUNS this tick started (memory reserved for all $RESERVED_RUNS); floors: free >= ${MEM_FREE_MIN}%, claude processes < $CLAUDE_PROCS_MAX); the next tick reads again"
   # The page text carries no reading (PR #660 round 1, minor): page_once dedupes on
   # the text, and a reading that moves one point a tick would page every tick.
   page_once memory-gate "kipi dispatch: holding new runs, the Mac is short of memory. It resumes on its own when memory frees up; the reading is in dispatch.log."
   exit 0
 fi
 # Cleared only with headroom past the floor, so a reading that hovers at the line
-# does not re-arm the page every other tick (PR #660 round 1, minor).
+# does not re-arm the page every other tick (PR #660 round 1, minor). A tick in the
+# band between the floor and floor + 10 fills but keeps the episode open: the Mac
+# never got its headroom back, so a drop under the floor again is the same episode
+# and does not page again (ASK-4042 item 4, test-dispatch-fill-verdict.sh 8a). The
+# daily re-ping in page_once still bounds a long episode.
 if { [ -z "$MEM_FREE" ] || [ "$MEM_FREE" -ge $((MEM_FREE_MIN + 10)) ]; } \
    && { [ -z "$MEM_PROCS" ] || [ "$MEM_PROCS" -le $((CLAUDE_PROCS_MAX - 3)) ]; }; then
   page_clear memory-gate
@@ -1883,7 +1947,7 @@ RC=$?
 # the pid is gone.
 case "$CHILD_PID" in
   ''|*[!0-9]*) : ;;
-  *) record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
+  *) PASS_PID="$CHILD_PID"; record_live_run "$CHILD_PID" "$NEXT" "${TARGET_PATH:-$REPO}" ;;
 esac
 compact_live_ledger
 if [ "$RC" -ne 0 ]; then

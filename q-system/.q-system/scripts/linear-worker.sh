@@ -131,7 +131,10 @@ CODEX_OUTAGE_MAX_AGE=86400
 # to disable it (tests that pin the both-down hold do).
 # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
 # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p --model claude-opus-5}"
+# The stand-in's model is the routing table's second-runner row (ASK-4013). If the
+# read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
+SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -1021,9 +1024,6 @@ def pick_order_key(i):
             i.get("createdAt") or "9999", i["identifier"])
 
 pool.sort(key=pick_order_key)
-# Counted from the POOL, so the run line names only parks that will be worked
-# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()).
-expired_parks = [i for i in pool if expired_park(i)]
 # SET ASIDE BY THE DISPATCHER FOR A DAY AFTER A BRANCH REFUSAL (ASK-3993). Its
 # branch_guard refused these because an open PR sits on a branch converge would
 # not commit into, and picking one again only repeats the refusal: on 2026-11-08
@@ -1033,6 +1033,11 @@ expired_parks = [i for i in pool if expired_park(i)]
 _set_aside = set((os.environ.get("KIPI_PICK_EXCLUDE") or "").split())
 if _set_aside:
     pool = [i for i in pool if i["identifier"] not in _set_aside]
+# Counted from the POOL, so the run line names only parks that will be worked
+# (PR #663 round 1, minor: a needs-scope or no-DoR park is refused by ready()),
+# and after the set-aside filter, since a park the dispatcher set aside for the
+# day is not worked this run either (ASK-4043).
+expired_parks = [i for i in pool if expired_park(i)]
 # An explicit --issue is a DRIVER OVERRIDE and deliberately skips the filter:
 # converge.sh and an explicit kipi-work invocation both name an issue the picker
 # already chose, and a rework round must be able to return to it. The job of the
@@ -2590,6 +2595,10 @@ while IFS= read -r ISSUE; do
     # kipi-dispatch.sh greps `[dry] would work ASK-<n>` to choose the next
     # issue; the reason rides AFTER that shape, never inside it.
     say "[dry] would work $ISSUE (attempt $((N+1))/$MAX_ATTEMPTS)${PICK_WHY:+ -- $PICK_WHY}"
+    # THE MODEL THE RUN WOULD GET (ASK-4013), on its own line for the same reason
+    # as the priority line below. The same read the real run makes, so a dry run
+    # shows the routing table's answer before any session is spent on it.
+    say "[dry] model $ISSUE $(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
     # THE DISPATCHER URGENT SLOT ASKS WHAT THIS PICK IS WORTH (ASK-3996, D25).
     # Its own line, never a suffix on the one above: kipi-dispatch.sh greps that
     # shape, and a second reader of the pick rules there would drift from ready().
@@ -3226,16 +3235,20 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
+  # $3 is the model the routing table gives this issue's class (ASK-4013): before
+  # it, this run named no model and took whatever ANTHROPIC_MODEL its parent
+  # exported. Empty only when the read itself fails; then no --model, as before.
+  WORK_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job worker --issue "$ISSUE" --repo "$TARGET_SLUG" --tree "$TARGET_REPO" 2>>"$LOG")"
   # The ladder's runner change (rung 2) picks the launch; the claude launch keeps
   # its literal shape and its guard set, so test-worker-guard-settings.sh's
-  # census still sees it. Codex takes no --settings; it runs in its own
+  # census still sees it. Codex takes no --settings or --model; it runs in its own
   # workspace-write sandbox, the shape the second-runner path already uses.
   primary_run() {
     if [ "$(ladder_runner_for "$ISSUE")" = "codex" ]; then
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
       run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
     else
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
     fi
   }
   if primary_run; then

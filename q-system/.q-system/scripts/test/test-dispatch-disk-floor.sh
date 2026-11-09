@@ -135,7 +135,13 @@ run_dispatch() {
        KIPI_DISPATCH_TURNLOCK="$WORK/turn.lock" \
        KIPI_WORKTREE_REAPER="$REAPER" \
        KIPI_NOTIFY="$WORK/notify" \
+       KIPI_DISPATCH_LIVE_PATTERN="kipi-fixture-no-such-converge" \
+       KIPI_DISPATCH_MEM_READING="free=90 procs=0" \
        bash "$DISPATCH" ) >>"$WORK/stdout.txt" 2>&1
+  # THE FIXTURE NEVER READS THE MAC (ASK-4042). Since #660 the cap is derived (1
+  # here) and the memory gate reads the real process table, so on a Mac with live
+  # converges or 14 claude processes every case read "skip: 2 converge run(s)
+  # live, cap 1" and 6 of 21 went red (green in CI, red locally, 2026-11-08).
 }
 new_tick_state() {  # new_tick_state <floor-gb>
   rm -rf "$WORK/home"; mkdir -p "$WORK/home/.config/kipi"

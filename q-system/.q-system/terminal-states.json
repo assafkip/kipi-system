@@ -1159,6 +1159,14 @@
         "what": "A ready-shaped ticket with no Linear project or no owner label, so no worker owns it.",
         "exits": [
           {
+            "kind": "consumer",
+            "fires": "by-order",
+            "path": "q-system/.q-system/scripts/linear-route.py",
+            "marker": "def evidence_decision",
+            "test": "q-system/.q-system/tests/test_linear_route.py",
+            "what": "Nightly through linear-triage-health.py (09:00, 10 writes a run): a no-project ticket with path or title-label evidence gets its project, DoR or not (ASK-3959 stage 1). Measured 2026-11-08: 73 of 384 route."
+          },
+          {
             "kind": "debt",
             "ticket": "ASK-3959",
             "since": "2026-11-08",
