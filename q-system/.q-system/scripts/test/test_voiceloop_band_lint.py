@@ -521,3 +521,51 @@ def test_real_engine_an_overlength_x_draft_still_reports_its_length_row(tmp_path
     r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
                        capture_output=True, text=True, env=env, timeout=60)
     assert "past-the-fold" in _ctx(r), r.stdout + r.stderr
+
+
+# --------------------------------------------------------------------------- K7
+# Instance voice-suppressions.json (spec vg-k7-suppression-file). The band lint asks
+# voice_suppressions.py and never parses the file; these pin that it asks.
+from datetime import datetime, timedelta, timezone
+
+_K7_TODAY = datetime.now(timezone.utc).date()
+
+
+def _k7_instance(tmp_path, rows):
+    root = _instance(tmp_path)
+    (root / "q-consult" / "config" / "voice-suppressions.json").write_text(
+        json.dumps({"suppressions": rows}))
+    return root
+
+
+def _k7_row(path="drafts/x-launch.md"):
+    return {"path": path, "reason": "fixture", "owner": "sana",
+            "created": (_K7_TODAY - timedelta(days=1)).isoformat(),
+            "expires": (_K7_TODAY + timedelta(days=5)).isoformat()}
+
+
+def test_a_suppressed_path_never_reaches_the_engine_and_says_who(tmp_path):
+    root = _k7_instance(tmp_path, [_k7_row()])
+    r, argv = _run_k8(tmp_path, root)
+    assert r.returncode == 0
+    assert argv == [], f"a suppressed draft must not be scored: {argv}"
+    assert "SUPPRESSED" in _ctx(r) and "sana" in _ctx(r), _ctx(r)
+
+
+def test_where_the_file_exists_the_band_marker_no_longer_skips(tmp_path):
+    root = _k7_instance(tmp_path, [_k7_row("drafts/other.md")])
+    draft = root / "drafts" / "x-launch.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("a draft\n<!-- voiceloop-band-lint-skip -->\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = _argv_stub(bin_dir, 0, "0 finding(s) on channel x against 5 exemplar(s)")
+    (tmp_path / "corpus").mkdir()
+    env = dict(os.environ, PATH=_sealed_path(bin_dir), VOICE_LOOP_CORPUS=str(tmp_path / "corpus"),
+               CLAUDE_PROJECT_DIR=str(root),
+               KIPI_EVIDENCE_REGISTRY=str(tmp_path / "no-registry.json"))
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(draft)}}
+    r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, timeout=60)
+    assert log.exists(), "the marker must not skip where the instance keeps the file"
+    assert "voiceloop-band-lint-skip" in _ctx(r) and "ignored" in _ctx(r), _ctx(r)

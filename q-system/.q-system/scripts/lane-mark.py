@@ -8,16 +8,34 @@ it holds no worker claim and writes no attempts-ledger row. This marker is how a
 lane says "mine", and the redrives and the WIP release read it (linear-sync.py
 lane_marker).
 
-    lane-mark.py start ASK-4011 --agent rules-to-code [--hours 24]
+    lane-mark.py start ASK-4011 --agent rules-to-code [--hours 24] \
+                 [--pr 621] [--worktree /path]      # worktree defaults to cwd
     lane-mark.py touch ASK-4011            # push the expiry out again
     lane-mark.py end   ASK-4011            # the lane is done: the fleet may act
+    lane-mark.py sync                      # re-derive lanes.state, touch no marker
 
 The marker is ~/.config/kipi/lanes/<ID>.json (KIPI_LANES_DIR overrides it):
-{"issue", "agent", "since", "until"}. It expires by itself at "until", so a lane
-that dies without `end` blocks the fleet for at most --hours. `end` sets "until"
-to now and keeps the file, which is the record that the lane ran.
+{"issue", "agent", "since", "until", "pr", "worktree"}. It expires by itself at
+"until", so a lane that dies without `end` blocks the fleet for at most --hours.
+`end` sets "until" to now and keeps the file, which is the record that the lane
+ran.
+
+ALSO THE ONE WRITER OF THE WATCHDOG STATE FILE (ASK-3932). Every op rewrites
+<lanes dir>/lanes.state from the live markers, one `label pr worktree` line each,
+which is what lane-watchdog.py reads. 2026-11-06 cost 11.5 hours because the
+waker was session-local and died with the session; hanging the state file off the
+marker every lane already writes means no separate arming step to forget.
+
+`sync` is that same rewrite with no marker change, so a reader can get a fresh
+derived file without parsing the markers itself. lane-watchdog.py calls it: an
+expired or dead marker used to keep its line in lanes.state until the next
+start/touch/end -- which for a lane that died without `end` never comes -- and
+the watchdog paged STALL on that ghost in 0.1s on every arm, forever (claude
+review of PR #706, round 1). Two parsers of one marker format is the defect this
+avoids: `sync` keeps the derivation in exactly one place.
 """
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -25,25 +43,122 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 ID_RX = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
+STATE_NAME = "lanes.state"
 
 
 def lanes_dir() -> str:
     return os.environ.get("KIPI_LANES_DIR") or os.path.expanduser("~/.config/kipi/lanes")
 
 
+def state_path() -> str:
+    return os.path.join(lanes_dir(), STATE_NAME)
+
+
+def lock_path() -> str:
+    return os.path.join(lanes_dir(), STATE_NAME + ".lock")
+
+
 def stamp(t: datetime) -> str:
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def parse_stamp(s):
+    try:
+        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def live_lanes(now: datetime) -> list:
+    """(issue, pr, worktree) for every unexpired, unended marker, issue-sorted.
+
+    A field is written as `-` when the lane never named one, because
+    lane-watchdog.py reads exactly three whitespace-separated fields per line and
+    exits 2 on anything else. Whitespace in a worktree path would split the line,
+    so such a lane is written as `-` rather than corrupting the file.
+    """
+    out = []
+    for name in sorted(os.listdir(lanes_dir())):
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(lanes_dir(), name)) as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(m, dict) or m.get("ended"):
+            continue
+        until = parse_stamp(m.get("until"))
+        if not until or until <= now:
+            continue
+        issue = str(m.get("issue") or "").strip()
+        if not ID_RX.match(issue):
+            continue
+        fields = []
+        for key in ("pr", "worktree"):
+            val = str(m.get(key) or "").strip()
+            fields.append(val if val and len(val.split()) == 1 else "-")
+        out.append((issue, fields[0], fields[1]))
+    return out
+
+
+def write_state(now: datetime) -> str:
+    """Rewrite the watchdog state file from the markers. One writer, every op.
+
+    Listing the markers and replacing the derived file is ONE critical section,
+    held with flock on <state>.lock. Without the lock, two lanes starting at
+    once interleave as: A lists the markers and sees [A]; B lists them and sees
+    [A, B]; B replaces lanes.state with [A, B]; A replaces it with its OLDER
+    [A]. Lane B then has a live marker and no line in the derived file, so
+    lane-watchdog.py never watches it until the next lane-mark op -- which for a
+    lane that dies without `end` never comes (claude review of PR #706, round 1).
+    The lock is advisory and per-file, so a reader of lanes.state is unaffected:
+    os.replace keeps the swap atomic for anyone who does not take the lock.
+    """
+    path = state_path()
+    os.makedirs(lanes_dir(), exist_ok=True)
+    with open(lock_path(), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            lines = [
+                "# lane-watchdog.py state, written by lane-mark.py (ASK-3932). Do not hand-edit:",
+                "# every lane-mark start/touch/end/sync rewrites it from the live markers.",
+            ]
+            lines += [f"{i} {pr} {wt}" for i, pr, wt in live_lanes(now)]
+            tmp = f"{path}.tmp.{os.getpid()}"
+            with open(tmp, "w") as fh:
+                fh.write("\n".join(lines) + "\n")
+            os.replace(tmp, path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return path
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("op", choices=("start", "touch", "end"))
-    ap.add_argument("issue")
+    ap.add_argument("op", choices=("start", "touch", "end", "sync"))
+    ap.add_argument("issue", nargs="?", default="")
     ap.add_argument("--agent", default=os.environ.get("KIPI_AGENT", ""))
     ap.add_argument("--hours", type=float, default=24.0)
+    ap.add_argument("--pr", default="", help="PR number or owner/repo#n the lane is driving")
+    ap.add_argument("--worktree", default="", help="the lane's worktree (default: cwd on start)")
     a = ap.parse_args(argv)
-    if not ID_RX.match(a.issue):
+    if a.issue and not ID_RX.match(a.issue):
         print(f"lane-mark: {a.issue!r} is not an issue id like ASK-123", file=sys.stderr)
+        return 64
+    if a.op == "sync":
+        # Re-derive the watchdog state file and touch nothing else. An id is
+        # accepted and ignored so `sync ASK-1` is not a silent no-op surprise,
+        # but a malformed one is still refused above.
+        os.makedirs(lanes_dir(), exist_ok=True)
+        try:
+            print(f"lane-mark: sync: watchdog state {write_state(datetime.now(timezone.utc))}")
+        except OSError as e:
+            print(f"lane-mark: sync: watchdog state not written ({e})", file=sys.stderr)
+            return 1
+        return 0
+    if not a.issue:
+        print("lane-mark: start, touch and end need an issue id", file=sys.stderr)
         return 64
     if not 0 < a.hours <= 72:
         print("lane-mark: --hours runs from more than 0 to 72", file=sys.stderr)
@@ -62,7 +177,14 @@ def main(argv=None) -> int:
         if not a.agent:
             print("lane-mark: start needs --agent (or KIPI_AGENT)", file=sys.stderr)
             return 64
-        cur = {"issue": a.issue, "agent": a.agent, "since": stamp(now)}
+        cur = {"issue": a.issue, "agent": a.agent, "since": stamp(now),
+               "pr": a.pr or "-", "worktree": a.worktree or os.getcwd()}
+    else:
+        # touch and end may correct the pr or worktree; they never erase one.
+        if a.pr:
+            cur["pr"] = a.pr
+        if a.worktree:
+            cur["worktree"] = a.worktree
     if a.op == "end":
         cur["until"] = stamp(now)
         cur["ended"] = stamp(now)
@@ -73,7 +195,16 @@ def main(argv=None) -> int:
     with open(tmp, "w") as fh:
         json.dump(cur, fh, indent=1)
     os.replace(tmp, path)
-    print(f"lane-mark: {a.issue} {a.op}: {cur.get('agent')} until {cur['until']}")
+    # The watchdog state file is DERIVED, so it is rewritten here and nowhere
+    # else. A failure to write it is reported and does not fail the marker: the
+    # marker is what the redrives read, and losing the lane's claim to save the
+    # watchdog would trade a 11.5-hour stall for a two-writer branch.
+    try:
+        state = write_state(now)
+        note = f"; watchdog state {state}"
+    except OSError as e:
+        note = f"; WARNING watchdog state not written ({e})"
+    print(f"lane-mark: {a.issue} {a.op}: {cur.get('agent')} until {cur['until']}{note}")
     return 0
 
 

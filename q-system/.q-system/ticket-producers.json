@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "_doc": [
+    "Every producer that may create a Linear ticket, with the job that consumes its tickets and the exit that closes them (ASK-4205).",
+    "Founder, 2026-11-09, verbatim: \"What's the point of tickets that nothing can close?\"",
+    "",
+    "Read by q-system/.q-system/scripts/ticket_producers.py. Three readers of that module:",
+    "  * linear-sync.py create refuses at run time a producer with no row, or whose row has no consumer or no exit, or whose row does not name linear-sync.py as a create path (gate: runtime).",
+    "  * q-system/.q-system/tests/test_ticket_producers.py fails CI when a tracked file constructs an issue create and no row names it (gate: static). That is merge time, earlier than run time.",
+    "  * the same test lints every row: a consumer, an exit of a known kind, a signature that compiles, and repo paths that exist.",
+    "",
+    "Fields per row:",
+    "  id: stable name. signature: the regex that recognises its tickets, matched with re.M against the title, a newline, then the description; the same signatures as the 2026-11-09 inflow audit's classifier. null only with signature_note.",
+    "  create_paths: where the issueCreate happens. A repo path, or an external ref with a prefix from external_prefixes.",
+    "  gate: runtime | static | hook | none. none needs a gap ticket that builds the gate.",
+    "  consumer: the script or agent that works or decides its tickets. exit: how they close, kind from exit_kinds, by = the script that does it.",
+    "  board_state: optional id of a terminal-states.json ticket_states row the ticket enters at creation; that table owns its max age.",
+    "",
+    "Not producers today: the stale-PR triage sweep (no inflow since 2026-10-20), linear-route-decide.py SPLIT (files nothing since ASK-4133), heartbeat.py (files GitHub issues; fleet-health-daily.py mirrors them, so they count under that row)."
+  ],
+  "exit_kinds": {
+    "worked": "the fleet worker works it and it closes when its PR merges",
+    "triage": "a triage job decides it: promote to the worker, route, hold or close",
+    "age-close": "a close job closes it by age, reversibly",
+    "recovered": "its own check closes it when the condition clears",
+    "keyed": "one keyed ticket per subject, rewritten in place by its producer"
+  },
+  "external_prefixes": {
+    "mcp:": "a Claude session's Linear MCP tool; the local PreToolUse hook sees it, this repo's code does not",
+    "chief:": "a file in the chief repo (assafkip/chief); chief/linear.py does not read this registry",
+    "cloud:": "a claude.ai cloud routine using the Linear connector; no local hook or script runs there"
+  },
+  "not_producers": [
+    {
+      "path": ".review-tmp-pr11/",
+      "why": "A tracked snapshot of PR #11's review copies. No plist, hook or script runs from it."
+    },
+    {
+      "path": ".review-scratch/",
+      "why": "A tracked scratch copy of the repo for review runs. Nothing files tickets from it."
+    }
+  ],
+  "producers": [
+    {
+      "id": "linear-sync-capability",
+      "what": "Capability-map tickets: kipi linear plan, then kipi linear create --apply. Run by hand, no launchd job.",
+      "signature": "<!--\\s*kipi-key:\\s*(?!fleet-health/|stall-sweep/|job-migration/|linear-dor/)[A-Za-z0-9_.-]+/[^\\s>]+\\s*-->",
+      "create_paths": ["q-system/.q-system/scripts/linear-sync.py"],
+      "gate": "runtime",
+      "consumer": "q-system/.q-system/scripts/linear-worker.sh",
+      "exit": {"kind": "worked", "by": "q-system/.q-system/scripts/linear-worker.sh"},
+      "note": "Filed with no labels. linear-owner-sweep.py adds owner:sana and linear-dor-drafter.py writes the DoR, then the worker picks it."
+    },
+    {
+      "id": "job-migration",
+      "what": "One ticket per launchd job to migrate. Run by hand.",
+      "signature": "kipi-key:\\s*job-migration/",
+      "create_paths": ["q-system/.q-system/scripts/linear-job-migration.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-worker.sh",
+      "exit": {"kind": "worked", "by": "q-system/.q-system/scripts/linear-worker.sh"}
+    },
+    {
+      "id": "linear-dor-failure",
+      "what": "The nightly DoR drafter's own run-failure report, one standing ticket.",
+      "signature": "kipi-key:\\s*linear-dor/run-failure",
+      "create_paths": ["q-system/.q-system/scripts/linear-dor-drafter.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-dor-drafter.py",
+      "exit": {"kind": "keyed", "by": "q-system/.q-system/scripts/linear-dor-drafter.py"}
+    },
+    {
+      "id": "fleet-health-daily",
+      "what": "One keyed ticket per detector finding (a failing job, a stale cron, a mirrored heartbeat-red issue).",
+      "signature": "kipi-key:\\s*fleet-health/",
+      "create_paths": ["q-system/.q-system/scripts/fleet-health-daily.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/fleet-health-daily.py",
+      "exit": {"kind": "keyed", "by": "q-system/.q-system/scripts/fleet-health-daily.py"}
+    },
+    {
+      "id": "stall-sweep",
+      "what": "Hourly: a work item idle 24h with no named next consumer, one keyed ticket per gap.",
+      "signature": "kipi-key:\\s*stall-sweep/",
+      "create_paths": ["q-system/.q-system/scripts/stall-sweep.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/stall-sweep.py",
+      "exit": {"kind": "keyed", "by": "q-system/.q-system/scripts/stall-sweep.py"}
+    },
+    {
+      "id": "spillover-promote",
+      "what": "One confirmed spillover finding promoted to a worker ticket.",
+      "signature": "Promoted from spillover",
+      "create_paths": ["q-system/.q-system/scripts/spillover-promote.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-worker.sh",
+      "exit": {"kind": "worked", "by": "q-system/.q-system/scripts/linear-worker.sh"}
+    },
+    {
+      "id": "cap-ladder",
+      "what": "A capped PR's ticket split into its next part.",
+      "signature": "by cap-ladder|\\(split after cap\\)",
+      "create_paths": ["q-system/.q-system/scripts/cap-ladder.py"],
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-worker.sh",
+      "exit": {"kind": "worked", "by": "q-system/.q-system/scripts/linear-worker.sh"}
+    },
+    {
+      "id": "spillover",
+      "what": "Review findings from the spillover ledgers, filed by spillover-linear-check.py through the alert path.",
+      "signature": "(^|\\] )spillover (sp-[0-9a-f]{6,}|defer-)",
+      "create_paths": ["q-system/.q-system/scripts/alert-to-linear.py"],
+      "via": "q-system/.q-system/scripts/spillover-linear-check.py",
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-alert-triage.py"},
+      "board_state": "needs-triage-alert",
+      "note": "Promotion hands it to the worker. The 14-day reversible close for medium and major (audit R6b) is owned by ASK-4196's close job."
+    },
+    {
+      "id": "alert-to-linear",
+      "what": "Every alert sent through slack-notify.sh, all families (launchd watchdog, reviewer, lifeguard, degraded sources, tripwire and the rest).",
+      "signature": "Filed automatically by the fleet alert path",
+      "create_paths": ["q-system/.q-system/scripts/alert-to-linear.py"],
+      "via": "q-system/.q-system/scripts/slack-notify.sh",
+      "gate": "static",
+      "consumer": "q-system/.q-system/scripts/linear-alert-triage.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-alert-triage.py"},
+      "board_state": "needs-triage-alert",
+      "gap": "ASK-4247",
+      "note": "One row for every emitter: a new emitter can start filing through slack-notify.sh with no row of its own. ASK-4247 registers emitters one by one."
+    },
+    {
+      "id": "hand-filed",
+      "what": "Tickets a Claude session files by hand (orchestrator, lane and worker sessions; /linear-drain of kipi linear issue captures).",
+      "signature": null,
+      "signature_note": "The fallback: every ticket no other row matches, as in the 2026-11-09 audit's classifier.",
+      "fallback": true,
+      "create_paths": ["mcp:mcp__linear__save_issue"],
+      "gate": "hook",
+      "hook": "~/.config/kipi/gate-locked/hooks/linear_gate.py",
+      "consumer": "q-system/.q-system/scripts/linear-worker.sh",
+      "exit": {"kind": "worked", "by": "q-system/.q-system/scripts/linear-worker.sh"},
+      "note": "The hook refuses a create with no project (RULE-2026-11-08-PROJECT). ASK-4196's close job is the age exit once built."
+    },
+    {
+      "id": "chief-ping-gate",
+      "what": "chief/ping_gate.py route_sana: a refused bot post, status post or 3-day streak.",
+      "signature": "Routed by chief/ping_gate\\.py|^ping-gate:",
+      "create_paths": ["chief:chief/linear.py"],
+      "via": "chief:chief/ping_gate.py",
+      "gate": "none",
+      "gap": "ASK-4248",
+      "consumer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-route-decide.py"},
+      "board_state": "no-project",
+      "note": "Filed with no project, so kipi-system's route-decide decides it. ASK-4244 (audit R8) stops this producer."
+    },
+    {
+      "id": "chief-routine-runs",
+      "what": "chief/routine_runs.py: a cloud routine that errored or did not run.",
+      "signature": "daily routine-run check",
+      "create_paths": ["chief:chief/linear.py"],
+      "via": "chief:chief/routine_runs.py",
+      "gate": "none",
+      "gap": "ASK-4248",
+      "consumer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-route-decide.py"},
+      "board_state": "no-project",
+      "note": "ASK-4246 (audit R9) adds the close on recovered."
+    },
+    {
+      "id": "chief-cloud-health",
+      "what": "chief's daily cloud health check of the Mac fleet (cloud/health-check.md), filing through the Linear connector.",
+      "signature": "daily cloud health check",
+      "create_paths": ["cloud:chief/cloud/health-check.md"],
+      "gate": "none",
+      "gap": "ASK-4248",
+      "consumer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-route-decide.py"},
+      "board_state": "no-project",
+      "note": "ASK-4246 (audit R9) adds the close on recovered."
+    },
+    {
+      "id": "chief-radar",
+      "what": "chief's radar bot files a tool-radar item for Sana.",
+      "signature": null,
+      "signature_note": "No footer of its own; the 2026-11-09 audit counted these under hand-filed.",
+      "create_paths": ["chief:chief/linear.py"],
+      "via": "chief:bots/radar/skills/__init__.py",
+      "gate": "none",
+      "gap": "ASK-4248",
+      "consumer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-route-decide.py"},
+      "board_state": "no-project"
+    },
+    {
+      "id": "chief-lgtm",
+      "what": "chief's LGTM bot files a ticket for a PR gate it cannot pass.",
+      "signature": null,
+      "signature_note": "No footer of its own; the 2026-11-09 audit counted these under hand-filed.",
+      "create_paths": ["chief:chief/linear.py"],
+      "via": "chief:bots/lgtm/skills/__init__.py",
+      "gate": "none",
+      "gap": "ASK-4248",
+      "consumer": "q-system/.q-system/scripts/linear-route-decide.py",
+      "exit": {"kind": "triage", "by": "q-system/.q-system/scripts/linear-route-decide.py"},
+      "board_state": "no-project"
+    }
+  ]
+}

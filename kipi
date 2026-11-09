@@ -46,6 +46,10 @@ usage() {
   echo "  kipi jobs [--apply]  File/refresh one migration issue per scheduled job"
   echo "  kipi work [--apply]  Autonomous worker: take a ready issue, branch, PR (never merges/closes)"
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
+  echo "  kipi lane start <ASK-n> --agent <name> [--pr N] [--worktree <path>]  A supervised lane says it is on a ticket"
+  echo "  kipi lane touch|end <ASK-n>   Push the lane's expiry out, or hand the ticket back to the fleet"
+  echo "  kipi lane sync       Re-derive the watchdog state file from the live lane markers"
+  echo "  kipi lane watch [--once] [--stall-min 20]  Arm the lane watchdog: it EXITS (3) the moment a lane goes quiet"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi alert-triage <list|promote|close|run> [--apply]  Triage the fleet-alert bucket (run = nightly pass)"
   echo "  kipi health          Fleet health check: dark/failing jobs, double schedules, open spillover"
@@ -150,6 +154,33 @@ case "${1:-help}" in
     shift || true
     ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-claude-opus-5}" \
       python3 "$KIPI_HOME/q-system/.q-system/scripts/linear-alert-triage.py" "$@"
+    ;;
+  lane)
+    # Supervised lanes (ASK-4095 for the marker, ASK-3932 for the watchdog).
+    # `start` is the orchestrator's launch step: lane-mark.py writes the lane's
+    # marker AND rewrites the watchdog state file from every live marker, so
+    # `watch` needs no arguments to find the lanes. `watch` runs in the
+    # background and its EXIT is the notification -- exit 3 means a lane has
+    # gone quiet. 2026-11-06: the session-local version of this died with the
+    # session and a red CI run sat unread for 11.5 hours.
+    shift || true
+    LANE_MARK="$KIPI_HOME/q-system/.q-system/scripts/lane-mark.py"
+    LANE_WATCHDOG="$KIPI_HOME/q-system/.q-system/scripts/lane-watchdog.py"
+    LANES_DIR="${KIPI_LANES_DIR:-$HOME/.config/kipi/lanes}"
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      start|touch|end|sync)
+        python3 "$LANE_MARK" "$sub" "$@"
+        ;;
+      watch)
+        python3 "$LANE_WATCHDOG" --state "$LANES_DIR/lanes.state" "$@"
+        ;;
+      *)
+        echo "usage: kipi lane <start|touch|end> <ASK-n> [...]   |   kipi lane sync   |   kipi lane watch [--once]" >&2
+        exit 1
+        ;;
+    esac
     ;;
   health)
     # Daily fleet health. Every detector must DETECT, ACT (file a deduped Linear

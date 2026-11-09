@@ -866,15 +866,55 @@ def fix_file(file_path):
     return fixed, left
 
 
-def lint_file(file_path):
+def _suppression_decision(file_path):
+    """K7: voice_suppressions.py decides; this lint never parses the file itself.
+
+    Returns (decision or None, notes). None means the reader did not load: markers
+    then behave as before K7, and the lint SAYS so rather than passing quietly.
+    """
+    try:
+        import importlib.util
+        name = "_voice_suppressions_k7"
+        module = sys.modules.get(name)
+        if module is None:
+            target = Path(__file__).resolve().parent / "voice_suppressions.py"
+            spec = importlib.util.spec_from_file_location(name, target)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            sys.modules[name] = module
+        decision = module.check(file_path)
+        return decision, list(decision.notes)
+    except Exception as exc:
+        return None, [f"voice_suppressions.py did not load ({type(exc).__name__}); "
+                      "in-file markers behave as before K7."]
+
+
+def _lint(file_path):
+    """(violations, notes, suppressed). The one body behind lint_file and both modes."""
     try:
         text = Path(file_path).read_text(encoding="utf-8")
     except Exception as e:
-        return [{"rule": "read-error", "line": 0, "detail": str(e)}]
+        return [{"rule": "read-error", "line": 0, "detail": str(e)}], [], False
 
+    decision, notes = _suppression_decision(file_path)
+    if decision is not None and decision.skip:
+        return [], notes, True
     if SKIP_MARKER in text:
-        return []
+        if decision is None or not decision.present:
+            return [], notes, False
+        notes.append(decision.marker_ignored(SKIP_MARKER))
+    return _run_checks(text, file_path), notes, False
 
+
+def lint_file(file_path):
+    """Violations only, for library callers. Notes still print: every skip is said."""
+    violations, notes, _ = _lint(file_path)
+    for note in notes:
+        print(f"voice-lint: {note}", file=sys.stderr)
+    return violations
+
+
+def _run_checks(text, file_path):
     all_violations = []
     all_violations.extend(check_emdash(text))
     all_violations.extend(check_banned_words(text))
@@ -930,10 +970,13 @@ def hook_mode():
     if not is_published_path(file_path):
         sys.exit(0)
 
-    violations = lint_file(file_path)
+    violations, notes, _ = _lint(file_path)
+    said = [f"voice-lint: {note}" for note in notes]
     blocking, warnings = _partition(violations)
     if blocking:
         print(format_report(file_path, blocking), file=sys.stderr)
+        for line in said:
+            print(line, file=sys.stderr)
         sys.exit(2)
     if warnings:
         print(
@@ -941,14 +984,26 @@ def hook_mode():
             + format_report(file_path, warnings),
             file=sys.stderr,
         )
+    if said:
+        # On exit 0 stderr reaches nobody; a skip that is not said is a silent bypass.
+        for line in said:
+            print(line, file=sys.stderr)
+        print(_hook_context(said))
     sys.exit(0)
 
 
+def _hook_context(lines):
+    return json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                               "additionalContext": "\n".join(lines)}})
+
+
 def cli_mode(file_path):
-    violations = lint_file(file_path)
+    violations, notes, suppressed = _lint(file_path)
+    for note in notes:
+        print(f"voice-lint: {note}")
     blocking, warnings = _partition(violations)
     if not violations:
-        print(f"voice-lint: clean ({file_path})")
+        print(f"voice-lint: {'suppressed' if suppressed else 'clean'} ({file_path})")
         sys.exit(0)
     if blocking:
         print(format_report(file_path, blocking))

@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPTS = Path(os.environ.get("CAP_LADDER_TEST_ROOT") or Path(__file__).resolve().parent.parent)
@@ -927,24 +929,34 @@ def case_mutant() -> None:
               held_stays_quiet(LADDER) is True and held_stays_quiet(mut) is False)
 
 
+# Runtime bound (ASK-4264). The file spawns about 400 child pythons (171 of them
+# cap-ladder.py --apply, each with its own fake gh/sync/fable), one after the
+# other. It outgrew the gate's 60 s default (72 s serial on a laptop; CI timed
+# out), and #703 gave it timeout_s 180 in its manifest entry. Every case builds
+# its own temp world and shares nothing, so the cases now run in threads: 29 to
+# 44 s cold-to-warm on an idle 10-core laptop. Wall time now tracks the longest
+# single case, so this bound does NOT see suite growth; it only guards against
+# the threading being lost (serial is 72 s+). It sits at 120 s so normal CI
+# variance cannot trip it and it stays under the manifest's 180 s ceiling, which
+# is the real limit. CAP_LADDER_RUNTIME_BOUND_S shows the red side.
+RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "120"))
+
+
 def main() -> int:
+    t0 = time.monotonic()
     print("test_cap_ladder.py")
+    cases = [case_worker, case_sites]
     if not LADDER.exists():
         check("cap-ladder.py exists", False, f"no {LADDER}: every cap still ends in a page and a park")
     else:
-        case_rungs()
-        case_decisions()
-        case_events()
-        case_edges()
-        case_owns()
-        case_review_fixes()
-        case_review_round2()
-        case_ask_lifecycle()
-        case_pytest_refusal()
-        case_review_687()
-        case_mutant()
-    case_worker()
-    case_sites()
+        cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
+                 case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
+                 case_mutant] + cases
+    # list() re-raises any exception a case threw, so a crash still fails the file.
+    with ThreadPoolExecutor(max_workers=len(cases)) as pool:
+        list(pool.map(lambda f: f(), cases))
+    took = time.monotonic() - t0
+    check(f"runtime: whole file in {took:.0f}s, bound {RUNTIME_BOUND_S:.0f}s", took <= RUNTIME_BOUND_S)
     print(f"\n{'FAIL' if FAILS else 'PASS'}: {len(FAILS)} failed")
     return 1 if FAILS else 0
 
