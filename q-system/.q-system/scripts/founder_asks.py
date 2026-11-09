@@ -12,6 +12,10 @@ retired 2026-09-11); nothing reads the file on a schedule.
 
 Registered in morning-brief.py OPTIONAL_SECTIONS. Read-only: the one writer is
 cap-ladder.py (status_add, status_resolve).
+
+OFF switch: no status file. An instance where cap-ladder.py never asked anything
+has none, and collect() returns None, so the brief renders no section at all
+(test_off_switches.py pins it).
 """
 from __future__ import annotations
 
