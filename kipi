@@ -48,6 +48,7 @@ usage() {
   echo "  kipi converge --issue <ASK-n> [--max-rounds N]  Drive one issue to an APPROVED PR (work+review+rework, capped)"
   echo "  kipi lane start <ASK-n> --agent <name> [--pr N] [--worktree <path>]  A supervised lane says it is on a ticket"
   echo "  kipi lane touch|end <ASK-n>   Push the lane's expiry out, or hand the ticket back to the fleet"
+  echo "  kipi lane sync       Re-derive the watchdog state file from the live lane markers"
   echo "  kipi lane watch [--once] [--stall-min 20]  Arm the lane watchdog: it EXITS (3) the moment a lane goes quiet"
   echo "  kipi dor [--apply]   Draft a Definition of Ready onto issues that lack one (bounded)"
   echo "  kipi alert-triage <list|promote|close|run> [--apply]  Triage the fleet-alert bucket (run = nightly pass)"
