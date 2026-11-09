@@ -527,14 +527,32 @@ def evidence_decision(issue: dict, facts: RoutingFacts) -> Decision:
     return d
 
 
-def plan_actions(issues: list, facts: RoutingFacts) -> list:
-    """One row per pending issue: what a run WOULD write, and why. Pure."""
+def plan_actions(issues: list, facts: RoutingFacts, board_projects: set | None = None) -> list:
+    """One row per pending issue: what a run WOULD write, and why. Pure.
+
+    `board_projects`, when given, is the board's project names (lowercased). A
+    route naming a project the board does not have is REFUSED HERE, before it can
+    take a write slot (ASK-4089): measured on the router's first real run, a
+    `[label]` naming a registry row with no board project failed its write every
+    night and spent 1 of the 10 slots. The ticket stays unrouted, and
+    linear-triage-health.py raises the board gap as a named breach.
+    """
     rows = []
     for issue in issues:
         if not is_pending(issue):
             continue
         decision = evidence_decision(issue, facts)
         current = project_of(issue)
+        off_board = None
+        # Only a route that WOULD be written is checked: a ticket that already has
+        # a project never gets set_project, so its evidence naming an off-board
+        # project refuses nothing (PR #679 review, minor 2).
+        if (decision.project and not current and board_projects is not None
+                and decision.project.lower() not in board_projects):
+            off_board = decision.project
+            decision = Decision(None, None,
+                                f"the evidence names {off_board!r}, which is not a project on the "
+                                "board; linear-triage-health.py files the board gap as an alert")
         labels = labels_of(issue)
         set_project = decision.project if (not current and decision.project) else None
         will_have_project = bool(current or set_project)
@@ -554,14 +572,22 @@ def plan_actions(issues: list, facts: RoutingFacts) -> list:
             # The route-unknown comment stays for the DoR class only. The no-DoR
             # class (ASK-3959) is hundreds of tickets, and a comment nobody reads
             # is not a consumer; what stays unrouted goes to the model decision.
+            # Not for an off-board route either: that ticket IS routable, and the
+            # comment would tell its reader the DoR is the problem when the board is.
+            # It would also spend the write slot ASK-4089 exists to save.
             "mark_unroutable": bool(not will_have_project
+                                    and not off_board
                                     and "Definition of Ready" in (issue.get("description") or "")
                                     and not is_fleet_alert(issue)
                                     and not is_marked_unroutable(issue)),
+            # Not for an off-board route: this meter means "the comment page ran
+            # out", and an off-board ticket's problem is the board (PR #679, minor 3).
             "mark_unknown": bool(not will_have_project
+                                 and not off_board
                                  and mark_read_incomplete(issue)),
             "rule": decision.rule,
             "reason": decision.reason,
+            "not_on_board": off_board,
             "label_ids": sorted({n["id"] for n in
                                  ((issue.get("labels") or {}).get("nodes") or [])
                                  if n.get("id")}),
@@ -574,9 +600,11 @@ def rows_with_work(rows: list) -> list:
             if r["set_project"] or r["add_label"] or r["mark_unroutable"]]
 
 
-def measure(issues: list, facts: RoutingFacts) -> dict:
-    rows = plan_actions(issues, facts)
+def measure(issues: list, facts: RoutingFacts, board_projects: set | None = None) -> dict:
+    rows = plan_actions(issues, facts, board_projects)
     routable = [r for r in rows if r["set_project"] or r["project"]]
+    refused = [{"id": r["identifier"], "project": r["not_on_board"]}
+               for r in rows if r["not_on_board"]]
     return {
         "registry_ok": facts.ok,
         "pending": len(rows),
@@ -585,6 +613,17 @@ def measure(issues: list, facts: RoutingFacts) -> dict:
         # Named on purpose: these tickets were skipped because their comment page
         # ran out, not because they are fine. An unnamed skip is a silent one.
         "mark_unknown": sum(1 for r in rows if r["mark_unknown"]),
+        # Routes refused because the named project is not on the board (ASK-4089).
+        # Each row names the ticket AND the name, so the nightly log says which
+        # registry row lacks a board project, not only that one does.
+        "not_on_board": len(refused),
+        "not_on_board_ids": refused,
+        # The report lines travel in the JSON so linear-triage-health.py prints
+        # the same text without importing this file (it runs it as a subprocess).
+        "not_on_board_lines": not_on_board_lines(refused),
+        # 0 refused is also what a check that never ran reports. Saying which is
+        # the difference between a pass and silence (PR #679 review r2, minor).
+        "board_check_ran": board_projects is not None,
         "with_work": len(rows_with_work(rows)),
         "by_rule": {rule: sum(1 for r in rows if r["rule"] == rule)
                     for rule in sorted({r["rule"] for r in rows if r["rule"]})},
@@ -701,6 +740,22 @@ def apply_row(sync, row: dict, projects: dict, labels: dict) -> list:
     return done
 
 
+def not_on_board_lines(refused: list, sample: int = 3) -> list:
+    """One line per refused PROJECT, not per ticket: the count is bounded by the
+    registry rows, so 60 off-board tickets cannot become 60 log lines twice over
+    (PR #679 review, nit). Shared with linear-triage-health.py's report."""
+    by_project: dict = {}
+    for off in refused:
+        by_project.setdefault(off.get("project") or "?", []).append(off.get("id") or "?")
+    out = []
+    for project in sorted(by_project):
+        ids = by_project[project]
+        eg = ", ".join(ids[:sample]) + (", ..." if len(ids) > sample else "")
+        out.append(f"route refused: {project!r} is not a project on the board, so no "
+                   f"project write for {len(ids)} ticket(s) ({eg})")
+    return out
+
+
 def render(m: dict, rows: list) -> str:
     if not m["registry_ok"]:
         return ("linear-route: UNKNOWN -- instance-registry.json or kipi-update.sh "
@@ -710,6 +765,8 @@ def render(m: dict, rows: list) -> str:
              f"{m['with_work']} with a write to make."]
     if m["by_rule"]:
         lines.append("  routed by: " + ", ".join(f"{k}={v}" for k, v in m["by_rule"].items()))
+    for line in m.get("not_on_board_lines", []):
+        lines.append("  " + line)
     for row in rows_with_work(rows):
         acts = [a for a in (
             f"project={row['set_project']}" if row["set_project"] else "",
@@ -756,12 +813,27 @@ def main(argv: list) -> int:
         print(f"board walk failed ({exc}); nothing measured", file=sys.stderr)
         return EXIT_INCOMPLETE
 
-    rows = plan_actions(issues, facts)
-    m = measure(issues, facts)
+    # The board's projects, read BEFORE the plan, dry run too, so a route naming
+    # a project the board lacks is refused in the plan and counted in the report
+    # (ASK-4089). A dry run with an unreadable list runs with the check off. An
+    # --apply run re-raises, as it did before this check moved up: with no list
+    # every project write would fail as no-such-project, and the caller would
+    # read a board problem that is really a read problem.
+    projects, board = {}, None
+    if facts.ok:
+        try:
+            projects = _name_id_map(sync, PROJECTS_QUERY, team_id, "projects")
+            board = set(projects)
+        except Exception as exc:  # noqa: BLE001
+            if args.apply:
+                raise
+            print(f"project list unreadable ({exc}); the board-name check is off this run",
+                  file=sys.stderr)
+    rows = plan_actions(issues, facts, board)
+    m = measure(issues, facts, board)
 
     written, failed = [], []
     if args.apply and facts.ok:
-        projects = _name_id_map(sync, PROJECTS_QUERY, team_id, "projects")
         labels = _name_id_map(sync, TEAM_LABELS_QUERY, team_id, "labels")
         for row in select_to_write(rows_with_work(rows), args.limit):
             try:

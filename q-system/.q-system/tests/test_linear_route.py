@@ -441,6 +441,92 @@ def test_negative_limit_is_a_usage_error():
 
 
 # --------------------------------------------------------------------------
+# the board-name check (ASK-4089): a route to a project the board lacks is
+# refused in the plan, so it never takes one of the nightly write slots
+# --------------------------------------------------------------------------
+
+# The fixture board has two of the registry's three projects. cole-GTM is the
+# registry row with no board project, the shape the first live run measured.
+ON_BOARD = {"kipi-system", "ask consulting"}
+
+
+def _gtm_ticket(tmp_path, ident="ASK-40"):
+    return issue(ident, files=str(tmp_path / "cole-gtm" / "projects" / "site.md"))
+
+
+def test_off_board_route_spends_no_write_slot(board, tmp_path):
+    """RED ON MAIN: the off-board row took the only slot and failed at write time."""
+    issues = [_gtm_ticket(tmp_path), issue("ASK-41")]
+    rows = route.plan_actions(issues, board, ON_BOARD)
+    picked = route.select_to_write(route.rows_with_work(rows), 1)
+    assert [r["identifier"] for r in picked] == ["ASK-41"]
+    off = next(r for r in rows if r["identifier"] == "ASK-40")
+    assert off["set_project"] is None
+    assert off["add_label"] is None
+    # No route-unknown comment either: the DoR is fine, the board is not.
+    assert off["mark_unroutable"] is False
+    assert off["not_on_board"] == "cole-GTM"
+
+
+def test_off_board_route_is_counted_and_named(board, tmp_path):
+    m = route.measure([_gtm_ticket(tmp_path), issue("ASK-41")], board, ON_BOARD)
+    assert m["not_on_board"] == 1
+    assert m["not_on_board_ids"] == [{"id": "ASK-40", "project": "cole-GTM"}]
+    # Still unroutable: no project was written.
+    assert m["unroutable"] == 1
+    assert m["routable"] == 1
+    assert ("route refused: 'cole-GTM' is not a project on the board, so no project "
+            "write for 1 ticket(s) (ASK-40)") in route.render(m, [])
+
+
+def test_a_ticket_that_has_a_project_refuses_nothing(board, tmp_path):
+    """PR #679 review, minor 2: no set_project would be written, so nothing is refused,
+    and the owner label still lands."""
+    t = issue("ASK-42", files=str(tmp_path / "cole-gtm" / "projects" / "site.md"),
+              project="kipi-system")
+    rows = route.plan_actions([t], board, ON_BOARD)
+    assert rows[0]["not_on_board"] is None
+    assert rows[0]["add_label"] == "owner:sana"
+    assert route.measure([t], board, ON_BOARD)["not_on_board"] == 0
+
+
+def test_an_off_board_ticket_is_not_counted_as_a_short_comment_read(board, tmp_path):
+    """PR #679 review, minor 3: mark_unknown means the comment page ran out."""
+    t = issue("ASK-43", files=str(tmp_path / "cole-gtm" / "projects" / "site.md"),
+              truncated=True)
+    rows = route.plan_actions([t], board, ON_BOARD)
+    assert rows[0]["not_on_board"] == "cole-GTM"
+    assert rows[0]["mark_unknown"] is False
+
+
+def test_refusal_lines_are_one_per_project_not_per_ticket():
+    refused = [{"id": f"ASK-{n}", "project": "cole-GTM"} for n in range(60)]
+    refused.append({"id": "ASK-99", "project": "openwitness"})
+    lines = route.not_on_board_lines(refused)
+    assert len(lines) == 2
+    assert "for 60 ticket(s) (ASK-0, ASK-1, ASK-2, ...)" in lines[0]
+    assert "'openwitness'" in lines[1] and "for 1 ticket(s) (ASK-99)" in lines[1]
+
+
+def test_board_check_ignores_case(board, tmp_path):
+    """The board map is lowercased by _name_id_map; the check must match it."""
+    rows = route.plan_actions([_gtm_ticket(tmp_path)], board, ON_BOARD | {"cole-gtm"})
+    assert rows[0]["set_project"] == "cole-GTM"
+    assert rows[0]["not_on_board"] is None
+
+
+def test_no_board_list_leaves_the_check_off(board, tmp_path):
+    """A dry run whose project read failed passes None here, and routes as before."""
+    rows = route.plan_actions([_gtm_ticket(tmp_path)], board)
+    assert rows[0]["set_project"] == "cole-GTM"
+    m = route.measure([_gtm_ticket(tmp_path)], board)
+    assert m["not_on_board"] == 0
+    # ...and says the check did not run, so 0 is not read as a clean board.
+    assert m["board_check_ran"] is False
+    assert route.measure([_gtm_ticket(tmp_path)], board, ON_BOARD)["board_check_ran"] is True
+
+
+# --------------------------------------------------------------------------
 # why a write failed: a local lookup miss is not Linear refusing
 # --------------------------------------------------------------------------
 
