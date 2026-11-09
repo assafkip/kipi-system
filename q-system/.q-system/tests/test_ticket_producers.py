@@ -302,6 +302,47 @@ class Registry(unittest.TestCase):
         got = tp.coverage_problems(self.reg, str(ROOT), filers=stale)
         self.assertTrue(any("stall-sweep.py` no longer builds" in p for p in got), got)
 
+    def test_change_size_keeps_this_suite_on_the_always_run_floor(self):
+        """The merge-time gate only bites if CI SELECTS this file on a diff that
+        adds a filer. change-size.py puts a test on the always-run floor when its
+        OWN text scans the tree (PR #705 review, minor 1: that rested on one
+        incidental listdir call). Pinned here, with the reviewer's reproducer.
+        An edit to this file always selects this file, so removing the scan
+        turns this red in that same PR. The scan is also deliberate: the
+        cross-check below runs git ls-files itself."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("change_size", SCRIPTS / "change-size.py")
+        cs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cs)
+        me = "q-system/.q-system/tests/test_ticket_producers.py"
+        text = Path(__file__).read_text()
+        self.assertTrue(cs.scans_the_tree(text), "change-size no longer reads this suite as a scanner")
+        # Built, not spelled: a path this text names is selected by mention,
+        # which would pass this check for the wrong reason.
+        unnamed = "q-system/.q-system/scripts/" + "-".join(("zq", "unnamed", "filer")) + ".py"
+        v = cs.plan(changed=[(unnamed, 3)],
+                    declared={me: text}, code_texts={}, diff_text="+X = 1\n")
+        self.assertIn(me, v["selected_tests"])
+        listed = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True,
+                                text=True, check=True).stdout.split("\n")
+        self.assertTrue(set(tp.tracked_filers(str(ROOT))) <= set(listed))
+
+    def test_test_paths_are_anchored_not_substrings(self):
+        for name in ("q-system/.q-system/scripts/latest-filer.py",
+                     "q-system/.q-system/scripts/contest_filer.py",
+                     "q-system/.q-system/scripts/attestation-filer.py"):
+            self.assertFalse(tp.is_test_path(name), name)
+        for name in ("q-system/.q-system/tests/x.py", "q-system/.q-system/scripts/test/x.sh",
+                     "q-system/.q-system/scripts/test_x.py", "q-system/.q-system/scripts/test-x.sh",
+                     "plugins/a/x_test.py", "plugins/a/x-test.sh"):
+            self.assertTrue(tp.is_test_path(name), name)
+
+    def test_an_unreadable_ticket_states_table_refuses_a_board_state_row(self):
+        row = next(r for r in self.reg["producers"] if r.get("board_state"))
+        got = tp.row_problems(row, self.reg, str(ROOT), states=None)
+        self.assertTrue(any("cannot be checked" in p for p in got), got)
+        self.assertEqual(tp.row_problems(row, self.reg, str(ROOT), states={row["board_state"]}), [])
+
     def test_the_create_shape_matches_real_filers_not_mentions(self):
         self.assertTrue(tp.CREATE_RE.search('mutation { issueCreate(input: $i) { success } }'))
         self.assertTrue(tp.CREATE_RE.search('node = data.get("issueCreate") or {}'))

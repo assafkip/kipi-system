@@ -172,8 +172,12 @@ def row_problems(row, reg: dict, root: str, states: set | None = None) -> list:
     if row.get("gap") and not TICKET_RE.match(str(row["gap"])):
         out.append(f"{who}: gap `{row['gap']}` is not a ticket id")
 
+    # Fails closed like the rest (PR #705 review, nit 3): an unreadable
+    # terminal-states.json used to skip this check and let the row through.
     bs = row.get("board_state")
-    if bs is not None and states is not None and bs not in states:
+    if bs is not None and states is None:
+        out.append(f"{who}: board_state `{bs}` cannot be checked: {TICKET_STATES_REL} is unreadable")
+    elif bs is not None and bs not in states:
         out.append(f"{who}: board_state `{bs}` is not a ticket_states row in terminal-states.json")
     return out
 
@@ -240,13 +244,19 @@ def refusal(producer, create_path: str, root: str | None = None, path: str | Non
 
 
 def is_test_path(path: str) -> bool:
-    """The same split as linear-filer-label-lint.py: a suite constructs the
-    mutation to assert on it, so it is not a producer."""
+    """A suite constructs the mutation to assert on it, so it is not a producer.
+
+    Anchored, unlike linear-filer-label-lint.py's substring match: there
+    `latest-filer.py` and `contest_filer.py` read as tests (PR #705 review, nit
+    2), and here that would excuse a real filer from the coverage gate. A test
+    is a file under tests/ or test/, a name that STARTS with test_ or test-, or
+    one that ENDS in _test or -test before its suffix."""
     norm = path.replace(os.sep, "/")
     base = norm.rsplit("/", 1)[-1]
     if "/tests/" in "/" + norm or "/test/" in "/" + norm:
         return True
-    return any(base.startswith(h) or h in base for h in ("test_", "test-", "_test.", "-test."))
+    stem = base.rsplit(".", 1)[0]
+    return base.startswith(("test_", "test-")) or stem.endswith(("_test", "-test"))
 
 
 def tracked_filers(root: str) -> list:
