@@ -169,14 +169,14 @@ case "${1:-help}" in
     sub="${1:-}"
     shift || true
     case "$sub" in
-      start|touch|end)
+      start|touch|end|sync)
         python3 "$LANE_MARK" "$sub" "$@"
         ;;
       watch)
         python3 "$LANE_WATCHDOG" --state "$LANES_DIR/lanes.state" "$@"
         ;;
       *)
-        echo "usage: kipi lane <start|touch|end> <ASK-n> [...]   |   kipi lane watch [--once]" >&2
+        echo "usage: kipi lane <start|touch|end> <ASK-n> [...]   |   kipi lane sync   |   kipi lane watch [--once]" >&2
         exit 1
         ;;
     esac

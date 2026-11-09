@@ -2,12 +2,14 @@
 """lane-mark.py writes the lane marker that linear-sync.lane_marker reads (ASK-4095).
 Scar: 2026-11-08 23:25Z, a redrive put a second writer on #666 because nothing told
 the fleet an interactive lane was on it."""
+import fcntl
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -30,16 +32,24 @@ with tempfile.TemporaryDirectory() as d:
     ls = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ls)
 
+    def bare_env():
+        env = dict(os.environ)
+        env.pop("KIPI_AGENT", None)
+        return env
+
+    def start_async(issue):
+        return subprocess.Popen(
+            [sys.executable, str(SCRIPTS / "lane-mark.py"), "start", issue, "--agent", "x"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=bare_env())
+
     def mark(*args):
         # KIPI_AGENT is lane-mark's fallback for --agent, and the fleet worker
         # exports it (KIPI_AGENT=sana), so an inherited env made "start needs an
         # agent" pass an agent and read exit 0. Measured 2026-11-09 on
         # origin/main: rc 0 in the worker's shell, rc 64 in a bare one. The test
         # runs in a shell of its own choosing, so it states the variable.
-        env = dict(os.environ)
-        env.pop("KIPI_AGENT", None)
         return subprocess.run([sys.executable, str(SCRIPTS / "lane-mark.py"), *args],
-                              capture_output=True, text=True, env=env).returncode
+                              capture_output=True, text=True, env=bare_env()).returncode
 
     print("== lane-mark")
     check("no marker: no lane", ls.lane_marker("ASK-1"), "")
@@ -71,6 +81,54 @@ with tempfile.TemporaryDirectory() as d:
           ls.lane_marker("ASK-5").startswith("its lane marker"), True)
     (Path(d) / "ASK-6.json").write_text('{"issue": "ASK-6", "agent": "x"}')
     check("a marker with no expiry is respected", "names no expiry" in ls.lane_marker("ASK-6"), True)
+
+    # --- the derived state file is written under a lock (ASK-3932, PR #706 r1) --
+    # FINDING: two lanes starting at once interleaved as "A lists the markers ->
+    # B lists them -> B replaces lanes.state -> A replaces it with its OLDER
+    # list", so lane B vanished from the derived file and the watchdog never
+    # watched it until the next lane-mark op, which for a lane that dies without
+    # `end` never comes. The read of the markers and the write of the derived
+    # file are now ONE critical section, held with flock on <state>.lock.
+    # The lock file is not a marker: linear-sync.lane_marker:739 opens
+    # <id>.json by exact name, so neither it nor lanes.state is ever read as one.
+    print("== lane-mark: the derived state file is written under a lock")
+    lock = Path(d) / "lanes.state.lock"
+    with open(lock, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        held = start_async("ASK-30")
+        time.sleep(1.0)
+        waiting = held.poll() is None     # must still be blocked on the lock
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    check("the state writer waits for a held lock", (waiting, held.wait(timeout=20)), (True, 0))
+
+    # 12 starts fired at once: every one of them has to be in the derived file.
+    # This is the race itself rather than the lock, so it can pass by luck on a
+    # broken build; the lock check above is the deterministic half.
+    ids = [f"ASK-{40 + i}" for i in range(12)]
+    procs = [start_async(i) for i in ids]
+    for p in procs:
+        p.wait(timeout=30)
+    state_text = (Path(d) / "lanes.state").read_text()
+    check("no lane is dropped when 12 start at once",
+          [i for i in ids if f"{i} " not in state_text], [])
+
+    # --- sync: the one writer can re-derive without touching a marker ---------
+    # FINDING: an expired or dead marker kept its line in lanes.state until the
+    # next start/touch/end, and the watchdog paged STALL on it in 0.1s on every
+    # arm, forever. `sync` is how the watchdog gets a fresh file without
+    # becoming a second parser of the markers.
+    print("== lane-mark: sync re-derives the state file, markers untouched")
+    before = json.load(open(Path(d) / "ASK-40.json"))
+    expired = Path(d) / "ASK-41.json"
+    rec41 = json.load(open(expired))
+    rec41["until"] = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    json.dump(rec41, open(expired, "w"))
+    check("sync needs no issue id", mark("sync"), 0)
+    state_text = (Path(d) / "lanes.state").read_text()
+    check("sync drops the expired lane", "ASK-41 " in state_text, False)
+    check("sync keeps the live lane", "ASK-40 " in state_text, True)
+    check("sync does not rewrite a marker", json.load(open(Path(d) / "ASK-40.json")), before)
+    check("sync still refuses a bad id", mark("sync", "not-an-id"), 64)
 
 print()
 if FAILS:
