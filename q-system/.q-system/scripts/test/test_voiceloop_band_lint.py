@@ -470,12 +470,13 @@ def test_no_manifest_leaves_the_table_result_unchanged(tmp_path):
 
 
 @pytest.mark.parametrize("fixture, reason", [
-    ("malformed.json", "unreadable"),
+    # .txt, not .json: verify.sh json-parse fails the build on any invalid .json, and these two are invalid on purpose.
+    ("malformed.txt", "unreadable"),
     ("bad-channel.json", "short"),
     ("unknown-lane.json", "nowhere"),
     ("list-channel.json", "not a channel"),
     ("top-level-list.json", "top level"),
-    ("deep.json", "unreadable"),
+    ("deep.txt", "unreadable"),
     ("lane-list.json", "no lane"),
 ])
 def test_a_bad_manifest_reports_one_line_then_uses_the_table(tmp_path, fixture, reason):
