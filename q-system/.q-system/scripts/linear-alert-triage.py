@@ -909,7 +909,10 @@ SUBJECT_SHAPES = (
 # every converge page into SUBJECT_SHAPES or this list, so a new page cannot
 # arrive unclassified.
 CONVERGE_NOT_SUBJECT = (
-    ("attempts ledger unwritable", "a machine-wide fault, first seen on this issue"),
+    # Matches both exit-8 pages: "attempts ledger unwritable" and the exit-5
+    # "refused: this run is under a test" cause (ASK-4052). Neither ends with ASK-N.
+    ("the retry cap is not enforceable until it is fixed",
+     "a ledger fault or a test aimed at the live ledger, first seen on this issue"),
     ("only the degraded Opus fallback reviewed it", "unreviewed code at the head"),
     ("was never reviewed", "unreviewed code at the head"),
 )

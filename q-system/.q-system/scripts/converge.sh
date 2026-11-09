@@ -1038,11 +1038,17 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
       # success. An attempt that was not PERSISTED did not happen, so the run
       # says so and stops on its own exit code rather than blending into the
       # ordinary no-PR case that the dispatcher expects to see repeatedly.
-      if ! python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+      BUMP_RC=0
+      python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
            "converge stopped at exit-7: no PR on $BRANCH after round $ROUND (worker rc=$WRC, recorded nothing itself)" \
-           >>"$LOG" 2>&1; then
-        say "STOP exit-8: could not record the attempt in $ATTEMPTS. The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
-        bash "$NOTIFY" "converge $ISSUE: attempts ledger unwritable -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+           >>"$LOG" 2>&1 || BUMP_RC=$?
+      if [ "$BUMP_RC" -ne 0 ]; then
+        # Exit 5 is a test aiming at the live ledger (ASK-4052), not an unwritable
+        # file, so the page names that cause (PR #669 review round 2, same class).
+        if [ "$BUMP_RC" -eq 5 ]; then _why="refused: this run is under a test and $ATTEMPTS is the live ledger; set KIPI_STATE_DIR in the test"
+        else _why="attempts ledger unwritable"; fi
+        say "STOP exit-8: could not record the attempt in $ATTEMPTS ($_why). The 3-attempt cap keys on that file, so it cannot trip while the write fails and this issue would retry forever. Fix the ledger before re-dispatching; see $LOG"
+        bash "$NOTIFY" "converge $ISSUE: $_why -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
         exit 8
       fi
     fi
