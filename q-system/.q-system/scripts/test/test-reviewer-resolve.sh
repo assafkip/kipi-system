@@ -546,6 +546,30 @@ hasnt "the detector does not publish a long raw reason it found on disk" "$DET" 
 has   "it says so in the body instead"                                   "$DET" "unpublishable"
 has   "and it still points the operator at the local ledger"             "$DET" "codex-outage-events.jsonl"
 
+# A ROW FROM THE PRE-RENAME WRITER IS NOT HYPOTHETICAL. The ledger lives in
+# $KIPI_STATE_DIR on a real machine, and the pass-1 resolver wrote `reason` with
+# the caller's raw words in it -- including on this developer's own box, from the
+# suite above. The reader must not publish those rows either, and the absent key
+# must not crash the detector that is the only thing telling Sana the reviewer is
+# down. Withheld, not guessed.
+OLDROW="$(KIPI_NOTIFY=/usr/bin/true python3 - "$SCRIPTS/fleet-health-daily.py" "$CODEX_LINE" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fhd", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from datetime import datetime, timezone
+day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+rows = [{"kind": "codex-outage", "account": "primary", "day": day,
+         "ts": day + "T03:00:00Z", "reason": sys.argv[2]}]   # the OLD key
+out = m.codex_outage_findings(rows, {"primary": {"outage_day": day}})
+# Title AND body: the withholding happens in the body, and "is the outage still
+# reported at all" is answered by the title.
+print((out[0]["title"] + "\n" + out[0]["body"]) if out else "<no finding>")
+PY
+)"
+hasnt "a pre-rename row's raw reason is not published either" "$OLDROW" "hooks.slack.com"
+has   "the missing code reads as withheld, not as an empty line" "$OLDROW" "unpublishable"
+has   "and the outage is STILL reported -- the row is not dropped" "$OLDROW" "down to Opus"
+
 echo "== the prose call sites no longer hand raw Codex output to the ledger =="
 for md in plugins/kipi-dsse/commands/issue-review.md plugins/prd-os/commands/prd-review.md; do
   grep -q 'the refusal line Codex printed' "$REPO/$md" \
