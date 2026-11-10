@@ -321,7 +321,18 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:
         ["log", f"--max-count={max_count + 1}", f"--format={fmt}", rev], cwd,
     )
     if code != 0:
-        return [], False
+        # NEVER ([], False). That shape is indistinguishable from "the walk read
+        # the whole range and found nothing", and it defeats both blindness
+        # signals at once: `truncated` is derived from the records git returned
+        # (none), and `fetched` describes the fetch, which succeeded. The sweep
+        # would print scanned 0 with status ok over history it never read — the
+        # silent false zero this whole ledger exists to stop (PR #66 round 10).
+        # main() maps RuntimeError to exit 1, and the daily detector already
+        # treats a non-zero sweeper as blind, so both ends of the handshake hold.
+        raise RuntimeError(
+            f"the history walk failed: git log exited {code} on {rev!r}. "
+            "The scan read nothing, so its count would be a false zero."
+        )
     raw = []
     for record in out.split(RECORD_SEP):
         record = record.strip("\n")

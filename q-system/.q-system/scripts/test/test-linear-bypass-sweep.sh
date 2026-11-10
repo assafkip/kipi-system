@@ -648,6 +648,47 @@ OUT_U3=$(cd "$WORK" && LINEAR_BYPASS_LEDGER="$UNACC_LEDGER" \
 check "a dry run reports the same unaccounted shas" "$U1_ALL" \
   "$(printf '%s' "$OUT_U3" | python3 -c "import json,sys; print(len(json.loads(sys.stdin.read())['unaccounted_commits']))")"
 
+# --- a history walk that FAILED is blind, never an empty clean scan ----------
+# PR #66 round 10. `read_commits` swallowed a non-zero `git log` and returned
+# ([], False), so the sweep printed scanned 0 with status ok over history it
+# never read, and NEITHER blindness signal could fire: `truncated` is computed
+# from the records git returned (none) and `fetched` describes the fetch, which
+# succeeded. A missing rev is already refused upstream with status rev-not-found,
+# so the reachable shape here is a walk that dies mid-way: a corrupt object, a
+# broken pack, a killed child. The stub reproduces exactly that, which is what
+# a corrupted-object-store fixture reproduces at 100x the cost (and git's loose
+# objects are mode 0444, so such a fixture silently fails to corrupt anything).
+WALK_OUT=$(cd "$WORK" && python3 - "$SWEEP" <<'PY' 2>&1
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("sweep", sys.argv[1])
+sweep = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sweep)
+here = pathlib.Path(".")
+
+real_git = sweep.git
+sweep.git = lambda args, cwd: (128, "") if args and args[0] == "log" else real_git(args, cwd)
+try:
+    sweep.read_commits("HEAD", 10, here)
+    print("RETURNED-EMPTY")
+except RuntimeError:
+    print("RAISED")
+finally:
+    sweep.git = real_git
+
+# Control: the same call on readable history must still walk, or the case above
+# proves nothing (it would "pass" on any repo where git log always fails).
+commits, _truncated = sweep.read_commits("HEAD", 10, here)
+print("WALKED" if commits else "WALKED-NOTHING")
+PY
+)
+check "a failed history walk raises instead of returning an empty scan" \
+  "RAISED" "$(printf '%s\n' "$WALK_OUT" | sed -n '1p')"
+check "the control proves the same call succeeds on readable history" \
+  "WALKED" "$(printf '%s\n' "$WALK_OUT" | sed -n '2p')"
+
 echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

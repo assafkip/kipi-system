@@ -1151,20 +1151,62 @@ def detect_unaccounted_commits(_ctx) -> list:
         # the false zero this detector exists to stop.
         raise RuntimeError(
             "the sweeper's scan window was truncated; commits in range went unread")
+    findings = []
+    if result.get("locked") is False:
+        # The ledger's read-then-append is ONE critical section; the flock IS its
+        # single writer. `locked: false` means that lock could not be TAKEN at
+        # all (the sidecar would not open — a read-only dir), so two sweeps can
+        # both read a sha as absent and both append it. The one file whose whole
+        # job is a true count then over-counts, invisibly (PR #66 round 11).
+        #
+        # Deliberately NOT a RuntimeError. The history finding below is derived
+        # from git alone and is still exactly true, so going blind here would
+        # discard a correct finding in order to report a broken count. The
+        # hazard is the ledger write, not the read, so the guard rides on its
+        # own finding and the reader keeps working.
+        #
+        # `is False` and not `not ...`: the real sweep always emits the key, and
+        # reading an ABSENT one as a lost lock would make every caller that omits
+        # it report a defect it never claimed.
+        findings.append({
+            "subject": "linear-bypass-unserialized",
+            # Terminal action is an environment fix (make the lock dir writable),
+            # which turns the finding off by itself, so the generic
+            # reopen-while-true rule is correct here and no acknowledgement flag
+            # is declared.
+            "title": "The bypass ledger was appended without its single writer",
+            "body": (
+                "`linear-bypass-sweep.py` reported `locked: false`: it could not take "
+                "the exclusive lock on its ledger sidecar, so the read-then-append that "
+                "dedups `q-system/output/linear-bypass.jsonl` ran unserialized.\n\n"
+                "Two overlapping sweeps can both read a sha as absent and both append it, "
+                "so the count this ledger exists to keep true can be too HIGH. The sweep "
+                "still runs and its finding about git history is unaffected; only the "
+                "count is at risk.\n\n"
+                "## Action\nThe lock is a sidecar next to the ledger "
+                "(`linear-bypass.jsonl.lock`). It fails to open when its directory is not "
+                "writable by the running user. Fix the directory permissions, then "
+                "`python3 q-system/.q-system/scripts/linear-bypass-sweep.py --dry --json` "
+                "and confirm `locked: true`.\n\n"
+                "Duplicate rows already written are safe to leave: the ledger is "
+                "append-only and deduped on read, so a repeat row inflates the row count "
+                "and not the set of shas."
+            ),
+        })
     # EVERY unaccounted sha in range, oldest first, and nothing subtracted.
     # Purely a fact about git history: the same commits produce the same list on
     # every run, on any machine, with no local record consulted.
     unaccounted = [sha for sha in (result.get("unaccounted_commits") or [])
                    if isinstance(sha, str) and sha]
     if not unaccounted:
-        return []
+        return findings
 
     # The cap bounds one issue description, and the ledger below carries the rest.
     # 200 rather than a tight number because dropping a sha off this list is the
     # expensive direction and a sha line is ~14 bytes.
     shown = unaccounted[:MAX_SHAS_IN_BODY]
     more = len(unaccounted) - len(shown)
-    return [{
+    return findings + [{
         # Stable subject: ONE standing issue for this class. The shas live in the
         # body, which is updatable; putting them in the dedup key would fork a
         # permanent issue per bypass.

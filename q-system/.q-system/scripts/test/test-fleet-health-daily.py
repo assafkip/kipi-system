@@ -751,6 +751,53 @@ _blind("a sweeper whose ledger write failed is blind",
 _blind("a stale ref (fetch failed) is blind, because the count may be low",
        payload={**_OK, "fetched": "failed"})
 
+# --- a ledger appended without its single writer is its own finding ----------
+# PR #66 round 11 nit. `locked: false` means flock could not be TAKEN at all
+# (the lock sidecar would not open), so the read-then-append that dedups the
+# ledger ran unserialized and two sweeps can append the same sha twice. The
+# ledger's only job is a true count, so that cannot pass silently.
+#
+# It is NOT blindness. The history finding is derived from git alone and stays
+# true, so raising here would throw away a correct finding to report a broken
+# count — a guard scoped to the context instead of to the hazard. Both go out.
+_unlocked = _with_sweeper(payload={**_OK, "locked": False})
+check("a lost lock is reported alongside the history finding",
+      sorted(f["subject"] for f in _unlocked),
+      ["linear-bypass-unaccounted", "linear-bypass-unserialized"])
+# A broken ledger is a finding on a quiet day too: nothing unaccounted does not
+# make an unserialized append fine, and this is the day it would hide on.
+_unlocked_clean = _with_sweeper(
+    payload={**_OK, "locked": False, "unaccounted_commits": [], "unaccounted": 0,
+             "commits": [], "recorded": 0})
+check("...and on a day with nothing unaccounted it still goes out",
+      [f["subject"] for f in _unlocked_clean], ["linear-bypass-unserialized"])
+# Fire-once: a standing environment defect must not earn a Slack line per cycle
+# (ASK-283). Same lost lock, byte-identical body, so the body-hash compare in
+# `_refresh_one` sees no change.
+def _body(findings, subject):
+    """The named finding's body, or a distinct miss marker — never findings[0],
+    which would compare the history finding to itself and pass for free."""
+    hit = [f["body"] for f in findings if f["subject"] == subject]
+    return hit[0] if hit else f"<no {subject} finding>"
+
+
+check("a standing lost lock produces a stable body",
+      _body(_with_sweeper(payload={**_OK, "locked": False}),
+            "linear-bypass-unserialized")
+      == _body(_unlocked, "linear-bypass-unserialized")
+      and "unserialized" in _body(_unlocked, "linear-bypass-unserialized"),
+      True)
+# Negative controls, both directions.
+check("a locked run reports only the history finding",
+      [f["subject"] for f in _with_sweeper(payload={**_OK, "locked": True})],
+      ["linear-bypass-unaccounted"])
+# The guard asserts on a POSITIVE false, never on an absent key. The real sweep
+# always emits `locked`; reading a missing key as a lost lock would make every
+# payload that omits it report a defect it never claimed.
+check("an absent locked key is not read as a lost lock",
+      [f["subject"] for f in _with_sweeper(payload=_OK)],
+      ["linear-bypass-unaccounted"])
+
 # --- the finding is a fact about history, not about this run ----------------
 # The sweep dedupes on sha forever, so the SECOND run ledgers nothing new
 # (`commits: []`). The finding has to survive that: "already ledgered" says
