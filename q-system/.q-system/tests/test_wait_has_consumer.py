@@ -68,6 +68,10 @@ BOARD = {
     "ASK-5007": issue("ASK-5007", DOR + ALERT),
     # a project no checkout backs
     "ASK-5008": issue("ASK-5008", DOR, project="nowhere"),
+    # owner:sana with a project and no DoR: linear-dor-drafter.py's "draft" population
+    "ASK-7001": issue("ASK-7001", "needs a spec"),
+    # refused once by the worker: the drafter's "redraft" population
+    "ASK-7002": issue("ASK-7002", DOR, labels=("owner:sana", "needs-scope")),
 }
 
 
@@ -85,6 +89,9 @@ def wc(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ls, "graphql", fake_graphql)
     monkeypatch.setattr(mod, "local_projects", lambda: {"kipi-system"})
+    # The nightly queues are Linear reads of the whole board; every case sets its own.
+    monkeypatch.setattr(mod, "_dor_queue", lambda: [])
+    monkeypatch.setattr(mod, "_triage_queue", lambda: [])
     mod.tmp = tmp_path
     return mod
 
@@ -331,3 +338,92 @@ def test_an_unreadable_lane_marker_is_not_a_consumer(wc):
     (wc.tmp / "lanes" / "ASK-5002.json").write_text("{not json")
     with pytest.raises(wc.CannotLook):
         wc.consumer_for("ASK-5002")
+
+
+# --- ASK-4306 round 4: nightly queues count only inside their cap (PR #712 review, round 3) ---
+
+@pytest.mark.parametrize("ident,mode", [("ASK-7001", "draft"), ("ASK-7002", "redraft")])
+def test_a_ticket_inside_the_drafters_cap_has_a_consumer(wc, monkeypatch, ident, mode):
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [ident])
+    ok, text = wc.consumer_for(ident)
+    assert ok, text
+    assert "linear-dor-drafter.py" in text and "inside 24h" in text
+
+
+def test_a_ticket_behind_the_drafters_cap_is_nobody(wc, monkeypatch):
+    cap = wc._plist_limit("com.kipi.linear-dor.plist")
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [f"ASK-{n}" for n in range(100, 100 + cap)] + ["ASK-7001"])
+    ok, text = wc.consumer_for("ASK-7001")
+    assert not ok
+    assert text.startswith("nothing picks this up:") and f"queued behind {cap}" in text
+    # control: one place earlier and it is inside the cap
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [f"ASK-{n}" for n in range(100, 100 + cap - 1)] + ["ASK-7001"])
+    assert wc.consumer_for("ASK-7001")[0]
+
+
+def test_the_alert_spillover_case_still_refuses_when_it_is_behind_the_cap(wc, monkeypatch):
+    # ASK-4195, the scar: the nightly triage takes 60 of 1,094. Behind the cap it is nobody.
+    cap = wc._plist_limit("com.kipi.linear-alert-triage.plist")
+    monkeypatch.setattr(wc, "_triage_queue", lambda: [f"ASK-{n}" for n in range(2000, 2000 + cap + 5)] + ["ASK-4195"])
+    ok, text = wc.consumer_for("ASK-4195")
+    assert not ok and "queued behind" in text and "fleet alert" in text
+    monkeypatch.setattr(wc, "_triage_queue", lambda: ["ASK-4195"])
+    ok, text = wc.consumer_for("ASK-4195")
+    assert ok and "linear-alert-triage.py" in text
+
+
+def test_a_held_or_refused_alert_is_not_in_the_triage_queue(wc):
+    # the default queue is empty: an alert the triage lane will not take has no consumer
+    ok, text = wc.consumer_for("ASK-4195")
+    assert not ok and "fleet alert" in text
+
+
+def test_the_cap_is_read_from_the_plist_not_copied(wc, monkeypatch):
+    monkeypatch.setattr(wc, "SCRIPTS", wc.tmp)
+    with pytest.raises(wc.CannotLook):
+        wc._plist_limit("com.kipi.linear-dor.plist")
+
+
+def test_a_lane_cannot_hold_on_the_pr_it_drives(wc, monkeypatch):
+    fake_pr(wc, monkeypatch)
+    marker(wc, "ASK-3834", NOW + timedelta(hours=5))
+    path = wc.tmp / "lanes" / "ASK-3834.json"
+    data = json.loads(path.read_text())
+    data["pr"] = "9"
+    path.write_text(json.dumps(data))
+    ok, text = wc.consumer_for("assafkip/kipi-system#9", waiter="ASK-3834")
+    assert not ok and "lane itself drives" in text
+    # controls: another waiter, and another PR number, both still pass
+    assert wc.consumer_for("assafkip/kipi-system#9", waiter="ASK-3835")[0]
+    assert wc.consumer_for("assafkip/kipi-system#10", waiter="ASK-3834")[0]
+
+
+# --- wait-guard.sh: the first caller of the check (PR #712 review, round 3, finding 3) ---
+
+def _guard_dir(tmp_path, stub_rc, stub_out):
+    import shutil
+    d = tmp_path / "guard"
+    d.mkdir()
+    shutil.copy(SCRIPTS / "wait-guard.sh", d / "wait-guard.sh")
+    (d / "wait-has-consumer.py").write_text(
+        "import sys\nprint(%r)\nsys.exit(%d)\n" % (stub_out, stub_rc))
+    return d / "wait-guard.sh"
+
+
+@pytest.mark.parametrize("rc,ok", [(0, True), (1, False), (2, False)])
+def test_wait_guard_passes_the_checks_verdict_through(tmp_path, rc, ok):
+    import subprocess
+    guard = _guard_dir(tmp_path, rc, "the stub's reason")
+    r = subprocess.run(["bash", str(guard), "ASK-1"], capture_output=True, text=True)
+    assert r.returncode == rc
+    if ok:
+        assert "OK to wait" in r.stdout
+    else:
+        assert "DO NOT WAIT" in r.stderr and "the stub's reason" in r.stderr
+
+
+def test_wait_guard_with_the_real_check_rejects_a_typo_and_no_argument():
+    import subprocess
+    typo = subprocess.run(["bash", str(SCRIPTS / "wait-guard.sh"), "not-a-ref"], capture_output=True, text=True)
+    assert typo.returncode == 64 and "DO NOT WAIT" in typo.stderr
+    assert subprocess.run(["bash", str(SCRIPTS / "wait-guard.sh")], capture_output=True, text=True).returncode == 64
