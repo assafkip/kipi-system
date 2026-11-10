@@ -42,6 +42,10 @@ for f in "$CONV" "$LEDGER" "$REVIEW_REDRIVE" "$CI_REDRIVE"; do
 done
 
 WORK="$(mktemp -d)"
+# attempts-ledger.py files an alert when it refuses a corrupt ledger (ASK-4143),
+# so every direct ledger call below needs a notifier stub too. Calls that set
+# their own KIPI_NOTIFY still override this.
+export KIPI_NOTIFY=/usr/bin/true
 # THE LANE RULE READS NOTHING LIVE HERE (ASK-4095): an empty ticket table and
 # lanes dir, so no run reaches Linear or the real ~/.config/kipi/lanes.
 printf '{}' > "$WORK/lane-tickets.json"; mkdir -p "$WORK/lanes"
