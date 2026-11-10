@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily founder-ruling debt report (ASK-4382, RULE-2026-11-10-RULING).
+
+     Founder, 2026-11-10: every RULING line records a decision of his and must be
+     enforced in code. The hook refuses a new or changed ruling with no resolvable
+     enforcer; this job is the other half. It lists every ruling in every
+     registered instance as ENFORCED, UNENFORCED, DEBT (grandfathered) or FAIL,
+     writes the list to ~/.local/state/kipi/ruling-gate/debt.md, and files ONE
+     alert through slack-notify.sh (Sana's Linear triage) when the open set
+     changes. UNENFORCED and grandfathered rulings are visible debt, never silent.
+
+     WHY IT CANNOT GO QUIET. It exits non-zero when the baseline or registry is
+     unreadable or the alert cannot be filed, and com.kipi.launchd-health reads
+     every com.kipi.* job's LastExitStatus.
+
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh. Pinned (job-checkouts.json): it runs from its own worktree
+     at origin/main, never the shared checkout.
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.ruling-gate-report -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.ruling-gate-report</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <!-- Login shell so the Linear API key slack-notify.sh needs resolves the way it
+         does for a human (ASK-718: a job ran blind for 19 days without it). -->
+    <string>python3 __KIPI_REPO__/q-system/.q-system/scripts/ruling-gate.py --report --registry __KIPI_REPO__/instance-registry.json</string>
+  </array>
+  <!-- Local 08:20: before the 09:30 launchd-health sweep reads this job's exit status. -->
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>20</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/logs/ruling-gate-report.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/logs/ruling-gate-report.err.log</string>
+</dict>
+</plist>

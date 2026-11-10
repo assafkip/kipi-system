@@ -204,6 +204,16 @@
         ]
       },
       {
+        "matcher": "Write|Edit|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/ruling-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/ruling-gate.py\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -263,6 +273,16 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/ruling-gate.py\" && python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/ruling-gate.py\"",
+            "timeout": 15
+          }
+        ]
+      },
       {
         "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [

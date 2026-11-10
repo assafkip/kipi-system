@@ -71,6 +71,10 @@ FLEET_ONLY = {
     "instance-automation-guard.py",
     "miyo-session-pull.py",
     "miyo-research-gate.py",
+    # ASK-4382: judges canonical/scope.md ruling lines, which live only in instance
+    # cases; the skeleton holds no case. A skeleton session writing an instance's
+    # case file is caught by the daily com.kipi.ruling-gate-report sweep instead.
+    "ruling-gate.py",
 }
 
 # A hook "propagates" when it invokes a script under a directory kipi update
