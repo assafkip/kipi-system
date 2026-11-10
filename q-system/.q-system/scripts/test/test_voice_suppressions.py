@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -456,3 +457,32 @@ def test_an_out_of_root_draft_without_a_marker_still_blocks(tmp_path):
     r = _hook(VOICE_LINT, tmp_path, root, BLOCKING_BODY, base=tmp_path / "repo-b")
     assert r.returncode == 2, r.stderr
     assert "ignored" not in r.stderr, r.stderr
+
+
+STOP_GATE = SCRIPTS / "voice-stop-gate.py"
+
+
+def _stop_gate(tmp_path, root, draft):
+    """Run a COPY of the Stop gate placed in the instance, so INSTANCE_ROOT is <root>."""
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    if not scripts.exists():
+        shutil.copytree(SCRIPTS, scripts, ignore=shutil.ignore_patterns("test", "__pycache__"))
+    transcript = tmp_path / "t.jsonl"
+    msg = {"role": "assistant", "content": [{"type": "text", "text":
+           "Here's the post:\n\n" + draft}]}
+    transcript.write_text(json.dumps({"type": "assistant", "message": msg}) + "\n")
+    payload = {"transcript_path": str(transcript), "session_id": "s"}
+    return subprocess.run([sys.executable, str(scripts / "voice-stop-gate.py")],
+                          input=json.dumps(payload), capture_output=True, text=True,
+                          env=_env(tmp_path, root), timeout=120)
+
+
+def test_the_stop_gate_does_not_honor_a_marker_where_the_file_exists(tmp_path):
+    """ASK-4277 review finding 1: the Stop gate lints a temp draft. Out of root it would
+    clear on a bare marker, which voice-enforcement.md says this gate never honors."""
+    root = _instance(tmp_path, rows=[_row(path="drafts/some-other-draft.md")])
+    body = BLOCKING_BODY * 3
+    marked = _stop_gate(tmp_path, root, body + "<!-- voice-lint-skip -->\n")
+    plain = _stop_gate(tmp_path, root, body)
+    assert plain.returncode == 2, plain.stderr  # control: the gate does block this body
+    assert marked.returncode == 2, marked.stderr
