@@ -19,6 +19,12 @@
 #      nothing is charged to the issue (fail closed, not "run unguarded").
 #   H. census by code: every agent-session call site in the worker passes it.
 set -uo pipefail
+# NOT A BILLING TEST (ASK-4311). This suite stubs `claude` on PATH and tests its
+# own subject, so its runs take the plan path: KIPI_FLEET_API_KEYS=0 makes the
+# worker, the reviewer and the dispatcher call `env -u ANTHROPIC_API_KEY claude`
+# exactly as before the fleet door. The door has its own suites
+# (test_fleet_api_credit.py, test-dispatch-api-key-gate.sh, test-worker-usage-brake.sh).
+export KIPI_FLEET_API_KEYS=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 WORKER="$ROOT/q-system/.q-system/scripts/linear-worker.sh"
@@ -205,7 +211,9 @@ ok "G: no guard set means no agent, a stated reason, and no attempt charged"
 # launch shaped like the reviewer call was invisible and the census passed.
 # Residual, said out loud: a launcher behind a brand-new variable name is still
 # invisible until its name is added to LAUNCHERS.
-LAUNCHERS='claude -p|\$\{?SECOND_RUNNER_FALLBACK|\$\{?REVIEWER_CMD'
+# `$FLEET_CLAUDE -p` is the main run since ASK-4311: the fleet door execs
+# `claude -p`, so it is a launch like any other.
+LAUNCHERS='claude -p|\$\{?FLEET_CLAUDE\}? -p|\$\{?SECOND_RUNNER_FALLBACK|\$\{?REVIEWER_CMD'
 KNOWN_REVIEWER='$REVIEWER_CMD "$PR_NUM"'   # pr-review-agent.sh runs its own review tree: ASK-3571
 # A definition is a line that IS an assignment of a quoted string (NAME="...").
 # Anchored, so an env-prefixed launch (NAME=value $LAUNCHER ...) still counts.

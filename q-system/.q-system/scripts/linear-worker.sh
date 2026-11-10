@@ -132,8 +132,9 @@ CODEX_OUTAGE_MAX_AGE=86400
 # THE WORKER NOW BILLS THE API CREDIT, NOT THE PLAN (ASK-4311). This file used
 # `env -u ANTHROPIC_API_KEY` at every call, deliberately, so the run went to the
 # founder's subscription and never to a billed API key (ASK-2176). The founder's
-# 2026-11-09 ruling inverts that for FLEET work only: the two Ultra accounts each
-# carry a $250/month Console API credit, and he would rather the fleet spend
+# 2026-11-09 ruling inverts that for FLEET work only: each of his two accounts
+# carries a monthly Console API credit (amounts and cycle ends live in
+# ~/.config/kipi/fleet-api.json, never here), and he would rather the fleet spend
 # Anthropic's money than his own plan allowance. "Im okay spending the moeny I
 # get from anthropic on the api. but I dont want to pay more myself".
 #
@@ -143,8 +144,20 @@ CODEX_OUTAGE_MAX_AGE=86400
 # KIPI_FLEET_API_KEYS=0 restores the old subscription-only behaviour, loudly.
 # test-subscription-only.sh pins that no API key is ever hardcoded here; the key
 # still never appears in this file, only inside the helper's own process.
-FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
-[ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
+#
+# THE OFF SWITCH IS RESOLVED HERE, not only inside fleet-claude.sh. With it set,
+# the call is the pre-ASK-4311 `env -u ANTHROPIC_API_KEY claude` byte for byte,
+# so it works in a checkout or a test skeleton that has no shim at all. Without
+# this, 22 suites that copy this script into a fixture without the shim died at
+# rc=127 (PR #717 CI, validate at c7650286).
+fleet_keyed() { [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; }
+if fleet_keyed; then
+  FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
+  [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
+else
+  echo "linear-worker: KIPI_FLEET_API_KEYS=0 -- claude runs bill the PLAN, not the API credit" >&2
+  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+fi
 # The stand-in's model is the routing table's second-runner row (ASK-4013). If the
 # read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
 SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
@@ -341,6 +354,15 @@ if ready_only; then
   # A pick list costs no model call, so there is nothing here for the brake to
   # brake -- and its exit 3 would replace the report's answer with silence.
   :
+elif fleet_keyed; then
+  # A RUN BILLED TO A KEY IS NOT BRAKED BY A PLAN READING (ASK-4311). This
+  # breaker measures the worker's share of the founder's PLAN usage. With the
+  # fleet door on, every claude run here bills a Console API key and spends
+  # nothing of the plan, so a plan reading could only stop work the plan is
+  # not paying for. The brakes on key spend are kipi-dispatch.sh's daily
+  # budget gate and fleet_api_key.py's per-run ceiling. KIPI_FLEET_API_KEYS=0
+  # puts the run back on the plan, and this brake back in front of it.
+  echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
 elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
   # kipi-dispatch.sh runs this script with no --apply to pick the next issue and

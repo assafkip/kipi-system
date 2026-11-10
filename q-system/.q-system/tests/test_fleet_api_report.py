@@ -51,6 +51,27 @@ NEXT_DAY = str(int((NOW_DT + dt.timedelta(days=1)).timestamp()))
 #: 04:00 local: before the 07:00 reset, so it belongs to the PREVIOUS budget day.
 BEFORE_RESET = str(int(dt.datetime(2026, 11, 9, 4, 0, 0).timestamp()))
 
+#: Per-key facts, shaped like ~/.config/kipi/fleet-api.json. Fixture amounts:
+#: key 1 $100 and key 2 $200, both expiring 07:00 local 2026-11-26, so both
+#: lines render as billable; cases about an unknown or unconfirmed key overwrite.
+CONFIRMED = "2026-11-10T21:00:00Z"
+#: 07:00 local on 2026-11-26 as the Console would print it, in UTC. Derived from
+#: the local instant so the budget-day count holds in any zone (CI is UTC).
+EXP = dt.datetime(2026, 11, 26, 7, 0, 0).astimezone(dt.timezone.utc) \
+    .strftime("%Y-%m-%dT%H:%M:%SZ")
+FACTS = {"keys": {
+    "1": {"monthly_credit_usd": 100, "current_cycle_expires_utc": EXP,
+          "auto_reload_off_confirmed_at": CONFIRMED},
+    "2": {"monthly_credit_usd": 200, "current_cycle_expires_utc": EXP,
+          "auto_reload_off_confirmed_at": CONFIRMED},
+}}
+
+
+def write_facts(path, facts):
+    with open(path, "w") as fh:
+        json.dump(facts, fh)
+
+
 READY = {
     "ready": [
         {"id": "ASK-1", "project": "kipi-system", "priority": 1},
@@ -85,9 +106,13 @@ class Base(unittest.TestCase):
         _script(self.worker,
                 "#!/usr/bin/env python3\nimport json\nprint(json.dumps(%r))\n" % (READY,))
 
+        self.facts = os.path.join(d, "fleet-api.json")
+        write_facts(self.facts, FACTS)
+
         self._saved = dict(os.environ)
         os.environ.update({
             "KIPI_TEST": "1",
+            "KIPI_FLEET_API_FACTS": self.facts,
             "KIPI_FLEET_SPEND_LEDGER": os.path.join(d, "spend.jsonl"),
             "KIPI_FLEET_EVENTS": os.path.join(d, "events.jsonl"),
             "KIPI_FLEET_REPORT_RECEIPT": os.path.join(d, "receipt.json"),
@@ -96,7 +121,6 @@ class Base(unittest.TestCase):
             "FAKE_CHIEF_RECORD": self.chief_record,
             "KIPI_DISPATCH_RESET_HOUR": "7",
             "KIPI_FLEET_NOW": NOW,              # 2026-11-09 12:00 local
-            "KIPI_FLEET_MONTHLY_CREDIT": "250",
         })
         spend._WARNED.clear()
         # closed_today() would reach Linear; every case stubs it, and one case
@@ -136,8 +160,34 @@ class TestContent(Base):
         spend.record(1, 3.50, actor="worker")
         r = report.build()
         self.assertIn("spent today: $3.50", r["text"])
-        self.assertIn("key 1: $246.50 left of $250.00", r["text"])
-        self.assertIn("key 2: $250.00 left of $250.00", r["text"])
+        # Each key in its own billing cycle, read from the facts file: a cycle
+        # ending 07:00 local on 2026-11-26 has 17 budget days left on 2026-11-09.
+        self.assertIn("key 1: $96.50 left of $100.00 this cycle "
+                      "(ends %s, 17 budget days left)" % EXP, r["text"])
+        self.assertIn("key 2: $200.00 left of $200.00 this cycle", r["text"])
+
+    def test_an_unknown_credit_is_named_every_day_not_shown_as_zero(self):
+        facts = json.loads(json.dumps(FACTS))
+        facts["keys"]["2"] = {"monthly_credit_usd": None,
+                              "current_cycle_expires_utc": None}
+        write_facts(self.facts, facts)
+        text = report.build()["text"]
+        self.assertIn("key 2: NOT USED, credit unknown", text)
+        self.assertIn(self.facts, text, "the line must name the file to fix")
+        self.assertNotIn("key 2: $0.00", text)
+
+    def test_an_unconfirmed_key_is_named_with_the_reason(self):
+        facts = json.loads(json.dumps(FACTS))
+        facts["keys"]["1"].pop("auto_reload_off_confirmed_at")
+        write_facts(self.facts, facts)
+        text = report.build()["text"]
+        self.assertIn("key 1: NOT USED, auto-reload off is not confirmed", text)
+
+    def test_an_unconfirmed_key_event_earns_its_own_message(self):
+        report.main([])
+        spend.event("unconfirmed", "key 1: auto-reload off is not confirmed")
+        report.main([])
+        self.assertEqual(len(self.sent()), 2, "the condition waited for tomorrow")
 
     def test_tickets_closed_today_is_in_the_text(self):
         self.assertIn("tickets closed today: 7", report.build()["text"])
@@ -229,6 +279,15 @@ class TestCadence(Base):
         """
         spend.record(1, 0.0, actor="worker", ok=False, unmetered=True,
                      note="killed by SIGTERM before its cost was read")
+        doc = report.build()
+        self.assertEqual(doc["unmetered_runs"], 1)
+        self.assertIn("FLOOR", doc["text"])
+
+    def test_a_run_with_no_readable_cost_also_makes_it_a_floor(self):
+        """Round 3, minor 3: the caveat covers a run whose output carried no cost,
+        not only one the watchdog killed."""
+        spend.record(1, 0.0, actor="worker", ok=True, unmetered=True,
+                     note="parse_error")
         doc = report.build()
         self.assertEqual(doc["unmetered_runs"], 1)
         self.assertIn("FLOOR", doc["text"])

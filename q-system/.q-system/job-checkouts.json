@@ -21,6 +21,7 @@
     "com.kipi.browser-session-health",
     "com.kipi.cap-ladder",
     "com.kipi.capability-expiry",
+    "com.kipi.fleet-api-report",
     "com.kipi.launchd-health",
     "com.kipi.linear-alert-triage",
     "com.kipi.linear-dor",

@@ -179,7 +179,10 @@ ok "--ready-json cuts no worktree and dispatches no agent"
 # ===========================================================================
 
 # --- 5. --apply with a holding brake still stops at 3 ---------------------
-run_worker state2 "$WORK/breaker-pause.sh" --apply --issue ASK-AAA --limit 1
+# On the PLAN path: a run billed to a fleet API key skips the plan brake on
+# purpose (ASK-4311, pinned by test-worker-usage-brake.sh case 6), so this case
+# names the path whose brake it is checking.
+KIPI_FLEET_API_KEYS=0 run_worker state2 "$WORK/breaker-pause.sh" --apply --issue ASK-AAA --limit 1
 RC_BRAKE=$?
 [ "$RC_BRAKE" = "3" ] \
   || fail "the brake no longer stops a real round (rc=$RC_BRAKE). A ready-json fix

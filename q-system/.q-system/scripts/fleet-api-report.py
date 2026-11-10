@@ -10,7 +10,8 @@ asked to receive. So this writes through chief's own alert path.
 WHAT IT SAYS, and the founder named every line of it:
 
   - spent today, against today's allowance
-  - credit left this month, per key
+  - credit left per key, in each key's own billing cycle
+  - a key whose credit is unknown, by name, every day until it is set
   - tickets closed today
   - TICKETS LEFT TO BE DONE, per reachable project ("have the report to chief
     also include How many tickets are left to be done every day")
@@ -69,7 +70,9 @@ DEFAULT_CHIEF_ROOT = os.path.join(os.path.expanduser("~"), "projects", "chief")
 #: the fix had to land on the REPORT and not only on the detector. The condition
 #: is filed once a budget day by `fleet_api_key.note_missing_key`, so putting it
 #: here costs one message, not 96.
-STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key")
+#: `unconfirmed` too: a key whose auto-reload is not confirmed off runs nothing,
+#: which also reads as a quiet day unless it is said.
+STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key", "unconfirmed")
 
 
 def receipt_path():
@@ -176,18 +179,22 @@ def build():
     lines.append("spent today: $%.2f of $%.2f (remaining $%.2f)"
                  % (budget["spent_usd"], budget["allowance_usd"],
                     budget["remaining_usd"]))
+    # One line per key, worded by the same function `credit` prints with. An
+    # unknown credit says NOT USED and names the file to fix: the founder reads
+    # this message, and a key the fleet silently skips is a key he thinks is
+    # carrying half the load.
     for slot in spend.SLOTS:
-        lines.append("key %d: $%.2f left of $%.2f this month"
-                     % (slot, credit["per_key_usd"][slot],
-                        credit["per_key_monthly_credit_usd"]))
-    # A KILLED RUN WAS CHARGED AND NEVER READ (review round 2, finding 2). Said
-    # out loud, because the allowance is divided out of the line above: with
-    # unmetered runs in the day, "spent today" is a floor and not a total. No
-    # dollar estimate, because there is no honest one -- `claude -p` prints
-    # total_cost_usd only at the end, and a killed run never got there.
+        lines.append(spend.describe_key(credit, slot))
+    # A RUN WAS CHARGED AND NEVER PRICED (review round 2 finding 2, round 3
+    # minor 3). Said out loud, because the allowance is divided out of the line
+    # above: with unmetered runs in the day, "spent today" is a floor and not a
+    # total. No dollar estimate, because there is no honest one: a killed run
+    # never printed total_cost_usd, and a run whose output was not the JSON
+    # envelope printed none we could read.
     if unmetered:
-        lines.append("spend is a FLOOR, not a total: %d run(s) were killed "
-                     "before their cost could be read" % unmetered)
+        lines.append("spend is a FLOOR, not a total: %d run(s) had a cost nobody "
+                     "could read (killed by the watchdog, or no cost in their "
+                     "output)" % unmetered)
     lines.append("tickets closed today: %s"
                  % (closed if closed_err is None else "COULD NOT READ (%s)" % closed_err))
 
