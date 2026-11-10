@@ -187,20 +187,24 @@ def _plist_limit(name: str) -> int:
         text = (SCRIPTS / name).read_text()
     except OSError as exc:
         raise CannotLook(f"{name} could not be read ({exc})")
-    m = re.search(r"--limit\s+(\d+)", text)
+    # Inside a <string> element only, so a comment or a description that mentions
+    # --limit cannot be read as the job's cap (PR #715 review, round 1 nit).
+    m = re.search(r"<string>[^<]*--limit\s+(\d+)[^<]*</string>", text)
     if not m:
         raise CannotLook(f"{name} no longer passes --limit, so the nightly cap is unknown")
     return int(m.group(1))
 
 
 def _dor_queue() -> list:
-    """Identifiers in the order linear-dor-drafter.py would take them tonight (its own
-    fetch_draftable + prioritise, the same two calls its main() makes)."""
+    """[(mode, identifier)] in the order linear-dor-drafter.py would take them tonight
+    (its own fetch_draftable + prioritise, the same two calls its main() makes). The
+    mode is kept because a "terminal" pass uses a cap slot and writes no Definition of
+    Ready (PR #715 review, round 1 major)."""
     dd = _load("dd", "linear-dor-drafter.py", "linear_dor_drafter_for_wait")
     ls = linear_sync()
     try:
         tid = ls.graphql('query{teams(filter:{key:{eq:"%s"}}){nodes{id}}}' % dd.TEAM_KEY, {})["teams"]["nodes"][0]["id"]
-        return [i["identifier"] for _mode, i in dd.prioritise(dd.fetch_draftable(ls, tid))]
+        return [(mode, i["identifier"]) for mode, i in dd.prioritise(dd.fetch_draftable(ls, tid))]
     except Exception as exc:
         raise CannotLook(f"the DoR drafter's queue could not be read ({str(exc)[:100]})")
 
@@ -235,11 +239,16 @@ def _queue_consumer(ident: str, issue: dict, labels: set, projects: set) -> tupl
             "com.kipi.linear-dor.plist", "write its Definition of Ready"
     else:
         return None, ""
-    order = queue()
+    raw = queue()
+    # The DoR queue carries (mode, id); the triage queue carries bare ids.
+    order = [x[1] if isinstance(x, tuple) else x for x in raw]
+    modes = {x[1]: x[0] for x in raw if isinstance(x, tuple)}
     if ident not in order:
         return None, ""
     cap = _plist_limit(plist)
     behind = order.index(ident)
+    if queue is _dor_queue and modes.get(ident) not in ("draft", "redraft"):
+        return None, f"; {job.split()[0]} would only mark {ident} {modes.get(ident) or 'unknown'}, which writes no Definition of Ready"
     if behind < cap:
         return (f"{job} will {what} for {ident} tonight (position {behind + 1} of {len(order)}, "
                 f"cap {cap} a night, inside {WITHIN_HOURS}h)"), ""

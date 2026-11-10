@@ -344,21 +344,37 @@ def test_an_unreadable_lane_marker_is_not_a_consumer(wc):
 
 @pytest.mark.parametrize("ident,mode", [("ASK-7001", "draft"), ("ASK-7002", "redraft")])
 def test_a_ticket_inside_the_drafters_cap_has_a_consumer(wc, monkeypatch, ident, mode):
-    monkeypatch.setattr(wc, "_dor_queue", lambda: [ident])
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [(mode, ident)])
     ok, text = wc.consumer_for(ident)
     assert ok, text
     assert "linear-dor-drafter.py" in text and "inside 24h" in text
 
 
+def test_a_ticket_the_drafter_only_marks_terminal_is_nobody(wc, monkeypatch):
+    # PR #715 review round 1 major: a terminal pass uses a cap slot and writes no DoR.
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [("terminal", "ASK-7001")])
+    ok, text = wc.consumer_for("ASK-7001")
+    assert not ok
+    assert text.startswith("nothing picks this up:") and "terminal" in text
+
+
 def test_a_ticket_behind_the_drafters_cap_is_nobody(wc, monkeypatch):
     cap = wc._plist_limit("com.kipi.linear-dor.plist")
-    monkeypatch.setattr(wc, "_dor_queue", lambda: [f"ASK-{n}" for n in range(100, 100 + cap)] + ["ASK-7001"])
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [("draft", f"ASK-{n}") for n in range(100, 100 + cap)] + [("draft", "ASK-7001")])
     ok, text = wc.consumer_for("ASK-7001")
     assert not ok
     assert text.startswith("nothing picks this up:") and f"queued behind {cap}" in text
     # control: one place earlier and it is inside the cap
-    monkeypatch.setattr(wc, "_dor_queue", lambda: [f"ASK-{n}" for n in range(100, 100 + cap - 1)] + ["ASK-7001"])
+    monkeypatch.setattr(wc, "_dor_queue", lambda: [("draft", f"ASK-{n}") for n in range(100, 100 + cap - 1)] + [("draft", "ASK-7001")])
     assert wc.consumer_for("ASK-7001")[0]
+
+
+def test_the_cap_is_read_from_a_plist_string_never_from_prose(wc, tmp_path, monkeypatch):
+    # PR #715 review round 1 nit: a --limit in a comment must not be read as the cap.
+    p = tmp_path / "fake.plist"
+    p.write_text("<!-- old: --limit 999 -->\n<array><string>run --limit 7 --apply</string></array>\n")
+    monkeypatch.setattr(wc, "SCRIPTS", tmp_path)
+    assert wc._plist_limit("fake.plist") == 7
 
 
 def test_the_alert_spillover_case_still_refuses_when_it_is_behind_the_cap(wc, monkeypatch):
