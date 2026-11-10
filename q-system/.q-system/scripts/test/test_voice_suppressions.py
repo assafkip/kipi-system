@@ -437,3 +437,22 @@ def test_the_census_catches_a_marker_reader_that_skips_the_reader(tmp_path):
         'SKIP = "voice-lint-skip"\nTARGET = "voice_suppressions.py"\nm.check(path)\n')
     _, missing = _marker_readers_missing_the_reader(tmp_path)
     assert missing == ["comment-lint.py", "rogue-lint.py", "rogue.sh"], missing
+
+
+def test_a_draft_outside_the_instance_root_keeps_its_marker(tmp_path):
+    """ASK-4277. Instance A holds the file; the draft lives in sibling repo B. No legal
+    row can name it (.. and absolute paths are refused), so turning its marker off
+    leaves no way to suppress it. Out of root, markers behave as before K7."""
+    root = _instance(tmp_path, rows=[_row(path="drafts/some-other-draft.md")])
+    sibling = tmp_path / "repo-b"
+    r = _hook(VOICE_LINT, tmp_path, root, BLOCKING_BODY + "<!-- voice-lint-skip -->\n",
+              base=sibling)
+    assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+
+
+def test_an_out_of_root_draft_without_a_marker_still_blocks(tmp_path):
+    """The negative control: the silent exit above is the marker, not a blind lint."""
+    root = _instance(tmp_path, rows=[_row(path="drafts/some-other-draft.md")])
+    r = _hook(VOICE_LINT, tmp_path, root, BLOCKING_BODY, base=tmp_path / "repo-b")
+    assert r.returncode == 2, r.stderr
+    assert "ignored" not in r.stderr, r.stderr

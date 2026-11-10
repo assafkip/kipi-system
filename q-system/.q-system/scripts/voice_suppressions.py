@@ -241,6 +241,12 @@ def check(file_path):
         root = _instance_root_for(file_path)
         if root is None:
             return Decision()
+        # ASK-4277: a draft outside the root (sibling repo, or the temp file
+        # voice-stop-gate lints) can never be named by a legal row, because '..' and
+        # absolute paths are refused. Switching its marker off would leave it with no
+        # way to be suppressed, so out of root the lints behave as before K7.
+        if not _rel_paths(file_path, root):
+            return Decision()
         try:
             q_dir = _load_ledger().instance_root(root, allow_unregistered=True)
         except Exception as exc:
