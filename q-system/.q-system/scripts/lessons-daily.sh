@@ -243,6 +243,25 @@ lessons_half() {
     QUIET=1
   fi
 
+  # K5 (ASK-4339): every changed lesson goes through the same validator the hook runs, so a
+  # lesson that reached disk by any route other than lessons-distill.py (which pre-validates)
+  # is named in the log and the alert. REPORT, not refuse: the daily job has no safe way to
+  # drop a lesson whose ledger row already says published, and a stopped job strands the
+  # fleet fan-out (ASK-2736). The validator also prints the debt number into the log.
+  VALIDATOR="$SKEL/q-system/.q-system/scripts/lessons-validator.py"
+  LESSON_REFUSED=""
+  if [ -f "$VALIDATOR" ]; then
+    VOUT="$(python3 "$VALIDATOR" --check-changed "$LREPO" 2>>"$LOG")" && VRC=0 || VRC=$?
+    [ -n "$VOUT" ] && echo "$(TS) $VOUT" >> "$LOG"
+    if [ "$VRC" -ne 0 ]; then
+      LESSON_REFUSED="$(printf '%s\n' "$VOUT" | grep -c 'lessons-validator refused' || true)"
+      # A crash prints no "refused" line; a non-zero exit must still reach the alert.
+      [ "$LESSON_REFUSED" = "0" ] && LESSON_REFUSED=1
+    fi
+  else
+    echo "$(TS) lessons-validator.py missing: lessons not validated this run" >> "$LOG"
+  fi
+
   # Persist new lessons + ledger in the skeleton, then fan to the fleet.
   if [ -n "${KIPI_PERSIST_CMD:-}" ]; then
     bash -c "$KIPI_PERSIST_CMD" || true
@@ -461,6 +480,7 @@ PROP_TXT="$PROP"
 MSG="Fleet learning ($(date +%Y-%m-%d)): ${PUB} new lesson(s), ${PROP_TXT}"
 [ "$PUB" -gt 0 ] && [ -n "${TITLES:-}" ] && MSG="$MSG — ${TITLES}"
 [ "$HELD" -gt 0 ] && MSG="$MSG · ${HELD} held for review (possible client data, see lesson-candidates/)"
+[ -n "${LESSON_REFUSED:-}" ] && [ "${LESSON_REFUSED:-0}" != "0" ] && MSG="$MSG · lessons-validator refused changed lesson(s), see log"
 case "$PROP" in "propagate FAILED"*) MSG="$MSG · propagation FAILED, see log" ;; esac
 [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons commit FAILED (hook refusal or git error), not persisted, see log"
 [ "$PUBLISH_MODE" = pr ] && [ "${PERSIST:-}" = "FAILED" ] && MSG="$MSG · lessons left in $LREPO"

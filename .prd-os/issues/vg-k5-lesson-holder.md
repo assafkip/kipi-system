@@ -1,7 +1,7 @@
 ---
 id: vg-k5-lesson-holder
 title: Lessons carry a linked held_by or a dated prose_accepted, from every writer
-status: open
+status: in-progress
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
@@ -10,6 +10,7 @@ allowed_files:
   - q-system/.q-system/scripts/lessons-daily.sh
   - q-system/.q-system/scripts/lesson-note.sh
   - q-system/lessons/README.md
+  - q-system/.q-system/scripts/test/test-lessons-validator.sh
   - q-system/.q-system/scripts/test/test_lessons_validator_holder.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_lessons_validator_holder.py.json
 disallowed_files: []
