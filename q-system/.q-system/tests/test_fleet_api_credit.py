@@ -704,6 +704,14 @@ class TestAutoReloadMustBeConfirmedOff(Base):
                 FACTS["keys"]["1"], auto_reload_off_confirmed_at=bad)}))
             self.assertFalse(spend.billable(1), "%r confirmed auto-reload off" % (bad,))
 
+    def test_an_unconfirmed_keys_credit_does_not_hold_the_ceiling_open(self):
+        """Key 1 billable and spent, key 2 unconfirmed with its credit intact:
+        the run is refused as CREDIT GONE, not let through to fail as a pause."""
+        self._unconfirm(2)
+        spend.record(1, 100.0, actor="worker")
+        self.assertEqual(self.run_exec(), keymod.EXIT_CREDIT_GONE)
+        self.assertEqual(self.calls(), [])
+
     def test_the_confirmed_fixture_is_billable(self):
         """The positive half: the guard does not refuse a confirmed key."""
         self.assertEqual(spend.billable_slots(), (1, 2))

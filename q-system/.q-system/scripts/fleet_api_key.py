@@ -778,7 +778,11 @@ def cmd_exec(argv, actor=None):
                          % (spend.facts_path() or "(no facts file)"))
         return EXIT_NO_KEY
 
-    if spend.credit(None)["total_left_usd"] <= 0.0:
+    # BILLABLE keys only. A key whose auto-reload is unconfirmed still has a
+    # credit_left, and counting it let a spent fleet through this check to
+    # refuse later with a "paused" message that named the wrong cause.
+    if all((spend.credit_left(s, None, facts) or 0.0) <= 0.0
+           for s in spend.billable_slots(facts)):
         sys.stderr.write("fleet_api_key: every known key's cycle credit is spent; "
                          "no run. Nothing here buys credit.\n")
         spend.event_once("pause", "every known key's cycle credit is spent")
