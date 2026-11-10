@@ -264,6 +264,9 @@ while [ $# -gt 0 ]; do
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
     --repo) shift; TARGET_REPO_ARG="${1:-}" ;;
     --release-only) RELEASE_ONLY=1 ;;
+    # Print the pick list and exit, before anything with a side effect. The
+    # daily API-credit report's only source for "tickets left" (ASK-4311).
+    --ready-json) READY_JSON=1 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
@@ -1435,6 +1438,18 @@ print(json.dumps({
 }))
 PY
 )"
+
+# ONE READER OF THE PICK RULES (ASK-4311). The daily API-credit report has to
+# say how many tickets are left to be done, and the only honest answer is the
+# number ready() itself produces: a second reader of these rules in the report
+# would drift from this one and report a queue nobody is actually working. So the
+# report asks the worker, and this flag is the whole interface -- print the pick
+# list and stop, before any claim, branch, worktree or agent run. Read-only by
+# construction: everything with a side effect happens below this line.
+if [ "${READY_JSON:-0}" = "1" ]; then
+  printf '%s\n' "$PICKED"
+  exit 0
+fi
 
 INFRA="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("infra_error",""))' 2>/dev/null)"
 if [ -n "$INFRA" ]; then
