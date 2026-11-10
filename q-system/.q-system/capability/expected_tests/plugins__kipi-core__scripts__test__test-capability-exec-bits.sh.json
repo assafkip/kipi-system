@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-core/scripts/test/test-capability-exec-bits.sh",
+ "runner": "bash"
+}

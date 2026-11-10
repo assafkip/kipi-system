@@ -8,9 +8,19 @@
 # Usage:  kipi-approve <64-hex-hash>
 set -uo pipefail
 
+#
+# This file ships executable (git mode 100755). The marketplace copy is a git
+# clone, so the exec bit must live in the index; it was 100644 from 2026-06-19
+# to 2026-11-09 and this command answered "permission denied" the whole time
+# (ASK-257). test/test-capability-exec-bits.sh asserts the index mode.
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Canonical: the sibling in this plugin directory. $HOME/.claude/bin is the
+# installed copy written by install-capability-token.sh, kept as an explicit
+# FALLBACK for a shell that runs this from outside the plugin tree. Not a
+# second source of truth -- see capability-token.sh's CANONICAL HOME note.
 LIB="$HERE/capability-token.sh"
-[ -x "$LIB" ] || LIB="$HOME/.claude/bin/capability-token.sh"
+[ -x "$LIB" ] || LIB="$HOME/.claude/bin/capability-token.sh"   # fallback, not canonical
 
 if [ ! -x "$LIB" ]; then
   echo "kipi-approve: capability-token.sh not found (run install-capability-token.sh)" >&2
