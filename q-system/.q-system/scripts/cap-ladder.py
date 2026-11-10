@@ -580,6 +580,24 @@ def live(issue: str, pr: dict | None) -> bool:
     return any(re.search(p, table, re.M) for p in pats)
 
 
+def lane_hold(issue: str) -> str:
+    """Why an interactive lane holds this issue now, or "" (ASK-4395).
+
+    2026-11-10 12:40Z: ASK-4311 was queued for rung 1, which closes the PR on
+    sana/<id>, opens a successor and requeues the ticket, while lane A
+    (sana-ask4311, a live lane-mark.py marker) was merging that PR (#717) with
+    --match-head-commit. The worker, the WIP release and ci-redrive read the
+    marker; the ladder did not. linear-sync.py lane_marker is THE reader of the
+    marker format, so it is reused here, not copied. FAIL CLOSED like ci-redrive's
+    lane_live: a reader that cannot run holds the issue, because a skipped night
+    is recoverable and a second writer on a lane's PR is not.
+    """
+    try:
+        return _sync().lane_marker(issue, now=now())
+    except Exception as exc:  # noqa: BLE001 - see FAIL CLOSED above
+        return f"the lane rule could not run ({str(exc)[:80]}), so the issue is treated as held"
+
+
 def ledger(op: list) -> bool:
     rc, out = run(LEDGER + [str(ATTEMPTS)] + op)
     if rc not in (0, 1):
@@ -1066,6 +1084,13 @@ def main(argv=None) -> int:
                     "the router tickets (ASK-3959, ASK-3958) own that, the ladder waits")
                 report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": "routing (ASK-3959, ASK-3958)"})
                 continue
+            # A LIVE LANE IS NOT CLIMBED (ASK-4395), and it is checked before the
+            # limit, so it spends no rung and no slot. See lane_hold.
+            held_by = lane_hold(issue)
+            if held_by:
+                say(f"{issue}: {held_by}; the rung is not spent, the ladder looks again at its next run")
+                report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": held_by})
+                continue
             if live(issue, pr):
                 say(f"{issue}: a run is live on it; the ladder looks again tomorrow")
                 continue
@@ -1104,6 +1129,13 @@ def main(argv=None) -> int:
             red = bt is not None and not owned_open(bt)
             ev = event_for(issue, row, t, slug)
             if ev:
+                # release() opens a PR and requeues: a live lane waits it out (ASK-4395).
+                held_by = lane_hold(issue)
+                if held_by:
+                    say(f"{issue}: {ev}, but {held_by}; it re-enters at the first run after the lane ends")
+                    report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
+                                   "waiting_on": held_by})
+                    continue
                 say(release(issue, row, t, slug, ev, args.apply))
                 continue
             wait = (f"held on {d.get('target')}: waiting for it to close, a touched file to change on main, "

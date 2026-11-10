@@ -897,11 +897,116 @@ def case_owns() -> None:
           got)
 
 
+def lane(env: dict, issue: str, until: str, agent: str = "sana-lane1") -> None:
+    """A lane-mark.py marker, in the shape lane-mark.py start writes."""
+    d = Path(env["KIPI_LANES_DIR"])
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{issue}.json").write_text(json.dumps(
+        {"issue": issue, "agent": agent, "since": "2026-11-08T20:00:00Z", "pr": "10", "until": until}, indent=1))
+
+
+def lane_world(td: str) -> dict:
+    env = make_world(Path(td))
+    env["KIPI_LANES_DIR"] = str(Path(td) / "lanes")
+    led(env, "record-capout", "ASK-1", "hit the 3-round cap on PR #10")
+    return env
+
+
+def expired_lane_climbs(script: Path) -> bool:
+    """An EXPIRED marker on a capped issue: rung 1 runs exactly as with no marker."""
+    with tempfile.TemporaryDirectory() as td:
+        if script != LADDER:
+            shutil.copy(LEDGER, script.parent / "attempts-ledger.py")
+            shutil.copy(SCRIPTS / "linear-sync.py", script.parent / "linear-sync.py")
+        env = lane_world(td)
+        lane(env, "ASK-1", "2026-11-09T04:00:00Z")          # 40 minutes before CAP_LADDER_NOW
+        out = ladder(env, "--apply", script=script)
+        gh, st = log(env, "gh"), json.loads(Path(env["CAP_LADDER_STATE"]).read_text())
+        return (any(c[:3] == ["pr", "close", "10"] for c in gh)
+                and any(c[:2] == ["pr", "create"] and "sana/ask-1" in c for c in gh)
+                and any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync"))
+                and not ledger_row(env, "ASK-1").get("capout")
+                and (st.get("ASK-1") or {}).get("rung") == 1 and "lane marker" not in out)
+
+
+def case_lane_marker() -> None:
+    # ASK-4395. 2026-11-10 12:40Z: ASK-4311 was capped and queued for rung 1, which
+    # closes the PR on sana/<id>, opens a successor and requeues the ticket. Lane A
+    # (sana-ask4311) held a live marker and was merging that PR (#717) with
+    # --match-head-commit, so rung 1 would have broken the merge and stranded its
+    # review history on a closed PR. The worker, the WIP release and ci-redrive read
+    # the marker; the ladder did not.
+    with tempfile.TemporaryDirectory() as td:
+        env = lane_world(td)
+        lane(env, "ASK-1", "2026-11-10T04:40:00Z")          # live: a day past CAP_LADDER_NOW
+        for _ in range(3):
+            led(env, "bump-attempt", "ASK-2", "no PR opened")
+        dry = ladder(env, "--limit", "1")
+        check("lane, dry: a live marker shows as the lane line, not as a planned rung",
+              "sana-lane1" in dry and "[dry] ASK-1: would take rung" not in dry, dry)
+        out = ladder(env, "--apply", "--limit", "1")
+        gh, sync = log(env, "gh"), log(env, "sync")
+        st = json.loads(Path(env["CAP_LADDER_STATE"]).read_text())
+        w = json.loads((Path(td) / "gh-world.json").read_text())
+        check("lane, live marker: the lane's PR is not closed and no successor opens",
+              not any(c[:2] == ["pr", "close"] for c in gh)
+              and not any(c[:2] == ["pr", "create"] and "sana/ask-1" in c for c in gh)
+              and any(p["number"] == 10 and p["state"] == "OPEN" for p in w["o/r"]), gh)
+        check("lane, live marker: no requeue, no comment, no RCA, the cap record is kept",
+              not any("ASK-1" in c for c in sync) and not any("ASK-1" in c for c in log(env, "fable"))
+              and ledger_row(env, "ASK-1").get("capout") is True, (sync, ledger_row(env, "ASK-1")))
+        check("lane, live marker: the rung is not spent",
+              (st.get("ASK-1") or {}).get("rung", 0) == 0 and not (st.get("ASK-1") or {}).get("handled"), st)
+        lines = [l for l in out.splitlines() if "ASK-1" in l and "sana-lane1" in l]
+        check("lane, live marker: exactly one log line, naming the lane agent and the marker's until",
+              len(lines) == 1 and "2026-11-10T04:40:00Z" in lines[0], out)
+        check("lane, live marker: a skipped issue does not use the run's limit (ASK-2 climbs at --limit 1)",
+              any(c[:2] == ["requeue", "ASK-2"] for c in sync), out)
+
+    check("lane, expired marker: rung 1 closes, reopens, clears, requeues and is spent, as with no marker",
+          expired_lane_climbs(LADDER))
+    # NEGATIVE SELF-TEST: a ladder that skips on the marker FILE, ignoring its
+    # until, must turn the expired case red, or the case above proves nothing.
+    with tempfile.TemporaryDirectory() as td:
+        mut = Path(td) / "cap-ladder.py"
+        src = LADDER.read_text()
+        anchor = "return _sync().lane_marker(issue, now=now())"
+        mut.write_text(src.replace(anchor, 'return "lane marker file" if (Path(os.environ["KIPI_LANES_DIR"]) '
+                                           '/ (issue + ".json")).exists() else ""', 1))
+        check("lane mutant: the file-exists copy really differs from the ladder", anchor in src and mut.read_text() != src)
+        check("lane mutant: a ladder that ignores the marker's until turns the expired case red",
+              expired_lane_climbs(mut) is False)
+
+    # A held ticket's re-entry opens a PR and requeues too: same rule.
+    td, env = decision_world([RCA + "DECISION: BLOCKED-ON ASK-50\n"])
+    try:
+        env["KIPI_LANES_DIR"] = str(Path(td.name) / "lanes")
+        ladder(env, "--apply")
+        reset(env)
+        at(env, 4)
+        edit_ticket(env, "ASK-50", state_type="completed")
+        lane(env, "ASK-1", "2026-11-14T04:40:00Z")          # live through day 4, expired by day 6
+        out = ladder(env, "--apply")
+        check("lane, held ticket: its event does not re-enter it while a lane holds it",
+              not any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync"))
+              and not any(c[:2] == ["pr", "create"] for c in log(env, "gh"))
+              and ledger_row(env, "ASK-1").get("ladder_hold") is True and "sana-lane1" in out, out)
+        at(env, 6)
+        out = ladder(env, "--apply")
+        check("lane, held ticket: once the marker expires the same event re-enters it",
+              any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync")) and "re-entered" in out, out)
+    finally:
+        td.cleanup()
+
+
 def held_stays_quiet(script: Path) -> bool:
     """A BLOCKED-ON ticket with nothing changed, 7 days later: quiet or not."""
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON ASK-50\n"])
     try:
-        shutil.copy(LEDGER, script.parent / "attempts-ledger.py") if script != LADDER else None
+        if script != LADDER:
+            # The ladder loads linear-sync.py from its own dir for the lane rule (ASK-4395).
+            shutil.copy(LEDGER, script.parent / "attempts-ledger.py")
+            shutil.copy(SCRIPTS / "linear-sync.py", script.parent / "linear-sync.py")
         ladder(env, "--apply", script=script)
         reset(env)
         at(env, 10)
@@ -918,6 +1023,7 @@ def case_mutant() -> None:
         mut.write_text(src.replace('(["clear-capout", issue], ', '(', 1))
         check("mutant: the copy really differs from the ladder", mut.read_text() != src)
         shutil.copy(LEDGER, Path(td) / "attempts-ledger.py")
+        shutil.copy(SCRIPTS / "linear-sync.py", Path(td) / "linear-sync.py")   # the lane rule, ASK-4395
         check("mutant: a ladder that skips clear-capout turns rung 1 red", case_rungs(script=mut) is False)
     with tempfile.TemporaryDirectory() as td:
         mut = Path(td) / "cap-ladder.py"
@@ -951,7 +1057,7 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant] + cases
+                 case_mutant, case_lane_marker] + cases
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))
