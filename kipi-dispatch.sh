@@ -1064,7 +1064,7 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
   case "$KEY_RC:$KEY_LINE" in
     "4:no key"*)
       say "API KEYS: $KEY_LINE -- nothing can run until that is fixed"
-      api_gate_page api-keys-missing "kipi dispatch: the fleet has no usable API key ($KEY_LINE), so no run starts. Every run would exit 4 with no spend row. Do: what the line names. A missing Keychain item: add service kipi-fleet-api-key-<slot>. An unknown credit: set monthly_credit_usd and cycle_anchor_day in ~/.config/kipi/fleet-api.json. The next tick starts on its own."
+      api_gate_page api-keys-missing "kipi dispatch: the fleet has no usable API key ($KEY_LINE), so no run starts. Every run would exit 4 with no spend row. Do: what the line names. A missing Keychain item: add service kipi-fleet-api-key-<slot>. An unknown credit or cycle: set monthly_credit_usd and current_cycle_expires_utc in ~/.config/kipi/fleet-api.json. Auto-reload not confirmed off: auto_reload_off_confirmed_at, set only once it is. The next tick starts on its own."
       exit 0 ;;
     "4:paused")
       say "API KEYS: every known key's credit read as exhausted; paused until the next budget day re-probes"

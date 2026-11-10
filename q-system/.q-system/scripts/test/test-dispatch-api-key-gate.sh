@@ -341,6 +341,19 @@ else
       "$(cat "$WORK/nofacts-pages/dispatch.log" 2>/dev/null)"
 fi
 
+# --- 11b: the page names the fields the code reads (PR #717 round 4, minor 1)
+# The missing-key page told the reader to set cycle_anchor_day, a field nothing
+# reads since the cycle end moved to current_cycle_expires_utc. Followed
+# verbatim, it left probe red and the fleet stopped.
+if grep -q "current_cycle_expires_utc" "$WORK/pages.txt" 2>/dev/null \
+   && grep -q "auto_reload_off_confirmed_at" "$WORK/pages.txt" 2>/dev/null \
+   && ! grep -q "cycle_anchor_day" "$GATE"; then
+  ok "case 11b: the missing-key page names the fields the helper reads"
+else
+  bad "case 11b: the missing-key page names a field no code reads" \
+      "$(grep -o 'Do: what the line names[^"]*' "$GATE" | head -1)"
+fi
+
 # --- 12: an unknown key 2 does not stop a fleet that has key 1 ---------------
 write_facts "$WORK/k2null.json" null yes
 ( unset KIPI_FLEET_FAKE_KEY_2
