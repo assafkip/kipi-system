@@ -88,8 +88,8 @@ Verification of the fix (validate green, a delta round's verdict) is recorded on
 
 ## Action items
 
-- [ ] The worker's review call passes `--delta` after round 1 (`linear-worker.sh:4177`) — owner: Sana via the fleet worker (`owner:sana` ticket) — type: code
-- [ ] A run killed by the 1800s watchdog after it pushed is not charged as a failed attempt — owner: Sana via the fleet worker (`owner:sana` ticket) — type: code
+- [ ] The worker's review call passes `--delta` after round 1 (`linear-worker.sh:4177`) — owner: Sana via the fleet worker, ASK-3904 (filed 2026-11-07, `needs-triage` removed and raised to High in this lane) — type: code
+- [ ] A run killed by the 1800s watchdog after it pushed is not charged as a failed attempt — owner: Sana via the fleet worker, ASK-4379 — type: code
 - [ ] This lane runs every suite that drives `kipi-dispatch.sh`, `linear-worker.sh` or `pr-review-agent.sh` before each push, and reads CI before asking for a review — owner: Sana lane `sana-ask4311` — type: process
 - [ ] Per-key credit and cycle facts are read from `~/.config/kipi/fleet-api.json`; no amount is hard-coded — owner: Sana lane `sana-ask4311` — type: code
 
