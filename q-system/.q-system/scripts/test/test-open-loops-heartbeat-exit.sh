@@ -22,6 +22,19 @@ AUDIT="$SCRIPTS/run-step-audit.py"
 PASS=0
 FAIL=0
 
+# THE KEY DOOR'S STAND-IN (ASK-4311). The sweep now runs each agent through
+# fleet-claude.sh, beside the script. The real one would ask the real Keychain
+# from inside a test, so every fixture gets this instead: it records each use
+# (who the run was billed as), then runs the shimmed `claude` on PATH.
+door_stub() {  # door_stub <skel> <tmp>
+  cat > "$1/q-system/.q-system/scripts/fleet-claude.sh" <<EOF
+#!/bin/bash
+echo "\${KIPI_AGENT:-unknown}" >> "$2/door-calls"
+exec claude "\$@"
+EOF
+  chmod +x "$1/q-system/.q-system/scripts/fleet-claude.sh"
+}
+
 # build_fixture <claude-exit-code> -> echoes the temp root
 build_fixture() {
   local claude_rc="$1"
@@ -49,6 +62,7 @@ build_fixture() {
 
   printf '#!/bin/bash\nexit %s\n' "$claude_rc" > "$tmp/bin/claude"
   chmod +x "$tmp/bin/claude"
+  door_stub "$skel" "$tmp"
 
   printf '%s' "$tmp"
 }
@@ -83,6 +97,20 @@ echo "test-open-loops-heartbeat-exit"
 run_case "failed agent run exits non-zero" 7 nonzero
 # The guard against a fix that just always fails: a clean sweep stays exit 0.
 run_case "clean sweep exits zero" 0 zero
+
+# --- ASK-4311: every agent run goes through the fleet key door ---------------
+TMPD="$(build_fixture 0)"
+PATH="$TMPD/bin:$PATH" KIPI_REPO="$TMPD/skel" \
+  bash "$TMPD/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+DOOR_CALLS="$(sort -u "$TMPD/door-calls" 2>/dev/null | tr '\n' ' ')"
+if [ "$DOOR_CALLS" = "openloops-heartbeat " ]; then
+  echo "PASS  the agent run goes through the fleet key door, billed as openloops-heartbeat"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  the agent run did not go through the key door (door calls: ${DOOR_CALLS:-none})"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMPD"
 
 # --- ASK-869: one machine-wide condition is ONE alert, not one per instance ---
 # Measured 2026-08-15: the account hit its weekly limit, every `claude -p` in the
@@ -126,13 +154,15 @@ build_env_fixture() {
   # double quotes, so the apostrophe in "You've" there is an unterminated string.
   local limit_default="You've hit your weekly limit · resets Aug 18 at 2pm (America/Los_Angeles)"
   printf '%s\n' "${HB_LIMIT_LINE:-$limit_default}" > "$tmp/limit-line"
+  printf '%s' "${HB_CLAUDE_RC:-1}" > "$tmp/rc"
   cat > "$tmp/bin/claude" <<EOF
 #!/bin/bash
 echo "\$PWD" >> "$tmp/claude-calls"
 cat "$tmp/limit-line"
-exit 1
+exit "\$(cat "$tmp/rc")"
 EOF
   chmod +x "$tmp/bin/claude"
+  door_stub "$skel" "$tmp"
   printf '%s' "$tmp"
 }
 
@@ -178,6 +208,25 @@ else
   echo "FAIL  a real 529 did not halt as one outage: notifies=${N529_NOTIFY:-0} calls=${N529_CALLS:-0}, want 1 and 1"
   FAIL=$((FAIL + 1))
 fi
+
+# A REFUSED KEY DOOR (ASK-4311: no key, paused, credit spent) is one machine-wide
+# fact: the sweep halts with ONE alert, exits 0, and never falls back to the plan.
+# Without door_refused() the refusal line matches no env-lib marker, so it filed
+# one failure per instance and woke every agent (calls=3).
+TMPR="$(HB_CLAUDE_RC=4 HB_LIMIT_LINE="fleet_api_key: no key for slot 1; refusing to fall back to the plan login" build_env_fixture)"
+PATH="$TMPR/bin:$PATH" KIPI_REPO="$TMPR/skel" \
+  bash "$TMPR/skel/q-system/.q-system/scripts/open-loops-heartbeat.sh" >/dev/null 2>&1
+R_RC=$?
+R_NOTIFY="$(wc -l < "$TMPR/notifies" 2>/dev/null | tr -d ' ')"
+R_CALLS="$(wc -l < "$TMPR/claude-calls" 2>/dev/null | tr -d ' ')"
+if [ "${R_NOTIFY:-0}" = "1" ] && [ "${R_CALLS:-0}" = "1" ] && [ "$R_RC" -eq 0 ]; then
+  echo "PASS  a refused key door halts the sweep with ONE alert (notifies=$R_NOTIFY calls=$R_CALLS exit=$R_RC)"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL  a refused key door was not one halt: notifies=${R_NOTIFY:-0} calls=${R_CALLS:-0} exit=$R_RC, want 1, 1, 0"
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$TMPR"
 
 # ONLY THE MARKER LEAVES THE MAC (ASK-3981, guarded by ASK-3989). A run killed at
 # its timeout exits non-zero with whatever the agent printed, so the tail of a
@@ -378,6 +427,7 @@ leak_case() {  # leak_case <script-path> <case-name> <expect: clean|leaks>
   # against the unfixed script.
   printf '#!/bin/bash\necho "%s"\nexit 0\n' "$marker" > "$tmp/bin/claude"
   chmod +x "$tmp/bin/claude"
+  door_stub "$skel" "$tmp"
 
   systmp="$(dirname "$(mktemp -u)")"
   ls -A "$systmp" 2>/dev/null | sort > "$tmp/before.txt"
