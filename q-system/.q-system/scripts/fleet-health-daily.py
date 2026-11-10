@@ -56,6 +56,7 @@ goes to stdout and the ledger.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -63,6 +64,7 @@ import re
 import shlex
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -1046,6 +1048,228 @@ def detect_open_spillover(_ctx) -> list:
               "`--resolution-commit <merged-sha>`, `--resolution-proof '<cmd with {tree}>' "
               "--broken-at <sha>`, or `--void \"<reason>\"`. Hand-clearing the gate "
               "is not possible."
+        ),
+    }]
+
+
+# How many shas one issue description carries. The rest are named by reference
+# to the sweep ledger, which holds every one of them.
+MAX_SHAS_IN_BODY = 200
+
+# THERE IS NO LOCAL RECORD OF WHAT LINEAR HAS BEEN TOLD, AND THAT IS THE DESIGN.
+#
+# Seven review rounds tried to keep one. The shape was always: the sweep finds a
+# sha, something local remembers "this one is handled", and the next run subtracts
+# what it remembers from what it found. Every round moved that memory (owed-set,
+# then reported-set), hardened its write (atomic, locked, post-filing only), and
+# narrowed which shas a filing was allowed to spend. Every round left a way for
+# the memory and the board to disagree, and each time the memory won and a real
+# bypass went silent.
+#
+# Round 8 found the two that outlived all of it, and both were the same shape.
+# `_refresh_one` REPLACES the managed region of the description, so a body built
+# by subtraction is a DELTA, and a delta overwrites the delta before it: batch
+# two of a 30-sha sweep deleted batch one from the issue while the record marked
+# all 30 reported, and an older overlapping run landing last subtracted the newer
+# run's sha the same way. Local bookkeeping correct, permanent artifact wrong.
+#
+# The subtraction was the defect, not any particular way of storing it. So the
+# body is now the WHOLE unaccounted set, straight out of git history. Every write
+# is the entire truth, which makes a late write, a duplicate write, and a
+# replayed write all harmless — there is nothing for them to subtract. A crash
+# anywhere costs a cycle, because nothing durable was riding on the run.
+#
+# What stops a daily ping is `_refresh_one`'s body-hash compare: an unchanged
+# body sends no mutation and lands in `existing`, which `should_notify` does not
+# count. That check is generic, already tested, and shared with all eight
+# detectors — one mechanism instead of a private one that could drift from it.
+
+
+def detect_unaccounted_commits(_ctx) -> list:
+    """Commits that reached origin with no Linear id and no [no-issue:] tag (ASK-284).
+
+    `git commit --no-verify` skips lefthook, so the commit-msg gate never runs and
+    the bypass ledger never learns. The ledger then reports a number LOWER than the
+    truth and reads as clean. `linear-bypass-sweep.py` is the verify path that reads
+    git directly; what it newly recorded is the finding.
+
+    The sweep writes its ledger row on a dry run too, deliberately. The dry-run
+    contract in this file is about not mutating the external Linear board; the
+    bypass ledger is a local, append-only, sha-deduped count, and making a count
+    true is never the wrong move. Gating it on `--apply` would mean a dry run
+    reports a number it is then unwilling to correct.
+
+    A finding carries the unaccounted shas Linear has NOT already been told about.
+    That keeps the detect-act-learn constraint (ASK-283: one summary line per new
+    occurrence, never one per cycle) while anchoring "new" to the board rather
+    than to the ledger's dedup. The ledger's job is the COUNT and it is written by
+    a child process; keying the alert on what that child happened to write this
+    run is what made a crash between the two processes a permanent silence.
+
+    The finding carries SHAS, never commit subjects. A Linear issue is permanent
+    and a commit message is operator-authored text (ASK-204): publish the
+    reference, not the input.
+    """
+    sweeper = HERE / "linear-bypass-sweep.py"
+    if not sweeper.is_file():
+        raise RuntimeError(f"the sweeper is missing at {sweeper}")
+    cmd = ["python3", str(sweeper), "--json"]
+    # Pin the swept ref to the REPO's default branch, never to whatever branch
+    # the running checkout happens to track. The finding below is one PERMANENT
+    # issue for the whole repo and its body is compared byte-for-byte, so a run
+    # from a feature worktree would rewrite that issue with a different range --
+    # and reopen it if the operator had triaged and closed it, because reopen is
+    # wired to body_stale. Same defect as the two ref SPELLINGS fixed in
+    # `short_ref`, reached by a different route (PR #720 round 12).
+    #
+    # Empty means origin/HEAD does not resolve (a --single-branch clone), and
+    # then the flag is OMITTED rather than guessed: the sweeper's own fallback
+    # chain still tries `@{u}` first, which is what shipped before this pin. A
+    # hardcoded `origin/main` would blind the detector on a repo whose default
+    # branch is named anything else.
+    pinned = _git(REPO_ROOT, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if pinned.returncode == 0 and pinned.stdout.strip():
+        cmd += ["--rev", pinned.stdout.strip()]
+    # Through `_git_env()`, like every other git read in this file. The sweeper
+    # is a git reader too, it just reaches git one process further down, and an
+    # inherited GIT_DIR beats both its `cwd` and the `--rev` pinned above.
+    #
+    # Measured 2026-11-10, with GIT_DIR pointing at a sibling checkout of this
+    # same project: the sweep answered `rev origin/sana/ask-284, scanned 884`
+    # instead of `origin/main, scanned 866`, and still reported a clean status.
+    # The detector publishes those shas into a PERMANENT Linear issue, so a
+    # hook-driven caller's environment would have put another checkout's history
+    # on the board under this repo's name. Two readers of one input disagreeing
+    # about which repo they read is the defect, even where each is defensible
+    # (PR #720 round 13).
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
+                             cwd=REPO_ROOT, env=_git_env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc
+    if res.returncode != 0:
+        # Carry the sweeper's own stderr through. Its non-zero exits are mostly
+        # REFUSALS whose fix is a flag (an underivable activation floor wants
+        # --all-history or --since), and "the sweeper exited 1" names the symptom
+        # while dropping the instruction — a 3am Slack line saying something is
+        # blind without saying what would unblind it.
+        detail = (res.stderr or "").strip().splitlines()
+        why = f": {detail[-1]}" if detail else ""
+        raise RuntimeError(f"the sweeper exited {res.returncode}{why}")
+    try:
+        result = json.loads(res.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("the sweeper produced no parseable JSON") from exc
+    if result.get("status") not in ("ok", "dry"):
+        raise RuntimeError(f"the sweeper reported status {result.get('status')!r}")
+    # The blindness checks come first again, and can, because a raise here now
+    # costs nothing. Earlier rounds had to run the bookkeeping before them: the
+    # sweeper's ledger rows were already written, so any raise in between spent
+    # shas the ledger would suppress forever. Nothing is spent before a filing
+    # any more, so an aborted run is purely an aborted run.
+    if result.get("fetched") == "failed":
+        # A remote-tracking ref is a local cache. If the fetch failed, the range
+        # just scanned may be missing commits pushed from anywhere else, and
+        # "nothing unaccounted" over a stale ref is an unknown, not a zero.
+        raise RuntimeError("the sweeper could not fetch; the swept ref may be stale")
+    if result.get("truncated"):
+        # The scan hit its commit cap with history still in range, so every
+        # number it returned is about the WINDOW. "Nothing unaccounted in the
+        # newest N" is not "nothing unaccounted", and the difference is exactly
+        # the false zero this detector exists to stop.
+        raise RuntimeError(
+            "the sweeper's scan window was truncated; commits in range went unread")
+    findings = []
+    if result.get("locked") is False:
+        # The ledger's read-then-append is ONE critical section; the flock IS its
+        # single writer. `locked: false` means that lock could not be TAKEN at
+        # all (the sidecar would not open — a read-only dir), so two sweeps can
+        # both read a sha as absent and both append it. The one file whose whole
+        # job is a true count then over-counts, invisibly (PR #66 round 11).
+        #
+        # Deliberately NOT a RuntimeError. The history finding below is derived
+        # from git alone and is still exactly true, so going blind here would
+        # discard a correct finding in order to report a broken count. The
+        # hazard is the ledger write, not the read, so the guard rides on its
+        # own finding and the reader keeps working.
+        #
+        # `is False` and not `not ...`: the real sweep always emits the key, and
+        # reading an ABSENT one as a lost lock would make every caller that omits
+        # it report a defect it never claimed.
+        findings.append({
+            "subject": "linear-bypass-unserialized",
+            # Terminal action is an environment fix (make the lock dir writable),
+            # which turns the finding off by itself, so the generic
+            # reopen-while-true rule is correct here and no acknowledgement flag
+            # is declared.
+            "title": "The bypass ledger was appended without its single writer",
+            "body": (
+                "`linear-bypass-sweep.py` reported `locked: false`: it could not take "
+                "the exclusive lock on its ledger sidecar, so the read-then-append that "
+                "dedups `q-system/output/linear-bypass.jsonl` ran unserialized.\n\n"
+                "Two overlapping sweeps can both read a sha as absent and both append it, "
+                "so the count this ledger exists to keep true can be too HIGH. The sweep "
+                "still runs and its finding about git history is unaffected; only the "
+                "count is at risk.\n\n"
+                "## Action\nThe lock is a sidecar next to the ledger "
+                "(`linear-bypass.jsonl.lock`). It fails to open when its directory is not "
+                "writable by the running user. Fix the directory permissions, then "
+                "`python3 q-system/.q-system/scripts/linear-bypass-sweep.py --dry --json` "
+                "and confirm `locked: true`.\n\n"
+                "Duplicate rows already written are safe to leave: the ledger is "
+                "append-only and deduped on read, so a repeat row inflates the row count "
+                "and not the set of shas."
+            ),
+        })
+    # EVERY unaccounted sha in range, oldest first, and nothing subtracted.
+    # Purely a fact about git history: the same commits produce the same list on
+    # every run, on any machine, with no local record consulted.
+    unaccounted = [sha for sha in (result.get("unaccounted_commits") or [])
+                   if isinstance(sha, str) and sha]
+    if not unaccounted:
+        return findings
+
+    # The cap bounds one issue description, and the ledger below carries the rest.
+    # 200 rather than a tight number because dropping a sha off this list is the
+    # expensive direction and a sha line is ~14 bytes.
+    shown = unaccounted[:MAX_SHAS_IN_BODY]
+    more = len(unaccounted) - len(shown)
+    return findings + [{
+        # Stable subject: ONE standing issue for this class. The shas live in the
+        # body, which is updatable; putting them in the dedup key would fork a
+        # permanent issue per bypass.
+        "subject": "linear-bypass-unaccounted",
+        # Provenance triage is the terminal action and it leaves git history
+        # untouched, so this finding stays true forever and the generic
+        # reopen-while-true rule would reopen this issue every morning with an
+        # unchanged body. Closing it is how the operator records the triage; a
+        # new sha moves the body and brings it back. See `_refresh_one`.
+        "close_is_acknowledgement": True,
+        "title": "Commits reached origin outside the Linear gate and outside its ledger",
+        "body": (
+            f"**{len(unaccounted)} commit(s)** found by `linear-bypass-sweep.py` on "
+            f"`{result.get('rev')}`: they reached origin "
+            "with neither an issue id nor a "
+            "`[no-issue:]` tag, which means the commit-msg gate did not run for them "
+            "(`--no-verify`, or a repo without lefthook installed).\n\n"
+            + "\n".join(f"- `{sha[:9]}`" for sha in shown)
+            + (f"\n- ...and {more} more, in `q-system/output/linear-bypass.jsonl`"
+               if more else "")
+            # Deliberately NOT the count of commits scanned. `_refresh_one`
+            # rewrites the issue whenever this body's hash moves, so a number
+            # that grows on its own — and the scan window grows with every
+            # ordinary commit — would mutate the issue and earn a Slack line
+            # every single cycle, which is the one-ping-per-occurrence rule
+            # (ASK-283) broken from the inside.
+            + "\n\n## Action\nThe accounting is already done — the sweep wrote these rows to "
+              "`q-system/output/linear-bypass.jsonl`, so the count is true again. What is "
+              "left is provenance: for each sha, `git show --no-patch <sha>` and decide "
+              "whether it belongs to an existing issue.\n\n"
+              "Rewriting the commits is NOT the action. That needs a force-push, which is "
+              "a destructive op and the founder's call.\n\n"
+              "Prevention lives in the commit-msg gate, which works. Reach for "
+              "`--no-verify` only when a hook has actually fired and blocked you, and "
+              "never pre-emptively."
         ),
     }]
 
@@ -2526,6 +2750,16 @@ DETECTORS = [
         "action": "file_issue",
         "lesson": "an-output-nobody-reads-is-the-same-as-no-output",
     },
+    {
+        "id": "linear-bypass-unaccounted",
+        "description": "a commit reached origin with no issue ref and no [no-issue:] tag",
+        "detect": detect_unaccounted_commits,
+        # file_issue, not "both": `fix()` is validated by validate_detectors and
+        # then never invoked by run_detectors, so declaring auto_fix would wire a
+        # dead engine. The ledger row is written by the sweep inside detect().
+        "action": "file_issue",
+        "lesson": "split-the-act-path-from-the-verify-path",
+    },
 ]
 
 
@@ -2848,6 +3082,19 @@ def _refresh_one(ls, finding: dict, apply: bool, tracked: dict, team_id: str,
     # not the text moved. An OPEN issue's state is never touched, so an issue the
     # operator moved to In Progress is not dragged back to Todo daily.
     closed = tracked.get("state_type") in CLOSED_STATE_TYPES
+    if closed and not body_stale and finding.get("close_is_acknowledgement"):
+        # This finding's truth is a permanent historical fact, so the rule above
+        # never terminates for it. Reopen-while-true assumes the finding names a
+        # LIVE state that its fix turns off; a finding about immutable commit
+        # messages can never go false, and the action it asks for (provenance
+        # triage, never a history rewrite) does not try to. The operator closes
+        # it and the next unattended run reopens the same issue with an
+        # identical body, every day, with no state they can reach that ends it.
+        #
+        # For this class, closing IS the acknowledgement. Reopening stays wired
+        # to `body_stale`, which is exactly the new-occurrence signal: a new
+        # bypass adds a sha, the body moves, and the issue comes back.
+        closed = False
     if not body_stale and not closed:
         return "existing"
     if not apply:
