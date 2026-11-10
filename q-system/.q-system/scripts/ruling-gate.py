@@ -88,9 +88,11 @@ MAX_DEPTH = 8
 MIN_REASON = 20
 RULING_RX = re.compile(r"^\s*RULING:\s*(R-\d{2,})(?![0-9A-Za-z-])")
 COMP_RX = re.compile(r"^\s*(ENFORCED-BY|UNENFORCED):\s*(R-\d{2,})\s*\|\s*(.*?)\s*$")
-# Case-insensitive on purpose: "Enforced-By: R-05 ..." must read as malformed,
-# never as a line the gate silently skipped.
-LOOSE_RX = re.compile(r"^\s*(RULING|ENFORCED-BY|UNENFORCED)\s*:", re.I)
+# What reads as an ATTEMPT at a ruling line, so a near miss is refused instead of
+# silently skipped. RULING: is case-sensitive, as the instance reader is (a prose
+# line "Ruling: ..." is not a ruling to it). The companions are matched loosely
+# ("Enforced by: R-05 x.py") because that is the rule-file spelling people reach for.
+LOOSE_RX = re.compile(r"^\s*(?:RULING\s*:|(?i:enforced[- ]by|unenforced)\s*:\s*R-\d)")
 HOWTO = ("Under the ruling add 'ENFORCED-BY: R-NN | <code path>' naming wired code (a git-tracked "
          "test, a settings.json hook, or a LaunchAgent plist) that contains '<case dir>:R-NN', or "
          "'UNENFORCED: R-NN | <reason>' when it cannot be code today; that one is listed and alerted "
@@ -305,7 +307,11 @@ def scope_files(roots):
                 continue
             seen.add(rd)
             depth = d.rstrip(os.sep).count(os.sep) - base_depth
-            dirs[:] = [x for x in dirs if x not in PRUNE and depth < MAX_DEPTH]
+            # A folder holding its own .git is a SEPARATE repo (in the fleet, another
+            # registered instance): never descend. The consulting root holds about ten,
+            # and this walk runs on every Bash call.
+            dirs[:] = [x for x in dirs if x not in PRUNE and depth < MAX_DEPTH
+                       and not os.path.exists(os.path.join(d, x, ".git"))]
             if os.path.basename(d) == "canonical" and "scope.md" in files:
                 f = os.path.join(d, "scope.md")
                 found.setdefault(os.path.realpath(f), f)
@@ -367,6 +373,14 @@ def pre_tool(data):
                        "bad": bad}
         p = snap_path(data)
         os.makedirs(os.path.dirname(p), exist_ok=True)
+        # A Bash call another hook denies never reaches PostToolUse, so its snapshot
+        # is never consumed. Drop any older than a day so the folder stays bounded.
+        for old in glob.glob(os.path.join(os.path.dirname(p), "*.json")):
+            try:
+                if os.path.getmtime(old) < time.time() - 86400:
+                    os.remove(old)
+            except OSError:
+                pass
         json.dump(snap, open(p, "w"))
         return 0
     if tool not in ("Write", "Edit", "MultiEdit"):

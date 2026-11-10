@@ -160,6 +160,21 @@ def test_ambiguous_or_thin_declarations_are_refused(box):
     assert "malformed" in box.write(scope_with(R1, "Enforced-By: R-01 tests/test_r01.py"))[1]
 
 
+def test_prose_that_starts_with_ruling_is_not_a_ruling(box):
+    assert box.write(scope_with("Ruling: the founder decided this in the call notes."))[0] == "ALLOW"
+    assert "malformed" in box.write(scope_with("RULING: R-1 | 2026-11-10 | other | \"x\""))[1]
+
+
+def test_nested_repo_is_not_walked(box):
+    nested = box.repo / "projects" / "other"
+    (nested / CASE / "canonical").mkdir(parents=True)
+    _git(nested, "init", "-q")
+    (nested / CASE / "canonical" / "scope.md").write_text(scope_with(R1))
+    box.hook("PreToolUse", "Bash", {"command": "x"}, tool_use_id="t9")
+    snap = next((box.home / ".local" / "state" / "kipi" / "ruling-gate" / "snap").glob("*t9.json"))
+    assert list(json.loads(snap.read_text())) == [str(box.scope)]
+
+
 def test_edit_tool_is_judged_on_the_result(box):
     tin = {"file_path": str(box.scope), "old_string": "Some case text.", "new_string": "Some case text.\n" + R1}
     out = box.hook("PreToolUse", "Edit", tin)
