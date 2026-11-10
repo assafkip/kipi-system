@@ -159,6 +159,12 @@ NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 # below replaces it. Empty only if python itself is broken: the opus alias then.
 CLAUDE_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job review 2>/dev/null)"
 CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
+# The one door to a fleet `claude -p` (ASK-4311): it reads the API key from the
+# Keychain, meters the run's own reported cost, and fails over key 1 to key 2.
+# Defined here beside the model so both halves of "how this reviewer runs" sit
+# together. Resolved as a path, never as a key: nothing in this file holds one.
+FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
+[ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different
@@ -1577,10 +1583,13 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # forces one more turn, and that turn's text replaces the verdict. Measured on a
     # week of real transcripts: reviewer verdicts say "does not exist" routinely
     # ("cites a backstop that does not exist"). The lint still logs them advisory.
-    # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-    # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+    # $FLEET_CLAUDE at the call, not a top-of-file export a later source could
+    # undo (ASK-4311). The reviewer is fleet work, so it bills an Ultra Console
+    # API credit rather than the founder's plan, through the one helper that
+    # reads the key and meters the run. This inverts ASK-2176's subscription-only
+    # rule for this call site only; KIPI_FLEET_API_KEYS=0 puts it back, loudly.
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && env -u ANTHROPIC_API_KEY claude -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac

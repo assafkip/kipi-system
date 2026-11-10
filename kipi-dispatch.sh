@@ -1013,6 +1013,47 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
   exit 0
 fi
 
+# --- API-CREDIT BUDGET GATE (ASK-4311) ---------------------------------------
+# THE DOLLAR CEILING, beside the issue-count ceiling above. The fleet now bills
+# the two Ultra Console API credits ($250 each a month) instead of the founder's
+# plan, and the founder's constraint is "I dont want to pay more myself". So the
+# $500 is spread by day: today's allowance is the credit that is actually LEFT
+# divided by the days that are actually LEFT in the month, recomputed on every
+# tick. At the allowance this tick starts nothing and the next budget day
+# resumes by itself, exactly like the issue cap above: no timer, no state
+# machine, just a different answer from a counter that rolls at 07:00 local.
+#
+# A READER, DELIBERATELY. `fleet_api_spend.py budget` only reads the ledger, and
+# `fleet_api_key.py probe` only reads the key state. Neither consumes the
+# paused-fleet re-probe, which a 15-minute tick would otherwise burn every day
+# before any run could use it (the defect the helper's own suite caught RED).
+#
+# FAIL OPEN, NOT CLOSED. A missing or broken helper does NOT stop dispatch: the
+# per-run path in fleet_api_key.py is what actually refuses on a spent credit,
+# and it is the one that cannot be bypassed. A gate here that failed closed
+# would turn any script error into a full fleet outage for a ceiling that is
+# already enforced where the money is spent.
+SPEND_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_spend.py"
+KEY_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_key.py"
+if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$SPEND_HELPER" ]; then
+  # ONE call, not one per use: two calls read the ledger at two moments, so a run
+  # finishing between them would print a reading that disagrees with the verdict.
+  BUDGET_RC=0
+  BUDGET_LINE="$(python3 "$SPEND_HELPER" budget 2>/dev/null)" || BUDGET_RC=$?
+  if [ "$BUDGET_RC" = "3" ]; then
+    say "API BUDGET: spent for budget day $BUDGET_DAY ($BUDGET_LINE), stopping until ${RESET_HOUR}:00 local"
+    page_once api-budget "kipi dispatch: today's API-credit allowance is spent, so no new run starts. Not an error -- the loop resumes by itself at ${RESET_HOUR}am with a fresh daily share of what is left of the \$500. Reading: $BUDGET_LINE"
+    exit 0
+  fi
+  page_clear api-budget
+  if [ -f "$KEY_HELPER" ] && ! python3 "$KEY_HELPER" probe >/dev/null 2>&1; then
+    say "API KEYS: both credits read as exhausted; paused until the next budget day re-probes"
+    page_once api-keys-paused "kipi dispatch: both Ultra API credits read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
+    exit 0
+  fi
+  page_clear api-keys-paused
+fi
+
 # --- MEMORY GATE (ASK-4008) --------------------------------------------------
 # FILLING EVERY FREE REPO NEEDS A MEMORY BOUND. On 2026-11-08 about 16 parallel
 # claude processes (300 to 500 MB each) pushed swap to about 10 GB and the disk to

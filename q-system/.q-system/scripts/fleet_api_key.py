@@ -361,6 +361,10 @@ def _run_once(slot, argv, actor):
     if not key:
         return None, "", 0.0, ""
     env = dict(os.environ)
+    # THE LINE THE WHOLE CHANGE EXISTS FOR. Dropping it sends the run back to the
+    # founder's plan and every call still succeeds, so nothing downstream
+    # notices. Mutation-checked 2026-11-09: removing it turns 12 of 25 cases red,
+    # test_child_is_handed_the_key first.
     env["ANTHROPIC_API_KEY"] = key
     # The slot is safe to pass on; the key is not. A child that wants to know
     # which account it is billing reads this.

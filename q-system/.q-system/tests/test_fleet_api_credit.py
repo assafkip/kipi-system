@@ -207,14 +207,47 @@ class TestFailover(Base):
         self.assertFalse(keymod.read_state()["paused"],
                          "the first success resumes the fleet")
 
+    def test_a_reader_does_not_spend_the_days_re_probe(self):
+        """`status` and `probe` are inspections; only a RUN consumes the probe.
+
+        Written from the dispatcher's side: kipi-dispatch.sh pages and clears on
+        every tick (`page_once` / `page_clear`, 15 minutes apart), so its gate is
+        a READER by construction. A reader that consumed the probe left the fleet
+        paused for the rest of the day with nothing having run.
+        """
+        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+        os.environ["FAKE_CLAUDE_DEAD_KEY"] = DEAD_KEY
+        os.environ["KIPI_FLEET_FAKE_KEY_1"] = DEAD_KEY
+        os.environ["KIPI_FLEET_FAKE_KEY_2"] = DEAD_KEY
+        self.run_exec()
+        probe_day_after_pause = keymod.read_state()["last_probe_day"]
+
+        os.environ["KIPI_FLEET_NOW"] = str(1762700400 + 86400)
+        os.environ["KIPI_FLEET_FAKE_KEY_1"] = LIVE_KEY_1
+        os.environ.pop("FAKE_CLAUDE_DEAD_KEY")
+        for _ in range(3):
+            self.assertEqual(keymod.usable_slot(), 1,
+                             "a read must not burn the probe")
+        self.assertEqual(keymod.read_state()["last_probe_day"],
+                         probe_day_after_pause,
+                         "reads left the stored probe day untouched")
+        self.assertEqual(self.run_exec(), 0, "the run still gets its probe")
+
     def test_a_new_month_hands_both_credits_back(self):
         os.environ["KIPI_FLEET_NOW"] = "1764590400"   # 2026-12-01
         state = keymod.read_state()
         state["exhausted"] = {"1": "2026-11", "2": "2026-11"}
         state["paused"] = True
         keymod.write_state(state)
+        # A reader SEES the heal (both credits are back) and persists nothing;
+        # the run is what writes it. Same readers-degrade split as the re-probe.
         self.assertEqual(keymod.usable_slot(), 1)
-        self.assertEqual(keymod.read_state()["exhausted"], {})
+        self.assertEqual(keymod.read_state()["exhausted"],
+                         {"1": "2026-11", "2": "2026-11"},
+                         "a read must not rewrite the stored marks")
+        self.assertEqual(self.run_exec(), 0)
+        self.assertEqual(keymod.read_state()["exhausted"], {},
+                         "the run persists the new month's heal")
 
     def test_an_ordinary_failure_is_not_read_as_an_exhausted_credit(self):
         """A non-zero run whose text says nothing about credit keeps key 1."""

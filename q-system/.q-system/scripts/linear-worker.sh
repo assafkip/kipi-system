@@ -129,12 +129,26 @@ CODEX_OUTAGE_MAX_AGE=86400
 # runs the SAME second-runner prompt, so the outcome logic below judges it
 # exactly as it judges Codex. Set KIPI_SECOND_RUNNER_FALLBACK to an empty string
 # to disable it (tests that pin the both-down hold do).
-# `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-# could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+# THE WORKER NOW BILLS THE API CREDIT, NOT THE PLAN (ASK-4311). This file used
+# `env -u ANTHROPIC_API_KEY` at every call, deliberately, so the run went to the
+# founder's subscription and never to a billed API key (ASK-2176). The founder's
+# 2026-11-09 ruling inverts that for FLEET work only: the two Ultra accounts each
+# carry a $250/month Console API credit, and he would rather the fleet spend
+# Anthropic's money than his own plan allowance. "Im okay spending the moeny I
+# get from anthropic on the api. but I dont want to pay more myself".
+#
+# fleet-claude.sh is the one door: it reads the key from the Keychain (never from
+# a command line), records what the run cost, fails over key 1 to key 2 on an
+# exhausted credit, and refuses rather than silently falling back to the plan.
+# KIPI_FLEET_API_KEYS=0 restores the old subscription-only behaviour, loudly.
+# test-subscription-only.sh pins that no API key is ever hardcoded here; the key
+# still never appears in this file, only inside the helper's own process.
+FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
+[ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
 # The stand-in's model is the routing table's second-runner row (ASK-4013). If the
 # read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
 SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-$FLEET_CLAUDE -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -1018,8 +1032,62 @@ try:
 except Exception:
     CAP_BLOCKERS = {}
 
+# FRESH WORK RIDES WITH URGENT AND HIGH (ASK-4311). Founder ruling 2026-11-09,
+# on how a bounded API-credit budget should be spent: "the worker spends on
+# Urgent and High, plus tickets created in the last 2 days, before anything
+# else", his steady-state goal being to close what came in today or yesterday.
+# Before this, a ticket filed this morning at Medium sorted behind every High AND
+# behind every older Medium, so a day's inflow could never be a day's outflow.
+#
+# ONE TIER, NOT A NEW SORT. Urgent, High and anything newer than the window share
+# tier 0; every other live ticket is tier 1; an expired park still sorts last of
+# all. PRIORITY_RANK is still the next key, so inside tier 0 an Urgent still
+# beats a fresh Medium, and ASK-248's oldest-first rule still bounds the wait
+# inside each band. What changes is only that an old low-band ticket now also
+# waits behind fresh ones, which is the founder's trade, stated as such.
+#
+# OFF SWITCH: KIPI_WORKER_FRESH_FIRST=0 restores the pre-ASK-4311 order, because
+# this reorders the whole queue and a measured rollback should not need a commit.
+FRESH_FIRST = os.environ.get("KIPI_WORKER_FRESH_FIRST", "1") != "0"
+try:
+    FRESH_DAYS = float(os.environ.get("KIPI_WORKER_FRESH_DAYS", "2"))
+except ValueError:
+    FRESH_DAYS = 2.0
+
+
+def _fresh_cutoff():
+    """ISO timestamp FRESH_DAYS ago. KIPI_WORKER_NOW (epoch seconds) is the test clock."""
+    import datetime as _d
+    raw = os.environ.get("KIPI_WORKER_NOW", "")
+    try:
+        base = _d.datetime.utcfromtimestamp(float(raw)) if raw else _d.datetime.utcnow()
+    except (ValueError, OSError):
+        base = _d.datetime.utcnow()
+    return (base - _d.timedelta(days=FRESH_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+FRESH_CUTOFF = _fresh_cutoff()
+
+
+def is_fresh(i):
+    """Created inside the window. A missing createdAt is NOT fresh: unknown age
+    must not jump the queue, which is the safe direction for an absent field."""
+    created = i.get("createdAt") or ""
+    return bool(created) and created >= FRESH_CUTOFF
+
+
+def pick_tier(i):
+    if expired_park(i):
+        return 2
+    if not FRESH_FIRST:
+        return 0
+    if PRIORITY_RANK.get(i.get("priority"), 4) <= 1:   # Urgent (1) or High (2)
+        return 0
+    return 0 if is_fresh(i) else 1
+
+
 def pick_order_key(i):
-    return (1 if expired_park(i) else 0, PRIORITY_RANK.get(i.get("priority"), 4),
+    return (pick_tier(i), PRIORITY_RANK.get(i.get("priority"), 4),
             -int(CAP_BLOCKERS.get(i["identifier"], 0) or 0),
             i.get("createdAt") or "9999", i["identifier"])
 
@@ -3328,8 +3396,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # bash, so without it run_bounded would score tee's exit status, not claude's.
   ENV_FAIL=""
   : > "$RUN_OUT_FILE" 2>/dev/null || true
-  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+  # $FLEET_CLAUDE at the call, not a top-of-file export a later source could undo
+  # (ASK-4311, inverting ASK-2176's subscription-only rule for fleet work). The
+  # helper it points at is the only reader of the key; nothing here ever holds one.
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
@@ -3346,7 +3415,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
       run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
     else
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
     fi
   }
   if primary_run; then
@@ -3619,7 +3688,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         : > "$RUN_OUT_FILE" 2>/dev/null || true
         # The stand-in is a second agent session in the same tree, so it gets
         # the same guard set as Sana's run, read again for this moment (ASK-3529).
-        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
           crc=0
         else
           crc=$?
