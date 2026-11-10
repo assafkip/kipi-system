@@ -272,6 +272,39 @@ while [ $# -gt 0 ]; do
   shift || true
 done
 
+# --- WHAT "READ-ONLY BY CONSTRUCTION" HAS TO MEAN ---------------------------
+# `--ready-json` answers one question for the daily API-credit report: how many
+# tickets are left. The early exit that serves it sits just below the picker, and
+# its comment claimed everything with a side effect happened after it. It did
+# not (PR #717 review round 1, finding 2 -- major). Three steps ran BEFORE it:
+# the usage brake (exits 3 and prints nothing when it holds), `git fetch` (pages
+# through $NOTIFY and exits 9 on failure), and the default-branch resolution
+# (same). So a daily report could file a Linear ticket in Sana's triage at 03:00
+# for an expired credential, and its own "tickets left" line could read COULD NOT
+# READ for a reason that has nothing to do with the board.
+#
+# None of the three is needed to answer it. The picker reads Linear plus the
+# registry; the fetch, the base and the brake exist for the worktree and the
+# model call, and in this mode neither happens. So each is guarded by this one
+# predicate rather than by three copies of the test.
+#
+# IT DOES NOT WEAKEN THEM FOR A REAL ROUND, and that is the half worth testing:
+# test-worker-ready-json.sh cases 5 and 6 drive --apply through the same two
+# broken environments and demand exit 3 and exit 9 with the page.
+ready_only() { [ "${READY_JSON:-0}" = "1" ]; }
+
+# IN THIS MODE STDOUT IS THE ANSWER, AND THE READER IS A PARSER. The report runs
+# `json.loads` on it (fleet-api-report.py:98), so ONE stray log line makes the
+# whole read fail -- and the pre-pick stretch does log to stdout: `say()` tees
+# there, and the WIP block says "has no GitHub slug" on any repo without one.
+# Observed by test-worker-ready-json.sh case 1: valid JSON preceded by that line,
+# parsed as nothing, reported as COULD NOT READ.
+#
+# Auditing every echo above the pick would fix today and rot tomorrow, so stdout
+# is pointed at stderr for the whole stretch instead and the pick list is printed
+# on fd 9, which nothing else in this script uses. The log keeps every line.
+if ready_only; then exec 9>&1 1>&2; fi
+
 # --- THE BRAKE (ASK-2010, Step 4) -------------------------------------------
 # FIRST thing after the arguments parse, and deliberately BEFORE the git fetch,
 # the claim and the worktree. A brake that fires after the expensive setup has
@@ -304,7 +337,11 @@ mkdir -p "$STATE_DIR"
 BREAKER_DEFAULT="$SKEL/plugins/kipi-core/voiceloop/usage_breaker.py"
 BREAKER_CMD="${KIPI_USAGE_BREAKER_CMD:-python3 $BREAKER_DEFAULT}"
 BREAKER_BOT="${KIPI_USAGE_BREAKER_BOT:-worker}"
-if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
+if ready_only; then
+  # A pick list costs no model call, so there is nothing here for the brake to
+  # brake -- and its exit 3 would replace the report's answer with silence.
+  :
+elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
   # kipi-dispatch.sh runs this script with no --apply to pick the next issue and
   # launches the real --apply round minutes later. Both pass through here, so the
@@ -487,7 +524,11 @@ reap_group() {
 #
 # 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
 # environment that is down from a worker that was invoked wrong.
-if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
+if ready_only; then
+  # No worktree is cut in this mode, so there is no base that could go stale --
+  # and a failed fetch here would page Sana from a run that only counted.
+  :
+elif ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
   bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
@@ -508,24 +549,31 @@ fi
 #
 # FAIL CLOSED. Guessing "main" is the defect being removed; with no answer the
 # run stops before any tree is cut, says why and pages, same as a failed fetch.
-DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
-DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-[ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
-if [ -z "$DEFAULT_BRANCH" ] \
-   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
-  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
-    | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
-fi
-if { [ -z "$DEFAULT_BRANCH" ] \
-     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
-   && [ -n "${TARGET_SLUG:-}" ]; then
-  DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
-fi
-if [ -z "$DEFAULT_BRANCH" ] \
-   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
-  say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
-  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
-  exit 9
+if ready_only; then
+  # Nothing below the pick runs in this mode, so no base is ever used. The three
+  # lookups below, two of them network calls, buy nothing here, and the
+  # fail-closed exit would page Sana from a run that only counted.
+  DEFAULT_BRANCH=""
+else
+  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+  [ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
+  if [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
+      | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+  fi
+  if { [ -z "$DEFAULT_BRANCH" ] \
+       || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
+     && [ -n "${TARGET_SLUG:-}" ]; then
+    DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
+  fi
+  if [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
+    bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
+    exit 9
+  fi
 fi
 export DEFAULT_BRANCH
 
@@ -1444,10 +1492,15 @@ PY
 # number ready() itself produces: a second reader of these rules in the report
 # would drift from this one and report a queue nobody is actually working. So the
 # report asks the worker, and this flag is the whole interface -- print the pick
-# list and stop, before any claim, branch, worktree or agent run. Read-only by
-# construction: everything with a side effect happens below this line.
-if [ "${READY_JSON:-0}" = "1" ]; then
-  printf '%s\n' "$PICKED"
+# list and stop, before any claim, branch, worktree or agent run.
+#
+# READ-ONLY BY CONSTRUCTION, and `ready_only()` above is what makes that true
+# rather than merely claimed: the brake, the fetch and the default-branch
+# resolution all sit above this line and all three page or exit non-zero, so each
+# is guarded there. Everything else above this line reads Linear, the registry
+# and `gh pr list`. Nothing above it writes, claims, pauses or pages.
+if ready_only; then
+  printf '%s\n' "$PICKED" >&9
   exit 0
 fi
 
