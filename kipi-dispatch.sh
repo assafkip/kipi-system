@@ -1014,72 +1014,80 @@ if [ "$DISPATCHED_TODAY" -ge "$DAILY_MAX" ]; then
 fi
 
 # --- API-CREDIT BUDGET GATE (ASK-4311) ---------------------------------------
-# THE DOLLAR CEILING, beside the issue-count ceiling above. The fleet now bills
-# the two Ultra Console API credits ($250 each a month) instead of the founder's
-# plan, and the founder's constraint is "I dont want to pay more myself". So the
-# $500 is spread by day: today's allowance is the credit that is actually LEFT
-# divided by the days that are actually LEFT in the month, recomputed on every
-# tick. At the allowance this tick starts nothing and the next budget day
-# resumes by itself, exactly like the issue cap above: no timer, no state
-# machine, just a different answer from a counter that rolls at 07:00 local.
+# THE DOLLAR CEILING, beside the issue-count ceiling above. The fleet bills the
+# founder's Console API credits instead of his plan, and his constraint is "I
+# dont want to pay more myself". Each key's credit and billing cycle come from
+# ~/.config/kipi/fleet-api.json. Today's allowance is, per key, the credit left
+# when today began over the days left in that key's cycle, summed. At the
+# allowance this tick starts nothing and the next budget day resumes by itself,
+# exactly like the issue cap above: a counter that rolls at 07:00 local.
 #
-# A READER, DELIBERATELY. `fleet_api_spend.py budget` only reads the ledger, and
-# `fleet_api_key.py probe` only reads the key state. Neither consumes the
-# paused-fleet re-probe, which a 15-minute tick would otherwise burn every day
-# before any run could use it (the defect the helper's own suite caught RED).
+# A READER, DELIBERATELY. `probe` and `budget` only read. Neither consumes the
+# paused fleet's one daily re-probe, which a 15-minute tick would otherwise burn
+# before any run could use it.
 #
-# FAIL OPEN, NOT CLOSED. A missing or broken helper does NOT stop dispatch: the
-# per-run path in fleet_api_key.py is what actually refuses on a spent credit,
-# and it is the one that cannot be bypassed. A gate here that failed closed
-# would turn any script error into a full fleet outage for a ceiling that is
-# already enforced where the money is spent.
+# THE GATE PASSES ONLY ON AN ANSWER IT UNDERSTANDS (PR #717 review round 3,
+# major). It used to promise "fail open" and then sent any nonzero probe, a
+# Python crash included, into the paused branch, which stopped the tick AND
+# paged "both credits read as exhausted ... Do: nothing". The promise was the
+# wrong half to keep: every fleet run goes through this same helper, so a crash
+# here is a crash in every run, and launching them burns each issue's attempts
+# for nothing. So a crash now stops the tick too, but under its OWN page that
+# names the exit code and the helper's last stderr line. Four answers, four
+# pages, and each branch clears the others' markers so a flip between
+# conditions cannot leave a stale marker that silences the next page.
+# A MISSING helper file is not a crash: it means this checkout predates the
+# fleet door, its worker still bills the plan, and there is nothing to gate.
 SPEND_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_spend.py"
 KEY_HELPER="$REPO/q-system/.q-system/scripts/fleet_api_key.py"
-if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$SPEND_HELPER" ]; then
-  # ONE call, not one per use: two calls read the ledger at two moments, so a run
-  # finishing between them would print a reading that disagrees with the verdict.
-  BUDGET_RC=0
-  BUDGET_LINE="$(python3 "$SPEND_HELPER" budget 2>/dev/null)" || BUDGET_RC=$?
-  if [ "$BUDGET_RC" = "3" ]; then
-    say "API BUDGET: spent for budget day $BUDGET_DAY ($BUDGET_LINE), stopping until ${RESET_HOUR}:00 local"
-    page_once api-budget "kipi dispatch: today's API-credit allowance is spent, so no new run starts. Not an error -- the loop resumes by itself at ${RESET_HOUR}am with a fresh daily share of what is left of the \$500. Reading: $BUDGET_LINE"
-    exit 0
+api_gate_page() {   # api_gate_page <marker> <text>: page one condition, clear the rest
+  local k
+  for k in api-keys-missing api-keys-paused api-helper-broken api-budget; do
+    [ "$k" = "$1" ] || page_clear "$k"
+  done
+  page_once "$1" "$2"
+}
+if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEND_HELPER" ]; then
+  API_ERR="$(mktemp "${TMPDIR:-/tmp}/kipi-api-gate.XXXXXX" 2>/dev/null || echo /dev/null)"
+  KEY_RC=0
+  KEY_LINE="$(python3 "$KEY_HELPER" probe 2>"$API_ERR")" || KEY_RC=$?
+  KEY_ERR="$(tail -n 1 "$API_ERR" 2>/dev/null)"
+  BUDGET_RC=0; BUDGET_LINE=""
+  if [ "$KEY_RC" = "0" ]; then
+    # ONE budget call, not one per use: two calls read the ledger at two
+    # moments, so a run finishing between them would print a reading that
+    # disagrees with the verdict.
+    BUDGET_LINE="$(python3 "$SPEND_HELPER" budget 2>"$API_ERR")" || BUDGET_RC=$?
+    [ "$BUDGET_RC" = "0" ] || [ "$BUDGET_RC" = "3" ] || KEY_ERR="$(tail -n 1 "$API_ERR" 2>/dev/null)"
   fi
-  page_clear api-budget
-  # TWO RED ANSWERS, TWO DIFFERENT PAGES (PR #717 review round 2, finding 1).
-  # `probe` prints `no key <slots>` when a Keychain item was never created and
-  # `paused` when both credits read as exhausted. They need different lines
-  # because they need different responses: a pause clears itself on the next
-  # budget day and wants nothing done, while a missing key clears only when the
-  # item is created and will otherwise refuse every run forever. A single page
-  # claiming "both credits read as exhausted" for a fleet that simply has no key
-  # sends whoever reads it to look at billing.
-  #
-  # Still a READER: probe asks the Keychain whether an item EXISTS (never for the
-  # secret) and consults the pause state without consuming the day's re-probe.
-  if [ -f "$KEY_HELPER" ]; then
-    KEY_LINE="$(python3 "$KEY_HELPER" probe 2>/dev/null)"; KEY_RC=$?
-    # EACH BRANCH CLEARS THE OTHER'S MARKER. page_once dedupes on `paged-<key>`
-    # and the two keys are independent files, so without these clears a flip
-    # between the conditions leaves a stale marker and the SECOND condition
-    # pages nobody -- a real pause arriving after a missing-key spell would be
-    # silent for as long as the marker survived. The conditions are mutually
-    # exclusive, so exactly one marker may exist at a time.
-    if [ "$KEY_RC" != "0" ] && printf '%s' "$KEY_LINE" | grep -q "^no key"; then
-      say "API KEYS: $KEY_LINE -- nothing can run until the Keychain item exists"
-      page_clear api-keys-paused
-      page_once api-keys-missing "kipi dispatch: the fleet has no API key in the Keychain ($KEY_LINE), so no run starts and nothing here can create it. Every run would exit 4 with no spend row. Do: add the item for each slot (service kipi-fleet-api-key-1 / -2), then the next tick starts on its own."
-      exit 0
-    fi
-    if [ "$KEY_RC" != "0" ]; then
-      say "API KEYS: both credits read as exhausted; paused until the next budget day re-probes"
-      page_clear api-keys-missing
-      page_once api-keys-paused "kipi dispatch: both Ultra API credits read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
-      exit 0
-    fi
-    page_clear api-keys-missing
-  fi
-  page_clear api-keys-paused
+  [ "$API_ERR" = "/dev/null" ] || rm -- "$API_ERR" 2>/dev/null || true
+  case "$KEY_RC:$KEY_LINE" in
+    "4:no key"*)
+      say "API KEYS: $KEY_LINE -- nothing can run until that is fixed"
+      api_gate_page api-keys-missing "kipi dispatch: the fleet has no usable API key ($KEY_LINE), so no run starts. Every run would exit 4 with no spend row. Do: what the line names. A missing Keychain item: add service kipi-fleet-api-key-<slot>. An unknown credit: set monthly_credit_usd and cycle_anchor_day in ~/.config/kipi/fleet-api.json. The next tick starts on its own."
+      exit 0 ;;
+    "4:paused")
+      say "API KEYS: every known key's credit read as exhausted; paused until the next budget day re-probes"
+      api_gate_page api-keys-paused "kipi dispatch: every known API key's credit read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
+      exit 0 ;;
+    0:*) ;;
+    *)
+      say "API KEYS: the key helper answered nothing the gate understands (probe rc=$KEY_RC, '${KEY_LINE}', stderr '${KEY_ERR}'); stopping the tick"
+      api_gate_page api-helper-broken "kipi dispatch: fleet_api_key.py is broken (probe rc=$KEY_RC, last stderr line: ${KEY_ERR:-none}), so no run starts. Every fleet run goes through the same helper and would fail the same way. This is NOT a spent credit. Do: run python3 $KEY_HELPER probe in $REPO and fix what it prints."
+      exit 0 ;;
+  esac
+  case "$BUDGET_RC" in
+    3)
+      say "API BUDGET: spent for budget day $BUDGET_DAY ($BUDGET_LINE), stopping until ${RESET_HOUR}:00 local"
+      api_gate_page api-budget "kipi dispatch: today's API-credit allowance is spent, so no new run starts. Not an error: the loop resumes by itself at ${RESET_HOUR}am with a fresh daily share of what is left in each key's billing cycle. Reading: $BUDGET_LINE"
+      exit 0 ;;
+    0)
+      for k in api-keys-missing api-keys-paused api-helper-broken api-budget; do page_clear "$k"; done ;;
+    *)
+      say "API BUDGET: the spend helper crashed (budget rc=$BUDGET_RC, stderr '${KEY_ERR}'); stopping the tick"
+      api_gate_page api-helper-broken "kipi dispatch: fleet_api_spend.py is broken (budget rc=$BUDGET_RC, last stderr line: ${KEY_ERR:-none}), so no run starts: the daily allowance cannot be read. This is NOT a spent credit. Do: run python3 $SPEND_HELPER budget in $REPO and fix what it prints."
+      exit 0 ;;
+  esac
 fi
 
 # --- MEMORY GATE (ASK-4008) --------------------------------------------------

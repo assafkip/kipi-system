@@ -29,7 +29,10 @@
 #   4. the two red answers never wear each other's page;
 #   5. a flip from one condition to the other still pages (the marker clear);
 #   6. a red gate does not consume the paused fleet's one daily re-probe;
-#   7. a missing helper still fails OPEN, as the gate's own comment promises.
+#   7. a missing helper FILE (a checkout before the door) lets the tick go on;
+#   8. a present but CRASHING helper stops the tick under its own page;
+#   9. a spent day pages the budget; 10. an unconfirmed key and 11. no known
+#      credit are red; 12. an unknown key 2 alone does not stop key 1.
 #
 # The gate BLOCK is lifted out of kipi-dispatch.sh by its own anchors, the way
 # test-dispatch-disk-floor.sh lifts the reviewer's functions, so the case follows
@@ -95,7 +98,8 @@ run_gate() {
     # say cannot see the suppression it is testing for.
     say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
     export KIPI_TEST=1
-    export KIPI_FLEET_SPEND_LEDGER="$WORK/$label-spend.jsonl"
+    export KIPI_FLEET_API_FACTS="${GATE_FACTS:-$WORK/facts.json}"
+    export KIPI_FLEET_SPEND_LEDGER="${GATE_LEDGER:-$WORK/$label-spend.jsonl}"
     export KIPI_FLEET_EVENTS="${GATE_EVENTS:-$WORK/$label-events.jsonl}"
     export KIPI_FLEET_STATE="$state"
     export KIPI_DISPATCH_RESET_HOUR=7
@@ -117,6 +121,23 @@ paged() {  # paged <pagedir> <pattern>
 marker() { [ -f "$1/paged-$2" ]; }
 through() { [ -f "$WORK/$1.through" ]; }
 NOW12="$(python3 -c 'import datetime as d;print(int(d.datetime(2026,11,9,12).timestamp()))')"
+# The per-key facts, shaped like ~/.config/kipi/fleet-api.json: both keys known
+# and confirmed, so the green case is green for the right reason. Variants below
+# null a credit or drop the auto-reload confirmation.
+write_facts() {  # write_facts <path> <key2 credit or null> <confirm key1 yes|no>
+  python3 - "$1" "$2" "$3" <<'FACTSPY'
+import json, sys
+EXP = "2026-11-26T15:00:00Z"
+k1 = {"monthly_credit_usd": 100, "current_cycle_expires_utc": EXP}
+if sys.argv[3] == "yes":
+    k1["auto_reload_off_confirmed_at"] = "2026-11-10T21:00:00Z"
+k2 = {"monthly_credit_usd": None if sys.argv[2] == "null" else int(sys.argv[2]),
+      "current_cycle_expires_utc": None if sys.argv[2] == "null" else EXP,
+      "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z"}
+json.dump({"keys": {"1": k1, "2": k2}}, open(sys.argv[1], "w"))
+FACTSPY
+}
+write_facts "$WORK/facts.json" 200 yes
 
 # --- 1: a key and live credit -----------------------------------------------
 KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 KIPI_FLEET_NOW="$NOW12" run_gate green
@@ -137,7 +158,7 @@ else
   bad "case 2: no key stops the tick with its own page" \
       "through=$(through nokey && echo yes || echo no) markers=$(ls "$WORK/nokey-pages" 2>/dev/null | tr '\n' ' ') stderr: $(tr "\n" "|" < "$WORK/nokey.out" 2>/dev/null)"
 fi
-if paged "$WORK/nokey-pages" "Keychain item exists" \
+if paged "$WORK/nokey-pages" "nothing can run until that is fixed" \
    && ! paged "$WORK/nokey-pages" "credits read as exhausted"; then
   ok "case 2b: the log names the Keychain, and does not blame the credit"
 else
@@ -154,7 +175,7 @@ fi
 ( unset KIPI_FLEET_FAKE_KEY_1 KIPI_FLEET_FAKE_KEY_2
   GATE_PAGEDIR="$WORK/nokey-pages" GATE_EVENTS="$WORK/nokey-events.jsonl" \
     KIPI_FLEET_NOW="$NOW12" run_gate nokey2 )
-NK="$(grep -c "no_key" "$WORK/nokey-events.jsonl" 2>/dev/null || echo 0)"
+NK="$(grep -c "no_key" "$WORK/nokey-events.jsonl" 2>/dev/null)"; NK="${NK:-0}"
 [ "$NK" = "1" ] \
   && ok "case 2d: a second tick in the same budget day adds no second event" \
   || bad "case 2d: one no_key event a budget day" "rows=$NK"
@@ -164,7 +185,7 @@ PAUSED="$WORK/paused-state.json"
 write_paused() {
   python3 - "$PAUSED" <<'PY'
 import json, sys
-json.dump({"active_slot": 1, "exhausted": {"1": "2026-11", "2": "2026-11"},
+json.dump({"active_slot": 1, "exhausted": {"1": "2026-11-26T15:00:00Z", "2": "2026-11-26T15:00:00Z"},
            "paused": True, "paused_since": "2026-11-09T08:00:00",
            "last_probe_day": "2026-11-09"}, open(sys.argv[1], "w"))
 PY
@@ -233,10 +254,9 @@ KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 KIPI_FLEET_NOW="$NOW12" \
   && ok "case 6: a red gate leaves the key state untouched (it burns no re-probe)" \
   || bad "case 6: the gate stays a reader" "state now: $(cat "$PAUSED")"
 
-# --- 7: fail open on a missing helper ----------------------------------------
-# kipi-dispatch.sh promises this in its own comment: the per-run path is what
-# actually refuses on a spent credit and it cannot be bypassed, so a gate that
-# failed closed would turn a script error into a full fleet outage.
+# --- 7: a MISSING helper file is a pre-door checkout, not a crash ------------
+# A checkout that predates ASK-4311 has no helper and a worker that still bills
+# the plan, so there is nothing to gate and the tick goes on.
 MISSING="$WORK/missing-gate.sh"
 sed 's#^KEY_HELPER=.*#KEY_HELPER="/nonexistent/fleet_api_key.py"#' "$GATE" > "$MISSING"
 mkdir -p "$WORK/open-pages"
@@ -246,6 +266,7 @@ mkdir -p "$WORK/open-pages"
   . "$HELPERS"
   say() { :; }
   export KIPI_TEST=1
+  export KIPI_FLEET_API_FACTS="$WORK/facts.json"
   export KIPI_FLEET_SPEND_LEDGER="$WORK/open-spend.jsonl"
   export KIPI_FLEET_EVENTS="$WORK/open-events.jsonl"
   export KIPI_FLEET_STATE="$WORK/open-state.json"
@@ -253,8 +274,80 @@ mkdir -p "$WORK/open-pages"
   . "$MISSING"
   echo through > "$WORK/open.through" ) >/dev/null 2>&1
 through open \
-  && ok "case 7: a missing key helper still fails OPEN, as the gate's comment promises" \
-  || bad "case 7: the gate fails open on a missing helper"
+  && ok "case 7: a missing helper file (a pre-door checkout) lets the tick go on" \
+  || bad "case 7: the gate passes a checkout with no helper"
+
+# --- 8: a PRESENT but BROKEN helper (PR #717 review round 3, major) ----------
+# probe crashing used to fall into the paused branch: the tick stopped AND the
+# page said "both credits read as exhausted ... Do: nothing" for a Python crash.
+# Every run goes through the same helper, so the tick still stops, but under
+# its own page that names the crash.
+BROKEN_DIR="$WORK/broken"; mkdir -p "$BROKEN_DIR"
+printf 'import sys\nsys.stderr.write("Traceback: ImportError: fleet_api_spend mid-rsync\\n")\nsys.exit(1)\n' \
+  > "$BROKEN_DIR/fleet_api_key.py"
+BROKEN="$WORK/broken-gate.sh"
+sed "s#^KEY_HELPER=.*#KEY_HELPER=\"$BROKEN_DIR/fleet_api_key.py\"#" "$GATE" > "$BROKEN"
+GATE_SAVED="$GATE"; GATE="$BROKEN"
+KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 KIPI_FLEET_NOW="$NOW12" run_gate broken
+GATE="$GATE_SAVED"
+if ! through broken && marker "$WORK/broken-pages" api-helper-broken; then
+  ok "case 8: a crashed helper stops the tick under its own page"
+else
+  bad "case 8: a crashed helper pages api-helper-broken" \
+      "through=$(through broken && echo yes || echo no) markers=$(ls "$WORK/broken-pages" 2>/dev/null | tr '\n' ' ')"
+fi
+if ! marker "$WORK/broken-pages" api-keys-paused \
+   && ! paged "$WORK/broken-pages" "credit read as exhausted" \
+   && paged "$WORK/broken-pages" "ImportError"; then
+  ok "case 8b: the crash is never reported as a pause, and its stderr is named"
+else
+  bad "case 8b: a crash wears the crash page, not the pause page" \
+      "$(cat "$WORK/broken-pages/dispatch.log" 2>/dev/null)"
+fi
+
+# --- 9: the day's allowance spent --------------------------------------------
+printf '{"day": "2026-11-09", "slot": 1, "cost_usd": 50.0}\n' > "$WORK/spent-spend.jsonl"
+GATE_LEDGER="$WORK/spent-spend.jsonl" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+  KIPI_FLEET_NOW="$NOW12" run_gate spent
+if ! through spent && marker "$WORK/spent-pages" api-budget \
+   && ! marker "$WORK/spent-pages" api-helper-broken; then
+  ok "case 9: a spent day stops the tick under the budget page"
+else
+  bad "case 9: a spent day pages api-budget" \
+      "through=$(through spent && echo yes || echo no) markers=$(ls "$WORK/spent-pages" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# --- 10: auto-reload not confirmed off (orchestrator, 2026-11-10) ------------
+write_facts "$WORK/unconfirmed.json" 200 no
+GATE_FACTS="$WORK/unconfirmed.json" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+  KIPI_FLEET_NOW="$NOW12" run_gate unconfirmed
+if ! through unconfirmed && marker "$WORK/unconfirmed-pages" api-keys-missing \
+   && paged "$WORK/unconfirmed-pages" "auto-reload off not confirmed"; then
+  ok "case 10: a key with auto-reload unconfirmed stops the tick and says why"
+else
+  bad "case 10: an unconfirmed key is red at the gate" \
+      "$(cat "$WORK/unconfirmed-pages/dispatch.log" 2>/dev/null)"
+fi
+
+# --- 11: no key with a known credit ------------------------------------------
+printf '{"keys": {}}' > "$WORK/nofacts.json"
+GATE_FACTS="$WORK/nofacts.json" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+  KIPI_FLEET_NOW="$NOW12" run_gate nofacts
+if ! through nofacts && marker "$WORK/nofacts-pages" api-keys-missing \
+   && paged "$WORK/nofacts-pages" "known credit"; then
+  ok "case 11: no known credit stops the tick and says so"
+else
+  bad "case 11: no known credit is red at the gate" \
+      "$(cat "$WORK/nofacts-pages/dispatch.log" 2>/dev/null)"
+fi
+
+# --- 12: an unknown key 2 does not stop a fleet that has key 1 ---------------
+write_facts "$WORK/k2null.json" null yes
+( unset KIPI_FLEET_FAKE_KEY_2
+  GATE_FACTS="$WORK/k2null.json" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_NOW="$NOW12" run_gate k2null )
+through k2null \
+  && ok "case 12: key 2 with an unknown credit is skipped, key 1 carries the fleet" \
+  || bad "case 12: an unknown key 2 stopped the tick" "$(cat "$WORK/k2null-pages/dispatch.log" 2>/dev/null)"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

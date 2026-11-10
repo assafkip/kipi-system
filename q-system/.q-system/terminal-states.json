@@ -725,6 +725,106 @@
       }
     },
     {
+      "id": "dispatch-api-keys-missing",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "nothing can run until that is fixed",
+      "sites": 1,
+      "what": "fleet_api_key.py probe answered `no key ...`: a known key has no Keychain item, its auto-reload is not confirmed off, or no key has a known credit and a live billing cycle in ~/.config/kipi/fleet-api.json (ASK-4311). The tick starts nothing and pages api-keys-missing once.",
+      "consumer": "com.kipi.dispatch -- every tick re-runs the probe; the first tick after the Keychain item or the facts-file field exists finds it green and dispatches, and page_clear turns the recovery into silence",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "KEY_LINE=\"$(python3 \"$KEY_HELPER\" probe",
+        "why": "The probe is re-read on every tick of the same job and holds no state of its own, so the stop clears on the first tick after the fact changes."
+      }
+    },
+    {
+      "id": "dispatch-api-keys-paused",
+      "source": "kipi-dispatch",
+      "class": "transient",
+      "marker": "paused until the next budget day re-probes",
+      "sites": 1,
+      "what": "Every known API key's credit read as exhausted (fleet_api_key.py state `paused`). The tick starts nothing and pages api-keys-paused once (ASK-4311).",
+      "consumer": "com.kipi.dispatch -- the first run of the next budget day is fleet_api_key.py's one re-probe; probe reads the new day as unprobed and answers green, so the next tick dispatches",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "KEY_LINE=\"$(python3 \"$KEY_HELPER\" probe",
+        "why": "A pause is lifted by the budget day changing, never by a timer, and the probe reads the day on every tick."
+      }
+    },
+    {
+      "id": "dispatch-api-helper-broken",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "the key helper answered nothing the gate understands",
+      "sites": 1,
+      "what": "fleet_api_key.py probe crashed or printed an answer the gate does not know (PR #717 review round 3, major). Every fleet run goes through the same helper, so the tick starts nothing and pages api-helper-broken with the exit code and last stderr line.",
+      "consumer": "com.kipi.dispatch -- every tick re-runs the probe; a transient crash (a helper mid-rsync during kipi update) clears on the next tick, and page_clear turns the recovery into silence",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "KEY_LINE=\"$(python3 \"$KEY_HELPER\" probe",
+        "why": "The probe is re-run on every tick, so a crash that was transient is gone on the next one without anything acting."
+      }
+    },
+    {
+      "id": "dispatch-api-budget-spent",
+      "source": "kipi-dispatch",
+      "class": "exhausted-counter",
+      "marker": "API BUDGET: spent for budget day",
+      "sites": 1,
+      "what": "Today's API-credit allowance is spent: per key, the credit left when the day began over the budget days left in that key's billing cycle, summed (ASK-4311). The loop rests until the reset hour.",
+      "consumer": "com.kipi.dispatch -- the budget day rolls at RESET_HOUR, the ledger's spent-today for the new day is zero, and the next tick dispatches again",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "BUDGET_LINE=\"$(python3 \"$SPEND_HELPER\" budget",
+        "why": "The allowance is keyed on a budget day that advances on its own, so the stop clears without anything acting."
+      }
+    },
+    {
+      "id": "dispatch-api-spend-helper-broken",
+      "source": "kipi-dispatch",
+      "class": "infra-failure",
+      "marker": "the spend helper crashed",
+      "sites": 1,
+      "what": "fleet_api_spend.py budget crashed, so the day's allowance cannot be read. The tick starts nothing and pages api-helper-broken (ASK-4311).",
+      "consumer": "com.kipi.dispatch -- every tick re-reads the budget; a transient crash clears on the next tick, and page_clear turns the recovery into silence",
+      "liveness_check": {
+        "kind": "launchd",
+        "label": "com.kipi.dispatch",
+        "run_evidence": "~/.config/kipi/dispatch-lastbeat",
+        "max_age_s": 3600
+      },
+      "reentry": {
+        "path": "kipi-dispatch.sh",
+        "marker": "BUDGET_LINE=\"$(python3 \"$SPEND_HELPER\" budget",
+        "why": "The budget is re-read on every tick, so a crash that was transient is gone on the next one without anything acting."
+      }
+    },
+    {
       "id": "dispatch-memory-gate",
       "source": "kipi-dispatch",
       "class": "transient",
@@ -1138,7 +1238,8 @@
     ],
     "not_a_state": {
       "dispatch-daily-cap": "A rate, not a state: no ticket is held by it, the next budget day takes the same picks.",
-      "dispatch-memory-gate": "A rate, not a state: no ticket is held by it, the next tick with room takes the same picks."
+      "dispatch-memory-gate": "A rate, not a state: no ticket is held by it, the next tick with room takes the same picks.",
+      "dispatch-api-budget-spent": "A rate, not a state: no ticket is held by it, the next budget day takes the same picks."
     },
     "rows": {
       "needs-triage-alert": {
