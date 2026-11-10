@@ -14,6 +14,7 @@ failure shape is pinned by a case of its own, not by a comment asking for care.
 """
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import json
 import os
@@ -38,6 +39,17 @@ def _load(name, filename=None):
 
 spend = _load("fleet_api_spend")
 report = _load("fleet_api_report", "fleet-api-report.py")
+
+#: THE SUITE CLOCK, DERIVED FROM A DATE (PR #717 review round 2, finding 3).
+#: The literal was 1762700400, which is 2025-11-09 07:00 local, while the
+#: comment beside it said 2026-11-09 -- and this suite PRINTS the budget day
+#: into the report text it asserts on, so the 2025 date was in the output a
+#: reader would check against. Derived, the number cannot drift from its label.
+NOW_DT = dt.datetime(2026, 11, 9, 12, 0, 0)
+NOW = str(int(NOW_DT.timestamp()))
+NEXT_DAY = str(int((NOW_DT + dt.timedelta(days=1)).timestamp()))
+#: 04:00 local: before the 07:00 reset, so it belongs to the PREVIOUS budget day.
+BEFORE_RESET = str(int(dt.datetime(2026, 11, 9, 4, 0, 0).timestamp()))
 
 READY = {
     "ready": [
@@ -83,7 +95,7 @@ class Base(unittest.TestCase):
             "KIPI_CHIEF_ALERT": "python3 " + self.chief,
             "FAKE_CHIEF_RECORD": self.chief_record,
             "KIPI_DISPATCH_RESET_HOUR": "7",
-            "KIPI_FLEET_NOW": "1762700400",     # 2026-11-09, mid-day local
+            "KIPI_FLEET_NOW": NOW,              # 2026-11-09 12:00 local
             "KIPI_FLEET_MONTHLY_CREDIT": "250",
         })
         spend._WARNED.clear()
@@ -179,9 +191,55 @@ class TestCadence(Base):
 
     def test_a_new_day_sends_again(self):
         report.main([])
-        os.environ["KIPI_FLEET_NOW"] = str(1762700400 + 86400)
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
         report.main([])
         self.assertEqual(len(self.sent()), 2)
+
+    def test_a_missing_key_cannot_read_as_a_quiet_day(self):
+        """PR #717 review round 2, finding 1, the REPORT half.
+
+        With nothing in the Keychain every run refuses, so spend stays $0,
+        credit stays whole and no pause is recorded -- the day reads exactly
+        like a cheap, quiet one. Fixing probe alone would have left this report
+        telling the founder the same lie, which is the ASK-113 round-2 shape:
+        the fix landed on the detector and not on the report.
+        """
+        spend.event("no_key", "no Keychain item for key 1, 2")
+        text = report.build()["text"]
+        self.assertIn("no_key", text,
+                      "the report rendered a keyless day as an ordinary one")
+        self.assertIn("no Keychain item", text)
+
+    def test_a_missing_key_earns_its_own_message_immediately(self):
+        """It is filed once a budget day, so this costs one message, not 96."""
+        report.main([])
+        self.assertEqual(len(self.sent()), 1)
+        spend.event("no_key", "no Keychain item for key 1, 2")
+        report.main([])
+        self.assertEqual(len(self.sent()), 2, "the condition waited for tomorrow")
+        report.main([])
+        self.assertEqual(len(self.sent()), 2, "and only once")
+
+    def test_a_killed_run_makes_the_spend_line_say_it_is_a_floor(self):
+        """PR #717 review round 2, finding 2, the REPORT half.
+
+        The allowance is divided out of "spent today". A run the watchdog killed
+        was charged and never read, so the number is a floor; a report that
+        prints it bare claims a total it does not have.
+        """
+        spend.record(1, 0.0, actor="worker", ok=False, unmetered=True,
+                     note="killed by SIGTERM before its cost was read")
+        doc = report.build()
+        self.assertEqual(doc["unmetered_runs"], 1)
+        self.assertIn("FLOOR", doc["text"])
+
+    def test_an_ordinary_day_says_nothing_about_floors(self):
+        """The negative: a day with no killed run must not carry the caveat, or
+        it stops meaning anything."""
+        spend.record(1, 0.42, actor="worker")
+        doc = report.build()
+        self.assertEqual(doc["unmetered_runs"], 0)
+        self.assertNotIn("FLOOR", doc["text"])
 
     def test_a_state_change_earns_its_own_message(self):
         report.main([])
@@ -309,7 +367,7 @@ class TestTheClosedQueryItself(unittest.TestCase):
             os.environ["KIPI_LINEAR_SYNC"] = fake
             os.environ["FAKE_SYNC_RECORD"] = record
             os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
-            os.environ["KIPI_FLEET_NOW"] = "1762700400"   # 2026-11-09 11:00 local
+            os.environ["KIPI_FLEET_NOW"] = NOW
             count, err = report.closed_today()
             expect_after, expect_before = spend.budget_day_window_utc()
         finally:
@@ -325,7 +383,7 @@ class TestTheClosedQueryItself(unittest.TestCase):
         self.assertEqual(seen["query"], report.CLOSED_QUERY,
                          "closed_today must send the constant the tests read")
         os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
-        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+        os.environ["KIPI_FLEET_NOW"] = NOW
 
         # And the window is the day it claims, not 15 hours earlier.
         import datetime as dtm
@@ -341,16 +399,16 @@ class TestTheClosedQueryItself(unittest.TestCase):
 class TestBudgetDayWindow(unittest.TestCase):
     def setUp(self):
         os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
-        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+        os.environ["KIPI_FLEET_NOW"] = NOW
 
     def tearDown(self):
         os.environ.pop("KIPI_FLEET_NOW", None)
         os.environ.pop("KIPI_DISPATCH_RESET_HOUR", None)
 
-    def test_a_0300_run_measures_the_day_it_is_counted_against(self):
-        """03:00 belongs to yesterday's budget day in BOTH gates, so the window
+    def test_a_pre_reset_run_measures_the_day_it_is_counted_against(self):
+        """04:00 belongs to yesterday's budget day in BOTH gates, so the window
         it measures has to be yesterday's too."""
-        os.environ["KIPI_FLEET_NOW"] = str(1762700400 - 8 * 3600)   # 03:00 local
+        os.environ["KIPI_FLEET_NOW"] = BEFORE_RESET                 # 04:00 local
         day = spend.budget_day()
         after, before = spend.budget_day_window_utc()
         self.assertEqual(spend.budget_day_start().strftime("%Y-%m-%d"), day)

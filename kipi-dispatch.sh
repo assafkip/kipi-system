@@ -1059,13 +1059,21 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$SPEND_HELPER" ]; then
   # secret) and consults the pause state without consuming the day's re-probe.
   if [ -f "$KEY_HELPER" ]; then
     KEY_LINE="$(python3 "$KEY_HELPER" probe 2>/dev/null)"; KEY_RC=$?
+    # EACH BRANCH CLEARS THE OTHER'S MARKER. page_once dedupes on `paged-<key>`
+    # and the two keys are independent files, so without these clears a flip
+    # between the conditions leaves a stale marker and the SECOND condition
+    # pages nobody -- a real pause arriving after a missing-key spell would be
+    # silent for as long as the marker survived. The conditions are mutually
+    # exclusive, so exactly one marker may exist at a time.
     if [ "$KEY_RC" != "0" ] && printf '%s' "$KEY_LINE" | grep -q "^no key"; then
       say "API KEYS: $KEY_LINE -- nothing can run until the Keychain item exists"
+      page_clear api-keys-paused
       page_once api-keys-missing "kipi dispatch: the fleet has no API key in the Keychain ($KEY_LINE), so no run starts and nothing here can create it. Every run would exit 4 with no spend row. Do: add the item for each slot (service kipi-fleet-api-key-1 / -2), then the next tick starts on its own."
       exit 0
     fi
     if [ "$KEY_RC" != "0" ]; then
       say "API KEYS: both credits read as exhausted; paused until the next budget day re-probes"
+      page_clear api-keys-missing
       page_once api-keys-paused "kipi dispatch: both Ultra API credits read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
       exit 0
     fi
