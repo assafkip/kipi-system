@@ -194,6 +194,39 @@ check("offending_cron_lines returns numbers, not text",
 check("a clean crontab yields no numbers",
       fh.offending_cron_lines("0 3 * * * /usr/bin/rsync -a ~/a ~/b\n"), [])
 
+# --- ASK-4311: the fleet door is allowed, any other keyed run is flagged ------
+# A keyed line is not "cannot authenticate": with the key on the line it CAN, and
+# it bills an API key no meter, budget or failover sees. So it is its own finding
+# with its own reason. The fleet's sanctioned keyed path, the door, never puts
+# `claude` in command position, so no shape of it is ever flagged.
+_KEYED_CRON = (
+    "# keyed lines\n"
+    "0 3 * * * ANTHROPIC_API_KEY=sk-ant-fake claude -p sweep\n"
+    "0 4 * * * env ANTHROPIC_API_KEY=sk-ant-fake /opt/homebrew/bin/claude -p x\n"
+    "0 5 * * * bash -lc 'ANTHROPIC_API_KEY=sk-ant-fake claude -p y'\n"
+    "0 6 * * * claude -p plain\n"
+)
+_keyed = {f["subject"]: f for f in fh.detect_cron_shells_claude(None, cron_text=_KEYED_CRON)}
+check("ASK-4311: a keyed run is its own finding, cron-keyed-claude",
+      sorted(_keyed), ["cron-keyed-claude", "cron-shells-claude"])
+check("ASK-4311: the keyed finding names lines 2, 3 and 4",
+      all(f"line {n}" in _keyed.get("cron-keyed-claude", {}).get("body", "") for n in (2, 3, 4)), True)
+check("ASK-4311: the keyed finding names the door as the way to bill a key",
+      "fleet-claude.sh" in _keyed.get("cron-keyed-claude", {}).get("body", ""), True)
+check("ASK-4311: the keyed finding carries no key text",
+      "sk-ant-fake" in str(_keyed.get("cron-keyed-claude")), False)
+check("ASK-4311: the unkeyed line stays a cannot-authenticate finding, alone",
+      [n for n in (2, 3, 4, 5) if f"line {n}" in _keyed.get("cron-shells-claude", {}).get("body", "")], [5])
+check("ASK-4311: keyed_cron_lines returns numbers", fh.keyed_cron_lines(_KEYED_CRON), [2, 3, 4])
+_DOOR_CRON = (
+    "0 3 * * * /x/q-system/.q-system/scripts/fleet-claude.sh -p sweep\n"
+    "0 4 * * * ANTHROPIC_API_KEY=sk-ant-fake /x/q-system/.q-system/scripts/fleet-claude.sh -p y\n"
+    "0 5 * * * python3 /x/q-system/.q-system/scripts/fleet_api_key.py exec -- claude -p z\n"
+    "0 6 * * * bash -lc 'KIPI_AGENT=x /x/fleet-claude.sh -p w'\n"
+)
+check("ASK-4311: no shape of the fleet door is flagged",
+      fh.detect_cron_shells_claude(None, cron_text=_DOOR_CRON), [])
+
 # The redaction machinery is GONE, not tightened. Named explicitly because the
 # failure mode this issue exists to stop is someone re-adding a pattern table.
 for _dead in ("_redact_secrets", "_ASSIGNMENT_RE", "_SECRET_PATTERNS"):

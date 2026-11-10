@@ -954,6 +954,53 @@ def offending_cron_lines(cron: str) -> list:
             if _shells_claude(_cron_command(line))]
 
 
+# A line that sets the key ITSELF, at a word start: `ANTHROPIC_API_KEY=x claude`,
+# `env ANTHROPIC_API_KEY=x claude`, or the same inside a `bash -lc '...'` string.
+# `env -u ANTHROPIC_API_KEY` carries no `=` and is the plan, not a keyed run.
+_KEYED_RE = re.compile(r"""(^|[\s;&|(`'"])ANTHROPIC_API_KEY=""")
+
+
+def keyed_cron_lines(cron: str) -> list:
+    """1-based line NUMBERS of the crontab lines that run `claude` on a key they set.
+
+    WHY ITS OWN LIST (ASK-4311). Such a line is not "cannot authenticate": the key
+    is on the line, so it runs, and it bills an API key that no meter, daily budget
+    or failover sees. The fleet's one sanctioned keyed path is the key door
+    (fleet-claude.sh, fleet_door.py, fleet_api_key.py exec), and the door never
+    puts `claude` in command position, so `_shells_claude` never scores it and no
+    shape of the door lands here. A door line in a crontab would still refuse
+    every run, since cron cannot read the Keychain, but it says so itself: the
+    door writes a `no_key` event that the daily credit report carries.
+    """
+    return [number for number, line in enumerate(cron.splitlines(), start=1)
+            if _shells_claude(_cron_command(line))
+            and _KEYED_RE.search(_strip_comment(_cron_command(line)))]
+
+
+def _keyed_cron_finding(numbers: list) -> dict:
+    return {
+        "subject": "cron-keyed-claude",
+        "title": (f"{len(numbers)} crontab line(s) run `claude` on an API key outside "
+                  "the fleet key door"),
+        "body": (
+            f"**{len(numbers)} crontab line(s) set `ANTHROPIC_API_KEY` themselves "
+            "and run `claude`.** Run `crontab -l | cat -n` and read:\n\n"
+            + "\n".join(f"- line {n}" for n in numbers)
+            + "\n\nThe lines are deliberately NOT copied here: a line that carries a "
+              "key is the line most likely to leak one, and a Linear issue is "
+              "permanent (ASK-204).\n\n"
+              "A keyed run bills an Anthropic API key with no meter, no daily budget "
+              "and no failover. The fleet bills its keys through ONE door "
+              "(ASK-4311), which reads the key from the Keychain, never a command "
+              "line, and records what each run cost.\n\n"
+              "## Action\nMove the job to a LaunchAgent and call "
+              "`q-system/.q-system/scripts/fleet-claude.sh` (shell) or "
+              "`fleet_door.run` (Python) instead of setting the key on the line. "
+              "Then rotate the key that was written into the crontab."
+        ),
+    }
+
+
 def detect_cron_shells_claude(ctx, cron_text=None) -> list:
     """A crontab line that invokes `claude`. It cannot work: cron has no keychain.
 
@@ -977,10 +1024,12 @@ def detect_cron_shells_claude(ctx, cron_text=None) -> list:
     blind run is reported as an error rather than as a clean bill of health.
     """
     cron = _crontab_for(ctx, cron_text)
-    numbers = offending_cron_lines(cron)
+    keyed = keyed_cron_lines(cron)
+    numbers = [n for n in offending_cron_lines(cron) if n not in keyed]
+    findings = [_keyed_cron_finding(keyed)] if keyed else []
     if not numbers:
-        return []
-    return [{
+        return findings
+    return findings + [{
         "subject": "cron-shells-claude",
         "title": f"{len(numbers)} crontab line(s) shell `claude` — cron has no keychain access",
         "body": (
