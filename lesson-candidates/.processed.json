@@ -1205,5 +1205,29 @@
     "status": "published",
     "date": "2026-11-09",
     "lesson_id": "review-third-party-code-through-your-own-fork"
+  },
+  "a142491d43aebd98": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-10",
+    "lesson_id": "make-the-enforced-path-cheaper-than-the-documented-path"
+  },
+  "92bc96a53c848c67": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-10",
+    "lesson_id": "read-the-executor-before-invoking-it-make-tools-fail-early-a"
+  },
+  "870dd1de2c00b234": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-10",
+    "lesson_id": "re-point-every-check-when-a-removed-variant-comes-back"
+  },
+  "8b49df8a6085c9f8": {
+    "instance": "redacted",
+    "status": "published",
+    "date": "2026-11-10",
+    "lesson_id": "guard-the-invariant-once-not-each-branch-that-a-review-names"
   }
 }

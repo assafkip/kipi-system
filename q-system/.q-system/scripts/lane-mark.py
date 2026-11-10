@@ -13,6 +13,7 @@ lane_marker).
     lane-mark.py touch ASK-4011            # push the expiry out again
     lane-mark.py end   ASK-4011            # the lane is done: the fleet may act
     lane-mark.py sync                      # re-derive lanes.state, touch no marker
+    lane-mark.py hold ASK-3834 --on ASK-4195   # the lane waits on ASK-4195 (RULE-2026-11-09-B)
 
 The marker is ~/.config/kipi/lanes/<ID>.json (KIPI_LANES_DIR overrides it):
 {"issue", "agent", "since", "until", "pr", "worktree"}. It expires by itself at
@@ -20,7 +21,7 @@ The marker is ~/.config/kipi/lanes/<ID>.json (KIPI_LANES_DIR overrides it):
 `end` sets "until" to now and keeps the file, which is the record that the lane
 ran.
 
-ALSO THE ONE WRITER OF THE WATCHDOG STATE FILE (ASK-3932). Every op rewrites
+ALSO THE ONE WRITER OF THE WATCHDOG STATE FILE (ASK-3932). Every liveness op (not hold, which changes no liveness field) rewrites
 <lanes dir>/lanes.state from the live markers, one `label pr worktree` line each,
 which is what lane-watchdog.py reads. 2026-11-06 cost 11.5 hours because the
 waker was session-local and died with the session; hanging the state file off the
@@ -33,9 +34,18 @@ start/touch/end -- which for a lane that died without `end` never comes -- and
 the watchdog paged STALL on that ghost in 0.1s on every arm, forever (claude
 review of PR #706, round 1). Two parsers of one marker format is the defect this
 avoids: `sync` keeps the derivation in exactly one place.
+
+HOLD (ASK-4306, RULE-2026-11-09-B). Founder, 2026-11-09: "No agent can be waiting on
+things that are never gonna get done... It should be fixed in code." `hold` records
+what the lane waits on, and REFUSES (exit 1) unless wait-has-consumer.py names a
+consumer for the blocker: an owned open PR, a ticket the worker would pick, or a
+ticket In Progress with a live marker or claim. The scar: ASK-3834's lane held on
+two spillover tickets the fleet-alert path files and the worker skips. A check that
+cannot run refuses too, because "could not look" is not "something will do it".
 """
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -134,9 +144,80 @@ def write_state(now: datetime) -> str:
     return path
 
 
+def load_consumer_module():
+    """wait-has-consumer.py, loaded from beside this file. One rule, one place."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wait-has-consumer.py")
+    spec = importlib.util.spec_from_file_location("wait_has_consumer_for_lane", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def check_blocker(blocker: str, waiter: str = ""):
+    """(True, consumer) or (False, why). Raises ValueError for a bad ref, else when the check cannot look."""
+    return load_consumer_module().consumer_for(blocker, waiter)
+
+
+def hold(a, path: str, cur: dict, now: datetime) -> int:
+    if not a.on:
+        print("lane-mark: hold needs --on <ASK-id | owner/repo#N>, the blocker the lane waits on", file=sys.stderr)
+        return 64
+    if not cur:
+        print(f"lane-mark: no lane marker for {a.issue} to hold; run start first", file=sys.stderr)
+        return 1
+    until0 = parse_stamp(cur.get("until"))
+    if cur.get("ended") or not until0 or until0 <= now:
+        print(f"lane-mark: {a.issue} has ended or expired; start it again before a hold", file=sys.stderr)
+        return 1
+    try:
+        ok, text = check_blocker(a.on, a.issue)
+    except ValueError as exc:
+        # A typo in --on is the caller's, not the infrastructure's: 64, never retried.
+        print(f"lane-mark: hold: {exc}", file=sys.stderr)
+        return 64
+    except Exception as exc:
+        # FAIL CLOSED: a check that could not run is not a consumer.
+        print(f"lane-mark: hold on {a.on} refused: the consumer check could not run ({str(exc)[:140]})", file=sys.stderr)
+        return 1
+    if not ok:
+        print(f"lane-mark: hold on {a.on} refused. {text}", file=sys.stderr)
+        return 1
+    # THE CHECK ABOVE TAKES SECONDS (Linear, gh), SO `cur` IS STALE BY NOW (PR #712
+    # review, round 2). Writing it back would erase an `end` that landed meanwhile
+    # and give the lane its 24h back. So under the lanes lock the marker is read
+    # AGAIN and only its `holds` key is changed; a marker that ended, expired or
+    # vanished in the meantime refuses the hold.
+    os.makedirs(lanes_dir(), exist_ok=True)
+    with open(lock_path(), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            try:
+                fresh = json.load(open(path))
+            except (OSError, ValueError):
+                fresh = {}
+            until = parse_stamp(fresh.get("until"))
+            if not fresh or fresh.get("ended") or not until or until <= now:
+                print(f"lane-mark: hold on {a.on} refused: the {a.issue} marker ended, expired or vanished "
+                      f"while the consumer was checked", file=sys.stderr)
+                return 1
+            holds = [h for h in fresh.get("holds") or [] if isinstance(h, dict) and h.get("on") != a.on]
+            holds.append({"on": a.on, "consumer": text, "at": stamp(now)})
+            fresh["holds"] = holds
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(fresh, fh, indent=1)
+            os.replace(tmp, path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    # No write_state: hold changes no liveness field, so lanes.state is unchanged.
+    print(f"lane-mark: {a.issue} hold: {a.on} has a consumer: {text}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("op", choices=("start", "touch", "end", "sync"))
+    ap.add_argument("op", choices=("start", "touch", "end", "sync", "hold"))
+    ap.add_argument("--on", default="", help="hold: the blocker (ASK-123 or owner/repo#N) the lane waits on")
     ap.add_argument("issue", nargs="?", default="")
     ap.add_argument("--agent", default=os.environ.get("KIPI_AGENT", ""))
     ap.add_argument("--hours", type=float, default=24.0)
@@ -158,7 +239,7 @@ def main(argv=None) -> int:
             return 1
         return 0
     if not a.issue:
-        print("lane-mark: start, touch and end need an issue id", file=sys.stderr)
+        print("lane-mark: start, touch, end and hold need an issue id", file=sys.stderr)
         return 64
     if not 0 < a.hours <= 72:
         print("lane-mark: --hours runs from more than 0 to 72", file=sys.stderr)
@@ -170,6 +251,8 @@ def main(argv=None) -> int:
         cur = json.load(open(path))
     except (OSError, ValueError):
         cur = {}
+    if a.op == "hold":
+        return hold(a, path, cur, now)
     if a.op in ("touch", "end") and not cur:
         print(f"lane-mark: no lane marker for {a.issue} to {a.op}", file=sys.stderr)
         return 1
