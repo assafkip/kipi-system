@@ -1204,8 +1204,17 @@ def main():
             f"{exc}\n")
         sys.exit(2)
 
+    # WHY UNDER THE INSTANCE ROOT (ASK-4277): voice_suppressions.check() leaves a draft
+    # OUTSIDE the root on the old marker behaviour. A system-temp draft is outside it,
+    # so a chat draft carrying the in-file skip marker cleared this gate, which the
+    # rule says honors no marker. Inside the root the K7 switch applies to it.
+    tmp_dir = INSTANCE_ROOT / ".voice-stop-gate-tmp"
+    try:
+        tmp_dir.mkdir(exist_ok=True)
+    except OSError:
+        tmp_dir = None  # read-only tree: fall back to system temp, as before
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", delete=False, encoding="utf-8"
+        mode="w", suffix=".md", delete=False, encoding="utf-8", dir=tmp_dir
     ) as tmp:
         tmp.write(draft)
         tmp_path = tmp.name

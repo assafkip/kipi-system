@@ -16,7 +16,9 @@ non-blocking, so one bad row would fail the gate OPEN for every draft. A bad fil
 row therefore suppresses nothing and comes back as a note naming the file.
 
 THE SWITCH: an instance that HAS the file (present, even if unreadable) no longer
-honours in-file markers. Breaking the file must not bring the old bypass back.
+honours in-file markers, for a draft inside the instance root. A draft outside the root
+cannot be named by any legal row, so it keeps the pre-K7 marker (ASK-4277); the Stop
+gate therefore writes its temp draft under the root. Breaking the file must not bring the old bypass back.
 Without the file every lint behaves exactly as before K7 and this module says nothing.
 
 Discovery (PRD "Shared discovery rule"): root is $CLAUDE_PROJECT_DIR, else the git
@@ -55,7 +57,7 @@ _GLOB_CHARS = frozenset("*?[]{}")
 
 
 class Decision:
-    """present: the instance has the file (in-file markers are off).
+    """present: the instance has the file and the draft is inside its root (in-file markers are off).
     skip: a valid, live row names this draft. notes: every line the lint must print."""
 
     def __init__(self, present=False, skip=False, notes=None, source=None):
@@ -240,6 +242,12 @@ def check(file_path):
     try:
         root = _instance_root_for(file_path)
         if root is None:
+            return Decision()
+        # ASK-4277: a draft outside the root (sibling repo, or the temp file
+        # voice-stop-gate lints) can never be named by a legal row, because '..' and
+        # absolute paths are refused. Switching its marker off would leave it with no
+        # way to be suppressed, so out of root the lints behave as before K7.
+        if not _rel_paths(file_path, root):
             return Decision()
         try:
             q_dir = _load_ledger().instance_root(root, allow_unregistered=True)
