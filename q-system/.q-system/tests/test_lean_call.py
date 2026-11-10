@@ -51,6 +51,9 @@ def stub(tmp_path, monkeypatch):
         # builtins only: `ls` is NOT on the sealed PATH, and a missing ls
         # prints nothing, which reads exactly like an empty dir.
         'for f in * .[!.]*; do [ -e "$f" ] && echo "$f"; done > "$LEAN_REC.ls"\n'
+        # Which key the call was billed to: the fleet key through the door, or
+        # none (the plan) when a call follows a founder session (ASK-4311).
+        'printf "%s" "${ANTHROPIC_API_KEY:-plan}" > "$LEAN_REC.key"\n'
         "printf '%s\\n' \"$LEAN_STUB_OUT\"\n")
     exe.chmod(0o755)
     monkeypatch.setenv("PATH", str(bindir))
@@ -58,15 +61,28 @@ def stub(tmp_path, monkeypatch):
     monkeypatch.setenv("LEAN_STUB_OUT", "CLEAN")
     monkeypatch.setenv("KIPI_CLAUDE_BIN", str(exe))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The fleet door's fixtures: a fake key and ledgers in the case's tmpdir.
+    monkeypatch.setenv("KIPI_TEST", "1")
+    monkeypatch.setenv("KIPI_FLEET_FAKE_KEY_1", FLEET_KEY)
+    for var, name in (("KIPI_FLEET_SPEND_LEDGER", "spend.jsonl"),
+                      ("KIPI_FLEET_EVENTS", "events.jsonl"), ("KIPI_FLEET_STATE", "state.json")):
+        monkeypatch.setenv(var, str(tmp_path / name))
+    for var in ("KIPI_FLEET_KEY_SLOT", "KIPI_FLEET_RUN", "KIPI_FLEET_API_KEYS", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
 
     def last():
         argv = Path(str(rec) + ".argv").read_bytes().split(b"\0")[:-1]
         return {"argv": [a.decode() for a in argv],
                 "cwd": Path(str(rec) + ".cwd").read_text().strip(),
-                "ls": Path(str(rec) + ".ls").read_text().strip()}
+                "ls": Path(str(rec) + ".ls").read_text().strip(),
+                "key": Path(str(rec) + ".key").read_text()}
     last.exe = str(exe)
     return last
 
+
+FLEET_KEY = "fake-fleet-key-1"
+#: What the fleet door appends so the run reports its own cost (fleet_api_key.py).
+DOOR_FLAGS = ["--output-format", "json"]
 
 LEAN_TAIL = ["--setting-sources", "", "--no-session-persistence",
              "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
@@ -76,6 +92,8 @@ LEAN_TAIL = ["--setting-sources", "", "--no-session-persistence",
 
 def _is_lean(call, test_cwd):
     argv = call["argv"]
+    if argv[-2:] == DOOR_FLAGS:
+        argv = argv[:-2]  # the door's meter flags ride after the lean tail
     tail_ok = argv[-len(LEAN_TAIL):] == LEAN_TAIL
     cwd_ok = (call["ls"] == "" and Path(call["cwd"]).resolve() != Path(test_cwd).resolve()
               and Path(call["cwd"]).name.startswith("kipi-lean-"))
@@ -148,6 +166,8 @@ def test_dor_drafter_call_is_lean(stub, monkeypatch):
     body, why = dor.draft_one(issue, timeout=20)
     assert body and not why, why
     assert _is_lean(stub(), os.getcwd()) == (True, True), stub()
+    # Unattended fleet work: billed to the fleet key through the door (ASK-4311).
+    assert stub()["key"] == FLEET_KEY and stub()["argv"][-2:] == DOOR_FLAGS, stub()
 
 
 def test_triage_call_is_lean(stub, monkeypatch):
@@ -158,15 +178,24 @@ def test_triage_call_is_lean(stub, monkeypatch):
              "labels": {"nodes": []}, "project": None, "createdAt": "2026-01-01T00:00:00Z"}
     tri.judge_batch([issue], timeout=20)
     assert _is_lean(stub(), os.getcwd()) == (True, True), stub()
+    # Run by hand, so it follows its caller (ASK-4311): a founder session's
+    # pass stays on his plan, a fleet run's pass bills the fleet key.
+    assert stub()["key"] == "plan" and DOOR_FLAGS[0] not in stub()["argv"], stub()
+    monkeypatch.setenv("KIPI_FLEET_RUN", "1")
+    tri.judge_batch([issue], timeout=20)
+    assert _is_lean(stub(), os.getcwd()) == (True, True), stub()
+    assert stub()["key"] == FLEET_KEY, stub()
 
 
 def test_lessons_distill_calls_are_lean(stub, monkeypatch):
     ld = _load("ld_lean", "lessons-distill.py")
     ld.llm_verify_clean("some text", "real")
     assert _is_lean(stub(), os.getcwd()) == (True, True), stub()
+    assert stub()["key"] == FLEET_KEY, stub()  # unattended: the fleet key (ASK-4311)
     monkeypatch.setenv("LEAN_STUB_OUT", '{"title":"t","body":"b","kind":"pattern"}')
     assert ld.distill_with_claude("t", "c")
     assert _is_lean(stub(), os.getcwd()) == (True, True), stub()
+    assert stub()["key"] == FLEET_KEY, stub()
 
 
 # --- LIVE: one real call, measured ------------------------------------------

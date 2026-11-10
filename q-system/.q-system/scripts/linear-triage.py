@@ -75,6 +75,7 @@ from pathlib import Path
 # settings, no tools unless declared). RCA 2026-10-06 root cause #3.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lean_call  # noqa: E402
+import fleet_door  # noqa: E402  (ASK-4311: who pays for the call)
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
@@ -370,14 +371,11 @@ def render_issue(i: dict, ev: list, flags: list) -> str:
             f"description:\n{body[:1800]}\n")
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: No launchd job runs this pass; an agent runs it by hand inside some session.
+#: So the call FOLLOWS ITS CALLER (ASK-4311): inside a fleet run it bills a fleet
+#: API key through the metered door, inside the founder's own session it stays on
+#: his plan with any inherited key stripped, exactly as before.
+DOOR_ACTOR = "linear-triage"
 
 
 def judge_batch(batch: list, timeout: int) -> tuple:
@@ -402,7 +400,8 @@ def judge_batch(batch: list, timeout: int) -> tuple:
     try:
         res = lean_call.run([binary, "-p", prompt],
                              capture_output=True, text=True, timeout=timeout,
-                             stdin=subprocess.DEVNULL, env=_subscription_env(),
+                             stdin=subprocess.DEVNULL,
+                             runner=fleet_door.runner_for_caller(DOOR_ACTOR),
                              job="fleet-triage")  # the routing table's row (ASK-4013)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"claude call failed ({type(exc).__name__} after {timeout}s)"

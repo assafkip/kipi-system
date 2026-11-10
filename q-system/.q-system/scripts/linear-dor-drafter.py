@@ -65,6 +65,8 @@ from pathlib import Path
 # settings, no tools unless declared). RCA 2026-10-06 root cause #3.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lean_call  # noqa: E402
+# Billed to a fleet API key through the one metered door (ASK-4311).
+import fleet_door  # noqa: E402
 from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
@@ -756,8 +758,9 @@ def runner_refusal(text: str, success: bool = False) -> tuple:
     the marker only (with a note) on a successful one. `local` is always the whole
     line, for this Mac's own log, so the reset clause is never lost (PR #640 r1).
 
-    Popen, not subprocess.run: the failure-reporting test replaces subprocess.run
-    to stand in for claude, and the classifier must not be mistaken for a call.
+    Popen, not subprocess.run: the classifier must never be mistaken for the
+    model call. The failure-reporting test stands in for claude at the fleet door
+    (fleet_door.run) since ASK-4311, and replaced subprocess.run before that.
     """
     if not text:
         return "", ""
@@ -786,14 +789,12 @@ def runner_refusal(text: str, success: bool = False) -> tuple:
     return local, local
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: The drafter is unattended fleet work (com.kipi.linear-dor at 03:00, and
+#: cap-ladder's re-scope rung), so every draft bills a fleet API key through the
+#: one metered door rather than the founder's plan (ASK-4311). It never falls
+#: back to the plan: with no key the door exits 4 and draft_one reports
+#: "claude exited rc=4", the same way any failed call is reported.
+DOOR_ACTOR = "dor-drafter"
 
 
 def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
@@ -850,7 +851,7 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             # is general: a merged fix is not a deployed one here.
             [binary, "-p", prompt],
             capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL, env=_subscription_env(),
+            stdin=subprocess.DEVNULL, runner=fleet_door.runner(DOOR_ACTOR),
             job="dor-drafting",  # the model is the routing table's row (ASK-4013)
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

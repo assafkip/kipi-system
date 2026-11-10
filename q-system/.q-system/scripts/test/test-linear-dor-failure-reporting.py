@@ -229,7 +229,7 @@ class _Res:
         self.returncode, self.stdout, self.stderr = rc, out, ""
 
 
-_real_run = dor.subprocess.run
+_real_run = dor.fleet_door.run
 _reasons = []
 try:
     dor.shutil.which = lambda _name: str(_fake_bin)
@@ -238,20 +238,35 @@ try:
     def _raises(*_a, **_k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=5)
 
-    dor.subprocess.run = _raises
+    dor.fleet_door.run = _raises
     _reasons.append(dor.draft_one(_issue, 5)[1])
 
-    dor.subprocess.run = lambda *_a, **_k: _Res(1, "")
+    dor.fleet_door.run = lambda *_a, **_k: _Res(1, "")
     _reasons.append(dor.draft_one(_issue, 5)[1])
 
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, "the model wrote prose instead " * 5)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, "the model wrote prose instead " * 5)
     _reasons.append(dor.draft_one(_issue, 5)[1])
 
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, _good_dor)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, _good_dor)
     _ok_body, _ok_reason = dor.draft_one(_issue, 5)
 finally:
-    dor.subprocess.run = _real_run
+    dor.fleet_door.run = _real_run
     dor.shutil.which = _real_which
+
+# THE DRAFTER BILLS A FLEET KEY (ASK-4311). The stand-ins above sit at the door,
+# so this proves the door is where the call goes: a drafter that called
+# subprocess.run itself would bypass every stand-in here and this line goes red.
+_door_seen = []
+_real_door = dor.fleet_door.run
+try:
+    dor.shutil.which = lambda _name: str(_fake_bin)
+    dor.fleet_door.run = lambda cmd, actor, **_k: (_door_seen.append((actor, list(cmd))), _Res(0, _good_dor))[1]
+    dor.draft_one({"identifier": "ASK-1", "title": "t", "description": ""}, 5)
+finally:
+    dor.fleet_door.run = _real_door
+    dor.shutil.which = _real_which
+check("ASK-4311: the draft call goes through the fleet key door as dor-drafter",
+      [(a, c[:2]) for a, c in _door_seen], [("dor-drafter", [str(_fake_bin), "-p"])])
 
 check("a timeout names itself", "TimeoutExpired" in _reasons[0], True)
 check("a non-zero exit names its code", "rc=1" in _reasons[1], True)
@@ -521,7 +536,7 @@ finally:
 # length only (ASK-204: a permanent record carries no untrusted text).
 LIMIT_TEXT = "You've hit your weekly limit · resets 6am (America/Los_Angeles)"
 _calls = []
-_real_run2, _real_which2 = dor.subprocess.run, dor.shutil.which
+_real_run2, _real_which2 = dor.fleet_door.run, dor.shutil.which
 try:
     dor.shutil.which = lambda _name: str(_fake_bin)
 
@@ -533,16 +548,16 @@ try:
         _calls.append(1)
         return _Res(0, LIMIT_TEXT)
 
-    dor.subprocess.run = _limited
+    dor.fleet_door.run = _limited
     _lim_body, _lim_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
     check("ASK-278: a usage-limit refusal is named in the reason", "weekly limit" in _lim_reason, True)
     check("ASK-278: it is marked as the runner's, not the issue's",
           _lim_reason.startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), True)
-    dor.subprocess.run = lambda *_a, **_k: _Res(1, "Traceback: secret=abc123 in the issue body\n")
+    dor.fleet_door.run = lambda *_a, **_k: _Res(1, "Traceback: secret=abc123 in the issue body\n")
     _other = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-278: any other output stays a length, never its text", "secret" in _other, False)
     # THE MEASURED SHAPE EXITS 0 (ASK-873, PR #637 round 1): the same line, rc 0.
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
     _rc0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-278: the refusal is named when claude exits 0 too",
           _rc0.startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), True)
@@ -550,7 +565,7 @@ try:
     # the control must be a draft draft_one keeps, or it proves nothing (ASK-3980).
     _draft = ("- **Outcome:** the thing is done\n- **Check:** run the test, it goes red then green\n"
               "- **Files:** q-system/.q-system/scripts/x.py\n\n**Energy:** Quick Win \u00b7 **Time Est:** 1 hour")
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, _draft)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, _draft)
     _ok_body, _ok_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
     check("ASK-278: a real draft that mentions nothing is never a refusal",
           (_ok_reason or "").startswith(getattr(dor, "RUNNER_REFUSED", "\x00")), False)
@@ -559,12 +574,12 @@ try:
     # prompt carries the issue body verbatim, so a one-line answer shaped like a
     # refusal must not carry its tail onto the permanent failure issue (ASK-204).
     _poison = "You have hit your weekly limit - resets 6am. AWS_SECRET=AKIAEXFIL44 copied out of the issue body"
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, _poison)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, _poison)
     _p_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-3980: at rc 0 the reason names the limit", "weekly limit" in _p_reason, True)
     check("ASK-3980: at rc 0 nothing after the marker reaches the reason", "AKIAEXFIL44" in _p_reason, False)
     # A FAILED exit is the CLI speaking, so its whole line, reset clause included, is kept.
-    dor.subprocess.run = lambda *_a, **_k: _Res(1, LIMIT_TEXT)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(1, LIMIT_TEXT)
     check("ASK-3980: at rc 1 the CLI's reset clause is kept",
           "resets 6am" in dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1], True)
     # A MISSING CLASSIFIER SAYS SO, instead of silently reverting to the length.
@@ -575,14 +590,14 @@ try:
     check("ASK-3980: a missing env-failure-lib.sh is named in the reason", "classifier missing" in _m_reason, True)
     # ...on the measured rc 0 shape too, which lands on the draft check (PR #640 r1).
     dor.ENV_LIB = SANDBOX / "no-such-env-failure-lib.sh"
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
     _m0 = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     dor.ENV_LIB = _real_lib
     check("ASK-3980: at rc 0 a missing env-failure-lib.sh is named too", "classifier missing" in _m0, True)
     # The reset clause is kept in the LOCAL log on rc 0, never on the filed reason.
     import contextlib, io
     _err = io.StringIO()
-    dor.subprocess.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
+    dor.fleet_door.run = lambda *_a, **_k: _Res(0, LIMIT_TEXT)
     with contextlib.redirect_stderr(_err):
         _l_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)[1]
     check("ASK-3980: at rc 0 the local log keeps the reset clause", "resets 6am" in _err.getvalue(), True)
@@ -591,7 +606,7 @@ try:
     # Through main(): three queued issues and a limited runner. One call, then stop.
     _calls.clear()
     dor.draft_one = _real_draft
-    dor.subprocess.run = _limited
+    dor.fleet_door.run = _limited
     dor.STATE = SANDBOX / "state-278.json"
     dor._linear = lambda: FakeLinear()
     dor.fetch_draftable = lambda ls_, tid: [
@@ -604,12 +619,12 @@ try:
     check("ASK-278: the issues it did not reach stay queued", _saved.get("remaining"), 3)
     # And through main() at rc 0, the shape the fleet actually saw.
     _calls.clear()
-    dor.subprocess.run = _limited_rc0
+    dor.fleet_door.run = _limited_rc0
     dor.STATE = SANDBOX / "state-278-rc0.json"
     dor.main()
     check("ASK-278: at rc 0 a limited runner still costs ONE call", len(_calls), 1)
 finally:
-    dor.subprocess.run, dor.shutil.which = _real_run2, _real_which2
+    dor.fleet_door.run, dor.shutil.which = _real_run2, _real_which2
     dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv
     dor.STATE, dor.fetch_draftable = _real_state, _real_fetch
 

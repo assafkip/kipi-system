@@ -37,6 +37,7 @@ from pathlib import Path
 # settings, no tools unless declared). RCA 2026-10-06 root cause #3.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lean_call  # noqa: E402
+import fleet_door  # noqa: E402  (ASK-4311: billed to a fleet API key)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS = Path(__file__).resolve().parent
@@ -165,14 +166,11 @@ def rca_title(text):
     return m.group(1).strip() if m else "untitled"
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: Unattended fleet work (com.kipi.lessons-daily runs lessons-daily.sh, which
+#: runs this), so both calls bill a fleet API key through the one metered door
+#: (ASK-4311). With no key the door exits 4: the distill returns None and the
+#: verify fails closed, the same as any failed call, never a plan fallback.
+DOOR_ACTOR = "lessons-distill"
 
 
 def distill_with_claude(title, cause):
@@ -185,7 +183,8 @@ def distill_with_claude(title, cause):
         f"Learning: {title}\nDetail:\n{cause[:1800]}"
     )
     try:
-        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=120,
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=120,
+                          runner=fleet_door.runner(DOOR_ACTOR),
                           job="lesson-distill")  # the routing table's row (ASK-4013)
         m = re.search(r"\{.*\}", r.stdout, re.S)
         obj = json.loads(m.group(0)) if m else None
@@ -205,7 +204,8 @@ def llm_verify_clean(text, mode):
     prompt = ("Does the text contain ANY specific real client, product, person, company, matter, or "
               "identifying number/codename? Reply exactly CLEAN or HELD.\n\n" + text[:2000])
     try:
-        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, env=_subscription_env(), timeout=90,
+        r = lean_call.run(["claude", "-p", prompt], capture_output=True, text=True, timeout=90,
+                          runner=fleet_door.runner(DOOR_ACTOR),
                           job="lesson-verify")  # the routing table's row (ASK-4013)
         return r.stdout.strip().upper().startswith("CLEAN")
     except Exception:
