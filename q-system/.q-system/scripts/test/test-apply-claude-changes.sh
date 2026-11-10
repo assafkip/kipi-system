@@ -514,6 +514,40 @@ else
   echo "  SKIP: apply-then-merge chain (kipi-settings-merge.py is skeleton-only)"
 fi
 
+# ASK-4249 (voicegate K1a): the exit-2 existence guard lands through instance-mode
+# apply with NO new op and NO ratchet exemption. Scar it pins: the first design
+# was a harden op that rewrote a gate hook to fail closed, which needed a ratchet
+# exemption (a sanctioned way to make a hook string vanish). The additive guard
+# only ADDS a hook string, so the ratchet sees growth and nothing else.
+T=$(mktemp -d); mk_fixture "$T"
+rm "$T/settings-template.json"
+mkdir -p "$T/q-inst"; echo "print('gate')" > "$T/q-inst/voice-gate.py"
+python3 - "$T/guard.json" <<'PY2'
+import json, sys
+gate = 'if test -f "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py"; then python3 "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py"; fi'
+guard = 'test -f "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py" || { echo "voice-gate.py missing: the gate cannot run" >&2; exit 2; }'
+group = {"matcher": "Write", "hooks": [{"type": "command", "command": gate}, {"type": "command", "command": guard}]}
+insert = "\n      " + json.dumps(group) + ","
+json.dump({"schema_version": 1, "slug": "instance-guard", "reason": "gate plus its exit-2 existence guard",
+           "edits": [{"file": ".claude/settings.json", "op": "insert_after", "anchor": "\"PostToolUse\": [",
+                      "insert": insert, "reason": "guard beside the gate, same event and matcher"}]},
+          open(sys.argv[1], "w"))
+PY2
+run_engine "$ENGINE" "$T/guard.json" "$T"
+check "instance-mode apply accepts the exit-2 existence guard (ratchet sees growth only)" 0 "OK applied instance-guard" "$RC" "$OUT"
+if python3 - "$T/.claude/settings.json" <<'PY2'
+import json, sys
+post = json.load(open(sys.argv[1]))["hooks"]["PostToolUse"]
+cmds = [h["command"] for g in post for h in g["hooks"]]
+assert any("|| { echo" in c and "exit 2" in c for c in cmds), "guard not written"
+assert any("existing-lint.py" in c for c in cmds), "pre-existing hook lost"
+g = next(g for g in post if any("exit 2" in h["command"] for h in g["hooks"]))
+assert g["matcher"] == "Write" and any(h["command"].startswith("if test -f") for h in g["hooks"]), "guard not beside the gate hook"
+PY2
+then ok "guard landed beside the gate hook in the same PostToolUse matcher; existing hook kept"
+else bad "guard missing, misplaced, or an existing hook lost"; fi
+rm -r "$T"
+
 # ---------------------- 8d. the fleet merge and an apply never interleave (ASK-3880)
 # Instance mode made this engine a second writer of an instance's
 # .claude/settings.json, next to kipi-settings-merge.py on the fleet update path.

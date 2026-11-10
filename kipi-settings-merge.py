@@ -185,7 +185,13 @@ def _only_retired(command, retired):
 
 def hook_key(command):
     """Identity of a hook command for dedup: the set of script identities it
-    invokes (see hook_script_names), or the raw string when none is recognizable."""
+    invokes (see hook_script_names), or the raw string when none is recognizable.
+    Contract (ASK-4249): an instance PostToolUse gate may carry a SEPARATE entry
+    `test -f "$CLAUDE_PROJECT_DIR/<p>" || { echo ...; exit 2; }` beside its own
+    hook. What keeps it is the script basename repeated in the echo message,
+    which adds a second key element; the braces do not. A guard whose message
+    omits the basename keys like the hook and is dropped. Pinned by
+    test-settings-merge.sh."""
     names = hook_script_names(command)
     return names if names else command
 

@@ -10,7 +10,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
-MERGE="$REPO_ROOT/kipi-settings-merge.py"
+# Ref hatch: SETTINGS_MERGE=<mutated merge, kipi-retired-hooks.json beside it> shows the guard cases red.
+MERGE="${SETTINGS_MERGE:-$REPO_ROOT/kipi-settings-merge.py}"
 # Skeleton-only harness: instances receive this test via sync but not the
 # merge script (repo-root files do not propagate). No-op there.
 [ -f "$MERGE" ] || { echo "SKIP: kipi-settings-merge.py absent (instance)"; exit 0; }
@@ -496,5 +497,98 @@ assert not outside, "template hook scripts outside q-system/:\n  " + "\n  ".join
 assert not path_ids, "template hooks the merge keys by path: %s" % sorted(set(path_ids))
 print("ok: all %d template hook script references lead with q-system/" % refs)
 EOF
+
+# ASK-4249 (voicegate K1a): an instance PostToolUse gate whose script is missing
+# is a silent no-op under the usual `if test -f ...; then ...; fi` wrapper, so the
+# gate stops gating and nothing says so. The fix is ADDITIVE: a separate entry in
+# the same event and matcher, `test -f X || { echo ...; exit 2; }`, that fails
+# loud. It only works if the merge keeps it beside the gate's own hook. Scar: the
+# merge keys hooks by the script they invoke, so a guard spelled like the hook
+# reads as a duplicate and is dropped. The guard's echo message repeats the script
+# basename, which adds a second key element; the bare `[ -f X ] || exit 2` form has
+# no such element, and is the negative control.
+cat > "$FIXTURE/template4.json" <<'EOF'
+{"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [
+  {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""}]}]}}
+EOF
+cat > "$FIXTURE/instance4.json" <<'EOF'
+{"hooks": {"PostToolUse": [{"matcher": "Edit|Write", "hooks": [
+  {"type": "command", "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py\"; fi"},
+  {"type": "command", "command": "test -f \"$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py\" || { echo \"voice-gate.py missing: the gate cannot run\" >&2; exit 2; }"}]}]}}
+EOF
+cp "$FIXTURE/instance4.json" "$FIXTURE/instance4-bare.json"
+python3 - "$FIXTURE/instance4-bare.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["hooks"]["PostToolUse"][0]["hooks"][1]["command"] = '[ -f "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py" ] || exit 2'
+json.dump(d, open(sys.argv[1], "w"))
+EOF
+OUT1=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4.json")
+OUT2=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4.json")
+OUTB=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4-bare.json")
+python3 - "$FIXTURE/instance4.json" "$FIXTURE/instance4-bare.json" "$OUT1$OUT2" "$OUTB" <<'EOF'
+import json, sys
+def post(p):
+    d = json.load(open(p))["hooks"]["PostToolUse"]
+    assert len(d) == 1 and d[0]["matcher"] == "Edit|Write", "guard must stay in the gate's own event and matcher"
+    return [h["command"] for h in d[0]["hooks"]]
+kept = post(sys.argv[1])
+assert len(kept) == 2, f"guard beside the gate hook did not survive two merges: {kept}"
+assert any(c.startswith("if test -f") for c in kept), "the gate's own hook was lost"
+assert any('|| { echo "voice-gate.py missing: the gate cannot run" >&2; exit 2; }' in c for c in kept), "the exit-2 guard was lost"
+assert "DROPPED" not in sys.argv[3], f"merge reported a drop for the guard: {sys.argv[3]}"
+# Negative self-test: the bare form is a duplicate by key and IS dropped, with a
+# DROPPED line. Without this, the survival check above could not tell a merge
+# that keeps everything from one that keeps the guard.
+bare = post(sys.argv[2])
+assert len(bare) == 1, f"bare [ -f ] guard should have been dropped as a duplicate: {bare}"
+assert "DROPPED" in sys.argv[4] and "|| exit 2" in sys.argv[4], f"the drop was not reported: {sys.argv[4]}"
+EOF
+echo "ok: exit-2 existence guard survives the merge twice; the bare [ -f ] form is dropped and reported"
+
+# PR #704 review: the survivor is the basename in the message, not the braces. A
+# braced guard whose message omits the script name keys like the hook and is dropped.
+cp "$FIXTURE/instance4.json" "$FIXTURE/instance4-nameless.json"
+python3 - "$FIXTURE/instance4-nameless.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["hooks"]["PostToolUse"][0]["hooks"][1]["command"] = 'test -f "$CLAUDE_PROJECT_DIR/q-inst/voice-gate.py" || { echo "gate script missing: the gate cannot run" >&2; exit 2; }'
+json.dump(d, open(sys.argv[1], "w"))
+EOF
+OUTN=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4-nameless.json")
+python3 - "$FIXTURE/instance4-nameless.json" "$OUTN" <<'EOF'
+import json, sys
+cmds = [h["command"] for h in json.load(open(sys.argv[1]))["hooks"]["PostToolUse"][0]["hooks"]]
+assert len(cmds) == 1 and "DROPPED" in sys.argv[2], f"a braced guard that omits the basename must be dropped: {cmds}"
+EOF
+echo "ok: a braced guard whose message omits the script name is dropped (the basename is the survivor)"
+
+# Shell contract of the guard itself, on a temp tree: exit 2 with its message
+# on stderr when the script is missing, exit 0 when present. Run through bash -c
+# as the harness runs a hook command, with CLAUDE_PROJECT_DIR pointing at the tree.
+GUARD=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['hooks']['PostToolUse'][0]['hooks'][1]['command'])" "$FIXTURE/instance4.json")
+GT="$FIXTURE/guard-tree"; mkdir -p "$GT/q-inst"
+set +e
+GERR=$(CLAUDE_PROJECT_DIR="$GT" bash -c "$GUARD" 2>&1 >/dev/null); GRC=$?
+set -e
+[ "$GRC" = 2 ] || { echo "FAIL: guard exited $GRC with the script missing, wanted 2"; exit 1; }
+case "$GERR" in *"voice-gate.py missing: the gate cannot run"*) ;; *) echo "FAIL: guard stderr lacks its message: $GERR"; exit 1;; esac
+echo "print('gate')" > "$GT/q-inst/voice-gate.py"
+set +e
+CLAUDE_PROJECT_DIR="$GT" bash -c "$GUARD" >/dev/null 2>&1; GRC=$?
+set -e
+[ "$GRC" = 0 ] || { echo "FAIL: guard exited $GRC with the script present, wanted 0"; exit 1; }
+echo "ok: guard exits 2 with its message when the script is missing, 0 when present"
+
+# Scope: the guard is for a gate that runs AFTER the action. Wired under a
+# PreToolUse event the same entry would block the very edit that restores the
+# script, which is the lesson a-hook-that-fails-closed-on-a-missing-script-blocks-the-fix-too.
+python3 - "$FIXTURE/instance4.json" <<'EOF'
+import json, sys
+events = [e for e, gs in json.load(open(sys.argv[1]))["hooks"].items()
+          for g in gs for h in g["hooks"] if "exit 2" in h["command"]]
+assert events == ["PostToolUse"], f"the exit-2 guard must be PostToolUse only, found {events}"
+EOF
+echo "ok: the exit-2 guard is scoped to PostToolUse"
 
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"
