@@ -163,8 +163,18 @@ CLAUDE_MODEL="${CLAUDE_MODEL:-opus}"
 # Keychain, meters the run's own reported cost, and fails over key 1 to key 2.
 # Defined here beside the model so both halves of "how this reviewer runs" sit
 # together. Resolved as a path, never as a key: nothing in this file holds one.
-FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
-[ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
+#
+# THE OFF SWITCH IS RESOLVED HERE TOO, not only inside fleet-claude.sh: with
+# KIPI_FLEET_API_KEYS=0 the call is the pre-ASK-4311 `env -u ANTHROPIC_API_KEY
+# claude` byte for byte, so it works in a test skeleton that copies this file
+# without the shim (rc=127 in 9 reviewer suites at c7650286 before this).
+if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; then
+  FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
+  [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
+else
+  echo "pr-review-agent: KIPI_FLEET_API_KEYS=0 -- the review bills the PLAN, not the API credit" >&2
+  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+fi
 CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # Verdict semantics live in ONE place, shared with the worker. Two scripts each
 # grepping the review prose with their own regex is two readers with different

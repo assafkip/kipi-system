@@ -13,6 +13,11 @@
 # has its own test against a frozen copy of that ledger.
 set -uo pipefail
 
+# THE PLAN BRAKE IS UNDER TEST HERE, so these runs bill the plan (ASK-4311). A
+# run billed to a fleet API key skips this brake on purpose; case 6 below drives
+# that path explicitly with KIPI_FLEET_API_KEYS=1.
+export KIPI_FLEET_API_KEYS=0
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKER="$SCRIPT_DIR/../linear-worker.sh"
 TMP="$(mktemp -d)"
@@ -179,6 +184,42 @@ grep -q -- '--dry' "$TMP/argv-apply.txt" \
 grep -q -- '--bot worker-test' "$TMP/argv-apply.txt" \
   && ok "the brake is asked about the bot the worker names" \
   || bad "the brake was not asked about --bot worker-test: $(cat "$TMP/argv-apply.txt")"
+
+# 6. ASK-4311: a run BILLED TO A KEY is not stopped by a PLAN reading. With the
+#    fleet door on, every claude run in the worker bills a Console API key and
+#    spends nothing of the plan; the brakes on key spend are the dispatcher's
+#    daily budget gate and fleet_api_key.py's per-run ceiling. A PAUSING stub
+#    that records whether it was asked: the keyed run must not ask it, must not
+#    exit 3, and must say in its log that the brake was skipped and why.
+mkdir -p "$TMP/state6"
+: > "$TMP/argv-keyed.txt"
+krc="$(KIPI_FLEET_API_KEYS=1 run_worker "$(argstub 3 "$TMP/argv-keyed.txt")" "$TMP/state6")"
+[ "$krc" = "3" ] && bad "THE DEFECT: a key-billed run was stopped by the plan brake (rc=3)" \
+                 || ok "a key-billed run is not stopped by the plan brake (rc=$krc)"
+[ -s "$TMP/argv-keyed.txt" ] \
+  && bad "the plan brake was asked about a key-billed run: $(cat "$TMP/argv-keyed.txt")" \
+  || ok "the plan brake is not even asked about a key-billed run"
+grep -q "usage breaker skipped: this run bills the fleet API key" "$TMP/state6/linear-worker.log" 2>/dev/null \
+  && ok "the skip is written to the worker log, with its reason" \
+  || bad "the keyed run skipped the brake silently"
+
+# 6b. MUTATION: the keyed skip cut out. The same keyed run must now be braked,
+#     or case 6 is reading something other than the skip.
+MUT6="$TMP/worker-no-keyed-skip.sh"
+# fable-discipline-lint-skip -- this python READS $WORKER as text to build the
+# mutant; it never executes it. run_worker pins KIPI_NOTIFY=/usr/bin/true.
+python3 - "$WORKER" "$MUT6" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+start = src.index("elif fleet_keyed; then")
+end = src.index("elif [ -n \"${KIPI_USAGE_BREAKER_CMD:-}\" ]", start)
+open(sys.argv[2], "w", encoding="utf-8").write(src[:start] + src[end:])
+PY
+mkdir -p "$TMP/state6b"
+: > "$TMP/argv-keyed-mut.txt"
+mkrc="$(KIPI_FLEET_API_KEYS=1 run_worker "$(argstub 3 "$TMP/argv-keyed-mut.txt")" "$TMP/state6b" "$MUT6")"
+[ "$mkrc" = "3" ] && ok "mutant killed: without the keyed skip the key-billed run is braked (rc=3)" \
+                  || bad "MUTANT SURVIVED: the keyed run went through with the skip cut out (rc=$mkrc)"
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
