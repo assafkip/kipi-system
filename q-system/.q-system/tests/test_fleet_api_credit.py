@@ -15,6 +15,7 @@ are the two that turn red for it.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -62,6 +63,45 @@ if seen is None:
     sys.exit(90)
 
 if seen == os.environ.get("FAKE_CLAUDE_DEAD_KEY"):
+    # FAKE_CLAUDE_REFUSAL picks the SHAPE of the refusal. The default is the
+    # friendly one: non-zero exit, Anthropic's own wording on stdout. The others
+    # are the shapes the first build of the detector missed (PR #717 finding 3),
+    # and each is a real `claude -p --output-format json` shape: the field names
+    # come from the captured response in
+    # plugins/kipi-core/voiceloop/tests/fixtures/claude-p-capture-2026-09-22.json.
+    shape = os.environ.get("FAKE_CLAUDE_REFUSAL", "prose-rc1")
+    if shape == "ui-string-402":
+        # The CLI rewrote the API error into its own short string. No pattern in
+        # the list appears anywhere; only api_error_status says what happened.
+        print(json.dumps({"type": "result", "is_error": True,
+                          "subtype": "error_during_execution",
+                          "api_error_status": 402,
+                          "result": "API Error: request failed",
+                          "total_cost_usd": 0.0}))
+        sys.exit(1)
+    if shape == "prose-rc0":
+        # A failed turn that still exits 0. The envelope is the only signal that
+        # the turn failed at all.
+        print(json.dumps({"type": "result", "is_error": True, "subtype": "error",
+                          "api_error_status": 400,
+                          "result": "Your credit balance is too low to access "
+                                    "the Anthropic API.", "total_cost_usd": 0.0}))
+        sys.exit(0)
+    if shape == "stderr-only":
+        # The envelope says nothing useful; the sentence is on stderr.
+        sys.stderr.write("API Error: your account has run out of credit\n")
+        print(json.dumps({"type": "result", "is_error": True, "subtype": "error",
+                          "result": "request failed", "total_cost_usd": 0.0}))
+        sys.exit(1)
+    if shape == "rate-limited-429":
+        # NOT an exhausted credit. Failing over here would burn key 2 on a
+        # transient limit.
+        print(json.dumps({"type": "result", "is_error": True,
+                          "subtype": "error_during_execution",
+                          "api_error_status": 429,
+                          "result": "API Error: rate limited",
+                          "total_cost_usd": 0.0}))
+        sys.exit(1)
     print(json.dumps({"type": "result", "is_error": True, "subtype": "error",
                       "result": "Your credit balance is too low to access the "
                                 "Anthropic API.", "total_cost_usd": 0.0}))
@@ -366,6 +406,123 @@ class TestNoSecretsLeak(Base):
                 body = fh.read()
             self.assertNotIn(LIVE_KEY_1, body)
             self.assertNotIn(LIVE_KEY_2, body)
+
+
+class TestRefusalShapesTheProseMissed(Base):
+    """PR #717 review round 1, finding 3 (major).
+
+    The detector read Anthropic's wording out of the child's STDOUT, and gated on
+    the process exit code. `claude -p --output-format json` rewrites an API error
+    into its own short string, reports failure inside the envelope, and can put
+    the sentence on stderr. Each case below is a refusal the first build let
+    through: no failover, no pause, no event, and the fleet kept hammering a dead
+    key while the daily report showed spend flat.
+    """
+
+    def _refuse_key_1(self, shape):
+        self.kill_key_1()
+        os.environ["FAKE_CLAUDE_REFUSAL"] = shape
+
+    def _failed_over(self):
+        """True when the run moved to key 2. Read from the CALLS, not the state."""
+        return [c["slot"] for c in self.calls()] == ["1", "2"]
+
+    def test_a_rewritten_ui_string_with_api_error_status_402_fails_over(self):
+        self._refuse_key_1("ui-string-402")
+        rc = self.run_exec()
+        self.assertEqual(rc, 0, "key 2 answered, so the run succeeded")
+        self.assertTrue(self._failed_over(),
+                        "no failover: the refusal carried no pattern from the "
+                        "list, and 402 was not read. Calls: %r"
+                        % [c["slot"] for c in self.calls()])
+        kinds = [e["kind"] for e in spend.events()]
+        self.assertIn("failover", kinds, "the failover left no event: %r" % kinds)
+
+    def test_a_failed_turn_that_exits_zero_still_fails_over(self):
+        self._refuse_key_1("prose-rc0")
+        rc = self.run_exec()
+        self.assertEqual(rc, 0)
+        self.assertTrue(self._failed_over(),
+                        "exit 0 with is_error:true skipped the detector entirely")
+        self.assertIn("failover", [e["kind"] for e in spend.events()])
+
+    def test_a_refusal_only_on_stderr_is_still_seen(self):
+        self._refuse_key_1("stderr-only")
+        rc = self.run_exec()
+        self.assertEqual(rc, 0)
+        self.assertTrue(self._failed_over(),
+                        "the sentence was on stderr, which the detector never read")
+
+    def test_a_rate_limit_is_not_an_exhausted_credit(self):
+        """The negative that keeps the fix honest: a 429 must NOT burn key 2."""
+        self._refuse_key_1("rate-limited-429")
+        rc = self.run_exec()
+        self.assertNotEqual(rc, 0, "the run failed and must be reported as failed")
+        self.assertEqual([c["slot"] for c in self.calls()], ["1"],
+                         "a rate limit failed over and spent the second key")
+        self.assertEqual(keymod.read_state()["exhausted"], {},
+                         "a rate limit marked a key exhausted for the month")
+        self.assertNotIn("failover", [e["kind"] for e in spend.events()])
+
+    def test_a_failed_turn_that_exits_zero_is_recorded_as_failed(self):
+        """The ledger has to agree with reality, or the report lies about it."""
+        self._refuse_key_1("prose-rc0")
+        self.run_exec()
+        with open(os.environ["KIPI_FLEET_SPEND_LEDGER"]) as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+        first = [r for r in rows if r["slot"] == 1][0]
+        self.assertFalse(first["ok"],
+                         "a turn that reported is_error:true was logged ok")
+
+    def test_the_refusals_own_status_is_recorded_for_the_next_reader(self):
+        """The pattern list is {{UNVERIFIED}}; this is what makes the first real
+        refusal readable instead of lost."""
+        self._refuse_key_1("ui-string-402")
+        self.run_exec()
+        with open(os.environ["KIPI_FLEET_SPEND_LEDGER"]) as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+        notes = " ".join(r.get("note") or "" for r in rows)
+        self.assertIn("api_error_status=402", notes)
+
+    def test_the_childs_stderr_still_reaches_the_caller(self):
+        """Capturing it for the scan must not swallow it: every caller's log is
+        where a stuck run is diagnosed from."""
+        self._refuse_key_1("stderr-only")
+        err = io.StringIO()
+        real = sys.stderr
+        sys.stderr = err
+        try:
+            self.run_exec()
+        finally:
+            sys.stderr = real
+        self.assertIn("run out of credit", err.getvalue(),
+                      "the child's stderr was captured and never re-emitted")
+
+
+class TestTheDetectorDirectly(Base):
+    def test_402_reads_as_exhausted_whatever_the_text_says(self):
+        self.assertTrue(keymod.reads_as_exhausted(
+            "API Error: request failed", {"api_error_status": 402}))
+
+    def test_429_and_400_do_not(self):
+        for status in (400, 429, 500, None, "nonsense"):
+            self.assertFalse(
+                keymod.reads_as_exhausted("API Error: request failed",
+                                          {"api_error_status": status}),
+                "status %r was read as an exhausted credit" % (status,))
+
+    def test_declared_error_matches_the_usage_ledgers_reading(self):
+        """ONE reading of this envelope in the fleet. `usage_ledger._failed()`
+        says is_error, or a subtype starting with "error"; this says the same, so
+        the two files cannot disagree about one run."""
+        self.assertTrue(keymod.declared_error({"is_error": True}))
+        self.assertTrue(keymod.declared_error({"subtype": "error_during_execution"}))
+        self.assertFalse(keymod.declared_error({"is_error": False,
+                                                "subtype": "success"}))
+        self.assertFalse(keymod.declared_error({"subtype": "max_turns"}),
+                         "a non-API stop reason is not an API refusal")
+        self.assertFalse(keymod.declared_error(None))
+        self.assertFalse(keymod.declared_error("not a dict"))
 
 
 if __name__ == "__main__":

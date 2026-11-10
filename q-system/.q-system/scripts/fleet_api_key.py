@@ -33,15 +33,31 @@ day's allowance stops NEW work in `kipi-dispatch.sh`, where stopping is free. A
 refusal here would kill a run already in flight, which spends the credit that
 produced the partial work and throws the work away.
 
-HONEST BOUNDARY on the refusal text. `_EXHAUSTED_PATTERNS` is the set of phrases
-read as "this key's credit is gone". It is {{UNVERIFIED}}: an exhausted credit
-has not been observed on a live key, because producing one costs $250. The
-patterns are overridable with KIPI_FLEET_EXHAUSTED_PATTERNS (newline-separated)
-so a real observation becomes a config change, not a code change. If the live
-wording matches none of them, the failure degrades to an ordinary failed run:
-the fleet keeps using key 1, the cost rows stop growing because nothing is
-charged, and the daily report shows spend flat against an unchanged credit. That
-is visible, not silent, and it is the reason the report carries per-key credit.
+HOW A REFUSAL IS RECOGNISED, and the boundary that is left. Three signals, two of
+them structural, because the first build read only Anthropic's prose on stdout
+and `claude -p` rewrites an API error into its own short string (PR #717 review
+round 1, finding 3 -- a missed refusal means no failover, no pause and no event):
+
+  1. `api_error_status` from the CLI's own result envelope. 402 is Payment
+     Required and reads as exhausted on its own, whatever the text says. 400 and
+     429 deliberately do not: failing over on a bad request or a rate limit would
+     burn key 2 on a bug.
+  2. `is_error` / `subtype` from the same envelope decide whether the turn FAILED.
+     Gating on the process exit code alone let an `is_error: true` run that
+     exited 0 skip the check entirely.
+  3. `_EXHAUSTED_PATTERNS` over the text, now stdout AND the child's stderr,
+     overridable with KIPI_FLEET_EXHAUSTED_PATTERNS (newline-separated) so a real
+     observation becomes a config change rather than a code change.
+
+STILL {{UNVERIFIED}} against a live exhausted key: producing one costs $250. The
+envelope field names are measured, not guessed -- they come from a captured real
+response (plugins/kipi-core/voiceloop/tests/fixtures/claude-p-capture-2026-09-22
+.json). If a live refusal still matches nothing, it degrades to an ordinary
+failed run: the fleet keeps using key 1, the cost rows stop growing because
+nothing is charged, and the daily report shows spend flat against an unchanged
+credit. Visible, not silent, and the reason the report carries per-key credit.
+Every spend row also records the `api_error_status` and `subtype` the CLI
+reported, so the first real refusal is readable afterwards instead of lost.
 
 Usage:
   fleet_api_key.py exec [--actor NAME] -- <command> [args...]
@@ -64,13 +80,14 @@ Env:
 from __future__ import annotations
 
 import argparse
+import collections
 import fcntl
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fleet_api_spend as spend  # noqa: E402  (same directory, single ledger owner)
@@ -122,7 +139,43 @@ def exhausted_patterns():
     return _EXHAUSTED_PATTERNS
 
 
-def reads_as_exhausted(text):
+#: `claude -p --output-format json` reports an API refusal in its OWN envelope:
+#: `is_error`, `subtype` and `api_error_status` are top-level fields of the result
+#: object (measured, not guessed -- they are in the captured real response at
+#: plugins/kipi-core/voiceloop/tests/fixtures/claude-p-capture-2026-09-22.json).
+#: HTTP 402 is Payment Required and means exactly one thing, so it is read
+#: structurally and needs no prose match at all. 400 and 429 are NOT here: a bad
+#: request and a rate limit are not an exhausted credit, and failing over on them
+#: would burn key 2 on a bug.
+EXHAUSTED_STATUSES = (402,)
+
+
+def reads_as_exhausted(text, envelope=None):
+    """Does this refusal mean "this key's credit is gone"?
+
+    TWO SURFACES, because the prose alone was not enough (PR #717 review round 1,
+    finding 3). The CLI rewrites an API error into its own short UI string, so a
+    substring match against Anthropic's wording can miss a refusal entirely --
+    and a missed refusal means no failover, no pause and no event: the fleet
+    keeps hammering a dead key and the daily report shows spend flat.
+
+      1. STRUCTURAL, and trusted first: `api_error_status` in EXHAUSTED_STATUSES.
+         A field the CLI sets itself cannot be reworded.
+      2. PROSE, as before: the pattern list over the text, which now includes the
+         child's STDERR as well as its stdout (`_run_once` captures both).
+
+    Still {{UNVERIFIED}} against a live exhausted key -- producing one costs $250.
+    What changed is the size of the hole: a 402 is caught whatever it says, and
+    the spend row records `api_error_status` so the first real refusal turns the
+    guess into a measurement.
+    """
+    if isinstance(envelope, dict):
+        status = envelope.get("api_error_status")
+        try:
+            if status is not None and int(status) in EXHAUSTED_STATUSES:
+                return True
+        except (TypeError, ValueError):
+            pass
     low = (text or "").lower()
     return any(p in low for p in exhausted_patterns())
 
@@ -329,6 +382,45 @@ def _with_json_flags(argv):
     return list(argv) + list(JSON_FLAGS)
 
 
+def envelope_of(stdout):
+    """The `claude -p --output-format json` result object, or None.
+
+    Separate from _parse_run because the FAILURE path needs it: a refusal still
+    prints the envelope, and its `is_error` / `api_error_status` fields are the
+    only signals that survive the CLI rewording an API error.
+    """
+    try:
+        doc = json.loads(stdout if stdout is not None else "")
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def declared_error(envelope):
+    """True when the CLI says the turn failed, whatever the process exit code was.
+
+    WHY THE EXIT CODE IS NOT ENOUGH (PR #717 round 1, finding 3). The failover was
+    gated on `rc != 0`. `claude -p` reports a failed turn inside the envelope --
+    `is_error: true`, `subtype` naming the kind -- and a build that exits 0 while
+    saying so would skip the detector entirely: no failover, no pause, no event.
+    Reading both means the exit code can only ADD a failure, never hide one.
+
+    ONE READING OF THIS ENVELOPE IN THE FLEET, not two. `voiceloop/usage_ledger.py
+    ._failed()` already answers this exact question for the usage ledger --
+    `is_error`, or a `subtype` that STARTS WITH "error" -- and two readers of one
+    input with different semantics is a defect even when each is defensible on
+    its own. So this is that rule, deliberately not a stricter one: a future
+    subtype like "max_turns" is not an API refusal, and treating every non-success
+    subtype as a failure here would have the two files disagree about the same
+    run.
+    """
+    if not isinstance(envelope, dict):
+        return False
+    if envelope.get("is_error") is True:
+        return True
+    return str(envelope.get("subtype") or "").startswith("error")
+
+
 def _parse_run(stdout):
     """(text_for_the_caller, cost_usd, note).
 
@@ -355,11 +447,44 @@ def _parse_run(stdout):
     return text + "\n", cost, None
 
 
+#: How much of a child's stderr the detector reads. The whole stream is handed
+#: back to the caller line by line as it arrives; only the SCAN is bounded, so a
+#: run that printed megabytes of progress cannot be held in memory to find one
+#: sentence.
+STDERR_SCAN_BYTES = 65536
+STDERR_SCAN_LINES = 400
+
+
+def _pump_stderr(stream, keep):
+    """Copy the child's stderr to ours AS IT ARRIVES, keeping a bounded tail.
+
+    WHY A PUMP AND NOT A BUFFER. Before the detector needed this text, stderr was
+    inherited, so a long run's progress reached the caller's log live. Holding it
+    until the child exits would lose it exactly when it matters most:
+    linear-worker.sh kills a hung run by process GROUP at 1800s, and anything
+    still sitting in this process at that moment dies with it. The log is where a
+    hang is read afterwards, so the bytes go out first and the tail is kept for
+    the scan second.
+    """
+    for line in iter(stream.readline, ""):
+        sys.stderr.write(line)
+        sys.stderr.flush()
+        keep.append(line)
+
+
 def _run_once(slot, argv, actor):
-    """Run argv with slot's key in the child env. Returns (rc, text, cost, raw)."""
+    """Run argv with slot's key in the child env.
+
+    Returns (rc, text, cost, scanned_text, envelope). `scanned_text` is stdout
+    PLUS stderr: a credit refusal from the CLI can land on either, and the
+    detector that only read stdout was half blind (PR #717 round 1, finding 3).
+    The child writes stderr straight into a temp file, so the bytes are not
+    reordered and nothing is buffered in this process; the file is then copied to
+    our own stderr, which is where every caller's log already points.
+    """
     key = read_key(slot)
     if not key:
-        return None, "", 0.0, ""
+        return None, "", 0.0, "", None
     env = dict(os.environ)
     # THE LINE THE WHOLE CHANGE EXISTS FOR. Dropping it sends the run back to the
     # founder's plan and every call still succeeds, so nothing downstream
@@ -369,15 +494,38 @@ def _run_once(slot, argv, actor):
     # The slot is safe to pass on; the key is not. A child that wants to know
     # which account it is billing reads this.
     env["KIPI_FLEET_KEY_SLOT"] = str(slot)
+    keep = collections.deque(maxlen=STDERR_SCAN_LINES)
     try:
-        proc = subprocess.run(_with_json_flags(argv), stdout=subprocess.PIPE,
-                              stderr=None, universal_newlines=True, env=env)
+        proc = subprocess.Popen(_with_json_flags(argv), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True,
+                                env=env)
     except OSError as exc:
         sys.stderr.write("fleet_api_key: cannot run %r (%s)\n" % (argv[0], exc))
-        return 127, "", 0.0, ""
-    text, cost, note = _parse_run(proc.stdout)
-    spend.record(slot, cost, actor=actor, ok=(proc.returncode == 0), note=note)
-    return proc.returncode, text, cost, proc.stdout or ""
+        return 127, "", 0.0, "", None
+    pump = threading.Thread(target=_pump_stderr, args=(proc.stderr, keep))
+    pump.daemon = True
+    pump.start()
+    stdout, _ = proc.communicate()
+    pump.join(timeout=5)
+    err_text = "".join(keep)[-STDERR_SCAN_BYTES:]
+
+    text, cost, note = _parse_run(stdout)
+    envelope = envelope_of(stdout)
+    # THE REFUSAL'S OWN FIELDS GO IN THE LEDGER. The pattern list is
+    # {{UNVERIFIED}} against a live exhausted key, and this is what makes the
+    # first real one readable afterwards instead of lost: the row carries the
+    # status and subtype the CLI reported.
+    if isinstance(envelope, dict):
+        bits = [b for b in (note,
+                            ("api_error_status=%s" % envelope["api_error_status"])
+                            if envelope.get("api_error_status") is not None else None,
+                            ("subtype=%s" % envelope["subtype"])
+                            if declared_error(envelope) else None) if b]
+        note = " ".join(bits) or None
+    ok = proc.returncode == 0 and not declared_error(envelope)
+    spend.record(slot, cost, actor=actor, ok=ok, note=note)
+    raw = (stdout or "") + ("\n" + err_text if err_text else "")
+    return proc.returncode, text, cost, raw, envelope
 
 
 def cmd_exec(argv, actor=None):
@@ -399,33 +547,38 @@ def cmd_exec(argv, actor=None):
                          "the next budget day re-probes\n")
         return EXIT_NO_KEY
 
-    rc, text, _cost, raw = _run_once(slot, argv, actor)
+    rc, text, _cost, raw, env1 = _run_once(slot, argv, actor)
     if rc is None:
         sys.stderr.write("fleet_api_key: no key for slot %d; refusing to fall back "
                          "to the plan login\n" % slot)
         return EXIT_NO_KEY
 
-    if rc != 0 and reads_as_exhausted(raw):
+    # A FAILED TURN IS A FAILED TURN WHETHER OR NOT THE PROCESS SAID SO. `rc != 0`
+    # alone let an `is_error: true` envelope with exit 0 skip the detector
+    # entirely (PR #717 round 1, finding 3).
+    if (rc != 0 or declared_error(env1)) and reads_as_exhausted(raw, env1):
         nxt = mark_exhausted(slot)
         if nxt is None:
             sys.stderr.write("fleet_api_key: both credits read as exhausted; "
                              "dispatch pauses until the next budget day\n")
             return EXIT_NO_KEY
-        rc2, text2, _c2, raw2 = _run_once(nxt, argv, actor)
+        rc2, text2, _c2, raw2, env2 = _run_once(nxt, argv, actor)
         if rc2 is None:
             sys.stderr.write("fleet_api_key: no key for slot %d\n" % nxt)
             return EXIT_NO_KEY
-        if rc2 != 0 and reads_as_exhausted(raw2):
+        if (rc2 != 0 or declared_error(env2)) and reads_as_exhausted(raw2, env2):
             mark_exhausted(nxt)
             sys.stderr.write("fleet_api_key: both credits read as exhausted; "
                              "dispatch pauses until the next budget day\n")
             return EXIT_NO_KEY
-        if rc2 == 0:
+        # A PAUSE IS LIFTED BY A TURN THAT WORKED, not by one that merely exited
+        # 0 while reporting its own failure.
+        if rc2 == 0 and not declared_error(env2):
             clear_pause()
         sys.stdout.write(text2)
         return rc2
 
-    if rc == 0:
+    if rc == 0 and not declared_error(env1):
         clear_pause()
     sys.stdout.write(text)
     return rc
