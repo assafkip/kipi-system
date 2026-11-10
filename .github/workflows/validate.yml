@@ -7,6 +7,53 @@ on:
     branches: [main]
 
 jobs:
+  # ASK-4230. PR #668 merged `def refusal(self) -> str | None` into
+  # linear-sync.py and this workflow passed, because the job below runs Python
+  # 3.12 where a PEP 604 union is legal syntax. launchd runs every job through
+  # `bash -lc`, where python3 is /usr/bin/python3 3.9.6 and the annotation is
+  # EVALUATED at def time, so the import raised TypeError.
+  # com.kipi.capability-expiry exited 1 on its first run. PR #703 quoted that one
+  # annotation; nothing stopped the class from coming back.
+  #
+  # ITS OWN JOB, not a step in `validate`. actions/setup-python repoints python3
+  # for the rest of the job, so a 3.9 step inside `validate` would silently
+  # downgrade every later step (the capability gate, the hook tests).
+  #
+  # TREE-WIDE BY CONSTRUCTION, and that is not the shape ASK-3828 forbids. The
+  # list is the set of files launchd loads, not the diff, because a module the
+  # change did not touch still crashes the job that imports the one it did.
+  # Measured on main at 63cff7f2: 160 files, exit 0, 9.1s. So a red here is
+  # introduced by the PR, which is the property ASK-3828 actually asks for.
+  #
+  # A CONTAINER, not actions/setup-python. Measured on run 42730935991: the
+  # setup-python step failed in seconds, because ubuntu-latest is 24.04 and
+  # actions/python-versions ships no 3.9 build for noble. Pinning ubuntu-22.04
+  # would work until that image retires; the container pins the INTERPRETER,
+  # which is the thing this gate is about. bookworm (not slim) carries git, so
+  # the collector reads `git ls-files` rather than falling back to a tree walk.
+  py39-load:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.9-bookworm
+    steps:
+      - uses: actions/checkout@v6
+      # checkout inside a container leaves the tree owned by a different uid, so
+      # git refuses it as dubious ownership and `git ls-files` returns nothing.
+      # The collector would then walk the tree instead, which is a DIFFERENT list
+      # arrived at silently. Declare the directory safe and keep one code path.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # No pip install. The gate loads top levels only, and every file in the
+      # list imports stdlib at module scope; a third-party import appearing at
+      # top level in a launchd-run script is itself the finding. Verified with
+      # PYTHONNOUSERSITE=1 locally: 160 files, exit 0.
+      - name: Every launchd-run script loads under Python 3.9
+        run: |
+          python3 -c "import sys; assert sys.version_info[:2] == (3, 9), sys.version"
+          python3 q-system/.q-system/scripts/py39_load_gate.py --repo-root . --python python3
+        env:
+          CI: true
+
   validate:
     runs-on: ubuntu-latest
     steps:
