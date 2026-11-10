@@ -12,6 +12,18 @@
 # backend), check consumes them. Everything fails closed: any error, missing
 # token, missing/altered public key, missing/invalid signature, expired or
 # malformed token denies. There is NO downgrade to unsigned acceptance.
+#
+# CANONICAL HOME (ASK-257). This file, plugins/kipi-core/scripts/, is the one
+# source of truth. $HOME/.claude/bin/capability-token.sh is an INSTALLED COPY,
+# written only by install-capability-token.sh at 0755, and it is the copy the
+# patched destructive-op-deny hook consults at runtime. Never hand-edit the
+# installed copy: re-run the installer instead, or the two drift silently (they
+# were dated four days apart when ASK-257 was filed). kipi-approve prefers its
+# own sibling and treats the installed copy as a FALLBACK only.
+#
+# Shipped executable on purpose: the marketplace copy is a git clone, so the
+# exec bit has to live in the git index. test/test-capability-exec-bits.sh
+# asserts mode 100755 there. A `chmod +x` in a local checkout fixes nothing.
 
 set -uo pipefail
 
