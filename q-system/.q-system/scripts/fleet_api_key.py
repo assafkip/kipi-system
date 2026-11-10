@@ -25,10 +25,13 @@ injection turns red instead of quietly re-billing the plan.
 THE FAILOVER. Key 1 until Anthropic refuses a run for an exhausted credit, then
 key 2. Both refused: the fleet PAUSES, and re-probes once at the start of each
 budget day; the first success resumes it. No path here ever buys credit, raises a
-limit, or touches billing.
+limit, or touches billing. Only keys with a KNOWN credit take part: a key whose
+credit is null in the facts file (fleet_api_spend.key_facts) is never run and
+never failed over to. An exhausted mark lasts until that key's own billing cycle
+rolls, not until the 1st.
 
 WHAT THE DAY'S BUDGET GATES AND WHAT IT DOES NOT. This module refuses on the
-MONTH's hard ceiling (both credits gone), never on the day's allowance. The
+hard ceiling (every known key's cycle credit gone), never on the day's allowance. The
 day's allowance stops NEW work in `kipi-dispatch.sh`, where stopping is free. A
 refusal here would kill a run already in flight, which spends the credit that
 produced the partial work and throws the work away.
@@ -49,7 +52,8 @@ round 1, finding 3 -- a missed refusal means no failover, no pause and no event)
      overridable with KIPI_FLEET_EXHAUSTED_PATTERNS (newline-separated) so a real
      observation becomes a config change rather than a code change.
 
-STILL {{UNVERIFIED}} against a live exhausted key: producing one costs $250. The
+STILL {{UNVERIFIED}} against a live exhausted key: producing one costs a cycle's
+credit. The
 envelope field names are measured, not guessed -- they come from a captured real
 response (plugins/kipi-core/voiceloop/tests/fixtures/claude-p-capture-2026-09-22
 .json). If a live refusal still matches nothing, it degrades to an ordinary
@@ -64,8 +68,9 @@ Usage:
   fleet_api_key.py status [--json]     # active slot, per-key credit, paused state
   fleet_api_key.py probe               # the daily re-probe; exit 0 if the fleet may run
 
-Exit codes: the child's code on a run. 2 usage. 4 no key available (paused, or
-nothing in the Keychain). 5 the month's credit is gone on both keys.
+Exit codes: the child's code on a run. 2 usage. 4 no key available (paused,
+nothing in the Keychain, or no key with a known credit). 5 every known key's
+cycle credit is gone.
 
 Env:
   KIPI_FLEET_KEYCHAIN_SERVICE_1/_2  Keychain service names
@@ -81,6 +86,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import fcntl
 import json
 import os
@@ -165,7 +171,8 @@ def reads_as_exhausted(text, envelope=None):
       2. PROSE, as before: the pattern list over the text, which now includes the
          child's STDERR as well as its stdout (`_run_once` captures both).
 
-    Still {{UNVERIFIED}} against a live exhausted key -- producing one costs $250.
+    Still {{UNVERIFIED}} against a live exhausted key -- producing one costs a
+    cycle's credit.
     What changed is the size of the hole: a 402 is caught whatever it says, and
     the spend row records `api_error_status` so the first real refusal turns the
     guess into a measurement.
@@ -213,71 +220,130 @@ def read_state():
     return base
 
 
-def write_state(state):
-    """Atomic replace under an advisory lock, so two runs cannot interleave."""
+def _lock_path():
+    parent = os.path.dirname(state_path())
+    return os.path.join(parent, ".fleet-api-state.lock") if parent else None
+
+
+@contextlib.contextmanager
+def state_lock():
+    """Hold the state lock across a whole READ-MODIFY-WRITE.
+
+    PR #717 review round 3, minor 4: the lock used to sit inside write_state
+    only, so it ordered the two writes and nothing else. mark_exhausted() in one
+    run and clear_pause() in another each read the same old state, and the
+    second write erased the first: a failover or a pause could vanish. Every
+    function that reads state in order to write it now holds this from before
+    the read to after the write. Readers do not take it: os.replace() already
+    gives them a whole file, old or new.
+
+    Not re-entrant. flock is per open file, so a nested acquire in the same
+    process would wait on itself; callers inside the lock use _write_unlocked.
+    """
+    lock = _lock_path()
+    fh = None
+    try:
+        if lock:
+            os.makedirs(os.path.dirname(lock), exist_ok=True)
+            fh = open(lock, "a")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError as exc:
+        # A lock that cannot be taken degrades to the old unordered write; a
+        # meter that stops the run it meters is worse (module contract).
+        sys.stderr.write("fleet_api_key: cannot lock %s (%s)\n" % (lock, exc))
+        if fh:
+            fh.close()
+        fh = None
+    try:
+        yield
+    finally:
+        if fh:
+            fh.close()
+
+
+def _write_unlocked(state):
+    """Atomic replace. The caller holds state_lock()."""
     path = state_path()
     parent = os.path.dirname(path)
     try:
         if parent and not os.path.isdir(parent):
             os.makedirs(parent, exist_ok=True)
-        lock = os.path.join(parent, ".fleet-api-state.lock") if parent else None
-        lock_fh = open(lock, "a") if lock else None
-        try:
-            if lock_fh:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-            fd, tmp = tempfile.mkstemp(dir=parent or None, prefix=".fleet-api-state.")
-            with os.fdopen(fd, "w") as fh:
-                json.dump(state, fh, sort_keys=True, indent=2)
-                fh.write("\n")
-            os.replace(tmp, path)
-        finally:
-            if lock_fh:
-                lock_fh.close()
+        fd, tmp = tempfile.mkstemp(dir=parent or None, prefix=".fleet-api-state.")
+        with os.fdopen(fd, "w") as fh:
+            json.dump(state, fh, sort_keys=True, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
     except OSError as exc:
         sys.stderr.write("fleet_api_key: cannot write %s (%s)\n" % (path, exc))
         return False
     return True
 
 
+def write_state(state):
+    """A blind write of a whole state, under the lock. A caller that READ the
+    state first must hold state_lock() across both and use _write_unlocked."""
+    with state_lock():
+        return _write_unlocked(state)
+
+
+def _mark_current(slot, mark, at=None, facts=None):
+    """Is an exhausted mark from this key's CURRENT billing cycle?"""
+    try:
+        slot = int(slot)
+    except (TypeError, ValueError):
+        return False          # a corrupt key in the state file is a stale mark
+    return mark is not None and mark == spend.cycle_id(slot, at, facts)
+
+
+def _usable(slot, state, at=None, facts=None):
+    """A known key, not marked exhausted this cycle, with credit left."""
+    # BILLABLE, not merely configured: a key whose auto-reload is not confirmed
+    # off is never run and never failed over to (orchestrator, 2026-11-10).
+    if not spend.billable(slot, facts, at):
+        return False
+    if _mark_current(slot, state.get("exhausted", {}).get(str(slot)), at, facts):
+        return False
+    left = spend.credit_left(slot, at, facts)
+    return left is not None and left > 0.0
+
+
 def mark_exhausted(slot, at=None):
-    state = read_state()
-    state["exhausted"][str(slot)] = spend.month_key(at)
-    nxt = next_slot(slot, state, at)
-    if nxt is None:
-        state["paused"] = True
-        state["paused_since"] = (at or spend.now()).isoformat(timespec="seconds")
-        state["active_slot"] = slot
-        # THE PAUSE CONSUMES TODAY'S PROBE. Without this line usable_slot() sees
-        # `paused` with a last_probe_day that is not today, treats the pause as
-        # unprobed, and hands key 1 straight back -- so the pause lasted exactly
-        # zero runs and every call re-ran against a dead credit. Observed RED by
-        # test_both_exhausted_pauses_the_fleet before this line existed. The
-        # refusal that CREATED the pause IS the day's probe; the next one is
-        # tomorrow's.
-        state["last_probe_day"] = spend.budget_day(at)
-        write_state(state)
-        spend.event("pause", "both API credits read as exhausted; dispatch pauses "
-                             "until the next budget day re-probes")
-        return None
-    state["active_slot"] = nxt
-    write_state(state)
+    with state_lock():
+        facts = spend.key_facts()
+        state = read_state()
+        state["exhausted"][str(slot)] = spend.cycle_id(slot, at, facts) \
+            or spend.budget_day(at)
+        nxt = next_slot(slot, state, at, facts)
+        if nxt is None:
+            state["paused"] = True
+            state["paused_since"] = (at or spend.now()).isoformat(timespec="seconds")
+            state["active_slot"] = slot
+            # THE PAUSE CONSUMES TODAY'S PROBE. Without this line usable_slot()
+            # sees `paused` with a last_probe_day that is not today, treats the
+            # pause as unprobed, and hands key 1 straight back -- so the pause
+            # lasted exactly zero runs and every call re-ran against a dead
+            # credit. Observed RED by test_both_exhausted_pauses_the_fleet before
+            # this line existed. The refusal that CREATED the pause IS the day's
+            # probe; the next one is tomorrow's.
+            state["last_probe_day"] = spend.budget_day(at)
+            _write_unlocked(state)
+            spend.event("pause", "every known key's credit read as exhausted; "
+                                 "dispatch pauses until the next budget day re-probes")
+            return None
+        state["active_slot"] = nxt
+        _write_unlocked(state)
     spend.event("failover", "key %d read as exhausted; switching to key %d"
                             % (slot, nxt))
     return nxt
 
 
-def next_slot(after, state=None, at=None):
-    """The next slot that is not marked exhausted THIS month, or None."""
+def next_slot(after, state=None, at=None, facts=None):
+    """The next KNOWN key that is not exhausted this cycle and has credit, or None."""
     state = state if state is not None else read_state()
-    month = spend.month_key(at)
+    facts = facts or spend.key_facts()
     for slot in SLOTS:
-        if slot == after:
-            continue
-        if state.get("exhausted", {}).get(str(slot)) == month:
-            continue
-        if spend.credit_left(slot, at) <= 0.0:
-            continue
-        return slot
+        if slot != after and _usable(slot, state, at, facts):
+            return slot
     return None
 
 
@@ -294,56 +360,67 @@ def usable_slot(at=None, consume=False):
     consumed the probe and the run that followed it got no key at all.
 
     So: `consume=True` only on the path that is about to actually run something
-    (`cmd_exec`). Every other caller sees the same answer and changes nothing.
+    (`cmd_exec`), and that path holds state_lock() across its read and write.
 
     A pause is lifted by a DAY changing, never by a timer: the re-probe is the
-    first RUN of the new budget day, and if it refuses again the pause returns. A
-    new calendar month clears every exhausted mark, because the credit itself is
-    granted monthly.
+    first RUN of the new budget day, and if it refuses again the pause returns.
+    A key's exhausted mark clears when THAT key's billing cycle rolls, because
+    the credit is granted per cycle.
     """
+    if consume:
+        with state_lock():
+            return _usable_slot(at, consume=True)
+    return _usable_slot(at, consume=False)
+
+
+def _usable_slot(at=None, consume=False):
     at = at or spend.now()
+    facts = spend.key_facts()
+    known = spend.billable_slots(facts, at)
+    if not known:
+        return None
     state = read_state()
-    month = spend.month_key(at)
     day = spend.budget_day(at)
 
-    # A new month hands back both credits. Heal the view in memory; persist the
-    # heal only on the writing path, so a reader stays a reader.
-    stale = [k for k, v in state.get("exhausted", {}).items() if v != month]
+    # A key whose cycle rolled has its credit back. Heal the view in memory;
+    # persist the heal only on the writing path, so a reader stays a reader.
+    stale = [k for k, v in state.get("exhausted", {}).items()
+             if not _mark_current(k, v, at, facts)]
     if stale:
         for k in stale:
             state["exhausted"].pop(k, None)
         state["paused"] = False
         state["paused_since"] = None
-        state["active_slot"] = SLOTS[0]
+        state["active_slot"] = known[0]
         if consume:
-            write_state(state)
+            _write_unlocked(state)
 
     if state.get("paused"):
         if state.get("last_probe_day") == day:
             return None
         if consume:
             state["last_probe_day"] = day
-            state["active_slot"] = SLOTS[0]
+            state["active_slot"] = known[0]
             state["exhausted"] = {}
-            write_state(state)
+            _write_unlocked(state)
             spend.event("probe", "new budget day %s: re-probing key %d"
-                                 % (day, SLOTS[0]))
-        return SLOTS[0]
+                                 % (day, known[0]))
+        return known[0]
 
-    active = state.get("active_slot", SLOTS[0])
-    if state.get("exhausted", {}).get(str(active)) == month or \
-            spend.credit_left(active, at) <= 0.0:
-        return next_slot(active, state, at)
-    return active
+    active = state.get("active_slot", known[0])
+    if _usable(active, state, at, facts):
+        return active
+    return next_slot(active, state, at, facts)
 
 
 def clear_pause(at=None):
-    state = read_state()
-    if not state.get("paused"):
-        return False
-    state["paused"] = False
-    state["paused_since"] = None
-    write_state(state)
+    with state_lock():
+        state = read_state()
+        if not state.get("paused"):
+            return False
+        state["paused"] = False
+        state["paused_since"] = None
+        _write_unlocked(state)
     spend.event("resume", "a run succeeded on key %d; dispatch resumes"
                           % state.get("active_slot", SLOTS[0]))
     return True
@@ -403,9 +480,30 @@ def key_present(slot):
     return out.returncode == 0
 
 
-def missing_slots():
-    """Slots with no key material, in failover order."""
-    return tuple(s for s in SLOTS if not key_present(s))
+def missing_slots(facts=None):
+    """KNOWN keys with no key material, in failover order. A key with an unknown
+    credit is never run, so its Keychain item is not asked about."""
+    return tuple(s for s in spend.configured_slots(facts) if not key_present(s))
+
+
+def note_unknown_credit():
+    """One `no_key` event a budget day when no key has a known credit and cycle."""
+    spend.event_once("no_key",
+                     "no key has a known credit and a live billing cycle in %s; "
+                     "every fleet run refuses (exit %d) until monthly_credit_usd "
+                     "and a future current_cycle_expires_utc are set"
+                     % (spend.facts_path() or "(no facts file)", EXIT_NO_KEY))
+
+
+def note_unconfirmed(slots):
+    """One `unconfirmed` event a budget day while a known key's auto-reload is
+    not confirmed off. Its own kind, so it is not deduped away by a no_key row."""
+    spend.event_once("unconfirmed",
+                     "key %s: auto-reload off is not confirmed, so the fleet does "
+                     "not bill it (exit %d). Set auto_reload_off_confirmed_at in %s "
+                     "once the founder confirms it in the Console"
+                     % (", ".join(str(s) for s in slots), EXIT_NO_KEY,
+                        spend.facts_path() or "the facts file"))
 
 
 def note_missing_key(slots):
@@ -474,29 +572,34 @@ def declared_error(envelope):
 
 
 def _parse_run(stdout):
-    """(text_for_the_caller, cost_usd, note).
+    """(text_for_the_caller, cost_usd, note, metered).
 
     `claude -p --output-format json` prints one object. Turned back into EXACTLY
     the bytes a plain `-p` call printed: `result` plus one trailing newline
     (measured 2026-09-22, voiceloop/usage_ledger.py fixture). Anything that is
-    not that object is handed back untouched and charged 0 with a note, because
-    a meter must never change what a caller reads.
+    not that object is handed back untouched, because a meter must never change
+    what a caller reads.
+
+    `metered` is False when no `total_cost_usd` could be read. PR #717 review
+    round 3, minor 3: such a run was booked as cost 0 with ok:true and nothing
+    else, so the ledger called a run nobody could price FREE and the report
+    printed no caveat. It is now an unmetered row, counted by
+    spend.unmetered_today() exactly like a run the watchdog killed.
     """
     raw = stdout if stdout is not None else ""
     try:
         doc = json.loads(raw)
     except ValueError:
-        return raw, 0.0, "parse_error"
-    if not isinstance(doc, dict) or "result" not in doc:
-        return raw, 0.0, "parse_error"
-    try:
-        cost = float(doc.get("total_cost_usd") or 0.0)
-    except (TypeError, ValueError):
-        cost = 0.0
+        return raw, 0.0, "parse_error", False
+    if not isinstance(doc, dict):
+        return raw, 0.0, "parse_error", False
+    cost = spend._number(doc.get("total_cost_usd"))
+    metered = cost is not None
+    cost = cost or 0.0
     text = doc.get("result")
     if not isinstance(text, str):
-        return raw, cost, "parse_error"
-    return text + "\n", cost, None
+        return raw, cost, "parse_error", metered
+    return text + "\n", cost, None, metered
 
 
 #: How much of a child's stderr the detector reads. The whole stream is handed
@@ -629,7 +732,7 @@ def _run_once(slot, argv, actor):
     pump.join(timeout=5)
     err_text = "".join(keep)[-STDERR_SCAN_BYTES:]
 
-    text, cost, note = _parse_run(stdout)
+    text, cost, note, metered = _parse_run(stdout)
     envelope = envelope_of(stdout)
     # THE REFUSAL'S OWN FIELDS GO IN THE LEDGER. The pattern list is
     # {{UNVERIFIED}} against a live exhausted key, and this is what makes the
@@ -646,7 +749,8 @@ def _run_once(slot, argv, actor):
     # CLEARED BEFORE THE ROW, so a SIGTERM arriving between these two lines
     # cannot add a second, unmetered row for a run that was already measured.
     _IN_FLIGHT.pop("run", None)
-    spend.record(slot, cost, actor=actor, ok=ok, note=note)
+    spend.record(slot, cost, actor=actor, ok=ok, note=note,
+                 unmetered=not metered)
     raw = (stdout or "") + ("\n" + err_text if err_text else "")
     return proc.returncode, text, cost, raw, envelope
 
@@ -656,10 +760,28 @@ def cmd_exec(argv, actor=None):
         sys.stderr.write("fleet_api_key: exec needs a command after `--`\n")
         return EXIT_USAGE
 
+    facts = spend.key_facts()
+    if not spend.configured_slots(facts):
+        # NO KEY WITH A KNOWN CREDIT. Never guessed (fleet_api_spend docstring).
+        note_unknown_credit()
+        sys.stderr.write("fleet_api_key: no key has a known credit and a live "
+                         "billing cycle in %s; no run. Nothing here guesses one.\n"
+                         % (spend.facts_path() or "(no facts file)"))
+        return EXIT_NO_KEY
+
+    if not spend.billable_slots(facts):
+        # A KNOWN CREDIT IS NOT ENOUGH. With auto-reload on, or the credit not
+        # yet claimed, the first run past the credit charges the founder's card.
+        note_unconfirmed(spend.unconfirmed_slots(facts))
+        sys.stderr.write("fleet_api_key: no key has auto-reload confirmed off "
+                         "(auto_reload_off_confirmed_at in %s); no run\n"
+                         % (spend.facts_path() or "(no facts file)"))
+        return EXIT_NO_KEY
+
     if spend.credit(None)["total_left_usd"] <= 0.0:
-        sys.stderr.write("fleet_api_key: both API credits are spent for %s; "
-                         "no run. Nothing here buys credit.\n" % spend.month_key())
-        spend.event("pause", "month %s: both credits spent" % spend.month_key())
+        sys.stderr.write("fleet_api_key: every known key's cycle credit is spent; "
+                         "no run. Nothing here buys credit.\n")
+        spend.event_once("pause", "every known key's cycle credit is spent")
         return EXIT_CREDIT_GONE
 
     # The only consuming caller: this is the path that actually runs something,
@@ -755,7 +877,7 @@ def _main(argv):
             print("active key: %d%s" % (state["active_slot"],
                                         " (PAUSED)" if state["paused"] else ""))
             for slot in SLOTS:
-                print("key %d: $%.2f left" % (slot, state["per_key_usd"][slot]))
+                print(spend.describe_key(state, slot))
             b = state["budget"]
             print("today (%s): spent $%.2f of $%.2f"
                   % (b["day"], b["spent_usd"], b["allowance_usd"]))
@@ -773,10 +895,26 @@ def _main(argv):
         # which pages a different line for each. test-dispatch-api-key-gate.sh
         # runs THIS helper through the real gate rather than a stub, so the two
         # halves cannot drift.
-        missing = missing_slots()
-        if missing:
-            note_missing_key(missing)
-            print("no key %s" % ",".join(str(s) for s in missing))
+        facts = spend.key_facts()
+        if not spend.configured_slots(facts):
+            note_unknown_credit()
+            print("no key: none has a known credit and a live billing cycle in %s"
+                  % (spend.facts_path() or "(no facts file)"))
+            return EXIT_NO_KEY
+        # Every KNOWN key must be both confirmed and present. An unconfirmed key
+        # reads exactly like a missing one here, so the dispatcher's gate and
+        # the pacer stop on it (orchestrator, 2026-11-10: "probe must also
+        # answer red for an unconfirmed key").
+        unconfirmed = spend.unconfirmed_slots(facts)
+        missing = missing_slots(facts)
+        if unconfirmed or missing:
+            if unconfirmed:
+                note_unconfirmed(unconfirmed)
+            if missing:
+                note_missing_key(missing)
+            why = ["%d (auto-reload off not confirmed)" % s for s in unconfirmed]
+            why += ["%d (no Keychain item)" % s for s in missing if s not in unconfirmed]
+            print("no key %s" % ", ".join(why))
             return EXIT_NO_KEY
         slot = usable_slot()
         if slot is None:

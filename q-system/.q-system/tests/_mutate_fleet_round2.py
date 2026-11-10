@@ -37,30 +37,43 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QSYS = os.path.normpath(os.path.join(HERE, ".."))
 
 #: (name, relative path, old, new). `old` must appear exactly once.
+#: Re-anchored in the ASK-4311 lane after the cycle and auto-reload changes moved
+#: every anchor: a harness whose anchors moved reports COULD NOT APPLY, which is
+#: a survivor, not a pass.
 MUTATIONS = [
     ("probe-ignores-keys", "scripts/fleet_api_key.py",
-     """        missing = missing_slots()
-        if missing:
-            note_missing_key(missing)
-            print("no key %s" % ",".join(str(s) for s in missing))
-            return EXIT_NO_KEY
-        slot = usable_slot()""",
-     """        slot = usable_slot()"""),
+     """        if unconfirmed or missing:""",
+     """        if False:"""),
     ("no-watchdog-handler", "scripts/fleet_api_key.py",
      """    _arm_watchdog_handler()
     _IN_FLIGHT["run"] = {"slot": slot, "actor": actor, "proc": None}""",
      """    _IN_FLIGHT["run"] = {"slot": slot, "actor": actor, "proc": None}"""),
     ("report-filters-no_key", "scripts/fleet-api-report.py",
-     """STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key")""",
+     """STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key", "unconfirmed")""",
      """STATE_CHANGE_KINDS = ("pause", "resume", "failover")"""),
     ("report-drops-the-floor-caveat", "scripts/fleet-api-report.py",
      """    if unmetered:
-        lines.append("spend is a FLOOR, not a total: %d run(s) were killed "
-                     "before their cost could be read" % unmetered)
-""", ""),
+        lines.append(""",
+     """    if False:
+        lines.append("""),
     ("clock-says-2025", "tests/test_fleet_api_credit.py",
      """NOW_DT = dt.datetime(2026, 11, 9, 12, 0, 0)""",
      """NOW_DT = dt.datetime.fromtimestamp(1762700400)"""),
+    # ASK-4311 lane, orchestrator ruling 2026-11-10: no run on a key whose
+    # auto-reload is not confirmed off.
+    ("billable-ignores-auto-reload", "scripts/fleet_api_spend.py",
+     """    return configured(slot, facts, at) and bool((facts.get(slot) or {}).get("confirmed_at"))""",
+     """    return configured(slot, facts, at)"""),
+    # Round 3, minor 3: a run nobody could price is not booked free.
+    ("parse-error-booked-free", "scripts/fleet_api_key.py",
+     """    spend.record(slot, cost, actor=actor, ok=ok, note=note,
+                 unmetered=not metered)""",
+     """    spend.record(slot, cost, actor=actor, ok=ok, note=note)"""),
+    # Round 3, minor 2 and the facts ruling: the cycle end is the Console's
+    # expiry, and a past expiry is unknown, never "still the old cycle".
+    ("past-expiry-still-live", "scripts/fleet_api_spend.py",
+     """    return (at or now()) < row["expires_at"]""",
+     """    return True"""),
 ]
 
 SUITES = ("tests/test_fleet_api_credit.py", "tests/test_fleet_api_report.py")
@@ -72,18 +85,15 @@ GATE_TEST = os.path.join(QSYS, "scripts", "test", "test-dispatch-api-key-gate.sh
 #: editing the real file. (name, old, new); `old` must appear exactly once.
 GATE_MUTATIONS = [
     ("gate-cannot-tell-the-two-apart",
-     '''    if [ "$KEY_RC" != "0" ] && printf '%s' "$KEY_LINE" | grep -q "^no key"; then
-      say "API KEYS: $KEY_LINE -- nothing can run until the Keychain item exists"
-      page_clear api-keys-paused
-      page_once api-keys-missing''',
-     '''    if false; then
-      say "API KEYS: $KEY_LINE -- nothing can run until the Keychain item exists"
-      page_clear api-keys-paused
-      page_once api-keys-missing'''),
+     '''    "4:no key"*)''',
+     '''    "4:no key-NEVER"*)'''),
     ("gate-leaves-the-other-marker",
-     '''      page_clear api-keys-paused
-      page_once api-keys-missing''',
-     '''      page_once api-keys-missing'''),
+     '''    [ "$k" = "$1" ] || page_clear "$k"''',
+     '''    :'''),
+    # Round 3, major: a crashed helper must not wear the pause page.
+    ("gate-crash-reads-as-pause",
+     '''    "4:paused")''',
+     '''    [1-9]*)'''),
 ]
 
 
