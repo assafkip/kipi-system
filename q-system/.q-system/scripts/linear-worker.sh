@@ -9,7 +9,9 @@
 #
 # THE FOUR THINGS IT WILL NOT DO
 # ------------------------------
-# 1. It will not MERGE. It opens a PR and stops. Merging is the founder's.
+# 1. It will not MERGE itself. It opens a PR and calls arm_automerge, which makes
+#    GitHub own the merge once the required kipi/reviewer-approved verdict lands.
+#    Merging is Sana's call, made through that verdict (RULE-2026-10-23-A).
 # 2. It will not CLOSE an issue. Closing runs through /issue-verify and
 #    /issue-closeout, which refuse without receipts. A worker that could close its
 #    own work would route around the only gates that make the board trustworthy.
