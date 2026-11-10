@@ -212,3 +212,8 @@ def test_pretool_allows_an_unchanged_write_and_denies_new_prose(sandbox):
                     tool_input={"file_path": path,
                                 "content": sandbox["rule"] + "\n## New prose\n\nAlways X.\n"})
     assert _decision(more) == "DENY", "a new prose section in a tracked worktree rule was allowed"
+
+
+if __name__ == "__main__":
+    # The capability gate runs declared tests as `python3 <file>`.
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
