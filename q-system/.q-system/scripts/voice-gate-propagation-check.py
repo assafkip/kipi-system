@@ -91,6 +91,16 @@ COULD_NOT_READ = "COULD NOT READ"
 NO_INSTANCES = "no instances in the registry"
 NO_FAN_OUT_REF = "the fan-out ref kipi-update.sh ships from"
 NO_REF_NOTE = ("cannot say ahead or behind: " + NO_FAN_OUT_REF + " did not resolve")
+NO_POPULATION = "the row set kipi-update.sh would sync"
+NO_POPULATION_NOTE = ("cannot say which rows a sync reaches: " + NO_POPULATION
+                      + " did not resolve")
+STALE_ROW_NOTE = ("stale registry row: the path does not exist, so kipi update "
+                  "skips it and no sync reaches it")
+NOT_SYNCED_NOTE = ("declared not skeleton-managed, so no sync reaches it "
+                   "(skeleton_managed: false, standalone, or no subtree_prefix)")
+UNDECLARED_NOTE = ("UNDECLARED non-propagating: receives no skeleton propagation "
+                   "and nothing on record says that is intended, so kipi update "
+                   "FAILS on this row")
 NOTIFY_TIMEOUT_S = 20
 # slack-notify.sh's OWN exit contract, not ours: "3  nothing to file on: no
 # Linear API key configured (a setup state)". A setup state read as a send
@@ -188,23 +198,108 @@ def _blob_id(skel_root: str, candidate: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def resolve(root: str):
-    """(skeleton_ok, [(name, path or None)]) from the registry at `root`.
+def resolve(root: str) -> bool:
+    """Is `root` the checkout the registry calls the skeleton?
 
     The RAW skeleton value is checked before realpath, because realpath("") is
     the cwd and would pass whenever this ran from its own root (the same hole
     Codex found in the lessons-drift reporter, issue 13).
+
+    It no longer returns the instance rows. Reading `name` and `path` straight
+    out of the registry was the PR #726 review's major and minor together: the
+    registry is a LEDGER of instances, not the list of directories a sync
+    reaches, and those are different sets. `registry_rows` asks the owner.
     """
     root = os.path.realpath(root)
     try:
         with open(os.path.join(root, "instance-registry.json"), encoding="utf-8") as fh:
             registry = json.load(fh)
     except (OSError, ValueError):
-        return False, []
+        return False
     raw = (registry.get("skeleton") or {}).get("path")
-    skeleton_ok = isinstance(raw, str) and bool(raw.strip()) and os.path.realpath(raw) == root
-    pairs = [(e.get("name") or "", e.get("path")) for e in registry.get("instances", [])]
-    return skeleton_ok, [p for p in pairs if p[0]]
+    return isinstance(raw, str) and bool(raw.strip()) and os.path.realpath(raw) == root
+
+
+def _registry_feed(source: str) -> str:
+    """The literal `python3 -c "..."` block kipi-update.sh feeds its own instance
+    loop from, sliced out of its source. Empty when it is not in that shape,
+    which the caller treats as unresolvable rather than guessing."""
+    start = source.find('done < <(python3 -c "')
+    if start < 0:
+        return ""
+    end = source.find('\n")\n', start)
+    if end < 0:
+        return ""
+    return source[start + len("done < <("):end + 2]
+
+
+def registry_rows(root: str):
+    """The instance rows `kipi update` ITSELF would iterate, or None.
+
+    Derived, not restated (lessons/derive-a-value-from-its-owner). Four rules
+    decide what a registry row even means -- the default `type`, the
+    `subtree_prefix or ''` normalisation, the "only an explicit false counts as
+    a declaration" rule, and dropping any row whose `status` starts with
+    "merged" -- and all four live in one python block inside kipi-update.sh. A
+    copy of them here would agree today and drift the day the owner changes,
+    which is the whole shape of the PR #726 review's minor.
+
+    None means the question could not be asked: no updater, a renamed feed, a
+    registry the owner itself cannot parse. The caller must not read None as
+    "nothing syncs", which is the harmless answer.
+    """
+    root = os.path.realpath(root)
+    try:
+        with open(os.path.join(root, UPDATER_REL), encoding="utf-8") as fh:
+            source = fh.read()
+    except OSError:
+        return None
+    feed = _registry_feed(source)
+    if not feed:
+        return None
+    registry = os.path.join(root, "instance-registry.json")
+    program = f"REGISTRY={shlex.quote(registry)}\n{feed}\n"
+    try:
+        done = subprocess.run(["bash", "-c", program],
+                              capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    rows = []
+    for line in done.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) != 5 or not parts[0]:
+            continue
+        rows.append({"name": parts[0], "path": parts[1], "prefix": parts[2],
+                     "type": parts[3], "declared": parts[4]})
+    return rows
+
+
+def sync_decision(row: dict) -> tuple:
+    """(decision, note): would a `kipi update` run rsync the skeleton over this
+    row? `syncs` | `stale-row` | `not-synced` | `undeclared`.
+
+    This mirrors kipi-update.sh's own three pre-sync branches, in its order
+    (kipi-update.sh:1629 path, :1649 standalone/no-prefix, :1651 declared vs
+    :1653 undeclared). The CONDITIONS are the one part of the decision that
+    cannot be sliced and executed -- they are inline in a `while` loop, not a
+    function like `fleet_ship_ref` -- so they are a divergence check instead:
+    `test_the_owners_three_skip_branches_are_still_the_ones_this_reads` parses
+    them out of the updater and goes RED when the owner's text moves. Strictly
+    worse than deriving, and it fails loudly rather than passing quietly.
+
+    `undeclared` is red on purpose and is NOT a skip for the owner either: the
+    updater counts that row as a FAIL, so it is the one row whose fan-out is
+    already broken (ASK-117). Handing it the quiet answer would be the defect.
+    """
+    if not row["path"] or not os.path.isdir(row["path"]):
+        return "stale-row", STALE_ROW_NOTE
+    if row["type"] == "standalone" or not row["prefix"]:
+        if row["declared"] == "declared":
+            return "not-synced", NOT_SYNCED_NOTE
+        return "undeclared", UNDECLARED_NOTE
+    return "syncs", ""
 
 
 def classify(instance_root: str, skel_root: str, shipped=None) -> tuple:
@@ -240,15 +335,35 @@ def classify(instance_root: str, skel_root: str, shipped=None) -> tuple:
 def scan(root: str) -> dict:
     """The report. Pure enough for a test to read without a subprocess."""
     root = os.path.realpath(root)
-    skeleton_ok, pairs = resolve(root)
-    rows = []
+    skeleton_ok = resolve(root)
+    population = registry_rows(root) if skeleton_ok else None
+    rows, excluded_rows = [], []
     shipped = shipped_blobs(root, _fan_out_ref(root)) if skeleton_ok else None
-    if skeleton_ok:
-        for name, path in pairs:
-            state, note = classify(path, root, shipped)
-            rows.append({"name": name, "path": path, "state": state, "note": note})
+    for row in population or []:
+        decision, note = sync_decision(row)
+        if decision != "syncs":
+            # NOT judged, and NOT dropped. A row no sync reaches cannot lose
+            # content to a sync, so it is not the fanout-loss hazard -- but 8 of
+            # the live fleet's 22 rows are in this bucket, and a report that
+            # stopped mentioning them would read as "22 instances clean".
+            excluded_rows.append(dict(row, state=decision, note=note))
+            continue
+        state, classify_note = classify(row["path"], root, shipped)
+        rows.append({"name": row["name"], "path": row["path"],
+                     "state": state, "note": classify_note})
     ahead = [r["name"] for r in rows if r["state"] == "ahead"]
     unanswered = [r["name"] for r in rows if r["state"] == "could-not-read"]
+    undeclared = [r["name"] for r in excluded_rows if r["state"] == "undeclared"]
+    excluded = {}
+    for row in excluded_rows:
+        if row["state"] != "undeclared":
+            excluded.setdefault(row["state"], []).append(row["name"])
+    # The population question, like the ship-ref question, has an answer this
+    # run may fail to get. "Could not ask which rows a sync reaches" must not
+    # print as "no row loses anything": without it every stale row would be
+    # silently called stale on a run that never consulted the owner.
+    if skeleton_ok and population is None:
+        unanswered = [NO_POPULATION] + unanswered
     # The CAUSE leads its own rows. An unresolvable ship ref turns every
     # mismatching instance into an identical `cannot say`, and a title reading
     # "RED UNANSWERED: a, b, c" names the symptom in 25 places and the reason in
@@ -256,19 +371,24 @@ def scan(root: str) -> dict:
     # answered, and a sentinel there would be a red with nothing behind it.
     if any(r["note"] == NO_REF_NOTE for r in rows):
         unanswered = [NO_FAN_OUT_REF] + unanswered
-    # A registry this run could PARSE but that names no instance scanned nothing,
-    # and nothing has the same bytes as a healthy fleet
-    # (lessons/zero-selected-items-is-a-failure-not-a-pass.md). Zero and
-    # never-ran must not both print green.
-    if skeleton_ok and not rows:
+    # A registry this run could PARSE but out of which NO row is a sync
+    # destination scanned nothing, and nothing has the same bytes as a healthy
+    # fleet (lessons/zero-selected-items-is-a-failure-not-a-pass.md). Zero and
+    # never-ran must not both print green. It is the SYNCED population that has
+    # to be non-empty, not the registry's row count: a registry whose every row
+    # is stale answers the question for no instance at all.
+    if skeleton_ok and population is not None and not rows:
         unanswered = [NO_INSTANCES]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "skeleton": root,
         "skeleton_ok": skeleton_ok,
         "instances": rows,
+        "excluded": excluded,
+        "excluded_rows": excluded_rows,
         "ahead": ahead,
         "unanswered": unanswered,
+        "undeclared": undeclared,
         # THREE ways to be red, and the middle one is the PR #339 review's major:
         # an instance whose gate file could not be read is UNKNOWN, never synced.
         # An instance that is genuinely ahead AND unreadable at 06:30 used to
@@ -277,7 +397,15 @@ def scan(root: str) -> dict:
         # was. A root that is not the skeleton is the same defect one level up:
         # it ran somewhere it cannot answer the question, which is not the same
         # answer as "no drift found".
-        "red": bool(ahead) or bool(unanswered) or not skeleton_ok,
+        #
+        # What is NOT red, as of the PR #726 review's major: a row no sync
+        # reaches. 8 of the live fleet's 22 rows point at directories deleted
+        # months ago, so every one of them scored `could-not-read` and this job
+        # would have exited 2 at 06:30 daily forever, with launchd-health
+        # re-pinging Sana every 6 hours (launchd-health-check.py:47). A gate red
+        # on its own population gets switched off, and then it protects nothing.
+        # Those rows stay NAMED and COUNTED in the message instead.
+        "red": bool(ahead) or bool(unanswered) or bool(undeclared) or not skeleton_ok,
     }
 
 
@@ -302,6 +430,20 @@ def render(report: dict) -> str:
     if report["unanswered"]:
         lines.append(f"RED UNANSWERED: {', '.join(report['unanswered'])} -- "
                      "not scanned, so not known to be safe")
+    if report["undeclared"]:
+        lines.append(f"RED UNDECLARED: {', '.join(report['undeclared'])} -- "
+                     "receives no skeleton propagation and nothing says that is "
+                     "intended, so kipi update fails on it")
+    # The rows this check EXCLUDED, counted. They are not red -- no sync reaches
+    # them, so no sync destroys anything in them -- and dropping them from the
+    # exit code must not drop them from the report too, or the next reader sees
+    # "no drift" over a registry a third of which points at nothing.
+    for state, label in (("stale-row", "stale registry row"),
+                         ("not-synced", "row declared not skeleton-managed")):
+        names = report["excluded"].get(state) or []
+        if names:
+            lines.append(f"{len(names)} {label}{'s' if len(names) != 1 else ''}, "
+                         f"excluded (no sync reaches them): {', '.join(names)}")
     for row in report["instances"]:
         if row["state"] == "could-not-read":
             lines.append(f"{row['name']}: {COULD_NOT_READ} ({row['note']})")
@@ -328,6 +470,14 @@ def fingerprint(report: dict) -> str:
     # run, and a channel repeating an unchanged condition stops being read.
     if report["unanswered"]:
         parts.append("unanswered:" + ",".join(sorted(report["unanswered"])))
+    if report["undeclared"]:
+        parts.append("undeclared:" + ",".join(sorted(report["undeclared"])))
+    # The EXCLUDED sets are deliberately not part of the state. They are not
+    # red, so they file no ticket, so a change in them has no alert to fire
+    # once. A new stale row appearing is registry hygiene, which is
+    # kipi-update.sh's own "SKIP: path does not exist" line to report and not
+    # this job's; folding it in here would restore the muted channel this
+    # round removed, one indirection further out.
     return "|".join(parts) if parts else "green"
 
 
@@ -347,30 +497,73 @@ def _send(message: str) -> None:
                            f"{(done.stderr or b'').decode('utf-8', 'replace')[:300]}")
 
 
-def _remember(root: str, current: str, report: dict) -> None:
+def _remember(root: str, current: str, report: dict) -> str:
     """The single writer of the state file. Advancing the state is what makes the
     next run quiet, so it happens on exactly two paths -- after a filing, and on
-    the first quiet run -- and never after a failed filing."""
+    the first quiet run -- and never after a failed filing.
+
+    Returns "" or the error. It does NOT raise, and the reason is a defect the
+    manifest fix above found one layer out: the state file and the manifest live
+    in the SAME `q-system/output/`, and this writer ran AFTER the alert had
+    already filed. So an unwritable output directory did not merely lose the
+    local artifact -- it threw a traceback out of a run that had already sent a
+    ticket, left the state unadvanced, and made the next run file the identical
+    ticket again, forever. That is the muted-channel failure inverted into an
+    alert storm, and it is the one founder-notifications.md calls worse.
+
+    Unlike the manifest, a state write that fails IS an exit-2 condition (see
+    main): the once-per-state-change promise is broken while it lasts, and that
+    is a real break rather than a property of a healthy population.
+    """
     state_path = os.path.join(os.path.realpath(root), STATE_REL)
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    with open(state_path, "w", encoding="utf-8") as fh:
-        json.dump({"fingerprint": current, "at": report["generated_at"]}, fh)
+    try:
+        os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as fh:
+            json.dump({"fingerprint": current, "at": report["generated_at"]}, fh)
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
+def _write_manifest(root: str, report: dict) -> dict:
+    """The LOCAL artifact, written last and never raising.
+
+    It used to be written FIRST and unguarded, so an output directory that
+    cannot be written -- a read-only volume, a file where the directory
+    belongs, a permission change -- raised out of `run()` and the red fleet
+    filed NOTHING (PR #726 review, minor). The convenience artifact was
+    ordered ahead of the only signal that leaves the machine.
+    """
+    try:
+        manifest = os.path.join(os.path.realpath(root), MANIFEST_REL)
+        os.makedirs(os.path.dirname(manifest), exist_ok=True)
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2, sort_keys=True)
+    except OSError as exc:
+        return {"written": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"written": True, "error": ""}
 
 
 def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     report = scan(root)
     message = render(report)
     out = {"report": report, "message": message,
-           "alert": {"filed": False, "skipped": True, "error": ""}}
-    if write_manifest:
-        manifest = os.path.join(os.path.realpath(root), MANIFEST_REL)
-        os.makedirs(os.path.dirname(manifest), exist_ok=True)
-        with open(manifest, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2, sort_keys=True)
+           "alert": {"filed": False, "skipped": True, "error": ""},
+           "manifest": {"written": False, "error": "", "skipped": not write_manifest}}
+
+    def finish(result):
+        # ONE exit from run(), so the manifest cannot be skipped by whichever
+        # early return the alert path took. Every `return` below goes through
+        # here; a second writer is how the first-run branch would quietly stop
+        # leaving an artifact.
+        if write_manifest:
+            out["manifest"].update(_write_manifest(root, report))
+        return result
+
     if trigger != "launchd":
         out["alert"]["reason"] = ("not launched by the plist (KIPI_TRIGGER != launchd): "
                                  "printed, filed nothing")
-        return out
+        return finish(out)
     state_path = os.path.join(os.path.realpath(root), STATE_REL)
     try:
         with open(state_path, encoding="utf-8") as fh:
@@ -380,7 +573,7 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     current = fingerprint(report)
     if current == previous:
         out["alert"]["reason"] = f"no state change since the last run ({current})"
-        return out
+        return finish(out)
     if not previous and not report["red"]:
         # First scheduled run on a healthy fleet: "" -> "green" is a state change
         # by string comparison, and filing "recovered" for a condition that never
@@ -390,7 +583,7 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
         # the first genuine red is not muted by this branch.
         _remember(root, current, report)
         out["alert"]["reason"] = f"first run and nothing is red ({current}): state recorded"
-        return out
+        return finish(out)
     out["alert"]["skipped"] = False
     body = message if report["red"] else (
         "voice-stop-gate propagation recovered: no instance is ahead of the skeleton")
@@ -406,12 +599,12 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
         # after a key exists files the red that was waiting.
         out["alert"]["skipped"] = True
         out["alert"]["reason"] = f"notifier not configured, nothing filed ({exc})"
-        return out
+        return finish(out)
     except Exception as exc:                      # never swallowed: the caller exits 2
         out["alert"]["error"] = f"{type(exc).__name__}: {exc}"
-        return out                                # state NOT advanced: retry next run
+        return finish(out)                        # state NOT advanced: retry next run
     _remember(root, current, report)
-    return out
+    return finish(out)
 
 
 def main(argv=None, notify=None) -> int:
@@ -432,6 +625,11 @@ def main(argv=None, notify=None) -> int:
         print(f"alert: FAILED, {alert['error']}", file=sys.stderr)
     else:
         print("alert: " + alert.get("reason", "not filed"))
+    # Said out loud, and NOT folded into the exit code. A local artifact failing
+    # is not the fleet losing behaviour, and exiting 2 for it would rebuild the
+    # permanently-red shape the PR #726 review's major is about one layer out.
+    if out["manifest"]["error"]:
+        print(f"manifest: NOT written, {out['manifest']['error']}", file=sys.stderr)
     if alert["error"]:
         return 2
     return 2 if out["report"]["red"] else 0

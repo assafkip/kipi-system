@@ -52,7 +52,7 @@ def _git(root, *args):
 
 
 def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=True,
-             updater=True):
+             updater=True, extra_rows=(), row_extra=None):
     """A skeleton git repo plus one clone per name, both holding the gate file.
 
     The skeleton also carries a COPY OF THE REAL `kipi-update.sh`, never a
@@ -60,6 +60,11 @@ def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=Tru
     file's own `fleet_ship_ref`, so a fixture updater written here would test
     this fixture's idea of the updater (lessons/fixtures-come-from-producers).
     `updater=False` is the negative: an unresolvable ref must not read green.
+
+    Every clone row carries `subtree_prefix: q-system` + `type: subtree`, which
+    is what 24 of the 25 live rows carry and is the shape `kipi update` actually
+    syncs. `extra_rows` appends registry rows verbatim, for the rows the updater
+    SKIPS (a missing path, a declared standalone) and the one it FAILS.
     """
     root = tmp_path / "skeleton"
     (root / GATE_REL).parent.mkdir(parents=True)
@@ -72,9 +77,12 @@ def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=Tru
         (clone / GATE_REL).parent.mkdir(parents=True)
         (clone / GATE_REL).write_text(SKELETON_GATE)
         clones[name] = clone
+    rows = [dict({"name": n, "path": str(p), "type": "subtree",
+                  "subtree_prefix": "q-system"}, **(row_extra or {}))
+            for n, p in clones.items()]
     (root / "instance-registry.json").write_text(json.dumps({
         "skeleton": {"path": str(skeleton_path or root)},
-        "instances": [{"name": n, "path": str(p)} for n, p in clones.items()]}))
+        "instances": rows + [dict(r) for r in extra_rows]}))
     if commit:
         _git(root, "init", "-q")
         _git(root, "add", "-A")
@@ -217,6 +225,177 @@ def test_the_runner_refuses_unless_its_root_is_the_registry_skeleton(tmp_path):
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert "skeleton: COULD NOT READ" in r.stdout, r.stdout
     assert "AHEAD" not in r.stdout
+
+
+# ---- what `kipi update` WOULD sync: the population this check may judge ------
+
+def test_a_registry_row_whose_directory_is_gone_is_not_a_fanout_loss_red(tmp_path):
+    """THE REPRODUCER for PR #726 review, major. Measured on the live registry:
+    9 of its 25 rows point at directories that no longer exist (cole-gtm and its
+    projects were deleted 2026-10-16, three client rows are gone). Every one of
+    them scored `could-not-read` -> `unanswered` -> exit 2, so this job would
+    have gone red at 06:30 on day one and every day after, and `launchd-health`
+    re-alerts on that non-zero exit every 6 hours. A gate red on its own
+    population gets switched off, which is the failure this file's own docstring
+    names and then walked into one level up.
+
+    `kipi update` prints "SKIP: path ... does not exist" and rsyncs nothing into
+    a row like this (kipi-update.sh:1630). A sync that never touches a directory
+    cannot destroy content in it, so it is NOT the fanout-loss hazard. It is a
+    stale registry row, and the fix is to say THAT rather than to say nothing:
+    the rows are still named and counted in the message.
+    """
+    root, _ = _fixture(tmp_path, extra_rows=[
+        {"name": "cole-gtm", "path": str(tmp_path / "deleted-last-month"),
+         "type": "subtree", "subtree_prefix": "q-system"}])
+    r = _run(root)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "UNANSWERED" not in r.stdout, r.stdout
+    assert "cole-gtm" in r.stdout and "stale registry row" in r.stdout, r.stdout
+
+
+def test_a_row_kipi_update_skips_is_not_told_the_next_sync_destroys_it(tmp_path):
+    """PR #726 review, minor. `resolve()` read only name and path, so a row
+    declaring `skeleton_managed: false` (or standalone, or a null
+    `subtree_prefix`) was scanned as if the skeleton rsyncs over it. kipi-update
+    prints "SKIP: declared not skeleton-managed" and syncs nothing there
+    (kipi-update.sh:1651), so telling it the next sync DESTROYS its gate is a
+    false alarm about a sync that will never happen. This is reddit-build-radar,
+    the one live row in that shape.
+    """
+    standalone = tmp_path / "reddit-build-radar"
+    (standalone / GATE_REL).parent.mkdir(parents=True)
+    (standalone / GATE_REL).write_text(AHEAD_GATE)        # genuinely different
+    root, _ = _fixture(tmp_path, extra_rows=[
+        {"name": "reddit-build-radar", "path": str(standalone),
+         "type": "standalone", "skeleton_managed": False}])
+    r = _run(root)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "AHEAD" not in r.stdout and "UNANSWERED" not in r.stdout, r.stdout
+    assert "reddit-build-radar" in r.stdout and "not skeleton-managed" in r.stdout
+
+
+def test_an_undeclared_non_propagating_row_is_red(tmp_path):
+    """The owner's third branch is NOT a skip: a row that receives no
+    propagation and has nothing on record saying that is intended makes
+    `kipi update` itself FAIL (kipi-update.sh:1653, ASK-117). Reading that as
+    "nothing syncs here, so nothing to lose" would hand the quiet answer to the
+    one row whose fan-out is broken. Measured: zero live rows are in this shape,
+    so this red is not red on today's population.
+    """
+    root, _ = _fixture(tmp_path, extra_rows=[
+        {"name": "orphan", "path": str(tmp_path / "orphan-dir"), "type": "standalone"}])
+    (tmp_path / "orphan-dir").mkdir()
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "orphan" in r.stdout and "UNDECLARED" in r.stdout, r.stdout
+
+
+def test_a_merged_registry_row_is_not_scanned(tmp_path):
+    """The owner's feed drops any row whose `status` starts with "merged" before
+    the loop ever sees it. Scanning one here would judge an instance that was
+    folded into another and is not a sync destination at all."""
+    root, clones = _fixture(tmp_path)
+    merged = tmp_path / "folded-in"
+    (merged / GATE_REL).parent.mkdir(parents=True)
+    (merged / GATE_REL).write_text(AHEAD_GATE)
+    reg = root / "instance-registry.json"
+    data = json.loads(reg.read_text())
+    data["instances"].append({"name": "folded-in", "path": str(merged),
+                              "type": "subtree", "subtree_prefix": "q-system",
+                              "status": "merged into consulting"})
+    reg.write_text(json.dumps(data))
+    r = _run(root)
+    assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
+    assert "folded-in" not in r.stdout, r.stdout
+
+
+def test_the_sync_population_is_derived_from_kipi_update_not_restated(tmp_path):
+    """BOUND, not merely equal (lessons/derive-a-value-from-its-owner), the same
+    way `_fan_out_ref` is. The row normalisation -- the default `type`, the
+    `subtree_prefix or ''`, the declared/undeclared rule, the merged filter --
+    lives in one python block inside kipi-update.sh, and this check EXECUTES
+    that block instead of reimplementing it. Mutating the owner has to move the
+    answer; a copy of those four rules would agree today and drift silently.
+    """
+    root, _ = _fixture(tmp_path, extra_rows=[
+        {"name": "radar", "path": str(tmp_path / "radar"), "type": "standalone",
+         "skeleton_managed": False}])
+    (tmp_path / "radar").mkdir()
+    m = _mod()
+    rows = m.registry_rows(str(root))
+    assert [r["name"] for r in rows] == ["consulting", "radar"], rows
+    assert rows[1]["declared"] == "declared" and rows[1]["type"] == "standalone"
+    src = (root / "kipi-update.sh").read_text()
+    mutated = src.replace("declared = 'declared' if i.get('skeleton_managed') is False",
+                          "declared = 'never' if i.get('skeleton_managed') is False", 1)
+    assert mutated != src, "the declaration rule moved in kipi-update.sh; re-pin this"
+    (root / "kipi-update.sh").write_text(mutated)
+    assert m.registry_rows(str(root))[1]["declared"] == "never"
+
+
+def test_the_owners_three_skip_branches_are_still_the_ones_this_reads():
+    """A DIVERGENCE CHECK, and strictly worse than deriving -- said plainly
+    because the lesson says to. The four row-normalisation rules ARE derived
+    (the test above executes them), but the three pre-sync branch CONDITIONS
+    are inline in kipi-update.sh's `while` loop, not a function like
+    `fleet_ship_ref`, so there is nothing to slice and execute. The second-best
+    answer is a check that goes RED when the owner's text moves, instead of a
+    copy that agrees today and passes quietly after the owner changes.
+    """
+    src = KIPI_UPDATE.read_text()
+    conditions = ['if [ ! -d "$path" ]; then',
+                  'if [ "$itype" = "standalone" ] || [ -z "$prefix" ]; then',
+                  'if [ "$declared" = "declared" ]; then']
+    missing = [c for c in conditions if c not in src]
+    assert not missing, (
+        "kipi-update.sh's pre-sync branches moved; sync_decision() in "
+        "voice-gate-propagation-check.py mirrors them and must be re-read: "
+        f"{missing}")
+    # and the mirror answers each of those three branches, so the list above is
+    # not three strings nothing consults
+    m = _mod()
+    base = {"name": "x", "path": str(KIPI_UPDATE.parent), "prefix": "q-system",
+            "type": "subtree", "declared": "undeclared"}
+    assert m.sync_decision(dict(base, path="/nope/gone"))[0] == "stale-row"
+    assert m.sync_decision(dict(base, type="standalone",
+                                declared="declared"))[0] == "not-synced"
+    assert m.sync_decision(dict(base, prefix=""))[0] == "undeclared"
+    assert m.sync_decision(base)[0] == "syncs"
+
+
+def test_an_unsliceable_updater_leaves_the_population_unanswered(tmp_path):
+    """No owner, no answer. Without the feed the check cannot tell which rows
+    `kipi update` would sync, and "cannot tell" must not print as the harmless
+    one -- the same posture as an unresolvable ship ref. A missing-directory row
+    must NOT be quietly called stale on a run that could not ask."""
+    root, _ = _fixture(tmp_path, updater=False)
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "UNANSWERED" in r.stdout and _mod().NO_POPULATION in r.stdout, r.stdout
+
+
+def test_the_message_names_and_counts_every_row_it_excluded(tmp_path):
+    """The silence this fix buys is bounded on purpose. Nine stale rows dropping
+    out of the exit code must not drop out of the REPORT too, or the next reader
+    sees "no drift" over a registry a third of which points at nothing. Every
+    excluded row keeps a named line and a counted summary."""
+    root, _ = _fixture(tmp_path, extra_rows=[
+        {"name": "gone-a", "path": str(tmp_path / "gone-a"), "type": "subtree",
+         "subtree_prefix": "q-system"},
+        {"name": "gone-b", "path": str(tmp_path / "gone-b"), "type": "subtree",
+         "subtree_prefix": "q-system"},
+        {"name": "radar", "path": str(tmp_path / "radar"), "type": "standalone",
+         "skeleton_managed": False}])
+    (tmp_path / "radar").mkdir()
+    m = _mod()
+    report = m.scan(str(root))
+    message = m.render(report)
+    assert report["red"] is False
+    assert report["excluded"] == {"stale-row": ["gone-a", "gone-b"],
+                                 "not-synced": ["radar"]}, report["excluded"]
+    assert "2 stale registry row" in message, message
+    assert "gone-a" in message and "gone-b" in message and "radar" in message
 
 
 # ---- the alert: once, on state change, and only under the plist marker --------
@@ -410,14 +589,47 @@ def test_the_run_writes_a_local_manifest_of_the_scan(tmp_path):
     assert needle not in Path(__file__).read_text(), "nor this suite"
 
 
+def test_an_unwritable_manifest_does_not_stop_the_alert(tmp_path):
+    """PR #726 review, minor. The manifest write ran BEFORE the alert and was
+    unguarded, so an output directory that cannot be written -- a read-only
+    volume, a file sitting where the dir belongs, a permission change -- raised
+    out of `run()` and the red fleet filed NOTHING. The local convenience
+    artifact was ordered ahead of the only signal that leaves the machine.
+
+    It now runs last and its failure is RECORDED, not raised. It does not set
+    the exit code on its own either: a local artifact failing is not the fleet
+    losing behaviour, and making it exit 2 would rebuild the permanently-red
+    shape this round is fixing. main() prints it to stderr so it is not silent.
+    """
+    root, clones = _fixture(tmp_path)
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
+    # a FILE where the output directory belongs: every write under it fails
+    (root / "q-system" / "output").write_text("not a directory")
+    m = _mod()
+    filed = []
+    out = m.run(str(root), notify=lambda msg: filed.append(msg), trigger="launchd")
+    assert out["alert"]["filed"] is True and len(filed) == 1, (out["alert"], filed)
+    assert out["manifest"]["written"] is False and out["manifest"]["error"], out["manifest"]
+    r = _run(root)
+    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
+    assert "manifest" in r.stderr.lower(), r.stderr
+
+
 # ---- the live fleet: the ONE skip in this file -------------------------------
 
-def test_the_real_fleet_has_no_instance_ahead_of_this_checkout():
+def test_the_real_fleet_is_green_by_the_runners_own_verdict():
     """CI-ONLY SKIP. The fanout-LOSS hazard is a property of the 25 instance
     clones, which exist on the founder's machine and nowhere in CI. The synthetic
     trees above pin the SCANNER; only this runs it against the fleet, and the
     scheduled plist is what makes it run where the clones are. Skipping here is
     correct; the runner not existing anywhere that fails loudly was the defect.
+
+    IT ASSERTS `red`, NOT `ahead` (PR #726 review, minor). Asserting only the
+    ahead set let this test pass on exactly the fleet where the runner it pins
+    exits 2 every morning: 9 stale registry rows were `unanswered`, `ahead` was
+    empty, this went green and the major went unseen for three review rounds.
+    The test now asks the runner the same question launchd asks it, and prints
+    the whole breakdown so a failure says WHICH bucket, not just that one exists.
     """
     root = HERE.parent.parent.parent
     registry = root / "instance-registry.json"
@@ -428,8 +640,10 @@ def test_the_real_fleet_has_no_instance_ahead_of_this_checkout():
     if report["skeleton_ok"] is False or not any(
             row["state"] != "could-not-read" for row in report["instances"]):
         pytest.skip("no readable sibling clones: not the fleet machine (CI)")
-    ahead = [row["name"] for row in report["instances"] if row["state"] == "ahead"]
-    assert ahead == [], f"these instances lose behaviour on the next sync: {ahead}"
+    assert report["red"] is False, (
+        "the scheduled runner exits 2 on this fleet: "
+        f"ahead={report['ahead']} unanswered={report['unanswered']} "
+        f"undeclared={report['undeclared']} excluded={report['excluded']}")
 
 
 def test_exactly_one_skip_site_lives_in_this_file():
@@ -444,7 +658,7 @@ def test_exactly_one_skip_site_lives_in_this_file():
     marker = "pytest" + "." + "mark" + "." + "skip"
     sites = re.findall(re.escape(needle) + "|" + re.escape(marker), src)
     assert len(sites) == 2, f"expected the 2 skip calls of ONE CI-only test, found {sites}"
-    body = src.split("def test_the_real_fleet_has_no_instance_ahead_of_this_checkout")[1]
+    body = src.split("def test_the_real_fleet_is_green_by_the_runners_own_verdict")[1]
     body = body.split("def test_exactly_one_skip_site")[0]
     assert body.count(needle) == 2, "both skips belong to the live-fleet test"
     assert "CI-ONLY SKIP" in body, "the skip has to say it is CI-only in the file"
