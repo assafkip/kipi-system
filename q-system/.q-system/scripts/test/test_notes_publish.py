@@ -768,12 +768,34 @@ def test_a_stale_checkout_never_republishes_a_case_closed_elsewhere(tmp_path):
     assert "deleted elsewhere" in r.stdout and ACTIVE in r.stdout, r.stdout
 
 
+def _untrack_keep_file(root, rel):
+    """Leave the file on disk but out of HEAD, the shape of a stale untracked copy."""
+    git(root, "rm", "-q", "--cached", rel)
+    commit_at(root, "2026-09-01T12:00:00+0000", "untrack")
+    assert (root / rel).exists()
+
+
 def test_the_overlay_consumes_a_deletion_made_elsewhere(tmp_path):
-    """RED on a85f667f: nothing ever removed the stale local copy."""
+    """RED on a85f667f: nothing ever removed the stale local copy.
+
+    Fixture is an UNTRACKED copy: ASK-4195 made tracked files immune, so this is
+    also the negative control for the tracked test below."""
     _, b, _ = _published_then_closed(tmp_path)
+    _untrack_keep_file(b, ACTIVE)
     r = overlay(b, remote=False)
     assert not (b / ACTIVE).exists(), r.stdout
     assert "deleted elsewhere" in r.stdout
+
+
+def test_the_overlay_never_unlinks_a_file_tracked_in_head(tmp_path):
+    """RED before ASK-4195: the unlink left a tracked file deleted in the tree and
+    the Stop hook committed that deletion as 'add RCAs'."""
+    _, b, _ = _published_then_closed(tmp_path)
+    assert git(b, "ls-tree", "HEAD", "--name-only", ACTIVE).stdout.strip() == ACTIVE
+    r = overlay(b, remote=False)
+    assert (b / ACTIVE).read_text() == "case-001\n", r.stdout
+    assert "kept" in r.stdout and ACTIVE in r.stdout and "tracked" in r.stdout, r.stdout
+    assert git(b, "status", "--porcelain", "--", ACTIVE).stdout.strip() == ""
 
 
 def test_a_case_reopened_with_new_content_after_the_close_is_published(tmp_path):
