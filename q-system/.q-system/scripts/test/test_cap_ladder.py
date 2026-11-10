@@ -91,6 +91,10 @@ import json, sys, os
 W = os.environ["W"]
 open(W + "/fable.log", "a").write(json.dumps(sys.argv[1:]) + "\n")
 issue = sys.argv[sys.argv.index("--issue") + 1]
+lane = os.environ.get("FAKE_FABLE_LANE")    # a lane-mark.py start landing mid-RCA (ASK-4395 round 1)
+if lane:
+    spec = json.loads(lane)
+    open(spec["path"], "w").write(json.dumps(spec["marker"]))
 w = json.load(open(W + "/gh-world.json"))
 q = w.setdefault("fable", {}).setdefault(issue, [])
 text = q.pop(0) if q else "SURFACE: s\nSTRUCTURAL: t\nSTOP: u\nNEXT: do the thing in q-system/x.py\nREFUTE: run y\n"
@@ -150,6 +154,7 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_DRAFTER": f"{py} {tmp}/bin/drafter",
         "CAP_LADDER_PS": f"{tmp}/bin/ps",
         "CAP_LADDER_LINEAR_FIXTURE": str(tmp / "linear.json"),
+        "KIPI_LANES_DIR": str(tmp / "lanes"),
         "CAP_LADDER_TARGETS": json.dumps([{"slug": "o/r", "project": "kipi-system"}]),
         "CAP_LADDER_MODEL_FP": "fp1",
         "CAP_LADDER_NOW": "2026-11-09T04:40:00+00:00",
@@ -669,7 +674,7 @@ def _founder_asks():
 # from the script's own list, so a script that drops one from its guard goes red.
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER")
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
 
 
 def case_review_687() -> None:
@@ -976,6 +981,34 @@ def case_lane_marker() -> None:
         check("lane mutant: the file-exists copy really differs from the ladder", anchor in src and mut.read_text() != src)
         check("lane mutant: a ladder that ignores the marker's until turns the expired case red",
               expired_lane_climbs(mut) is False)
+
+    # PR #732 round 1, major: the marker was read once, then climb() spent up to
+    # 600s in Fable before closing the PR. A lane started in that window lost it.
+    with tempfile.TemporaryDirectory() as td:
+        env = lane_world(td)
+        Path(env["KIPI_LANES_DIR"]).mkdir()
+        env["FAKE_FABLE_LANE"] = json.dumps({"path": str(Path(td) / "lanes/ASK-1.json"), "marker": {
+            "issue": "ASK-1", "agent": "sana-late", "until": "2026-11-10T04:40:00Z"}})
+        out = ladder(env, "--apply")
+        gh, st = log(env, "gh"), json.loads(Path(env["CAP_LADDER_STATE"]).read_text())
+        check("lane, marker lands mid-RCA (rung 1): the PR is not closed, nothing opens or requeues, rung unspent",
+              log(env, "fable") and not any(c[:2] in (["pr", "close"], ["pr", "create"]) for c in gh)
+              and not any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync"))
+              and ledger_row(env, "ASK-1").get("capout") is True and not (st.get("ASK-1") or {}).get("rung")
+              and "sana-late" in out, (out, gh))
+    td, env = decision_world([RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
+    try:
+        env["KIPI_LANES_DIR"] = str(Path(td.name) / "lanes")
+        Path(env["KIPI_LANES_DIR"]).mkdir()
+        env["FAKE_FABLE_LANE"] = json.dumps({"path": str(Path(td.name) / "lanes/ASK-1.json"), "marker": {
+            "issue": "ASK-1", "agent": "sana-late", "until": "2026-11-14T04:40:00Z"}})
+        out = ladder(env, "--apply")
+        st = json.loads(Path(env["CAP_LADDER_STATE"]).read_text())
+        check("lane, marker lands mid-decision (rung 4): no sub-tickets, no state change, rung unspent",
+              log(env, "fable") and not writes(env) and not log(env, "sync")
+              and (st.get("ASK-1") or {}).get("rung") == 3 and "sana-late" in out, (out, writes(env)))
+    finally:
+        td.cleanup()
 
     # A held ticket's re-entry opens a PR and requeues too: same rule.
     td, env = decision_world([RCA + "DECISION: BLOCKED-ON ASK-50\n"])

@@ -122,11 +122,13 @@ FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
 PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
 
-# Every path this script writes and every outside writer it calls. Under pytest
-# main() refuses unless ALL are redirected (PR #687 review, minor 4).
+# Every path this script writes, every outside writer it calls, and the live
+# lanes dir it reads (KIPI_LANES_DIR, PR #732 round 1 minor: a test that missed
+# it read the founder's real markers). Under pytest main() refuses unless ALL
+# are redirected (PR #687 review, minor 4).
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER")
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
 
 
 def now() -> datetime:
@@ -913,6 +915,18 @@ def next_step_line(r: int) -> str:
             "an owned blocker), never a timed retry.")
 
 
+def late_lane(issue: str) -> str:
+    """The lane check again, after the Fable call and before the first write.
+
+    PR #732 round 1, major: main() read the marker once, then rca() ran Fable for
+    up to 600s before the PR close. A lane-mark.py start in that window was
+    invisible, and its PR was closed. The RCA spend is sunk; the writes are not.
+    """
+    held_by = lane_hold(issue)
+    return (f"{issue}: {held_by}, which appeared while the RCA ran; nothing was closed, opened or "
+            "requeued, and the rung is not spent") if held_by else ""
+
+
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
           apply: bool, tgts: list, report: list) -> str:
     row = state.get(issue) or {}
@@ -928,6 +942,9 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             report.append({"issue": issue, "rung": r, "decision": None, "red": True,
                            "note": "capped with no decision record: Fable produced no RCA; retried next run"})
             return f"{issue}: rung {r}: no decision record (RED in the report); the cap stays"
+        late = late_lane(issue)
+        if late:
+            return late
         out = apply_decision(issue, d, t, pr, slug, r, row)
         if "retries" in out:
             report.append({"issue": issue, "rung": r, "decision": d["kind"], "red": True, "note": out})
@@ -938,6 +955,9 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         return out
 
     rca_path, _ = rca(issue, kind, why, pr, slug)
+    late = late_lane(issue)
+    if late:
+        return late
     ledger(["claim-flag" if r == 2 else "clear-flag", issue, RUNNER_FLAG])
     if r == 3:
         run(SYNC + ["label", issue, "needs-scope"])
