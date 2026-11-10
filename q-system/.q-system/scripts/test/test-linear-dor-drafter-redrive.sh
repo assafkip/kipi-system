@@ -156,6 +156,21 @@ export KIPI_SLACK_WEBHOOK=""
 export HOME="$WORK/home"
 export CALLS_LOG="$WORK/calls.log"
 
+# THE DRAFTER BILLS A FLEET KEY THROUGH THE DOOR (ASK-4311). The door puts a stub
+# under the temp root in fixture mode by itself, so the real Keychain is never
+# asked; with no fixture key it would refuse every draft (exit 4). So: a fake key,
+# a facts file that makes key 1 billable, and every ledger inside $WORK.
+export KIPI_FLEET_FAKE_KEY_1="fixture-fleet-key"
+export KIPI_FLEET_SPEND_LEDGER="$WORK/fleet-spend.jsonl" KIPI_FLEET_EVENTS="$WORK/fleet-events.jsonl"
+export KIPI_FLEET_STATE="$WORK/fleet-state.json" KIPI_FLEET_API_FACTS="$WORK/fleet-api.json"
+python3 - "$KIPI_FLEET_API_FACTS" <<'PY'
+import datetime, json, sys
+end = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=20)
+row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
+       "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
+json.dump({"keys": {"1": row, "2": dict(row)}}, open(sys.argv[1], "w"))
+PY
+
 # --- harness ----------------------------------------------------------------
 reset() {
   : > "$WORK/requests.log"; : > "$WORK/updates.jsonl"; : > "$WORK/calls.log"
