@@ -810,5 +810,94 @@ else
 fi
 
 echo
+echo "=== a committer date git really emits parses on every interpreter ==="
+# `%cI` spells a +00:00 offset as `Z`, and `datetime.fromisoformat` only learned
+# to read that in Python 3.11. The sweeper is reached through a bare `python3`
+# from the detector and through a `#!/usr/bin/env python3` shebang, so which
+# interpreter runs it is a PATH fact rather than a guarantee.
+#
+# Measured on kipi-system 2026-11-10: 243 of the 723 commits in the swept range
+# carry `Z`. Under a parser that rejects it, every one fell out of `within_floor`
+# silently while `status` stayed `ok` and `truncated` stayed false (round 13).
+#
+# The stub below is a Python 3.9-FAITHFUL `fromisoformat`: it rejects a trailing
+# `Z` and delegates everything else. Narrow on purpose -- the round-12 scar was a
+# stub that swallowed a call it was not meant to own -- and its first printed
+# line is the control that proves it really does reject, so the case cannot pass
+# vacuously on a newer interpreter.
+DATEZ=$(cd "$TMP" && python3 - "$SWEEP" <<'PY' 2>&1
+import importlib.util
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+
+spec = importlib.util.spec_from_file_location("sweep", sys.argv[1])
+sweep = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sweep)
+
+real = datetime.fromisoformat
+
+
+def py39(text):
+    if text.endswith(("Z", "z")):
+        raise ValueError("Invalid isoformat string: " + repr(text))
+    return real(text)
+
+
+class Shim:
+    """Stands in for the module's `datetime` name; only fromisoformat differs."""
+    fromisoformat = staticmethod(py39)
+
+
+Z = "2026-11-10T08:05:26Z"
+try:
+    py39(Z)
+    print("STUB-ACCEPTS")          # control failed: the case would prove nothing
+except ValueError:
+    print("STUB-REJECTS")
+
+# A real git repo, so the `Z` under test is the byte string git itself emits for
+# a UTC committer date, never an invented one.
+work = tempfile.mkdtemp()
+subprocess.run(["git", "init", "-q", work], check=True)
+subprocess.run(["git", "-C", work, "-c", "user.email=a@b", "-c", "user.name=a",
+                "commit", "-q", "--allow-empty", "-m", "utc commit"],
+               check=True,
+               env={"PATH": "/usr/bin:/bin", "GIT_COMMITTER_DATE": "2026-11-10T08:05:26+0000",
+                    "GIT_AUTHOR_DATE": "2026-11-10T08:05:26+0000"})
+emitted = subprocess.run(["git", "-C", work, "log", "-1", "--format=%cI"],
+                         capture_output=True, text=True).stdout.strip()
+print("GIT-EMITS-Z" if emitted.endswith("Z") else "GIT-EMITS-OFFSET:" + emitted)
+
+floor = real("2026-07-26T11:53:35-07:00")
+sweep.datetime = Shim
+print("PARSED" if sweep.parse_floor(Z, strict=False) is not None else "UNPARSED")
+print("KEPT" if sweep.within_floor({"sha": "a" * 40, "committed_at": emitted},
+                                   floor) else "DROPPED")
+sweep.datetime = datetime
+try:
+    sweep.within_floor({"sha": "b" * 40, "committed_at": "not-a-date"}, floor)
+    print("SILENT-DROP")
+except RuntimeError:
+    print("RAISED")
+PY
+)
+check "the control proves the 3.9-faithful stub really rejects a Z date" \
+  "STUB-REJECTS" "$(printf '%s\n' "$DATEZ" | sed -n '1p')"
+check "...and the control proves git itself emits that Z for a UTC commit" \
+  "GIT-EMITS-Z" "$(printf '%s\n' "$DATEZ" | sed -n '2p')"
+check "a Z-suffixed floor parses without the interpreter's 3.11 tolerance" \
+  "PARSED" "$(printf '%s\n' "$DATEZ" | sed -n '3p')"
+check "a commit git dated in UTC stays inside the scan, not silently dropped" \
+  "KEPT" "$(printf '%s\n' "$DATEZ" | sed -n '4p')"
+# The other half: a date NO interpreter can read must go blind, never quiet. The
+# commit was returned by git, so excluding it hides a possible bypass inside a
+# scan that still reports `status: ok` -- and `truncated` is derived from this
+# same call, so the blindness signal would go quiet with it.
+check "a committer date no parser can read raises instead of dropping the commit" \
+  "RAISED" "$(printf '%s\n' "$DATEZ" | sed -n '5p')"
+
+echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

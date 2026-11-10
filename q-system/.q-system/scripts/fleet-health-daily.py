@@ -1130,9 +1130,21 @@ def detect_unaccounted_commits(_ctx) -> list:
     pinned = _git(REPO_ROOT, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if pinned.returncode == 0 and pinned.stdout.strip():
         cmd += ["--rev", pinned.stdout.strip()]
+    # Through `_git_env()`, like every other git read in this file. The sweeper
+    # is a git reader too, it just reaches git one process further down, and an
+    # inherited GIT_DIR beats both its `cwd` and the `--rev` pinned above.
+    #
+    # Measured 2026-11-10, with GIT_DIR pointing at a sibling checkout of this
+    # same project: the sweep answered `rev origin/sana/ask-284, scanned 884`
+    # instead of `origin/main, scanned 866`, and still reported a clean status.
+    # The detector publishes those shas into a PERMANENT Linear issue, so a
+    # hook-driven caller's environment would have put another checkout's history
+    # on the board under this repo's name. Two readers of one input disagreeing
+    # about which repo they read is the defect, even where each is defensible
+    # (PR #720 round 13).
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
-                             cwd=REPO_ROOT)
+                             cwd=REPO_ROOT, env=_git_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc
     if res.returncode != 0:

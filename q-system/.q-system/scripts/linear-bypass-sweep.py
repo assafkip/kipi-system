@@ -310,6 +310,31 @@ def gate_live_since(rev: str, cwd: Path) -> str:
     return out.strip().splitlines()[-1].strip()
 
 
+def iso_text(value: str) -> str:
+    """git's ISO-8601 spelling, in the one form every `fromisoformat` accepts.
+
+    `%cI` emits a trailing `Z` whenever the offset is exactly +00:00, and
+    `datetime.fromisoformat` only learned to read that in Python 3.11. Below
+    that it raises, and this module is reached through a bare `python3` from
+    `fleet-health-daily.py` and a `#!/usr/bin/env python3` shebang, so WHICH
+    interpreter runs it is a PATH fact, not a guarantee.
+
+    Measured on this repo 2026-11-10: of the 723 commits in the swept range, 243
+    carry `Z` and 480 carry a numeric offset. On an interpreter that rejects `Z`
+    the old code dropped all 243 out of `within_floor` silently, while `status`
+    stayed `ok` and `truncated` stayed false — a third of history unread and
+    every blindness signal quiet (PR #720 round 13).
+
+    Normalizing here rather than catching the error at each call site is what
+    makes the answer interpreter-INDEPENDENT: the parse no longer depends on a
+    tolerance that arrived in 3.11.
+    """
+    text = (value or "").strip()
+    if text.endswith(("Z", "z")):
+        return text[:-1] + "+00:00"
+    return text
+
+
 def parse_floor(value: str, strict: bool = True):
     """Parse an ISO-8601 date or timestamp into an aware datetime.
 
@@ -317,7 +342,7 @@ def parse_floor(value: str, strict: bool = True):
     must never degrade into "no floor" — that is the failure mode that made
     `git log --since` unusable here.
     """
-    text = (value or "").strip()
+    text = iso_text(value)
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
@@ -339,14 +364,31 @@ def within_floor(commit: dict, floor) -> bool:
     """Did this commit object enter history at or after the floor?
 
     Committer date, matching gate_live_since: a replayed pre-gate commit keeps
-    its author date but is a NEW object that entered after the gate. An
-    unparseable date is outside the floor — a commit whose position in time
-    cannot be established is not evidence of anything.
+    its author date but is a NEW object that entered after the gate.
+
+    An unparseable date RAISES. It used to return False, which reads as "outside
+    the floor" and is the same silent false zero the round-10 and round-12 fixes
+    in this file already refused: git RETURNED this commit, so dropping it means
+    a bypass can hide inside a scan that still reports `status: ok`, and
+    `truncated` is derived from this same call so even the blindness signal goes
+    quiet. Blind is the recoverable direction; the raise names the sha and the
+    byte string so the next step is a lookup rather than a guess.
+
+    After `iso_text`, both spellings git actually emits parse on every supported
+    interpreter, so this is a backstop that should never fire on real history,
+    not a filter doing day-to-day work.
     """
     if floor is None:
         return True
-    when = parse_floor(commit["committed_at"], strict=False)
-    return when is not None and when >= floor
+    raw = commit.get("committed_at", "")
+    when = parse_floor(raw, strict=False)
+    if when is None:
+        raise RuntimeError(
+            f"commit {commit.get('sha', '?')} has a committer date this parser "
+            f"cannot read ({raw!r}), so its position against the activation "
+            "floor is unknown and excluding it would be a silent false zero."
+        )
+    return when >= floor
 
 
 def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:

@@ -794,8 +794,8 @@ check("a standing lost lock produces a stable body",
 # operator had triaged and closed -- the exact outcome the round-9 fix exists to
 # prevent. Taking the ref from whatever the checkout tracks did that from any
 # feature worktree (PR #720 round 12).
-def _sweeper_argv(payload=None):
-    """The argv the detector actually builds, captured from the stub."""
+def _sweeper_call(payload=None):
+    """The argv AND the kwargs the detector actually builds, from the stub."""
     seen = {}
     real_run, real_isfile = fh.subprocess.run, Path.is_file
 
@@ -808,6 +808,7 @@ def _sweeper_argv(payload=None):
         if not any("linear-bypass-sweep.py" in str(part) for part in cmd):
             return real_run(cmd, *_a, **_k)
         seen["cmd"] = list(cmd)
+        seen["kwargs"] = dict(_k)
         return _StubSweep(payload or _OK, 0, None, "")
 
     fh.subprocess.run = _capture
@@ -817,10 +818,11 @@ def _sweeper_argv(payload=None):
         fh.detect_unaccounted_commits(None)
     finally:
         fh.subprocess.run, Path.is_file = real_run, real_isfile
-    return seen.get("cmd", [])
+    return seen
 
 
-_argv = _sweeper_argv()
+_call = _sweeper_call()
+_argv = _call.get("cmd", [])
 _pinned_ref = _argv[_argv.index("--rev") + 1] if "--rev" in _argv else ""
 check("the detector pins the swept ref instead of taking the checkout's",
       "--rev" in _argv, True)
@@ -835,6 +837,31 @@ check("...and pins it to a short remote-tracking spelling",
 _pin_rc = fh._git(fh.REPO_ROOT, "rev-parse", "--verify", "--quiet",
                   (_pinned_ref or "nope") + "^{commit}").returncode
 check("...and the control proves that ref resolves in this repo", _pin_rc, 0)
+
+# --- the sweeper is a git reader too, so it gets the same scrubbed env --------
+# `_git_env()` exists because an inherited GIT_DIR beats `-C`. The sweeper
+# reaches git one process further down, so `cwd` and the `--rev` pinned above are
+# beaten by exactly the same variable. Measured 2026-11-10 with GIT_DIR pointing
+# at a sibling checkout of this project: the sweep answered `rev
+# origin/sana/ask-284, scanned 884` instead of `origin/main, scanned 866` and
+# still reported a clean status, and the detector publishes those shas into a
+# PERMANENT Linear issue (PR #720 round 13).
+_sweep_env = _call.get("kwargs", {}).get("env")
+check("the sweeper does not inherit the caller's GIT_* environment",
+      _sweep_env is not None, True)
+check("...and not one GIT_* variable but the prompt kill-switch reaches it",
+      sorted(k for k in (_sweep_env or {}) if k.startswith("GIT_")),
+      ["GIT_TERMINAL_PROMPT"])
+# Control one: scrubbing must not hand the child an EMPTY environment. The
+# detector invokes a bare `python3`, which is resolved through PATH by the OS, so
+# an env without PATH turns this fix into a detector that cannot start its own
+# sweeper.
+check("...and the control proves PATH survived the scrub",
+      bool((_sweep_env or {}).get("PATH")), True)
+# Control two: the sweeper FETCHES, so a credential prompt under launchd would
+# hang it until the 120s timeout. That is the one GIT_ variable it must keep.
+check("...and the control proves the prompt kill-switch is off, not just present",
+      (_sweep_env or {}).get("GIT_TERMINAL_PROMPT"), "0")
 
 # Negative controls, both directions.
 check("a locked run reports only the history finding",
