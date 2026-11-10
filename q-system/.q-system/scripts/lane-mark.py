@@ -165,8 +165,9 @@ def hold(a, path: str, cur: dict, now: datetime) -> int:
     if not cur:
         print(f"lane-mark: no lane marker for {a.issue} to hold; run start first", file=sys.stderr)
         return 1
-    if cur.get("ended"):
-        print(f"lane-mark: {a.issue} has ended; start it again before a hold", file=sys.stderr)
+    until0 = parse_stamp(cur.get("until"))
+    if cur.get("ended") or not until0 or until0 <= now:
+        print(f"lane-mark: {a.issue} has ended or expired; start it again before a hold", file=sys.stderr)
         return 1
     try:
         ok, text = check_blocker(a.on, a.issue)
@@ -181,13 +182,34 @@ def hold(a, path: str, cur: dict, now: datetime) -> int:
     if not ok:
         print(f"lane-mark: hold on {a.on} refused. {text}", file=sys.stderr)
         return 1
-    holds = [h for h in cur.get("holds") or [] if isinstance(h, dict) and h.get("on") != a.on]
-    holds.append({"on": a.on, "consumer": text, "at": stamp(now)})
-    cur["holds"] = holds
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(cur, fh, indent=1)
-    os.replace(tmp, path)
+    # THE CHECK ABOVE TAKES SECONDS (Linear, gh), SO `cur` IS STALE BY NOW (PR #712
+    # review, round 2). Writing it back would erase an `end` that landed meanwhile
+    # and give the lane its 24h back. So under the lanes lock the marker is read
+    # AGAIN and only its `holds` key is changed; a marker that ended, expired or
+    # vanished in the meantime refuses the hold.
+    os.makedirs(lanes_dir(), exist_ok=True)
+    with open(lock_path(), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            try:
+                fresh = json.load(open(path))
+            except (OSError, ValueError):
+                fresh = {}
+            until = parse_stamp(fresh.get("until"))
+            if not fresh or fresh.get("ended") or not until or until <= now:
+                print(f"lane-mark: hold on {a.on} refused: the {a.issue} marker ended, expired or vanished "
+                      f"while the consumer was checked", file=sys.stderr)
+                return 1
+            holds = [h for h in fresh.get("holds") or [] if isinstance(h, dict) and h.get("on") != a.on]
+            holds.append({"on": a.on, "consumer": text, "at": stamp(now)})
+            fresh["holds"] = holds
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(fresh, fh, indent=1)
+            os.replace(tmp, path)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    # No write_state: hold changes no liveness field, so lanes.state is unchanged.
     print(f"lane-mark: {a.issue} hold: {a.on} has a consumer: {text}")
     return 0
 

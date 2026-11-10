@@ -302,3 +302,32 @@ def test_local_projects_is_the_dispatch_set_minus_kill_switches(wc, monkeypatch)
     mod = load("wait-has-consumer.py", "wait_has_consumer_lp")
     mod._MODS.update({"po": po, "lr": lr})
     assert mod.local_projects() == {"ProjOn"}
+
+
+def test_hold_does_not_erase_an_end_that_lands_during_the_check(lm, monkeypatch):
+    start(lm)
+
+    def check_then_end(b, w=""):
+        assert lm.main(["end", "ASK-3834"]) == 0   # the lane ends while the check runs
+        return True, "linear-worker.sh would pick it"
+
+    monkeypatch.setattr(lm, "check_blocker", check_then_end)
+    assert lm.main(["hold", "ASK-3834", "--on", "ASK-5001"]) == 1
+    cur = json.load(open(lm.tmp / "lanes" / "ASK-3834.json"))
+    assert cur.get("ended") and "holds" not in cur
+
+
+def test_hold_on_an_expired_marker_refuses(lm, monkeypatch):
+    start(lm)
+    p = lm.tmp / "lanes" / "ASK-3834.json"
+    cur = json.load(open(p))
+    cur["until"] = stamp(NOW - timedelta(hours=1))
+    p.write_text(json.dumps(cur))
+    monkeypatch.setattr(lm, "check_blocker", lambda b, w="": (True, "x"))
+    assert lm.main(["hold", "ASK-3834", "--on", "ASK-5001"]) == 1
+
+
+def test_an_unreadable_lane_marker_is_not_a_consumer(wc):
+    (wc.tmp / "lanes" / "ASK-5002.json").write_text("{not json")
+    with pytest.raises(wc.CannotLook):
+        wc.consumer_for("ASK-5002")

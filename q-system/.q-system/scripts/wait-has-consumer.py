@@ -211,6 +211,11 @@ def _consumer_for_ticket(ident: str, waiter: str = "") -> tuple:
         return False, NO_ONE + f"{ident} is {state['name']}, so there is no work left for a hold to wait on"
     if state["type"] == "started":
         marker = ls.lane_marker(ident)
+        if marker.startswith("its lane marker"):
+            # lane_marker() reads an unreadable marker as live so the fleet stays
+            # off the ticket (fail closed). For THIS question the direction inverts:
+            # a marker nobody can read is not proof anyone is working.
+            raise CannotLook(marker)
         if marker:
             return True, f"{ident} is {state['name']} with a live lane marker ({marker})"
         claim = ls.live_claim(os.path.join(state_dir(), "worktrees"), ident)
