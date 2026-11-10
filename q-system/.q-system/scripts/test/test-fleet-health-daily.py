@@ -800,6 +800,13 @@ def _sweeper_argv(payload=None):
     real_run, real_isfile = fh.subprocess.run, Path.is_file
 
     def _capture(cmd, *_a, **_k):
+        # ONLY the sweeper. The detector resolves the ref it pins through `_git`,
+        # which is the same `subprocess.run` this stub replaces: swallowing that
+        # call too made `pinned.stdout` the stub's JSON blob, so the detector
+        # pinned `--rev <json>` and the two checks below passed on a string that
+        # is not a ref at all. The resolve control is what caught it.
+        if not any("linear-bypass-sweep.py" in str(part) for part in cmd):
+            return real_run(cmd, *_a, **_k)
         seen["cmd"] = list(cmd)
         return _StubSweep(payload or _OK, 0, None, "")
 
@@ -821,9 +828,12 @@ check("...and pins it to a short remote-tracking spelling",
       bool(_pinned_ref) and not _pinned_ref.startswith("refs/"), True)
 # Control: the pin must name a ref that RESOLVES here, or both checks above are
 # satisfied by any string at all.
-_pin_rc = subprocess.run(
-    ["git", "-C", str(fh.REPO_ROOT), "rev-parse", "--verify", "--quiet",
-     (_pinned_ref or "nope") + "^{commit}"], capture_output=True).returncode
+# Through `fh._git`, not a bare subprocess: it strips every GIT_* variable, and
+# an inherited GIT_DIR beats `-C`, so a bare call answers about whatever repo the
+# caller's environment named (the scar in `_git_env`). Measured here: the bare
+# form reported this ref unresolvable while the detector resolved it fine.
+_pin_rc = fh._git(fh.REPO_ROOT, "rev-parse", "--verify", "--quiet",
+                  (_pinned_ref or "nope") + "^{commit}").returncode
 check("...and the control proves that ref resolves in this repo", _pin_rc, 0)
 
 # Negative controls, both directions.

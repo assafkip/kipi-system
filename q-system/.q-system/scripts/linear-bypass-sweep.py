@@ -101,8 +101,16 @@ RECORD_SEP_FMT = "%x1e"
 # A real boundary is the separator followed by the NEXT record's full sha and a
 # field separator. A message cannot fake that: it would have to carry a NUL.
 # 40 hex for sha1, 64 for a sha256 repo.
+#
+# The `\n?` is load-bearing, measured not reasoned: `git log --format=X` appends
+# its OWN newline after each formatted entry, so the real byte sequence between
+# records is `\x1e\n<sha>\x00`, never `\x1e<sha>\x00`. Without it the lookahead
+# never matched, the whole walk collapsed into ONE record, and every count in
+# the suite came back as 1. The newline is left on the front of the next record
+# and removed by that record's own `strip("\n")`.
 SHA_PATTERN = r"[0-9a-f]{40}(?:[0-9a-f]{24})?"
-RECORD_BOUNDARY = re.compile(RECORD_SEP + r"(?=" + SHA_PATTERN + FIELD_SEP + r")")
+RECORD_BOUNDARY = re.compile(
+    RECORD_SEP + r"(?=\n?" + SHA_PATTERN + FIELD_SEP + r")")
 SHA_RE = re.compile(SHA_PATTERN + r"\Z")
 
 DEFAULT_MAX_COUNT = 500
@@ -377,10 +385,13 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:
             "The scan read nothing, so its count would be a false zero."
         )
     raw = []
-    # git appends the separator after the LAST record too; drop exactly one so
-    # the final message does not inherit it. One, not `rstrip`, because a message
-    # is allowed to end with the byte itself.
-    body_out = out[:-1] if out.endswith(RECORD_SEP) else out
+    # git appends the separator after the LAST record too, and then its own
+    # newline, so drop the trailing newlines first and then EXACTLY ONE
+    # separator. One, not `rstrip(RECORD_SEP)`, because a commit message is
+    # allowed to end with that byte itself and must keep it.
+    body_out = out.rstrip("\n")
+    if body_out.endswith(RECORD_SEP):
+        body_out = body_out[:-1]
     for record in RECORD_BOUNDARY.split(body_out):
         record = record.strip("\n")
         if not record.strip():

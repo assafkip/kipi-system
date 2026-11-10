@@ -738,6 +738,13 @@ OUT_RS=$(cd "$RSREPO" && LINEAR_BYPASS_LEDGER="$RS_LEDGER" \
   python3 "$SWEEP" --rev origin/main --all-history --no-fetch --dry --json 2>/dev/null)
 RS_LIST=$(printf '%s' "$OUT_RS" | python3 -c \
   'import json,sys; print(" ".join(json.load(sys.stdin)["unaccounted_commits"]))')
+# The scan has to have SEEN both commits. Without this the case passes for the
+# wrong reason: a parser that collapses the whole walk into one record scans
+# only the newest commit, so the separated one is "not unaccounted" because it
+# was never classified at all. That is exactly what the first version of the
+# anchored split did, and this assertion is what caught it.
+check "the scan read both commits, not one collapsed record" "2" \
+  "$(printf '%s' "$OUT_RS" | field scanned)"
 case " $RS_LIST " in
   *" $SHA_RS "*) no "the separated commit was classified unaccounted (its id was cut off)" ;;
   *)             ok "a commit whose id follows a record separator stays accounted" ;;
