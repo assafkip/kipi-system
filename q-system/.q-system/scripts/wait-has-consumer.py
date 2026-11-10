@@ -324,6 +324,28 @@ def _lane_pr(waiter: str) -> str:
         return ""
 
 
+# pr-owner.decide() actions that are an act within WITHIN_HOURS. Everything else
+# (skip, reopened, young, wait, outside, outside-filed, hold) is pr-owner declining.
+# "ladder" stays in: cap-ladder.py is a real consumer of that PR.
+PR_OWNER_ACTS = frozenset({"ladder", "merge", "update", "review", "close-superseded", "rework",
+                           "close-requeue", "close-comment"})
+
+
+def _lane_for_pr(po, pr: dict) -> str:
+    """Name the live lane or worker claim that drives this PR's ticket, or ''."""
+    ls = linear_sync()
+    for ident in po.ticket_candidates(pr["branch"], pr["title"]):
+        marker = ls.lane_marker(ident)
+        if marker.startswith("its lane marker"):
+            raise CannotLook(marker)
+        if marker:
+            return f"{ident}'s {marker}"
+        claim = ls.live_claim(os.path.join(state_dir(), "worktrees"), ident)
+        if claim:
+            return f"{ident} with {claim}"
+    return ""
+
+
 def _consumer_for_pr(m, waiter: str = "") -> tuple:
     mine = _lane_pr(waiter) if waiter else ""
     if mine and mine != "-":
@@ -352,14 +374,38 @@ def _consumer_for_pr(m, waiter: str = "") -> tuple:
         if Path(path, ".kipi-no-dispatch").exists():
             return False, NO_ONE + f"{slug} has a .kipi-no-dispatch kill switch, so pr-owner.py skips it"
         try:
-            raw = po.gh_json(["pr", "view", str(number), "-R", slug, "--json", "state,isCrossRepository,number"])
+            raw = po.gh_json(["pr", "view", str(number), "-R", slug, "--json", po.PR_FIELDS + ",state,commits,files"])
         except (RuntimeError, ValueError) as exc:
             raise CannotLook(f"gh could not read {slug}#{number} ({str(exc)[:100]})")
         if not raw or str(raw.get("state")).upper() != "OPEN":
             return False, NO_ONE + f"{slug}#{number} is not open"
         if ci.head_provenance(raw) != ci.SAME_REPO:
             return False, NO_ONE + f"{slug}#{number} has a head outside the repo (a fork or unstated), and pr-owner.py acts on none of those"
-        return True, f"pr-owner.py (hourly, com.kipi.pr-owner) owns open PR {slug}#{number}"
+        # A CONSUMER COUNTS ONLY WHEN ITS OWN DECISION CODE SAYS IT ACTS (PR #715 round 2,
+        # major). "The PR is open" named pr-owner.py for a PR it leaves alone for 48h (young)
+        # or indefinitely (reopened), so the check said wait while nothing moved. Ask decide().
+        pr = po.normalize(slug, name, path, raw)
+        now = po.now_s()
+        if now - (pr["created"] or now) >= po.AGE_S:
+            # Past the age gate decide() reads the reviewer status, the ladder and whether the
+            # base has a workflow; pr-owner main() fills them the same way before it asks.
+            try:
+                st = po.gh_json(["api", f"repos/{slug}/commits/{pr['head']}/status"])
+                pr["reviewer"] = po.reviewer_state((st or {}).get("statuses"), po.floor_desc())
+                if pr["touches_ledger"]:
+                    pr["lessons"] = po.lessons_verdict(slug, pr)
+                if pr["ci"] == "none":
+                    pr["no_ci"] = po.no_workflows(slug, pr["base"])
+                pr["ladder"] = po.ladder_check(pr)
+            except (RuntimeError, ValueError) as exc:
+                raise CannotLook(f"could not read {slug}#{number} for pr-owner.py's decide() ({str(exc)[:100]})")
+        d = po.decide(pr, now, po.load_state(po.state_path()), po.read_ticket, 1)
+        if d["action"] in PR_OWNER_ACTS:
+            return True, f"pr-owner.py (hourly, com.kipi.pr-owner) owns open PR {slug}#{number} (its decide(): {d['action']})"
+        lane = _lane_for_pr(po, pr)
+        if lane:
+            return True, f"{lane} drives open PR {slug}#{number}; pr-owner.py would not act ({d['action']}: {d['reason']})"
+        return False, NO_ONE + f"{slug}#{number}: pr-owner.py's own decide() says {d['action']} ({d['reason']}), and no live lane marker or worker claim names a ticket on its branch"
     return False, NO_ONE + f"{repo} is not in the fleet set pr-owner.py sweeps, so nothing reviews, fixes or merges {repo}#{number}"
 
 

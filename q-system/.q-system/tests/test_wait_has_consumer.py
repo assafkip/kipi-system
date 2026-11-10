@@ -102,17 +102,31 @@ def marker(wc, ident, until):
                              "until": stamp(until), "pr": "-", "worktree": "-"}))
 
 
-def fake_pr(wc, monkeypatch, *, state="OPEN", cross=False, in_fleet=True, killed=False, archived=False):
+def fake_pr(wc, monkeypatch, *, state="OPEN", cross=False, in_fleet=True, killed=False, archived=False,
+            age_h=100, branch="sana/ask-9999-x", reopened=False):
     po = wc.pr_owner()
     repo = wc.tmp / "kipi-system"
     repo.mkdir(exist_ok=True)
     if killed:
         (repo / ".kipi-no-dispatch").write_text("")
     rows = [("kipi-system", str(repo), "")] if in_fleet else []
+    created = stamp(datetime.now(timezone.utc) - timedelta(hours=age_h))
+    head = "a" * 40
+    monkeypatch.setenv("KIPI_PR_OWNER_STATE", str(wc.tmp / "po-state.json"))
+    if reopened:
+        (wc.tmp / "po-state.json").write_text(json.dumps(
+            {"closed": {"assafkip/kipi-system#9": {"head": head, "at": int(NOW.timestamp())}}}))
+    raw = {"state": state, "isCrossRepository": cross, "number": 9, "title": "t", "headRefName": branch,
+           "headRefOid": head, "baseRefName": "main", "createdAt": created, "isDraft": False,
+           "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+           "commits": [{"committedDate": created}], "files": [],
+           "statusCheckRollup": [{"__typename": "StatusContext", "context": "ci", "state": "SUCCESS"}]}
     monkeypatch.setattr(po, "fleet_repos", lambda root=None: (rows, ""))
     monkeypatch.setattr(po, "slug_for", lambda root, path, targets: "assafkip/kipi-system")
     monkeypatch.setattr(po, "archived", lambda path, label: archived)
-    monkeypatch.setattr(po, "gh_json", lambda argv: {"state": state, "isCrossRepository": cross, "number": 9})
+    monkeypatch.setattr(po, "gh_json", lambda argv: raw if argv[:2] == ["pr", "view"] else {"statuses": []})
+    monkeypatch.setattr(po, "ladder_check", lambda pr, state_dir=None: "")
+    monkeypatch.setattr(po, "read_ticket", lambda ident: None)
 
 
 # --- the four cases the ticket names, each seen red before the script existed ---
@@ -443,3 +457,37 @@ def test_wait_guard_with_the_real_check_rejects_a_typo_and_no_argument():
     typo = subprocess.run(["bash", str(SCRIPTS / "wait-guard.sh"), "not-a-ref"], capture_output=True, text=True)
     assert typo.returncode == 64 and "DO NOT WAIT" in typo.stderr
     assert subprocess.run(["bash", str(SCRIPTS / "wait-guard.sh")], capture_output=True, text=True).returncode == 64
+
+
+# --- PR #715 round 2: a consumer counts only when its own decide() says it acts ---
+
+def test_a_young_pr_with_no_live_lane_is_refused(wc, monkeypatch):
+    fake_pr(wc, monkeypatch, age_h=1)
+    ok, text = wc.consumer_for("assafkip/kipi-system#9")
+    assert not ok
+    assert text.startswith("nothing picks this up:")
+    assert "young" in text
+
+
+def test_a_reopened_pr_with_no_live_lane_is_refused(wc, monkeypatch):
+    fake_pr(wc, monkeypatch, reopened=True)
+    ok, text = wc.consumer_for("assafkip/kipi-system#9")
+    assert not ok
+    assert "reopened" in text
+
+
+def test_a_young_pr_with_a_live_lane_marker_passes_and_names_the_lane(wc, monkeypatch):
+    fake_pr(wc, monkeypatch, age_h=1, branch="sana/ask-5002-x")
+    marker(wc, "ASK-5002", NOW + timedelta(hours=5))
+    ok, text = wc.consumer_for("assafkip/kipi-system#9")
+    assert ok
+    assert "ASK-5002" in text and "lane marker" in text
+
+
+def test_a_pr_pr_owner_decide_will_act_on_passes(wc, monkeypatch):
+    fake_pr(wc, monkeypatch, age_h=100)
+    po = wc.pr_owner()
+    monkeypatch.setattr(po, "decide", lambda *a, **k: {"action": "review", "reason": "x"})
+    ok, text = wc.consumer_for("assafkip/kipi-system#9")
+    assert ok
+    assert "decide(): review" in text
