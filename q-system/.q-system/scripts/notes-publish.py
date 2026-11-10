@@ -509,11 +509,16 @@ def _overlay_wanted(g: _Git, root: Path, rel: str, remote: str, lineage: dict,
     return bool(local) and local in lineage.get(rel, ())
 
 
-def _consume_deletions(g: _Git, root: Path, entries: dict, tombs: dict) -> list:
+def _consume_deletions(g: _Git, root: Path, entries: dict, tombs: dict, kept: list) -> list:
     """Remove local copies another checkout deleted (codex round 4, #464).
 
     Only when the local content is EXACTLY a deleted version: an edit made after
     the deletion is new work and stays. Unstaged, like every overlay write.
+
+    Never a path tracked in HEAD (ASK-4195): the unlink showed as a tracked
+    deletion and the Stop hook committed it as "add RCAs". The overlay only
+    cleans untracked strays; it prints the tracked path it kept and why.
+    Returns removed paths; tracked paths it kept are appended to `kept`.
     """
     removed = []
     for rel, shas in sorted(tombs.items()):
@@ -523,6 +528,9 @@ def _consume_deletions(g: _Git, root: Path, entries: dict, tombs: dict) -> list:
             continue
         local = g("hash-object", "--no-filters", str(root / rel), timeout=10).stdout.strip()
         if local and local in shas:
+            if g("ls-tree", "--name-only", "HEAD", "--", rel, timeout=10).stdout.strip():
+                kept.append(rel)
+                continue
             (root / rel).unlink()
             removed.append(rel)
     return removed
@@ -569,13 +577,18 @@ def overlay(repo: str, remote=None) -> list:
         dest.write_bytes(blob.stdout)
         history.remember(rel, sha)
         written.append(rel)
-    removed = _consume_deletions(g, root, entries, lineage.get(DELETED, {}))
+    kept = []
+    removed = _consume_deletions(g, root, entries, lineage.get(DELETED, {}), kept)
     history.save()
+    keep_msg = ([f"notes-overlay: kept {', '.join(kept)} (deleted elsewhere, but tracked in HEAD; "
+                 "the overlay only removes untracked copies)"] if kept else [])
     if not written and not removed:
+        if keep_msg:
+            return keep_msg
         return [] if quiet else [f"notes-overlay: nothing newer on origin {BRANCH} ({tip[:9]})"]
     gone = f"; removed (deleted elsewhere): {', '.join(removed)}" if removed else ""
     return [f"notes-overlay: overlaid {len(written)} file(s) from origin {BRANCH} "
-            f"({tip[:9]}), unstaged: {', '.join(written) or 'none'}{gone}"]
+            f"({tip[:9]}), unstaged: {', '.join(written) or 'none'}{gone}"] + keep_msg
 
 
 def main(argv=None) -> int:
