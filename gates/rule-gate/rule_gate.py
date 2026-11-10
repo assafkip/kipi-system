@@ -16,7 +16,9 @@ A rule section is a markdown section ('# ' or '## ' heading plus body) in a rule
 file. Rule files, matched case-insensitively: any CLAUDE.md; any *.md at any
 depth under a .claude/rules/ directory; *.md under ~/.claude/agents/; and every
 file a rule file imports with @path. A section that is NEW or CHANGED (not in
-the baseline taken at install) must carry:
+the baseline taken at install, and, for a file tracked in a linked git worktree,
+not in that file as merge-base(HEAD, origin's default branch) holds it; ASK-4283)
+must carry:
 
     Rule-ID: <id>
     Enforced by: <path>[, <path> ...]
@@ -204,6 +206,129 @@ def baseline_file_sections(path):
     return out
 
 
+# ---------------------------------------------------------------- linked worktrees
+# A TRACKED FILE IN A LINKED WORKTREE IS NOT NEW (ASK-4283). The baseline is keyed by the
+# paths --init walked, and projects_files() stops at depth 4, so whole repos were never
+# walked. In a fresh worktree of one, every tracked rule section read as NEW and
+# repair_file had no per-path baseline to revert to, so it deleted. 2026-11-09: the first
+# tool call in 4p-case-051-session deleted 5 tracked rules (0 of their 47 sections were
+# in the baseline) and auto-commit committed it as f31929ab, 533 lines; ask-141 and
+# ask-4309 lost 7 files and had 6 stripped. So in a linked worktree, the file as origin's
+# default branch holds it serves as that file's baseline.
+# THE ANCHOR IS merge-base(HEAD, origin's default branch), NEVER HEAD: auto-commit, or a
+# `git commit` in the same tool call, would make HEAD grandfather any agent-written rule.
+# Text reaches the default branch only through a reviewed merge.
+# THE FILE MUST ALSO BE IN THE INDEX: an untracked file is judged as new, as before.
+# THE MAIN CHECKOUT (.git is a folder) never reaches git here, so it is judged as before.
+# Any git error or timeout returns "no worktree baseline", which is the strict behaviour.
+# Residual, stated: a same-user shell can move refs/remotes/origin/* by hand; that is the
+# same class as the user-writable gate files the docstring already names.
+_GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+_WT_TOPS, _WT_FILES = {}, {}
+
+
+def _git(top, *args, data=None):
+    # An inherited GIT_DIR (a hook launched from inside another git process) would point
+    # every read below at the wrong repo.
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_DROP}
+    try:
+        r = subprocess.run(["git", "-C", top, *args], input=data, capture_output=True,
+                           timeout=5, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _worktree_rules(top):
+    """{relpath: text} of each rule file at the anchor that is also in the index, for the
+    LINKED worktree rooted at top; None for anything else. One batch of git calls per
+    repo: per-file calls measured 1.31s per tool call over 46 rule files."""
+    if top in _WT_TOPS:
+        return _WT_TOPS[top]
+    _WT_TOPS[top] = None
+    out = _git(top, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+    dirs = out.decode(errors="replace").splitlines() if out else []
+    if len(dirs) < 2 or os.path.realpath(dirs[0]) == os.path.realpath(dirs[1]):
+        return None  # not a linked worktree (a submodule's .git file lands here too)
+    ref = (_git(top, "symbolic-ref", "-q", "refs/remotes/origin/HEAD") or b"").decode().strip()
+    ref = next((r for r in (ref, "refs/remotes/origin/main", "refs/remotes/origin/master")
+                if r and _git(top, "rev-parse", "-q", "--verify", r + "^{commit}")), None)
+    mb = _git(top, "merge-base", "HEAD", ref) if ref else None
+    tree = _git(top, "ls-tree", "-r", "-z", mb.decode().strip()) if mb else None
+    index = _git(top, "ls-files", "-z")
+    if tree is None or index is None:
+        return None
+    tracked = set(index.decode("utf-8", errors="replace").split("\0"))
+    by_sha = {}
+    for row in tree.decode("utf-8", errors="replace").split("\0"):
+        meta, _, rel = row.partition("\t")
+        parts = meta.split()
+        if (len(parts) == 3 and parts[1] == "blob" and rel in tracked
+                and is_rule_path(os.path.join(top, rel))):
+            by_sha.setdefault(parts[2], []).append(rel)
+    rules = {}
+    if by_sha:
+        shas = list(by_sha)
+        raw = _git(top, "cat-file", "--batch", data=("\n".join(shas) + "\n").encode())
+        if raw is None:
+            return None
+        pos = 0
+        try:
+            for sha in shas:
+                nl = raw.index(b"\n", pos)
+                head = raw[pos:nl].split()
+                if len(head) != 3 or head[1] != b"blob":
+                    return None
+                size = int(head[2])
+                # The same decode as read_text, so section hashes compare like for like.
+                text = raw[nl + 1:nl + 1 + size].decode("utf-8", errors="replace")
+                pos = nl + 1 + size + 1
+                for rel in by_sha[sha]:
+                    rules[rel] = text
+        except ValueError:
+            return None
+    _WT_TOPS[top] = rules
+    return rules
+
+
+def worktree_baseline(path):
+    """(sections, section hashes) of this rule file as origin's default branch holds it,
+    when the file sits in a linked worktree and is in its index; ([], set()) otherwise."""
+    rp = os.path.realpath(path)
+    if rp in _WT_FILES:
+        return _WT_FILES[rp]
+    _WT_FILES[rp] = ([], set())
+    d = os.path.dirname(rp)
+    while not os.path.lexists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return _WT_FILES[rp]
+        d = os.path.dirname(d)
+    if not os.path.isfile(os.path.join(d, ".git")):
+        return _WT_FILES[rp]  # .git is a folder: the main checkout, judged as before
+    rules = _worktree_rules(d)
+    text = rules.get(os.path.relpath(rp, d)) if rules else None
+    if text is not None:
+        secs = sections(text)
+        _WT_FILES[rp] = (secs, {shash(h, b) for h, b in secs})
+    return _WT_FILES[rp]
+
+
+def grandfathered(path, head, body, baseline):
+    hx = shash(head, body)
+    if baseline is not None and hx in baseline:
+        return True
+    return hx in worktree_baseline(path)[1]
+
+
+def worktree_text(path):
+    """The file as origin's default branch holds it, for restoring a tracked worktree
+    file whose every section failed, or "" when there is no such copy."""
+    secs = worktree_baseline(path)[0]
+    return ("\n".join(((h + "\n") if h != "(preamble)" else "") + b for h, b in secs).rstrip()
+            + "\n") if secs else ""
+
+
 # ---------------------------------------------------------------- enforcers
 def _settings_commands():
     cmds = []
@@ -277,7 +402,7 @@ def check_section(head, body, id_owner, here):
 def failing(path, text, baseline, id_owner):
     bad, seen_ids = [], {}
     for head, body in sections(text):
-        if baseline is not None and shash(head, body) in baseline:
+        if grandfathered(path, head, body, baseline):
             continue
         m = ID_RX.search(body)
         if m:
@@ -562,10 +687,14 @@ def repair_file(path, baseline, id_owner):
     if not bad:
         return None
     by_heading = baseline_file_sections(path)
+    # A tracked worktree file reverts to origin's text by heading, the way a main-checkout
+    # file reverts to its install-time text, instead of losing the section (ASK-4283).
+    for h, b in worktree_baseline(path)[0]:
+        by_heading.setdefault(h, b)
     bad_heads = {h for h, _ in bad}
     out, removed = [], []
     for head, body in sections(text):
-        if head in bad_heads and not (baseline is not None and shash(head, body) in baseline):
+        if head in bad_heads and not grandfathered(path, head, body, baseline):
             removed.append((head + "\n" + body) if head != "(preamble)" else body)
             if head in by_heading:
                 out.append((head, by_heading[head]))
@@ -574,7 +703,7 @@ def repair_file(path, baseline, id_owner):
     new = "\n".join(((h + "\n") if h != "(preamble)" else "") + b for h, b in out).rstrip() + "\n"
     q = quarantine(path, "\n\n".join(removed))
     if not new.strip():
-        restored = baseline_text(path)
+        restored = baseline_text(path) or worktree_text(path)
         if restored:
             with open(path, "w") as fh:
                 fh.write(restored)
