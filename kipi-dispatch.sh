@@ -1046,10 +1046,30 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$SPEND_HELPER" ]; then
     exit 0
   fi
   page_clear api-budget
-  if [ -f "$KEY_HELPER" ] && ! python3 "$KEY_HELPER" probe >/dev/null 2>&1; then
-    say "API KEYS: both credits read as exhausted; paused until the next budget day re-probes"
-    page_once api-keys-paused "kipi dispatch: both Ultra API credits read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
-    exit 0
+  # TWO RED ANSWERS, TWO DIFFERENT PAGES (PR #717 review round 2, finding 1).
+  # `probe` prints `no key <slots>` when a Keychain item was never created and
+  # `paused` when both credits read as exhausted. They need different lines
+  # because they need different responses: a pause clears itself on the next
+  # budget day and wants nothing done, while a missing key clears only when the
+  # item is created and will otherwise refuse every run forever. A single page
+  # claiming "both credits read as exhausted" for a fleet that simply has no key
+  # sends whoever reads it to look at billing.
+  #
+  # Still a READER: probe asks the Keychain whether an item EXISTS (never for the
+  # secret) and consults the pause state without consuming the day's re-probe.
+  if [ -f "$KEY_HELPER" ]; then
+    KEY_LINE="$(python3 "$KEY_HELPER" probe 2>/dev/null)"; KEY_RC=$?
+    if [ "$KEY_RC" != "0" ] && printf '%s' "$KEY_LINE" | grep -q "^no key"; then
+      say "API KEYS: $KEY_LINE -- nothing can run until the Keychain item exists"
+      page_once api-keys-missing "kipi dispatch: the fleet has no API key in the Keychain ($KEY_LINE), so no run starts and nothing here can create it. Every run would exit 4 with no spend row. Do: add the item for each slot (service kipi-fleet-api-key-1 / -2), then the next tick starts on its own."
+      exit 0
+    fi
+    if [ "$KEY_RC" != "0" ]; then
+      say "API KEYS: both credits read as exhausted; paused until the next budget day re-probes"
+      page_once api-keys-paused "kipi dispatch: both Ultra API credits read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
+      exit 0
+    fi
+    page_clear api-keys-missing
   fi
   page_clear api-keys-paused
 fi

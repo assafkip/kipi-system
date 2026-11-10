@@ -14,13 +14,17 @@ are the two that turn red for it.
 """
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import io
 import json
 import os
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,15 +51,35 @@ DEAD_KEY = "fake-key-1-exhausted"
 LIVE_KEY_1 = "fake-key-1-live"
 LIVE_KEY_2 = "fake-key-2-live"
 
+#: THE SUITE CLOCK, DERIVED FROM A DATE RATHER THAN TYPED AS AN EPOCH (PR #717
+#: review round 2, finding 3). The literal was 1762700400, which is 2025-11-09
+#: 07:00 local, while every comment beside it said 2026-11-09 and the report
+#: suite printed the 2025 date into its own output. A derived constant cannot
+#: drift from its comment: change the date here and the number follows.
+#: Mid-day on purpose, well inside the 07:00-to-07:00 budget day, so adding a
+#: day cannot land on the boundary.
+NOW_DT = dt.datetime(2026, 11, 9, 12, 0, 0)
+NOW = str(int(NOW_DT.timestamp()))
+NEXT_DAY = str(int((NOW_DT + dt.timedelta(days=1)).timestamp()))
+#: The first of the NEXT calendar month, where the monthly credit is handed back.
+DEC_FIRST = str(int(dt.datetime(2026, 12, 1, 12, 0, 0).timestamp()))
+
 FAKE_CLAUDE = r'''#!/usr/bin/env python3
 """A fake `claude`. Records the env it was handed, then answers like the CLI."""
-import json, os, sys
+import json, os, sys, time
 
 record = os.environ["FAKE_CLAUDE_RECORD"]
 seen = os.environ.get("ANTHROPIC_API_KEY")
 with open(record, "a") as fh:
     fh.write(json.dumps({"argv": sys.argv[1:], "key": seen,
                          "slot": os.environ.get("KIPI_FLEET_KEY_SLOT")}) + "\n")
+
+# A HUNG RUN, for the watchdog cases. The record above is written FIRST, so the
+# test can wait for the child to be up and kill it while it is genuinely mid-run
+# rather than racing the spawn. `claude -p` prints total_cost_usd only at the
+# end, which is exactly why a killed run's cost cannot be recovered.
+if os.environ.get("FAKE_CLAUDE_SLEEP"):
+    time.sleep(float(os.environ["FAKE_CLAUDE_SLEEP"]))
 
 if seen is None:
     # A run with no key would bill the plan. Make that loud, not a pass.
@@ -230,7 +254,7 @@ class TestFailover(Base):
         self.assertIsNone(keymod.usable_slot(), "a paused fleet offers no key")
 
     def test_a_paused_fleet_re_probes_once_on_the_next_budget_day(self):
-        os.environ["KIPI_FLEET_NOW"] = "1762700400"   # 2026-11-09 ~12:00 local
+        os.environ["KIPI_FLEET_NOW"] = NOW
         os.environ["FAKE_CLAUDE_DEAD_KEY"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_2"] = DEAD_KEY
@@ -238,7 +262,7 @@ class TestFailover(Base):
         self.assertIsNone(keymod.usable_slot(), "same day: no second probe")
 
         # Next budget day, and the credits are live again.
-        os.environ["KIPI_FLEET_NOW"] = str(1762700400 + 86400)
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = LIVE_KEY_1
         os.environ.pop("FAKE_CLAUDE_DEAD_KEY")
         self.assertEqual(keymod.usable_slot(), 1, "a new budget day re-probes")
@@ -255,14 +279,14 @@ class TestFailover(Base):
         a READER by construction. A reader that consumed the probe left the fleet
         paused for the rest of the day with nothing having run.
         """
-        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+        os.environ["KIPI_FLEET_NOW"] = NOW
         os.environ["FAKE_CLAUDE_DEAD_KEY"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_2"] = DEAD_KEY
         self.run_exec()
         probe_day_after_pause = keymod.read_state()["last_probe_day"]
 
-        os.environ["KIPI_FLEET_NOW"] = str(1762700400 + 86400)
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = LIVE_KEY_1
         os.environ.pop("FAKE_CLAUDE_DEAD_KEY")
         for _ in range(3):
@@ -274,7 +298,7 @@ class TestFailover(Base):
         self.assertEqual(self.run_exec(), 0, "the run still gets its probe")
 
     def test_a_new_month_hands_both_credits_back(self):
-        os.environ["KIPI_FLEET_NOW"] = "1764590400"   # 2026-12-01
+        os.environ["KIPI_FLEET_NOW"] = DEC_FIRST
         state = keymod.read_state()
         state["exhausted"] = {"1": "2026-11", "2": "2026-11"}
         state["paused"] = True
@@ -305,7 +329,7 @@ class TestSpendAndBudget(Base):
         self.assertAlmostEqual(spend.spent_month(2), 0.0, places=6)
 
     def test_the_allowance_is_the_credit_left_over_the_days_left(self):
-        os.environ["KIPI_FLEET_NOW"] = "1764590400"   # 2026-12-01, 31 days left
+        os.environ["KIPI_FLEET_NOW"] = DEC_FIRST      # 31 days left in December
         os.environ["KIPI_FLEET_MONTHLY_CREDIT"] = "250"
         b = spend.budget()
         self.assertEqual(b["days_left_in_month"], 31)
@@ -314,7 +338,7 @@ class TestSpendAndBudget(Base):
         self.assertFalse(b["exhausted"])
 
     def test_a_day_at_its_budget_reads_exhausted(self):
-        os.environ["KIPI_FLEET_NOW"] = "1764590400"
+        os.environ["KIPI_FLEET_NOW"] = DEC_FIRST
         os.environ["KIPI_FLEET_MONTHLY_CREDIT"] = "250"
         allowance = spend.budget()["allowance_usd"]
         spend.record(1, allowance + 0.01, actor="worker")
@@ -323,11 +347,11 @@ class TestSpendAndBudget(Base):
         self.assertAlmostEqual(b["remaining_usd"], 0.0, places=6)
 
     def test_a_spent_day_does_not_spill_into_the_next_one(self):
-        os.environ["KIPI_FLEET_NOW"] = "1764590400"
+        os.environ["KIPI_FLEET_NOW"] = DEC_FIRST
         os.environ["KIPI_FLEET_MONTHLY_CREDIT"] = "250"
         spend.record(1, 400.0, actor="worker")
         self.assertTrue(spend.budget()["exhausted"])
-        os.environ["KIPI_FLEET_NOW"] = str(1764590400 + 86400)
+        os.environ["KIPI_FLEET_NOW"] = str(int(DEC_FIRST) + 86400)
         self.assertAlmostEqual(spend.spent_today(), 0.0, places=6)
 
     def test_the_month_credit_is_a_hard_ceiling_no_run_may_cross(self):
@@ -369,18 +393,231 @@ class TestEvents(Base):
         self.assertIn("failover", kinds)
 
     def test_a_pause_and_a_resume_both_leave_events(self):
-        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+        os.environ["KIPI_FLEET_NOW"] = NOW
         os.environ["FAKE_CLAUDE_DEAD_KEY"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = DEAD_KEY
         os.environ["KIPI_FLEET_FAKE_KEY_2"] = DEAD_KEY
         self.run_exec()
         self.assertIn("pause", [e["kind"] for e in spend.events()])
 
-        os.environ["KIPI_FLEET_NOW"] = str(1762700400 + 86400)
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
         os.environ["KIPI_FLEET_FAKE_KEY_1"] = LIVE_KEY_1
         os.environ.pop("FAKE_CLAUDE_DEAD_KEY")
         self.run_exec()
         self.assertIn("resume", [e["kind"] for e in spend.events()])
+
+
+class TestTheSuiteClock(unittest.TestCase):
+    """PR #717 review round 2, finding 3 (minor).
+
+    The clock was the epoch literal 1762700400 with `# 2026-11-09` beside it, and
+    the number is 2025-11-09. Nothing was computed wrongly -- the suites are
+    internally consistent either way -- but every date in their comments and in
+    the report suite's own printed output named a year the code was not using,
+    which is how a later reader derives a window from the wrong month. This case
+    is what makes the clock's own label checkable rather than commented.
+    """
+
+    def setUp(self):
+        self._saved = dict(os.environ)
+        os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
+        os.environ["KIPI_FLEET_NOW"] = NOW
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved)
+
+    def test_the_clock_is_the_date_its_name_claims(self):
+        self.assertEqual(spend.now().strftime("%Y-%m-%d %H:%M"), "2026-11-09 12:00")
+        self.assertEqual(spend.budget_day(), "2026-11-09")
+        self.assertEqual(spend.month_key(), "2026-11")
+
+    def test_the_next_day_constant_is_the_next_budget_day(self):
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
+        self.assertEqual(spend.budget_day(), "2026-11-10")
+
+    def test_the_december_constant_is_the_next_calendar_month(self):
+        os.environ["KIPI_FLEET_NOW"] = DEC_FIRST
+        self.assertEqual(spend.month_key(), "2026-12")
+        self.assertEqual(spend.days_left_in_month(), 31)
+
+
+class TestProbeAnswersAboutKEYS(Base):
+    """PR #717 review round 2, finding 1 (major).
+
+    `probe` asked `usable_slot()`, which answers from the credit ledger and the
+    pause state and knows nothing about whether a key EXISTS. With nothing in the
+    Keychain -- which is the state on merge day, because nothing in this PR
+    creates the two items -- probe printed `key 1` and exited 0, the dispatcher's
+    gate read green, and every run it launched then died at `read_key` with exit
+    4: no spend row, no event, no ticket. The daily report read as a quiet day.
+    """
+
+    def _probe(self):
+        buf = io.StringIO()
+        saved, sys.stdout = sys.stdout, buf
+        try:
+            rc = keymod._main(["probe"])
+        finally:
+            sys.stdout = saved
+        return rc, buf.getvalue().strip()
+
+    def _no_keys(self):
+        os.environ.pop("KIPI_FLEET_FAKE_KEY_1", None)
+        os.environ.pop("KIPI_FLEET_FAKE_KEY_2", None)
+
+    def test_probe_is_green_with_a_key_and_a_live_credit(self):
+        rc, out = self._probe()
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "key 1")
+
+    def test_probe_is_red_when_nothing_is_in_the_keychain(self):
+        self._no_keys()
+        rc, out = self._probe()
+        self.assertEqual(rc, keymod.EXIT_NO_KEY,
+                         "probe answered green with no key installed")
+        self.assertIn("no key", out)
+
+    def test_an_installed_key_2_does_not_mask_a_missing_key_1(self):
+        """The partial install is the worse shape: `read_key` returns None before
+        any refusal is detected, so there is no failover either -- the fleet
+        wedges on the slot whose item was never created."""
+        os.environ.pop("KIPI_FLEET_FAKE_KEY_1", None)
+        rc, out = self._probe()
+        self.assertEqual(rc, keymod.EXIT_NO_KEY)
+        self.assertIn("no key", out)
+        self.assertIn("1", out, "the page has to name which slot is missing")
+
+    def test_a_missing_key_leaves_one_event_a_day_not_ninety_six(self):
+        """The dispatcher probes every 15 minutes. One row a budget day is signal;
+        96 is the noise that gets an alert channel muted."""
+        self._no_keys()
+        for _ in range(5):
+            self._probe()
+        self.assertEqual(
+            [e["kind"] for e in spend.events(day="2026-11-09")].count("no_key"), 1,
+            "a 15-minute reader turned one condition into N events")
+        os.environ["KIPI_FLEET_NOW"] = NEXT_DAY
+        self._probe()
+        self.assertEqual(
+            [e["kind"] for e in spend.events(day="2026-11-10")].count("no_key"), 1,
+            "the next budget day earns its own event")
+        self.assertEqual(
+            [e["kind"] for e in spend.events(day="2026-11-09")].count("no_key"), 1,
+            "the new day's event rewrote yesterday's")
+
+    def test_probe_stays_a_reader_even_when_it_goes_red(self):
+        """`usable_slot(consume=False)` exists because a 15-minute reader used to
+        burn the paused fleet's one daily re-probe. The missing-key answer must
+        not reintroduce that: it writes an EVENT, never the key state."""
+        self._no_keys()
+        before = keymod.read_state()
+        self._probe()
+        self.assertEqual(keymod.read_state(), before,
+                         "a red probe rewrote the key state")
+
+    def test_a_run_with_no_key_also_leaves_the_event(self):
+        """Belt and braces for the case where dispatch is bypassed: the trace has
+        to exist whether the gate or the run is the thing that noticed."""
+        self._no_keys()
+        self.assertEqual(self.run_exec(), keymod.EXIT_NO_KEY)
+        self.assertIn("no_key", [e["kind"] for e in spend.events()])
+
+    def test_presence_never_reads_the_secret_itself(self):
+        """`key_present` answers yes/no. It must not be a wrapper that pulls the
+        key into this process, because the founder's constraint is that a key
+        never lands anywhere a presence check could log it."""
+        import ast
+        import inspect
+        tree = ast.parse(inspect.getsource(keymod.key_present).lstrip())
+        argv = [[c.value for c in n.elts if isinstance(c, ast.Constant)]
+                for n in ast.walk(tree) if isinstance(n, ast.List)]
+        self.assertTrue(argv, "no argv list found in key_present")
+        flat = [v for row in argv for v in row]
+        self.assertIn("find-generic-password", flat)
+        self.assertNotIn("-w", flat,
+                         "the presence check asked `security` for the password "
+                         "itself; presence is answerable without it")
+
+
+class TestAWatchdogKill(Base):
+    """PR #717 review round 2, finding 2 (major, marked nonblocking).
+
+    `linear-worker.sh` kills a hung run by process GROUP at 1800s (the rc=143 in
+    this issue's own worker log). `spend.record` sits after `proc.communicate()`,
+    so the kill lands before it and the ledger gets NOTHING: an Opus turn that
+    really was charged is absent from the number the day's allowance is divided
+    out of, and the fleet's own meter reads the day as cheaper than it was.
+
+    The cost itself is unrecoverable -- `claude -p` prints `total_cost_usd` only
+    at the end -- so the fix does not invent one. It makes the GAP countable: a
+    row marked `unmetered`, which the report then names, so today's spend reads
+    as a floor rather than a total.
+
+    Reproduced the way the worker does it: a real subprocess in its own process
+    group, killed with `killpg`. In-process SIGTERM would kill the test runner.
+    """
+
+    def _killed_run(self):
+        os.environ["FAKE_CLAUDE_SLEEP"] = "60"
+        proc = subprocess.Popen(
+            [sys.executable, os.path.join(SCRIPTS, "fleet_api_key.py"),
+             "exec", "--actor", "worker", "--", self.fake, "-p", "hello"],
+            env=dict(os.environ), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, start_new_session=True)
+        deadline = time.time() + 30
+        while time.time() < deadline and not self.calls():
+            time.sleep(0.05)
+        self.assertTrue(self.calls(), "the fake claude never started; nothing to kill")
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        try:
+            proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail("the SIGTERM handler did not let the process die")
+        return proc
+
+    def _rows(self):
+        path = os.environ["KIPI_FLEET_SPEND_LEDGER"]
+        if not os.path.exists(path):
+            return []
+        with open(path) as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    def test_a_killed_run_still_leaves_a_row(self):
+        self._killed_run()
+        rows = self._rows()
+        self.assertEqual(len(rows), 1,
+                         "a killed run left the ledger empty: %r" % rows)
+        self.assertEqual(rows[0]["slot"], 1)
+        self.assertFalse(rows[0]["ok"])
+
+    def test_the_row_says_its_cost_was_never_read(self):
+        self._killed_run()
+        row = self._rows()[0]
+        self.assertTrue(row.get("unmetered"),
+                        "the row claims a measured $0 for a run that was charged")
+        self.assertIn("SIGTERM", row.get("note") or "")
+
+    def test_an_unmetered_row_is_counted_so_the_report_can_say_so(self):
+        self._killed_run()
+        self.assertEqual(spend.unmetered_today(), 1)
+
+    def test_the_handler_does_not_swallow_the_kill(self):
+        """The worker reads the exit status. A handler that recorded and then
+        exited 0 would turn a timeout into a success."""
+        proc = self._killed_run()
+        self.assertEqual(proc.returncode, -signal.SIGTERM,
+                         "the process survived its own watchdog kill")
+
+    def test_a_normal_run_records_exactly_one_metered_row(self):
+        """The negative: the handler must not double-record, and an ordinary run
+        must not be marked unmetered."""
+        self.assertEqual(self.run_exec(), 0)
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0].get("unmetered"))
+        self.assertEqual(spend.unmetered_today(), 0)
 
 
 class TestNoSecretsLeak(Base):

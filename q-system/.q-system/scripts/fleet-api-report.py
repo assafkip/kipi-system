@@ -62,7 +62,14 @@ DEFAULT_RECEIPT = os.path.join(
 DEFAULT_CHIEF_ROOT = os.path.join(os.path.expanduser("~"), "projects", "chief")
 
 #: Kinds that earn their own message the moment they happen, not tomorrow.
-STATE_CHANGE_KINDS = ("pause", "resume", "failover")
+#:
+#: `no_key` IS ONE OF THEM (PR #717 review round 2, finding 1). With nothing in
+#: the Keychain every fleet run refuses, spend stays at $0, credit stays whole
+#: and no pause is recorded, so the day read EXACTLY like a quiet, cheap day --
+#: the fix had to land on the REPORT and not only on the detector. The condition
+#: is filed once a budget day by `fleet_api_key.note_missing_key`, so putting it
+#: here costs one message, not 96.
+STATE_CHANGE_KINDS = ("pause", "resume", "failover", "no_key")
 
 
 def receipt_path():
@@ -159,6 +166,7 @@ def build():
     """The report as a dict plus its one-message text."""
     budget = spend.budget()
     credit = spend.credit()
+    unmetered = spend.unmetered_today()
     per_project, ready_total, ready_err = ready_counts()
     closed, closed_err = closed_today()
     todays_events = [e for e in spend.events()
@@ -172,6 +180,14 @@ def build():
         lines.append("key %d: $%.2f left of $%.2f this month"
                      % (slot, credit["per_key_usd"][slot],
                         credit["per_key_monthly_credit_usd"]))
+    # A KILLED RUN WAS CHARGED AND NEVER READ (review round 2, finding 2). Said
+    # out loud, because the allowance is divided out of the line above: with
+    # unmetered runs in the day, "spent today" is a floor and not a total. No
+    # dollar estimate, because there is no honest one -- `claude -p` prints
+    # total_cost_usd only at the end, and a killed run never got there.
+    if unmetered:
+        lines.append("spend is a FLOOR, not a total: %d run(s) were killed "
+                     "before their cost could be read" % unmetered)
     lines.append("tickets closed today: %s"
                  % (closed if closed_err is None else "COULD NOT READ (%s)" % closed_err))
 
@@ -196,6 +212,7 @@ def build():
         "ready_error": ready_err,
         "closed_today": closed,
         "closed_error": closed_err,
+        "unmetered_runs": unmetered,
         "state_changes": len(todays_events),
         "text": "\n".join(lines),
     }

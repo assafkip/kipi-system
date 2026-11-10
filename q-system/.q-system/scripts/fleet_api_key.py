@@ -84,6 +84,7 @@ import collections
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -370,6 +371,57 @@ def read_key(slot):
     return key or None
 
 
+def key_present(slot):
+    """Is there key MATERIAL for `slot`? Presence only -- never the secret.
+
+    THE QUESTION `probe` WAS NOT ASKING (PR #717 review round 2, finding 1).
+    `usable_slot()` answers from the credit ledger and the pause state; it knows
+    nothing about whether the Keychain item exists. Nothing in this change
+    creates the two items, so on merge day probe read `key 1`, the dispatcher
+    gate went green, and every run it launched died at `read_key` with exit 4 --
+    no spend row, no event, no ticket, and a daily report that read as a quiet
+    day.
+
+    `find-generic-password` WITHOUT `-w` returns the item's attributes and not
+    its password, so this asks the Keychain the yes/no question and the secret
+    never enters this process. A presence check that pulled the key in would be
+    one more place it could be logged.
+    """
+    if in_test_mode():
+        return bool(os.environ.get("KIPI_FLEET_FAKE_KEY_%d" % slot))
+    try:
+        out = subprocess.run(
+            ["security", "find-generic-password", "-s", service_name(slot)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        # `security` itself not running is a RED answer, not a green one: the
+        # per-run path reads the key through the same binary, so a run launched
+        # now would fail anyway. Saying "no key" here stops the tick instead of
+        # spending it on runs that cannot work.
+        sys.stderr.write("fleet_api_key: cannot run `security` (%s)\n" % exc)
+        return False
+    return out.returncode == 0
+
+
+def missing_slots():
+    """Slots with no key material, in failover order."""
+    return tuple(s for s in SLOTS if not key_present(s))
+
+
+def note_missing_key(slots):
+    """One `no_key` event per budget day, whoever noticed.
+
+    Both the dispatcher's 15-minute probe and a run that got through reach this,
+    and `spend.event_once` is what keeps the timer from turning one condition
+    into 96 rows. It writes the EVENTS ledger and never the key state, so a
+    reader stays a reader (see `usable_slot`).
+    """
+    spend.event_once("no_key",
+                     "no Keychain item for key %s; every fleet run refuses "
+                     "(exit %d) until it is created. Nothing here can create it."
+                     % (", ".join(str(s) for s in slots), EXIT_NO_KEY))
+
+
 # --- the run ----------------------------------------------------------------
 def _with_json_flags(argv):
     """Add --output-format json to a `claude` call that has no format flag yet."""
@@ -472,6 +524,70 @@ def _pump_stderr(stream, keep):
         keep.append(line)
 
 
+#: The run this process is in the middle of, for the watchdog handler below.
+#: Empty whenever nothing is in flight, and cleared the moment the normal path
+#: has recorded, so a kill arriving late cannot write a second row.
+_IN_FLIGHT = {}
+
+
+def _record_in_flight_as_unmetered(signum):
+    """Record the run a watchdog is killing, then let the kill land.
+
+    WHY THIS EXISTS (PR #717 review round 2, finding 2). `linear-worker.sh` kills
+    a hung run by process GROUP at 1800s -- the rc=143 in this issue's own worker
+    log -- and `spend.record` sits after `proc.communicate()`. The default
+    SIGTERM action therefore took this process down before the row was written,
+    so a timed-out Opus turn that Anthropic really charged was simply absent
+    from the ledger the day's allowance is divided out of: the meter read the day
+    as cheaper than it was, and read it that way every time the watchdog fired.
+
+    The cost cannot be recovered -- `claude -p` prints `total_cost_usd` only at
+    the end -- so this does not invent one. It writes the row with cost 0 and
+    `unmetered: True`, which `spend.unmetered_today()` counts and the daily
+    report turns into "today's spend is a floor, not a total". A visible gap
+    beats a silent zero.
+
+    ONE APPEND, THEN OUT OF THE WAY. The handler does not drain the child or
+    parse anything: the whole process group is going down, and a handler that
+    blocked would turn a watchdog kill into a hang.
+    """
+    run = _IN_FLIGHT.pop("run", None)
+    if run:
+        try:
+            name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            name = str(signum)
+        proc = run.get("proc")
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        spend.record(run["slot"], 0.0, actor=run.get("actor"), ok=False,
+                     unmetered=True,
+                     note="killed by %s before its cost was read" % name)
+    # Die BY the signal, not by a tidy exit 0: converge.sh and the worker read
+    # the status, and a swallowed SIGTERM would read as a run that succeeded.
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _arm_watchdog_handler():
+    """SIGTERM and SIGINT only, and only where a handler can be installed.
+
+    SIGKILL cannot be caught, so a `kill -9` still loses the row; that is stated
+    rather than papered over. The worker's watchdog sends TERM first, which is
+    the case this covers. Off the main thread `signal.signal` raises, and this
+    module is imported as a library in the suites, so the failure is swallowed
+    rather than made into an error at import time.
+    """
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, lambda s, _f: _record_in_flight_as_unmetered(s))
+        except (ValueError, OSError):
+            pass
+
+
 def _run_once(slot, argv, actor):
     """Run argv with slot's key in the child env.
 
@@ -495,13 +611,17 @@ def _run_once(slot, argv, actor):
     # which account it is billing reads this.
     env["KIPI_FLEET_KEY_SLOT"] = str(slot)
     keep = collections.deque(maxlen=STDERR_SCAN_LINES)
+    _arm_watchdog_handler()
+    _IN_FLIGHT["run"] = {"slot": slot, "actor": actor, "proc": None}
     try:
         proc = subprocess.Popen(_with_json_flags(argv), stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, universal_newlines=True,
                                 env=env)
     except OSError as exc:
+        _IN_FLIGHT.pop("run", None)
         sys.stderr.write("fleet_api_key: cannot run %r (%s)\n" % (argv[0], exc))
         return 127, "", 0.0, "", None
+    _IN_FLIGHT["run"]["proc"] = proc
     pump = threading.Thread(target=_pump_stderr, args=(proc.stderr, keep))
     pump.daemon = True
     pump.start()
@@ -523,6 +643,9 @@ def _run_once(slot, argv, actor):
                             if declared_error(envelope) else None) if b]
         note = " ".join(bits) or None
     ok = proc.returncode == 0 and not declared_error(envelope)
+    # CLEARED BEFORE THE ROW, so a SIGTERM arriving between these two lines
+    # cannot add a second, unmetered row for a run that was already measured.
+    _IN_FLIGHT.pop("run", None)
     spend.record(slot, cost, actor=actor, ok=ok, note=note)
     raw = (stdout or "") + ("\n" + err_text if err_text else "")
     return proc.returncode, text, cost, raw, envelope
@@ -549,6 +672,11 @@ def cmd_exec(argv, actor=None):
 
     rc, text, _cost, raw, env1 = _run_once(slot, argv, actor)
     if rc is None:
+        # THE SAME TRACE THE GATE LEAVES. A run can reach here with the gate
+        # bypassed (a direct fleet-claude.sh call, a one-off), and a refusal with
+        # no event is exactly the "quiet day" the review named. event_once keeps
+        # it at one row a budget day however many runs hit it.
+        note_missing_key([slot])
         sys.stderr.write("fleet_api_key: no key for slot %d; refusing to fall back "
                          "to the plan login\n" % slot)
         return EXIT_NO_KEY
@@ -634,6 +762,22 @@ def _main(argv):
         return 0
 
     if args.cmd == "probe":
+        # KEY MATERIAL FIRST, CREDIT SECOND. They are different questions and the
+        # gate needs them apart: "paused" means both credits read as exhausted
+        # and the next budget day re-probes by itself, while "no key" means
+        # nothing will ever run until an item is created. Pre-fix this branch
+        # asked only the second question and answered GREEN for the first (PR
+        # #717 review round 2, finding 1).
+        #
+        # The words `no key` and `paused` are a contract with kipi-dispatch.sh,
+        # which pages a different line for each. test-dispatch-api-key-gate.sh
+        # runs THIS helper through the real gate rather than a stub, so the two
+        # halves cannot drift.
+        missing = missing_slots()
+        if missing:
+            note_missing_key(missing)
+            print("no key %s" % ",".join(str(s) for s in missing))
+            return EXIT_NO_KEY
         slot = usable_slot()
         if slot is None:
             print("paused")

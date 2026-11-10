@@ -223,8 +223,20 @@ def _cost(row):
     return value if value > 0 and value == value and value != float("inf") else 0.0
 
 
-def record(slot, cost_usd, actor=None, ok=True, note=None, at=None):
-    """Append one spend row. Returns the row, written or not."""
+def record(slot, cost_usd, actor=None, ok=True, note=None, at=None,
+           unmetered=False):
+    """Append one spend row. Returns the row, written or not.
+
+    `unmetered` MARKS A COST THAT WAS REALLY CHARGED AND NEVER READ (PR #717
+    review round 2, finding 2). `linear-worker.sh` kills a hung run by process
+    group at 1800s, and `claude -p` prints `total_cost_usd` only at the end, so a
+    killed Opus turn's real cost is gone -- Anthropic charged it, and no reader
+    here can recover the number. The honest move is not to invent one: the row
+    carries cost 0 with this flag, `unmetered_today()` counts it, and the daily
+    report says the day's spend is a FLOOR. A silent 0 would instead have the
+    meter claim the run was free, and the allowance is divided out of that
+    number.
+    """
     at = at or now()
     row = {
         "schema": SCHEMA,
@@ -237,6 +249,8 @@ def record(slot, cost_usd, actor=None, ok=True, note=None, at=None):
         "actor": actor or os.environ.get("KIPI_AGENT") or "unknown",
         "ok": bool(ok),
     }
+    if unmetered:
+        row["unmetered"] = True
     if note:
         row["note"] = note
     row["written"] = _append(ledger_path(), row)
@@ -264,6 +278,18 @@ def spent_today(at=None):
         if row.get("day") == day:
             total += _cost(row)
     return round(total, 6)
+
+
+def unmetered_today(at=None):
+    """How many runs in this budget day were charged and never read.
+
+    The count the daily report turns into "today's spend is a floor, not a
+    total". Deliberately a COUNT and not an estimate: there is no honest dollar
+    figure to put here, and a guessed one would be spent against a real ceiling.
+    """
+    day = budget_day(at)
+    return sum(1 for row in _read_rows(ledger_path())
+               if row.get("day") == day and row.get("unmetered") is True)
 
 
 def credit_left(slot, at=None):
@@ -319,6 +345,28 @@ def event(kind, text, at=None):
     }
     row["written"] = _append(events_path(), row)
     return row
+
+
+def event_once(kind, text, at=None):
+    """`event`, but at most one row of this KIND per budget day.
+
+    FOR A CONDITION A READER NOTICES ON A TIMER (PR #717 review round 2, finding
+    1). The dispatcher's gate probes every 15 minutes, so a condition that
+    persists -- no key installed, say -- would file 96 identical rows a day, the
+    report would render all of them, and an alert channel that cries 96 times
+    gets muted. One row a day is the signal; the next budget day earns its own.
+
+    The dedupe lives in the LEDGER rather than in a state file on purpose: it is
+    then visible to anyone reading the events back, and it adds no field to the
+    key state that a reader would have to write (`fleet_api_key.usable_slot`
+    exists in two modes precisely because a reader writing state burned the
+    paused fleet's one daily re-probe).
+    """
+    at = at or now()
+    if any(r.get("kind") == str(kind) for r in events(at=at)):
+        return {"kind": str(kind), "text": str(text), "day": budget_day(at),
+                "deduped": True, "written": False}
+    return event(kind, text, at=at)
 
 
 def events(day=None, at=None):
