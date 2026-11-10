@@ -560,5 +560,22 @@ def test_a_bare_binary_name_becomes_the_path_the_wrapper_can_check(tmp_path, mon
     assert decide.absolute_binary(None) is None
 
 
+def test_the_ask_bills_a_fleet_key_through_the_door(monkeypatch, tmp_path):
+    """ASK-4311: the unattended decide pass spawns through the metered key door,
+    handed to run_model as its `run=` drop-in, so the gate and usage row stay."""
+    seen = {}
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    import sys as _sys
+    _sys.path.insert(0, str(decide.HERE.parents[2] / "plugins" / "kipi-core"))
+    from voiceloop import prompt_render
+    monkeypatch.setattr(prompt_render, "run_model",
+                        lambda prompt, binary, **kw: seen.update(kw) or "ANSWER")
+    monkeypatch.setattr(decide, "_load", lambda *a: type("T", (), {"claude_binary": staticmethod(lambda: str(fake))}))
+    assert decide.ask_model("p") == "ANSWER"
+    assert getattr(seen.get("run"), "fleet_door", None) == ("run", "route-decide"), seen
+
+
 def test_the_model_comes_from_the_routing_table_not_a_literal():
     assert decide.MODEL == decide.model_route.pick("fleet-triage")

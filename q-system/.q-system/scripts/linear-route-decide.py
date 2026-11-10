@@ -424,6 +424,9 @@ def build_prompt(issue: dict, names: dict, facts, refused: list, gone: set | Non
         close_line="" if CLOSE_KEY in gone else CLOSE_LINE)
 
 
+DOOR_ACTOR = "route-decide"
+
+
 def absolute_binary(name: str | None) -> str | None:
     """The binary as an absolute path, or None.
 
@@ -447,15 +450,25 @@ def ask_model(prompt: str) -> str:
     the model directly and test_model_call_sites.py refused it: a direct call is
     invisible to the usage ledger and to model_gate's daily cap (ASK-2008), and
     that inventory only shrinks. bare=True is the classifier bound: no tools, no
-    MCP servers, no settings, an empty cwd, the subscription only. The prompt
-    carries text anyone who can open a ticket chose, so the call gets nothing.
-    The binary comes from linear-alert-triage.py's lookup, so there is one.
+    MCP servers, no settings, an empty cwd. The prompt carries text anyone who
+    can open a ticket chose, so the call gets nothing. The binary comes from
+    linear-alert-triage.py's lookup, so there is one.
+
+    BILLED TO A FLEET API KEY (ASK-4311). This is unattended fleet work
+    (com.kipi.linear-route-decide), so the spawn goes through the one metered
+    door via run_model's `run=` seam: the model gate and the usage row still
+    happen in run_model, the key and the spend row happen in the door. The door
+    turns the JSON envelope back into plain text, so the usage row for these
+    calls reads parse_error with is_error False; the cost is in the fleet spend
+    ledger, not there. No key means exit 4, which run_model returns as None:
+    one failed ask, never a plan fallback.
     """
     try:
         triage = _load("linear_alert_triage_for_decide", "linear-alert-triage.py")
         binary = absolute_binary(triage.claude_binary())
         sys.path.insert(0, str(HERE.parents[2] / "plugins" / "kipi-core"))
         from voiceloop import prompt_render
+        import fleet_door
     except Exception as exc:  # noqa: BLE001 - an unloadable helper is one failed ask
         print(f"  model helper could not load ({type(exc).__name__})", file=sys.stderr)
         return ""
@@ -463,7 +476,8 @@ def ask_model(prompt: str) -> str:
         print("  no working claude binary", file=sys.stderr)
         return ""
     out = prompt_render.run_model(prompt, binary, timeout=MODEL_TIMEOUT,
-                                  caller="linear-route-decide.py", model=MODEL, bare=True)
+                                  caller="linear-route-decide.py", model=MODEL, bare=True,
+                                  run=fleet_door.runner(DOOR_ACTOR))
     return (out or "").strip()
 
 
