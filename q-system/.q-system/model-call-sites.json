@@ -4,21 +4,21 @@
     "plugins/kipi-core/voiceloop/prompt_render.py"
   ],
   "shared": {
-    "plugins/prd-os/scripts/judgment_compiler.py": "builds argv for prd-os judgments; runs under linear-worker, unmetered",
-    "q-system/.q-system/scripts/audhd-output-eval.py": "on-demand eval, founder-launched, never scheduled",
+    "plugins/prd-os/scripts/judgment_compiler.py": "builds argv for prd-os judgments; runs inside a session, worker sessions included; on the plan until it can follow its caller (ASK-4380)",
+    "q-system/.q-system/scripts/audhd-output-eval.py": "on-demand eval inside a session; fleet_door.run_for_caller: a fleet key in a fleet run, the plan in the founder's (ASK-4311)",
     "q-system/.q-system/scripts/design-reader-gate.py": "hook-time reader with --safe-mode, its own argv shape",
-    "q-system/.q-system/scripts/fable-escalate.py": "the fable escalation caller, Popen with a stdin prompt, unmetered",
+    "q-system/.q-system/scripts/fable-escalate.py": "the fable escalation caller, stdin prompt; fleet_door.run_for_caller: hook in any session, cap-ladder marks its rung a fleet run (ASK-4311)",
     "q-system/.q-system/scripts/granola-voice-synthesize.py": "on-demand synthesis, founder-launched",
-    "q-system/.q-system/scripts/lessons-distill.py": "scheduled distiller, two direct calls, unmetered",
-    "q-system/.q-system/scripts/linear-alert-triage.py": "the nightly alert-triage lane (ASK-1133), one call per alert with --tools '' --strict-mcp-config and a pinned model, unmetered",
-    "q-system/.q-system/scripts/linear-dor-drafter.py": "scheduled drafter; --tools '' now comes from lean_call's default (ASK-1132), unmetered",
-    "q-system/.q-system/scripts/linear-triage.py": "unwired per the capability manifest; runs by hand, unmetered",
-    "q-system/.q-system/scripts/linear-worker.sh": "the worker itself; bash -c string, the biggest unmetered spender",
+    "q-system/.q-system/scripts/lessons-distill.py": "scheduled distiller, two calls, metered through the fleet key door (ASK-4311)",
+    "q-system/.q-system/scripts/linear-alert-triage.py": "the nightly alert-triage lane (ASK-1133), one call per alert with --tools '' --strict-mcp-config and a pinned model, metered through the fleet key door (ASK-4311)",
+    "q-system/.q-system/scripts/linear-dor-drafter.py": "scheduled drafter; --tools '' from lean_call's default (ASK-1132), metered through the fleet key door (ASK-4311)",
+    "q-system/.q-system/scripts/linear-triage.py": "unwired per the capability manifest; runs by hand inside a session; fleet_door.run_for_caller (ASK-4311)",
+    "q-system/.q-system/scripts/linear-worker.sh": "the worker itself; bash -c string, metered through fleet-claude.sh (ASK-4311)",
     "q-system/.q-system/scripts/morning-brief.py": "scheduled brief with --allowedTools, unmetered",
-    "q-system/.q-system/scripts/open-loops-heartbeat.sh": "headless call per instance (sp-c2dcebad), unmetered",
-    "q-system/.q-system/scripts/pr-review-agent.sh": "the 2400s reviewer (sp-3bcc9e16), unmetered",
+    "q-system/.q-system/scripts/open-loops-heartbeat.sh": "headless call per instance (sp-c2dcebad), metered through fleet-claude.sh (ASK-4311)",
+    "q-system/.q-system/scripts/pr-review-agent.sh": "the 2400s reviewer (sp-3bcc9e16), metered through fleet-claude.sh (ASK-4311)",
     "q-system/.q-system/scripts/probe_hook_envelope.py": "one-shot probe, founder-launched",
-    "q-system/.q-system/scripts/skill-trigger-eval.py": "on-demand eval, founder-launched, never scheduled"
+    "q-system/.q-system/scripts/skill-trigger-eval.py": "on-demand eval inside a session; fleet_door.run_for_caller: a fleet key in a fleet run, the plan in the founder's (ASK-4311)"
   },
   "skeleton": {},
   "instances": {

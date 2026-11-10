@@ -15,6 +15,7 @@ WHAT THESE CASES EXIST TO KILL:
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -65,6 +66,17 @@ else:
     print("ok from " + who)
 '''
 
+def write_facts(path):
+    """A billable key 1, shaped like ~/.config/kipi/fleet-api.json. Under KIPI_TEST
+    the helper has no default facts file, and a key with no facts is never used.
+    The cycle ends 20 days after the REAL now: these cases run on the real clock."""
+    end = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=20))
+    row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
+           "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    with open(path, "w") as fh:
+        json.dump({"keys": {"1": row, "2": dict(row)}}, fh)
+
+
 #: A `security` that only records it was called. On PATH first in the case that
 #: proves a test-context run never reaches the real Keychain.
 FAKE_SECURITY = "#!/bin/sh\necho \"$*\" >> \"$FAKE_SECURITY_LOG\"\nexit 44\n"
@@ -78,8 +90,11 @@ class Base(unittest.TestCase):
         self.fake = os.path.join(d, "claude")
         self._write_exe(self.fake, FAKE_CLAUDE)
         self.ledger = os.path.join(d, "spend.jsonl")
+        self.facts = os.path.join(d, "fleet-api.json")
+        write_facts(self.facts)
         self._saved = dict(os.environ)
         os.environ.update({
+            "KIPI_FLEET_API_FACTS": self.facts,
             "KIPI_TEST": "1",
             "KIPI_FLEET_SPEND_LEDGER": self.ledger,
             "KIPI_FLEET_EVENTS": os.path.join(d, "events.jsonl"),

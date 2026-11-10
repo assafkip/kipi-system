@@ -152,7 +152,11 @@ def test_the_engine_scanner_agrees_with_fleet_health_on_every_shared_shell_site(
          `run_bounded "$T" bash -c "... claude -p ..."`, the worker's own
          call behind a wrapper function fleet-health does not know;
       2. a wrapper held in a variable, `$TO claude -p` (the heartbeat),
-         which fleet-health reads as an unknown command.
+         which fleet-health reads as an unknown command;
+      3. the fleet key door, `$FLEET_CLAUDE -p` or `fleet-claude.sh -p`
+         (ASK-4311). The engine counts it because it spends exactly what a
+         bare `claude -p` spends. fleet-health must NOT: its crontab scanner
+         files a keyed run outside the door, and the door is never that.
     The worker and the heartbeat are the two biggest spenders in the fleet;
     an inventory that missed them would be the wrong inventory. Any other
     disagreement fails. The reverse direction is not asserted: fleet-health
@@ -161,6 +165,7 @@ def test_the_engine_scanner_agrees_with_fleet_health_on_every_shared_shell_site(
     oracle = _shell_oracle()
     shell_c = re.compile(r"\b(bash|sh|zsh|dash|ksh)\s+-\w*c\w*\s")
     var_wrapper = re.compile(r"(^|[\s(;&|])\$\{?[A-Z_]+\}?\s+(\S*/)?claude\s")
+    door = re.compile(r"(^|[\s(;&|])(\$\{?FLEET_CLAUDE\}?|\S*fleet-claude\.sh)\s+-p\b")
     checked, excepted = 0, 0
     for row in spec()["shared"]:
         if not row.endswith(".sh"):
@@ -170,7 +175,7 @@ def test_the_engine_scanner_agrees_with_fleet_health_on_every_shared_shell_site(
             if line.lstrip().startswith("#") or not cs._line_calls(line):
                 continue
             if not oracle(line):
-                assert shell_c.search(line) or var_wrapper.search(line), \
+                assert shell_c.search(line) or var_wrapper.search(line) or door.search(line), \
                     f"{row}: engine counts it, fleet-health does not, and it is neither named exception: {line.strip()[:120]}"
                 excepted += 1
             checked += 1  # every counted line in every file (PR #418 round 1), not the first

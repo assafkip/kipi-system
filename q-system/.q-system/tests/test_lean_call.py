@@ -12,6 +12,7 @@ so the real binary cannot be reached, and the stub records its argv and cwd.
 The LIVE case makes one real Haiku call and is skipped unless
 KIPI_LIVE_MODEL_TEST=1. It is the runtime proof: a source read is not one.
 """
+import datetime
 import importlib.util
 import json
 import os
@@ -64,6 +65,13 @@ def stub(tmp_path, monkeypatch):
     # The fleet door's fixtures: a fake key and ledgers in the case's tmpdir.
     monkeypatch.setenv("KIPI_TEST", "1")
     monkeypatch.setenv("KIPI_FLEET_FAKE_KEY_1", FLEET_KEY)
+    # Under KIPI_TEST the helper has no default facts file; a key without facts
+    # is never used, so the case writes a billable one (cycle ends 20 days out).
+    end = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=20))
+    row = {"monthly_credit_usd": 200, "auto_reload_off_confirmed_at": "2026-11-10T21:00:00Z",
+           "current_cycle_expires_utc": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    (tmp_path / "fleet-api.json").write_text(json.dumps({"keys": {"1": row, "2": dict(row)}}))
+    monkeypatch.setenv("KIPI_FLEET_API_FACTS", str(tmp_path / "fleet-api.json"))
     for var, name in (("KIPI_FLEET_SPEND_LEDGER", "spend.jsonl"),
                       ("KIPI_FLEET_EVENTS", "events.jsonl"), ("KIPI_FLEET_STATE", "state.json")):
         monkeypatch.setenv(var, str(tmp_path / name))
