@@ -57,7 +57,6 @@ import importlib.util
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -73,6 +72,15 @@ PACKET_CHAR_CAP = 12000
 REASON_CHARS = 800          # the caller's own message, bounded at this end too
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import fleet_door  # noqa: E402  (ASK-4311: who pays for the triage call)
+
+#: This runs from the token-guard hook inside ANY session and from cap-ladder's
+#: nightly rung, so the call FOLLOWS ITS CALLER (ASK-4311): a fleet run (a worker
+#: session the key door started, or cap-ladder, which marks itself) bills a fleet
+#: API key through the metered door; the founder's own session stays on his plan
+#: with any inherited key stripped, exactly as before.
+DOOR_ACTOR = "fable-escalate"
 QROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEFAULT_LEDGER_DIR = os.path.join(QROOT, "output", "fable-escalations")
 DEFAULT_NOTIFY = os.path.join(HERE, "slack-notify.sh")
@@ -266,16 +274,6 @@ def build_packet(trigger, reason, transcript_path):
 # the call
 # --------------------------------------------------------------------------
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-
-
 def call_fable(packet, timeout):
     """(triage, failure). Never raises, never hangs, never leaks a child.
 
@@ -284,6 +282,8 @@ def call_fable(packet, timeout):
     pipe keeps communicate() blocked long after the timeout fired, which is the
     exact hang this branch exists to make impossible. Scar: the same shape cost
     a full debugging session on a captured `claude -p` call earlier in this repo.
+    fleet_door owns that now (own session, the whole group stopped on a timeout),
+    on both the plan path and the key path, so there is one copy of it.
     """
     command = os.environ.get("KIPI_FABLE_CLAUDE_CMD")
 
@@ -309,7 +309,7 @@ def call_fable(packet, timeout):
     if not command or not os.path.exists(command):
         return None, "claude binary not found"
 
-    env = _subscription_env()
+    env = dict(os.environ)
     # RECURSION GUARD. The child is itself a `claude` process, so without this
     # its own token-guard could hit a stuck block and escalate again, and each
     # escalation would fork another. One marker closes the whole tree.
@@ -323,22 +323,15 @@ def call_fable(packet, timeout):
 
     started = time.time()
     try:
-        proc = subprocess.Popen(
-            [command, "-p", "--model", FABLE_MODEL],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, env=env, cwd=workdir,
-            start_new_session=True)
-    except OSError as exc:
-        return None, "spawn failed: %s" % exc
-
-    try:
-        out, err = proc.communicate(input=packet, timeout=timeout)
+        proc = fleet_door.run_for_caller(
+            [command, "-p", "--model", FABLE_MODEL], actor=DOOR_ACTOR,
+            input=packet, capture_output=True, text=True, env=env, cwd=workdir,
+            timeout=timeout)
     except subprocess.TimeoutExpired:
-        _killpg(proc)
         return None, "timeout after %ss" % timeout
     except OSError as exc:
-        _killpg(proc)
-        return None, "io error: %s" % exc
+        return None, "spawn failed: %s" % exc
+    out, err = proc.stdout, proc.stderr
 
     if proc.returncode != 0:
         return None, "exit %s: %s" % (proc.returncode, (err or "").strip()[:200])
@@ -346,17 +339,6 @@ def call_fable(packet, timeout):
     if not triage:
         return None, "empty response after %.1fs" % (time.time() - started)
     return triage, None
-
-
-def _killpg(proc):
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        pass
-    try:
-        proc.wait(timeout=5)
-    except Exception:
-        pass
 
 
 # --------------------------------------------------------------------------

@@ -90,6 +90,7 @@ FAKE_FABLE = r'''#!/usr/bin/env python3
 import json, sys, os
 W = os.environ["W"]
 open(W + "/fable.log", "a").write(json.dumps(sys.argv[1:]) + "\n")
+open(W + "/fable.env", "a").write(os.environ.get("KIPI_FLEET_RUN", "-") + "\n")
 issue = sys.argv[sys.argv.index("--issue") + 1]
 w = json.load(open(W + "/gh-world.json"))
 q = w.setdefault("fable", {}).setdefault(issue, [])
@@ -234,6 +235,11 @@ def case_rungs(script: Path = LADDER) -> bool:
         check("rung 1: the capout record is cleared, so the redrives re-enter it", a_clear, ledger_row(env, "ASK-1"))
         check("rung 1: Fable writes an RCA (--kind rca) before the work continues",
               any(c[:2] == ["--kind", "rca"] for c in log(env, "fable")), log(env, "fable"))
+        # ASK-4311: fable-escalate.py follows its caller, so this launchd rung has
+        # to say it is a fleet run, or its RCA bills the founder's plan.
+        marks = (Path(env["W"]) / "fable.env").read_text().split()
+        check("rung 1: the RCA child is marked a fleet run (KIPI_FLEET_RUN=1), so it bills a fleet key",
+              bool(marks) and set(marks) == {"1"}, marks)
         check("rung 1: the ticket is requeued and the comment names the next rung",
               any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync"))
               and any(c[0] == "progress" and "rung 2" in c[2] for c in log(env, "sync")), log(env, "sync"))
