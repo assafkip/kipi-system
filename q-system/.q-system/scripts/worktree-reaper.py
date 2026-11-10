@@ -10,12 +10,16 @@ WHAT "FINISHED" MEANS. A worktree is removed only when ALL of these hold:
   - it sits under one of the configured roots (worktree-reaper.json), and is a
     linked worktree (`.git` is a file), never a primary checkout;
   - `git status --porcelain` is empty: no modified and no untracked files;
-  - it is not locked (`git worktree lock`);
+  - it is not locked (`git worktree lock`), and for a review tree no live
+    pr-review-agent.sh run holds its `<tree>.lock`;
   - no process has its working directory inside it (an agent still in it);
   - git has not touched it for `min_idle_hours`;
   - its HEAD is already on origin's default branch, OR a GitHub PR for its
-    branch or HEAD is merged or closed and no PR for it is open.
-Anything else is kept, and the log says why.
+    branch or HEAD is merged or closed and no PR for it is open. A review tree
+    (review-trees/<owner>_<repo>__pr-<N>) is matched by the N in its name.
+Anything else is kept, and the log says why. A PR lookup that FAILED keeps the
+tree as "PR lookup failed" and is counted in the summary line, never read as
+"no PR found" (ASK-4390).
 
 NEVER rm. Removal is `git worktree remove` WITHOUT --force, so git itself
 refuses a tree that is not clean, and the branch ref is never deleted: a
@@ -43,6 +47,9 @@ DEFAULT_CONFIG = os.path.join(HERE, "..", "worktree-reaper.json")
 ALERT = os.path.join(HERE, "alert-to-linear.py")
 DEFAULTS = {"roots": [], "min_idle_hours": 6, "alarm_below_gb": 10,
             "refuse_worktree_below_gb": 5}
+LOOKUP_FAILED = "PR lookup failed"
+# pr-review-agent.sh review_tree_path: <state>/review-trees/<artifact_key>__pr-<N>.
+REVIEW_TREE = re.compile(r"^(?P<key>.+)__pr-(?P<n>[0-9]+)$")
 
 
 def load_config(path: str | None = None) -> dict:
@@ -107,9 +114,51 @@ def _locked(gitdir: str) -> bool:
     return os.path.exists(os.path.join(gitdir, "locked"))
 
 
+def _is_review_tree(wt: str) -> bool:
+    return os.path.basename(os.path.dirname(wt)) == "review-trees"
+
+
+def _review_lock_held(wt: str) -> bool:
+    """A live pr-review-agent.sh run owns this review tree.
+
+    acquire_wt_lock writes the run's PID to `<tree>.lock` and never deletes it
+    when the run ends: 114 such files named a dead PID on 2026-11-10. So only a
+    live holder counts, decided the way that script's proven_dead() decides it.
+    An unreadable or empty lock (a claim mid-create) counts as held."""
+    if not _is_review_tree(wt):
+        return False
+    try:
+        with open(wt + ".lock", encoding="ascii", errors="replace") as fh:
+            text = fh.read().strip()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    if text == "":
+        return True
+    try:
+        pid = int(text)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OverflowError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _slug(url: str) -> str | None:
     m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$", url.strip())
     return m.group(1) if m else None
+
+
+def _artifact_key(slug: str) -> str:
+    """repo-slug-lib.sh artifact_key's stem: `/` -> `_`, then [^A-Za-z0-9._-] -> `_`."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", slug.replace("/", "_"))
 
 
 class Repo:
@@ -119,7 +168,9 @@ class Repo:
         self.common_dir = common_dir
         self.primary = os.path.dirname(common_dir.rstrip(os.sep))
         self._default = None
-        self._prs = None
+        self._slug = ""
+        self._prs: list[dict] | None = None
+        self._looked_up = False
 
     def default_ref(self) -> str | None:
         if self._default is None:
@@ -136,24 +187,56 @@ class Repo:
             self._default = ref
         return self._default or None
 
-    def prs(self) -> list[dict]:
-        if self._prs is None:
-            self._prs = []
+    def slug(self) -> str | None:
+        if self._slug == "":
             # The configured URL, not `remote get-url`: get-url applies insteadOf
             # rewrites, and the slug must name the GitHub repo either way.
             r = _git(self.primary, "config", "--get", "remote.origin.url")
-            slug = _slug(r.stdout) if r.returncode == 0 else None
-            if slug:
-                try:
-                    out = subprocess.run(
-                        ["gh", "pr", "list", "-R", slug, "--state", "all", "--limit", "1000",
-                         "--json", "number,state,headRefName,headRefOid"],
-                        capture_output=True, text=True, timeout=120)
-                    if out.returncode == 0:
-                        self._prs = json.loads(out.stdout or "[]")
-                except (OSError, ValueError, subprocess.TimeoutExpired):
-                    pass
+            self._slug = (_slug(r.stdout) if r.returncode == 0 else None) or None
+        return self._slug
+
+    def prs(self) -> list[dict] | None:
+        """Every PR of this repo, [] when it has no GitHub remote, and None when the
+        lookup FAILED. ASK-4390: this used to return [] on a gh error too, so the
+        GitHub outage of 2026-11-10 (TLS handshake timeout) read as "no PR found"
+        for 27 trees. A failure that looks like an answer cannot be seen."""
+        if not self._looked_up:
+            self._looked_up = True
+            slug = self.slug()
+            if not slug:
+                self._prs = []
+                return self._prs
+            why = ""
+            try:
+                out = subprocess.run(
+                    ["gh", "pr", "list", "-R", slug, "--state", "all", "--limit", "1000",
+                     "--json", "number,state,headRefName,headRefOid"],
+                    capture_output=True, text=True, timeout=120)
+                if out.returncode == 0:
+                    prs = json.loads(out.stdout or "[]")
+                    if isinstance(prs, list):
+                        self._prs = prs
+                    else:
+                        why = "gh output is not a list"
+                else:
+                    lines = (out.stderr or out.stdout).strip().splitlines()
+                    why = f"gh exit {out.returncode}: {lines[0] if lines else 'no output'}"
+            except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                why = f"{type(exc).__name__}: {exc}"
+            if self._prs is None:
+                print(f"worktree-reaper: {LOOKUP_FAILED} for {slug} ({why}); "
+                      f"its unmerged trees are kept")
         return self._prs
+
+    def review_pr(self, wt: str) -> int | None:
+        """N for review-trees/<key>__pr-<N> when <key> is THIS repo's key, else None.
+        Detached at the head it reviewed, such a tree matches no PR by headRefOid
+        after a later push, and by branch never (ASK-4390: 8 trees, 0.43 GB)."""
+        m = REVIEW_TREE.match(os.path.basename(wt)) if _is_review_tree(wt) else None
+        slug = self.slug()
+        if not m or not slug or m.group("key") != _artifact_key(slug):
+            return None
+        return int(m.group("n"))
 
 
 def verdict(wt: str, repos: dict, held: list[str], cfg: dict, now: float) -> tuple[bool, str]:
@@ -172,6 +255,8 @@ def verdict(wt: str, repos: dict, held: list[str], cfg: dict, now: float) -> tup
         return False, "has uncommitted or untracked files"
     if _locked(gitdir):
         return False, "locked"
+    if _review_lock_held(wt):
+        return False, "a review run holds its lock"
     if _in_use(wt, held):
         return False, "a process is working in it"
     if idle < cfg["min_idle_hours"]:
@@ -180,10 +265,17 @@ def verdict(wt: str, repos: dict, held: list[str], cfg: dict, now: float) -> tup
     ref = repo.default_ref()
     if ref and _git(wt, "merge-base", "--is-ancestor", head, ref).returncode == 0:
         return True, f"already on {ref}"
-    b = _git(wt, "symbolic-ref", "--short", "-q", "HEAD")
-    branch = b.stdout.strip() if b.returncode == 0 else ""
-    mine = [p for p in repo.prs()
-            if p.get("headRefOid") == head or (branch and p.get("headRefName") == branch)]
+    prs = repo.prs()
+    if prs is None:
+        return False, LOOKUP_FAILED
+    n = repo.review_pr(wt)
+    if n is not None:
+        mine = [p for p in prs if p.get("number") == n]
+    else:
+        b = _git(wt, "symbolic-ref", "--short", "-q", "HEAD")
+        branch = b.stdout.strip() if b.returncode == 0 else ""
+        mine = [p for p in prs
+                if p.get("headRefOid") == head or (branch and p.get("headRefName") == branch)]
     if not mine:
         return False, "not merged and no PR found"
     open_ = [p for p in mine if p.get("state") == "OPEN"]
@@ -239,9 +331,14 @@ def run(cfg: dict, apply: bool, now: float | None = None) -> dict:
             # the one from the start of the pass cannot see an agent that resumed
             # a dormant, clean tree while earlier trees were being checked, and
             # `git worktree remove` does not refuse a tree a process is in.
+            # A review run that claimed the tree since its verdict is re-read here
+            # for the same reason (ASK-4390).
             live = held_dirs()
             if live is None or _in_use(wt, live):
                 kept.append((wt, "a process is working in it"))
+                continue
+            if _review_lock_held(wt):
+                kept.append((wt, "a review run holds its lock"))
                 continue
             done, err = remove(wt)
             (removed if done else failed).append((wt, why if done else err))
@@ -249,13 +346,15 @@ def run(cfg: dict, apply: bool, now: float | None = None) -> dict:
         for wt, why in rows:
             print(f"{label}: {wt} ({why})")
     free = free_gb()
+    lookup_failed = sum(1 for _, why in kept if why == LOOKUP_FAILED)
     print(f"worktree-reaper: removed={len(removed)} kept={len(kept)} failed={len(failed)} "
-          f"free={free:.1f}GB apply={apply}")
+          f"pr_lookup_failed={lookup_failed} free={free:.1f}GB apply={apply}")
     alarmed = apply and free < cfg["alarm_below_gb"]
     if alarmed:
         alarm(cfg, free)
     return {"removed": [w for w, _ in removed], "kept": dict(kept),
-            "failed": [w for w, _ in failed], "free_gb": free, "alarmed": alarmed}
+            "failed": [w for w, _ in failed], "free_gb": free, "alarmed": alarmed,
+            "pr_lookup_failed": lookup_failed}
 
 
 def main(argv: list[str] | None = None) -> int:

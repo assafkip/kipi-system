@@ -265,3 +265,99 @@ def test_shipped_config_and_job_are_wired():
         matchers = {m["matcher"] for m in settings["hooks"]["PreToolUse"]
                     if any("worktree-disk-floor.py" in h["command"] for h in m["hooks"])}
         assert {"Bash", "EnterWorktree"} <= matchers, rel
+
+
+# --- ASK-4390 (disk 4.1 GB free, 2026-11-10) ----------------------------------
+# A dry run kept 167 of 168 trees. 27 of those read "not merged and no PR found"
+# while GitHub was unreachable, and 8 were review trees whose PR the lookup could
+# not see because a later push moved the PR head off the sha they were reviewed at.
+
+
+def _gh_says(env, body):
+    (env.tmp / "bin" / "gh").write_text("#!/bin/sh\n" + body)
+
+
+@pytest.mark.parametrize("gh_body", [
+    "echo 'TLS handshake timeout' >&2\nexit 1\n",   # the 2026-11-10 outage
+    "echo 'not json'\n",                            # exit 0, unreadable output
+])
+def test_a_failed_pr_lookup_is_its_own_keep_reason(env, capsys, gh_body):
+    wt = env.make("wip")
+    _gh_says(env, gh_body)
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "PR lookup failed"
+    assert out["pr_lookup_failed"] == 1
+    assert "pr_lookup_failed=1" in capsys.readouterr().out
+
+
+def _review_tree(env, n, key="acme_widget"):
+    """A pr-review-agent.sh tree, review-trees/<key>__pr-<N>: detached at the head
+    it reviewed, which a later push to the PR left behind, so neither the PR's
+    headRefOid nor its branch name matches the tree."""
+    root = env.tmp / "review-trees"
+    root.mkdir(exist_ok=True)
+    if str(root / "*") not in env.cfg["roots"]:
+        env.cfg["roots"].append(str(root / "*"))
+    wt = root / f"{key}__pr-{n}"
+    git(env.primary, "worktree", "add", "-q", "--detach", str(wt), "origin/main")
+    (wt / "reviewed.txt").write_text(str(n))
+    git(wt, "add", "reviewed.txt")
+    git(wt, "commit", "-qm", f"head reviewed for PR {n}")
+    return wt
+
+
+def _pr(n, state):
+    return {"number": n, "state": state, "headRefName": "feat", "headRefOid": "later-push"}
+
+
+def test_review_tree_of_a_merged_pr_is_found_by_its_number(env):
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["removed"] == [os.path.realpath(wt)]
+    assert not wt.exists()
+
+
+def test_review_tree_of_an_open_pr_is_kept(env):
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "OPEN")]))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "PR #12 is open"
+    assert wt.exists()
+
+
+def test_review_tree_is_kept_when_the_lookup_fails(env):
+    wt = _review_tree(env, 12)
+    _gh_says(env, "exit 1\n")
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "PR lookup failed"
+
+
+def test_review_tree_named_for_another_repo_does_not_borrow_its_number(env):
+    # The number in the name is only this repo's PR when the key is this repo's
+    # artifact_key; acme/other's PR 12 says nothing about acme/widget's PR 12.
+    wt = _review_tree(env, 12, key="acme_other")
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "not merged and no PR found"
+
+
+def test_a_live_review_lock_keeps_a_finished_review_tree(env):
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    (wt.parent / (wt.name + ".lock")).write_text(str(os.getpid()))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "a review run holds its lock"
+    assert wt.exists()
+
+
+def test_a_dead_review_lock_does_not_keep_it(env):
+    # pr-review-agent.sh leaves its .lock behind after every run: 114 of them
+    # named a dead PID on 2026-11-10. Only a live holder means a review is on it.
+    p = subprocess.Popen(["true"])
+    p.wait()
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "CLOSED")]))
+    (wt.parent / (wt.name + ".lock")).write_text(str(p.pid))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["removed"] == [os.path.realpath(wt)]
