@@ -7,6 +7,39 @@ on:
     branches: [main]
 
 jobs:
+  # ASK-4230. PR #668 merged `def refusal(self) -> str | None` into
+  # linear-sync.py and this workflow passed, because the job below runs Python
+  # 3.12 where a PEP 604 union is legal syntax. launchd runs every job through
+  # `bash -lc`, where python3 is /usr/bin/python3 3.9.6 and the annotation is
+  # EVALUATED at def time, so the import raised TypeError.
+  # com.kipi.capability-expiry exited 1 on its first run. PR #703 quoted that one
+  # annotation; nothing stopped the class from coming back.
+  #
+  # ITS OWN JOB, not a step in `validate`. actions/setup-python repoints python3
+  # for the rest of the job, so a 3.9 step inside `validate` would silently
+  # downgrade every later step (the capability gate, the hook tests).
+  #
+  # TREE-WIDE BY CONSTRUCTION, and that is not the shape ASK-3828 forbids. The
+  # list is the set of files launchd loads, not the diff, because a module the
+  # change did not touch still crashes the job that imports the one it did.
+  # Measured on main at 63cff7f2: 160 files, exit 0, 9.1s. So a red here is
+  # introduced by the PR, which is the property ASK-3828 actually asks for.
+  py39-load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up the Python launchd actually uses
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.9'
+      # No pip install. The gate loads top levels only, and every file in the
+      # list imports stdlib at module scope; a third-party import appearing at
+      # top level in a launchd-run script is itself the finding.
+      - name: Every launchd-run script loads under Python 3.9
+        run: python3 q-system/.q-system/scripts/py39_load_gate.py --repo-root . --python python3
+        env:
+          CI: true
+
   validate:
     runs-on: ubuntu-latest
     steps:
