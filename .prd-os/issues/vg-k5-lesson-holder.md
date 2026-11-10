@@ -13,6 +13,7 @@ allowed_files:
   - q-system/.q-system/scripts/test/test-lessons-validator.sh
   - q-system/.q-system/scripts/test/test_lessons_validator_holder.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_lessons_validator_holder.py.json
+  - q-system/.q-system/scripts/test_turn_classifier.py
 disallowed_files: []
 required_checks:
   - python3 -m pytest -q q-system/.q-system/scripts/test/test_lessons_validator_holder.py
