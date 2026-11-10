@@ -33,21 +33,37 @@ def _version_of(candidate):
 
 
 def find_py39():
-    """A real 3.9 interpreter, or fail loudly.
-
-    NO skipTest here on purpose. dc-25's scar: a design-chain test with no
-    browser called skipTest, the file exited 0, and the capability gate read
-    green over tests that never ran. A 3.9 gate with no 3.9 interpreter is
-    untested, not satisfied.
-    """
+    """A real 3.9 interpreter, or None."""
     for cand in ("python3.9", "/usr/bin/python3", "python3", sys.executable):
         if _version_of(cand) == "3.9":
             return cand
-    pytest.fail(
-        "no Python 3.9 interpreter found (tried python3.9, /usr/bin/python3, "
-        "python3, sys.executable). This gate cannot be tested without one; in "
-        "CI it comes from actions/setup-python 3.9."
-    )
+    return None
+
+
+PY39 = find_py39()
+
+# WHY A SKIP IS ALLOWED HERE, given dc-25's scar (a browser-less design-chain
+# test called skipTest, the file exited 0, and the capability gate read green
+# over tests that never ran).
+#
+# The skip is not the only coverage. The `py39-load` job in validate.yml is a
+# separate check that runs this gate against every collected file inside a
+# python:3.9-bookworm container, and it is the thing that actually protects main.
+# These cases are the developer-local and macOS version of that run.
+#
+# Measured 2026-11-09 on run 42732357797: verify.yml's runner has NO 3.9, so a
+# fail-loud find_py39() turned `verify` red for an environment reason while
+# `py39-load` was green. That is the wrong signal on the wrong check.
+#
+# What keeps the skip honest is test_the_py39_ci_job_still_exists below, which
+# runs UNCONDITIONALLY. Delete the CI job and this suite goes red, so the skip
+# can never be the whole story.
+requires_py39 = pytest.mark.skipif(
+    PY39 is None,
+    reason="no Python 3.9 on this runner; the py39-load job in validate.yml "
+           "runs the gate under 3.9 and test_the_py39_ci_job_still_exists "
+           "proves that job is still wired",
+)
 
 
 @pytest.fixture(scope="module")
@@ -85,23 +101,24 @@ QUOTED = textwrap.dedent(
 )
 
 
+@requires_py39
 def test_the_pr668_annotation_fails_the_load(gate, tmp_path):
-    py39 = find_py39()
     target = tmp_path / "fixture.py"
     target.write_text(UNQUOTED)
-    ok, detail = gate.load_one(py39, str(tmp_path), "fixture.py", 60)
+    ok, detail = gate.load_one(PY39, str(tmp_path), "fixture.py", 60)
     assert not ok, "an unquoted PEP 604 union loaded under 3.9; the gate is blind"
     assert "unsupported operand type" in detail
     assert gate.blame_line(detail, "fixture.py") == "fixture.py:3"
 
 
 def test_the_quoted_annotation_loads(gate, tmp_path):
-    py39 = find_py39()
+    """Interpreter-independent: a quoted annotation loads everywhere."""
     (tmp_path / "fixture.py").write_text(QUOTED)
-    ok, detail = gate.load_one(py39, str(tmp_path), "fixture.py", 60)
+    ok, detail = gate.load_one(sys.executable, str(tmp_path), "fixture.py", 60)
     assert ok, detail
 
 
+@requires_py39
 def test_py_compile_alone_would_not_have_caught_it(tmp_path):
     """Why this gate LOADS instead of compiling.
 
@@ -110,11 +127,10 @@ def test_py_compile_alone_would_not_have_caught_it(tmp_path):
     TypeError comes from evaluating it. This test is the receipt for that
     design decision, so nobody simplifies the gate back into a compile.
     """
-    py39 = find_py39()
     target = tmp_path / "fixture.py"
     target.write_text(UNQUOTED)
     compiled = subprocess.run(
-        [py39, "-m", "py_compile", str(target)],
+        [PY39, "-m", "py_compile", str(target)],
         capture_output=True, text=True, cwd=str(tmp_path),
     )
     assert compiled.returncode == 0, (
@@ -123,8 +139,7 @@ def test_py_compile_alone_would_not_have_caught_it(tmp_path):
 
 
 def test_main_exits_mid_import_is_not_run(gate, tmp_path):
-    """A script's main() must not run during the probe."""
-    py39 = find_py39()
+    """A script's main() must not run during the probe. Interpreter-independent."""
     (tmp_path / "fixture.py").write_text(textwrap.dedent(
         """
         import sys
@@ -134,18 +149,19 @@ def test_main_exits_mid_import_is_not_run(gate, tmp_path):
             main()
         """
     ))
-    ok, detail = gate.load_one(py39, str(tmp_path), "fixture.py", 60)
+    ok, detail = gate.load_one(sys.executable, str(tmp_path), "fixture.py", 60)
     assert ok, detail
 
 
+@requires_py39
 def test_a_dataclass_loads_under_the_probe(gate, tmp_path):
     """The sentinel module is registered in sys.modules.
 
     Measured 2026-11-09: without the registration, @dataclass on 3.9 resolves a
     field type through sys.modules.get(cls.__module__), gets None, and three
-    healthy scripts failed with AttributeError. This pins the fix.
+    healthy scripts failed with AttributeError. 3.9-gated because 3.10+
+    dataclasses no longer take that path, so the regression is invisible there.
     """
-    py39 = find_py39()
     (tmp_path / "fixture.py").write_text(textwrap.dedent(
         """
         from dataclasses import dataclass
@@ -155,7 +171,7 @@ def test_a_dataclass_loads_under_the_probe(gate, tmp_path):
             count: int = 0
         """
     ))
-    ok, detail = gate.load_one(py39, str(tmp_path), "fixture.py", 60)
+    ok, detail = gate.load_one(PY39, str(tmp_path), "fixture.py", 60)
     assert ok, detail
 
 
@@ -204,19 +220,41 @@ def test_test_files_and_package_members_are_excluded(collected):
     )
 
 
+@requires_py39
 def test_the_whole_gate_is_green_on_this_tree():
     """The gate must pass on its own population.
 
-    A gate that is red the day it lands is a gate someone switches off, and then
-    it protects nothing. This is the pass half of the red/green pair; the red
-    half is test_the_pr668_annotation_fails_the_load above.
+    A gate that is red the day it lands gets switched off, and then it protects
+    nothing. This is the pass half of the red/green pair; the red half is
+    test_the_pr668_annotation_fails_the_load above.
     """
-    py39 = find_py39()
     proc = subprocess.run(
-        [sys.executable, str(GATE), "--repo-root", str(ROOT), "--python", py39],
+        [sys.executable, str(GATE), "--repo-root", str(ROOT), "--python", PY39],
         capture_output=True, text=True, cwd=str(ROOT), timeout=900,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# ------------------------------------------------- what earns the skips above
+
+def test_the_py39_ci_job_still_exists():
+    """UNCONDITIONAL. This is why a skip above is not a silent pass.
+
+    Every @requires_py39 case says, in its skip reason, that the py39-load job
+    covers it. That claim has to be checkable, or the skip is the dc-25 scar
+    wearing a longer explanation. If the job is deleted, renamed, or stops
+    running the gate under 3.9, this test goes red on every runner.
+    """
+    wf = (ROOT / ".github" / "workflows" / "validate.yml").read_text()
+    assert re.search(r"^  py39-load:$", wf, re.M), (
+        "the py39-load job is gone from validate.yml; every @requires_py39 skip "
+        "in this file now covers nothing"
+    )
+    assert "py39_load_gate.py" in wf, "py39-load no longer runs the gate"
+    assert "python:3.9" in wf, (
+        "py39-load no longer pins a 3.9 interpreter, so it could pass on 3.12 "
+        "where the PR #668 annotation is legal"
+    )
 
 
 if __name__ == "__main__":
