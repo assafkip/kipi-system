@@ -134,6 +134,37 @@ def budget_day(at=None):
     return (at - dt.timedelta(hours=reset_hour())).strftime("%Y-%m-%d")
 
 
+def budget_day_start(day=None, at=None):
+    """The local-clock instant a budget day BEGINS: that day at RESET_HOUR.
+
+    The inverse of `budget_day()`, and it exists because the label alone is not a
+    timestamp. The report appended "T00:00:00Z" to it and asked Linear for
+    everything completed since then, which in a UTC-8 zone is 15 hours before
+    the day it claimed to measure -- it counted most of the previous afternoon
+    and evening (PR #717 review round 1, finding 4). Wall-clock arithmetic on
+    purpose, matching budget_day(): a day that crosses a DST boundary is 23 or 25
+    hours long and still runs 07:00 to 07:00 by the clock on the wall.
+    """
+    label = day or budget_day(at)
+    base = dt.datetime.strptime(label, "%Y-%m-%d")
+    return base + dt.timedelta(hours=reset_hour())
+
+
+def _utc_z(local_naive):
+    """A naive LOCAL datetime as a UTC ISO-8601 `...Z` string."""
+    return local_naive.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def budget_day_window_utc(day=None, at=None):
+    """(start, end) of a budget day as UTC `...Z` strings, end exclusive.
+
+    Both bounds, not just the start: a `--force` re-run, or a report built for a
+    past day, would otherwise count everything since that day began.
+    """
+    start = budget_day_start(day, at)
+    return _utc_z(start), _utc_z(start + dt.timedelta(days=1))
+
+
 def month_key(at=None):
     """Credit is granted per CALENDAR month, so this is not shifted by RESET_HOUR."""
     at = at or now()

@@ -212,5 +212,165 @@ class TestCadence(Base):
         self.assertIn("FLEET API CREDIT", self.sent()[0])
 
 
+#: A stand-in for linear-sync.py, loaded through the report's real load path
+#: (KIPI_LINEAR_SYNC) so the document under test is the one the report sends.
+FAKE_SYNC = r'''
+import json, os
+
+
+def graphql(query, variables=None):
+    with open(os.environ["FAKE_SYNC_RECORD"], "w") as fh:
+        json.dump({"query": query, "vars": variables or {}}, fh)
+    return {"issues": {"nodes": [{"identifier": "ASK-1", "completedAt": "x"}]}}
+'''
+
+
+def _balanced(doc):
+    """(ok, depth_at_end). A GraphQL document's braces, counted."""
+    depth = 0
+    for ch in doc:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return False, depth
+    return depth == 0, depth
+
+
+def _span_of_object_after(doc, marker):
+    """The `{...}` that follows `marker`, as (start, end) over `doc`.
+
+    Brace-matched rather than regex-matched, because the whole defect was a
+    MISPLACED closing brace: a regex that stops at the first `}` would have
+    called the broken document fine.
+    """
+    at = doc.index(marker) + len(marker)
+    while doc[at] in " \t\n":
+        at += 1
+    assert doc[at] == "{", "no object literal after %r" % marker
+    depth = 0
+    for i in range(at, len(doc)):
+        if doc[i] == "{":
+            depth += 1
+        elif doc[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return at, i
+    raise AssertionError("unclosed object after %r" % marker)
+
+
+class TestTheClosedQueryItself(unittest.TestCase):
+    """THE DOCUMENT THE REPORT ACTUALLY SENDS (PR #717 round 1, finding 1).
+
+    Every other case in this file stubs closed_today() whole, which is right for
+    them -- they are about the report's text -- and is exactly why a document
+    Linear rejects on every call shipped unnoticed. These cases read
+    report.CLOSED_QUERY, the same constant closed_today() hands to graphql().
+    """
+
+    def test_the_document_is_brace_balanced(self):
+        ok, depth = _balanced(report.CLOSED_QUERY)
+        self.assertTrue(ok, "unbalanced by %d: %s" % (depth, report.CLOSED_QUERY))
+
+    def test_state_is_inside_filter_not_beside_it(self):
+        """`state:` as a sibling of `filter:` is not a field of IssueFilter, so
+        Linear answers with an error and the count is never produced."""
+        doc = report.CLOSED_QUERY
+        start, end = _span_of_object_after(doc, "filter:")
+        self.assertIn("state:", doc[start:end],
+                      "state: is not inside filter:{...}: %s" % doc)
+        outside = doc[:start] + doc[end + 1:]
+        self.assertNotIn("state:", outside,
+                         "state: also appears outside filter:{...}: %s" % doc)
+
+    def test_both_window_bounds_are_declared_and_used(self):
+        doc = report.CLOSED_QUERY
+        for name in ("$after", "$before"):
+            self.assertEqual(doc.count(name), 2,
+                             "%s must be declared once and used once: %s" % (name, doc))
+        self.assertIn("gte:$after", doc.replace(" ", ""))
+        self.assertIn("lt:$before", doc.replace(" ", ""))
+
+    def test_closed_today_asks_for_the_budget_days_own_window(self):
+        """The window is the budget day, 07:00 local to 07:00 local.
+
+        The shipped code appended "T00:00:00Z" to the day LABEL. In a UTC-8 zone
+        that starts 15 hours early and counts the previous afternoon.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        record = os.path.join(tmp.name, "asked.json")
+        fake = os.path.join(tmp.name, "linear-sync.py")
+        with open(fake, "w") as fh:
+            fh.write(FAKE_SYNC)
+        env_before = dict(os.environ)
+        try:
+            os.environ["KIPI_LINEAR_SYNC"] = fake
+            os.environ["FAKE_SYNC_RECORD"] = record
+            os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
+            os.environ["KIPI_FLEET_NOW"] = "1762700400"   # 2026-11-09 11:00 local
+            count, err = report.closed_today()
+            expect_after, expect_before = spend.budget_day_window_utc()
+        finally:
+            os.environ.clear()
+            os.environ.update(env_before)
+
+        self.assertIsNone(err, "the fake answered, so there is no error")
+        self.assertEqual(count, 1)
+        with open(record) as fh:
+            seen = json.load(fh)
+        self.assertEqual(seen["vars"].get("after"), expect_after)
+        self.assertEqual(seen["vars"].get("before"), expect_before)
+        self.assertEqual(seen["query"], report.CLOSED_QUERY,
+                         "closed_today must send the constant the tests read")
+        os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
+        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+
+        # And the window is the day it claims, not 15 hours earlier.
+        import datetime as dtm
+        start = spend.budget_day_start()
+        self.assertEqual(start.hour, 7, "a budget day starts at RESET_HOUR local")
+        self.assertEqual(start.strftime("%Y-%m-%d"), spend.budget_day())
+        back = dtm.datetime.strptime(
+            expect_after, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dtm.timezone.utc)
+        self.assertEqual(back.astimezone().replace(tzinfo=None), start,
+                         "the UTC bound does not round-trip to 07:00 local")
+
+
+class TestBudgetDayWindow(unittest.TestCase):
+    def setUp(self):
+        os.environ["KIPI_DISPATCH_RESET_HOUR"] = "7"
+        os.environ["KIPI_FLEET_NOW"] = "1762700400"
+
+    def tearDown(self):
+        os.environ.pop("KIPI_FLEET_NOW", None)
+        os.environ.pop("KIPI_DISPATCH_RESET_HOUR", None)
+
+    def test_a_0300_run_measures_the_day_it_is_counted_against(self):
+        """03:00 belongs to yesterday's budget day in BOTH gates, so the window
+        it measures has to be yesterday's too."""
+        os.environ["KIPI_FLEET_NOW"] = str(1762700400 - 8 * 3600)   # 03:00 local
+        day = spend.budget_day()
+        after, before = spend.budget_day_window_utc()
+        self.assertEqual(spend.budget_day_start().strftime("%Y-%m-%d"), day)
+        self.assertLess(after, before)
+
+    def test_the_window_is_exactly_one_day_long(self):
+        import datetime as dtm
+        after, before = spend.budget_day_window_utc()
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        delta = dtm.datetime.strptime(before, fmt) - dtm.datetime.strptime(after, fmt)
+        self.assertEqual(delta, dtm.timedelta(days=1))
+
+    def test_an_explicit_day_overrides_the_clock(self):
+        after, _ = spend.budget_day_window_utc(day="2026-03-01")
+        self.assertTrue(after.startswith("2026-03-01") or
+                        after.startswith("2026-02-28") or
+                        after.startswith("2026-03-02"),
+                        "2026-03-01 07:00 local must land on an adjacent UTC date: %s"
+                        % after)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

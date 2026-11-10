@@ -109,21 +109,46 @@ def ready_counts():
     return per, sum(per.values()), None
 
 
+#: The "tickets closed today" query, as a module constant so a test can read the
+#: document the report actually sends rather than a copy of it.
+#:
+#: TWO DEFECTS LIVED IN ONE LINE (PR #717 review round 1, findings 1 and 4). The
+#: document was brace-unbalanced and put `state:` OUTSIDE `filter:`, so Linear
+#: rejected every call and the line could only ever say COULD NOT READ -- and no
+#: test saw it, because every test stubbed closed_today() whole. And the window
+#: started at the budget-day LABEL plus "T00:00:00Z", which in a UTC-8 zone is 15
+#: hours before the day it names. Both bounds now come from
+#: spend.budget_day_window_utc().
+CLOSED_QUERY = (
+    "query($after:DateTimeOrDuration!,$before:DateTimeOrDuration!){"
+    " issues(filter:{completedAt:{gte:$after,lt:$before}"
+    ",state:{type:{eq:\"completed\"}}}){"
+    " nodes{ identifier completedAt } } }"
+)
+
+
 def closed_today():
-    """(count, error). Issues this team completed inside the current budget day."""
+    """(count, error). Issues completed inside the current budget day.
+
+    Every issue the account can see, not one team: the query carries no team
+    filter, and claiming otherwise in this docstring would be a scope the code
+    does not have.
+    """
     try:
         import importlib.util
-        path = os.path.join(HERE, "linear-sync.py")
+        # KIPI_LINEAR_SYNC is the test seam, and it is the load path itself
+        # rather than a patched function: the shipped document went out broken
+        # because no test ever drove the real call. A fake linear-sync.py here
+        # records the query the report actually sends.
+        path = os.environ.get("KIPI_LINEAR_SYNC") or os.path.join(HERE, "linear-sync.py")
         spec = importlib.util.spec_from_file_location("ls_report", path)
         ls = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(ls)
     except Exception as exc:                      # noqa: BLE001 - reporter never raises
         return None, "could not load linear-sync.py (%s)" % exc
-    day = spend.budget_day()
-    query = ("query($after:DateTimeOrDuration!){ issues(filter:{completedAt:{gte:$after}}"
-             " state:{type:{eq:\"completed\"}}}){ nodes{ identifier completedAt } } }")
+    after, before = spend.budget_day_window_utc()
     try:
-        doc = ls.graphql(query, {"after": day + "T00:00:00Z"})
+        doc = ls.graphql(CLOSED_QUERY, {"after": after, "before": before})
     except Exception as exc:                      # noqa: BLE001
         return None, "Linear would not answer (%s)" % exc
     nodes = ((doc or {}).get("issues") or {}).get("nodes") or []
