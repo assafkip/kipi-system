@@ -89,6 +89,9 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# The model call bills a fleet API key through the one metered door (ASK-4311).
+sys.path.insert(0, str(HERE))
+import fleet_door  # noqa: E402
 
 ALERT_MARKER = "kipi-alert-fingerprint"
 PROMOTED_MARKER = "kipi-alert-promoted"
@@ -854,16 +857,13 @@ def parse_verdict(text: str) -> tuple[str, str] | None:
     return verdict, body
 
 
-def _subscription_env() -> dict:
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns a
-    nightly lane into metered spend. This lane first shipped with
-    {**os.environ, ...} and test-subscription-only.sh went red on it in CI
-    (validate run 39510514778, ASK-1133).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: The nightly lane is unattended fleet work (com.kipi.linear-alert-triage), so
+#: each call bills a fleet API key through the one metered door (ASK-4311). The
+#: door strips any key this process inherited and the helper injects the fleet
+#: one, so the scar this replaced (ASK-1133: the lane first shipped with
+#: {**os.environ, ...} and inherited whatever key was set) cannot come back. No
+#: key means exit 4, which decide() reads as a failed call, never a verdict.
+DOOR_ACTOR = "alert-triage"
 
 
 def prompt_description(issue: dict) -> str:
@@ -890,15 +890,15 @@ def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
         project=(issue.get("project") or {}).get("name") or "unassigned",
         title=issue.get("title") or "",
         description=prompt_description(issue))
-    env = _subscription_env()
+    env = dict(os.environ)
     env["ANTHROPIC_MODEL"] = TRIAGE_MODEL
     try:
         # OUTSIDE THE REPO: the project's settings, hooks and .mcp.json load from
         # the working directory, and none of them belong to a classifier.
         with tempfile.TemporaryDirectory(prefix="kipi-alert-triage-") as cwd:
-            res = subprocess.run(model_argv(binary, prompt), capture_output=True,
-                                 text=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                                 env=env, cwd=cwd)
+            res = fleet_door.run(model_argv(binary, prompt), actor=DOOR_ACTOR,
+                                 capture_output=True, text=True, timeout=timeout,
+                                 stdin=subprocess.DEVNULL, env=env, cwd=cwd)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"  {ident}: model call failed ({type(exc).__name__})", file=sys.stderr)
         return None

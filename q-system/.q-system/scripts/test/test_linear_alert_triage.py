@@ -1061,11 +1061,12 @@ class TestD7TheModelGetsNoTools(unittest.TestCase):
     def _call(self, stdout="HOLD\nnot scoped", rc=0, env=None):
         seen = {}
 
+        # The stand-in sits at the fleet door, where the call now goes (ASK-4311).
         def fake_run(argv, **kw):
             seen["argv"], seen["kw"] = list(argv), kw
             return subprocess.CompletedProcess(argv, rc, stdout=stdout, stderr="")
         with patch.object(triage, "claude_binary", lambda: "claude"), \
-             patch.object(triage.subprocess, "run", fake_run), \
+             patch.object(triage.fleet_door, "run", fake_run), \
              patch.dict(triage.os.environ, env or {}):
             result = triage.decide(alert("ASK-1"))
         return seen, result
@@ -1103,6 +1104,18 @@ class TestD7TheModelGetsNoTools(unittest.TestCase):
         self.assertTrue(cwd, "no cwd: the model inherits the repo and its settings")
         self.assertFalse(str(Path(cwd).resolve()).startswith(
             str(SCRIPTS.parent.parent.parent.resolve())))
+
+    def test_the_call_bills_the_fleet_key_through_the_door(self):
+        """ASK-4311: a decide() that spawned claude itself would bypass the
+        stand-in above, so `seen` would be empty and this goes red."""
+        seen = self._call()[0]
+        self.assertEqual(seen["kw"].get("actor"), triage.DOOR_ACTOR)
+        self.assertEqual(seen["argv"][:2], ["claude", "-p"])
+
+    def test_a_refused_door_is_no_decision(self):
+        """Exit 4 is the door refusing (no key, or paused): a failed call, never
+        a verdict, and never a quiet fallback to the plan."""
+        self.assertIsNone(self._call(stdout="", rc=4)[1])
 
     def test_a_failed_call_is_no_decision(self):
         self.assertIsNone(self._call(rc=1)[1])
