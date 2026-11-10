@@ -24,19 +24,33 @@ jobs:
   # change did not touch still crashes the job that imports the one it did.
   # Measured on main at 63cff7f2: 160 files, exit 0, 9.1s. So a red here is
   # introduced by the PR, which is the property ASK-3828 actually asks for.
+  #
+  # A CONTAINER, not actions/setup-python. Measured on run 42730935991: the
+  # setup-python step failed in seconds, because ubuntu-latest is 24.04 and
+  # actions/python-versions ships no 3.9 build for noble. Pinning ubuntu-22.04
+  # would work until that image retires; the container pins the INTERPRETER,
+  # which is the thing this gate is about. bookworm (not slim) carries git, so
+  # the collector reads `git ls-files` rather than falling back to a tree walk.
   py39-load:
     runs-on: ubuntu-latest
+    container:
+      image: python:3.9-bookworm
     steps:
       - uses: actions/checkout@v6
-      - name: Set up the Python launchd actually uses
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.9'
+      # checkout inside a container leaves the tree owned by a different uid, so
+      # git refuses it as dubious ownership and `git ls-files` returns nothing.
+      # The collector would then walk the tree instead, which is a DIFFERENT list
+      # arrived at silently. Declare the directory safe and keep one code path.
+      - name: Let git read the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # No pip install. The gate loads top levels only, and every file in the
       # list imports stdlib at module scope; a third-party import appearing at
-      # top level in a launchd-run script is itself the finding.
+      # top level in a launchd-run script is itself the finding. Verified with
+      # PYTHONNOUSERSITE=1 locally: 160 files, exit 0.
       - name: Every launchd-run script loads under Python 3.9
-        run: python3 q-system/.q-system/scripts/py39_load_gate.py --repo-root . --python python3
+        run: |
+          python3 -c "import sys; assert sys.version_info[:2] == (3, 9), sys.version"
+          python3 q-system/.q-system/scripts/py39_load_gate.py --repo-root . --python python3
         env:
           CI: true
 
