@@ -22,6 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 EVAL_DIR = os.environ.get("SKILL_EVAL_DIR", os.path.join(HERE, "..", "skill-evals"))
 REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 CLAUDE = os.environ.get("SKILL_EVAL_CLAUDE_CMD", "claude")
+sys.path.insert(0, HERE)
+import fleet_door  # noqa: E402  (ASK-4311: who pays for each case)
 
 
 def load_fixture(skill):
@@ -45,21 +47,18 @@ def _routed_model(job="on-demand"):
     return mod.pick(job)
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: An on-demand eval with no launchd job: it runs inside whichever session
+#: started it. So each call FOLLOWS ITS CALLER (ASK-4311): a fleet run bills a
+#: fleet API key through the metered door, the founder's own session stays on his
+#: plan with any inherited key stripped, exactly as before.
+DOOR_ACTOR = "skill-trigger-eval"
 
 
 def run_case(prompt):
     # Run claude -p from the REPO ROOT so the .claude/rules auto-invoke path loads.
     try:
-        r = subprocess.run([CLAUDE, "-p", prompt, "--model", _routed_model()], cwd=REPO_ROOT, env=_subscription_env(),
-                           capture_output=True, text=True, timeout=180)
+        r = fleet_door.run_for_caller([CLAUDE, "-p", prompt, "--model", _routed_model()], actor=DOOR_ACTOR,
+                                      cwd=REPO_ROOT, capture_output=True, text=True, timeout=180)
         return r.stdout or ""
     except Exception:
         return ""

@@ -49,6 +49,8 @@ DEFAULT_CASES = os.environ.get(
 DEFAULT_STYLE = os.environ.get(
     "AUDHD_EVAL_STYLE", os.path.join(REPO_ROOT, ".claude", "output-styles", "audhd.md"))
 CLAUDE = os.environ.get("AUDHD_EVAL_CLAUDE_CMD", "claude")
+sys.path.insert(0, HERE)
+import fleet_door  # noqa: E402  (ASK-4311: who pays for each call)
 
 WEIGHTS = {
     "correctness": 0.35,
@@ -181,21 +183,18 @@ def gate(results):
     return not reasons, reasons
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: An on-demand eval with no launchd job: it runs inside whichever session
+#: started it. So each call FOLLOWS ITS CALLER (ASK-4311): a fleet run bills a
+#: fleet API key through the metered door, the founder's own session stays on his
+#: plan with any inherited key stripped, exactly as before.
+DOOR_ACTOR = "audhd-output-eval"
 
 
 def _claude(prompt, extra_args, cwd):
-    env = _subscription_env()
+    env = dict(os.environ)
     env.setdefault("ANTHROPIC_MODEL", "claude-opus-5")
-    r = subprocess.run([CLAUDE, "-p", prompt] + extra_args,
-                       capture_output=True, text=True, timeout=300, cwd=cwd, env=env)
+    r = fleet_door.run_for_caller([CLAUDE, "-p", prompt] + extra_args, actor=DOOR_ACTOR,
+                                  capture_output=True, text=True, timeout=300, cwd=cwd, env=env)
     # A failed or empty call must STOP the run, not become a scoreable "" --
     # a dead API otherwise judges as a response and can still print gate PASS
     # (PR #225 review, major).
