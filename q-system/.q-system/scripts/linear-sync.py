@@ -1121,6 +1121,142 @@ def cmd_label(args) -> int:
     return EXIT_OK
 
 
+# Agents in Linear are ordinary User rows carrying `app: true` -- introspected
+# live 2026-11-10, same call, same workspace: Codex, Sana and Linear come back
+# beside the humans. There is no separate "agents" collection to query, so the
+# `app` flag is the only thing separating an agent from a person.
+APP_USERS = """
+query { users(first: 250) { nodes { id name displayName active app } } }
+"""
+
+# `delegateId` on IssueUpdateInput and `delegate` on Issue -- both introspected
+# live 2026-11-10 rather than copied from a doc. The mutation asks for the
+# RESULTING delegate back, because `success` alone cannot distinguish an accepted
+# write from one that landed on a different identity (see the echo check below).
+ISSUE_DELEGATE = """
+mutation($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    success
+    issue { id identifier delegate { id name } }
+  }
+}
+"""
+
+
+def _app_users() -> list:
+    """Every agent in the workspace. Humans are filtered out here, deliberately:
+    `delegate` is Linear's AGENT hand-off, and a human delegate is a review
+    request nobody can act on that still reads as requested on the board."""
+    nodes = ((graphql(APP_USERS, {}) or {}).get("users") or {}).get("nodes") or []
+    return [u for u in nodes if u.get("app") and u.get("active")]
+
+
+def cmd_delegate(args) -> int:
+    """Hand an issue to a native Linear agent, or take it back.
+
+    WHY THIS EXISTS (ASK-253, superseding ASK-221 / PR #34). The founder installed
+    the Codex Linear agent on 2026-07-29 to review Sana's work inside the issue.
+    Per `linear.app/docs/agents-in-linear`, an agent is given work by DELEGATION,
+    not assignment: the human assignee stays the owner. ASK-221 hand-built the
+    same conversation out of ~150 lines of glue plus a local reviewer that can
+    only post a commit STATUS, because it runs as the account that authors these
+    PRs and GitHub forbids self-approval. A separate app identity can actually
+    review. This verb is the hand-off, nothing more.
+
+    NOTHING CALLS IT. That is the point and not an omission: delegation starts a
+    paid Linear coding session ($0.07-$5 per run against a prepaid workspace
+    balance), and the question of what the loop READS as a verdict -- a parsed
+    comment, a GitHub review, or a Linear Loop -- is a separate founder decision.
+    Wiring the worker owes a once-per-PR-head-sha bound and its own call-log
+    test; that is a follow-up issue. An unbounded loop here is a runaway bill.
+
+    EVERY FAILURE PATH REFUSES LOUDLY, because the defect class this verb sits in
+    is a discarded mutation result: `commentCreate` here reported success on a
+    rejected write until Codex found it on 2026-07-29, and `sp-8f879dc5` is the
+    same shape. A delegate verb with that bug tells the loop the reviewer was
+    engaged while the issue sits undelegated and nobody reviews anything.
+    """
+    if bool(args.clear) == bool(args.agent):
+        print("BLOCK: pass exactly one of --agent <name> or --clear", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        issue = graphql(ISSUE_BY_ID, {"id": args.issue}).get("issue")
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if not issue:
+        print(f"BLOCK: no issue {args.issue}", file=sys.stderr)
+        return EXIT_USAGE
+
+    target_id = None
+    target_name = ""
+    if args.agent:
+        # RESOLVE BEFORE WRITING. An unknown name must cost nothing: issueUpdate
+        # with a guessed delegateId is a write, and a write landing on the wrong
+        # identity starts a paid session for the wrong agent.
+        try:
+            agents = _app_users()
+        except LinearAPIError as exc:
+            print(f"BLOCK: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        want = args.agent.strip().lower()
+        match = next((u for u in agents
+                      if want in {(u.get("name") or "").lower(),
+                                  (u.get("displayName") or "").lower()}), None)
+        if not match:
+            known = ", ".join(sorted(u["name"] for u in agents)) or "(none)"
+            print(f"BLOCK: no Linear agent named {args.agent!r}. Nothing was sent. "
+                  f"Agents in this workspace: {known}", file=sys.stderr)
+            return EXIT_USAGE
+        target_id, target_name = match["id"], match["name"]
+
+    try:
+        result = graphql(ISSUE_DELEGATE, {
+            "id": issue["id"],
+            "input": {"delegateId": target_id},
+        })
+    except LinearAPIError as exc:
+        print(f"BLOCK: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    updated = (result or {}).get("issueUpdate") or {}
+    if not updated.get("success"):
+        print(f"BLOCK: Linear did not change the delegate on {issue['identifier']}. "
+              f"Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+
+    echoed_issue = updated.get("issue")
+    if not echoed_issue:
+        print(f"BLOCK: Linear reported success on {issue['identifier']} but echoed "
+              f"no issue, so the resulting delegate is unknown. Raw: {updated}",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    # VERIFY THE ECHO, do not trust `success`. Linear can accept the write and the
+    # resulting delegate still not be the one asked for; those two cases are
+    # indistinguishable from the success flag alone, and the loop would report a
+    # reviewer that was never engaged.
+    echoed = echoed_issue.get("delegate") or {}
+    if args.clear:
+        if echoed.get("id"):
+            print(f"BLOCK: {issue['identifier']} is still delegated to "
+                  f"{echoed.get('name')} after --clear. Raw: {updated}",
+                  file=sys.stderr)
+            return EXIT_USAGE
+        print(f"{issue['identifier']}: delegate cleared")
+        return EXIT_OK
+
+    if echoed.get("id") != target_id:
+        print(f"BLOCK: asked for {target_name} ({target_id}) on "
+              f"{issue['identifier']}, Linear reports {echoed.get('name')} "
+              f"({echoed.get('id')}). Raw: {updated}", file=sys.stderr)
+        return EXIT_USAGE
+
+    print(f"{issue['identifier']}: delegated to {target_name} ({target_id})")
+    return EXIT_OK
+
+
 def _lock_dir() -> str:
     """Where the per-issue write locks live.
 
@@ -1789,6 +1925,14 @@ def main() -> int:
     p.add_argument("issue", help="issue identifier, e.g. ASK-148")
     p.add_argument("name", help="label to add, e.g. needs-scope")
     p.set_defaults(func=cmd_label)
+
+    p = sub.add_parser("delegate",
+                       help="hand an issue to a native Linear agent, or clear it")
+    p.add_argument("issue", help="issue identifier, e.g. ASK-253")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--agent", help="agent name as Linear shows it, e.g. Codex")
+    g.add_argument("--clear", action="store_true", help="remove the delegate")
+    p.set_defaults(func=cmd_delegate)
 
     p = sub.add_parser("requeue",
                        help="move a started issue back to Backlog with a one-line comment")
