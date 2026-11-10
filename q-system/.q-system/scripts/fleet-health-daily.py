@@ -1113,9 +1113,25 @@ def detect_unaccounted_commits(_ctx) -> list:
     sweeper = HERE / "linear-bypass-sweep.py"
     if not sweeper.is_file():
         raise RuntimeError(f"the sweeper is missing at {sweeper}")
+    cmd = ["python3", str(sweeper), "--json"]
+    # Pin the swept ref to the REPO's default branch, never to whatever branch
+    # the running checkout happens to track. The finding below is one PERMANENT
+    # issue for the whole repo and its body is compared byte-for-byte, so a run
+    # from a feature worktree would rewrite that issue with a different range --
+    # and reopen it if the operator had triaged and closed it, because reopen is
+    # wired to body_stale. Same defect as the two ref SPELLINGS fixed in
+    # `short_ref`, reached by a different route (PR #720 round 12).
+    #
+    # Empty means origin/HEAD does not resolve (a --single-branch clone), and
+    # then the flag is OMITTED rather than guessed: the sweeper's own fallback
+    # chain still tries `@{u}` first, which is what shipped before this pin. A
+    # hardcoded `origin/main` would blind the detector on a repo whose default
+    # branch is named anything else.
+    pinned = _git(REPO_ROOT, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    if pinned.returncode == 0 and pinned.stdout.strip():
+        cmd += ["--rev", pinned.stdout.strip()]
     try:
-        res = subprocess.run(["python3", str(sweeper), "--json"],
-                             capture_output=True, text=True, timeout=120,
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120,
                              cwd=REPO_ROOT)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"the sweeper could not run: {type(exc).__name__}") from exc

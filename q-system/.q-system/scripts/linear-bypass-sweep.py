@@ -68,6 +68,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -77,17 +78,32 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 GATE_PATH = HERE / "linear-issue-ref-check.py"
 
-# git log field separator. NUL between fields, RS between records: neither can
-# appear inside a commit message, so a multi-line body cannot fake a new record.
+# git log field separator. NUL between fields, RS between records.
+#
+# ONE of those two bytes is actually impossible inside a commit message, and the
+# earlier claim that both were is false. \x1e passes through argv, so
+# `git commit -m $'subject\x1ebody'` stores it verbatim -- measured, not reasoned.
+# NUL is the impossible one: `subprocess` raises `ValueError: embedded null byte`
+# before git ever runs, so no argv-fed message can carry it.
+#
+# That is why the record boundary below is ANCHORED rather than bare. Splitting
+# on \x1e alone cut a message AT the separator and dropped the rest of it,
+# including the `(ASK-nnn)` that made the commit accounted -- so a gate-accounted
+# commit was reported as a bypass (PR #720 round 12).
 #
 # The FORMAT STRING uses git's own `%x00`/`%x1e` escapes rather than the literal
-# bytes. A literal NUL cannot be passed in argv at all -- `subprocess` raises
-# `ValueError: embedded null byte` before git ever runs -- so git has to be the
-# one that emits the byte, into its output where it is legal.
+# bytes, because git has to be the one that emits them, into its output where
+# they are legal.
 FIELD_SEP = "\x00"
 RECORD_SEP = "\x1e"
 FIELD_SEP_FMT = "%x00"
 RECORD_SEP_FMT = "%x1e"
+# A real boundary is the separator followed by the NEXT record's full sha and a
+# field separator. A message cannot fake that: it would have to carry a NUL.
+# 40 hex for sha1, 64 for a sha256 repo.
+SHA_PATTERN = r"[0-9a-f]{40}(?:[0-9a-f]{24})?"
+RECORD_BOUNDARY = re.compile(RECORD_SEP + r"(?=" + SHA_PATTERN + FIELD_SEP + r")")
+SHA_RE = re.compile(SHA_PATTERN + r"\Z")
 
 DEFAULT_MAX_COUNT = 500
 # The ceiling on automatic growth. It exists so an --all-history scan of a repo
@@ -131,15 +147,42 @@ def repo_root(start: Path) -> Path:
     return start
 
 
+def short_ref(ref: str) -> str:
+    """`refs/remotes/origin/main` -> `origin/main`. ONE spelling per ref.
+
+    Cosmetic to git, which accepts either and resolves both to the same commit.
+    Load-bearing to everything downstream: this string is interpolated into a
+    PERMANENT Linear issue body, and `_refresh_one` compares that body's hash to
+    decide whether anything changed.
+
+    `@{u}` answers with the long spelling and `origin/HEAD` with the short one.
+    Every launchd job runs from a checkout pinned to origin/main (detached, so
+    no `@{u}`) while the founder's checkout tracks its upstream, so alternating
+    runs rewrote the standing issue and earned a Slack line with nothing
+    changed. Worse: reopen is wired to `body_stale`, so the flip reopened an
+    issue the operator had triaged and closed, which is the one thing the
+    round-9 `close_is_acknowledgement` fix exists to prevent (PR #720 round 12).
+
+    Only `refs/remotes/` is stripped. A `refs/heads/` upstream (a branch tracking
+    a LOCAL branch) is left alone: it is a different ref, not a different
+    spelling of this one, and `remote_of` has to keep reading it as local.
+    """
+    prefix = "refs/remotes/"
+    return ref[len(prefix):] if ref.startswith(prefix) else ref
+
+
 def default_rev(cwd: Path) -> str:
     """The branch's own upstream if it has one, else origin's default branch.
 
     'Reached origin' is the property that matters: a commit still sitting in a
     local branch is inside the founder's control and outside this ledger's job.
+
+    Normalized through `short_ref` at this ONE site, so every consumer -- the
+    issue body, stdout, `remote_of`, the JSON result -- reads one spelling.
     """
     code, out = git(["rev-parse", "--symbolic-full-name", "@{u}"], cwd)
     if code == 0 and out.strip():
-        return out.strip()
+        return short_ref(out.strip())
     code, out = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd)
     if code == 0 and out.strip():
         return out.strip()
@@ -334,13 +377,27 @@ def read_commits(rev: str, max_count: int, cwd: Path, since: str = "") -> tuple:
             "The scan read nothing, so its count would be a false zero."
         )
     raw = []
-    for record in out.split(RECORD_SEP):
+    # git appends the separator after the LAST record too; drop exactly one so
+    # the final message does not inherit it. One, not `rstrip`, because a message
+    # is allowed to end with the byte itself.
+    body_out = out[:-1] if out.endswith(RECORD_SEP) else out
+    for record in RECORD_BOUNDARY.split(body_out):
         record = record.strip("\n")
         if not record.strip():
             continue
         parts = record.split(FIELD_SEP)
-        if len(parts) < 4:
-            continue
+        if len(parts) < 4 or not SHA_RE.match(parts[0].strip()):
+            # NOT `continue`. A record the anchored split produced always starts
+            # with a sha and carries four fields, so reaching here means the
+            # parse desynced and the commits in this record were never
+            # classified. Skipping them is a count that silently omits history
+            # the walk DID read -- the same false-zero shape as the round-10
+            # finding, one layer in. Blind is the recoverable direction.
+            raise RuntimeError(
+                "the history walk returned a record this parser cannot read "
+                f"({len(parts)} field(s)); its commits were never classified, "
+                "so the count would silently omit them."
+            )
         sha, authored_at = parts[0].strip(), parts[1].strip()
         committed_at, message = parts[2].strip(), parts[3]
         body = message.strip()

@@ -690,5 +690,118 @@ check "the control proves the same call succeeds on readable history" \
   "WALKED" "$(printf '%s\n' "$WALK_OUT" | sed -n '2p')"
 
 echo
+echo "=== a record separator inside a commit message does not truncate it ==="
+
+# The format string separates RECORDS with %x1e, and the docstring claimed a
+# commit message cannot contain that byte. It can: \x1e passes through argv, so
+# `git commit -m` carries it and git stores it verbatim. The bare split then cut
+# the message AT the separator and dropped everything after it -- including the
+# `(ASK-nnn)` that made the commit ACCOUNTED -- so the sweep reported a
+# gate-accounted commit as a bypass (PR #720 round 12).
+#
+# `--all-history` rather than a copied gate file: the floor is not what is under
+# test here, and an unfloored scan of a 3-commit fixture is the whole range.
+RSREPO="$TMP/rs"
+RS_ORIGIN="$TMP/rs-origin.git"
+RS_LEDGER="$TMP/rs.jsonl"
+git init --bare -q "$RS_ORIGIN"
+git init -q -b main "$RSREPO"
+git -C "$RSREPO" config user.email sweep@test.local
+git -C "$RSREPO" config user.name "Sweep Test"
+git -C "$RSREPO" config commit.gpgsign false
+
+RS_MSG="$(printf 'fix(parse): the separated one\036(ASK-284)')"
+echo rs > "$RSREPO/rs.txt"
+git -C "$RSREPO" add rs.txt
+git -C "$RSREPO" commit -q --no-verify -m "$RS_MSG"
+SHA_RS=$(git -C "$RSREPO" rev-parse HEAD)
+
+# Control, in the SAME scan: a commit with no id at all. Without it this case
+# would pass on a sweep that classified nothing, which is the failure shape the
+# round-10 finding was about.
+echo plain > "$RSREPO/plain.txt"
+git -C "$RSREPO" add plain.txt
+git -C "$RSREPO" commit -q --no-verify -m 'chore(control): no id and no hatch'
+SHA_RS_CTL=$(git -C "$RSREPO" rev-parse HEAD)
+git -C "$RSREPO" remote add origin "$RS_ORIGIN"
+git -C "$RSREPO" push -q -u origin main
+
+# The fixture proves its own premise: if git did not keep the byte, the case
+# below is vacuous and must say so rather than pass.
+if git -C "$RSREPO" log -1 --format=%B "$SHA_RS" | grep -q $'\036'; then
+  ok "git stored the record separator inside the commit message"
+else
+  no "git did not store the separator; this case proves nothing"
+fi
+
+OUT_RS=$(cd "$RSREPO" && LINEAR_BYPASS_LEDGER="$RS_LEDGER" \
+  python3 "$SWEEP" --rev origin/main --all-history --no-fetch --dry --json 2>/dev/null)
+RS_LIST=$(printf '%s' "$OUT_RS" | python3 -c \
+  'import json,sys; print(" ".join(json.load(sys.stdin)["unaccounted_commits"]))')
+case " $RS_LIST " in
+  *" $SHA_RS "*) no "the separated commit was classified unaccounted (its id was cut off)" ;;
+  *)             ok "a commit whose id follows a record separator stays accounted" ;;
+esac
+case " $RS_LIST " in
+  *" $SHA_RS_CTL "*) ok "the control proves the same scan does classify a real bypass" ;;
+  *)                 no "the control bypass was not found; the scan read nothing" ;;
+esac
+
+echo
+echo "=== the swept ref has ONE spelling, whatever the checkout calls it ==="
+
+# `rev` is interpolated into a PERMANENT Linear issue body, and `_refresh_one`
+# compares that body hash to decide whether anything changed. `@{u}` answers
+# `refs/remotes/origin/main` while `origin/HEAD` answers `origin/main` -- same
+# commit, different string. Every launchd job runs from a checkout pinned to
+# origin/main (detached, so no `@{u}`) while the founder's checkout tracks its
+# upstream, so alternating runs rewrote the standing issue and earned a Slack
+# line with nothing changed. Worse, reopen is wired to body_stale, so the flip
+# reopened an issue the operator had triaged and closed (PR #720 round 12).
+SPELL=$(cd "$REVF" && python3 - "$SWEEP" <<'PY' 2>&1
+import importlib.util
+import pathlib
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("sweep", sys.argv[1])
+sweep = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sweep)
+here = pathlib.Path(".").resolve()
+
+
+def g(*args):
+    return subprocess.run(["git", "-C", str(here), *args],
+                          capture_output=True, text=True)
+
+
+# A: the shape a tracking checkout has. B: the shape a pinned launchd checkout
+# has. Both must name the same ref the same way.
+g("checkout", "-q", "main")
+tracking = sweep.default_rev(here)
+g("checkout", "-q", "--detach", "HEAD")
+detached = sweep.default_rev(here)
+print(tracking)
+print(detached)
+# Controls: a spelling that resolves to nothing would make equality worthless.
+print(g("rev-parse", "--verify", "--quiet", tracking + "^{commit}").stdout.strip())
+print(g("rev-parse", "--verify", "--quiet", detached + "^{commit}").stdout.strip())
+PY
+)
+SPELL_A=$(printf '%s\n' "$SPELL" | sed -n '1p')
+SPELL_B=$(printf '%s\n' "$SPELL" | sed -n '2p')
+SPELL_SHA_A=$(printf '%s\n' "$SPELL" | sed -n '3p')
+SPELL_SHA_B=$(printf '%s\n' "$SPELL" | sed -n '4p')
+check "a tracking checkout and a detached one name the ref identically" \
+  "$SPELL_A" "$SPELL_B"
+check "the control proves that spelling resolves to a real commit" \
+  "$SPELL_SHA_A" "$SPELL_SHA_B"
+if [ -n "$SPELL_SHA_A" ]; then
+  ok "the resolved spelling is a commit, not an empty string ($SPELL_A)"
+else
+  no "the spelling resolves to nothing; the equality above proves nothing"
+fi
+
+echo
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ] || exit 1

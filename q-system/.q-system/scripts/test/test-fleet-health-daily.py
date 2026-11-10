@@ -787,6 +787,45 @@ check("a standing lost lock produces a stable body",
       == _body(_unlocked, "linear-bypass-unserialized")
       and "unserialized" in _body(_unlocked, "linear-bypass-unserialized"),
       True)
+# --- the standing issue must not describe the RUNNING CHECKOUT --------------
+# `rev` lands in a PERMANENT issue body that `_refresh_one:3063` compares by
+# hash, and `close_is_acknowledgement` only holds while `not body_stale`. So a
+# body that moves with the checkout both rewrites the issue AND reopens one the
+# operator had triaged and closed -- the exact outcome the round-9 fix exists to
+# prevent. Taking the ref from whatever the checkout tracks did that from any
+# feature worktree (PR #720 round 12).
+def _sweeper_argv(payload=None):
+    """The argv the detector actually builds, captured from the stub."""
+    seen = {}
+    real_run, real_isfile = fh.subprocess.run, Path.is_file
+
+    def _capture(cmd, *_a, **_k):
+        seen["cmd"] = list(cmd)
+        return _StubSweep(payload or _OK, 0, None, "")
+
+    fh.subprocess.run = _capture
+    Path.is_file = lambda self: True if self.name == "linear-bypass-sweep.py" \
+        else real_isfile(self)
+    try:
+        fh.detect_unaccounted_commits(None)
+    finally:
+        fh.subprocess.run, Path.is_file = real_run, real_isfile
+    return seen.get("cmd", [])
+
+
+_argv = _sweeper_argv()
+_pinned_ref = _argv[_argv.index("--rev") + 1] if "--rev" in _argv else ""
+check("the detector pins the swept ref instead of taking the checkout's",
+      "--rev" in _argv, True)
+check("...and pins it to a short remote-tracking spelling",
+      bool(_pinned_ref) and not _pinned_ref.startswith("refs/"), True)
+# Control: the pin must name a ref that RESOLVES here, or both checks above are
+# satisfied by any string at all.
+_pin_rc = subprocess.run(
+    ["git", "-C", str(fh.REPO_ROOT), "rev-parse", "--verify", "--quiet",
+     (_pinned_ref or "nope") + "^{commit}"], capture_output=True).returncode
+check("...and the control proves that ref resolves in this repo", _pin_rc, 0)
+
 # Negative controls, both directions.
 check("a locked run reports only the history finding",
       [f["subject"] for f in _with_sweeper(payload={**_OK, "locked": True})],
@@ -1040,15 +1079,28 @@ check("a day with no new bypass sends no mutation", _board.mutations - _before, 
 
 # --- the lock sidecars this file opens must not dirty a checkout ------------
 # `_pending_lock` creates `<BYPASS_PENDING>.lock` on every --apply run. The
-# ignore rule written for the sweep ledger is `*.jsonl.lock`, which does not
+# ignore rule written for the sweep ledger was `*.jsonl.lock`, which does not
 # match a `.json.lock` sibling, so the lock landed as an untracked file in the
 # founder's tree after the first health run. Asked of git, not of the ignore
 # file's text: a pattern that reads right and does not match is the whole bug.
+#
+# Both sidecar names, and `-v` so the MATCHING RULE is asserted too. With only
+# "is it ignored", a per-extension line added next to `q-system/output/**` is
+# dead and the check still passes, which is how `q-system/output/*.lock` shipped
+# reading as protection it was not providing (PR #720 round 12). Pinning the
+# rule makes the check red both ways: red if a dead sibling pattern comes back,
+# red if the directory rule is ever narrowed to extension lists.
 _repo = Path(__file__).resolve().parents[4]
-for _lock in ("q-system/output/linear-bypass.jsonl.lock",):
-    _rc = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-q", _lock],
-                         capture_output=True).returncode
-    check(f"git ignores the {Path(_lock).name} sidecar", _rc, 0)
+_DIR_RULE = "q-system/output/**"
+for _lock in ("q-system/output/linear-bypass.jsonl.lock",
+              "q-system/output/linear-bypass.json.lock"):
+    _ci = subprocess.run(["git", "-C", str(_repo), "check-ignore", "-v", _lock],
+                         capture_output=True, text=True)
+    check(f"git ignores the {Path(_lock).name} sidecar", _ci.returncode, 0)
+    # `-v` prints `<file>:<line>:<pattern>\t<path>`; the pattern is field 3.
+    _rule = (_ci.stdout.split("\t")[0].split(":")[2:] or [""])
+    check(f"...via the directory rule, not a dead per-extension line ({_lock})",
+          ":".join(_rule).strip(), _DIR_RULE)
 
 # --- a triaged bypass stays closed; only a NEW sha may reopen it ------------
 # `_refresh_one` reopens a CLOSED issue whose finding is still true, and for
