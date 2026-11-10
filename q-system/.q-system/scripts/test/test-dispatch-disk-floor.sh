@@ -36,6 +36,12 @@
 # watched to FAIL. The worker copy runs from beside the real worker, so it keeps
 # the sibling scripts it loads (PR #656 review, finding 3).
 set -uo pipefail
+# NOT A BILLING TEST (ASK-4311). This suite stubs `claude` on PATH and tests its
+# own subject, so its runs take the plan path: KIPI_FLEET_API_KEYS=0 makes the
+# worker, the reviewer and the dispatcher call `env -u ANTHROPIC_API_KEY claude`
+# exactly as before the fleet door. The door has its own suites
+# (test_fleet_api_credit.py, test-dispatch-api-key-gate.sh, test-worker-usage-brake.sh).
+export KIPI_FLEET_API_KEYS=0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 SCRIPTS="$ROOT/q-system/.q-system/scripts"
 DISPATCH="${KIPI_DISPATCH_UNDER_TEST:-$ROOT/kipi-dispatch.sh}"
