@@ -21,7 +21,7 @@ The marker is ~/.config/kipi/lanes/<ID>.json (KIPI_LANES_DIR overrides it):
 `end` sets "until" to now and keeps the file, which is the record that the lane
 ran.
 
-ALSO THE ONE WRITER OF THE WATCHDOG STATE FILE (ASK-3932). Every op rewrites
+ALSO THE ONE WRITER OF THE WATCHDOG STATE FILE (ASK-3932). Every liveness op (not hold, which changes no liveness field) rewrites
 <lanes dir>/lanes.state from the live markers, one `label pr worktree` line each,
 which is what lane-watchdog.py reads. 2026-11-06 cost 11.5 hours because the
 waker was session-local and died with the session; hanging the state file off the
@@ -153,9 +153,9 @@ def load_consumer_module():
     return mod
 
 
-def check_blocker(blocker: str):
-    """(True, consumer) or (False, why). Raises when the check cannot look."""
-    return load_consumer_module().consumer_for(blocker)
+def check_blocker(blocker: str, waiter: str = ""):
+    """(True, consumer) or (False, why). Raises ValueError for a bad ref, else when the check cannot look."""
+    return load_consumer_module().consumer_for(blocker, waiter)
 
 
 def hold(a, path: str, cur: dict, now: datetime) -> int:
@@ -165,8 +165,15 @@ def hold(a, path: str, cur: dict, now: datetime) -> int:
     if not cur:
         print(f"lane-mark: no lane marker for {a.issue} to hold; run start first", file=sys.stderr)
         return 1
+    if cur.get("ended"):
+        print(f"lane-mark: {a.issue} has ended; start it again before a hold", file=sys.stderr)
+        return 1
     try:
-        ok, text = check_blocker(a.on)
+        ok, text = check_blocker(a.on, a.issue)
+    except ValueError as exc:
+        # A typo in --on is the caller's, not the infrastructure's: 64, never retried.
+        print(f"lane-mark: hold: {exc}", file=sys.stderr)
+        return 64
     except Exception as exc:
         # FAIL CLOSED: a check that could not run is not a consumer.
         print(f"lane-mark: hold on {a.on} refused: the consumer check could not run ({str(exc)[:140]})", file=sys.stderr)

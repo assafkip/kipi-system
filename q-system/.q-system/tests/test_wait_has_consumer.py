@@ -221,7 +221,7 @@ def start(lm, ident="ASK-3834"):
 
 def test_hold_refuses_when_the_blocker_has_no_consumer(lm, monkeypatch, capsys):
     start(lm)
-    monkeypatch.setattr(lm, "check_blocker", lambda b: (False, "nothing picks this up: alert ticket"))
+    monkeypatch.setattr(lm, "check_blocker", lambda b, w="": (False, "nothing picks this up: alert ticket"))
     assert lm.main(["hold", "ASK-3834", "--on", "ASK-4195"]) == 1
     cur = json.load(open(lm.tmp / "lanes" / "ASK-3834.json"))
     assert "holds" not in cur
@@ -230,7 +230,7 @@ def test_hold_refuses_when_the_blocker_has_no_consumer(lm, monkeypatch, capsys):
 
 def test_hold_records_when_the_blocker_has_a_consumer(lm, monkeypatch):
     start(lm)
-    monkeypatch.setattr(lm, "check_blocker", lambda b: (True, "linear-worker.sh would pick ASK-5001"))
+    monkeypatch.setattr(lm, "check_blocker", lambda b, w="": (True, "linear-worker.sh would pick ASK-5001"))
     assert lm.main(["hold", "ASK-3834", "--on", "ASK-5001"]) == 0
     cur = json.load(open(lm.tmp / "lanes" / "ASK-3834.json"))
     assert cur["holds"][0]["on"] == "ASK-5001"
@@ -241,7 +241,7 @@ def test_hold_records_when_the_blocker_has_a_consumer(lm, monkeypatch):
 
 
 def test_hold_needs_a_marker_and_an_on_blocker(lm, monkeypatch):
-    monkeypatch.setattr(lm, "check_blocker", lambda b: (True, "x"))
+    monkeypatch.setattr(lm, "check_blocker", lambda b, w="": (True, "x"))
     assert lm.main(["hold", "ASK-3834", "--on", "ASK-5001"]) == 1   # no marker
     start(lm)
     assert lm.main(["hold", "ASK-3834"]) == 64                       # no --on
@@ -250,7 +250,7 @@ def test_hold_needs_a_marker_and_an_on_blocker(lm, monkeypatch):
 def test_hold_fails_closed_when_the_check_cannot_run(lm, monkeypatch):
     start(lm)
 
-    def boom(b):
+    def boom(b, w=""):
         raise RuntimeError("linear down")
 
     monkeypatch.setattr(lm, "check_blocker", boom)
@@ -262,3 +262,43 @@ def test_the_real_check_blocker_reaches_the_real_script(lm):
     # Not the seam: check_blocker must load wait-has-consumer.py by its real path.
     mod = lm.load_consumer_module()
     assert hasattr(mod, "consumer_for")
+
+
+def test_hold_on_a_typo_is_64_not_a_retryable_failure(lm):
+    start(lm)
+    assert lm.main(["hold", "ASK-3834", "--on", "not-a-ref"]) == 64
+
+
+def test_hold_on_an_ended_lane_refuses(lm, monkeypatch):
+    start(lm)
+    assert lm.main(["end", "ASK-3834"]) == 0
+    monkeypatch.setattr(lm, "check_blocker", lambda b, w="": (True, "x"))
+    assert lm.main(["hold", "ASK-3834", "--on", "ASK-5001"]) == 1
+    assert "holds" not in json.load(open(lm.tmp / "lanes" / "ASK-3834.json"))
+
+
+def test_a_lane_cannot_hold_on_its_own_ticket(wc):
+    marker(wc, "ASK-5002", NOW + timedelta(hours=5))
+    ok, text = wc.consumer_for("ASK-5002", waiter="ASK-5002")
+    assert not ok and "own ticket" in text
+    assert wc.consumer_for("ASK-5002", waiter="ASK-3834")[0]
+
+
+# --- local_projects: the dispatcher's set, not every checkout (PR #712 review, major 1) ---
+
+def test_local_projects_is_the_dispatch_set_minus_kill_switches(wc, monkeypatch):
+    po = wc.pr_owner()
+    on, off, killed = (wc.tmp / n for n in ("on", "off", "killed"))
+    for d in (on, off, killed):
+        d.mkdir()
+    (killed / ".kipi-no-dispatch").write_text("")
+    # off: has a registry row and a checkout but the dispatcher does not enter it
+    monkeypatch.setattr(po, "fleet_repos", lambda root=None: ([("on", str(on), ""), ("killed", str(killed), "")], ""))
+    lr = wc._load("lr", "linear_registry.py", "linear_registry_for_wait")
+    facts = {"ok": True, "local_repos": [{"project": "ProjOn", "path": str(on)},
+                                         {"project": "ProjOff", "path": str(off)},
+                                         {"project": "ProjKilled", "path": str(killed)}]}
+    monkeypatch.setattr(lr, "registry_facts", lambda *a, **k: facts)
+    mod = load("wait-has-consumer.py", "wait_has_consumer_lp")
+    mod._MODS.update({"po": po, "lr": lr})
+    assert mod.local_projects() == {"ProjOn"}

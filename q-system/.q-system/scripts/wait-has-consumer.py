@@ -87,12 +87,38 @@ def state_dir() -> str:
 
 
 def local_projects() -> set:
-    """Board projects with a checkout on this machine: where a worker can run."""
+    """Board projects the DISPATCHER enters: where a worker can actually run.
+
+    SCAR (PR #712 review, round 1): the first cut returned every registry row with a
+    checkout, 14 projects, while the dispatcher's own set (fleet_candidates() in
+    kipi-dispatch.sh, which requires dispatch.enabled) held 3. A hold on a ticket in
+    Alice read "the worker would pick it" and nothing ever entered that checkout.
+    So the set is pr-owner.py's fleet_repos(), which cuts fleet_candidates out of
+    the dispatcher and runs it, minus any checkout with a .kipi-no-dispatch kill
+    switch (repo-preflight.sh), joined to the board project by checkout path.
+    """
+    po = pr_owner()
+    try:
+        rows, targets = po.fleet_repos(po.ROOT)
+    except SystemExit as exc:
+        raise CannotLook(str(exc.code)[:160])
     lr = _load("lr", "linear_registry.py", "linear_registry_for_wait")
-    facts = lr.registry_facts(lr.default_registry_path(), None, os.environ.get("KIPI_DISPATCH_TARGETS") or None)
+    facts = lr.registry_facts(lr.default_registry_path(), None, os.environ.get("KIPI_DISPATCH_TARGETS") or targets or None)
     if not facts.get("ok"):
         raise CannotLook("instance-registry.json could not be read, so which projects a worker covers is unknown")
-    return {r["project"] for r in facts.get("local_repos") or [] if r.get("project")}
+    by_path = {os.path.realpath(r["path"]): r["project"] for r in facts.get("local_repos") or [] if r.get("project")}
+    out = set()
+    for _name, path, _remote in rows:
+        if Path(path, ".kipi-no-dispatch").exists():
+            continue
+        proj = by_path.get(os.path.realpath(path))
+        # The home row is the checkout running this (a worktree has a different
+        # path from the registry row), and the registry names its project.
+        if not proj and os.path.realpath(path) == os.path.realpath(po.ROOT):
+            proj = facts.get("skeleton_project")
+        if proj:
+            out.add(proj)
+    return out
 
 
 def worker_rule(worker_text=None):
@@ -173,8 +199,10 @@ def _why_not(issue: dict, ns: dict, projects: set) -> str:
     return f"linear-worker.sh ready() refuses it in state {state['name']}"
 
 
-def _consumer_for_ticket(ident: str) -> tuple:
+def _consumer_for_ticket(ident: str, waiter: str = "") -> tuple:
     ls = linear_sync()
+    if waiter and waiter == ident:
+        return False, NO_ONE + f"{ident} is the lane's own ticket; a lane cannot be the consumer of its own wait"
     issue = _ticket(ident)
     if not issue:
         return False, NO_ONE + f"{ident} does not exist on the board"
@@ -227,11 +255,14 @@ def _consumer_for_pr(m) -> tuple:
     return False, NO_ONE + f"{repo} is not in the fleet set pr-owner.py sweeps, so nothing reviews, fixes or merges {repo}#{number}"
 
 
-def consumer_for(ref: str) -> tuple:
-    """(True, consumer) or (False, "nothing picks this up: why"). Raises CannotLook."""
+def consumer_for(ref: str, waiter: str = "") -> tuple:
+    """(True, consumer) or (False, "nothing picks this up: why"). Raises CannotLook.
+
+    `waiter` is the lane's own ticket: its own marker is never the consumer of its wait.
+    """
     ref = (ref or "").strip()
     if TICKET_RX.match(ref):
-        return _consumer_for_ticket(ref)
+        return _consumer_for_ticket(ref, waiter)
     m = PR_RX.match(ref)
     if m:
         return _consumer_for_pr(m)
