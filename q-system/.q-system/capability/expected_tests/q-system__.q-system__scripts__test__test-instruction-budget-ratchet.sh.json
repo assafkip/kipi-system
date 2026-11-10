@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-instruction-budget-ratchet.sh",
+ "runner": "bash"
+}

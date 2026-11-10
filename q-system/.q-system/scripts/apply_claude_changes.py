@@ -1021,6 +1021,75 @@ def gate_template_parses(root):
         return False
 
 
+BUDGET_AUDIT_REL = os.path.join(
+    "q-system", ".q-system", "scripts", "instruction-budget-audit.py")
+
+
+def _budget_number(root, args):
+    """One integer from the budget audit, or None when it cannot be asked.
+
+    The LIVE script is always the one that runs; only --root moves. A missing
+    script, a non-zero exit or unparsable output all return None, which the
+    caller treats as not-applicable -- an instance that carries no audit is not
+    a tree this check has an opinion about.
+    """
+    script = os.path.join(root, BUDGET_AUDIT_REL)
+    if not os.path.isfile(script):
+        return None
+    try:
+        proc = subprocess.run(
+            [sys.executable, script] + args,
+            cwd=root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.decode("utf-8", "replace").strip())
+    except ValueError:
+        return None
+
+
+def check_instruction_budget(root, copy_root, log):
+    """Refuse an append this tree's instruction budget cannot pay for (ASK-285).
+
+    WHY A PRECONDITION AND NOT A GATES MEMBER. gate_regression asks every gate
+    one question: was it passing before and not passing after. That is right for
+    a parse gate and wrong for a BUDGET -- a tree already over its cap fails the
+    budget BEFORE and AFTER, which is not pass -> fail, so the engine would grow
+    it further and print "gates held". The comparison that works is NOT WORSE,
+    which needs the two numbers rather than two booleans.
+
+    WHY "NOT WORSE" AND NOT "MUST BE GREEN". A paths-scoped rule costs zero
+    always-on lines, so a blanket refusal on an over-cap tree would wall off the
+    very appends that are free -- and the route cannot shrink anything, so it
+    would have no way back. The ceiling is therefore max(cap, live).
+
+    RULES-ONLY UNITS on both sides. Root CLAUDE.md is outside scoped_path's
+    reach, so the staged copy does not carry one and a total that included it
+    would be comparing two different trees.
+    """
+    cap = _budget_number(root, ["--rules-cap"])
+    if cap is None:
+        log.append("instruction budget: no cap declared; not checked")
+        return
+    live = _budget_number(root, ["--root", root, "--rules-total"])
+    staged_total = _budget_number(root, ["--root", copy_root, "--rules-total"])
+    if live is None or staged_total is None:
+        log.append("instruction budget: unmeasurable; not checked")
+        return
+    ceiling = max(cap, live)
+    if staged_total > ceiling:
+        raise Refusal(
+            "edit exceeds the always-on instruction budget: rules total would go "
+            "%d -> %d against a ceiling of %d (cap %d). Move a rule to "
+            "paths-scoped first -- that banks the freed lines as headroom this "
+            "append can spend." % (live, staged_total, ceiling, cap))
+    log.append("instruction budget: rules %d -> %d, ceiling %d" % (live, staged_total, ceiling))
+
+
 GATES = (
     ("settings-json-parses", gate_settings_parses),
     ("settings-template-parses", gate_template_parses),
@@ -1282,6 +1351,8 @@ def main(argv):
         if settings_key is not None:
             permission_surface_check(root, staged[settings_key])
             log.append("permission surfaces unchanged")
+
+        check_instruction_budget(root, copy_root, log)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

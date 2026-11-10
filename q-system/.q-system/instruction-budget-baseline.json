@@ -1,4 +1,25 @@
 {
-  "total_always_on": 512,
-  "note": "ASK-136 raised this from 511 by exactly 1. Read the reason before treating a future bump as routine: quick-plan.md claimed (ENFORCED) and named no executable, and naming plan-lint.py cost one always-on line. The repo's norm is that rule edits are NET-ZERO (ASK-137 and ASK-138 both landed this same CAP-22 fix class without touching this file), and that norm still stands. This bump exists because the two write paths into .claude/ deadlock: apply_claude_changes.py is additive-only and its line ratchet REFUSES to shrink a rule, while claude-path-write-guard blocks git checkout and direct Edit on .claude/, so once a line has been added through the sanctioned path an agent cannot take it back. Captured as spillover, not treated as settled. Target remains 300 and this file still only auto-tightens."
+  "cap": 512,
+  "files": {
+    "::claude_md": 46,
+    "audhd-interaction.md": 16,
+    "auto-detection.md": 26,
+    "dogfood-gate.md": 40,
+    "fable-discipline-auto-invoke.md": 23,
+    "founder-notifications.md": 29,
+    "model-allocation.md": 27,
+    "no-orphan-findings.md": 37,
+    "quick-plan.md": 15,
+    "rca-mode.md": 27,
+    "security.md": 13,
+    "self-healing-retry.md": 40,
+    "skill-hook-pairing.md": 24,
+    "social-reaction-gate.md": 13,
+    "sycophancy-core.md": 35,
+    "token-discipline.md": 37,
+    "voice-enforcement.md": 20,
+    "wiring-check.md": 44
+  },
+  "note": "TWO NUMBERS, NOT ONE (ASK-285). `cap` is the gate; `total_always_on` is the last observed total; `files` is the per-file snapshot that lets a drop be classified. A drop from SCOPING (a rule moved to paths-scoped, every line still on disk) holds the cap and banks the freed lines as headroom an append may spend. A drop from DELETION (lines left the tree) lowers the cap permanently. cap moves only by -deletion_delta, so the floor may tighten and never loosen. This replaces the single auto-tightening number that deadlocked against apply_claude_changes.py, which can express neither a removal nor a scoping: every rule-file append was unlandable. The ASK-136 +1 bump this file used to carry was the symptom of that deadlock; the mechanism is now the fix. Target remains 300. An AGENT cannot bank headroom (scoping is a frontmatter edit the engine refuses); the founder can, an agent spends it.",
+  "total_always_on": 512
 }
