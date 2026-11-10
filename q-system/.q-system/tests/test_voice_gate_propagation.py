@@ -69,7 +69,26 @@ def _fixture(tmp_path, instances=("consulting",), skeleton_path=None, commit=Tru
     root = tmp_path / "skeleton"
     (root / GATE_REL).parent.mkdir(parents=True)
     (root / GATE_REL).write_text(SKELETON_GATE)
-    if updater:
+    if updater == "no-feed":
+        # The updater is present and READABLE; only its registry feed block is
+        # gone. `updater=False` cannot reach this branch -- a missing file is
+        # caught by the OSError path one step earlier -- and a mutant returning
+        # [] instead of None from the unsliceable branch survived until this
+        # fixture existed (round 4 mutation M4).
+        src = KIPI_UPDATE.read_text()
+        head, _, rest = src.partition('done < <(python3 -c "')
+        (root / "kipi-update.sh").write_text(head + "done < <(true)\n"
+                                             + rest.partition('\n")\n')[2])
+    elif updater == "no-ship-ref":
+        # The updater is PRESENT and its registry feed still resolves; only
+        # `fleet_ship_ref` is gone. The two questions this check asks the owner
+        # are independent -- which rows a sync reaches, and which blobs it ever
+        # shipped -- so the negative for one must not take the other out with
+        # it. `updater=False` (no file at all) is the negative for both.
+        (root / "kipi-update.sh").write_text(
+            KIPI_UPDATE.read_text().replace("\nfleet_ship_ref() {\n",
+                                            "\nfleet_ship_ref_renamed() {\n", 1))
+    elif updater:
         shutil.copy(KIPI_UPDATE, root / "kipi-update.sh")
     clones = {}
     for name in instances:
@@ -174,9 +193,16 @@ def test_the_fan_out_ref_is_derived_from_kipi_update_not_restated(tmp_path):
 
 
 def test_an_unresolvable_fan_out_ref_is_unanswered_not_behind(tmp_path):
-    """No updater, no answer. Without the ship ref the check cannot tell AHEAD
-    from BEHIND, and "cannot tell" must not print as the harmless one."""
-    root, clones = _fixture(tmp_path, updater=False)
+    """No ship ref, no answer. Without it the check cannot tell AHEAD from
+    BEHIND, and "cannot tell" must not print as the harmless one.
+
+    The fixture now renames only `fleet_ship_ref` instead of dropping the whole
+    updater. Deleting the file made the POPULATION unanswerable too, and that
+    cause leads, so this test would have gone green on the wrong sentinel -- a
+    test passing for a reason it does not name (lessons/test-passes-for-the-
+    wrong-reason).
+    """
+    root, clones = _fixture(tmp_path, updater="no-ship-ref")
     (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
     r = _run(root)
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
@@ -368,11 +394,22 @@ def test_an_unsliceable_updater_leaves_the_population_unanswered(tmp_path):
     """No owner, no answer. Without the feed the check cannot tell which rows
     `kipi update` would sync, and "cannot tell" must not print as the harmless
     one -- the same posture as an unresolvable ship ref. A missing-directory row
-    must NOT be quietly called stale on a run that could not ask."""
-    root, _ = _fixture(tmp_path, updater=False)
-    r = _run(root)
-    assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
-    assert "UNANSWERED" in r.stdout and _mod().NO_POPULATION in r.stdout, r.stdout
+    must NOT be quietly called stale on a run that could not ask.
+
+    BOTH unresolvable paths, because they are different code and only one of
+    them was covered: a missing updater file (OSError) and an updater whose
+    feed block is no longer in that shape. The second is what a renamed or
+    rewritten feed looks like, and it is the likelier of the two.
+    """
+    m = _mod()
+    for mode in (False, "no-feed"):
+        root, _ = _fixture(tmp_path / str(mode), updater=mode)
+        assert m.registry_rows(str(root)) is None, mode
+        r = _run(root)
+        assert r.returncode == 2, (mode, r.returncode, r.stdout, r.stderr)
+        assert "UNANSWERED" in r.stdout and m.NO_POPULATION in r.stdout, (mode, r.stdout)
+        assert m.NO_INSTANCES not in r.stdout, (
+            mode, "an unaskable population must not print as an empty registry")
 
 
 def test_the_message_names_and_counts_every_row_it_excluded(tmp_path):
@@ -613,6 +650,62 @@ def test_an_unwritable_manifest_does_not_stop_the_alert(tmp_path):
     r = _run(root)
     assert r.returncode == 2, (r.returncode, r.stdout, r.stderr)
     assert "manifest" in r.stderr.lower(), r.stderr
+
+
+def test_an_unadvanceable_state_is_loud_and_not_an_alert_storm(tmp_path, capsys):
+    """THE SECOND DEFECT, found by the test above rather than by the review.
+
+    The state file and the manifest share `q-system/output/`, and `_remember`
+    ran AFTER the alert had already filed. So an unwritable output directory
+    did not merely lose the local artifact: it threw a traceback out of a run
+    that had already sent a ticket, left the state unadvanced, and made the
+    NEXT run file the identical ticket. Forever. Guarding only the manifest
+    would have fixed the crash and kept the storm, which is the "a local fix
+    correct in isolation is worse one layer out" shape.
+
+    Opposite exit posture to the manifest on purpose: a lost convenience
+    artifact is not a fleet condition, a broken once-per-change promise is.
+    """
+    root, clones = _fixture(tmp_path)
+    (clones["consulting"] / GATE_REL).write_text(AHEAD_GATE)
+    (root / "q-system" / "output").write_text("not a directory")
+    m = _mod()
+    filed = []
+    notify = lambda msg: filed.append(msg)
+    out = m.run(str(root), notify=notify, trigger="launchd")
+    assert out["alert"]["filed"] is True, out["alert"]
+    assert out["state"]["written"] is False and out["state"]["error"], out["state"]
+    # the storm is REAL while the dir is unwritable -- that is why it exits 2
+    m.run(str(root), notify=notify, trigger="launchd")
+    assert len(filed) == 2, "unadvanced state does re-file; the exit code is the fix"
+    # main() through an INJECTED notifier, not a subprocess: alert-to-linear.py
+    # refuses under pytest (exit 4), so a real child can never reach the state
+    # branch at all. Measured here rather than assumed -- the first cut of this
+    # test drove `_run` and was green on "the alert failed", a different line.
+    # ON A GREEN FLEET, which is the only way this assertion can mean what it
+    # says. Driven on the red fleet above it passed for the wrong reason:
+    # `red` already returns 2, so deleting the state branch's `return 2`
+    # entirely left the test green (round 4 mutation M7). Here nothing is
+    # ahead, the first-run branch files nothing, and 2 can ONLY come from the
+    # state write (lessons/test-passes-for-the-wrong-reason).
+    green = tmp_path / "green"
+    groot, _ = _fixture(green)
+    (groot / "q-system" / "output").write_text("not a directory")
+    os.environ["KIPI_TRIGGER"] = "launchd"
+    try:
+        assert m.main(["--root", str(groot)], notify=notify) == 2
+    finally:
+        os.environ.pop("KIPI_TRIGGER", None)
+    err = capsys.readouterr().err
+    assert "state: NOT advanced" in err, err
+    assert m.scan(str(groot))["red"] is False, "the fleet must be green for this"
+    # and it recovers on its own once the directory is a directory again
+    (root / "q-system" / "output").unlink()
+    out = m.run(str(root), notify=notify, trigger="launchd")
+    assert out["state"]["written"] is True and out["state"]["error"] == "", out["state"]
+    before = len(filed)
+    m.run(str(root), notify=notify, trigger="launchd")
+    assert len(filed) == before, "a recorded state must go quiet again"
 
 
 # ---- the live fleet: the ONE skip in this file -------------------------------

@@ -36,6 +36,44 @@ the owner changes (lessons/derive-a-value-from-its-owner). When it cannot be
 resolved, a mismatching instance is UNANSWERED, never `behind`: "cannot tell"
 must not print as the harmless one.
 
+## THE POPULATION IS WHAT A SYNC REACHES, NOT WHAT THE REGISTRY LISTS
+
+The registry is a LEDGER of instances. The set of directories `kipi update`
+rsyncs over is a different, smaller set, and reading the first as the second was
+this runner's largest defect: 8 of the live fleet's 22 rows point at directories
+deleted months ago, every one scored `could-not-read`, so it would have exited 2
+at 06:30 on day one and every day after, with `launchd-health` re-pinging Sana
+every 6 hours (`launchd-health-check.py:47`, FAIL_PING_TTL_SECONDS). A gate red
+on its own population gets switched off -- the call this file's own docstring
+already made one level down, and then walked into one level up (PR #726 review,
+major; and its minor about `skeleton_managed`, which is the same defect wearing
+the other registry field).
+
+So `registry_rows` EXECUTES kipi-update.sh's own registry feed, the way
+`_fan_out_ref` executes `fleet_ship_ref`: the default `type`, the
+`subtree_prefix or ''` normalisation, the "only an explicit false counts as a
+declaration" rule and the dropped `status: merged*` rows are four decisions that
+live in one place and move together. `sync_decision` then mirrors the updater's
+three pre-sync branches. Those three conditions are inline in a `while` loop and
+cannot be sliced, so they get a DIVERGENCE CHECK instead of a derivation
+(`test_the_owners_three_skip_branches_are_still_the_ones_this_reads`) -- worse
+than deriving, said plainly, and it fails loudly rather than passing quietly.
+
+Four outcomes, and only two of them are this job's business:
+
+| decision | what the updater does | here |
+|---|---|---|
+| `syncs` | rsyncs the skeleton over it | scanned: synced/behind/ahead/unreadable |
+| `stale-row` | "SKIP: path does not exist" | excluded, named, counted, NOT red |
+| `not-synced` | "SKIP: declared not skeleton-managed" | excluded, named, counted, NOT red |
+| `undeclared` | counts the row as a FAIL (ASK-117) | RED: its fan-out is already broken |
+
+Excluded is not dropped. Those rows keep a named, counted line in the message,
+because a report that stopped mentioning 8 of 22 rows would read as "22
+instances clean". They are deliberately NOT in the fingerprint: they file no
+ticket, so there is no once-per-change promise to keep about them, and a new
+stale row is registry hygiene that kipi-update.sh reports itself.
+
 The two citations of that reporter below name it WITHOUT its `.py`, deliberately.
 `test_lessons_drift_report.py::test_single_caller_the_plist_template_is_the_only_one_in_the_tree`
 is an exact-set git grep for its filename, and it is correct to be that blunt: a
@@ -549,7 +587,15 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     message = render(report)
     out = {"report": report, "message": message,
            "alert": {"filed": False, "skipped": True, "error": ""},
+           "state": {"written": False, "error": "", "skipped": True},
            "manifest": {"written": False, "error": "", "skipped": not write_manifest}}
+
+    def remember(current):
+        # The single call site of the single writer, so "the state advanced" and
+        # "the state write failed" cannot disagree between the two branches that
+        # advance it.
+        err = _remember(root, current, report)
+        out["state"] = {"written": not err, "error": err, "skipped": False}
 
     def finish(result):
         # ONE exit from run(), so the manifest cannot be skipped by whichever
@@ -581,7 +627,7 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
         # `is_noise()` in alert-to-linear does not match that wording, so it
         # really does become a real ticket. The state is still RECORDED below, so
         # the first genuine red is not muted by this branch.
-        _remember(root, current, report)
+        remember(current)
         out["alert"]["reason"] = f"first run and nothing is red ({current}): state recorded"
         return finish(out)
     out["alert"]["skipped"] = False
@@ -603,7 +649,7 @@ def run(root: str, notify=None, trigger=None, write_manifest=True) -> dict:
     except Exception as exc:                      # never swallowed: the caller exits 2
         out["alert"]["error"] = f"{type(exc).__name__}: {exc}"
         return finish(out)                        # state NOT advanced: retry next run
-    _remember(root, current, report)
+    remember(current)
     return finish(out)
 
 
@@ -630,6 +676,14 @@ def main(argv=None, notify=None) -> int:
     # permanently-red shape the PR #726 review's major is about one layer out.
     if out["manifest"]["error"]:
         print(f"manifest: NOT written, {out['manifest']['error']}", file=sys.stderr)
+    # The STATE write is the other half of that output directory and the
+    # opposite call. While it cannot be written, "alert once per state change"
+    # is broken: the same ticket files on every run. That is a real break, not
+    # a property of a healthy fleet, so it owns the exit code.
+    if out["state"]["error"]:
+        print(f"state: NOT advanced, {out['state']['error']} -- the next run "
+              "would file the same alert again", file=sys.stderr)
+        return 2
     if alert["error"]:
         return 2
     return 2 if out["report"]["red"] else 0
