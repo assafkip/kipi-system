@@ -92,6 +92,10 @@ NOT_SECURITY = {
     "kb-graph-guard.py", "auto-commit.py", "knowledge-inject.py", "lessons-inject.py",
     "voice-dna-loader.py", "capability-claim-lint.py", "evidence-read-log-lint.py",
     "worktree-disk-floor.py",
+    # ASK-4382: a crash lets one unenforced ruling land, and the daily
+    # com.kipi.ruling-gate-report still lists it as FAIL and alerts, so it is
+    # recoverable. It also denies on its own crash for a scope-file write.
+    "ruling-gate.py",
 }
 
 
