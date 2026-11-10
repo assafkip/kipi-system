@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/tests/test_wait_has_consumer.py",
+ "runner": "pytest",
+ "timeout_s": 120
+}
