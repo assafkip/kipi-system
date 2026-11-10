@@ -290,10 +290,11 @@ def test_a_failed_pr_lookup_is_its_own_keep_reason(env, capsys, gh_body):
     assert "pr_lookup_failed=1" in capsys.readouterr().out
 
 
-def _review_tree(env, n, key="acme_widget"):
+def _review_tree(env, n, key="acme_widget", fetched=True):
     """A pr-review-agent.sh tree, review-trees/<key>__pr-<N>: detached at the head
     it reviewed, which a later push to the PR left behind, so neither the PR's
-    headRefOid nor its branch name matches the tree."""
+    headRefOid nor its branch name matches the tree. `fetched` puts that head on
+    refs/remotes/pr/<N>, as review_worktree does (pr-review-agent.sh update-ref)."""
     root = env.tmp / "review-trees"
     root.mkdir(exist_ok=True)
     if str(root / "*") not in env.cfg["roots"]:
@@ -303,6 +304,8 @@ def _review_tree(env, n, key="acme_widget"):
     (wt / "reviewed.txt").write_text(str(n))
     git(wt, "add", "reviewed.txt")
     git(wt, "commit", "-qm", f"head reviewed for PR {n}")
+    if fetched:
+        git(env.primary, "update-ref", f"refs/remotes/pr/{n}", git(wt, "rev-parse", "HEAD"))
     return wt
 
 
@@ -352,8 +355,8 @@ def test_a_live_review_lock_keeps_a_finished_review_tree(env):
 
 
 def test_a_dead_review_lock_does_not_keep_it(env):
-    # pr-review-agent.sh leaves its .lock behind after every run: 114 of them
-    # named a dead PID on 2026-11-10. Only a live holder means a review is on it.
+    # release_wt_lock deletes the .lock on a clean exit, but a killed run leaves
+    # it: 114 of them named a dead PID on 2026-11-10. Only a live holder counts.
     p = subprocess.Popen(["true"])
     p.wait()
     wt = _review_tree(env, 12)
@@ -361,3 +364,104 @@ def test_a_dead_review_lock_does_not_keep_it(env):
     (wt.parent / (wt.name + ".lock")).write_text(str(p.pid))
     out = mod.run(env.cfg, apply=True, now=LATER)
     assert out["removed"] == [os.path.realpath(wt)]
+
+
+# --- PR #731 round 1 review -------------------------------------------------
+
+@pytest.mark.parametrize("age_s,kept", [(0, True), (3600, False)])
+def test_an_empty_review_lock_counts_only_while_fresh(env, age_s, kept):
+    # Finding 2. acquire_wt_lock reads an empty lock as a claim mid-create and
+    # reclaims it once it stays empty, so it must not pin a merged tree forever.
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    lock = wt.parent / (wt.name + ".lock")
+    lock.write_text("")
+    t = time.time() - age_s
+    os.utime(lock, (t, t))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    if kept:
+        assert out["kept"][os.path.realpath(wt)] == "a review run holds its lock"
+    else:
+        assert out["removed"] == [os.path.realpath(wt)]
+
+
+def test_a_review_tree_whose_head_is_on_no_remote_ref_is_kept(env):
+    # Finding 3. A detached tree has no branch ref to keep its commits, so
+    # "loses no commit" holds only when HEAD is on a remote-tracking ref.
+    wt = _review_tree(env, 12, fetched=False)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "detached HEAD is on no remote ref"
+    assert wt.exists()
+
+
+def test_a_removed_review_tree_loses_no_commit(env):
+    wt = _review_tree(env, 12)
+    head = git(wt, "rev-parse", "HEAD")
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["removed"] == [os.path.realpath(wt)]
+    assert git(env.primary, "for-each-ref", "--contains", head, "refs/remotes")
+
+
+AGENT = os.path.join(SCRIPTS, "pr-review-agent.sh")
+CLAIM = '_wt_lock_path=""; source "$1"; acquire_wt_lock "$2"; echo "$?"'
+
+
+def _real_acquire_wt_lock(tmp):
+    """acquire_wt_lock sliced from pr-review-agent.sh, as test-pr-review-reap-trees.sh
+    slices it: the reaper must agree with the review's OWN claim code."""
+    body = subprocess.run(["sed", "-n", "/^acquire_wt_lock() {/,/^}/p", AGENT],
+                          check=True, capture_output=True, text=True).stdout
+    assert body.startswith("acquire_wt_lock() {")
+    path = tmp / "lock.sh"
+    path.write_text(body)
+    return path
+
+
+def test_a_review_that_claims_before_the_remove_keeps_the_tree(env, monkeypatch):
+    # Finding 1. A review that claimed between the verdict and `git worktree
+    # remove` lost its tree. Here the REAL acquire_wt_lock claims it at that point
+    # and its shell stays alive, the way a running review does.
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    lock_sh, rc = _real_acquire_wt_lock(env.tmp), env.tmp / "claim.rc"
+    real_claim, procs = mod._claim_review_tree, []
+
+    def review_claims_first(path):
+        procs.append(subprocess.Popen(
+            ["bash", "-c", CLAIM + ' > "$3"; sleep 30', "_", str(lock_sh), path, str(rc)]))
+        deadline = time.time() + 20
+        while not (rc.exists() and rc.read_text().strip()):
+            assert time.time() < deadline, "the review's claim never finished"
+            time.sleep(0.05)
+        assert rc.read_text().strip() == "0"   # the review won its claim
+        return real_claim(path)
+
+    monkeypatch.setattr(mod, "_claim_review_tree", review_claims_first)
+    try:
+        out = mod.run(env.cfg, apply=True, now=LATER)
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+    assert out["kept"][os.path.realpath(wt)] == "a review run holds its lock"
+    assert wt.exists()
+
+
+def test_a_review_arriving_after_the_reaper_claim_is_turned_away(env, monkeypatch):
+    wt = _review_tree(env, 12)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    lock_sh, real_remove, seen = _real_acquire_wt_lock(env.tmp), mod.remove, {}
+
+    def late_review_then_remove(path):
+        r = subprocess.run(["bash", "-c", CLAIM, "_", str(lock_sh), path],
+                           capture_output=True, text=True)
+        seen["rc"] = r.stdout.strip()
+        return real_remove(path)
+
+    monkeypatch.setattr(mod, "remove", late_review_then_remove)
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert seen["rc"] == "2"   # acquire_wt_lock: busy, a live holder that is not it
+    assert out["removed"] == [os.path.realpath(wt)]
+    assert not (wt.parent / (wt.name + ".lock")).exists()   # the reaper released it
