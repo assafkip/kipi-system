@@ -1,7 +1,7 @@
 ---
 id: vg-k5-lesson-holder
 title: Lessons carry a linked held_by or a dated prose_accepted, from every writer
-status: in-progress
+status: closed
 priority: p1
 parent_prd: prd-voicegate-skeleton-2026-11-09
 allowed_files:
@@ -36,8 +36,23 @@ held_by: a repo-relative path that exists, is a hook, script or test file, and c
 ## Deliverables
 
 <!-- Check each box when it ships; close refuses until checked count equals deliverables_count (locked at issue-start). -->
-- [ ] Red first: a new lesson with neither field is refused
-- [ ] held_by naming a missing file is refused; held_by naming a file that lacks the lesson id is refused; held_by as an absolute path is refused
-- [ ] The token denylist runs over every new field value, not only the title
-- [ ] lessons-distill.py, lessons-daily.sh and lesson-note.sh each emit a valid field (an auto-distilled lesson gets prose_accepted with its reason and date) or run the validator; a test drives each writer on a fixture
-- [ ] Existing lessons without either field are counted as debt by a printed number
+- [x] Red first: a new lesson with neither field is refused
+- [x] held_by naming a missing file is refused; held_by naming a file that lacks the lesson id is refused; held_by as an absolute path is refused
+- [x] The token denylist runs over every new field value, not only the title
+- [x] lessons-distill.py, lessons-daily.sh and lesson-note.sh each emit a valid field (an auto-distilled lesson gets prose_accepted with its reason and date) or run the validator; a test drives each writer on a fixture
+- [x] Existing lessons without either field are counted as debt by a printed number
+
+## Amendments
+
+### 2026-11-10T03:20:16Z
+Reason: The existing test-lessons-validator.sh asserts a field-less lesson is valid; the K5 rule makes that lesson refused, so that case must carry prose_accepted. Same validator, same behaviour under test.
+
+Before:
+- allowed_files: ['q-system/.q-system/scripts/lessons-validator.py', 'q-system/.q-system/scripts/lessons-distill.py', 'q-system/.q-system/scripts/lessons-daily.sh', 'q-system/.q-system/scripts/lesson-note.sh', 'q-system/lessons/README.md', 'q-system/.q-system/scripts/test/test_lessons_validator_holder.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_lessons_validator_holder.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/scripts/test/test_lessons_validator_holder.py']
+- disallowed_files: []
+
+After:
+- allowed_files: ['q-system/.q-system/scripts/lessons-validator.py', 'q-system/.q-system/scripts/lessons-distill.py', 'q-system/.q-system/scripts/lessons-daily.sh', 'q-system/.q-system/scripts/lesson-note.sh', 'q-system/lessons/README.md', 'q-system/.q-system/scripts/test/test-lessons-validator.sh', 'q-system/.q-system/scripts/test/test_lessons_validator_holder.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_lessons_validator_holder.py.json']
+- required_checks: ['python3 -m pytest -q q-system/.q-system/scripts/test/test_lessons_validator_holder.py']
+- disallowed_files: []
