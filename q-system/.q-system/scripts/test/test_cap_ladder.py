@@ -996,6 +996,9 @@ def case_lane_marker() -> None:
               and not any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync"))
               and ledger_row(env, "ASK-1").get("capout") is True and not (st.get("ASK-1") or {}).get("rung")
               and "sana-late" in out, (out, gh))
+        rep = json.loads(Path(env["CAP_LADDER_REPORT"]).read_text())["rows"]
+        check("lane, marker lands mid-RCA: the report names the lane as what the issue waits on (PR #732 round 2)",
+              any(r["issue"] == "ASK-1" and "sana-late" in (r.get("waiting_on") or "") for r in rep), rep)
     td, env = decision_world([RCA + "DECISION: SPLIT\nSUBTICKET: a :: b\n"])
     try:
         env["KIPI_LANES_DIR"] = str(Path(td.name) / "lanes")

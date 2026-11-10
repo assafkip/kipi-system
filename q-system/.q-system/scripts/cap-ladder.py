@@ -915,16 +915,22 @@ def next_step_line(r: int) -> str:
             "an owned blocker), never a timed retry.")
 
 
-def late_lane(issue: str) -> str:
-    """The lane check again, after the Fable call and before the first write.
+def late_lane(issue: str, rung: int, report: list) -> str:
+    """The lane check again, after the Fable call and before the ladder's own writes.
 
     PR #732 round 1, major: main() read the marker once, then rca() ran Fable for
     up to 600s before the PR close. A lane-mark.py start in that window was
-    invisible, and its PR was closed. The RCA spend is sunk; the writes are not.
+    invisible, and its PR was closed. What has landed by now is the RCA spend and
+    the RCA comment fable-escalate.py posts on the ticket. The PR close, the
+    successor, the clears, the requeue and the rung have not. The report row
+    matches the early check's (PR #732 round 2, minor).
     """
     held_by = lane_hold(issue)
+    if not held_by:
+        return ""
+    report.append({"issue": issue, "rung": rung, "waiting_on": held_by})
     return (f"{issue}: {held_by}, which appeared while the RCA ran; nothing was closed, opened or "
-            "requeued, and the rung is not spent") if held_by else ""
+            "requeued, and the rung is not spent")
 
 
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
@@ -942,7 +948,7 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             report.append({"issue": issue, "rung": r, "decision": None, "red": True,
                            "note": "capped with no decision record: Fable produced no RCA; retried next run"})
             return f"{issue}: rung {r}: no decision record (RED in the report); the cap stays"
-        late = late_lane(issue)
+        late = late_lane(issue, r - 1, report)
         if late:
             return late
         out = apply_decision(issue, d, t, pr, slug, r, row)
@@ -955,7 +961,7 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         return out
 
     rca_path, _ = rca(issue, kind, why, pr, slug)
-    late = late_lane(issue)
+    late = late_lane(issue, r - 1, report)
     if late:
         return late
     ledger(["claim-flag" if r == 2 else "clear-flag", issue, RUNNER_FLAG])
