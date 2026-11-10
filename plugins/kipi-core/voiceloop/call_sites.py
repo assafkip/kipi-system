@@ -87,7 +87,37 @@ def is_fleet_door(token: str) -> bool:
     only thing that records what the run cost.
     """
     return bool(_FLEET_DOOR.match(token or ""))
-_FLAG_TOKEN = re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
+
+
+# THE PYTHON DOOR (ASK-4311). q-system/.q-system/scripts/fleet_door.py is the
+# Python front end of the same metered door: `fleet_door.run(argv, actor)` and
+# `fleet_door.run_for_caller(argv, actor)` spawn the call, and
+# `fleet_door.runner(actor)` / `runner_for_caller(actor)` are the drop-ins a
+# caller hands to lean_call.run(runner=) or prompt_render.run_model(run=). The
+# module name is matched exactly, never an alias: a call this cannot name reads
+# as an ordinary subprocess call, which the subscription guard then judges on its
+# env=, so an unrecognised door fails toward a red line rather than a pass.
+PY_DOOR_MODULE = "fleet_door"
+PY_DOOR_CALLS = frozenset({"run", "run_for_caller"})
+PY_DOOR_RUNNERS = frozenset({"runner", "runner_for_caller"})
+
+
+def _door_attr(node, names) -> bool:
+    return (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id == PY_DOOR_MODULE and node.attr in names)
+
+
+def is_py_fleet_door_call(node) -> bool:
+    """Is this ast.Call a model call routed through the Python fleet door?"""
+    if not isinstance(node, ast.Call):
+        return False
+    if _door_attr(node.func, PY_DOOR_CALLS):
+        return True
+    return any(k.arg in ("runner", "run") and isinstance(k.value, ast.Call)
+               and _door_attr(k.value.func, PY_DOOR_RUNNERS) for k in node.keywords)
+
+
+_FLAG_TOKEN =re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 # Tokens that stand in front of a command without being one, and the flags of
