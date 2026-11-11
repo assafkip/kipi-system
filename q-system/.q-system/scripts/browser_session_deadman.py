@@ -111,12 +111,12 @@ def _write_state(path, payload: dict) -> None:
 def _founder_sender(message: str) -> dict:
     import sys
     spec = importlib.util.spec_from_file_location(
-        "slack_founder", HERE / "slack_founder.py")
+        "founder_notify", HERE / "founder_notify.py")
     mod = importlib.util.module_from_spec(spec)
     # Registered for the same reason browser_session_health._module registers:
     # a module built off a spec and never put in sys.modules breaks anything
     # that resolves its own __module__ (dataclasses, typing, pickle).
-    sys.modules["slack_founder"] = mod
+    sys.modules["founder_notify"] = mod
     spec.loader.exec_module(mod)
     return mod.deliver(message)
 
@@ -126,7 +126,7 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
 
     Non-zero either way once stale, including when the message could not be
     delivered: launchd-health-check reads the exit status and files its own
-    issue, so a deadman that cannot reach Slack is still not a silent one.
+    issue, so a deadman that cannot reach Telegram is still not a silent one.
     """
     sender = sender or _founder_sender
     state_path = Path(state_path) if state_path else ALARM_STATE
@@ -137,7 +137,7 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
 
     if ok:
         if already:
-            result = sender(f":white_check_mark: The browser-session health check is "
+            result = sender(f"The browser-session health check is "
                             f"running again. Verified {stamp}.") or {}
             if result.get("delivered"):
                 _write_state(state_path, {"alarmed": False, "at": stamp})
@@ -146,7 +146,7 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
     if already:
         return 1
 
-    result = sender(f":rotating_light: Nothing is checking the research browser "
+    result = sender(f"Nothing is checking the research browser "
                     f"sessions. {reason}\n"
                     f"Checked {stamp} by com.kipi.browser-session-deadman.\n"
                     f"You get this once. Nothing further until it recovers.") or {}

@@ -4,7 +4,7 @@ Bloom's one board, three buckets, an agent narrows into it).
 
 A registered optional section of morning-brief.py (stem "notion_board", key
 "board"). The brief calls `collect(now, sources)` behind its guard, BEFORE the
-Slack send, inside a bounded budget (Codex finding-4 on the PRD: a board
+Telegram send, inside a bounded budget (Codex finding-4 on the PRD: a board
 written after the send could never report its state in the message the
 founder reads). The result is one row in the brief:
 
@@ -14,7 +14,7 @@ founder reads). The result is one row in the brief:
 
 Three buckets on one Notion page, as heading_2 blocks: "Top of mind",
 "This week", "Inbox". This module rewrites ONLY the bullets under "Top of mind"
-with the same three owed items and withheld count the Slack brief shows, then
+with the same three owed items and withheld count the Telegram brief shows, then
 reads the page back and reports agreement. It never touches the other two
 buckets (a-write-only-integration-cannot-report-state: the read-back is the
 only proof the write landed).
@@ -29,7 +29,7 @@ parent page, and this file never reads the consulting token's environment
 variable nor names an ASK page (test_notion_board.py greps for both).
 
 Under pytest, collect() refuses to reach the network unless an opener is
-injected, the same chokepoint slack_founder.deliver has.
+injected, the same chokepoint founder_notify.deliver has.
 """
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ _SUFFIX = re.compile(r"\s*\[[^\]]+\]\s*$")
 
 
 def top_of_mind_lines(owed_rows: list, ids_elsewhere=frozenset()) -> list:
-    """The SAME three items and withheld count the Slack brief shows: lead rows
+    """The SAME three items and withheld count the Telegram brief shows: lead rows
     (never the counted tail in parentheses), then the withheld line. Each lead
     line ends with its id in brackets (issue mbl-board-item-identity, Codex
     finding-5): the id is what lets tomorrow's rewrite see that the founder

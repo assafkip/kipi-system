@@ -2,7 +2,7 @@
 """RED FIRST. Issue mbl-friction-artifact (prd-morning-brief-learns, Codex
 finding-18). Every case here failed before friction-note.sh and
 weekly-improve.py existed. Live paths are never touched: the ledger is a
-tmp_path file via KIPI_FRICTION_FILE, and slack_founder refuses under
+tmp_path file via KIPI_FRICTION_FILE, and founder_notify refuses under
 PYTEST_CURRENT_TEST (asserted, not assumed).
 """
 from __future__ import annotations
@@ -181,10 +181,10 @@ def test_is_refused_contract(weekly):
 
 # --- delivery ------------------------------------------------------------------
 
-def test_delivery_goes_through_slack_founder_and_never_slack_notify(weekly, tmp_path, capsys):
+def test_delivery_goes_through_founder_notify_and_never_slack_notify(weekly, tmp_path, capsys):
     src = WEEKLY.read_text(encoding="utf-8") + NOTE.read_text(encoding="utf-8")
     assert "slack-notify" not in src, "slack-notify.sh files a Linear ticket; it is not the founder channel"
-    assert "slack_founder" in WEEKLY.read_text(encoding="utf-8")
+    assert "founder_notify" in WEEKLY.read_text(encoding="utf-8")
     ledger = tmp_path / "friction.jsonl"
     ledger.write_text(json.dumps({"id": "fr-2026-09-08-01", "target": "rule", "text": "change the owner rule"}) + "\n")
     rc = weekly.main(["--friction", str(ledger), "--inbox", str(tmp_path / "no-inbox")])

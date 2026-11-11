@@ -24,9 +24,9 @@ healthy day fires it ~48 times and says nothing.
 ## What it checks, and what it deliberately does not
 
 It checks the RECEIPT: `~/.config/kipi/morning-brief-last.json`, written by the
-brief only after Slack has answered. Not a log mtime, not a process listing --
+brief only after Telegram has answered. Not a log mtime, not a process listing --
 those are liveness proxies, and a proxy is how you get a green watchdog over a
-dead capability. The receipt records what Slack SAID, so "the job ran and
+dead capability. The receipt records what Telegram SAID, so "the job ran and
 delivered nothing" alarms exactly like "the job never ran", which is correct:
 both mean the founder has no brief.
 
@@ -52,7 +52,7 @@ founder wanted to know. He is also not at his desk in that window, which is why
 this is recorded as a bounded limit rather than treated as the same defect.
 
 The real fix is an alarm keyed on the OUTPUT rather than the receipt -- something
-off this machine asking Slack "did a message from colenotify with 'Morning brief'
+off this machine asking Telegram "did a message from colenotify with 'Morning brief'
 land today?" That needs no local state, so unlike the brief itself it is not
 blocked by the cloud sandbox's lack of access to ~/.config/kipi. It is captured,
 not built here, because it is a different job with its own delivery proof.
@@ -128,7 +128,7 @@ def _already_alarmed(now: dt.datetime, state_path=None) -> bool:
     except Exception:  # noqa: BLE001
         return False
     # A recorded-but-undelivered alarm does not count (PR #294 review, major):
-    # it used to, so one refused Slack send at 09:00 silenced every later
+    # it used to, so one refused Telegram send at 09:00 silenced every later
     # retry that day. The record keeps `delivered` for exactly this reason.
     return state.get("date") == now.strftime("%Y-%m-%d") and bool(state.get("delivered"))
 
@@ -144,7 +144,7 @@ def _record_alarm(now: dt.datetime, result: dict, state_path=None) -> None:
 
 
 def _sender():
-    spec = importlib.util.spec_from_file_location("slack_founder", HERE / "slack_founder.py")
+    spec = importlib.util.spec_from_file_location("founder_notify", HERE / "founder_notify.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -164,7 +164,7 @@ def main(argv=None) -> int:
         print(f"[deadman] {now:%H:%M} before the {DEADLINE_HOUR:02d}:00 deadline; "
               f"not overdue yet ({reason})")
         return 0
-    message = (f":rotating_light: No morning brief today. {reason}\n"
+    message = (f"No morning brief today. {reason}\n"
                f"Checked {now:%Y-%m-%d %H:%M %Z} by com.kipi.morning-brief-deadman.")
     if args.dry_run:
         print(f"[deadman][dry-run] would send:\n{message}")
@@ -177,7 +177,7 @@ def main(argv=None) -> int:
     print(f"[deadman][send] {json.dumps(result)}")
     _record_alarm(now, result)
     # Non-zero either way: the watched job is overdue. launchd-health-check sees
-    # this exit and files its own issue, so a deadman that cannot reach Slack is
+    # this exit and files its own issue, so a deadman that cannot reach Telegram is
     # still not a silent one.
     return 1
 

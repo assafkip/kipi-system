@@ -98,58 +98,11 @@ done
 # check, so treat a clean check 6 as "no NEW python poster appeared", never as
 # "nothing posts". The KNOWN list is the hand-verified record; the detector is
 # a tripwire on top of it, not a replacement for it.
-# --- 6. who still POSTS to the webhook directly ------------------------------
-# Reading the webhook path is not the same as posting to it, and the difference
-# is the whole check. cole's preflight.py and pipeline_health.py both name the
-# file only to assert it is non-empty; neither has a curl or a urlopen. Counting
-# those as bypasses would bury the ONE caller that genuinely posts.
-echo "-- 6. direct webhook POSTERS that bypass the chokepoint"
-# "mentions the path" and "sends to it" are different, and the file-level grep
-# used first could not tell them apart: fable-escalate.py and
-# launchd-health-check.py name the webhook in a DOCSTRING and contain a urlopen
-# for unrelated work, so a file-level AND flagged 50 innocent files and buried
-# the real ones. A poster reads the hook into a variable and hands THAT variable
-# to a sender, so the two facts have to meet on the same name.
-#
-# Verified by hand 2026-08-10, both are content digests rather than alerts:
-#   email-watch/ledger.py       client email digest      -> sp-cd130e85, his call
-#   .../run_weekly.sh           weekly threat-intel      -> a client deliverable
-# parser_watchdog.py WAS a third and is now routed through the chokepoint.
-KNOWN="email-watch/ledger.py|threat-intel-agent/scripts/run_weekly.sh"
-posters=""
-while IFS= read -r f; do
-  is_scratch "$f" && continue
-  # The checker names every pattern it hunts for, so without this it flags
-  # ITSELF as a poster. Found by running it after installing it.
-  case "$f" in *slack-notify.sh|*alert-to-linear.py|*/tests/*|*test_*|*verify-alert-wiring.sh) continue ;; esac
-  # python: hook = ...slack-webhook... then urlopen(<same name>) / _http(..,<name>)
-  # shell:  VAR="$(< ...slack-webhook)" then curl ... "$VAR"
-  if python3 - "$f" <<'PY'
-import re, sys
-src = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-names = set(re.findall(r"(\w+)\s*=\s*[^\n]*slack-webhook", src))
-names |= set(re.findall(r"(\w+)\s*=\s*[^\n]*\$\{?HOME\}?/\.config/kipi/slack-webhook", src))
-if not names:
-    sys.exit(1)
-for n in names:
-    # the same identifier reaching a sender, on any later line
-    if re.search(rf"(urlopen|requests\.post|_http)\s*\([^)]*\b{n}\b", src) \
-       or re.search(rf"curl[^\n]*[\"']?\$\{{?{n}\}}?", src) \
-       or re.search(rf"\b{n}\b[^\n]*=[^\n]*\n(?:.*\n)*?.*curl[^\n]*\$\{{?{n}\}}?", src):
-        sys.exit(0)
-sys.exit(1)
-PY
-  then posters="$posters$f\n"; fi
-done < <(grep -rl "config/kipi/slack-webhook" "$FLEET_ROOT" \
-          --include=*.py --include=*.sh 2>/dev/null | grep -v "/.git/")
-uniq_posters="$(printf "$posters" | sed '/^$/d' | sort -u)"
-count="$(printf '%s' "$uniq_posters" | grep -c . || true)"
-unexpected="$(printf '%s' "$uniq_posters" | grep -vE "$KNOWN" || true)"
-if [ -z "$unexpected" ]; then
-  ok "$count direct poster(s), both known content digests, no alert bypasses"
-else
-  bad "an UNACCOUNTED script posts to the webhook" "$unexpected"
-fi
+# --- 6. direct Slack posters: retired (RULE-2026-11-11-A, ASK-4479) ----------
+# This section hunted scripts that read the old Slack webhook file and POSTed to
+# it. Slack is gone from this repo (chief's own Slack code is the follow-up, ASK-4488), and q-system/.q-system/tests/test_no_slack_bots.py
+# walks every tracked file for any Slack sender or reader, which is stronger than a
+# same-name heuristic over one config path. Nothing is checked here on purpose.
 
 echo
 echo "  $PASS passed, $FAIL failed"
