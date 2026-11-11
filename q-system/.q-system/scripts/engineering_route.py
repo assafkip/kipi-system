@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Engineering signal from the morning brief -> Sana's Linear triage. Never the founder.
+"""Engineering signal -> Sana's Linear triage. Never the founder.
+
+Two doors: `route()` for the morning brief's degraded sections, and `to_sana()` for a
+script whose whole message is an engineering signal (a job that did not run, a checker
+that stopped, drift only Sana can fix). ASK-4479 S2: three of those used to hand their
+line to founder_notify, where chief's phone gate refused it and filed it to Sana anyway.
 
 Founder, 2026-08-10, in slack-notify.sh's own header: *"I dont want to see any of these.
 Any of the ones that need attention should go to Sana - not me."* And 2026-09-03, on the
@@ -26,6 +31,7 @@ is worse than none. `founder-notifications.md`: alert on state change, once.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -69,6 +75,25 @@ def send(message: str) -> None:
         raise RuntimeError(
             f"slack-notify.sh exited {done.returncode}: "
             f"{(done.stderr or b'').decode('utf-8', 'replace').strip()[:200]}")
+
+
+def to_sana(message: str, notify=None) -> dict:
+    """File one engineering line to Sana's triage. Returns founder_notify.deliver's keys.
+
+    Same keys on purpose, so a caller that moves from the founder's door to this one
+    keeps its failure handling: `delivered` here means the ticket was filed. It refuses
+    under pytest before anything spawns, the posture founder_notify.deliver has, so no
+    test can file a real ticket (scar 2026-08-28: a new test paged six duplicates).
+    """
+    if notify is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return {"delivered": False, "refused": True, "transport": "fleet-alert",
+                "reason": "running under pytest; a test never files a Linear ticket"}
+    try:
+        (notify or send)(message)
+    except Exception as exc:                                # noqa: BLE001
+        return {"delivered": False, "refused": False, "transport": "fleet-alert",
+                "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    return {"delivered": True, "refused": False, "transport": "fleet-alert"}
 
 
 def route(sources: dict, sections, notify=None) -> tuple:

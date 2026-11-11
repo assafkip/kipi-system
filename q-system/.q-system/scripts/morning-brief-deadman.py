@@ -143,8 +143,15 @@ def _record_alarm(now: dt.datetime, result: dict, state_path=None) -> None:
     tmp.replace(path)
 
 
-def _sender():
-    spec = importlib.util.spec_from_file_location("founder_notify", HERE / "founder_notify.py")
+def _sana():
+    """The fleet alert path, never the founder (ASK-4479 S2).
+
+    A brief that did not run or was not delivered is a job failure, and he cannot fix a
+    job (founder 2026-08-10: "should go to Sana - not me"; 2026-11-07: nothing calls him
+    unless it is a critical break). On his phone path chief refused the "did not run"
+    reason for its dash and filed it to Sana anyway, by the back door.
+    """
+    spec = importlib.util.spec_from_file_location("engineering_route", HERE / "engineering_route.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -172,13 +179,13 @@ def main(argv=None) -> int:
     if _already_alarmed(now):
         print(f"[deadman] already alarmed today; staying quiet ({reason})")
         return 1
-    result = _sender().deliver(message)
+    result = _sana().to_sana(message)
     print(f"[deadman] OVERDUE: {reason}")
     print(f"[deadman][send] {json.dumps(result)}")
     _record_alarm(now, result)
     # Non-zero either way: the watched job is overdue. launchd-health-check sees
-    # this exit and files its own issue, so a deadman that cannot reach Telegram is
-    # still not a silent one.
+    # this exit and files its own issue, so a deadman that cannot file is still not
+    # a silent one.
     return 1
 
 

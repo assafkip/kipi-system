@@ -346,10 +346,13 @@ def _message(profile, surface, entry, state: str) -> str:
         return (f"Browser session back: {label} "
                 f"({profile['identity']}). Verified {entry.get('at')}.")
     why = entry.get("reason") or entry.get("error") or "no reason recorded"
+    # No path, no command, no dash (ASK-4479 S2): chief refuses all three on his phone
+    # and that refusal reached nobody. The repair stays his step, said the way he
+    # works: he tells Claude, and Claude runs browser_session.py login.
     return (f"Browser session DEAD: {label} "
-            f"({profile['identity']}) at {surface['url']} -- {why}\n"
-            f"Repair is a human step, nothing here will retry the sign-in: "
-            f"python3 {HERE / 'browser_session.py'} login {profile['name']}\n"
+            f"({profile['identity']}) at {surface['url']}. Why: {str(why)[:80]}\n"
+            f"Repair needs your password once. Tell Claude: open the "
+            f"{profile['name']} browser session login.\n"
             f"You get this once. Nothing further until it recovers.")
 
 

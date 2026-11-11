@@ -51,7 +51,7 @@ def post_to(chat, text, label, saver=None):
     line = phone_text.dm_length(shown, saver=saver)
     if os.environ.get("FAKE_HOLD"):
         return {"delivered": True, "held": True, "reason": "kept for retry: down"}
-    return {"delivered": True, "refused": False, "chat": chat, "sent": line}
+    return {"delivered": True, "refused": False, "chat": chat, "sent": line, "got": text}
 '''
 
 
@@ -135,6 +135,62 @@ class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
         for text in ("a", "\n".join("x" * 5 for _ in range(19)), "\n".join("x" for _ in range(20)),
                      "y" * 2000, "y" * 2001):
             self.assertEqual(rm.fits(text), ns["fits"](text), repr(text[:20]))
+
+
+
+class TestDetailAndVerdict(unittest.TestCase):
+    """ASK-4479 S2. The detail path (the digest's full list behind the app link) and
+    the rule that chief saying nothing is not a delivery."""
+
+    def setUp(self):
+        self.mod = _load()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(self.mod, "_under_test", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _child(self, message, detail, save_ok=True):
+        """deliver() against the fake chief, keeping the child's own JSON."""
+        import subprocess
+        _fake_chief(self.tmp.name, save_ok)
+        seen = {}
+
+        def runner(a, c, t):
+            done = subprocess.run(a, cwd=c, capture_output=True, text=True, timeout=t)
+            seen["answer"] = json.loads(done.stdout.strip().splitlines()[-1])
+            return done.returncode, done.stdout
+
+        with mock.patch.dict(os.environ, {"KIPI_CHIEF_ROOT": self.tmp.name}):
+            os.environ.pop("KIPI_FOUNDER_NOTIFY_CMD", None)
+            res = self.mod.deliver(message, runner=runner, timeout=30, detail=detail)
+        return res, seen["answer"]
+
+    def test_the_child_sends_exactly_what_with_detail_composes(self):
+        res, answer = self._child("Linear today: 1 closed, 0 opened.", "ASK-1 the full list")
+        self.assertEqual(answer["got"], self.mod.with_detail(
+            "Linear today: 1 closed, 0 opened.", "row1", "https://app.example.invalid"))
+        self.assertTrue(res["delivered"] and res["detail_saved"], res)
+
+    def test_a_failed_save_says_so_on_the_phone_line(self):
+        res, answer = self._child("Linear today: 1 closed, 0 opened.", "ASK-1 the full list", save_ok=False)
+        self.assertEqual(answer["got"], self.mod.with_detail(
+            "Linear today: 1 closed, 0 opened.", None, "https://app.example.invalid"))
+        self.assertIn(self.mod.DETAIL_UNSAVED, answer["got"])
+        self.assertFalse(res["detail_saved"], res)
+
+    def test_no_detail_sends_the_message_unchanged(self):
+        res, answer = self._child("short note", None)
+        self.assertEqual(answer["got"], "short note")
+        self.assertNotIn("detail_saved", res)
+
+    def test_exit_zero_with_no_verdict_is_not_a_delivery(self):
+        """PR #519 review, minor: `or not answer` made silence a delivery, and the
+        morning-brief receipt copies `delivered`, which keeps its deadman quiet."""
+        for out in ("", "not-json", "[]", "{}"):
+            res = self.mod.deliver("the founder's morning brief", runner=lambda a, c, t, o=out: (0, o))
+            self.assertFalse(res["delivered"], (out, res))
+            self.assertIn("exit 0", res["reason"], (out, res))
 
 
 if __name__ == "__main__":

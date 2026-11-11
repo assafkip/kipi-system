@@ -90,14 +90,6 @@ for repo in $FLEET_ROOT/consulting \
   fi
 done
 
-# HONEST LIMIT ON CHECK 6, measured not assumed: the detector below found 1 of
-# the 2 posters confirmed by hand on 2026-08-10. It matches the python shape
-# (name = ...slack-webhook -> urlopen(name)) reliably and the shell shape
-# (VAR="$(< ...)" -> curl "$VAR") only sometimes. run_weekly.sh is a real poster
-# it did NOT flag. Under-reporting is the dangerous direction for a safety
-# check, so treat a clean check 6 as "no NEW python poster appeared", never as
-# "nothing posts". The KNOWN list is the hand-verified record; the detector is
-# a tripwire on top of it, not a replacement for it.
 # --- 6. direct Slack posters: retired (RULE-2026-11-11-A, ASK-4479) ----------
 # This section hunted scripts that read the old Slack webhook file and POSTed to
 # it. Slack is gone from this repo (chief's own Slack code is the follow-up, ASK-4488), and q-system/.q-system/tests/test_no_slack_bots.py

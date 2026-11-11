@@ -27,6 +27,15 @@ about, and shipping it inside a status digest would be absurd.
 still exits 0 when no webhook resolves. So delivery is recorded separately from the
 attempt, and a run that could not deliver says so on stdout where launchd logs it.
 
+## What his phone shows (ASK-4479 S2)
+
+Plain counts: closed, opened, and each "could not be worked" bucket in plain words.
+The full list (ids, titles, the worker's own lines) is saved to his app Chat and the
+phone line carries the link. Chief's phone gate refuses ids, PR numbers, paths, test
+names, dashes and long lines, and it refused the old whole-list message every day:
+it reached nobody and became a Sana ticket. Both texts come from one `collect()`, so
+they cannot disagree.
+
 ## Its own deadman is the founder
 
 A daily message that stops arriving is visible to a human on day one, which is more
@@ -194,7 +203,19 @@ def _section(title, rows, error, fmt):
         [f"  ...and {len(rows) - 15} more"] if len(rows) > 15 else [])
 
 
-def build(now: dt.datetime):
+#: Plain words for each BLOCKED_PATTERNS entry, same order (a parallel tuple, so a new
+#: pattern with no wording fails test_founder_message_census on its first day).
+BLOCKED_PLAIN = (
+    "Need a clearer spec",
+    "Waiting on something the runner cannot grant itself",
+    "In another repo, skipped here",
+    "In repos this Mac has no copy of",
+    "Refused by the repo safety check",
+    "Repos on hold",
+)
+
+
+def collect(now: dt.datetime) -> dict:
     # MATCH THE LOG'S OWN CLOCK. `linear-worker.log` and `dispatch.log` prefix every
     # line with a UTC stamp (`date -u`), and this compared them against the LOCAL
     # date. Measured 2026-08-13 21:5x PDT: local said 2026-08-13 while the logs were
@@ -211,7 +232,14 @@ def build(now: dt.datetime):
 
     closed, opened, api_err = fetch(since_iso)
     blocked, log_err = blocked_today(window)
+    return {"now": now, "local_day": local_day, "closed": closed, "opened": opened,
+            "blocked": blocked, "api_err": api_err, "log_err": log_err}
 
+
+def render(c: dict) -> str:
+    """The full list, saved to his app Chat. Ids and the worker's own words stay here."""
+    now, local_day, api_err, log_err = c["now"], c["local_day"], c["api_err"], c["log_err"]
+    closed, opened, blocked = c["closed"], c["opened"], c["blocked"]
     lines = [f"*Linear daily* {local_day} (as of {now.strftime('%H:%M %Z')})", ""]
     lines += _section("Closed today", closed, api_err,
                       lambda n: f"{n['identifier']} {n['title'][:90]}")
@@ -220,10 +248,34 @@ def build(now: dt.datetime):
                       lambda n: f"{n['identifier']} {n['title'][:90]}")
     lines.append("")
     lines += _section("Tried, could not be worked", blocked, log_err, lambda s: s)
-    return "\n".join(lines), (api_err or log_err)
+    return "\n".join(lines)
 
 
-def send(message: str):
+def phone(c: dict) -> str:
+    """The line his phone shows: counts in plain words, nothing chief refuses."""
+    if c["api_err"]:
+        lines = ["Linear today: the issue list could not be read."]
+    else:
+        lines = [f"Linear today: {len(c['closed'])} closed, {len(c['opened'])} opened."]
+    if c["log_err"]:
+        lines.append("Could not be worked: the worker log could not be read.")
+    elif not c["blocked"]:
+        lines.append("Could not be worked: none.")
+    else:
+        lines.append("Could not be worked:")
+        for row in c["blocked"]:
+            i = next((k for k, pat in enumerate(BLOCKED_PATTERNS) if pat.search(row)), None)
+            label = BLOCKED_PLAIN[i] if i is not None else "Other"
+            lines.append(f"{label}: {re.match(r'[0-9]+', row).group(0)}")
+    return "\n".join(lines)
+
+
+def build(now: dt.datetime):
+    c = collect(now)
+    return render(c), (c["api_err"] or c["log_err"])
+
+
+def send(message: str, detail: str | None = None):
     """Delegate to founder_notify.deliver(). Verified by chief's answer, not the exit code.
 
     RULE-2026-11-11-A (ASK-4479): this digest used to post to Slack, first by its
@@ -241,7 +293,7 @@ def send(message: str):
     spec = importlib.util.spec_from_file_location("founder_notify", HERE / "founder_notify.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.deliver(message)
+    return mod.deliver(message, detail=detail)
 
 
 def main() -> int:
@@ -250,12 +302,15 @@ def main() -> int:
     args = ap.parse_args()
 
     now = dt.datetime.now().astimezone()
-    message, degraded = build(now)
+    c = collect(now)
+    message, degraded = render(c), (c["api_err"] or c["log_err"])
+    line = phone(c)
     print(message)
+    print(f"\n[phone] {line}")
     if args.dry_run:
         print("\n[dry-run] nothing sent")
         return 0
-    result = send(message)
+    result = send(line, detail=message)
     print(f"\n[send] {result}")
     if not result.get("delivered"):
         # Never exit 0 on an undelivered digest. That is the whole defect this
