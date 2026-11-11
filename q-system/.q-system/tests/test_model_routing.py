@@ -235,7 +235,11 @@ class CallSites(unittest.TestCase):
 
     def test_worker_main_run_passes_a_model(self):
         text = (SCRIPTS / "linear-worker.sh").read_text()
-        main = [l for l in text.splitlines() if 'claude -p \\"\\$1\\"' in l and not l.strip().startswith("#")]
+        # The main run goes through the fleet door since ASK-4311
+        # (`$FLEET_CLAUDE -p`), which is still a claude -p call.
+        main = [l for l in text.splitlines()
+                if ('claude -p \\"\\$1\\"' in l or '$FLEET_CLAUDE -p \\"\\$1\\"' in l)
+                and not l.strip().startswith("#")]
         self.assertEqual(len(main), 1, "expected exactly one main-run claude -p line")
         self.assertIn("--model", main[0])
 
@@ -304,7 +308,11 @@ def bare_calls(path_name: str, text: str) -> list:
     pinned = re.search(r"(?m)^\s*export\s+ANTHROPIC_MODEL=", text)
     for n, line in enumerate(text.splitlines(), 1):
         s = line.strip()
-        if s.startswith("#") or not re.search(r"\bclaude\s+-p\b", s):
+        # `$FLEET_CLAUDE -p` and `fleet-claude.sh -p` are claude calls too
+        # (ASK-4311): the door execs `claude -p` with the same arguments, and a
+        # matcher blind to it would stop checking the worker and the reviewer.
+        if s.startswith("#") or not re.search(
+                r"(\bclaude|\$\{?FLEET_CLAUDE\}?|fleet-claude\.sh)\s+-p\b", s):
             continue
         if "--model" not in s and not pinned and not s.startswith(("echo ", "say ", "log ")):
             bare.append(f"{path_name}:{n}")
@@ -367,8 +375,9 @@ class EveryCallNamesAModel(unittest.TestCase):
         # PR #664 round 4, major: the reviewer's own mutation. A file-level match
         # stayed green with --model gone from a real call; per call, it goes red.
         agent = (SCRIPTS / "pr-review-agent.sh").read_text()
-        self.assertIn("claude -p --model '$CLAUDE_MODEL'", agent)
-        self.assertTrue(bare_calls("pr-review-agent.sh", agent.replace("claude -p --model '$CLAUDE_MODEL'", "claude -p")))
+        self.assertIn("$FLEET_CLAUDE -p --model '$CLAUDE_MODEL'", agent)
+        self.assertTrue(bare_calls("pr-review-agent.sh", agent.replace(
+            "$FLEET_CLAUDE -p --model '$CLAUDE_MODEL'", "$FLEET_CLAUDE -p")))
         distill = (SCRIPTS / "lessons-distill.py").read_text()
         self.assertTrue(bare_calls("lessons-distill.py", distill.replace('job="lesson-distill"', 'timeout2=1')))
         # a second call in a file that already names a model elsewhere is still caught

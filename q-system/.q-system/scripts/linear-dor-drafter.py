@@ -65,6 +65,8 @@ from pathlib import Path
 # settings, no tools unless declared). RCA 2026-10-06 root cause #3.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lean_call  # noqa: E402
+# Billed to a fleet API key through the one metered door (ASK-4311).
+import fleet_door  # noqa: E402
 from typing import NamedTuple
 
 HERE = Path(__file__).resolve().parent
@@ -767,8 +769,9 @@ def runner_refusal(text: str, success: bool = False) -> tuple:
     the marker only (with a note) on a successful one. `local` is always the whole
     line, for this Mac's own log, so the reset clause is never lost (PR #640 r1).
 
-    Popen, not subprocess.run: the failure-reporting test replaces subprocess.run
-    to stand in for claude, and the classifier must not be mistaken for a call.
+    Popen, not subprocess.run: the classifier must never be mistaken for the
+    model call. The failure-reporting test stands in for claude at the fleet door
+    (fleet_door.run) since ASK-4311, and replaced subprocess.run before that.
     """
     if not text:
         return "", ""
@@ -797,14 +800,12 @@ def runner_refusal(text: str, success: bool = False) -> tuple:
     return local, local
 
 
-def _subscription_env():
-    """os.environ without ANTHROPIC_API_KEY, for the headless `claude` call.
-
-    Subscription only, never the billed API (founder, 2026-09-28): claude
-    prefers the key over the subscription login, so an inherited key turns the
-    call into metered spend. Pinned by test-subscription-only.sh (ASK-2176).
-    """
-    return {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+#: The drafter is unattended fleet work (com.kipi.linear-dor at 03:00, and
+#: cap-ladder's re-scope rung), so every draft bills a fleet API key through the
+#: one metered door rather than the founder's plan (ASK-4311). It never falls
+#: back to the plan: a refused door is a runner refusal (see draft_one), so the
+#: batch stops and the failure issue gets fleet_door.REFUSED.
+DOOR_ACTOR = "dor-drafter"
 
 
 def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
@@ -861,13 +862,21 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
             # is general: a merged fix is not a deployed one here.
             [binary, "-p", prompt],
             capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL, env=_subscription_env(),
+            stdin=subprocess.DEVNULL, runner=fleet_door.runner(DOOR_ACTOR),
             job="dor-drafting",  # the model is the routing table's row (ASK-4013)
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
+    # A REFUSED KEY DOOR IS A RUNNER REFUSAL (ASK-4311, PR #736 review round 1). No
+    # key, a paused fleet or a spent credit refuses every issue behind this one the
+    # same way, so it takes the runner-refusal exit: the batch stops, and the
+    # permanent failure issue gets fleet_door.REFUSED, a closed marker, never "claude
+    # exited rc=4 with 0 chars of output" once per queued issue.
+    if fleet_door.door_refused(res):
+        print(f"  {issue['identifier']}: {RUNNER_REFUSED}{fleet_door.REFUSED}", file=sys.stderr)
+        return None, RUNNER_REFUSED + fleet_door.REFUSED
     out = (res.stdout or "").strip()
     # READ FOR A REFUSAL ON EVERY EXIT CODE, BEFORE THE LENGTH CHECK (PR #637 round 1).
     # The measured shape of this outage EXITS 0 (ASK-873: on 2026-08-15 every

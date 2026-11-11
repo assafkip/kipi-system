@@ -122,11 +122,13 @@ FABLE = cmd("CAP_LADDER_FABLE", [sys.executable, str(HERE / "fable-escalate.py")
 DRAFTER = cmd("CAP_LADDER_DRAFTER", [sys.executable, str(HERE / "linear-dor-drafter.py")])
 PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
 
-# Every path this script writes and every outside writer it calls. Under pytest
-# main() refuses unless ALL are redirected (PR #687 review, minor 4).
+# Every path this script writes, every outside writer it calls, and the live
+# lanes dir it reads (KIPI_LANES_DIR, PR #732 round 1 minor: a test that missed
+# it read the founder's real markers). Under pytest main() refuses unless ALL
+# are redirected (PR #687 review, minor 4).
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER")
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
 
 
 def now() -> datetime:
@@ -580,6 +582,24 @@ def live(issue: str, pr: dict | None) -> bool:
     return any(re.search(p, table, re.M) for p in pats)
 
 
+def lane_hold(issue: str) -> str:
+    """Why an interactive lane holds this issue now, or "" (ASK-4395).
+
+    2026-11-10 12:40Z: ASK-4311 was queued for rung 1, which closes the PR on
+    sana/<id>, opens a successor and requeues the ticket, while lane A
+    (sana-ask4311, a live lane-mark.py marker) was merging that PR (#717) with
+    --match-head-commit. The worker, the WIP release and ci-redrive read the
+    marker; the ladder did not. linear-sync.py lane_marker is THE reader of the
+    marker format, so it is reused here, not copied. FAIL CLOSED like ci-redrive's
+    lane_live: a reader that cannot run holds the issue, because a skipped night
+    is recoverable and a second writer on a lane's PR is not.
+    """
+    try:
+        return _sync().lane_marker(issue, now=now())
+    except Exception as exc:  # noqa: BLE001 - see FAIL CLOSED above
+        return f"the lane rule could not run ({str(exc)[:80]}), so the issue is treated as held"
+
+
 def ledger(op: list) -> bool:
     rc, out = run(LEDGER + [str(ATTEMPTS)] + op)
     if rc not in (0, 1):
@@ -895,6 +915,24 @@ def next_step_line(r: int) -> str:
             "an owned blocker), never a timed retry.")
 
 
+def late_lane(issue: str, rung: int, report: list) -> str:
+    """The lane check again, after the Fable call and before the ladder's own writes.
+
+    PR #732 round 1, major: main() read the marker once, then rca() ran Fable for
+    up to 600s before the PR close. A lane-mark.py start in that window was
+    invisible, and its PR was closed. What has landed by now is the RCA spend and
+    the RCA comment fable-escalate.py posts on the ticket. The PR close, the
+    successor, the clears, the requeue and the rung have not. The report row
+    matches the early check's (PR #732 round 2, minor).
+    """
+    held_by = lane_hold(issue)
+    if not held_by:
+        return ""
+    report.append({"issue": issue, "rung": rung, "waiting_on": held_by})
+    return (f"{issue}: {held_by}, which appeared while the RCA ran; nothing was closed, opened or "
+            "requeued, and the rung is not spent")
+
+
 def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: dict,
           apply: bool, tgts: list, report: list) -> str:
     row = state.get(issue) or {}
@@ -910,6 +948,9 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
             report.append({"issue": issue, "rung": r, "decision": None, "red": True,
                            "note": "capped with no decision record: Fable produced no RCA; retried next run"})
             return f"{issue}: rung {r}: no decision record (RED in the report); the cap stays"
+        late = late_lane(issue, r - 1, report)
+        if late:
+            return late
         out = apply_decision(issue, d, t, pr, slug, r, row)
         if "retries" in out:
             report.append({"issue": issue, "rung": r, "decision": d["kind"], "red": True, "note": out})
@@ -920,6 +961,9 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         return out
 
     rca_path, _ = rca(issue, kind, why, pr, slug)
+    late = late_lane(issue, r - 1, report)
+    if late:
+        return late
     ledger(["claim-flag" if r == 2 else "clear-flag", issue, RUNNER_FLAG])
     if r == 3:
         run(SYNC + ["label", issue, "needs-scope"])
@@ -1066,6 +1110,13 @@ def main(argv=None) -> int:
                     "the router tickets (ASK-3959, ASK-3958) own that, the ladder waits")
                 report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": "routing (ASK-3959, ASK-3958)"})
                 continue
+            # A LIVE LANE IS NOT CLIMBED (ASK-4395), and it is checked before the
+            # limit, so it spends no rung and no slot. See lane_hold.
+            held_by = lane_hold(issue)
+            if held_by:
+                say(f"{issue}: {held_by}; the rung is not spent, the ladder looks again at its next run")
+                report.append({"issue": issue, "rung": row.get("rung", 0), "waiting_on": held_by})
+                continue
             if live(issue, pr):
                 say(f"{issue}: a run is live on it; the ladder looks again tomorrow")
                 continue
@@ -1104,6 +1155,13 @@ def main(argv=None) -> int:
             red = bt is not None and not owned_open(bt)
             ev = event_for(issue, row, t, slug)
             if ev:
+                # release() opens a PR and requeues: a live lane waits it out (ASK-4395).
+                held_by = lane_hold(issue)
+                if held_by:
+                    say(f"{issue}: {ev}, but {held_by}; it re-enters at the first run after the lane ends")
+                    report.append({"issue": issue, "rung": row.get("rung"), "decision": "BLOCKED-ON",
+                                   "waiting_on": held_by})
+                    continue
                 say(release(issue, row, t, slug, ev, args.apply))
                 continue
             wait = (f"held on {d.get('target')}: waiting for it to close, a touched file to change on main, "

@@ -475,6 +475,10 @@ if [ -f "$WORKER" ]; then
   chmod +x "$BRAKE_STUB"
   # KIPI_NOTIFY is /usr/bin/true: this drives the REAL worker, whose failure
   # paths page. Same reason test-worker-usage-brake.sh pins it.
+  # KIPI_FLEET_API_KEYS=0: the plan brake answers 3 only on the plan path. A
+  # run billed to a fleet key skips it on purpose (ASK-4311, pinned by
+  # test-worker-usage-brake.sh case 6), and this case reads the plan contract.
+  KIPI_FLEET_API_KEYS=0 \
   KIPI_STATE_DIR="$WORK/brake-state" \
   KIPI_USAGE_BREAKER_CMD="bash $BRAKE_STUB" \
   KIPI_USAGE_BREAKER_BOT="worker-test" \

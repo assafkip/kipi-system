@@ -61,6 +61,14 @@ UPDATER_HELPERS = (
     "fleet-reach-audit.py",
     "fleet-unblock.py",
     "settings-template.json",
+    # The preservation overrides the deletion guard reads (PR #609, ASK-3821).
+    # THIRD time the trap above has caught the same thing: the file arrived on
+    # main with its feature, this list did not gain it, and the derivation
+    # below went red on every PR opened against that main -- including this one,
+    # which touches neither kipi-update.sh nor this file. Data, not a script,
+    # and that is fine: settings-template.json is here for the same reason, the
+    # fixture has to model the skeleton the updater actually runs in.
+    "kipi-update-preservation-overrides.json",
 )
 
 # The fixture writes its own registry, so the updater referencing it is not a

@@ -59,7 +59,10 @@ done
 #
 # A driver is at risk when a commit can land inside its run. Two objective markers,
 # unioned, so no judgement call sits between a new driver and this check:
-#   1. it invokes `claude -p`  -- one model call is minutes, a loop of them is hours
+#   1. it invokes `claude -p`  -- one model call is minutes, a loop of them is hours.
+#      Through the fleet key door (`$FLEET_CLAUDE -p`, `fleet-claude.sh -p`) it is
+#      the same call, just billed to a key (ASK-4311); the marker sees both, or the
+#      heartbeat dropped out of discovery the day it moved onto the door.
 #   2. it declares a *TIMEOUT*= of >= 600 seconds
 # Running it found open-loops-heartbeat.sh too (headless `claude -p` per instance,
 # open-loops-heartbeat.sh:92), which the review did not name. That is the argument
@@ -78,7 +81,7 @@ discover_drivers() {
     # model; linear-worker, open-loops-heartbeat and pr-review-agent stay found.
     # ONE process, not a pipe (PR #421 round 14, minor): under pipefail,
     # `grep -v ... | grep -q` returned 141 on any file past the pipe buffer.
-    if awk '!/^[[:space:]]*#/ && /claude -p/ { hit = 1; exit } END { exit !hit }' "$f" \
+    if awk '!/^[[:space:]]*#/ && /claude -p|FLEET_CLAUDE[}"]* -p|fleet-claude\.sh"? -p/ { hit = 1; exit } END { exit !hit }' "$f" \
         || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
       echo "$f"
     fi
@@ -292,11 +295,12 @@ SYN="$WORK/syn-scripts"; mkdir -p "$SYN"
 printf '#!/usr/bin/env bash\nset -uo pipefail\nclaude -p "review this" </dev/null\n' > "$SYN/planted-model-caller.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\nTIMEOUT_SECONDS=%s\nsleep 1\n' "$DISCOVERY_MIN_SECONDS" > "$SYN/planted-long-timeout.sh"
 printf '#!/usr/bin/env bash\nset -uo pipefail\nTIMEOUT_SECONDS=5\necho hi\n' > "$SYN/planted-quick-helper.sh"
+printf '#!/usr/bin/env bash\nset -uo pipefail\n$TO $FLEET_CLAUDE -p "review this" </dev/null\n' > "$SYN/planted-door-caller.sh"
 FOUND="$(discover_drivers "$SYN" | xargs -n1 basename | sort | tr '\n' ' ')"
-if [ "$FOUND" = "planted-long-timeout.sh planted-model-caller.sh " ]; then
-  ok "discovery caught both planted drivers and left the quick helper alone (found: $FOUND)"
+if [ "$FOUND" = "planted-door-caller.sh planted-long-timeout.sh planted-model-caller.sh " ]; then
+  ok "discovery caught all three planted drivers, the key door's included, and left the quick helper alone (found: $FOUND)"
 else
-  bad "discovery is wrong; expected the two planted drivers only, got: ${FOUND:-<nothing>}"
+  bad "discovery is wrong; expected the three planted drivers only, got: ${FOUND:-<nothing>}"
 fi
 # A LONG model caller (PR #421 round 14, minor). The comment-stripping
 # discovery was a two-grep pipe, and under this suite's pipefail `grep -q`

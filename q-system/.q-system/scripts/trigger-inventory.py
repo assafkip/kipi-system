@@ -149,14 +149,13 @@ def manual_sources(root):
     return out
 
 
-def _name_pattern(rel, cands):
+def _name_pattern(rel, base_counts):
     """A file name shared by two candidates (root foo.sh and scripts/foo.sh) must
     not let one trigger mark both (Codex adversarial review): an ambiguous name
     is matched with its parent directory, or, for a root script, only when no
     directory precedes it."""
     base = os.path.basename(rel)
-    ambiguous = sum(1 for c in cands if os.path.basename(c) == base) > 1
-    if not ambiguous:
+    if base_counts[base] <= 1:
         return r"(?<![\w.-])" + re.escape(base) + r"(?![\w-])"
     if os.sep in rel:
         parent = os.path.basename(os.path.dirname(rel))
@@ -164,20 +163,49 @@ def _name_pattern(rel, cands):
     return r"(?<![\w./-])" + re.escape(base) + r"(?![\w-])"
 
 
-def _named(text, cands):
-    """Candidates a text names: by file name, or (for .py) by import statement,
-    since `import foo` carries no .py suffix and is how a library is reached."""
-    hits = []
+def _matchers(cands):
+    """One compiled pattern set per candidate, built once per inventory() call.
+    ASK-4407, profiled 2026-11-11 on a copy of this repo (604 candidates): the
+    old per-text build counted basenames over every candidate for every
+    candidate (124M basename calls) and recompiled every pattern on every
+    search (453k compiles; re's cache holds 512, the run needs ~1,800). The
+    live-copy test hit CI's 420 s per-file timeout on PR #729.
+    `needle` is the literal stem every pattern below contains, so a text
+    without it cannot match any of them: a sound prefilter, not a heuristic."""
+    base_counts = {}
+    for rel in cands:
+        b = os.path.basename(rel)
+        base_counts[b] = base_counts.get(b, 0) + 1
+    out = []
     for rel in cands:
         base = os.path.basename(rel)
-        if re.search(_name_pattern(rel, cands), text):
+        name_re = re.compile(_name_pattern(rel, base_counts))
+        import_re = stem_re = None
+        needle = base
+        if base.endswith(".py"):
+            needle = base[:-3]
+            stem = re.escape(needle)
+            import_re = re.compile(r"(?m)^\s*(?:import\s+" + stem + r"\b|from\s+" + stem + r"\s+import\b)")
+            stem_re = re.compile(r"""["']""" + stem + r"""["']""")
+        out.append((rel, needle, name_re, import_re, stem_re))
+    return out
+
+
+def _named(text, matchers):
+    """Candidates a text names: by file name, or (for .py) by import statement,
+    since `import foo` carries no .py suffix and is how a library is reached.
+    `matchers` comes from _matchers(cands)."""
+    hits = []
+    for rel, needle, name_re, import_re, stem_re in matchers:
+        if needle not in text:
+            continue
+        if name_re.search(text):
             hits.append(rel)
             continue
-        if base.endswith(".py"):
-            stem = re.escape(base[:-3])
-            if re.search(r"(?m)^\s*(?:import\s+" + stem + r"\b|from\s+" + stem + r"\s+import\b)", text):
+        if import_re is not None:
+            if import_re.search(text):
                 hits.append(rel)
-            elif re.search(r"""["']""" + stem + r"""["']""", text):
+            elif stem_re.search(text):
                 hits.append(rel)  # dynamic load by stem string (morning-brief's _optional_module)
     return hits
 
@@ -225,12 +253,13 @@ def load_exemptions(root):
 
 def inventory(root, installed_dir):
     cands = candidates(root)
+    matchers = _matchers(cands)
     exempt, problems = load_exemptions(root)
     stages = {rel: {"status": "dead", "via": [], "sources": []} for rel in cands}
     sources = trigger_sources(root, installed_dir)
     queue = []
     for kind, name, text in sources:
-        for rel in _named(text, cands):
+        for rel in _named(text, matchers):
             st = stages[rel]
             st["status"] = "triggered"
             st["sources"].append(f"{kind}: {name}")
@@ -243,7 +272,7 @@ def inventory(root, installed_dir):
         seen.add(rel)
         if _is_test(rel):
             continue  # a test exercising a script is not a production trigger for it
-        for other in _named(_code_text(os.path.join(root, rel)), cands):
+        for other in _named(_code_text(os.path.join(root, rel)), matchers):
             if other == rel:
                 continue
             st = stages[other]
@@ -253,7 +282,7 @@ def inventory(root, installed_dir):
                 st["status"] = "triggered"
                 queue.append(other)
     for kind, name, text in manual_sources(root):
-        for rel in _named(text, cands):
+        for rel in _named(text, matchers):
             if stages[rel]["status"] == "dead":
                 stages[rel]["status"] = "manual-only"
                 stages[rel]["sources"].append(f"{kind}: {name}")
