@@ -1270,7 +1270,7 @@ Never run the whole test suite of the repo under review. CI and the commit hooks
 run the floor; you do not. Run only the test files the PR adds or changes, plus
 the files that import the changed module (find them with grep), and pass them by
 path. Run any given command at most once: send its full output to a file under
-\\\$TMPDIR and read that file with grep, tail or sed as often as you like.
+\$TMPDIR and read that file with grep, tail or sed as often as you like.
 Re-running a command to look at a different slice of its output is the failure
 this section exists to stop.
 
