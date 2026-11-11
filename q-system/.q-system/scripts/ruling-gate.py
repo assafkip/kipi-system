@@ -509,6 +509,9 @@ def post_tool(data):
         # #729 review, finding 2). A version committed before this call began is
         # history, not this call's write; --report still lists it. A write plus a
         # commit inside the call is newer than the snapshot and is still reverted.
+        # Limit: the date is git's committer date, which GIT_COMMITTER_DATE can
+        # back-date. Nothing in the fleet sets it, and --report lists what this
+        # misses (round 2 minor, rejected with its reason on ASK-4382).
         if committed_before(f, since):
             log({"mode": "post", "path": f, "verdict": "skip-committed", "why": why})
             continue
