@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""One Slack message each morning: what the founder has going on today.
+"""One Telegram message each morning: what the founder has going on today.
 
-Founder-directed 2026-08-30: fully automated, no HTML, one Slack message telling
+Founder-directed 2026-08-30: fully automated, no HTML, one Telegram message telling
 him what he has on. Plan: `q-system/output/plans/morning-brief-overhaul-2026-08-30.md`.
 
 ## What this replaces, and why it is not a revival
@@ -31,8 +31,8 @@ returns `(rows, error)`. A section with an error prints COULD NOT READ. It never
 prints "nothing", because a silent zero reading as a quiet day is the exact
 defect that let this system die in April.
 
-**The send is verified, not assumed.** Delivery goes through `slack_founder.py`,
-which reads Slack's own answer out of the response body. Never `slack-notify.sh`:
+**The send is verified, not assumed.** Delivery goes through `founder_notify.py`,
+which reads Telegram's own answer out of the response body. Never `slack-notify.sh`:
 that is the fleet ALERT path, it files a Linear ticket for Sana, it sends nothing
 to Slack, and it exits 0 either way.
 
@@ -109,7 +109,7 @@ def _subscription_env():
 def run_claude(prompt: str, tools: list, timeout: int = CLAUDE_TIMEOUT):
     """(stdout, error). One bounded headless call.
 
-    REFUSES UNDER PYTEST. Same chokepoint posture as slack_founder.deliver: the
+    REFUSES UNDER PYTEST. Same chokepoint posture as founder_notify.deliver: the
     refusal lives at the destination, not in per-test stubs, because per-test
     stubbing only ever protects the tests somebody remembered to write.
 
@@ -670,7 +670,7 @@ OPTIONAL_SECTIONS = (
 ERROR_LOG = STATE_DIR / "logs" / "morning-brief-errors.log"
 COLLECT_BUDGET_S = 20.0
 # The fixed four are bounded too (PR #294 review, major: `fixed_budget_s=None`
-# meant one hung calendar or mail call held the 07:00 brief, its Slack send and
+# meant one hung calendar or mail call held the 07:00 brief, its Telegram send and
 # its receipt forever, and the 09:00 deadman was the first thing to notice).
 # Calendar shells `claude -p` under CLAUDE_TIMEOUT and mail shells the ledger under
 # LEDGER_TIMEOUT_S (clamped below it, ASK-1323), so the thread bound sits one minute
@@ -715,7 +715,7 @@ def _guarded(key: str, fn, budget_s: float, log_path) -> tuple:
       A mail/HTTP/parser error can carry a token, a URL or a payload fragment.
       The brief gets `<key> failed (<Type>)`; the message goes to the local log.
     - finding-4: a collector is bounded. The board writer runs here, before the
-      Slack send, so a hung Notion call must cost at most `budget_s`, never the
+      Telegram send, so a hung Notion call must cost at most `budget_s`, never the
       morning. The worker thread is abandoned on timeout; the brief moves on.
 
     THIS GUARD BOUNDS THE WAIT, NOT THE WORK. Codex round 4 on the consulting board
@@ -893,7 +893,7 @@ def write_receipt(result: dict, now: dt.datetime, receipt_path=None) -> Path:
     """Single writer of the freshness receipt.
 
     Written LAST and only after the send has answered, so the recorded state is
-    what Slack said rather than what this script intended. `delivered` is copied
+    what Telegram said rather than what this script intended. `delivered` is copied
     straight off the send result; there is no separate "I tried" flag that could
     drift from it.
     """
@@ -919,7 +919,7 @@ def main(argv=None) -> int:
                     help="build and print; send nothing, write no receipt")
     ap.add_argument("--inbox-only", action="store_true",
                     help="mail + GroupMe + the Notion board, nothing else. The hourly "
-                         "runner: no Slack message, no receipt, no calendar, no Linear, "
+                         "runner: no Telegram message, no receipt, no calendar, no Linear, "
                          "no launchd sweep.")
     args = ap.parse_args(argv)
 
@@ -930,7 +930,7 @@ def main(argv=None) -> int:
         # hour."* The board is where he looks; a once-a-day inbox means a client who
         # writes at 08:00 is invisible until tomorrow.
         #
-        # NO SLACK SEND, on purpose. Twelve messages a day is how a channel gets
+        # NO TELEGRAM SEND, on purpose. Twelve messages a day is how a channel gets
         # muted, and the 07:00 brief already carries the daily read. This run only
         # repaints the board.
         #
@@ -989,7 +989,7 @@ def main(argv=None) -> int:
         print("\n[dry-run] nothing sent, no receipt written")
         return 0
 
-    sender = _load_sibling("slack_founder", "slack_founder.py")
+    sender = _load_sibling("founder_notify", "founder_notify.py")
     result = sender.deliver(message)
     result["degraded"] = degraded
     print(f"\n[send] {json.dumps(result)}")

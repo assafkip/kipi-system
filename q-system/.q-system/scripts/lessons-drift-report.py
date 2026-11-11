@@ -4,7 +4,7 @@
 Issues lr-drift-reporter and lr-drift-trigger-proof (prd-lessons-rail-and-up-rail,
 plan 4c). Measured 2026-09-01: eight lessons existed only in consulting for
 three weeks and nothing said so. This says so, every Monday 06:45, through
-slack_founder.deliver (founder-facing), never the fleet alert path.
+founder_notify.deliver (founder-facing), never the fleet alert path.
 
 Resolution (Codex finding-13 on the PRD): the skeleton is the registry's
 `skeleton` entry and it MUST be this file's own repo root, otherwise the
@@ -173,7 +173,7 @@ def build(root, now=None):
 
 def run(root, deliver=None, dry_run=False, trigger=None, now=None):
     """Build, then deliver only when launched by the plist (KIPI_TRIGGER=launchd).
-    `deliver` is injectable for tests; None means slack_founder.deliver."""
+    `deliver` is injectable for tests; None means founder_notify.deliver."""
     message = build(root, now=now)
     result = {"message": message, "delivery": {"delivered": False, "refused": False, "skipped": True}}
     if dry_run:
@@ -182,7 +182,7 @@ def run(root, deliver=None, dry_run=False, trigger=None, now=None):
         result["delivery"]["reason"] = "not launched by the plist (KIPI_TRIGGER != launchd): printed, not sent"
         return result
     if deliver is None:
-        deliver = _load("slack_founder", "slack_founder.py").deliver
+        deliver = _load("founder_notify", "founder_notify.py").deliver
     out = deliver(message) or {}
     result["delivery"] = {"delivered": bool(out.get("delivered")), "refused": bool(out.get("refused")), "skipped": False}
     return result
@@ -191,7 +191,7 @@ def run(root, deliver=None, dry_run=False, trigger=None, now=None):
 def main(argv=None, deliver=None):
     """Exit 0 when nothing was owed or the owed message landed; exit 2 when the
     plist launched this and delivery did not happen (PR #294 review, major: a
-    refused Slack send returned 0, so the reporter's ONLY alert vanished behind
+    refused Telegram send returned 0, so the reporter's ONLY alert vanished behind
     a success exit that launchd, the deadman and run-step-audit all read as
     fine). Printed-not-sent (no plist marker) and --dry-run owe nothing."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])

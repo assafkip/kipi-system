@@ -43,7 +43,7 @@ the receipt, so a launchd restart cannot resurrect an alert he has already had.
 
 Two audiences, and the split is the point:
 
-  FOUNDER, via slack_founder.deliver   a session died. Only a human with a
+  FOUNDER, via founder_notify.deliver   a session died. Only a human with a
                                        password can repair it.
   SANA'S QUEUE, via slack-notify.sh    the probe itself is broken (N consecutive
                                        unknowns). He cannot fix a browser that
@@ -319,7 +319,7 @@ def _live_prober(profile, surface) -> dict:
 
 
 def _founder_sender(message: str) -> dict:
-    return _module("slack_founder.py").deliver(message)
+    return _module("founder_notify.py").deliver(message)
 
 
 def _ops_sender(message: str) -> dict:
@@ -343,10 +343,10 @@ def _message(profile, surface, entry, state: str) -> str:
     """One line about ONE surface of ONE profile. Never a digest."""
     label = f"{profile['name']}/{surface['name']}"
     if state == "alive":
-        return (f":white_check_mark: Browser session back: {label} "
+        return (f"Browser session back: {label} "
                 f"({profile['identity']}). Verified {entry.get('at')}.")
     why = entry.get("reason") or entry.get("error") or "no reason recorded"
-    return (f":rotating_light: Browser session DEAD: {label} "
+    return (f"Browser session DEAD: {label} "
             f"({profile['identity']}) at {surface['url']} -- {why}\n"
             f"Repair is a human step, nothing here will retry the sign-in: "
             f"python3 {HERE / 'browser_session.py'} login {profile['name']}\n"
@@ -412,7 +412,7 @@ def _surface_pass(profile, surface, prior, prober, sender, ops_sender, stamp, ou
                                  "state": state, "message": message, "result": result})
             entry["last_alert_at"] = stamp
             # Suppress ONLY after the alert landed (PR #294 review, major): a
-            # refused send left alerted_state stamped, so a Slack or Linear
+            # refused send left alerted_state stamped, so a Telegram or Linear
             # outage silenced the incident until the browser state changed.
             if result.get("delivered"):
                 alerted = state

@@ -10,7 +10,7 @@ being collected; they come here.
 ## Why this is its OWN file and not four lines inside morning-brief.py
 
 `test_morning_brief.py::test_no_source_file_calls_slack_notify` greps morning-brief.py,
-morning-brief-deadman.py and slack_founder.py for the string "slack-notify" and fails on
+morning-brief-deadman.py and founder_notify.py for the string "slack-notify" and fails on
 a hit. That guard is correct and stays: the founder's BRIEF must never go out through the
 fleet alert path, which files a Linear ticket and sends him nothing. Routing a side
 channel to Sana is a different act from delivering his brief, but the guard is a source

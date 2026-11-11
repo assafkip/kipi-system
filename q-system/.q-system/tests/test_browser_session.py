@@ -328,7 +328,7 @@ def test_health_can_actually_load_the_browser_module(health):
 
 
 def test_health_can_actually_load_the_founder_sender(health):
-    mod = health._module("slack_founder.py")
+    mod = health._module("founder_notify.py")
     assert callable(mod.deliver)
 
 
@@ -369,7 +369,7 @@ def test_deadman_alarms_on_a_missing_receipt(tmp_path, deadman):
 
 def test_deadman_retries_an_undelivered_alarm_and_stops_after_it_lands(tmp_path, deadman):
     """PR #294 review, major: alarmed=True was written without checking the send,
-    so one refused Slack call silenced the deadman for the whole outage."""
+    so one refused Telegram call silenced the deadman for the whole outage."""
     now = dt.datetime(2026, 8, 30, 12, 0)
     receipt, state = tmp_path / "r.json", tmp_path / "state.json"
     receipt.write_text(json.dumps({"at": (now - dt.timedelta(hours=6)).isoformat()}))

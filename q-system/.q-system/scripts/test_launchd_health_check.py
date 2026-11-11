@@ -884,7 +884,7 @@ finally:
 # delivered case a send_ping hardcoded to False would pass and page nobody, ever.
 #
 # SCAR, sp-7773af84, measured 2026-08-14. This block used to drive a
-# $KIPI_SLACK_WEBHOOK on a refused port. On 2026-08-10 slack-notify.sh's
+# Slack webhook env var on a refused port. On 2026-08-10 slack-notify.sh's
 # destination changed from Slack to Linear and it stopped reading a webhook at
 # all, so the knob these assertions turned was inert and they were really
 # measuring whether the RUNNER HAD A LINEAR KEY. That cannot be green anywhere:

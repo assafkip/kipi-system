@@ -2,7 +2,7 @@
 """Engine test for the morning brief (ASK-1178).
 
 RED FIRST. Every case here was written and seen to fail before
-`morning-brief.py`, `morning-brief-deadman.py` or `slack_founder.py` existed.
+`morning-brief.py`, `morning-brief-deadman.py` or `founder_notify.py` existed.
 The first run is a bare ImportError on all of them; that counts as red only
 because the import assertions below name the missing module explicitly. A
 collection error is NOT a red run (it means zero tests executed), so the module
@@ -10,7 +10,7 @@ loader returns a skip-free failure rather than blowing up at import time.
 
 ## What this suite may NOT do
 
-No live data path. It never calls Slack, never calls `claude -p`, never reads
+No live data path. It never calls Telegram, never calls `claude -p`, never reads
 the founder's real Linear key, and never writes `~/.config/kipi/`. Every
 outbound seam is either injected or refused by the chokepoint under
 `PYTEST_CURRENT_TEST`. Two cases assert those refusals directly, because a
@@ -68,7 +68,7 @@ def deadman():
 
 @pytest.fixture(scope="module")
 def sender():
-    return _load("slack_founder", "slack_founder.py")
+    return _load("founder_notify", "founder_notify.py")
 
 
 NOW = dt.datetime(2026, 8, 30, 7, 0, 0, tzinfo=dt.timezone.utc).astimezone()
@@ -155,56 +155,60 @@ def test_no_html_no_cards_no_scores(brief):
 
 
 # --------------------------------------------------------------------------
-# Constraint 2: delivery is read off Slack's answer, never off an exit code
+# Constraint 2: delivery is read off chief's answer, never off an exit code
+# RULE-2026-11-11-A: the Slack transports are gone; the seam is the runner.
 # --------------------------------------------------------------------------
 
-class _Resp:
-    def __init__(self, body, status=200):
-        self._body = body.encode()
-        self.status = status
-
-    def read(self):
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
+@pytest.fixture
+def live_path(monkeypatch, sender):
+    """deliver() refuses under pytest. The runner seam is injected, so nothing
+    leaves the process; only the refusal guard is lifted for the case."""
+    monkeypatch.setattr(sender, "_under_test", lambda: False)
+    monkeypatch.delenv("KIPI_FOUNDER_NOTIFY_CMD", raising=False)
 
 
-def test_webhook_ok_body_is_the_only_success(sender):
-    got = sender.post_webhook("https://hooks.slack.com/x", "hi",
-                              opener=lambda req, timeout: _Resp("ok"))
+def test_delivered_true_in_chiefs_answer_is_the_only_success(sender, live_path):
+    got = sender.deliver("hi", runner=lambda a, c, t: (0, json.dumps({"delivered": True})))
+    assert got["delivered"] is True
+    assert got["transport"] == "telegram"
+
+
+def test_exit_zero_with_a_refusal_in_the_body_is_a_failure(sender, live_path):
+    """The trap: a process that exits 0 and still refused. An exit code sees green."""
+    body = json.dumps({"delivered": False, "reason": "ping gate refused"})
+    got = sender.deliver("hi", runner=lambda a, c, t: (0, body))
+    assert got["delivered"] is False
+    assert "ping gate refused" in json.dumps(got)
+
+
+def test_a_nonzero_exit_is_a_failure_even_with_a_delivered_body(sender, live_path):
+    got = sender.deliver("hi", runner=lambda a, c, t: (1, json.dumps({"delivered": True})))
+    assert got["delivered"] is False
+
+
+def test_a_held_message_counts_as_delivered_the_way_chief_reports_it(sender, live_path):
+    got = sender.deliver("hi", runner=lambda a, c, t: (0, json.dumps({"held": True})))
     assert got["delivered"] is True
 
 
-def test_webhook_http_200_with_a_non_ok_body_is_a_failure(sender):
-    """The trap: Slack answers 200 and still refuses. An exit code sees green."""
-    got = sender.post_webhook("https://hooks.slack.com/x", "hi",
-                              opener=lambda req, timeout: _Resp("no_service"))
+def test_the_text_and_chat_reach_the_command(sender, live_path):
+    seen = {}
+
+    def runner(argv, cwd, timeout):
+        seen["argv"], seen["cwd"] = argv, cwd
+        return 0, json.dumps({"delivered": True})
+
+    sender.deliver("the words", chat="chief", runner=runner)
+    assert "the words" in seen["argv"] and "chief" in seen["argv"]
+
+
+def test_a_runner_that_raises_is_reported_not_swallowed(sender, live_path):
+    def runner(argv, cwd, timeout):
+        raise OSError("no chief checkout")
+
+    got = sender.deliver("hi", runner=runner)
     assert got["delivered"] is False
-    assert "no_service" in json.dumps(got)
-
-
-def test_bot_post_reads_ok_false_as_undelivered(sender):
-    body = json.dumps({"ok": False, "error": "channel_not_found"})
-    got = sender.post_bot("xoxb-fake", "C0", "hi",
-                          opener=lambda req, timeout: _Resp(body))
-    assert got["delivered"] is False
-    assert got.get("error") == "channel_not_found"
-
-
-def test_bot_post_reads_ok_true_as_delivered(sender):
-    got = sender.post_bot("xoxb-fake", "C0", "hi",
-                          opener=lambda req, timeout: _Resp(json.dumps({"ok": True})))
-    assert got["delivered"] is True
-
-
-def test_no_credential_is_reported_not_swallowed(sender):
-    got = sender.deliver("hi", webhook="", token="", channel="C0")
-    assert got["delivered"] is False
-    assert got.get("reason")
+    assert "no chief checkout" in got["reason"]
 
 
 # --------------------------------------------------------------------------
@@ -241,11 +245,11 @@ def _executable_source(path: Path) -> str:
 
 
 def test_no_source_file_calls_slack_notify(brief, deadman, sender):
-    for filename in ("morning-brief.py", "morning-brief-deadman.py", "slack_founder.py"):
+    for filename in ("morning-brief.py", "morning-brief-deadman.py", "founder_notify.py"):
         code = _executable_source(SCRIPTS / filename)
         assert "slack-notify" not in code, (
             f"{filename} routes the founder's brief through the fleet ALERT path, "
-            "which files a Linear ticket for Sana and sends nothing to Slack")
+            "which files a Linear ticket for Sana and sends nothing to the founder")
 
 
 def test_the_slack_notify_check_can_actually_fail(tmp_path):
@@ -269,9 +273,7 @@ def test_the_slack_notify_check_can_actually_fail(tmp_path):
 
 def test_sender_refuses_to_deliver_under_pytest(sender):
     assert os.environ.get("PYTEST_CURRENT_TEST")
-    got = sender.deliver("this must never reach the founder",
-                         webhook="https://hooks.slack.com/real",
-                         token="xoxb-real", channel="C04Q71LA283")
+    got = sender.deliver("this must never reach the founder")
     assert got["delivered"] is False
     assert got.get("refused") is True
 
@@ -1105,7 +1107,7 @@ class TestNoCapUpstreamOfTheBoard:
         assert all(getattr(r, "key", "").startswith("mail:t") for r in rows)
 
     def test_the_SECTION_still_caps_what_he_reads(self, brief):
-        """The Slack message stays short. That was the cap's only legitimate job."""
+        """The Telegram message stays short. That was the cap's only legitimate job."""
         rows = [brief.Row(f"line {i}", f"mail:t{i}") for i in range(40)]
         out = brief._section("Mail", rows, None)
         assert len(out) == brief.MAX_ROWS + 2, out[:3]

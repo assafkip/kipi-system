@@ -309,8 +309,8 @@ def notify_channel_configured():
     cannot stop the watchdog.
 
     That destination is LINEAR, not Slack, since 2026-08-10. This paragraph used
-    to name the webhook resolution order ($KIPI_SLACK_WEBHOOK, then
-    ~/.config/kipi/slack-webhook) and it outlived the channel by four days --
+    to name the retired webhook resolution order (an env var, then
+    a state file) and it outlived the channel by four days --
     which is the same way sp-7773af84 stayed invisible. The resolution order is
     deliberately NOT restated here; it belongs to the function being borrowed.
 
