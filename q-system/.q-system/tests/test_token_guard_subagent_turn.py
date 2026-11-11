@@ -180,6 +180,20 @@ def test_main_actor_ignores_coordinator_rows(lane):
     assert "coordinator" not in result.stderr
 
 
+def test_an_offset_stamp_fails_closed(lane):
+    """PR #735 review round 1 (ASK-4423): `.939+02:00` once parsed as UTC wall
+    clock, i.e. 2h in the future, which re-armed the reset on every probe.
+    This message is really an hour OLD; only the exact `Z` form may parse."""
+    seed(lane, VOLUME_CEILING - 1, last_reset=time.time() - 600)
+    entry = coordinator_row()
+    local = datetime.fromtimestamp(time.time() - 3600, timezone.utc)
+    entry["timestamp"] = (local.replace(tzinfo=None) + (datetime(2000, 1, 1, 2)
+                          - datetime(2000, 1, 1))).strftime(
+                              "%Y-%m-%dT%H:%M:%S.123") + "+02:00"
+    append(lane, entry)
+    assert call(lane, 1).returncode == 2
+
+
 def test_subagent_block_points_at_the_coordinator(lane):
     seed(lane, VOLUME_CEILING - 1, last_reset=time.time())
     result = call(lane, 1)
