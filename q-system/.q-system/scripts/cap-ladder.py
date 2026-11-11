@@ -134,12 +134,12 @@ def now() -> datetime:
     return datetime.fromisoformat(fixed) if fixed else datetime.now(timezone.utc)
 
 
-def run(argv: list, timeout: int = 120, env: dict | None = None) -> tuple[int, str]:
+def run(argv: list, timeout: int = 120) -> tuple[int, str]:
     """(rc, stdout). On a failure the stderr rides along, so a caller can tell
     gh's 404 from a network fault."""
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
-                           stdin=subprocess.DEVNULL, env=env)
+                           stdin=subprocess.DEVNULL)
         out = (p.stdout or "").strip()
         return p.returncode, out if p.returncode == 0 else (out + "\n" + (p.stderr or "")).strip()
     except (OSError, subprocess.SubprocessError) as exc:
@@ -674,10 +674,7 @@ def rca(issue: str, kind: str, why: str, pr: dict | None, slug: str, decide: str
         argv += ["--decide", decide]
     if pr:
         argv += ["--pr", str(pr["number"]), "--branch", pr["headRefName"], "--repo-args", f"-R {slug}"]
-    # A FLEET RUN, SAID OUT LOUD (ASK-4311). fable-escalate.py follows its caller:
-    # from the founder's own session it bills his plan, from a fleet run a fleet
-    # API key. This rung is launchd fleet work, so it says so for this one child.
-    rc, out = run(argv, timeout=600, env=dict(os.environ, KIPI_FLEET_RUN="1"))
+    rc, out = run(argv, timeout=600)
     try:
         path = (json.loads(out.splitlines()[-1]) if out else {}).get("rca_path") or ""
     except (ValueError, IndexError):

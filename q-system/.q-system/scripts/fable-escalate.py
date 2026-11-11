@@ -77,9 +77,11 @@ import fleet_door  # noqa: E402  (ASK-4311: who pays for the triage call)
 
 #: This runs from the token-guard hook inside ANY session and from cap-ladder's
 #: nightly rung, so the call FOLLOWS ITS CALLER (ASK-4311): a fleet run (a worker
-#: session the key door started, or cap-ladder, which marks itself) bills a fleet
-#: API key through the metered door; the founder's own session stays on his plan
-#: with any inherited key stripped, exactly as before.
+#: session the key door started, or a launchd job that sets KIPI_FLEET_RUN=1 for
+#: this child) bills a fleet API key through the metered door; the founder's own
+#: session stays on his plan with any inherited key stripped, exactly as before.
+#: cap-ladder.py does not set the mark yet: that file is lane C's (ASK-4395), and
+#: until it does, cap-ladder's RCA rung bills the plan.
 DOOR_ACTOR = "fable-escalate"
 QROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEFAULT_LEDGER_DIR = os.path.join(QROOT, "output", "fable-escalations")
