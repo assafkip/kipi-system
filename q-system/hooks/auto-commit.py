@@ -10,6 +10,7 @@ import calendar
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import os
@@ -252,7 +253,7 @@ def classify(filepath):
 SYSTEM_STATE_TYPES = frozenset(("chore",))
 
 
-def system_state_paths(paths):
+def system_state_paths(paths, held=None):
     """Subset of paths safe for the FLEET SYNC to commit unattended.
 
     why (ASK-605): kipi-update.sh carried its own three-entry
@@ -269,7 +270,8 @@ def system_state_paths(paths):
     """
     # The updater pipes `git status` from the instance it is in, so its losses are
     # read there, not in CLAUDE_PROJECT_DIR (ASK-4386: "in any mode").
-    held = claude_losses(paths, os.getcwd())
+    if held is None:
+        held = held_claude_paths(paths, os.getcwd())
     return [p for p in paths
             if isinstance(classify(p), tuple)
             and classify(p)[0] in SYSTEM_STATE_TYPES
@@ -322,9 +324,39 @@ def claude_losses(paths, cwd=None):
     return held
 
 
+def held_claude_paths(paths, cwd=None):
+    """claude_losses, plus every .claude/ path absent from HEAD once any loss is held.
+
+    why (PR #738 round 1, major): numstat runs --no-renames, so a rename reads as a
+    delete plus an add. The delete was held, the add committed, and HEAD carried
+    both names, which kipi update then fans out. A move with edits, or a section
+    split into a new file, has the same two halves at any similarity, so "new
+    beside a held loss" is the test, not git's rename score. A pure addition with
+    no loss still commits.
+    """
+    cwd = cwd or PROJ_DIR
+    held = claude_losses(paths, cwd)
+    new = [p for p in paths if is_claude_path(p) and p not in held]
+    if not held or not new:
+        return held
+    r = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"]
+                       + new, cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return held | set(new)  # cannot tell new from old: hold
+    in_head = set(r.stdout.split("\0"))
+    return held | {p for p in new if p not in in_head}
+
+
 def hold_claude_losses(groups):
-    """Drop every .claude/ path that loses lines from the commit groups."""
-    held = claude_losses([p for ps in groups.values() for p in ps])
+    """Drop every held .claude/ path (held_claude_paths) from the commit groups."""
+    paths = [p for ps in groups.values() for p in ps]
+    # get_changed_files reads `git diff HEAD` with rename detection, which lists a
+    # staged rename by its NEW name only, so the held delete half was invisible
+    # here and the add half committed alone (PR #738 round 2 reproducer).
+    r = run(["git", "diff", "--name-only", "-z", "--no-renames", "HEAD"])
+    paths += [p for p in r.stdout.split("\0")
+              if p and is_claude_path(p) and p not in paths]
+    held = held_claude_paths(paths)
     if not held:
         return groups
     kept = {}
@@ -332,10 +364,85 @@ def hold_claude_losses(groups):
         keep = [p for p in paths if p not in held]
         if keep:
             kept[key] = keep
-    print(f"auto-commit: held {len(held)} .claude/ path(s) that drop lines, left "
-          "uncommitted; a hook never commits a .claude/ deletion (ASK-4386): "
-          + ", ".join(sorted(held)))
+    print(f"auto-commit: held {len(held)} .claude/ path(s) that drop lines or are "
+          "new beside one that does, left uncommitted; a hook never commits a "
+          ".claude/ deletion (ASK-4386): " + ", ".join(sorted(held)))
     return kept
+
+
+HELD_DIR_ENV = "KIPI_AUTOCOMMIT_HELD_DIR"
+
+
+def restore_held_claude(held, cwd):
+    """Put held .claude/ paths back to HEAD in the tree the fleet updater syncs.
+
+    why (PR #738 round 1, blocking major): --system-state used to drop a held loss
+    and stop there. The path stayed dirty under kipi-update.sh's own guard
+    (`git diff -- .claude/`), so the updater abandoned that instance on every run,
+    and nothing else may touch an instance's main checkout. The loss came from an
+    unattended writer (rule_gate's ASK-4283 defect deleted the 2026-11-10 rules),
+    so HEAD is the truth and the restore is the exit. It errs toward enforcement:
+    the restored file is HEAD's committed copy. Only what this PR withholds from
+    the updater is touched (`.claude/state/` exhaust is not system state, so it is
+    never reverted). A dry run reaches here too, but it runs in the updater's
+    disposable model, never the live instance.
+
+    Lossless: a working copy the checkout would overwrite is copied out first,
+    and if any copy fails nothing is restored. A held path new to HEAD is only
+    unstaged, never removed from disk; the guard reads tracked changes only.
+    Returns the restored paths.
+    """
+    held = sorted(p for p in held if isinstance(classify(p), tuple)
+                  and classify(p)[0] in SYSTEM_STATE_TYPES)
+    if not held:
+        return []
+    r = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"]
+                       + held, cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"auto-commit: cannot read HEAD; {len(held)} held .claude/ path(s) "
+              "left as they are", file=sys.stderr)
+        return []
+    in_head = [p for p in held if p in set(r.stdout.split("\0"))]
+    base = os.environ.get(HELD_DIR_ENV) or os.path.join(
+        os.path.expanduser("~"), ".local", "state", "kipi", "auto-commit-held-claude")
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
+    copy_dir = os.path.join(base, stamp)
+    try:
+        for p in in_head:
+            src = os.path.join(cwd, p)
+            if os.path.lexists(src):
+                dst = os.path.join(copy_dir, p)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst, follow_symlinks=False)
+    except OSError as e:
+        print(f"auto-commit: could not keep a copy ({e}); nothing restored",
+              file=sys.stderr)
+        return []
+    # Index first, then the tree: a failed checkout leaves an unstaged change, which
+    # the guard still sees, never a staged one the updater's commit could take.
+    steps = [["git", "reset", "-q", "HEAD", "--"] + held]
+    if in_head:
+        steps.append(["git", "checkout", "HEAD", "--"] + in_head)
+    for cmd in steps:
+        rr = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        if rr.returncode != 0:
+            print(f"auto-commit: restore step failed ({rr.stderr.strip()[:200]})",
+                  file=sys.stderr)
+            return []
+    row = {"ts": stamp, "repo": os.path.abspath(cwd), "restored": in_head,
+           "unstaged_new": [p for p in held if p not in in_head],
+           "copies": copy_dir if os.path.isdir(copy_dir) else None,
+           "why": "ASK-4386: an unattended .claude/ loss is restored from HEAD, "
+                  "never committed"}
+    try:
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "restored.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except OSError as e:
+        print(f"auto-commit: restored, but the ledger row failed ({e})", file=sys.stderr)
+    print(f"auto-commit: restored {len(in_head)} held .claude/ path(s) from HEAD "
+          f"(ASK-4386): {', '.join(in_head)}", file=sys.stderr)
+    return in_head
 
 
 # The commit-msg gate owns "which issue does this branch name" (ASK-4386). Asking
@@ -513,8 +620,10 @@ def commit_group(commit_type, message, files):
     # session belonged to, so it declares itself as a bypass rather than being
     # silently blocked -- which would kill the safety net that makes work
     # survive a context loss or a parallel-session branch switch.
-    # Consequence on purpose: every auto-commit shows up in the bypass ledger,
-    # so "how much work never reached Linear" is a number, not a guess.
+    # Consequence on purpose: every auto-commit on a branch that names no issue
+    # shows up in the bypass ledger, so "how much work never reached Linear" is a
+    # number, not a guess. On an issue branch it names the issue instead (below),
+    # so it is linked work and writes no ledger row.
     body_lines.append("")
     # ASK-4386: on a branch cut for an issue the bypass is refused by the gate,
     # because the issue IS known: three bypass commits on sana/ask-4309 carried a
@@ -1313,10 +1422,18 @@ if __name__ == "__main__":
     # `--system-state`: read paths on stdin, print the subset the FLEET SYNC may
     # commit unattended. This is the shared-classifier chokepoint for ASK-605 --
     # kipi-update.sh shells this instead of keeping a second list that drifts.
-    # Pure and side-effect free: it touches no git state and commits nothing.
+    # It commits nothing. Its one write is restore_held_claude: a .claude/ loss
+    # the updater may not commit goes back to HEAD, or the instance never syncs
+    # again (PR #738 round 1). With nothing held it touches no git state.
     if "--system-state" in sys.argv:
-        for path in system_state_paths(
-                [ln.strip() for ln in sys.stdin if ln.strip()]):
+        lines = [ln.strip() for ln in sys.stdin if ln.strip()]
+        # The updater feeds porcelain v1, where a staged rename is one line,
+        # "old -> new". Both names count, or the rename's old half is invisible.
+        names = [n for ln in lines for n in ln.split(" -> ")]
+        held = held_claude_paths(names, os.getcwd())
+        restore_held_claude(held, os.getcwd())
+        held |= {ln for ln in lines if set(ln.split(" -> ")) & held}
+        for path in system_state_paths(lines, held=held):
             print(path)
         sys.exit(0)
     if DETACH_FLAG in sys.argv and os.environ.get(WORKER_ENV) != "1" \

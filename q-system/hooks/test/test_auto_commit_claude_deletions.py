@@ -130,6 +130,101 @@ class ClaudeDeletionsAreHeld(Scratch):
         self.assertNotIn("keep.md", git(self.repo, "ls-files").stdout)
 
 
+class RenamesNeverHalfCommit(Scratch):
+    """PR #738 round 1 (major): the delete half was held, the add half landed, and
+    HEAD carried both names, which kipi update then fans out."""
+
+    def assert_one_name_at_head(self, out):
+        names = git(self.repo, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
+        self.assertIn(".claude/rules/keep.md", names, out)
+        self.assertNotIn(".claude/rules/renamed.md", names,
+                         "the rename's add half committed beside its held delete:\n" + out)
+
+    def test_unstaged_rename_commits_neither_half(self):
+        os.rename(os.path.join(self.repo, ".claude/rules/keep.md"),
+                  os.path.join(self.repo, ".claude/rules/renamed.md"))
+        self.assert_one_name_at_head(self.run_hook().stdout)
+
+    def test_staged_rename_commits_neither_half(self):
+        git(self.repo, "mv", ".claude/rules/keep.md", ".claude/rules/renamed.md")
+        self.assert_one_name_at_head(self.run_hook().stdout)
+
+
+class SystemStateRestoresHeldLosses(Scratch):
+    """PR #738 round 1 (blocking major): a held loss dropped from --system-state
+    stayed dirty inside the updater's own guard scope, so kipi update abandoned
+    that instance on every run. HEAD is the truth there: put it back."""
+
+    def setUp(self):
+        super().setUp()
+        self.held_dir = os.path.join(self.tmp, "held-claude")
+        self.env["KIPI_AUTOCOMMIT_HELD_DIR"] = self.held_dir
+
+    def system_state(self):
+        # The updater's exact feed: `git status --porcelain -uall | cut -c4-`.
+        st = git(self.repo, "status", "--porcelain", "-uall").stdout
+        feed = "".join(ln[3:] + "\n" for ln in st.splitlines())
+        r = subprocess.run([sys.executable, HOOK, "--system-state"], cwd=self.repo,
+                           env=self.env, input=feed, capture_output=True, text=True,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.split("\n"), r.stderr
+
+    def assert_guard_clean(self, err):
+        # kipi-update.sh's dirty-tree guard, the same two reads it makes.
+        for args in (("diff", "--cached", "--quiet", "--", ".claude/"),
+                     ("diff", "--quiet", "--", ".claude/")):
+            r = git(self.repo, *args)
+            self.assertEqual(r.returncode, 0, "the updater guard still refuses: "
+                             + git(self.repo, "status", "--short").stdout + err)
+
+    def test_held_deletion_is_restored_so_the_instance_still_syncs(self):
+        os.remove(os.path.join(self.repo, ".claude/rules/keep.md"))
+        self.write("q-system/memory/notes.md", "base\nmore\n")
+        out, err = self.system_state()
+        self.assertNotIn(".claude/rules/keep.md", out, "the updater was told to commit a deletion")
+        self.assertIn("q-system/memory/notes.md", out, "control: system state still flows")
+        self.assert_guard_clean(err)
+        with open(os.path.join(self.repo, ".claude/rules/keep.md")) as fh:
+            self.assertEqual(fh.read(), "rule one\nrule two\nrule three\n")
+
+    def test_staged_deletion_is_restored(self):
+        git(self.repo, "rm", "-q", ".claude/rules/keep.md")
+        out, err = self.system_state()
+        self.assertNotIn(".claude/rules/keep.md", out)
+        self.assert_guard_clean(err)
+
+    def test_line_loss_is_restored_and_the_working_copy_is_kept(self):
+        self.write(".claude/rules/other.md", "a\n")
+        out, err = self.system_state()
+        self.assert_guard_clean(err)
+        kept = []
+        for root, _, files in os.walk(self.held_dir):
+            for f in files:
+                if f == "other.md":
+                    with open(os.path.join(root, f)) as fh:
+                        kept.append(fh.read())
+        self.assertEqual(kept, ["a\n"], "the overwritten working copy was not kept")
+        with open(os.path.join(self.held_dir, "restored.jsonl")) as fh:
+            self.assertIn(".claude/rules/other.md", fh.read())
+
+    def test_staged_rename_restores_the_old_name_and_commits_neither(self):
+        git(self.repo, "mv", ".claude/rules/keep.md", ".claude/rules/renamed.md")
+        out, err = self.system_state()
+        self.assertFalse([p for p in out if "renamed.md" in p or "keep.md" in p], out)
+        self.assert_guard_clean(err)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, ".claude/rules/renamed.md")),
+                        "the new name was deleted from disk")
+
+    def test_negative_self_test_nothing_held_writes_nothing(self):
+        # A pure .claude/ addition is still system state, and no loss means the
+        # classifier stays read-only: no restore, no state directory.
+        self.write(".claude/rules/new.md", "fresh\n")
+        out, _ = self.system_state()
+        self.assertIn(".claude/rules/new.md", out)
+        self.assertFalse(os.path.exists(self.held_dir), "a restore ran with nothing held")
+
+
 class IssueBranchCommitsNameTheIssue(Scratch):
     branch = "sana/ask-4309"
 
