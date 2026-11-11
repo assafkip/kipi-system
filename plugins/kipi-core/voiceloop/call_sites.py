@@ -117,7 +117,7 @@ def is_py_fleet_door_call(node) -> bool:
                and _door_attr(k.value.func, PY_DOOR_RUNNERS) for k in node.keywords)
 
 
-_FLAG_TOKEN =re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
+_FLAG_TOKEN = re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 # Tokens that stand in front of a command without being one, and the flags of
