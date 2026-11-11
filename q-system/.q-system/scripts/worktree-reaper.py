@@ -25,8 +25,9 @@ NEVER rm. Removal is `git worktree remove` WITHOUT --force, so git itself
 refuses a tree that is not clean, and no ref is ever deleted. A branch tree's
 commits stay on its branch. A review tree is DETACHED and has no branch, so it
 goes only when its HEAD is on a remote-tracking ref (review_worktree puts the
-reviewed head on refs/remotes/pr/<N>); otherwise it is kept as "detached HEAD
-is on no remote ref". Either way a removed worktree loses no commit. A review
+reviewed head on refs/remotes/pr/<N>) or GitHub itself serves that commit
+(refs/pull/<N>/head keeps it after _wt_bail deletes the local ref); otherwise it
+is kept. Either way a removed worktree loses no commit. A review
 tree is also CLAIMED through pr-review-agent.sh's own lock protocol before it is
 removed (see _claim_review_tree). If the open-process census cannot be taken
 (lsof fails), nothing is removed that run.
@@ -54,6 +55,7 @@ ALERT = os.path.join(HERE, "alert-to-linear.py")
 DEFAULTS = {"roots": [], "min_idle_hours": 6, "alarm_below_gb": 10,
             "refuse_worktree_below_gb": 5}
 LOOKUP_FAILED = "PR lookup failed"
+COMMIT_LOOKUP_FAILED = "commit lookup failed"
 # pr-review-agent.sh review_tree_path: <state>/review-trees/<artifact_key>__pr-<N>.
 REVIEW_TREE = re.compile(r"^(?P<key>.+)__pr-(?P<n>[0-9]+)$")
 # acquire_wt_lock's mutex: ONE per review-trees directory, never unlinked.
@@ -321,6 +323,26 @@ class Repo:
                       f"its unmerged trees are kept")
         return self._prs
 
+    def on_github(self, sha: str) -> bool | None:
+        """GitHub serves this commit (True), says it has none (False), or the
+        lookup failed (None). PR #731 round 2, finding 1: _wt_bail deletes
+        refs/remotes/pr/<N> and leaves the tree, so the remote-ref check alone kept
+        such a tree forever while its HEAD, a PR head, sat on GitHub."""
+        slug = self.slug()
+        if not slug:
+            return False
+        try:
+            out = subprocess.run(["gh", "api", f"repos/{slug}/commits/{sha}", "--jq", ".sha"],
+                                 capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if out.returncode == 0:
+            return True if out.stdout.strip() == sha else None
+        # 404: no such repo or commit. 422: "No commit found for SHA". Anything
+        # else (TLS, auth, rate limit) is a failed lookup, not an answer.
+        err = out.stderr or ""
+        return False if ("HTTP 404" in err or "HTTP 422" in err) else None
+
     def review_pr(self, wt: str) -> int | None:
         """N for review-trees/<key>__pr-<N> when <key> is THIS repo's key, else None.
         Detached at the head it reviewed, such a tree matches no PR by headRefOid
@@ -375,7 +397,11 @@ def verdict(wt: str, repos: dict, held: list[str], cfg: dict, now: float) -> tup
     if open_:
         return False, f"PR #{open_[0].get('number')} is open"
     if n is not None and not _on_remote_ref(wt, head):
-        return False, "detached HEAD is on no remote ref"
+        on_gh = repo.on_github(head)
+        if on_gh is None:
+            return False, COMMIT_LOOKUP_FAILED
+        if not on_gh:
+            return False, "detached HEAD is on no remote ref and not on GitHub"
     p = mine[0]
     return True, f"PR #{p.get('number')} {str(p.get('state')).lower()}"
 
@@ -437,7 +463,10 @@ def run(cfg: dict, apply: bool, now: float | None = None) -> dict:
                     continue
             try:
                 live = held_dirs()
-                if live is None or _in_use(wt, live):
+                if live is None:   # PR #731 round 2, finding 2: say what happened
+                    kept.append((wt, "process census failed"))
+                    continue
+                if _in_use(wt, live):
                     kept.append((wt, "a process is working in it"))
                     continue
                 done, err = remove(wt)

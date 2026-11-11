@@ -385,13 +385,49 @@ def test_an_empty_review_lock_counts_only_while_fresh(env, age_s, kept):
         assert out["removed"] == [os.path.realpath(wt)]
 
 
+def _gh_commit_api(env, api_body):
+    """gh stub: `gh api ...` runs api_body, anything else prints the PR list."""
+    _gh_says(env, f'if [ "$1" = api ]; then\n{api_body}\nfi\ncat \'{env.prs}\'\n')
+
+
 def test_a_review_tree_whose_head_is_on_no_remote_ref_is_kept(env):
-    # Finding 3. A detached tree has no branch ref to keep its commits, so
-    # "loses no commit" holds only when HEAD is on a remote-tracking ref.
+    # Round 1, finding 3. A detached tree has no branch ref to keep its commits,
+    # so "loses no commit" needs HEAD on a remote ref, or on GitHub itself.
     wt = _review_tree(env, 12, fetched=False)
     env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    _gh_commit_api(env, "echo 'gh: No commit found for SHA (HTTP 422)' >&2\nexit 1")
     out = mod.run(env.cfg, apply=True, now=LATER)
-    assert out["kept"][os.path.realpath(wt)] == "detached HEAD is on no remote ref"
+    assert out["kept"][os.path.realpath(wt)] == "detached HEAD is on no remote ref and not on GitHub"
+    assert wt.exists()
+
+
+def test_a_bailed_review_tree_whose_head_github_has_is_removed(env):
+    # Round 2, finding 1. _wt_bail deletes refs/remotes/pr/<N> and leaves the
+    # tree; its HEAD is a PR head GitHub keeps, so the remote-ref gate alone
+    # would keep it forever.
+    wt = _review_tree(env, 12, fetched=False)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    _gh_commit_api(env, f"echo {git(wt, 'rev-parse', 'HEAD')}\nexit 0")
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["removed"] == [os.path.realpath(wt)]
+
+
+def test_a_failed_commit_lookup_keeps_the_tree_under_its_own_reason(env):
+    wt = _review_tree(env, 12, fetched=False)
+    env.prs.write_text(json.dumps([_pr(12, "MERGED")]))
+    _gh_commit_api(env, "echo 'TLS handshake timeout' >&2\nexit 1")
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "commit lookup failed"
+
+
+def test_a_failed_census_at_remove_time_is_not_called_a_process(env, monkeypatch):
+    # Round 2, finding 2: lsof failing at the per-tree re-check read as
+    # "a process is working in it" when nothing was.
+    wt = env.make("done", merged=True)
+    censuses = iter([[], None])
+    monkeypatch.setattr(mod, "held_dirs", lambda: next(censuses))
+    out = mod.run(env.cfg, apply=True, now=LATER)
+    assert out["kept"][os.path.realpath(wt)] == "process census failed"
     assert wt.exists()
 
 
