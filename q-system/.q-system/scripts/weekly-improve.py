@@ -152,7 +152,17 @@ def input_count(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAY
 
 
 def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> tuple:
-    """(message, degraded)."""
+    """(message, degraded): the full report, which goes to his app Chat."""
+    message, degraded, _phone = report(friction_path, inbox, now=now, days=days)
+    return message, degraded
+
+
+def report(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> tuple:
+    """(message, degraded, phone). `phone` is what his phone shows: each input's state
+    in plain words and nothing chief's gate refuses (ASK-4479 S2). A proposal cites a
+    friction excerpt, and an excerpt can carry a path, an id or a dash; chief refused
+    the whole message for one and filed it to Sana, so he got nothing. The excerpts
+    stay in `message`, saved to the app Chat behind the link on the phone line."""
     now = now or dt.datetime.now().astimezone()
     all_rows, error = read_friction(friction_path)
     lines = ["*Weekly improve*", ""]
@@ -160,6 +170,7 @@ def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> 
     if error:
         lines += ["*Friction*", f"  COULD NOT READ: {error}"]
         degraded = True
+        fstate = "could not be read"
     else:
         rows = [r for r in all_rows if in_window(r, now, days)]
         older = len(all_rows) - len(rows)
@@ -168,13 +179,18 @@ def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> 
         fpath = Path(friction_path) if friction_path else FRICTION_FILE
         if not fpath.exists():
             lines.append(f"  Friction: input missing, no {fpath.name} exists (nothing has ever written one)")
+            fstate = "input missing"
         elif not all_rows:
             lines.append(f"  Friction: input empty, {fpath.name} has no rows")
+            fstate = "input empty"
         elif not rows:
             last = max(_day(r.get("at", "")) for r in all_rows)
             lines.append(f"  Friction: no new rows in {days} days, last row {last}")
+            fstate = f"no new rows in {days} days"
         else:
             lines += [f"  {p}" for p in proposals] or ["  nothing proposable this week"]
+            fstate = f"{len(proposals)} to propose" + (
+                f", {len(refused)} refused as outside system scope" if refused else "")
             if refused:
                 lines.append(f"  refused {len(refused)} line(s) outside system scope: {', '.join(refused)}")
         if older:
@@ -183,19 +199,24 @@ def build(friction_path=None, inbox=None, now=None, days: int = WINDOW_DAYS) -> 
     lines += ["", "*Skill proposals inbox*"]
     if ierr:
         lines.append(f"  COULD NOT READ: {ierr}")
+        istate = "could not be read"
         degraded = True
     elif not files:
         idir = Path(inbox) if inbox else INBOX_DIR
         if not idir.is_dir():
             lines.append("  Skill proposals inbox: input missing, no inbox directory exists")
+            istate = "input missing"
         else:
+            istate = "input empty"
             stamps = [p.stat().st_mtime for p in idir.iterdir() if p.is_file()]
             last = dt.datetime.fromtimestamp(max(stamps), dt.timezone.utc).strftime("%Y-%m-%d") if stamps else None
             lines.append(f"  Skill proposals inbox: input empty, last file {last}" if last
                          else "  Skill proposals inbox: input empty, no file has ever landed")
     else:
         lines += [f"  {f}" for f in files]
-    return "\n".join(lines), degraded
+        istate = f"{len(files)} new"
+    phone = "\n".join(["Weekly improve", f"Friction: {fstate}.", f"Skill proposals inbox: {istate}."])
+    return "\n".join(lines), degraded, phone
 
 
 def main(argv=None) -> int:
@@ -215,13 +236,14 @@ def main(argv=None) -> int:
             return 1
         print(input_count(args.friction, args.inbox))
         return 0
-    message, degraded = build(args.friction, args.inbox)
+    message, degraded, line = report(args.friction, args.inbox)
     print(message)
+    print(f"\n[phone] {line}")
     if args.dry_run:
         print("\n[dry-run] nothing sent")
         return 1 if degraded else 0
     sender = _load_sibling("founder_notify", "founder_notify.py")
-    result = sender.deliver(message)
+    result = sender.deliver(line, detail=message)
     print(f"\n[send] {json.dumps(result)}")
     if not result.get("delivered"):
         return 1

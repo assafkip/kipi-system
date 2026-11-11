@@ -158,6 +158,12 @@ def _digest(tmp_path, monkeypatch, phone_text):
     for fetched in ((nodes, nodes, None), ([], [], "HTTPError: HTTP Error 401: Unauthorized")):
         monkeypatch.setattr(mod, "fetch", lambda _since, f=fetched: f)
         mod.main()
+    assert len(sent) == 2, sent
+    return _texts(sent, phone_text)
+
+
+def _texts(sent, phone_text):
+    """What post_to receives for each captured deliver(message, detail) call."""
     texts = []
     for message, detail in sent:
         if detail:
@@ -166,7 +172,6 @@ def _digest(tmp_path, monkeypatch, phone_text):
                       FN.with_detail(message, None, phone_text.APP_LINK)]
         else:
             texts.append(message)
-    assert len(sent) == 2, sent
     return texts
 
 
@@ -188,17 +193,40 @@ def _browser_health(tmp_path, monkeypatch, phone_text):
             mod._message(prof, surf, {"at": "2026-11-11T09:00:00-08:00"}, "alive")]
 
 
+#: A friction line naming a file, the way a real one does. The path sits inside the
+#: 60-character excerpt, after a space: chief's code-path marker needs the space.
+_FRICTION_PATH = ".q-system/scripts/morning-brief.py"
+
+
 def _weekly_improve(tmp_path, monkeypatch, phone_text):
+    """main() itself, with founder_notify swapped for a recorder, so the census reads
+    exactly what weekly-improve hands deliver()."""
     mod = _load("weekly_improve_census", "weekly-improve.py")
-    now = dt.datetime(2026, 11, 11, 6, 30, tzinfo=dt.timezone.utc)
+    at = (dt.datetime.now().astimezone() - dt.timedelta(days=1)).isoformat(timespec="seconds")
     ledger = tmp_path / "friction.jsonl"
     ledger.write_text("".join(json.dumps(r) + "\n" for r in (
-        {"id": "fr-2026-11-10-01", "at": "2026-11-10T10:00:00+00:00", "target": "rule",
+        {"id": "fr-2026-11-10-01", "at": at, "target": "rule",
          "text": "the brief lists Sana's tickets as mine, change the owner rule"},
-        {"id": "fr-2026-11-10-02", "at": "2026-11-10T11:00:00+00:00", "target": "rule",
+        {"id": "fr-2026-11-10-03", "at": at, "target": "rule",
+         "text": f"the owner rule in {_FRICTION_PATH} shows Sana's tickets as mine"},
+        {"id": "fr-2026-11-10-02", "at": at, "target": "rule",
          "text": "sell the brief as a product to founders"})))
-    return [mod.build(ledger, tmp_path / "no-inbox", now=now)[0],
-            mod.build(tmp_path / "absent.jsonl", tmp_path / "no-inbox", now=now)[0]]
+    sent, real = [], mod._load_sibling
+
+    class _Recorder:
+        @staticmethod
+        def deliver(message, detail=None):
+            sent.append((message, detail))
+            return {"delivered": True}
+
+    monkeypatch.setattr(mod, "_load_sibling",
+                        lambda stem, filename: _Recorder if stem == "founder_notify" else real(stem, filename))
+    for friction in (ledger, tmp_path / "absent.jsonl"):
+        mod.main(["--friction", str(friction), "--inbox", str(tmp_path / "no-inbox")])
+    assert len(sent) == 2, sent
+    # Not vacuous: the path line was proposed, so its excerpt is in what went out.
+    assert any(_FRICTION_PATH in (detail or message) for message, detail in sent), sent
+    return _texts(sent, phone_text)
 
 
 CASES = {
