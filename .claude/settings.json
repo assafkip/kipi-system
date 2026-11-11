@@ -530,7 +530,7 @@
           },
           {
             "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit 2; }; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py crashed (exit $rc): the gate cannot run\" >&2; exit 2; }; exit \"$rc\"",
+            "command": "hook_in=$(cat); case \"$hook_in\" in *'\"stop_hook_active\":true'*|*'\"stop_hook_active\": true'*) hold=0 ;; *) hold=2 ;; esac; test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit \"$hold\"; }; printf '%s\\n' \"$hook_in\" | python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py crashed (exit $rc): the gate cannot run\" >&2; exit \"$hold\"; }; exit \"$rc\"",
             "timeout": 30
           },
           {

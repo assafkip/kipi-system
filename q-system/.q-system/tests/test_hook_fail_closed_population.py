@@ -452,7 +452,7 @@ def test_voice_template_and_skeleton_agree():
     assert template == skeleton, sorted(template ^ skeleton)
 
 
-def _run_voice(command, tree, body):
+def _run_voice(command, tree, body, stdin="{}"):
     """Run a wired command as the harness does: through sh, the project dir set."""
     scripts = tree / "q-system" / ".q-system" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
@@ -461,7 +461,7 @@ def _run_voice(command, tree, body):
         (scripts / gate).write_text(body)
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["CLAUDE_PROJECT_DIR"] = str(tree)
-    return gate, subprocess.run(["/bin/sh", "-c", command], input="{}", env=env,
+    return gate, subprocess.run(["/bin/sh", "-c", command], input=stdin, env=env,
                                 capture_output=True, text=True, timeout=60)
 
 
@@ -495,6 +495,95 @@ def test_voice_gate_verdict_passes_through(tmp_path, entry):
                        "import sys\nsys.stderr.write('GATE-REFUSED')\nsys.exit(2)\n")
     assert no.returncode == 2 and "GATE-REFUSED" in no.stderr, (no.returncode, no.stderr[-300:])
     assert "crashed" not in no.stderr, no.stderr[-300:]
+
+
+# A broken gate on Stop must not wedge the session (PR #743 review, major). Exit 2
+# on Stop keeps Claude going, and a missing or crashed script is a condition no
+# turn can fix, so an unconditional 2 refuses every stop forever. The hooks docs:
+# "The `stop_hook_active` field is `true` when Claude Code is already continuing as
+# a result of a stop hook. Check this value or process the transcript to avoid
+# blocking on a condition that will never resolve." So the first stop refuses with
+# the message, and the continuation stop is let through with the message again.
+VOICE_STOP = [(e, i) for e, i in zip(VOICE_ENTRIES, VOICE_IDS) if e[1] == "Stop"]
+VOICE_BROKEN = {"missing": (None, "missing: the gate cannot run"),
+                "crash": (f"raise RuntimeError({SENTINEL!r})\n", "crashed (exit 1): the gate cannot run")}
+# Claude Code may serialize with or without the space; both must be read.
+STOP_AGAIN = {"spaced": json.dumps({"hook_event_name": "Stop", "stop_hook_active": True}),
+              "compact": json.dumps({"hook_event_name": "Stop", "stop_hook_active": True},
+                                    separators=(",", ":"))}
+
+
+def test_voice_stop_census_reads_both_files():
+    assert len(VOICE_STOP) == 2, [i for _, i in VOICE_STOP]
+
+
+@pytest.mark.parametrize("form", sorted(STOP_AGAIN))
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_lets_the_continuation_stop_through(tmp_path, entry, broken, form):
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body, stdin=STOP_AGAIN[form])
+    assert proc.returncode == 0, (
+        f"rc={proc.returncode} on a continuation stop with {gate} {broken}: the session "
+        f"is wedged in a refusal no turn can fix")
+    assert f"{gate} {message}" in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("stdin", [
+    json.dumps({"hook_event_name": "Stop", "stop_hook_active": False}),
+    json.dumps({"hook_event_name": "Stop"}),
+    # The field's text inside a message is escaped JSON, not the field itself.
+    json.dumps({"hook_event_name": "Stop", "stop_hook_active": False,
+                "last_assistant_message": 'it sends "stop_hook_active": true'}),
+], ids=["false", "absent", "quoted-in-message"])
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_first_stop_still_refuses(tmp_path, entry, broken, stdin):
+    # Negative control: a wrapper that let every broken stop through would pass the
+    # case above. The first stop must refuse, or the broken gate is never reported.
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body, stdin=stdin)
+    assert proc.returncode == 2, f"rc={proc.returncode} with {gate} {broken}, wanted 2"
+    assert f"{gate} {message}" in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_runs_a_present_gate_unchanged(tmp_path, entry):
+    # The hatch is for a broken gate only. A present gate gets the payload byte for
+    # byte and keeps its own refusal, continuation stop or not.
+    body = ("import sys\nsys.stdout.write(sys.stdin.read())\n"
+            "sys.stderr.write('GATE-REFUSED')\nsys.exit(2)\n")
+    _, proc = _run_voice(entry[3], tmp_path, body, stdin=STOP_AGAIN["spaced"])
+    assert proc.returncode == 2 and "GATE-REFUSED" in proc.stderr, (proc.returncode, proc.stderr)
+    assert json.loads(proc.stdout) == json.loads(STOP_AGAIN["spaced"]), proc.stdout[-300:]
+    assert "cannot run" not in proc.stderr, proc.stderr[-300:]
+
+
+# PR #743 review, major, disposed: "PostToolUse voice-lint wrappers deny every
+# Edit/Write when the script is absent or crashes." They cannot deny it. The hooks
+# docs, exit code 2 table: "| `PostToolUse` | No | Shows stderr to Claude; the
+# tool already ran |". The write has landed before the hook starts, so a broken
+# lint costs a gate-cannot-run notice on each write until `kipi update` restores
+# it, which is the fail-closed signal ASK-4207 exists for. This case pins the half
+# a test can see: the wrapper returns 2 and leaves the written file as it was.
+VOICE_POST = [(e, i) for e, i in zip(VOICE_ENTRIES, VOICE_IDS) if e[1] == "PostToolUse"]
+
+
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_POST], ids=[i for _, i in VOICE_POST])
+def test_voice_post_wrapper_leaves_the_written_file_on_disk(tmp_path, entry, broken):
+    assert len(VOICE_POST) == 6, [i for _, i in VOICE_POST]
+    draft = tmp_path / "notes" / "draft.md"
+    draft.parent.mkdir()
+    draft.write_text("already written by the tool\n")
+    before = draft.stat()
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body,
+                            stdin=json.dumps(_write(draft, "already written by the tool\n")))
+    assert proc.returncode == 2 and f"{gate} {message}" in proc.stderr, (proc.returncode,
+                                                                          proc.stderr[-300:])
+    assert draft.read_text() == "already written by the tool\n"
+    assert draft.stat().st_mtime_ns == before.st_mtime_ns, "the wrapper touched the file"
 
 
 def _settings_merge():
