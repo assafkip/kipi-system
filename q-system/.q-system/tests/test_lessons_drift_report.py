@@ -3,8 +3,9 @@
 issue lr-drift-trigger-proof. A scheduled reporter says what a declared hub
 instance has that the skeleton lacks, resolves both paths from the registry
 (the skeleton entry must be the reporter's own root, so a worktree never
-reports as the skeleton), appends the propagation streak summary, and delivers
-via founder_notify.deliver only when launched by its plist.
+reports as the skeleton), appends the propagation streak summary, and files
+to Sana through engineering_route.to_sana only when launched by its plist and only
+in a week with drift or something unreadable (ASK-4479 S2).
 
 Every tree here is tmp; the registry and hubs file are fixtures.
 """
@@ -145,7 +146,7 @@ def test_streak_summary_is_appended(tmp_path):
     assert "streak 4, 0 escalations in 30d" in r.stdout, r.stdout
 
 
-def test_delivery_goes_through_founder_notify_and_is_refused_under_pytest(tmp_path):
+def test_delivery_goes_to_sana_and_is_refused_under_pytest(tmp_path):
     root, hub = _fixture(tmp_path)
     (hub / "q-system" / "lessons" / "only-here.md").write_text("---\ntitle: only here\n---\nx\n")
     m = _mod()
@@ -185,8 +186,8 @@ def test_loading_helpers_leaves_the_bytecode_flag_as_it_found_it(tmp_path):
 
 def test_never_references_the_fleet_alert_path():
     src = REPORT.read_text()
-    assert "slack-notify" not in src, "founder-facing; never the Linear alert path"
-    assert "founder_notify" in src
+    assert "slack-notify" not in src, "files through the engineering_route sibling, never the script"
+    assert "engineering_route" in src
 
 
 def test_plist_template_runs_it_monday_0645_with_the_trigger_marker():
@@ -242,6 +243,7 @@ def test_a_launchd_run_whose_delivery_fails_exits_nonzero_and_a_delivered_one_ex
     launched by the plist and not delivered is a failure; printed-not-sent
     (no plist marker) and dry-run stay 0 because nothing was owed."""
     root, hub = _fixture(tmp_path)
+    (hub / "q-system" / "lessons" / "only-here.md").write_text("---\ntitle: only here\n---\nx\n")
     m = _mod()
     monkeypatch.setenv("KIPI_TRIGGER", "launchd")
     assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": False, "refused": True}) == 2
@@ -264,7 +266,9 @@ def test_single_caller_the_plist_template_is_the_only_one_in_the_tree():
     root = HERE.parent.parent.parent
     out = subprocess.run(["git", "-C", str(root), "grep", "-l", "--", "lessons-drift-report.py"], capture_output=True, text=True).stdout
     rel = sorted(l for l in out.splitlines() if l and not l.startswith(".prd-os/"))
+    # The census lists it in ROUTED_TO_SANA: a check on its route, not a caller (ASK-4479 S2).
     assert rel == ["q-system/.q-system/scripts/com.kipi.lessons-drift.plist",
+                   "q-system/.q-system/tests/test_founder_message_census.py",
                    "q-system/.q-system/tests/test_lessons_drift_report.py"], rel
 
 
@@ -278,5 +282,22 @@ def test_this_file_runs_its_own_tests_under_python3():
     assert none.returncode != 0
 
 
+
+def test_a_week_with_no_drift_files_nothing_and_exits_zero(tmp_path, monkeypatch):
+    """ASK-4479 S2: on Sana's queue a weekly "no drift" ticket is noise, and an open
+    ticket that says nothing is how a queue stops being read. Owed is drift or an
+    unreadable input; a clean week is silent and still exits 0."""
+    root, hub = _fixture(tmp_path)
+    m = _mod()
+    calls = []
+    out = m.run(root=root, deliver=lambda msg: calls.append(msg) or {"delivered": True}, dry_run=False,
+                trigger="launchd")
+    assert calls == [] and out["delivery"]["skipped"] is True, out
+    assert "nothing to file" in out["delivery"]["reason"]
+    monkeypatch.setenv("KIPI_TRIGGER", "launchd")
+    assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": False}) == 0
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
+

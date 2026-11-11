@@ -52,6 +52,17 @@ _SKIP_PREFIX = (
     ".review-scratch/",
     "q-system/output/",
     "q-system/.q-system/tests/test_no_slack_bots.py",
+    # This file reaches every instance through kipi update, where REPO is the
+    # instance root. These are consulting's exclusions, the same ones its twin
+    # (q-consult/pipeline/tests/test_no_slack_bots.py) carries, so the census is
+    # green in both repos (PR #519 review, minor): the secret scanners hold token
+    # SHAPES on purpose, output is generated, and SEND_SHAPES in test_bookings.py
+    # is a detector list that sends nothing.
+    "q-consult/output/",
+    "gtm/scripts/secret_scan/",
+    "gtm/scripts/env_ref_scan/",
+    "q-consult/pipeline/tests/test_no_slack_bots.py",
+    "q-consult/pipeline/tests/test_bookings.py",
 )
 
 

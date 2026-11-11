@@ -24,6 +24,8 @@ SCRIPT = os.path.join(HERE, "..", "scripts", "founder_notify.py")
 
 _FAKE_PHONE_TEXT = '''
 APP_LINK = "https://app.example.invalid"
+def plain_links(text):
+    return text or ""
 DM_MAX_CHARS = 2000
 DM_MAX_LINES = 20
 SAVE_OK = {ok}
@@ -31,6 +33,11 @@ def fits(answer):
     t = (answer or "").strip()
     return len(t) <= DM_MAX_CHARS and t.count("\\n") < DM_MAX_LINES
 def save_long(text):
+    import os
+    where = os.environ.get("FAKE_SAVES")
+    if where:
+        with open(where, "a") as fh:
+            fh.write(text + chr(0))
     return "row1" if SAVE_OK else None
 def dm_length(answer, saver=None):
     text = (answer or "").strip()
@@ -39,7 +46,7 @@ def dm_length(answer, saver=None):
     first = next((l.strip() for l in text.splitlines() if l.strip()), "")
     saved = (saver or save_long)(text)
     if saved:
-        return first + "\\nFull answer is in the app Chat: " + APP_LINK + "/chat?m=" + saved
+        return first + "\\nFull answer is in the app Chat: " + APP_LINK + ("/chat?m=" + saved if isinstance(saved, str) else "/chat")
     return text[:DM_MAX_CHARS - 60] + "\\n(cut: the full text could not be saved to the app)"
 '''
 
@@ -51,7 +58,18 @@ def post_to(chat, text, label, saver=None):
     line = phone_text.dm_length(shown, saver=saver)
     if os.environ.get("FAKE_HOLD"):
         return {"delivered": True, "held": True, "reason": "kept for retry: down"}
-    return {"delivered": True, "refused": False, "chat": chat, "sent": line}
+    return {"delivered": True, "refused": False, "chat": chat, "sent": line, "got": text}
+'''
+
+_FAKE_PING_GATE = '''
+def unquote(s):
+    return s or ""
+def check_whatsapp(text, alert_class=None):
+    if (text or "").count(chr(10)) >= 20:
+        return {"send": False, "reasons": ["too-long"], "words": []}
+    if "REFUSE-ME" in (text or ""):
+        return {"send": False, "reasons": ["engineering-on-whatsapp"], "words": ["ASK id"]}
+    return {"send": True, "reasons": [], "words": []}
 '''
 
 
@@ -70,6 +88,8 @@ def _fake_chief(root, save_ok=True):
         f.write(_FAKE_PHONE_TEXT.format(ok=save_ok))
     with open(os.path.join(pkg, "telegram_out.py"), "w") as f:
         f.write(_FAKE_TELEGRAM_OUT)
+    with open(os.path.join(pkg, "ping_gate.py"), "w") as f:
+        f.write(_FAKE_PING_GATE)
 
 
 class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
@@ -105,11 +125,17 @@ class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
         self.assertTrue(res["saved"])
         self.assertTrue(res["link"].endswith("/chat"), res)
 
-    def test_collapsed_with_failed_save_says_saved_false(self):
+    def test_a_long_message_whose_save_fails_is_gated_as_post_will_gate_it(self):
+        """PR #749 review round 2, minor 3: with the app save down, _post's dm_length
+        keeps the whole text (cut to 1940 chars) and the gate refuses it too-long. The
+        pre-check gated a stand-in link line instead and passed. It must see what
+        _post sees: refused, nothing posted, and the save failing too means no
+        fallback line either."""
         body = "\n".join(f"row {i}" for i in range(40))
         res = self._deliver(body, save_ok=False)
-        self.assertTrue(res.get("collapsed"))
-        self.assertFalse(res["saved"])
+        self.assertFalse(res["delivered"], res)
+        self.assertTrue(res.get("fallback"), res)
+        self.assertIn("too-long", res.get("gate_reasons") or [], res)
 
     def test_held_key_is_carried(self):
         res = self._deliver("short note", hold=True)
@@ -135,6 +161,90 @@ class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
         for text in ("a", "\n".join("x" * 5 for _ in range(19)), "\n".join("x" for _ in range(20)),
                      "y" * 2000, "y" * 2001):
             self.assertEqual(rm.fits(text), ns["fits"](text), repr(text[:20]))
+
+
+
+class TestDetailAndVerdict(unittest.TestCase):
+    """ASK-4479 S2. The detail path (the digest's full list behind the app link) and
+    the rule that chief saying nothing is not a delivery."""
+
+    def setUp(self):
+        self.mod = _load()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(self.mod, "_under_test", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _child(self, message, detail, save_ok=True, kind=None):
+        """deliver() against the fake chief, keeping the child's own JSON."""
+        import subprocess
+        _fake_chief(self.tmp.name, save_ok)
+        seen = {}
+
+        def runner(a, c, t):
+            done = subprocess.run(a, cwd=c, capture_output=True, text=True, timeout=t)
+            seen["answer"] = json.loads(done.stdout.strip().splitlines()[-1])
+            return done.returncode, done.stdout
+
+        with mock.patch.dict(os.environ, {"KIPI_CHIEF_ROOT": self.tmp.name}):
+            os.environ.pop("KIPI_FOUNDER_NOTIFY_CMD", None)
+            res = self.mod.deliver(message, runner=runner, timeout=30, detail=detail, kind=kind)
+        return res, seen["answer"]
+
+    def test_the_child_sends_exactly_what_with_detail_composes(self):
+        res, answer = self._child("Linear today: 1 closed, 0 opened.", "ASK-1 the full list")
+        self.assertEqual(answer["got"], self.mod.with_detail(
+            "Linear today: 1 closed, 0 opened.", "row1", "https://app.example.invalid"))
+        self.assertTrue(res["delivered"] and res["detail_saved"], res)
+
+    def test_a_failed_save_says_so_on_the_phone_line(self):
+        res, answer = self._child("Linear today: 1 closed, 0 opened.", "ASK-1 the full list", save_ok=False)
+        self.assertEqual(answer["got"], self.mod.with_detail(
+            "Linear today: 1 closed, 0 opened.", None, "https://app.example.invalid"))
+        self.assertIn(self.mod.DETAIL_UNSAVED, answer["got"])
+        self.assertFalse(res["detail_saved"], res)
+
+    def test_no_detail_sends_the_message_unchanged(self):
+        res, answer = self._child("short note", None)
+        self.assertEqual(answer["got"], "short note")
+        self.assertNotIn("detail_saved", res)
+
+    def test_a_message_chief_would_refuse_goes_out_as_the_fallback_line(self):
+        """PR #749 review, major 2: the refused text never reaches post_to (that call is
+        what files the Sana ticket); the full text is saved and one clean line goes."""
+        saves = os.path.join(self.tmp.name, "saves.bin")
+        with mock.patch.dict(os.environ, {"FAKE_SAVES": saves}):
+            res, answer = self._child("brief with REFUSE-ME inside", None, kind="Morning brief")
+        self.assertTrue(res["delivered"] and res["fallback"] and res["full_saved"], res)
+        self.assertEqual(answer["got"], self.mod.fallback_line("Morning brief", "row1", "https://app.example.invalid"))
+        with open(saves) as fh:
+            self.assertIn("brief with REFUSE-ME inside", fh.read())
+
+    def test_a_refusal_whose_save_fails_is_undelivered_and_never_posted(self):
+        res, answer = self._child("brief with REFUSE-ME inside", None, save_ok=False)
+        self.assertFalse(res["delivered"], res)
+        self.assertTrue(res["fallback"] and not res["full_saved"], res)
+        self.assertNotIn("got", answer, "post_to ran with a text chief refuses")
+
+    def test_an_empty_message_is_undelivered_and_nothing_is_saved(self):
+        """PR #749 review round 2, minor 4: an empty message became a fallback and
+        delivered a link to a blank app note. Before this PR chief said "empty"."""
+        saves = os.path.join(self.tmp.name, "saves.bin")
+        with mock.patch.dict(os.environ, {"FAKE_SAVES": saves}):
+            res, answer = self._child("   ", None, kind="Morning brief")
+        self.assertFalse(res["delivered"], res)
+        self.assertNotIn("got", answer, "post_to ran for an empty message")
+        self.assertFalse(os.path.exists(saves), "an empty message was saved to the app")
+        self.assertNotIn("fallback", res)
+
+    def test_exit_zero_with_no_verdict_is_not_a_delivery(self):
+        """PR #519 review, minor: `or not answer` made silence a delivery, and the
+        morning-brief receipt copies `delivered`, which keeps its deadman quiet."""
+        for out in ("", "not-json", "[]", "{}"):
+            res = self.mod.deliver("the founder's morning brief", runner=lambda a, c, t, o=out: (0, o))
+            self.assertFalse(res["delivered"], (out, res))
+            self.assertIn("exit 0", res["reason"], (out, res))
 
 
 if __name__ == "__main__":

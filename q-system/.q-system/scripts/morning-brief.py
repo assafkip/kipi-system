@@ -907,6 +907,12 @@ def write_receipt(result: dict, now: dt.datetime, receipt_path=None) -> Path:
         "reason": result.get("reason") or result.get("error"),
         "degraded": result.get("degraded"),
     }
+    if result.get("fallback"):
+        # Chief would have refused the brief itself, so he got one link line and the
+        # brief is in the app Chat (PR #749 review round 2, minor 2). Still delivered;
+        # this is how a reader of the receipt sees it degraded.
+        payload["fallback"] = True
+        payload["gate_reasons"] = [str(r) for r in (result.get("gate_reasons") or [])]
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp.replace(path)  # atomic: the deadman may read while this writes
@@ -990,7 +996,9 @@ def main(argv=None) -> int:
         return 0
 
     sender = _load_sibling("founder_notify", "founder_notify.py")
-    result = sender.deliver(message)
+    # The kind names the fallback line when chief would refuse the brief itself: a
+    # mail subject or calendar title carrying a ticket id (PR #749 review, major 2).
+    result = sender.deliver(message, kind="Morning brief")
     result["degraded"] = degraded
     print(f"\n[send] {json.dumps(result)}")
     receipt = write_receipt(result, now)

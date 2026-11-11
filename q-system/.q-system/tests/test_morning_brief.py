@@ -1112,3 +1112,18 @@ class TestNoCapUpstreamOfTheBoard:
         out = brief._section("Mail", rows, None)
         assert len(out) == brief.MAX_ROWS + 2, out[:3]
         assert "and 25 more" in out[-1]
+
+
+def test_a_fallback_delivery_is_visible_in_the_receipt(brief, tmp_path):
+    """PR #749 review round 2, minor 2: a brief that went out as the fallback link
+    line was recorded as a plain delivery, so nothing reading the receipt could see
+    it degraded. The receipt keeps `fallback` and chief's reasons; a plain delivery
+    carries neither."""
+    receipt = tmp_path / "receipt.json"
+    brief.write_receipt({"delivered": True, "transport": "telegram", "fallback": True,
+                         "gate_reasons": ["engineering-on-whatsapp"]}, NOW, receipt_path=receipt)
+    data = json.loads(receipt.read_text())
+    assert data["delivered"] is True and data["fallback"] is True, data
+    assert data["gate_reasons"] == ["engineering-on-whatsapp"], data
+    brief.write_receipt({"delivered": True, "transport": "telegram"}, NOW, receipt_path=receipt)
+    assert "fallback" not in json.loads(receipt.read_text())

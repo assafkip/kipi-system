@@ -108,17 +108,20 @@ def _write_state(path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def _founder_sender(message: str) -> dict:
+def _sana_sender(message: str) -> dict:
+    """Sana's triage, never the founder (ASK-4479 S2). Nothing checking the sessions is
+    the checker broken, the class browser_session_health already files to Sana; on his
+    phone path chief refused this line (172 characters) and filed it to Sana anyway."""
     import sys
     spec = importlib.util.spec_from_file_location(
-        "founder_notify", HERE / "founder_notify.py")
+        "engineering_route", HERE / "engineering_route.py")
     mod = importlib.util.module_from_spec(spec)
     # Registered for the same reason browser_session_health._module registers:
     # a module built off a spec and never put in sys.modules breaks anything
     # that resolves its own __module__ (dataclasses, typing, pickle).
-    sys.modules["founder_notify"] = mod
+    sys.modules["engineering_route"] = mod
     spec.loader.exec_module(mod)
-    return mod.deliver(message)
+    return mod.to_sana(message)
 
 
 def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> int:
@@ -126,9 +129,9 @@ def run(now: dt.datetime, receipt_path=None, state_path=None, sender=None) -> in
 
     Non-zero either way once stale, including when the message could not be
     delivered: launchd-health-check reads the exit status and files its own
-    issue, so a deadman that cannot reach Telegram is still not a silent one.
+    issue, so a deadman that cannot file is still not a silent one.
     """
-    sender = sender or _founder_sender
+    sender = sender or _sana_sender
     state_path = Path(state_path) if state_path else ALARM_STATE
     ok, reason = check(now, receipt_path=receipt_path)
     state = _read_state(state_path)
@@ -172,7 +175,7 @@ def main(argv=None) -> int:
 
     def sender(message: str) -> dict:
         captured.append(message)
-        return _founder_sender(message)
+        return _sana_sender(message)
 
     rc = run(now, sender=sender)
     for message in captured:

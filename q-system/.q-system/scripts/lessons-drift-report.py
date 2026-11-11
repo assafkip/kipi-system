@@ -3,8 +3,11 @@
 
 Issues lr-drift-reporter and lr-drift-trigger-proof (prd-lessons-rail-and-up-rail,
 plan 4c). Measured 2026-09-01: eight lessons existed only in consulting for
-three weeks and nothing said so. This says so, every Monday 06:45, through
-founder_notify.deliver (founder-facing), never the fleet alert path.
+three weeks and nothing said so. This says so, every Monday 06:45, to Sana's
+triage through engineering_route.to_sana, and only in a week with drift or something
+unreadable (ASK-4479 S2). Its lines are file paths, which chief's phone gate refuses, so
+on the founder path a real drift report reached nobody and became a Sana ticket anyway.
+A clean week files nothing: a weekly no-drift ticket is how a queue stops being read.
 
 Resolution (Codex finding-13 on the PRD): the skeleton is the registry's
 `skeleton` entry and it MUST be this file's own repo root, otherwise the
@@ -131,9 +134,15 @@ def drift(hub_root, skel_root):
 
 
 def build(root, now=None):
+    return report(root, now=now)[0]
+
+
+def report(root, now=None):
+    """(text, owed). Owed: a hub drifted, or something could not be read."""
     now = now or datetime.now(timezone.utc)
     root = os.path.realpath(root)
     lines = [f"Lessons drift ({now.strftime('%Y-%m-%d')})"]
+    drifted = False
     skeleton_ok, hubs = resolve(root)
     if not skeleton_ok:
         lines.append(f"skeleton: {COULD_NOT_READ} (the registry's skeleton entry is not this checkout: {root})")
@@ -151,6 +160,7 @@ def build(root, now=None):
         if not absent and not changed:
             lines.append(f"{name}: no drift" + (f" ({len(behind)} behind the skeleton, the next sync fixes them)" if behind else ""))
             continue
+        drifted = True
         lines.append(f"{name} has {len(absent)} the skeleton lacks and {len(changed)} that differ"
                      + (f" ({len(behind)} more are just behind)" if behind else "") + ":")
         lines += [f"  absent   {p}" for p in absent]
@@ -168,21 +178,25 @@ def build(root, now=None):
         lines.append("propagation: " + streak.summary_line(s))
     except Exception as exc:  # the drift report still ships without the streak line
         lines.append(f"propagation: {COULD_NOT_READ} ({type(exc).__name__})")
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    return text, drifted or COULD_NOT_READ in text
 
 
 def run(root, deliver=None, dry_run=False, trigger=None, now=None):
     """Build, then deliver only when launched by the plist (KIPI_TRIGGER=launchd).
-    `deliver` is injectable for tests; None means founder_notify.deliver."""
-    message = build(root, now=now)
+    `deliver` is injectable for tests; None means engineering_route.to_sana."""
+    message, owed = report(root, now=now)
     result = {"message": message, "delivery": {"delivered": False, "refused": False, "skipped": True}}
     if dry_run:
         return result
     if trigger != "launchd":
         result["delivery"]["reason"] = "not launched by the plist (KIPI_TRIGGER != launchd): printed, not sent"
         return result
+    if not owed:
+        result["delivery"]["reason"] = "no drift and nothing unreadable: nothing to file"
+        return result
     if deliver is None:
-        deliver = _load("founder_notify", "founder_notify.py").deliver
+        deliver = _load("engineering_route", "engineering_route.py").to_sana
     out = deliver(message) or {}
     result["delivery"] = {"delivered": bool(out.get("delivered")), "refused": bool(out.get("refused")), "skipped": False}
     return result
@@ -204,8 +218,8 @@ def main(argv=None, deliver=None):
     d = result["delivery"]
     if a.dry_run:
         return 0
-    print("delivery: " + ("sent" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
-    if trigger == "launchd" and not d["delivered"]:
+    print("delivery: " + ("filed for Sana" if d["delivered"] else "refused" if d["refused"] else d.get("reason", "not sent")))
+    if trigger == "launchd" and not d["delivered"] and not d.get("skipped"):
         print("delivery: FAILED, the plist launched this and nothing landed", file=sys.stderr)
         return 2
     return 0
