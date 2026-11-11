@@ -1,7 +1,7 @@
 ---
 id: vg-k9-spillover-dispatch
 title: A spillover ticket with a Definition of Ready and owner:sana is dispatch work, not a fleet alert
-status: in-progress
+status: closed
 priority: p1
 parent_prd: standalone
 allowed_files:
