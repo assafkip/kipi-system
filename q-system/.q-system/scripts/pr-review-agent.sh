@@ -140,7 +140,13 @@ fi
 unset _SKEL_TOPLEVEL _SKEL_PHYS
 SYNC="$SCRIPT_DIR/linear-sync.py"
 OUT_DIR="$HOME/.config/kipi/pr-reviews"
-TIMEOUT_SECONDS=2400
+# KIPI_REVIEW_TIMEOUT overrides the cap for one run (ASK-4511). It was hardcoded,
+# so a review that needed a probe or a shorter proof run could not be bounded
+# without editing the script. A value that is not a positive integer falls back
+# to 2400: a cap of 0 or a string would kill the engine at once or crash
+# run_bounded, and either reads as "the reviewer is down".
+TIMEOUT_SECONDS="${KIPI_REVIEW_TIMEOUT:-2400}"
+case "$TIMEOUT_SECONDS" in ''|*[!0-9]*|0) TIMEOUT_SECONDS=2400 ;; esac
 NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 
 # PIN THE REVIEWER'S IDENTITY. Before ASK-221 the claude engine passed no
@@ -1257,6 +1263,26 @@ and say you tried. Dropping a finding you could not reproduce is a SUCCESS of th
 process, not a failure of it.
 
 Never modify the repo. Read-only review. Do not commit, do not push.
+
+## BOUND YOUR TEST RUNS (this is what the wall clock is spent on)
+
+Never run the whole test suite of the repo under review. CI and the commit hooks
+run the floor; you do not. Run only the test files the PR adds or changes, plus
+the files that import the changed module (find them with grep), and pass them by
+path. Run any given command at most once: send its full output to a file under
+\\\$TMPDIR and read that file with grep, tail or sed as often as you like.
+Re-running a command to look at a different slice of its output is the failure
+this section exists to stop.
+
+Measured 2026-11-10 on two chief PRs: this reviewer ran the repo's entire suite
+six times, each time piped through a different tail or grep, and was killed at
+the 2400 s cap with no verdict. The same model finishes in about 10 minutes when
+it runs only the owning tests.
+
+If the review tree has no virtualenv, that is normal: it is a fresh checkout.
+Do not search the machine for another checkout's interpreter and do not try to
+build one. Use the system python3, and if the changed tests need packages it
+lacks, say so in one line and review the code by reading it instead.
 
 ## Output
 
