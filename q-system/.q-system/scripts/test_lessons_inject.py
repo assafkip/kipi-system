@@ -147,6 +147,10 @@ def case_non_engineering_prompt_with_shared_vocabulary_is_silent() -> bool:
 
     This prompt is deliberately NON-engineering but DOES overlap the voice-cadence
     lesson (post, draft, cadence, rhythm). Only the trigger gate can keep it quiet.
+
+    It also matches the draft act route, and stays silent because this synthetic
+    corpus holds none of that route's lessons: an act match alone must never open
+    term overlap on a non-engineering turn (ASK-4208).
     """
     repo = _repo()
     rc, out = run(repo, "I want to write a post about voice cadence and draft rhythm")
@@ -433,6 +437,228 @@ def case_what_is_recorded_is_what_was_shown() -> bool:
         return True                      # nothing left to show: correct
     b = _ctx(second)
     return not any(tag in a and tag in b for tag in ("[small-a]", "[small-b]"))
+
+
+# ---------------------------------------------------------------------------
+# REPLAY OF THE FOUR VOICELOOP INCIDENT PROMPTS (ASK-4208; deferred finding-14
+# of prd-voicegate-skeleton-2026-11-09).
+#
+# Measured 2026-11-10 on this repo's own corpus (281 lessons), BEFORE the act
+# route existed: 0 of the 5 target lessons surfaced on any of the 4 prompts.
+# Two prompts never passed TRIGGER_RE and injected nothing; the other two
+# ranked unrelated lessons first. A prompt that names a chat act ("draft the
+# post", "show it to me") shares no words with a lesson that names a mechanism
+# ("gate", "check"), so term overlap had nothing to match. The cases below are
+# the pass condition the finding asked for, and they were red on that code.
+#
+# Runs against a COPY of the real corpus, because the corpus is what the hook
+# selects from: synthetic lessons would prove the route reads its own table and
+# nothing about whether these lessons reach these prompts.
+#
+# Sanitized for a public repo. Each prompt is verbatim except that the platform
+# names were dropped (one per prompt in 1, 3 and 4). No platform name is a word
+# the act route or TRIGGER_RE reads, and the baseline stayed 0 of 5 without
+# them. No client, person, path or machine name was in any of the four.
+
+REPLAY_TARGETS = (
+    "a-check-must-be-able-to-fail-for-the-reason-you-care-abou",
+    "zero-selected-items-is-a-failure-not-a-pass",
+    "gates-must-recompute-not-read-self-reports",
+    "bind-a-check-to-the-property-not-the-nearest-proxy",
+    "assert-what-went-into-a-composed-artifact-not-just-that-it-c",
+)
+_ASSERT, _BIND = REPLAY_TARGETS[4], REPLAY_TARGETS[3]
+_RECOMPUTE, _ZERO = REPLAY_TARGETS[2], REPLAY_TARGETS[1]
+
+# (prompt, the target lessons that MUST surface on a fresh session). Exactly one
+# each: the header plus the two SMALLEST targets is 6,271 bytes against the
+# 6,000-byte lessons share, so no turn can carry two of them whole.
+REPLAY = (
+    ("you can only draft the post in a way that matches the build - make "
+     "triple sure you are doing taht", {_ASSERT}),
+    ("show it to me again", {_RECOMPUTE}),
+    ("write me a post about building my own CRM", {_ASSERT}),
+    ("Show me the post texts one at a time, numbered by topic name, and wait "
+     "for my verdict on each", {_RECOMPUTE}),
+)
+# The same four prompts as ONE session: the dedupe walks each act's list, so
+# four exit turns surface four different targets.
+REPLAY_SESSION_ORDER = (_ASSERT, _RECOMPUTE, _BIND, _ZERO)
+
+# Negative control: no target lesson before the change (measured), so any target
+# here after it is flooding. Two are near misses on purpose: "post" with no
+# drafting verb, and "show me" with no draft to show.
+REPLAY_UNRELATED = (
+    "what is the weather tomorrow",
+    "fix the timeout in the scheduler script",
+    "refactor the ledger writer so two processes cannot append at once",
+    "the post office closes at five",
+    "show me the logs from the nightly job",
+    "draft the migration plan for the schema change",
+)
+
+_REAL_CORPUS = HOOK.parent.parent.parent / "lessons"
+
+
+def _replay_repo() -> Path:
+    import shutil
+    tmp = Path(tempfile.mkdtemp())
+    shutil.copytree(_REAL_CORPUS, tmp / "q-system" / "lessons")
+    return tmp
+
+
+def _replay_run(repo: Path, prompt: str, sid: str = "", tmpdir: str = ""):
+    """The targets the hook actually SHOWED, read from its emitted payload."""
+    payload = {"prompt": prompt}
+    if sid:
+        payload["session_id"] = sid
+    env = {"CLAUDE_PROJECT_DIR": str(repo), "PATH": "/usr/bin:/bin"}
+    if tmpdir:
+        env["TMPDIR"] = tmpdir          # the session record lands in the test's dir
+    p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                       capture_output=True, text=True, env=env, check=False)
+    shown = [t for t in REPLAY_TARGETS if f"=== [{t}]" in _ctx(p.stdout)]
+    return p.returncode, shown
+
+
+def case_replay_each_incident_prompt_surfaces_its_target_lesson() -> bool:
+    repo, ok = _replay_repo(), True
+    for prompt, want in REPLAY:
+        rc, shown = _replay_run(repo, prompt)
+        if rc != 0 or set(shown) != want:
+            print(f"    replay: {prompt[:40]!r}: surfaced {len(shown)} of 5 "
+                  f"{shown}, expected {sorted(want)}")
+            ok = False
+    return ok
+
+
+def case_replay_one_session_walks_the_route() -> bool:
+    repo, tmpdir = _replay_repo(), tempfile.mkdtemp()
+    sid = "replay-" + uuid.uuid4().hex
+    got = []
+    for prompt, _want in REPLAY:
+        _rc, shown = _replay_run(repo, prompt, sid=sid, tmpdir=tmpdir)
+        got.append(shown)
+    want = [[t] for t in REPLAY_SESSION_ORDER]
+    if got != want:
+        print(f"    replay session: surfaced {got}, expected {want}")
+    return got == want
+
+
+def case_replay_unrelated_prompts_gain_no_target_lesson() -> bool:
+    repo, ok = _replay_repo(), True
+    for prompt in REPLAY_UNRELATED:
+        rc, shown = _replay_run(repo, prompt)
+        if rc != 0 or shown:
+            print(f"    control: {prompt!r} surfaced {shown}")
+            ok = False
+    return ok
+
+
+# Engineering prompts that ALSO name an act, one per route (PR #744 review
+# blocker). Before the fix the routed lesson went first in the 6,000-byte share
+# and every lesson term overlap ranked for them was skipped: measured 2026-11-10,
+# the email prompt lost both of its two ranked lessons to one routed one.
+ENGINEERING_WITH_ACT = (
+    "fix the validator script migration, then write the email about it",
+    "fix the gate hook test, then show me the draft again",
+)
+
+
+def _hook_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_li_mod", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _session_run(repo: Path, prompt: str, sid: str, tmpdir: str, routes: bool = True):
+    """(payload, session record). routes=False runs the same hook with
+    ACT_ROUTES emptied: what term overlap alone emits and charges."""
+    if routes:
+        argv = [sys.executable, str(HOOK)]
+    else:
+        argv = [sys.executable, "-c",
+                "import importlib.util, sys\n"
+                f"spec = importlib.util.spec_from_file_location('li', {str(HOOK)!r})\n"
+                "m = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(m)\n"
+                "m.ACT_ROUTES = ()\n"
+                "sys.exit(m.main())\n"]
+    p = subprocess.run(argv, input=json.dumps({"prompt": prompt, "session_id": sid}),
+                       capture_output=True, text=True, check=False,
+                       env={"CLAUDE_PROJECT_DIR": str(repo), "PATH": "/usr/bin:/bin",
+                            "TMPDIR": tmpdir})
+    rec = Path(tmpdir) / "kipi-lessons-inject" / (sid + ".json")
+    return _ctx(p.stdout), (json.loads(rec.read_text()) if rec.exists() else {})
+
+
+def case_an_act_never_displaces_what_term_overlap_ranked() -> bool:
+    """An engineering prompt is selected exactly as it was before the route.
+
+    The oracle is the same hook with ACT_ROUTES emptied, not a pinned list of
+    lesson ids: the corpus grows weekly and a pinned ranking would go stale on
+    the next lessons PR while proving nothing about the route. Byte-identical
+    payload means the ranked lessons kept their place and no routed lesson took
+    bytes from them. Identical session record means nothing extra was marked
+    seen or charged to the session budget.
+    """
+    import re
+    routes = _hook_module().ACT_ROUTES
+    repo, tmpdir, ok = _replay_repo(), tempfile.mkdtemp(), True
+    for prompt in ENGINEERING_WITH_ACT:
+        # Preconditions, or this case can pass without exercising anything.
+        if not any(rx.search(prompt) for _act, rx, _lids in routes):
+            print(f"    precondition: {prompt!r} names no act")
+            ok = False
+            continue
+        sid = uuid.uuid4().hex
+        base, base_rec = _session_run(repo, prompt, "base-" + sid, tmpdir, routes=False)
+        got, got_rec = _session_run(repo, prompt, "real-" + sid, tmpdir)
+        ranked = re.findall(r"=== \[([^\]]+)\]", base)
+        if not ranked:
+            print(f"    precondition: {prompt!r} ranks no lesson by term overlap")
+            ok = False
+            continue
+        if got != base or got_rec != base_rec:
+            shown = re.findall(r"=== \[([^\]]+)\]", got)
+            print(f"    displaced: {prompt[:45]!r}: surfaced {shown}, term overlap "
+                  f"ranked {ranked}; charged {got_rec.get('chars')} vs "
+                  f"{base_rec.get('chars')}")
+            ok = False
+    return ok
+
+
+def case_a_code_read_is_not_a_show_act() -> bool:
+    """PR #744 review minor: "version" and "text" were show nouns, so a code
+    read routed an exit lesson. Read off the route table itself: through the hook
+    this prompt is engineering and never reaches a route, so a payload check
+    would pass whether or not the nouns were narrowed. The incident prompts must
+    still name an act, or the narrowing cut the route it was meant to trim."""
+    routes = _hook_module().ACT_ROUTES
+    hit = [act for act, rx, _l in routes
+           if rx.search("show me the latest version of the validator script")]
+    unrouted = [p for p, _w in REPLAY if not any(rx.search(p) for _a, rx, _l in routes)]
+    if hit or unrouted:
+        print(f"    code read routed as {hit}; incident prompts naming no act: {unrouted}")
+    return not hit and not unrouted
+
+
+def case_every_routed_lesson_exists_in_the_real_corpus() -> bool:
+    """A renamed or removed lesson would leave its route pointing at nothing,
+    and the hook skips a missing id silently. This is where that turns red."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_li_routes", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    ids = {mod.parse_lesson(p)[0] for p in _REAL_CORPUS.glob("*.md")}
+    routed = [lid for _act, _rx, lids in mod.ACT_ROUTES for lid in lids]
+    missing = sorted(set(routed) - ids)
+    if missing:
+        print(f"    routed ids missing from the corpus: {missing}")
+    return bool(routed) and not missing
+
 
 CASES = [v for k, v in sorted(globals().items()) if k.startswith("case_")]
 

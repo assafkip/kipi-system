@@ -52,7 +52,11 @@ HONEST BOUNDARY (the part people skip):
   here should be read as claiming otherwise. Term overlap is a crude selector: it
   will miss a lesson whose vocabulary differs from the prompt's even when that
   lesson is the relevant one, and the miss is SILENT.
-  What it does NOT do: fire on prompts with no engineering intent, rank at
+  ACT_ROUTES closes one measured miss of that kind (ASK-4208: drafting or showing
+  a post, 0 of 5 exit lessons before it). Every other vocabulary miss is still
+  silent.
+  What it does NOT do: fire on prompts with no engineering intent (except a
+  named act in ACT_ROUTES, which brings only that act's own lessons), rank at
   SessionStart, or block anything.
 
   AND IT STOPS. There is a per-session budget (SESSION_CEILING_CHARS), so a long
@@ -125,6 +129,69 @@ TRIGGER_RE = re.compile(
     r"rca|root cause|postmortem|corpus|reproducer|mutation"
     r")\b"
 )
+
+# THE ACT ROUTE (ASK-4208). Term overlap cannot reach a lesson that shares no
+# words with the prompt, and the voiceloop incident prompts share none: they name
+# a chat act ("draft the post", "show it to me again") while the lessons
+# written for those turns name a mechanism ("gate", "check", "proof"). Measured
+# 2026-11-10 on the skeleton corpus: 0 of the 5 exit lessons surfaced on any of
+# the 4 incident prompts; two never passed TRIGGER_RE at all.
+#
+# The missing step is an inference, "drafting or showing a post is an exit",
+# that no word-matching selector makes. So it is written down as data: an act
+# the prompt names maps to that act's lessons, in priority order. Every other
+# prompt is selected exactly as before.
+#
+# NARROW ON PURPOSE, held by the replay's negative control in
+# test_lessons_inject.py. Drafting needs a reader-facing noun within a few
+# words; showing needs "to me" or a draft noun. "message", "comment" and
+# "thread" are left out for their code senses, and a hyphen compound
+# ("post-commit", "email-watch") is not a reader noun. A false fire costs one
+# lesson, and the dedupe caps it at five per session.
+#
+# ONE routed lesson per turn, because two never fit: the header plus the two
+# smallest exit lessons is 6,271 bytes against the 6,000-byte share. The
+# session dedupe walks the list, so the next exit turn gets the next lesson.
+#
+# A ROUTE NEVER RUNS ON AN ENGINEERING PROMPT (PR #744 review blocker). The
+# first version put the routed lesson ahead of term overlap in the same
+# 6,000-byte share. A routed lesson is 4,000 bytes or more, so on "fix the
+# validator script migration, then write the email about it" both ranked
+# lessons were skipped for one routed one, and a show prompt charged 5,373
+# bytes to the session budget where term overlap charged 3,735. An engineering
+# prompt is now selected byte for byte as it was before the route existed.
+#
+# "build" and "building" do not make an act prompt engineering. In a prompt
+# that drafts a post they are the post's subject ("a post about building my own
+# CRM"), the same class of word that took design, ship and budget out of
+# TRIGGER_RE. They were the only trigger in two of the four incident prompts,
+# and with them counted the route could never reach those two.
+_ACT_SUBJECT_WORDS = re.compile(r"(?i)\bbuild(?:ing)?\b")
+# "version" and "text" left the show nouns (PR #744 review minor): "show me the
+# latest version of the validator script" is a code read, not an exit. "draft"
+# stays, because it names the act itself.
+_READER_NOUNS = (r"post|posts|reply|replies|email|emails|dm|dms|caption|captions|"
+                 r"tweet|tweets|newsletter|essay")
+_NOUN_END = r")(?![\w-])"
+ACT_ROUTES = (
+    ("draft", re.compile(
+        r"(?i)\b(?:draft\w*|re-?draft\w*|write|writing|rewrit\w*|compose|composing)"
+        r"(?:\W+\w+){0,4}?\W+(?:" + _READER_NOUNS + _NOUN_END),
+     ("assert-what-went-into-a-composed-artifact-not-just-that-it-c",
+      "bind-a-check-to-the-property-not-the-nearest-proxy",
+      "a-check-must-be-able-to-fail-for-the-reason-you-care-abou",
+      "zero-selected-items-is-a-failure-not-a-pass",
+      "gates-must-recompute-not-read-self-reports")),
+    ("show", re.compile(
+        r"(?i)\bshow\s+(?:(?:it|them|this|that)\s+to\s+me\b|me(?:\W+\w+){0,4}?\W+"
+        r"(?:draft|drafts|" + _READER_NOUNS + _NOUN_END + r")"),
+     ("gates-must-recompute-not-read-self-reports",
+      "zero-selected-items-is-a-failure-not-a-pass",
+      "a-check-must-be-able-to-fail-for-the-reason-you-care-abou",
+      "bind-a-check-to-the-property-not-the-nearest-proxy",
+      "assert-what-went-into-a-composed-artifact-not-just-that-it-c")),
+)
+ROUTED_PER_TURN = 1
 
 
 def _seen_path(session_id):
@@ -310,7 +377,12 @@ def main():
         # they exited 1 with an AttributeError traceback (Codex nit, PR #277).
         return 0
     prompt = payload.get("prompt") or ""
-    if not prompt.strip() or not TRIGGER_RE.search(prompt):
+    if not prompt.strip():
+        return 0
+    acts = [(act, lids) for act, rx, lids in ACT_ROUTES if rx.search(prompt)]
+    engineering = bool(TRIGGER_RE.search(
+        _ACT_SUBJECT_WORDS.sub(" ", prompt) if acts else prompt))
+    if not engineering and not acts:
         return 0
     # Agent prose in a task-notification says "fix", "test", "hook" in every
     # paragraph; this fired up to 11,993 bytes on turns nobody typed (ASK-2511).
@@ -358,8 +430,23 @@ def main():
         # says every time. Continuing past here is how three relevant lessons
         # become a hundred and fifty irrelevant ones.
         return 0
-    ranked = rank(lessons, terms(prompt))
-    picked = [r for r in ranked if r[1] not in seen][:TOP_K]
+    # One selector per turn, never both (see ACT_ROUTES). Engineering: term
+    # overlap alone, as before the route. Otherwise the first unseen lesson per
+    # matched act, so an act match never opens term overlap to a turn with no
+    # engineering intent, and never takes bytes from it on a turn that has some.
+    picked = []
+    if engineering:
+        picked = [(f"relevance {score:.1f}", lid, title, body)
+                  for score, lid, title, body in rank(lessons, terms(prompt))
+                  if lid not in seen][:TOP_K]
+    else:
+        by_id = {lid: (title, body) for lid, title, body, _t in lessons}
+        for act, lids in acts:
+            for lid in lids:
+                if lid in by_id and lid not in seen and lid not in {p[1] for p in picked}:
+                    picked.append((f"routed: {act}", lid) + by_id[lid])
+                    break
+        picked = picked[:ROUTED_PER_TURN]
     if not picked:
         return 0
 
@@ -376,8 +463,8 @@ def main():
     # lesson could fit here, be trimmed by cap(), and still be recorded as shown
     # and suppressed for the session (PR #523 review).
     parts, used, shown = [header], len(header.encode("utf-8")), []
-    for score, lid, title, body in picked:
-        chunk = f"\n=== [{lid}] {title}  (relevance {score:.1f}) ===\n\n{body}\n"
+    for why, lid, title, body in picked:
+        chunk = f"\n=== [{lid}] {title}  ({why}) ===\n\n{body}\n"
         if used + len(chunk.encode("utf-8")) > ceiling:
             # SKIP IT, do not stop (Codex minor, PR #277). `break` meant one
             # oversized top-ranked lesson returned the header alone -- and since
