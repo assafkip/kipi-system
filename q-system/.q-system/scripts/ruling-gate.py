@@ -45,7 +45,9 @@ Modes:
       changed a ruling with no resolvable enforcer is reverted (prior lines put
       back, new lines removed), the removed text is saved under quarantine/,
       and the session is told. Judged by EFFECT, not by reading command text:
-      rule_gate v1 matched shell text and a red-team pass beat it 15 ways.
+      rule_gate v1 matched shell text and a red-team pass beat it 15 ways. A file
+      that now holds a version committed before the call began (git checkout,
+      merge, pull) is left alone; --report lists it.
   --report: the scheduled check. Lists every ruling as ENFORCED, UNENFORCED,
       DEBT (grandfathered, nothing declared) or FAIL, writes the listing, and
       files one alert through slack-notify.sh (Sana's Linear triage) when the
@@ -75,6 +77,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 RULE_ID = "RULE-2026-11-10-RULING"
@@ -82,7 +85,21 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 BASELINE = os.path.join(os.path.dirname(HERE), "ruling-gate-baseline.json")
 NOTIFY = os.path.join(HERE, "slack-notify.sh")
 CODE_EXT = (".py", ".sh", ".js", ".mjs", ".ts")
-TEMP_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
+
+
+def _temp_prefixes():
+    # A fixed list missed a relocated TMPDIR: a stub there read as an ordinary file,
+    # so the refusal came from a later check instead (PR #729 review, finding 4). The
+    # machine's own temp dir counts too, unless it is "/" or home, which would make
+    # every out-of-repo enforcer temp space.
+    fixed = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
+    t = os.path.realpath(tempfile.gettempdir()).rstrip(os.sep)
+    if t.count(os.sep) >= 2 and t != os.path.realpath(os.path.expanduser("~")):
+        return fixed + (t + os.sep,)
+    return fixed
+
+
+TEMP_PREFIXES = _temp_prefixes()
 PRUNE = {".git", "node_modules", ".venv", "venv", "__pycache__", "evidence", "dist", "build", ".next"}
 MAX_DEPTH = 8
 MIN_REASON = 20
@@ -437,11 +454,30 @@ def quarantine(path, text):
     return f
 
 
+def committed_before(path, since):
+    """True when PATH holds exactly its blob at HEAD and the commit that last changed
+    it there is older than SINCE, the second the pre-call snapshot was taken."""
+    root = repo_root(path)
+    if not root:
+        return False
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+    try:
+        blob = subprocess.run(["git", "-C", root, "show", "HEAD:" + rel], capture_output=True, timeout=10)
+        if blob.returncode != 0 or blob.stdout != open(path, "rb").read():
+            return False
+        ct = subprocess.run(["git", "-C", root, "log", "-1", "--format=%ct", "HEAD", "--", rel],
+                            capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return ct.isdigit() and int(ct) < int(since)
+
+
 def post_tool(data):
     if (data.get("tool_name") or "") != "Bash":
         return 0
     p = snap_path(data)
     try:
+        since = os.path.getmtime(p)
         snap = json.load(open(p))
     except (OSError, ValueError):
         return 0  # no before-state, no diff: the scheduled report sees it instead
@@ -466,6 +502,15 @@ def post_tool(data):
                 fails.add(rid)
                 why.append(w)
         if not fails and not bad_new:
+            continue
+        # Judged by effect, git putting a committed version on disk (checkout, ff
+        # merge, pull) looked like a shell write, and the repair injected or deleted
+        # founder rulings in a tracked client scope.md and left the tree dirty (PR
+        # #729 review, finding 2). A version committed before this call began is
+        # history, not this call's write; --report still lists it. A write plus a
+        # commit inside the call is newer than the snapshot and is still reverted.
+        if committed_before(f, since):
+            log({"mode": "post", "path": f, "verdict": "skip-committed", "why": why})
             continue
         removed = repair(f, prior["entries"], fails, set(bad_new))
         q = quarantine(f, removed)
@@ -518,7 +563,8 @@ def report(args):
     text = "\n".join(lines) + "\n"
     sys.stdout.write(text)
     out = args.out or os.path.join(state_dir(), "debt.md")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    if os.path.dirname(out):  # a bare filename has no folder to make (finding 5)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as fh:
         fh.write(text)
     if args.no_alert or not open_rows:
@@ -544,6 +590,9 @@ def report(args):
 
 
 def check(args):
+    if not os.path.isfile(args.check):
+        print(f"ruling-gate: --check {args.check}: no such file", file=sys.stderr)
+        return 2
     rows = rows_for([args.check], load_baseline(args.baseline) or set())
     for st, key, _, why in rows:
         print(f"{st} {key}: {why}")

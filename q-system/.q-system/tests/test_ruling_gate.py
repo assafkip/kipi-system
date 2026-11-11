@@ -23,6 +23,8 @@ REPO_BASELINE = Path(__file__).resolve().parents[1] / "ruling-gate-baseline.json
 CASE = "case-007-demo"
 KEY = f"{CASE}:R-01"
 R1 = 'RULING: R-01 | 2026-11-10 | other | "only tools that fit the case run"'
+R2 = 'RULING: R-02 | 2026-11-10 | other | "the export is in scope"'
+OLD_DATE = "2026-01-01T00:00:00"
 
 
 def _git(repo, *args):
@@ -72,9 +74,20 @@ class Box:
         assert d["permissionDecision"] == "deny"
         return "DENY", d["permissionDecisionReason"]
 
-    def cli(self, *args):
+    def cli(self, *args, cwd=None):
         return subprocess.run([sys.executable, str(self.gate), *args], capture_output=True, text=True,
-                              env=self.env, timeout=60)
+                              env=self.env, timeout=60, cwd=cwd or str(self.tmp))
+
+    def commit(self, msg, old=True):
+        # A pulled or checked-out commit predates the call that brings it in; one
+        # made inside the call does not. OLD dates stand for the former.
+        env = dict(self.env, GIT_AUTHOR_DATE=OLD_DATE, GIT_COMMITTER_DATE=OLD_DATE) if old else self.env
+        for a in (["add", "-A", "inv"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg]):
+            subprocess.run(["git", "-C", str(self.repo), *a], check=True, capture_output=True, env=env)
+
+    def status(self):
+        return subprocess.run(["git", "-C", str(self.repo), "status", "--porcelain"], capture_output=True,
+                              text=True, check=True).stdout.strip()
 
     def grandfather(self, *lines):
         hashes = [hashlib.sha256((CASE + "\n" + " ".join(l.split())).encode()).hexdigest()[:16] for l in lines]
@@ -227,6 +240,48 @@ def test_shell_write_of_an_enforced_ruling_stays(box):
     assert R1 in box.scope.read_text()
 
 
+# PR #729 review, finding 2: judged by effect, a git checkout or ff merge looked like
+# a shell write, and the repair rewrote a tracked client scope.md.
+def test_git_checkout_of_a_committed_version_is_not_repaired(box):
+    box.code("tests/test_r01.py", f"# {KEY}\n", track=True)
+    box.scope.write_text(scope_with(R1))
+    box.commit("older")
+    _git(box.repo, "branch", "older")
+    box.scope.write_text(scope_with(R1, "ENFORCED-BY: R-01 | tests/test_r01.py"))
+    box.commit("declared")
+    box.hook("PreToolUse", "Bash", {"command": "git checkout older"}, tool_use_id="t3")
+    _git(box.repo, "checkout", "-q", "older")
+    assert box.hook("PostToolUse", "Bash", {"command": "git checkout older"}, tool_use_id="t3") == ""
+    assert "ENFORCED-BY" not in box.scope.read_text() and box.status() == ""
+
+
+def test_git_ff_merge_of_a_colleagues_ruling_is_not_deleted(box):
+    box.grandfather(R1)
+    box.scope.write_text(scope_with(R1))
+    box.commit("base")
+    _git(box.repo, "checkout", "-qb", "colleague")
+    box.scope.write_text(scope_with(R1, R2))
+    box.commit("colleague adds R-02, no enforcer yet")
+    _git(box.repo, "checkout", "-q", "-")
+    box.hook("PreToolUse", "Bash", {"command": "git merge"}, tool_use_id="t4")
+    _git(box.repo, "merge", "--ff-only", "-q", "colleague")
+    assert box.hook("PostToolUse", "Bash", {"command": "git merge"}, tool_use_id="t4") == ""
+    assert R2 in box.scope.read_text() and box.status() == ""
+
+
+def test_write_and_commit_inside_the_call_is_still_reverted(box):
+    # Negative self-test for the skip above: "matches HEAD" alone would let this through.
+    box.grandfather(R1)
+    box.scope.write_text(scope_with(R1))
+    box.commit("base")
+    box.hook("PreToolUse", "Bash", {"command": "x"}, tool_use_id="t5")
+    box.scope.write_text(scope_with(R1, R2))
+    box.commit("sneak", old=False)
+    out = json.loads(box.hook("PostToolUse", "Bash", {"command": "x"}, tool_use_id="t5"))
+    assert out["decision"] == "block" and "reverted 1 ruling(s)" in out["reason"]
+    assert "R-02" not in box.scope.read_text()
+
+
 # ---------------------------------------------------------------- the scheduled report
 def test_report_lists_debt_alerts_once_and_fails_loudly(box):
     box.grandfather(R1)
@@ -251,6 +306,14 @@ def test_report_refuses_without_a_baseline(box):
     assert r.returncode == 1 and "baseline" in r.stderr
 
 
+def test_cli_bad_paths_give_a_message_not_a_traceback(box):
+    # PR #729 review, finding 5.
+    r = box.cli("--check", str(box.tmp / "no-such" / "canonical" / "scope.md"))
+    assert r.returncode == 2 and "no such file" in r.stderr and "Traceback" not in r.stderr
+    r = box.cli("--report", "--baseline", str(box.baseline), "--no-alert", "--out", "debt-bare.md", str(box.repo))
+    assert r.returncode == 0 and "Traceback" not in r.stderr and (box.tmp / "debt-bare.md").is_file()
+
+
 def test_init_writes_hashes_only_and_never_twice(box):
     box.scope.write_text(scope_with(R1))
     out = box.tmp / "b.json"
@@ -265,7 +328,10 @@ def test_init_writes_hashes_only_and_never_twice(box):
 # digest means someone grandfathered a ruling by hand. Debt shrinks by adding
 # ENFORCED-BY lines in the case, never by editing this file.
 PINNED_COUNT = 19
-PINNED_DIGEST = "6ff5226b94a9d0591f308a589d3ea6a965296c0b9ee3f5509a97d49440f492b0"
+# Re-taken 2026-11-10 before merge (PR #729 review, finding 3): the first take went
+# stale when a case session edited R-17..R-19 22 minutes later, ungated because the
+# gate was not live yet. "When the gate shipped" means merge, so the set is taken then.
+PINNED_DIGEST = "6768882920b84a2d2aaff519c7723e2c70d9a8c885af5a9531b1ec09c2d6aa93"
 
 
 def test_shipped_baseline_is_pinned_and_holds_no_text():
