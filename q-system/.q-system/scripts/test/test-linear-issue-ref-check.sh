@@ -7,6 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$SCRIPT_DIR/../linear-issue-ref-check.py"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# The gate reads the CURRENT branch (ASK-4386: a [no-issue:] bypass is refused on a
+# branch that names an issue). Run from a scratch repo on `main`, or these cases
+# measure whichever branch the caller happens to have checked out: they went red
+# on sana/ask-4386 and green on CI's detached merge ref.
+git -C "$TMP" init -q -b main
+cd "$TMP" || exit 1
 
 pass=0
 fail=0

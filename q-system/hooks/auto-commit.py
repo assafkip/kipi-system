@@ -267,9 +267,94 @@ def system_state_paths(paths):
     every instance at once is a different blast radius, and half-finished
     canonical edits are not the updater's to take.
     """
+    # The updater pipes `git status` from the instance it is in, so its losses are
+    # read there, not in CLAUDE_PROJECT_DIR (ASK-4386: "in any mode").
+    held = claude_losses(paths, os.getcwd())
     return [p for p in paths
             if isinstance(classify(p), tuple)
-            and classify(p)[0] in SYSTEM_STATE_TYPES]
+            and classify(p)[0] in SYSTEM_STATE_TYPES
+            and p not in held]
+
+
+# --- ASK-4386: an unattended committer never commits a .claude/ deletion --------
+#
+# THE SCAR (2026-11-10). rule_gate's baseline defect (ASK-4283) deleted tracked
+# rule files in two unattended worker trees. Both agents left the deletions
+# UNSTAGED on purpose. The `.claude/rules/` row above staged and committed them
+# anyway: 70163e63 on kipi-system sana/ask-4309 (13 files, -613) and f31929ab on
+# 4 Points sana/case-051-session (-533), after which a whole case session ran
+# without q-investigation.md and evidence-capture-protocol.md. Losing lines under
+# .claude/ removes enforcement, so no unattended committer decides it: the path
+# stays dirty, a path someone staged stays staged, and the agent commits it under
+# an issue id (apply-claude-changes.sh writes the tree, the agent commits). Pure
+# additions still commit. Prefer refusing to commit over committing a deletion.
+CLAUDE_DIR = ".claude/"
+
+
+def is_claude_path(path):
+    return path.startswith(CLAUDE_DIR) or ("/" + CLAUDE_DIR) in path
+
+
+def claude_losses(paths, cwd=None):
+    """The .claude/ paths among `paths` whose change against HEAD drops any line.
+
+    Read-only: one `git diff --numstat HEAD`, which sees staged and unstaged work.
+    A path gone from disk is a deletion even where numstat shows 0/0 (an empty
+    file). A binary diff ("-") cannot prove nothing was lost, so it is held. If
+    the diff itself fails, every .claude/ path is held: a loss cannot be ruled out.
+    """
+    cwd = cwd or PROJ_DIR
+    claude = [p for p in paths if is_claude_path(p)]
+    if not claude:
+        return set()
+    held = {p for p in claude if not os.path.lexists(os.path.join(cwd, p))}
+    if subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=cwd,
+                      capture_output=True, text=True).returncode != 0:
+        return held  # unborn branch: nothing committed can be lost
+    r = subprocess.run(["git", "diff", "--numstat", "-z", "--no-renames", "HEAD",
+                        "--"] + claude, cwd=cwd, capture_output=True, text=True)
+    if r.returncode != 0:
+        return set(claude)
+    for rec in r.stdout.split("\0"):
+        parts = rec.split("\t", 2)
+        if len(parts) == 3 and parts[1] != "0":
+            held.add(parts[2])
+    return held
+
+
+def hold_claude_losses(groups):
+    """Drop every .claude/ path that loses lines from the commit groups."""
+    held = claude_losses([p for ps in groups.values() for p in ps])
+    if not held:
+        return groups
+    kept = {}
+    for key, paths in groups.items():
+        keep = [p for p in paths if p not in held]
+        if keep:
+            kept[key] = keep
+    print(f"auto-commit: held {len(held)} .claude/ path(s) that drop lines, left "
+          "uncommitted; a hook never commits a .claude/ deletion (ASK-4386): "
+          + ", ".join(sorted(held)))
+    return kept
+
+
+# The commit-msg gate owns "which issue does this branch name" (ASK-4386). Asking
+# it, instead of a second regex here, keeps one parser; a tree without the gate
+# falls back to the declared bypass, which no gate there refuses either.
+GATE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                           ".q-system", "scripts", "linear-issue-ref-check.py")
+_BRANCH_ISSUE = {}
+
+
+def branch_issue():
+    if "v" not in _BRANCH_ISSUE:
+        issue = None
+        if os.path.isfile(GATE_SCRIPT):
+            r = run([sys.executable, GATE_SCRIPT, "--branch-issue"])
+            if r.returncode == 0:
+                issue = r.stdout.strip() or None
+        _BRANCH_ISSUE["v"] = issue
+    return _BRANCH_ISSUE["v"]
 
 
 def group_files(files):
@@ -431,7 +516,14 @@ def commit_group(commit_type, message, files):
     # Consequence on purpose: every auto-commit shows up in the bypass ledger,
     # so "how much work never reached Linear" is a number, not a guess.
     body_lines.append("")
-    body_lines.append("[no-issue: auto-commit safety net, unattended Stop hook]")
+    # ASK-4386: on a branch cut for an issue the bypass is refused by the gate,
+    # because the issue IS known: three bypass commits on sana/ask-4309 carried a
+    # rule deletion no gate inspected. Name the branch's issue instead.
+    issue = branch_issue()
+    if issue:
+        body_lines.append(f"Refs: {issue} (auto-commit safety net, unattended Stop hook)")
+    else:
+        body_lines.append("[no-issue: auto-commit safety net, unattended Stop hook]")
 
     full_msg = header + "\n\n" + "\n".join(body_lines)
 
@@ -1163,7 +1255,7 @@ def _commit_main():
         return
 
     groups, unclassified = group_files(files)
-    groups = hold_skeleton_memory(groups)
+    groups = hold_claude_losses(hold_skeleton_memory(groups))
     refusals = shrink_refusals([f for fl in groups.values() for f in fl])
     if refusals:
         report_refusal(refusals)
