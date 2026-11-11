@@ -57,3 +57,12 @@ After:
 - allowed_files: ['q-system/.q-system/scripts/lessons-validator.py', 'q-system/.q-system/scripts/lessons-distill.py', 'q-system/.q-system/scripts/lessons-daily.sh', 'q-system/.q-system/scripts/lesson-note.sh', 'q-system/lessons/README.md', 'q-system/.q-system/scripts/test/test-lessons-validator.sh', 'q-system/.q-system/scripts/test/test_lessons_validator_holder.py', 'q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_lessons_validator_holder.py.json']
 - required_checks: ['python3 -m pytest -q q-system/.q-system/scripts/test/test_lessons_validator_holder.py']
 - disallowed_files: []
+
+### 2026-11-11T00:13:45Z
+Reason: test_turn_classifier.py was added to allowed_files after the close receipt: the test counted README.md as a lesson, and lessons-inject.py already skips README.md. Added in commit 9ac281ba (#718). Recorded through the issue runner amend path (amendment_count 1, verify green 23 of 23, mutant caught). The runner refuses close on a closed issue without a fresh review, and this amendment changes 0 lines of app code, so the footer note was written by hand and the issue stays closed.
+
+Before:
+- allowed_files: (the 8 files listed above, without q-system/.q-system/scripts/test_turn_classifier.py)
+
+After:
+- allowed_files: (the 9 files listed above, with q-system/.q-system/scripts/test_turn_classifier.py)
