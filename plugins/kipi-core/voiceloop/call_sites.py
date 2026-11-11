@@ -48,7 +48,15 @@ from pathlib import Path
 _TEST_DIR = re.compile(r"(^|/)(tests?|test)/|(^|/)test[_-]")
 _SCRATCH = re.compile(r"^\.review-")
 _PY_TEXT = re.compile(r"""(,|\[|\()\s*["'](-p|--print)["']""")
-_CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
+# "Does this quoted string hold a claude invocation at all?" -- the guard that
+# decides whether to descend into a `bash -c "..."` body or a `${VAR-...}`
+# default. The door has to be in here as well as in _BINARY_TOKEN (ASK-4311):
+# `\bclaude\b` does NOT match `$FLEET_CLAUDE`, because `_` is a word character so
+# there is no boundary before CLAUDE. Teaching only _BINARY_TOKEN left the
+# scanners still blind to the worker and the reviewer, whose calls live inside
+# exactly those quoted bodies. Measured: before this line, both files reported
+# zero claude-call segments.
+_CLAUDE_WORD = re.compile(r"\bclaude\b|fleet-claude\.sh|\$\{?FLEET_CLAUDE\}?", re.I)
 # Shell is read as TOKENS, not as one regex over the line (PR #413 round 4: the
 # nested-optional pattern backtracked exponentially, 16.8 s on a 24-flag line,
 # inside a pre-push gate with no timeout). A command segment ends at a pipe or
@@ -56,7 +64,29 @@ _CLAUDE_WORD = re.compile(r"\bclaude\b", re.I)
 # in `/claude`, or a `$CLAUDE*` variable, and the call flag is any later token
 # that is exactly -p or --print. Quotes around the tokens are stripped, which is
 # how a `bash -c "... claude -p \"$1\""` string is seen.
-_BINARY_TOKEN = re.compile(r"""^["'`(]*((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?)["'`)]*$""")
+# THE FLEET DOOR IS ALSO A CLAUDE CALL (ASK-4311). `fleet-claude.sh` execs
+# `claude -p` with an Ultra Console API key in the child's env, so a line reading
+# `$FLEET_CLAUDE -p ...` spends exactly as much as a bare `claude -p` does. Until
+# it was listed here the scanners could not see it at all: moving the worker and
+# the reviewer onto the door removed the token `claude` from those lines, and
+# both the subscription-only guard and the call-site inventory went quiet on the
+# two highest-volume sites in the fleet. A gate that stops seeing its biggest
+# subject reads exactly like a gate with nothing to report.
+_FLEET_DOOR = re.compile(
+    r"""^["'`(]*((\S*/)?fleet-claude\.sh|\$\{?FLEET_CLAUDE\}?)["'`)]*$""")
+_BINARY_TOKEN = re.compile(
+    r"""^["'`(]*((\S*/)?claude|\$\{?CLAUDE[A-Z_]*\}?"""
+    r"""|(\S*/)?fleet-claude\.sh|\$\{?FLEET_CLAUDE\}?)["'`)]*$""")
+
+
+def is_fleet_door(token: str) -> bool:
+    """Is this command token the one metered, keyed door to a fleet `claude -p`?
+
+    A caller that runs the door needs no `env -u ANTHROPIC_API_KEY`: the door is
+    the only thing allowed to put a key in a child's environment, and it is the
+    only thing that records what the run cost.
+    """
+    return bool(_FLEET_DOOR.match(token or ""))
 _FLAG_TOKEN = re.compile(r"""^["'`]*(-p|--print)["'`\\]*$""")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}

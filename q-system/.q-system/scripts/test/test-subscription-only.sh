@@ -86,7 +86,15 @@ def _seg_bad(seg, depth):
     out = []
     if ci >= 0 and cs._BINARY_TOKEN.match(tokens[ci]) \
             and any(cs._FLAG_TOKEN.match(t) for t in tokens[ci + 1:]) \
-            and not _strips(tokens[:ci]):
+            and not _strips(tokens[:ci]) \
+            and not cs.is_fleet_door(tokens[ci]):
+        # TWO ACCEPTED SHAPES, NOT ONE (ASK-4311). `env -u ANTHROPIC_API_KEY
+        # claude` bills the founder's plan and is still accepted. The fleet door
+        # bills an Ultra Console API credit and is accepted too, because the
+        # founder's 2026-11-09 ruling is that FLEET work should spend Anthropic's
+        # credit rather than his plan. What stays refused is the third shape: a
+        # bare `claude -p` that inherits whatever key happens to be in the
+        # environment, metered by nothing and billed to whoever is paying.
         out.append(seg.strip())
     # A command string carried as one token: `bash -c "..."`, a quoted case-arm
     # continuation, or `NAME="... claude -p ..."` executed later.
@@ -360,6 +368,32 @@ if sh_violations('env -u ANTHROPIC_API_KEY claude -p "hi"\n$TO env -u ANTHROPIC_
     bad("positive control: env -u ANTHROPIC_API_KEY was not accepted")
 else:
     ok("positive control: env -u ANTHROPIC_API_KEY claude -p is accepted")
+
+# THE FLEET DOOR, BOTH DIRECTIONS (ASK-4311). The acceptance added for the door
+# is only worth having if it is narrow, so it is proved from both sides: the door
+# passes, and a bare call sitting in a file that ALSO uses the door still fails.
+# Without the second half, naming the door anywhere in a file would wave through
+# every unmetered call in it.
+FLEET_OK = ('"$FLEET_CLAUDE" -p "hi"\n'
+            '$FLEET_CLAUDE -p --model x "$p"\n'
+            'bash -c "cd /x && $FLEET_CLAUDE -p \\"$1\\"" _ "$p"\n'
+            'FB="${OVERRIDE-$FLEET_CLAUDE -p --model x}"\n'
+            '/opt/k/q-system/.q-system/scripts/fleet-claude.sh -p "$p"\n')
+if sh_violations(FLEET_OK):
+    bad("positive control: the fleet door was not accepted (%s)"
+        % sh_violations(FLEET_OK)[:1])
+else:
+    ok("positive control: $FLEET_CLAUDE -p is accepted (metered, keyed door)")
+
+if sh_violations('$FLEET_CLAUDE -p "ok"\nclaude -p "sneaky"\n'):
+    ok("negative control caught: a bare call beside the fleet door")
+else:
+    bad("negative control PASSED: a bare call beside the fleet door")
+
+if cs.is_fleet_door("claude") or not cs.is_fleet_door("$FLEET_CLAUDE"):
+    bad("is_fleet_door() does not distinguish the door from a bare binary")
+else:
+    ok("is_fleet_door() accepts only the door, not a bare claude")
 
 HELPER = ("def subscription_env():\n"
           "    return {k: v for k, v in os.environ.items() if k != 'ANTHROPIC_API_KEY'}\n")

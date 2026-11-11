@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The daily API-credit report to chief (ASK-4311).
+     TEMPLATE, not a loadable plist: __KIPI_REPO__ and __HOME__ are materialized by
+     install-plist.sh, the same placeholder convention every other job here uses
+     (ASK-191; a hardcoded home makes the skeleton unusable on another machine and
+     fails validate-separation's Full skeleton sweep).
+     Install: bash q-system/.q-system/scripts/install-plist.sh com.kipi.fleet-api-report
+
+     RUNS FROM A PINNED CHECKOUT, NOT THE SHARED ONE: __KIPI_REPO__ is filled by
+     install-plist.sh with the job checkout, per the separate-worktrees rule
+     (every launchd job runs from a dedicated checkout, never the tree humans and
+     interactive sessions park on).
+
+     WHY 06:45 LOCAL. The budget day rolls at 07:00 (KIPI_DISPATCH_RESET_HOUR), so
+     06:45 reports the day that is ENDING, with its spend complete, rather than a
+     day 15 minutes old with nothing in it yet. The founder asked for one message
+     a day; the script's own receipt is what holds that, so a manual run or a
+     retry cannot double-send.
+
+     NO EnvironmentVariables, and that is measured (2026-11-07, com.kipi.linear-dor):
+     a job run by this launchd domain through `/bin/bash -lc` has HOME, USER and
+     LOGNAME. The report reads ledgers and calls chief's alert path; it never calls
+     a model, so it needs no key and no model routing.
+
+     ONE MORE REASON IT IS SEPARATE FROM DISPATCH: dispatch pauses when the budget
+     is spent. A report wired inside dispatch would go silent on exactly the day
+     the founder most needs to hear why nothing ran. No double hyphen in this
+     comment: XML forbids one there, and expat refuses the whole file for it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kipi.fleet-api-report</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>cd __KIPI_REPO__ &amp;&amp; python3 q-system/.q-system/scripts/fleet-api-report.py</string>
+  </array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>45</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>__HOME__/.config/kipi/fleet-api-report.out</string>
+  <key>StandardErrorPath</key><string>__HOME__/.config/kipi/fleet-api-report.err</string>
+</dict>
+</plist>

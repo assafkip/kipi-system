@@ -131,12 +131,39 @@ CODEX_OUTAGE_MAX_AGE=86400
 # runs the SAME second-runner prompt, so the outcome logic below judges it
 # exactly as it judges Codex. Set KIPI_SECOND_RUNNER_FALLBACK to an empty string
 # to disable it (tests that pin the both-down hold do).
-# `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-# could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+# THE WORKER NOW BILLS THE API CREDIT, NOT THE PLAN (ASK-4311). This file used
+# `env -u ANTHROPIC_API_KEY` at every call, deliberately, so the run went to the
+# founder's subscription and never to a billed API key (ASK-2176). The founder's
+# 2026-11-09 ruling inverts that for FLEET work only: each of his two accounts
+# carries a monthly Console API credit (amounts and cycle ends live in
+# ~/.config/kipi/fleet-api.json, never here), and he would rather the fleet spend
+# Anthropic's money than his own plan allowance. "Im okay spending the moeny I
+# get from anthropic on the api. but I dont want to pay more myself".
+#
+# fleet-claude.sh is the one door: it reads the key from the Keychain (never from
+# a command line), records what the run cost, fails over key 1 to key 2 on an
+# exhausted credit, and refuses rather than silently falling back to the plan.
+# KIPI_FLEET_API_KEYS=0 restores the old subscription-only behaviour, loudly.
+# test-subscription-only.sh pins that no API key is ever hardcoded here; the key
+# still never appears in this file, only inside the helper's own process.
+#
+# THE OFF SWITCH IS RESOLVED HERE, not only inside fleet-claude.sh. With it set,
+# the call is the pre-ASK-4311 `env -u ANTHROPIC_API_KEY claude` byte for byte,
+# so it works in a checkout or a test skeleton that has no shim at all. Without
+# this, 22 suites that copy this script into a fixture without the shim died at
+# rc=127 (PR #717 CI, validate at c7650286).
+fleet_keyed() { [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ]; }
+if fleet_keyed; then
+  FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$SCRIPT_DIR/fleet-claude.sh}"
+  [ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $SCRIPT_DIR/fleet-claude.sh"
+else
+  echo "linear-worker: KIPI_FLEET_API_KEYS=0 -- claude runs bill the PLAN, not the API credit" >&2
+  FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+fi
 # The stand-in's model is the routing table's second-runner row (ASK-4013). If the
 # read fails the string carries no --model and the run inherits ANTHROPIC_MODEL.
 SECOND_RUNNER_MODEL="$(python3 "$SCRIPT_DIR/model_route.py" pick --job second-runner 2>/dev/null)"
-SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-env -u ANTHROPIC_API_KEY claude -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
+SECOND_RUNNER_FALLBACK="${KIPI_SECOND_RUNNER_FALLBACK-$FLEET_CLAUDE -p${SECOND_RUNNER_MODEL:+ --model $SECOND_RUNNER_MODEL}}"
 # And the main outage claim (PR #421 round 12). Since round 5 it is released only
 # by a run that hears the runner answer, and a queue that stays empty after an
 # outage never reaches the runner: the claim outlived its outage and the next
@@ -252,10 +279,46 @@ while [ $# -gt 0 ]; do
     --issue) shift; ONLY_ISSUE="${1:-}" ;;
     --repo) shift; TARGET_REPO_ARG="${1:-}" ;;
     --release-only) RELEASE_ONLY=1 ;;
+    # Print the pick list and exit, before anything with a side effect. The
+    # daily API-credit report's only source for "tickets left" (ASK-4311).
+    --ready-json) READY_JSON=1 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
   shift || true
 done
+
+# --- WHAT "READ-ONLY BY CONSTRUCTION" HAS TO MEAN ---------------------------
+# `--ready-json` answers one question for the daily API-credit report: how many
+# tickets are left. The early exit that serves it sits just below the picker, and
+# its comment claimed everything with a side effect happened after it. It did
+# not (PR #717 review round 1, finding 2 -- major). Three steps ran BEFORE it:
+# the usage brake (exits 3 and prints nothing when it holds), `git fetch` (pages
+# through $NOTIFY and exits 9 on failure), and the default-branch resolution
+# (same). So a daily report could file a Linear ticket in Sana's triage at 03:00
+# for an expired credential, and its own "tickets left" line could read COULD NOT
+# READ for a reason that has nothing to do with the board.
+#
+# None of the three is needed to answer it. The picker reads Linear plus the
+# registry; the fetch, the base and the brake exist for the worktree and the
+# model call, and in this mode neither happens. So each is guarded by this one
+# predicate rather than by three copies of the test.
+#
+# IT DOES NOT WEAKEN THEM FOR A REAL ROUND, and that is the half worth testing:
+# test-worker-ready-json.sh cases 5 and 6 drive --apply through the same two
+# broken environments and demand exit 3 and exit 9 with the page.
+ready_only() { [ "${READY_JSON:-0}" = "1" ]; }
+
+# IN THIS MODE STDOUT IS THE ANSWER, AND THE READER IS A PARSER. The report runs
+# `json.loads` on it (fleet-api-report.py:98), so ONE stray log line makes the
+# whole read fail -- and the pre-pick stretch does log to stdout: `say()` tees
+# there, and the WIP block says "has no GitHub slug" on any repo without one.
+# Observed by test-worker-ready-json.sh case 1: valid JSON preceded by that line,
+# parsed as nothing, reported as COULD NOT READ.
+#
+# Auditing every echo above the pick would fix today and rot tomorrow, so stdout
+# is pointed at stderr for the whole stretch instead and the pick list is printed
+# on fd 9, which nothing else in this script uses. The log keeps every line.
+if ready_only; then exec 9>&1 1>&2; fi
 
 # --- THE BRAKE (ASK-2010, Step 4) -------------------------------------------
 # FIRST thing after the arguments parse, and deliberately BEFORE the git fetch,
@@ -289,7 +352,20 @@ mkdir -p "$STATE_DIR"
 BREAKER_DEFAULT="$SKEL/plugins/kipi-core/voiceloop/usage_breaker.py"
 BREAKER_CMD="${KIPI_USAGE_BREAKER_CMD:-python3 $BREAKER_DEFAULT}"
 BREAKER_BOT="${KIPI_USAGE_BREAKER_BOT:-worker}"
-if [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
+if ready_only; then
+  # A pick list costs no model call, so there is nothing here for the brake to
+  # brake -- and its exit 3 would replace the report's answer with silence.
+  :
+elif fleet_keyed; then
+  # A RUN BILLED TO A KEY IS NOT BRAKED BY A PLAN READING (ASK-4311). This
+  # breaker measures the worker's share of the founder's PLAN usage. With the
+  # fleet door on, every claude run here bills a Console API key and spends
+  # nothing of the plan, so a plan reading could only stop work the plan is
+  # not paying for. The brakes on key spend are kipi-dispatch.sh's daily
+  # budget gate and fleet_api_key.py's per-run ceiling. KIPI_FLEET_API_KEYS=0
+  # puts the run back on the plan, and this brake back in front of it.
+  echo "usage breaker skipped: this run bills the fleet API key, not the plan (KIPI_FLEET_API_KEYS=0 restores both)" >>"$LOG"
+elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # A DRY RUN ASKS WITHOUT SPENDING (ASK-2010; claude review of PR #472, minor).
   # kipi-dispatch.sh runs this script with no --apply to pick the next issue and
   # launches the real --apply round minutes later. Both pass through here, so the
@@ -472,7 +548,11 @@ reap_group() {
 #
 # 9, not 1: 1 is the usage error above, and a caller has to be able to tell an
 # environment that is down from a worker that was invoked wrong.
-if ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
+if ready_only; then
+  # No worktree is cut in this mode, so there is no base that could go stale --
+  # and a failed fetch here would page Sana from a run that only counted.
+  :
+elif ! git -C "$TARGET_REPO" fetch --quiet origin 2>>"$LOG"; then
   say "INFRA: git fetch failed in $TARGET_REPO. Stopping before any worktree is cut from a stale base."
   bash "$NOTIFY" "worker: git fetch failed in $TARGET_REPO -- the run did NO work. Check credentials/network." 2>/dev/null || true
   exit 9
@@ -493,24 +573,31 @@ fi
 #
 # FAIL CLOSED. Guessing "main" is the defect being removed; with no answer the
 # run stops before any tree is cut, says why and pages, same as a failed fetch.
-DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
-DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-[ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
-if [ -z "$DEFAULT_BRANCH" ] \
-   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
-  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
-    | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
-fi
-if { [ -z "$DEFAULT_BRANCH" ] \
-     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
-   && [ -n "${TARGET_SLUG:-}" ]; then
-  DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
-fi
-if [ -z "$DEFAULT_BRANCH" ] \
-   || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
-  say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
-  bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
-  exit 9
+if ready_only; then
+  # Nothing below the pick runs in this mode, so no base is ever used. The three
+  # lookups below, two of them network calls, buy nothing here, and the
+  # fail-closed exit would page Sana from a run that only counted.
+  DEFAULT_BRANCH=""
+else
+  DEFAULT_BRANCH="$(git -C "$TARGET_REPO" rev-parse --abbrev-ref origin/HEAD 2>/dev/null)"
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+  [ "$DEFAULT_BRANCH" = "HEAD" ] && DEFAULT_BRANCH=""
+  if [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    DEFAULT_BRANCH="$(git -C "$TARGET_REPO" ls-remote --symref origin HEAD 2>/dev/null \
+      | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')"
+  fi
+  if { [ -z "$DEFAULT_BRANCH" ] \
+       || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; } \
+     && [ -n "${TARGET_SLUG:-}" ]; then
+    DEFAULT_BRANCH="$(gh api "repos/$TARGET_SLUG" --jq .default_branch 2>/dev/null | tr -d '[:space:]')"
+  fi
+  if [ -z "$DEFAULT_BRANCH" ] \
+     || ! git -C "$TARGET_REPO" rev-parse --verify -q "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
+    say "INFRA: cannot determine the default branch of $TARGET_REPO (no existing branch named by origin/HEAD, the remote's HEAD, or GitHub for '${TARGET_SLUG:-no slug}'; last answer '${DEFAULT_BRANCH:-none}'). Stopping before any worktree is cut from a guessed base."
+    bash "$NOTIFY" "worker: cannot determine the default branch of $TARGET_REPO -- the run did NO work. Do: check the default branch on GitHub for ${TARGET_SLUG:-this repo} exists, then in that repo run git remote set-head origin --auto" 2>/dev/null || true
+    exit 9
+  fi
 fi
 export DEFAULT_BRANCH
 
@@ -1020,8 +1107,62 @@ try:
 except Exception:
     CAP_BLOCKERS = {}
 
+# FRESH WORK RIDES WITH URGENT AND HIGH (ASK-4311). Founder ruling 2026-11-09,
+# on how a bounded API-credit budget should be spent: "the worker spends on
+# Urgent and High, plus tickets created in the last 2 days, before anything
+# else", his steady-state goal being to close what came in today or yesterday.
+# Before this, a ticket filed this morning at Medium sorted behind every High AND
+# behind every older Medium, so a day's inflow could never be a day's outflow.
+#
+# ONE TIER, NOT A NEW SORT. Urgent, High and anything newer than the window share
+# tier 0; every other live ticket is tier 1; an expired park still sorts last of
+# all. PRIORITY_RANK is still the next key, so inside tier 0 an Urgent still
+# beats a fresh Medium, and ASK-248's oldest-first rule still bounds the wait
+# inside each band. What changes is only that an old low-band ticket now also
+# waits behind fresh ones, which is the founder's trade, stated as such.
+#
+# OFF SWITCH: KIPI_WORKER_FRESH_FIRST=0 restores the pre-ASK-4311 order, because
+# this reorders the whole queue and a measured rollback should not need a commit.
+FRESH_FIRST = os.environ.get("KIPI_WORKER_FRESH_FIRST", "1") != "0"
+try:
+    FRESH_DAYS = float(os.environ.get("KIPI_WORKER_FRESH_DAYS", "2"))
+except ValueError:
+    FRESH_DAYS = 2.0
+
+
+def _fresh_cutoff():
+    """ISO timestamp FRESH_DAYS ago. KIPI_WORKER_NOW (epoch seconds) is the test clock."""
+    import datetime as _d
+    raw = os.environ.get("KIPI_WORKER_NOW", "")
+    try:
+        base = _d.datetime.utcfromtimestamp(float(raw)) if raw else _d.datetime.utcnow()
+    except (ValueError, OSError):
+        base = _d.datetime.utcnow()
+    return (base - _d.timedelta(days=FRESH_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+FRESH_CUTOFF = _fresh_cutoff()
+
+
+def is_fresh(i):
+    """Created inside the window. A missing createdAt is NOT fresh: unknown age
+    must not jump the queue, which is the safe direction for an absent field."""
+    created = i.get("createdAt") or ""
+    return bool(created) and created >= FRESH_CUTOFF
+
+
+def pick_tier(i):
+    if expired_park(i):
+        return 2
+    if not FRESH_FIRST:
+        return 0
+    if PRIORITY_RANK.get(i.get("priority"), 4) <= 1:   # Urgent (1) or High (2)
+        return 0
+    return 0 if is_fresh(i) else 1
+
+
 def pick_order_key(i):
-    return (1 if expired_park(i) else 0, PRIORITY_RANK.get(i.get("priority"), 4),
+    return (pick_tier(i), PRIORITY_RANK.get(i.get("priority"), 4),
             -int(CAP_BLOCKERS.get(i["identifier"], 0) or 0),
             i.get("createdAt") or "9999", i["identifier"])
 
@@ -1369,6 +1510,23 @@ print(json.dumps({
 }))
 PY
 )"
+
+# ONE READER OF THE PICK RULES (ASK-4311). The daily API-credit report has to
+# say how many tickets are left to be done, and the only honest answer is the
+# number ready() itself produces: a second reader of these rules in the report
+# would drift from this one and report a queue nobody is actually working. So the
+# report asks the worker, and this flag is the whole interface -- print the pick
+# list and stop, before any claim, branch, worktree or agent run.
+#
+# READ-ONLY BY CONSTRUCTION, and `ready_only()` above is what makes that true
+# rather than merely claimed: the brake, the fetch and the default-branch
+# resolution all sit above this line and all three page or exit non-zero, so each
+# is guarded there. Everything else above this line reads Linear, the registry
+# and `gh pr list`. Nothing above it writes, claims, pauses or pages.
+if ready_only; then
+  printf '%s\n' "$PICKED" >&9
+  exit 0
+fi
 
 INFRA="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("infra_error",""))' 2>/dev/null)"
 if [ -n "$INFRA" ]; then
@@ -3330,8 +3488,9 @@ Anything real you find and are not fixing: capture it, never just mention it:
   # bash, so without it run_bounded would score tee's exit status, not claude's.
   ENV_FAIL=""
   : > "$RUN_OUT_FILE" 2>/dev/null || true
-  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
+  # $FLEET_CLAUDE at the call, not a top-of-file export a later source could undo
+  # (ASK-4311, inverting ASK-2176's subscription-only rule for fleet work). The
+  # helper it points at is the only reader of the key; nothing here ever holds one.
   # $2 is the guard set (step 3b), or empty, in which case ${2:+...} adds no
   # argument at all. Positional, never spliced into this string: the JSON holds
   # quotes and globs that would break the quoting here.
@@ -3348,7 +3507,7 @@ Anything real you find and are not fixing: capture it, never just mention it:
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
       run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
     else
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' env -u ANTHROPIC_API_KEY claude -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
     fi
   }
   if primary_run; then
@@ -3621,7 +3780,7 @@ its job -- if the guard is the blocker, that is exactly what step 5 is for."
         : > "$RUN_OUT_FILE" 2>/dev/null || true
         # The stand-in is a second agent session in the same tree, so it gets
         # the same guard set as Sana's run, read again for this moment (ASK-3529).
-        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && env -u ANTHROPIC_API_KEY $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
+        if run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $SECOND_RUNNER_FALLBACK \"\$1\" \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$CODEX_PROMPT" "$(guard_settings_now)"; then
           crc=0
         else
           crc=$?
