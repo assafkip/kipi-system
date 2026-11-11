@@ -730,7 +730,9 @@ ALERT_MARKER = "kipi-alert-fingerprint"
 # below is what message_for() in spillover-linear-check.py writes, and an
 # ordinary alert with a DoR stays an alert (ASK-839, pinned by
 # test_linear_alert_triage.py). DOR_TEXT is the same text ready() tests, held in
-# one constant here so there is no second parser of it.
+# one constant here so there is no second parser of it. The exemption needs the
+# DoR as a HEADING line: message_for squashes the finding text onto one line, so
+# a finding that merely names the phrase cannot fake a section (review round 1).
 DOR_TEXT = "Definition of Ready"
 SPILLOVER_FORM = " | resolve with prd_runner spillover resolve "
 
@@ -753,7 +755,7 @@ def is_fleet_alert(i):
         if sep and name.strip() == ALERT_MARKER:
             d = i.get("description") or ""
             owned = "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}
-            if owned and SPILLOVER_FORM in d and DOR_TEXT in d:
+            if owned and SPILLOVER_FORM in d and (chr(10) + "## " + DOR_TEXT) in d:
                 return False
             return True
     return False

@@ -70,6 +70,7 @@ def test_same_spillover_without_a_dor_is_still_an_alert():
 def test_spillover_with_dor_but_not_owner_sana_is_not_picked():
     i = issue(SPILL + DOR, labels=("owner:assaf",))
     assert not READY(i)
+    assert IS_FLEET_ALERT(i) is True
     i = issue(SPILL + DOR, labels=("needs-triage",))
     assert not READY(i)
 
@@ -84,3 +85,11 @@ def test_a_spillover_phrase_in_prose_without_the_marker_is_not_special():
     # No marker: not an alert at all, so ready() decides on the DoR as before.
     i = issue("Discussing spillover resolve flow." + DOR)
     assert IS_FLEET_ALERT(i) is False
+
+
+def test_a_finding_that_only_names_the_phrase_stays_an_alert():
+    # message_for puts the finding text on one line inside the fence; naming the
+    # DoR there is not a DoR section.
+    named = SPILL.replace("some finding", "takes the first ## Definition of Ready heading")
+    i = issue(named)
+    assert IS_FLEET_ALERT(i) is True
