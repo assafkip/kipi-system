@@ -65,6 +65,8 @@ _FAKE_PING_GATE = '''
 def unquote(s):
     return s or ""
 def check_whatsapp(text, alert_class=None):
+    if (text or "").count(chr(10)) >= 20:
+        return {"send": False, "reasons": ["too-long"], "words": []}
     if "REFUSE-ME" in (text or ""):
         return {"send": False, "reasons": ["engineering-on-whatsapp"], "words": ["ASK id"]}
     return {"send": True, "reasons": [], "words": []}
@@ -123,11 +125,17 @@ class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
         self.assertTrue(res["saved"])
         self.assertTrue(res["link"].endswith("/chat"), res)
 
-    def test_collapsed_with_failed_save_says_saved_false(self):
+    def test_a_long_message_whose_save_fails_is_gated_as_post_will_gate_it(self):
+        """PR #749 review round 2, minor 3: with the app save down, _post's dm_length
+        keeps the whole text (cut to 1940 chars) and the gate refuses it too-long. The
+        pre-check gated a stand-in link line instead and passed. It must see what
+        _post sees: refused, nothing posted, and the save failing too means no
+        fallback line either."""
         body = "\n".join(f"row {i}" for i in range(40))
         res = self._deliver(body, save_ok=False)
-        self.assertTrue(res.get("collapsed"))
-        self.assertFalse(res["saved"])
+        self.assertFalse(res["delivered"], res)
+        self.assertTrue(res.get("fallback"), res)
+        self.assertIn("too-long", res.get("gate_reasons") or [], res)
 
     def test_held_key_is_carried(self):
         res = self._deliver("short note", hold=True)
@@ -218,6 +226,17 @@ class TestDetailAndVerdict(unittest.TestCase):
         self.assertFalse(res["delivered"], res)
         self.assertTrue(res["fallback"] and not res["full_saved"], res)
         self.assertNotIn("got", answer, "post_to ran with a text chief refuses")
+
+    def test_an_empty_message_is_undelivered_and_nothing_is_saved(self):
+        """PR #749 review round 2, minor 4: an empty message became a fallback and
+        delivered a link to a blank app note. Before this PR chief said "empty"."""
+        saves = os.path.join(self.tmp.name, "saves.bin")
+        with mock.patch.dict(os.environ, {"FAKE_SAVES": saves}):
+            res, answer = self._child("   ", None, kind="Morning brief")
+        self.assertFalse(res["delivered"], res)
+        self.assertNotIn("got", answer, "post_to ran for an empty message")
+        self.assertFalse(os.path.exists(saves), "an empty message was saved to the app")
+        self.assertNotIn("fallback", res)
 
     def test_exit_zero_with_no_verdict_is_not_a_delivery(self):
         """PR #519 review, minor: `or not answer` made silence a delivery, and the

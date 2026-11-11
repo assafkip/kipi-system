@@ -173,8 +173,9 @@ def _morning_brief(tmp_path, monkeypatch, phone_text):
     full = dict(empty, calendar=(["09:30 Call with Lee (Zoom)"], None),
                 mail=(["Lee at Portant: SOW questions"], None))
     broken = dict(full, mail=([], "HTTPError: 401"))
-    ticket = dict(full, mail=([_TICKET_SUBJECT], None))
-    return [mod.build(now, s)[0] for s in (full, empty, broken, ticket)]
+    # Clean data only: the brief's OWN wording must pass as is. Other people's words
+    # (a subject naming a ticket) are test_a_brief_naming_a_ticket_reaches_him_through_the_fallback.
+    return [mod.build(now, s)[0] for s in (full, empty, broken)]
 
 
 def _browser_health(tmp_path, monkeypatch, phone_text):
@@ -228,12 +229,6 @@ CASES = {
     "weekly-improve.py": _weekly_improve,
 }
 
-#: Callers whose message carries other people's words (mail subjects, calendar
-#: titles), so it may reach him as the fallback line, with the full text in the app.
-#: Every other caller's phone text is written for his phone and must pass as is: a
-#: fallback there is a regression, so the census does not allow one.
-FALLBACK_OK = {"morning-brief.py": "Morning brief"}
-
 #: Engineering signals (founder 2026-08-10: "should go to Sana - not me"). Each one
 #: is a job or a checker reporting on itself, which the founder cannot fix.
 ROUTED_TO_SANA = (
@@ -255,16 +250,14 @@ def test_every_founder_notify_caller_has_a_census_case():
 
 @pytest.mark.parametrize("caller", sorted(CASES))
 def test_every_founder_message_passes_chiefs_phone_gate(caller, chief, tmp_path, monkeypatch):
+    """Claim (a): each caller's own template on clean data passes chief DIRECTLY.
+    Never through plan(): the fallback makes any text deliverable, so a census run
+    through it cannot fail on the caller's own wording (PR #749 review round 2,
+    major 1). A caller whose own words are engineering-shaped is red here."""
     texts = CASES[caller](tmp_path, monkeypatch, chief[1])
     assert texts, f"{caller}: the census built no message"
     refused = []
     for text in texts:
-        if caller in FALLBACK_OK:
-            p = FN.plan(chief[0], chief[1], text, FALLBACK_OK[caller], save=lambda _t: "row1")
-            if p["text"] is None:
-                refused.append(f"{p['reason']}\n  {text[:300]!r}")
-                continue
-            text = p["text"]
         ok, reasons, words = verdict(chief, text)
         if not ok:
             refused.append(f"{reasons} {words}\n  {text[:300]!r}")
@@ -318,6 +311,10 @@ def test_a_brief_naming_a_ticket_reaches_him_through_the_fallback(chief):
     sources["mail"] = ([_TICKET_SUBJECT], None)
     message = mod.build(now, sources)[0]
     assert not verdict(chief, message)[0], "the fixture must be one chief refuses, or this proves nothing"
+    # Control: the same brief with a clean subject passes as is, so the refusal comes
+    # from the third-party subject and not from the brief's own wording.
+    clean = mod.build(now, dict(sources, mail=(["Lee at Portant: SOW questions"], None)))[0]
+    assert verdict(chief, clean)[0], "the brief's own wording is refused; that is claim (a), not a fallback"
     saved = []
     p = FN.plan(chief[0], chief[1], message, "Morning brief", save=lambda t: saved.append(t) or "row1")
     assert p["fallback"] and p["full_saved"] and saved == [message], p

@@ -125,14 +125,19 @@ def fallback_line(kind: str, saved, app_link: str) -> str:
     return FALLBACK_LINE.format(kind=kind, link=_link(app_link, saved))
 
 
-def phone_gate(ping_gate, phone_text, text: str, label: str = LABEL) -> tuple:
+def phone_gate(ping_gate, phone_text, text: str, label: str = LABEL, saver=None) -> tuple:
     """(send, reasons, words): chief's telegram_out._post send(), call for call.
 
     Label prefix, plain_links, the whole-text engineering check when the text does
     not fit, the probe of the cut line, dm_length, then the final check_whatsapp
     with the app link standing for the action (DEC-68). post_to passes no
-    alert_class, so neither does this. Pure apart from chief's own pure checks: the
-    savers here are stand-ins, nothing is saved."""
+    alert_class, so neither does this.
+
+    `saver` is the one dm_length uses for the final line, as `_post` passes its own.
+    The child passes chief's real save_long (cached), so a failed save yields the
+    long cut text `_post` would gate, not a link (PR #749 review round 2, minor 3).
+    None is a stand-in that assumes the save succeeds: pure, and what the census
+    uses. The probe's stand-in is chief's own (`lambda _t: True` in `_post`)."""
     link = phone_text.APP_LINK
     t = phone_text.plain_links((text or "").strip())
     if not t:
@@ -147,19 +152,24 @@ def phone_gate(ping_gate, phone_text, text: str, label: str = LABEL) -> tuple:
                                          alert_class=None)
         if not probe.get("send"):
             return False, probe.get("reasons"), probe.get("words")
-    line = phone_text.dm_length(shown, saver=lambda _t: "row1")
+    line = phone_text.dm_length(shown, saver=saver or (lambda _t: "row1"))
     gate = ping_gate.check_whatsapp(f"{quoted if line == shown else line} {link}", alert_class=None)
     return bool(gate.get("send")), gate.get("reasons"), gate.get("words")
 
 
-def plan(ping_gate, phone_text, text: str, kind: str = DEFAULT_KIND, save=None, label: str = LABEL) -> dict:
+def plan(ping_gate, phone_text, text: str, kind: str = DEFAULT_KIND, save=None, label: str = LABEL,
+         saver=None) -> dict:
     """What post_to receives, decided before post_to runs. `text` None: send nothing.
 
     A text the gate passes goes as is. A refused one is saved whole with `save`
     (chief's save_long by default) and replaced by the fallback line, which is gated
     too. A save that fails, or a fallback line the gate refuses, sends nothing and
-    says why: a refused text is never handed to post_to."""
-    ok, reasons, words = phone_gate(ping_gate, phone_text, text, label)
+    says why: a refused text is never handed to post_to. An empty message sends and
+    saves nothing (PR #749 review round 2, minor 4: it became a link to a blank note).
+    `saver` goes to phone_gate, see there."""
+    if not (text or "").strip():
+        return {"text": None, "fallback": False, "reason": "empty message: nothing sent or saved"}
+    ok, reasons, words = phone_gate(ping_gate, phone_text, text, label, saver=saver)
     if ok:
         return {"text": text, "fallback": False}
     kept = (save or phone_text.save_long)(text)
@@ -186,20 +196,29 @@ def child(argv) -> int:
     if detail:
         kept = phone_text.save_long(detail)
         text = with_detail(text, kept, phone_text.APP_LINK)
-    p = plan(ping_gate, phone_text, text, kind or DEFAULT_KIND, label=label)
+    # ONE saver for the pre-check and for post_to, cached by text. The pre-check then
+    # cuts the final line exactly as _post will, failed save included, and _post
+    # reuses the answer instead of saving the same text twice.
+    kept_long = {}
+
+    def saver(t):
+        if t not in kept_long:
+            kept_long[t] = phone_text.save_long(t)
+        return kept_long[t]
+
+    p = plan(ping_gate, phone_text, text, kind or DEFAULT_KIND, label=label, saver=saver)
     if p["text"] is None:
         res = {"delivered": False, "refused": True, "reason": p["reason"]}
     else:
-        saves = []
+        asked = []
 
-        def saver(t):
-            got = phone_text.save_long(t)
-            saves.append(bool(got))
-            return got
+        def post_saver(t):
+            asked.append(t)
+            return saver(t)
 
-        res = dict(telegram_out.post_to(chat, p["text"], label, saver=saver))
-        if saves:
-            res.update(collapsed=True, saved=saves[-1], link=phone_text.APP_LINK + "/chat")
+        res = dict(telegram_out.post_to(chat, p["text"], label, saver=post_saver))
+        if asked:
+            res.update(collapsed=True, saved=bool(saver(asked[-1])), link=phone_text.APP_LINK + "/chat")
     if p["fallback"]:
         res.update({k: p[k] for k in ("fallback", "gate_reasons", "full_saved")})
     if detail:
