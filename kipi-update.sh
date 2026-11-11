@@ -27,7 +27,11 @@ fi
 # are preserved. Everything else syncs from the skeleton.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REGISTRY="$SCRIPT_DIR/instance-registry.json"
+# KIPI_UPDATE_REGISTRY: fleet-sync-land.py points one entry at a worktree cut from
+# the instance's origin, so a sync can land via PR without writing the human's
+# shared checkout (ASK-4431). Exported so fleet-reach-audit.py audits the same list.
+REGISTRY="${KIPI_UPDATE_REGISTRY:-$SCRIPT_DIR/instance-registry.json}"
+export KIPI_UPDATE_REGISTRY="$REGISTRY"
 # KIPI_SKELETON_REMOTE lets a fork point at itself (GitHub issue #2); default is upstream
 SKELETON_REMOTE="${KIPI_SKELETON_REMOTE:-https://github.com/assafkip/kipi-system.git}"
 # With no override, the provenance proof compares this checkout with ITS OWN origin, which is

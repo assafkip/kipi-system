@@ -375,8 +375,10 @@ def main():
 
     skeleton = pathlib.Path(args.skeleton).resolve()
     updater = skeleton / "kipi-update.sh"
-    registry = skeleton / "instance-registry.json"
-    owned = instance_owned_subtrees(updater)
+    # Same list the updater reads: fleet-sync-land.py points one entry at a landing
+    # worktree, and auditing the shared checkout instead would gate the wrong tree (ASK-4431).
+    registry = pathlib.Path(os.environ.get("KIPI_UPDATE_REGISTRY") or skeleton / "instance-registry.json")
+    owned =instance_owned_subtrees(updater)
     skel_blobs = SkeletonBlobs(skeleton)
 
     entries = [

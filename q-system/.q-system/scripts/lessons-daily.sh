@@ -438,6 +438,20 @@ elif [ "$PUB" -gt 0 ] || [ "$PUBLISH_MODE" = pr ]; then  # PR mode fans out main
 else
   PROP="no propagation (nothing published)"
 fi
+# ASK-4431. The fan-out commits into each shared checkout's CURRENT branch and
+# nothing pushes it: a client instance synced daily onto a feature branch while origin/main
+# went 32 days without one. After a real fan-out, land the lagging instances
+# through worktrees off origin (PR + auto-merge). The divergence check runs on every
+# real run, because a lag grows fastest when the fan-out is failing; it alerts Sana
+# via slack-notify.sh. Never under a test's KIPI_PROPAGATE_CMD, so no fixture
+# reaches the live registry.
+if [ -z "${KIPI_PROPAGATE_CMD:-}" ]; then
+  case "$PROP" in propagat*)
+    python3 "$SKEL/fleet-sync-land.py" land >> "$LOG" 2>&1 \
+      || echo "$(TS) fleet-sync-land: a landing failed (see above)" >> "$LOG" ;;
+  esac
+  python3 "$SKEL/fleet-sync-land.py" check --alert >> "$LOG" 2>&1 || true
+fi
 
 # bump prints "<new>\t<previous>" from ONE locked operation; a separate read
 # before the reset would let a concurrent failure land in between (Codex).
