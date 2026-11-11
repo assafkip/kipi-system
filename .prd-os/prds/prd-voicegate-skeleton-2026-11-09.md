@@ -42,7 +42,7 @@ Measured on kipi-system origin/main 976993a7, 2026-11-09:
 - The fail-closed census for an instance hook. `test_hook_fail_closed_population.py` reads only the skeleton's two settings files by design; the instance gate's proof is consulting K1b's delete-the-file test.
 - The skeleton template's voice-lint wrappers (`settings-template.json:144`, `:305`, `:310`, `:457`) and the crash-exits-1 class in those lints. Deferred on finding-4 to its own ticket: a different fix (template plus crash handling) with fleet blast radius.
 - K10 worker ledger fields. Deferred on finding-16: RULE-2026-11-07-F reads pickup-to-merge from GitHub on day one, so the fields would be write-only. They land with the consulting V10 reader that names them.
-- K6 proof writers (evidence ledger, morning step log, design-chain receipts). Deferred on finding-18 to one ticket listing the three; the plan orders K6 after V9.
+- K6 proof writers. Deferred on finding-18; the list, files and done conditions are now in the K6 section below, one Linear issue each. The plan orders K6 after V9.
 - The lessons-injector replay (4 incident prompts, 5 target lessons, 0 of 5 today). Deferred on finding-14: no injector change has a design yet, and a test pinning 0 of 5 would pin the defect.
 - The shell-header claim lint (folded into ASK-3818, not built here).
 - K4's shared receipt module: both `runtime_receipt.py` copies are already blob b8c2d99e, pinned by the byte-identity assertion at `plugins/prd-os/tests/test_runtime_receipt_gate.py:71`. K4 closes citing that test.
@@ -74,6 +74,19 @@ Instance root: `$CLAUDE_PROJECT_DIR` when set, else the git toplevel of the draf
 ### K7 row contract
 
 Each row: `path` (exact repo-relative path; no glob characters, no `..`, not absolute), `reason` (non-empty), `owner` (from a closed set in the reader module), `created` and `expires` (UTC dates, `YYYY-MM-DD`). A row skips while today in UTC is before `expires`; on the `expires` date it no longer skips. `expires` is at most 30 days after `created`. An unreadable file or an invalid row suppresses nothing and is reported by name; the reader never raises, so a lint never exits 1 on a bad row. Every skip prints the row's owner, reason and expiry.
+
+### K6 proof writers (measured 2026-11-11, closes finding-18)
+
+Measured by reading the writers in `q-system/.q-system/scripts/` and `plugins/kipi-core/`. A proof writer here is code that records a verification claim a later gate or draft trusts. The one K1 to K5 covered is the voice lint family. The plan lines K6 from (`voiceloop-enforced-in-code-resume-2026-11-07.md`, line 110) also name the chief email gate and investigations `client_report.py`; those are in other repos and stay filed there (see Non-goals).
+
+| Writer | File:function | Status | Done condition |
+|---|---|---|---|
+| Evidence ledger | `q-system/.q-system/scripts/evidence_ledger.py`: `add` (`:346`) and `append_row` (`:317`) | Open: ASK-4577 | `add` runs the command itself and stores the captured output; a caller-supplied result is refused. Red test: a made-up result is not stored. |
+| Morning step log | `plugins/kipi-core/kipi-mcp/src/kipi_mcp/step_logger.py`: `StepLogger.log_step` (`:41`); `q-system/.q-system/log-step.py`: `cmd_log_step` (`:156`) | Open: ASK-4578 | A step is `done` only when its bus artifact exists and validates, through one writer. Red test: `done` with no artifact is recorded `unverified`. |
+| Design-chain exemption marker | `plugins/kipi-design/hooks/dogfood_gate.py` (`:413`, `:521`); `q-system/.q-system/scripts/design-chain-gate.py`: `_tripwire_na_holds` (`:203`) | Open: ASK-4579, after K7 merges | In an instance with the K7 file, the in-file `eyeball-gate-skip` marker stops exempting; a row does. Red test: marker without a row is checked. |
+| Design-chain receipts | `q-system/.q-system/scripts/design-chain-gate.py`: `_seal_snapshot` writes `receipts.json` (`:2930`) | Covered, no issue | `seal` runs the producers itself (`_run_producers` `:703`, `producer_problems` `:658`) and refuses to write when any reports a problem (`:2855` onward, `seal REFUSED`). No caller-supplied result reaches the receipt. |
+
+Other writers read and found to be out of scope: `browser_session_health.py:write_receipt`, `fleet-api-report.py:write_receipt` and `morning-brief.py:write_receipt` record the job's own run result, not a verification claim a gate trusts.
 
 ## Alternatives considered
 
