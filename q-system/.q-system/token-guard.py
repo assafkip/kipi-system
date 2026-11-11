@@ -1509,10 +1509,13 @@ def reset_volume_if_committed(cache, head_epoch):
 # reset it by hand). Each stop cost a fresh agent re-reading the whole context.
 #
 # A subagent's "user" is its coordinator. Measured 2026-11-10 over 336 real
-# subagent transcripts: all 139 SendMessage deliveries are `type: user` rows
-# with `origin.kind == "coordinator"` and a timestamp; 4 resumed a stopped
+# subagent transcripts: 139 deliveries are `type: user` rows with
+# `origin.kind == "coordinator"` and a `Z` timestamp; 4 resumed a stopped
 # agent, 135 landed mid-run. So a coordinator row newer than the last reset is
-# that actor's UserPromptSubmit.
+# that actor's new turn. 3 more rows are `origin.kind == "peer"` (another
+# session) and are excluded on purpose: a peer can be a sibling lane, and two
+# lanes messaging each other would re-arm each other forever. The coordinator
+# chain ends at the main actor, which only a human message resets.
 #
 # Deliberately NOT a reset: `origin.kind == "task-notification"` (251 rows in
 # the same sample). A subagent mints those itself with run_in_background, so a
@@ -1524,7 +1527,15 @@ def reset_volume_if_committed(cache, head_epoch):
 # proportionally longer); push / Linear write / PR status as progress (a push
 # follows a commit that already reset, and the others have no-op shapes the
 # response does not reveal).
-COORDINATOR_TAIL_BYTES = 256 * 1024   # only the newest rows can be a new turn
+# Scar (PR #735 review round 2, major): a fixed 256 KiB tail missed 63 of 63
+# real mid-run messages. A lane's own tool traffic between the message and the
+# first probe (call 35) measured 0.39 to 1.58 MB, and 0.64 to 1.78 MB by call
+# 50. So the scan walks BACKWARD from EOF and stops at the first row older than
+# the last reset: nothing before that row can be a new turn. The cap is about
+# 9x the measured maximum; hitting it costs a reset, never grants one.
+COORDINATOR_SCAN_CHUNK = 256 * 1024
+COORDINATOR_SCAN_CAP = 16 * 1024 * 1024
+_ROW_STAMP = re.compile(rb'"timestamp"\s*:\s*"([^"\\]+)"')
 SUBAGENT_TURN_HINT = (
     " You are a subagent: your coordinator's next message starts a new turn"
     " and restores this budget, so end now with your exact state and next"
@@ -1554,53 +1565,81 @@ def _iso_to_epoch(stamp):
     return base + (float("0." + frac) if frac else 0.0)
 
 
-def _coordinator_message_epoch(hook_input):
-    """Epoch of the newest coordinator message in this subagent's OWN
-    transcript tail, or None. None for the main actor (it has
-    UserPromptSubmit) and on any read error. Reads at most
-    COORDINATOR_TAIL_BYTES: a message that scrolled past the tail before the
-    probe ran is missed, which costs a reset, never grants one."""
+def _coordinator_row_epoch(line):
+    """Epoch of a coordinator delivery row, or None for any other row."""
+    if b'"coordinator"' not in line:
+        return None
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(row, dict) or row.get("type") != "user":
+        return None
+    origin = row.get("origin")
+    if not isinstance(origin, dict) or origin.get("kind") != "coordinator":
+        return None
+    return _iso_to_epoch(row.get("timestamp"))
+
+
+def _coordinator_message_epoch(hook_input, since):
+    """Epoch of the newest coordinator message newer than `since` in this
+    subagent's OWN transcript, or None. None for the main actor (it has
+    UserPromptSubmit) and on any read error.
+
+    Walks backward from EOF in COORDINATOR_SCAN_CHUNK steps and stops at the
+    first row stamped at or before `since` (the last reset), or after
+    COORDINATOR_SCAN_CAP bytes. The stop reads only the row's own top-level
+    stamp: a stamp quoted inside tool output is JSON-escaped, so the pattern
+    cannot match it."""
     if not hook_input.get("agent_id"):
         return None
     path = actor_transcript_path(hook_input)
     if not path:
         return None
-    newest = None
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
-            size = f.tell()
-            start = max(0, size - COORDINATOR_TAIL_BYTES)
-            f.seek(start)
-            lines = f.read().splitlines()
+            pos = f.tell()
+            floor = max(0, pos - COORDINATOR_SCAN_CAP)
+            carry = b""
+            while pos > floor:
+                step = min(COORDINATOR_SCAN_CHUNK, pos - floor)
+                pos -= step
+                f.seek(pos)
+                lines = (f.read(step) + carry).split(b"\n")
+                # The first piece is partial unless we are at byte 0: carry it
+                # into the next (earlier) chunk instead of judging half a row.
+                carry = lines.pop(0) if pos > 0 else b""
+                for line in reversed(lines):
+                    found = _ROW_STAMP.search(line)
+                    stamp = _iso_to_epoch(found.group(1).decode("ascii", "replace")) \
+                        if found else None
+                    if stamp is not None and stamp <= since:
+                        return None
+                    epoch = _coordinator_row_epoch(line)
+                    if epoch and epoch > since:
+                        return epoch
     except OSError:
         return None
-    if start:
-        lines = lines[1:]   # the first line of a mid-file tail is partial
-    for line in lines:
-        if b'"coordinator"' not in line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        origin = row.get("origin") if isinstance(row, dict) else None
-        if row.get("type") != "user" or not isinstance(origin, dict) \
-                or origin.get("kind") != "coordinator":
-            continue
-        epoch = _iso_to_epoch(row.get("timestamp"))
-        if epoch and (newest is None or epoch > newest):
-            newest = epoch
-    return newest
+    return None
 
 
 def reset_turn_if_coordinator_spoke(cache, coordinator_epoch):
-    """A coordinator message newer than the last reset is a new turn for this
-    subagent: the full per-message reset UserPromptSubmit gives the main actor.
-    The reset stamps last_volume_reset = now, which is past that message, so
-    one message buys exactly one window (no ratchet)."""
+    """A coordinator message newer than the last reset restores this
+    subagent's VOLUME budget, the same counters the commit valve resets. The
+    reset stamps last_volume_reset = now, which is past that message, so one
+    message buys exactly one window (no ratchet).
+
+    Volume only, not the full per-message reset (PR #735 review rounds 1-2,
+    with a reproducer): the full reset also cleared repeat_map and
+    edit_targets, so a message bought a 4th identical retry against the two
+    no-progress detectors the higher-ceiling rejection relies on."""
     if coordinator_epoch and coordinator_epoch > cache.get("last_volume_reset", 0):
-        cache = reset_per_message_counters(cache)
+        cache["tool_calls_since_user"] = 0
+        cache["agent_calls_since_user"] = 0
+        cache["warnings_issued"] = 0
+        cache["last_volume_reset"] = time.time()
+        cache = clear_gate_grace(cache)
     return cache
 
 
@@ -1688,9 +1727,11 @@ def main():
     # same peek and stays outside the lock too (ASK-777).
     head_epoch = None
     coordinator_epoch = None
-    if load_cache(actor).get("tool_calls_since_user", 0) >= VOLUME_WARNING:
+    peek = load_cache(actor)
+    if peek.get("tool_calls_since_user", 0) >= VOLUME_WARNING:
         head_epoch = _head_commit_epoch()
-        coordinator_epoch = _coordinator_message_epoch(hook_input)
+        coordinator_epoch = _coordinator_message_epoch(
+            hook_input, peek.get("last_volume_reset", 0))
 
     # Everything from here to process exit runs under this actor's lock, so the
     # load-mutate-save below is one critical section rather than a race. The

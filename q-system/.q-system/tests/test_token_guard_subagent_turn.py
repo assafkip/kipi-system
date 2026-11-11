@@ -180,6 +180,59 @@ def test_main_actor_ignores_coordinator_rows(lane):
     assert "coordinator" not in result.stderr
 
 
+def traffic(lane, nbytes, ts=None):
+    """The lane's own tool traffic, real size. Round 2 of the PR #735 review
+    measured 0.39 to 1.58 MB between a mid-run message and the first probe;
+    the first fixture held about 500 bytes, so it could not go red for the
+    production reason. Each row also quotes an escaped stamp in its output, the
+    shape the backward scan must not mistake for the row's own stamp."""
+    quoted = json.dumps({"timestamp": iso(time.time() - 86400)})
+    blob = "y" * 4000
+    rows = []
+    for _ in range(max(1, nbytes // 4200)):
+        rows.append(row(None, quoted + blob, ts=ts, tool_result=True, is_meta=False))
+    append(lane, *rows)
+
+
+def test_mid_run_message_behind_real_traffic_resets(lane):
+    """Red on 82a93549: a fixed 256 KiB tail lost the message behind 1.6 MB."""
+    assert drive(lane, 1, 45) == (None, "")
+    append(lane, coordinator_row())
+    traffic(lane, 1_600_000)
+    blocked_at, stderr = drive(lane, 46, 55)
+    assert blocked_at is None, stderr
+
+
+def test_stale_message_behind_real_traffic_does_not_reset(lane):
+    """The backward scan stops at the first row older than the last reset, so
+    an already-used message under newer traffic grants nothing."""
+    seed(lane, VOLUME_CEILING - 1, last_reset=time.time() - 30)
+    append(lane, coordinator_row(ts=time.time() - 60))
+    traffic(lane, 1_600_000)
+    assert call(lane, 1).returncode == 2
+
+
+def test_coordinator_turn_keeps_the_retry_detectors(lane):
+    """Review rounds 1-2 (minor, with a reproducer): the full per-message
+    reset also cleared repeat_map and edit_targets, buying a 4th identical
+    retry. The coordinator reset is volume only, like the commit valve."""
+    seed(lane, VOLUME_CEILING - 1, last_reset=time.time() - 600)
+    key = f"{lane['sid']}-agent-{AGENT}"
+    with open(f"/tmp/claude-guard-{key}.json") as f:
+        state = json.load(f)
+    state["repeat_map"] = {"held-key": 3}
+    state["edit_targets"] = {"/tmp/tgturn-held": 2}
+    with open(f"/tmp/claude-guard-{key}.json", "w") as f:
+        json.dump(state, f)
+    append(lane, coordinator_row())
+    assert call(lane, 1).returncode == 0
+    with open(f"/tmp/claude-guard-{key}.json") as f:
+        after = json.load(f)
+    assert after["tool_calls_since_user"] <= 1
+    assert after["repeat_map"].get("held-key") == 3
+    assert after["edit_targets"].get("/tmp/tgturn-held") == 2
+
+
 def test_an_offset_stamp_fails_closed(lane):
     """PR #735 review round 1 (ASK-4423): `.939+02:00` once parsed as UTC wall
     clock, i.e. 2h in the future, which re-armed the reset on every probe.
