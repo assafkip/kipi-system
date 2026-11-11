@@ -152,6 +152,24 @@ TRIGGER_RE = re.compile(
 # ONE routed lesson per turn, because two never fit: the header plus the two
 # smallest exit lessons is 6,271 bytes against the 6,000-byte share. The
 # session dedupe walks the list, so the next exit turn gets the next lesson.
+#
+# A ROUTE NEVER RUNS ON AN ENGINEERING PROMPT (PR #744 review blocker). The
+# first version put the routed lesson ahead of term overlap in the same
+# 6,000-byte share. A routed lesson is 4,000 bytes or more, so on "fix the
+# validator script migration, then write the email about it" both ranked
+# lessons were skipped for one routed one, and a show prompt charged 5,373
+# bytes to the session budget where term overlap charged 3,735. An engineering
+# prompt is now selected byte for byte as it was before the route existed.
+#
+# "build" and "building" do not make an act prompt engineering. In a prompt
+# that drafts a post they are the post's subject ("a post about building my own
+# CRM"), the same class of word that took design, ship and budget out of
+# TRIGGER_RE. They were the only trigger in two of the four incident prompts,
+# and with them counted the route could never reach those two.
+_ACT_SUBJECT_WORDS = re.compile(r"(?i)\bbuild(?:ing)?\b")
+# "version" and "text" left the show nouns (PR #744 review minor): "show me the
+# latest version of the validator script" is a code read, not an exit. "draft"
+# stays, because it names the act itself.
 _READER_NOUNS = (r"post|posts|reply|replies|email|emails|dm|dms|caption|captions|"
                  r"tweet|tweets|newsletter|essay")
 _NOUN_END = r")(?![\w-])"
@@ -166,7 +184,7 @@ ACT_ROUTES = (
       "gates-must-recompute-not-read-self-reports")),
     ("show", re.compile(
         r"(?i)\bshow\s+(?:(?:it|them|this|that)\s+to\s+me\b|me(?:\W+\w+){0,4}?\W+"
-        r"(?:draft|drafts|text|texts|version|versions|" + _READER_NOUNS + _NOUN_END + r")"),
+        r"(?:draft|drafts|" + _READER_NOUNS + _NOUN_END + r")"),
      ("gates-must-recompute-not-read-self-reports",
       "zero-selected-items-is-a-failure-not-a-pass",
       "a-check-must-be-able-to-fail-for-the-reason-you-care-abou",
@@ -361,8 +379,9 @@ def main():
     prompt = payload.get("prompt") or ""
     if not prompt.strip():
         return 0
-    engineering = bool(TRIGGER_RE.search(prompt))
     acts = [(act, lids) for act, rx, lids in ACT_ROUTES if rx.search(prompt)]
+    engineering = bool(TRIGGER_RE.search(
+        _ACT_SUBJECT_WORDS.sub(" ", prompt) if acts else prompt))
     if not engineering and not acts:
         return 0
     # Agent prose in a task-notification says "fix", "test", "hook" in every
@@ -411,23 +430,23 @@ def main():
         # says every time. Continuing past here is how three relevant lessons
         # become a hundred and fifty irrelevant ones.
         return 0
-    # Routed lessons first: the first unseen one per matched act. Term overlap
-    # fills the rest only on an engineering prompt, so an act match alone never
-    # opens the general selector to a non-engineering turn.
-    by_id = {lid: (title, body) for lid, title, body, _t in lessons}
+    # One selector per turn, never both (see ACT_ROUTES). Engineering: term
+    # overlap alone, as before the route. Otherwise the first unseen lesson per
+    # matched act, so an act match never opens term overlap to a turn with no
+    # engineering intent, and never takes bytes from it on a turn that has some.
     picked = []
-    for act, lids in acts:
-        for lid in lids:
-            if lid in by_id and lid not in seen and lid not in {p[1] for p in picked}:
-                picked.append((f"routed: {act}", lid) + by_id[lid])
-                break
-    picked = picked[:ROUTED_PER_TURN]
     if engineering:
-        taken = {p[1] for p in picked}
-        ranked = [(f"relevance {score:.1f}", lid, title, body)
+        picked = [(f"relevance {score:.1f}", lid, title, body)
                   for score, lid, title, body in rank(lessons, terms(prompt))
-                  if lid not in seen and lid not in taken]
-        picked += ranked[:TOP_K - len(picked)]
+                  if lid not in seen][:TOP_K]
+    else:
+        by_id = {lid: (title, body) for lid, title, body, _t in lessons}
+        for act, lids in acts:
+            for lid in lids:
+                if lid in by_id and lid not in seen and lid not in {p[1] for p in picked}:
+                    picked.append((f"routed: {act}", lid) + by_id[lid])
+                    break
+        picked = picked[:ROUTED_PER_TURN]
     if not picked:
         return 0
 

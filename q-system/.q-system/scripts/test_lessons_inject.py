@@ -555,6 +555,96 @@ def case_replay_unrelated_prompts_gain_no_target_lesson() -> bool:
     return ok
 
 
+# Engineering prompts that ALSO name an act, one per route (PR #744 review
+# blocker). Before the fix the routed lesson went first in the 6,000-byte share
+# and every lesson term overlap ranked for them was skipped: measured 2026-11-10,
+# the email prompt lost both of its two ranked lessons to one routed one.
+ENGINEERING_WITH_ACT = (
+    "fix the validator script migration, then write the email about it",
+    "fix the gate hook test, then show me the draft again",
+)
+
+
+def _hook_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_li_mod", HOOK)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _session_run(repo: Path, prompt: str, sid: str, tmpdir: str, routes: bool = True):
+    """(payload, session record). routes=False runs the same hook with
+    ACT_ROUTES emptied: what term overlap alone emits and charges."""
+    if routes:
+        argv = [sys.executable, str(HOOK)]
+    else:
+        argv = [sys.executable, "-c",
+                "import importlib.util, sys\n"
+                f"spec = importlib.util.spec_from_file_location('li', {str(HOOK)!r})\n"
+                "m = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(m)\n"
+                "m.ACT_ROUTES = ()\n"
+                "sys.exit(m.main())\n"]
+    p = subprocess.run(argv, input=json.dumps({"prompt": prompt, "session_id": sid}),
+                       capture_output=True, text=True, check=False,
+                       env={"CLAUDE_PROJECT_DIR": str(repo), "PATH": "/usr/bin:/bin",
+                            "TMPDIR": tmpdir})
+    rec = Path(tmpdir) / "kipi-lessons-inject" / (sid + ".json")
+    return _ctx(p.stdout), (json.loads(rec.read_text()) if rec.exists() else {})
+
+
+def case_an_act_never_displaces_what_term_overlap_ranked() -> bool:
+    """An engineering prompt is selected exactly as it was before the route.
+
+    The oracle is the same hook with ACT_ROUTES emptied, not a pinned list of
+    lesson ids: the corpus grows weekly and a pinned ranking would go stale on
+    the next lessons PR while proving nothing about the route. Byte-identical
+    payload means the ranked lessons kept their place and no routed lesson took
+    bytes from them. Identical session record means nothing extra was marked
+    seen or charged to the session budget.
+    """
+    import re
+    routes = _hook_module().ACT_ROUTES
+    repo, tmpdir, ok = _replay_repo(), tempfile.mkdtemp(), True
+    for prompt in ENGINEERING_WITH_ACT:
+        # Preconditions, or this case can pass without exercising anything.
+        if not any(rx.search(prompt) for _act, rx, _lids in routes):
+            print(f"    precondition: {prompt!r} names no act")
+            ok = False
+            continue
+        sid = uuid.uuid4().hex
+        base, base_rec = _session_run(repo, prompt, "base-" + sid, tmpdir, routes=False)
+        got, got_rec = _session_run(repo, prompt, "real-" + sid, tmpdir)
+        ranked = re.findall(r"=== \[([^\]]+)\]", base)
+        if not ranked:
+            print(f"    precondition: {prompt!r} ranks no lesson by term overlap")
+            ok = False
+            continue
+        if got != base or got_rec != base_rec:
+            shown = re.findall(r"=== \[([^\]]+)\]", got)
+            print(f"    displaced: {prompt[:45]!r}: surfaced {shown}, term overlap "
+                  f"ranked {ranked}; charged {got_rec.get('chars')} vs "
+                  f"{base_rec.get('chars')}")
+            ok = False
+    return ok
+
+
+def case_a_code_read_is_not_a_show_act() -> bool:
+    """PR #744 review minor: "version" and "text" were show nouns, so a code
+    read routed an exit lesson. Read off the route table itself: through the hook
+    this prompt is engineering and never reaches a route, so a payload check
+    would pass whether or not the nouns were narrowed. The incident prompts must
+    still name an act, or the narrowing cut the route it was meant to trim."""
+    routes = _hook_module().ACT_ROUTES
+    hit = [act for act, rx, _l in routes
+           if rx.search("show me the latest version of the validator script")]
+    unrouted = [p for p, _w in REPLAY if not any(rx.search(p) for _a, rx, _l in routes)]
+    if hit or unrouted:
+        print(f"    code read routed as {hit}; incident prompts naming no act: {unrouted}")
+    return not hit and not unrouted
+
+
 def case_every_routed_lesson_exists_in_the_real_corpus() -> bool:
     """A renamed or removed lesson would leave its route pointing at nothing,
     and the hook skips a missing id silently. This is where that turns red."""
