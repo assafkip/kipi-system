@@ -147,6 +147,12 @@ OUT_DIR="$HOME/.config/kipi/pr-reviews"
 # run_bounded, and either reads as "the reviewer is down".
 TIMEOUT_SECONDS="${KIPI_REVIEW_TIMEOUT:-2400}"
 case "$TIMEOUT_SECONDS" in ''|*[!0-9]*|0) TIMEOUT_SECONDS=2400 ;; esac
+# Floor of 300: a cap of 1 to 5 seconds is a positive integer but kills the
+# engine before it can read the diff, and that reads as "the reviewer is down".
+if [ "$TIMEOUT_SECONDS" -lt 300 ]; then
+  echo "KIPI_REVIEW_TIMEOUT=$TIMEOUT_SECONDS is below the 300s floor; using 2400" >&2
+  TIMEOUT_SECONDS=2400
+fi
 NOTIFY="${KIPI_NOTIFY:-$SCRIPT_DIR/slack-notify.sh}"
 
 # PIN THE REVIEWER'S IDENTITY. Before ASK-221 the claude engine passed no
