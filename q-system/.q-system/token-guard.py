@@ -1531,15 +1531,27 @@ SUBAGENT_TURN_HINT = (
     " step. Do not manufacture a commit to get past this.")
 
 
+_UTC_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z")
+
+
 def _iso_to_epoch(stamp):
-    """`2026-11-10T00:16:40.939Z` -> float epoch, or None. Anything else fails
-    closed (no reset), never open."""
-    try:
-        whole, _, frac = stamp.rstrip("Z").partition(".")
-        base = calendar.timegm(time.strptime(whole, "%Y-%m-%dT%H:%M:%S"))
-        return base + (float("0." + frac) if frac.isdigit() else 0.0)
-    except (ValueError, TypeError, AttributeError, OverflowError):
+    """`2026-11-10T00:16:40.939Z` -> float epoch, or None. Only the exact UTC
+    `Z` form parses; anything else fails closed (no reset).
+
+    Scar (PR #735 review round 1, major): the first version split on "." and
+    read the left half as UTC, so `...40.939+02:00` became a time 2h in the
+    FUTURE. Every probe then saw a message newer than the reset it had just
+    stamped, and the ceiling was gone for two hours: fail-open. Measured
+    transcripts use `Z` only (139 of 139), so strict costs nothing today."""
+    match = _UTC_STAMP.fullmatch(stamp) if isinstance(stamp, str) else None
+    if not match:
         return None
+    try:
+        base = calendar.timegm(time.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+    frac = match.group(2)
+    return base + (float("0." + frac) if frac else 0.0)
 
 
 def _coordinator_message_epoch(hook_input):
