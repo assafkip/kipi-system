@@ -221,8 +221,11 @@ def baseline_file_sections(path):
 # THE FILE MUST ALSO BE IN THE INDEX: an untracked file is judged as new, as before.
 # THE MAIN CHECKOUT (.git is a folder) never reaches git here, so it is judged as before.
 # Any git error or timeout returns "no worktree baseline", which is the strict behaviour.
-# Residual, stated: a same-user shell can move refs/remotes/origin/* by hand; that is the
-# same class as the user-writable gate files the docstring already names.
+# Residual, stated: the anchor is a LOCAL ref, so a same-user shell can forge it
+# (`git update-ref refs/remotes/origin/main HEAD`) and grandfather any prose in that
+# worktree, with no sudo. Root-owning gate-locked does NOT close this (PR #733 review,
+# round 1). It sits with the other same-user residuals install-rule-gate.sh names (the
+# folder swap, ~/.claude/settings.json); hardening it is captured in the spillover ledger.
 _GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
 _WT_TOPS, _WT_FILES = {}, {}
