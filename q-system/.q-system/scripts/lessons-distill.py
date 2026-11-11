@@ -13,7 +13,7 @@ Per new learning:
   2. GATE (fail-closed, lessons_scrub): find client-data signals; scrub them; a lesson PUBLISHES only
      if the scrubbed text is deterministically clean AND an LLM semantic pass confirms no residual
      real entity. Anything the gate can't clear is HELD (written to the held dir), never published.
-  3. PUBLISH clean lessons to q-system/lessons/<id>.md (frontmatter {id,kind,title,date}); the rail
+  3. PUBLISH clean lessons to q-system/lessons/<id>.md (frontmatter {id,kind,title,date,prose_accepted}); the rail
      fans them read-only to every instance on the next `kipi update`.
   4. LEDGER every source so each learning is processed once (idempotent daily runs); a published
      row also names the lesson_id it became, so each lesson traces to its source.
@@ -252,14 +252,42 @@ def held_source_link(path):
     return f"[{relative.name}](../{relative.as_posix()})"
 
 
-def write_lesson(lessons_dir, distilled, published_text, stamp, used_ids):
+class LessonRefused(Exception):
+    """lessons-validator.py would refuse the lesson this run was about to publish."""
+
+
+def _validator():
+    # Load the hook's own module so the writer and the hook share ONE judge (K5, ASK-4339).
+    # A second copy of the rules here would drift from the hook the first time one changes.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("lessons_validator", Path(__file__).with_name("lessons-validator.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Fixed strings, never text from the source: prose_accepted fans to every instance in a
+# frontmatter line, and a source note can name a client. The scrub gate cleans the body;
+# nothing would scrub this field, so it carries no source text at all.
+ACCEPT_REASON = {
+    "rca": "auto-distilled from a documented failure, scrub gate cleared, no code holder yet",
+    "learnings": "auto-distilled from a learning note, scrub gate cleared, no code holder yet",
+}
+
+
+def write_lesson(lessons_dir, distilled, published_text, stamp, used_ids, source_kind="rca"):
     title = published_text.split("\n", 1)[0].strip() or distilled["title"]
     body = published_text.split("\n", 1)[1].strip() if "\n" in published_text else ""
     base = slugify(title); lid = base; n = 2
     while lid in used_ids or (lessons_dir / f"{lid}.md").exists():
         lid = f"{base}-{n}"; n += 1
     used_ids.add(lid)
-    doc = (f"---\nid: {lid}\nkind: {distilled['kind']}\ntitle: {title}\ndate: {stamp}\n---\n\n{body}\n")
+    reason = ACCEPT_REASON.get(source_kind, ACCEPT_REASON["rca"])
+    doc = (f"---\nid: {lid}\nkind: {distilled['kind']}\ntitle: {title}\ndate: {stamp}\n"
+           f"prose_accepted: {stamp} {reason}\n---\n\n{body}\n")
+    errs = _validator().check_text(doc, f"{lid}.md", str(lessons_dir.resolve().parent.parent))
+    if errs:
+        raise LessonRefused("; ".join(errs))
     (lessons_dir / f"{lid}.md").write_text(doc)
     return lid, title
 
@@ -322,7 +350,14 @@ def main():
             continue
         if published_text:
             lessons_dir.mkdir(parents=True, exist_ok=True)
-            lid, title = write_lesson(lessons_dir, distilled, published_text, stamp, used_ids)
+            try:
+                lid, title = write_lesson(lessons_dir, distilled, published_text, stamp, used_ids,
+                                          Path(path).parent.name)
+            except LessonRefused as e:
+                # Held, not published, and the run goes on: one lesson the validator refuses
+                # must not stop the other sources from being distilled tonight.
+                published_text, held_reason = None, "lessons-validator refused: " + str(e)
+        if published_text:
             published.append(title)
         else:
             held_dir.mkdir(parents=True, exist_ok=True)

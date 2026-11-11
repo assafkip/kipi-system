@@ -154,7 +154,11 @@ class TestClassifier(unittest.TestCase):
         lessons = HERE.parent.parent / "lessons"
         if not lessons.is_dir():
             self.skipTest("no lessons corpus in this checkout")
-        biggest = max(len(p.read_bytes()) for p in lessons.glob("*.md"))
+        # README.md is the corpus's authoring instruction, not a lesson;
+        # lessons-inject.py skips it (K5 grew it to 5986 bytes and this
+        # test, which globbed it, went red on a file that is never injected).
+        biggest = max(len(p.read_bytes()) for p in lessons.glob("*.md")
+                      if p.name != "README.md")
         self.assertLess(biggest + 600, tc.SHARES["lessons-inject"])
 
     def test_turn_cap_is_the_sum_of_shares(self):

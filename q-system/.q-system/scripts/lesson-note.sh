@@ -22,4 +22,13 @@ TS="$(date +%Y%m%d-%H%M%S)"
 SLUG="$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//' | cut -c1-50)"
 FILE="$DIR/NOTE-$TS-${SLUG:-note}.md"
 printf '# %s\n\n%s\n' "$TITLE" "$BODY" > "$FILE"
+# K5 (ASK-4339): run the lessons validator on what was just written. A note that is only a
+# title would distill into nothing and sit in the intake ledger as a processed source. The
+# lesson it becomes gets its prose_accepted from lessons-distill.py (fixed reason, dated),
+# not from this note, so no note text reaches a fanned frontmatter field.
+if ! python3 "$QROOT/.q-system/scripts/lessons-validator.py" --check-note "$FILE"; then
+  mv "$FILE" "$FILE.refused"   # leaves the intake glob (NOTE-*.md); the refusal stays inspectable
+  echo "lesson-note: refused, note kept as $FILE.refused" >&2
+  exit 2
+fi
 echo "wrote learning note: $FILE"

@@ -53,6 +53,18 @@ id: <kebab-case>
 kind: pattern | methodology
 title: <short, HOW-only, no client names>
 date: YYYY-MM-DD
+held_by: <repo-relative path to a hook, script or test that contains the id>   # one of these two
+prose_accepted: YYYY-MM-DD <reason there is no deterministic check>            # is required
 ```
 
 No other keys. No `source_instances` (naming instances is itself a disclosure). Enforced by `lessons-validator.py`: it blocks any lesson file that violates this.
+
+### Who holds a lesson (K5, ASK-4339)
+
+A new or changed lesson names its holder, so a lesson cannot sit as prose with nobody pointing at code:
+
+- `held_by`: a repo-relative path (no absolute path, no `..`, no symlink out of the repo) to a hook, script or test file that exists and contains the lesson `id`. Same linkage rule `rule_gate.py` enforces for RULE-2026-11-08-CODE. It proves linkage, not that the code enforces the lesson; review does that.
+- `prose_accepted`: a real `YYYY-MM-DD` date, then a reason. A dated decision that this lesson has no deterministic check.
+- The client-token denylist runs over every value, not only the title. Never put a source's wording in `prose_accepted`.
+- Lessons already on origin/main without either field are **debt**: not refused, counted. Every validator run prints `debt: N of M`; `python3 q-system/.q-system/scripts/lessons-validator.py --debt` prints it by hand. Editing a debt lesson makes it changed, so it then needs a field.
+- Every writer complies: `lessons-distill.py` writes `prose_accepted` (fixed reason, run date) and checks the lesson with the validator before it writes; `lessons-daily.sh` runs `--check-changed` and names any refused lesson in the log and the alert; `lesson-note.sh` runs `--check-note` and refuses a note with no title or body.
