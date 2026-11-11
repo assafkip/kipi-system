@@ -801,8 +801,8 @@ def test_escalations_stop_at_the_cap_and_page_once(actor, env):
 def test_cap_row_does_not_claim_a_page_that_was_never_sent(actor, env, tmp_path):
     """FINDING-2 REPRODUCER (PR #75 round 1, Codex major).
 
-    slack-notify.sh resolves its webhook from $KIPI_SLACK_WEBHOOK then
-    ~/.config/kipi/slack-webhook, and its own header says: "No webhook
+    slack-notify.sh used to resolve a retired Slack webhook (env var, then a
+    state file), and its own header says: "No webhook
     configured -> silent no-op (exit 0), so callers never break." The cap path
     took that exit 0 as proof of delivery, wrote `notified: true` into the
     ledger, and set fable_capped_notified so no later attempt would ever be

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One Slack message a day: what closed, what opened, what could not be worked.
+"""One Telegram message a day: what closed, what opened, what could not be worked.
 
 Founder-directed 2026-08-13: "I want to create a mechanism that pings me once a day
 on slack with which linear issues were closed today -- what they are about / New
@@ -224,35 +224,21 @@ def build(now: dt.datetime):
 
 
 def send(message: str):
-    """Delegate to slack_founder.deliver(). Verified by Slack's answer, as before.
+    """Delegate to founder_notify.deliver(). Verified by chief's answer, not the exit code.
 
-    ## Why this changed (2026-08-30, ASK-1178)
-
-    This function used to read `~/.config/kipi/slack-webhook` itself and POST to
-    it. That file was RETIRED on 2026-08-19 (`slack-webhook.retired-2026-08-19`
-    is still on disk beside an older `.old-workspace`) and nothing repointed
-    this job. Measured in its own log, `~/.config/kipi/logs/linear-daily-digest.out.log`:
-    11 `delivered: False` against 5 `delivered: True`, every recent one reading
-    `no webhook`. Eleven days of a correct 4pm digest going nowhere.
-
-    The job was never broken. Its only transport was decommissioned underneath
-    it, and a single-transport sender has no way to survive that. So delivery
-    moves to the shared chokepoint, which tries the webhook FIRST (unchanged
-    behaviour the day a webhook exists again) and falls back to the bot token.
-
-    ## What did NOT change
+    RULE-2026-11-11-A (ASK-4479): this digest used to post to Slack, first by its
+    own webhook (retired 2026-08-19, which left eleven days of a correct 4pm digest
+    delivered nowhere, ASK-1178), then through the shared Slack chokepoint. Slack is
+    gone from the fleet. Delivery is Telegram through chief, and `deliver()` returns
+    chief's own verdict so the result recorded below is what was said, not what was
+    intended.
 
     Still not `slack-notify.sh`. That is the fleet ALERT path; it files a Linear
-    ticket for Sana and sends nothing to Slack. The first version of this digest
-    called it, got exit 0, and recorded `delivered_claim: True` having filed
-    ASK-724 -- a status digest as a Linear ticket. Do not "fix" this back.
-
-    Still verified rather than assumed: `deliver()` returns Slack's own verdict,
-    read out of the response body, because Slack answers HTTP 200 both for a
-    delivered webhook (body `ok`) and for a refused chat.postMessage
-    (`{"ok": false, ...}`).
+    ticket for Sana. The first version of this digest called it, got exit 0, and
+    recorded `delivered_claim: True` having filed ASK-724, a status digest as a
+    Linear ticket. Do not "fix" this back.
     """
-    spec = importlib.util.spec_from_file_location("slack_founder", HERE / "slack_founder.py")
+    spec = importlib.util.spec_from_file_location("founder_notify", HERE / "founder_notify.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.deliver(message)

@@ -379,8 +379,8 @@ def notify_channel_configured():
     Scar (sp-7773af84, measured 2026-08-14, the reason this reads Linear and not
     a webhook): on 2026-08-10 slack-notify.sh's destination changed from Slack to
     Linear -- it now shells alert-to-linear.py and never resolves a webhook at
-    all. This function was left behind still gating on $KIPI_SLACK_WEBHOOK and
-    ~/.config/kipi/slack-webhook, which by then decided NOTHING about whether an
+    all. This function was left behind still gating on the retired Slack webhook (an env var and
+    a state file), which by then decided NOTHING about whether an
     alert could be filed. Two failures came out of that, in opposite directions:
 
       1. Production: a machine holding a valid Linear key but no leftover webhook

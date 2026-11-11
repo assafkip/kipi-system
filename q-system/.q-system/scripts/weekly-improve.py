@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """weekly-improve.py -- the weekly pass over the friction ledger and the
-skill-proposals inbox. One Slack message to the founder, through
-slack_founder.deliver, never through the fleet alert path (the shell notifier
+skill-proposals inbox. One Telegram message to the founder, through
+founder_notify.deliver, never through the fleet alert path (the shell notifier
 that files a Linear ticket for Sana and sends nothing to Slack; Phase 1
 learned that, and test_weekly_improve.py greps this file for its name).
 
@@ -220,7 +220,7 @@ def main(argv=None) -> int:
     if args.dry_run:
         print("\n[dry-run] nothing sent")
         return 1 if degraded else 0
-    sender = _load_sibling("slack_founder", "slack_founder.py")
+    sender = _load_sibling("founder_notify", "founder_notify.py")
     result = sender.deliver(message)
     print(f"\n[send] {json.dumps(result)}")
     if not result.get("delivered"):

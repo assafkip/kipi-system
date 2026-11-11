@@ -4,7 +4,7 @@ issue lr-drift-trigger-proof. A scheduled reporter says what a declared hub
 instance has that the skeleton lacks, resolves both paths from the registry
 (the skeleton entry must be the reporter's own root, so a worktree never
 reports as the skeleton), appends the propagation streak summary, and delivers
-via slack_founder.deliver only when launched by its plist.
+via founder_notify.deliver only when launched by its plist.
 
 Every tree here is tmp; the registry and hubs file are fixtures.
 """
@@ -145,7 +145,7 @@ def test_streak_summary_is_appended(tmp_path):
     assert "streak 4, 0 escalations in 30d" in r.stdout, r.stdout
 
 
-def test_delivery_goes_through_slack_founder_and_is_refused_under_pytest(tmp_path):
+def test_delivery_goes_through_founder_notify_and_is_refused_under_pytest(tmp_path):
     root, hub = _fixture(tmp_path)
     (hub / "q-system" / "lessons" / "only-here.md").write_text("---\ntitle: only here\n---\nx\n")
     m = _mod()
@@ -186,7 +186,7 @@ def test_loading_helpers_leaves_the_bytecode_flag_as_it_found_it(tmp_path):
 def test_never_references_the_fleet_alert_path():
     src = REPORT.read_text()
     assert "slack-notify" not in src, "founder-facing; never the Linear alert path"
-    assert "slack_founder" in src
+    assert "founder_notify" in src
 
 
 def test_plist_template_runs_it_monday_0645_with_the_trigger_marker():
@@ -236,7 +236,7 @@ def test_cli_without_the_marker_prints_and_says_it_did_not_send(tmp_path):
 
 
 def test_a_launchd_run_whose_delivery_fails_exits_nonzero_and_a_delivered_one_exits_zero(tmp_path, monkeypatch, capsys):
-    """PR #294 review, major: main() returned 0 after Slack refused, so the
+    """PR #294 review, major: main() returned 0 after Telegram refused, so the
     scheduled reporter's only alert vanished with a success exit that launchd,
     the deadman and run-step-audit all read as fine. Three shapes, one rule:
     launched by the plist and not delivered is a failure; printed-not-sent
