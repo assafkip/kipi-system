@@ -990,7 +990,9 @@ def main(argv=None) -> int:
         return 0
 
     sender = _load_sibling("founder_notify", "founder_notify.py")
-    result = sender.deliver(message)
+    # The kind names the fallback line when chief would refuse the brief itself: a
+    # mail subject or calendar title carrying a ticket id (PR #749 review, major 2).
+    result = sender.deliver(message, kind="Morning brief")
     result["degraded"] = degraded
     print(f"\n[send] {json.dumps(result)}")
     receipt = write_receipt(result, now)

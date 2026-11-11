@@ -266,7 +266,9 @@ def test_single_caller_the_plist_template_is_the_only_one_in_the_tree():
     root = HERE.parent.parent.parent
     out = subprocess.run(["git", "-C", str(root), "grep", "-l", "--", "lessons-drift-report.py"], capture_output=True, text=True).stdout
     rel = sorted(l for l in out.splitlines() if l and not l.startswith(".prd-os/"))
+    # The census lists it in ROUTED_TO_SANA: a check on its route, not a caller (ASK-4479 S2).
     assert rel == ["q-system/.q-system/scripts/com.kipi.lessons-drift.plist",
+                   "q-system/.q-system/tests/test_founder_message_census.py",
                    "q-system/.q-system/tests/test_lessons_drift_report.py"], rel
 
 
@@ -279,9 +281,6 @@ def test_this_file_runs_its_own_tests_under_python3():
     none = subprocess.run([sys.executable, __file__, "-k", "no_such_test_zzz"], capture_output=True, text=True, env=env)
     assert none.returncode != 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
 
 
 def test_a_week_with_no_drift_files_nothing_and_exits_zero(tmp_path, monkeypatch):
@@ -297,3 +296,8 @@ def test_a_week_with_no_drift_files_nothing_and_exits_zero(tmp_path, monkeypatch
     assert "nothing to file" in out["delivery"]["reason"]
     monkeypatch.setenv("KIPI_TRIGGER", "launchd")
     assert m.main(["--root", str(root)], deliver=lambda msg: {"delivered": False}) == 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", *sys.argv[1:]]))
+

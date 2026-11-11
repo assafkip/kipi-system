@@ -99,22 +99,9 @@ def verdict(chief, text):
     not fit, the probe of the cut line, dm_length, then the final check_whatsapp
     with the app link standing for the action (DEC-68). post_to passes no
     alert_class, so neither does this."""
-    ping_gate, phone_text = chief
-    link = phone_text.APP_LINK
-    t = phone_text.plain_links((text or "").strip())
-    shown = f"{FN.LABEL}: {ping_gate.unquote(t).strip()}"
-    quoted = f"{FN.LABEL}: {t.strip()}"
-    if not phone_text.fits(shown):
-        whole = ping_gate.check_whatsapp(f"{quoted} {link}", alert_class=None)
-        if "engineering-on-whatsapp" in (whole.get("reasons") or []):
-            return False, whole.get("reasons"), whole.get("words")
-        probe = ping_gate.check_whatsapp(f"{phone_text.dm_length(shown, saver=lambda _t: True)} {link}",
-                                         alert_class=None)
-        if not probe.get("send"):
-            return False, probe.get("reasons"), probe.get("words")
-    line = phone_text.dm_length(shown, saver=lambda _t: "row1")
-    gate = ping_gate.check_whatsapp(f"{quoted if line == shown else line} {link}", alert_class=None)
-    return bool(gate.get("send")), gate.get("reasons"), gate.get("words")
+    # One replica, the one the child runs before post_to: a second copy here could
+    # agree with chief while the child's disagreed.
+    return FN.phone_gate(chief[0], chief[1], text)
 
 
 # ---- the founder-facing callers, each built by its own code --------------------
@@ -175,6 +162,10 @@ def _texts(sent, phone_text):
     return texts
 
 
+#: A mail subject the way Gmail hands it over: other people's words, with a ticket id.
+_TICKET_SUBJECT = "Re: ASK-4479 invoice question"
+
+
 def _morning_brief(tmp_path, monkeypatch, phone_text):
     mod = _load("morning_brief_census", "morning-brief.py")
     now = dt.datetime(2026, 11, 11, 7, 0, tzinfo=dt.timezone.utc).astimezone()
@@ -182,7 +173,8 @@ def _morning_brief(tmp_path, monkeypatch, phone_text):
     full = dict(empty, calendar=(["09:30 Call with Lee (Zoom)"], None),
                 mail=(["Lee at Portant: SOW questions"], None))
     broken = dict(full, mail=([], "HTTPError: 401"))
-    return [mod.build(now, s)[0] for s in (full, empty, broken)]
+    ticket = dict(full, mail=([_TICKET_SUBJECT], None))
+    return [mod.build(now, s)[0] for s in (full, empty, broken, ticket)]
 
 
 def _browser_health(tmp_path, monkeypatch, phone_text):
@@ -236,6 +228,12 @@ CASES = {
     "weekly-improve.py": _weekly_improve,
 }
 
+#: Callers whose message carries other people's words (mail subjects, calendar
+#: titles), so it may reach him as the fallback line, with the full text in the app.
+#: Every other caller's phone text is written for his phone and must pass as is: a
+#: fallback there is a regression, so the census does not allow one.
+FALLBACK_OK = {"morning-brief.py": "Morning brief"}
+
 #: Engineering signals (founder 2026-08-10: "should go to Sana - not me"). Each one
 #: is a job or a checker reporting on itself, which the founder cannot fix.
 ROUTED_TO_SANA = (
@@ -261,6 +259,12 @@ def test_every_founder_message_passes_chiefs_phone_gate(caller, chief, tmp_path,
     assert texts, f"{caller}: the census built no message"
     refused = []
     for text in texts:
+        if caller in FALLBACK_OK:
+            p = FN.plan(chief[0], chief[1], text, FALLBACK_OK[caller], save=lambda _t: "row1")
+            if p["text"] is None:
+                refused.append(f"{p['reason']}\n  {text[:300]!r}")
+                continue
+            text = p["text"]
         ok, reasons, words = verdict(chief, text)
         if not ok:
             refused.append(f"{reasons} {words}\n  {text[:300]!r}")
@@ -287,3 +291,36 @@ def test_the_replica_refuses_what_chief_refuses(chief):
     assert not ok and "engineering-on-whatsapp" in reasons, "the whole-text check before the app save"
     ok, reasons, _ = verdict(chief, "Linear today: 4 closed, 3 opened.")
     assert ok, reasons
+
+
+def test_digest_blocked_wording_cannot_drift(tmp_path):
+    """PR #749 review, minor: a 7th BLOCKED_PATTERNS entry with no BLOCKED_PLAIN
+    wording crashed phone() with an IndexError inside the 4pm run, and no test saw
+    it. It must fail at import instead, where any test that loads the file sees it."""
+    src = (SCRIPTS / "daily-linear-digest.py").read_text()
+    anchor = "BLOCKED_PATTERNS = (\n"
+    assert src.count(anchor) == 1
+    drifted = tmp_path / "daily_linear_digest_drifted.py"
+    drifted.write_text(src.replace(anchor, anchor + '    re.compile(r"[0-9]+ issue[(]s[)] PARKED awaiting budget.*"),\n'))
+    spec = importlib.util.spec_from_file_location("digest_drifted", drifted)
+    with pytest.raises(RuntimeError, match="BLOCKED_PLAIN"):
+        spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    _load("daily_linear_digest_aligned", "daily-linear-digest.py")  # the shipped tuples load
+
+
+def test_a_brief_naming_a_ticket_reaches_him_through_the_fallback(chief):
+    """PR #749 review, major 2: a mail subject carrying a Linear id made chief refuse
+    the whole brief; it reached nobody and became a Sana ticket. Now the child sees the
+    refusal first, saves the full brief to the app and sends one line that passes."""
+    mod = _load("morning_brief_fallback", "morning-brief.py")
+    now = dt.datetime(2026, 11, 11, 7, 0, tzinfo=dt.timezone.utc).astimezone()
+    sources = {k: ([], None) for k in ("calendar", "mail", "owed", "overnight")}
+    sources["mail"] = ([_TICKET_SUBJECT], None)
+    message = mod.build(now, sources)[0]
+    assert not verdict(chief, message)[0], "the fixture must be one chief refuses, or this proves nothing"
+    saved = []
+    p = FN.plan(chief[0], chief[1], message, "Morning brief", save=lambda t: saved.append(t) or "row1")
+    assert p["fallback"] and p["full_saved"] and saved == [message], p
+    assert p["text"] == FN.fallback_line("Morning brief", "row1", chief[1].APP_LINK)
+    assert verdict(chief, p["text"])[0], p["text"]
+    assert '"Morning brief"' in _code(SCRIPTS / "morning-brief.py"), "morning-brief does not name its kind"

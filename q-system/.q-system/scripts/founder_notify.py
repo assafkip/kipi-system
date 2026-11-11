@@ -17,10 +17,22 @@ line, with no `alert_class` (post_to passes none). A line carrying engineering t
 `_sana`. The founder gets nothing. That is how the 4pm Linear digest reached nobody
 and became a Sana ticket every day (consulting PR #519 review, major).
 
-So a caller hands this module only text written for his phone, and
-`test_founder_message_census.py` runs each caller's real message through that same
-gate sequence. An engineering signal never comes here: it goes to Sana through
-`engineering_route.file`, on purpose, instead of being bounced by chief.
+So a caller hands this module text written for his phone, and
+`test_founder_message_census.py` runs each caller's real message through
+`phone_gate`, the same gate sequence. An engineering signal never comes here: it goes
+to Sana through `engineering_route.to_sana`, on purpose, instead of being bounced by
+chief.
+
+## When chief would refuse anyway: the fallback line
+
+Some messages carry other people's words: a mail subject like "Re: ASK-4479 invoice
+question" in the morning brief. Chief refuses the whole brief for that id (PR #749
+review, major 2). So the child runs `plan` BEFORE `post_to`: `phone_gate` on the exact
+texts `_post` will check. On a refusal it never calls `post_to` with that text (that
+call is what files the Sana ticket). It saves the full text with chief's
+`phone_text.save_long` and sends one line, "<kind> is in the app Chat: <link>", which
+passes the gate. The verdict says `fallback: true`, with chief's reasons in
+`gate_reasons`. A caller names its kind (`deliver(..., kind="Morning brief")`).
 
 WHY THE `deliver()` SHAPE STAYED. The callers load a sibling module and call
 `deliver(message)`, then record the returned dict. Keeping the verb and the dict
@@ -72,59 +84,137 @@ import subprocess
 DEFAULT_CHIEF_ROOT = os.path.join(os.path.expanduser("~"), "projects", "chief")
 DEFAULT_CHAT = "chief"
 LABEL = "kipi"
+DEFAULT_KIND = "A kipi message"
 
 #: The line after a message whose `detail` was saved, and the line when it was not.
-#: Passed to the child as arguments so `with_detail` and the child use one wording.
 DETAIL_SAVED = "Full list in the app Chat: {link}"
 DETAIL_UNSAVED = "The full list could not be saved to the app today."
+#: The one line sent instead of a text chief's gate would refuse.
+FALLBACK_LINE = "{kind} is in the app Chat: {link}"
 
-#: chief's post_to is a FUNCTION with package-relative imports, so it is called as
-#: a module from chief's own root. Running telegram_out.py as a file dies with
-#: ImportError (the same first-live-run scar fleet-api-report.py records).
-#: The detail branch mirrors `with_detail` line for line;
-#: test_founder_notify.TestDetail runs it against a fake chief and compares.
+#: The child loads THIS file by path and runs `child()` inside chief's checkout (its
+#: cwd), so `from chief import ...` resolves there. Code, not a string: the pre-check
+#: and the fallback are too much logic to keep untested in a `-c` literal, and one
+#: `phone_gate` serves both the child and the census. chief's post_to is a FUNCTION
+#: with package-relative imports, so it is never run as a file (ImportError, the
+#: fleet-api-report.py first-live-run scar).
 _SNIPPET = (
-    "import json, sys\n"
-    "from chief import telegram_out, phone_text\n"
-    "chat, text, label, detail, saved_line, unsaved_line = sys.argv[1:7]\n"
-    "kept = None\n"
-    "if detail:\n"
-    "    kept = phone_text.save_long(detail)\n"
-    "    where = ('/chat?m=%s' % kept) if isinstance(kept, str) else '/chat'\n"
-    "    text = text.rstrip() + '\\n' + (saved_line.format(link=phone_text.APP_LINK + where)\n"
-    "                                   if kept else unsaved_line)\n"
-    "saves = []\n"
-    "def saver(t):\n"
-    "    got = phone_text.save_long(t)\n"
-    "    saves.append(bool(got))\n"
-    "    return got\n"
-    "res = dict(telegram_out.post_to(chat, text, label, saver=saver))\n"
-    "if saves:\n"
-    "    res.update(collapsed=True, saved=saves[-1], link=phone_text.APP_LINK + '/chat')\n"
-    "if detail:\n"
-    "    res['detail_saved'] = bool(kept)\n"
-    "print(json.dumps(res, sort_keys=True, default=str))\n"
-    "ok = res.get('delivered') or res.get('held') or res.get('queued')\n"
-    "sys.exit(0 if ok else 1)\n"
+    "import importlib.util, sys\n"
+    "spec = importlib.util.spec_from_file_location('founder_notify_child', sys.argv[1])\n"
+    "mod = importlib.util.module_from_spec(spec)\n"
+    "sys.modules['founder_notify_child'] = mod\n"
+    "spec.loader.exec_module(mod)\n"
+    "sys.exit(mod.child(sys.argv[2:]))\n"
 )
+
+
+def _link(app_link: str, saved) -> str:
+    """save_long's answer as a link: a row id deep-links (DEC-58), True is the plain Chat."""
+    return app_link + (f"/chat?m={saved}" if isinstance(saved, str) else "/chat")
 
 
 def with_detail(message: str, saved, app_link: str) -> str:
     """The text post_to receives when `detail` was given. `saved` is save_long's
     answer: a row id, True (saved, no id) or a falsy value (not saved). Pure."""
     if saved:
-        where = f"/chat?m={saved}" if isinstance(saved, str) else "/chat"
-        return message.rstrip() + "\n" + DETAIL_SAVED.format(link=app_link + where)
+        return message.rstrip() + "\n" + DETAIL_SAVED.format(link=_link(app_link, saved))
     return message.rstrip() + "\n" + DETAIL_UNSAVED
 
 
-def _argv(message, chat, detail):
+def fallback_line(kind: str, saved, app_link: str) -> str:
+    return FALLBACK_LINE.format(kind=kind, link=_link(app_link, saved))
+
+
+def phone_gate(ping_gate, phone_text, text: str, label: str = LABEL) -> tuple:
+    """(send, reasons, words): chief's telegram_out._post send(), call for call.
+
+    Label prefix, plain_links, the whole-text engineering check when the text does
+    not fit, the probe of the cut line, dm_length, then the final check_whatsapp
+    with the app link standing for the action (DEC-68). post_to passes no
+    alert_class, so neither does this. Pure apart from chief's own pure checks: the
+    savers here are stand-ins, nothing is saved."""
+    link = phone_text.APP_LINK
+    t = phone_text.plain_links((text or "").strip())
+    if not t:
+        return False, ["empty"], []
+    shown = f"{label}: {ping_gate.unquote(t).strip()}"
+    quoted = f"{label}: {t.strip()}"
+    if not phone_text.fits(shown):
+        whole = ping_gate.check_whatsapp(f"{quoted} {link}", alert_class=None)
+        if "engineering-on-whatsapp" in (whole.get("reasons") or []):
+            return False, whole.get("reasons"), whole.get("words")
+        probe = ping_gate.check_whatsapp(f"{phone_text.dm_length(shown, saver=lambda _t: True)} {link}",
+                                         alert_class=None)
+        if not probe.get("send"):
+            return False, probe.get("reasons"), probe.get("words")
+    line = phone_text.dm_length(shown, saver=lambda _t: "row1")
+    gate = ping_gate.check_whatsapp(f"{quoted if line == shown else line} {link}", alert_class=None)
+    return bool(gate.get("send")), gate.get("reasons"), gate.get("words")
+
+
+def plan(ping_gate, phone_text, text: str, kind: str = DEFAULT_KIND, save=None, label: str = LABEL) -> dict:
+    """What post_to receives, decided before post_to runs. `text` None: send nothing.
+
+    A text the gate passes goes as is. A refused one is saved whole with `save`
+    (chief's save_long by default) and replaced by the fallback line, which is gated
+    too. A save that fails, or a fallback line the gate refuses, sends nothing and
+    says why: a refused text is never handed to post_to."""
+    ok, reasons, words = phone_gate(ping_gate, phone_text, text, label)
+    if ok:
+        return {"text": text, "fallback": False}
+    kept = (save or phone_text.save_long)(text)
+    out = {"fallback": True, "gate_reasons": list(reasons or []), "gate_words": list(words or [])[:6],
+           "full_saved": bool(kept)}
+    if not kept:
+        return {**out, "text": None,
+                "reason": "chief's phone gate refused it and the full text could not be saved to the app"}
+    line = fallback_line(kind, kept, phone_text.APP_LINK)
+    ok2, reasons2, _ = phone_gate(ping_gate, phone_text, line, label)
+    if not ok2:
+        return {**out, "text": None, "reason": "the fallback line was refused too: " + ", ".join(reasons2 or [])}
+    return {**out, "text": line}
+
+
+def child(argv) -> int:
+    """Runs inside chief's checkout as `python3 -c _SNIPPET`. Prints chief's verdict as JSON.
+
+    The call stays `post_to(chat, text, "kipi", saver=saver)`, the shape chief's
+    tests/test_post_to_consumer_contract.py pins (chief #374)."""
+    from chief import phone_text, ping_gate, telegram_out
+    chat, text, label, detail, kind = (list(argv) + [""] * 5)[:5]
+    kept = None
+    if detail:
+        kept = phone_text.save_long(detail)
+        text = with_detail(text, kept, phone_text.APP_LINK)
+    p = plan(ping_gate, phone_text, text, kind or DEFAULT_KIND, label=label)
+    if p["text"] is None:
+        res = {"delivered": False, "refused": True, "reason": p["reason"]}
+    else:
+        saves = []
+
+        def saver(t):
+            got = phone_text.save_long(t)
+            saves.append(bool(got))
+            return got
+
+        res = dict(telegram_out.post_to(chat, p["text"], label, saver=saver))
+        if saves:
+            res.update(collapsed=True, saved=saves[-1], link=phone_text.APP_LINK + "/chat")
+    if p["fallback"]:
+        res.update({k: p[k] for k in ("fallback", "gate_reasons", "full_saved")})
+    if detail:
+        res["detail_saved"] = bool(kept)
+    print(json.dumps(res, sort_keys=True, default=str))
+    return 0 if (res.get("delivered") or res.get("held") or res.get("queued")) else 1
+
+
+def _argv(message, chat, detail, kind):
     raw = os.environ.get("KIPI_FOUNDER_NOTIFY_CMD")
     if raw:
         return shlex.split(raw) + [message], None
     root = os.environ.get("KIPI_CHIEF_ROOT") or DEFAULT_CHIEF_ROOT
-    return ["python3", "-c", _SNIPPET, chat, message, LABEL, detail or "",
-            DETAIL_SAVED, DETAIL_UNSAVED], root
+    return ["python3", "-c", _SNIPPET, os.path.abspath(__file__), chat, message, LABEL,
+            detail or "", kind or DEFAULT_KIND], root
 
 
 def _under_test() -> bool:
@@ -135,7 +225,7 @@ def _under_test() -> bool:
 
 
 def deliver(message: str, chat: str | None = None, runner=None, timeout: int = 60,
-            detail: str | None = None) -> dict:
+            detail: str | None = None, kind: str | None = None) -> dict:
     """Put `message` in front of the founder. Returns chief's verdict as a dict.
 
     THE FIXTURE REFUSAL lives here rather than in per-test stubs. Per-test stubbing
@@ -146,12 +236,13 @@ def deliver(message: str, chat: str | None = None, runner=None, timeout: int = 6
     assertion without a message existing.
 
     `runner` is the injectable subprocess seam (argv, cwd, timeout) -> (rc, stdout).
+    `kind` names the message in the fallback line ("Morning brief").
     """
     if _under_test():
         return {"delivered": False, "refused": True,
                 "reason": "running under pytest; the founder is never paged by a test"}
     chat = chat or os.environ.get("KIPI_FOUNDER_CHAT") or DEFAULT_CHAT
-    argv, cwd = _argv(message, chat, detail)
+    argv, cwd = _argv(message, chat, detail, kind)
     if runner is None:
         def runner(a, c, t):
             done = subprocess.run(a, cwd=c, capture_output=True, text=True, timeout=t)
@@ -177,6 +268,10 @@ def deliver(message: str, chat: str | None = None, runner=None, timeout: int = 6
         result["link"] = str(answer.get("link") or "")
     if "detail_saved" in answer:
         result["detail_saved"] = bool(answer["detail_saved"])
+    if answer.get("fallback"):
+        result["fallback"] = True
+        result["full_saved"] = bool(answer.get("full_saved"))
+        result["gate_reasons"] = [str(r) for r in (answer.get("gate_reasons") or [])][:8]
     if not delivered:
         why = answer.get("reason") or (f"exit {rc}, no delivery verdict from chief" if not answer
                                        else f"exit {rc}, chief did not report a delivery")

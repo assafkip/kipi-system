@@ -203,8 +203,10 @@ def _section(title, rows, error, fmt):
         [f"  ...and {len(rows) - 15} more"] if len(rows) > 15 else [])
 
 
-#: Plain words for each BLOCKED_PATTERNS entry, same order (a parallel tuple, so a new
-#: pattern with no wording fails test_founder_message_census on its first day).
+#: Plain words for each BLOCKED_PATTERNS entry, same order. A parallel tuple, so the
+#: check below turns a length mismatch into an error at import: every test that loads
+#: this file goes red (test_digest_blocked_wording_cannot_drift), where before it was an
+#: IndexError inside the 4pm run that no test reached (PR #749 review, minor).
 BLOCKED_PLAIN = (
     "Need a clearer spec",
     "Waiting on something the runner cannot grant itself",
@@ -213,6 +215,9 @@ BLOCKED_PLAIN = (
     "Refused by the repo safety check",
     "Repos on hold",
 )
+if len(BLOCKED_PLAIN) != len(BLOCKED_PATTERNS):
+    raise RuntimeError(f"BLOCKED_PLAIN has {len(BLOCKED_PLAIN)} wordings for "
+                       f"{len(BLOCKED_PATTERNS)} BLOCKED_PATTERNS; add the new pattern's plain words")
 
 
 def collect(now: dt.datetime) -> dict:

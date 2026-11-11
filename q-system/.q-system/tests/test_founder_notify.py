@@ -24,6 +24,8 @@ SCRIPT = os.path.join(HERE, "..", "scripts", "founder_notify.py")
 
 _FAKE_PHONE_TEXT = '''
 APP_LINK = "https://app.example.invalid"
+def plain_links(text):
+    return text or ""
 DM_MAX_CHARS = 2000
 DM_MAX_LINES = 20
 SAVE_OK = {ok}
@@ -31,6 +33,11 @@ def fits(answer):
     t = (answer or "").strip()
     return len(t) <= DM_MAX_CHARS and t.count("\\n") < DM_MAX_LINES
 def save_long(text):
+    import os
+    where = os.environ.get("FAKE_SAVES")
+    if where:
+        with open(where, "a") as fh:
+            fh.write(text + chr(0))
     return "row1" if SAVE_OK else None
 def dm_length(answer, saver=None):
     text = (answer or "").strip()
@@ -39,7 +46,7 @@ def dm_length(answer, saver=None):
     first = next((l.strip() for l in text.splitlines() if l.strip()), "")
     saved = (saver or save_long)(text)
     if saved:
-        return first + "\\nFull answer is in the app Chat: " + APP_LINK + "/chat?m=" + saved
+        return first + "\\nFull answer is in the app Chat: " + APP_LINK + ("/chat?m=" + saved if isinstance(saved, str) else "/chat")
     return text[:DM_MAX_CHARS - 60] + "\\n(cut: the full text could not be saved to the app)"
 '''
 
@@ -52,6 +59,15 @@ def post_to(chat, text, label, saver=None):
     if os.environ.get("FAKE_HOLD"):
         return {"delivered": True, "held": True, "reason": "kept for retry: down"}
     return {"delivered": True, "refused": False, "chat": chat, "sent": line, "got": text}
+'''
+
+_FAKE_PING_GATE = '''
+def unquote(s):
+    return s or ""
+def check_whatsapp(text, alert_class=None):
+    if "REFUSE-ME" in (text or ""):
+        return {"send": False, "reasons": ["engineering-on-whatsapp"], "words": ["ASK id"]}
+    return {"send": True, "reasons": [], "words": []}
 '''
 
 
@@ -70,6 +86,8 @@ def _fake_chief(root, save_ok=True):
         f.write(_FAKE_PHONE_TEXT.format(ok=save_ok))
     with open(os.path.join(pkg, "telegram_out.py"), "w") as f:
         f.write(_FAKE_TELEGRAM_OUT)
+    with open(os.path.join(pkg, "ping_gate.py"), "w") as f:
+        f.write(_FAKE_PING_GATE)
 
 
 class TestDeliverSaysWhereTheTextIs(unittest.TestCase):
@@ -150,7 +168,7 @@ class TestDetailAndVerdict(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def _child(self, message, detail, save_ok=True):
+    def _child(self, message, detail, save_ok=True, kind=None):
         """deliver() against the fake chief, keeping the child's own JSON."""
         import subprocess
         _fake_chief(self.tmp.name, save_ok)
@@ -163,7 +181,7 @@ class TestDetailAndVerdict(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"KIPI_CHIEF_ROOT": self.tmp.name}):
             os.environ.pop("KIPI_FOUNDER_NOTIFY_CMD", None)
-            res = self.mod.deliver(message, runner=runner, timeout=30, detail=detail)
+            res = self.mod.deliver(message, runner=runner, timeout=30, detail=detail, kind=kind)
         return res, seen["answer"]
 
     def test_the_child_sends_exactly_what_with_detail_composes(self):
@@ -183,6 +201,23 @@ class TestDetailAndVerdict(unittest.TestCase):
         res, answer = self._child("short note", None)
         self.assertEqual(answer["got"], "short note")
         self.assertNotIn("detail_saved", res)
+
+    def test_a_message_chief_would_refuse_goes_out_as_the_fallback_line(self):
+        """PR #749 review, major 2: the refused text never reaches post_to (that call is
+        what files the Sana ticket); the full text is saved and one clean line goes."""
+        saves = os.path.join(self.tmp.name, "saves.bin")
+        with mock.patch.dict(os.environ, {"FAKE_SAVES": saves}):
+            res, answer = self._child("brief with REFUSE-ME inside", None, kind="Morning brief")
+        self.assertTrue(res["delivered"] and res["fallback"] and res["full_saved"], res)
+        self.assertEqual(answer["got"], self.mod.fallback_line("Morning brief", "row1", "https://app.example.invalid"))
+        with open(saves) as fh:
+            self.assertIn("brief with REFUSE-ME inside", fh.read())
+
+    def test_a_refusal_whose_save_fails_is_undelivered_and_never_posted(self):
+        res, answer = self._child("brief with REFUSE-ME inside", None, save_ok=False)
+        self.assertFalse(res["delivered"], res)
+        self.assertTrue(res["fallback"] and not res["full_saved"], res)
+        self.assertNotIn("got", answer, "post_to ran with a text chief refuses")
 
     def test_exit_zero_with_no_verdict_is_not_a_delivery(self):
         """PR #519 review, minor: `or not answer` made silence a delivery, and the
