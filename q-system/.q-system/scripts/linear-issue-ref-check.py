@@ -61,6 +61,26 @@ def issue_re(keys: list) -> "re.Pattern":
 
 ISSUE_RE = issue_re(team_keys())
 
+
+def branch_issue(keys: list = None):
+    """The issue id the checked-out branch names (`sana/ask-4309` -> ASK-4309), or None.
+
+    Branch names are lowercase, so this match ignores case where ISSUE_RE does not.
+    A detached HEAD (rebase, CI's PR merge ref) names nothing. auto-commit.py asks
+    this through `--branch-issue` so the two never parse branches differently.
+    """
+    try:
+        out = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    alternation = "|".join(re.escape(k) for k in (keys or team_keys()))
+    m = re.search(r"(?i)(?<![a-z0-9])(" + alternation + r")-(\d+)(?!\d)",
+                  out.stdout.strip())
+    return f"{m.group(1).upper()}-{m.group(2)}" if m else None
+
 # [no-issue: reason] with a non-empty reason. An empty reason is not an escape.
 BYPASS_RE = re.compile(r"\[no-issue:\s*(?P<reason>[^\]]*?)\s*\]", re.IGNORECASE)
 
@@ -154,6 +174,9 @@ def refuse(subject: str) -> int:
 def main(argv: list) -> int:
     if len(argv) < 2:
         return 0
+    if argv[1] == "--branch-issue":
+        print(branch_issue() or "")
+        return 0
 
     msg_file = Path(argv[1])
     try:
@@ -176,6 +199,15 @@ def main(argv: list) -> int:
         return 0
 
     bypass = BYPASS_RE.search(body)
+    named = branch_issue() if bypass else None
+    if named:
+        # ASK-4386: the bypass is for work with no issue. A branch cut for one has
+        # an issue, and 70163e63 used this hatch on sana/ask-4309 to commit a
+        # 13-file rule deletion that no gate inspected.
+        print(f"\nBLOCK: [no-issue:] on a branch that names {named}.\n"
+              f"  subject: {subject or '(empty)'}\n"
+              f"  Name the issue in the message, e.g. ({named}).\n", file=sys.stderr)
+        return 1
     if bypass:
         reason = bypass.group("reason").strip()
         if reason:
