@@ -12,6 +12,7 @@ about 60 a night against about 1,094 queued, so a lane waiting on one waited wee
 The exemption is narrow on purpose: test_linear_alert_triage.py pins that a DoR on
 an ordinary alert must stay refused (ASK-839), and that test is not edited here.
 """
+import importlib.util
 import re
 from pathlib import Path
 
@@ -93,3 +94,43 @@ def test_a_finding_that_only_names_the_phrase_stays_an_alert():
     named = SPILL.replace("some finding", "takes the first ## Definition of Ready heading")
     i = issue(named)
     assert IS_FLEET_ALERT(i) is True
+
+
+def _load(name, filename):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# PR #734 review major 2: the exemption fired on a hand-built string no writer
+# produces. These tests run the REAL producer and the REAL drafter selection.
+PRODUCER = _load("spillover_linear_check", "spillover-linear-check.py")
+DRAFTER = _load("dor_drafter", "linear-dor-drafter.py")
+
+
+def _filed_ticket():
+    msg = PRODUCER.message_for({"id": "sp-deadbeef", "severity": "major",
+                                "source": "prd-x", "description": "a finding",
+                                "owner": "sana"})
+    return ("Filed automatically by the fleet alert path.\n\n```\n" + msg
+            + "\n```\n\n" + MARKER)
+
+
+def test_the_three_copies_of_the_spillover_form_agree():
+    assert DRAFTER.SPILLOVER_FORM in _filed_ticket()
+    assert DRAFTER.SPILLOVER_FORM in SRC
+
+
+def test_a_ticket_the_real_producer_files_is_drafted_then_dispatched():
+    desc = _filed_ticket()
+    i = issue(desc)
+    assert IS_FLEET_ALERT(i) is True and not READY(i)  # no DoR yet
+    assert DRAFTER.selection_mode(i) == "draft"        # the writer now picks it
+    drafted = desc + "\n\n" + MARKER + "\n" + DRAFTER.DOR_HEADING + "\n\n- Done: green\n"
+    j = issue(drafted)
+    assert IS_FLEET_ALERT(j) is False and READY(j) is True
+
+
+def test_the_drafter_still_refuses_an_ordinary_alert():
+    assert DRAFTER.selection_mode(issue(PLAIN_ALERT)) is None

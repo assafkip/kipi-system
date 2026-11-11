@@ -721,20 +721,6 @@ def project_of(i):
 # wrote WRITER-apostrophe-S and the suite went from 24 green to 11 failures.
 ALERT_MARKER = "kipi-alert-fingerprint"
 
-# K9 (ASK-4410, RULE-2026-11-09-B part 3): a SPILLOVER ticket that carries a
-# Definition of Ready and owner:sana is dispatch work, not an alert. Spillover
-# tickets are filed through the fleet alert path (spillover-linear-check.py), so
-# they carry the marker above, and every reader of is_fleet_alert skipped them:
-# only the nightly triage promoted them, about 60 a night against about 1094
-# queued, so a lane waiting on one waited weeks. NARROW ON PURPOSE: the form
-# below is what message_for() in spillover-linear-check.py writes, and an
-# ordinary alert with a DoR stays an alert (ASK-839, pinned by
-# test_linear_alert_triage.py). DOR_TEXT is the same text ready() tests, held in
-# one constant here so there is no second parser of it. The exemption needs the
-# DoR as a HEADING line: message_for squashes the finding text onto one line, so
-# a finding that merely names the phrase cannot fake a section (review round 1).
-DOR_TEXT = "Definition of Ready"
-SPILLOVER_FORM = " | resolve with prd_runner spillover resolve "
 
 def is_fleet_alert(i):
     # MATCHED IN THE WRITERS OWN STRUCTURAL FORM (ASK-839, PR #191 round 4):
@@ -753,9 +739,23 @@ def is_fleet_alert(i):
         head = chunk.split("-->", 1)[0]
         name, sep, _rest = head.partition(":")
         if sep and name.strip() == ALERT_MARKER:
+            # K9 (ASK-4410, RULE-2026-11-09-B part 3): a SPILLOVER ticket with a
+            # Definition of Ready heading and owner:sana is dispatch work. Spillover
+            # tickets are filed through the alert path, so they carry the marker and
+            # every reader skipped them; only the nightly triage promoted about 60 a
+            # night against about 1094 queued. NARROW: an ordinary alert with a DoR
+            # stays an alert (ASK-839). LOCALS, NOT MODULE NAMES: wait-has-consumer.py
+            # cuts this function out by AST and carries a fixed list of worker
+            # globals, so a new module constant raised NameError on every alert there
+            # (PR #734 review, major 1). The form is what message_for() in
+            # spillover-linear-check.py writes; linear-dor-drafter.py drafts onto
+            # exactly this form, and a test pins the three together. The heading
+            # must be a line of its own: message_for squashes the finding onto one
+            # line, so a finding that only names the phrase cannot fake a section.
             d = i.get("description") or ""
             owned = "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}
-            if owned and SPILLOVER_FORM in d and (chr(10) + "## " + DOR_TEXT) in d:
+            if (owned and " | resolve with prd_runner spillover resolve " in d
+                    and chr(10) + "## Definition of Ready" in d):
                 return False
             return True
     return False

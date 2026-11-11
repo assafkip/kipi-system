@@ -116,6 +116,17 @@ def is_alert_ticket(description: str) -> bool:
     by the reporting count. Two substring tests in two places is how they drift."""
     return bool(ALERT_FINGERPRINT_RE.search(description or ""))
 
+# K9 (ASK-4410, PR #734 review major 2): a SPILLOVER ticket is the one alert shape
+# that is dispatch work once it has a DoR (RULE-2026-11-09-B part 3), so this job
+# drafts onto it. The form is what spillover-linear-check.py message_for writes;
+# linear-worker.sh is_fleet_alert holds the same text and test_spillover_dispatch.py
+# pins all three together. Without a writer the worker exemption fired on nothing.
+SPILLOVER_FORM = " | resolve with prd_runner spillover resolve "
+
+
+def is_spillover_ticket(description: str) -> bool:
+    return is_alert_ticket(description) and SPILLOVER_FORM in (description or "")
+
 # The single founder-ping channel (.claude/rules/founder-notifications.md).
 # Used ONLY when the report itself could not reach the board -- an open Linear
 # issue is the signal on a normal failing night, and a nightly Slack line on top
@@ -595,7 +606,7 @@ def selection_mode(issue: dict, started_ok: frozenset = frozenset()) -> str | No
     # board 2026-08-15: 81 open alert tickets, 19 already drafted onto, and all 19
     # sat in the permanently-UNREACHABLE bucket. This drip is what converted them,
     # at the rate of one batch a night, out of the remaining 62.
-    if is_alert_ticket(desc):
+    if is_alert_ticket(desc) and not is_spillover_ticket(desc):
         return None
 
     # AN UNROUTABLE ISSUE MUST NOT BE PROMOTED (ASK-839, the second question the

@@ -6,11 +6,12 @@ priority: p1
 parent_prd: standalone
 allowed_files:
   - q-system/.q-system/scripts/linear-worker.sh
+  - q-system/.q-system/scripts/linear-dor-drafter.py
   - q-system/.q-system/scripts/test/test_spillover_dispatch.py
   - q-system/.q-system/capability/expected_tests/q-system__.q-system__scripts__test__test_spillover_dispatch.py.json
 disallowed_files: []
 required_checks:
-  - python3 -m pytest -q q-system/.q-system/scripts/test/test_spillover_dispatch.py q-system/.q-system/scripts/test/test_linear_alert_triage.py
+  - python3 -m pytest -q q-system/.q-system/scripts/test/test_spillover_dispatch.py q-system/.q-system/scripts/test/test_linear_alert_triage.py q-system/.q-system/tests/test_wait_has_consumer.py
 required_reviews: []
 bypass_exempt: "No gate is bypassed. The change widens what the fleet worker picks, so the red test pins both sides: a spillover ticket with a DoR and owner:sana is picked, and a bare alert or any other alert with a DoR is still refused."
 deliverables_count: 4
@@ -29,7 +30,7 @@ Spillover tickets are filed through the fleet-alert path by `spillover-linear-ch
 ## Acceptance
 
 - `is_fleet_alert()` returns false for an issue that carries the alert marker, the spillover form written by `spillover-linear-check.py:message_for`, a Definition of Ready, and the `owner:sana` label.
-- The DoR test is the one `ready()` already uses (the text `Definition of Ready`), held in one constant. No second DoR parser.
+- The DoR test uses the same text `ready()` tests (`Definition of Ready`), as a heading line. Locals inside the function, not module constants: `wait-has-consumer.py` cuts it out by AST with a fixed global list.
 - Narrow on purpose: an alert that is not a spillover ticket stays an alert even with a DoR. `test_linear_alert_triage.py::test_a_dor_alone_does_not_unblock_it` (ASK-839) pins that and must stay green.
 
 ## Deliverables
@@ -39,3 +40,6 @@ Spillover tickets are filed through the fleet-alert path by `spillover-linear-ch
 - [x] The same spillover ticket without a DoR, without owner:sana, and a non-spillover alert with a DoR are each refused (negative self-tests)
 - [x] `is_fleet_alert()` carries the exemption, with the DoR text in one constant shared with the existing check
 - [x] `test_linear_alert_triage.py` stays green with no edit
+
+### 2026-11-11T00:40:00Z (PR #734 review round 1, by hand: the issue is closed and the runner refuses a second review)
+Reason: two majors. (1) New module constants broke `wait-has-consumer.py`'s AST cut of `is_fleet_alert`; the constants became locals and `test_wait_has_consumer.py` joined required_checks. (2) No writer produced the marker + spillover form + DoR heading together; `linear-dor-drafter.py` now drafts onto the spillover form (same marker, same form text), and the test runs the real producer `message_for` and the real drafter selection. allowed_files gained `q-system/.q-system/scripts/linear-dor-drafter.py`. The 208 tests across the three files pass.
