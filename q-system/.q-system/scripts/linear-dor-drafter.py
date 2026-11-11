@@ -792,8 +792,8 @@ def runner_refusal(text: str, success: bool = False) -> tuple:
 #: The drafter is unattended fleet work (com.kipi.linear-dor at 03:00, and
 #: cap-ladder's re-scope rung), so every draft bills a fleet API key through the
 #: one metered door rather than the founder's plan (ASK-4311). It never falls
-#: back to the plan: with no key the door exits 4 and draft_one reports
-#: "claude exited rc=4", the same way any failed call is reported.
+#: back to the plan: a refused door is a runner refusal (see draft_one), so the
+#: batch stops and the failure issue gets fleet_door.REFUSED.
 DOOR_ACTOR = "dor-drafter"
 
 

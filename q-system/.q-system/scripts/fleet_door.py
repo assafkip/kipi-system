@@ -185,23 +185,44 @@ def _spawn(argv, cmd, input=None, timeout=None, check=False, capture_output=Fals
 REFUSED = "the fleet key door refused the run (no key, paused, or no billable credit)"
 
 
+#: The helper's REFUSAL sentences (fleet_api_key.py cmd_exec, every `return 4/5`),
+#: matched as phrases. The `fleet_api_key:` prefix alone is not enough (PR #736
+#: review round 2): the helper also writes it on paths that go on to run the child
+#: ("cannot read ... starting fresh", "cannot lock", "cannot write"), so a child
+#: that then exits 4 itself read as a refused door, and the drafter would have
+#: filed "the door refused" on a night the key worked. Pinned against the REAL
+#: helper by test_fleet_door.py, so a reworded refusal turns that suite red rather
+#: than leaving this check quietly blind.
+REFUSAL_PHRASES = (
+    "no key has a known credit",
+    "no key has auto-reload confirmed off",
+    "cycle credit is spent",
+    "paused (both credits read as exhausted)",
+    "no key for slot",
+    "both credits read as exhausted",
+)
+
+
 def _refusal_lines(res):
     err = getattr(res, "stderr", None)
     if isinstance(err, bytes):
         err = err.decode("utf-8", "replace")
-    return [ln for ln in (err or "").splitlines() if ln.startswith("fleet_api_key:")]
+    return [ln for ln in (err or "").splitlines()
+            if ln.startswith("fleet_api_key:") and any(p in ln for p in REFUSAL_PHRASES)]
 
 
 def door_refused(res):
-    """Did the key door refuse this run before any child ran?
+    """Did the key door refuse this run (no key, paused, or no billable credit)?
 
-    WHY EVERY PYTHON SITE ASKS THIS (PR #736 review round 1). Exit 4 or 5 alone
-    is ambiguous, since a child may exit 4 itself, so the helper's own
-    `fleet_api_key:` line on the captured stderr is required as well. A refusal is
-    the MACHINE's, not the issue's (ASK-869): no key, a paused fleet or a spent
-    credit refuses every item behind this one the same way. A site that read it as
-    an ordinary failed call wrote "claude exited rc=4 with 0 chars of output" once
-    per issue onto a permanent Linear record and never stopped its batch.
+    Exit 4 or 5 alone is ambiguous, since a child may exit 4 itself, so one of the
+    helper's own refusal sentences on the captured stderr is required as well. A
+    refusal is the MACHINE's, not the issue's (ASK-869): it refuses every item
+    behind this one the same way.
+
+    WHO ASKS (PR #736 review rounds 1 and 2): the two sites where a refusal would
+    otherwise land on a permanent record or burn a batch. The drafter stops its
+    batch and files the closed marker; alert triage names the door. Every other
+    Python site fails that one call, and run() below says so on its stderr.
     """
     return (getattr(res, "returncode", None) in (EXIT_NO_KEY, EXIT_CREDIT_GONE)
             and bool(_refusal_lines(res)))

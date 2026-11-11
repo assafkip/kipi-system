@@ -197,6 +197,50 @@ class TestDoorRefusedTellsTheDoorFromTheChild(Base):
     def test_the_marker_names_no_path(self):
         self.assertNotIn("/", door.REFUSED)
 
+    # ROUND 2 (PR #736): the REAL helper's refusal sentences, one case each, so a
+    # reworded refusal turns this suite red instead of blinding door_refused().
+    def _refused_with(self, facts=None, state=None):
+        if facts is not None:
+            with open(self.facts, "w") as fh:
+                json.dump(facts, fh)
+        if state is not None:
+            with open(os.environ["KIPI_FLEET_STATE"], "w") as fh:
+                json.dump(state, fh)
+        res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
+        return res, self.calls()
+
+    def test_no_known_credit_is_a_refusal(self):
+        os.environ["KIPI_FLEET_API_FACTS"] = os.path.join(self.tmp.name, "absent.json")
+        res, calls = self._refused_with()
+        self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
+
+    def test_auto_reload_unconfirmed_is_a_refusal(self):
+        with open(self.facts) as fh:
+            facts = json.load(fh)
+        for row in facts["keys"].values():
+            row["auto_reload_off_confirmed_at"] = None
+        res, calls = self._refused_with(facts=facts)
+        self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
+
+    def test_a_paused_fleet_is_a_refusal(self):
+        spend = sys.modules.get("fleet_api_spend") or _load("fleet_api_spend")
+        res, calls = self._refused_with(state={
+            "active_slot": 1, "exhausted": {}, "paused": True,
+            "paused_since": "2026-11-10T00:00:00", "last_probe_day": spend.budget_day()})
+        self.assertEqual((door.door_refused(res), calls), (True, []), res.stderr)
+
+    def test_a_helper_warning_then_a_child_exit_4_is_not_a_refusal(self):
+        """The round-2 reproducer: an unreadable state file makes the helper warn
+        with its prefix and run the child anyway; the child exits 4 itself."""
+        with open(os.environ["KIPI_FLEET_STATE"], "w") as fh:
+            fh.write("{not json")
+        os.environ["FAKE_RC"] = "4"
+        res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
+        self.assertEqual(res.returncode, 4)
+        self.assertIn("fleet_api_key:", res.stderr)
+        self.assertEqual(len(self.calls()), 1, "the child must have run")
+        self.assertFalse(door.door_refused(res))
+
 
 class TestTimeoutKillsTheWholeRun(Base):
     def test_a_timeout_leaves_no_orphan_and_an_unmetered_row(self):
