@@ -380,6 +380,27 @@ def judge(text, row, runner=None, claude_bin=None, timeout=prompt_render.TIMEOUT
     return parse_answer(answer or "", row.get("tier") or STYLE)
 
 
+ANNOTATE = "annotate"
+
+
+def _annotate_demote(result):
+    """A FAIL on a row marked `"mode": "annotate"` becomes a labelled WARN.
+
+    WHY IN THE ENGINE (ASK-4487, from consulting V7 sp-e877b091). A deployment adapter
+    that demoted FAIL around `review` bound only its own entry point: `run` calls this
+    module's `review`, so a FAIL on a lane with too few known-bad posts to calibrate
+    (no evidence the question is right) still drove a revision and rewrote the post.
+    Demoting here, below both `review` and `run`'s failure list, means no caller can
+    reach the reviser through an annotate row. Default is block: a row without the
+    flag behaves as before. Demoting before the quality-then-style cut also lets the
+    style wave run, since an annotated quality FAIL kills nothing.
+    """
+    row, verdict, detail, fmt = result
+    if verdict == FAIL and row.get("mode") == ANNOTATE:
+        return row, WARN, "annotate: %s" % (detail or ""), fmt
+    return result
+
+
 def review(text, channel, runner=None, path=None, order=None, workers=None,
            counts=None, **kwargs):
     """Judge every applicable constraint. Returns [(row, verdict, detail, format)].
@@ -406,6 +427,9 @@ def review(text, channel, runner=None, path=None, order=None, workers=None,
         return []
 
     def _wave(batch):
+        return [_annotate_demote(r) for r in _wave_raw(batch)]
+
+    def _wave_raw(batch):
         if not batch:
             return []
         limit = max(1, min(workers or CRITIC_WORKERS, len(batch)))

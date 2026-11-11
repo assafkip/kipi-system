@@ -4,7 +4,9 @@
 RULE-2026-11-11-A (founder, 2026-11-11: "No bots should be there"). This module
 replaces slack_founder.py, which posted to Slack by webhook or bot token. Every byte
 of that wire code is gone. A founder message now goes to Telegram through chief's
-`telegram_out.post_to`, after chief's own ping gate and caps. Same shape as
+`telegram_out.post_to`. Chief's ping gate does NOT run for these: nothing sets
+`CHIEF_JOB`, so `ping_gate._gated` returns False, and briefs and digests carry no
+single action the gate would accept (it would refuse them). Same shape as
 consulting's `failure_notice.send_telegram`.
 
 WHY THE `deliver()` SHAPE STAYED. Seven scripts load a sibling module and call
