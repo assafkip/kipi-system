@@ -512,6 +512,44 @@ def _count_checked_deliverables(text: str) -> tuple[int, int]:
     return checked, listed
 
 
+def _depends_on(fm: dict) -> list[str]:
+    """Issue ids a spec lists in depends_on. prd_split writes `[a, b]` inline;
+    a hand-written block list parses to a list already. No key, or `[]`: none."""
+    raw = fm.get("depends_on") or []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            raw = raw[1:-1].split(",")
+        else:
+            raw = [raw]
+    return [x.strip() for x in raw if x.strip()]
+
+
+def _dependency_refusal(paths: Paths, issue_id: str, fm: dict) -> str | None:
+    """ASK-4233: why this start must be refused, or None.
+
+    why: prd_split dropped depends_on, so an out-of-order spec started without
+    a word (sp-e37fa02c). A listed issue that has no spec is refused with its
+    own message, never read as closed: a typo must not open the gate.
+    """
+    not_closed, missing = [], []
+    for dep in _depends_on(fm):
+        try:
+            _, dep_fm, _ = _load_spec(paths, dep)
+        except FileNotFoundError:
+            missing.append(dep)
+            continue
+        if (dep_fm.get("status") or "").strip() != "closed":
+            not_closed.append(dep)
+    if missing:
+        return (f"cannot start {issue_id}: depends_on names {', '.join(missing)}, "
+                "which has no spec in the issues dir")
+    if not_closed:
+        return (f"cannot start {issue_id}: depends_on {', '.join(not_closed)} "
+                "is not closed yet")
+    return None
+
+
 def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
     # Cross-runner concurrency: refuse to load an issue while a non-archived PRD
     # is active. Symmetric with prd-os's prd_runner, which refuses to start a
@@ -536,6 +574,10 @@ def cmd_load(paths: Paths, args: argparse.Namespace) -> int:
         deliverables_count = _validate_deliverables_count(fm)
     except ValueError as exc:
         sys.stderr.write(f"cannot load {args.issue_id}: {exc}\n")
+        return 2
+    dep_err = _dependency_refusal(paths, fm.get("id", args.issue_id), fm)
+    if dep_err is not None:
+        sys.stderr.write(dep_err + "\n")
         return 2
     if _age_gate_refuses(paths, fm.get("id", args.issue_id), getattr(args, "age_override", None)):
         return 2

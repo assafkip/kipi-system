@@ -216,6 +216,19 @@ def _validate_entry(entry: object, index: int, id_re: re.Pattern = ISSUE_ID_RE) 
                 raise ValueError(
                     f"entry #{index}: {key} must be a list of non-empty strings"
                 )
+    # why: depends_on was dropped here (ASK-4233, sp-e37fa02c), so issue-start
+    # could not refuse an out-of-order spec. It is written inline as
+    # `depends_on: [a, b]`, so an id may not hold a comma, bracket or space
+    # that would change how the reader splits it.
+    depends_on = entry.get("depends_on", [])
+    if (
+        not isinstance(depends_on, list)
+        or not all(isinstance(x, str) and re.fullmatch(r"[^\s,\[\]]+", x) for x in depends_on)
+    ):
+        raise ValueError(
+            f"entry #{index}: depends_on must be a list of issue ids "
+            "(no spaces, commas or brackets)"
+        )
     priority = entry.get("priority", DEFAULT_PRIORITY)
     if not isinstance(priority, str) or not priority:
         raise ValueError(f"entry #{index}: priority must be a non-empty string")
@@ -323,6 +336,7 @@ def _validate_entry(entry: object, index: int, id_re: re.Pattern = ISSUE_ID_RE) 
         "gate_lifecycle": gate_lifecycle,
         "deletes": list(entry.get("deletes", [])),
         "bypass_exempt": entry.get("bypass_exempt", ""),
+        "depends_on": list(depends_on),
     }
 
 
@@ -423,6 +437,8 @@ def _render_spec(
         extra.append("deletes:" + _yaml_list(entry["deletes"]))
     if entry.get("bypass_exempt"):
         extra.append(f"bypass_exempt: {json.dumps(entry['bypass_exempt'])}")
+    if entry.get("depends_on"):
+        extra.append("depends_on: [" + ", ".join(entry["depends_on"]) + "]")
     deliverables = entry.get("deliverables") or [entry["title"]]
     extra.append(f"deliverables_count: {len(deliverables)}")
     if extra:
