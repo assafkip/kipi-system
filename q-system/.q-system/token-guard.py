@@ -11,6 +11,9 @@ Called by three hooks:
     clears that file's spiral counter; successful commit clears the volume
     counters)
   - UserPromptSubmit: resets per-message counters + sweeps stale caches
+  - (no event) a coordinator message in a SUBAGENT's own transcript is that
+    actor's new turn: same reset as UserPromptSubmit (ASK-777, see
+    _coordinator_message_epoch)
 
 Per-actor budget scoping (sp0-guard-actor-scope):
   Counters are keyed per ACTOR, not per session. Subagent (Task/workflow)
@@ -1496,6 +1499,99 @@ def reset_volume_if_committed(cache, head_epoch):
     return cache
 
 
+# --- A subagent's new turn (ASK-777) ------------------------------------------
+# UserPromptSubmit fires for the main actor only, so before this a subagent's
+# counter could reset ONLY on a commit. Scar, 2026-11-11: two background lanes
+# (kipi-system #731, #729) stopped at the ceiling mid-PR while committing,
+# pushing and waiting on review, and a resume could not help them because the
+# cache persists across a resume: the resumed lane's first call was blocked
+# (first seen 2026-08-14, a read-only audit lane pinned at 50 until a human
+# reset it by hand). Each stop cost a fresh agent re-reading the whole context.
+#
+# A subagent's "user" is its coordinator. Measured 2026-11-10 over 336 real
+# subagent transcripts: all 139 SendMessage deliveries are `type: user` rows
+# with `origin.kind == "coordinator"` and a timestamp; 4 resumed a stopped
+# agent, 135 landed mid-run. So a coordinator row newer than the last reset is
+# that actor's UserPromptSubmit.
+#
+# Deliberately NOT a reset: `origin.kind == "task-notification"` (251 rows in
+# the same sample). A subagent mints those itself with run_in_background, so a
+# loop of `sleep 1` + wait would re-arm its own budget forever: a no-op
+# counting as progress, the ASK-4144 class. Same for Stop-hook feedback,
+# interrupts and tool results. Rejected alternatives, recorded on ASK-777: a
+# higher subagent ceiling (the only blocking no-progress checks besides the
+# ceiling are exact-retry and edit-spiral, so a varied-input runaway would run
+# proportionally longer); push / Linear write / PR status as progress (a push
+# follows a commit that already reset, and the others have no-op shapes the
+# response does not reveal).
+COORDINATOR_TAIL_BYTES = 256 * 1024   # only the newest rows can be a new turn
+SUBAGENT_TURN_HINT = (
+    " You are a subagent: your coordinator's next message starts a new turn"
+    " and restores this budget, so end now with your exact state and next"
+    " step. Do not manufacture a commit to get past this.")
+
+
+def _iso_to_epoch(stamp):
+    """`2026-11-10T00:16:40.939Z` -> float epoch, or None. Anything else fails
+    closed (no reset), never open."""
+    try:
+        whole, _, frac = stamp.rstrip("Z").partition(".")
+        base = calendar.timegm(time.strptime(whole, "%Y-%m-%dT%H:%M:%S"))
+        return base + (float("0." + frac) if frac.isdigit() else 0.0)
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return None
+
+
+def _coordinator_message_epoch(hook_input):
+    """Epoch of the newest coordinator message in this subagent's OWN
+    transcript tail, or None. None for the main actor (it has
+    UserPromptSubmit) and on any read error. Reads at most
+    COORDINATOR_TAIL_BYTES: a message that scrolled past the tail before the
+    probe ran is missed, which costs a reset, never grants one."""
+    if not hook_input.get("agent_id"):
+        return None
+    path = actor_transcript_path(hook_input)
+    if not path:
+        return None
+    newest = None
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - COORDINATOR_TAIL_BYTES)
+            f.seek(start)
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    if start:
+        lines = lines[1:]   # the first line of a mid-file tail is partial
+    for line in lines:
+        if b'"coordinator"' not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        origin = row.get("origin") if isinstance(row, dict) else None
+        if row.get("type") != "user" or not isinstance(origin, dict) \
+                or origin.get("kind") != "coordinator":
+            continue
+        epoch = _iso_to_epoch(row.get("timestamp"))
+        if epoch and (newest is None or epoch > newest):
+            newest = epoch
+    return newest
+
+
+def reset_turn_if_coordinator_spoke(cache, coordinator_epoch):
+    """A coordinator message newer than the last reset is a new turn for this
+    subagent: the full per-message reset UserPromptSubmit gives the main actor.
+    The reset stamps last_volume_reset = now, which is past that message, so
+    one message buys exactly one window (no ratchet)."""
+    if coordinator_epoch and coordinator_epoch > cache.get("last_volume_reset", 0):
+        cache = reset_per_message_counters(cache)
+    return cache
+
+
 def main():
     # Runtime guard (scar sp-28bf75a4): this is a Claude Code circuit breaker.
     # Foreign runtimes that load the kipi plugins via their own marketplace clone
@@ -1576,9 +1672,13 @@ def main():
     # wrong about it costs one wasted or one skipped probe on a single tool
     # call, never correctness: the authoritative count is re-read under the lock
     # on the very next line, and a missed reset lands on the following call.
+    # The transcript tail read is file I/O for the same reason, so it rides the
+    # same peek and stays outside the lock too (ASK-777).
     head_epoch = None
+    coordinator_epoch = None
     if load_cache(actor).get("tool_calls_since_user", 0) >= VOLUME_WARNING:
         head_epoch = _head_commit_epoch()
+        coordinator_epoch = _coordinator_message_epoch(hook_input)
 
     # Everything from here to process exit runs under this actor's lock, so the
     # load-mutate-save below is one critical section rather than a race. The
@@ -1592,6 +1692,7 @@ def main():
     cache = load_cache(actor)
     cache = update_counters(tool_name, tool_input, cache)
     cache = reset_volume_if_committed(cache, head_epoch)
+    cache = reset_turn_if_coordinator_spoke(cache, coordinator_epoch)
 
     # A triage from an earlier stuck refusal, if the detached call has landed.
     # One cheap open() on the common path (the file is absent almost always).
@@ -1642,6 +1743,8 @@ def main():
         if result:
             level, msg = result
             if level == "block":
+                if hook_input.get("agent_id"):
+                    msg += SUBAGENT_TURN_HINT
                 cache = uncount_blocked_attempt(cache, tool_name, tool_input)
                 save_cache(actor, cache)
                 block(msg, cache=cache, hook_input=hook_input,
