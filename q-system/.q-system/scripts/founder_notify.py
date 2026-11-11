@@ -52,8 +52,15 @@ LABEL = "kipi"
 #: ImportError (the same first-live-run scar fleet-api-report.py records).
 _SNIPPET = (
     "import json, sys\n"
-    "from chief import telegram_out\n"
-    "res = telegram_out.post_to(sys.argv[1], sys.argv[2], sys.argv[3])\n"
+    "from chief import telegram_out, phone_text\n"
+    "saves = []\n"
+    "def saver(t):\n"
+    "    got = phone_text.save_long(t)\n"
+    "    saves.append(bool(got))\n"
+    "    return got\n"
+    "res = dict(telegram_out.post_to(sys.argv[1], sys.argv[2], sys.argv[3], saver=saver))\n"
+    "if saves:\n"
+    "    res.update(collapsed=True, saved=saves[-1], link=phone_text.APP_LINK + '/chat')\n"
     "print(json.dumps(res, sort_keys=True, default=str))\n"
     "ok = res.get('delivered') or res.get('held') or res.get('queued')\n"
     "sys.exit(0 if ok else 1)\n"
@@ -109,6 +116,12 @@ def deliver(message: str, chat: str | None = None, runner=None, timeout: int = 6
     delivered = rc == 0 and bool(answer.get("delivered") or answer.get("held")
                                  or answer.get("queued") or not answer)
     result = {"delivered": delivered, "transport": "telegram", "chat": chat}
+    if answer.get("held"):
+        result["held"] = True
+    if answer.get("collapsed"):
+        result["collapsed"] = True
+        result["saved"] = bool(answer.get("saved"))
+        result["link"] = str(answer.get("link") or "")
     if not delivered:
         result["reason"] = str(answer.get("reason") or f"exit {rc}, no delivery verdict")[:200]
     return result

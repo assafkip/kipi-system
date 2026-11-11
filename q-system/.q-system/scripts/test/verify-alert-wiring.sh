@@ -100,7 +100,7 @@ done
 # a tripwire on top of it, not a replacement for it.
 # --- 6. direct Slack posters: retired (RULE-2026-11-11-A, ASK-4479) ----------
 # This section hunted scripts that read the old Slack webhook file and POSTed to
-# it. Slack is gone from the fleet, and q-system/.q-system/tests/test_no_slack_bots.py
+# it. Slack is gone from this repo (chief's own Slack code is the follow-up, ASK-4488), and q-system/.q-system/tests/test_no_slack_bots.py
 # walks every tracked file for any Slack sender or reader, which is stronger than a
 # same-name heuristic over one config path. Nothing is checked here on purpose.
 
