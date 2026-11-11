@@ -1117,6 +1117,23 @@ class TestD7TheModelGetsNoTools(unittest.TestCase):
         a verdict, and never a quiet fallback to the plan."""
         self.assertIsNone(self._call(stdout="", rc=4)[1])
 
+    def test_a_refused_door_names_the_door_not_the_answer(self):
+        """PR #736 review round 1: the refusal read as "answer outside the
+        contract", which blames the model for an empty credit."""
+        import contextlib
+        import io
+
+        def refused(argv, **kw):
+            return subprocess.CompletedProcess(
+                argv, 4, stdout="", stderr="fleet_api_key: no key for slot 1; refusing\n")
+        err = io.StringIO()
+        with patch.object(triage, "claude_binary", lambda: "claude"), \
+             patch.object(triage.fleet_door, "run", refused), \
+             contextlib.redirect_stderr(err):
+            self.assertIsNone(triage.decide(alert("ASK-1")))
+        self.assertIn(triage.fleet_door.REFUSED, err.getvalue())
+        self.assertNotIn("outside the contract", err.getvalue())
+
     def test_a_failed_call_is_no_decision(self):
         self.assertIsNone(self._call(rc=1)[1])
         self.assertIsNone(self._call(stdout="I think this is probably fine")[1])

@@ -902,6 +902,11 @@ def decide(issue: dict, timeout: int = MODEL_TIMEOUT) -> tuple[str, str] | None:
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"  {ident}: model call failed ({type(exc).__name__})", file=sys.stderr)
         return None
+    # The door's refusal names the door (PR #736 review round 1), not the alert and
+    # not the model's answer: no key, paused or no billable credit is the machine's.
+    if fleet_door.door_refused(res):
+        print(f"  {ident}: {fleet_door.REFUSED}", file=sys.stderr)
+        return None
     if res.returncode != 0:
         print(f"  {ident}: model exited rc={res.returncode}", file=sys.stderr)
         return None

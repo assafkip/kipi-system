@@ -19,8 +19,11 @@ API credit, his own session work stays on the plan):
                     run in the founder's own session never changes what his
                     session bills. "A fleet run" is read from the environment the
                     parent left: the helper sets KIPI_FLEET_KEY_SLOT in every run
-                    it starts, and a launchd fleet job that calls such a tool sets
-                    KIPI_FLEET_RUN=1 for its children.
+                    it starts (fleet_api_key.py, the producer that exists today).
+                    KIPI_FLEET_RUN=1 is the mark a launchd fleet job sets for such
+                    a child. Its first producer is cap-ladder's RCA rung, handed
+                    to lane C on ASK-4395; until that lands, nothing in this tree
+                    sets it, and that rung bills the plan.
 
 NO FALLBACK TO THE PLAN WHEN A KEY IS MISSING. The helper refuses (exit 4 no key
 or paused, 5 the month's credit gone) and this module says so on the caller's
@@ -175,17 +178,41 @@ def _spawn(argv, cmd, input=None, timeout=None, check=False, capture_output=Fals
     return subprocess.CompletedProcess(cmd, rc, out, err)
 
 
-def _say_refusal(actor, res):
-    if res.returncode not in (EXIT_NO_KEY, EXIT_CREDIT_GONE):
-        return
-    err = res.stderr
+#: What a site puts on a PERMANENT record for a refused door. A closed vocabulary on
+#: purpose: the helper's own line can carry a local path, so it stays in this Mac's
+#: log, and only this marker reaches Linear (the ASK-204 rule the drafter already
+#: follows for a runner refusal).
+REFUSED = "the fleet key door refused the run (no key, paused, or no billable credit)"
+
+
+def _refusal_lines(res):
+    err = getattr(res, "stderr", None)
     if isinstance(err, bytes):
         err = err.decode("utf-8", "replace")
-    lines = [ln for ln in (err or "").splitlines() if ln.startswith("fleet_api_key:")]
-    if not lines:
+    return [ln for ln in (err or "").splitlines() if ln.startswith("fleet_api_key:")]
+
+
+def door_refused(res):
+    """Did the key door refuse this run before any child ran?
+
+    WHY EVERY PYTHON SITE ASKS THIS (PR #736 review round 1). Exit 4 or 5 alone
+    is ambiguous, since a child may exit 4 itself, so the helper's own
+    `fleet_api_key:` line on the captured stderr is required as well. A refusal is
+    the MACHINE's, not the issue's (ASK-869): no key, a paused fleet or a spent
+    credit refuses every item behind this one the same way. A site that read it as
+    an ordinary failed call wrote "claude exited rc=4 with 0 chars of output" once
+    per issue onto a permanent Linear record and never stopped its batch.
+    """
+    return (getattr(res, "returncode", None) in (EXIT_NO_KEY, EXIT_CREDIT_GONE)
+            and bool(_refusal_lines(res)))
+
+
+def _say_refusal(actor, res):
+    if not door_refused(res):
         return  # the child's own exit code, or the helper's line already reached stderr
     sys.stderr.write("fleet_door: %s was refused by the fleet key door (exit %d) and did "
-                     "NOT fall back to the plan: %s\n" % (actor, res.returncode, lines[-1]))
+                     "NOT fall back to the plan: %s\n"
+                     % (actor, res.returncode, _refusal_lines(res)[-1]))
     sys.stderr.flush()
 
 

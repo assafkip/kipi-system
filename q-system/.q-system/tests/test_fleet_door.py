@@ -64,6 +64,7 @@ if "--output-format" in sys.argv:
                       "result": "ok from " + who, "total_cost_usd": 0.5}))
 else:
     print("ok from " + who)
+sys.exit(int(os.environ.get("FAKE_RC") or 0))
 '''
 
 def write_facts(path):
@@ -104,7 +105,7 @@ class Base(unittest.TestCase):
             "ANTHROPIC_API_KEY": INHERITED,
         })
         for k in ("KIPI_FLEET_FAKE_KEY_2", "KIPI_FLEET_API_KEYS", "KIPI_FLEET_KEY_SLOT",
-                  "KIPI_FLEET_RUN", "FAKE_SLEEP", "KIPI_FLEET_NOW", "FAKE_READ_STDIN"):
+                  "KIPI_FLEET_RUN", "FAKE_SLEEP", "KIPI_FLEET_NOW", "FAKE_READ_STDIN", "FAKE_RC"):
             os.environ.pop(k, None)
 
     def tearDown(self):
@@ -176,6 +177,25 @@ class TestNoKeyMeansNoRun(Base):
             sys.stderr = saved
         self.assertIn("t-site", said)
         self.assertIn("did NOT fall back to the plan", said)
+
+
+class TestDoorRefusedTellsTheDoorFromTheChild(Base):
+    """PR #736 review round 1: every Python site asks door_refused() to tell the
+    machine's refusal (stop the batch, name the door) from a child's own exit 4."""
+
+    def test_a_real_refusal_reads_as_refused(self):
+        os.environ.pop("KIPI_FLEET_FAKE_KEY_1")
+        res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
+        self.assertTrue(door.door_refused(res))
+
+    def test_a_child_that_exits_4_itself_is_not_the_door(self):
+        os.environ["FAKE_RC"] = "4"
+        res = door.run([self.fake, "-p", "hi"], actor="t", capture_output=True, text=True)
+        self.assertEqual(res.returncode, 4)
+        self.assertFalse(door.door_refused(res))
+
+    def test_the_marker_names_no_path(self):
+        self.assertNotIn("/", door.REFUSED)
 
 
 class TestTimeoutKillsTheWholeRun(Base):

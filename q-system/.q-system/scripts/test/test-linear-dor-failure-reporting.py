@@ -623,6 +623,32 @@ try:
     dor.STATE = SANDBOX / "state-278-rc0.json"
     dor.main()
     check("ASK-278: at rc 0 a limited runner still costs ONE call", len(_calls), 1)
+
+    # A REFUSED KEY DOOR (ASK-4311, PR #736 review round 1): exit 4 plus the
+    # helper's own `fleet_api_key:` line is the machine's refusal. One call, the
+    # batch stops, and the reason is the closed marker: the helper's line names a
+    # local path, and that must not reach the permanent failure issue.
+    class _Refused(_Res):
+        def __init__(self):
+            _Res.__init__(self, 4, "")
+            self.stderr = ("fleet_api_key: no key has a known credit and a live billing "
+                           "cycle in /Users/someone/.config/kipi/fleet-api.json; no run.\n")
+
+    def _door_refuses(*_a, **_k):
+        _calls.append(1)
+        return _Refused()
+    _calls.clear()
+    dor.fleet_door.run = _door_refuses
+    _ref_body, _ref_reason = dor.draft_one({"identifier": "ASK-9", "title": "t", "description": ""}, 5)
+    check("ASK-4311: a refused door is a runner refusal with the closed marker",
+          (_ref_body, _ref_reason), (None, dor.RUNNER_REFUSED + dor.fleet_door.REFUSED))
+    check("ASK-4311: the helper's local path never reaches the reason", "/Users/" in _ref_reason, False)
+    _calls.clear()
+    dor.STATE = SANDBOX / "state-4311-door.json"
+    dor.main()
+    check("ASK-4311: a refused door costs ONE call, not one per queued issue", len(_calls), 1)
+    check("ASK-4311: the issues it did not reach stay queued",
+          json.loads((SANDBOX / "state-4311-door.json").read_text()).get("remaining"), 3)
 finally:
     dor.fleet_door.run, dor.shutil.which = _real_run2, _real_which2
     dor._linear, dor.draft_one, sys.argv = _real_linear, _real_draft, _real_argv

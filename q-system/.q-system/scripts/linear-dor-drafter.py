@@ -858,6 +858,14 @@ def draft_one(issue: dict, timeout: int, prompt: str | None = None) -> tuple:
         reason = f"claude call failed ({type(exc).__name__} after {timeout}s)"
         print(f"  {issue['identifier']}: {reason}", file=sys.stderr)
         return None, reason
+    # A REFUSED KEY DOOR IS A RUNNER REFUSAL (ASK-4311, PR #736 review round 1). No
+    # key, a paused fleet or a spent credit refuses every issue behind this one the
+    # same way, so it takes the runner-refusal exit: the batch stops, and the
+    # permanent failure issue gets fleet_door.REFUSED, a closed marker, never "claude
+    # exited rc=4 with 0 chars of output" once per queued issue.
+    if fleet_door.door_refused(res):
+        print(f"  {issue['identifier']}: {RUNNER_REFUSED}{fleet_door.REFUSED}", file=sys.stderr)
+        return None, RUNNER_REFUSED + fleet_door.REFUSED
     out = (res.stdout or "").strip()
     # READ FOR A REFUSAL ON EVERY EXIT CODE, BEFORE THE LENGTH CHECK (PR #637 round 1).
     # The measured shape of this outage EXITS 0 (ASK-873: on 2026-08-15 every

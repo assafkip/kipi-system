@@ -460,7 +460,9 @@ def ask_model(prompt: str) -> str:
     happen in run_model, the key and the spend row happen in the door. The door
     turns the JSON envelope back into plain text, so the usage row for these
     calls reads parse_error with is_error False; the cost is in the fleet spend
-    ledger, not there. No key means exit 4, which run_model returns as None:
+    ledger, not there, and ASK-4429 (the helper hands the envelope back to a
+    caller that asked for JSON) is what restores the token counts. No key means
+    exit 4, which run_model returns as None:
     one failed ask, never a plan fallback.
     """
     try:
