@@ -141,7 +141,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; fi"
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit 2; }; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" --drain-only; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py crashed (exit $rc): the gate cannot run\" >&2; exit 2; }; exit \"$rc\""
           }
         ]
       }
@@ -302,17 +302,17 @@
           },
           {
             "type": "command",
-            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\"; fi",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit 2; }; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-lint.py crashed (exit $rc): the gate cannot run\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\"; fi",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit 2; }; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-substance-lint.py crashed (exit $rc): the gate cannot run\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\" ]; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"; fi",
+            "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit 2; }; python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voiceloop-band-lint.py crashed (exit $rc): the gate cannot run\" >&2; exit 2; }; exit \"$rc\"",
             "timeout": 35
           },
           {
@@ -454,7 +454,7 @@
           },
           {
             "type": "command",
-            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; then python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; fi",
+            "command": "hook_in=$(cat); case \"$hook_in\" in *'\"stop_hook_active\":true'*|*'\"stop_hook_active\": true'*) hold=0 ;; *) hold=2 ;; esac; test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\" || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py missing: the gate cannot run. Restore it: kipi update\" >&2; exit \"$hold\"; }; printf '%s\\n' \"$hook_in\" | python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py\"; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/voice-stop-gate.py crashed (exit $rc): the gate cannot run\" >&2; exit \"$hold\"; }; exit \"$rc\"",
             "timeout": 30
           },
           {

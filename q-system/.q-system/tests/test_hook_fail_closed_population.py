@@ -383,3 +383,267 @@ def test_sync_check_preflight_exits_even_if_main_returns(tmp_path):
     finally:
         p.stdin.close()
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# ASK-4207: the voice gates' WRAPPERS fail closed.
+#
+# The cases above inject a crash into a gate's Python. The voice gates also had
+# a hole one layer out, in the wired shell command. The template wrapped them in
+# `if [ -f X ]; then python3 X; fi`, so a missing script ran nothing and exited
+# 0, and every instance's voice check passed unchecked text without a word. An
+# uncaught exception exits 1, which the harness treats as non-blocking, so a
+# crash passed it too. Measured on de746fa7: the template's five voice entries
+# exited 0 with the script missing and 1 on a crash.
+#
+# The K1a guard (ASK-4249, test-settings-merge.sh) is a SEPARATE entry beside an
+# instance gate. It cannot be one here: the merge keys a q-system/ script by its
+# basename, so a separate guard and its hook read as one key and the second is
+# dropped (pinned below). The guard therefore sits inside the same entry, with
+# the K1a message, and every mention of the script keeps the anchored
+# $CLAUDE_PROJECT_DIR/q-system/ spelling so the retired-hook drop still sees the
+# whole entry as the skeleton's.
+
+VOICE_GATES = ("voice-lint.py", "voice-substance-lint.py", "voiceloop-band-lint.py",
+               "voice-stop-gate.py")
+VOICE_RESTORE = "Restore it: kipi update"
+VOICE_SCRIPT_DIR = "$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/"
+# The shape every voice entry carried before ASK-4207: the merge test below feeds
+# it in as an instance's stale copy.
+VOICE_OLD_FORM = 'if [ -f "{p}" ]; then python3 "{p}"{a}; fi'
+
+
+def _voice_entries():
+    """(settings file, event, gate, command) for every wired voice-gate command."""
+    out = []
+    for settings in SETTINGS_FILES:
+        for event, groups in json.loads(settings.read_text()).get("hooks", {}).items():
+            for group in groups:
+                for hook in group.get("hooks", []):
+                    command = hook.get("command", "")
+                    gates = [g for g in VOICE_GATES if "scripts/" + g in command]
+                    if gates:
+                        out.append((settings.name, event, gates[0], command))
+    return out
+
+
+VOICE_ENTRIES = _voice_entries()
+VOICE_IDS = ["%s:%s:%s%s" % (f, e, g, ":drain" if "--drain-only" in c else "")
+             for f, e, g, c in VOICE_ENTRIES]
+
+
+def test_voice_census_reads_every_entry():
+    # A census that read nothing would pass every case below. Each settings file
+    # wires the three PostToolUse lints, the Stop gate and its SessionStart drain.
+    want = {("PostToolUse", "voice-lint.py"), ("PostToolUse", "voice-substance-lint.py"),
+            ("PostToolUse", "voiceloop-band-lint.py"), ("Stop", "voice-stop-gate.py"),
+            ("SessionStart", "voice-stop-gate.py")}
+    for settings in SETTINGS_FILES:
+        got = {(e, g) for f, e, g, _ in VOICE_ENTRIES if f == settings.name}
+        assert want <= got, f"{settings.name} lost voice entries: {sorted(want - got)}"
+    assert len(VOICE_ENTRIES) == 10, VOICE_IDS
+
+
+def test_voice_template_and_skeleton_agree():
+    by_file = {}
+    for f, e, _g, c in VOICE_ENTRIES:
+        by_file.setdefault(f, set()).add((e, c))
+    template, skeleton = (by_file[s.name] for s in SETTINGS_FILES)
+    assert template == skeleton, sorted(template ^ skeleton)
+
+
+def _run_voice(command, tree, body, stdin="{}"):
+    """Run a wired command as the harness does: through sh, the project dir set."""
+    scripts = tree / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    gate = next(g for g in VOICE_GATES if "scripts/" + g in command)
+    if body is not None:
+        (scripts / gate).write_text(body)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["CLAUDE_PROJECT_DIR"] = str(tree)
+    return gate, subprocess.run(["/bin/sh", "-c", command], input=stdin, env=env,
+                                capture_output=True, text=True, timeout=60)
+
+
+@pytest.mark.parametrize("entry", VOICE_ENTRIES, ids=VOICE_IDS)
+def test_voice_gate_missing_refuses_and_names_the_restore(tmp_path, entry):
+    gate, proc = _run_voice(entry[3], tmp_path, None)
+    assert proc.returncode == 2, f"rc={proc.returncode} with {gate} missing, wanted 2"
+    assert f"{gate} missing: the gate cannot run" in proc.stderr, proc.stderr[-300:]
+    assert VOICE_RESTORE in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("entry", VOICE_ENTRIES, ids=VOICE_IDS)
+def test_voice_gate_crash_refuses(tmp_path, entry):
+    # Crash mapping: in hook mode none of these scripts exits 1 on purpose (their
+    # only sys.exit(1) is an argv usage error the wired command never reaches), so
+    # any exit other than 0 or 2 is an uncaught exception and must refuse.
+    gate, proc = _run_voice(entry[3], tmp_path, f"raise RuntimeError({SENTINEL!r})\n")
+    assert SENTINEL in proc.stderr, f"the stub never ran: {proc.stderr[-300:]}"
+    assert proc.returncode == 2, f"rc={proc.returncode} on a crash of {gate}, wanted 2"
+    assert f"{gate} crashed (exit 1): the gate cannot run" in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("entry", VOICE_ENTRIES, ids=VOICE_IDS)
+def test_voice_gate_verdict_passes_through(tmp_path, entry):
+    # Negative control for the two cases above: a wrapper that refused everything
+    # would pass them. A clean gate stays 0 with its stdout intact; a refusal
+    # stays 2 with its own reason and no crash message.
+    _, ok = _run_voice(entry[3], tmp_path / "ok", "print('GATE-OK')\n")
+    assert ok.returncode == 0 and "GATE-OK" in ok.stdout, (ok.returncode, ok.stderr[-300:])
+    _, no = _run_voice(entry[3], tmp_path / "no",
+                       "import sys\nsys.stderr.write('GATE-REFUSED')\nsys.exit(2)\n")
+    assert no.returncode == 2 and "GATE-REFUSED" in no.stderr, (no.returncode, no.stderr[-300:])
+    assert "crashed" not in no.stderr, no.stderr[-300:]
+
+
+# A broken gate on Stop must not wedge the session (PR #743 review, major). Exit 2
+# on Stop keeps Claude going, and a missing or crashed script is a condition no
+# turn can fix, so an unconditional 2 refuses every stop forever. The hooks docs:
+# "The `stop_hook_active` field is `true` when Claude Code is already continuing as
+# a result of a stop hook. Check this value or process the transcript to avoid
+# blocking on a condition that will never resolve." So the first stop refuses with
+# the message, and the continuation stop is let through with the message again.
+VOICE_STOP = [(e, i) for e, i in zip(VOICE_ENTRIES, VOICE_IDS) if e[1] == "Stop"]
+VOICE_BROKEN = {"missing": (None, "missing: the gate cannot run"),
+                "crash": (f"raise RuntimeError({SENTINEL!r})\n", "crashed (exit 1): the gate cannot run")}
+# Claude Code may serialize with or without the space; both must be read.
+STOP_AGAIN = {"spaced": json.dumps({"hook_event_name": "Stop", "stop_hook_active": True}),
+              "compact": json.dumps({"hook_event_name": "Stop", "stop_hook_active": True},
+                                    separators=(",", ":"))}
+
+
+def test_voice_stop_census_reads_both_files():
+    assert len(VOICE_STOP) == 2, [i for _, i in VOICE_STOP]
+
+
+@pytest.mark.parametrize("form", sorted(STOP_AGAIN))
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_lets_the_continuation_stop_through(tmp_path, entry, broken, form):
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body, stdin=STOP_AGAIN[form])
+    assert proc.returncode == 0, (
+        f"rc={proc.returncode} on a continuation stop with {gate} {broken}: the session "
+        f"is wedged in a refusal no turn can fix")
+    assert f"{gate} {message}" in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("stdin", [
+    json.dumps({"hook_event_name": "Stop", "stop_hook_active": False}),
+    json.dumps({"hook_event_name": "Stop"}),
+    # The field's text inside a message is escaped JSON, not the field itself.
+    json.dumps({"hook_event_name": "Stop", "stop_hook_active": False,
+                "last_assistant_message": 'it sends "stop_hook_active": true'}),
+], ids=["false", "absent", "quoted-in-message"])
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_first_stop_still_refuses(tmp_path, entry, broken, stdin):
+    # Negative control: a wrapper that let every broken stop through would pass the
+    # case above. The first stop must refuse, or the broken gate is never reported.
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body, stdin=stdin)
+    assert proc.returncode == 2, f"rc={proc.returncode} with {gate} {broken}, wanted 2"
+    assert f"{gate} {message}" in proc.stderr, proc.stderr[-300:]
+
+
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_STOP], ids=[i for _, i in VOICE_STOP])
+def test_voice_stop_wrapper_runs_a_present_gate_unchanged(tmp_path, entry):
+    # The hatch is for a broken gate only. A present gate gets the payload byte for
+    # byte and keeps its own refusal, continuation stop or not.
+    body = ("import sys\nsys.stdout.write(sys.stdin.read())\n"
+            "sys.stderr.write('GATE-REFUSED')\nsys.exit(2)\n")
+    _, proc = _run_voice(entry[3], tmp_path, body, stdin=STOP_AGAIN["spaced"])
+    assert proc.returncode == 2 and "GATE-REFUSED" in proc.stderr, (proc.returncode, proc.stderr)
+    assert json.loads(proc.stdout) == json.loads(STOP_AGAIN["spaced"]), proc.stdout[-300:]
+    assert "cannot run" not in proc.stderr, proc.stderr[-300:]
+
+
+# PR #743 review, major, disposed: "PostToolUse voice-lint wrappers deny every
+# Edit/Write when the script is absent or crashes." They cannot deny it. The hooks
+# docs, exit code 2 table: "| `PostToolUse` | No | Shows stderr to Claude; the
+# tool already ran |". The write has landed before the hook starts, so a broken
+# lint costs a gate-cannot-run notice on each write until `kipi update` restores
+# it, which is the fail-closed signal ASK-4207 exists for. This case pins the half
+# a test can see: the wrapper returns 2 and leaves the written file as it was.
+VOICE_POST = [(e, i) for e, i in zip(VOICE_ENTRIES, VOICE_IDS) if e[1] == "PostToolUse"]
+
+
+@pytest.mark.parametrize("broken", sorted(VOICE_BROKEN))
+@pytest.mark.parametrize("entry", [e for e, _ in VOICE_POST], ids=[i for _, i in VOICE_POST])
+def test_voice_post_wrapper_leaves_the_written_file_on_disk(tmp_path, entry, broken):
+    assert len(VOICE_POST) == 6, [i for _, i in VOICE_POST]
+    draft = tmp_path / "notes" / "draft.md"
+    draft.parent.mkdir()
+    draft.write_text("already written by the tool\n")
+    before = draft.stat()
+    body, message = VOICE_BROKEN[broken]
+    gate, proc = _run_voice(entry[3], tmp_path, body,
+                            stdin=json.dumps(_write(draft, "already written by the tool\n")))
+    assert proc.returncode == 2 and f"{gate} {message}" in proc.stderr, (proc.returncode,
+                                                                          proc.stderr[-300:])
+    assert draft.read_text() == "already written by the tool\n"
+    assert draft.stat().st_mtime_ns == before.st_mtime_ns, "the wrapper touched the file"
+
+
+def _settings_merge():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("kipi_settings_merge",
+                                                  ROOT / "kipi-settings-merge.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _voice_commands(settings):
+    return [h["command"] for gs in settings.get("hooks", {}).values() for g in gs
+            for h in g["hooks"] if any("scripts/" + v in h.get("command", "") for v in VOICE_GATES)]
+
+
+def test_the_update_merge_replaces_an_instance_stale_voice_wrapper():
+    """Load path for instances: the update rebuilds settings.json from the
+    template, so the template's fail-closed entry must win over the old wrapper an
+    instance still carries, and must stay droppable as the skeleton's if retired."""
+    merge = _settings_merge()
+    template = json.loads(SETTINGS_FILES[0].read_text())
+    stale = {"hooks": {}}
+    for event, groups in template["hooks"].items():
+        for group in groups:
+            for hook in group["hooks"]:
+                command = hook.get("command", "")
+                gate = next((g for g in VOICE_GATES if "scripts/" + g in command), None)
+                if gate is None:
+                    continue
+                assert merge.hook_script_names(command) == {gate}, command
+                assert merge._shows_skeleton(command), command
+                old = VOICE_OLD_FORM.format(p=VOICE_SCRIPT_DIR + gate,
+                                            a=" --drain-only" if "--drain-only" in command else "")
+                grp = {"hooks": [{"type": "command", "command": old}]}
+                if "matcher" in group:
+                    grp["matcher"] = group["matcher"]
+                stale["hooks"].setdefault(event, []).append(grp)
+    report = []
+    wired = _voice_commands(merge.merge_settings(template, stale, retired=frozenset(),
+                                                 report=report))
+    assert len(wired) == 5, wired
+    assert not [c for c in wired if c.startswith("if ")], f"a stale wrapper survived: {wired}"
+    assert not report, report
+    # Retirement still reaches the new entry, because every script mention in it
+    # is anchored: a fail-closed entry that outlived its script would refuse forever.
+    left = _voice_commands(merge.merge_settings({"hooks": {}}, {"hooks": template["hooks"]},
+                                                retired=frozenset(VOICE_GATES), report=[]))
+    assert not left, f"a retired voice gate's fail-closed entry would outlive it: {left}"
+
+
+def test_a_separate_guard_for_a_q_system_gate_is_deduped():
+    """Why the guard is not a separate K1a entry here: the merge keys both by the
+    basename and keeps only the first, so the guard would silently vanish."""
+    merge = _settings_merge()
+    p = VOICE_SCRIPT_DIR + "voice-lint.py"
+    hook = VOICE_OLD_FORM.format(p=p, a="")
+    guard = f'test -f "{p}" || {{ echo "voice-lint.py missing: the gate cannot run" >&2; exit 2; }}'
+    tpl = {"hooks": {"PostToolUse": [{"matcher": "Edit|Write", "hooks": [
+        {"type": "command", "command": hook}, {"type": "command", "command": guard}]}]}}
+    merged = merge.merge_settings(tpl, {}, retired=frozenset(), report=[])
+    assert [h["command"] for h in merged["hooks"]["PostToolUse"][0]["hooks"]] == [hook]
