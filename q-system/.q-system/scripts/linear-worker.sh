@@ -721,6 +721,19 @@ def project_of(i):
 # wrote WRITER-apostrophe-S and the suite went from 24 green to 11 failures.
 ALERT_MARKER = "kipi-alert-fingerprint"
 
+# K9 (ASK-4410, RULE-2026-11-09-B part 3): a SPILLOVER ticket that carries a
+# Definition of Ready and owner:sana is dispatch work, not an alert. Spillover
+# tickets are filed through the fleet alert path (spillover-linear-check.py), so
+# they carry the marker above, and every reader of is_fleet_alert skipped them:
+# only the nightly triage promoted them, about 60 a night against about 1094
+# queued, so a lane waiting on one waited weeks. NARROW ON PURPOSE: the form
+# below is what message_for() in spillover-linear-check.py writes, and an
+# ordinary alert with a DoR stays an alert (ASK-839, pinned by
+# test_linear_alert_triage.py). DOR_TEXT is the same text ready() tests, held in
+# one constant here so there is no second parser of it.
+DOR_TEXT = "Definition of Ready"
+SPILLOVER_FORM = " | resolve with prd_runner spillover resolve "
+
 def is_fleet_alert(i):
     # MATCHED IN THE WRITERS OWN STRUCTURAL FORM (ASK-839, PR #191 round 4):
     # alert-to-linear.py:515 emits <!-- kipi-alert-fingerprint: <fp> -->. The
@@ -738,6 +751,10 @@ def is_fleet_alert(i):
         head = chunk.split("-->", 1)[0]
         name, sep, _rest = head.partition(":")
         if sep and name.strip() == ALERT_MARKER:
+            d = i.get("description") or ""
+            owned = "owner:sana" in {l["name"] for l in i["labels"]["nodes"]}
+            if owned and SPILLOVER_FORM in d and DOR_TEXT in d:
+                return False
             return True
     return False
 
