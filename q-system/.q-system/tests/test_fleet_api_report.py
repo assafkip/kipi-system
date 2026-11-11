@@ -18,6 +18,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -326,7 +327,108 @@ class TestCadence(Base):
         nobody. A report the founder asked to RECEIVE goes through chief."""
         report.main([])
         self.assertEqual(len(self.sent()), 1)
-        self.assertIn("FLEET API CREDIT", self.sent()[0])
+        self.assertIn("Fleet API credit", self.sent()[0])
+        self.assertNotIn("FLEET API CREDIT", self.sent()[0],
+                         "chief got the engineering text, not the founder's")
+
+
+#: A stand-in for chief's package, shaped like the real one: telegram_out uses a
+#: package-relative import, so running it as a FILE dies with ImportError exactly
+#: as ~/projects/chief/chief/telegram_out.py did on the first live kickstart.
+FAKE_CHIEF_INIT = ""
+FAKE_CHIEF_CONFIG = "RECORD_ENV = 'FAKE_CHIEF_RECORD'\n"
+FAKE_CHIEF_OUT = r'''
+import json, os
+from . import config
+
+
+def alert(text, alert_class=None, *, lines=False, **_kw):
+    with open(os.environ[config.RECORD_ENV], "a") as fh:
+        fh.write(json.dumps({"text": text, "lines": lines}) + "\n")
+    if os.environ.get("FAKE_CHIEF_REFUSE"):
+        return {"delivered": False, "refused": True, "reason": "ping gate refused: no-action"}
+    return {"delivered": True, "refused": False, "reason": None}
+'''
+
+
+class TestTheRealChiefPath(Base):
+    """The default send path, with no KIPI_CHIEF_ALERT stub. Every earlier case
+    stubbed it, which is how a default that could never deliver shipped."""
+
+    def setUp(self):
+        super().setUp()
+        root = os.path.join(self.tmp.name, "chief-root")
+        pkg = os.path.join(root, "chief")
+        os.makedirs(pkg)
+        for name, body in (("__init__.py", FAKE_CHIEF_INIT), ("config.py", FAKE_CHIEF_CONFIG),
+                           ("telegram_out.py", FAKE_CHIEF_OUT)):
+            with open(os.path.join(pkg, name), "w") as fh:
+                fh.write(body)
+        self.pkg = pkg
+        os.environ.pop("KIPI_CHIEF_ALERT", None)
+        os.environ["KIPI_CHIEF_ROOT"] = root
+
+    def _calls(self):
+        if not os.path.exists(self.chief_record):
+            return []
+        with open(self.chief_record) as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+
+    def test_the_default_calls_chiefs_alert_function_as_a_module(self):
+        self.assertEqual(report.main([]), 0)
+        calls = self._calls()
+        self.assertEqual(len(calls), 1, "chief's alert() was never called")
+        self.assertTrue(calls[0]["lines"], "the report's line breaks were flattened")
+        self.assertIn("Fleet API credit", calls[0]["text"])
+        self.assertTrue(os.path.exists(os.environ["KIPI_FLEET_REPORT_RECEIPT"]))
+
+    def test_negative_self_test_the_old_file_run_cannot_import(self):
+        """The fixture reproduces the live failure: run as a file, the module dies."""
+        import subprocess as sp
+        out = sp.run([sys.executable, os.path.join(self.pkg, "telegram_out.py"), "alert", "x"],
+                     stdout=sp.PIPE, stderr=sp.PIPE, universal_newlines=True)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("ImportError", out.stderr)
+
+    def test_a_refused_alert_writes_no_receipt_so_the_next_run_retries(self):
+        os.environ["FAKE_CHIEF_REFUSE"] = "1"
+        self.assertEqual(report.main([]), 0, "a reporter never fails its job")
+        self.assertEqual(len(self._calls()), 1)
+        self.assertFalse(os.path.exists(os.environ["KIPI_FLEET_REPORT_RECEIPT"]),
+                         "a refused send was recorded as sent")
+
+
+#: Shapes chief's phone gate cuts as engineering (measured 2026-11-11 against
+#: ping_gate.check): a file path, a facts-file field name, an exit code, the
+#: Keychain. None may reach the founder's message.
+ENGINEERING = re.compile(r"/Users/|\.json\b|_usd\b|_utc\b|_at\b|\bexit \d|Keychain|fleet_api")
+
+
+class TestFounderText(Base):
+    def test_every_state_change_kind_has_a_founder_sentence(self):
+        missing = [k for k in report.STATE_CHANGE_KINDS if k not in report.FOUNDER_SENTENCES]
+        self.assertEqual(missing, [], "a kind would leak its raw engineering text")
+
+    def test_no_engineering_text_reaches_the_founder(self):
+        facts = json.loads(json.dumps(FACTS))
+        facts["keys"]["2"] = {"monthly_credit_usd": None, "current_cycle_expires_utc": None}
+        write_facts(self.facts, facts)
+        for kind in report.STATE_CHANGE_KINDS:
+            spend.event(kind, "no Keychain item for key 1; every fleet run refuses (exit 4)")
+        spend.record(1, 0.0, actor="worker", ok=False, unmetered=True, note="killed")
+        r = report.build()
+        self.assertTrue(ENGINEERING.search(r["text"]), "the fixture plants nothing to catch")
+        self.assertIsNone(ENGINEERING.search(r["founder_text"]),
+                          "engineering text in the founder's message: %r" % r["founder_text"])
+        self.assertIn("key 2: not in use yet", r["founder_text"])
+        self.assertIn("tickets left to be done: 4", r["founder_text"])
+
+    def test_one_sentence_per_kind_however_many_events(self):
+        for _ in range(3):
+            spend.event("failover", "key 1 read as exhausted; switching to key 2")
+        r = report.build()
+        self.assertEqual(r["founder_text"].count(report.FOUNDER_SENTENCES["failover"]), 1)
+        self.assertEqual(r["state_changes"], 3, "the receipt still counts every event")
 
 
 #: A stand-in for linear-sync.py, loaded through the report's real load path

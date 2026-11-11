@@ -39,7 +39,8 @@ Exit 0 whenever the report was produced, sent or not. A reporter that fails the
 job it reports on is worse than a late report.
 
 Env:
-  KIPI_CHIEF_ALERT     the alert command (default: python3 <chief>/chief/telegram_out.py alert)
+  KIPI_CHIEF_ALERT     the alert command, test seam (default: chief.telegram_out.alert()
+                       called as a module from KIPI_CHIEF_ROOT)
   KIPI_CHIEF_ROOT      chief's checkout (default ~/projects/chief)
   KIPI_FLEET_REPORT_RECEIPT  receipt path
   KIPI_WORKER_READY_CMD      override the ready-count command (tests)
@@ -79,12 +80,31 @@ def receipt_path():
     return os.environ.get("KIPI_FLEET_REPORT_RECEIPT") or DEFAULT_RECEIPT
 
 
+#: chief's priority alert is a FUNCTION, `chief.telegram_out.alert(text,
+#: lines=True)`, and it has no CLI verb. The first build ran
+#: `python3 <chief>/chief/telegram_out.py alert`: run as a file, the module's
+#: package-relative imports die with ImportError, and `alert` is not one of its
+#: argparse verbs anyway. Every test stubbed KIPI_CHIEF_ALERT, so the first live
+#: kickstart (2026-11-11 00:3xZ) was the first time the real path ran, and it
+#: delivered nothing. Called as a module from chief's own root, the import
+#: resolves and the founder's priority path (the DEC-52 machine-health line,
+#: which skips the engineering cut that would send it to Linear) is the one used.
+CHIEF_ALERT_SNIPPET = (
+    "import json, sys\n"
+    "from chief import telegram_out\n"
+    "res = telegram_out.alert(sys.argv[1], lines=True)\n"
+    "print(json.dumps(res, sort_keys=True, default=str))\n"
+    "sys.exit(0 if res.get('delivered') else 1)\n"
+)
+
+
 def chief_alert_argv():
+    """(argv, cwd). The text is appended to argv by send()."""
     raw = os.environ.get("KIPI_CHIEF_ALERT")
     if raw:
-        return shlex.split(raw)
+        return shlex.split(raw), None
     root = os.environ.get("KIPI_CHIEF_ROOT") or DEFAULT_CHIEF_ROOT
-    return ["python3", os.path.join(root, "chief", "telegram_out.py"), "alert"]
+    return ["python3", "-c", CHIEF_ALERT_SNIPPET], root
 
 
 def ready_counts():
@@ -165,6 +185,57 @@ def closed_today():
     return len(nodes), None
 
 
+#: What each state change means to the founder, in his words. The event TEXT is
+#: written for Sana (slot numbers, exit codes, the Keychain) and chief's phone
+#: gate refuses engineering text on his phone: measured 2026-11-11 against
+#: chief's ping_gate.check_whatsapp, the no_key line was cut as
+#: engineering-only, and the cut took the message's only link with it, so the
+#: whole report was refused. Every kind in STATE_CHANGE_KINDS needs a sentence
+#: here; a test pins that, so a new kind cannot leak its raw text.
+FOUNDER_SENTENCES = {
+    "pause": "Both keys are out of credit, so the fleet paused. It tries again on its own tomorrow.",
+    "resume": "The fleet is running again.",
+    "failover": "One key ran out of credit, so the fleet moved to the other key.",
+    "no_key": "For part of the day the fleet had no key it could use, so it ran nothing then. Sana has it.",
+    "unconfirmed": "A key is not used until its auto-reload is confirmed off. Sana has it.",
+}
+
+
+def founder_text(budget, credit, closed, closed_err, ready_total, per_project,
+                 ready_err, unmetered, todays_events):
+    """The message for chief: the founder's own lines, no engineering text.
+
+    Same facts as the engineering text, which stays on this job's stdout (its
+    log) for Sana. A key the fleet does not bill gets a plain line here; the
+    field and the file to fix are in the log and in Sana's ticket.
+    """
+    lines = ["Fleet API credit, %s" % budget["day"]]
+    lines.append("spent today: $%.2f of $%.2f" % (budget["spent_usd"], budget["allowance_usd"]))
+    for slot in spend.SLOTS:
+        if credit["per_key_usd"].get(slot) is None or slot in (credit.get("unconfirmed_keys") or []):
+            lines.append("key %d: not in use yet. Sana is finishing its setup." % slot)
+        else:
+            lines.append(spend.describe_key(credit, slot))
+    if unmetered:
+        lines.append("spent today is a floor: %d run(s) ended before their cost could be read"
+                     % unmetered)
+    lines.append("tickets closed today: %s" % (closed if closed_err is None else "could not read"))
+    if ready_err:
+        lines.append("tickets left to be done: could not read")
+    else:
+        lines.append("tickets left to be done: %d" % ready_total)
+        for project, count in sorted(per_project.items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append("  %s: %d" % (project, count))
+    seen = []
+    for ev in todays_events:
+        kind = ev.get("kind")
+        if kind not in seen:
+            seen.append(kind)
+    for kind in seen:
+        lines.append(FOUNDER_SENTENCES.get(kind) or "The fleet changed state today. Sana has it.")
+    return "\n".join(lines)
+
+
 def build():
     """The report as a dict plus its one-message text."""
     budget = spend.budget()
@@ -222,6 +293,8 @@ def build():
         "unmetered_runs": unmetered,
         "state_changes": len(todays_events),
         "text": "\n".join(lines),
+        "founder_text": founder_text(budget, credit, closed, closed_err, ready_total,
+                                     per_project, ready_err, unmetered, todays_events),
     }
     return report
 
@@ -269,16 +342,19 @@ def due(report):
 
 
 def send(text):
-    argv = chief_alert_argv() + [text]
+    argv, cwd = chief_alert_argv()
     try:
-        out = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             universal_newlines=True, timeout=120)
+        out = subprocess.run(argv + [text], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=True, timeout=120, cwd=cwd)
     except (OSError, subprocess.SubprocessError) as exc:
         sys.stderr.write("fleet-api-report: chief alert path failed (%s)\n" % exc)
         return False
     if out.returncode != 0:
-        sys.stderr.write("fleet-api-report: chief alert exited %d: %s\n"
-                         % (out.returncode, (out.stderr or "").strip()[:200]))
+        # chief prints its own reason as one JSON line (a gate refusal, a 403);
+        # it is the first thing to read when a report did not arrive.
+        sys.stderr.write("fleet-api-report: chief alert exited %d: %s %s\n"
+                         % (out.returncode, (out.stdout or "").strip()[:300],
+                            (out.stderr or "").strip()[-300:]))
         return False
     return True
 
@@ -304,7 +380,7 @@ def main(argv):
         sys.stderr.write("fleet-api-report: not sending (%s)\n" % why)
         return 0
 
-    if send(report["text"]):
+    if send(report["founder_text"]):
         write_receipt(report["day"], report["state_changes"])
     return 0
 
