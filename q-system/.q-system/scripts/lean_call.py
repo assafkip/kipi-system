@@ -119,13 +119,20 @@ def declared(needs_tools=None, needs_settings=False, cwd=None, needs_mcp=False,
 
 
 def run(argv, *, needs_tools=None, needs_settings=False, cwd=None,
-        needs_mcp=False, system_prompt=LEAN_SYSTEM_PROMPT, job=None, **kwargs):
+        needs_mcp=False, system_prompt=LEAN_SYSTEM_PROMPT, job=None, runner=None,
+        **kwargs):
     """subprocess.run with the lean contract. Same return and exceptions.
 
     `job` names this call's row in q-system/.q-system/model-routing.json and adds
     `--model` from it (ASK-4013). Before it, every lean call passed no --model and
     ran on whatever the CLI defaulted to with no settings loaded: measured
-    2026-11-08, that was claude-opus-5-5, chosen by nobody."""
+    2026-11-08, that was claude-opus-5-5, chosen by nobody.
+
+    `runner` replaces subprocess.run for the spawn, with the same signature. The
+    fleet passes `fleet_door.runner(actor)` so the lean call is billed to a fleet
+    API key and lands in the spend ledger (ASK-4311). The lean flags are built
+    here either way, so the bound does not depend on who spawns."""
+    spawn = runner or subprocess.run
     if job and "--model" not in argv:
         argv = [*argv, "--model", _route().pick(job)]
     full = lean_argv(argv, needs_tools=needs_tools, needs_settings=needs_settings,
@@ -134,6 +141,6 @@ def run(argv, *, needs_tools=None, needs_settings=False, cwd=None,
     if note:
         print("lean_call: declared " + note, file=sys.stderr)
     if cwd is not None:
-        return subprocess.run(full, cwd=cwd, **kwargs)
+        return spawn(full, cwd=cwd, **kwargs)
     with tempfile.TemporaryDirectory(prefix="kipi-lean-") as empty:
-        return subprocess.run(full, cwd=empty, **kwargs)
+        return spawn(full, cwd=empty, **kwargs)

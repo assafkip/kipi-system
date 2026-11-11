@@ -28,6 +28,13 @@
 #           and no other line in the file names ANTHROPIC_API_KEY (no re-add).
 #           `env=os.environ`, `env=dict(os.environ)` or no env= all fail.
 #           An `opencode run` argv counts as a model call: it reads the key too.
+#           OR the call goes through the Python fleet door (ASK-4311):
+#           `fleet_door.run(...)`, `fleet_door.run_for_caller(...)`, or a runner
+#           call carrying `runner=`/`run=fleet_door.runner(...)`. A file whose
+#           every call is the door names ANTHROPIC_API_KEY nowhere: the door
+#           strips an inherited key and the helper injects the fleet one.
+#   both    no site reads the Keychain itself (`find-generic-password`): only
+#           fleet_api_key.py does, so there is one place a key is read.
 # Negative controls at the end prove each of those shapes is caught.
 set -uo pipefail
 
@@ -243,10 +250,12 @@ def py_violations(text, path="<src>"):
     calls = []
     for scope in scopes:
         for n in ast.walk(scope):
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
-                    and n.func.attr in _SUBPROCESS and isinstance(n.func.value, ast.Name) \
-                    and n.func.value.id in _RUNNERS:
-                argv = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "args"), None)
+            runner_call = isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) \
+                and n.func.attr in _SUBPROCESS and isinstance(n.func.value, ast.Name) \
+                and n.func.value.id in _RUNNERS
+            door_call = isinstance(n, ast.Call) and cs.is_py_fleet_door_call(n)
+            if runner_call or door_call:
+                argv = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg in ("args", "cmd")), None)
                 if _model_expr(argv, scope, funcs):
                     calls.append((n, scope))
     # innermost scope wins for a call seen from the module and its function
@@ -256,15 +265,32 @@ def py_violations(text, path="<src>"):
             seen[id(n)] = (n, scope)
     if not seen:
         return ["no model subprocess call recognized (the resolver is blind to this file's shape)"]
+    plan_calls = 0
     for n, scope in seen.values():
+        if cs.is_py_fleet_door_call(n):
+            continue  # the door strips any inherited key; the helper injects the fleet key
+        plan_calls += 1
         why = _env_ok(n, scope)
         if why:
             out.append("line %d: %s" % (n.lineno, why))
-    if not out:
+    if not out and plan_calls:
         why = _helper_ok(tree, text, path)
         if why:
             out.append(why)
+    elif not out:
+        # Every call is the door: the file has no key handling of its own to do.
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and n.value == KEY:
+                out.append("line %d names %s, but every call goes through the fleet door "
+                           "(a re-add?)" % (n.lineno, KEY))
+                break
     return out
+
+
+def keychain_violations(text):
+    """A site that reads the Keychain itself. Only fleet_api_key.py may (ASK-4311)."""
+    return ["reads the Keychain itself (find-generic-password); only fleet_api_key.py may"
+            ] if "find-generic-password" in text else []
 
 
 # ---------------------------------------------------------------- sites ----
@@ -276,6 +302,7 @@ print("subscription-only guard: %d model call sites" % len(sites))
 for rel in sites:
     text = (ROOT / rel).read_text(errors="replace")
     v = py_violations(text, rel) if rel.endswith(".py") else sh_violations(text)
+    v += keychain_violations(text)
     if v:
         bad("%s can run claude on the billed API key: %s" % (rel, v[0][:160]))
         for extra in v[1:]:
@@ -415,6 +442,38 @@ for label, src in PY_CONTROLS.items():
         ok("negative control caught: python, %s" % label)
     else:
         bad("negative control PASSED: python, %s" % label)
+# THE PYTHON DOOR, BOTH DIRECTIONS (ASK-4311). Accepted only as the canonical
+# module name and only on the call that spawns; a bare call beside it still fails.
+PY_DOOR_OK = {
+    "fleet_door.run": 'import fleet_door\nfleet_door.run([binary, "-p", x], "a", capture_output=True)\n',
+    "fleet_door.run_for_caller": 'import fleet_door\nfleet_door.run_for_caller([binary, "-p", x], "a")\n',
+    "lean_call.run(runner=fleet_door.runner(..))":
+        'import lean_call, fleet_door\nlean_call.run([b, "-p", x], runner=fleet_door.runner("a"))\n',
+}
+for label, src in PY_DOOR_OK.items():
+    if py_violations(src):
+        bad("positive control: the python door was not accepted (%s): %s" % (label, py_violations(src)))
+    else:
+        ok("positive control: %s is accepted (metered, keyed door)" % label)
+PY_DOOR_BAD = {
+    "a bare call beside the python door":
+        'import fleet_door, subprocess\nfleet_door.run([b, "-p", x], "a")\nsubprocess.run(["claude", "-p", x])\n',
+    "a runner that is not the door":
+        'import lean_call\nlean_call.run([b, "-p", x], runner=my_runner)\n',
+    "the door under an alias": 'import fleet_door as fd\nfd.run([b, "-p", x], "a")\n',
+    "a door-only file that sets the key itself":
+        'import os, fleet_door\nos.environ["ANTHROPIC_API_KEY"] = k\nfleet_door.run([b, "-p", x], "a")\n',
+}
+for label, src in PY_DOOR_BAD.items():
+    if py_violations(src):
+        ok("negative control caught: python, %s" % label)
+    else:
+        bad("negative control PASSED: python, %s" % label)
+for label, src in {"python": 'subprocess.run(["security", "find-generic-password", "-w", "-s", s])\n',
+                   "shell": 'KEY="$(security find-generic-password -w -s x)"\n'}.items():
+    (ok if keychain_violations(src) else bad)(
+        "negative control caught: %s, a site that reads the Keychain itself" % label)
+
 good = 'import os, subprocess\n' + HELPER + 'subprocess.run(["claude", "-p", x], env=subscription_env())\n'
 if py_violations(good):
     bad("positive control: env=subscription_env() was not accepted: %s" % py_violations(good))
@@ -440,6 +499,21 @@ with tempfile.TemporaryDirectory() as _tmp:
         ok("positive control: an instance-local stripped call is accepted")
     else:
         bad("positive control: instance-local stripped call: %r" % (_found.get("ok.sh"),))
+
+# The Python door's own environments, imported the way a caller would: neither the
+# plan path nor the helper's env may carry an inherited key (ASK-4311).
+try:
+    sys.path.insert(0, str(ROOT / "q-system" / ".q-system" / "scripts"))
+    import fleet_door
+    os.environ[KEY] = "sk-ant-negative-control"
+    leaked = [n for n, e in (("plan_env", fleet_door.plan_env()),
+                             ("door_env", fleet_door.door_env(["/usr/local/bin/claude", "-p", "x"])))
+              if KEY in e]
+    os.environ.pop(KEY, None)
+    (ok if not leaked else bad)("fleet_door plan_env()/door_env() drop %s%s"
+                                % (KEY, (" (leaked: %s)" % leaked) if leaked else ""))
+except Exception as exc:  # noqa: BLE001
+    bad("fleet_door unavailable: %s" % exc)
 
 # The wrapper's own helper, imported the way a caller would.
 try:

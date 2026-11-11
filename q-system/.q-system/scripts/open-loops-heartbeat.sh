@@ -49,6 +49,25 @@ ENV_HALT=""
 # KIPI_REPO override points $SKEL at another tree.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env-failure-lib.sh"
 
+# THE FLEET KEY DOOR (ASK-4311). This sweep is unattended fleet work, so each
+# agent run bills a fleet API key through fleet-claude.sh, the one metered door:
+# it reads the key from the Keychain (never a command line), records what the
+# run cost, fails over key 1 to key 2, and refuses (exit 4 or 5, a line starting
+# `fleet_api_key:`) rather than falling back to the founder's plan.
+# KIPI_FLEET_API_KEYS=0 is the deliberate, loud way back to the plan. Resolved
+# from beside this script, never from $SKEL, for the reason the lib above is.
+HB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FLEET_CLAUDE="${KIPI_FLEET_CLAUDE:-$HB_DIR/fleet-claude.sh}"
+[ -x "$FLEET_CLAUDE" ] || FLEET_CLAUDE="bash $HB_DIR/fleet-claude.sh"
+
+# A REFUSED DOOR IS ONE MACHINE-WIDE FACT, like an exhausted account (ASK-869):
+# no key, a paused fleet or a spent month refuses every instance the same way,
+# so it halts the sweep once instead of filing one failure per instance.
+door_refused() {  # door_refused <rc> <output> -> 0 when the key door refused the run
+  case "$1" in 4|5) ;; *) return 1 ;; esac
+  printf '%s\n' "$2" | grep -q '^fleet_api_key: '
+}
+
 log_step() {  # log_step <instance-name> <completed|skipped|failed> [note]
   python3 -c '
 import json, sys
@@ -164,9 +183,10 @@ work_instance() {
   }
   local agent_tmp="$AGENT_TMP"
   local agent_rc=0
-  # `env -u ANTHROPIC_API_KEY` at the call, not a top-of-file unset a later source
-  # could undo: subscription only, never the billed API (ASK-2176, test-subscription-only.sh).
-  ( cd "$path" && KIPI_INSTANCE_NAME="$name" env -u ANTHROPIC_API_KEY $TO claude -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ) || agent_rc=$?
+  # $FLEET_CLAUDE at the call (ASK-4311): the metered key door, never a bare
+  # `claude -p` that inherits whatever key is in the environment
+  # (test-subscription-only.sh holds every call to one of the two shapes).
+  ( cd "$path" && KIPI_INSTANCE_NAME="$name" KIPI_AGENT=openloops-heartbeat $TO $FLEET_CLAUDE -p "$prompt" </dev/null 2>&1 | tee -a "$LOG" > "$agent_tmp" ) || agent_rc=$?
   # Read it out, then delete it, BEFORE either branch decides anything. The
   # classifier below reads $agent_out and never the file, so there is exactly one
   # place the file has to go away and no future branch can be added past it --
@@ -187,6 +207,12 @@ work_instance() {
     # `.claude/rules/self-healing-retry.md` step 5 already states the rule --
     # environmental failures stop on attempt 1 and surface immediately, because
     # retrying cannot fix an environment. The heartbeat simply never applied it.
+    if door_refused "$agent_rc" "$agent_out"; then
+      ENV_HALT="fleet key door refused (exit $agent_rc: no key, paused, or the month's credit spent)"
+      echo "$(TS) heartbeat[$name]: $ENV_HALT -- halting the sweep, no plan fallback" >> "$LOG"
+      log_step "$name" skipped "environmental: $ENV_HALT"
+      return 0
+    fi
     if is_environmental "$agent_out"; then
       # The marker travels to the ticket and the page; this log keeps the whole
       # line (ASK-3981): a run killed at its timeout exits non-zero with whatever
