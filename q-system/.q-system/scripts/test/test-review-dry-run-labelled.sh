@@ -16,6 +16,10 @@
 # comments on a live PR every time anyone invokes it is worse. The bug is that
 # the run does not say which mode it was in.
 #
+# ASK-4419 (2026-11-10) kept "never post by accident" and dropped the silent
+# default: a run with neither --post nor --dry-run is refused (exit 2) before
+# the review runs. The label is read after the cost; the refusal comes before.
+#
 # WHY THIS TEST ASSERTS BOTH DIRECTIONS. A test that only checks "a no-post run
 # says DRY RUN" is passed by a script that stamps DRY RUN on every run,
 # including the ones that really did move the gate -- which is the same defect
@@ -122,9 +126,38 @@ ok "negative self-test: the gh log records a statuses POST when one happens"
 : > "$GH_LOG"
 
 # ===========================================================================
+# CASE 1a -- ASK-4419 reproducer: NO mode flag is refused before the review.
+# Measured 2026-11-10 on PR #731: a lane ran without --post, the review took 10
+# minutes and approved, kipi/reviewer-approved stayed red, the round was lost.
+# ===========================================================================
+: > "$GH_LOG"
+run_reviewer "$WORK/nomode.out" nomode
+RC_NOMODE=$?
+NOMODE_STATUS="$(grep -c "statuses/" "$GH_LOG" || true)"
+echo "  [ctx] no-mode run rc=$RC_NOMODE, commit statuses posted: $NOMODE_STATUS"
+[ "$RC_NOMODE" = "2" ] || fail "a run with neither --post nor --dry-run exited $RC_NOMODE, not 2: an agent that forgot --post gets a finished-looking review that posted nothing:
+$(tail -6 "$WORK/nomode.out")"
+ok "a run with no mode flag exits 2"
+grep -q -- "--post" "$WORK/nomode.out" && grep -q -- "--dry-run" "$WORK/nomode.out" \
+  || fail "the no-mode refusal does not name both --post and --dry-run: $(cat "$WORK/nomode.out")"
+ok "the refusal names --post and --dry-run"
+[ "$NOMODE_STATUS" = "0" ] || fail "the refused run posted a commit status"
+! grep -q '^  verdict: ' "$WORK/nomode.out" || fail "the refused run still ran the review; the refusal must come before the cost"
+[ "$(find "$WORK/home-nomode" -name '*.verdict.json' 2>/dev/null | wc -l | tr -d ' ')" = "0" ] \
+  || fail "the refused run wrote a verdict record, which the loop gates on"
+ok "the refused run ran no review, posted nothing and wrote no verdict record"
+: > "$GH_LOG"
+run_reviewer "$WORK/both.out" both --post --dry-run
+RC_BOTH=$?
+[ "$RC_BOTH" = "2" ] && [ "$(grep -c "statuses/" "$GH_LOG" || true)" = "0" ] \
+  || fail "--post with --dry-run was not refused (rc=$RC_BOTH): $(tail -4 "$WORK/both.out")"
+ok "--post with --dry-run is refused as a contradiction, nothing posted"
+: > "$GH_LOG"
+
+# ===========================================================================
 # CASE 1 -- the reproducer: default (no --post) invocation
 # ===========================================================================
-run_reviewer "$WORK/dry.out" dry
+run_reviewer "$WORK/dry.out" dry --dry-run  # NEGATIVE SELF-TEST (ASK-4419): an explicit dry run still posts nothing
 RC_DRY=$?
 
 VERDICT_LINE="$(grep -m1 '^  verdict: ' "$WORK/dry.out" || true)"
@@ -168,10 +201,9 @@ case "$DONE_LINE" in
   *) fail "the run's closing line carries no '$MARKER' marker: '${DONE_LINE:-<none>}'. A reader who skims to the last line still sees a clean finish." ;;
 esac
 
-# Exit code stays 0. This is a REPORTING defect; a non-zero exit would break
-# every caller that legitimately surveys without posting.
+# --dry-run exits 0: a caller that means to survey says so (ASK-4419).
 [ "$RC_DRY" = "0" ] \
-  || fail "the no-post run exited $RC_DRY; a dry run must still exit 0 (callers survey with it)"
+  || fail "the --dry-run run exited $RC_DRY; an explicit dry run must still exit 0 (callers survey with it)"
 ok "the no-post run still exits 0"
 
 # ===========================================================================

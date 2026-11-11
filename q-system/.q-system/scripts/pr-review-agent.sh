@@ -80,9 +80,10 @@
 # finding. What the engine changes is exactly three things: which binary runs,
 # which status context it posts, and which directory its artifacts land in.
 #
-# Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
+# Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] (--post | --dry-run)
 #                            [--engine claude|codex] [--delta | --base <sha>]
 #         --post also comments the review on the PR and the Linear issue.
+#         --dry-run posts nothing. One of the two is REQUIRED (ASK-4419).
 #         --delta reviews only `git diff <last reviewed sha> <head>`, the sha
 #         read from this engine's verdict record; with no usable record it
 #         reads the whole PR (round 1). --base <sha> names the base directly;
@@ -192,7 +193,7 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # CODEX BY DEFAULT. Env-overridable so a codex outage long enough to matter is a
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
-PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
+PR=""; ISSUE=""; POST=0; DRY_RUN=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
 REVIEW_BASE_ARG=""; DELTA=0; BASE_FLAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -210,6 +211,7 @@ while [ $# -gt 0 ]; do
     # reviewed and got the verdict and the commit status.
     --repo)   shift; TARGET_REPO_ARG="${1:-}" ;;
     --post)   POST=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     -*) echo "unknown arg: $1" >&2; exit 1 ;;
     *) PR="$1" ;;
   esac
@@ -262,7 +264,26 @@ GH_R_PROMPT=""
 # form, which is what every pre-ASK-738 caller and fixture already relies on.
 STATUS_REPO_PATH="{owner}/{repo}"
 [ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
-[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex] [--delta | --base <sha>]" >&2; exit 1; }
+[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] (--post | --dry-run) [--engine claude|codex] [--delta | --base <sha>]" >&2; exit 1; }
+
+# NO SILENT MODE (ASK-4419). The default used to be a dry run. Measured
+# 2026-11-10 on PR #731: a lane ran this without --post, the review took 10
+# minutes and approved, kipi/reviewer-approved stayed red, the PR could not
+# merge, and the lane was at its call ceiling so nothing re-ran it. ASK-758's
+# DRY RUN label did not save the round: it is read AFTER the cost is paid.
+# Every production caller (kipi-dispatch.sh, converge.sh, linear-worker.sh,
+# hosted-review-gate.sh, lessons-daily.sh) passes --post, so the only callers
+# a refusal reaches are hand runs, and they get it before the review starts.
+# Not "post by default": a reviewer that posts whenever anyone invokes it is
+# the accident ASK-758 kept out.
+if [ "$POST" = "1" ] && [ "$DRY_RUN" = "1" ]; then
+  echo "pr-review-agent.sh: --post and --dry-run contradict; pass one. Refused before the review ran." >&2
+  exit 2
+fi
+if [ "$POST" != "1" ] && [ "$DRY_RUN" != "1" ]; then
+  echo "pr-review-agent.sh: no mode given. Pass --post to post the verdict, the PR comment and kipi/reviewer-approved (the merge gate reads it), or --dry-run to post nothing. Refused before the review ran, so no round was spent." >&2
+  exit 2
+fi
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
 # the whole reason this is a flag and not a second script.

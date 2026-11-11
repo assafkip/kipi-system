@@ -169,7 +169,7 @@ run_agent() {   # run_agent <fixture> <pr-number>
       PATH="$BIN:$PATH" \
       REVIEW_FIXTURE="$fixture" \
       KIPI_NOTIFY="/usr/bin/true" \
-      bash "$AGENT" "$pr" --issue "ASK-TEST" >"$WORK/out-$pr.log" 2>&1
+      bash "$AGENT" "$pr" --issue "ASK-TEST" --dry-run >"$WORK/out-$pr.log" 2>&1
   echo "$home/.config/kipi/pr-reviews/pr-$pr.verdict.json"
 }
 
@@ -186,7 +186,7 @@ field() {   # field <record> <key>
 printf '%s\n' "You've hit your weekly limit · resets Sep 22 at 2pm (America/Los_Angeles)" > "$WORK/outage.md"
 mkdir -p "$WORK/home-outage"
 env HOME="$WORK/home-outage" PATH="$BIN:$PATH" REVIEW_FIXTURE="$WORK/outage.md" KIPI_NOTIFY="/usr/bin/true" \
-  bash "$AGENT" 90 --issue "ASK-TEST" >"$WORK/out-90.log" 2>&1
+  bash "$AGENT" 90 --issue "ASK-TEST" --dry-run >"$WORK/out-90.log" 2>&1
 OUTAGE_RC=$?
 if [ "$OUTAGE_RC" = "9" ]; then
   ok "a reviewer whose runner refused exits 9, the machine's code"

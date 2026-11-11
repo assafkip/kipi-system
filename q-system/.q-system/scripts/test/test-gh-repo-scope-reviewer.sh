@@ -138,7 +138,7 @@ ok "negative self-test: PR #42 resolves to two different heads in the two repos"
 ( cd "$WORK/skel" \
   && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="/usr/bin/true" \
      KIPI_TARGET_REPO="$WORK/target" \
-     bash "$AGENT" 42 --issue ASK-AAA --engine codex ) >"$WORK/run.out" 2>&1
+     bash "$AGENT" 42 --issue ASK-AAA --engine codex --dry-run ) >"$WORK/run.out" 2>&1
 RC=$?
 
 echo "  [ctx] cwd during the run: $WORK/skel (slug $HOME_SLUG, head ${SHA_HOME:0:8})"
@@ -212,7 +212,7 @@ ok "no gh call in the reviewer fell back to cwd"
 ( cd "$WORK/skel" \
   && env -u KIPI_TARGET_REPO \
      HOME="$WORK/home2" KIPI_STATE_DIR="$WORK/state2" KIPI_NOTIFY="/usr/bin/true" \
-     bash "$AGENT" 42 --issue ASK-AAA --engine codex --repo "$WORK/target" \
+     bash "$AGENT" 42 --issue ASK-AAA --engine codex --dry-run --repo "$WORK/target" \
 ) >"$WORK/run-flag.out" 2>&1
 RC2=$?
 echo "  [ctx] --repo flag run (KIPI_TARGET_REPO unset), rc=$RC2"

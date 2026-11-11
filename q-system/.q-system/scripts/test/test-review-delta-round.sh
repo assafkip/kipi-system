@@ -168,7 +168,7 @@ ok "round 2 receipt records head $SHA2 and review_base $SHA1"
 sleep 1
 
 # --- default, no new flag: still the whole PR, prompt unchanged ------------------
-run_reviewer "$WORK/r3.out"
+run_reviewer "$WORK/r3.out" --dry-run
 [ "$(calls)" = "3" ] || fail "the default run did not reach the stub"
 grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-3.diff" || fail "the default run (no flag) no longer reads the whole PR"
 grep -q 'THIS IS A DELTA ROUND' "$SEEN/call-3.prompt" && fail "the default run's prompt changed"
@@ -210,14 +210,14 @@ echo "$SHA2" > "$WORK/head"
 
 # --- --base with no value: refuse, never a silent full review ---------------------
 before="$(calls)"
-run_reviewer "$WORK/r4c.out" --base
+run_reviewer "$WORK/r4c.out" --dry-run --base
 [ "$(calls)" = "$before" ] || fail "--base with no value still called the model"
 [ "$(cat "$WORK/r4c.out.rc")" != "0" ] || fail "--base with no value exited 0"
 ok "--base with no value: refused, no model call"
 
 # --- an explicit --base that is not a commit: refuse ------------------------------
 before="$(calls)"
-run_reviewer "$WORK/r5.out" --base deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+run_reviewer "$WORK/r5.out" --dry-run --base deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 [ "$(calls)" = "$before" ] || fail "an unknown --base still called the model"
 [ "$(cat "$WORK/r5.out.rc")" != "0" ] || fail "an unknown --base exited 0"
 ok "--base that is not a commit: refused, no model call"
@@ -227,7 +227,7 @@ G -C "$WORK/skel" checkout -q -b side main
 echo "SIDE" > "$WORK/skel/SIDE.txt"; G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m side
 SIDE="$(git -C "$WORK/skel" rev-parse HEAD)"
 G -C "$WORK/skel" checkout -q "$SHA2"
-run_reviewer "$WORK/r6.out" --base "$SIDE"
+run_reviewer "$WORK/r6.out" --dry-run --base "$SIDE"
 n="$(calls)"
 grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" \
   || fail "a non-ancestor base did not fall back to the whole PR:
@@ -245,7 +245,7 @@ PY
 echo "ROUND3_LINE" >> "$WORK/skel/FILE.txt"
 G -C "$WORK/skel" commit -q -am "round 3"
 echo "$(git -C "$WORK/skel" rev-parse HEAD)" > "$WORK/head"
-run_reviewer "$WORK/r7.out" --delta
+run_reviewer "$WORK/r7.out" --dry-run --delta
 n="$(calls)"
 grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" \
   || fail "an unusable receipt was used as a delta base; nobody reviewed that sha:

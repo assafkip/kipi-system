@@ -110,7 +110,7 @@ run_review() {  # run_review <repo-path> <outfile>
   ( cd "$WORK/skel" \
     && HOME="$WORK/home" KIPI_STATE_DIR="$WORK/state" KIPI_NOTIFY="/usr/bin/true" \
        KIPI_TARGET_REPO="$1" \
-       bash "$AGENT" 42 --issue ASK-AAA --engine codex ) >"$2" 2>&1
+       bash "$AGENT" 42 --issue ASK-AAA --engine codex --dry-run ) >"$2" 2>&1
 }
 
 # ===========================================================================
