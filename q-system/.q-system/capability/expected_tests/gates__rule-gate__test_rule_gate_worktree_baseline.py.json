@@ -1,0 +1,5 @@
+{
+ "path": "gates/rule-gate/test_rule_gate_worktree_baseline.py",
+ "runner": "python3",
+ "timeout_s": 120
+}

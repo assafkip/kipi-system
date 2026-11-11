@@ -1,0 +1,4 @@
+{
+ "prefix": "gates/",
+ "reason": "gates/ holds the reviewed source of machine-global hooks that run from ~/.config/kipi/gate-locked, installed by a founder-run installer (ASK-4283) and never shipped to instances by the fleet updater. It is not a skeleton script tree, so discovery is not widened to it; each test in it is declared by hand, and test_install_rule_gate.py pins the installer to the source hash."
+}

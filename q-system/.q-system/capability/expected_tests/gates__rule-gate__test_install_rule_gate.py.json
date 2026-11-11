@@ -1,0 +1,5 @@
+{
+ "path": "gates/rule-gate/test_install_rule_gate.py",
+ "runner": "python3",
+ "timeout_s": 300
+}
