@@ -73,6 +73,18 @@ During `kipi update`, `settings.json` is rebuilt from `settings-template.json` w
 
 After sync, subtree instances get path fixups (`/q-system/hooks/` -> `/q-system/q-system/hooks/`).
 
+## Instance post-sync step
+
+An instance may declare ONE command in `.kipi-post-sync` at its repo root
+(one command line; blank lines and `#` lines are ignored). `kipi-update.sh`
+runs it in the instance after the rsyncs and before it stages and commits the
+config half, for an instance whose own commit-time check needs a derived
+artifact refreshed first. A non-zero exit, a missing command or a file with
+more than one command line abandons that instance through the normal rollback,
+prints the step's own output and names the step in the summary. `--dry-run`
+prints the command and does not run it. No file means no change. Test:
+`test-kipi-update-post-sync-step.sh`.
+
 ## Pushing Changes Back from an Instance
 
 If you improve an agent, script, or template inside an instance's `q-system/`:
