@@ -66,22 +66,36 @@ _DEFANG = frozenset({".", ":", "@", "://", "dot", "at"})
 # so a near-miss of each still blocks (pinned in test_placeholder_gate_citations.py):
 #   a number bracket, `[1]` `[1, 2]` `[3-5]`: digits only, never a template slot.
 #   an editorial word, `[sic]` `[REDACTED]`: the whole bracket, exact, any case.
-#   a link definition, `[1]: https://...` at a line start: a URL must follow the colon.
-#   a reference link, `[label][1]`: the label bracket is directly followed by a bracket.
+#   a link definition, `[1]: https://...` at a line start: a URL must follow the colon, and the
+#     LABEL must be one plain token (digits or a single word). `[SOURCE 1]: https://...` has a
+#     space, reads as a template slot, and blocks (review round 1 on the carry PR, finding 2).
+#     Only the label bracket is exempt, never a bracket inside the URL tail.
+#   a reference link, `[label][1]`: exempt ONLY when the second bracket names a link definition
+#     in the same text. The first cut exempted any bracket after any token, so `[TBD][3]` and
+#     `[CLIENT NAME][REDACTED]` passed and a half-filled figure with its footnote attached went
+#     out (round 1 finding 1). `[label][1]` and `[TBD][3]` are the same characters, so the text's
+#     own definition is the only thing that tells them apart; no definition, it blocks.
 _NUMBER = re.compile(r"\[\d{1,3}(?:\s*[,\-\u2013]\s*\d{1,3})*\]")
 _EDITORIAL = frozenset({"sic", "redacted"})
-_LINK_DEF = re.compile(r"^[ \t]{0,3}\[[^\]\n]{1,60}\]:[ \t]*(?:https?://|/|\./)\S+", re.M)
+_LINK_DEF = re.compile(
+    r"^[ \t]{0,3}(\[(?P<ref>\d{1,3}|[A-Za-z0-9_-]{1,30})\]):[ \t]*(?:https?://|/|\./)\S+", re.M)
+_REF_USE = re.compile(r"\[(\d{1,3}|[A-Za-z0-9_-]{1,30})\]")
 
 
 def _is_citation(text, match):
     inner = match.group(0)[1:-1]
     if _NUMBER.fullmatch(match.group(0)) or inner.strip().lower() in _EDITORIAL:
         return True
-    if match.end() < len(text) and text[match.end()] == "[":
+    defined = {d.group("ref").lower() for d in _LINK_DEF.finditer(text)}
+    ref = _REF_USE.match(text, match.end())
+    if ref and ref.group(1).lower() in defined:
+        return True
+    # The ref bracket itself, `[Kroll]` in `[the report][Kroll]`: defined, and directly after a label.
+    if match.start() > 0 and text[match.start() - 1] == "]" and inner.lower() in defined:
         return True
     line_start = text.rfind("\n", 0, match.start()) + 1
     link = _LINK_DEF.match(text, line_start)
-    return bool(link) and link.start() <= match.start() < link.end()
+    return bool(link) and match.start() == link.start(1)
 
 
 def _is_defang(text, match):
