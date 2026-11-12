@@ -159,6 +159,15 @@ def test_long_git_log_is_trimmed_head_and_tail_kept(git_log_out):
     assert len(out["stdout"]) < len(git_log_out) * 0.8
 
 
+def test_cr_separated_records_are_not_collapsed_to_one_row():
+    # 801 bare-CR rows (an Excel-for-Mac CSV) once came back as 1 row with a footer
+    # that claimed nothing was dropped (PR 764 round 2).
+    rows = [f"{i},client-{i},{i * 137}" for i in range(801)]
+    out = trimmed(run_hook(bash_payload("cat export.csv", "\r".join(rows))))["stdout"]
+    assert "0,client-0,0" in out and "800,client-800,109600" in out
+    assert "lines omitted" in out and "showing 1 of 1" not in out
+
+
 def test_head_30_lines_are_kept():
     text = "\n".join(f"headline number {i} unique {i * 7919}" for i in range(400))
     out = trimmed(run_hook(bash_payload("make", text)))
@@ -295,6 +304,8 @@ MUTANTS = [
     ("hunk_ansi", 'HUNK_RE.search(ANSI_RE.sub("", out)) or HUNK_RE.search(ANSI_RE.sub("", err))',
      "HUNK_RE.search(out) or HUNK_RE.search(err)", "test_colored_hunk_header_untouched"),
     ("prune", "    prune_old(folder)\n", "", "test_old_spill_files_pruned_fresh_kept"),
+    ("cr_records", 'if "\\r" in text and "\\n" not in text.rstrip("\\r"):', "if False:",
+     "test_cr_separated_records_are_not_collapsed_to_one_row"),
     ("head", "HEAD_LINES = 30", "HEAD_LINES = 0", "test_head_30_lines_are_kept"),
     ("kill_switch", "if os.environ.get(\"KIPI_OUTPUT_TRIM\") == \"0\":\n        return None",
      "if False:\n        return None", "test_kill_switch"),

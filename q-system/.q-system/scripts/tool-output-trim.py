@@ -80,6 +80,11 @@ JEST_END_RE = re.compile(r"^(?:Test Suites|Tests):")
 def clean_lines(text: str) -> list[str]:
     """Strip ANSI and control chars; keep the last redraw of a carriage-return line."""
     text = CONTROL_RE.sub("", ANSI_RE.sub("", text.replace("\r\n", "\n")))
+    # Why: a bare-CR file (Excel-for-Mac CSV) has no LF at all, so the redraw rule
+    # below kept 1 of 801 rows and the footer said nothing was dropped (PR 764
+    # round 2, major). Output with CRs and no LF is records, not a redraw.
+    if "\r" in text and "\n" not in text.rstrip("\r"):
+        text = text.replace("\r", "\n")
     lines = []
     for raw in text.split("\n"):
         parts = [p for p in raw.split("\r") if p.strip()]
