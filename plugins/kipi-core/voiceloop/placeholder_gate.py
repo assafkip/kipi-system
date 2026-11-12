@@ -49,6 +49,25 @@ _SQUARE = re.compile(r"\[[^\]\n]{1,60}\]")
 _CURLY = re.compile(r"\{\{[^}\n]{1,60}\}\}")
 _MARKDOWN_LINK = re.compile(r"\[[^\]\n]{1,60}\]\(")
 
+# THE IOC DEFANG (ASK-4651, 2026-11-12). Run on his own long-form writing for the first
+# time, this gate refused a published article on `example[.]com`: the standard
+# threat-intel way to write an indicator so it cannot be clicked. The 81-text control in
+# the docstring was all social posts, a genre that never defangs, so it could not see
+# this. The set is the bracket forms the common defang tools write (dot, colon, at,
+# scheme separator, and the word forms); `hxxp` has no bracket and never matched.
+# A defang sits INSIDE an indicator, so it is exempt only with non-space on both sides.
+# `[at]` between spaces still reads as a blank, and that case is pinned by a test.
+_DEFANG = frozenset({".", ":", "@", "://", "dot", "at"})
+
+
+def _is_defang(text, match):
+    if match.group(0)[1:-1].lower() not in _DEFANG:
+        return False
+    start, end = match.start(), match.end()
+    if start == 0 or end >= len(text):
+        return False
+    return not text[start - 1].isspace() and not text[end].isspace()
+
 
 def tokens(text):
     """Every unfilled template token in the text, in order, deduplicated."""
@@ -58,6 +77,8 @@ def tokens(text):
     for match in _SQUARE.finditer(text):
         # A markdown link's bracket is a label, not a blank. See the docstring.
         if _MARKDOWN_LINK.match(text, match.start()):
+            continue
+        if _is_defang(text, match):
             continue
         if match.group(0) not in found:
             found.append(match.group(0))
