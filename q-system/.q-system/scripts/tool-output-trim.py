@@ -54,6 +54,7 @@ TAIL_LINES = 40
 CONTEXT_LINES = 2
 FOLD_IDENTICAL = 3
 
+SPILL_NAME_RE = re.compile(r"-\d+\.txt$")
 ANSI_RE = re.compile(
     r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
 )
@@ -226,7 +227,7 @@ def prune_old(folder: Path) -> None:
     try:
         cutoff = time.time() - RETENTION_DAYS * 86400
         for f in folder.glob("*-*.txt"):
-            if f.is_file() and f.stat().st_mtime < cutoff:
+            if SPILL_NAME_RE.search(f.name) and f.is_file() and f.stat().st_mtime < cutoff:
                 f.unlink()
     except OSError:
         pass
@@ -286,6 +287,12 @@ def process(payload: dict) -> dict | None:
 
     new_out, out_lines, out_kept = trim_stream(out)
     new_err, err_lines, err_kept = trim_stream(err)
+    # Why: a saving that comes from CLEANING (CR collapse, ANSI strip) and not from
+    # dropping lines cannot be described by the "showing k of t" footer, and it
+    # produced "showing 1 of 1" over 800 lost CSV rows twice (PR 764 rounds 2, 3).
+    # Nothing selected away means no trim, whatever the char count says.
+    if out_kept >= out_lines and err_kept >= err_lines:
+        return None
     footer_stub = "[trim: showing {k} of {t} lines; full output ({c} chars) is in {p}]"
     # Size the gate on a footer with a realistic path, then write the file only
     # once the trim is known to pay, so a no-op never litters the state dir.

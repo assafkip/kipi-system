@@ -168,6 +168,22 @@ def test_cr_separated_records_are_not_collapsed_to_one_row():
     assert "lines omitted" in out and "showing 1 of 1" not in out
 
 
+def test_mixed_cr_and_lf_is_untouched_not_collapsed():
+    # One stray LF turned the zero-LF fix off and the 1-of-801 collapse came back (round 3).
+    rows = "\r".join(f"{i},client-{i},{i * 137}" for i in range(801)) + "\ndone\n"
+    r = run_hook(bash_payload("cat mac.csv; echo done", rows))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_prune_leaves_foreign_files(_state):
+    _state.mkdir(parents=True)
+    foreign = _state / "my-notes.txt"
+    foreign.write_text("keep")
+    os.utime(foreign, (1, 1))
+    trimmed(run_hook(bash_payload("make", "\n".join(f"headline {i} unique {i * 7919}" for i in range(400)))))
+    assert foreign.exists()
+
+
 def test_head_30_lines_are_kept():
     text = "\n".join(f"headline number {i} unique {i * 7919}" for i in range(400))
     out = trimmed(run_hook(bash_payload("make", text)))
@@ -242,8 +258,10 @@ def test_old_spill_files_pruned_fresh_kept(_state):
 
 
 def test_trim_under_20_percent_saving_is_skipped():
-    # 60 distinct long lines: under head+tail, nothing omitted, footer only adds bytes.
-    text = "\n".join(f"{i:03d} " + "q" * 40 + str(i * 7919) for i in range(60))
+    # 90 distinct long lines: 20 are omitted (head 30, tail 40) but the saving stays under 20%.
+    # (With nothing omitted the no-selection guard refuses first, which would
+    # shadow the saving gate and let its mutant survive.)
+    text = "\n".join(f"{i:03d} " + "q" * 40 + str(i * 7919) for i in range(90))
     assert len(text) > 2000
     r = run_hook(bash_payload("cmd", text))
     assert r.returncode == 0 and r.stdout == ""
@@ -306,6 +324,9 @@ MUTANTS = [
     ("prune", "    prune_old(folder)\n", "", "test_old_spill_files_pruned_fresh_kept"),
     ("cr_records", 'if "\\r" in text and "\\n" not in text.rstrip("\\r"):', "if False:",
      "test_cr_separated_records_are_not_collapsed_to_one_row"),
+    ("no_selection_guard", "if out_kept >= out_lines and err_kept >= err_lines:", "if False:",
+     "test_mixed_cr_and_lf_is_untouched_not_collapsed"),
+    ("prune_scope", "SPILL_NAME_RE.search(f.name) and ", "", "test_prune_leaves_foreign_files"),
     ("head", "HEAD_LINES = 30", "HEAD_LINES = 0", "test_head_30_lines_are_kept"),
     ("kill_switch", "if os.environ.get(\"KIPI_OUTPUT_TRIM\") == \"0\":\n        return None",
      "if False:\n        return None", "test_kill_switch"),
