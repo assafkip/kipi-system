@@ -184,8 +184,78 @@ def names(path: str) -> list[str]:
     return out
 
 
+def mention_matcher(path: str):
+    """text -> does it name `path`. Built ONCE per path (ASK-4648 2c): plan() asks the
+    same path of every declared test, and rebuilding names() and the pattern per test
+    was 581,765 builds on a large instance repo.
+
+    SUBSTRING FIRST. The regex needs the literal name, so a name that is not a
+    substring cannot match: `in` runs at memchr speed and leaves ~2,300 real searches
+    of 581,765. Measured 2026-11-12 on a large instance repo: 1750 paths x 379 tests
+    over 6.4 MB of test text, 212 of 229 seconds in the regex; reading every file took
+    0.9. The answer is the same for every input; only the cost moved."""
+    pats = [(n, re.compile(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-]|\.\w)")) for n in names(path)]
+    return lambda text: any(n in text and rx.search(text) for n, rx in pats)
+
+
+_RUN_RE = re.compile(r"[\w.-]+")
+
+
+def mention_index(texts: dict[str, str]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    r"""({name: texts where `mentions` is true}, {name: texts where `mentions_dir` is
+    true}) for every name made only of [\w.-], built in ONE pass per text.
+
+    Why an index and not a faster scan (ASK-4648 2c): even the memchr prefilter was
+    ~3s of the 4s left on a large instance repo, because it scans 6.4 MB per name. The
+    `mentions` pattern pins a name between (?<![\w.-]) and (?![\w-]|\.\w), so a hit
+    always STARTS a maximal run of [\w.-] characters. Then, with R that run:
+      * R == name                               (next char is outside the class), or
+      * R[len(name)] == "." and the char after it is not \w  (R ends, or ".", or "-").
+    `mentions_dir` ends on (?![\w.-]), so it is R == name alone.
+    A name holding a character outside [\w.-] has no run to look up; callers keep the
+    regex for those. test_change_size.py pins this index against the regexes."""
+    named, dirs = {}, {}
+    for path, text in texts.items():
+        for run in set(_RUN_RE.findall(text)):
+            named.setdefault(run, set()).add(path)
+            dirs.setdefault(run, set()).add(path)
+            for k in range(1, len(run)):
+                if run[k] == "." and (k + 1 == len(run) or run[k + 1] in ".-"):
+                    named.setdefault(run[:k], set()).add(path)
+    return named, dirs
+
+
+def _clean(name: str) -> bool:
+    return _RUN_RE.fullmatch(name) is not None
+
+
+def tests_mentioning(path: str, declared: dict[str, str], index) -> set[str]:
+    """Same set as {t for t, text in declared.items() if mentions(text, path)}."""
+    out, slow = set(), []
+    for n in names(path):
+        if _clean(n):
+            out |= index[0].get(n, set())
+        else:
+            slow.append(n)
+    if slow:
+        m = mention_matcher(path)
+        out |= {t for t, text in declared.items() if m(text)}
+    return out
+
+
+def tests_mentioning_dirs(dirs: list[str], declared: dict[str, str], index) -> set[str]:
+    """Same set as {t for t, text in declared.items() if any(mentions_dir(text, d) for d in dirs)}."""
+    out = set()
+    for d in dirs:
+        if _clean(d):
+            out |= index[1].get(d, set())
+        else:
+            out |= {t for t, text in declared.items() if mentions_dir(text, d)}
+    return out
+
+
 def mentions(text: str, path: str) -> bool:
-    return any(re.search(r"(?<![\w.-])" + re.escape(n) + r"(?![\w-]|\.\w)", text) for n in names(path))
+    return mention_matcher(path)(text)
 
 
 # Directory names too generic to identify an owner. `fixtures/` names every
@@ -324,7 +394,10 @@ def owning_dirs(path: str) -> list[str]:
 
 
 def mentions_dir(text: str, name: str) -> bool:
-    return re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text) is not None
+    # Substring first, same reason as mention_matcher (ASK-4648 2c): 21,179 of these
+    # searches cost 4.3s on a large instance repo, and a name that is not in the text
+    # cannot match the regex.
+    return name in text and re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w.-])", text) is not None
 
 
 def executable_text(text: str) -> str:
@@ -455,6 +528,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     always = {t for t in scanners if t not in declared_covers}
     live = name_index({c: executable_text(text) for c, text in code_texts.items()}) if code_texts else ({}, {})
     test_index = name_index(declared) if declared else ({}, {})
+    mention_idx = mention_index(declared)
 
     # A DECLARED COVERAGE GLOB SELECTS (ASK-1918), and only for a test that
     # actually scans. `covers` may take a test OFF the always-run floor; it may
@@ -473,7 +547,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
     for path, _ in changed:
         if path in declared or path in (fragments or {}) or machinery_reason(path):
             continue        # handled above: a test runs itself, a fragment runs its test
-        direct = {t for t, text in declared.items() if mentions(text, path)}
+        direct = tests_mentioning(path, declared, mention_idx)
         # NO PATTERN PARSER HERE, ON PURPOSE. A test that ENUMERATES its inputs
         # never names them (codex, PR #377 round 1, major 2: test-install-jobs-
         # coverage.py globs `com.kipi.*.plist`). Round 1 answered that by reading
@@ -496,8 +570,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
             # file it matched `.claude/rules/x.md` against every test that says
             # "rules", which is most of them.
             if is_test_path(path):
-                direct |= {t for t, text in declared.items()
-                           if any(mentions_dir(text, d) for d in owning_dirs(path))}
+                direct |= tests_mentioning_dirs(owning_dirs(path), declared, mention_idx)
             # AND WHEN NOTHING NAMES IT, NOTHING EXTRA RUNS. Round 1 escalated to
             # the full suite here. Measured against the last 80 commits of main it
             # fired on 34, and what it fired on was mostly test files CI runs in
