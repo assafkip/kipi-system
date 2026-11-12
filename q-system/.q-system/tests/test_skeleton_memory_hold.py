@@ -64,6 +64,24 @@ class Hold(unittest.TestCase):
         self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
 
 
+class UntrackedLedger(unittest.TestCase):
+    """codex P2, PR #760: a new .prd-os file origin also adds blocks the fast-forward."""
+    NEW = ".prd-os/receipts/new.json"
+
+    def test_untracked_overlap_is_held_and_fast_forward_succeeds(self):
+        s = fixture()
+        d = os.path.dirname(s)
+        up = os.path.join(d, "w")
+        w(up, self.NEW, "origin\n"); g(up, "add", "-A"); g(up, "commit", "-qm", "add")
+        g(d, "-C", "o.git", "fetch", "-q", "../w", "main:main"); g(s, "fetch", "-q")
+        w(s, self.NEW, "local\n")
+        self.assertNotEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+        r = hold(s)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertEqual("local\n", open(r.stdout.split("-> ")[1].strip()).read())
+        self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+
+
 class CallSite(unittest.TestCase):
     def test_lessons_daily_calls_the_hold_before_the_fast_forward_and_notifies(self):
         sh = open(os.path.join(os.path.dirname(HOLD), "lessons-daily.sh")).read()

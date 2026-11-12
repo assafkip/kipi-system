@@ -32,7 +32,10 @@ def git(repo, *a):
 
 
 def overlap(repo, upstream):
-    dirty = {l[3:] for l in git(repo, "status", "--porcelain", "--untracked-files=no",
+    # Untracked too (codex P2, PR #760): auto-commit now leaves a NEW .prd-os file
+    # uncommitted, and `merge --ff-only` refuses to overwrite an untracked path
+    # that origin also adds, exactly as it refuses a modified tracked one.
+    dirty = {l[3:] for l in git(repo, "status", "--porcelain", "--untracked-files=all",
                                 "--", *PREFIXES).stdout.splitlines()}
     moved = set(git(repo, "diff", "--name-only", "HEAD", upstream, "--", *PREFIXES).stdout.split())
     return sorted(dirty & moved)
@@ -57,7 +60,9 @@ def main(argv=None):
             print(f"hold FAILED for {p}: {e}")
             rc = 1
             continue
-        if git(a.repo, "checkout", "HEAD", "--", p).returncode != 0:
+        if git(a.repo, "cat-file", "-e", "HEAD:" + p).returncode != 0:
+            os.remove(os.path.join(a.repo, p))  # untracked: the copy above is the keeper
+        elif git(a.repo, "checkout", "HEAD", "--", p).returncode != 0:
             print(f"hold FAILED to restore {p}; copy at {os.path.join(dest, p)}")
             rc = 1
             continue
