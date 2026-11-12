@@ -36,7 +36,7 @@ EXEMPT = [
     ("reference link definition", "Sources\n\n[1]: https://example.com/report\n"),
     ("named reference definition", "[kroll]: https://example.com/kroll-2023\n"),
     ("reference link use", "See the [vendor writeup][1] for the full timeline.\n\n[1]: https://example.com/w\n"),
-    ("reference link use, named ref", "See [the report][Kroll].\n\n[kroll]: https://example.com/k\n"),
+    ("link definition with a prose label", "[vendor writeup]: https://example.com/w\n"),
     ("sic in a quote", 'He wrote "we recieved [sic] the files" in the ticket.'),
     ("sic upper", 'The note said "teh [SIC] logs".'),
     ("redacted", "The account belonged to [REDACTED], a reseller in the region."),
@@ -61,6 +61,11 @@ BLOCKS = [
     ("reference link use with no definition", "See the [vendor writeup][1] for the full timeline."),
     ("slot + ref defined elsewhere under another name", "Total [TBD][9].\n\n[1]: https://example.com/w\n"),
     ("link definition label is a slot", "Sources\n\n[SOURCE 1]: https://example.com/a\n"),
+    # Round 1 on the fix PR: a defined NAMED ref used to exempt both brackets.
+    ("slot + defined named ref", "Prepared for [CLIENT NAME][kroll].\n\n[kroll]: https://example.com/k\n"),
+    ("named reference use", "See [the report][kroll].\n\n[kroll]: https://example.com/k\n"),
+    ("slot-shaped label before a defined number", "Total [TBD][3].\n\n[3]: https://example.com/w\n"),
+    ("all-caps link definition label", "[SOURCE]: https://example.com/a\n"),
     ("slot inside a link definition url", "[1]: https://example.com/a[CLIENT]\n"),
 ]
 
