@@ -515,4 +515,5 @@ def test_every_layout_agents_cut_trees_in_is_a_root(layout):
     import fnmatch
     path = os.path.expanduser(layout)
     roots = [os.path.expanduser(r) for r in mod.load_config()["roots"]]
-    assert any(fnmatch.fnmatch(path, r) for r in roots)
+    # candidates() uses glob, where * never crosses a slash; fnmatch's does. Match depth too.
+    assert any(fnmatch.fnmatch(path, r) and path.count("/") == r.count("/") for r in roots)

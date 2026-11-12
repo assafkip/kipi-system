@@ -279,3 +279,38 @@ def test_tree_with_work_not_in_main_stays(two_commits):
     age(e, t)
     r = e.run("B", tree_listing(t), "--apply")
     assert t.exists() and "not contained" in r.stdout
+
+
+def test_trailing_slash_spelling_does_not_defeat_the_live_process_guard(two_commits):
+    e = two_commits
+    t = tree(e, "busy"); age(e, t)
+    proc = subprocess.Popen(["sleep", "30"], cwd=str(t))
+    try:
+        r = e.run("B", tree_listing(str(t) + "/"), "--apply")
+        assert t.exists() and "a process is working in it" in r.stdout
+    finally:
+        proc.kill()
+
+
+def test_dry_run_does_not_make_the_following_apply_read_the_tree_as_touched(two_commits):
+    e = two_commits
+    t = tree(e, "idle"); age(e, t)
+    e.run("B", tree_listing(t))
+    r = e.run("B", tree_listing(t), "--apply")
+    assert not t.exists(), r.stdout
+
+
+def test_a_flag_without_a_value_or_an_empty_number_is_refused_not_hung(env):
+    for extra in (["--chunk"], ["--min-age-hours", ""]):
+        r = env.run("A", listing("A", "x"), *extra)
+        assert r.returncode == 2
+
+
+def test_a_failed_ls_remote_is_a_failure_not_already_gone(env, tmp_path):
+    env.branch("live"); git(env.work, "merge", "-q", "--ff-only", "origin/live") if False else None
+    real = shutil.which("git")
+    stub = tmp_path / "bin" / "git"
+    stub.write_text(f'#!/bin/bash\ncase "$*" in *ls-remote*) exit 1;; esac\nexec {real} "$@"\n')
+    stub.chmod(0o755)
+    r = env.run("A", listing("A", "live"), "--apply")
+    assert r.returncode != 0 and "already gone" not in r.stdout and "live" in env.heads()

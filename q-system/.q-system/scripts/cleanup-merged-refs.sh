@@ -31,20 +31,20 @@ set -u
 LIST="" ; BATCH="" ; APPLY=0 ; REPO="" ; REMOTE="origin" ; MIN_AGE_H=24 ; CHUNK=25
 while [ $# -gt 0 ]; do
   case "$1" in
-    --batch) BATCH="${2:-}"; shift 2 ;;
+    --batch) [ $# -ge 2 ] || { echo "cleanup-merged-refs: --batch needs a value" >&2; exit 2; }; BATCH="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
-    --repo) REPO="${2:-}"; shift 2 ;;
-    --remote) REMOTE="${2:-}"; shift 2 ;;
-    --min-age-hours) MIN_AGE_H="${2:-}"; shift 2 ;;
-    --chunk) CHUNK="${2:-}"; shift 2 ;;
-    -h|--help) sed -n 2,31p "$0"; exit 0 ;;
+    --repo) [ $# -ge 2 ] || { echo "cleanup-merged-refs: --repo needs a value" >&2; exit 2; }; REPO="$2"; shift 2 ;;
+    --remote) [ $# -ge 2 ] || { echo "cleanup-merged-refs: --remote needs a value" >&2; exit 2; }; REMOTE="$2"; shift 2 ;;
+    --min-age-hours) [ $# -ge 2 ] || { echo "cleanup-merged-refs: --min-age-hours needs a value" >&2; exit 2; }; MIN_AGE_H="$2"; shift 2 ;;
+    --chunk) [ $# -ge 2 ] || { echo "cleanup-merged-refs: --chunk needs a value" >&2; exit 2; }; CHUNK="$2"; shift 2 ;;
+    -h|--help) sed -n 2,28p "$0"; exit 0 ;;
     -*) echo "cleanup-merged-refs: unknown flag $1" >&2; exit 2 ;;
     *) LIST="$1"; shift ;;
   esac
 done
 case "$BATCH" in A|D|B) ;; *) echo "cleanup-merged-refs: --batch must be A, D or B" >&2; exit 2 ;; esac
 [ -f "$LIST" ] || { echo "cleanup-merged-refs: list file not found: $LIST" >&2; exit 2; }
-case "$MIN_AGE_H$CHUNK" in *[!0-9]*) echo "cleanup-merged-refs: --min-age-hours and --chunk are whole numbers" >&2; exit 2 ;; esac
+for n in "$MIN_AGE_H" "$CHUNK"; do case "$n" in ""|*[!0-9]*) echo "cleanup-merged-refs: --min-age-hours and --chunk are whole numbers" >&2; exit 2 ;; esac; done
 [ "$CHUNK" -ge 1 ] || { echo "cleanup-merged-refs: --chunk must be at least 1" >&2; exit 2; }
 command -v jq >/dev/null || { echo "cleanup-merged-refs: jq is required" >&2; exit 2; }
 
@@ -84,18 +84,22 @@ if [ "$BATCH" = B ]; then
   MAINTIP="$(G rev-parse "refs/remotes/$REMOTE/main" 2>/dev/null)" || { echo "cleanup-merged-refs: no $REMOTE/main" >&2; exit 2; }
   while IFS= read -r path; do
     [ -n "$path" ] || continue
+    # A hand-written list can carry a trailing slash or a symlinked spelling; lsof reports
+    # the real path with none, so the process-census prefix compare needs the same form.
+    path="${path%/}"; [ -d "$path" ] && path="$(cd "$path" && pwd -P)"
     case "$path" in
       */.local/state/kipi/*|*/projects/kipi-scheduled|*/projects/kipi-scheduled/*) keep "$path" "pinned machine checkout, never removed"; continue ;;
     esac
     [ -f "$path/.git" ] || { keep "$path" "not a linked worktree (missing or primary checkout)"; continue; }
     gd="$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null)" || { keep "$path" "git cannot read it"; continue; }
-    # Read the mtimes BEFORE `git status`: status refreshes the index and would make every
-    # idle tree look touched a moment ago (the same trap worktree-reaper.py pins).
+    # Read the mtimes BEFORE `git status`, and run status with GIT_OPTIONAL_LOCKS=0: a plain
+    # status rewrites the index, so a DRY run would make the following --apply read every
+    # tree as touched a moment ago (review of #773, major 2).
     newest=0; for f in "$gd/HEAD" "$gd/index"; do [ -e "$f" ] && { m="$(perl -e 'print((stat $ARGV[0])[9])' "$f")"; [ "$m" -gt "$newest" ] && newest="$m"; }; done
     [ $((NOW - newest)) -ge "$MIN_AGE_S" ] || { keep "$path" "touched inside the last $MIN_AGE_H h"; continue; }
     main_repo="$(cd "$path" && cd "$(git rev-parse --git-common-dir)/.." && pwd)"
     git -C "$main_repo" worktree list --porcelain | awk -v p="$path" '$1=="worktree"{cur=$2} $1=="locked"&&cur==p{f=1} END{exit !f}' && { keep "$path" "locked"; continue; }
-    [ -z "$(git -C "$path" status --porcelain 2>/dev/null)" ] || { keep "$path" "has uncommitted or untracked files"; continue; }
+    [ -z "$(GIT_OPTIONAL_LOCKS=0 git -C "$path" status --porcelain 2>/dev/null)" ] || { keep "$path" "has uncommitted or untracked files"; continue; }
     head="$(git -C "$path" rev-parse HEAD)"
     [ "$head" != "$MAINTIP" ] || { keep "$path" "HEAD is the $REMOTE/main tip: a fresh or pinned tree" "$head"; continue; }
     git -C "$path" merge-base --is-ancestor "$head" "refs/remotes/$REMOTE/main" 2>/dev/null || { keep "$path" "HEAD not contained in $REMOTE/main" "$head"; continue; }
@@ -120,7 +124,8 @@ else
     [ -n "$ref" ] || continue
     name="${ref#"$REMOTE"/}"
     case "$name" in main|master|HEAD|release/*|backup/*) keep "$name" "protected name"; continue ;; esac
-    tip="$(G ls-remote --heads "$REMOTE" "refs/heads/$name" | awk 'NR==1{print $1}')"
+    lsr="$(G ls-remote --heads "$REMOTE" "refs/heads/$name")" || { COUNT_FAIL=$((COUNT_FAIL + 1)); echo "FAILED  $name  (ls-remote failed)"; rec "$name" failed "ls-remote failed"; continue; }
+    tip="$(printf '%s\n' "$lsr" | awk 'NR==1{print $1}')"
     [ -n "$tip" ] || { keep "$name" "already gone from $REMOTE"; continue; }
     if printf '%s' "$PRS" | jq -e --arg b "$name" 'any(.[]; .headRefName == $b and .state == "OPEN")' >/dev/null; then keep "$name" "head of an open PR" "$tip"; continue; fi
     G cat-file -e "$tip^{commit}" 2>/dev/null || G fetch -q "$REMOTE" "refs/heads/$name" 2>/dev/null
