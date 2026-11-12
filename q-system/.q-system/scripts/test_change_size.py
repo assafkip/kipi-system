@@ -11,6 +11,7 @@ whose removal nothing notices is decoration.
 """
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -780,3 +781,121 @@ def test_instance_mutants_are_killed(label, old, new, case, tmp_path):
     mutant = load(CS_SRC.replace(old, new, 1), "cs_inst_mutant", tmp_path / "m")
     with pytest.raises(AssertionError):
         case(mutant, tmp_path / "r")
+
+
+# ------------------------------------------------- speed without a changed verdict (ASK-4648 2c)
+# THE ORACLE IS A COPY OF THE ORIGINAL REGEX, NOT cs.mentions. mentions() now has a
+# substring prefilter and the index replaces it inside plan(); comparing the new code to
+# itself would pass whatever either did.
+import re as _re
+
+
+def _oracle_mentions(text, path):
+    p = Path(path)
+    ns = [p.name] + ([p.stem] if p.suffix == ".py" and len(p.stem) >= 5 else [])
+    return any(_re.search(r"(?<![\w.-])" + _re.escape(n) + r"(?![\w-]|\.\w)", text) for n in ns)
+
+
+def _oracle_dir(text, d):
+    return _re.search(r"(?<![\w.-])" + _re.escape(d) + r"(?![\w.-])", text) is not None
+
+
+# Each text is a spelling the pattern must call right: end of sentence, a longer name,
+# a path prefix, a dotted suffix, a hyphen on either side, a space inside a name.
+_SPELLINGS = ["see widget.py.", "widget.py.bak", "widget.py-x", "x-widget.py", "widget.pyc",
+              "(widget.py)", "a/widget.py", "widget.py", "widget.py.\nnext", "widget.py..",
+              "widget.py.-", "my widget.py", "widget", "import widget", "widget.helper",
+              "x.widget.py", "WIDGET.py", "widget_lib.py", "tests/", "fixtures/widget-case/x"]
+_NAMES = ["scripts/widget.py", "scripts/my widget.py", "a/widget", "a/widget.py.bak",
+          "a/widget-x.py", "scripts/widget_lib.py", "tests/widget-case/x.json", "x/widget.helper"]
+_DIRS = ["widget", "widget-case", "my widget", "tests", "widget.py"]
+
+
+def case_index_matches_the_regexes(cs):
+    declared = {f"t{i}.sh": text for i, text in enumerate(_SPELLINGS)}
+    idx = cs.mention_index(declared)
+    for path in _NAMES:
+        want = {t for t, x in declared.items() if _oracle_mentions(x, path)}
+        got = cs.tests_mentioning(path, declared, idx)
+        assert got == want, (path, sorted(got ^ want))
+    for d in _DIRS:
+        want = {t for t, x in declared.items() if _oracle_dir(x, d)}
+        got = cs.tests_mentioning_dirs([d], declared, idx)
+        assert got == want, (d, sorted(got ^ want))
+
+
+def test_the_name_index_gives_the_regexes_answer(cs):
+    case_index_matches_the_regexes(cs)
+
+
+def test_the_substring_prefilter_gives_the_regexes_answer(cs):
+    for path in _NAMES:
+        for text in _SPELLINGS:
+            assert cs.mentions(text, path) == _oracle_mentions(text, path), (path, text)
+    for d in _DIRS:
+        for text in _SPELLINGS:
+            assert cs.mentions_dir(text, d) == _oracle_dir(text, d), (d, text)
+
+
+def case_plan_uses_the_index_not_a_test_by_path_loop(cs):
+    # A count, not a clock: 40 tests x 30 changed files must cost no per-test matcher
+    # builds when every name is plain, which was 1,200 pattern builds before.
+    calls = []
+    real = cs.mention_matcher
+    cs.mention_matcher = lambda *a, **k: calls.append(a) or real(*a, **k)
+    declared = {f"q-system/.q-system/scripts/test/test-{i}.sh": f"echo case{i} lib{i}.sh" for i in range(40)}
+    changed = [(f"q-system/.q-system/scripts/lib{i}.sh", 1) for i in range(30)]
+    v = cs.plan(changed, declared, {p: "x" for p, _ in changed})
+    assert not calls, f"{len(calls)} per-path matcher builds"
+    assert len(v["selected_tests"]) == 30, v["selected_tests"]
+
+
+def test_plan_asks_no_per_test_question_for_a_plain_name(cs):
+    case_plan_uses_the_index_not_a_test_by_path_loop(cs)
+
+
+def _git_ok(root, *a):
+    r = subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def test_the_last_30_merged_ranges_classify_identically_to_origin_main(tmp_path):
+    """Old path vs new path over this repo's own history. The old file is read from
+    git into tmp for this run only; no second copy ships. SKIPS (not passes) when the
+    clone has no origin/main or no history: a shallow CI checkout cannot run it, and
+    the unit cases above still hold the decision points there. After this change
+    merges, origin/main IS the new code and this compares the file to itself; set
+    KIPI_PARITY_OLD_REF to a ref from before 2026-11-12 to rerun it for real."""
+    top = _git_ok(HERE, "rev-parse", "--show-toplevel")
+    root = Path(top.strip()) if top else None
+    ref = os.environ.get("KIPI_PARITY_OLD_REF", "origin/main")
+    rel = "q-system/.q-system/scripts/change-size.py"
+    old_src = root and _git_ok(root, "show", f"{ref}:{rel}")
+    if not old_src:
+        pytest.skip(f"no {ref}:{rel} in this clone")
+    commits = (_git_ok(root, "log", f"--first-parent", "-n", "30", "--format=%H", ref) or "").split()
+    commits = [c for c in commits if _git_ok(root, "rev-parse", "--verify", "-q", f"{c}~1")]
+    if len(commits) < 30:
+        pytest.skip(f"only {len(commits)} usable ranges in this clone")
+    old = load(old_src, "cs_old_from_git", tmp_path)
+    new = load(CS_SRC, "cs_new", tmp_path)
+    for c in commits:
+        a, b = old.plan_for_repo(root, f"{c}~1", c), new.plan_for_repo(root, f"{c}~1", c)
+        assert a == b, (c, {k: (a[k], b[k]) for k in a if a[k] != b.get(k)})
+
+
+SPEED_MUTANTS = [
+    ("the index reads a dotted suffix", 'if run[k] == "." and (k + 1 == len(run) or run[k + 1] in ".-"):', "if False:", case_index_matches_the_regexes),
+    ("a name outside the run class keeps the regex", "        if _clean(n):\n            out |= index[0]", "        if True:\n            out |= index[0]", case_index_matches_the_regexes),
+    ("a directory is a whole run", "            dirs.setdefault(run, set()).add(path)", "            pass", case_index_matches_the_regexes),
+    ("plan reads the index", "        direct = tests_mentioning(path, declared, mention_idx)", "        direct = set()", case_one_line),
+    ("plan does not rebuild per test", "        direct = tests_mentioning(path, declared, mention_idx)", "        direct = {t for t, x in declared.items() if mention_matcher(path)(x)}", case_plan_uses_the_index_not_a_test_by_path_loop),
+]
+
+
+@pytest.mark.parametrize("label,old,new,case", SPEED_MUTANTS, ids=[m[0] for m in SPEED_MUTANTS])
+def test_speed_mutants_are_killed(label, old, new, case, tmp_path):
+    assert CS_SRC.count(old) == 1, f"the mutant for '{label}' no longer matches exactly once"
+    mutant = load(CS_SRC.replace(old, new, 1), "cs_speed_mutant", tmp_path)
+    with pytest.raises(AssertionError):
+        case(mutant)
