@@ -719,7 +719,30 @@ def case_instance_synced_import_is_not_an_escalator(cs, tmp_path):
     assert v["tier"] == "S" and not v["full_suite"], v
 
 
-@pytest.mark.parametrize("case", [case_instance_synced_import_is_not_an_escalator, case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
+def case_instance_edit_of_a_shipped_plugin_is_not_counted(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"plugins/prd-os/scripts/x.py": "x = 1\n" * 200}), "main")
+    assert v["tier"] == "S" and v["app_lines"] == 0, v
+
+
+def case_instance_own_plugin_is_sized(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"plugins/memory-lifecycle/lib.py": "x = 1\n" * 200}), "main")
+    assert v["tier"] == "L" and v["app_lines"] == 200, v
+
+
+def case_instance_own_plugin_conftest_is_machinery(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"plugins/memory-lifecycle/conftest.py": "import pytest\n"}), "main")
+    assert v["full_suite"], v
+    v = cs.plan_for_repo(_repo(tmp_path / "s", False, {"plugins/kipi-core/conftest.py": "import pytest\n"}), "main")
+    assert not v["full_suite"], v
+
+
+def test_shipped_plugins_match_the_skeleton_plugins_dir(cs):
+    # The same enumeration kipi-update.sh managed_plugin_names() uses: plugins/*/ , dot dirs skipped.
+    root = HERE.parents[2] / "plugins"
+    assert tuple(sorted(p.name for p in root.glob("*/") if p.is_dir())) == tuple(sorted(cs.SHIPPED_PLUGINS))
+
+
+@pytest.mark.parametrize("case", [case_instance_edit_of_a_shipped_plugin_is_not_counted, case_instance_own_plugin_is_sized, case_instance_own_plugin_conftest_is_machinery, case_instance_synced_import_is_not_an_escalator, case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
                                   case_instance_own_lines_still_count, case_instance_synced_code_is_not_app_lines,
                                   case_instance_owned_subtree_stays_own])
 def test_instance_vs_skeleton(cs, tmp_path, case):
@@ -739,6 +762,9 @@ INST_MUTANTS = [
     ("imports of a synced file", "or not own(current):", ":", case_instance_synced_import_is_not_an_escalator),
     ("skeleton is read from the registry", '(root / "instance-registry.json").exists()', "False", case_skeleton_counts_synced_files),
     ("an instance-owned subtree stays own", "for o in INSTANCE_OWNED_SUBTREES)", "for o in ())", case_instance_owned_subtree_stays_own),
+    ("an own plugin is not synced", 'return path.split("/")[1] in SHIPPED_PLUGINS', "return True", case_instance_own_plugin_is_sized),
+    ("a shipped plugin is synced", 'return path.split("/")[1] in SHIPPED_PLUGINS', "return False", case_instance_edit_of_a_shipped_plugin_is_not_counted),
+    ("own plugin machinery fires", 'path.startswith("plugins/"):\n        return', 'path.startswith("plugins/"):\n        return True or', case_instance_own_plugin_conftest_is_machinery),
     ("only synced prefixes are synced", "    if not path.startswith(SYNCED_PREFIXES):\n        return False\n", "", case_instance_own_lines_still_count),
 ]
 

@@ -135,16 +135,27 @@ def is_code(path: str) -> bool:
 # prefixes arrived by sync: the skeleton wrote it, the next sync rewrites it, and
 # counting it as the instance's change made ktlyst product an L over a synced
 # conftest.py and brag an L over a synced capability fragment (ASK-4648, 2026-11-12).
-# `.claude/` is absent on purpose: the sync copies only its *.md there, not code.
+# `.claude/` is absent on purpose: the sync copies its *.md and settings.json, and
+# neither is code this classifier sizes.
 # A copy of kipi-update.sh's INSTANCE_OWNED_SUBTREES (the sync never touches these, so
 # they are the instance's own code); test_change_size.py parses the bash array and
 # fails on drift, the way test_instance_automation_guard.py does.
-SYNCED_PREFIXES = ("q-system/", "plugins/")
+SYNCED_PREFIXES = ("q-system/",)
+# plugins/ is NOT synced wholesale (ASK-4657, review of PR #761): kipi-update.sh
+# rsyncs only the directories managed_plugin_names() finds in the skeleton's plugins/,
+# so an instance's own plugin (consulting's plugins/memory-lifecycle) is its code and a
+# blanket prefix sized a real change as 0 lines. This script runs INSIDE the instance,
+# where the skeleton is absent and the sync writes no manifest, so the list ships WITH
+# the script and is as current as the last sync. test_change_size.py compares it to the
+# skeleton's plugins/*/ and fails on drift, so a new plugin cannot land unlisted.
+SHIPPED_PLUGINS = ("kipi-core", "kipi-design", "kipi-dsse", "kipi-notebooklm", "kipi-ops", "prd-os")
 INSTANCE_OWNED_SUBTREES = ("my-project", "canonical", "memory", "output", "research",
                            ".q-system/data", ".q-system/agent-pipeline/bus")
 
 
 def is_synced(path: str) -> bool:
+    if path.startswith("plugins/"):
+        return path.split("/")[1] in SHIPPED_PLUGINS
     if not path.startswith(SYNCED_PREFIXES):
         return False
     rest = path[len("q-system/"):] if path.startswith("q-system/") else ""
