@@ -168,3 +168,33 @@ def multi_pr_deliverables(deliverables: list[str]) -> list[str]:
     """Deliverables that each name a PR or branch. Two or more is two PRs."""
     named = [d for d in deliverables if _DELIVERABLE_PR_RE.search(d)]
     return named if len(named) >= 2 else []
+
+
+# why: ASK-4649. A long brief, or one with no stated limit on the final report,
+# costs tokens on every turn of the agent and again in the parent that reads
+# the report (one measured build: 118 agents, median 275k tokens per request;
+# a pilot with a short brief ran at 108k). Measured on the only brief set the
+# guard may read, 105 distinct Agent briefs from one chief session: non-blank
+# lines p50 14, p90 26, p95 29, max 67; words p50 339, p90 710, p95 848, max
+# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. One session is not
+# a fair fleet sample, so the check returns a message and the caller WARNS.
+# A missing-report-limit warning was tried and cut: it fired on 91 of 105
+# briefs (87%), and a warning on nearly every launch teaches the model to
+# ignore the channel (coordinator ruling, PR #769).
+BRIEF_MAX_LINES = 40
+BRIEF_MAX_WORDS = 1000
+
+def brief_length_reason(text: str) -> str:
+    """Why `text` is too long for a brief. Empty string means within the caps."""
+    if not text:
+        return ""
+    lines = sum(1 for ln in text.splitlines() if ln.strip())
+    words = len(text.split())
+    if lines > BRIEF_MAX_LINES or words > BRIEF_MAX_WORDS:
+        return (
+            f"the brief is {lines} non-blank lines and {words} words "
+            f"(caps: {BRIEF_MAX_LINES} lines, {BRIEF_MAX_WORDS} words). Every "
+            "turn of the agent re-reads it. Point at files instead of pasting "
+            "their text."
+        )
+    return ""

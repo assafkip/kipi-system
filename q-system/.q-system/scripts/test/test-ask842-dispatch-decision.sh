@@ -56,7 +56,9 @@ for ROW in gtm-partner reddit-build-radar; do
   OUT="$(REG="$REGISTRY" ROW="$ROW" python3 - <<'PY' 2>&1
 import json, os
 reg, want = os.environ["REG"], os.environ["ROW"]
-rows = [e for e in json.load(open(reg)).get("instances", []) if e.get("name") == want]
+# ASK-4650: a deleted repo row moves to eliminated with its dispatch record intact, so read either collection.
+_d = json.load(open(reg))
+rows = [e for e in _d.get("instances", []) + _d.get("eliminated", []) if e.get("name") == want]
 if len(rows) != 1:
     print("ROWCOUNT:%d" % len(rows)); raise SystemExit(0)
 d = rows[0].get("dispatch")

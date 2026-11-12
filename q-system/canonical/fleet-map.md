@@ -88,12 +88,12 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 ## 4. GTM — owned by **Cole**
 | Project | What it is |
 |---|---|
-| `cole-gtm` | **The GTM home + Cole persona repo.** Cole Mercer (cole@ktlystlabs.com) + `gtm/` pipeline (ICP, positioning, campaigns, a prospect deal); the 9 below cascade under `cole-gtm/projects/` |
+| `cole-gtm` | **The GTM home + Cole persona repo.** Cole Mercer (cole@ktlystlabs.com) + `gtm/` pipeline (ICP, positioning, campaigns, a prospect deal); the 9 below cascade under `cole-gtm/projects/` **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
 | `cole-gtm/products/` `[cole-gtm]` | The "claudedaddy" content machine (moved from ASK 2026-07-06). AFTER DEDUP: `distribution-engine` LIVE (`com.claudedaddy.repo-distribution`, ships GitHub repos) + video product catalog + kits. Daily podcast is in `gtm/scripts/podcast/`. ARCHIVED 2026-07-06 (`~/projects/_archive/`): x/youtube/pinterest posters + jobs (didn't work), refill-engine (fed posters), ai-news-podcast (dead TTS predecessor) |
 | ~~`founder-signal-engine`~~ ARCHIVED 2026-07-06 | Was a dormant subset of `competitive-analysis` (same code, couldn't ingest on its own). Archived to `~/projects/_archive/`; competitive-analysis is the canonical superset |
 | `fractional-cxo` | Scans feeds for fractional roles, a rate floor, Slack-pings (NOT moved — still top-level) |
 | `cole-gtm/projects/signal-desk` `[cole-gtm]` | Market signals → ranked contact actions |
-| `cole-gtm/projects/strategy` `[cole-gtm]` | Decks, investor docs, positioning research; canonical positioning source (post-dissolution, RULE-G) |
+| `cole-gtm/projects/strategy` `[cole-gtm]` | Decks, investor docs, positioning research; canonical positioning source (post-dissolution, RULE-G) **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
 | `cole-gtm/projects/notebooklm-daily-podcast` `[cole-gtm]` | Daily AI-news podcast (the "podcast" under Cole) |
 
 ## 5. Website-Gen / $29 Micro-SaaS (Next.js, *.ktlystlabs.com) — persona `micro-saas`
@@ -109,7 +109,7 @@ Anchor-less bucket (no brain repo); named `micro-saas` to avoid overloading
 | `micro-saas/projects/runreceipts` `[micro-saas]` | Verify agent-run completion claims vs diff |
 | `micro-saas/projects/shipgate` `[micro-saas]` | PR ship-readiness gate |
 | `micro-saas/projects/interview-coach-public` `[micro-saas]` | Behavioral interview coach — a friend's shipped product (re-homed from dev-tools 2026-07-06; it's a product, not an OSS plugin) |
-| `cole-gtm/projects/website` `[cole-gtm]` | The Kipi System marketing site (has a CLAUDE.md merge conflict); keeps KTLYST bridge dual-role (writes `website-state.json`) |
+| `cole-gtm/projects/website` `[cole-gtm]` | The Kipi System marketing site (has a CLAUDE.md merge conflict); keeps KTLYST bridge dual-role (writes `website-state.json`) **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
 
 Interview coach — shipped 3× as hosted products (consolidation target):
 `freshlist`, `warmreach`, `slimcli` — same behavioral interview coach, paywalled webapp.
@@ -138,7 +138,7 @@ Eyeball: retired. The `~/projects/eyeball` repo is gone from disk. The determini
 | Project | What it is |
 |---|---|
 | `cole-gtm/projects/competitive-analysis` `[cole-gtm]` | AI market signals → newsletter + podcast brief |
-| `cole-gtm/projects/reddit-build-radar` `[cole-gtm]` | Reddit consensus → one weekly build idea |
+| `cole-gtm/projects/reddit-build-radar` `[cole-gtm]` | Reddit consensus → one weekly build idea **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
 | `cole-gtm/projects/vc-signals` `[cole-gtm]` | Cyber VC investment dashboard (GitHub Pages) |
 
 ## 9. Personal / Single-Purpose Coaches (kipi instances, not for sale)
@@ -149,7 +149,7 @@ Eyeball: retired. The `~/projects/eyeball` repo is gone from disk. The determini
 | `school-negotiator` | Tuition negotiation |
 | `school-repo` | Classroom activities |
 | `family_repo` | Parenting knowledge base |
-| `cole-gtm/projects/personal-brand` `[cole-gtm]` | Personal-brand advisory |
+| `cole-gtm/projects/personal-brand` `[cole-gtm]` | Personal-brand advisory **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
 
 ## Infra (not products)
 | Project | What it is |

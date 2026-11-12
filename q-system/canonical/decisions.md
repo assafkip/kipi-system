@@ -531,3 +531,10 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-11-12
 - **Held by:** `q-system/.q-system/scripts/cleanup-merged-refs.sh`; test `q-system/.q-system/tests/test_cleanup_merged_refs.py` (16 cases, 4 mutants red); roots in `q-system/.q-system/worktree-reaper.json`, test `test_worktree_reaper.py`.
 - **Revisit:** If a kept branch class turns out to be pure bookkeeping (post-merge receipt commits), allow it in the script by name.
+
+## 2026-11-12: Seven registry rows for deleted directories move to `eliminated` (ASK-4650)
+- **Decision:** `KTLYST_strategy`, `ktlyst-website`, `personal-brand`, `gtm-partner`, `reddit-build-radar`, `thaena` and `norri ai` leave `instances` and join `eliminated`, rows intact with a note. Origin: [SYSTEM-INFERRED]
+- **Reason:** Their directories are gone (cole-gtm deleted 2026-10-16; two under consulting/projects). `kipi-update.sh` counted each as Skipped on every run. `eliminated` is the registry's existing home for removed projects (school-idf precedent), and the validator asserts those paths stay absent.
+- **Date:** 2026-11-12
+- **Held by:** `q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh` (reads the dispatch record from either collection).
+- **Revisit:** Only if a directory returns, then the row moves back.
