@@ -603,7 +603,7 @@ def test_a_run_that_executes_nothing_is_never_silently_green(gate, repo):
 # --------------------------------------------------------------- the mutants
 CS_MUTANTS = [
     ("the machinery escalator", "        if why:\n            escalators.append(why)", "        if False:\n            escalators.append(why)", case_escalator_beats_line_count),
-    ("imports scoped to app code", 'if line.startswith("+++") or is_test_path(current):', 'if line.startswith("+++"):', case_import_scoping),
+    ("imports scoped to app code", 'if line.startswith("+++") or is_test_path(current) or not own(current):', 'if line.startswith("+++"):', case_import_scoping),
     ("a comment is not an edge", 'if not l.lstrip().startswith("#"))', "if True)", case_comment_is_not_a_caller),
     ("the callers' tests run", "        for dep in dependents(path, live):", "        for dep in []:", None),
     ("a fixture is matched before it is skipped", "            if is_test_path(path):\n                direct |=", "            if False:\n                direct |=", case_fixture_reaches_its_owner),
@@ -714,7 +714,12 @@ def case_instance_owned_subtree_stays_own(cs, tmp_path):
     assert v["app_lines"] == 200 and v["tier"] == "L", v
 
 
-@pytest.mark.parametrize("case", [case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
+def case_instance_synced_import_is_not_an_escalator(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"plugins/kipi-core/new.py": "import some_external_package\n"}), "main")
+    assert v["tier"] == "S" and not v["full_suite"], v
+
+
+@pytest.mark.parametrize("case", [case_instance_synced_import_is_not_an_escalator, case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
                                   case_instance_own_lines_still_count, case_instance_synced_code_is_not_app_lines,
                                   case_instance_owned_subtree_stays_own])
 def test_instance_vs_skeleton(cs, tmp_path, case):
@@ -731,6 +736,7 @@ def test_owned_subtrees_match_kipi_update_sh(cs):
 INST_MUTANTS = [
     ("machinery of a synced file", "machinery_reason(path) if own(path) else None", "machinery_reason(path)", case_instance_ignores_synced_files),
     ("app lines of a synced file", "if is_code(p) and own(p))", "if is_code(p))", case_instance_synced_code_is_not_app_lines),
+    ("imports of a synced file", "or not own(current):", ":", case_instance_synced_import_is_not_an_escalator),
     ("skeleton is read from the registry", '(root / "instance-registry.json").exists()', "False", case_skeleton_counts_synced_files),
     ("an instance-owned subtree stays own", "for o in INSTANCE_OWNED_SUBTREES)", "for o in ())", case_instance_owned_subtree_stays_own),
     ("only synced prefixes are synced", "    if not path.startswith(SYNCED_PREFIXES):\n        return False\n", "", case_instance_own_lines_still_count),

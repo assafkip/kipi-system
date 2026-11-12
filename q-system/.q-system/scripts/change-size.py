@@ -371,7 +371,7 @@ def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
     return sorted(c for c in files_naming(path, index) if c != path)
 
 
-def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
+def third_party_imports(diff_text: str, local_stems: set[str], own=lambda p: True) -> list[str]:
     """New imports in APP code only. A test file importing pytest is not a new
     dependency of the product: CI already installs it, and 9 of the last 40
     commits on main were called L for exactly that before this was scoped."""
@@ -382,7 +382,8 @@ def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
         if f:
             current = f.group(1)
             continue
-        if line.startswith("+++") or is_test_path(current):
+        # A synced file's imports are the skeleton's, not this instance's (codex, PR #761).
+        if line.startswith("+++") or is_test_path(current) or not own(current):
             continue
         m, f2 = _IMPORT_LINE_RE.match(line), _FROM_LINE_RE.match(line)
         mods = [part.split()[0].split(".")[0] for part in m.group(1).split(",")] if m else []
@@ -423,7 +424,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         if path in declared:
             selected.add(path)
 
-    for mod in third_party_imports(diff_text, local_stems or set()):
+    for mod in third_party_imports(diff_text, local_stems or set(), own):
         escalators.append(f"new third-party import: {mod}")
 
     # A SCANNER ALWAYS RUNS, UNLESS IT HAS SAID WHAT IT COVERS (ASK-1918). It
