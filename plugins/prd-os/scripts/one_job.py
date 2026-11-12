@@ -176,34 +176,13 @@ def multi_pr_deliverables(deliverables: list[str]) -> list[str]:
 # a pilot with a short brief ran at 108k). Measured on the only brief set the
 # guard may read, 105 distinct Agent briefs from one chief session: non-blank
 # lines p50 14, p90 26, p95 29, max 67; words p50 339, p90 710, p95 848, max
-# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. Only 14 of 105 name
-# a numeric report limit (91 do not), so a BLOCK on the limit would refuse 87%
-# of real briefs. Both checks therefore return a message and the caller WARNS.
+# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. One session is not
+# a fair fleet sample, so the check returns a message and the caller WARNS.
+# A missing-report-limit warning was tried and cut: it fired on 91 of 105
+# briefs (87%), and a warning on nearly every launch teaches the model to
+# ignore the channel (coordinator ruling, PR #769).
 BRIEF_MAX_LINES = 40
 BRIEF_MAX_WORDS = 1000
-
-_REPORT_WORD = r"(?:report|reply|respond|summary|write-?up|final message|answer)"
-_UNIT = r"(?:words?|lines?|sentences?|bullets?|tokens?|chars?|characters)"
-_REPORT_LIMIT_RES = (
-    # "report under 300 words", "Keep it under 900 words", "at most 10 lines".
-    # No report word required: the real briefs write "Keep it under 900 words"
-    # (measured, the first fixture of the test file).
-    re.compile(
-        rf"(?:\bunder|\bwithin|\bat most|\bno more than|\bmax(?:imum)?|"
-        rf"\bless than|\bup to|\bfewer than|<)\s*\d+\s*{_UNIT}",
-        re.I,
-    ),
-    # "report in two sentences", "reply in 5 lines"
-    re.compile(
-        rf"\b{_REPORT_WORD}\b[^\n]{{0,80}}?\bin\s+(?:\d+|one|two|three|four|five)\s+{_UNIT}",
-        re.I,
-    ),
-    # "300 words max", "5 lines or fewer"
-    re.compile(
-        rf"\b\d+\s*{_UNIT}\s+(?:max\b|maximum|or (?:less|fewer))", re.I
-    ),
-)
-
 
 def brief_length_reason(text: str) -> str:
     """Why `text` is too long for a brief. Empty string means within the caps."""
@@ -219,14 +198,3 @@ def brief_length_reason(text: str) -> str:
             "their text."
         )
     return ""
-
-
-def missing_report_limit_reason(text: str) -> str:
-    """Message when `text` states no limit on the final report, else empty."""
-    if not text or any(rx.search(text) for rx in _REPORT_LIMIT_RES):
-        return ""
-    return (
-        "the brief states no limit on the final report. The parent reads it "
-        "and pays for it again on every later turn. Add one, for example "
-        "'Report under 300 words.'"
-    )

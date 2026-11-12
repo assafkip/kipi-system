@@ -31,8 +31,8 @@ Bypass for a brief that only QUOTES a multi-PR shape: BYPASS_RE below stands
 this script down when the brief carries `one-job-brief-skip: <why>`. The
 reason text is required so a bypass stays countable in transcripts.
 
-ASK-4649 adds two WARNINGS (exit 0, additionalContext): a brief over 40
-non-blank lines or 1000 words, and a brief with no stated report limit.
+ASK-4649 adds one WARNING (exit 0, additionalContext): a brief over 40
+non-blank lines or 1000 words.
 
 Exit codes: 2 = block (stderr goes back to Claude), 0 = allow.
 """
@@ -89,33 +89,29 @@ def _guidance(reasons: list[str], howto: str) -> str:
 
 
 def _warn_caps(one_job, text: str) -> None:
-    """ASK-4649: brief length and a missing report limit WARN, never block.
+    """ASK-4649: an over-long brief WARNS, never blocks.
 
     why: the only brief set this guard may measure is 105 briefs from one
-    session, so the caps are not a fair sample of the fleet, and 91 of 105
-    (87%) state no report limit; a block there is a gate red on its own population.
-    stderr on exit 0 never reaches the model (the INERT note above shows only
-    to the operator), so the warning goes out as PreToolUse additionalContext,
-    nested under hookSpecificOutput (a top-level key is silently ignored, the
-    scar in token-guard.py warn()). The text does NOT name the bypass marker:
-    it also stands down the multi-PR block, and naming it on ~87% of launches
-    taught the model the string that turns the block off (PR #769 review).
+    session, so the caps are not a fair sample of the fleet; a block there is a
+    gate red on its own population. stderr on exit 0 never reaches the model
+    (the INERT note above shows only to the operator), so the warning goes out
+    as PreToolUse additionalContext, nested under hookSpecificOutput (a
+    top-level key is silently ignored, the scar in token-guard.py warn()). The
+    text does NOT name the bypass marker: it also stands down the multi-PR
+    block, and advertising it taught the model the string that turns the block
+    off (PR #769 review round 1).
+
+    getattr, not attribute access: the fleet updater can land q-system ahead of
+    plugins/, and an AttributeError here would exit 1 on every single-job
+    launch (PR #769 review round 2, major).
     """
-    notes = [
-        r for r in (
-            one_job.brief_length_reason(text),
-            one_job.missing_report_limit_reason(text),
-        ) if r
-    ]
-    if not notes:
+    check = getattr(one_job, "brief_length_reason", None)
+    reason = check(text) if callable(check) else ""
+    if not reason:
         return
-    msg = (
-        "AGENT BRIEF WARNING (not blocked, ASK-4649): "
-        + " ".join(notes)
-    )
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
-        "additionalContext": msg,
+        "additionalContext": f"AGENT BRIEF WARNING (not blocked, ASK-4649): {reason}",
     }}))
 
 

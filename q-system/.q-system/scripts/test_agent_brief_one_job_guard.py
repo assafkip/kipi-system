@@ -95,8 +95,6 @@ def test_single_job_brief_passes(case):
     r = _run(SINGLE_JOB[case])
     assert r.returncode == 0, (case, r.stderr)
     assert r.stderr == ""
-    # the report-limit WARNING may speak on stdout; it must never be a block
-    assert "BLOCKED" not in r.stdout
 
 
 def test_bypass_needs_a_reason():
@@ -146,9 +144,9 @@ def test_wired_in_both_settings_files(settings):
     assert len(hits) == 1, f"{settings}: guard wired {len(hits)} times"
 
 
-# ---- ASK-4649: brief length and report-limit WARNINGS (exit 0, never a block)
-# Fixtures are real briefs from the control set, not invented. Measured on those
-# 105 briefs: 3 over the length caps, 91 with no numeric report limit.
+# ---- ASK-4649: brief length WARNING (exit 0, never a block)
+# Fixture: line and word counts of three real briefs, every word replaced by
+# `w` (the repo is public). Measured on the 105 real briefs: 3 over the caps.
 BRIEFS = json.loads((HERE / "fixtures" / "agent_briefs_control_1111.json").read_text())
 
 
@@ -162,36 +160,27 @@ def _warning(r: subprocess.CompletedProcess) -> str:
     return out["additionalContext"]
 
 
-def test_short_brief_with_report_limit_passes_silently():
-    r = _run(BRIEFS["short_with_report_limit"])
+def test_short_brief_passes_silently():
+    r = _run(BRIEFS["short"])
     assert r.stdout == "" and _warning(r) == ""
 
 
-def test_long_brief_gets_the_length_message():
-    msg = _warning(_run(BRIEFS["long_no_report_limit"]))
+@pytest.mark.parametrize("key", ["over_line_cap", "over_word_cap"])
+def test_long_brief_gets_the_length_message(key):
+    msg = _warning(_run(BRIEFS[key]))
     assert "non-blank lines" in msg and "caps: 40 lines, 1000 words" in msg
 
 
-def test_brief_without_report_limit_gets_that_message():
-    msg = _warning(_run(BRIEFS["short_no_report_limit"]))
-    assert "no limit on the final report" in msg
-    assert "non-blank lines" not in msg, "a short brief must not get the length note"
-
-
-def test_a_stated_limit_in_a_long_brief_drops_only_the_limit_message():
-    msg = _warning(_run(BRIEFS["long_no_report_limit"] + "\nReport under 300 words."))
-    assert "non-blank lines" in msg and "no limit on the final report" not in msg
-
-
-def test_bypass_silences_both_warnings():
+def test_bypass_silences_the_warning():
     marker = "\none-job-brief-skip: a long brief by design, one job"
-    r = _run(BRIEFS["long_no_report_limit"] + marker)
+    r = _run(BRIEFS["over_line_cap"] + marker)
     assert r.stdout == "" and _warning(r) == ""
 
 
-def test_warnings_never_block_even_when_both_fire():
-    r = _run(BRIEFS["long_no_report_limit"])
-    assert r.returncode == 0
+def test_warning_does_not_name_the_bypass_marker():
+    # PR #769 round 1 major: the marker also stands down the multi-PR block.
+    msg = _warning(_run(BRIEFS["over_line_cap"]))
+    assert msg and "one-job-brief-skip" not in msg
 
 
 def test_malformed_input_still_exits_zero_without_output():
@@ -201,20 +190,26 @@ def test_malformed_input_still_exits_zero_without_output():
 
 
 def test_each_length_cap_fires_alone():
-    # boundary shapes, constructed: the real long brief trips both caps at once
-    # and would hide a mutant that disables only one of them
-    lines_only = "\n".join(["Report under 300 words. Step."] + ["step"] * 45)
-    words_only = "Report under 300 words. " + "word " * 1100
+    # constructed boundary shapes: the real long briefs would hide a mutant
+    # that disables only one cap
+    lines_only = "\n".join(["step"] * 46)
+    words_only = "word " * 1100
     assert "non-blank lines" in _warning(_run(lines_only))
     assert "non-blank lines" in _warning(_run(words_only))
-    # the description line counts too: 1 + 1 + 38 = exactly 40 lines
-    at_cap = "Report under 300 words.\n" + "\n".join(["step"] * 38)
-    assert _warning(_run(at_cap)) == ""
+    # the description line counts too: 1 + 39 = exactly 40 lines
+    assert _warning(_run("\n".join(["step"] * 39))) == ""
 
 
-def test_warning_does_not_name_the_bypass_marker():
-    # PR #769 review major: the marker also stands down the multi-PR block, so
-    # advertising it in a warning that fires on most launches teaches the model
-    # the string that turns the block off. The bypass still works (test above).
-    msg = _warning(_run(BRIEFS["long_no_report_limit"]))
-    assert msg and "one-job-brief-skip" not in msg
+def test_detector_without_the_new_function_does_not_crash(tmp_path):
+    # q-system ahead of plugins/: a one_job.py from before ASK-4649. Red before
+    # the getattr guard (AttributeError, exit 1), green after.
+    root = tmp_path / "repo"
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    plug = root / "plugins" / "prd-os" / "scripts"
+    plug.mkdir(parents=True)
+    (plug / "one_job.py").write_text("def multi_pr_reasons(text):\n    return []\n")
+    guard = scripts / GUARD.name
+    guard.write_text(GUARD.read_text())
+    r = _run(BRIEFS["over_line_cap"], guard=guard)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == "", r
