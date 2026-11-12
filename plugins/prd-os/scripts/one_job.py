@@ -168,3 +168,65 @@ def multi_pr_deliverables(deliverables: list[str]) -> list[str]:
     """Deliverables that each name a PR or branch. Two or more is two PRs."""
     named = [d for d in deliverables if _DELIVERABLE_PR_RE.search(d)]
     return named if len(named) >= 2 else []
+
+
+# why: ASK-4649. A long brief, or one with no stated limit on the final report,
+# costs tokens on every turn of the agent and again in the parent that reads
+# the report (one measured build: 118 agents, median 275k tokens per request;
+# a pilot with a short brief ran at 108k). Measured on the only brief set the
+# guard may read, 105 distinct Agent briefs from one chief session: non-blank
+# lines p50 14, p90 26, p95 29, max 67; words p50 339, p90 710, p95 848, max
+# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. Only 6 of 105 name
+# a numeric report limit, so a BLOCK on the limit would refuse about 94% of
+# real briefs. Both checks therefore return a message and the caller WARNS.
+BRIEF_MAX_LINES = 40
+BRIEF_MAX_WORDS = 1000
+
+_REPORT_WORD = r"(?:report|reply|respond|summary|write-?up|final message|answer)"
+_UNIT = r"(?:words?|lines?|sentences?|bullets?|tokens?|chars?|characters)"
+_REPORT_LIMIT_RES = (
+    # "report under 300 words", "Keep it under 900 words", "at most 10 lines".
+    # No report word required: the real briefs write "Keep it under 900 words"
+    # (measured, the first fixture of the test file).
+    re.compile(
+        rf"(?:\bunder|\bwithin|\bat most|\bno more than|\bmax(?:imum)?|"
+        rf"\bless than|\bup to|\bfewer than|<)\s*\d+\s*{_UNIT}",
+        re.I,
+    ),
+    # "report in two sentences", "reply in 5 lines"
+    re.compile(
+        rf"\b{_REPORT_WORD}\b[^\n]{{0,80}}?\bin\s+(?:\d+|one|two|three|four|five)\s+{_UNIT}",
+        re.I,
+    ),
+    # "300 words max", "5 lines or fewer"
+    re.compile(
+        rf"\b\d+\s*{_UNIT}\s+(?:max\b|maximum|or (?:less|fewer))", re.I
+    ),
+)
+
+
+def brief_length_reason(text: str) -> str:
+    """Why `text` is too long for a brief. Empty string means within the caps."""
+    if not text:
+        return ""
+    lines = sum(1 for ln in text.splitlines() if ln.strip())
+    words = len(text.split())
+    if lines > BRIEF_MAX_LINES or words > BRIEF_MAX_WORDS:
+        return (
+            f"the brief is {lines} non-blank lines and {words} words "
+            f"(caps: {BRIEF_MAX_LINES} lines, {BRIEF_MAX_WORDS} words). Every "
+            "turn of the agent re-reads it. Point at files instead of pasting "
+            "their text."
+        )
+    return ""
+
+
+def missing_report_limit_reason(text: str) -> str:
+    """Message when `text` states no limit on the final report, else empty."""
+    if not text or any(rx.search(text) for rx in _REPORT_LIMIT_RES):
+        return ""
+    return (
+        "the brief states no limit on the final report. The parent reads it "
+        "and pays for it again on every later turn. Add one, for example "
+        "'Report under 300 words.'"
+    )
