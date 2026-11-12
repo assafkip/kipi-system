@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/budget_check.py",
+ "reason": "ASK-4649 per-PR token cap check. Its input now exists (linear-worker.sh appends one row per run to run-tokens.jsonl via run_tokens.py --record, ASK-4675); the scheduled caller that divides by merged PRs and files a Linear issue on a crossed cap is ASK-4678, which the fleet worker picks from the owner:sana backlog",
+ "spillover_id": "sp-d372f5f4"
+}

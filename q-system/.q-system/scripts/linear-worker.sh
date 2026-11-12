@@ -469,6 +469,17 @@ AGENT="sana"
 # INHERITS the worker's own process group, so `kill -- -$job` would either fail
 # (no such group) or signal the worker itself. With it, the job is the leader of
 # a group of its own and the whole tree under it can be signalled by pgid.
+# record_run_tokens <session> <issue> <repo>: one row of tokens for the run just
+# finished, in ~/.local/state/kipi/run-tokens.jsonl. Observability only: it logs one
+# line on failure and returns 0, so a failed read never fails or delays a run.
+record_run_tokens() {
+  [ -n "${1:-}" ] || return 0
+  python3 "$SCRIPT_DIR/run_tokens.py" --record "${KIPI_RUN_TOKENS_FILE:-$HOME/.local/state/kipi/run-tokens.jsonl}" \
+    --session "$1" --ticket "$2" --repo "$3" --pr "${PR_NUM:-}" >/dev/null 2>>"$LOG" \
+    || echo "$(TS) $2: run tokens not recorded (see line above)" >>"$LOG"
+  return 0
+}
+
 run_bounded() {  # run_bounded <seconds> <cmd...>
   local secs="$1"; shift
   set -m
@@ -3526,7 +3537,16 @@ Anything real you find and are not fixing: capture it, never just mention it:
       say "$ISSUE: cap-ladder rung 2 asked for a different runner, so Codex ($CODEX_CMD) works this attempt"
       run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && $CODEX_CMD \"\$1\" </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT"
     else
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL"
+      # --session-id (ASK-4649/4675): the worker has to know WHICH transcript this run
+      # wrote, or token cost per run cannot be read. A fresh uuid per launch, never one
+      # per issue: claude refuses a session id it has already used, and a rework or
+      # retry is a new launch. The read is the SHELL's, after the run, because a guard
+      # blocks agent-run programs from reading under ~/.claude.
+      RUN_SID="$(python3 -c 'import uuid;print(uuid.uuid4())' 2>/dev/null)"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${4:+--session-id \"\$4\"} \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL" "$RUN_SID"
+      local prc=$?
+      record_run_tokens "$RUN_SID" "$ISSUE" "$TARGET_SLUG"
+      return $prc
     fi
   }
   if primary_run; then

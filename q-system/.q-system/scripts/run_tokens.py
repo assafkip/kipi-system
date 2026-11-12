@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 CTX_KEYS = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 
 
-def expand(paths: list[str], subagents: bool) -> list[Path]:
+def expand(paths: list[str], subagents: bool, unreadable: list[str] | None = None) -> list[Path]:
     """Files to read, in order, each once."""
     out: list[Path] = []
     seen: set[Path] = set()
@@ -48,7 +49,14 @@ def expand(paths: list[str], subagents: bool) -> list[Path]:
             continue
         p = Path(raw).expanduser()
         if p.is_dir():
-            for f in sorted(p.rglob("*.jsonl")):
+            # os.walk with onerror, never Path.rglob: rglob swallows a directory it
+            # cannot list, so a locked dir read as "zero requests, wrong path".
+            def _bad(e: OSError) -> None:
+                if unreadable is not None:
+                    unreadable.append(str(e.filename or p))
+
+            found = [Path(r) / n for r, _, ns in os.walk(p, onerror=_bad) for n in ns if n.endswith(".jsonl")]
+            for f in sorted(found):
                 add(f)
         else:
             add(p)
@@ -126,8 +134,8 @@ def summarize(items: list[dict]) -> dict:
 
 
 def report(paths: list[str], by_agent: bool = False, subagents: bool = False) -> dict:
-    files = expand(paths, subagents)
     bad: list[str] = []
+    files = expand(paths, subagents, bad)
     best = read_best(files, bad)
     out = summarize([u for u, _ in best.values()])
     out["transcripts"] = len(files)
@@ -140,12 +148,55 @@ def report(paths: list[str], by_agent: bool = False, subagents: bool = False) ->
     return out
 
 
+def record(a) -> int:
+    """Append one row {ts, ticket, repo, pr, session, ...tokens} for a worker run.
+
+    Single writer: one O_APPEND write of one short line, so concurrent workers
+    interleave whole rows, never bytes. No transcript found is a nonzero exit with a
+    named reason, never an all-zero row that reads as a free run.
+    """
+    import datetime
+    import re
+    if not a.session or not re.fullmatch(r"[0-9a-fA-F-]{36}", a.session):
+        print("run_tokens: --record needs a uuid --session", file=sys.stderr)
+        return 1
+    hits = sorted((Path.home() / ".claude" / "projects").glob(f"*/{a.session}.jsonl"))
+    if not hits:
+        print(f"run_tokens: no transcript for session {a.session}", file=sys.stderr)
+        return 1
+    rep = report([str(hits[0])], subagents=True)
+    if rep["unreadable"] or rep["requests"] == 0:
+        print(f"run_tokens: session {a.session}: unreadable or zero requests", file=sys.stderr)
+        return 1
+    row = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+           "ticket": a.ticket, "repo": a.repo, "pr": a.pr, "session": a.session, **rep}
+    out = Path(a.record).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(out, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, (json.dumps(row) + "\n").encode())
+    finally:
+        os.close(fd)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("paths", nargs="+", help="transcript .jsonl files or directories")
+    ap.add_argument("paths", nargs="*", help="transcript .jsonl files or directories")
+    # --record is the worker's caller (ASK-4649/4675): after a run, the WORKER'S SHELL
+    # names the session it launched; this finds that transcript and appends ONE row.
+    ap.add_argument("--record", metavar="OUT.jsonl", help="append one row for --session to this file")
+    ap.add_argument("--session", help="the --session-id the run was started with")
+    ap.add_argument("--ticket", default="")
+    ap.add_argument("--repo", default="")
+    ap.add_argument("--pr", default="")
     ap.add_argument("--by-agent", action="store_true")
     ap.add_argument("--subagents", action="store_true", help="also read <stem>/subagents/ beside each file")
     a = ap.parse_args(argv)
+    if a.record:
+        return record(a)
+    if not a.paths:
+        ap.error("give transcript paths, or --record with --session")
     rep = report(a.paths, a.by_agent, a.subagents)
     print(json.dumps(rep))
     if rep["unreadable"]:

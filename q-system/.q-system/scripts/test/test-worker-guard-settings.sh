@@ -71,6 +71,16 @@ chmod +x "$STUB/gh"
 cat > "$STUB/claude" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\0' "$@" > "$CLAUDE_ARGV"
+# ASK-4675: a real run writes its transcript under $HOME/.claude/projects/<cwd>/<session>.jsonl.
+# NO_TX=1 is the run that wrote none (the negative case).
+if [ -z "${NO_TX:-}" ]; then
+  sid=""; prev=""
+  for a in "$@"; do [ "$prev" = "--session-id" ] && sid="$a"; prev="$a"; done
+  if [ -n "$sid" ]; then
+    mkdir -p "$HOME/.claude/projects/-stub"
+    printf '%s\n' '{"type":"assistant","message":{"id":"m1","model":"x","usage":{"input_tokens":3,"output_tokens":700,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}}}' > "$HOME/.claude/projects/-stub/$sid.jsonl"
+  fi
+fi
 git -c user.email=t@t.t -c user.name=t commit -q --allow-empty -m "agent work"
 exit 0
 EOF
@@ -153,6 +163,28 @@ if not s.get("permissions", {}).get("deny"):
 print("  argv: -p <prompt> --settings <%d hook commands, %d deny rules>" % (len(cmds), len(s["permissions"]["deny"])))
 PY
 ok "E: a tree without project settings starts the agent with the skeleton's guard set"
+
+# --- E2. the worker passes --session-id and records the run's tokens (ASK-4675) ---
+ROWS="$WORK/home/.local/state/kipi/run-tokens.jsonl"
+tr '\0' '\n' < "$WORK/argv-E" | grep -x -- '--session-id' >/dev/null || fail "E2: the worker started claude with no --session-id, so no transcript can be tied to the run"
+[ "$(cat "$WORK/rc-E")" = "0" ] || fail "E2: the run did not exit 0"
+[ -f "$ROWS" ] || fail "E2: the run finished but wrote no run-tokens row. Output: $(tail -6 "$WORK/run-E.out")"
+"$REAL_PY" - "$ROWS" <<'PY' || fail "E2: the row is wrong"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+r = rows[-1]
+if len(rows) != 1 or r["ticket"] != "ASK-GGG" or r["output_tokens"] != 700 or r["requests"] != 1 or not r["session"]:
+    sys.exit("E2: unexpected row %r" % (r,))
+PY
+ok "E2: --session-id is passed and one run-tokens row (ticket, 700 output tokens) is appended"
+
+# --- E3. a run whose transcript cannot be read still succeeds -------------------
+rm -f "$ROWS"
+NO_TX=1 run_case E3 no
+[ "$(cat "$WORK/rc-E3")" = "0" ] || fail "E3: a missing transcript failed the worker run. Output: $(tail -8 "$WORK/run-E3.out")"
+grep -q 'ok ASK-GGG' "$WORK/run-E3.out" || fail "E3: the run did not complete. Output: $(tail -8 "$WORK/run-E3.out")"
+[ ! -s "$ROWS" ] || fail "E3: a row was written for a run with no transcript"
+ok "E3: no transcript means no row and an unchanged run"
 
 # --- F. project settings that run every guard: nothing supplied ---------------
 run_case F parity

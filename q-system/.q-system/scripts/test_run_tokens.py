@@ -106,3 +106,22 @@ def test_unreadable_transcript_is_named_and_fails(tmp_path):
     rc, r = run("budget_check.py", ok, str(d), "--prs", "2", "--cap-total", "999999")
     assert rc == 1 and r["unreadable"] == [str(d)]
     d.chmod(0o600)
+
+
+def test_unreadable_directory_is_named_not_dropped(tmp_path):
+    # An unlistable directory used to yield no files at all (Path.rglob swallows the
+    # error), so the report said "zero requests (wrong path)" and never named it.
+    d = tmp_path / "locked"
+    d.mkdir()
+    d.chmod(0)
+    try:
+        if list(d.iterdir()) is not None:  # running as root: chmod does not bite
+            d.chmod(0o700)
+            return
+    except OSError:
+        pass
+    try:
+        rc, r = run("run_tokens.py", str(FX / "main.ndjson"), str(d))
+        assert rc == 1 and r["unreadable"] == [str(d)] and r["requests"] == 2
+    finally:
+        d.chmod(0o700)
