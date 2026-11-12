@@ -1,9 +1,9 @@
 ---
 id: prd-voicegate-skeleton-2026-11-09
 title: Voicegate Skeleton
-status: approved
+status: archived
 created_at: 2026-11-09T18:04:43Z
-updated_at: 2026-11-09T18:24:19Z
+updated_at: 2026-11-11T23:53:20Z
 owner: sana
 reviewers: []
 findings_path: .prd-os/findings/prd-voicegate-skeleton-2026-11-09-findings.jsonl
