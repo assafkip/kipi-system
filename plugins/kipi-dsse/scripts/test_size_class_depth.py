@@ -283,3 +283,16 @@ def test_a_configured_base_ref_that_does_not_exist_is_named_in_the_reason(tmp_pa
     _git(repo, "commit", "-qm", "cfg")
     out = _size(repo)
     assert out["class"] == "L" and "codex.base_ref=ghost" in " ".join(out["reasons"]), out
+
+
+def test_a_configured_base_that_is_the_checked_out_branch_is_refused(tmp_path):
+    # Codex P1, PR 762: master...HEAD on master is empty, so a big change would read S.
+    repo = _sized_repo(tmp_path, {"scripts/big.py": BIG_FILE})
+    _git(repo, "branch", "-m", "master")
+    _rebase_onto(repo, None)
+    (repo / ".prd-os").mkdir(exist_ok=True)
+    (repo / ".prd-os/config.json").write_text(json.dumps({"codex": {"base_ref": "master"}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "cfg")
+    out = _size(repo)
+    assert out["class"] == "L" and "checked-out branch" in " ".join(out["reasons"]), out
