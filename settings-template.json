@@ -264,6 +264,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/tool-output-trim.py\"; then python3 -I \"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/tool-output-trim.py\"; fi",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [
           {
