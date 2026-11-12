@@ -5,9 +5,13 @@
     "~/projects/*-wt*",
     "~/projects/*/.wt-*",
     "~/projects/*/.claude/worktrees/*",
+    "~/projects/*/worktrees/*",
+    "~/projects/_worktrees/*",
+    "~/projects/*-worktrees/*",
     "~/.config/kipi/worktrees/*",
     "~/.config/kipi/review-trees/*"
   ],
+  "_roots_added_2026_11_12": "ASK-4650. 2026-11-12 the census found clean merged trees the reaper never looked at, because these three layouts were in no root: <repo>/worktrees/*, ~/projects/_worktrees/*, ~/projects/*-worktrees/*. A root is a list of places agents cut trees; none of the three can match the machine checkouts pinned in test_worktree_reaper.py.",
   "min_idle_hours": 6,
   "alarm_below_gb": 10,
   "refuse_worktree_below_gb": 5

@@ -156,6 +156,7 @@ def test_the_status_check_does_not_make_an_idle_tree_look_touched(env):
     "~/.local/state/kipi/dispatch/kipi-system",   # kipi-dispatch-pinned.sh PINNED
     "~/.local/state/kipi/dispatch-checkout",
     "~/projects/kipi-scheduled",                  # the launchd jobs' checkout
+    "~/.local/state/kipi/jobs/com.kipi.pr-owner/kipi-system",   # a locked per-job pin (ASK-4650)
 ])
 def test_shipped_roots_never_reach_the_fleets_own_checkouts(machine_checkout):
     # These are detached at origin/main, so "already on main" would remove them.
@@ -501,3 +502,17 @@ def test_a_review_arriving_after_the_reaper_claim_is_turned_away(env, monkeypatc
     assert seen["rc"] == "2"   # acquire_wt_lock: busy, a live holder that is not it
     assert out["removed"] == [os.path.realpath(wt)]
     assert not (wt.parent / (wt.name + ".lock")).exists()   # the reaper released it
+
+
+@pytest.mark.parametrize("layout", [
+    "~/projects/kipi-system/worktrees/install-x",      # <repo>/worktrees/*
+    "~/projects/_worktrees/kipi-voicegate-3",          # shared _worktrees dir
+    "~/projects/kipi-system-worktrees/stall-chief",    # <repo>-worktrees/*
+])
+def test_every_layout_agents_cut_trees_in_is_a_root(layout):
+    # ASK-4650: the census found 6 clean merged trees under these three layouts that
+    # no root named, so the daily reaper never saw them and they sat for days.
+    import fnmatch
+    path = os.path.expanduser(layout)
+    roots = [os.path.expanduser(r) for r in mod.load_config()["roots"]]
+    assert any(fnmatch.fnmatch(path, r) for r in roots)

@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/cleanup-merged-refs.sh",
+ "reason": "ASK-4650 founder-run deleter for merged remote branches and finished trees. The destructive-op hook blocks remote ref deletion for every agent, so no script or job may call it; the caller is the founder's shell, and its receipts land in ~/.local/state/kipi/cleanup-merged-refs/. Tree removal in steady state is worktree-reaper.py (com.kipi.worktree-reaper, 04:10 daily).",
+ "spillover_id": "sp-1ea0f982"
+}
