@@ -82,7 +82,7 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 | `consulting/projects/client_b` `[consulting]` | client-b fractional advisory hub (runs client_b-slack-sync + ti-weekly jobs) |
 | `consulting/projects/accountant` `[consulting]` | Books for KTLYST + ASK (2 cash-basis ledgers) |
 | `consulting/projects/lawyer` `[consulting]` | In-house legal advisor |
-| `cole-gtm/projects/event_coordinator` `[cole-gtm]` | Stub (still `{{DESCRIPTION}}` placeholder) |
+| `cole-gtm/projects/event_coordinator` `[cole-gtm]` | Stub (still `{{DESCRIPTION}}` placeholder) **GONE (ASK-4650, 2026-11-12): the `cole-gtm` directory was deleted 2026-10-16.** |
 | `ktlyst-review-panel` | 9-persona brutal review of deliverables |
 
 ## 4. GTM — owned by **Cole**
@@ -92,9 +92,9 @@ The KTLYST product you SELL (now `ktlyst-saas/projects/product`, see §1) also f
 | `cole-gtm/products/` `[cole-gtm]` | The "claudedaddy" content machine (moved from ASK 2026-07-06). AFTER DEDUP: `distribution-engine` LIVE (`com.claudedaddy.repo-distribution`, ships GitHub repos) + video product catalog + kits. Daily podcast is in `gtm/scripts/podcast/`. ARCHIVED 2026-07-06 (`~/projects/_archive/`): x/youtube/pinterest posters + jobs (didn't work), refill-engine (fed posters), ai-news-podcast (dead TTS predecessor) |
 | ~~`founder-signal-engine`~~ ARCHIVED 2026-07-06 | Was a dormant subset of `competitive-analysis` (same code, couldn't ingest on its own). Archived to `~/projects/_archive/`; competitive-analysis is the canonical superset |
 | `fractional-cxo` | Scans feeds for fractional roles, a rate floor, Slack-pings (NOT moved — still top-level) |
-| `cole-gtm/projects/signal-desk` `[cole-gtm]` | Market signals → ranked contact actions |
+| `cole-gtm/projects/signal-desk` `[cole-gtm]` | Market signals → ranked contact actions **GONE (ASK-4650, 2026-11-12): the `cole-gtm` directory was deleted 2026-10-16.** |
 | `cole-gtm/projects/strategy` `[cole-gtm]` | Decks, investor docs, positioning research; canonical positioning source (post-dissolution, RULE-G) **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
-| `cole-gtm/projects/notebooklm-daily-podcast` `[cole-gtm]` | Daily AI-news podcast (the "podcast" under Cole) |
+| `cole-gtm/projects/notebooklm-daily-podcast` `[cole-gtm]` | Daily AI-news podcast (the "podcast" under Cole) **GONE (ASK-4650, 2026-11-12): the `cole-gtm` directory was deleted 2026-10-16.** |
 
 ## 5. Website-Gen / $29 Micro-SaaS (Next.js, *.ktlystlabs.com) — persona `micro-saas`
 The 6 below moved under `micro-saas/projects/` (persona reorg phase 3, 2026-07-06).
@@ -137,9 +137,9 @@ Eyeball: retired. The `~/projects/eyeball` repo is gone from disk. The determini
 ## 8. Research / Signal Dashboards
 | Project | What it is |
 |---|---|
-| `cole-gtm/projects/competitive-analysis` `[cole-gtm]` | AI market signals → newsletter + podcast brief |
+| `cole-gtm/projects/competitive-analysis` `[cole-gtm]` | AI market signals → newsletter + podcast brief **GONE (ASK-4650, 2026-11-12): the `cole-gtm` directory was deleted 2026-10-16.** |
 | `cole-gtm/projects/reddit-build-radar` `[cole-gtm]` | Reddit consensus → one weekly build idea **GONE (ASK-4650, 2026-11-12): directory deleted; registry row moved to `eliminated`.** |
-| `cole-gtm/projects/vc-signals` `[cole-gtm]` | Cyber VC investment dashboard (GitHub Pages) |
+| `cole-gtm/projects/vc-signals` `[cole-gtm]` | Cyber VC investment dashboard (GitHub Pages) **GONE (ASK-4650, 2026-11-12): the `cole-gtm` directory was deleted 2026-10-16.** |
 
 ## 9. Personal / Single-Purpose Coaches (kipi instances, not for sale)
 | Project | What it is |
