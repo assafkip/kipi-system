@@ -64,6 +64,56 @@ class Hold(unittest.TestCase):
         self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
 
 
+class UntrackedLedger(unittest.TestCase):
+    """codex P2, PR #760: a new .prd-os file origin also adds blocks the fast-forward."""
+    NEW = ".prd-os/receipts/new.json"
+
+    def test_untracked_overlap_is_held_and_fast_forward_succeeds(self):
+        s = fixture()
+        d = os.path.dirname(s)
+        up = os.path.join(d, "w")
+        w(up, self.NEW, "origin\n"); g(up, "add", "-A"); g(up, "commit", "-qm", "add")
+        g(d, "-C", "o.git", "fetch", "-q", "../w", "main:main"); g(s, "fetch", "-q")
+        w(s, self.NEW, "local\n")
+        self.assertNotEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+        r = hold(s)
+        self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        self.assertEqual("local\n", open(r.stdout.split("-> ")[1].strip()).read())
+        self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+
+
+    def _upstream_adds(self, rel):
+        s = fixture()
+        d = os.path.dirname(s)
+        up = os.path.join(d, "w")
+        w(up, rel, "origin\n"); g(up, "add", "-A"); g(up, "commit", "-qm", "add")
+        g(d, "-C", "o.git", "fetch", "-q", "../w", "main:main"); g(s, "fetch", "-q")
+        return s
+
+    def test_staged_new_file_is_not_deleted_and_hold_reports_failure(self):
+        s = self._upstream_adds(self.NEW)
+        w(s, self.NEW, "local\n"); g(s, "add", self.NEW)
+        r = hold(s)
+        self.assertNotEqual(0, r.returncode)
+        self.assertTrue(os.path.exists(os.path.join(s, self.NEW)))
+
+    def test_authored_issue_spec_draft_is_left_alone(self):
+        spec = ".prd-os/issues/ASK-9.md"
+        s = self._upstream_adds(spec)
+        w(s, spec, "draft\n")
+        r = hold(s)
+        self.assertEqual("", r.stdout)
+        self.assertEqual("draft\n", open(os.path.join(s, spec)).read())
+
+    def test_name_with_a_space_is_held(self):
+        rel = ".prd-os/receipts/two words.json"
+        s = self._upstream_adds(rel)
+        w(s, rel, "local\n")
+        r = hold(s)
+        self.assertIn("held: " + rel, r.stdout)
+        self.assertEqual(0, g(s, "merge", "--ff-only", "-q", "origin/main").returncode)
+
+
 class CallSite(unittest.TestCase):
     def test_lessons_daily_calls_the_hold_before_the_fast_forward_and_notifies(self):
         sh = open(os.path.join(os.path.dirname(HOLD), "lessons-daily.sh")).read()

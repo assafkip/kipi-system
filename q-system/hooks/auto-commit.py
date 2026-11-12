@@ -1046,7 +1046,11 @@ def git_operation_in_progress():
     return None
 
 
-SKELETON_MEMORY_PREFIX = "q-system/memory/"
+# ASK-4647: .prd-os/ ledgers joined the held set. Measured 2026-11-12: 89e9b619
+# ("update prd-os ledgers", judgments-tip.json +4/-4) put local main 2 ahead of
+# origin/main, sync_skel_to_main left it alone, and lessons-daily's propagate
+# failed 3 nights running. Same drift as the memory case below, other prefix.
+SKELETON_MEMORY_PREFIXES = ("q-system/memory/", ".prd-os/")
 
 
 def on_skeleton_default_branch():
@@ -1078,12 +1082,12 @@ def hold_skeleton_memory(groups):
         return groups
     kept, held = {}, []
     for key, paths in groups.items():
-        keep = [p for p in paths if not p.startswith(SKELETON_MEMORY_PREFIX)]
-        held += [p for p in paths if p.startswith(SKELETON_MEMORY_PREFIX)]
+        keep = [p for p in paths if not p.startswith(SKELETON_MEMORY_PREFIXES)]
+        held += [p for p in paths if p.startswith(SKELETON_MEMORY_PREFIXES)]
         if keep:
             kept[key] = keep
     if held:
-        print(f"auto-commit: skeleton default branch: {len(held)} memory file(s) "
+        print(f"auto-commit: skeleton default branch: {len(held)} memory/ledger file(s) "
               "left uncommitted so local main stays at origin/main")
     return kept
 
