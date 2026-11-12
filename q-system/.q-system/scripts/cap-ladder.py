@@ -128,7 +128,7 @@ PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
 # are redirected (PR #687 review, minor 4).
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR", "KIPI_FOUNDER_NOTIFY_CMD")
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR", "KIPI_FOUNDER_NOTIFY_CMD", "CAP_LADDER_ALERT")
 
 
 def now() -> datetime:
@@ -452,7 +452,8 @@ def status_resolve(ref: str, note: str = "", by: str = "") -> int:
     return _status_locked(go)
 
 
-NOTIFY_KIND = "Your open decisions"   # names the message in chief's fallback line
+NOTIFY_KIND = "The list of your open decisions"   # chief's fallback line reads "<kind> is in the app Chat"
+ALERT = cmd("CAP_LADDER_ALERT", ["bash", str(HERE / "slack-notify.sh")])   # engineering signal -> Sana's triage
 _NOTIFY_MOD = None
 
 
@@ -466,48 +467,72 @@ def _notify_mod():
     return _NOTIFY_MOD
 
 
-def notify_new_asks(apply: bool = True) -> str:
+def founder_ask_message(n: int) -> str:
+    """The phone line. It names no ticket, path or command, so chief's gate passes it
+    as is (test_founder_message_census.py runs this exact text through the real gate).
+    The asks themselves travel as `detail`, which chief saves to his app Chat; sending
+    them as the line got the whole text refused ('engineering-on-whatsapp', PR #778
+    review round 1, major) and left him a bare fallback link."""
+    return f"{n} decision{'' if n == 1 else 's'} waiting for you."
+
+
+def founder_ask_detail(rows: list) -> str:
+    lines = []
+    for r in rows:
+        lines.append(f"{r.get('issue')}: {r.get('ask')}" + (" [clipped]" if r.get("clipped") else ""))
+        lines.append(f"When done: {r.get('resolve')}")
+    return "\n".join(lines)
+
+
+def notify_new_asks(apply: bool = True, alert: bool = False) -> str:
     """Hand every unresolved ask that was never sent to chief's phone gate, ONCE.
 
     WHY (founder 2026-11-12, "nothing should be waiting for me"): the status file's
     one reader was /q-morning, which he does not open, so every ask in it reached
-    nobody. One message per run lists all unsent asks (batching, not one ping per
-    ask) with the command that releases each.
+    nobody. One message per run (batching, not one ping per ask); the full list with
+    the command that releases each ask goes to his app Chat as `detail`.
 
     SENT IS WHAT CHIEF SAID, NOT WHAT THE PROCESS DID. `notified_at` is stamped only
     when founder_notify.deliver() reports delivered. Any failure, refusal or
     exception leaves the rows unstamped, so the next run (nightly 04:40, or the next
-    --founder-ask) retries. A text chief's gate refuses (an ask names an ASK id or a
-    path) goes out as a link to the full text in his app Chat: deliver() does that
-    fallback itself, so this never reshapes an ask to dodge the gate.
-    Returns a one-line report for the run log."""
-    todo = [r for r in _status_rows() if not r.get("resolved") and not r.get("notified_at") and r.get("id")]
-    if not todo:
-        return "founder asks: none unsent"
-    if not apply:
-        return f"[dry] founder asks: would send {len(todo)} unsent to chief's phone gate"
-    lines = ["Decisions waiting for you:"]
-    for r in todo:
-        lines.append(f"{r.get('issue')}: {r.get('ask')}" + (" [clipped]" if r.get("clipped") else ""))
-        lines.append(f"When done: {r.get('resolve')}")
-    try:
-        verdict = _notify_mod().deliver("\n".join(lines), kind=NOTIFY_KIND)
-    except Exception as exc:      # a broken notifier must leave the asks retryable, never stamped
-        return f"founder asks: {len(todo)} unsent, notify raised {type(exc).__name__}: {str(exc)[:120]}; retried next run"
-    if not verdict.get("delivered"):
-        return (f"founder asks: {len(todo)} unsent, chief did not deliver "
-                f"({str(verdict.get('reason') or 'no reason')[:120]}); retried next run")
-    ids = {r["id"] for r in todo}
+    --founder-ask) retries.
 
+    ONE LOCK ACROSS READ, SEND AND STAMP (PR #778 round 1, minor): the unsent read
+    sat outside the lock, so two runs during one slow send pushed the same ask twice.
+    A --resolve waits at most deliver's timeout behind it.
+
+    A NIGHTLY FAILURE IS FILED TO SANA (`alert`, round 1, major 2): stdout alone left
+    an ask unsent forever with nobody told. One line per nightly failed run, through
+    the fleet alert path; a --founder-ask failure stays quiet because the nightly
+    run retries it and speaks if it fails too. Returns a line for the run log."""
     def go():
-        rows = _status_rows()
+        todo = [r for r in _status_rows() if not r.get("resolved") and not r.get("notified_at") and r.get("id")]
+        if not todo:
+            return "founder asks: none unsent"
+        if not apply:
+            return f"[dry] founder asks: would send {len(todo)} unsent to chief's phone gate"
+        try:
+            verdict = _notify_mod().deliver(founder_ask_message(len(todo)), detail=founder_ask_detail(todo),
+                                            kind=NOTIFY_KIND)
+        except Exception as exc:   # a broken notifier must leave the asks retryable, never stamped
+            verdict = {"delivered": False, "reason": f"notify raised {type(exc).__name__}: {str(exc)[:120]}"}
+        if not verdict.get("delivered"):
+            why = f"founder asks: {len(todo)} unsent, chief did not deliver ({str(verdict.get('reason') or 'no reason')[:120]}); retried next run"
+            if alert:
+                try:
+                    subprocess.run([*ALERT, "cap-ladder: " + why], capture_output=True, text=True, timeout=30)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            return why
         stamp = now().isoformat()
+        ids = {r["id"] for r in todo}
+        rows = _status_rows()
         for r in rows:
             if r.get("id") in ids and not r.get("notified_at"):
                 r["notified_at"] = stamp
         _status_write(rows)
-    _status_locked(go)
-    return f"founder asks: {len(todo)} sent to chief" + (" (as a link to the full text)" if verdict.get("fallback") else "")
+        return f"founder asks: {len(todo)} sent to chief"
+    return _status_locked(go)
 
 
 def ask_resolved(ask_id: str) -> bool:
@@ -1242,7 +1267,7 @@ def main(argv=None) -> int:
             write_state(state)
             write_json(BLOCKERS, blockers)
             write_json(REPORT, {"at": now().isoformat(), "rows": report})
-    say(notify_new_asks(args.apply))
+    say(notify_new_asks(args.apply, alert=True))
     say(f"run complete: {len(caps)} capped, {done} climbed, "
         f"{sum(1 for r in state.values() if r.get('held'))} held, "
         f"{moot} ask{'' if moot == 1 else 's'} resolved as moot{'' if args.apply else ' (dry)'}")

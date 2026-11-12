@@ -222,11 +222,17 @@ def _weekly_improve(tmp_path, monkeypatch, phone_text):
     return _texts(sent, phone_text)
 
 
+def _cap_ladder(tmp_path, monkeypatch, phone_text):
+    mod = _load("cap_ladder_census", "cap-ladder.py")
+    return [mod.founder_ask_message(n) for n in (1, 2, 9)]
+
+
 CASES = {
     "daily-linear-digest.py": _digest,
     "morning-brief.py": _morning_brief,
     "browser_session_health.py": _browser_health,
     "weekly-improve.py": _weekly_improve,
+    "cap-ladder.py": _cap_ladder,
 }
 
 #: Engineering signals (founder 2026-08-10: "should go to Sana - not me"). Each one
