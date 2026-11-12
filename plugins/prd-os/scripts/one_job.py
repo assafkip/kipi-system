@@ -176,9 +176,9 @@ def multi_pr_deliverables(deliverables: list[str]) -> list[str]:
 # a pilot with a short brief ran at 108k). Measured on the only brief set the
 # guard may read, 105 distinct Agent briefs from one chief session: non-blank
 # lines p50 14, p90 26, p95 29, max 67; words p50 339, p90 710, p95 848, max
-# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. Only 6 of 105 name
-# a numeric report limit, so a BLOCK on the limit would refuse about 94% of
-# real briefs. Both checks therefore return a message and the caller WARNS.
+# 1224. 1 of 105 is over 40 lines, 3 of 105 over 1000 words. Only 14 of 105 name
+# a numeric report limit (91 do not), so a BLOCK on the limit would refuse 87%
+# of real briefs. Both checks therefore return a message and the caller WARNS.
 BRIEF_MAX_LINES = 40
 BRIEF_MAX_WORDS = 1000
 

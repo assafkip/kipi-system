@@ -92,12 +92,14 @@ def _warn_caps(one_job, text: str) -> None:
     """ASK-4649: brief length and a missing report limit WARN, never block.
 
     why: the only brief set this guard may measure is 105 briefs from one
-    session, so the caps are not a fair sample of the fleet, and 94% of them
-    state no report limit; a block there is a gate red on its own population.
+    session, so the caps are not a fair sample of the fleet, and 91 of 105
+    (87%) state no report limit; a block there is a gate red on its own population.
     stderr on exit 0 never reaches the model (the INERT note above shows only
     to the operator), so the warning goes out as PreToolUse additionalContext,
     nested under hookSpecificOutput (a top-level key is silently ignored, the
-    scar in token-guard.py warn()).
+    scar in token-guard.py warn()). The text does NOT name the bypass marker:
+    it also stands down the multi-PR block, and naming it on ~87% of launches
+    taught the model the string that turns the block off (PR #769 review).
     """
     notes = [
         r for r in (
@@ -110,7 +112,6 @@ def _warn_caps(one_job, text: str) -> None:
     msg = (
         "AGENT BRIEF WARNING (not blocked, ASK-4649): "
         + " ".join(notes)
-        + " Silence with `one-job-brief-skip: <why>` in the prompt."
     )
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",

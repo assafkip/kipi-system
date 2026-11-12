@@ -148,7 +148,7 @@ def test_wired_in_both_settings_files(settings):
 
 # ---- ASK-4649: brief length and report-limit WARNINGS (exit 0, never a block)
 # Fixtures are real briefs from the control set, not invented. Measured on those
-# 105 briefs: 3 over the length caps, 97 with no numeric report limit.
+# 105 briefs: 3 over the length caps, 91 with no numeric report limit.
 BRIEFS = json.loads((HERE / "fixtures" / "agent_briefs_control_1111.json").read_text())
 
 
@@ -210,3 +210,11 @@ def test_each_length_cap_fires_alone():
     # the description line counts too: 1 + 1 + 38 = exactly 40 lines
     at_cap = "Report under 300 words.\n" + "\n".join(["step"] * 38)
     assert _warning(_run(at_cap)) == ""
+
+
+def test_warning_does_not_name_the_bypass_marker():
+    # PR #769 review major: the marker also stands down the multi-PR block, so
+    # advertising it in a warning that fires on most launches teaches the model
+    # the string that turns the block off. The bypass still works (test above).
+    msg = _warning(_run(BRIEFS["long_no_report_limit"]))
+    assert msg and "one-job-brief-skip" not in msg
