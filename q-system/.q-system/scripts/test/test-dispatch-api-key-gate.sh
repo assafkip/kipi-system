@@ -104,7 +104,7 @@ run_gate() {
     export KIPI_FLEET_STATE="$state"
     export KIPI_DISPATCH_RESET_HOUR=7
     . "$GATE"
-    echo through > "$WORK/$label.through" ) >"$WORK/$label.out" 2>&1
+    echo "through keys=${KIPI_FLEET_API_KEYS:-unset}" > "$WORK/$label.through" ) >"$WORK/$label.out" 2>&1
 }
 # The notifier records the page text and always succeeds: page_once writes its
 # marker ONLY when page_ok reports the page went out, so a notifier that failed
@@ -361,6 +361,54 @@ write_facts "$WORK/k2null.json" null yes
 through k2null \
   && ok "case 12: key 2 with an unknown credit is skipped, key 1 carries the fleet" \
   || bad "case 12: an unknown key 2 stopped the tick" "$(cat "$WORK/k2null-pages/dispatch.log" 2>/dev/null)"
+
+# --- 13: plan-billing override file (ASK-4714) -------------------------------
+# Only the paused branch may read it. Each case reuses case 3's paused state.
+TODAY="$(date -u +%Y-%m-%d)"
+pb_case() {  # pb_case <label> <file content or NOFILE>
+  local f="$WORK/$1-pb"
+  if [ "$2" = "NOFILE" ]; then f="$WORK/$1-absent"; else printf '%s\n' "$2" > "$f"; fi
+  write_paused
+  KIPI_FLEET_PLAN_BILLING_FILE="$f" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+    KIPI_FLEET_NOW="$NOW12" run_gate "$1" "$PAUSED"
+}
+pb_case pbfuture "2999-01-01"
+if through pbfuture && grep -q 'keys=0' "$WORK/pbfuture.through" \
+   && paged "$WORK/pbfuture-pages" "PLAN BILLING OVERRIDE" && paged "$WORK/pbfuture-pages" "2999-01-01" \
+   && ! marker "$WORK/pbfuture-pages" api-keys-paused; then
+  ok "case 13a: paused plus a future date runs with KIPI_FLEET_API_KEYS=0 and logs the plan line"
+else
+  bad "case 13a: future date overrides the pause" "$(cat "$WORK/pbfuture.through" 2>&1) $(cat "$WORK/pbfuture-pages/dispatch.log" 2>/dev/null)"
+fi
+for c in "pbpast:2000-01-01" "pbtoday:$TODAY" "pbbad:not-a-date" "pbmonth:2999-13-45" "pbempty:"; do
+  pb_case "${c%%:*}" "${c#*:}"
+  if ! through "${c%%:*}" && marker "$WORK/${c%%:*}-pages" api-keys-paused; then
+    ok "case 13b: override '${c#*:}' stays paused with today's page"
+  else
+    bad "case 13b: override '${c#*:}' must stay paused" "$(cat "$WORK/${c%%:*}.through" 2>&1)"
+  fi
+done
+pb_case pbnone NOFILE
+! through pbnone && marker "$WORK/pbnone-pages" api-keys-paused \
+  && ok "case 13c: no file stays paused" || bad "case 13c: a missing file must stay paused"
+# A key with credit: the file is never read, keys stay on.
+KIPI_FLEET_PLAN_BILLING_FILE="$WORK/pbfuture-pb" KIPI_FLEET_FAKE_KEY_1=k1 KIPI_FLEET_FAKE_KEY_2=k2 \
+  KIPI_FLEET_NOW="$NOW12" run_gate pbcredit
+if through pbcredit && grep -q 'keys=unset' "$WORK/pbcredit.through" \
+   && ! paged "$WORK/pbcredit-pages" "PLAN BILLING"; then
+  ok "case 13d: a key with credit ignores the file"
+else
+  bad "case 13d: credit must beat the override" "$(cat "$WORK/pbcredit.through" 2>&1)"
+fi
+
+# A pause page raised before the override must clear while it holds, or the
+# page re-pings the day the override lapses with a stale marker.
+FLP="$WORK/pbflip-pages"; mkdir -p "$FLP"
+GATE_PAGEDIR="$FLP" pb_case pbflip1 "2000-01-01"
+marker "$FLP" api-keys-paused || bad "case 13e: precondition, the pause marker was never raised" "$(ls "$FLP")"
+GATE_PAGEDIR="$FLP" pb_case pbflip2 "2999-01-01"
+! marker "$FLP" api-keys-paused && ok "case 13e: an active override clears the stale pause marker" \
+  || bad "case 13e: stale api-keys-paused marker survived the override"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"
