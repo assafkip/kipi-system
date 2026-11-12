@@ -170,9 +170,10 @@ assert_reddit_build_radar_is_recorded() {
 import json, sys
 
 registry = json.load(open(sys.argv[1], encoding="utf-8"))
-match = [e for e in registry["instances"] if e["name"] == "reddit-build-radar"]
+# ASK-4650: the directory is gone, so the row lives in eliminated with the ASK-117 record intact. Either collection counts; absence from both is the deletion this test exists to catch.
+match = [e for e in registry["instances"] + registry.get("eliminated", []) if e["name"] == "reddit-build-radar"]
 if not match:
-    print("reddit-build-radar is no longer in instances[]")
+    print("reddit-build-radar is in neither instances[] nor eliminated[]")
     sys.exit(1)
 entry = match[0]
 if entry.get("skeleton_managed") is not False:
