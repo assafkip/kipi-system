@@ -22,7 +22,9 @@ import subprocess
 import sys
 import time
 
-PREFIX = "q-system/memory/"
+# ASK-4647: .prd-os/ is held by auto-commit.py too, so a dirty ledger origin also
+# changed would refuse the fast-forward exactly like a memory file.
+PREFIXES = ("q-system/memory/", ".prd-os/")
 
 
 def git(repo, *a):
@@ -31,8 +33,8 @@ def git(repo, *a):
 
 def overlap(repo, upstream):
     dirty = {l[3:] for l in git(repo, "status", "--porcelain", "--untracked-files=no",
-                                "--", PREFIX).stdout.splitlines()}
-    moved = set(git(repo, "diff", "--name-only", "HEAD", upstream, "--", PREFIX).stdout.split())
+                                "--", *PREFIXES).stdout.splitlines()}
+    moved = set(git(repo, "diff", "--name-only", "HEAD", upstream, "--", *PREFIXES).stdout.split())
     return sorted(dirty & moved)
 
 
