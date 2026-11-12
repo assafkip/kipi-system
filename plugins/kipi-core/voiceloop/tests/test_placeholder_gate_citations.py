@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A report's citation forms are text, an empty template token is a blank.
 
-why this file exists (ASK-4658, found by the review of ASK-4651's PR, kipi #763). That PR
+why this file exists (ASK-4658, found by the review of ASK-4651's PR, PR #763). That PR
 exempted the IOC defang only. The other bracket conventions of a written report still hit
 the hard row `unfilled-placeholder`, so reports sent through the press-doc door would have
 been refused for a numbered footnote, a reference-link definition, `[sic]` inside a quote,
