@@ -142,3 +142,74 @@ def test_wired_in_both_settings_files(settings):
         if GUARD.name in h["command"]
     ]
     assert len(hits) == 1, f"{settings}: guard wired {len(hits)} times"
+
+
+# ---- ASK-4649: brief length WARNING (exit 0, never a block)
+# Fixture: line and word counts of three real briefs, every word replaced by
+# `w` (the repo is public). Measured on the 105 real briefs: 3 over the caps.
+BRIEFS = json.loads((HERE / "fixtures" / "agent_briefs_control_1111.json").read_text())
+
+
+def _warning(r: subprocess.CompletedProcess) -> str:
+    assert r.returncode == 0, r.stderr
+    assert r.stderr == "", "a warning on stderr never reaches the model"
+    if not r.stdout.strip():
+        return ""
+    out = json.loads(r.stdout)["hookSpecificOutput"]
+    assert out["hookEventName"] == "PreToolUse"
+    return out["additionalContext"]
+
+
+def test_short_brief_passes_silently():
+    r = _run(BRIEFS["short"])
+    assert r.stdout == "" and _warning(r) == ""
+
+
+@pytest.mark.parametrize("key", ["over_line_cap", "over_word_cap"])
+def test_long_brief_gets_the_length_message(key):
+    msg = _warning(_run(BRIEFS[key]))
+    assert "non-blank lines" in msg and "caps: 40 lines, 1000 words" in msg
+
+
+def test_bypass_silences_the_warning():
+    marker = "\none-job-brief-skip: a long brief by design, one job"
+    r = _run(BRIEFS["over_line_cap"] + marker)
+    assert r.stdout == "" and _warning(r) == ""
+
+
+def test_warning_does_not_name_the_bypass_marker():
+    # PR #769 round 1 major: the marker also stands down the multi-PR block.
+    msg = _warning(_run(BRIEFS["over_line_cap"]))
+    assert msg and "one-job-brief-skip" not in msg
+
+
+def test_malformed_input_still_exits_zero_without_output():
+    r = subprocess.run([sys.executable, str(GUARD)], input="not json",
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+
+
+def test_each_length_cap_fires_alone():
+    # constructed boundary shapes: the real long briefs would hide a mutant
+    # that disables only one cap
+    lines_only = "\n".join(["step"] * 46)
+    words_only = "word " * 1100
+    assert "non-blank lines" in _warning(_run(lines_only))
+    assert "non-blank lines" in _warning(_run(words_only))
+    # the description line counts too: 1 + 39 = exactly 40 lines
+    assert _warning(_run("\n".join(["step"] * 39))) == ""
+
+
+def test_detector_without_the_new_function_does_not_crash(tmp_path):
+    # q-system ahead of plugins/: a one_job.py from before ASK-4649. Red before
+    # the getattr guard (AttributeError, exit 1), green after.
+    root = tmp_path / "repo"
+    scripts = root / "q-system" / ".q-system" / "scripts"
+    scripts.mkdir(parents=True)
+    plug = root / "plugins" / "prd-os" / "scripts"
+    plug.mkdir(parents=True)
+    (plug / "one_job.py").write_text("def multi_pr_reasons(text):\n    return []\n")
+    guard = scripts / GUARD.name
+    guard.write_text(GUARD.read_text())
+    r = _run(BRIEFS["over_line_cap"], guard=guard)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == "", r
