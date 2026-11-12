@@ -37,6 +37,14 @@ BIG_FILE = "".join(f"V{i} = {i}\n" for i in range(160))          # 160 lines: L
 FAST_CHECK = "python3 tests/test_tool.py"
 
 
+@pytest.fixture(autouse=True)
+def _no_worker_classifier(monkeypatch):
+    """ASK-4612: a worker run exports KIPI_SIZE_CLASSIFIER, and with it set the
+    no-classifier fixture below was sized S by the skeleton's copy (measured: 1 red of 174
+    kipi-dsse tests). Each test here owns its classifier, so the variable is cleared."""
+    monkeypatch.delenv("KIPI_SIZE_CLASSIFIER", raising=False)
+
+
 def _git(repo: Path, *args: str) -> None:
     r = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
