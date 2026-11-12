@@ -523,3 +523,10 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-11-08
 - **Held by:** `q-system/.q-system/scripts/test/test-fleet-liveness.py` (coverage and bounds, in CI; red on 5d281a28, 7 mutants), the `liveness-debt-expired` detector in `q-system/.q-system/scripts/fleet-health-daily.py` (the dates, daily, with a real clock; an expired debt files one Linear issue), and `heartbeat.py` with `.github/workflows/heartbeat.yml` (consumer reports, off the Mac). The 10 debts name ASK-3824, ASK-3950, ASK-3958, ASK-3959, ASK-3960, ASK-3961, ASK-3962 and ASK-3973, and expire 2026-12-08. (ASK-3957's E5 debt was removed on 2026-11-08: #636 shipped it, and it closes the guard gap in client sessions rather than giving the repo-refused state an exit by age, so E6 on ASK-3958 is that state's one debt.)
 - **Revisit:** Only on a founder order. A max age moves to a measured SLE once the heartbeat has two weeks of rows.
+
+## 2026-11-12: Seven registry rows for deleted directories move to `eliminated` (ASK-4650)
+- **Decision:** `KTLYST_strategy`, `ktlyst-website`, `personal-brand`, `gtm-partner`, `reddit-build-radar`, `thaena` and `norri ai` leave `instances` and join `eliminated`, rows intact with a note. Origin: [SYSTEM-INFERRED]
+- **Reason:** Their directories are gone (cole-gtm deleted 2026-10-16; two under consulting/projects). `kipi-update.sh` counted each as Skipped on every run. `eliminated` is the registry's existing home for removed projects (school-idf precedent), and the validator asserts those paths stay absent.
+- **Date:** 2026-11-12
+- **Held by:** `q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh` (reads the dispatch record from either collection).
+- **Revisit:** Only if a directory returns, then the row moves back.
