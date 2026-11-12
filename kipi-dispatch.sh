@@ -1067,9 +1067,24 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" != "0" ] && [ -f "$KEY_HELPER" ] && [ -f "$SPEN
       api_gate_page api-keys-missing "kipi dispatch: the fleet has no usable API key ($KEY_LINE), so no run starts. Every run would exit 4 with no spend row. Do: what the line names. A missing Keychain item: add service kipi-fleet-api-key-<slot>. An unknown credit or cycle: set monthly_credit_usd and current_cycle_expires_utc in ~/.config/kipi/fleet-api.json. Auto-reload not confirmed off: auto_reload_off_confirmed_at, set only once it is. The next tick starts on its own."
       exit 0 ;;
     "4:paused")
+      # PLAN-BILLING OVERRIDE (ASK-4714). The founder ruled 2026-11-12 that the
+      # worker runs on the Claude plan while both credits are spent. A bare
+      # KIPI_FLEET_API_KEYS=0 has no expiry and launchd never had it, so the ruling
+      # lives in a dated file instead. It applies ONLY here, so a key with credit
+      # is never overridden, and any bad or lapsed file falls through to the pause.
+      PB_FILE="${KIPI_FLEET_PLAN_BILLING_FILE:-$HOME/.config/kipi/fleet-plan-billing-until}"
+      PB_UNTIL="$(head -n 1 "$PB_FILE" 2>/dev/null | tr -d '[:space:]')"
+      # Round-trip the date: a shape match alone lets 2026-13-45 through.
+      PB_OK="$(date -u -d "$PB_UNTIL" +%Y-%m-%d 2>/dev/null || date -u -j -f %Y-%m-%d "$PB_UNTIL" +%Y-%m-%d 2>/dev/null)"
+      if [ "$PB_OK" = "$PB_UNTIL" ] \
+         && [[ "$(date -u +%Y-%m-%d)" < "$PB_UNTIL" ]]; then
+        say "API KEYS: PLAN BILLING OVERRIDE: every key reads exhausted, so runs bill the PLAN, not the API credit, until $PB_UNTIL (file $PB_FILE); KIPI_FLEET_API_KEYS=0 for this tick's worker runs"
+        export KIPI_FLEET_API_KEYS=0
+      else
       say "API KEYS: every known key's credit read as exhausted; paused until the next budget day re-probes"
       api_gate_page api-keys-paused "kipi dispatch: every known API key's credit read as exhausted, so the fleet is paused. It re-probes once at the start of the next budget day and the first success resumes it. Nothing buys credit. Do: nothing, or check \`fleet_api_key.py status\`."
-      exit 0 ;;
+      exit 0
+      fi ;;
     0:*) ;;
     *)
       say "API KEYS: the key helper answered nothing the gate understands (probe rc=$KEY_RC, '${KEY_LINE}', stderr '${KEY_ERR}'); stopping the tick"
