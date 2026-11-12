@@ -22,6 +22,7 @@ GATE_SRC = (HERE / "capability-gate.py").read_text()
 
 
 def load(src: str, name: str, tmp: Path):
+    tmp.mkdir(parents=True, exist_ok=True)
     f = tmp / f"{name}.py"
     f.write_text(src)
     spec = importlib.util.spec_from_file_location(name, f)
@@ -491,6 +492,7 @@ def repo(tmp_path):
     (scripts / "test").mkdir(parents=True)
     frags = root / "q-system/.q-system/capability/expected_tests"
     frags.mkdir(parents=True)
+    (root / "instance-registry.json").write_text("{}\n")  # skeleton-shaped: the machinery is its own
     (scripts / "widget.sh").write_text("echo 1\n")
     (scripts / "capability-gate.py").write_text("# stand-in\n")
     for name, body in (("test-widget.sh", "# names widget.sh\ntouch ran-widget\n"),
@@ -656,3 +658,88 @@ def test_gate_mutants_are_killed(label, old, new, case, tmp_path, repo):
     mutant = load(GATE_SRC.replace(old, new, 1), "gate_mutant", tmp_path)
     with pytest.raises(AssertionError):
         case(mutant, repo)
+
+
+# ------------------------------------------- instance vs skeleton (ASK-4648)
+def _repo(tmp: Path, skeleton: bool, files: dict[str, str]) -> Path:
+    """A real throwaway git repo: base commit on `main`, then `files` on a branch."""
+    tmp.mkdir(parents=True, exist_ok=True)
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+    git("init", "-q", "-b", "main")
+    (tmp / "README.md").write_text("x\n")
+    if skeleton:
+        (tmp / "instance-registry.json").write_text("{}\n")
+    git("add", "-A"); git("commit", "-qm", "base"); git("checkout", "-qb", "feat")
+    for rel, text in files.items():
+        f = tmp / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+    git("add", "-A"); git("commit", "-qm", "change")
+    return tmp
+
+
+SYNCED = {
+    "plugins/kipi-core/kipi-mcp/tests/conftest.py": "import pytest\n",
+    "q-system/.q-system/capability/declared_inert/control-file-propagate.py.json": "{}\n",
+}
+OWN5 = {"tools/own.py": "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n"}
+
+
+def case_instance_ignores_synced_files(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {**SYNCED, **OWN5}), "main")
+    assert (v["tier"], v["full_suite"], v["app_lines"]) == ("S", False, 5), v
+
+
+def case_skeleton_counts_synced_files(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, True, {**SYNCED, **OWN5}), "main")
+    assert v["tier"] == "L" and v["full_suite"], v
+
+
+def case_instance_own_lines_still_count(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"tools/own.py": "x = 1\n" * 200}), "main")
+    assert v["tier"] == "L" and v["app_lines"] == 200, v
+
+
+def case_instance_synced_code_is_not_app_lines(cs, tmp_path):
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"plugins/kipi-core/lib.py": "x = 1\n" * 200}), "main")
+    assert v["tier"] == "S" and v["app_lines"] == 0, v
+
+
+def case_instance_owned_subtree_stays_own(cs, tmp_path):
+    # q-system/memory/ is excluded from the sync, so code there is the instance's.
+    v = cs.plan_for_repo(_repo(tmp_path, False, {"q-system/memory/own.py": "x = 1\n" * 200}), "main")
+    assert v["app_lines"] == 200 and v["tier"] == "L", v
+
+
+@pytest.mark.parametrize("case", [case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
+                                  case_instance_own_lines_still_count, case_instance_synced_code_is_not_app_lines,
+                                  case_instance_owned_subtree_stays_own])
+def test_instance_vs_skeleton(cs, tmp_path, case):
+    case(cs, tmp_path)
+
+
+def test_owned_subtrees_match_kipi_update_sh(cs):
+    import re
+    sh = (HERE.parents[2] / "kipi-update.sh").read_text()
+    body = re.search(r"^INSTANCE_OWNED_SUBTREES=\(\n(.*?)\n\)", sh, re.S | re.M).group(1)
+    assert tuple(body.split()) == cs.INSTANCE_OWNED_SUBTREES
+
+
+INST_MUTANTS = [
+    ("machinery of a synced file", "machinery_reason(path) if own(path) else None", "machinery_reason(path)", case_instance_ignores_synced_files),
+    ("app lines of a synced file", "if is_code(p) and own(p))", "if is_code(p))", case_instance_synced_code_is_not_app_lines),
+    ("skeleton is read from the registry", '(root / "instance-registry.json").exists()', "False", case_skeleton_counts_synced_files),
+    ("an instance-owned subtree stays own", "for o in INSTANCE_OWNED_SUBTREES)", "for o in ())", case_instance_owned_subtree_stays_own),
+    ("only synced prefixes are synced", "    if not path.startswith(SYNCED_PREFIXES):\n        return False\n", "", case_instance_own_lines_still_count),
+]
+
+
+@pytest.mark.parametrize("label,old,new,case", INST_MUTANTS, ids=[m[0] for m in INST_MUTANTS])
+def test_instance_mutants_are_killed(label, old, new, case, tmp_path):
+    assert old in CS_SRC, f"the mutant for '{label}' no longer matches the source"
+    mutant = load(CS_SRC.replace(old, new, 1), "cs_inst_mutant", tmp_path / "m")
+    with pytest.raises(AssertionError):
+        case(mutant, tmp_path / "r")
