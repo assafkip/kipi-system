@@ -16,5 +16,8 @@ assert hits("I flagged someone flagging it, one flagger.") == [], "fired inside 
 assert len(hits("There is one flag in the report.")) == 1, "control: whole phrase must fire"
 assert len(hits("One flag. Then nothing.")) == 1, "control: phrase at a sentence start must fire"
 assert len(hits("one flag, one flag")) == 2, "control: each whole occurrence counts"
+assert len(hits("Two quick ones: one flags it.")) == 1, "control: a plural still fires"
+plurals = [v for v in vl.check_banned_phrases("These are game-changers.") if "game-changer" in v["detail"]]
+assert plurals, "control: the plural 'game-changers' still fires"
 print("PASS: banned phrases match whole words only; whole-phrase controls still fire")
 PY

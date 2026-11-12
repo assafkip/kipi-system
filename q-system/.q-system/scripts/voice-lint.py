@@ -273,8 +273,9 @@ def check_banned_phrases(text):
     prose_text = strip_code_for_prose_check(text).lower()
     for phrase in BANNED_PHRASES:
         # Whole words only (ASK-4608): a bare substring find fired 'one flag' inside
-        # 'the one flagged question' and blocked the consulting site deploy.
-        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])")
+        # 'the one flagged question' and blocked the consulting site deploy. A plural
+        # still fires ('game-changers'), so the tail allows an s or es before the edge.
+        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?:e?s)?(?![a-z0-9])")
         for match in pattern.finditer(prose_text):
             line = find_line_number(text, match.start())
             violations.append({"rule": "banned-phrase", "line": line, "detail": f"banned phrase: '{phrase}'"})
