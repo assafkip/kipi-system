@@ -737,9 +737,14 @@ def case_instance_own_plugin_conftest_is_machinery(cs, tmp_path):
 
 
 def test_shipped_plugins_match_the_skeleton_plugins_dir(cs):
-    # The same enumeration kipi-update.sh managed_plugin_names() uses: plugins/*/ , dot dirs skipped.
+    # Skeleton only: this file syncs to instances, where an own plugin makes the dir listing
+    # differ on purpose. The skeleton is the repo that holds instance-registry.json.
+    if not (HERE.parents[2] / "instance-registry.json").exists():
+        pytest.skip("instance: the skeleton's plugins/ is the source, not this tree")
+    # Same enumeration as kipi-update.sh managed_plugin_names(): bash */ skips dot dirs, pathlib's glob does not.
     root = HERE.parents[2] / "plugins"
-    assert tuple(sorted(p.name for p in root.glob("*/") if p.is_dir())) == tuple(sorted(cs.SHIPPED_PLUGINS))
+    found = [p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    assert tuple(sorted(found)) == tuple(sorted(cs.SHIPPED_PLUGINS))
 
 
 @pytest.mark.parametrize("case", [case_instance_edit_of_a_shipped_plugin_is_not_counted, case_instance_own_plugin_is_sized, case_instance_own_plugin_conftest_is_machinery, case_instance_synced_import_is_not_an_escalator, case_instance_ignores_synced_files, case_skeleton_counts_synced_files,
