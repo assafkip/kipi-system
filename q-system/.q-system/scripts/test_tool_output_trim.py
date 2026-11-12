@@ -216,6 +216,22 @@ def test_hunk_header_content_untouched_even_via_wrapper():
     assert r.returncode == 0 and r.stdout == ""
 
 
+def test_colored_hunk_header_untouched():
+    text = "\x1b[1mdiff --git a/f b/f\x1b[m\n\x1b[36m@@ -1,3 +1,4 @@\x1b[m\n" + "\n".join(f"+line {i} {i * 7919}" for i in range(600))
+    r = run_hook(bash_payload("./show-patch.sh", text))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_old_spill_files_pruned_fresh_kept(_state):
+    _state.mkdir(parents=True)
+    old, fresh = _state / "old-1.txt", _state / "fresh-1.txt"
+    old.write_text("x"); fresh.write_text("y")
+    os.utime(old, (1, 1))
+    text = "\n".join(f"headline number {i} unique {i * 7919}" for i in range(400))
+    trimmed(run_hook(bash_payload("make", text)))
+    assert not old.exists() and fresh.exists()
+
+
 def test_trim_under_20_percent_saving_is_skipped():
     # 60 distinct long lines: under head+tail, nothing omitted, footer only adds bytes.
     text = "\n".join(f"{i:03d} " + "q" * 40 + str(i * 7919) for i in range(60))
@@ -267,7 +283,7 @@ MUTANTS = [
      "if False:\n        return None", "test_trim_under_20_percent_saving_is_skipped"),
     ("diff_command", "if GIT_DIFF_CMD_RE.search(command or \"\"):\n        return True",
      "if False:\n        return True", "test_git_diff_command_untouched"),
-    ("diff_hunk", "return bool(HUNK_RE.search(out) or HUNK_RE.search(err))", "return False",
+    ("diff_hunk", 'return bool(HUNK_RE.search(ANSI_RE.sub("", out)) or HUNK_RE.search(ANSI_RE.sub("", err)))', "return False",
      "test_hunk_header_content_untouched_even_via_wrapper"),
     ("failure_blocks", "    keep: set[int] = set()\n    n = len(lines)\n    i = 0\n    while i < n:",
      "    keep: set[int] = set()\n    n = len(lines)\n    i = n\n    while i < n:",
@@ -276,6 +292,9 @@ MUTANTS = [
      "test_real_traceback_block_kept_whole"),
     ("error_context", "if SIGNAL_RE.search(lines[i]):\n            keep.update",
      "if False:\n            keep.update", "test_error_line_mid_output_kept_with_context"),
+    ("hunk_ansi", 'HUNK_RE.search(ANSI_RE.sub("", out)) or HUNK_RE.search(ANSI_RE.sub("", err))',
+     "HUNK_RE.search(out) or HUNK_RE.search(err)", "test_colored_hunk_header_untouched"),
+    ("prune", "    prune_old(folder)\n", "", "test_old_spill_files_pruned_fresh_kept"),
     ("head", "HEAD_LINES = 30", "HEAD_LINES = 0", "test_head_30_lines_are_kept"),
     ("kill_switch", "if os.environ.get(\"KIPI_OUTPUT_TRIM\") == \"0\":\n        return None",
      "if False:\n        return None", "test_kill_switch"),

@@ -44,6 +44,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 MIN_CHARS = 2000
@@ -208,10 +209,29 @@ def _safe(value: object) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(value or ""))[:80].strip(".") or "nosession"
 
 
+RETENTION_DAYS = 7
+
+
+def prune_old(folder: Path) -> None:
+    """Best-effort: unlink spill files older than RETENTION_DAYS (Codex P2, PR 764).
+
+    Only <name>-<n>.txt files this hook wrote; never raises, since a failed prune
+    must not cost the model its trimmed output.
+    """
+    try:
+        cutoff = time.time() - RETENTION_DAYS * 86400
+        for f in folder.glob("*-*.txt"):
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+    except OSError:
+        pass
+
+
 def write_full(session: str, body: str) -> Path | None:
     """Save the full output as <session>-<n>.txt. O_EXCL makes the counter race-free."""
     folder = state_dir()
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    prune_old(folder)
     for n in range(1, 100000):
         path = folder / f"{session}-{n}.txt"
         try:
@@ -232,7 +252,9 @@ def is_diff_output(command: str, out: str, err: str) -> bool:
     """
     if GIT_DIFF_CMD_RE.search(command or ""):
         return True
-    return bool(HUNK_RE.search(out) or HUNK_RE.search(err))
+    # ANSI stripped first: `git diff --color=always` starts every hunk header with an
+    # escape code, which defeated the anchored regex (Codex P1, PR 764).
+    return bool(HUNK_RE.search(ANSI_RE.sub("", out)) or HUNK_RE.search(ANSI_RE.sub("", err)))
 
 
 def process(payload: dict) -> dict | None:
