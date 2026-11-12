@@ -196,7 +196,7 @@ assert_human "$W/needy"
 echo "PASS 7: a successful step that dirties tracked files outside scope is refused and restored"
 
 W="$(newdir)"
-build_fixture "$W" "$SCRIPT" "touch .mirror-ok && printf 'CLOBBERED\n' > NOTES-AT-ROOT.md && exit 3"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && printf 'CLOBBERED\n' > NOTES-AT-ROOT.md && git add NOTES-AT-ROOT.md && exit 3"
 OUT="$(run "$W" --only needy)"
 rolled_back "$OUT" || fail "case 8 should roll back: $OUT"
 [ "$(cat "$W/needy/NOTES-AT-ROOT.md")" = "committed root notes" ] || fail "case 8: a failed step's write survived the rollback"
@@ -237,8 +237,8 @@ mutant "commit still runs after a failed step" \
         git -C "$path" rev-parse --git-dir'
 mutant "out-of-scope writes not detected" \
   'if [ -n "$ps_new" ]; then' 'if false; then'
-mutant "out-of-scope writes not restored" \
-  'git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true' 'true'
+mutant "restore ignores the index" \
+  'git -C "$path" restore --source=HEAD --staged --worktree -- "${ps_line:3}" 2>/dev/null || true' 'git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true'
 mutant "one-command check loosened" \
   '-ne 1 ]; then' '-ne 2 ]; then'
 mutant "summary stops naming the step" \

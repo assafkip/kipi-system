@@ -3577,7 +3577,9 @@ print("\n".join(mod.EXTRA_WATCHED))
           echo "    ERROR: post-sync step modified tracked files outside .claude/ and plugins/ (restored):"
           printf '%s\n' "$ps_new" | sed 's/^/      /'
           while IFS= read -r ps_line; do
-            git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true
+            # --staged too: a step that ran `git add` left the index holding the write,
+            # and a plain checkout restores from the index (PR #780 round 2).
+            git -C "$path" restore --source=HEAD --staged --worktree -- "${ps_line:3}" 2>/dev/null || true
           done <<< "$ps_new"
           POST_SYNC_FAILED_STEP="${POST_SYNC_FAILED_STEP:-$POST_SYNC_STEP (wrote outside .claude/ and plugins/)}"
           CONFIG_FAILED=1
