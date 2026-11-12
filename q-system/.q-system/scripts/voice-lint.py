@@ -272,11 +272,12 @@ def check_banned_phrases(text):
     violations = []
     prose_text = strip_code_for_prose_check(text).lower()
     for phrase in BANNED_PHRASES:
-        idx = prose_text.find(phrase)
-        while idx != -1:
-            line = find_line_number(text, idx)
+        # Whole words only (ASK-4608): a bare substring find fired 'one flag' inside
+        # 'the one flagged question' and blocked the consulting site deploy.
+        pattern = re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])")
+        for match in pattern.finditer(prose_text):
+            line = find_line_number(text, match.start())
             violations.append({"rule": "banned-phrase", "line": line, "detail": f"banned phrase: '{phrase}'"})
-            idx = prose_text.find(phrase, idx + 1)
     return violations
 
 
