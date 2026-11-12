@@ -81,25 +81,35 @@ def run(tool_input, env_extra, tool="Write", raw=None):
     stdin = raw if raw is not None else json.dumps({"tool_name": tool, "tool_input": tool_input})
     p = subprocess.run([sys.executable, str(HOOK)], input=stdin, capture_output=True,
                        text=True, env=env, timeout=180)
-    return p.returncode, p.stderr
+    return p.returncode, p.stderr, p.stdout
 
 
 def expect_block(name, res, *needles):
-    rc, err = res
+    rc, err = res[0], res[1]
     # rc 2 alone is not proof: python exits 2 when the hook file is missing.
     ok = rc == 2 and "BLOCKED by reuse-gate" in err and all(n in err for n in needles)
     check(name, ok, f"want BLOCK with {needles}, got rc={rc} err={err[:400]!r}")
 
 
 def expect_pass(name, res):
-    rc, err = res
-    check(name, rc == 0 and "BLOCKED" not in err, f"want PASS, got rc={rc} err={err[:400]!r}")
+    rc, err = res[0], res[1]
+    # A crash that failed open also exits 0. Review of #755: a raise injected into
+    # the worktree branch still read 52/52 green, so a pass must be a CLEAN pass.
+    clean = "BLOCKED" not in err and "failing open" not in err
+    check(name, rc == 0 and clean, f"want PASS, got rc={rc} err={err[:400]!r}")
 
 
 def expect_open(name, res):
-    rc, err = res
-    check(name, rc == 0 and "failing open" in err,
-          f"want fail-open warning, got rc={rc} err={err[:400]!r}")
+    rc, err, out = res
+    # The warning must reach someone: on exit 0 Claude Code shows no stderr, so it
+    # rides stdout as a systemMessage too.
+    try:
+        msg = json.loads(out.strip().splitlines()[-1]).get("systemMessage", "")
+    except (ValueError, IndexError, AttributeError):
+        msg = ""
+    check(name, rc == 0 and "failing open" in err and "failing open" in msg,
+          f"want fail-open warning on stderr and systemMessage, got rc={rc} "
+          f"err={err[:300]!r} out={out[:200]!r}")
 
 
 def w(path, content):
@@ -148,6 +158,16 @@ def main():
         expect_block("reuses one missing of two", run(w(new, script(
             "Reuses-kipi: q-system/.q-system/scripts/backlog-sweep.py\n"
             "Reuses-kipi: q-system/.q-system/scripts/nope.py")), env), "nope.py")
+        # 3b. a directory is not a file (the brief: "naming an existing kipi-system file")
+        expect_block("reuses a directory", run(w(new, script(
+            "Reuses-kipi: q-system/.q-system/scripts")), env), "not a file")
+        # 3c. ordinary ways of writing a real citation pass
+        for form in ("q-system/.q-system/scripts/backlog-sweep.py.",
+                     "kipi-system/q-system/.q-system/scripts/backlog-sweep.py",
+                     "`q-system/.q-system/scripts/backlog-sweep.py`"):
+            expect_pass(f"reuses form {form}", run(w(new, script(f"Reuses-kipi: {form}")), env))
+        expect_pass("reuses in a /* */ comment", run(w(client / "backlog_sweep.js",
+            "/* Reuses-kipi: q-system/.q-system/scripts/backlog-sweep.py */\nrun();\n"), env))
         # 4. Kipi-checked must name EVERY overlapping capability
         both = client / "backlog_linear_sync.py"
         expect_block("checked misses one", run(w(both, script(
@@ -160,7 +180,15 @@ def main():
             "Kipi-checked: q-system/.q-system/scripts/backlog-sweep.py, "
             "q-system/.q-system/scripts/linear-sync.py -- neither fits", doc="Sync tool.")), env))
         expect_block("checked without reason", run(w(both, script(
-            "Kipi-checked: backlog-sweep, linear-sync", doc="Sync tool.")), env), "--")
+            "Kipi-checked: backlog-sweep, linear-sync", doc="Sync tool.")), env), "no reason")
+        # 4b. an em or en dash also separates the reason (the founder bans "--" in output)
+        for dash in ("\u2014", "\u2013"):
+            expect_pass(f"checked with dash {dash!a}", run(w(both, script(
+                f"Kipi-checked: backlog-sweep, linear-sync {dash} neither files mail threads",
+                doc="Sync tool.")), env))
+        # 4c. the refusal's own template pasted back is not an answer
+        expect_block("template pasted back", run(w(both, script(
+            "Kipi-checked: <slug>, <slug> -- <why none fits>", doc="Sync tool.")), env), "linear-sync")
         # 5. no overlap still needs the lookup recorded
         zebra = client / "zebra_quokka.py"
         expect_block("no overlap, no header", run(w(zebra, script(doc="Count quokkas.")), env),
@@ -171,12 +199,21 @@ def main():
             "Kipi-checked: none", doc="Count quokkas.")), env), "--")
         expect_block("checked none while overlaps exist", run(w(new, script(
             "Kipi-checked: none -- I looked")), env), "backlog-sweep")
-        # 6. more than 8 overlaps: the refusal lists 8, and naming those 8 passes
+        # 5b. with nothing listed, the literal `none` is required
+        expect_block("no overlap, names something else", run(w(zebra, script(
+            "Kipi-checked: linear-sync -- looked", doc="Count quokkas.")), env),
+            "nothing in kipi-system overlaps it")
+        expect_block("no overlap, template pasted back", run(w(zebra, script(
+            "Kipi-checked: <slug>, <slug> -- <why none fits>", doc="Count quokkas.")), env), "none")
+        # The one shape only the reason check catches (mutation run, round 1 of #755).
+        expect_block("none with the template reason", run(w(zebra, script(
+            "Kipi-checked: none -- <reason>", doc="Count quokkas.")), env), "no reason")
+        # 6. more than 8 overlaps: the refusal lists exactly 8, and naming those 8 passes
         many = client / "sweep_runner.py"
-        rc, err = run(w(many, script(doc="Run every sweep.")), env)
+        rc, err, _ = run(w(many, script(doc="Run every sweep.")), env)
         expect_block("many overlaps", (rc, err), "sweep")
         listed = [ln.split()[1] for ln in err.splitlines() if ln.startswith("  - ")]
-        check("lists at most 8", 0 < len(listed) <= 8, f"listed {listed}")
+        check("lists exactly 8 of 11", len(listed) == 8, f"listed {listed}")
         expect_pass("naming the listed 8 passes", run(w(many, script(
             "Kipi-checked: " + ", ".join(listed) + " -- none of them runs all sweeps",
             doc="Run every sweep.")), env))
@@ -203,12 +240,27 @@ def main():
         expect_pass("its worktree, non-github origin", run(
             w(wt / "scripts" / "new_backlog_sweep.py", script()), env))
         git(repo, "remote", "set-url", "origin", KIPI_URL)
+        # 8a2. a symlink into a kipi-system SUBDIR is kipi (judged on the resolved path).
+        # A link to the kipi root would pass either way: its .git shows through the link.
+        link = root / "link-to-kipi-q"
+        link.symlink_to(repo / "q-system")
+        expect_pass("symlink into kipi subdir", run(w(link / "new_backlog_sweep.py", script()), env))
+        # 8a3. an absolute citation from a kipi worktree names the same kipi file
+        expect_pass("reuses absolute worktree path", run(w(new, script(
+            f"Reuses-kipi: {wt}/q-system/.q-system/scripts/backlog-sweep.py")), env))
         # 8b. control: a git repo with another origin is gated (being in a repo is not the exemption)
         other = root / "other-repo"
         other.mkdir()
         git(other, "init", "-q")
         git(other, "remote", "add", "origin", "https://github.com/assafkip/chief.git")
         expect_block("other repo gated", run(w(other / "scripts" / "backlog_sweep.py", script()), env),
+                     "backlog-sweep")
+        # 8c. a worktree of a client repo is gated too: the fleet worker's trees are this shape
+        git(other, "-c", "user.email=f@example.invalid", "-c", "user.name=f",
+            "commit", "-q", "--allow-empty", "-m", "base")
+        owt = root / "other-wt"
+        git(other, "worktree", "add", "-q", "--detach", str(owt), "HEAD")
+        expect_block("client worktree gated", run(w(owt / "scripts" / "backlog_sweep.py", script()), env),
                      "backlog-sweep")
         # 9. temp space passes under the DEFAULT policy, and a non-temp path still gates
         default = {k: v for k, v in env.items() if k != "KIPI_REUSE_GATE_TEMP_ROOTS"}
@@ -237,6 +289,15 @@ def main():
         expect_pass("edit of an existing file", run({"file_path": str(existing),
                                                      "old_string": "print(0)",
                                                      "new_string": "print(2)"}, env, tool="Edit"))
+        # 11b. a MultiEdit that creates a file is judged on ALL its edits applied
+        me = str(client / "multi_backlog_sweep.py")
+        first = {"old_string": "", "new_string": script()}
+        expect_block("multiedit-create, no header", run(
+            {"file_path": me, "edits": [first]}, env, tool="MultiEdit"), "backlog-sweep")
+        expect_pass("multiedit-create, header in a later edit", run(
+            {"file_path": me, "edits": [first, {"old_string": "print(1)", "new_string":
+             "# Reuses-kipi: q-system/.q-system/scripts/backlog-sweep.py\nprint(1)"}]},
+            env, tool="MultiEdit"))
         # 12. origin/main packed into packed-refs still resolves (cache hit, still gated)
         git(repo, "pack-refs", "--all")
         check("loose ref gone", not (repo / ".git" / "refs" / "remotes" / "origin" / "main").exists(),
@@ -248,6 +309,8 @@ def main():
         bad.write_text(f"import sys\nopen({str(counter)!r}, 'a').write('x\\n')\nsys.exit(1)\n")
         benv = dict(env, KIPI_REUSE_GATE_CACHE=str(root / "cache-bad"), KIPI_REUSE_GATE_GEN=str(bad))
         expect_open("generator fails", run(w(new, script()), benv))
+        stray = sorted(p.name for p in (root / "cache-bad").glob(".tree-*"))
+        check("a failed run leaves no export behind", stray == [], f"left {stray}")
         expect_open("generator fails, second write", run(w(new, script()), benv))
         calls = counter.read_text().count("x") if counter.exists() else 0
         check("broken map generated once per sha", calls == 1, f"generator ran {calls} times")
@@ -264,9 +327,23 @@ def main():
             f = pc / f"{i:040x}.json"
             f.write_text("{}")
             os.utime(f, (1_000_000 + i, 1_000_000 + i))
+        # what a run killed midway leaves behind: an export dir and a temp file
+        (pc / ".tree-killed" / "q-system").mkdir(parents=True)
+        (pc / ".tmp-killed").write_text("partial")
         run(w(new, script()), dict(env, KIPI_REUSE_GATE_CACHE=str(pc)))
         kept = sorted(p.name for p in pc.glob("*.json"))
         check("prune keeps the newest", f"{sha}.json" in kept and len(kept) <= 10, f"kept {kept}")
+        left = sorted(p.name for p in pc.glob(".t*"))
+        check("prune drops killed-run leftovers", left == [], f"left {left}")
+        # 14b. no checkout is kept: the gate leaves no worktree in the kipi repo
+        wts = git(repo, "worktree", "list", "--porcelain")
+        check("no gate worktree registered", str(cache) not in wts and str(pc) not in wts, wts)
+        # 14c. after a broken map, the NEXT origin/main sha regenerates and gates again
+        git(repo, "commit", "-q", "--allow-empty", "-m", "next sha")
+        git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        recovered = dict(env, KIPI_REUSE_GATE_CACHE=str(root / "cache-bad"))
+        expect_block("next sha recovers after a broken map", run(w(new, script()), recovered),
+                     "backlog-sweep")
         # 15. malformed input and the founder's kill switch pass
         expect_pass("malformed stdin", run(None, env, raw="not json"))
         expect_pass("kill switch", run(w(new, script()), dict(env, REUSE_GATE_OFF="1")))
