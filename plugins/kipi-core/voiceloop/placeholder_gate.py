@@ -66,22 +66,42 @@ _DEFANG = frozenset({".", ":", "@", "://", "dot", "at"})
 # so a near-miss of each still blocks (pinned in test_placeholder_gate_citations.py):
 #   a number bracket, `[1]` `[1, 2]` `[3-5]`: digits only, never a template slot.
 #   an editorial word, `[sic]` `[REDACTED]`: the whole bracket, exact, any case.
-#   a link definition, `[1]: https://...` at a line start: a URL must follow the colon.
-#   a reference link, `[label][1]`: the label bracket is directly followed by a bracket.
+#   a link definition, `[1]: https://...` at a line start: a URL must follow the colon, and only
+#     the label bracket is exempt, never a bracket inside the URL tail. The label may be prose
+#     (`[vendor writeup]: https://...`) but not slot-shaped.
+#   a reference link, `[label][1]`: exempt ONLY when the ref is a NUMBER that `[1]: https://...`
+#     defines in the same text, and the label is not slot-shaped. `[label][1]` and `[TBD][3]` are
+#     the same characters, so syntax cannot separate them; two reviews of this gate found the
+#     hole twice (a bare `[` after the token, then any defined ref). A closed positive shape
+#     is what is left: named refs (`[text][kroll]`) are dropped because a name is as free as a
+#     slot, and a slot-shaped label blocks even before a defined number.
+#   SLOT-SHAPED: the label has no lowercase letter and is not plain digits (`[TBD]`, `[N]`,
+#     `[CLIENT NAME]`, `[SOURCE 1]`). Residual, said plainly: a lowercase instruction label
+#     directly before a number the text defines (`[paste the list][1]` with `[1]: https://...`)
+#     is still read as a reference link.
 _NUMBER = re.compile(r"\[\d{1,3}(?:\s*[,\-\u2013]\s*\d{1,3})*\]")
 _EDITORIAL = frozenset({"sic", "redacted"})
-_LINK_DEF = re.compile(r"^[ \t]{0,3}\[[^\]\n]{1,60}\]:[ \t]*(?:https?://|/|\./)\S+", re.M)
+_LINK_DEF = re.compile(
+    r"^[ \t]{0,3}(\[(?P<ref>[^\]\n]{1,60})\]):[ \t]*(?:https?://|/|\./)\S+", re.M)
+_REF_USE = re.compile(r"\[(\d{1,3})\]")
+
+
+def _slot_shaped(label):
+    return not any(c.islower() for c in label) and not label.strip().isdigit()
 
 
 def _is_citation(text, match):
     inner = match.group(0)[1:-1]
     if _NUMBER.fullmatch(match.group(0)) or inner.strip().lower() in _EDITORIAL:
         return True
-    if match.end() < len(text) and text[match.end()] == "[":
-        return True
+    ref = _REF_USE.match(text, match.end())
+    if ref and not _slot_shaped(inner):
+        defined = {d.group("ref").strip() for d in _LINK_DEF.finditer(text)}
+        if ref.group(1) in defined:
+            return True
     line_start = text.rfind("\n", 0, match.start()) + 1
     link = _LINK_DEF.match(text, line_start)
-    return bool(link) and link.start() <= match.start() < link.end()
+    return bool(link) and match.start() == link.start(1) and not _slot_shaped(link.group("ref"))
 
 
 def _is_defang(text, match):
