@@ -1,0 +1,5 @@
+{
+  "path": "plugins/kipi-core/hooks/test_reuse_gate.py",
+  "runner": "python3",
+  "timeout_s": 120
+}
