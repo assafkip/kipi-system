@@ -224,7 +224,7 @@ def _weekly_improve(tmp_path, monkeypatch, phone_text):
 
 def _cap_ladder(tmp_path, monkeypatch, phone_text):
     mod = _load("cap_ladder_census", "cap-ladder.py")
-    return [mod.founder_ask_message(n) for n in (1, 2, 9)]
+    return _texts([(mod.founder_ask_message(n), "the asks") for n in (1, 2, 9)], phone_text)
 
 
 CASES = {

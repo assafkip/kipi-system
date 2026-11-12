@@ -452,6 +452,7 @@ def status_resolve(ref: str, note: str = "", by: str = "") -> int:
     return _status_locked(go)
 
 
+FOUNDER_ASK_SEND_S = int(os.environ.get("CAP_LADDER_SEND_S") or 20)   # env: the test's hang case
 NOTIFY_KIND = "The list of your open decisions"   # chief's fallback line reads "<kind> is in the app Chat"
 ALERT = cmd("CAP_LADDER_ALERT", ["bash", str(HERE / "slack-notify.sh")])   # engineering signal -> Sana's triage
 _NOTIFY_MOD = None
@@ -484,12 +485,14 @@ def founder_ask_detail(rows: list) -> str:
     return "\n".join(lines)
 
 
-def notify_new_asks(apply: bool = True, alert: bool = False) -> str:
+def notify_new_asks(apply: bool = True, alert: bool = False, timeout: int = 60) -> str:
     """Hand every unresolved ask that was never sent to chief's phone gate, ONCE.
 
     WHY (founder 2026-11-12, "nothing should be waiting for me"): the status file's
     one reader was /q-morning, which he does not open, so every ask in it reached
-    nobody. One message per run (batching, not one ping per ask); the full list with
+    nobody. One message per RUN: the nightly run batches every unsent ask, and a
+    --founder-ask run sends the unsent ones at that moment, so a sweep that files N
+    asks in N processes pings N times. The full list with
     the command that releases each ask goes to his app Chat as `detail`.
 
     SENT IS WHAT CHIEF SAID, NOT WHAT THE PROCESS DID. `notified_at` is stamped only
@@ -500,6 +503,11 @@ def notify_new_asks(apply: bool = True, alert: bool = False) -> str:
     ONE LOCK ACROSS READ, SEND AND STAMP (PR #778 round 1, minor): the unsent read
     sat outside the lock, so two runs during one slow send pushed the same ask twice.
     A --resolve waits at most deliver's timeout behind it.
+
+    THE --founder-ask SEND IS CAPPED AT 20 s (round 2, major): both sweeps that call
+    it bound the subprocess at 60 s with no handler, and deliver's own 60 s cap let a
+    chief outage kill the sweep at its first ask. deliver turns a timeout into "not
+    delivered", so the ask stays unsent and the nightly run sends it.
 
     A NIGHTLY FAILURE IS FILED TO SANA (`alert`, round 1, major 2): stdout alone left
     an ask unsent forever with nobody told. One line per nightly failed run, through
@@ -513,7 +521,7 @@ def notify_new_asks(apply: bool = True, alert: bool = False) -> str:
             return f"[dry] founder asks: would send {len(todo)} unsent to chief's phone gate"
         try:
             verdict = _notify_mod().deliver(founder_ask_message(len(todo)), detail=founder_ask_detail(todo),
-                                            kind=NOTIFY_KIND)
+                                            kind=NOTIFY_KIND, timeout=timeout)
         except Exception as exc:   # a broken notifier must leave the asks retryable, never stamped
             verdict = {"delivered": False, "reason": f"notify raised {type(exc).__name__}: {str(exc)[:120]}"}
         if not verdict.get("delivered"):
@@ -1151,7 +1159,7 @@ def main(argv=None) -> int:
         got = status_add(i, k, a, source="cap-ladder.py --founder-ask")
         print(f"cap-ladder: the same ask is already listed ({got})" if got in before else f"cap-ladder: ask added ({got})")
         # The ask is recorded either way; a failed send only leaves it for the nightly retry.
-        print("cap-ladder: " + notify_new_asks(True))
+        print("cap-ladder: " + notify_new_asks(True, timeout=FOUNDER_ASK_SEND_S))
         return 0
 
     tgts = targets()

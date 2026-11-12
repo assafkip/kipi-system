@@ -131,6 +131,7 @@ def make_world(tmp: Path) -> dict:
         "open(w + '/notify.log', 'a').write(json.dumps(sys.argv[-1]) + '\\n')\n"
         "mode = open(w + '/notify.mode').read().strip() if os.path.exists(w + '/notify.mode') else ''\n"
         "if mode == 'boom':\n    sys.exit(3)\n"
+        "if mode == 'hang':\n    import time\n    time.sleep(8)\n"
         "print(json.dumps({'delivered': mode != 'fail', 'reason': 'down'}))\n"
         "sys.exit(1 if mode == 'fail' else 0)\n")
     (tmp / "bin/alert").write_text(
@@ -1146,6 +1147,16 @@ def case_founder_asks_reach_chief() -> None:
         ladder(env, "--apply")                       # sweep resolves it as moot BEFORE the send
         check("founder-asks: an ask whose ticket closed is resolved as moot and not sent",
               rows(env)["ASK-2"].get("resolved") and len(sent(env)) == 1, (rows(env), sent(env)))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "notify.mode").write_text("hang")
+        t0 = time.monotonic()
+        p = subprocess.run([sys.executable, str(LADDER), "--founder-ask", "ASK-1", "founder-decision", "spend: x"],
+                           env=dict(env, CAP_LADDER_SEND_S="1"), capture_output=True, text=True, timeout=60,
+                           stdin=subprocess.DEVNULL)
+        took = time.monotonic() - t0
+        check("founder-asks: a hung chief cannot hold --founder-ask past its send cap; the ask stays unsent",
+              p.returncode == 0 and took < 6 and not rows(env)["ASK-1"].get("notified_at"), (p.returncode, took, p.stdout + p.stderr))
     for mode in ("fail", "boom"):
         with tempfile.TemporaryDirectory() as td:
             env = make_world(Path(td))
