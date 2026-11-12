@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_worker_tree_classifier.py",
+ "runner": "pytest"
+}
