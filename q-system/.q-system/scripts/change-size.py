@@ -131,6 +131,26 @@ def is_code(path: str) -> bool:
     return path.endswith(CODE_SUFFIXES) and not is_test_path(path)
 
 
+# WHAT kipi-update.sh COPIES INTO AN INSTANCE. Inside an instance a file under these
+# prefixes arrived by sync: the skeleton wrote it, the next sync rewrites it, and
+# counting it as the instance's change made ktlyst product an L over a synced
+# conftest.py and brag an L over a synced capability fragment (ASK-4648, 2026-11-12).
+# `.claude/` is absent on purpose: the sync copies only its *.md there, not code.
+# A copy of kipi-update.sh's INSTANCE_OWNED_SUBTREES (the sync never touches these, so
+# they are the instance's own code); test_change_size.py parses the bash array and
+# fails on drift, the way test_instance_automation_guard.py does.
+SYNCED_PREFIXES = ("q-system/", "plugins/")
+INSTANCE_OWNED_SUBTREES = ("my-project", "canonical", "memory", "output", "research",
+                           ".q-system/data", ".q-system/agent-pipeline/bus")
+
+
+def is_synced(path: str) -> bool:
+    if not path.startswith(SYNCED_PREFIXES):
+        return False
+    rest = path[len("q-system/"):] if path.startswith("q-system/") else ""
+    return not any(rest == o or rest.startswith(o + "/") for o in INSTANCE_OWNED_SUBTREES)
+
+
 def machinery_reason(path: str) -> str | None:
     name = Path(path).name
     if path in FULL_RUN_PATHS or path.startswith(FULL_RUN_PREFIXES):
@@ -351,7 +371,7 @@ def dependents(path: str, index: tuple[dict, dict]) -> list[str]:
     return sorted(c for c in files_naming(path, index) if c != path)
 
 
-def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
+def third_party_imports(diff_text: str, local_stems: set[str], own=lambda p: True) -> list[str]:
     """New imports in APP code only. A test file importing pytest is not a new
     dependency of the product: CI already installs it, and 9 of the last 40
     commits on main were called L for exactly that before this was scoped."""
@@ -362,7 +382,8 @@ def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
         if f:
             current = f.group(1)
             continue
-        if line.startswith("+++") or is_test_path(current):
+        # A synced file's imports are the skeleton's, not this instance's (codex, PR #761).
+        if line.startswith("+++") or is_test_path(current) or not own(current):
             continue
         m, f2 = _IMPORT_LINE_RE.match(line), _FROM_LINE_RE.match(line)
         mods = [part.split()[0].split(".")[0] for part in m.group(1).split(",")] if m else []
@@ -377,16 +398,22 @@ def third_party_imports(diff_text: str, local_stems: set[str]) -> list[str]:
 def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: dict[str, str],
          diff_text: str = "", local_stems: set[str] | None = None,
          fragments: dict[str, str] | None = None,
-         covers: dict[str, list[str]] | None = None) -> dict:
+         covers: dict[str, list[str]] | None = None, skeleton: bool = True) -> dict:
     """PURE. changed = [(path, changed_line_count)] (both sides of a rename listed);
     declared = {declared test path: its text}; code_texts = {non-test code path:
     its text}, used for the one-hop dependents; covers = {declared test path: the
-    path globs its fragment says it covers}. Returns the whole verdict."""
+    path globs its fragment says it covers}. Returns the whole verdict.
+
+    skeleton=False means the repo is an INSTANCE: a path the sync owns is not the
+    instance's change, so it is neither machinery nor app lines. A hand-edit of such
+    a file inside an instance is ignored too, on purpose: the next sync overwrites it,
+    and the diff cannot tell it from the sync commit itself."""
     reasons, escalators, selected = [], [], set()
-    app_lines = sum(n for p, n in changed if is_code(p))
+    own = (lambda p: not is_synced(p)) if not skeleton else (lambda p: True)
+    app_lines = sum(n for p, n in changed if is_code(p) and own(p))
 
     for path, _ in changed:
-        why = machinery_reason(path)
+        why = machinery_reason(path) if own(path) else None
         if why:
             escalators.append(why)
         if path in (fragments or {}):
@@ -397,7 +424,7 @@ def plan(changed: list[tuple[str, int]], declared: dict[str, str], code_texts: d
         if path in declared:
             selected.add(path)
 
-    for mod in third_party_imports(diff_text, local_stems or set()):
+    for mod in third_party_imports(diff_text, local_stems or set(), own):
         escalators.append(f"new third-party import: {mod}")
 
     # A SCANNER ALWAYS RUNS, UNLESS IT HAS SAID WHAT IT COVERS (ASK-1918). It
@@ -590,7 +617,9 @@ def plan_for_repo(root: Path, base: str, head: str = "HEAD") -> dict:
     changed, diff_text = read_changed(root, base, head)
     code_texts, stems = read_code(root)
     declared, fragments, covers = read_declared(root)
-    return plan(changed, declared, code_texts, diff_text, stems, fragments, covers)
+    # Same test as instance-automation-guard.py: the skeleton has the registry at its root.
+    skeleton = (root / "instance-registry.json").exists()
+    return plan(changed, declared, code_texts, diff_text, stems, fragments, covers, skeleton)
 
 
 def main(argv=None) -> int:

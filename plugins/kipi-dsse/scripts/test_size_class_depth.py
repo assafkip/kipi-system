@@ -138,7 +138,7 @@ def test_a_diff_the_classifier_cannot_read_gets_the_strict_numbers(tmp_path):
     repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT}, base_ref=False)
     out = _dry(repo)
     assert out["size_class"] == "L", out
-    assert "could not classify" in " ".join(out["reasons"])
+    assert "no diff base resolves" in " ".join(out["reasons"])   # ASK-4648: named before the fatal
 
 
 def test_uncommitted_code_gets_the_strict_numbers(tmp_path):
@@ -214,3 +214,85 @@ def test_a_close_refused_for_uncommitted_code_names_the_file(tmp_path):
     r = _issue(repo, "close")
     assert r.returncode == 2, r.stdout + r.stderr
     assert "uncommitted change to scripts/tool.py" in r.stderr and "Commit it" in r.stderr, r.stderr
+
+
+# --- the diff base is resolved per repo (ASK-4648) ------------------------------------
+# Real temp repos. Before the resolver, a repo with no origin/main fell to L on the fatal.
+
+def _rebase_onto(repo: Path, ref: str | None) -> None:
+    """Drop origin/main and point `ref` (if any) at the base commit instead."""
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    if ref:
+        _git(repo, "update-ref", ref, "HEAD~1")
+
+
+def _size(repo: Path) -> dict:
+    spec = importlib.util.spec_from_file_location("_cb4648", DSSE / "check_budget.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.size_class(repo)
+
+
+def test_a_master_only_repo_with_no_remote_is_not_sized_l_by_the_fatal(tmp_path):
+    # codex.base_ref is the only pointer a no-remote repo has.
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _git(repo, "branch", "-m", "master")
+    _rebase_onto(repo, "refs/heads/trunk")
+    (repo / ".prd-os").mkdir(exist_ok=True)
+    (repo / ".prd-os/config.json").write_text(json.dumps({"codex": {"base_ref": "trunk"}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "cfg")
+    out = _size(repo)
+    assert (out["class"], out["base"]) == ("S", "trunk"), out
+
+
+def test_origin_head_pointing_at_master_is_the_base(tmp_path):
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _rebase_onto(repo, "refs/remotes/origin/master")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+    out = _size(repo)
+    assert (out["class"], out["base"]) == ("S", "origin/master"), out
+
+
+def test_origin_main_wins_over_origin_head_and_config(tmp_path):
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _git(repo, "update-ref", "refs/remotes/origin/master", "HEAD")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+    assert _size(repo)["base"] == "origin/main"
+
+
+def test_a_working_tree_base_ref_is_skipped_and_nothing_resolving_is_l_with_reasons(tmp_path):
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _rebase_onto(repo, "refs/heads/working-tree")   # a real ref of that name: only the skip refuses it
+    (repo / ".prd-os").mkdir(exist_ok=True)
+    (repo / ".prd-os/config.json").write_text(json.dumps({"codex": {"base_ref": "working-tree"}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "cfg")
+    out = _size(repo)
+    why = " ".join(out["reasons"])
+    assert out["class"] == "L", out
+    assert "origin/main" in why and "origin/HEAD" in why and "codex.base_ref" in why, why
+
+
+def test_a_configured_base_ref_that_does_not_exist_is_named_in_the_reason(tmp_path):
+    repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT})
+    _rebase_onto(repo, None)
+    (repo / ".prd-os").mkdir(exist_ok=True)
+    (repo / ".prd-os/config.json").write_text(json.dumps({"codex": {"base_ref": "ghost"}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "cfg")
+    out = _size(repo)
+    assert out["class"] == "L" and "codex.base_ref=ghost" in " ".join(out["reasons"]), out
+
+
+def test_a_configured_base_that_is_the_checked_out_branch_is_refused(tmp_path):
+    # Codex P1, PR 762: master...HEAD on master is empty, so a big change would read S.
+    repo = _sized_repo(tmp_path, {"scripts/big.py": BIG_FILE})
+    _git(repo, "branch", "-m", "master")
+    _rebase_onto(repo, None)
+    (repo / ".prd-os").mkdir(exist_ok=True)
+    (repo / ".prd-os/config.json").write_text(json.dumps({"codex": {"base_ref": "master"}}))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "cfg")
+    out = _size(repo)
+    assert out["class"] == "L" and "checked-out branch" in " ".join(out["reasons"]), out
