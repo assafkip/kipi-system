@@ -34,6 +34,7 @@ stdlib only. Tests: test_check_budget.py, test_size_class_depth.py.
 from __future__ import annotations
 
 import importlib.util
+import json
 import shlex
 import subprocess
 import sys
@@ -141,6 +142,53 @@ DEPTH = {
 STRICT_CLASS = "L"
 CLASSIFIER_RELPATH = "q-system/.q-system/scripts/change-size.py"
 DIFF_BASE = "origin/main"
+WORKING_TREE = "working-tree"   # a base_ref value (ktlyst product) meaning "no ref"
+
+
+def _ref_exists(repo_root: Path, ref: str) -> bool:
+    return subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--verify", "-q",
+                           f"{ref}^{{commit}}"], capture_output=True).returncode == 0
+
+
+def resolve_base(repo_root: Path) -> tuple[str | None, list[str]]:
+    """(ref, tried) for the repo's diff base. ref is None when nothing resolves.
+
+    WHY (ASK-4648): DIFF_BASE was a literal origin/main. 8 instance repos have no such ref
+    (master, or no remote ref), `git diff origin/main...HEAD` died with fatal, and
+    size_class() fell to class L for every issue there. Order: origin/main, then the remote
+    default branch (refs/remotes/origin/HEAD), then codex.base_ref from .prd-os/config.json.
+    The one JSON key is read directly, not through prd-os config.load_config: that parser
+    raises on ANY other bad field, and an unrelated typo there would unresolve the base.
+    """
+    tried: list[str] = []
+    if _ref_exists(repo_root, DIFF_BASE):
+        return DIFF_BASE, tried
+    tried.append(DIFF_BASE)
+    r = subprocess.run(["git", "-C", str(repo_root), "symbolic-ref", "-q",
+                        "refs/remotes/origin/HEAD"], capture_output=True, text=True)
+    head = r.stdout.strip().removeprefix("refs/remotes/") if r.returncode == 0 else ""
+    if head and _ref_exists(repo_root, head):
+        return head, tried
+    tried.append("origin/HEAD")
+    try:
+        cfg = json.loads((Path(repo_root) / ".prd-os/config.json").read_text())
+        configured = cfg["codex"]["base_ref"]
+    except (OSError, ValueError, KeyError, TypeError):
+        configured = None
+    if isinstance(configured, str) and configured and configured != WORKING_TREE:
+        # Codex P1 on PR 762: the checked-out branch moves with every commit, so
+        # `base...HEAD` is empty and any change reads S. Only a ref HEAD is not on is a base.
+        cur = subprocess.run(["git", "-C", str(repo_root), "symbolic-ref", "-q", "--short", "HEAD"],
+                             capture_output=True, text=True).stdout.strip()
+        if configured == cur:
+            tried.append(f"codex.base_ref={configured} (is the checked-out branch)")
+        elif _ref_exists(repo_root, configured):
+            return configured, tried
+        else:
+            tried.append(f"codex.base_ref={configured}")
+    else:
+        tried.append("codex.base_ref (unset)")
+    return None, tried
 
 
 def depth(size: str) -> dict:
@@ -148,8 +196,8 @@ def depth(size: str) -> dict:
     return DEPTH.get(size, DEPTH[STRICT_CLASS])
 
 
-def _strict(reason: str) -> dict:
-    return {"class": STRICT_CLASS, "reasons": [reason], "base": DIFF_BASE}
+def _strict(reason: str, base: str | None = None) -> dict:
+    return {"class": STRICT_CLASS, "reasons": [reason], "base": base or DIFF_BASE}
 
 
 def _uncommitted(repo_root: Path) -> list[str]:
@@ -176,23 +224,26 @@ def size_class(repo_root: Path) -> dict:
     path = Path(repo_root) / CLASSIFIER_RELPATH
     if not path.is_file():
         return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH}, so the strict numbers apply")
+    base, tried = resolve_base(Path(repo_root))
+    if base is None:
+        return _strict("no diff base resolves (tried " + ", ".join(tried) + "), so the strict numbers apply")
     try:
         spec = importlib.util.spec_from_file_location("kipi_change_size", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         dirty = [p for p in _uncommitted(Path(repo_root)) if mod.is_code(p) or mod.machinery_reason(p)]
-        verdict = mod.plan_for_repo(Path(repo_root), DIFF_BASE)
+        verdict = mod.plan_for_repo(Path(repo_root), base)
         tier, reasons = verdict["tier"], [str(r) for r in verdict["reasons"]]
     except Exception as exc:  # noqa: BLE001 -- any failure here means the strict numbers
-        return _strict(f"could not classify the diff against {DIFF_BASE} "
-                       f"({type(exc).__name__}: {str(exc)[:160]})")
+        return _strict(f"could not classify the diff against {base} "
+                       f"({type(exc).__name__}: {str(exc)[:160]})", base)
     if dirty:
         more = f" and {len(dirty) - 1} more" if len(dirty) > 1 else ""
         return _strict(f"uncommitted change to {dirty[0]}{more}; the classifier reads committed "
-                       "HEAD only, so this change's size is unknown. Commit it")
+                       "HEAD only, so this change's size is unknown. Commit it", base)
     if tier not in DEPTH:
-        return _strict(f"the classifier returned tier {tier!r}, which has no depth")
-    return {"class": tier, "reasons": reasons, "base": DIFF_BASE}
+        return _strict(f"the classifier returned tier {tier!r}, which has no depth", base)
+    return {"class": tier, "reasons": reasons, "base": base}
 
 
 def main(argv: list[str]) -> int:
