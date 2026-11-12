@@ -123,6 +123,16 @@ def make_world(tmp: Path) -> dict:
     (tmp / "bin/sync").write_text(FAKE_LOG % "sync")
     (tmp / "bin/drafter").write_text(FAKE_LOG % "drafter")
     (tmp / "bin/ps").write_text("#!/bin/sh\ncat \"$W/ps.txt\" 2>/dev/null\nexit 0\n")
+    # The stand-in for chief's phone gate: records the message, answers like chief's verdict JSON.
+    # Mode file "fail" = not delivered, "boom" = exits with no verdict. NEVER a real send.
+    (tmp / "bin/notify").write_text(
+        "import json, os, sys\n"
+        "w = os.environ['W']\n"
+        "open(w + '/notify.log', 'a').write(json.dumps(sys.argv[-1]) + '\\n')\n"
+        "mode = open(w + '/notify.mode').read().strip() if os.path.exists(w + '/notify.mode') else ''\n"
+        "if mode == 'boom':\n    sys.exit(3)\n"
+        "print(json.dumps({'delivered': mode != 'fail', 'reason': 'down'}))\n"
+        "sys.exit(1 if mode == 'fail' else 0)\n")
     for f in (tmp / "bin").iterdir():
         f.chmod(0o755)
     (tmp / "gh-world.json").write_text(json.dumps({"o/r": [
@@ -150,6 +160,7 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_REVIEWS": str(tmp / "reviews"),
         "CAP_LADDER_GH": f"{py} {tmp}/bin/gh",
         "CAP_LADDER_SYNC": f"{py} {tmp}/bin/sync",
+        "KIPI_FOUNDER_NOTIFY_CMD": f"{py} {tmp}/bin/notify",
         "CAP_LADDER_FABLE": f"{py} {tmp}/bin/fable",
         "CAP_LADDER_DRAFTER": f"{py} {tmp}/bin/drafter",
         "CAP_LADDER_PS": f"{tmp}/bin/ps",
@@ -674,7 +685,7 @@ def _founder_asks():
 # from the script's own list, so a script that drops one from its guard goes red.
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
+             "KIPI_FOUNDER_NOTIFY_CMD", "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
 
 
 def case_review_687() -> None:
@@ -1084,6 +1095,80 @@ def case_mutant() -> None:
 RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "120"))
 
 
+def case_founder_asks_reach_chief() -> None:
+    """Founder 2026-11-12: an ask in the status file must reach him through chief's
+    phone gate, not only through /q-morning (he does not open it)."""
+    def sent(env):
+        f = Path(env["W"]) / "notify.log"
+        return [json.loads(l) for l in f.read_text().splitlines()] if f.exists() else []
+
+    def rows(env):
+        return {r["issue"]: r for r in _status_rows(env)}
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        out = ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: grant the seat")
+        s1 = sent(env)
+        check("founder-asks: a new ask makes exactly one call to the notify path, carrying the ask and its resolve command",
+              len(s1) == 1 and "access: grant the seat" in s1[0] and "--resolve" in s1[0]
+              and rows(env)["ASK-1"].get("notified_at"), (s1, out))
+        ladder(env, "--founder-ask", "ASK-1", "founder-decision", "access: grant the seat")   # same ask again
+        ladder(env, "--apply")                                                                 # the nightly run
+        check("founder-asks: a second run and the nightly run send nothing for a sent ask", len(sent(env)) == 1, sent(env))
+        ladder(env, "--founder-ask", "ASK-2", "founder-decision", "spend: two")
+        s2 = sent(env)
+        check("founder-asks: a later ask sends only itself, never the sent one again",
+              len(s2) == 2 and "spend: two" in s2[1] and "grant the seat" not in s2[1], s2)
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "notify.mode").write_text("fail")      # so the ask is still UNSENT when it is resolved
+        ladder(env, "--founder-ask", "ASK-1", "founder-decision", "spend: one")
+        ladder(env, "--resolve", "ASK-1", "--by", "founder")
+        (Path(td) / "notify.mode").write_text("")
+        before = len(sent(env))
+        ladder(env, "--apply")
+        check("founder-asks: a resolved ask sends nothing", len(sent(env)) == before, sent(env))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        ladder(env, "--founder-ask", "ASK-2", "founder-decision", "spend: two")     # ASK-2 is open here
+        (Path(td) / "linear.json").write_text(json.dumps(
+            {"ASK-2": {"state_type": "canceled", "labels": ["owner:sana"], "project": "kipi-system",
+                       "title": "t", "description": "d"}}))
+        (Path(td) / "notify.mode").write_text("fail")
+        ladder(env, "--apply")                       # sweep resolves it as moot BEFORE the send
+        check("founder-asks: an ask whose ticket closed is resolved as moot and not sent",
+              rows(env)["ASK-2"].get("resolved") and len(sent(env)) == 1, (rows(env), sent(env)))
+    for mode in ("fail", "boom"):
+        with tempfile.TemporaryDirectory() as td:
+            env = make_world(Path(td))
+            (Path(td) / "notify.mode").write_text(mode)
+            p = subprocess.run([sys.executable, str(LADDER), "--founder-ask", "ASK-1", "founder-decision", "spend: x"],
+                               env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            check(f"founder-asks: notify mode {mode}: the ask stays listed, unsent, exit 0",
+                  p.returncode == 0 and not rows(env)["ASK-1"].get("notified_at") and not rows(env)["ASK-1"].get("resolved"),
+                  (p.returncode, p.stdout + p.stderr))
+            (Path(td) / "notify.mode").write_text("")
+            ladder(env, "--apply")
+            check(f"founder-asks: after {mode} the nightly run retries it and stamps it only then",
+                  rows(env)["ASK-1"].get("notified_at") and len(sent(env)) == 2, sent(env))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        ladder(env, "--founder-ask", "ASK-1", "founder-decision", "spend: one")
+        ladder(env, "--founder-ask", "ASK-2", "founder-decision", "spend: two")
+        # re-open both as unsent to see the batch: one call, both asks
+        sp = Path(env["CAP_LADDER_STATUS"])
+        sp.write_text("".join(json.dumps({k: v for k, v in r.items() if k != "notified_at"}) + "\n" for r in _status_rows(env)))
+        n = len(sent(env))
+        ladder(env, "--apply")
+        last = sent(env)[n:]
+        check("founder-asks: unsent asks go as ONE batched message", len(last) == 1 and "spend: one" in last[0] and "spend: two" in last[0], last)
+        sp.write_text("".join(json.dumps({k: v for k, v in r.items() if k != "notified_at"}) + "\n" for r in _status_rows(env)))
+        n2 = len(sent(env))
+        out = ladder(env)
+        check("founder-asks: a dry run names the count and sends nothing",
+              "[dry] founder asks: would send 2" in out and len(sent(env)) == n2
+              and not any(r.get("notified_at") for r in _status_rows(env)), out)
+
+
 def main() -> int:
     t0 = time.monotonic()
     print("test_cap_ladder.py")
@@ -1093,7 +1178,7 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant, case_lane_marker] + cases
+                 case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))
