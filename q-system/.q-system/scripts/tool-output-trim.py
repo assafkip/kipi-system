@@ -79,17 +79,17 @@ JEST_END_RE = re.compile(r"^(?:Test Suites|Tests):")
 
 
 def clean_lines(text: str) -> list[str]:
-    """Strip ANSI and control chars; keep the last redraw of a carriage-return line."""
-    text = CONTROL_RE.sub("", ANSI_RE.sub("", text.replace("\r\n", "\n")))
-    # Why: a bare-CR file (Excel-for-Mac CSV) has no LF at all, so the redraw rule
-    # below kept 1 of 801 rows and the footer said nothing was dropped (PR 764
-    # round 2, major). Output with CRs and no LF is records, not a redraw.
-    if "\r" in text and "\n" not in text.rstrip("\r"):
-        text = text.replace("\r", "\n")
-    lines = []
-    for raw in text.split("\n"):
-        parts = [p for p in raw.split("\r") if p.strip()]
-        lines.append((parts[-1] if parts else "").rstrip())
+    """Strip ANSI and control chars; every CR, LF or CRLF ends a record.
+
+    Why one splitter and no redraw rule: `a\rb\rc` is a progress bar OR three CSV
+    rows, and the bytes cannot say which. Keeping only the last CR segment lost
+    800 rows with a footer that claimed nothing was dropped, and each patch moved
+    the heuristic's edge (zero LF, then any LF) - PR 764 rounds 2 and 3, RCA
+    rca-trim-hook-three-rounds-2026-11-12. With every CR a record boundary the
+    footer total is the input's own record count, so the loss is always declared.
+    """
+    text = CONTROL_RE.sub("", ANSI_RE.sub("", text))
+    lines = [raw.rstrip() for raw in re.split(r"\r\n|\r|\n", text)]
     if lines and not lines[-1]:
         lines.pop()
     return lines
@@ -136,23 +136,25 @@ def failure_indexes(lines: list[str]) -> set[int]:
 # Only IDENTICAL lines fold. The reference also folded lines that differ in
 # digits; that hid "file1.py" vs "file2.py" and "test 7" vs "test 8" and made the
 # head of a log disappear, so the digit fold is gone (ASK-4649 test round 1).
-def _fold_run(run: list[str]) -> list[str]:
+# Why no blank-run special case: it collapsed N blank lines to 1 with no marker,
+# so kept + omitted + folded stopped equalling the input's record count. A blank
+# run now folds like any identical run, with a marker that carries the count.
+def _fold_run(run: list[str]) -> tuple[list[str], list[int]]:
     count = len(run)
-    if not run[0].strip():
-        return run[:1]
-    if all(line == run[0] for line in run):
-        if count >= FOLD_IDENTICAL:
-            return [run[0], f"[trim: previous line repeated {count - 1} more times]"]
-        return run
-    return run
+    if count >= FOLD_IDENTICAL and all(line == run[0] for line in run):
+        return [run[0], f"[trim: previous line repeated {count - 1} more times]"], [1, count - 1]
+    return run, [1] * count
 
 
-def fold_runs(lines: list[str], protected: set[int]) -> tuple[list[str], set[int]]:
+def fold_runs(lines: list[str], protected: set[int]) -> tuple[list[str], set[int], list[int]]:
     """Fold repeated runs, never inside a protected failure block.
 
-    Returns the new lines and the protected set re-indexed onto them.
+    Returns the new lines, the protected set re-indexed onto them, and a weight per
+    new line: how many INPUT records it stands for. A fold marker stands for the
+    lines it folded, so an omitted range that hides one still reports the true count.
     """
     out: list[str] = []
+    weights: list[int] = []
     new_protected: set[int] = set()
     i = 0
     n = len(lines)
@@ -160,18 +162,22 @@ def fold_runs(lines: list[str], protected: set[int]) -> tuple[list[str], set[int
         if i in protected:
             new_protected.add(len(out))
             out.append(lines[i])
+            weights.append(1)
             i += 1
             continue
         j = i + 1
         while j < n and j not in protected and lines[j] == lines[i]:
             j += 1
-        out.extend(_fold_run(lines[i:j]))
+        run, w = _fold_run(lines[i:j])
+        out.extend(run)
+        weights.extend(w)
         i = j
-    return out, new_protected
+    return out, new_protected, weights
 
 
-def select_lines(lines: list[str], protected: set[int]) -> list[str]:
+def select_lines(lines: list[str], protected: set[int], weights: list[int] | None = None) -> list[str]:
     n = len(lines)
+    weights = weights or [1] * n
     if n <= HEAD_LINES + TAIL_LINES:
         return lines
     keep = set(range(HEAD_LINES)) | set(range(n - TAIL_LINES, n)) | protected
@@ -190,7 +196,7 @@ def select_lines(lines: list[str], protected: set[int]) -> list[str]:
         j = i
         while j < n and j not in keep:
             j += 1
-        out.append(f"[trim: {j - i} lines omitted]")
+        out.append(f"[trim: {sum(weights[i:j])} lines omitted]")
         i = j
     return out
 
@@ -199,8 +205,8 @@ def trim_stream(text: str) -> tuple[str, int, int]:
     """(trimmed text, lines before, lines after)."""
     lines = clean_lines(text)
     protected = failure_indexes(lines)
-    folded, protected = fold_runs(lines, protected)
-    kept = select_lines(folded, protected)
+    folded, protected, weights = fold_runs(lines, protected)
+    kept = select_lines(folded, protected, weights)
     return "\n".join(kept), len(lines), len(kept)
 
 

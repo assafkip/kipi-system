@@ -168,10 +168,96 @@ def test_cr_separated_records_are_not_collapsed_to_one_row():
     assert "lines omitted" in out and "showing 1 of 1" not in out
 
 
-def test_mixed_cr_and_lf_is_untouched_not_collapsed():
-    # One stray LF turned the zero-LF fix off and the 1-of-801 collapse came back (round 3).
-    rows = "\r".join(f"{i},client-{i},{i * 137}" for i in range(801)) + "\ndone\n"
-    r = run_hook(bash_payload("cat mac.csv; echo done", rows))
+_OMIT_RE = __import__("re").compile(r"^\[trim: (\d+) lines omitted\]$")
+_REPEAT_RE = __import__("re").compile(r"^\[trim: previous line repeated (\d+) more times\]$")
+_FOOTER_RE = __import__("re").compile(r"\[trim: showing (\d+) of (\d+) lines;")
+
+
+def _generated_output(rng):
+    """(text, record_count). The count comes from the generator, not from the hook."""
+    rows, n = [], rng.randint(150, 700)
+    i = 0
+    while i < n:
+        kind = rng.random()
+        if kind < 0.05:
+            rows += ["same line again"] * rng.randint(3, 9)
+        elif kind < 0.10:
+            rows.append(f"ERROR step {i} failed code {i * 31}")
+        elif kind < 0.12:
+            rows += ["\x20"] * rng.randint(1, 5)
+        elif kind < 0.15:
+            rows.append(f"\x1b[32mok\x1b[0m {i} {i * 7919}")
+        else:
+            rows.append(f"rec{i:05d},{i * 7919},payload")
+        i += 1
+    rows.append("done")  # a blank LAST row is dropped by design (trailing newline), so end on text
+    seps = [rng.choice(["\n", "\r", "\r\n"]) for _ in rows]
+    # Whole-output separator regimes, because the failures were regime-shaped:
+    # pure CR, pure LF, CR chunk inside an LF log, and fully random.
+    mode = rng.choice(["random", "cr", "lf", "chunk"])
+    if mode == "cr":
+        seps = ["\r"] * len(rows)
+    elif mode == "lf":
+        seps = ["\n"] * len(rows)
+    elif mode == "chunk":
+        lo = rng.randint(0, len(rows) // 2)
+        seps = ["\n"] * len(rows)
+        for j in range(lo, min(len(rows), lo + rng.randint(20, 300))):
+            seps[j] = "\r"
+    text = "".join(r + s for r, s in zip(rows, seps[:-1] + [""]))
+    return text, len(rows)
+
+
+def test_footer_total_is_the_input_record_count_for_every_input():
+    # The invariant that three review rounds each found one input of (PR 764):
+    # for ANY trimmed output, footer total == the input's own record count, and
+    # kept content lines + omitted + folded repeats == that total. Oracle is the
+    # generator's row count, not the hook's, so a lossy cleaning step cannot hide.
+    import random
+
+    rng = random.Random(4649)
+    trims = 0
+    for case in range(120):
+        text, records = _generated_output(rng)
+        r = run_hook(bash_payload("make", text))
+        assert r.returncode == 0, r.stderr
+        if not r.stdout.strip():
+            continue
+        trims += 1
+        out = trimmed(r)["stdout"]
+        body = out.rsplit("\n", 1)[0]
+        m = _FOOTER_RE.search(out)
+        assert m, f"case {case}: trim without a footer"
+        assert int(m.group(2)) == records, f"case {case}: footer says {m.group(2)} of {records} records"
+        omitted = repeated = content = 0
+        for line in body.split("\n"):
+            if (mo := _OMIT_RE.match(line)):
+                omitted += int(mo.group(1))
+            elif (mr := _REPEAT_RE.match(line)):
+                repeated += int(mr.group(1))
+            else:
+                content += 1
+        assert content + omitted + repeated == records, (
+            f"case {case}: {content} kept + {omitted} omitted + {repeated} folded != {records}"
+        )
+    assert trims >= 60, f"only {trims} of 120 generated outputs trimmed; the property barely ran"
+
+
+def test_cr_chunk_inside_an_lf_log_is_not_collapsed():
+    # The exact shape round 3's guard missed: 400 CR rows in the middle of an LF log.
+    rows = [f"rec{i:04d},{i * 7919},zz" for i in range(1000)]
+    text = "\n".join(rows[:300]) + "\n" + "\r".join(rows[300:700]) + "\n" + "\n".join(rows[700:])
+    out = trimmed(run_hook(bash_payload("make", text)))["stdout"]
+    assert "showing 71 of 1000 lines" in out
+
+
+def test_unselected_cleaning_saving_is_not_trimmed():
+    # 60 lines, all kept, but ANSI stripping alone clears the 20% gate. A footer
+    # "showing 60 of 60" over a rewritten body would describe nothing real.
+    esc = "\x1b[38;5;196m" * 6
+    text = "\n".join(f"{esc}row {i:03d} {'x' * 20}\x1b[0m" for i in range(60))
+    assert len(text) > 2000
+    r = run_hook(bash_payload("make", text))
     assert r.returncode == 0 and r.stdout == ""
 
 
@@ -322,10 +408,20 @@ MUTANTS = [
     ("hunk_ansi", 'HUNK_RE.search(ANSI_RE.sub("", out)) or HUNK_RE.search(ANSI_RE.sub("", err))',
      "HUNK_RE.search(out) or HUNK_RE.search(err)", "test_colored_hunk_header_untouched"),
     ("prune", "    prune_old(folder)\n", "", "test_old_spill_files_pruned_fresh_kept"),
-    ("cr_records", 'if "\\r" in text and "\\n" not in text.rstrip("\\r"):', "if False:",
+    ("cr_collapse", 'lines = [raw.rstrip() for raw in re.split(r"\\r\\n|\\r|\\n", text)]',
+     'lines = [raw.split("\\r")[-1].rstrip() for raw in text.replace("\\r\\n", "\\n").split("\\n")]',
+     "test_footer_total_is_the_input_record_count_for_every_input"),
+    ("cr_collapse_chunk", 'lines = [raw.rstrip() for raw in re.split(r"\\r\\n|\\r|\\n", text)]',
+     'lines = [raw.split("\\r")[-1].rstrip() for raw in text.replace("\\r\\n", "\\n").split("\\n")]',
+     "test_cr_chunk_inside_an_lf_log_is_not_collapsed"),
+    ("cr_records", 'lines = [raw.rstrip() for raw in re.split(r"\\r\\n|\\r|\\n", text)]',
+     'lines = [raw.split("\\r")[-1].rstrip() for raw in text.replace("\\r\\n", "\\n").split("\\n")]',
      "test_cr_separated_records_are_not_collapsed_to_one_row"),
+    ("omit_weights", 'out.append(f"[trim: {sum(weights[i:j])} lines omitted]")',
+     'out.append(f"[trim: {j - i} lines omitted]")',
+     "test_footer_total_is_the_input_record_count_for_every_input"),
     ("no_selection_guard", "if out_kept >= out_lines and err_kept >= err_lines:", "if False:",
-     "test_mixed_cr_and_lf_is_untouched_not_collapsed"),
+     "test_unselected_cleaning_saving_is_not_trimmed"),
     ("prune_scope", "SPILL_NAME_RE.search(f.name) and ", "", "test_prune_leaves_foreign_files"),
     ("head", "HEAD_LINES = 30", "HEAD_LINES = 0", "test_head_30_lines_are_kept"),
     ("kill_switch", "if os.environ.get(\"KIPI_OUTPUT_TRIM\") == \"0\":\n        return None",
