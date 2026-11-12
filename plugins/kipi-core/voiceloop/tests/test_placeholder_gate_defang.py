@@ -2,7 +2,7 @@
 """An IOC defang is text, an empty template token is a blank.
 
 why this file exists (ASK-4651, 2026-11-12). Pointing the voice gate at intel reports
-(RULE-2026-11-12-A) ran the hard rows on his own long-form writing for the first time.
+(ASK-4651) ran the hard rows on his own long-form writing for the first time.
 `unfilled-placeholder` refused one of his published articles on `[.]`, the standard
 threat-intel defang (`example[.]com`). That row blocks in every gate that imports this
 module, so every report that defangs a domain or an IP would have been refused.

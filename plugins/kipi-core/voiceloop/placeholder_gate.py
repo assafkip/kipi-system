@@ -54,10 +54,34 @@ _MARKDOWN_LINK = re.compile(r"\[[^\]\n]{1,60}\]\(")
 # threat-intel way to write an indicator so it cannot be clicked. The 81-text control in
 # the docstring was all social posts, a genre that never defangs, so it could not see
 # this. The set is the bracket forms the common defang tools write (dot, colon, at,
-# scheme separator, and the word forms); `hxxp` has no bracket and never matched.
+# scheme separator "://", and the words dot and at); `hxxp` has no bracket and never matched.
+# `[colon]` and `[/]` are NOT in the set and still block (ASK-4658 F3: the comment used to
+# claim every form common tools write).
 # A defang sits INSIDE an indicator, so it is exempt only with non-space on both sides.
 # `[at]` between spaces still reads as a blank, and that case is pinned by a test.
 _DEFANG = frozenset({".", ":", "@", "://", "dot", "at"})
+
+# THE CITATION FORMS OF A WRITTEN REPORT (ASK-4658, 2026-11-12). Same shape as the defang:
+# the 81-text control was social posts, which carry none of these. Each is narrow on purpose,
+# so a near-miss of each still blocks (pinned in test_placeholder_gate_citations.py):
+#   a number bracket, `[1]` `[1, 2]` `[3-5]`: digits only, never a template slot.
+#   an editorial word, `[sic]` `[REDACTED]`: the whole bracket, exact, any case.
+#   a link definition, `[1]: https://...` at a line start: a URL must follow the colon.
+#   a reference link, `[label][1]`: the label bracket is directly followed by a bracket.
+_NUMBER = re.compile(r"\[\d{1,3}(?:\s*[,\-\u2013]\s*\d{1,3})*\]")
+_EDITORIAL = frozenset({"sic", "redacted"})
+_LINK_DEF = re.compile(r"^[ \t]{0,3}\[[^\]\n]{1,60}\]:[ \t]*(?:https?://|/|\./)\S+", re.M)
+
+
+def _is_citation(text, match):
+    inner = match.group(0)[1:-1]
+    if _NUMBER.fullmatch(match.group(0)) or inner.strip().lower() in _EDITORIAL:
+        return True
+    if match.end() < len(text) and text[match.end()] == "[":
+        return True
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    link = _LINK_DEF.match(text, line_start)
+    return bool(link) and link.start() <= match.start() < link.end()
 
 
 def _is_defang(text, match):
@@ -78,7 +102,7 @@ def tokens(text):
         # A markdown link's bracket is a label, not a blank. See the docstring.
         if _MARKDOWN_LINK.match(text, match.start()):
             continue
-        if _is_defang(text, match):
+        if _is_defang(text, match) or _is_citation(text, match):
             continue
         if match.group(0) not in found:
             found.append(match.group(0))
