@@ -64,13 +64,19 @@ def _num(v) -> int:
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
 
 
-def read_best(files: list[Path]) -> dict[str, tuple[dict, str]]:
-    """message id -> (largest-output usage snapshot, file it came from)."""
+def read_best(files: list[Path], unreadable: list[str] | None = None) -> dict[str, tuple[dict, str]]:
+    """message id -> (largest-output usage snapshot, file it came from).
+
+    A file that cannot be opened is named in `unreadable`, never skipped silently:
+    a partial read that exits 0 lets a cap check pass on most of the data (review of #765).
+    """
     best: dict[str, tuple[dict, str]] = {}
     for f in files:
         try:
             handle = sys.stdin.buffer if str(f) == "-" else f.open("rb")
         except OSError:
+            if unreadable is not None:
+                unreadable.append(str(f))
             continue
         with handle:
             for raw in handle:
@@ -121,9 +127,11 @@ def summarize(items: list[dict]) -> dict:
 
 def report(paths: list[str], by_agent: bool = False, subagents: bool = False) -> dict:
     files = expand(paths, subagents)
-    best = read_best(files)
+    bad: list[str] = []
+    best = read_best(files, bad)
     out = summarize([u for u, _ in best.values()])
     out["transcripts"] = len(files)
+    out["unreadable"] = bad
     if by_agent:
         groups: dict[str, list[dict]] = {}
         for u, f in best.values():
@@ -140,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     rep = report(a.paths, a.by_agent, a.subagents)
     print(json.dumps(rep))
+    if rep["unreadable"]:
+        print(f"run_tokens: {len(rep['unreadable'])} transcript(s) could not be opened", file=sys.stderr)
+        return 1
     if rep["requests"] == 0:
         print("run_tokens: zero requests read (empty, malformed or wrong path)", file=sys.stderr)
         return 1

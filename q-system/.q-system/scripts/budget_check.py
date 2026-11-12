@@ -46,9 +46,9 @@ def main(argv: list[str] | None = None) -> int:
     per_pr = out / prs if prs > 0 else None
     result = {"output_tokens": out, "requests": rep["requests"], "merged_prs": prs,
               "output_tokens_per_pr": per_pr, "cap_per_pr": a.cap_per_pr, "cap_total": a.cap_total,
-              "over": []}
+              "unreadable": rep["unreadable"], "over": []}
     rc = 0
-    if rep["requests"] == 0:
+    if rep["requests"] == 0 or rep["unreadable"]:
         rc = 1
     if a.cap_per_pr is not None:
         if per_pr is None:

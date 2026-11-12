@@ -88,3 +88,21 @@ def test_budget_cannot_evaluate_is_not_a_pass(tmp_path):
     e = tmp_path / "e.jsonl"
     e.write_text("")
     assert run("budget_check.py", str(e), "--prs", "1", "--cap-total", "999")[0] == 1
+
+
+def test_unreadable_transcript_is_named_and_fails(tmp_path):
+    # review of #765: a file that fails to open used to be skipped with exit 0
+    d = tmp_path / "locked.jsonl"
+    d.write_text((FX / "main.ndjson").read_text())
+    d.chmod(0)
+    try:
+        if d.open("rb"):  # running as root: chmod does not bite, nothing to test
+            return
+    except OSError:
+        pass
+    ok = str(FX / "main.ndjson")
+    rc, r = run("run_tokens.py", ok, str(d))
+    assert rc != 0 and r["unreadable"] == [str(d)] and r["requests"] == 2
+    rc, r = run("budget_check.py", ok, str(d), "--prs", "2", "--cap-total", "999999")
+    assert rc == 1 and r["unreadable"] == [str(d)]
+    d.chmod(0o600)
