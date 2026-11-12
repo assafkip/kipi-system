@@ -208,96 +208,19 @@ def test_mutant_without_the_merged_head_check_deletes_the_reused_branch(env, tmp
     assert "reused" not in env.heads()
 
 
-# ---------------------------------------------------------------- worktrees
-def tree(env, name, base="main~1", branch=None):
-    path = env.tmp / name
-    git(env.work, "worktree", "add", "-q", *(["-b", branch] if branch else ["--detach"]),
-        str(path), base)
-    return path
+def test_there_is_no_tree_batch_and_the_script_never_removes_a_worktree(env):
+    # RCA 2026-11-12: a second tree remover re-learned the reaper's rules one review round
+    # at a time. Trees have one owner, worktree-reaper.py; B is refused, not served.
+    r = env.run("B", "## B. x\n\n- /anywhere\n", "--apply")
+    assert r.returncode == 2 and "worktree-reaper" in r.stderr
+    text = open(SCRIPT).read()
+    assert "worktree remove" not in text and "lsof" not in text
 
 
-def age(env, path, days=3):
-    gd = git(path, "rev-parse", "--absolute-git-dir")
-    t = time.time() - days * 86400
-    for f in ("HEAD", "index"):
-        if os.path.exists(os.path.join(gd, f)):
-            os.utime(os.path.join(gd, f), (t, t))
-
-
-def tree_listing(*paths):
-    return "## B. x\n\n" + "".join(f"- {p} | (detached) | uncommitted files: 0\n" for p in paths)
-
-
-@pytest.fixture
-def two_commits(env):
-    env.branch("x"); env.land_main()
-    git(env.work, "fetch", "-q", "origin")
-    git(env.work, "merge", "-q", "--ff-only", "origin/main")
-    return env
-
-
-def test_clean_idle_merged_tree_goes_and_dirty_locked_fresh_pinned_stay(two_commits):
-    e = two_commits
-    clean, dirty, locked, fresh = (tree(e, n) for n in ("clean", "dirty", "locked", "fresh"))
-    (dirty / "wip.txt").write_text("unsaved")
-    git(e.work, "worktree", "lock", str(locked))
-    tip_tree = tree(e, "tip", base="main")
-    pinned = tree(e, "p/.local/state/kipi/jobs/x")
-    for t in (clean, dirty, locked, tip_tree, pinned):
-        age(e, t)
-    paths = [clean, dirty, locked, fresh, tip_tree, pinned]
-    r = e.run("B", tree_listing(*paths), "--apply")
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert not clean.exists()
-    for kept in (dirty, locked, fresh, tip_tree, pinned):
-        assert kept.exists(), kept
-    assert "has uncommitted" in r.stdout and "locked" in r.stdout
-    assert "touched inside" in r.stdout and "fresh or pinned" in r.stdout
-    assert "pinned machine checkout" in r.stdout
-    assert (dirty / "wip.txt").read_text() == "unsaved"
-
-
-def test_tree_dry_run_removes_nothing(two_commits):
-    e = two_commits
-    t = tree(e, "clean"); age(e, t)
-    r = e.run("B", tree_listing(t))
-    assert t.exists() and "would remove" in r.stdout
-
-
-def test_tree_whose_branch_heads_an_open_pr_stays(two_commits):
-    e = two_commits
-    t = tree(e, "br", branch="sana/open-one"); age(e, t)
-    e.pr("sana/open-one", "OPEN", git(t, "rev-parse", "HEAD"))
-    r = e.run("B", tree_listing(t), "--apply")
-    assert t.exists() and "open PR" in r.stdout
-
-
-def test_tree_with_work_not_in_main_stays(two_commits):
-    e = two_commits
-    t = tree(e, "ahead", branch="sana/ahead"); age(e, t)
-    (t / "n.txt").write_text("n"); git(t, "add", "-A"); git(t, "commit", "-qm", "n", date=OLD)
-    age(e, t)
-    r = e.run("B", tree_listing(t), "--apply")
-    assert t.exists() and "not contained" in r.stdout
-
-
-def test_trailing_slash_spelling_does_not_defeat_the_live_process_guard(two_commits):
-    e = two_commits
-    t = tree(e, "busy"); age(e, t)
-    proc = subprocess.Popen(["sleep", "30"], cwd=str(t))
-    try:
-        r = e.run("B", tree_listing(str(t) + "/"), "--apply")
-        assert t.exists() and "a process is working in it" in r.stdout
-    finally:
-        proc.kill()
-
-
-def test_dry_run_does_not_make_the_following_apply_read_the_tree_as_touched(two_commits):
-    e = two_commits
-    t = tree(e, "idle"); age(e, t)
-    e.run("B", tree_listing(t))
-    r = e.run("B", tree_listing(t), "--apply")
-    assert not t.exists(), r.stdout
+def test_help_prints_the_usage_comment_and_no_code():
+    # Round 1 nit: a fixed line range printed two lines of source. Print the comment block.
+    out = subprocess.run(["bash", SCRIPT, "--help"], capture_output=True, text=True).stdout
+    assert "Usage: cleanup-merged-refs.sh" in out and "set -u" not in out and "LIST=" not in out
 
 
 def test_a_flag_without_a_value_or_an_empty_number_is_refused_not_hung(env):
@@ -307,7 +230,7 @@ def test_a_flag_without_a_value_or_an_empty_number_is_refused_not_hung(env):
 
 
 def test_a_failed_ls_remote_is_a_failure_not_already_gone(env, tmp_path):
-    env.branch("live"); git(env.work, "merge", "-q", "--ff-only", "origin/live") if False else None
+    env.branch("live")
     real = shutil.which("git")
     stub = tmp_path / "bin" / "git"
     stub.write_text(f'#!/bin/bash\ncase "$*" in *ls-remote*) exit 1;; esac\nexec {real} "$@"\n')
