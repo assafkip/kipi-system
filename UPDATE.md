@@ -82,7 +82,10 @@ config half, for an instance whose own commit-time check needs a derived
 artifact refreshed first. A non-zero exit, a missing command or a file with
 more than one command line abandons that instance through the normal rollback,
 prints the step's own output and names the step in the summary. `--dry-run`
-prints the command and does not run it. No file means no change. Test:
+prints the command and does not run it. The step may write under `.claude/` and
+`plugins/` (the config half it precedes). A step that modifies any other tracked
+file is refused and those files are restored. There is no time limit on the step.
+No file means no change. Test:
 `test-kipi-update-post-sync-step.sh`.
 
 ## Pushing Changes Back from an Instance

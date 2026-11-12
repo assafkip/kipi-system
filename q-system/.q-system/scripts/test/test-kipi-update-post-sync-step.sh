@@ -41,6 +41,7 @@ mk_inst() {
   mkdir -p "$inst/q-system" "$inst/.claude/rules"
   printf 'skeleton content v1 (old)\n' > "$inst/q-system/tracked.md"
   printf '{}\n' > "$inst/.claude/settings.json"
+  printf 'committed root notes\n' > "$inst/NOTES-AT-ROOT.md"
   printf '# stale rule\n' > "$inst/.claude/rules/demo-rule.md"
   [ -n "$decl" ] && printf '%s\n' "$decl" > "$inst/.kipi-post-sync"
   ( cd "$inst" && G init -q && G add -A && G commit -qm inst )
@@ -180,6 +181,28 @@ rolled_back "$OUT" || fail "case 6 should refuse: $OUT"
 [ ! -e "$RAN" ] || fail "case 6 ran a command from a malformed declaration"
 echo "PASS 6: a declaration with two commands is refused"
 
+# ---------------- 7 and 8. writes outside the committed scope ----------------
+# PR #780 review: a step writing a tracked file outside .claude/ and plugins/
+# was neither committed nor rolled back. A success wedged the next run at the
+# dirty-tree guard; a failure left the clobbered file behind.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && printf 'derived\n' > q-system/tracked.md"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 7 should refuse a step that dirties q-system/: $OUT"
+echo "$OUT" | grep -qF "outside .claude/ and plugins/" || fail "case 7 did not say why: $OUT"
+[ "$(cat "$W/needy/q-system/tracked.md")" != "derived" ] || fail "case 7 left the step's write behind"
+synced_commit "$W/needy" && fail "case 7 committed: $OUT"
+assert_human "$W/needy"
+echo "PASS 7: a successful step that dirties tracked files outside scope is refused and restored"
+
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && printf 'CLOBBERED\n' > NOTES-AT-ROOT.md && exit 3"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 8 should roll back: $OUT"
+[ "$(cat "$W/needy/NOTES-AT-ROOT.md")" = "committed root notes" ] || fail "case 8: a failed step's write survived the rollback"
+assert_human "$W/needy"
+echo "PASS 8: a failed step's out-of-scope write is restored"
+
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
 # ---------------- mutants: one per decision point ----------------
@@ -212,6 +235,10 @@ mutant "commit still runs after a failed step" \
   '[ -z "$POST_SYNC_FAILED_STEP" ] &&
         git -C "$path" rev-parse --git-dir' 'true &&
         git -C "$path" rev-parse --git-dir'
+mutant "out-of-scope writes not detected" \
+  'if [ -n "$ps_new" ]; then' 'if false; then'
+mutant "out-of-scope writes not restored" \
+  'git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true' 'true'
 mutant "one-command check loosened" \
   '-ne 1 ]; then' '-ne 2 ]; then'
 mutant "summary stops naming the step" \

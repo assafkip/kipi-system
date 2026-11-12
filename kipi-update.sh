@@ -3554,6 +3554,14 @@ print("\n".join(mod.EXTRA_WATCHED))
         echo "    post-sync step (dry run, NOT run): $POST_SYNC_STEP"
       else
         echo "    Running post-sync step: $POST_SYNC_STEP"
+        # Tracked files the step modifies OUTSIDE the scope this run commits and
+        # restores (.claude/, plugins/). Scar (PR #780 review): such a write was
+        # neither committed nor rolled back, so a successful step wedged the
+        # instance at the dirty-tree guard on every later run while this run
+        # reported success, and a failed step's write survived the rollback.
+        # Snapshot first so a file already dirty is never mistaken for the step's.
+        ps_scope=(-- . ':(exclude).claude' ':(exclude)plugins')
+        ps_before="$(git -C "$path" status --porcelain --untracked-files=no "${ps_scope[@]}" 2>/dev/null | sort)"
         # Own stdout and stderr both shown: the step's message is the diagnosis.
         if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" 2>&1)"; then
           printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
@@ -3562,6 +3570,17 @@ print("\n".join(mod.EXTRA_WATCHED))
           CONFIG_FAILED=1
         else
           printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+        fi
+        ps_after="$(git -C "$path" status --porcelain --untracked-files=no "${ps_scope[@]}" 2>/dev/null | sort)"
+        ps_new="$(comm -13 <(printf '%s\n' "$ps_before") <(printf '%s\n' "$ps_after") | sed '/^$/d')"
+        if [ -n "$ps_new" ]; then
+          echo "    ERROR: post-sync step modified tracked files outside .claude/ and plugins/ (restored):"
+          printf '%s\n' "$ps_new" | sed 's/^/      /'
+          while IFS= read -r ps_line; do
+            git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true
+          done <<< "$ps_new"
+          POST_SYNC_FAILED_STEP="${POST_SYNC_FAILED_STEP:-$POST_SYNC_STEP (wrote outside .claude/ and plugins/)}"
+          CONFIG_FAILED=1
         fi
       fi
     fi
