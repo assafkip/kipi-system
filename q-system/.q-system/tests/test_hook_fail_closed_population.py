@@ -92,6 +92,9 @@ NOT_SECURITY = {
     "kb-graph-guard.py", "auto-commit.py", "knowledge-inject.py", "lessons-inject.py",
     "voice-dna-loader.py", "capability-claim-lint.py", "evidence-read-log-lint.py",
     "worktree-disk-floor.py",
+    # Output trimmer (ASK-4649): a crash returns no updatedToolOutput, so the
+    # full output reaches the model. Nothing is refused, nothing is lost.
+    "tool-output-trim.py",
 }
 
 
