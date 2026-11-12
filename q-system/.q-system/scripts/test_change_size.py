@@ -860,15 +860,17 @@ def _git_ok(root, *a):
 
 
 def test_the_last_30_merged_ranges_classify_identically_to_origin_main(tmp_path):
-    """Old path vs new path over this repo's own history. The old file is read from
-    git into tmp for this run only; no second copy ships. SKIPS (not passes) when the
-    clone has no origin/main or no history: a shallow CI checkout cannot run it, and
-    the unit cases above still hold the decision points there. After this change
-    merges, origin/main IS the new code and this compares the file to itself; set
-    KIPI_PARITY_OLD_REF to a ref from before 2026-11-12 to rerun it for real."""
+    """Old path vs new path over this repo's own history. A ONE-SHOT PROOF, so it runs
+    only when KIPI_PARITY_OLD_REF names a ref from before the speed change. Without it
+    it would compare origin/main to itself and still cost 73s, over this file's 60s
+    timeout (PR #771 validate, 2026-11-12). The unit oracle and the mutants are the
+    standing guard. Rerun: KIPI_PARITY_OLD_REF=d1bc68a1 python3 -m pytest -q
+    q-system/.q-system/scripts/test_change_size.py -k last_30"""
+    ref = os.environ.get("KIPI_PARITY_OLD_REF")
+    if not ref:
+        pytest.skip("one-shot proof: set KIPI_PARITY_OLD_REF to a pre-change ref to run it")
     top = _git_ok(HERE, "rev-parse", "--show-toplevel")
     root = Path(top.strip()) if top else None
-    ref = os.environ.get("KIPI_PARITY_OLD_REF", "origin/main")
     rel = "q-system/.q-system/scripts/change-size.py"
     old_src = root and _git_ok(root, "show", f"{ref}:{rel}")
     if not old_src:
