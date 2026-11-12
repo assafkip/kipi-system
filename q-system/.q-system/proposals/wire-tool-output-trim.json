@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "slug": "wire-tool-output-trim",
+  "reason": "ASK-4649: wire tool-output-trim.py PostToolUse, matcher Bash, timeout 5, in BOTH .claude/settings.json and settings-template.json (both or neither, or settings-template-sync-check fails and the fleet gets the script with a dead switch). It replaces large Bash output with a trimmed copy plus a path to the full text; it fails open (prints nothing, exit 0) and has an off switch, KIPI_OUTPUT_TRIM=0. Added as its own matcher block at the head of PostToolUse so it adds no edit to an existing entry.",
+  "requires": {
+    "files_present": [
+      "q-system/.q-system/scripts/tool-output-trim.py",
+      "q-system/.q-system/scripts/test_tool_output_trim.py"
+    ],
+    "template_pairs": [
+      "tool-output-trim.py"
+    ]
+  },
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "\"PostToolUse\": [",
+      "reason": "Own Bash matcher block; the script self-scopes on tool_name and exits 0 with no output on anything it should not touch.",
+      "insert": "\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"python3 -I \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/tool-output-trim.py\\\"\",\n            \"timeout\": 5\n          }\n        ]\n      },"
+    },
+    {
+      "file": "settings-template.json",
+      "op": "insert_after",
+      "anchor": "\"PostToolUse\": [",
+      "reason": "Fleet ship path, guarded with test -f so an instance that has not received the script yet is a no-op.",
+      "insert": "\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"if test -f \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/tool-output-trim.py\\\"; then python3 -I \\\"$CLAUDE_PROJECT_DIR/q-system/.q-system/scripts/tool-output-trim.py\\\"; fi\",\n            \"timeout\": 5\n          }\n        ]\n      },"
+    }
+  ]
+}
