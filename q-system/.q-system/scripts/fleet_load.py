@@ -9,11 +9,14 @@ that file into launch arguments, so the worker does not keep a second copy of th
              the machine knows about whose name the job's row does not list. Prints
              nothing when there is nothing to pass, so the caller adds no --settings.
   mcp-config --job J                             the strict MCP config for --mcp-config.
-  startup    --session SID --ticket T --record OUT
+  startup    --session SID --ticket T --record OUT [--job J]
              reads the run's own transcript, reports what loaded at start-up (skill
              count, deferred tool names, MCP servers) against the row's
              startup_ceiling, appends one row to OUT, and prints ONE alert line only
-             when a metric crosses the ceiling that the previous row did not show over.
+             for a metric newly over the ceiling or newly unread (the transcript
+             carried no record of it), against the previous row. The line says
+             "grew past its ceiling" for a real breach and "could not be read" for
+             an unread count: an unread count is a read failure, not growth.
 
 Exit 0 on success; 1 on a file it cannot read or parse (the caller logs it and falls
 back to the full launch, which costs tokens and loses no gate); 2 on a row this code
@@ -114,9 +117,12 @@ def mcp_config(job: str, allow: Path = ALLOW) -> str:
 
 
 def startup_counts(transcript: Path) -> dict:
-    """What the session loaded before its first request, from its attachment records."""
-    out = {"skills": None, "skill_listing_chars": None, "deferred_tools": None, "mcp_servers": 0}
-    servers: set[str] = set()
+    """What the session loaded before its first request, from its attachment records.
+    A count whose record the transcript did not carry is None (unread), never 0."""
+    out = {"skills": None, "skill_listing_chars": None, "deferred_tools": None, "mcp_servers": None}
+    # None until a record that lists MCP servers is read. Seeded at 0 it passed the
+    # tightest ceiling (0) on a transcript that carried nothing (PR #796 review, minor 3).
+    servers: set[str] | None = None
     for line in transcript.read_text().splitlines():
         try:
             a = json.loads(line).get("attachment") or {}
@@ -128,12 +134,15 @@ def startup_counts(transcript: Path) -> dict:
             out["skill_listing_chars"] = len(a.get("content") or "")
         elif t == "deferred_tools_delta" and out["deferred_tools"] is None:
             out["deferred_tools"] = len(a.get("addedNames") or [])
+            servers = set() if servers is None else servers
             for k in ("pendingMcpServers", "needsAuthMcpServers", "failedMcpServers"):
-                servers |= set(a.get(k) or [])
+                # The CLI writes failed entries as {"name", "errorCode", "error"} objects; set()
+                # on them raised TypeError and lost the whole row (14 of 400 transcripts, 2026-11-13).
+                servers |= {v.get("name") if isinstance(v, dict) else v for v in a.get(k) or []}
             servers |= {n.split("__")[1] for n in a.get("addedNames") or [] if n.startswith("mcp__") and n.count("__") >= 2}
         elif t == "mcp_instructions_delta":
-            servers |= set(a.get("addedNames") or [])
-    out["mcp_servers"] = len(servers)
+            servers = (set() if servers is None else servers) | set(a.get("addedNames") or [])
+    out["mcp_servers"] = None if servers is None else len(servers)
     return out
 
 
@@ -183,9 +192,15 @@ def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "work
     with record.open("a") as f:
         f.write(json.dumps(row) + "\n")
     new = [o for o in over if _breach(o) not in prev_over]
-    if new:  # alert on the state change, once per newly breached metric (founder-notifications.md)
-        return f"worker start-up grew past its ceiling on {ticket}: {'; '.join(new)} (fleet-load-allowlist.json worker.startup_ceiling, ASK-4756)"
-    return ""
+    if not new:  # alert on the state change, once per newly breached metric (founder-notifications.md)
+        return ""
+    # Two states, two sentences. One sentence for both filed a transcript the ratchet
+    # could not read as a token regression in Sana's queue (PR #796 review, minor 1).
+    grew = [o for o in new if _breach(o)[1] == "over"]
+    unread = [o for o in new if _breach(o)[1] == "unread"]
+    said = ([f"grew past its ceiling on {ticket}: {'; '.join(grew)}"] if grew else []) + \
+           ([f"could not be read on {ticket}: {'; '.join(unread)}"] if unread else [])
+    return f"{job} start-up {' | '.join(said)} (fleet-load-allowlist.json {job}.startup_ceiling, ASK-4756)"
 
 
 def main(argv: list[str] | None = None) -> int:

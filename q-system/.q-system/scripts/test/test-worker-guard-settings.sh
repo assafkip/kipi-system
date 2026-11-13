@@ -240,7 +240,7 @@ if len(rows) != 1 or r["session"] != sid or r["ticket"] != "ASK-GGG" or r["job"]
 if "skills unread" not in r["over"]:
     sys.exit("E2b: a transcript with no skill listing was not reported unread: %r" % r["over"])
 PY
-grep -q 'start-up grew past its ceiling on ASK-GGG' "$NOTIFY_LOG" 2>/dev/null || fail "E2b: the crossing reached no line in Sana's queue. Notify log: $(cat "$NOTIFY_LOG" 2>/dev/null)"
+grep -q 'start-up could not be read on ASK-GGG' "$NOTIFY_LOG" 2>/dev/null || fail "E2b: the unread start-up reached no line in Sana's queue. Notify log: $(cat "$NOTIFY_LOG" 2>/dev/null)"
 ok "E2b: the start-up ratchet wrote one row for the run's session and sent one line to Sana's queue"
 NO_TX=1 run_case E3 no
 [ "$(cat "$WORK/rc-E3")" = "0" ] || fail "E3: a missing transcript failed the worker run. Output: $(tail -8 "$WORK/run-E3.out")"
