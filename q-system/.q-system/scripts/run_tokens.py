@@ -24,6 +24,7 @@ malformed input must not look like a clean zero).
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -72,13 +73,26 @@ def _num(v) -> int:
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
 
 
-def read_best(files: list[Path], unreadable: list[str] | None = None) -> dict[str, tuple[dict, str]]:
-    """message id -> (largest-output usage snapshot, file it came from).
+def _when(ts) -> datetime.datetime | None:
+    """A record's `timestamp` as an aware datetime, or None when absent or unparseable."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        # the "Z" swap keeps this working on Pythons whose fromisoformat predates "Z"
+        t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+
+
+def read_best(files: list[Path],
+              unreadable: list[str] | None = None) -> dict[str, tuple[dict, str, datetime.datetime | None]]:
+    """message id -> (largest-output usage snapshot, file it came from, earliest timestamp seen).
 
     A file that cannot be opened is named in `unreadable`, never skipped silently:
     a partial read that exits 0 lets a cap check pass on most of the data (review of #765).
     """
-    best: dict[str, tuple[dict, str]] = {}
+    best: dict[str, tuple[dict, str, datetime.datetime | None]] = {}
     for f in files:
         try:
             handle = sys.stdin.buffer if str(f) == "-" else f.open("rb")
@@ -104,9 +118,17 @@ def read_best(files: list[Path], unreadable: list[str] | None = None) -> dict[st
                 if not isinstance(usage, dict) or model.startswith("<"):
                     continue
                 held = best.get(msg["id"])
+                ts = _when(rec.get("timestamp"))
+                if held is None:
+                    best[msg["id"]] = (usage, str(f), ts)
+                    continue
+                # the request's time is its FIRST snapshot's, whichever snapshot's usage is kept
+                first = ts if held[2] is None or (ts is not None and ts < held[2]) else held[2]
                 # strictly greater: a tie keeps the first snapshot seen
-                if held is None or _num(usage.get("output_tokens")) > _num(held[0].get("output_tokens")):
-                    best[msg["id"]] = (usage, str(f))
+                if _num(usage.get("output_tokens")) > _num(held[0].get("output_tokens")):
+                    best[msg["id"]] = (usage, str(f), first)
+                else:
+                    best[msg["id"]] = (held[0], held[1], first)
     return best
 
 
@@ -118,32 +140,58 @@ def _pct(sorted_vals: list[int], q: float) -> int:
     return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
 
 
-def summarize(items: list[dict]) -> dict:
-    ctx = sorted(sum(_num(u.get(k)) for k in CTX_KEYS) for u in items)
+def _context_first(items: list[tuple[dict, datetime.datetime | None]]) -> int | None:
+    """Context (input + cache read + cache write) of the earliest request by timestamp.
+
+    Why this exists (ASK-4747): the worker's start-up cost was the one row the token
+    analysis could not fill (token-drain-analysis-2026-11-12 s.2, "NOT MEASURED, the
+    row has no first-request field"), so the lean start-up cut had no before number.
+    By timestamp, never by read order: files are read in path order (a session plus
+    its subagents, or a sorted directory), so the first record read need not be the
+    first request made. None, never 0, when ANY request carries no time: that one may
+    be the first (review of #789), and a 0 would read as a free start-up, the same
+    lie the exit 1 on zero requests refuses.
+    """
+    if not items or any(t is None for _, t in items):
+        return None
+    _, u = min(((t, u) for u, t in items), key=lambda p: p[0])  # min keeps the first of equal times
+    return sum(_num(u.get(k)) for k in CTX_KEYS)
+
+
+def summarize(items: list[tuple[dict, datetime.datetime | None]]) -> dict:
+    usages = [u for u, _ in items]
+    ctx = sorted(sum(_num(u.get(k)) for k in CTX_KEYS) for u in usages)
     mid = len(ctx) // 2
     median = 0 if not ctx else (ctx[mid] if len(ctx) % 2 else (ctx[mid - 1] + ctx[mid]) // 2)
     return {
-        "requests": len(items),
-        "input_tokens": sum(_num(u.get("input_tokens")) for u in items),
-        "cache_read_tokens": sum(_num(u.get("cache_read_input_tokens")) for u in items),
-        "cache_write_tokens": sum(_num(u.get("cache_creation_input_tokens")) for u in items),
-        "output_tokens": sum(_num(u.get("output_tokens")) for u in items),
+        "requests": len(usages),
+        "input_tokens": sum(_num(u.get("input_tokens")) for u in usages),
+        "cache_read_tokens": sum(_num(u.get("cache_read_input_tokens")) for u in usages),
+        "cache_write_tokens": sum(_num(u.get("cache_creation_input_tokens")) for u in usages),
+        "output_tokens": sum(_num(u.get("output_tokens")) for u in usages),
         "context_median": median,
         "context_p90": _pct(ctx, 0.9),
+        "context_first": _context_first(items),
     }
 
 
-def report(paths: list[str], by_agent: bool = False, subagents: bool = False) -> dict:
+def report(paths: list[str], by_agent: bool = False, subagents: bool = False,
+           start_of: str | None = None) -> dict:
+    """`start_of` names the one transcript whose first request is `context_first`."""
     bad: list[str] = []
     files = expand(paths, subagents, bad)
     best = read_best(files, bad)
-    out = summarize([u for u, _ in best.values()])
+    out = summarize([(u, t) for u, _, t in best.values()])
     out["transcripts"] = len(files)
     out["unreadable"] = bad
+    groups: dict[str, list[tuple[dict, datetime.datetime | None]]] = {}
+    for u, f, t in best.values():
+        groups.setdefault(f, []).append((u, t))
+    if start_of is not None:
+        # A run's start-up is ITS OWN transcript's first request. The minimum over the
+        # session plus its subagent files reported a subagent's request instead (review of #789).
+        out["context_first"] = _context_first(groups.get(start_of, []))
     if by_agent:
-        groups: dict[str, list[dict]] = {}
-        for u, f in best.values():
-            groups.setdefault(f, []).append(u)
         out["by_agent"] = {f: summarize(g) for f, g in sorted(groups.items())}
     return out
 
@@ -155,7 +203,6 @@ def record(a) -> int:
     interleave whole rows, never bytes. No transcript found is a nonzero exit with a
     named reason, never an all-zero row that reads as a free run.
     """
-    import datetime
     import re
     if not a.session or not re.fullmatch(r"[0-9a-fA-F-]{36}", a.session):
         print("run_tokens: --record needs a uuid --session", file=sys.stderr)
@@ -164,7 +211,7 @@ def record(a) -> int:
     if not hits:
         print(f"run_tokens: no transcript for session {a.session}", file=sys.stderr)
         return 1
-    rep = report([str(hits[0])], subagents=True)
+    rep = report([str(hits[0])], subagents=True, start_of=str(hits[0]))
     if rep["unreadable"] or rep["requests"] == 0:
         print(f"run_tokens: session {a.session}: unreadable or zero requests", file=sys.stderr)
         return 1

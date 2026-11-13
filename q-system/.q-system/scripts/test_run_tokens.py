@@ -7,6 +7,7 @@ case can only be built by editing a real record: those copies are derived from
 the fixture in the test, not invented.
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,85 @@ def test_context_percentiles():
     # per-request context: 77741, 92565, 77330
     assert rep["context_median"] == 77741
     assert rep["context_p90"] == 92565
+
+
+def _out_of_order_transcript(tmp_path, stamped=True):
+    """A session transcript, derived from the real fixture records, whose earliest
+    request by timestamp is NOT its first line.
+
+    File order: id B (3 snapshots, 23:29:19+, context 92565), then id A (2 snapshots,
+    23:29:15+, context 77741), then id C (a copy of B's record with a new id, a later
+    time and a smaller context, 31002). So first-in-file is B, earliest is A, latest
+    and smallest is C: each wrong pick gives a different number than the right one.
+    """
+    lines = (FX / "main.ndjson").read_text().splitlines()
+    c = json.loads(lines[2])
+    c["message"]["id"] = "msg_derived_C"
+    c["timestamp"] = "2026-11-11T23:29:31.002Z"
+    c["message"]["usage"].update(input_tokens=2, cache_read_input_tokens=30000, cache_creation_input_tokens=1000)
+    recs = [json.loads(x) for x in lines[2:5] + lines[0:2]] + [c]
+    if not stamped:
+        for r in recs:
+            r.pop("timestamp", None)
+    sid = "0b5e1c2a-4f3d-4e6a-9c7b-2d8f1a3e5c47"
+    proj = tmp_path / "home" / ".claude" / "projects" / "-fixture"
+    proj.mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    return sid
+
+
+def _record(tmp_path, sid):
+    out = tmp_path / "rows.jsonl"
+    env = {**os.environ, "HOME": str(tmp_path / "home")}
+    p = subprocess.run([sys.executable, str(HERE / "run_tokens.py"), "--record", str(out),
+                        "--session", sid, "--ticket", "ASK-4747"], capture_output=True, text=True, env=env)
+    rows = [json.loads(x) for x in out.read_text().splitlines()] if out.exists() else []
+    return p.returncode, rows
+
+
+def test_record_row_carries_context_first_of_the_earliest_request(tmp_path):
+    # ASK-4747 step 1: the worker's first-request context was the one number the
+    # token analysis could not read from the ledger (token-drain-analysis-2026-11-12, s.2).
+    rc, rows = _record(tmp_path, _out_of_order_transcript(tmp_path))
+    assert rc == 0 and len(rows) == 1
+    assert rows[0]["requests"] == 3
+    assert rows[0]["context_first"] == 2 + 49911 + 27828  # id A, earliest by timestamp
+
+
+def test_record_row_without_timestamps_has_null_context_first(tmp_path):
+    # No stamped request: the row still lands (the aggregates are real), and the
+    # start-up reads as unknown, never as a 0 that looks like a free start-up.
+    rc, rows = _record(tmp_path, _out_of_order_transcript(tmp_path, stamped=False))
+    assert rc == 0 and len(rows) == 1
+    assert rows[0]["requests"] == 3 and rows[0]["context_first"] is None
+
+
+def test_record_context_first_is_the_sessions_own_not_a_subagents(tmp_path):
+    # Review of #789 (major): the row's start-up was the minimum over the session AND
+    # its subagent files. Same layout as test_subagent_transcript_is_added; the
+    # subagent fixture's records are 3 hours older than the session's.
+    sid = "6c1f0e2b-8a4d-4b7e-9f3a-1e5d7c9b2a40"
+    proj = tmp_path / "home" / ".claude" / "projects" / "-fixture"
+    (proj / sid / "subagents").mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text((FX / "main.ndjson").read_text())
+    (proj / sid / "subagents" / "agent-x.jsonl").write_text((FX / "subagent.ndjson").read_text())
+    rc, rows = _record(tmp_path, sid)
+    assert rc == 0 and rows[0]["requests"] == 3  # the subagent is still counted
+    assert rows[0]["context_first"] == 2 + 49911 + 27828  # main.ndjson line 0, not the subagent's 77330
+
+
+def test_record_context_first_is_null_when_any_request_is_unstamped(tmp_path):
+    # Review of #789 (minor): an unstamped request may be the first one, so a stamped
+    # later request must not be reported as the start-up.
+    sid = _out_of_order_transcript(tmp_path)
+    f = next((tmp_path / "home" / ".claude" / "projects" / "-fixture").glob(f"{sid}.jsonl"))
+    recs = [json.loads(x) for x in f.read_text().splitlines()]
+    for r in recs:
+        if r["message"]["id"] == "msg_011Cgx1WH5VKhBJnXpsYjB9n":  # id A, the earliest
+            r.pop("timestamp")
+    f.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    rc, rows = _record(tmp_path, sid)
+    assert rc == 0 and rows[0]["requests"] == 3 and rows[0]["context_first"] is None
 
 
 def test_empty_and_malformed_exit_nonzero(tmp_path):
