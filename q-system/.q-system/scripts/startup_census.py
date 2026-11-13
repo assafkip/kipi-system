@@ -75,7 +75,12 @@ def parts(recs: list[dict]) -> dict:
                 out[_tool_key("tool_addition.", name)] += len(json.dumps(blk))
             elif "Codebase and user instructions" in text[:300]:
                 out["instructions"] += len(text)
-            elif "just became available" in text[:300]:
+            elif ("just became available" in text[:300]
+                  or "deferred tools are now available" in text[:300]):
+                # Two producer headers for one block: "just became available"
+                # when some tools arrive with full schemas, "deferred tools are
+                # now available" when none do (seen after the MCP cut, 2026-11-13).
+                # Split on the section markers, never on the header.
                 skills = text.find("The following skills are available")
                 env = text.find("# Environment")
                 head = env if env >= 0 else (skills if skills >= 0 else len(text))

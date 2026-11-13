@@ -57,3 +57,18 @@ def test_missing_shape_exits_1(tmp_path):
                        capture_output=True, text=True)
     assert p.returncode == 1
     assert "no api-request-shape" in p.stderr
+
+
+def test_deferred_header_without_tool_additions_still_splits():
+    # Producer shape after the MCP cut: no tool_addition blocks, so the block
+    # opens with the deferred-tools header instead. Header text copied from a
+    # real transcript; filler stands in for the names, environment and listing.
+    head = "The following deferred tools are now available via ToolSearch."
+    text = head + "x" * 3880 + "# Environment" + "y" * 1524 + "The following skills are available" + "z" * 30000
+    recs = [{"type": "api-request-shape", "shape": {"system": [], "tools": []}},
+            {"type": "api-request-blob", "message": {"content": [{"type": "text", "text": text}]}},
+            {"type": "api-request"}]
+    p = startup_census.parts(recs)
+    assert p["skill_listing"] == 30000 + len("The following skills are available")
+    assert p["deferred_tools_and_mcp_instructions"] == len(head) + 3880
+    assert "brief_and_other" not in p

@@ -1,0 +1,5 @@
+{
+  "path": "q-system/.q-system/tests/test_sana_agent_startup.py",
+  "runner": "pytest",
+  "timeout_s": 60
+}
