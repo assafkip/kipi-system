@@ -2293,8 +2293,9 @@ lean_mcp_config_now() {
 
 # record_startup <session> <issue>: what the run loaded at start-up, against the
 # worker row's startup_ceiling (the ASK-4756 ratchet). One row per run in
-# worker-startup.jsonl; ONE line to Sana's queue when a run crosses the ceiling and
-# the previous run did not. Never stops or delays a run (founder ruling R1: no caps).
+# worker-startup.jsonl; ONE line to Sana's queue for each metric newly over the
+# ceiling (or newly unread) against the previous run's row, so a breach that persists
+# does not repeat. Never stops or delays a run (founder ruling R1: no caps).
 record_startup() {
   [ -n "${1:-}" ] || return 0
   local alert

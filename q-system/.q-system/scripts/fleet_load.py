@@ -152,6 +152,14 @@ def over_ceiling(counts: dict, ceiling: dict) -> list[str]:
     return over
 
 
+def _breach(entry: str) -> tuple[str, str]:
+    """("skills", "unread") or ("skills", "over"): an unread count and a real breach of
+    the same metric are different states, so one never latches the other (PR #792
+    review round 3)."""
+    parts = entry.split()
+    return (parts[0], "unread" if parts[1:] == ["unread"] else "over")
+
+
 def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "worker", allow: Path = ALLOW) -> str:
     hits = sorted((cfg / "projects").glob(f"*/{session}.jsonl"))
     if not hits:
@@ -161,12 +169,12 @@ def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "work
     # The latch is the SET of metrics over, read back from this file's last row (this
     # function is the file's reader as well as its writer). A boolean latch let a run
     # already over on skills hide a later MCP server breach (PR #792 review round 2).
-    prev_over: set[str] = set()
+    prev_over: set[tuple[str, str]] = set()
     if record.exists():
         rows = [ln for ln in record.read_text().splitlines() if ln.strip()]
         if rows:
             try:
-                prev_over = {o.split()[0] for o in json.loads(rows[-1]).get("over") or []}
+                prev_over = {_breach(o) for o in json.loads(rows[-1]).get("over") or []}
             except (ValueError, AttributeError, IndexError):
                 prev_over = set()
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "job": job,
@@ -174,7 +182,7 @@ def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "work
     record.parent.mkdir(parents=True, exist_ok=True)
     with record.open("a") as f:
         f.write(json.dumps(row) + "\n")
-    new = [o for o in over if o.split()[0] not in prev_over]
+    new = [o for o in over if _breach(o) not in prev_over]
     if new:  # alert on the state change, once per newly breached metric (founder-notifications.md)
         return f"worker start-up grew past its ceiling on {ticket}: {'; '.join(new)} (fleet-load-allowlist.json worker.startup_ceiling, ASK-4756)"
     return ""
