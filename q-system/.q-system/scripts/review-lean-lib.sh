@@ -46,7 +46,7 @@ review_lean_args() {
   REVIEW_LEAN_FLAGS=""
   if [ "${KIPI_REVIEW_LEAN:-1}" != "0" ]; then
     REVIEW_LEAN_ENV="KIPI_REVIEW_SCRIPTS='$sdir' CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "
-    REVIEW_LEAN_FLAGS=" --setting-sources '' --settings '$sdir/../review-lean-settings.json' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob --disable-slash-commands"
+    REVIEW_LEAN_FLAGS=" --setting-sources '' --settings '$sdir/../review-lean-settings.json' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash --disable-slash-commands"
     echo "pr-review-agent: REVIEWER MODE LEAN (default; KIPI_REVIEW_LEAN=0 turns it off): no MCP, no CLAUDE.md or rules, Read/Grep/Glob/Bash only, guard hooks and the project deny list only" >&2
   fi
 }
