@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/test/test-kipi-update-post-sync-step.sh",
+ "runner": "bash",
+ "timeout_s": 600
+}

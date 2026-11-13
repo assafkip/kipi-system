@@ -110,6 +110,12 @@ if [ ! -f "$REGISTRY" ]; then
   exit 1
 fi
 
+# The instance's one declared post-sync command lives at its repo root. The
+# rsyncs write only q-system/, .claude/ and plugins/, so this file is never
+# synced over or deleted.
+POST_SYNC_DECL=".kipi-post-sync"
+POST_SYNC_FAILED_STEP=""
+
 # Instance-owned subtrees: the skeleton never overwrites these, because each
 # instance authors its own. This list was duplicated across four sites (the
 # q-system rsync, the dry-run preview rsync, the untracked-collision scan, and
@@ -1445,7 +1451,8 @@ count_instance_failure() {
   # 2-6 prd-os versions behind for weeks and each run skipped a different subset
   # (measured 2026-08-04). A count is not a report.
   FAILED_NAMES="$FAILED_NAMES
-    - ${name:-<unnamed>} (${path:-unknown path})"
+    - ${name:-<unnamed>} (${path:-unknown path})${POST_SYNC_FAILED_STEP:+ [post-sync step failed: $POST_SYNC_FAILED_STEP]}"
+  POST_SYNC_FAILED_STEP=""
   # Names only, one per line, for the sweep-history row (ASK-776). Paths stay
   # out: the row is a fleet record, and a name is all a reader needs.
   FAILED_IDS="${FAILED_IDS}${name:-<unnamed>}
@@ -3524,9 +3531,44 @@ print("\n".join(mod.EXTRA_WATCHED))
       done < <(managed_plugin_names)
     fi
 
-    # Commit the config sync. The updater used to commit only $prefix/, leaving
-    # .claude/ and plugins/ permanently dirty in every instance repo.
-    if git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    # An instance's declared post-sync step (ASK-4726), run AFTER the rsyncs and
+    # BEFORE the config half is staged and committed. Scar: an instance's own
+    # pre-commit check refused the config commit whenever the sync delivered an
+    # engine file its public mirror lacked, and the mirror can only be exported
+    # once the engine is on disk. The sync rolled back four times, each
+    # unblocked by hand. The step is the instance's own code, the same trust as
+    # its pre-commit hook. NOTHING here limits or undoes what it writes: PR #780
+    # and #784 each spent three rounds on code that did, and each round found a
+    # new gap in it. A file the step writes outside .claude/ and plugins/ is not
+    # in the sync's commit, because stage_config_sync stages only those paths
+    # (test case 7 pins that). Dry run only PRINTS the command.
+    if [ "$CONFIG_FAILED" = "0" ] && [ -f "$path/$POST_SYNC_DECL" ]; then
+      POST_SYNC_STEP="$(grep -vE '^[[:space:]]*(#|$)' "$path/$POST_SYNC_DECL" || true)"
+      if [ -z "$POST_SYNC_STEP" ] || [ "$(printf '%s\n' "$POST_SYNC_STEP" | wc -l)" -ne 1 ]; then
+        echo "    ERROR: $POST_SYNC_DECL must hold exactly one command line"
+        POST_SYNC_FAILED_STEP="$POST_SYNC_DECL (not exactly one command)"
+        CONFIG_FAILED=1
+      elif [ "$DRY_RUN" = "--dry-run" ]; then
+        echo "    post-sync step (dry run, NOT run): $POST_SYNC_STEP"
+      else
+        echo "    Running post-sync step: $POST_SYNC_STEP"
+        # Own stdout and stderr both shown: the step's message is the diagnosis.
+        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" 2>&1)"; then
+          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+          echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
+          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
+          CONFIG_FAILED=1
+        else
+          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+        fi
+      fi
+    fi
+
+    # A failed step skips the commit: the rollback does not rewind a commit that
+    # landed, so committing first would leave a config half the step never
+    # blessed on the instance's branch.
+    if [ -z "$POST_SYNC_FAILED_STEP" ] &&
+        git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
       if ! ( cd "$path" &&
         # The untrack below is this block's FIRST index write, so the wait sits
         # before it, not before the staging that follows (PR #314 round 2).
