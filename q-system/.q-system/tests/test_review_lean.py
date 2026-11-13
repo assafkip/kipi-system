@@ -47,7 +47,10 @@ def build(lib, lean, tmp, mode):
     (stub / "fleet").chmod(0o755)
     fleet = str(stub / "fleet") if mode == "keyed" else "env -u ANTHROPIC_API_KEY claude"
     env = {**os.environ, "REC": str(rec), "PATH": f"{stub}:{os.environ['PATH']}"}
-    env.pop("KIPI_REVIEW_LEAN", None)
+    # A lean reviewer runs this suite with the lean env exported; drop it so "off"
+    # is measured from a clean env (#799 round 1: false red inside a lean session).
+    for k in ("KIPI_REVIEW_LEAN", "CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "KIPI_REVIEW_SCRIPTS"):
+        env.pop(k, None)
     if lean is not None:
         env["KIPI_REVIEW_LEAN"] = lean
     root = tmp / "tree"

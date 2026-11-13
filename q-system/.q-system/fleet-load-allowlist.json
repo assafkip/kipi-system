@@ -25,7 +25,7 @@
    "plugins": [],
    "mcp_servers": [],
    "account_connectors": false,
-   "why": "A reviewer reads the PR tree and writes one verdict file. Plugin hooks guard writes it does not make, and it reads any rule it cites from the PR tree with Read or Grep: the lean reviewer loads no CLAUDE.md, rules or settings at start (ASK-4743).",
+   "why": "A reviewer reads the PR tree and writes one verdict file. Plugin hooks guard writes it does not make, and it reads any rule it cites from the PR tree with Read or Grep: the lean reviewer starts with no CLAUDE.md or rules loaded, and its only settings file is review-lean-settings.json (ASK-4743).",
    "strict_mcp": true
   },
   "background": {
