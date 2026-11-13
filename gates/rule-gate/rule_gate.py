@@ -49,6 +49,7 @@ Modes:
   Stop / SubagentStop: the same scan, plus a scan of the session's own tree (the git
     tree holding its cwd, stopping at any nested tree), never another tree's
     (ASK-4769). A failing file blocks the stop, at most MAX_BLOCKS times per session.
+    Outside any git tree it adds nothing to the hot set and logs a no-tree row.
   --init writes the baseline (section texts) and the debt list. --scan reports.
 
 Residual, stated: the gate, its baseline and the token minter are files this
@@ -443,10 +444,17 @@ def _lines(text):
     return [l.rstrip() for l in (text or "").splitlines() if l.strip()]
 
 
-def _baseline_bodies(path):
-    """{heading: [body, ...]} of this file at install and as origin's default branch holds it."""
+def _baseline_bodies(path, baseline):
+    """{heading: [body, ...]}: every install-baseline section by heading, plus this file as
+    origin's default branch holds it.
+    BY HEADING ACROSS THE WHOLE BASELINE, NOT BY THIS FILE'S PATH (PR #793 review, round
+    1): grandfathered() matches a section by hash wherever it sits, so a review-tree clone
+    (its .git is a folder, its path never walked) keeps its unchanged sections. Keyed by
+    path, the split test found no body there, and a wired insert above a JSON block
+    deleted the old section's heading and prose. Only text the baseline already
+    grandfathers can match, so this passes nothing the whole section would not."""
     out = {}
-    for h, b in list(baseline_file_sections(path).items()) + list(worktree_baseline(path)[0]):
+    for h, b in list((baseline or {}).values()) + list(worktree_baseline(path)[0]):
         out.setdefault(h, []).append(b)
     return out
 
@@ -494,7 +502,7 @@ def failing(path, text, baseline, id_owner):
         if not why.get(i):
             continue
         if bodies is None:
-            bodies = _baseline_bodies(path)  # read only when a section fails
+            bodies = _baseline_bodies(path, baseline)  # built only when a section fails
         if not any(_split_off(secs, old, why, i, b) for b in bodies.get(head, [])):
             bad.append((head, why[i]))
     return bad
@@ -950,7 +958,14 @@ def stop(data):
     # payload cwd, the same input hot_set() uses, never from an inherited environment
     # variable: a child `claude -p` would carry its parent's and judge the parent's tree.
     root = tree_root(data.get("cwd"))
-    files = tree_files(root) if root else []
+    if not root:
+        # OUTSIDE ANY GIT TREE THE STOP ADDS NOTHING TO THE HOT SET, AND SAYS SO (PR #793
+        # review, round 1): a silent skip read the same as a clean scan. Walking the cwd
+        # instead would judge every non-repo folder under a container like ~/projects,
+        # which no session owns: the blast radius this scope removes.
+        log({"ts": time.time(), "mode": "stop", "verdict": "no-tree", "cwd": data.get("cwd")})
+        return 0
+    files = tree_files(root)
     bad = []
     for f in files:
         try:

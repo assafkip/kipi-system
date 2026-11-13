@@ -23,7 +23,9 @@ THE SANDBOX IS OUTSIDE TEMP SPACE ON PURPOSE. check_section refuses an enforcer 
 /tmp or /var/folders, which is where pytest's tmp_path lives on macOS, so a rule that
 SHOULD be kept could never be kept there and every positive case below would be
 vacuous. Each test gets its own folder under ~/.cache/kipi-rule-gate-tests and removes
-it afterwards. Nothing here reads or writes ~/projects or ~/.config.
+it afterwards. With the default gate copy nothing here reads or writes ~/projects or
+~/.config; under RULE_GATE_UNDER_TEST the installed gate reads its own baseline and
+managed-settings-path, read-only, and writes only under the sandbox HOME.
 """
 import json
 import os
@@ -186,12 +188,22 @@ def test_stop_judges_own_tree_wherever_it_sits(sb):
 
 
 # ======================================================== (b) a split is not a change
-def split_fixture(sb, t):
+def split_fixture(sb, t, kind="worktree"):
     old = (f"# Split rule {t}\n\nIntro prose {t}.\n\n"
            f"## Old section {t}\n\nOld prose that keeps its verdict {t}.\n\n"
            f"```json\n[{{\"clause\": \"Old section {t}\", \"status\": \"ENFORCED\"}}]\n```\n")
     r = sb.repo("r", {os.path.join(".claude", "rules", "split.md"): old}, sb.h("projects", "r"))
-    wt = sb.worktree(r, sb.h(".config", "kipi", "worktrees", "r-wt"), "sana/r")
+    if kind == "worktree":
+        wt = sb.worktree(r, sb.h(".config", "kipi", "worktrees", "r-wt"), "sana/r")
+    else:
+        # A review tree is a CLONE (.git is a folder) whose path no baseline walked; its
+        # unchanged sections are grandfathered only by hash, from the install baseline,
+        # which --init takes here over the sandbox HOME (it walks ~/projects/r).
+        r_init = subprocess.run([sys.executable, sb.gate, "--init"], capture_output=True,
+                                text=True, env=sb.env, cwd=sb.home, timeout=120)
+        assert r_init.returncode == 0 and "baseline" in r_init.stdout, r_init.stdout + r_init.stderr
+        wt = sb.h(".config", "kipi", "review-trees", "owner_r__pr-1")
+        sb.git(sb.root, "clone", "-q", os.path.join(sb.root, "origins", "r.git"), wt)
     # Wired through a LaunchAgent plist: location-proof on old and new code alike, so
     # these tests measure the split and nothing else.
     enf = os.path.join(wt, "automation", "split_check.py")
@@ -221,6 +233,36 @@ def test_wired_section_inserted_above_the_json_block_keeps_the_old_verdict(sb):
     sb.run("PostToolUse", wt)
     with open(path) as fh:
         assert fh.read() == new, "the gate rewrote a file whose only change is a wired section"
+
+
+def test_wired_section_inserted_above_the_json_block_in_a_review_tree_clone(sb):
+    # PR #793 review, round 1: keyed by path, the split test found no old body in a
+    # clone, and the gate deleted the old section's heading and prose.
+    if os.environ.get("RULE_GATE_UNDER_TEST"):
+        pytest.skip("needs --init on a sandbox lock; --init is never run against an installed gate")
+    t = tok()
+    tree, path, old = split_fixture(sb, t, kind="clone")
+    json_at = old.index("```json")
+    new = old[:json_at] + wired_section(t) + old[json_at:]
+    sb.put(path, new)
+    _, out = sb.scan(tree)
+    assert fails_for(out, f"## Old section {t}") == [], f"a clone read an unchanged section as changed:\n{out}"
+    sb.run("PostToolUse", tree)
+    with open(path) as fh:
+        assert fh.read() == new, "the gate rewrote a clone's file whose only change is a wired section"
+
+
+def test_stop_outside_any_git_tree_records_that_it_scanned_nothing(sb):
+    # PR #793 review, round 1: the skip was silent, so it read the same as a clean scan.
+    # Decision recorded in stop(): no walk of a non-git cwd (it would judge folders no
+    # session owns), and a no-tree row says the Stop added nothing to the hot set.
+    d = sb.h("projects", "notarepo")
+    sb.put(os.path.join(d, "docs", "CLAUDE.md"), unwired_prose(tok()))
+    assert sb.stop_scan_reasons(d) == []
+    with open(sb.h(".config", "kipi", "rule-gate", "rule-gate.jsonl")) as fh:
+        rows = [json.loads(l) for l in fh if l.strip()]
+    assert any(r.get("mode") == "stop" and r.get("verdict") == "no-tree" and r.get("cwd") == d
+               for r in rows), "a Stop outside any git tree left no record of its skip"
 
 
 def test_wired_section_inserted_at_a_boundary_keeps_the_old_verdict(sb):
