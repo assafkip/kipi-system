@@ -2272,6 +2272,39 @@ guard_settings_now() {
   python3 "$SCRIPT_DIR/skeleton-guard-settings.py" --for-tree "$TREE" 2>>"$LOG" || true
 }
 
+# lean_settings_now / lean_mcp_config_now (ASK-4747, ASK-4756): what the claude launch
+# in primary_run LOADS, read from fleet-load-allowlist.json's worker row by the one
+# reader, fleet_load.py. The guard set rides inside the same --settings JSON, so the
+# guards are never traded for the trim. Measured 2026-11-12 in a kipi-system tree:
+# 117,872 first-request tokens with every installed plugin, MCP server and account
+# connector; 76,036 with this launch. A build that fails falls back to the guard set
+# and no MCP flags, which is the launch before ASK-4747: it costs tokens and drops no
+# gate. The log line says so; fleet_load.py startup is what notices the cost.
+lean_settings_now() {
+  local guard; guard="$(guard_settings_now)"
+  python3 "$SCRIPT_DIR/fleet_load.py" settings --job worker --tree "$TREE" --guard-json "$guard" 2>>"$LOG" && return 0
+  echo "$(TS) $ISSUE: lean launch settings not built (line above); this run loads every installed plugin" >>"$LOG"
+  printf '%s' "$guard"
+}
+lean_mcp_config_now() {
+  python3 "$SCRIPT_DIR/fleet_load.py" mcp-config --job worker 2>>"$LOG" && return 0
+  echo "$(TS) $ISSUE: strict MCP config not built (line above); this run loads every MCP server and connector" >>"$LOG"
+}
+
+# record_startup <session> <issue>: what the run loaded at start-up, against the
+# worker row's startup_ceiling (the ASK-4756 ratchet). One row per run in
+# worker-startup.jsonl; ONE line to Sana's queue when a run crosses the ceiling and
+# the previous run did not. Never stops or delays a run (founder ruling R1: no caps).
+record_startup() {
+  [ -n "${1:-}" ] || return 0
+  local alert
+  alert="$(python3 "$SCRIPT_DIR/fleet_load.py" startup --session "$1" --ticket "$2" \
+    --record "${KIPI_STARTUP_FILE:-$HOME/.local/state/kipi/worker-startup.jsonl}" 2>>"$LOG")" \
+    || { echo "$(TS) $2: start-up not recorded (see line above)" >>"$LOG"; return 0; }
+  [ -n "$alert" ] && { say "$alert"; bash "$NOTIFY" "$alert" 2>/dev/null || true; }
+  return 0
+}
+
 # --- worktree positioning (ASK-212, PR #25 review finding 1) -----------------
 # tree_holds_pr_head <tree> <branch>: true when everything on origin/<branch> is
 # already reachable from the tree's HEAD -- i.e. a push from this tree destroys
@@ -3552,9 +3585,10 @@ Anything real you find and are not fixing: capture it, never just mention it:
       # retry is a new launch. The read is the SHELL's, after the run, because a guard
       # blocks agent-run programs from reading under ~/.claude.
       RUN_SID="$(python3 -c 'import uuid;print(uuid.uuid4())' 2>/dev/null)"
-      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${4:+--session-id \"\$4\"} \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(guard_settings_now)" "$WORK_MODEL" "$RUN_SID"
+      run_bounded "$TIMEOUT_SECONDS" bash -c "set -o pipefail; cd '$TREE' && KIPI_AGENT='$AGENT' $FLEET_CLAUDE -p \"\$1\" \${4:+--session-id \"\$4\"} \${3:+--model \"\$3\"} \${2:+--settings \"\$2\"} \${5:+--strict-mcp-config --mcp-config \"\$5\"} </dev/null 2>&1 | tee -a '$LOG' > '$RUN_OUT_FILE'" _ "$PROMPT" "$(lean_settings_now)" "$WORK_MODEL" "$RUN_SID" "$(lean_mcp_config_now)"
       local prc=$?
       record_run_tokens "$RUN_SID" "$ISSUE" "$TARGET_SLUG"
+      record_startup "$RUN_SID" "$ISSUE"
       return $prc
     fi
   }

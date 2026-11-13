@@ -12,7 +12,14 @@
    "mcp_servers": [],
    "account_connectors": false,
    "why": "A builder works through these plugins' hooks: fable-discipline-lint (prd-os), rca-lint (kipi-core), the issue hooks (kipi-dsse), the dogfood gate and design door (kipi-design). It reaches Linear and GitHub through scripts, so it needs no MCP server. kipi-ops (one interpretive skill, no hooks) and kipi-notebooklm (a research MCP server) serve no build step. Its plugins' own MCP servers (kipi-core ships one) stay off: strict_mcp means the launcher passes a strict, empty MCP config.",
-   "strict_mcp": true
+   "strict_mcp": true,
+   "startup_ceiling": {
+    "skills": 120,
+    "deferred_tools": 20,
+    "mcp_servers": 0,
+    "measured": "2026-11-12, one claude -p in a kipi-system tree with this row applied (ASK-4756): 106 skills in the listing, 13 deferred tool names, 0 MCP servers; first request 76,036 tokens (117,872 with the full set: 345 skills, 617 deferred names, 14 MCP servers with instructions).",
+    "why": "A ratchet, not a cap on runs: fleet_load.py startup reads each worker run's transcript and alerts Sana once when a count crosses this line. The margin (about 13% on skills, 7 tool names) lets one new fleet skill land without an alert; a new plugin or any MCP server does not. The listing's text is capped by the CLI near 30k characters at both 106 and 345 skills, so the count is the measure, not the characters."
+   }
   },
   "review": {
    "plugins": [],
