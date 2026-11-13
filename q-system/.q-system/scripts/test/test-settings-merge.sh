@@ -591,4 +591,38 @@ assert events == ["PostToolUse"], f"the exit-2 guard must be PostToolUse only, f
 EOF
 echo "ok: the exit-2 guard is scoped to PostToolUse"
 
+# ASK-4852: an instance's claudeMdExcludes survives the rebuild. Scar 2026-11-13:
+# a client instance is nested inside another instance, so every session
+# launched there loads the parent's CLAUDE.md too, and the warning read 194.8k
+# against Claude Code's 150.0k limit. Its project-scope excludes are the only
+# per-folder fix, and the template rebuild deleted any top-level key it did not
+# list, so the next sync would have put the warning back.
+cat > "$FIXTURE/template5.json" <<'EOF'
+{"permissions": {"allow": []}, "claudeMdExcludes": ["/t/shared.md"]}
+EOF
+cat > "$FIXTURE/instance5.json" <<'EOF'
+{"permissions": {"allow": []}, "claudeMdExcludes": ["/i/parent/CLAUDE.md", "/t/shared.md", "/i/import.md"]}
+EOF
+cat > "$FIXTURE/instance6.json" <<'EOF'
+{"permissions": {"allow": []}, "claudeMdExcludes": ["/i/parent/CLAUDE.md"]}
+EOF
+cat > "$FIXTURE/instance7.json" <<'EOF'
+{"permissions": {"allow": []}}
+EOF
+python3 "$MERGE" "$FIXTURE/template5.json" "$FIXTURE/instance5.json" >/dev/null
+python3 "$MERGE" "$FIXTURE/template.json" "$FIXTURE/instance6.json" >/dev/null
+python3 "$MERGE" "$FIXTURE/template.json" "$FIXTURE/instance7.json" >/dev/null
+python3 - "$FIXTURE" <<'EOF'
+import json, os, sys
+d = sys.argv[1]
+got5 = json.load(open(os.path.join(d, "instance5.json"))).get("claudeMdExcludes")
+assert got5 == ["/t/shared.md", "/i/parent/CLAUDE.md", "/i/import.md"], \
+    f"template entries first, instance-only entries kept in order, no duplicate: {got5}"
+got6 = json.load(open(os.path.join(d, "instance6.json"))).get("claudeMdExcludes")
+assert got6 == ["/i/parent/CLAUDE.md"], f"an instance exclude the template lacks was dropped: {got6}"
+got7 = json.load(open(os.path.join(d, "instance7.json")))
+assert "claudeMdExcludes" not in got7, f"the merge invented a key neither side had: {got7}"
+EOF
+echo "ok: instance claudeMdExcludes survive the merge, template first, no duplicates (ASK-4852)"
+
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"

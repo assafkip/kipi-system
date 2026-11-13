@@ -267,6 +267,18 @@ def merge_settings(template, existing, retired=None, report=None):
     if existing.get("model") and existing.get("model") != template.get("model"):
         merged["model"] = existing["model"]
 
+    # Preserve instance claudeMdExcludes (ASK-4852). A client repo nested inside another
+    # instance loads every ancestor's CLAUDE.md; its project-scope excludes are the only
+    # per-folder way to drop a parent's file. Scar 2026-11-13: a nested client instance read
+    # 194.8k against Claude Code's 150.0k limit, and this rebuild deleted any top-level key
+    # it did not list, so its exclude would have died on the next sync. Template entries
+    # first, instance-only entries after, in order, no duplicates.
+    instance_excludes = existing.get("claudeMdExcludes")
+    if isinstance(instance_excludes, list):
+        combined = [e for e in template.get("claudeMdExcludes") or [] if isinstance(e, str)]
+        combined += [e for e in instance_excludes if isinstance(e, str) and e not in combined]
+        merged["claudeMdExcludes"] = combined
+
     # Union template + instance hooks per event+matcher. Template first: for a
     # given script, the template's CURRENT command form wins and the instance's
     # stale variants drop (the double-token-guard scar above). Instance-added
