@@ -38,6 +38,11 @@ ALLOW = Path(__file__).resolve().parent.parent / "fleet-load-allowlist.json"
 STRICT_EMPTY = '{"mcpServers":{}}'
 
 
+class Unservable(Exception):
+    """A row this code cannot turn into launch arguments (exit 2). Not a LookupError:
+    KeyError is one, and a missing job would then read as an unservable row."""
+
+
 def config_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 
@@ -92,7 +97,7 @@ def mcp_config(job: str, allow: Path = ALLOW) -> str:
         return ""
     if row.get("mcp_servers"):
         # The file names servers but holds no definitions; serving them needs code.
-        raise LookupError(f"{job}: mcp_servers {row['mcp_servers']} named, but fleet_load has no definitions for them")
+        raise Unservable(f"{job}: mcp_servers {row['mcp_servers']} named, but fleet_load has no definitions for them")
     return STRICT_EMPTY
 
 
@@ -175,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             out = mcp_config(a.job)
         else:
             out = startup(a.session, a.ticket, Path(a.record), config_dir(), a.job)
-    except LookupError as e:
+    except Unservable as e:
         print(f"fleet_load: {e}", file=sys.stderr)
         return 2
     except (OSError, ValueError, KeyError, TypeError) as e:
