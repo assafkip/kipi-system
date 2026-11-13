@@ -47,7 +47,10 @@ def build(lib, lean, tmp, mode):
     (stub / "fleet").chmod(0o755)
     fleet = str(stub / "fleet") if mode == "keyed" else "env -u ANTHROPIC_API_KEY claude"
     env = {**os.environ, "REC": str(rec), "PATH": f"{stub}:{os.environ['PATH']}"}
-    env.pop("KIPI_REVIEW_LEAN", None)
+    # A lean reviewer runs this suite with the lean env exported; drop it so "off"
+    # is measured from a clean env (#799 round 1: false red inside a lean session).
+    for k in ("KIPI_REVIEW_LEAN", "CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "KIPI_REVIEW_SCRIPTS"):
+        env.pop(k, None)
     if lean is not None:
         env["KIPI_REVIEW_LEAN"] = lean
     root = tmp / "tree"
@@ -146,6 +149,9 @@ def test_lean_keeps_every_project_deny_rule():
     lean = json.loads(SETTINGS.read_text())
     missing = set(project["permissions"]["deny"]) - set(lean.get("permissions", {}).get("deny", []))
     assert not missing, f"lean review settings lack project deny rules: {sorted(missing)}"
+    # Equal, not a superset: the _why calls it the same set, so a lean-only entry is drift too (#799 round 2).
+    extra = set(lean["permissions"]["deny"]) - set(project["permissions"]["deny"])
+    assert not extra, f"lean review settings deny rules the project does not: {sorted(extra)}"
 
 
 def test_lean_flags_realize_the_fleet_load_allowlist_review_row():
@@ -155,7 +161,8 @@ def test_lean_flags_realize_the_fleet_load_allowlist_review_row():
     ones, mcp_servers [], 0 skills, tools Bash/Glob/Grep/Read. On one real review pair at
     one head (PRs #790/#791): first request 123,269 normal (345 skills, 717 deferred tool
     names, 17 MCP servers) against 11,192 lean (no skill listing, 0 tool names, 0 servers).
-    A row that grows a plugin or a server fails here until the launcher loads it."""
+    A row that grows a plugin or a server fails here on purpose: change the launcher
+    and this test in the same PR."""
     row = json.loads((SCRIPTS.parent / "fleet-load-allowlist.json").read_text())["jobs"]["review"]
     assert row["plugins"] == [] and row["mcp_servers"] == [] and row["account_connectors"] is False, \
         f"the review row changed ({row}); review-lean-lib.sh must load exactly what it names"
