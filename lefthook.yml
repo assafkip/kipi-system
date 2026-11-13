@@ -175,8 +175,11 @@ commit-msg:
 
 pre-push:
   commands:
-    # The capability gate's structure checks on each pushed branch commit,
-    # scoped to the branch (--check-only --diff-base <merge-base>), about 17 s.
+    # The capability gate's structure checks on each pushed branch TIP (not
+    # every commit under it, the same as CI), scoped to the branch
+    # (--check-only --diff-base <merge-base>), about 17 s. It reads the local
+    # spillover ledger, which CI never has, so it can refuse a dead
+    # declared_inert pointer that CI passes; it runs no tests, which CI does.
     # PR #794 went red in CI three times on `inert-engine`, 23 minutes after
     # each push, for a finding this computes before the push leaves
     # (ASK-4814, rca-pr794-round-cap-2026-11-12.md). use_stdin hands the script
@@ -185,7 +188,7 @@ pre-push:
     capability-gate:
       run: bash q-system/.q-system/scripts/prepush-capability-gate.sh
       use_stdin: true
-      fail_text: "The capability gate refused a pushed commit. CI runs the same gate and would go red."
+      fail_text: "The capability gate refused a pushed branch tip. The RED lines above name what to fix."
 
 post-commit:
   commands:

@@ -99,6 +99,7 @@ def test_a_pushed_undeclared_engine_refuses_the_push(clone_red_then_green):
     assert f"RED: inert-engine: {PROBE} has no reference on any wiring surface" in out, out
     assert "capability-gate: RED (1)" in out, out
     assert f"REFUSED {red[:12]}" in out, out
+    assert "citing an OPEN spillover id" in out, out
     assert _worktrees(clone) == 1, "the temp worktree was left behind"
 
 
@@ -120,7 +121,10 @@ def test_its_declared_inert_entry_passes_despite_an_untracked_stray(clone_red_th
     # A pass prints the verdict, not the gate's ~12 KB of notes: every agent
     # push carries this output into its context.
     assert "DECLARED-INERT" not in out, out
-    assert STRAY not in out, out
+    # The clone has no spillover ledger, so no declared_inert pointer was
+    # checked. That note survives the quiet filter: a bare GREEN would read as
+    # "checked" (PR #800 review, minor 4).
+    assert "inert-spillover-liveness: SKIPPED" in out, out
     assert _worktrees(clone) == 1, "the temp worktree was left behind"
 
 
@@ -132,8 +136,23 @@ def test_a_delete_and_a_tag_push_judge_nothing(clone_red_then_green):
     run = _prepush(clone, stdin)
     out = run.stdout + run.stderr
     assert run.returncode == 0, out
-    assert "nothing to judge" in run.stderr, out
+    assert "no pushed branch tip to judge" in run.stderr, out
+    assert "skipped refs/heads/gone (delete)" in run.stderr, out
+    assert "skipped refs/tags/v1 (not a branch)" in run.stderr, out
     assert "capability-gate" not in out, out
+
+
+def test_another_red_class_gets_no_declared_inert_hint(clone_red_then_green):
+    """An undeclared test is refused too, but the declared_inert hint does not
+    fit it, so the refusal must not print that hint (PR #800 review, minor 3)."""
+    clone, _, _ = clone_red_then_green
+    rel = "q-system/.q-system/scripts/test_prepush_probe_undeclared.py"
+    tip = _commit(clone, rel, "def test_x():\n    assert True\n")
+    run = _prepush(clone, _branch_line(tip))
+    out = run.stdout + run.stderr
+    assert run.returncode == 1, out
+    assert f"present-but-undeclared: {rel}" in out, out
+    assert "citing an OPEN spillover id" not in out, out
 
 
 def test_no_origin_main_skips_loudly_and_never_blocks(tmp_path):
