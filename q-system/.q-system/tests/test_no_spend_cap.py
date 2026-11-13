@@ -15,6 +15,9 @@ site must match a declaration below, of one of three kinds:
 A new cap reads a spend source somewhere, lands outside every declaration or past a
 declaration's pinned count, and goes red. Debt only shrinks: a removed debt line leaves
 its declaration matching nothing, and a stale declaration is red too.
+LIMIT (PR #788 review): a change welded onto an already-declared line keeps its count and
+passes. Pinning exact lines would turn every edit of them red; the debt lines leave with
+ASK-4761 and review covers the rest. A lib sourced through a `$(cd ...)` path is not followed.
 
 NOT spend limits, never sites here, pinned by test_count_limits_are_not_spend_sites: the
 review round cap (MAX_ROUNDS), the live-run cap (MAX_CONCURRENT) and the daily dispatch
@@ -65,7 +68,7 @@ DECLARED = (
     (S + "fleet-claude.sh", "HELPER", "environmental", 4),  # key door: refuses only with no credit
 )
 
-SOURCED = re.compile(r'^\s*\.\s+"\$SCRIPT_DIR/([\w.-]+\.sh)"')
+SOURCED = re.compile(r'^\s*(?:\.|source)\s+"\$SCRIPT_DIR/([\w.-]+\.sh)"')
 ASSIGN = re.compile(r"^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=")
 
 
@@ -85,7 +88,7 @@ def spend_sources():
 def scanned_files():
     """SCANNED plus every lib they source: a cap moved into a sourced lib is still seen."""
     files = list(SCANNED)
-    for f in SCANNED:
+    for f in files:   # grows as libs are found, so a lib's own libs are read too
         for line in (REPO / f).read_text().splitlines():
             m = SOURCED.match(line)
             if m and S + m.group(1) not in files:
@@ -156,6 +159,17 @@ class NoSpendCap(unittest.TestCase):
             self.assertTrue(SPEND_NAME.search(never), f"{never} needs no exclusion")
             self.assertNotIn(never, self.names)
         self.assertIn(S + "env-failure-lib.sh", scanned_files())   # the worker sources it
+        import sys, tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            for f in SCANNED:
+                (Path(tmp) / f).parent.mkdir(parents=True, exist_ok=True)
+                (Path(tmp) / f).write_text("")
+            (Path(tmp) / S / "linear-worker.sh").write_text('. "$SCRIPT_DIR/a.sh"\n')
+            (Path(tmp) / S / "a.sh").write_text('source "$SCRIPT_DIR/b.sh"\n')
+            (Path(tmp) / S / "b.sh").write_text("")
+            with mock.patch.object(sys.modules[__name__], "REPO", Path(tmp)):
+                self.assertIn(S + "b.sh", scanned_files())   # a lib of a lib, via `source`
 
     def test_count_limits_are_not_spend_sites(self):
         for rel, word in (("kipi-dispatch.sh", "DAILY_MAX"), ("kipi-dispatch.sh", "MAX_CONCURRENT"),

@@ -26,21 +26,26 @@ INSTALL_KEY = re.compile(r"^[a-z0-9-]+@[a-z0-9-]+$")
 def fleet():
     m = json.loads(MARKET.read_text())
     plugins = {p["name"] for p in m["plugins"]}
-    servers = set()
+    servers, by_plugin = set(), {}
     for p in m["plugins"]:
         mcp = REPO / p["source"] / ".mcp.json"
         if mcp.exists():
-            servers |= set(json.loads(mcp.read_text()).get("mcpServers", {}))
-    return m["name"], plugins, servers
+            by_plugin[p["name"]] = set(json.loads(mcp.read_text()).get("mcpServers", {}))
+            servers |= by_plugin[p["name"]]
+    return m["name"], plugins, servers, by_plugin
 
 
-def problems(doc, market, plugins, servers):
+def problems(doc, market, plugins, servers, by_plugin):
     out = []
     if set(doc.get("jobs", {})) != JOBS:
         out.append(f"job classes {sorted(doc.get('jobs', {}))} != {sorted(JOBS)}")
     for job, row in doc.get("jobs", {}).items():
         out += [f"{job}: plugin {p} is not a fleet plugin" for p in row.get("plugins", []) if p not in plugins]
         out += [f"{job}: MCP server {s} no fleet plugin declares" for s in row.get("mcp_servers", []) if s not in servers]
+        for p in row.get("plugins", []):
+            extra = by_plugin.get(p, set()) - set(row.get("mcp_servers", []))
+            if extra and row.get("strict_mcp") is not True:   # PR #788 review: kipi-core ships one
+                out.append(f"{job}: {p} ships MCP server(s) {sorted(extra)} the row neither lists nor strips")
         if row.get("account_connectors") is not False:
             out.append(f"{job}: account_connectors must be false")
         if not str(row.get("why", "")).strip():
@@ -66,13 +71,14 @@ class FleetLoadAllowlist(unittest.TestCase):
             self.assertIn(p, worker)
 
     def test_negative_self_test_each_check_can_fail(self):
-        market, plugins, servers = fleet()
+        market, plugins, servers, by_plugin = fleet()
         good = json.loads(ALLOW.read_text())
-        self.assertEqual(problems(good, market, plugins, servers), [])
+        self.assertEqual(problems(good, market, plugins, servers, by_plugin), [])
         cases = (
             lambda d: d["jobs"]["worker"]["plugins"].append("posthog"),
             lambda d: d["jobs"]["review"]["mcp_servers"].append("claude_ai_Gmail"),
             lambda d: d["jobs"]["background"].update(account_connectors=True),
+            lambda d: d["jobs"]["worker"].pop("strict_mcp"),
             lambda d: d["jobs"].pop("review"),
             lambda d: d["interactive"]["leave_user_scope"].append("kipi-core@" + market),
             lambda d: d["interactive"]["leave_user_scope"].append("posthog"),
@@ -80,7 +86,7 @@ class FleetLoadAllowlist(unittest.TestCase):
         for i, mutate in enumerate(cases):
             d = json.loads(json.dumps(good))
             mutate(d)
-            self.assertTrue(problems(d, market, plugins, servers), f"case {i} passed")
+            self.assertTrue(problems(d, market, plugins, servers, by_plugin), f"case {i} passed")
 
 
 if __name__ == "__main__":

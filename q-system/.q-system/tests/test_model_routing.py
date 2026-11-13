@@ -238,7 +238,7 @@ class QualityReceipt(unittest.TestCase):
         t = json.loads(TABLE.read_text())
         d = QS.parents[1] / t["quality_receipts"]["path"]
         self.assertEqual(off_opus_without_receipt(t, model_route.pick, d), [])
-        self.assertIn("2026-11-13", t["founder"][-1])
+        self.assertTrue(any(f.startswith("2026-11-13, verbatim: \"its critical") for f in t["founder"]))
 
     def test_negative_self_test_only_a_whole_receipt_counts(self):
         t = json.loads(TABLE.read_text())
