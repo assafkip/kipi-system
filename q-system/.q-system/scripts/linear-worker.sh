@@ -87,6 +87,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # asserted by grepping its source. Unset in production; the defaults are the
 # real skeleton and the real state dir.
 SKEL="${KIPI_SKEL:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+# SIZE CLASSIFIER FROM THE PINNED SKELETON (ASK-4612). Each issue tree is cut from the
+# target's ORIGIN, and the fleet sync commits the skeleton only in the running checkout,
+# never pushed: on 2026-11-12, 9 of 14 instance remotes had no change-size.py, so kipi-dsse
+# sized every worker issue there L (2 reviews, 1 adversarial, 5 to 10 repeats). The agent's
+# Bash inherits this; check_budget.py loads the classifier code from here and still reads
+# the diff and the fragments from the tree.
+if [ -f "$SKEL/q-system/.q-system/scripts/change-size.py" ]; then
+  export KIPI_SIZE_CLASSIFIER="$SKEL/q-system/.q-system/scripts/change-size.py"
+fi
 CLAIM="$SCRIPT_DIR/linear-claim.py"
 SYNC="$SCRIPT_DIR/linear-sync.py"
 # Overridable so the suite can read back WHAT was paged without paging the

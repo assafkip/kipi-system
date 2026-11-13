@@ -112,13 +112,9 @@ fi
 
 # The instance's one declared post-sync command lives at its repo root. The
 # rsyncs write only q-system/, .claude/ and plugins/, so this file is never
-# synced over or deleted; it is instance-owned by position, not by listing.
+# synced over or deleted.
 POST_SYNC_DECL=".kipi-post-sync"
 POST_SYNC_FAILED_STEP=""
-# The step's wall clock, in seconds (see ps_run_step for what it protects). The
-# override exists so the suite can prove the deadline in 3s rather than 600;
-# it moves a timeout, never a check, so it is not a bypass.
-POST_SYNC_TIMEOUT="${KIPI_POST_SYNC_TIMEOUT:-600}"
 
 # Instance-owned subtrees: the skeleton never overwrites these, because each
 # instance authors its own. This list was duplicated across four sites (the
@@ -1437,473 +1433,6 @@ for record in open(sys.argv[2], "rb").read().split(b"\0"):
     except OSError:
         pass
 PY
-}
-
-# A declared post-sync step runs under a git-built snapshot (ASK-4726).
-#
-# Scar (PR #780, three review rounds): the step's out-of-scope writes were
-# undone by a hand-written pass that read `git status --porcelain` text, sliced
-# it at offset 3 and fed the result to `git restore`. Round 2 found a staged
-# write that survived it; round 3 found a C-quoted path (a space, an accent) and
-# a staged rename it could not name. Same defect class twice: a second copy of a
-# job git already does, parsing text git does not promise to keep parseable.
-#
-# So nothing here reads a porcelain line. The state before the step is a TREE
-# object (a temporary index seeded from the real one, `add -A`, `write-tree`)
-# plus a byte copy of the real index. After the step, the same tree is taken
-# again and `diff-tree -z` names every changed path, NUL separated. Restore is
-# `checkout-index` from the old tree plus an unlink of added paths. No stash
-# entry, no ref, no change to the real index until a restore copies the saved
-# one back. Unreferenced objects stay in the object store until git gc.
-#
-# THE RULE THE STEP IS HELD TO: it may ADD untracked files, and write anything
-# under plugins/ (the config half it precedes). Any other change to a file that
-# existed before it, any change under .claude/, any change to the index, and any
-# change to a git ref is a refusal, and a refusal or a failure puts the instance
-# back as it was.
-#
-# WHAT THE MAIN TREE CANNOT SEE, and the three snapshots that cover it (PR #784):
-#
-#   1. GITIGNORED FILES. `git add -A` skips what .gitignore skips, so a step
-#      writing .claude/settings.local.json or .claude/plans/ was invisible to
-#      the tree above, the write persisted unnamed, and the "no change under
-#      .claude/" rule was false as written -- in the one directory that wires
-#      every hook, rule and agent. ps_claude_tree is a SECOND tree, .claude/
-#      alone, built with -f from an EMPTY index, so ignored paths are in it.
-#   2. INDEX FLAGS. `git ls-files -s` prints mode, blob and stage and nothing
-#      else, so `update-index --assume-unchanged` left its output byte-identical
-#      and the flag survived the sync, hiding later working-tree changes from
-#      every git read. `-v` prefixes the flag letter (measured: `h` for
-#      assume-unchanged, `S` for skip-worktree), which is what is compared.
-#      Not a byte compare of the index FILE: any `git status` the step runs
-#      refreshes the stat cache and rewrites those bytes, so a byte compare
-#      would refuse every step that merely reads git.
-#   3. REFS. A `git stash push -u` inside a step that then fails moved the
-#      human's untracked work into a stash entry; the tree restore brought the
-#      files back and the entry stayed, holding a second copy. for-each-ref is
-#      snapshotted, a change is reported, and ps_restore_refs puts them back.
-#
-# And DIRECTORIES: git tracks none, so unlinking the files a step added left its
-# `mkdir -p deep/dir` behind forever. ps_dirs records the directory set and
-# ps_prune_new_dirs removes, deepest first, only those that are empty now and
-# were absent before -- a directory that existed before the step is never
-# touched, whether or not it is empty.
-ps_index_path() {  # $1 repo -> absolute path of the real index
-  git -C "$1" rev-parse --path-format=absolute --git-path index 2>/dev/null
-}
-
-# HEAD, which for-each-ref DOES NOT LIST (PR #787 major). Two defects came from
-# that one omission, and they compound:
-#   1. A step running `git checkout -b x` creates refs/heads/x AND points HEAD
-#      at it. The ref is a violation, so the step is refused, and the rollback
-#      deleted refs/heads/x -- `git update-ref -d` on the branch HEAD points at
-#      is ALLOWED (measured) and leaves `git rev-parse HEAD` fatal. The
-#      instance-level rollback that runs next checks paths out of that same
-#      HEAD, so the undo broke the instance worse than the step had.
-#   2. A step running `git checkout <existing-branch>` moves HEAD and changes NO
-#      ref at all, so nothing saw it, the step was ACCEPTED, and the config
-#      commit landed on whatever branch the step left checked out.
-# So HEAD is snapshotted, a move is reported, and it is put back BEFORE any ref
-# is deleted. Putting it back is a pointer write: `symbolic-ref` touches neither
-# the working tree nor the index (measured), so it cannot fight the tree restore
-# and it is not the commit-rewinding move ps_ref_plan deliberately refuses.
-ps_head() {  # $1 repo -> "ref <name>" or "detached <sha>"
-  local target
-  if target="$(git -C "$1" symbolic-ref -q HEAD 2>/dev/null)"; then
-    printf 'ref %s\n' "$target"
-  else
-    printf 'detached %s\n' "$(git -C "$1" rev-parse HEAD 2>/dev/null || echo unborn)"
-  fi
-}
-
-ps_restore_head() {  # $1 repo, $2 scratch dir
-  local repo="$1" dir="$2" before now kind target
-  before="$(cat "$dir/head.before")"
-  now="$(ps_head "$repo")"
-  if [ "$before" = "$now" ]; then return 0; fi
-  kind="${before%% *}"
-  target="${before#* }"
-  case "$kind" in
-    ref) git -C "$repo" symbolic-ref HEAD "$target" || return 1 ;;
-    detached) git -C "$repo" update-ref --no-deref HEAD "$target" || return 1 ;;
-    *) return 1 ;;
-  esac
-  echo "    HEAD put back to $target after the post-sync step moved it"
-}
-
-# GITIGNORED FILES OUTSIDE .claude/, BY STAT AND NOT BY CONTENT (PR #787 major).
-# ps_tree's `git add -A` skips what .gitignore skips and ps_claude_tree's forced
-# tree covers .claude/ alone, so a step clobbering a gitignored file anywhere
-# else was neither refused nor named, and git held no copy of it.
-#
-# A forced tree over the WHOLE repo is the obvious fix and it is not affordable.
-# Measured on the real instances 2026-11-13: the consulting instance carries
-# 567.6 MB across 17,014 gitignored files (site/ 259 MB, q-consult/ 186 MB,
-# generated_imgs/ 49 MB), which a before-and-after forced tree would hash and
-# write into its .git as loose objects twice per sync. The same ignored set
-# lstat-ed in 0.06s. So detection is a stat manifest (mode, size, mtime in ns),
-# which is what this is.
-#
-# THE BOUNDARY, stated because the gap is real and not a TODO: outside .claude/
-# a changed or removed gitignored file is REFUSED and NAMED and the operator is
-# told it was NOT put back, because putting it back needs the content snapshot
-# the measurement above rules out. Inside .claude/ -- the directory that wires
-# every hook, rule and agent -- the forced tree still restores it. That split
-# matches what the updater's older instance-level rollback already does:
-# checkpoint_untracked_list is `git ls-files --others`, with no `-i`, so no
-# ignored file anywhere has ever been restored by an abandon.
-#
-# And a step is allowed to ADD files, ignored ones included, so a path that is
-# new since the snapshot is not a violation. Only one present before and now
-# missing or different is.
-#
-# What a stat compare cannot see: a write that lands the same byte count and
-# then restores mtime to the nanosecond. The step is a command this repo
-# declares, not an adversary, so that is an accepted blind spot.
-#
-# The manifest is read NUL-separated (`ls-files -z`) and written one row per
-# line, so a gitignored path holding a literal newline splits into two rows and
-# reads as changed. That direction is the safe one: it refuses a sync it did not
-# have to, and it cannot pass a clobber. Spaces and non-ASCII are handled, which
-# the fixture's hostile names cover (the row splits on the first three spaces
-# only, so the path keeps its own).
-# $2 is a scratch path for the file list, NOT a pipe: `python3 -I -` takes its
-# program from stdin, so piping the list in made python read the heredoc, the
-# manifest come back empty, and git die on the closed pipe -- which pipefail
-# turned into "could not snapshot" on every instance. Caught by case 2 going red.
-ps_ignored_manifest() {  # $1 repo, $2 list scratch file -> "<mode> <size> <mtime_ns> <path>"
-  git -C "$1" ls-files -o -i --exclude-standard -z > "$2" 2>/dev/null || return 1
-  python3 -I - "$1" "$2" <<'PY'
-import os
-import sys
-
-root = os.fsencode(sys.argv[1])
-with open(sys.argv[2], "rb") as handle:
-    listing = handle.read()
-rows = []
-for rel in listing.split(b"\0"):
-    # .claude/ is left out on purpose: the forced tree already reports AND
-    # restores it, and one changed file must not read as two findings.
-    if not rel or rel.startswith(b".claude/"):
-        continue
-    try:
-        st = os.lstat(os.path.join(root, rel))
-    except OSError:
-        continue
-    rows.append(b"%o %d %d %s" % (st.st_mode, st.st_size, st.st_mtime_ns, rel))
-out = sys.stdout.buffer
-for row in sorted(rows):
-    out.write(row + b"\n")
-PY
-}
-
-# Prints one line per gitignored path that existed before the step and is now
-# missing or different. Added paths are allowed and are not printed.
-ps_ignored_changed() {  # $1 before manifest, $2 after manifest
-  python3 -I - "$1" "$2" <<'PY'
-import sys
-
-
-def load(path):
-    out = {}
-    with open(path, "rb") as handle:
-        for line in handle:
-            line = line.rstrip(b"\n")
-            if not line:
-                continue
-            mode, size, mtime, rel = line.split(b" ", 3)
-            out[rel] = (mode, size, mtime)
-    return out
-
-
-before = load(sys.argv[1])
-after = load(sys.argv[2])
-out = sys.stdout.buffer
-for rel in sorted(before):
-    if before[rel] != after.get(rel):
-        out.write(b"(a gitignored file changed) " + rel + b"\n")
-PY
-}
-
-ps_tree() {  # $1 repo, $2 scratch dir, $3 name -> prints a tree id
-  local repo="$1" idx="$2/$3.index" real
-  real="$(ps_index_path "$repo")" || return 1
-  if [ -f "$real" ]; then cp -- "$real" "$idx" || return 1; fi
-  GIT_INDEX_FILE="$idx" git -C "$repo" add -A >/dev/null 2>&1 || return 1
-  GIT_INDEX_FILE="$idx" git -C "$repo" write-tree 2>/dev/null
-}
-
-# .claude/ alone, IGNORED FILES INCLUDED (see note 1 above). An empty index and
-# -f are both load-bearing: seeded from the real index the ignored paths would
-# still be skipped, and without -f `git add` refuses them outright.
-ps_claude_tree() {  # $1 repo, $2 scratch dir, $3 name -> prints a tree id
-  local repo="$1" idx="$2/$3.claude.index"
-  rm -f -- "$idx"
-  if [ -d "$repo/.claude" ]; then
-    GIT_INDEX_FILE="$idx" git -C "$repo" add -A -f -- .claude >/dev/null 2>&1 || return 1
-  fi
-  GIT_INDEX_FILE="$idx" git -C "$repo" write-tree 2>/dev/null
-}
-
-# The index as git prints it, FLAG LETTER INCLUDED (see note 2 above). One
-# function so the `-v` that makes assume-unchanged and skip-worktree visible
-# cannot drift between the before and after reads.
-ps_index_dump() {  # $1 repo
-  git -C "$1" ls-files -v -s -z
-}
-
-ps_dirs() {  # $1 repo: every directory under it, NUL separated, .git excluded
-  python3 -I - "$1" <<'PY'
-import os
-import sys
-
-root = os.fsencode(sys.argv[1])
-out = sys.stdout.buffer
-for current, directories, _ in os.walk(root, followlinks=False):
-    directories[:] = [d for d in directories if d != b".git"]
-    for name in directories:
-        out.write(os.path.join(current, name) + b"\0")
-PY
-}
-
-ps_snapshot() {  # $1 repo, $2 scratch dir: record the state before the step
-  local repo="$1" dir="$2" real
-  real="$(ps_index_path "$repo")" || return 1
-  ps_tree "$repo" "$dir" before > "$dir/tree.before" || return 1
-  [ -s "$dir/tree.before" ] || return 1
-  ps_claude_tree "$repo" "$dir" before > "$dir/ctree.before" || return 1
-  [ -s "$dir/ctree.before" ] || return 1
-  ps_index_dump "$repo" > "$dir/ls.before" || return 1
-  git -C "$repo" for-each-ref --format='%(refname) %(objectname)' > "$dir/refs.before" || return 1
-  ps_head "$repo" > "$dir/head.before" || return 1
-  [ -s "$dir/head.before" ] || return 1
-  ps_ignored_manifest "$repo" "$dir/ignored.list" > "$dir/ignored.before" || return 1
-  ps_dirs "$repo" > "$dir/dirs.before" || return 1
-  if [ -f "$real" ]; then cp -- "$real" "$dir/index.before"; fi
-}
-
-# Prints the offending paths, one per line, empty when the step stayed in bounds.
-# Deduplicated: .claude/ is covered by two snapshots on purpose (the main tree
-# sees its tracked files, the forced tree sees all of them), and one changed
-# file there must not read as two findings.
-ps_violations() {  # $1 repo, $2 scratch dir
-  ps_violations_raw "$1" "$2" | sort -u
-}
-
-ps_violations_raw() {  # $1 repo, $2 scratch dir
-  local repo="$1" dir="$2" p
-  ps_tree "$repo" "$dir" after > "$dir/tree.after" || { echo "(could not snapshot the tree after the step)"; return 0; }
-  ps_claude_tree "$repo" "$dir" after > "$dir/ctree.after" || { echo "(could not snapshot .claude/ after the step)"; return 0; }
-  ps_index_dump "$repo" > "$dir/ls.after" || { echo "(could not read the index after the step)"; return 0; }
-  git -C "$repo" for-each-ref --format='%(refname) %(objectname)' > "$dir/refs.after" ||
-    { echo "(could not read the refs after the step)"; return 0; }
-  cmp -s "$dir/ls.before" "$dir/ls.after" || echo "(the index changed)"
-  # Any ref the step created, moved or deleted: a commit, a tag, a stash entry.
-  if ! cmp -s "$dir/refs.before" "$dir/refs.after"; then
-    diff "$dir/refs.before" "$dir/refs.after" 2>/dev/null |
-      sed -n 's/^[<>][[:space:]]*\([^ ]*\).*$/(a git ref changed) \1/p'
-  fi
-  # HEAD, which the refs above do not list. A `git checkout <existing-branch>`
-  # moves it and changes no ref, so without this the step was ACCEPTED and the
-  # config commit landed on the branch the step left checked out.
-  ps_head "$repo" > "$dir/head.after" || { echo "(could not read HEAD after the step)"; return 0; }
-  cmp -s "$dir/head.before" "$dir/head.after" ||
-    echo "(HEAD moved) $(cat "$dir/head.before") -> $(cat "$dir/head.after")"
-  # Gitignored files outside .claude/: detected by stat, named, NOT restored.
-  ps_ignored_manifest "$repo" "$dir/ignored.list" > "$dir/ignored.after" ||
-    { echo "(could not read the gitignored files after the step)"; return 0; }
-  ps_ignored_changed "$dir/ignored.before" "$dir/ignored.after"
-  # Changed or removed paths: allowed only under plugins/.
-  while IFS= read -r -d '' p; do
-    case "$p" in plugins/*) ;; *) printf '%s\n' "$p" ;; esac
-  done < <(git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=MDTUXB \
-             "$(cat "$dir/tree.before")" "$(cat "$dir/tree.after")" 2>/dev/null)
-  # Anything at all under .claude/, added or changed, ignored files included.
-  while IFS= read -r -d '' p; do
-    printf '%s\n' "$p"
-  done < <(git -C "$repo" diff-tree -r -z --name-only --no-renames \
-             "$(cat "$dir/ctree.before")" "$(cat "$dir/ctree.after")" 2>/dev/null)
-}
-
-# CREATED refs are deleted, DELETED refs are put back, and a MOVED ref is left
-# alone and named. That asymmetry is the whole contract and it is deliberate.
-#
-# The first version replayed the entire snapshot (`update <ref> <old>` for every
-# ref). It passed every case and the mutation run caught it: with the
-# "commit still runs after a failed step" guard removed, the config commit
-# landed and then VANISHED from the instance's history, because replaying
-# refs/heads/master rewound the branch to its pre-step value. A local fix,
-# correct in isolation, reaching one layer out and deleting a commit.
-# restore_instance's own comment is explicit that this is the wrong move --
-# "Leave the instance CLEAN at whatever commit it reached -- do NOT rewind a
-# commit that landed... Rewinding was tried and is wrong" -- and a ref replay
-# here does it behind its back.
-#
-# So the hazard, not the situation (lesson: scoping-guards-to-the-hazardous-
-# operation). The hazard Codex named is a ref the step CREATED: a
-# `git stash push -u` entry holding a copy of the human's untracked work.
-# Deleting that cannot rewind anything that existed before the step. A moved
-# ref is reported as a violation by ps_violations, printed here, and left for a
-# human -- the honest boundary is that the instance comes back as it was in its
-# files, index and created refs, and NOT in a branch the step moved.
-ps_restore_refs() {  # $1 repo, $2 scratch dir
-  local repo="$1" dir="$2"
-  git -C "$repo" for-each-ref --format='%(refname) %(objectname)' > "$dir/refs.now" || return 1
-  if cmp -s "$dir/refs.before" "$dir/refs.now"; then return 0; fi
-  ps_ref_plan "$dir/refs.before" "$dir/refs.now" > "$dir/refs.plan" || return 1
-  sed -n 's/^#moved /    WARN: the post-sync step MOVED a git ref and it is left as the step set it: /p' \
-    "$dir/refs.plan"
-  # `|| true` on the grep, not on the pipeline: a plan holding ONLY a #moved
-  # note selects no lines, grep exits 1, and under `set -o pipefail` that made
-  # ps_rollback report "could not restore" on a rollback that had nothing left
-  # to do. update-ref's own failure must still propagate.
-  { grep -v '^#' "$dir/refs.plan" || true; } |
-    git -C "$repo" update-ref --stdin || return 1
-}
-
-ps_ref_plan() {  # $1 refs before, $2 refs now -> update-ref batch + #moved notes
-  python3 -I - "$1" "$2" <<'PY'
-import sys
-
-
-def load(path):
-    out = {}
-    with open(path, encoding="utf-8", errors="surrogateescape") as handle:
-        for line in handle:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            ref, _, obj = line.partition(" ")
-            out[ref] = obj
-    return out
-
-
-before = load(sys.argv[1])
-now = load(sys.argv[2])
-for ref, obj in now.items():
-    if ref not in before:
-        print("delete %s %s" % (ref, obj))
-    elif before[ref] != obj:
-        print("#moved %s (%s -> %s)" % (ref, before[ref], obj))
-for ref, obj in before.items():
-    if ref not in now:
-        print("create %s %s" % (ref, obj))
-PY
-}
-
-# THE STEP RUNS WITH A DEADLINE, ITS STDIN CLOSED, AND ITS OUTPUT IN A FILE.
-# One line used to do all three jobs wrong, and each is a way for one instance's
-# step to break instances that have nothing to do with it:
-#
-#   NO DEADLINE. A hung step stalled the whole sweep, so every later instance in
-#   the registry never synced, with no bound and no message (PR #787 minor, and
-#   the same class in two earlier rounds).
-#
-#   THE SWEEP'S STDIN. The instance loop reads the registry from a process
-#   substitution on stdin (`done < <(python3 ...)` at the bottom of this file)
-#   and the step inherited it, so a step that read stdin ATE the remaining
-#   records; those instances were skipped while the run reported Updated 1 /
-#   Failed 0 / Skipped 0 and exited 0 (measured: test case 20).
-#
-#   A COMMAND SUBSTITUTION. `$(...)` waits for the write end of the pipe to
-#   close, which a background grandchild of a step that already exited holds
-#   open, so the sweep stalled for that child's lifetime even past the deadline
-#   (measured: test case 19b, 3s against 27s). A file has no such wait.
-#
-# Only the direct child is killed. A grandchild it orphans is not chased, since
-# this shell has no job control and so no process group of its own to signal;
-# the file redirection is what makes an orphan harmless to the sweep.
-ps_run_step() {  # $1 repo, $2 command, $3 seconds, $4 output file -> rc, 124 = timed out
-  local repo="$1" cmd="$2" limit="$3" out="$4" pid waited rc
-  ( cd "$repo" && exec bash -c "$cmd" ) </dev/null >"$out" 2>&1 &
-  pid=$!
-  waited=0
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$limit" ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 2
-      kill -KILL "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      return 124
-    fi
-    sleep 1
-    waited=$((waited + 1))
-  done
-  rc=0
-  wait "$pid" || rc=$?
-  return "$rc"
-}
-
-ps_prune_new_dirs() {  # $1 repo, $2 scratch dir
-  python3 -I - "$1" "$2/dirs.before" <<'PY'
-import os
-import sys
-
-root = os.fsencode(sys.argv[1])
-with open(sys.argv[2], "rb") as handle:
-    before = set(handle.read().split(b"\0")) - {b""}
-now = []
-for current, directories, _ in os.walk(root, followlinks=False):
-    directories[:] = [d for d in directories if d != b".git"]
-    for name in directories:
-        now.append(os.path.join(current, name))
-# Deepest first, so a nested tree the step created comes out whole. A directory
-# that was there before the step stays, empty or not; one that still holds a
-# file (a legal write under plugins/) fails rmdir and stays too.
-for candidate in sorted(now, key=len, reverse=True):
-    if candidate in before:
-        continue
-    try:
-        os.rmdir(candidate)
-    except OSError:
-        pass
-PY
-}
-
-ps_rollback() {  # $1 repo, $2 scratch dir: put the instance back as snapshotted
-  local repo="$1" dir="$2" real before after cbefore cafter
-  real="$(ps_index_path "$repo")" || return 1
-  before="$(cat "$dir/tree.before")"
-  # Re-taken here: a step that failed never reached ps_violations, and a step
-  # that did may have been followed by nothing else, but the cost is one add.
-  ps_tree "$repo" "$dir" after > "$dir/tree.after" || return 1
-  after="$(cat "$dir/tree.after")"
-  ps_claude_tree "$repo" "$dir" after > "$dir/ctree.after" || return 1
-  cbefore="$(cat "$dir/ctree.before")"
-  cafter="$(cat "$dir/ctree.after")"
-  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=A "$before" "$after" \
-    | ( cd "$repo" && xargs -0 rm -f -- )
-  GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" read-tree "$before" || return 1
-  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=MDTUXB "$before" "$after" \
-    | GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" checkout-index -f -z --stdin || return 1
-  # The same two passes over the forced .claude/ tree, which is the only one
-  # that holds the gitignored paths there.
-  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=A "$cbefore" "$cafter" \
-    | ( cd "$repo" && xargs -0 rm -f -- )
-  GIT_INDEX_FILE="$dir/crestore.index" git -C "$repo" read-tree "$cbefore" || return 1
-  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=MDTUXB "$cbefore" "$cafter" \
-    | GIT_INDEX_FILE="$dir/crestore.index" git -C "$repo" checkout-index -f -z --stdin || return 1
-  # HEAD FIRST, then the refs: a created branch is deleted below, and deleting
-  # the branch HEAD points at is allowed and leaves HEAD fatal (measured).
-  # The order is chosen for the common shape, `checkout -b`, where HEAD-first
-  # means the delete happens with HEAD already pointing somewhere real. The
-  # mirror shape -- a step that detaches and then deletes the branch -- has HEAD
-  # naming a ref that ps_restore_refs re-creates one line later, so HEAD is
-  # transiently dangling and consistent by the end. `symbolic-ref` does not
-  # require its target to exist, which is what makes that order legal at all.
-  ps_restore_head "$repo" "$dir" || return 1
-  ps_restore_refs "$repo" "$dir" || return 1
-  ps_prune_new_dirs "$repo" "$dir" || return 1
-  # SAID OUT LOUD BY THE CODE THAT DID NOT DO IT. A gitignored file outside
-  # .claude/ is detected and named, never put back (the 567.6 MB measurement on
-  # ps_ignored_manifest). This is also the ONLY place that names it after a
-  # step that FAILED, since such a step never reaches ps_violations.
-  ps_ignored_manifest "$repo" "$dir/ignored.list" > "$dir/ignored.rollback" || return 1
-  ps_ignored_changed "$dir/ignored.before" "$dir/ignored.rollback" \
-    > "$dir/ignored.unrestored" || return 1
-  sed 's|^(a gitignored file changed) |    WARN: not restored, left as the step wrote it (gitignored): |' \
-    "$dir/ignored.unrestored"
-  if [ -f "$dir/index.before" ]; then cp -- "$dir/index.before" "$real"; else rm -f -- "$real"; fi
 }
 
 # The single give-up path. Every one of the 24 sites routes through here, so
@@ -4004,21 +3533,15 @@ print("\n".join(mod.EXTRA_WATCHED))
 
     # An instance's declared post-sync step (ASK-4726), run AFTER the rsyncs and
     # BEFORE the config half is staged and committed. Scar: an instance's own
-    # pre-commit check refuses the config commit whenever the sync delivers an
-    # engine file its public mirror lacks, and the mirror can only be exported
-    # once the engine is on disk. The gate sits on the very commit that lands
-    # the engine, so the sync rolled back four times and was unblocked by hand
-    # each time. The step runs here, where the engine is on disk and the gate
-    # has not yet run. No gate is weakened: the instance's check still compares
-    # what is in its tree. Failure abandons the instance through the existing
-    # rollback, so a refused step is still a refusal.
-    # Dry run only PRINTS the command: a model run copies the whole instance,
-    # and a declared step must never run against anything but the real sync.
-    POST_SYNC_STEP=""
-    # Empty unless a snapshot is being HELD past this block, which is the whole
-    # point of it being declared here: see the retained-snapshot block below the
-    # config commit.
-    PS_DIR=""
+    # pre-commit check refused the config commit whenever the sync delivered an
+    # engine file its public mirror lacked, and the mirror can only be exported
+    # once the engine is on disk. The sync rolled back four times, each
+    # unblocked by hand. The step is the instance's own code, the same trust as
+    # its pre-commit hook. NOTHING here limits or undoes what it writes: PR #780
+    # and #784 each spent three rounds on code that did, and each round found a
+    # new gap in it. A file the step writes outside .claude/ and plugins/ is not
+    # in the sync's commit, because stage_config_sync stages only those paths
+    # (test case 7 pins that). Dry run only PRINTS the command.
     if [ "$CONFIG_FAILED" = "0" ] && [ -f "$path/$POST_SYNC_DECL" ]; then
       POST_SYNC_STEP="$(grep -vE '^[[:space:]]*(#|$)' "$path/$POST_SYNC_DECL" || true)"
       if [ -z "$POST_SYNC_STEP" ] || [ "$(printf '%s\n' "$POST_SYNC_STEP" | wc -l)" -ne 1 ]; then
@@ -4029,67 +3552,24 @@ print("\n".join(mod.EXTRA_WATCHED))
         echo "    post-sync step (dry run, NOT run): $POST_SYNC_STEP"
       else
         echo "    Running post-sync step: $POST_SYNC_STEP"
-        # Snapshot first, with git's own objects (see ps_snapshot). A snapshot we
-        # cannot take is a step we do not run: the invariant could not be proven.
-        PS_DIR="$(mktemp -d)"
-        if ! ps_snapshot "$path" "$PS_DIR"; then
-          echo "    ERROR: could not snapshot $path before the post-sync step; step NOT run"
-          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (no snapshot)"
+        # Own stdout and stderr both shown: the step's message is the diagnosis.
+        # stdin closed: this loop reads the registry from stdin, so a step that read
+        # it (ssh, git push over ssh, cat) ate the remaining instances and the run
+        # still exited 0 (PR #785 round 1).
+        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then
+          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+          echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
+          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
           CONFIG_FAILED=1
-          rm -r -- "$PS_DIR"
-          PS_DIR=""
         else
-          # Own stdout and stderr both shown: the step's message is the diagnosis.
-          # Into a FILE and under a deadline, with stdin closed: see ps_run_step.
-          ps_rc=0
-          ps_run_step "$path" "$POST_SYNC_STEP" "$POST_SYNC_TIMEOUT" \
-            "$PS_DIR/step.out" || ps_rc=$?
-          if [ "$ps_rc" != "0" ]; then
-            sed 's/^/      /' "$PS_DIR/step.out"
-            if [ "$ps_rc" = "124" ]; then
-              echo "    ERROR: post-sync step exceeded ${POST_SYNC_TIMEOUT}s and was killed: $POST_SYNC_STEP"
-              POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (exceeded ${POST_SYNC_TIMEOUT}s)"
-            else
-              echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
-              POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
-            fi
-          else
-            sed 's/^/      /' "$PS_DIR/step.out"
-            ps_bad="$(ps_violations "$path" "$PS_DIR")"
-            if [ -n "$ps_bad" ]; then
-              echo "    ERROR: post-sync step went outside its bounds (it may add untracked files and write under plugins/; it changed):"
-              printf '%s\n' "$ps_bad" | sed 's/^/      /'
-              POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (wrote outside its bounds)"
-            fi
-          fi
-          if [ -n "$POST_SYNC_FAILED_STEP" ]; then
-            CONFIG_FAILED=1
-          fi
-          # THE SNAPSHOT IS HELD HERE, AND THE ONE ROLLBACK SITE IS BELOW THE
-          # CONFIG COMMIT. Whichever way the step went, the commit has not run
-          # yet and can still fail (ASK-797's unwind, an instance pre-commit
-          # hook, a held index.lock), and the older restore_instance that an
-          # abandon runs cannot undo the step: its untracked inventory is
-          # `git ls-files --others -- q-system/ .claude/ plugins/`
-          # (checkpoint_untracked_list), so an allowed untracked file an
-          # ACCEPTED step created at the repo root -- the exact shape a mirror
-          # export produces -- survived while the run reported the instance
-          # rolled back (PR #784, Codex P1).
-          #
-          # One site rather than two. A rollback here for the refusal plus one
-          # below for the failed commit made each a no-op in the other's
-          # absence, so the mutant that disables this branch SURVIVED the whole
-          # suite: two writers of one undo, each individually defensible.
+          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
         fi
       fi
     fi
 
-    # Commit the config sync. The updater used to commit only $prefix/, leaving
-    # .claude/ and plugins/ permanently dirty in every instance repo.
-    # A failed post-sync step skips the commit entirely. The rollback does not
-    # rewind a commit that landed, so committing first would leave a config half
-    # the step never blessed on the instance's branch (measured in
-    # test-kipi-update-post-sync-step.sh case 3).
+    # A failed step skips the commit: the rollback does not rewind a commit that
+    # landed, so committing first would leave a config half the step never
+    # blessed on the instance's branch.
     if [ -z "$POST_SYNC_FAILED_STEP" ] &&
         git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
       if ! ( cd "$path" &&
@@ -4125,26 +3605,6 @@ print("\n".join(mod.EXTRA_WATCHED))
       fi
     else
       CONFIG_FAILED=1
-    fi
-
-    # THE ONE ROLLBACK SITE for a post-sync step, and the release of its held
-    # snapshot. The commit either landed, and the step's writes are part of the
-    # state the instance now carries, or something after the snapshot failed --
-    # the step itself, its bounds check, or the config commit -- and the step is
-    # undone here. CONFIG_FAILED is the whole condition on purpose: the
-    # post-sync block only runs when it was 0, and the commit block is the only
-    # thing between there and here, so a non-zero value here means exactly
-    # "the step or the commit did not land".
-    # Nothing goes quieter: the refusal, the step's own output and the instance
-    # name are all printed by the lines above and by count_instance_failure.
-    if [ -n "$PS_DIR" ]; then
-      if [ "$CONFIG_FAILED" != "0" ]; then
-        echo "    Rolling back the post-sync step: ${POST_SYNC_FAILED_STEP:-the config commit did not land}"
-        ps_rollback "$path" "$PS_DIR" ||
-          echo "    WARN: could not restore $path after the post-sync step; inspect it by hand"
-      fi
-      rm -r -- "$PS_DIR"
-      PS_DIR=""
     fi
 
     if [ "$CONFIG_FAILED" != "0" ]; then

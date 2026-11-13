@@ -34,6 +34,7 @@ stdlib only. Tests: test_check_budget.py, test_size_class_depth.py.
 from __future__ import annotations
 
 import importlib.util
+import os
 import json
 import shlex
 import subprocess
@@ -141,6 +142,15 @@ DEPTH = {
 }
 STRICT_CLASS = "L"
 CLASSIFIER_RELPATH = "q-system/.q-system/scripts/change-size.py"
+# WHY AN OVERRIDE (ASK-4612). The worker cuts each issue tree from the instance's ORIGIN,
+# and the fleet sync commits the skeleton only in the instance's running checkout, never
+# pushed. Measured 2026-11-12: 9 of 14 instance remotes carry no change-size.py at all, so
+# every worker run there read "no classifier" and got L's depth whatever it changed.
+# linear-worker.sh sets this to the pinned skeleton's copy. The diff and the repo's data
+# (fragments, registry) still come from the tree; only the classifier CODE is the
+# skeleton's. Set to a path that is not a file is a broken worker, so it is L with that
+# reason, never a silent fall back to the tree's stale copy.
+CLASSIFIER_ENV = "KIPI_SIZE_CLASSIFIER"
 DIFF_BASE = "origin/main"
 WORKING_TREE = "working-tree"   # a base_ref value (ktlyst product) meaning "no ref"
 
@@ -221,9 +231,16 @@ def _uncommitted(repo_root: Path) -> list[str]:
 
 def size_class(repo_root: Path) -> dict:
     """{"class": S|M|L, "reasons": [...], "base": ref} for the repo's diff. Never raises."""
-    path = Path(repo_root) / CLASSIFIER_RELPATH
-    if not path.is_file():
-        return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH}, so the strict numbers apply")
+    override = os.environ.get(CLASSIFIER_ENV, "").strip()
+    if override:
+        path = Path(override)
+        if not path.is_file():
+            return _strict(f"{CLASSIFIER_ENV} names {override}, which is not a file, "
+                           "so the strict numbers apply")
+    else:
+        path = Path(repo_root) / CLASSIFIER_RELPATH
+        if not path.is_file():
+            return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH}, so the strict numbers apply")
     base, tried = resolve_base(Path(repo_root))
     if base is None:
         return _strict("no diff base resolves (tried " + ", ".join(tried) + "), so the strict numbers apply")

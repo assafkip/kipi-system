@@ -123,6 +123,20 @@ def make_world(tmp: Path) -> dict:
     (tmp / "bin/sync").write_text(FAKE_LOG % "sync")
     (tmp / "bin/drafter").write_text(FAKE_LOG % "drafter")
     (tmp / "bin/ps").write_text("#!/bin/sh\ncat \"$W/ps.txt\" 2>/dev/null\nexit 0\n")
+    # The stand-in for chief's phone gate: records the message, answers like chief's verdict JSON.
+    # Mode file "fail" = not delivered, "boom" = exits with no verdict, "nodetail" = delivered but the
+    # detail was not saved, "hang" = no answer for 8 s. NEVER a real send.
+    (tmp / "bin/notify").write_text(
+        "import json, os, sys\n"
+        "w = os.environ['W']\n"
+        "open(w + '/notify.log', 'a').write(json.dumps(sys.argv[-1]) + '\\n')\n"
+        "mode = open(w + '/notify.mode').read().strip() if os.path.exists(w + '/notify.mode') else ''\n"
+        "if mode == 'boom':\n    sys.exit(3)\n"
+        "if mode == 'hang':\n    import time\n    time.sleep(8)\n"
+        "print(json.dumps({'delivered': mode != 'fail', 'detail_saved': mode != 'nodetail', 'reason': 'down'}))\n"
+        "sys.exit(1 if mode == 'fail' else 0)\n")
+    (tmp / "bin/alert").write_text(
+        "import os, sys\nopen(os.environ['W'] + '/alert.log', 'a').write(sys.argv[-1] + '\\n')\n")
     for f in (tmp / "bin").iterdir():
         f.chmod(0o755)
     (tmp / "gh-world.json").write_text(json.dumps({"o/r": [
@@ -150,6 +164,8 @@ def make_world(tmp: Path) -> dict:
         "CAP_LADDER_REVIEWS": str(tmp / "reviews"),
         "CAP_LADDER_GH": f"{py} {tmp}/bin/gh",
         "CAP_LADDER_SYNC": f"{py} {tmp}/bin/sync",
+        "KIPI_FOUNDER_NOTIFY_CMD": f"{py} {tmp}/bin/notify",
+        "CAP_LADDER_ALERT": f"{py} {tmp}/bin/alert",
         "CAP_LADDER_FABLE": f"{py} {tmp}/bin/fable",
         "CAP_LADDER_DRAFTER": f"{py} {tmp}/bin/drafter",
         "CAP_LADDER_PS": f"{tmp}/bin/ps",
@@ -674,7 +690,7 @@ def _founder_asks():
 # from the script's own list, so a script that drops one from its guard goes red.
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
+             "KIPI_FOUNDER_NOTIFY_CMD", "CAP_LADDER_ALERT", "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
 
 
 def case_review_687() -> None:
@@ -1084,6 +1100,130 @@ def case_mutant() -> None:
 RUNTIME_BOUND_S = float(os.environ.get("CAP_LADDER_RUNTIME_BOUND_S", "120"))
 
 
+def case_founder_asks_reach_chief() -> None:
+    """Founder 2026-11-12: an ask in the status file must reach him through chief's
+    phone gate, not only through /q-morning (he does not open it).
+
+    PR #778 RCA rca-founder-ask-send-three-rounds-2026-11-12.md: --founder-ask only
+    RECORDS; `--send-asks` (and the nightly run) is the one sender."""
+    def sent(env):
+        f = Path(env["W"]) / "notify.log"
+        return [json.loads(l) for l in f.read_text().splitlines()] if f.exists() else []
+
+    def rows(env):
+        return {r["issue"]: r for r in _status_rows(env)}
+
+    def ask(env, issue, text):
+        return subprocess.run([sys.executable, str(LADDER), "--founder-ask", issue, "founder-decision", text],
+                              env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+    def send(env):
+        return subprocess.run([sys.executable, str(LADDER), "--send-asks"], env=env, capture_output=True,
+                              text=True, timeout=60, stdin=subprocess.DEVNULL)
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        p = ask(env, "ASK-1", "access: grant the seat")
+        check("founder-asks: recording never calls the notify path; the ask is listed and unsent",
+              p.returncode == 0 and sent(env) == [] and "ASK-1" in rows(env) and not rows(env)["ASK-1"].get("notified_at"),
+              (p.returncode, sent(env), p.stdout + p.stderr))
+        p = send(env)
+        s1 = sent(env)
+        check("founder-asks: one send is one call to the notify path, a phone line naming no ticket, then stamped",
+              p.returncode == 0 and len(s1) == 1 and s1[0] == "1 decision waiting for you." and rows(env)["ASK-1"].get("notified_at"), (s1, p.stdout))
+        import importlib.util as _iu
+        _sp = _iu.spec_from_file_location("capl_detail", str(LADDER))
+        _m = _iu.module_from_spec(_sp)
+        _sp.loader.exec_module(_m)
+        det = _m.founder_ask_detail(list(rows(env).values()))
+        check("founder-asks: the detail saved to his app Chat carries the ask and the command that releases it",
+              "access: grant the seat" in det and "--resolve" in det, det)
+        ask(env, "ASK-1", "access: grant the seat")   # same ask again
+        send(env)
+        ladder(env, "--apply")                          # the nightly run
+        check("founder-asks: a second send and the nightly run send nothing for a sent ask", len(sent(env)) == 1, sent(env))
+        ask(env, "ASK-2", "spend: two")
+        check("founder-asks: a later ask is recorded and still sends nothing until a send runs", len(sent(env)) == 1, sent(env))
+        send(env)
+        s2 = sent(env)
+        check("founder-asks: a later ask sends only itself, never the sent one again",
+              len(s2) == 2 and s2[1] == "1 decision waiting for you.", s2)
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        ask(env, "ASK-1", "spend: one")
+        ladder(env, "--resolve", "ASK-1", "--by", "founder")
+        send(env)
+        check("founder-asks: a resolved ask sends nothing", sent(env) == [], sent(env))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        ask(env, "ASK-2", "spend: two")     # ASK-2 is open here
+        (Path(td) / "linear.json").write_text(json.dumps(
+            {"ASK-2": {"state_type": "canceled", "labels": ["owner:sana"], "project": "kipi-system",
+                       "title": "t", "description": "d"}}))
+        ladder(env, "--apply")                       # sweep resolves it as moot BEFORE the send
+        check("founder-asks: an ask whose ticket closed is resolved as moot and not sent",
+              rows(env)["ASK-2"].get("resolved") and sent(env) == [], (rows(env), sent(env)))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "notify.mode").write_text("nodetail")
+        ask(env, "ASK-1", "spend: one")
+        p = send(env)
+        check("founder-asks: delivered with the detail NOT saved leaves the ask unsent",
+              len(sent(env)) == 1 and not rows(env)["ASK-1"].get("notified_at") and "did not save the detail" in p.stdout, (p.stdout, sent(env)))
+        (Path(td) / "notify.mode").write_text("")
+        send(env)
+        check("founder-asks: the next send retries it and stamps it only then",
+              len(sent(env)) == 2 and rows(env)["ASK-1"].get("notified_at"), sent(env))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        (Path(td) / "notify.mode").write_text("hang")
+        ask(env, "ASK-1", "spend: x")
+        sender = subprocess.Popen([sys.executable, str(LADDER), "--send-asks"], env=env, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        deadline = time.monotonic() + 5
+        while not sent(env) and time.monotonic() < deadline:     # the sender is inside the hung call
+            time.sleep(0.1)
+        t0 = time.monotonic()
+        p = ask(env, "ASK-2", "spend: y")
+        took = time.monotonic() - t0
+        ladder(env, "--resolve", "ASK-1", "--by", "founder")      # nor does a resolve wait on it
+        took2 = time.monotonic() - t0
+        sender.wait(timeout=60)
+        check("founder-asks: a recorder and a resolve running while chief hangs are not held and are recorded",
+              bool(sent(env)) and p.returncode == 0 and took < 4 and took2 < 4 and "ASK-2" in rows(env), (sent(env), p.returncode, took, took2))
+    for mode in ("fail", "boom"):
+        with tempfile.TemporaryDirectory() as td:
+            env = make_world(Path(td))
+            (Path(td) / "notify.mode").write_text(mode)
+            p = ask(env, "ASK-1", "spend: x")
+            check(f"founder-asks: notify mode {mode}: recording succeeds, exit 0, unsent",
+                  p.returncode == 0 and not rows(env)["ASK-1"].get("notified_at") and not rows(env)["ASK-1"].get("resolved"),
+                  (p.returncode, p.stdout + p.stderr))
+            send(env)
+            al = Path(td) / "alert.log"
+            check(f"founder-asks: notify mode {mode}: a failed --send-asks stays unsent and files nothing (the nightly run speaks)",
+                  not rows(env)["ASK-1"].get("notified_at") and not al.exists(), al.read_text() if al.exists() else "")
+            ladder(env, "--apply")
+            check(f"founder-asks: notify mode {mode}: a failed nightly send files ONE line to Sana",
+                  al.exists() and len(al.read_text().splitlines()) == 1 and "unsent" in al.read_text(), al.read_text() if al.exists() else "")
+            (Path(td) / "notify.mode").write_text("")
+            ladder(env, "--apply")
+            check(f"founder-asks: nightly success files nothing more", len(al.read_text().splitlines()) == 1, al.read_text())
+            check(f"founder-asks: after {mode} the nightly run retries it and stamps it only then",
+                  rows(env)["ASK-1"].get("notified_at") and len(sent(env)) == 3, sent(env))
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        ask(env, "ASK-1", "spend: one")
+        ask(env, "ASK-2", "spend: two")
+        check("founder-asks: N asks recorded, nothing sent yet", sent(env) == [], sent(env))
+        out = ladder(env)
+        check("founder-asks: a dry run names the count and sends nothing",
+              "[dry] founder asks: would send 2" in out and sent(env) == []
+              and not any(r.get("notified_at") for r in _status_rows(env)), out)
+        send(env)
+        check("founder-asks: N asks recorded then one send is exactly ONE message",
+              sent(env) == ["2 decisions waiting for you."] and all(r.get("notified_at") for r in _status_rows(env)), sent(env))
+
+
 def main() -> int:
     t0 = time.monotonic()
     print("test_cap_ladder.py")
@@ -1093,7 +1233,7 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant, case_lane_marker] + cases
+                 case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))

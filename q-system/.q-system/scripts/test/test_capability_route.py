@@ -165,6 +165,22 @@ def review_round1(td: Path) -> None:
     check("round 1 major 2: an undated park starts its 14 days the first night it is seen, then routes",
           first and ledger(td).get("ASK-63", {}).get("capout") is True, (out, out2))
 
+    # PR #778 RCA: --founder-ask only records, so a sweep that filed an ask starts cap-ladder's ONE
+    # sender once after the sweep; a sweep that filed none starts nothing.
+    started = []
+    real_main, real_start = m._main, m._start_sender
+    m._start_sender = lambda: started.append(1)
+    m._main = lambda argv=None: (m._ASKED.append("ASK-1"), 0)[1]
+    m._ASKED.clear()
+    rc_a = m.main([])
+    m._main = lambda argv=None: 0
+    m._ASKED.clear()
+    rc_b = m.main([])
+    m._main, m._start_sender = real_main, real_start
+    m._ASKED.clear()
+    check("a sweep that filed an ask starts the ONE sender once; a sweep that filed none starts nothing",
+          rc_a == 0 and rc_b == 0 and started == [1], (rc_a, rc_b, started))
+
     # Round 1 major 1: no cap-ladder.py on the tree, no capout and no unblock.
     with tempfile.TemporaryDirectory() as t2:
         m2, calls2 = load(Path(t2), ladder=False)

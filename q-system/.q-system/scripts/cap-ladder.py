@@ -87,6 +87,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -128,7 +129,7 @@ PS = cmd("CAP_LADDER_PS", ["ps", "-Ao", "args="])
 # are redirected (PR #687 review, minor 4).
 LIVE_VARS = ("CAP_LADDER_STATE", "CAP_LADDER_STATUS", "CAP_LADDER_REPORT", "CAP_LADDER_BLOCKERS",
              "CAP_LADDER_ATTEMPTS", "CAP_LADDER_LINEAR_LOG", "CAP_LADDER_GH", "CAP_LADDER_SYNC",
-             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR")
+             "CAP_LADDER_FABLE", "CAP_LADDER_DRAFTER", "KIPI_LANES_DIR", "KIPI_FOUNDER_NOTIFY_CMD", "CAP_LADDER_ALERT")
 
 
 def now() -> datetime:
@@ -322,11 +323,13 @@ ASK_CHARS = 1000                      # the one bound on a stored ask (status_ad
 
 # --- THE MORNING STATUS FILE: this script is its one writer ------------------
 # Founder rulings: spend, access and outside reach are "parked with its reason
-# and listed in the morning status file. It is not a page." founder_asks.py
-# renders the unresolved entries as a section of /q-morning, its one reader. The
-# brief runs when the founder types it (its schedule was retired 2026-09-11), and
-# each line carries the one command that releases the hold:
-# `cap-ladder.py --resolve <ask id>`. Nothing else reads this file on a schedule.
+# and listed in the morning status file. It is not a page." The file is the
+# RECORD. Two readers: founder_asks.py renders the unresolved entries as a
+# section of /q-morning, and notify_new_asks() below hands every unsent entry to
+# chief's phone gate. The brief alone reached nobody: it runs when the founder
+# types it (schedule retired 2026-09-11) and he does not type it ("I dont use the
+# q-morning - I use chief", founder 2026-11-12). Each line carries the one command
+# that releases the hold: `cap-ladder.py --resolve <ask id>`.
 # Other jobs add asks through `cap-ladder.py --founder-ask`, never by appending.
 
 def _status_rows() -> list:
@@ -448,6 +451,129 @@ def status_resolve(ref: str, note: str = "", by: str = "") -> int:
         _status_write(rows)
         return 1
     return _status_locked(go)
+
+
+SEND_LOCK_WAIT_S = int(os.environ.get("CAP_LADDER_SEND_WAIT_S") or 90)   # env: the test's second-sender case
+NOTIFY_KIND = "The list of your open decisions"   # chief's fallback line reads "<kind> is in the app Chat"
+ALERT = cmd("CAP_LADDER_ALERT", ["bash", str(HERE / "slack-notify.sh")])   # engineering signal -> Sana's triage
+_NOTIFY_MOD = None
+
+
+def _notify_mod():
+    global _NOTIFY_MOD
+    if _NOTIFY_MOD is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("kipi_founder_notify_ladder", str(HERE / "founder_notify.py"))
+        _NOTIFY_MOD = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_NOTIFY_MOD)
+    return _NOTIFY_MOD
+
+
+def founder_ask_message(n: int) -> str:
+    """The phone line. It names no ticket, path or command, so chief's gate passes it
+    as is (test_founder_message_census.py runs this exact text through the real gate).
+    The asks themselves travel as `detail`, which chief saves to his app Chat; sending
+    them as the line got the whole text refused ('engineering-on-whatsapp', PR #778
+    review round 1, major) and left him a bare fallback link."""
+    return f"{n} decision{'' if n == 1 else 's'} waiting for you."
+
+
+def founder_ask_detail(rows: list) -> str:
+    lines = []
+    for r in rows:
+        lines.append(f"{r.get('issue')}: {r.get('ask')}" + (" [clipped]" if r.get("clipped") else ""))
+        lines.append(f"When done: {r.get('resolve')}")
+    return "\n".join(lines)
+
+
+def _send_lock(wait_s: int):
+    """The open lock file of THE sender, or None if another sender held it for wait_s.
+
+    A lock of its own, not the status lock: the status lock is held to read and to
+    stamp only, so a recorder (--founder-ask) never waits behind a send to chief."""
+    lock = STATUS.with_suffix(".send.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lock, "w")
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                return None
+            time.sleep(0.2)
+
+
+def notify_new_asks(apply: bool = True, alert: bool = False, timeout: int = 60) -> str:
+    """THE ONE SENDER: hand every unresolved, unsent ask to chief's phone gate as ONE message.
+
+    WHY (founder 2026-11-12, "nothing should be waiting for me"): the status file's
+    one reader was /q-morning, which he does not open, so every ask in it reached
+    nobody. The full list with the command that releases each ask goes to his app
+    Chat as `detail`.
+
+    SPLIT FROM THE RECORDER (PR #778, RCA rca-founder-ask-send-three-rounds-2026-11-12.md).
+    --founder-ask used to send inline. Three review rounds each found a new hole in
+    that send: a lock held across the call to chief, a cap that bounded the call and
+    not the lock wait, an ask stamped sent with no detail saved, N pings per sweep.
+    Now --founder-ask only records and returns. This function is the only caller of
+    chief for asks: the nightly run (04:40) and `--send-asks`, which the two
+    --founder-ask callers start once after their sweep.
+
+    THE STATUS LOCK IS HELD TO READ AND TO STAMP, NEVER ACROSS deliver(). Senders
+    queue on a send lock of their own, so a hung chief delays the next send and
+    nothing else: a recorder and a --resolve never wait on it.
+
+    SENT IS WHAT CHIEF SAID. `notified_at` is stamped only when deliver() reports
+    delivered AND detail_saved is True: delivered with the detail lost left him a
+    count and no decisions. Any other outcome leaves every ask unsent for the next
+    send. A stamp lands only on the asks that were in the batch; an ask recorded
+    during the send waits for the next one. Returns a line for the run log.
+
+    `alert` (nightly only): a failed send is filed to Sana through the fleet alert
+    path, one line per failed run, so an ask is never unsent with nobody told."""
+    def read_unsent():
+        return [r for r in _status_rows() if not r.get("resolved") and not r.get("notified_at") and r.get("id")]
+    if not apply:
+        todo = _status_locked(read_unsent)
+        return f"[dry] founder asks: would send {len(todo)} unsent to chief's phone gate" if todo else "founder asks: none unsent"
+    gate = _send_lock(SEND_LOCK_WAIT_S)
+    if gate is None:
+        return "founder asks: another send is still running; this one leaves the unsent asks to it or the next run"
+    try:
+        todo = _status_locked(read_unsent)
+        if not todo:
+            return "founder asks: none unsent"
+        try:
+            verdict = _notify_mod().deliver(founder_ask_message(len(todo)), detail=founder_ask_detail(todo),
+                                            kind=NOTIFY_KIND, timeout=timeout)
+        except Exception as exc:   # a broken notifier must leave the asks retryable, never stamped
+            verdict = {"delivered": False, "reason": f"notify raised {type(exc).__name__}: {str(exc)[:120]}"}
+        if verdict.get("delivered") and verdict.get("detail_saved") is not True:
+            verdict = {"delivered": False, "reason": "chief delivered the line but did not save the detail"}
+        if not verdict.get("delivered"):
+            why = f"founder asks: {len(todo)} unsent, chief did not deliver ({str(verdict.get('reason') or 'no reason')[:120]}); retried next send"
+            if alert:
+                try:
+                    subprocess.run([*ALERT, "cap-ladder: " + why], capture_output=True, text=True, timeout=30)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            return why
+        stamp = now().isoformat()
+        ids = {r["id"] for r in todo}
+
+        def mark():
+            rows = _status_rows()
+            for r in rows:
+                if r.get("id") in ids and not r.get("notified_at"):
+                    r["notified_at"] = stamp
+            _status_write(rows)
+        _status_locked(mark)
+        return f"founder asks: {len(todo)} sent to chief"
+    finally:
+        gate.close()
 
 
 def ask_resolved(ask_id: str) -> bool:
@@ -1031,7 +1157,9 @@ def main(argv=None) -> int:
     ap.add_argument("--note", default="", help="with --resolve: what was decided")
     ap.add_argument("--by", default="", help="with --resolve: who decided (kept with the process context)")
     ap.add_argument("--founder-ask", nargs=3, metavar=("ISSUE", "KIND", "ASK"),
-                    help="add one ask to the morning status file (other jobs call this), then exit")
+                    help="add one ask to the morning status file (other jobs call this), then exit; records only, never sends")
+    ap.add_argument("--send-asks", action="store_true",
+                    help="send every unsent ask to chief's phone gate as one message, then exit (the one sender)")
     args = ap.parse_args(argv)
     # FIRST, before any verb that writes (round 2, minor: --resolve and
     # --founder-ask ran above this and wrote the real status file under pytest).
@@ -1065,6 +1193,11 @@ def main(argv=None) -> int:
         before = {r.get("id") for r in _status_rows()}
         got = status_add(i, k, a, source="cap-ladder.py --founder-ask")
         print(f"cap-ladder: the same ask is already listed ({got})" if got in before else f"cap-ladder: ask added ({got})")
+        # RECORD ONLY. No call to chief on this path (RCA rca-founder-ask-send-three-rounds-2026-11-12.md):
+        # callers bound this process at 60 s and cannot catch a timeout. `--send-asks` sends.
+        return 0
+    if args.send_asks:
+        print("cap-ladder: " + notify_new_asks(True))
         return 0
 
     tgts = targets()
@@ -1180,6 +1313,7 @@ def main(argv=None) -> int:
             write_state(state)
             write_json(BLOCKERS, blockers)
             write_json(REPORT, {"at": now().isoformat(), "rows": report})
+    say(notify_new_asks(args.apply, alert=True))
     say(f"run complete: {len(caps)} capped, {done} climbed, "
         f"{sum(1 for r in state.values() if r.get('held'))} held, "
         f"{moot} ask{'' if moot == 1 else 's'} resolved as moot{'' if args.apply else ' (dry)'}")

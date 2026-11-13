@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 import sys
 import tempfile
 from pathlib import Path
@@ -46,6 +47,9 @@ def world(td: Path, script: Path = SCRIPT):
     (td / "fake_linear.py").write_text(FAKE_LINEAR)
     (td / "ladder.py").write_text(LOG % "ladder")
     (td / "sync.py").write_text(LOG % "sync")
+    # The end-to-end case runs the REAL cap-ladder.py, and a founder ask now starts its detached
+    # sender (PR #778 RCA). A stub notifier keeps that sender off chief even if HOME ever leaks.
+    (td / "notify.py").write_text("import json\nprint(json.dumps({'delivered': True, 'detail_saved': True}))\n")
     lab = lambda: [{"id": "L-owner:assaf", "name": "owner:assaf"}]
     (td / "tickets.json").write_text(json.dumps([
         {"id": "u1", "identifier": "ASK-1", "title": "the reviewer posts a status it did not earn",
@@ -56,6 +60,7 @@ def world(td: Path, script: Path = SCRIPT):
     # status file, and a test reads no live path either.
     return dict(os.environ, W=str(td), HOME=str(td), CAP_LADDER_STATUS=str(td / "status.jsonl"),
                 OWNER_ROUTE_FIXTURE=str(td / "fake_linear.py"),
+                KIPI_FOUNDER_NOTIFY_CMD=f"{sys.executable} {td / 'notify.py'}",
                 OWNER_ROUTE_LADDER=f"{sys.executable} {td / 'ladder.py'}",
                 OWNER_ROUTE_SYNC=f"{sys.executable} {td / 'sync.py'}")
 
@@ -87,6 +92,13 @@ def main() -> int:
               any("issueAddLabel" in json.dumps(e) or e["v"].get("l") == "L-owner:sana" for e in lin)
               and any(e["v"].get("l") == "L-owner:assaf" for e in lin)
               and any(c[:2] == ["progress", "ASK-1"] for c in logged(td, "sync")), (out, lin))
+        for _ in range(50):     # the sender is detached; its fake logs a moment after the sweep returns
+            if ["--send-asks"] in logged(td, "ladder"):
+                break
+            time.sleep(0.1)
+        sends = [c for c in logged(td, "ladder") if c == ["--send-asks"]]
+        check("a sweep that filed an ask starts the ONE sender once, after the asks (PR #778 RCA)",
+              len(sends) == 1 and logged(td, "ladder")[-1] == ["--send-asks"], logged(td, "ladder"))
         check("a spend question: listed for the founder through cap-ladder.py --founder-ask, label kept",
               any(c[:2] == ["--founder-ask", "ASK-2"] for c in logged(td, "ladder"))
               and not any(c[:2] == ["progress", "ASK-2"] for c in logged(td, "sync")), out)

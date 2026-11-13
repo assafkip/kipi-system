@@ -10,7 +10,7 @@ or `[REDACTED]`. Reviewer repro on `placeholder_gate.tokens`: all four blocked.
 The sort, recorded on ASK-4658 (genre convention = exempt, real blank = keep):
   `[1]`, `[1, 2]`, `[3-5]` : exempt. A number is never a template slot.
   `[1]: https://...`, `[kroll]: https://...` at a line start : exempt, a link definition.
-  `[label][1]` : exempt, a reference link; the label bracket is followed by a bracket.
+  `[label][1]` : exempt only when `[1]: https://...` is defined in the same text.
   `[sic]`, `[REDACTED]` : exempt, a fixed editorial word, exact match only.
   `[CLIENT NAME]`, `[TBD]`, `[paste the intake list here]`, `{{X}}` : keep, they block.
 
@@ -35,7 +35,8 @@ EXEMPT = [
     ("footnote range", "The campaign is documented elsewhere [3-5]."),
     ("reference link definition", "Sources\n\n[1]: https://example.com/report\n"),
     ("named reference definition", "[kroll]: https://example.com/kroll-2023\n"),
-    ("reference link use", "See the [vendor writeup][1] for the full timeline."),
+    ("reference link use", "See the [vendor writeup][1] for the full timeline.\n\n[1]: https://example.com/w\n"),
+    ("link definition with a prose label", "[vendor writeup]: https://example.com/w\n"),
     ("sic in a quote", 'He wrote "we recieved [sic] the files" in the ticket.'),
     ("sic upper", 'The note said "teh [SIC] logs".'),
     ("redacted", "The account belonged to [REDACTED], a reseller in the region."),
@@ -52,6 +53,20 @@ BLOCKS = [
     ("sic with extra words", "teh [sic please fix] logs"),
     ("definition without a url", "[source]: fill this in later\n"),
     ("label alone", "Contact [name] for the keys."),
+    # Review round 1 repros: a slot before an exempt-looking bracket, no definition behind it.
+    ("slot + footnote", "The loss totalled [TBD][3] by the end of the quarter."),
+    ("slot + redacted", "Sent to [CLIENT NAME][REDACTED] on day two."),
+    ("slot + footnote range", "Prepared for [CLIENT NAME][1-2]."),
+    ("paste instruction + footnote", "[paste the intake list here][1]"),
+    ("reference link use with no definition", "See the [vendor writeup][1] for the full timeline."),
+    ("slot + ref defined elsewhere under another name", "Total [TBD][9].\n\n[1]: https://example.com/w\n"),
+    ("link definition label is a slot", "Sources\n\n[SOURCE 1]: https://example.com/a\n"),
+    # Round 1 on the fix PR: a defined NAMED ref used to exempt both brackets.
+    ("slot + defined named ref", "Prepared for [CLIENT NAME][kroll].\n\n[kroll]: https://example.com/k\n"),
+    ("named reference use", "See [the report][kroll].\n\n[kroll]: https://example.com/k\n"),
+    ("slot-shaped label before a defined number", "Total [TBD][3].\n\n[3]: https://example.com/w\n"),
+    ("all-caps link definition label", "[SOURCE]: https://example.com/a\n"),
+    ("slot inside a link definition url", "[1]: https://example.com/a[CLIENT]\n"),
 ]
 
 
