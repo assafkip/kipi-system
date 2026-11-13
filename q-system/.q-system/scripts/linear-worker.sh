@@ -2277,7 +2277,7 @@ guard_settings_now() {
 # reader, fleet_load.py. The guard set rides inside the same --settings JSON, so the
 # guards are never traded for the trim. Measured 2026-11-12 in a kipi-system tree:
 # 117,872 first-request tokens with every installed plugin, MCP server and account
-# connector; 76,036 with this launch. A build that fails falls back to the guard set
+# connector; 76,036 with this launch (76,166 re-measured after the 2026-11-13 sync). A build that fails falls back to the guard set
 # and no MCP flags, which is the launch before ASK-4747: it costs tokens and drops no
 # gate. The log line says so; fleet_load.py startup is what notices the cost.
 lean_settings_now() {

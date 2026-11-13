@@ -93,6 +93,13 @@ exit 0
 EOF
 chmod +x "$STUB/claude"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/reviewer-noop"; chmod +x "$STUB/reviewer-noop"
+# Records each line the worker sends to Sana's queue (the worker calls `bash "$NOTIFY"`).
+NOTIFY_LOG="$WORK/notify.txt"
+cat > "$STUB/notify-rec" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$NOTIFY_LOG"
+EOF
+chmod +x "$STUB/notify-rec"
 cat > "$STUB/python3" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
@@ -140,7 +147,7 @@ JSON
   : > "$GH_LOG"; rm -f "$WORK/argv-$1"
   ( cd "$WORK/skel" \
     && HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-$1" \
-       KIPI_NOTIFY="/usr/bin/true" KIPI_PR_REVIEWER="$STUB/reviewer-noop" \
+       KIPI_NOTIFY="$STUB/notify-rec" KIPI_PR_REVIEWER="$STUB/reviewer-noop" \
        KIPI_LINEAR_PROJECT="targetproj" CLAUDE_ARGV="$WORK/argv-$1" GUARD_FAIL="$gfail" \
        bash "$WORKER" --apply --repo "$tgt" --issue ASK-GGG --limit 1 \
   ) >"$WORK/run-$1.out" 2>&1
@@ -216,10 +223,30 @@ ok "E2: --session-id is passed and one run-tokens row (ticket, 700 output tokens
 
 # --- E3. a run whose transcript cannot be read still succeeds -------------------
 rm -f "$ROWS"
+# --- E2b. the start-up ratchet runs on the same transcript (ASK-4756, PR #792 review) ---
+# The stub transcript carries no skill_listing or deferred_tools_delta record, so the
+# counts are unread: the row must say so and Sana gets one line. A dropped or broken
+# record_startup call leaves no row and fails here.
+SROWS="$WORK/home/.local/state/kipi/worker-startup.jsonl"
+[ -f "$SROWS" ] || fail "E2b: the run finished but wrote no worker-startup row; the ratchet never ran. Output: $(tail -6 "$WORK/run-E.out")"
+"$REAL_PY" - "$SROWS" "$WORK/argv-E" <<'PY' || fail "E2b: the start-up row is wrong"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+argv = [a.decode() for a in open(sys.argv[2], "rb").read().split(b"\0")[:-1]]
+sid = argv[argv.index("--session-id") + 1]
+r = rows[-1]
+if len(rows) != 1 or r["session"] != sid or r["ticket"] != "ASK-GGG" or r["job"] != "worker":
+    sys.exit("E2b: rows %r, session %s" % (rows, sid))
+if "skills unread" not in r["over"]:
+    sys.exit("E2b: a transcript with no skill listing was not reported unread: %r" % r["over"])
+PY
+grep -q 'start-up grew past its ceiling on ASK-GGG' "$NOTIFY_LOG" 2>/dev/null || fail "E2b: the crossing reached no line in Sana's queue. Notify log: $(cat "$NOTIFY_LOG" 2>/dev/null)"
+ok "E2b: the start-up ratchet wrote one row for the run's session and sent one line to Sana's queue"
 NO_TX=1 run_case E3 no
 [ "$(cat "$WORK/rc-E3")" = "0" ] || fail "E3: a missing transcript failed the worker run. Output: $(tail -8 "$WORK/run-E3.out")"
 grep -q 'ok ASK-GGG' "$WORK/run-E3.out" || fail "E3: the run did not complete. Output: $(tail -8 "$WORK/run-E3.out")"
 [ ! -s "$ROWS" ] || fail "E3: a row was written for a run with no transcript"
+[ "$(grep -c . "$SROWS")" = "1" ] || fail "E3: a run with no transcript added a start-up row"
 ok "E3: no transcript means no row and an unchanged run"
 
 # --- F. project settings that run every guard: nothing supplied ---------------

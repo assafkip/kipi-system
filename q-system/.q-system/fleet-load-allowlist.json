@@ -17,7 +17,7 @@
     "skills": 140,
     "deferred_tools": 20,
     "mcp_servers": 0,
-    "measured": "2026-11-12/13, one claude -p in a kipi-system tree with this row applied (ASK-4756): first request 76,166 tokens (117,872 with the full set: 345 skills, 617 deferred tool names, 37 MCP servers). Post-trim counts: 13 deferred tool names, 0 MCP servers, 121 skills. The skill count was 106 until an account sync on 2026-11-13 added 4 @synced plugins (now turned off here) and 15 anthropic-skills:* account skills, which no enabledPlugins key reaches.",
+    "measured": "2026-11-12/13, one claude -p in a kipi-system tree with this row applied (ASK-4756): first request 76,036 tokens, 76,166 re-measured after the account sync below (117,872 with the full set: 345 skills, 617 deferred tool names, 37 MCP servers). Post-trim counts: 13 deferred tool names, 0 MCP servers, 121 skills. The skill count was 106 until an account sync on 2026-11-13 added 4 @synced plugins (now turned off here) and 15 anthropic-skills:* account skills, which no enabledPlugins key reaches.",
     "why": "A ratchet, not a cap on runs: fleet_load.py startup reads each worker run's transcript and alerts Sana once when a count crosses this line. The margin (about 15% on skills, 7 tool names) lets a few new skills land without an alert; a new plugin or any MCP server does not. The listing's text is capped by the CLI near 30k characters at 106, 121 and 345 skills, so the count is the measure, not the characters."
    }
   },

@@ -58,6 +58,8 @@ class Base(unittest.TestCase):
                                        "posthog@claude-plugins-official": [{"scope": "user"}]}}))
         (self.cfg / "settings.json").write_text(json.dumps(
             {"enabledPlugins": {"vercel@claude-plugins-official": True, "kipi-core@kipi": True}}))
+        (self.cfg / "settings.local.json").write_text(json.dumps(
+            {"permissions": {"allow": []}, "enabledPlugins": {"slack@claude-plugins-official": True}}))
         (self.tree / ".claude" / "settings.json").write_text(json.dumps(
             {"enabledPlugins": {"frontend-design@claude-code-plugins": True}}))
         pj = self.cfg / "skills" / "last30days" / ".claude-plugin"
@@ -79,7 +81,8 @@ class LeanSettings(Base):
     def test_every_source_is_read(self):
         self.assertEqual(fleet_load.known_plugins(self.tree, self.cfg), {
             "kipi-core@kipi", "prd-os@kipi", "posthog@claude-plugins-official", "vercel@claude-plugins-official",
-            "frontend-design@claude-code-plugins", "last30days@skills-dir", "small-business@synced"})
+            "frontend-design@claude-code-plugins", "last30days@skills-dir", "small-business@synced",
+            "slack@claude-plugins-official"})
 
     def test_off_is_the_complement_of_the_row_and_the_guard_survives(self):
         guard = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "g"}]}]},
@@ -90,10 +93,11 @@ class LeanSettings(Base):
         self.assertEqual(doc["enabledPlugins"], {
             "posthog@claude-plugins-official": False, "vercel@claude-plugins-official": False,
             "frontend-design@claude-code-plugins": False, "last30days@skills-dir": False,
-            "small-business@synced": False})
+            "small-business@synced": False, "slack@claude-plugins-official": False})
 
     def test_nothing_to_pass_prints_nothing(self):
         for f in (self.cfg / "plugins" / "installed_plugins.json", self.cfg / "settings.json",
+                  self.cfg / "settings.local.json",
                   self.tree / ".claude" / "settings.json",
                   self.cfg / "skills" / "last30days" / ".claude-plugin" / "plugin.json",
                   self.cfg / "plugins" / "synced" / "acct_org" / "dab4db2f" / ".claude-plugin" / "plugin.json"):

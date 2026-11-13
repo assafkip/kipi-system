@@ -23,7 +23,8 @@ Why disable-the-rest and never force-enable the row: the worker runs in client t
 whose project settings may turn a fleet plugin off on purpose. Forcing it on would add
 hooks that tree never ran. Turning the rest off can only remove what the job's row
 says it does not use. Measured 2026-11-12 in a kipi-system tree (ASK-4756): 117,872
-first-request tokens with the full set, 76,036 with this launch.
+first-request tokens with the full set, 76,036 with this launch (76,166 re-measured
+after the 2026-11-13 account sync).
 """
 from __future__ import annotations
 
@@ -72,7 +73,9 @@ def known_plugins(tree: Path, cfg: Path) -> set[str]:
     `claude` on PATH, and a stray stub call would record argv and commit.
     """
     ids = set(_load(cfg / "plugins" / "installed_plugins.json").get("plugins", {}))
-    for s in (cfg / "settings.json", tree / ".claude" / "settings.json", tree / ".claude" / "settings.local.json"):
+    # Both user files and both tree files: the CLI reads all four (PR #792 review, minor).
+    for s in (cfg / "settings.json", cfg / "settings.local.json",
+              tree / ".claude" / "settings.json", tree / ".claude" / "settings.local.json"):
         ids |= set(_load(s).get("enabledPlugins", {}) or {})
     skills = cfg / "skills"
     if skills.is_dir():
