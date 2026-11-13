@@ -73,6 +73,26 @@ During `kipi update`, `settings.json` is rebuilt from `settings-template.json` w
 
 After sync, subtree instances get path fixups (`/q-system/hooks/` -> `/q-system/q-system/hooks/`).
 
+## Instance post-sync step
+
+An instance may declare ONE command in `.kipi-post-sync` at its repo root (one
+command line; blank lines and `#` lines are ignored). `kipi-update.sh` runs it
+in the instance after the rsyncs and before it stages and commits the config
+half, for an instance whose own commit-time check needs a derived artifact
+refreshed first. A non-zero exit, a missing command, or a file holding zero or
+more than one command line abandons that instance through the normal rollback,
+prints the step's output and names the step in the summary. Other instances are
+unaffected. `--dry-run` prints the command and does not run it. No file means
+no change. Test: `test-kipi-update-post-sync-step.sh`.
+
+Trust boundary:
+
+- The step is the instance's own code, the same trust as its pre-commit hook, which already runs arbitrary instance code at that moment.
+- The updater does not limit or undo what a step writes. The config commit stages only `.claude/` and `plugins/`, so a write elsewhere is not in the sync's commit.
+- A failed step abandons the instance through the existing rollback, which resets the synced paths (`.claude/`, `plugins/` and the subtree prefix) to HEAD. It does not track what the step wrote.
+- The updater does not time the step out, so a step must not leave a background child holding the run.
+- A step must not write under `.claude/`: the instance's integrity tripwire reverts it.
+
 ## Pushing Changes Back from an Instance
 
 If you improve an agent, script, or template inside an instance's `q-system/`:
