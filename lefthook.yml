@@ -173,6 +173,20 @@ commit-msg:
     client-names-msg:
       run: python3 q-system/.q-system/scripts/client-name-guard.py --message {1}
 
+pre-push:
+  commands:
+    # The capability gate's structure checks on each pushed branch commit,
+    # scoped to the branch (--check-only --diff-base <merge-base>), about 17 s.
+    # PR #794 went red in CI three times on `inert-engine`, 23 minutes after
+    # each push, for a finding this computes before the push leaves
+    # (ASK-4814, rca-pr794-round-cap-2026-11-12.md). use_stdin hands the script
+    # git's "<ref> <sha> <ref> <sha>" lines; without it the script sees no
+    # pushed commit and judges nothing.
+    capability-gate:
+      run: bash q-system/.q-system/scripts/prepush-capability-gate.sh
+      use_stdin: true
+      fail_text: "The capability gate refused a pushed commit. CI runs the same gate and would go red."
+
 post-commit:
   commands:
     # CheapCheck consumes the ui-ux-pro-max design CSVs (cheapcheck/q-design/data).
