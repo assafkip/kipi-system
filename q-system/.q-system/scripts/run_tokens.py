@@ -85,7 +85,8 @@ def _when(ts) -> datetime.datetime | None:
     return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
 
 
-def read_best(files: list[Path], unreadable: list[str] | None = None) -> dict[str, tuple[dict, str, datetime.datetime | None]]:
+def read_best(files: list[Path],
+              unreadable: list[str] | None = None) -> dict[str, tuple[dict, str, datetime.datetime | None]]:
     """message id -> (largest-output usage snapshot, file it came from, earliest timestamp seen).
 
     A file that cannot be opened is named in `unreadable`, never skipped silently:
@@ -147,13 +148,13 @@ def _context_first(items: list[tuple[dict, datetime.datetime | None]]) -> int | 
     row has no first-request field"), so the lean start-up cut had no before number.
     By timestamp, never by read order: files are read in path order (a session plus
     its subagents, or a sorted directory), so the first record read need not be the
-    first request made. None, never 0, when no request carries a time: a 0 would read
-    as a free start-up, the same lie the exit 1 on zero requests refuses.
+    first request made. None, never 0, when ANY request carries no time: that one may
+    be the first (review of #789), and a 0 would read as a free start-up, the same
+    lie the exit 1 on zero requests refuses.
     """
-    stamped = [(t, u) for u, t in items if t is not None]
-    if not stamped:
+    if not items or any(t is None for _, t in items):
         return None
-    _, u = min(stamped, key=lambda p: p[0])  # min keeps the first of equal times
+    _, u = min(((t, u) for u, t in items), key=lambda p: p[0])  # min keeps the first of equal times
     return sum(_num(u.get(k)) for k in CTX_KEYS)
 
 
@@ -174,17 +175,23 @@ def summarize(items: list[tuple[dict, datetime.datetime | None]]) -> dict:
     }
 
 
-def report(paths: list[str], by_agent: bool = False, subagents: bool = False) -> dict:
+def report(paths: list[str], by_agent: bool = False, subagents: bool = False,
+           start_of: str | None = None) -> dict:
+    """`start_of` names the one transcript whose first request is `context_first`."""
     bad: list[str] = []
     files = expand(paths, subagents, bad)
     best = read_best(files, bad)
     out = summarize([(u, t) for u, _, t in best.values()])
     out["transcripts"] = len(files)
     out["unreadable"] = bad
+    groups: dict[str, list[tuple[dict, datetime.datetime | None]]] = {}
+    for u, f, t in best.values():
+        groups.setdefault(f, []).append((u, t))
+    if start_of is not None:
+        # A run's start-up is ITS OWN transcript's first request. The minimum over the
+        # session plus its subagent files reported a subagent's request instead (review of #789).
+        out["context_first"] = _context_first(groups.get(start_of, []))
     if by_agent:
-        groups: dict[str, list[tuple[dict, datetime.datetime | None]]] = {}
-        for u, f, t in best.values():
-            groups.setdefault(f, []).append((u, t))
         out["by_agent"] = {f: summarize(g) for f, g in sorted(groups.items())}
     return out
 
@@ -204,7 +211,7 @@ def record(a) -> int:
     if not hits:
         print(f"run_tokens: no transcript for session {a.session}", file=sys.stderr)
         return 1
-    rep = report([str(hits[0])], subagents=True)
+    rep = report([str(hits[0])], subagents=True, start_of=str(hits[0]))
     if rep["unreadable"] or rep["requests"] == 0:
         print(f"run_tokens: session {a.session}: unreadable or zero requests", file=sys.stderr)
         return 1

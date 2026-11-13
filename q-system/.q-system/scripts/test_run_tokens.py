@@ -117,6 +117,34 @@ def test_record_row_without_timestamps_has_null_context_first(tmp_path):
     assert rows[0]["requests"] == 3 and rows[0]["context_first"] is None
 
 
+def test_record_context_first_is_the_sessions_own_not_a_subagents(tmp_path):
+    # Review of #789 (major): the row's start-up was the minimum over the session AND
+    # its subagent files. Same layout as test_subagent_transcript_is_added; the
+    # subagent fixture's records are 3 hours older than the session's.
+    sid = "6c1f0e2b-8a4d-4b7e-9f3a-1e5d7c9b2a40"
+    proj = tmp_path / "home" / ".claude" / "projects" / "-fixture"
+    (proj / sid / "subagents").mkdir(parents=True)
+    (proj / f"{sid}.jsonl").write_text((FX / "main.ndjson").read_text())
+    (proj / sid / "subagents" / "agent-x.jsonl").write_text((FX / "subagent.ndjson").read_text())
+    rc, rows = _record(tmp_path, sid)
+    assert rc == 0 and rows[0]["requests"] == 3  # the subagent is still counted
+    assert rows[0]["context_first"] == 2 + 49911 + 27828  # main.ndjson line 0, not the subagent's 77330
+
+
+def test_record_context_first_is_null_when_any_request_is_unstamped(tmp_path):
+    # Review of #789 (minor): an unstamped request may be the first one, so a stamped
+    # later request must not be reported as the start-up.
+    sid = _out_of_order_transcript(tmp_path)
+    f = next((tmp_path / "home" / ".claude" / "projects" / "-fixture").glob(f"{sid}.jsonl"))
+    recs = [json.loads(x) for x in f.read_text().splitlines()]
+    for r in recs:
+        if r["message"]["id"] == "msg_011Cgx1WH5VKhBJnXpsYjB9n":  # id A, the earliest
+            r.pop("timestamp")
+    f.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    rc, rows = _record(tmp_path, sid)
+    assert rc == 0 and rows[0]["requests"] == 3 and rows[0]["context_first"] is None
+
+
 def test_empty_and_malformed_exit_nonzero(tmp_path):
     e = tmp_path / "empty.jsonl"
     e.write_text("")
