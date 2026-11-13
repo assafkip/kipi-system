@@ -3,7 +3,8 @@
  "founder": [
   "2026-11-08, verbatim: \"I want you to evaluate what kind of tickets can go to sonnet and what kind of tickets can stay on Opus and make that a rule in code\"",
   "2026-11-08, verbatim: \"it's probably not going to create as good as code solutions for open PRS and tickets\"",
-  "2026-09-28 (automation audit): reviewer on Sonnet, set as KIPI_REVIEW_CLAUDE_MODEL in com.kipi.dispatch.plist. Superseded for review by the 2026-11-08 ruling above: this table now decides, and nothing reads that env var."
+  "2026-09-28 (automation audit): reviewer on Sonnet, set as KIPI_REVIEW_CLAUDE_MODEL in com.kipi.dispatch.plist. Superseded for review by the 2026-11-08 ruling above: this table now decides, and nothing reads that env var.",
+  "2026-11-13, verbatim: \"its critical that we dont use sonnet if the quality of the work is not as good.\" Reviewers are Opus (relayed 2026-11-12). Held by test_model_routing.py QualityReceipt (RULE-2026-11-13-B)."
  ],
  "default": "claude-opus-5",
  "known_models": [
@@ -208,5 +209,19 @@
  "interactive": "Interactive Sana subagents take their model from ~/.claude/agents/sana.md frontmatter `model: opus` (the harness reads it; it resolves to claude-opus-5-5). Sonnet 5.5 authored 14 PRs interactively, approve 57% vs Opus 5.5 63 PRs at 67%, merged 86% both: not shown to hold, so no sana-light agent type. Frontmatter stays `opus`.",
  "not_routed_here": "Jobs with no reader of this table yet, and no Sonnet history either: DoR drafting, fleet triage and lesson distilling (lean_call.run passes no --model, so they ride the CLI default), RCA writing (interactive), lessons-daily.sh (exports claude-opus-5).",
  "client_path_markers_why": "A repo is a client engagement when its checkout sits under one of these roots. Path, not slug: this repo is public and never names a client.",
- "decision_rule_status": "Interim. With fewer than 10 Sonnet samples per class this table reads 'unknown', and unknown routes to Opus. ASK-4038 measures Sonnet for real (reviewer recall on 12 PRs, worker replay on 3 low-risk classes) and makes model_route read that evidence, so a row moves from data, not from an edit (PR #664 round 1, finding 2; spillover sp-24fc6463)."
+ "decision_rule_status": "Interim. With fewer than 10 Sonnet samples per class this table reads 'unknown', and unknown routes to Opus. ASK-4038 measures Sonnet for real (reviewer recall on 12 PRs, worker replay on 3 low-risk classes) and makes model_route read that evidence, so a row moves from data, not from an edit (PR #664 round 1, finding 2; spillover sp-24fc6463).",
+ "quality_receipts": {
+  "path": "q-system/.q-system/model-quality-receipts",
+  "file": "<job>__<class>.json",
+  "shape": {
+   "job": "worker or review",
+   "class": "a class name from this table",
+   "model": "the non-Opus model id",
+   "samples": "int, at least 10",
+   "verdict": "no-worse",
+   "measured_at": "YYYY-MM-DD",
+   "method": "how both models were judged"
+  },
+  "why": "RULE-2026-11-13-B. A worker or review class may resolve to a non-Opus model only when this receipt exists. None exists on 2026-11-13. ASK-4038's both-models test writes them."
+ }
 }

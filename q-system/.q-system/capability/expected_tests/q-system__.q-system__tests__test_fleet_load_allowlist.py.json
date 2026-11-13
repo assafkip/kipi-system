@@ -1,0 +1,4 @@
+{
+ "path": "q-system/.q-system/tests/test_fleet_load_allowlist.py",
+ "runner": "python3"
+}

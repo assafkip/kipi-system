@@ -203,6 +203,62 @@ class Table(unittest.TestCase):
         self.assertEqual(model_route.FLOOR, self.t["default"])
 
 
+RECEIPT_KEYS = ("job", "class", "model", "samples", "verdict", "measured_at", "method")
+
+
+def receipt_allows(job, cls, model, receipts_dir):
+    """True only for a whole receipt naming this job, class and model, 10+ samples, no-worse."""
+    try:
+        r = json.loads((Path(receipts_dir) / f"{job}__{cls}.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return (isinstance(r, dict) and all(k in r for k in RECEIPT_KEYS)
+            and (r["job"], r["class"], r["model"]) == (job, cls, model)
+            and isinstance(r["samples"], int) and r["samples"] >= 10
+            and r["verdict"] == "no-worse" and str(r["method"]).strip() != ""
+            and re.match(r"^\d{4}-\d{2}-\d{2}$", str(r["measured_at"])) is not None)
+
+
+def off_opus_without_receipt(table, pick, receipts_dir):
+    return [f"{job}/{cls} -> {pick(job, cls)}"
+            for job in ("worker", "review") for cls in table["jobs"][job]["classes"]
+            if "opus" not in pick(job, cls) and not receipt_allows(job, cls, pick(job, cls), receipts_dir)]
+
+
+class QualityReceipt(unittest.TestCase):
+    """RULE-2026-11-13-B. Founder, 2026-11-13, verbatim: "its critical that we dont use
+    sonnet if the quality of the work is not as good." Reviewers are Opus (relayed
+    2026-11-12). Every worker and review class resolves, through model_route.pick (the
+    path the call sites take), to Opus unless a quality receipt for that job and class
+    sits at the table's quality_receipts.path. None exists on 2026-11-13, so today this
+    pins Opus. ASK-4038's both-models test writes receipts; when the first lands it also
+    relaxes test_no_row_leaves_opus_until_the_bar_is_enforced_in_code to this rule."""
+
+    def test_every_code_class_resolves_to_opus_unless_a_receipt_holds(self):
+        t = json.loads(TABLE.read_text())
+        d = QS.parents[1] / t["quality_receipts"]["path"]
+        self.assertEqual(off_opus_without_receipt(t, model_route.pick, d), [])
+        self.assertTrue(any(f.startswith("2026-11-13, verbatim: \"its critical") for f in t["founder"]))
+
+    def test_negative_self_test_only_a_whole_receipt_counts(self):
+        t = json.loads(TABLE.read_text())
+        sonnet_docs = lambda job, cls: "claude-sonnet-5-5" if (job, cls) == ("worker", "docs-text") \
+            else model_route.pick(job, cls)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(off_opus_without_receipt(t, sonnet_docs, tmp), ["worker/docs-text -> claude-sonnet-5-5"])
+            good = {"job": "worker", "class": "docs-text", "model": "claude-sonnet-5-5", "samples": 10,
+                    "verdict": "no-worse", "measured_at": "2026-12-01", "method": "same tickets on both models, blind judge"}
+            p = Path(tmp) / "worker__docs-text.json"
+            p.write_text(json.dumps(good))
+            self.assertEqual(off_opus_without_receipt(t, sonnet_docs, tmp), [])
+            for k, v in (("samples", 9), ("verdict", "thin"), ("model", "claude-sonnet-5"), ("method", " "),
+                         ("class", "test-only"), ("measured_at", "soon")):
+                p.write_text(json.dumps(dict(good, **{k: v})))
+                self.assertFalse(receipt_allows("worker", "docs-text", "claude-sonnet-5-5", tmp), k)
+            p.write_text("{not json")
+            self.assertFalse(receipt_allows("worker", "docs-text", "claude-sonnet-5-5", tmp))
+
+
 class Pick(unittest.TestCase):
     def test_known_job_and_class(self):
         t = json.loads(TABLE.read_text())
