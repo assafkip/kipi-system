@@ -24,9 +24,12 @@ must carry:
     Enforced by: <path>[, <path> ...]
 
 and each enforcer must exist, contain the Rule-ID, sit outside temp space, and be
-code. At least one enforcer must be WIRED: a command in a settings.json hook, a
-LaunchAgent plist, or a git-tracked test file in a repo. A Rule-ID belongs to one
-section only.
+code. A relative enforcer path names a file in the rule file's own git tree. At least
+one enforcer must be WIRED: a command in a settings.json hook ($CLAUDE_PROJECT_DIR
+expanded), a LaunchAgent plist, or a git-tracked test file. The verdict does not
+depend on the folder a tree is checked out in (ASK-4681). A Rule-ID belongs to one
+section only. A section cut short only because a new section was inserted inside it
+keeps its verdict when the cut-off tail ends a new section that passes.
 
 Modes:
   PreToolUse (Write | Edit | MultiEdit | NotebookEdit | Bash):
@@ -43,7 +46,10 @@ Modes:
     removed, and a symlinked rule file is unlinked. The removed text is saved
     under ~/.config/kipi/rule-gate/quarantine/. Missing protected hook entries
     are re-added to settings.json. Claude is told what was repaired.
-  Stop / SubagentStop: the same scan, plus a report-only scan of ~/projects.
+  Stop / SubagentStop: the same scan, plus a scan of the session's own tree (the git
+    tree holding its cwd, stopping at any nested tree), never another tree's
+    (ASK-4769). A failing file blocks the stop, at most MAX_BLOCKS times per session.
+    Outside any git tree it adds nothing to the hot set and logs a no-tree row.
   --init writes the baseline (section texts) and the debt list. --scan reports.
 
 Residual, stated: the gate, its baseline and the token minter are files this
@@ -333,24 +339,44 @@ def worktree_text(path):
 
 
 # ---------------------------------------------------------------- enforcers
-def _settings_commands():
+def _hook_commands(path):
+    try:
+        s = json.load(open(path))
+    except (OSError, ValueError):
+        return []
+    return [hk.get("command") or "" for rows in (s.get("hooks") or {}).values()
+            for r in rows or [] for hk in r.get("hooks", []) or []]
+
+
+def _project_dir(cmd, root):
+    return cmd.replace("${CLAUDE_PROJECT_DIR}", root).replace("$CLAUDE_PROJECT_DIR", root)
+
+
+def _settings_commands(fp):
+    """Hook commands that can run fp, with $CLAUDE_PROJECT_DIR expanded the way Claude Code
+    expands it at run time.
+    THE FLEET WIRES ITS HOOKS AS "$CLAUDE_PROJECT_DIR/<path>" (ASK-4681). No absolute form
+    of an enforcer ever matched that text, so a hook-enforced rule read as unwired in every
+    tree, and only the trees under ~/projects had their settings read at all. A project's
+    own settings expand with that project's root: its hooks run only in its sessions, so
+    they never wire a same-named file in another tree. User and managed settings run in
+    every project, so they expand with the root of the tree fp sits in."""
+    root = tree_root(fp)
     cmds = []
-    files = [SETTINGS, MANAGED] + glob.glob(os.path.join(HOME, "projects", "*", ".claude", "settings*.json"))
-    for f in files:
-        try:
-            s = json.load(open(f))
-        except (OSError, ValueError):
-            continue
-        for rows in (s.get("hooks") or {}).values():
-            for r in rows or []:
-                for hk in r.get("hooks", []) or []:
-                    cmds.append(hk.get("command") or "")
+    for f in (SETTINGS, MANAGED):
+        cmds += [_project_dir(c, root) if root else c for c in _hook_commands(f)]
+    projects = set(glob.glob(os.path.join(HOME, "projects", "*", ".claude", "settings*.json")))
+    if root:
+        projects |= set(glob.glob(os.path.join(root, ".claude", "settings*.json")))
+    for f in sorted(projects):
+        own = os.path.realpath(os.path.dirname(os.path.dirname(f)))
+        cmds += [_project_dir(c, own) for c in _hook_commands(f)]
     return cmds
 
 
 def wired(fp):
     forms = {fp, fp.replace(HOME, "~"), fp.replace(HOME, "$HOME")}
-    for c in _settings_commands():
+    for c in _settings_commands(fp):
         if any(f in c for f in forms):
             return True
     for pl in glob.glob(os.path.join(HOME, "Library", "LaunchAgents", "*.plist")):
@@ -359,13 +385,17 @@ def wired(fp):
                 return True
         except OSError:
             pass
-    if fp.startswith(os.path.join(HOME, "projects") + os.sep):
-        base = os.path.basename(fp).lower()
-        if base.startswith("test") or "/test/" in fp or "/tests/" in fp:
-            r = subprocess.run(["git", "-C", os.path.dirname(fp), "ls-files", "--error-unmatch", fp],
-                               capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                return True
+    # A TRACKED TEST IS WIRED WHEREVER ITS TREE SITS (ASK-4681). This allowance used to
+    # apply only under ~/projects, so on consulting PR #540 the reviewer's tree under
+    # ~/.config/kipi/review-trees deleted a correctly wired new rule after every tool call
+    # (28 cycles in round 2) while the same file survived under ~/projects. The folder a
+    # tree is checked out in says nothing about whether its test runs.
+    base = os.path.basename(fp).lower()
+    if base.startswith("test") or "/test/" in fp or "/tests/" in fp:
+        r = subprocess.run(["git", "-C", os.path.dirname(fp), "ls-files", "--error-unmatch", fp],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return True
     return False
 
 
@@ -385,7 +415,15 @@ def check_section(head, body, id_owner, here):
         return f"{rid}: 'Enforced by:' names no file"
     any_wired = False
     for p in paths:
-        fp = os.path.realpath(norm(p.split()[0]))
+        raw = norm(p.split()[0])
+        if not os.path.isabs(raw):
+            # A RELATIVE ENFORCER NAMES A FILE IN THE RULE FILE'S OWN TREE (ASK-4681), never
+            # in the session's cwd: realpath() alone resolved it against the cwd, so a
+            # session in a subfolder, or a Stop scan run from another repo, judged
+            # "automation/x.py" as a different file and removed a wired rule. Census
+            # 2026-11-13: both relative enforcers on the machine resolve against their tree.
+            raw = os.path.join(tree_root(here[0]) or os.path.dirname(here[0]), raw)
+        fp = os.path.realpath(raw)
         fp = MOVED.get(fp, fp)  # a gate moved under lock is judged as its locked copy (D33)
         if fp.startswith(TEMP_PREFIXES):
             return f"{rid}: enforcer {p} is in temp space"
@@ -402,20 +440,77 @@ def check_section(head, body, id_owner, here):
     return None
 
 
+def _lines(text):
+    return [l.rstrip() for l in (text or "").splitlines() if l.strip()]
+
+
+def _baseline_bodies(path, baseline):
+    """{heading: [body, ...]}: every install-baseline section by heading, plus this file as
+    origin's default branch holds it.
+    BY HEADING ACROSS THE WHOLE BASELINE, NOT BY THIS FILE'S PATH (PR #793 review, round
+    1): grandfathered() matches a section by hash wherever it sits, so a review-tree clone
+    (its .git is a folder, its path never walked) keeps its unchanged sections. Keyed by
+    path, the split test found no body there, and a wired insert above a JSON block
+    deleted the old section's heading and prose.
+    What this lets through, stated (round 2): a section whose lines are a strict prefix
+    of SOME same-heading baseline body, from any file, when the rest of that body ends a
+    passing new section below it. Every unwired line left is a line of one grandfathered
+    body, in that body's order, and the rest of the body sits inside a wired section.
+    grandfathered() already passes a whole copy of a baseline section in any file, by
+    hash, so this passes such a copy with a wired section inserted into it. A line that
+    is in no baseline body never passes unwired."""
+    out = {}
+    for h, b in list((baseline or {}).values()) + list(worktree_baseline(path)[0]):
+        out.setdefault(h, []).append(b)
+    return out
+
+
+def _split_off(secs, old, why, i, was_body):
+    """True when section i is its baseline text cut short by an inserted section.
+    A SECTION IS ITS HEADING PLUS ITS WHOLE BODY, so a heading inserted INSIDE an old
+    section moves the old section's tail into the new one and the old section's hash
+    changes with no word of it edited. 2026-11-13, consulting voice-loop-anywhere.md: a
+    wired section inserted above the JSON block that closed an old section made the old
+    section read as changed, with no Rule-ID, and the Stop scan blocked on it.
+    It holds only when: section i's lines are a strict prefix of its baseline body; the
+    rest of that body ends a later section; every section from i up to that one is new;
+    and that section PASSES. A tail that rode into a failing section is no move: the
+    repair removes that section, so section i must be restored with it in the same pass.
+    A tail that is gone, or an edited prefix, is still a change."""
+    cur, was = _lines(secs[i][1]), _lines(was_body)
+    if len(cur) >= len(was) or was[:len(cur)] != cur:
+        return False
+    tail = was[len(cur):]
+    for j in range(i + 1, len(secs)):
+        if old[j]:
+            return False
+        if _lines(secs[j][1])[-len(tail):] == tail:
+            return not why.get(j)
+    return False
+
+
 def failing(path, text, baseline, id_owner):
-    bad, seen_ids = [], {}
-    for head, body in sections(text):
-        if grandfathered(path, head, body, baseline):
+    secs = sections(text)
+    old = [grandfathered(path, h, b, baseline) for h, b in secs]
+    why, seen_ids = {}, {}
+    for i, (head, body) in enumerate(secs):
+        if old[i]:
             continue
         m = ID_RX.search(body)
         if m:
             if m.group(1) in seen_ids:
-                bad.append((head, f"{m.group(1)}: Rule-ID used twice in this file"))
+                why[i] = f"{m.group(1)}: Rule-ID used twice in this file"
                 continue
             seen_ids[m.group(1)] = head
-        why = check_section(head, body, id_owner, (os.path.realpath(path), head))
-        if why:
-            bad.append((head, why))
+        why[i] = check_section(head, body, id_owner, (os.path.realpath(path), head))
+    bad, bodies = [], None
+    for i, (head, _) in enumerate(secs):
+        if not why.get(i):
+            continue
+        if bodies is None:
+            bodies = _baseline_bodies(path, baseline)  # built only when a section fails
+        if not any(_split_off(secs, old, why, i, b) for b in bodies.get(head, [])):
+            bad.append((head, why[i]))
     return bad
 
 
@@ -819,12 +914,64 @@ def projects_files():
     return sorted(acc)
 
 
+def tree_root(path):
+    """The working tree holding path (a main checkout, a linked worktree or a clone): the
+    nearest folder at or above it with a .git entry. None outside any git tree."""
+    if not path:
+        return None
+    d = norm(path)
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    while True:
+        if os.path.lexists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
+
+
+# Folders walked below a tree root: the depth projects_files() gave a repo at ~/projects/<repo>.
+TREE_DEPTH = 3
+
+
+def tree_files(root):
+    """Rule files of ONE tree. A folder holding its own .git is another tree (kipi-system's
+    worktrees/ and .wt-floor-wiring/ hold other sessions' trees), so the walk stops there."""
+    acc = set()
+    for d, dirs, files in os.walk(root):
+        rel = os.path.relpath(d, root)
+        depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS and depth < TREE_DEPTH
+                   and not os.path.lexists(os.path.join(d, x, ".git"))]
+        for f in files:
+            full = os.path.join(d, f)
+            if is_rule_path(full):
+                acc.add(full)
+    return sorted(acc)
+
+
 def stop(data):
     post_tool(data)  # repairs and reports the hot set on its own channel
     baseline = load_baseline()
     if baseline is None:
         return 0
-    files = projects_files()
+    # THE STOP JUDGES ONLY THE SESSION'S OWN TREE (ASK-4769, option a). It walked all of
+    # ~/projects, so on 2026-11-13 one builder's uncommitted rule edit in
+    # ~/projects/_worktrees/ask-4641 blocked the Stop of an unrelated kipi-system session
+    # twice and turned two review rounds (PR #788 r2, PR #789 r1) UNSTATED: the blocked
+    # session could neither read nor fix another agent's tree. The tree comes from the
+    # payload cwd, the same input hot_set() uses, never from an inherited environment
+    # variable: a child `claude -p` would carry its parent's and judge the parent's tree.
+    root = tree_root(data.get("cwd"))
+    if not root:
+        # OUTSIDE ANY GIT TREE THE STOP ADDS NOTHING TO THE HOT SET, AND SAYS SO (PR #793
+        # review, round 1): a silent skip read the same as a clean scan. Walking the cwd
+        # instead would judge every non-repo folder under a container like ~/projects,
+        # which no session owns: the blast radius this scope removes.
+        log({"ts": time.time(), "mode": "stop", "verdict": "no-tree", "cwd": data.get("cwd")})
+        return 0
+    files = tree_files(root)
     bad = []
     for f in files:
         try:
@@ -846,8 +993,8 @@ def stop(data):
     if n >= MAX_BLOCKS:
         return 0
     open(counter, "w").write(str(n + 1))
-    print(json.dumps({"decision": "block", "reason": f"rule-gate: {len(bad)} project rule file(s) hold rule text "
-                      f"with no wired enforcer, first: {bad[0]}. " + HOWTO}))
+    print(json.dumps({"decision": "block", "reason": f"rule-gate: {len(bad)} rule file(s) in this session's tree "
+                      f"({root}) hold rule text with no wired enforcer, first: {bad[0]}. " + HOWTO}))
     return 0
 
 
