@@ -188,6 +188,44 @@ class StartupRatchet(Base):
         self.assertIn("skills unread", fleet_load.startup("bare", "ASK-1", rec, self.cfg, allow=self.allow))
         self.assertIn("skills 200 > 140", fleet_load.startup("big", "ASK-2", rec, self.cfg, allow=self.allow))
 
+    def test_an_unread_alert_says_unread_and_never_grew(self):
+        # PR #796 review minor 1: an unread count alerted as "grew past its ceiling", so
+        # Sana's ticket read a transcript that could not be read as a token regression.
+        rec = self.tmp / "state" / "worker-startup.jsonl"
+        self.session("bare", json.dumps({"type": "assistant", "message": {"id": "m"}}) + "\n")
+        alert = fleet_load.startup("bare", "ASK-1", rec, self.cfg, allow=self.allow)
+        self.assertIn("could not be read on ASK-1: skills unread", alert)
+        self.assertNotIn("grew", alert)
+        # A run that is over on one metric and unread on others says both, each in its
+        # own words: the growth clause names only the real breach.
+        rec2 = self.tmp / "state" / "worker-startup-2.jsonl"
+        self.session("skills_only", tx_lines(200, [], []).splitlines()[0] + "\n")
+        mixed = fleet_load.startup("skills_only", "ASK-2", rec2, self.cfg, allow=self.allow)
+        grew, _, unread = mixed.partition("could not be read on ASK-2: ")
+        self.assertIn("grew past its ceiling on ASK-2: skills 200 > 140", grew)
+        self.assertNotIn("unread", grew)
+        self.assertIn("deferred_tools unread", unread)
+
+    def test_mcp_servers_unread_is_reported_and_a_real_zero_is_not(self):
+        # PR #796 review minor 3: mcp_servers started at 0, so a transcript that carried
+        # no server record passed the tightest ceiling (0) as a clean zero.
+        ceiling = {"skills": 140, "deferred_tools": 20, "mcp_servers": 0}
+        p = self.cfg / "projects" / "-tree"
+        self.session("bare", json.dumps({"type": "assistant", "message": {"id": "m"}}) + "\n")
+        bare = fleet_load.startup_counts(p / "bare.jsonl")
+        self.assertIsNone(bare["mcp_servers"])
+        self.assertIn("mcp_servers unread", fleet_load.over_ceiling(bare, ceiling))
+        # A real zero: the measured lean run's deferred_tools_delta lists no MCP server.
+        self.session("lean", LEAN)
+        lean = fleet_load.startup_counts(p / "lean.jsonl")
+        self.assertEqual(lean["mcp_servers"], 0)
+        self.assertFalse([o for o in fleet_load.over_ceiling(lean, ceiling) if o.startswith("mcp_servers")])
+        # An instructions record alone is a read: it names a server, so the count is not unread.
+        self.session("instr", json.dumps({"type": "attachment", "attachment": {
+            "type": "mcp_instructions_delta", "addedNames": ["linear"], "addedBlocks": ["## x"],
+            "removedNames": []}}) + "\n")
+        self.assertEqual(fleet_load.startup_counts(p / "instr.jsonl")["mcp_servers"], 1)
+
     def test_no_transcript_no_row(self):
         rec = self.tmp / "state" / "worker-startup.jsonl"
         self.assertEqual(fleet_load.startup("missing", "ASK-1", rec, self.cfg, allow=self.allow), "")
