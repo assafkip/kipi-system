@@ -9,7 +9,7 @@ that file into launch arguments, so the worker does not keep a second copy of th
              the machine knows about whose name the job's row does not list. Prints
              nothing when there is nothing to pass, so the caller adds no --settings.
   mcp-config --job J                             the strict MCP config for --mcp-config.
-  startup    --session SID --ticket T --record OUT
+  startup    --session SID --ticket T --record OUT [--job J]
              reads the run's own transcript, reports what loaded at start-up (skill
              count, deferred tool names, MCP servers) against the row's
              startup_ceiling, appends one row to OUT, and prints ONE alert line only
@@ -136,7 +136,9 @@ def startup_counts(transcript: Path) -> dict:
             out["deferred_tools"] = len(a.get("addedNames") or [])
             servers = set() if servers is None else servers
             for k in ("pendingMcpServers", "needsAuthMcpServers", "failedMcpServers"):
-                servers |= set(a.get(k) or [])
+                # The CLI writes failed entries as {"name", "errorCode", "error"} objects; set()
+                # on them raised TypeError and lost the whole row (14 of 400 transcripts, 2026-11-13).
+                servers |= {v.get("name") if isinstance(v, dict) else v for v in a.get(k) or []}
             servers |= {n.split("__")[1] for n in a.get("addedNames") or [] if n.startswith("mcp__") and n.count("__") >= 2}
         elif t == "mcp_instructions_delta":
             servers = (set() if servers is None else servers) | set(a.get("addedNames") or [])
@@ -198,7 +200,7 @@ def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "work
     unread = [o for o in new if _breach(o)[1] == "unread"]
     said = ([f"grew past its ceiling on {ticket}: {'; '.join(grew)}"] if grew else []) + \
            ([f"could not be read on {ticket}: {'; '.join(unread)}"] if unread else [])
-    return f"worker start-up {' | '.join(said)} (fleet-load-allowlist.json worker.startup_ceiling, ASK-4756)"
+    return f"{job} start-up {' | '.join(said)} (fleet-load-allowlist.json {job}.startup_ceiling, ASK-4756)"
 
 
 def main(argv: list[str] | None = None) -> int:

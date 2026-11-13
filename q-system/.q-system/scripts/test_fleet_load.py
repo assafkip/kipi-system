@@ -226,6 +226,29 @@ class StartupRatchet(Base):
             "removedNames": []}}) + "\n")
         self.assertEqual(fleet_load.startup_counts(p / "instr.jsonl")["mcp_servers"], 1)
 
+    def test_a_failed_server_entry_in_the_cli_shape_is_counted(self):
+        # The CLI writes failedMcpServers entries as objects ({"name", "errorCode", "error"};
+        # 14 of 400 real transcripts on 2026-11-13). set() on them raised TypeError, so the
+        # run's whole row was lost in the full-launch fallback the ratchet exists to catch.
+        rec = [json.loads(x) for x in LEAN.splitlines()]
+        rec[1]["attachment"]["failedMcpServers"] = [
+            {"name": "apify", "errorCode": "CONNECT_TIMEOUT", "error": "MCP server apify connection timed out after 60000ms"}]
+        self.session("failed", "\n".join(json.dumps(r) for r in rec) + "\n")
+        counts = fleet_load.startup_counts(self.cfg / "projects" / "-tree" / "failed.jsonl")
+        self.assertEqual(counts["mcp_servers"], 1)
+        self.assertIn("mcp_servers 1 > 0", fleet_load.over_ceiling(counts, {"mcp_servers": 0}))
+
+    def test_the_alert_names_the_job_it_measured(self):
+        # PR #797 review minor 2: the line said "worker" for any --job, pointing Sana at the wrong row.
+        d = json.loads(self.allow.read_text())
+        d["jobs"]["review"]["startup_ceiling"] = {"skills": 60}
+        self.allow.write_text(json.dumps(d))
+        self.session("big", tx_lines(200, [], []))
+        alert = fleet_load.startup("big", "ASK-9", self.tmp / "s.jsonl", self.cfg, job="review", allow=self.allow)
+        self.assertTrue(alert.startswith("review start-up grew past its ceiling on ASK-9"), alert)
+        self.assertIn("review.startup_ceiling", alert)
+        self.assertNotIn("worker", alert)
+
     def test_no_transcript_no_row(self):
         rec = self.tmp / "state" / "worker-startup.jsonl"
         self.assertEqual(fleet_load.startup("missing", "ASK-1", rec, self.cfg, allow=self.allow), "")
