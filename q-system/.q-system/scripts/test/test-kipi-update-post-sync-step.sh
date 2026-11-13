@@ -240,6 +240,39 @@ done
 echo "$OUT" | grep -qE "Updated: +3" || fail "case 9: summary does not count three instances: $OUT"
 echo "PASS 9: a step that reads stdin leaves every later instance synced"
 
+# ---------------- 10. a step that hangs must not hold the sweep ----------------
+# PR #787 review: the step ran with no wall clock, so one hung step stalled the
+# sweep and every later instance in the registry never synced. This is NOT the
+# policing PR #785 removed -- nothing here limits what the step writes. It stops
+# one instance's step from reaching instances it has nothing to do with.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && sleep 45"
+START="$SECONDS"
+OUT="$(KIPI_POST_SYNC_TIMEOUT=3 run "$W")"
+ELAPSED="$((SECONDS - START))"
+rolled_back "$OUT" || fail "case 10 should refuse a step that runs past its deadline: $OUT"
+echo "$OUT" | grep -qF "post-sync step exceeded 3s and was killed" ||
+  fail "case 10 did not name the deadline: $OUT"
+[ "$ELAPSED" -lt 40 ] || fail "case 10 waited ${ELAPSED}s on a 3s deadline"
+synced_commit "$W/other" || fail "case 10: the hung step stopped the rest of the sweep: $OUT"
+echo "PASS 10: a step past its deadline is killed, named, and the sweep continues"
+
+# ---------------- 11. a background child of a FINISHED step ----------------
+# The deadline alone does not cover this: the step exits 0 well inside it, and
+# the sweep still waited, because `$(...)` waits for the write end of the pipe
+# to close and the grandchild holds it open. Measured before the fix: 27s for a
+# step whose own work took under a second. The output goes to a file for this.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && sh -c 'sleep 25 &'"
+START="$SECONDS"
+OUT="$(KIPI_POST_SYNC_TIMEOUT=60 run "$W" --only needy)"
+ELAPSED="$((SECONDS - START))"
+rolled_back "$OUT" && fail "case 11: the step exited 0 and should be accepted: $OUT"
+synced_commit "$W/needy" || fail "case 11: needy never synced: $OUT"
+[ "$ELAPSED" -lt 20 ] ||
+  fail "case 11 waited ${ELAPSED}s on a background child of a step that had exited"
+echo "PASS 11: a background child of a finished step does not hold the sweep"
+
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
 # ---------------- mutants: one per decision point ----------------
@@ -263,7 +296,7 @@ PY
 mutant "declaration ignored" \
   '[ -f "$path/$POST_SYNC_DECL" ]; then' '[ -f "$path/$POST_SYNC_DECL.off" ]; then'
 mutant "step exit code ignored" \
-  'bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" </dev/null 2>&1; true)"; then'
+  '"$POST_SYNC_TIMEOUT" "$PS_OUT" || ps_rc=$?' '"$POST_SYNC_TIMEOUT" "$PS_OUT" || ps_rc=0'
 mutant "dry run executes the step" \
   'elif [ "$DRY_RUN" = "--dry-run" ]; then
         echo "    post-sync step (dry run' 'elif false; then
@@ -277,7 +310,32 @@ mutant "one-command check loosened" \
 mutant "summary stops naming the step" \
   '${POST_SYNC_FAILED_STEP:+ [post-sync step failed: $POST_SYNC_FAILED_STEP]}' ''
 mutant "step keeps the loop's stdin" \
-  'bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" 2>&1)"; then'
+  '( cd "$repo" && exec bash -c "$cmd" ) </dev/null >"$out" 2>&1 &' \
+  '( cd "$repo" && exec bash -c "$cmd" ) >"$out" 2>&1 &'
+# The deadline. Mutated by dropping the OVERRIDE rather than the comparison: a
+# mutant with no deadline at all would HANG the mutation run instead of failing
+# it, and a mutant that cannot finish is not a kill.
+mutant "no wall clock on the step" \
+  'POST_SYNC_TIMEOUT="${KIPI_POST_SYNC_TIMEOUT:-600}"' 'POST_SYNC_TIMEOUT=600'
+# The file. Reverting to a command substitution makes the sweep wait on a
+# background child of a finished step, which case 11 times.
+#
+# Both halves hold single quotes, so they are built in quoted heredocs rather
+# than inline. The inline form needed '"'"' four times per anchor and shipped
+# with one closing quote missing, which made the WHOLE suite a parse error
+# (bash -n: "unexpected EOF while looking for matching `''") rather than a
+# failing assertion. A test file that cannot be parsed reports nothing at all.
+PS_SUB_OLD="$(cat <<'EOS'
+ps_run_step "$path" "$POST_SYNC_STEP" "$POST_SYNC_TIMEOUT" "$PS_OUT" || ps_rc=$?
+        sed 's/^/      /' "$PS_OUT"
+EOS
+)"
+PS_SUB_NEW="$(cat <<'EOS'
+POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" </dev/null 2>&1)" || ps_rc=$?
+        printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+EOS
+)"
+mutant "step output captured in a command substitution" "$PS_SUB_OLD" "$PS_SUB_NEW"
 mutant "config staging widened to the whole tree" \
   'git -C "$target" add -u -- "$scope/" || return 1' 'git -C "$target" add -u || return 1'
 echo "ALL PASS"

@@ -115,6 +115,50 @@ fi
 # synced over or deleted.
 POST_SYNC_DECL=".kipi-post-sync"
 POST_SYNC_FAILED_STEP=""
+# The step's wall clock, in seconds. The override exists so the suite can prove
+# the deadline in 3s instead of 600; it moves a timeout, never a check.
+POST_SYNC_TIMEOUT="${KIPI_POST_SYNC_TIMEOUT:-600}"
+
+# THE STEP IS THE INSTANCE'S OWN CODE AND NOTHING HERE LIMITS WHAT IT WRITES
+# (PR #785 settled that). This protects the OTHER instances from it, which is a
+# different question: one instance's step must not be able to stop the sweep
+# that has not reached them yet.
+#
+#   NO DEADLINE. A step that hangs held the sweep forever, so every later
+#   instance in the registry never synced, with no bound and no message.
+#
+#   A COMMAND SUBSTITUTION. `$(...)` waits for the write end of the pipe to
+#   close, and a background child the step leaves behind holds it open after
+#   the step itself has exited 0. Measured: 3s of work, 27s of waiting. A file
+#   has no such wait, which is why the output goes to one.
+#
+# stdin stays closed for the reason PR #785 round 1 found: this loop reads the
+# registry from stdin, so a step that read it ate the remaining instances.
+#
+# Only the direct child is signalled. This shell has no job control, so it has
+# no process group of its own to kill; an orphaned grandchild is instead made
+# harmless by the file redirection above, which is the half that actually
+# unblocks the sweep.
+ps_run_step() {  # $1 repo, $2 command, $3 seconds, $4 output file -> rc, 124 = timed out
+  local repo="$1" cmd="$2" limit="$3" out="$4" pid waited rc
+  ( cd "$repo" && exec bash -c "$cmd" ) </dev/null >"$out" 2>&1 &
+  pid=$!
+  waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$limit" ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      sleep 2
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  rc=0
+  wait "$pid" || rc=$?
+  return "$rc"
+}
 
 # Instance-owned subtrees: the skeleton never overwrites these, because each
 # instance authors its own. This list was duplicated across four sites (the
@@ -3553,16 +3597,22 @@ print("\n".join(mod.EXTRA_WATCHED))
       else
         echo "    Running post-sync step: $POST_SYNC_STEP"
         # Own stdout and stderr both shown: the step's message is the diagnosis.
-        # stdin closed: this loop reads the registry from stdin, so a step that read
-        # it (ssh, git push over ssh, cat) ate the remaining instances and the run
-        # still exited 0 (PR #785 round 1).
-        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then
-          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
-          echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
-          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
+        # Under a deadline, with stdin closed, and into a FILE: see ps_run_step
+        # for what each of those three protects.
+        PS_OUT="$(mktemp)"
+        ps_rc=0
+        ps_run_step "$path" "$POST_SYNC_STEP" "$POST_SYNC_TIMEOUT" "$PS_OUT" || ps_rc=$?
+        sed 's/^/      /' "$PS_OUT"
+        rm -f -- "$PS_OUT"
+        if [ "$ps_rc" != "0" ]; then
+          if [ "$ps_rc" = "124" ]; then
+            echo "    ERROR: post-sync step exceeded ${POST_SYNC_TIMEOUT}s and was killed: $POST_SYNC_STEP"
+            POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (exceeded ${POST_SYNC_TIMEOUT}s)"
+          else
+            echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
+            POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
+          fi
           CONFIG_FAILED=1
-        else
-          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
         fi
       fi
     fi
