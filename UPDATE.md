@@ -89,7 +89,9 @@ Trust boundary:
 
 - The step is the instance's own code, the same trust as its pre-commit hook, which already runs arbitrary instance code at that moment.
 - The updater does not limit or undo what a step writes. The config commit stages only `.claude/` and `plugins/`, so a write elsewhere is not in the sync's commit.
-- A failed step rolls back what the SYNC wrote, not what the step wrote.
+- A failed step abandons the instance through the existing rollback, which resets the synced paths (`.claude/`, `plugins/` and the subtree prefix) to HEAD. It does not track what the step wrote.
+- The updater does not time the step out, so a step must not leave a background child holding the run.
+- A step must not write under `.claude/`: the instance's integrity tripwire reverts it.
 
 ## Pushing Changes Back from an Instance
 

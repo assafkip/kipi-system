@@ -224,6 +224,22 @@ $(diff <(echo "$OA") <(echo "$OB"))"
   echo "PASS 8: with no declaration the run is identical to origin/main's updater"
 fi
 
+# ---------------- 9. a step that reads stdin must not eat the instance loop ----------------
+# PR #785 round 1: the instance loop reads the registry from stdin, so a step
+# that read stdin (ssh, git push over ssh, cat) consumed the remaining rows. The
+# other instances were never processed and the run still exited 0.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && cat >/dev/null"
+mk_inst "$W/third" "" no
+printf '{"instances":[{"name":"needy","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"other","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"third","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
+  "$W/needy" "$W/other" "$W/third" > "$W/skel/instance-registry.json"
+OUT="$(run "$W")"
+for inst in needy other third; do
+  synced_commit "$W/$inst" || fail "case 9: $inst was not synced after a step read stdin: $OUT"
+done
+echo "$OUT" | grep -qE "Updated: +3" || fail "case 9: summary does not count three instances: $OUT"
+echo "PASS 9: a step that reads stdin leaves every later instance synced"
+
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
 # ---------------- mutants: one per decision point ----------------
@@ -247,7 +263,7 @@ PY
 mutant "declaration ignored" \
   '[ -f "$path/$POST_SYNC_DECL" ]; then' '[ -f "$path/$POST_SYNC_DECL.off" ]; then'
 mutant "step exit code ignored" \
-  'bash -c "$POST_SYNC_STEP" 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" 2>&1; true)"; then'
+  'bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" </dev/null 2>&1; true)"; then'
 mutant "dry run executes the step" \
   'elif [ "$DRY_RUN" = "--dry-run" ]; then
         echo "    post-sync step (dry run' 'elif false; then
@@ -260,6 +276,8 @@ mutant "one-command check loosened" \
   '-ne 1 ]; then' '-ne 2 ]; then'
 mutant "summary stops naming the step" \
   '${POST_SYNC_FAILED_STEP:+ [post-sync step failed: $POST_SYNC_FAILED_STEP]}' ''
+mutant "step keeps the loop's stdin" \
+  'bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" 2>&1)"; then'
 mutant "config staging widened to the whole tree" \
   'git -C "$target" add -u -- "$scope/" || return 1' 'git -C "$target" add -u || return 1'
 echo "ALL PASS"

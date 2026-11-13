@@ -3553,7 +3553,10 @@ print("\n".join(mod.EXTRA_WATCHED))
       else
         echo "    Running post-sync step: $POST_SYNC_STEP"
         # Own stdout and stderr both shown: the step's message is the diagnosis.
-        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" 2>&1)"; then
+        # stdin closed: this loop reads the registry from stdin, so a step that read
+        # it (ssh, git push over ssh, cat) ate the remaining instances and the run
+        # still exited 0 (PR #785 round 1).
+        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" </dev/null 2>&1)"; then
           printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
           echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
           POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
