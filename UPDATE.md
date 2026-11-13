@@ -82,9 +82,45 @@ config half, for an instance whose own commit-time check needs a derived
 artifact refreshed first. A non-zero exit, a missing command or a file with
 more than one command line abandons that instance through the normal rollback,
 prints the step's own output and names the step in the summary. `--dry-run`
-prints the command and does not run it. The step is held to a rule, checked with git's own tree snapshots (no `git status` text is parsed): it may add untracked files and write under `plugins/` (the config
-half it precedes). It must not change any other file that existed before it, must not write under `.claude/` (the integrity tripwire is
-sanctioned before the step runs), must not touch the index, and must not move a git ref. A step that does, or that fails, is refused and the instance is put back as it was: tracked content, untracked set, the index down to its `assume-unchanged` and `skip-worktree` flags, any ref the step created or deleted, and the directories the step created. A ref the step MOVED (a commit it made) is named in the output and left as the step set it, never rewound, the same posture the instance-level rollback already takes toward a commit that landed. `.claude/` is covered down to its gitignored paths (`settings.local.json`, `plans/`), which a plain `git add -A` snapshot skips. There is no time limit on the step.
+prints the command and does not run it.
+
+**How it is run.** With its stdin closed, its output written to a file, and a
+deadline of 600 seconds (`KIPI_POST_SYNC_TIMEOUT` overrides it; it moves a
+timeout, never a check). Each of those protects instances that have nothing to
+do with this one: the instance loop reads the registry from stdin, so a step
+reading stdin ate the remaining records and those instances were skipped while
+the run reported `Failed 0`; a command substitution waits for a background
+grandchild of a finished step to close the pipe; and with no deadline one hung
+step stalled the whole sweep. A step past its deadline is killed, named with its
+limit, and the sweep moves to the next instance.
+
+**The rule it is held to**, checked with git's own tree snapshots (no `git status`
+text is parsed): it may add untracked files and write under `plugins/` (the
+config half it precedes). It must not change any other file that existed before
+it, must not write under `.claude/` (the integrity tripwire is sanctioned before
+the step runs), must not touch the index, must not move a git ref, and must not
+move `HEAD`.
+
+**What a refusal or a failure puts back:** tracked content, the untracked set,
+the index down to its `assume-unchanged` and `skip-worktree` flags, `HEAD`, any
+ref the step created or deleted, and the directories the step created. `.claude/`
+is covered down to its gitignored paths (`settings.local.json`, `plans/`), which
+a plain `git add -A` snapshot skips.
+
+Two things are reported and deliberately NOT put back, because putting them back
+would cost more than the damage:
+
+- A ref the step MOVED (a commit it made) is named and left as the step set it,
+  the same posture the instance-level rollback already takes toward a commit that
+  landed. `HEAD` is still put back, which is a pointer write and not a rewind.
+- A gitignored file OUTSIDE `.claude/` that the step changed or removed is named,
+  the sync is refused, and the output says it was not restored. Restoring it
+  needs a content snapshot of every ignored file: measured 2026-11-13, that is
+  567.6 MB across 17,014 files in the consulting instance, hashed into `.git`
+  twice per sync, against 0.06s to `lstat` the same set. So these are detected by
+  stat (mode, size, mtime in nanoseconds) rather than by content. The updater's
+  older instance-level rollback never restored an ignored file either
+  (`git ls-files --others`, with no `-i`).
 An accepted step's snapshot is held until the config commit lands: if that commit is refused, the step is undone too, because the updater's older instance-level rollback reaches only `q-system/`, `.claude/` and `plugins/`.
 No file means no change. Test:
 `test-kipi-update-post-sync-step.sh`.
