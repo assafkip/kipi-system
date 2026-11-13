@@ -41,6 +41,7 @@ def tx_lines(skills: int, mcp_names: list[str], instr: list[str], pending: list[
 
 
 LEAN = tx_lines(106, [], [])
+LEAN_AFTER_SYNC = tx_lines(121, [], [])  # 2026-11-13: +15 account skills no enabledPlugins key reaches
 FULL = tx_lines(345, [f"mcp__linear__t{i}" for i in range(300)] + [f"mcp__claude_ai_Gmail__t{i}" for i in range(304)],
                 [f"srv{i}" for i in range(14)], pending=["apify", "playwright"])
 
@@ -62,6 +63,9 @@ class Base(unittest.TestCase):
         pj = self.cfg / "skills" / "last30days" / ".claude-plugin"
         pj.mkdir(parents=True)
         (pj / "plugin.json").write_text(json.dumps({"name": "last30days", "version": "2.9.5"}))
+        sp = self.cfg / "plugins" / "synced" / "acct_org" / "dab4db2f" / ".claude-plugin"
+        sp.mkdir(parents=True)
+        (sp / "plugin.json").write_text(json.dumps({"name": "small-business", "version": "1.35.2"}))
         self.allow = self.tmp / "allow.json"
         self.allow.write_text(fleet_load.ALLOW.read_text())
 
@@ -75,7 +79,7 @@ class LeanSettings(Base):
     def test_every_source_is_read(self):
         self.assertEqual(fleet_load.known_plugins(self.tree, self.cfg), {
             "kipi-core@kipi", "prd-os@kipi", "posthog@claude-plugins-official", "vercel@claude-plugins-official",
-            "frontend-design@claude-code-plugins", "last30days@skills-dir"})
+            "frontend-design@claude-code-plugins", "last30days@skills-dir", "small-business@synced"})
 
     def test_off_is_the_complement_of_the_row_and_the_guard_survives(self):
         guard = json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "g"}]}]},
@@ -85,12 +89,14 @@ class LeanSettings(Base):
         self.assertEqual(doc["permissions"], {"deny": ["Bash(rm -rf *)"]})
         self.assertEqual(doc["enabledPlugins"], {
             "posthog@claude-plugins-official": False, "vercel@claude-plugins-official": False,
-            "frontend-design@claude-code-plugins": False, "last30days@skills-dir": False})
+            "frontend-design@claude-code-plugins": False, "last30days@skills-dir": False,
+            "small-business@synced": False})
 
     def test_nothing_to_pass_prints_nothing(self):
         for f in (self.cfg / "plugins" / "installed_plugins.json", self.cfg / "settings.json",
                   self.tree / ".claude" / "settings.json",
-                  self.cfg / "skills" / "last30days" / ".claude-plugin" / "plugin.json"):
+                  self.cfg / "skills" / "last30days" / ".claude-plugin" / "plugin.json",
+                  self.cfg / "plugins" / "synced" / "acct_org" / "dab4db2f" / ".claude-plugin" / "plugin.json"):
             f.unlink()
         self.assertEqual(fleet_load.lean_settings("worker", self.tree, "", self.cfg, self.allow), "")
 
@@ -128,6 +134,8 @@ class StartupRatchet(Base):
         self.session("full", FULL)
         p = self.cfg / "projects" / "-tree"
         self.assertEqual(fleet_load.over_ceiling(fleet_load.startup_counts(p / "lean.jsonl"), ceiling), [])
+        self.session("after", LEAN_AFTER_SYNC)
+        self.assertEqual(fleet_load.over_ceiling(fleet_load.startup_counts(p / "after.jsonl"), ceiling), [])
         self.assertEqual(len(fleet_load.over_ceiling(fleet_load.startup_counts(p / "full.jsonl"), ceiling)), 3)
 
     def test_the_line_is_inclusive_and_one_past_it_fails(self):

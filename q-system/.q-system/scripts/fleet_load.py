@@ -65,10 +65,10 @@ def _load(p: Path) -> dict:
 def known_plugins(tree: Path, cfg: Path) -> set[str]:
     """Every plugin id (name@marketplace) the CLI could load for a session in `tree`.
 
-    Three sources, each seen in `claude plugin list --json` on 2026-11-12: the install
-    records, the enabledPlugins keys of the user and tree settings, and a skills-dir
-    plugin (a ~/.claude/skills/<dir> holding .claude-plugin/plugin.json, listed as
-    <name>@skills-dir). The CLI itself is not called: the worker's test suites stub
+    Four sources, each seen in `claude plugin list --json` on 2026-11-12/13: the install
+    records, the enabledPlugins keys of the user and tree settings, a skills-dir plugin
+    (a ~/.claude/skills/<dir> holding .claude-plugin/plugin.json, listed as
+    <name>@skills-dir), and an account-synced plugin (<name>@synced). The CLI itself is not called: the worker's test suites stub
     `claude` on PATH, and a stray stub call would record argv and commit.
     """
     ids = set(_load(cfg / "plugins" / "installed_plugins.json").get("plugins", {}))
@@ -79,6 +79,15 @@ def known_plugins(tree: Path, cfg: Path) -> set[str]:
         for pj in sorted(skills.glob("*/.claude-plugin/plugin.json")):
             name = _load(pj).get("name") or pj.parent.parent.name
             ids.add(f"{name}@skills-dir")
+    # Account-synced plugins (<name>@synced, scope "synced"): pushed by an account sync
+    # under plugins/synced/<account>/<dir>/. Four appeared on 2026-11-13 between two
+    # measurements ten minutes apart and took the lean listing from 106 skills to 164;
+    # the start-up ratchet is what caught it. A fifth source would show up the same way.
+    synced = cfg / "plugins" / "synced"
+    if synced.is_dir():
+        for pj in sorted(synced.glob("*/*/.claude-plugin/plugin.json")):
+            name = _load(pj).get("name") or pj.parent.parent.name
+            ids.add(f"{name}@synced")
     return ids
 
 
