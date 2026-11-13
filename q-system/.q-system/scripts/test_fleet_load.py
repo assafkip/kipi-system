@@ -170,6 +170,17 @@ class StartupRatchet(Base):
         self.assertEqual([r["ticket"] for r in rows], ["ASK-1", "ASK-2", "ASK-3", "ASK-4"])
         self.assertEqual(rows[2]["over"], [])
 
+    def test_a_new_breach_alerts_while_an_old_one_persists(self):
+        rec = self.tmp / "state" / "worker-startup.jsonl"
+        self.session("skills", tx_lines(200, [], []))
+        self.session("skills2", tx_lines(210, [], []))
+        self.session("plus_mcp", tx_lines(200, ["mcp__linear__t1"], ["linear"]))
+        self.assertIn("skills 200 > 140", fleet_load.startup("skills", "ASK-1", rec, self.cfg, allow=self.allow))
+        self.assertEqual(fleet_load.startup("skills2", "ASK-2", rec, self.cfg, allow=self.allow), "")
+        alert = fleet_load.startup("plus_mcp", "ASK-3", rec, self.cfg, allow=self.allow)
+        self.assertIn("mcp_servers 1 > 0", alert)
+        self.assertNotIn("skills", alert)
+
     def test_no_transcript_no_row(self):
         rec = self.tmp / "state" / "worker-startup.jsonl"
         self.assertEqual(fleet_load.startup("missing", "ASK-1", rec, self.cfg, allow=self.allow), "")

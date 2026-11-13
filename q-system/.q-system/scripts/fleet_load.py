@@ -13,7 +13,7 @@ that file into launch arguments, so the worker does not keep a second copy of th
              reads the run's own transcript, reports what loaded at start-up (skill
              count, deferred tool names, MCP servers) against the row's
              startup_ceiling, appends one row to OUT, and prints ONE alert line only
-             when the run crosses the ceiling and the previous row did not.
+             when a metric crosses the ceiling that the previous row did not show over.
 
 Exit 0 on success; 1 on a file it cannot read or parse (the caller logs it and falls
 back to the full launch, which costs tokens and loses no gate); 2 on a row this code
@@ -158,21 +158,25 @@ def startup(session: str, ticket: str, record: Path, cfg: Path, job: str = "work
         return ""  # no transcript, no row: same rule as run_tokens.py --record
     counts = startup_counts(hits[0])
     over = over_ceiling(counts, job_row(job, allow).get("startup_ceiling") or {})
-    prev_over = False
+    # The latch is the SET of metrics over, read back from this file's last row (this
+    # function is the file's reader as well as its writer). A boolean latch let a run
+    # already over on skills hide a later MCP server breach (PR #792 review round 2).
+    prev_over: set[str] = set()
     if record.exists():
         rows = [ln for ln in record.read_text().splitlines() if ln.strip()]
         if rows:
             try:
-                prev_over = bool(json.loads(rows[-1]).get("over"))
-            except ValueError:
-                prev_over = False
+                prev_over = {o.split()[0] for o in json.loads(rows[-1]).get("over") or []}
+            except (ValueError, AttributeError, IndexError):
+                prev_over = set()
     row = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "job": job,
            "ticket": ticket, "session": session, **counts, "over": over}
     record.parent.mkdir(parents=True, exist_ok=True)
     with record.open("a") as f:
         f.write(json.dumps(row) + "\n")
-    if over and not prev_over:  # alert on the state change, once (founder-notifications.md)
-        return f"worker start-up grew past its ceiling on {ticket}: {'; '.join(over)} (fleet-load-allowlist.json worker.startup_ceiling, ASK-4756)"
+    new = [o for o in over if o.split()[0] not in prev_over]
+    if new:  # alert on the state change, once per newly breached metric (founder-notifications.md)
+        return f"worker start-up grew past its ceiling on {ticket}: {'; '.join(new)} (fleet-load-allowlist.json worker.startup_ceiling, ASK-4756)"
     return ""
 
 
