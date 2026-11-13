@@ -1131,9 +1131,16 @@ def demote_base_findings(root, errors, on_base, base, notes):
     base could not be read, and then nothing is demoted: fail closed."""
     if on_base is None:
         return
+    # The ledger path is normalised too. Under the pre-push hook `root` is a
+    # temp worktree, but the ledger resolves through --git-common-dir to the
+    # MAIN checkout, so a finding that embeds the ledger path never matched the
+    # base's copy (export_base puts it at <root>/.prd-os/) and refused every
+    # push for a finding main already had (PR #804 review, major 1).
+    ledger = str(spillover_ledger_path(root))
     keep = []
     for e in errors:
-        if e.replace(str(root), "<root>") in on_base:
+        norm = e.replace(ledger, "<root>/.prd-os/spillover.jsonl").replace(str(root), "<root>")
+        if norm in on_base:
             notes.append(f"ON THE BASE ALREADY ({base}), not this change's: {e.splitlines()[0]}")
         else:
             keep.append(e)

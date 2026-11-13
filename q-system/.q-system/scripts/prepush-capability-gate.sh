@@ -94,12 +94,12 @@ for sha in "${shas[@]}"; do
     printf '%s\n' "$out" | grep -E '^capability-gate: |SKIPPED' >&2 || true
   else
     printf '%s\n' "$out" >&2
-    echo "capability pre-push: REFUSED ${sha:0:12} (gate exit $rc). Fix the RED lines above." >&2
+    echo "capability pre-push: REFUSED ${sha:0:12} (gate exit $rc). Fix what the gate printed above." >&2
     # The declared_inert hint fits one RED class only; any other refusal
     # (an undeclared test, a gate that could not run) gets no misleading hint.
     case "$out" in
       *"RED: inert-engine:"*)
-        echo "capability pre-push: an inert engine needs a caller on a wiring surface, or a declared_inert entry under q-system/.q-system/capability/declared_inert/ citing an OPEN spillover id." >&2 ;;
+        echo "capability pre-push: an inert engine needs a caller on a wiring surface, or a declared_inert entry under q-system/.q-system/capability/declared_inert/ citing a spillover id that is not resolved (open or promoted)." >&2 ;;
     esac
     refused=1
   fi
