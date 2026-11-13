@@ -122,6 +122,23 @@ def answered(t: dict, status: Path) -> dict | None:
     return hits[-1] if hits else None
 
 
+ASKED = []   # tickets whose ask landed this run: the one send fires once after the loop
+
+
+def start_sender(ladder: list) -> None:
+    """Start cap-ladder's ONE sender, detached, after the sweep filed its asks.
+
+    --founder-ask only records (PR #778 RCA rca-founder-ask-send-three-rounds-2026-11-12.md);
+    this is the trigger that makes a new ask reach his phone now and not at 04:40,
+    and it makes the sweep's N asks one message. Detached and self-bounded, so a hung
+    chief can neither fail nor delay this sweep. A failed start is the nightly run's to retry."""
+    try:
+        subprocess.Popen(ladder + ["--send-asks"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 def route(t: dict, g, apply: bool, ladder: list, sync: list, status: Path) -> str:
     ident = t["identifier"]
     hit = asks_founder(t)
@@ -132,6 +149,8 @@ def route(t: dict, g, apply: bool, ladder: list, sync: list, status: Path) -> st
         p = subprocess.run(ladder + ["--founder-ask", ident, "founder-decision", ask_text(t)],
                            capture_output=True, text=True, timeout=60)
         said = (p.stdout or p.stderr).strip()[:160]
+        if p.returncode == 0:
+            ASKED.append(ident)
         return f"{ident}: asks a founder question ({hit!r}); " + (said if p.returncode == 0 else f"ask NOT listed ({said})")
     if done:
         why = (f"**Relabelled owner:sana by owner-assaf-route.py (ASK-3961).** The founder answered this "
@@ -181,6 +200,8 @@ def main(argv=None) -> int:
     rows = tickets(g)
     for t in rows:
         print("owner-assaf-route: " + route(t, g, args.apply, ladder, sync, status))
+    if ASKED:
+        start_sender(ladder)
     print(f"owner-assaf-route: {len(rows)} owner:assaf ticket(s){'' if args.apply else ' (dry)'}")
     return 0
 

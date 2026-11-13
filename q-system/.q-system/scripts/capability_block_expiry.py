@@ -413,6 +413,23 @@ def _seen(identifier: str, now, apply: bool, forget: bool = False):
     return now
 
 
+_ASKED = []   # asks that landed this run: the one send fires once after the sweep
+
+
+def _start_sender() -> None:
+    """Start cap-ladder's ONE sender, detached, after the sweep filed its asks.
+
+    --founder-ask only records (PR #778 RCA rca-founder-ask-send-three-rounds-2026-11-12.md);
+    this makes a new ask reach his phone now and not at 04:40, and makes the sweep's
+    N asks one message. Detached and self-bounded: a hung chief cannot fail or delay
+    this sweep. A failed start is the nightly cap-ladder run's to retry."""
+    try:
+        subprocess.Popen([sys.executable, LADDER_SCRIPT, "--send-asks"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 def _founder_ask(identifier: str, ask: str) -> tuple[bool, str]:
     """Hand one ask to the morning status file through its ONE writer,
     cap-ladder.py --founder-ask (ASK-3824). Never appended here: two writers on
@@ -421,6 +438,8 @@ def _founder_ask(identifier: str, ask: str) -> tuple[bool, str]:
         return False, "cap-ladder.py is not on this tree, so the ask has no writer yet"
     p = subprocess.run([sys.executable, LADDER_SCRIPT, "--founder-ask", identifier, "founder-decision", ask],
                        capture_output=True, text=True, timeout=60)
+    if p.returncode == 0:
+        _ASKED.append(identifier)
     return p.returncode == 0, (p.stdout or p.stderr).strip()
 
 
@@ -1063,6 +1082,13 @@ def clear_block(identifier: str, probe: str, evidence: str,
 
 
 def main(argv=None) -> int:
+    rc = _main(argv)
+    if _ASKED:
+        _start_sender()
+    return rc
+
+
+def _main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--repo-project", default=os.environ.get("REPO_PROJECT") or None,
                     help="only re-test blocks in this Linear project (default $REPO_PROJECT)")
