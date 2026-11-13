@@ -133,7 +133,7 @@ def test_settings_attach_exactly_the_guards():
 def test_script_is_wired_through_the_lib():
     text = AGENT.read_text()
     assert '. "$SCRIPT_DIR/review-lean-lib.sh"' in text
-    assert 'claude) review_lean_args "$SCRIPT_DIR"' in text
+    assert 'review_lean_args "$SCRIPT_DIR"' in text
     # ONE claude line, and it carries both lean inserts: a second copy would bypass the switch.
     assert text.count("$FLEET_CLAUDE -p") == 1, "a second claude line would bypass the switch"
     tpl = template()
