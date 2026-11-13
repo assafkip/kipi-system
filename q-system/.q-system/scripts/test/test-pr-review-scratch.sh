@@ -71,6 +71,11 @@ CLAUDE_MODEL=m; CODEX_MODEL=m; TIMEOUT_SECONDS=5; PROMPT="the-prompt"
 # The slice starts below the reviewer's FLEET_CLAUDE resolution (ASK-4311), so
 # the prelude sets the value that resolution gives with KIPI_FLEET_API_KEYS=0.
 FLEET_CLAUDE="env -u ANTHROPIC_API_KEY claude"
+# run_engine builds the claude line with review_claude_cmd (review-lean-lib.sh,
+# ASK-4743) and the slice starts below the reviewer's \`.\` of that lib. Without
+# this the engine ran an empty command and the stub saw no call (PR #786 validate).
+SCRIPT_DIR="$HERE/.."
+. "$HERE/../review-lean-lib.sh"
 $1
 source "$T/slice.sh"
 run_engine claude "$T/out.txt"

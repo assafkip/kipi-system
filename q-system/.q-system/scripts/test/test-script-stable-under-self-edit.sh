@@ -68,10 +68,25 @@ done
 # open-loops-heartbeat.sh:92), which the review did not name. That is the argument
 # for discovery in one line.
 DISCOVERY_MIN_SECONDS=600
+calls_model() {   # calls_model <file>: marker 1 on a non-comment line
+  awk '!/^[[:space:]]*#/ && /claude -p|FLEET_CLAUDE[}"]* -p|fleet-claude\.sh"? -p/ { hit = 1; exit } END { exit !hit }' "$1"
+}
+# A sourced *-lib.sh is never a driver; its model call belongs to every script that
+# sources it (ASK-4796). PR #786 moved the reviewer's only `claude -p` line into
+# review-lean-lib.sh, and pr-review-agent.sh, a 2400s driver, fell out of discovery
+# while the lib, which a trailing `exit` would break, would have come in (ASK-2009).
+sourced_model_lib() {   # sourced_model_lib <dir> <file>: a sourced lib calls the model
+  local lib
+  for lib in $(sed -En 's/^[[:space:]]*(\.|source)[[:space:]]+"[^"]*\/([A-Za-z0-9_.-]*-lib\.sh)".*/\2/p' "$2"); do
+    [ -f "$1/$lib" ] && calls_model "$1/$lib" && return 0
+  done
+  return 1
+}
 discover_drivers() {
   local dir="$1" f secs
   for f in "$dir"/*.sh; do
     [ -f "$f" ] || continue
+    case "$f" in *-lib.sh) continue ;; esac
     secs="$(sed -n 's/^[A-Z_]*TIMEOUT[A-Z_]*=\([0-9][0-9]*\).*/\1/p' "$f" | sort -rn | head -1)"
     # Comment lines are not code (ASK-2009): a sourced lib whose header QUOTES the
     # outage line `claude -p` printed was discovered as a driver, and the rule's
@@ -81,7 +96,7 @@ discover_drivers() {
     # model; linear-worker, open-loops-heartbeat and pr-review-agent stay found.
     # ONE process, not a pipe (PR #421 round 14, minor): under pipefail,
     # `grep -v ... | grep -q` returned 141 on any file past the pipe buffer.
-    if awk '!/^[[:space:]]*#/ && /claude -p|FLEET_CLAUDE[}"]* -p|fleet-claude\.sh"? -p/ { hit = 1; exit } END { exit !hit }' "$f" \
+    if calls_model "$f" || sourced_model_lib "$dir" "$f" \
         || { [ -n "$secs" ] && [ "$secs" -ge "$DISCOVERY_MIN_SECONDS" ]; }; then
       echo "$f"
     fi

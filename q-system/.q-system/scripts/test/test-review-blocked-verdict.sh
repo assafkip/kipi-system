@@ -83,7 +83,8 @@ grep -q 'network_access=true' "$AGENT" && bad "a network grant is still in pr-re
 grep -qE '^if ! gh pr view "\$PR" \$KIPI_GH_REPO_ARGS > "\$PR_CONTEXT_DIR/pr.txt"' "$AGENT" && ok "the script fetches the PR before the review" || bad "no PR fetch before the review"
 grep -q 'PR_CONTEXT_DIR/pr.diff' "$AGENT" && ok "the prompt points at the fetched diff" || bad "the prompt does not point at the fetched diff"
 
-grep -q "disallowedTools 'Bash(git clone:\*)' 'Bash(gh:\*)' 'Bash(curl:\*)'" "$AGENT" \
+# The claude command line lives in review-lean-lib.sh since ASK-4743 (PR #786).
+grep -q "disallowedTools 'Bash(git clone:\*)' 'Bash(gh:\*)' 'Bash(curl:\*)'" "$HERE/../review-lean-lib.sh" \
   && ok "the claude engine blocks direct gh/curl Bash calls (not containment; see the follow-up)" || bad "the direct gh/curl block on the claude engine is gone"
 
 echo "$PASS passed, $FAIL failed"
