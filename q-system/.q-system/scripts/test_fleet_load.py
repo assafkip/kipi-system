@@ -181,6 +181,13 @@ class StartupRatchet(Base):
         self.assertIn("mcp_servers 1 > 0", alert)
         self.assertNotIn("skills", alert)
 
+    def test_an_unread_run_does_not_hide_the_next_real_breach(self):
+        rec = self.tmp / "state" / "worker-startup.jsonl"
+        self.session("bare", json.dumps({"type": "assistant", "message": {"id": "m"}}) + "\n")
+        self.session("big", tx_lines(200, [], []))
+        self.assertIn("skills unread", fleet_load.startup("bare", "ASK-1", rec, self.cfg, allow=self.allow))
+        self.assertIn("skills 200 > 140", fleet_load.startup("big", "ASK-2", rec, self.cfg, allow=self.allow))
+
     def test_no_transcript_no_row(self):
         rec = self.tmp / "state" / "worker-startup.jsonl"
         self.assertEqual(fleet_load.startup("missing", "ASK-1", rec, self.cfg, allow=self.allow), "")
