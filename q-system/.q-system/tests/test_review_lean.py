@@ -148,6 +148,27 @@ def test_lean_keeps_every_project_deny_rule():
     assert not missing, f"lean review settings lack project deny rules: {sorted(missing)}"
 
 
+def test_lean_flags_realize_the_fleet_load_allowlist_review_row():
+    """ASK-4756, reviewer half: reviews load no plugins and no MCP server, the `review`
+    row of fleet-load-allowlist.json (RULE-2026-11-13-E). Measured 2026-11-13, one lean
+    `claude -p` with these flags, stream-json init: plugins only the CLI's 4 @builtin
+    ones, mcp_servers [], 0 skills, tools Bash/Glob/Grep/Read. On one real review pair at
+    one head (PRs #790/#791): first request 123,269 normal (345 skills, 717 deferred tool
+    names, 17 MCP servers) against 11,192 lean (no skill listing, 0 tool names, 0 servers).
+    A row that grows a plugin or a server fails here until the launcher loads it."""
+    row = json.loads((SCRIPTS.parent / "fleet-load-allowlist.json").read_text())["jobs"]["review"]
+    assert row["plugins"] == [] and row["mcp_servers"] == [] and row["account_connectors"] is False, \
+        f"the review row changed ({row}); review-lean-lib.sh must load exactly what it names"
+    assert row["strict_mcp"] is True
+    flags = subprocess.run(["bash", "-c", f'. "{LIB}"; review_lean_args "{SCRIPTS}" 2>/dev/null; printf "%s" "$REVIEW_LEAN_FLAGS"'],
+                           env={k: v for k, v in os.environ.items() if k != "KIPI_REVIEW_LEAN"},
+                           capture_output=True, text=True, check=True).stdout
+    # --setting-sources '' loads no enabledPlugins, so no marketplace plugin starts;
+    # the strict, empty MCP config drops plugin servers AND account connectors.
+    for need in ("--setting-sources ''", "--strict-mcp-config", "--mcp-config '{\"mcpServers\":{}}'", "--disable-slash-commands"):
+        assert need in flags, f"default review flags lack {need}: {flags}"
+
+
 def test_script_is_wired_through_the_lib():
     text = AGENT.read_text()
     assert '. "$SCRIPT_DIR/review-lean-lib.sh"' in text
