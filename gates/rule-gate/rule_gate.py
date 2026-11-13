@@ -451,8 +451,14 @@ def _baseline_bodies(path, baseline):
     1): grandfathered() matches a section by hash wherever it sits, so a review-tree clone
     (its .git is a folder, its path never walked) keeps its unchanged sections. Keyed by
     path, the split test found no body there, and a wired insert above a JSON block
-    deleted the old section's heading and prose. Only text the baseline already
-    grandfathers can match, so this passes nothing the whole section would not."""
+    deleted the old section's heading and prose.
+    What this lets through, stated (round 2): a section whose lines are a strict prefix
+    of SOME same-heading baseline body, from any file, when the rest of that body ends a
+    passing new section below it. Every unwired line left is a line of one grandfathered
+    body, in that body's order, and the rest of the body sits inside a wired section.
+    grandfathered() already passes a whole copy of a baseline section in any file, by
+    hash, so this passes such a copy with a wired section inserted into it. A line that
+    is in no baseline body never passes unwired."""
     out = {}
     for h, b in list((baseline or {}).values()) + list(worktree_baseline(path)[0]):
         out.setdefault(h, []).append(b)

@@ -37,7 +37,7 @@ set -uo pipefail
 
 # BASE is the ASK-4283 gate that is live since 2026-11-10; PATCHED is the ASK-4681 source beside this file.
 BASE_SHA256="${KIPI_GATE_BASE_SHA256:-bd181154df2c7ff46250473c9af262d618e3222352f2fff93c9a2ee66330081b}"
-PATCHED_SHA256="fb0b407f982db94f0aa3c90eac5797aa6bd61ebeb1289547d664a88c787a263d"
+PATCHED_SHA256="c1daf50d640757731c42d3351bb41b282071a3ce35114b90523178e6bc172654"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/rule_gate.py"
 # Both reproducers run: the ASK-4283 one (tracked worktree rules survive) and the ASK-4681 one

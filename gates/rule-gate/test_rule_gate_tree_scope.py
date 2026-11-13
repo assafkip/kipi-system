@@ -30,9 +30,11 @@ managed-settings-path, read-only, and writes only under the sandbox HOME.
 import json
 import os
 import pwd
+import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 
 import pytest
@@ -137,8 +139,28 @@ class Sandbox:
         return reasons
 
 
+def prune_stale_sandboxes(max_age_s=3600):
+    """A killed run skips the finally below and leaves its sandbox in the account's home
+    (PR #793 review, round 2 nit). Only folders this file names (32 hex characters) and
+    older than an hour are removed; a whole run takes seconds, so a live run's folder is
+    never touched."""
+    try:
+        names = os.listdir(SANDBOX_ROOT)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(SANDBOX_ROOT, n)
+        try:
+            stale = re.fullmatch(r"[0-9a-f]{32}", n) and time.time() - os.path.getmtime(p) > max_age_s
+        except OSError:
+            continue
+        if stale:
+            shutil.rmtree(p, ignore_errors=True)
+
+
 @pytest.fixture
 def sb():
+    prune_stale_sandboxes()
     root = os.path.join(SANDBOX_ROOT, uuid.uuid4().hex)
     assert not os.path.realpath(root).startswith(TEMP_PREFIXES), (
         f"sandbox {root} is in temp space: every enforcer would be refused and the "
