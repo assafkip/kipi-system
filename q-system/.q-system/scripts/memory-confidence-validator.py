@@ -4,7 +4,9 @@
 PostToolUse(Edit|Write) hook. Pairs with .claude/rules/memory-confidence.md and
 PRD prd-memory-confidence-provenance-2026-06-30. Self-scoped: only fires on auto-
 memory files (a path under ~/.claude/projects/<slug>/memory/*.md, excluding the
-MEMORY.md index); every other path exits 0 fast.
+MEMORY.md index); every other path exits 0 fast. One more scope (ASK-4817): an
+agent memory index, ~/.claude/agent-memory/<agent>/MEMORY.md, exits 2 when it
+is over AGENT_INDEX_CEILING_BYTES.
 
 Reads hook JSON on stdin. Exit 0 (allow) unless the written memory file declares a
 `confidence` outside [0.0, 1.0] or a `provenance` outside the fixed enum -> exit 2
@@ -22,6 +24,7 @@ is unit-testable against a temp path, exactly as lessons-validator.py scopes on
 "q-system/lessons/".
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,6 +86,38 @@ def in_scope(file_path):
     return True
 
 
+# ASK-4817: an agent's memory index loads into every start of that agent and is
+# cut at about 24.4 KB on read, so the newest pointers past the cut are silently
+# lost. Sana's reached 23,910 bytes on 2026-11-12, one builder note at a time, and
+# nothing measured it. The ceiling sits well under the read limit so the agent
+# that crosses it still has room to compact. Project indexes
+# (~/.claude/projects/*/memory/MEMORY.md) are not in this scope: four were over
+# 16 KB when measured, and that compaction is ASK-4822.
+AGENT_INDEX_CEILING_BYTES = 16384
+
+
+def agent_index_in_scope(file_path):
+    """True only for an agent memory index: ~/.claude/agent-memory/<agent>/MEMORY.md."""
+    norm = file_path.replace("\\", "/")
+    return "/.claude/agent-memory/" in norm and norm.rsplit("/", 1)[-1] == "MEMORY.md"
+
+
+def check_agent_index_size(file_path):
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        return  # PostToolUse: unreadable -> nothing to measure
+    if size > AGENT_INDEX_CEILING_BYTES:
+        block(
+            f"{file_path} is {size} bytes, over the {AGENT_INDEX_CEILING_BYTES}-byte "
+            "ceiling. The index is cut at about 24.4 KB on read, so pointers past the "
+            "cut are lost. Compact it now: move pointer lines into a topic file the "
+            "index links (index_topics.md or a topics_*.md), merge duplicates, and "
+            "keep every memory file reachable from the index. Supersede, do not "
+            "delete (ASK-4817)."
+        )
+
+
 def parse_frontmatter(text):
     """Return dict of top-level frontmatter scalars, or None if no frontmatter."""
     if not text.startswith("---"):
@@ -109,6 +144,9 @@ def main():
         sys.exit(0)
     tool_input = payload.get("tool_input") or {}
     file_path = tool_input.get("file_path") or tool_input.get("path") or ""
+    if file_path and agent_index_in_scope(file_path):
+        check_agent_index_size(file_path)
+        sys.exit(0)
     if not file_path or not in_scope(file_path):
         sys.exit(0)
     try:
