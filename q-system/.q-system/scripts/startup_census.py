@@ -126,7 +126,9 @@ def census_file(path: str) -> dict:
     with open(path) as fh:
         recs = [json.loads(line) for line in fh if line.strip()]
     row = census(recs)
-    row["context_first"] = run_tokens.report([path], start_of=path).get("context_first")
+    # One file in, so no start_of: run_tokens keys its groups by the normalized
+    # Path, and a raw "./x" start_of matched no group and read null (review of #794).
+    row["context_first"] = run_tokens.report([path]).get("context_first")
     row["file"] = path
     return row
 

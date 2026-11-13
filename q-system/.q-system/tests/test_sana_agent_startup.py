@@ -59,7 +59,7 @@ def test_proposal_line_is_generated_from_the_decision():
 def test_builders_servers_stay_allowed():
     d = _decision()
     assert set(d["keep_mcp_servers"]) >= MEASURED_KEEP
-    assert not MEASURED_KEEP & set(d["deny_mcp_servers"])
+    assert not set(d["keep_mcp_servers"]) & set(d["deny_mcp_servers"]), "a server is kept or denied, never both"
     assert all(d["keep_mcp_servers"][s].strip() for s in MEASURED_KEEP), "each kept server says why"
 
 

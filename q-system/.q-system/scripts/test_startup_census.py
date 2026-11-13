@@ -33,6 +33,12 @@ def test_context_first_is_run_tokens_number_on_the_same_bytes():
     assert startup_census.census_file(str(FX))["context_first"] == 132256
 
 
+def test_relative_or_doubled_path_reads_the_same(monkeypatch):
+    monkeypatch.chdir(FX.parent)
+    assert startup_census.census_file("./" + FX.name)["context_first"] == 132256
+    assert startup_census.census_file(str(FX.parent) + "//" + FX.name)["context_first"] == 132256
+
+
 def test_api_error_or_synthetic_first_record_is_not_a_free_start_up(tmp_path):
     bad = [{"type": "assistant", "isApiErrorMessage": True, "timestamp": "2026-11-13T00:00:00Z",
             "message": {"id": "e1", "model": "claude-opus-5-5", "usage": {"input_tokens": 0}, "content": []}},
