@@ -1,0 +1,8 @@
+{
+ "path": "q-system/.q-system/tests/test_fleet_load_allowlist.py",
+ "runner": "python3",
+ "covers": [
+  "q-system/.q-system/fleet-load-allowlist.json",
+  ".claude-plugin/marketplace.json"
+ ]
+}

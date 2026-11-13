@@ -538,3 +538,76 @@ Monthly audit (1st of month): count decisions by origin tag. If >60% are rubber-
 - **Date:** 2026-11-12
 - **Held by:** `q-system/.q-system/scripts/test/test-ask842-dispatch-decision.sh` (reads the dispatch record from either collection).
 - **Revisit:** Only if a directory returns, then the row moves back.
+
+## Founder rulings and Sana decisions anchored in code (2026-11-13, ASK-4760)
+
+Founder, 2026-11-13, verbatim: "remember - every decision needs to be anchored in code." Each entry below names its holder, and `q-system/.q-system/tests/test_rulings_anchored.py` reads every one: a missing holder, a holder that does not name the rule id, or an ADVISORY with no reason is red.
+
+### RULE-2026-11-13-A: No cap, pause or budget gate on tokens or spend
+- **Origin:** [USER-DIRECTED] (founder, 2026-11-13, verbatim: "I don't want a cap. We never have a cap. It's more of a hindrance than anything else.")
+- **Decision:** The dispatcher, the worker, the key door and the libs they source never stop work on a token or spend reading. Every spend-source site in them is declared as a recorder, an environmental stop (no key has credit left) or dated debt. The review round cap, the live-run cap and the daily dispatch count are counts of runs, not spend, and stay.
+- **Reason:** PR #783 (ASK-4721) built a 25M-per-24h cap on 2026-11-12 and was closed unmerged the next morning. Measured on origin/main 5432f6cc: two older spend stops are still live, the worker's plan usage breaker (ASK-2010, runs while `KIPI_FLEET_API_KEYS=0`, which dispatch exports during the plan-billing override dated 2026-11-29) and dispatch's daily API-credit allowance (ASK-4311). Removing the allowance costs no extra money: credit is prepaid and auto-reload is off.
+- **Date:** 2026-11-13
+- **Enforcement:** PARTIAL
+- **Held by:** `q-system/.q-system/tests/test_no_spend_cap.py` (red on a new spend site, on a site past a declaration's pinned count, and on a stale declaration; red on PR #783's head).
+- **Not yet:** ASK-4761 removes both debt stops and their two declarations.
+- **Revisit:** Only on a founder order.
+
+### RULE-2026-11-13-B: A worker or review class never runs Sonnet unless a quality test says it is as good
+- **Origin:** [USER-DIRECTED] (founder, 2026-11-13, verbatim: "its critical that we dont use sonnet if the quality of the work is not as good." Reviewers are Opus, relayed 2026-11-12.)
+- **Decision:** Every worker and review class resolves through `model_route.pick` to Opus unless a receipt for that job and class exists at `quality_receipts.path` in the routing table (10+ samples, verdict no-worse, a method). None exists, so every class is Opus. Interactive build agents fall under the same rule.
+- **Reason:** `q-system/output/analyses/opus-vs-sonnet-fleet-history-2026-11-13.md` (1,927 PRs, 13 repos, 2026-10-24 to 11-13), agent builders: merged 88% (100 of 113) on Sonnet 5.5 vs 96% (452 of 473) on Opus 5.5; first-round approve on small PRs 71% (34 of 48) vs 88% (83 of 94), medium 54% (19 of 35) vs 72% (88 of 122). Every other job class: cannot tell. The unattended worker has never run Sonnet.
+- **Date:** 2026-11-13
+- **Enforcement:** PARTIAL
+- **Held by:** `q-system/.q-system/tests/test_model_routing.py` (QualityReceipt), `q-system/.q-system/model-routing.json` (the ruling in `founder`, the receipt path in `quality_receipts`).
+- **Not yet:** ASK-4765 refuses an interactive build agent launched on Sonnet or Haiku with no receipt. ASK-4038's both-models test writes the receipts.
+- **Revisit:** When a receipt lands for a class.
+
+### RULE-2026-11-13-C: Nothing waits on the founder, and what reaches him goes through chief
+- **Origin:** [USER-DIRECTED] (founder, 2026-11-12, verbatim: "nothing should be waiting for me" and "I dont use the q-morning - I use chief")
+- **Decision:** A founder ask is recorded once by `cap-ladder.py --founder-ask` and sent by one sender through chief's phone gate. No job writes to the morning brief as the way to reach him. Built in PR #782 (ASK-4728); nothing new here.
+- **Reason:** Before #782 the asks went to the brief, which he does not run, so they reached nobody.
+- **Date:** 2026-11-13
+- **Enforcement:** ENFORCED
+- **Held by:** `q-system/.q-system/scripts/test/test_cap_ladder.py`, `q-system/.q-system/scripts/cap-ladder.py`.
+- **Revisit:** Only on a founder order.
+
+### RULE-2026-11-13-D: Work with no reason to wait for a clock time runs now
+- **Origin:** [USER-DIRECTED] (founder, 2026-11-13, verbatim: "if there is no actual reason to run some processes at a specifci time, dont wait for htme. do them now")
+- **Decision:** A proof, a dry run or a job that can run now runs now (`launchctl kickstart`, `gh workflow run`, a dry path). A clock wait needs a stated reason, such as a spent daily budget of an outside service or a deploy that would move a checkout other jobs run from.
+- **Reason:** Restates the 2026-11-08 "prove now" ruling in `no-idle-escalate-to-sana.md`, which measured 4 idle hours on 2026-11-07.
+- **Date:** 2026-11-13
+- **Enforcement:** ADVISORY
+- **Held by:** nothing. No hook sees an agent decide to wait, and no file records why a job runs at its time.
+- **Advisory because:** Whether a time has "an actual reason" is judgment. The deterministic slice that exists, a hold must name a consumer (wait-has-consumer.py, RULE-2026-11-09-B), checks who acts, never when. A check that plists carry a reason string would pass on any reason, so it would read as enforcement and enforce nothing. ASK-4764 removes the commonest clock wait, an agent polling a PR.
+- **Revisit:** If waits get a recorded reason field that code can read.
+
+### RULE-2026-11-13-E: Headless jobs load only the fleet plugins their class names, and no account connectors
+- **Origin:** [SYSTEM-INFERRED] (Sana's decision D1, from the 2026-11-12/13 measurements in ASK-4756.)
+- **Decision:** The worker loads kipi-core, prd-os, kipi-dsse and kipi-design (their hooks are the guards it builds through) and no MCP server. The reviewer and background calls load no plugins and no MCP server. No headless job loads account connectors. Interactive: the fleet's plugins stay user scope; the four largest non-fleet plugins leave user scope and stay installed at project scope where a session used them in the last 30 days.
+- **Reason:** Every agent re-reads a skill listing of about 7.7k tokens and about 500 deferred MCP tool names (about 8.6k tokens) on every request; 309 skill entries across 24 user-scope plugins, 164 of them from one analytics plugin, 38 from the fleet's own (token-drain analysis section 3, ASK-4756).
+- **Date:** 2026-11-13
+- **Enforcement:** PARTIAL
+- **Held by:** `q-system/.q-system/tests/test_fleet_load_allowlist.py`, `q-system/.q-system/fleet-load-allowlist.json`.
+- **Not yet:** ASK-4756 wires the launchers to read the file and moves the interactive plugins. `pr-review-agent.sh` is left alone here while ASK-4743 edits it.
+- **Revisit:** When a job class needs a plugin or server it lacks; add it to the file with the reason.
+
+### RULE-2026-11-13-F: Six fixed procedures agents ran by hand become code
+- **Origin:** [SYSTEM-INFERRED] (Sana's decision D2, from the six observed on 2026-11-12/13 in ASK-4757.)
+- **Decision:** All six are code. What to wait for, and whether to merge, stays with the model; the procedure does not.
+
+| # | Procedure | Verdict | Ticket | Why |
+|---|---|---|---|---|
+| 1 | Restart a PR at the review cap | code | ASK-4762 | cap-ladder holds the rungs; it lacks a one-PR target and matches only sana/ask-NNNN branches |
+| 2 | Carry one skeleton file into an instance and publish its mirror | code | ASK-4763 (post-sync step: ASK-4726) | copy, byte-compare, mapped tests and export are fixed steps |
+| 3 | Full review of a commit that only merges main cleanly | code | ASK-4742 ask 3 | whether a merge is clean is a git question |
+| 4 | A review finishing on a head that moved | code | ASK-4742 ask 4 | one API read before and after |
+| 5 | Sleep-and-recheck poll turns | code | ASK-4764 | a background command exits on the event for nothing |
+| 6 | Merge order for sibling PRs | code | ASK-4742 ask 5 | file overlap is a diff computation |
+
+- **Reason:** Each was an agent or a full model run on 2026-11-12/13 doing a step with one right answer (ASK-4757). The census in ASK-4757 still covers the other model call sites.
+- **Date:** 2026-11-13
+- **Enforcement:** PARTIAL
+- **Held by:** `q-system/.q-system/tests/test_rulings_anchored.py` (six rows, each code row names its ticket).
+- **Not yet:** ASK-4762, ASK-4763, ASK-4764 and ASK-4742 asks 3 to 5 build them.
+- **Revisit:** When the census finds a row that is judgment after all.

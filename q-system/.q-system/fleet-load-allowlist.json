@@ -1,0 +1,39 @@
+{
+ "_": "RULE-2026-11-13-E. The plugins and MCP servers each headless job class loads, decided by Sana 2026-11-13. Read by the launchers once ASK-4756 wires them; pinned by q-system/.q-system/tests/test_fleet_load_allowlist.py. No job class loads account connectors.",
+ "measured": "2026-11-12/13 (token-drain analysis section 3, ASK-4756): every agent loads a skill listing of about 7.7k tokens and about 500 deferred MCP tool names, about 8.6k tokens, re-read on every request. 309 skill entries across 24 user-scope plugins: 164 from one analytics plugin (161 SKILL.md files in its cache), 38 from the fleet's own.",
+ "jobs": {
+  "worker": {
+   "plugins": [
+    "kipi-core",
+    "prd-os",
+    "kipi-dsse",
+    "kipi-design"
+   ],
+   "mcp_servers": [],
+   "account_connectors": false,
+   "why": "A builder works through these plugins' hooks: fable-discipline-lint (prd-os), rca-lint (kipi-core), the issue hooks (kipi-dsse), the dogfood gate and design door (kipi-design). It reaches Linear and GitHub through scripts, so it needs no MCP server. kipi-ops (one interpretive skill, no hooks) and kipi-notebooklm (a research MCP server) serve no build step."
+  },
+  "review": {
+   "plugins": [],
+   "mcp_servers": [],
+   "account_connectors": false,
+   "why": "A reviewer reads the PR tree and writes one verdict file. Plugin hooks guard writes it does not make, and the rules it cites load from the tree's own .claude/rules."
+  },
+  "background": {
+   "plugins": [],
+   "mcp_servers": [],
+   "account_connectors": false,
+   "why": "lean_call.py already runs with no settings, no tools and an empty strict MCP config. This row records that as the decision."
+  }
+ },
+ "interactive": {
+  "user_scope": "fleet plugins only",
+  "leave_user_scope": [
+   "posthog@claude-plugins-official",
+   "vercel@claude-plugins-official",
+   "document-skills@anthropic-agent-skills",
+   "slack@claude-plugins-official"
+  ],
+  "why": "The four largest non-fleet plugins (164, 42, 19 and 13 entries) leave user scope. Each stays installed at project scope where a session used it in the last 30 days; ASK-4756 measures that from transcripts before the move. The fleet's own plugins stay user scope: a plugin scoped to one project loses its slash commands in every other project."
+ }
+}

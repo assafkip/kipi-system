@@ -1245,3 +1245,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+# RULE-2026-11-13-C (decisions.md): this file holds "nothing should be waiting for me" and
+# "I dont use the q-morning - I use chief": founder asks go through one recorder and chief's gate.
