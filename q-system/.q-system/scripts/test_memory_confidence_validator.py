@@ -145,7 +145,14 @@ def main():
     # ASK-4817: an agent memory index over the ceiling blocks; at the ceiling,
     # a content file, a project index and any other MEMORY.md pass. The pair
     # ceiling / ceiling+1 is the negative self-test for this branch.
+    # Pinned as a literal: the cases below derive from the constant, so they
+    # alone would stay green if it were raised past the read limit (PR #803
+    # review, minor 1).
     ceiling = mcv.AGENT_INDEX_CEILING_BYTES
+    pin_ok = ceiling == 16384
+    print(f"[{'PASS' if pin_ok else 'FAIL'}] agent index ceiling is 16384 bytes (got {ceiling})")
+    if not pin_ok:
+        failures.append("agent index ceiling pin")
     index_cases = [
         ("agent index at ceiling -> pass", (".claude", "agent-memory", "sana"), "MEMORY.md", ceiling, 0),
         ("agent index one byte over -> block", (".claude", "agent-memory", "sana"), "MEMORY.md", ceiling + 1, 2),
@@ -163,7 +170,7 @@ def main():
     if failures:
         print(f"\nFAILED: {len(failures)} case(s): {failures}")
         sys.exit(1)
-    print(f"\nOK: all {len(CASES) + 3 + len(index_cases)} checks passed")
+    print(f"\nOK: all {len(CASES) + 4 + len(index_cases)} checks passed")
     sys.exit(0)
 
 

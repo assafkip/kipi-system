@@ -110,8 +110,9 @@ def check_agent_index_size(file_path):
     if size > AGENT_INDEX_CEILING_BYTES:
         block(
             f"{file_path} is {size} bytes, over the {AGENT_INDEX_CEILING_BYTES}-byte "
-            "ceiling. The index is cut at about 24.4 KB on read, so pointers past the "
-            "cut are lost. Compact it now: move pointer lines into a topic file the "
+            "ceiling. Nothing is lost yet: the ceiling sits under the read limit "
+            "(about 24.4 KB, ASK-4817), past which the newest pointers are cut. "
+            "Compact it now, while there is room: move pointer lines into a topic file the "
             "index links (index_topics.md or a topics_*.md), merge duplicates, and "
             "keep every memory file reachable from the index. Supersede, do not "
             "delete (ASK-4817)."
