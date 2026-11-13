@@ -1,5 +1,6 @@
 #!/bin/bash
-# install-rule-gate.sh: install the ASK-4283 rule_gate.py and make gate-locked root-owned.
+# install-rule-gate.sh: install the reviewed rule_gate.py (ASK-4681 on top of ASK-4283) and make
+# gate-locked root-owned.
 #
 # Run once, by the founder:   sudo bash <this file>
 #
@@ -34,11 +35,15 @@
 #   KIPI_GATE_PYTHON. sudo's env_reset drops them, so the founder's run uses the defaults.
 set -uo pipefail
 
-BASE_SHA256="${KIPI_GATE_BASE_SHA256:-de2f63272aaa85c4575e870114293c616207d365845d98d986fc2bb090ef72fb}"
-PATCHED_SHA256="bd181154df2c7ff46250473c9af262d618e3222352f2fff93c9a2ee66330081b"
+# BASE is the ASK-4283 gate that is live since 2026-11-10; PATCHED is the ASK-4681 source beside this file.
+BASE_SHA256="${KIPI_GATE_BASE_SHA256:-bd181154df2c7ff46250473c9af262d618e3222352f2fff93c9a2ee66330081b}"
+PATCHED_SHA256="527895b6e8e3efad9172083f40032189ba040be8b89066f15a9102756a015c4d"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/rule_gate.py"
-REPRO="${KIPI_GATE_REPRODUCER:-$HERE/test_rule_gate_worktree_baseline.py}"
+# Both reproducers run: the ASK-4283 one (tracked worktree rules survive) and the ASK-4681 one
+# (location-independent verdicts, Stop judges only its own tree, a split is not a change).
+if [ -n "${KIPI_GATE_REPRODUCER:-}" ]; then REPRO=("$KIPI_GATE_REPRODUCER")
+else REPRO=("$HERE/test_rule_gate_worktree_baseline.py" "$HERE/test_rule_gate_tree_scope.py"); fi
 NO_CHOWN="${KIPI_GATE_NO_CHOWN:-0}"
 
 step() { printf '%-3s %s\n' "$1" "$2"; }
@@ -73,9 +78,9 @@ step 2 "ok: source is the reviewed rule_gate.py ($PATCHED_SHA256)"
 repro() {  # repro <gate or empty for sandbox copy> <label>
   local out
   if [ -n "$1" ]; then
-    out="$(cd / && as_user env PYTHONDONTWRITEBYTECODE=1 RULE_GATE_UNDER_TEST="$1" "$PY" -m pytest "$REPRO" -q -p no:cacheprovider 2>&1)"
+    out="$(cd / && as_user env PYTHONDONTWRITEBYTECODE=1 RULE_GATE_UNDER_TEST="$1" "$PY" -m pytest "${REPRO[@]}" -q -p no:cacheprovider 2>&1)"
   else
-    out="$(cd / && as_user env PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest "$REPRO" -q -p no:cacheprovider 2>&1)"
+    out="$(cd / && as_user env PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest "${REPRO[@]}" -q -p no:cacheprovider 2>&1)"
   fi
   local rc=$?
   REPRO_LAST="$(printf '%s\n' "$out" | tail -1)"
@@ -104,7 +109,7 @@ fi
 
 if [ "$ALREADY" = "0" ]; then
   # 5. backup
-  BK="$LOCK/backups/$(date +%Y%m%dT%H%M%S)-ask-4283"
+  BK="$LOCK/backups/$(date +%Y%m%dT%H%M%S)-ask-4681"
   mkdir -p "$BK" && cp -p "$GATE" "$BK/rule_gate.py" && cp -p "$MANIFEST" "$BK/protected-manifest.json" \
     || fail 5 "backup to $BK did not complete" 70
   [ "$(sha "$BK/rule_gate.py")" = "$LIVE" ] || fail 5 "backup copy does not match the live gate" 70
