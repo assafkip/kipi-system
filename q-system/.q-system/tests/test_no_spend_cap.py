@@ -126,6 +126,10 @@ def unaccounted(rel, text, names, declared=DECLARED):
     return bad, used
 
 
+def stale_declarations(used, declared=DECLARED):
+    return [d[:2] for d in declared if d not in used]
+
+
 class NoSpendCap(unittest.TestCase):
     def setUp(self):
         self.names = spend_sources()
@@ -137,7 +141,7 @@ class NoSpendCap(unittest.TestCase):
             bad += b
             used_all.update(used)
         self.assertEqual(bad, [], "a spend reading the founder's no-cap ruling does not allow")
-        stale = [d[:2] for d in DECLARED if d not in used_all]
+        stale = stale_declarations(used_all)
         self.assertEqual(stale, [], "a declaration matches nothing: remove it (debt only shrinks)")
 
     def test_debt_names_its_removal_ticket_in_the_ledger(self):
@@ -151,6 +155,7 @@ class NoSpendCap(unittest.TestCase):
         for never in NOT_SPEND:
             self.assertTrue(SPEND_NAME.search(never), f"{never} needs no exclusion")
             self.assertNotIn(never, self.names)
+        self.assertIn(S + "env-failure-lib.sh", scanned_files())   # the worker sources it
 
     def test_count_limits_are_not_spend_sites(self):
         for rel, word in (("kipi-dispatch.sh", "DAILY_MAX"), ("kipi-dispatch.sh", "MAX_CONCURRENT"),
@@ -167,6 +172,8 @@ class NoSpendCap(unittest.TestCase):
         self.assertTrue(unaccounted(rel, direct, self.names)[0])
         via_var = base + '\nCAP="$SCRIPT_DIR/budget_check.py"\nCAP2="$CAP"\npython3 "$CAP2" --cap-total 1 || exit 0\n'
         self.assertEqual(len(unaccounted(rel, via_var, self.names)[0]), 3)
+        fake = ("kipi-dispatch.sh", "NO_SUCH_NEEDLE", "debt", 1)
+        self.assertEqual(stale_declarations({}, (fake,)), [fake[:2]])
         past_pin = base + '\nif [ "$BREAKER_DEFAULT" ]; then exit 3; fi\n'
         self.assertIn("past the 5 pinned", " ".join(unaccounted(rel, past_pin, self.names)[0]))
 

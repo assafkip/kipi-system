@@ -93,7 +93,11 @@ class RulingsAnchored(unittest.TestCase):
         )
         for i, c in enumerate(cases):
             self.assertTrue(problems(c, "RULE-NEG-9"), f"case {i} passed")
-        self.assertTrue(d2_problems("### RULE-2026-11-13-F: x\n| 1 | a | code | none |\n"))
+        good = "### RULE-2026-11-13-F: x\n" + "".join(f"| {n} | p | code | ASK-{n} | w |\n" for n in range(1, 7))
+        self.assertEqual(d2_problems(good), [])
+        self.assertEqual(d2_problems(good.replace("| 3 | p | code | ASK-3 |", "| 3 | p | code | none |")),
+                         ["D2 row 3: code verdict names no ticket"])
+        self.assertTrue(d2_problems(good.replace("| 6 | p | code | ASK-6 | w |\n", "")))
 
 
 if __name__ == "__main__":
