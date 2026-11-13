@@ -89,9 +89,9 @@ Trust boundary:
 
 - The step is the instance's own code, the same trust as its pre-commit hook, which already runs arbitrary instance code at that moment.
 - The updater does not limit or undo what a step writes. The config commit stages only `.claude/` and `plugins/`, so a write elsewhere is not in the sync's commit.
-- A failed step abandons the instance through the existing rollback, which resets the synced paths (`.claude/`, `plugins/` and the subtree prefix) to HEAD. It does not track what the step wrote.
+- A failed step abandons the instance through the existing rollback, which resets the synced paths (`.claude/`, `plugins/` and the subtree prefix) to HEAD and removes files that are untracked there and absent from the run's checkpoint, so a failed step's new files under those paths go too. Writes outside those paths stay.
 - The step gets 600 seconds (`KIPI_POST_SYNC_TIMEOUT`). Past that the updater kills it and abandons the instance. It kills only the step's own process, so a step must not leave a background child.
-- A step must not write under `.claude/` or `plugins/`. The config commit stages those paths, so the write would land in the sync's commit as if the skeleton had shipped it.
+- A step must not write under `.claude/` or `plugins/`. The config commit stages tracked files there (`git add -u`), so an edit to one lands in the sync's commit as if the skeleton had shipped it. A new file there is not staged, and an instance's integrity tripwire may delete it and raise a SECURITY alert.
 
 ## Pushing Changes Back from an Instance
 
