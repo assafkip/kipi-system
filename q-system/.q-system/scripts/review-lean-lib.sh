@@ -10,10 +10,12 @@
 # rules, MCP tool schemas, plugin hooks) re-read on every turn. Measured on this
 # build (2.1.323), one-word prompt from a repo tree: normal 117.7k, lean 8.0k.
 #
-# DEFAULT OFF. KIPI_REVIEW_LEAN unset or anything but 1 prints the pre-ASK-4743
-# command byte for byte (a test pins it): other sessions call this script from the
-# shared checkout and a reviewer whose behaviour moved silently is the one defect
-# that cannot be reasoned about.
+# DEFAULT ON since the planted-defect control (2026-11-12, PRs #790/#791 at one
+# head): lean found all 3 planted defects the normal reviewer found, including
+# the rule-file one, at $1.48 against $6.66. KIPI_REVIEW_LEAN=0, exactly, prints
+# the pre-ASK-4743 command byte for byte (a test pins it). Only "0" opts out: the
+# old switch read "anything but 1" as off, and a typo'd opt-out that silently
+# keeps lean is safer than a typo'd value that silently restores a 124k start-up.
 #
 # LEAN = no MCP, no settings from any source, no CLAUDE.md, no auto-memory, no slash
 # commands, and only Read/Grep/Glob/Bash. NOT lean_call.py as is: that runs in an
@@ -26,10 +28,10 @@
 review_claude_cmd() {
   local root="$1" model="$2" fleet="$3" dest="$4" sdir="$5"
   local base lean_env="" lean_flags=""
-  if [ "${KIPI_REVIEW_LEAN:-0}" = "1" ]; then
+  if [ "${KIPI_REVIEW_LEAN:-1}" != "0" ]; then
     lean_env="KIPI_REVIEW_SCRIPTS='$sdir' CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "
     lean_flags=" --setting-sources '' --settings '$sdir/../review-lean-settings.json' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash --disable-slash-commands"
-    echo "pr-review-agent: REVIEWER MODE LEAN (KIPI_REVIEW_LEAN=1): no MCP, no CLAUDE.md or rules, Read/Grep/Glob/Bash only, guard hooks only" >&2
+    echo "pr-review-agent: REVIEWER MODE LEAN (default; KIPI_REVIEW_LEAN=0 turns it off): no MCP, no CLAUDE.md or rules, Read/Grep/Glob/Bash only, guard hooks and the project deny list only" >&2
   fi
   base="cd '$root' && KIPI_AGENT=pr-reviewer ${lean_env}$fleet -p --model '$model' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)'${lean_flags} </dev/null > '$dest' 2>&1"
   printf '%s' "$base"

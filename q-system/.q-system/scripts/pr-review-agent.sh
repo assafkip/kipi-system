@@ -198,7 +198,7 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # is the machine's, not an unusable review. See the claude dispatch below.
 . "$SCRIPT_DIR/env-failure-lib.sh"
 . "$SCRIPT_DIR/reviewer-token-lib.sh"
-# The claude reviewer's command line, lean switch included (ASK-4743, default off).
+# The claude reviewer's command line, lean switch included (ASK-4743, default on; KIPI_REVIEW_LEAN=0 is the old line).
 . "$SCRIPT_DIR/review-lean-lib.sh"
 
 

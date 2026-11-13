@@ -58,15 +58,17 @@ def failures(lib, tmp):
     """Every contract check, as a list of failure names. Empty = the lib is right."""
     bad = []
     for mode in ("keyed", "plan"):
-        cmd, argv, env, root, fleet = build(lib, None, tmp, mode)
+        # OFF is KIPI_REVIEW_LEAN=0, exactly. Default ON since the planted-defect
+        # control (ASK-4743, PRs #790/#791): lean caught every defect normal did.
+        cmd, argv, env, root, fleet = build(lib, "0", tmp, mode)
         if cmd != OLD.format(root=root, fleet=fleet, model="claude-test", dest=f"{tmp}/out"):
             bad.append(f"{mode}: off is not byte-identical")
         if "--setting-sources" in argv or env != ["", "", ""]:
             bad.append(f"{mode}: off leaks lean flags or env")
-        for v in ("0", "true", ""):
+        _, argv, env, _, _ = build(lib, None, tmp, mode)
+        for v in ("1", "true", ""):
             if build(lib, v, tmp, mode)[1] != argv:
-                bad.append(f"{mode}: switch value {v!r} turned lean on")
-        _, argv, env, _, _ = build(lib, "1", tmp, mode)
+                bad.append(f"{mode}: switch value {v!r} differs from the default (lean)")
         for need in (["--setting-sources", ""], ["--strict-mcp-config"], ["--tools", "Read,Grep,Glob,Bash"],
                      ["--allowedTools", "Read,Grep,Glob,Bash"], ["--disable-slash-commands"],
                      ["--mcp-config", '{"mcpServers":{}}'], ["--disallowedTools", "Bash(git clone:*)"]):
@@ -86,8 +88,9 @@ def test_contract_holds(tmp_path):
 
 
 MUTANTS = {
-    "switch always on": ('"${KIPI_REVIEW_LEAN:-0}" = "1"', '"1" = "1"'),
-    "switch inverted": ('"${KIPI_REVIEW_LEAN:-0}" = "1"', '"${KIPI_REVIEW_LEAN:-0}" != "1"'),
+    "switch always on": ('"${KIPI_REVIEW_LEAN:-1}" != "0"', '"1" = "1"'),
+    "switch inverted": ('"${KIPI_REVIEW_LEAN:-1}" != "0"', '"${KIPI_REVIEW_LEAN:-1}" = "0"'),
+    "default off again": ("KIPI_REVIEW_LEAN:-1}", "KIPI_REVIEW_LEAN:-0}"),
     "settings sources kept": ("--setting-sources '' ", ""),
     "tools not restricted": ("--tools Read,Grep,Glob,Bash ", ""),
     "mcp kept": ("--strict-mcp-config ", ""),
@@ -116,6 +119,17 @@ def test_settings_attach_exactly_the_guards():
     assert set(s["hooks"]) == {"PreToolUse"}, "context-injecting events must stay off in lean mode"
     assert "/Users/" not in SETTINGS.read_text()
     assert (SCRIPTS / "claude-path-write-guard.py").is_file()
+
+
+def test_lean_keeps_every_project_deny_rule():
+    """--setting-sources '' drops the project deny list. Measured 2026-11-12 in a
+    real lean run before this copy: `sudo -n true` ran. With it: "Permission to
+    use Bash with command sudo -n true has been denied." A rule added to the
+    project list and not here would run unrefused in every lean review."""
+    project = json.loads((SCRIPTS.parents[2] / ".claude" / "settings.json").read_text())
+    lean = json.loads(SETTINGS.read_text())
+    missing = set(project["permissions"]["deny"]) - set(lean.get("permissions", {}).get("deny", []))
+    assert not missing, f"lean review settings lack project deny rules: {sorted(missing)}"
 
 
 def test_script_is_wired_through_the_lib():
