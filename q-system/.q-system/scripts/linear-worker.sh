@@ -497,7 +497,8 @@ AGENT="sana"
 record_run_tokens() {
   [ -n "${1:-}" ] || return 0
   python3 "$SCRIPT_DIR/run_tokens.py" --record "${KIPI_RUN_TOKENS_FILE:-$HOME/.local/state/kipi/run-tokens.jsonl}" \
-    --session "$1" --ticket "$2" --repo "$3" --pr "${PR_NUM:-}" >/dev/null 2>>"$LOG" \
+    --session "$1" --ticket "$2" --repo "$3" --pr "${PR_NUM:-}" \
+    --billing "$(fleet_keyed && echo key || echo plan)" >/dev/null 2>>"$LOG" \
     || echo "$(TS) $2: run tokens not recorded (see line above)" >>"$LOG"
   return 0
 }

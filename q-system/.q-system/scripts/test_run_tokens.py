@@ -207,3 +207,14 @@ def test_cap_cli_exit_codes(tmp_path):
     p = subprocess.run([sys.executable, str(HERE / "run_tokens.py"), "--cap-check", led, "--cap-file", cap,
                         "--now", NOW], capture_output=True, text=True)
     assert p.returncode == 3 and "OVER" in p.stdout
+
+
+def test_cap_key_billed_rows_do_not_count(tmp_path, capsys):
+    # PR #783 review, major 2: a run billed to an API key spent nothing of the plan.
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    key = dict(_row("2026-11-12T11:00:00+00:00", inp=500), billing="key")
+    plan = dict(_row("2026-11-12T11:00:00+00:00", inp=60), billing="plan")
+    assert run_tokens.cap_check(_ledger(tmp_path, [key, plan]), cap, NOW) == 0
+    assert "1 key-billed row(s) not counted" in capsys.readouterr().out
+    unmarked = _row("2026-11-12T11:00:00+00:00", inp=100)  # rows before the field: counted
+    assert run_tokens.cap_check(_ledger(tmp_path, [key, unmarked]), cap, NOW) == 3

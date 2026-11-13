@@ -169,7 +169,8 @@ def record(a) -> int:
         print(f"run_tokens: session {a.session}: unreadable or zero requests", file=sys.stderr)
         return 1
     row = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-           "ticket": a.ticket, "repo": a.repo, "pr": a.pr, "session": a.session, **rep}
+           "ticket": a.ticket, "repo": a.repo, "pr": a.pr, "session": a.session,
+           "billing": a.billing, **rep}
     out = Path(a.record).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(out, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -233,7 +234,7 @@ def cap_check(ledger: str, cap_file: str | None = None, now: str | None = None) 
         # with no meter must say so, not look green (the UNMETERED line of ASK-4721).
         print(f"run_tokens cap: UNMETERED: no ledger at {path}; the plan cap cannot brake runs it never saw")
         return CAP_RUN
-    rows, bad = [], 0
+    rows, bad, keyed = [], 0, 0
     try:
         with path.open() as fh:
             for line in fh:
@@ -244,6 +245,12 @@ def cap_check(ledger: str, cap_file: str | None = None, now: str | None = None) 
                     ts = datetime.datetime.fromisoformat(r["ts"])
                 except (ValueError, KeyError, TypeError):
                     bad += 1
+                    continue
+                # A run billed to a Console API key spent nothing of the plan (PR #783
+                # review, major 2). Rows from before the field existed have no marker
+                # and count: every one of them was written under the plan override.
+                if r.get("billing") == "key":
+                    keyed += 1
                     continue
                 rows.append((ts, r))
     except OSError as exc:
@@ -265,7 +272,7 @@ def cap_check(ledger: str, cap_file: str | None = None, now: str | None = None) 
         hit = used >= win["cap"]
         over = over or hit
         parts.append(f"{win['hours']:g}h {used / 1e6:.1f}M of {win['cap'] / 1e6:.1f}M{' OVER' if hit else ''}")
-    tail = f"; {bad} malformed row(s) skipped" if bad else ""
+    tail = (f"; {bad} malformed row(s) skipped" if bad else "") + (f"; {keyed} key-billed row(s) not counted" if keyed else "")
     label = cfg.get("status", "")
     print(f"run_tokens cap: {'OVER' if over else 'under'}: weighted tokens {', '.join(parts)}"
           f"{' (' + label + ')' if label else ''}{tail}")
@@ -287,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ticket", default="")
     ap.add_argument("--repo", default="")
     ap.add_argument("--pr", default="")
+    ap.add_argument("--billing", choices=("plan", "key"), default="plan",
+                    help="who paid for the run; --cap-check skips key rows (default plan: the safe side)")
     ap.add_argument("--by-agent", action="store_true")
     ap.add_argument("--subagents", action="store_true", help="also read <stem>/subagents/ beside each file")
     a = ap.parse_args(argv)

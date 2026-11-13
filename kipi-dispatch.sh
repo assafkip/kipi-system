@@ -1234,12 +1234,21 @@ if [ "${KIPI_FLEET_API_KEYS:-1}" = "0" ] && [ -f "$TOKEN_CAP_HELPER" ]; then
   CAP_LINE="$(python3 "$TOKEN_CAP_HELPER" --cap-check "${KIPI_RUN_TOKENS_FILE:-$HOME/.local/state/kipi/run-tokens.jsonl}" 2>&1 | tail -n 1; exit "${PIPESTATUS[0]}")" || CAP_RC=$?
   case "$CAP_RC" in
     0)
+      # No page_clear of plan-token-cap here: at the cap the reading swings over and
+      # under as rows age out, and a clear per swing is a ticket per swing (PR #783
+      # review, major 1). page_once's 24h cooldown is the only dedupe it needs.
       say "PLAN TOKENS: $CAP_LINE"
-      page_clear plan-token-cap; page_clear plan-token-cap-broken ;;
+      page_clear plan-token-cap-broken
+      # UNMETERED lets the tick go on (a fresh machine has no ledger before its first
+      # run), but a producer that stopped writing must reach Sana (review, major 3).
+      case "$CAP_LINE" in
+        *UNMETERED*) page_once plan-token-cap-unmetered "kipi dispatch: the plan token cap has no rows to read (UNMETERED), so plan-billed runs are not braked. Do: check that linear-worker.sh record_run_tokens is writing ~/.local/state/kipi/run-tokens.jsonl." ;;
+        *) page_clear plan-token-cap-unmetered ;;
+      esac ;;
     3)
       say "PLAN TOKENS: over the cap, no new dispatch this tick: $CAP_LINE"
       page_clear plan-token-cap-broken
-      page_once plan-token-cap "kipi dispatch: the plan-billed fleet passed its token cap, so no new run starts until the rolling window drops under it. Not an error, it resumes by itself. Reading: $CAP_LINE. The cap lives in q-system/.q-system/run-token-cap.json."
+      page_once plan-token-cap "kipi dispatch: the plan-billed fleet passed its token cap, so no new run starts until the rolling window drops under it. Not an error, it resumes by itself. The reading is in dispatch.log (PLAN TOKENS lines); the cap lives in q-system/.q-system/run-token-cap.json."
       exit 0 ;;
     *)
       say "PLAN TOKENS: the cap check is broken (rc=$CAP_RC): $CAP_LINE; stopping the tick"
