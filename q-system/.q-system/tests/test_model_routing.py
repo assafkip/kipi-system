@@ -374,10 +374,9 @@ class EveryCallNamesAModel(unittest.TestCase):
     def test_negative_self_test_stripping_a_real_calls_model_is_caught(self):
         # PR #664 round 4, major: the reviewer's own mutation. A file-level match
         # stayed green with --model gone from a real call; per call, it goes red.
-        # The reviewer's claude line moved into review-lean-lib.sh (ASK-4743); read it there.
-        agent = (SCRIPTS / "review-lean-lib.sh").read_text()
+        agent = (SCRIPTS / "pr-review-agent.sh").read_text()
         self.assertIn("$FLEET_CLAUDE -p --model '$CLAUDE_MODEL'", agent)
-        self.assertTrue(bare_calls("review-lean-lib.sh", agent.replace(
+        self.assertTrue(bare_calls("pr-review-agent.sh", agent.replace(
             "$FLEET_CLAUDE -p --model '$CLAUDE_MODEL'", "$FLEET_CLAUDE -p")))
         distill = (SCRIPTS / "lessons-distill.py").read_text()
         self.assertTrue(bare_calls("lessons-distill.py", distill.replace('job="lesson-distill"', 'timeout2=1')))

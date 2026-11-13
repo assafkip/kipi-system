@@ -4,6 +4,7 @@ No real model call: `claude` is a stub that records its argv and env. Every
 tmp file lives under pytest's tmp_path; nothing touches a live data path.
 """
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -27,6 +28,13 @@ STUB = textwrap.dedent("""\
     """)
 
 
+def template():
+    """The double-quoted `bash -c` string of the reviewer's claude arm, as source text."""
+    m = re.findall(r'(?m)^\s*("cd \'\$REVIEW_ROOT\' && .*? 2>&1")\s+_ "\$PROMPT"', AGENT.read_text())
+    assert len(m) == 1, f"expected one claude bash -c line in pr-review-agent.sh, found {len(m)}"
+    return m[0]
+
+
 def build(lib, lean, tmp, mode):
     """Run the command the lib prints, with a stub claude; return (argv, env_row)."""
     rec = tmp / "rec.txt"
@@ -44,9 +52,13 @@ def build(lib, lean, tmp, mode):
         env["KIPI_REVIEW_LEAN"] = lean
     root = tmp / "tree"
     root.mkdir(exist_ok=True)
+    # The REAL template from pr-review-agent.sh's claude arm, expanded by bash with
+    # the lib's two globals, so the test sees the line the reviewer runs (ASK-4796:
+    # a lib-printed copy hid the call from every consumer that reads the reviewer).
     cmd = subprocess.run(
-        ["bash", "-c", f'. "{lib}"; review_claude_cmd "{root}" claude-test "$F" "{tmp}/out" "{SCRIPTS}"'],
-        env={**env, "F": fleet}, capture_output=True, text=True, check=True).stdout
+        ["bash", "-c", f'. "{lib}"; review_lean_args "{SCRIPTS}"; REVIEW_ROOT="{root}"; CLAUDE_MODEL=claude-test; '
+                       f'FLEET_CLAUDE="$F"; set -- claude "{tmp}/out"; eval "cmd=$TPL"; printf "%s" "$cmd"'],
+        env={**env, "F": fleet, "TPL": template()}, capture_output=True, text=True, check=True).stdout
     subprocess.run(["bash", "-c", cmd, "_", "PROMPT"], env=env, check=True,
                    capture_output=True, text=True)
     rows = rec.read_text().splitlines()
@@ -121,5 +133,9 @@ def test_settings_attach_exactly_the_guards():
 def test_script_is_wired_through_the_lib():
     text = AGENT.read_text()
     assert '. "$SCRIPT_DIR/review-lean-lib.sh"' in text
-    assert 'review_claude_cmd "$REVIEW_ROOT" "$CLAUDE_MODEL" "$FLEET_CLAUDE" "$2" "$SCRIPT_DIR"' in text
-    assert "cd '$REVIEW_ROOT' && KIPI_AGENT=pr-reviewer" not in text, "inline copy would bypass the switch"
+    assert 'claude) review_lean_args "$SCRIPT_DIR"' in text
+    # ONE claude line, and it carries both lean inserts: a second copy would bypass the switch.
+    assert text.count("$FLEET_CLAUDE -p") == 1, "a second claude line would bypass the switch"
+    tpl = template()
+    assert "${REVIEW_LEAN_ENV}KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL'" in tpl
+    assert "${REVIEW_LEAN_FLAGS} </dev/null" in tpl

@@ -1632,8 +1632,12 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # API credit rather than the founder's plan, through the one helper that
     # reads the key and meters the run. This inverts ASK-2176's subscription-only
     # rule for this call site only; KIPI_FLEET_API_KEYS=0 puts it back, loudly.
-    claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "$(review_claude_cmd "$REVIEW_ROOT" "$CLAUDE_MODEL" "$FLEET_CLAUDE" "$2" "$SCRIPT_DIR")" _ "$PROMPT" ;;
+    # The lean half (env before KIPI_AGENT=, flags before the redirect) comes from
+    # review-lean-lib.sh; both are empty when lean is off. The line itself stays HERE
+    # so call_sites.py and every test that reads this file still see the call (ASK-4796).
+    claude) review_lean_args "$SCRIPT_DIR"
+            KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
+              "cd '$REVIEW_ROOT' && ${REVIEW_LEAN_ENV}KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)'${REVIEW_LEAN_FLAGS} </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac
