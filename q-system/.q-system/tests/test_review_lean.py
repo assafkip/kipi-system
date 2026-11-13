@@ -155,7 +155,8 @@ def test_lean_flags_realize_the_fleet_load_allowlist_review_row():
     ones, mcp_servers [], 0 skills, tools Bash/Glob/Grep/Read. On one real review pair at
     one head (PRs #790/#791): first request 123,269 normal (345 skills, 717 deferred tool
     names, 17 MCP servers) against 11,192 lean (no skill listing, 0 tool names, 0 servers).
-    A row that grows a plugin or a server fails here until the launcher loads it."""
+    A row that grows a plugin or a server fails here on purpose: change the launcher
+    and this test in the same PR."""
     row = json.loads((SCRIPTS.parent / "fleet-load-allowlist.json").read_text())["jobs"]["review"]
     assert row["plugins"] == [] and row["mcp_servers"] == [] and row["account_connectors"] is False, \
         f"the review row changed ({row}); review-lean-lib.sh must load exactly what it names"
