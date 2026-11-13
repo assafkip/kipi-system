@@ -64,6 +64,11 @@ def parts(recs: list[dict]) -> dict:
         if r.get("type") != "api-request-blob":
             continue
         content = (r.get("message") or {}).get("content")
+        # The CLI writes some blobs with plain-string content: 1,128 of 44,854
+        # blobs in 2,168 transcripts (2026-11-13), one of them 45,869 chars. A
+        # list-only loop dropped them at exit 0 (review of #794, round 3).
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
         for blk in content if isinstance(content, list) else []:
             text = blk.get("text") or ""
             if blk.get("type") == "tool_addition":
@@ -126,6 +131,7 @@ def census_file(path: str) -> dict:
     with open(path) as fh:
         recs = [json.loads(line) for line in fh if line.strip()]
     row = census(recs)
+    row["has_shape"] = any(r.get("type") == "api-request-shape" for r in recs)
     # One file in, so no start_of: run_tokens keys its groups by the normalized
     # Path, and a raw "./x" start_of matched no group and read null (review of #794).
     row["context_first"] = run_tokens.report([path]).get("context_first")
@@ -145,7 +151,9 @@ def main(argv: list[str]) -> int:
             rc = 1
             continue
         if not row["parts_chars"]:
-            print("startup_census: no api-request-shape record in %s" % path, file=sys.stderr)
+            why = ("api-request-shape present, no parts in it" if row.get("has_shape")
+                   else "no api-request-shape record")
+            print("startup_census: %s in %s" % (why, path), file=sys.stderr)
             rc = 1
         print(json.dumps(row))
     return rc

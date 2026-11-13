@@ -115,3 +115,20 @@ def test_malformed_shape_is_reported_and_the_batch_goes_on(tmp_path):
     assert "cannot read" in p.stderr
     rows = [json.loads(line) for line in p.stdout.splitlines()]
     assert [r["context_first"] for r in rows] == [132256]
+
+
+def test_string_content_blob_is_counted():
+    # Producer shape: a system blob whose content is a plain string.
+    text = "The following deferred tools are now available via ToolSearch." + "x" * 900
+    recs = [{"type": "api-request-shape", "shape": {"system": [], "tools": []}},
+            {"type": "api-request-blob", "message": {"role": "system", "content": text}},
+            {"type": "api-request"}]
+    assert sum(startup_census.parts(recs).values()) == len(text)
+
+
+def test_empty_shape_is_named_as_present(tmp_path):
+    f = tmp_path / "e.ndjson"
+    f.write_text(json.dumps({"type": "api-request-shape", "shape": {"system": [], "tools": []}}) + "\n")
+    p = subprocess.run([sys.executable, str(HERE / "startup_census.py"), str(f)], capture_output=True, text=True)
+    assert p.returncode == 1
+    assert "api-request-shape present, no parts" in p.stderr
