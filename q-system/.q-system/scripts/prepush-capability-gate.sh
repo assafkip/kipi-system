@@ -70,13 +70,19 @@ for sha in "${shas[@]}"; do
   git -C "$root" worktree add -q --detach "$tmp/tree" "$sha"
   echo "capability pre-push: ${sha:0:12} capability-gate.py --check-only --diff-base ${base:0:12}" >&2
   set +e
-  python3 "$tmp/tree/q-system/.q-system/scripts/capability-gate.py" \
-    --repo-root "$tmp/tree" --check-only --diff-base "$base"
+  out="$(python3 "$tmp/tree/q-system/.q-system/scripts/capability-gate.py" \
+    --repo-root "$tmp/tree" --check-only --diff-base "$base" 2>&1)"
   rc=$?
   set -e
   cleanup
   tmp=""
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 0 ]; then
+    # A green run prints about 12 KB of notes (every declared_inert entry, every
+    # base finding). Every agent push would carry that into its context, so a
+    # pass shows the verdict line only; a refusal shows everything.
+    printf '%s\n' "$out" | grep -E '^capability-gate: ' >&2 || true
+  else
+    printf '%s\n' "$out" >&2
     echo "capability pre-push: REFUSED ${sha:0:12} (gate exit $rc). Fix the RED lines above: wire the script, or add a declared_inert entry under q-system/.q-system/capability/declared_inert/." >&2
     refused=1
   fi

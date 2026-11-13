@@ -117,7 +117,9 @@ def test_its_declared_inert_entry_passes_despite_an_untracked_stray(clone_red_th
     out = run.stdout + run.stderr
     assert run.returncode == 0, out
     assert "capability-gate: GREEN" in out, out
-    assert f"DECLARED-INERT (sp-test): {PROBE}" in out, out
+    # A pass prints the verdict, not the gate's ~12 KB of notes: every agent
+    # push carries this output into its context.
+    assert "DECLARED-INERT" not in out, out
     assert STRAY not in out, out
     assert _worktrees(clone) == 1, "the temp worktree was left behind"
 
