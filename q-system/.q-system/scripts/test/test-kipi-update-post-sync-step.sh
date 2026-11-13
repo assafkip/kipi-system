@@ -16,8 +16,12 @@
 # (completes; the SAME fixture on origin/main's updater is red)  3 step makes
 # the marker then exits non-zero (rolled back, step named, a second instance
 # unaffected)  4 same with a missing command  5 dry run (printed, not run)
-# 6 a declaration holding two commands is refused.  Then one mutant per
-# decision point; each must turn this file red.
+# 6 a declaration holding two commands is refused  7 and 8 writes outside the
+# committed scope  9 the invariant over every hostile write at once  10 a failed
+# step stops the commit with no hook in the way  11 an index-only change
+# 12 gitignored paths under .claude/  13 the config commit fails after an
+# accepted step  14 an index FLAG only  15 a ref the step created.  Then one
+# mutant per decision point; each must turn this file red.
 #
 # The failing steps create the marker BEFORE they fail, on purpose: with the
 # marker absent the instance's own hook would roll the sync back anyway, and a
@@ -34,6 +38,10 @@ trap 'python3 -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=Tr
 # mktemp, not a counter: callers use $(newdir), a subshell, and a counter bumped
 # there is lost, which handed every case the SAME directory.
 newdir() { mktemp -d "$TOP/w.XXXXXX"; }
+# A gitignored directory under .claude/ in every fixture. Built from parts so
+# this file never spells a literal redirect into a .claude/ path, which the
+# instances' own claude-path-write-guard refuses on sight.
+IGNORED_CLAUDE_DIR=".claude/plans"
 
 # $1 = instance dir, $2 = declaration text ("" = none), $3 = yes|no: marker hook
 mk_inst() {
@@ -43,6 +51,12 @@ mk_inst() {
   printf '{}\n' > "$inst/.claude/settings.json"
   printf 'committed root notes\n' > "$inst/NOTES-AT-ROOT.md"
   printf '# stale rule\n' > "$inst/.claude/rules/demo-rule.md"
+  # A GITIGNORED file under .claude/, the shape of settings.local.json and
+  # plans/: `git add -A` skips it, so the main tree snapshot is blind to it and
+  # a step could rewrite the directory that wires every hook unnamed (PR #784).
+  printf '%s\n' "$IGNORED_CLAUDE_DIR/" > "$inst/.gitignore"
+  mkdir -p "$inst/$IGNORED_CLAUDE_DIR"
+  printf 'personal plan\n' > "$inst/$IGNORED_CLAUDE_DIR/mine.md"
   # Hostile names for the invariant case: a space and non-ASCII (git C-quotes
   # both in porcelain output) and a file the step renames.
   printf 'committed accented\n' > "$inst/root notes é.md"
@@ -121,6 +135,20 @@ g() { git -c user.email=t@t.t -c user.name=test -C "$d" "$@"; }
 g rev-parse HEAD
 g ls-files -s -z | tr '\0' '\n'
 echo "--- stash"; g stash list
+echo "--- dirs"
+# Directories, which NO git command lists: git tracks none. Without this the
+# oracle could not see a `mkdir -p deep/dir` the step left behind and case 9
+# asserted more than it checked (PR #784).
+python3 -I - "$d" <<'PYDIR'
+import os
+import sys
+
+root = sys.argv[1]
+for current, directories, _ in os.walk(root):
+    directories[:] = sorted(x for x in directories if x != ".git")
+    for name in directories:
+        print(os.path.relpath(os.path.join(current, name), root))
+PYDIR
 echo "--- files"
 g ls-files -z -c -o | python3 -c '
 import hashlib, os, sys
@@ -149,6 +177,15 @@ assert_human() {
   [ "$(cat "$1/human-notes.txt")" = "unsaved human notes" ] || fail "human file changed in $1"
   [ "$(status_of "$1" | grep human-notes)" = "?? human-notes.txt" ] || fail "human file no longer untracked in $1"
   G -C "$1" diff --cached --quiet || fail "index left staged in $1"
+  # Asserted on every case, not only the one that attacks it: the gitignored
+  # .claude/ file is invisible to status_of and to the fingerprint, so nothing
+  # else in this file would notice it being rewritten.
+  [ "$(cat "$1/$IGNORED_CLAUDE_DIR/mine.md")" = "personal plan" ] ||
+    fail "the gitignored .claude/ file changed in $1"
+  # No index flag (assume-unchanged / skip-worktree) left set: `ls-files -s`
+  # cannot see one, `-v` prints it as a lowercase tag or S.
+  [ -z "$(G -C "$1" ls-files -v | grep -E '^([a-z]|S) ' || true)" ] ||
+    fail "an index flag was left set in $1"
 }
 
 # ---------------- 1. no declaration: today's behaviour ----------------
@@ -302,6 +339,66 @@ echo "$OUT" | grep -qF "the index changed" || fail "case 11 did not say why: $OU
 assert_human "$W/needy"
 echo "PASS 11: a step that only stages is refused and the index restored"
 
+# ---------------- 12. gitignored paths under .claude/ ----------------
+# PR #784 major: `git add -A` skips what .gitignore skips, so a step rewriting
+# .claude/settings.local.json or .claude/plans/ was outside the tree snapshot.
+# The sync completed and the write persisted unnamed, in the one directory that
+# wires every hook, rule and agent.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" \
+  "touch .mirror-ok && printf 'CLOBBERED\n' > $IGNORED_CLAUDE_DIR/mine.md && printf 'N\n' > $IGNORED_CLAUDE_DIR/from-the-step.md"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 12 should refuse a step writing a gitignored .claude/ path: $OUT"
+echo "$OUT" | grep -qF "$IGNORED_CLAUDE_DIR/mine.md" || fail "case 12 did not name the ignored file it changed: $OUT"
+echo "$OUT" | grep -qF "$IGNORED_CLAUDE_DIR/from-the-step.md" || fail "case 12 did not name the ignored file it created: $OUT"
+[ ! -e "$W/needy/$IGNORED_CLAUDE_DIR/from-the-step.md" ] || fail "case 12 left the step's ignored file behind"
+assert_human "$W/needy"
+echo "PASS 12: a step writing gitignored paths under .claude/ is refused and restored"
+
+# ---------------- 13. the config commit fails after an accepted step ----------------
+# Codex P1: the snapshot was deleted before the commit ran. A step that stays in
+# bounds and then hits a refused commit was reported rolled back while its
+# untracked root artifact survived -- restore_instance's untracked inventory
+# stops at q-system/, .claude/ and plugins/. The step here makes no marker, so
+# the instance's own hook refuses the very commit that follows it.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "printf 'derived\n' > derived-at-root.md"
+B="$(status_of "$W/needy")"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 13 should roll back: $OUT"
+echo "$OUT" | grep -q "mirror is STALE" || fail "case 13: the hook never refused the commit: $OUT"
+echo "$OUT" | grep -qF "Rolling back the accepted post-sync step" || fail "case 13 did not say it rolled the step back: $OUT"
+[ ! -e "$W/needy/derived-at-root.md" ] || fail "case 13: an accepted step's root artifact survived a failed config commit"
+[ "$(status_of "$W/needy")" = "$B" ] || fail "case 13 status changed"
+assert_human "$W/needy"
+echo "PASS 13: an accepted step is undone when the config commit does not land"
+
+# ---------------- 14. an index FLAG only ----------------
+# Codex P2: `git ls-files -s` prints mode, blob and stage, so
+# `update-index --assume-unchanged` left its output byte-identical. The flag
+# then survived the sync and hid later working-tree changes from every git read.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && git update-index --assume-unchanged NOTES-AT-ROOT.md"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 14 should refuse an index-flag change: $OUT"
+echo "$OUT" | grep -qF "the index changed" || fail "case 14 did not say why: $OUT"
+assert_human "$W/needy"
+echo "PASS 14: a step that only sets an index flag is refused and the flag restored"
+
+# ---------------- 15. a ref the step created ----------------
+# Codex P2: `git stash push -u` moves the human's untracked work into a stash
+# entry. The tree restore brings the files back; the entry stayed, holding a
+# second copy of work the human never stashed.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" \
+  "touch .mirror-ok && git -c user.email=t@t.t -c user.name=test stash push -u -q -m from-the-step"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 15 should refuse a step that moves a ref: $OUT"
+echo "$OUT" | grep -qF "(a git ref changed) refs/stash" || fail "case 15 did not name the ref: $OUT"
+[ -z "$(G -C "$W/needy" stash list)" ] || fail "case 15: the stash entry the step created survived the rollback"
+assert_human "$W/needy"
+echo "PASS 15: a step that creates a ref is refused and the ref removed"
+
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
 # ---------------- mutants: one per decision point ----------------
@@ -340,16 +437,44 @@ mutant "rollback skipped after a refusal" \
   'if [ -n "$POST_SYNC_FAILED_STEP" ]; then
             ps_rollback' 'if false; then
             ps_rollback'
+# Anchored with the diff-tree line above each pipe: the main tree and the
+# forced .claude/ tree run the same two passes, so the pipe alone matches twice
+# and a two-match anchor is a failed experiment, not a kill.
 mutant "added files are not removed" \
-  '| ( cd "$repo" && xargs -0 rm -f -- )' '| ( cd "$repo" && cat >/dev/null )'
+  '--diff-filter=A "$before" "$after" \
+    | ( cd "$repo" && xargs -0 rm -f -- )' '--diff-filter=A "$before" "$after" \
+    | ( cd "$repo" && cat >/dev/null )'
+mutant "added files under .claude/ are not removed" \
+  '--diff-filter=A "$cbefore" "$cafter" \
+    | ( cd "$repo" && xargs -0 rm -f -- )' '--diff-filter=A "$cbefore" "$cafter" \
+    | ( cd "$repo" && cat >/dev/null )'
 mutant "changed files are not restored" \
-  'checkout-index -f -z --stdin || return 1' 'checkout-index -f -z --stdin </dev/null || return 1'
+  'GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" checkout-index -f -z --stdin || return 1' \
+  'GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" checkout-index -f -z --stdin </dev/null || return 1'
+mutant "changed files under .claude/ are not restored" \
+  'GIT_INDEX_FILE="$dir/crestore.index" git -C "$repo" checkout-index -f -z --stdin || return 1' \
+  'GIT_INDEX_FILE="$dir/crestore.index" git -C "$repo" checkout-index -f -z --stdin </dev/null || return 1'
 mutant "real index not restored" \
   'cp -- "$dir/index.before" "$real"; else' 'true; else'
 mutant "an index change is not a violation" \
   'cmp -s "$dir/ls.before" "$dir/ls.after" || echo "(the index changed)"' 'true'
+mutant "index flags are not read" \
+  'git -C "$1" ls-files -v -s -z' 'git -C "$1" ls-files -s -z'
+mutant "ignored files under .claude/ are not snapshotted" \
+  'git -C "$repo" add -A -f -- .claude' 'git -C "$repo" add -A -- .claude'
 mutant "a write under .claude/ is allowed" \
-  '.claude/*) printf' '.claude-x/*) printf'
+  '             "$(cat "$dir/ctree.before")" "$(cat "$dir/ctree.after")" 2>/dev/null)' \
+  '             "$(cat "$dir/ctree.before")" "$(cat "$dir/ctree.before")" 2>/dev/null)'
+mutant "a ref change is not a violation" \
+  'if ! cmp -s "$dir/refs.before" "$dir/refs.after"; then' 'if false; then'
+mutant "refs are not restored" \
+  'ps_restore_refs "$repo" "$dir" || return 1' 'true || return 1'
+mutant "directories the step created are not pruned" \
+  'ps_prune_new_dirs "$repo" "$dir" || return 1' 'true || return 1'
+mutant "the snapshot is released before the config commit" \
+  '    if [ -n "$PS_DIR" ]; then
+      if [ "$CONFIG_FAILED" != "0" ]; then' '    if [ -n "$PS_DIR" ]; then
+      if false; then'
 mutant "a changed file outside plugins/ is allowed" \
   'case "$p" in plugins/*) ;; *) printf' 'case "$p" in *) ;; *) printf'
 mutant "one-command check loosened" \
