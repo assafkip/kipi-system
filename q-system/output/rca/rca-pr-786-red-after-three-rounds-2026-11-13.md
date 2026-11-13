@@ -3,7 +3,7 @@
 **Date:** 2026-11-13
 **Trigger:** iteration-speed.md rule 6. PR #786 reached the review cap (3 rounds: 00:50Z REQUEST CHANGES, 00:56Z APPROVE WITH NITS, 02:03Z APPROVE) with Skeleton Validation red on both runs (00:50Z run 43340273401, 01:57Z run 43348697308). ASK-4796.
 **Surface-fix commit:** 66768b4d (lib-copy lists, consumer patches)
-**Structural-fix commit:** 33dad1cc (the claude line back in pr-review-agent.sh; the consumer patches reverted). PR #795 replaces #786.
+**Structural-fix commit:** 33dad1cc (the claude line back in pr-review-agent.sh; the consumer patches reverted) and 1eb26e56 (the arm's first line back to main's text). PR #795 replaces #786.
 
 ## What happened
 
@@ -44,6 +44,7 @@ Review rounds read the diff and not the CI result. Rounds 2 and 3 approved a hea
 - Red first, on 827d2a43: ran the 9 tests locally. All 9 exited 1, with the same FAIL lines as CI.
 - Green after, on 33dad1cc: all 9 exited 0. So did 5 more lib-copy tests (dry-run-labelled, reviewer-status-identity, gh-repo-scope-reviewer, artifact-repo-keyed, root-guard), test_model_routing.py and test_review_lean.py.
 - test_model_call_sites.py and test-subscription-only.sh: the same 3 failing ids and the same FAIL lines on 33dad1cc as on origin/main c395d6aa. Those are fleet-instance state on this Mac (ASK-4119, ASK-2772, ASK-2775). The round-4 reds for kipi-system are gone.
+- #795 `validate` then caught one more reader that 33dad1cc broke: test_blocked_claim_evidence_lint.py reads the arm's first line. 1eb26e56 put that line back to main's text. After that, a census of every tracked test that names pr-review-agent.sh (50 files), not a hand list: all exit 0 on 1eb26e56, and again on main with the flip applied.
 - Negative self-tests, mutate.py on pr-review-agent.sh, 4 of 4 KILLED and restored: `--model` removed (model-routing red); disallowedTools removed (blocked-verdict red); `$FLEET_CLAUDE -p` renamed (test_model_call_sites.py's kipi-system subtests red); `${REVIEW_LEAN_FLAGS}` not spliced (test_review_lean.py red).
 
 ## Contributing factors
@@ -65,4 +66,5 @@ Review rounds read the diff and not the CI result. Rounds 2 and 3 approved a hea
 
 - Moving a command line into a sourced lib also moves it away from every detector that found it by reading the file. Leave the line where the readers are, and move only the parts that vary.
 - Two rounds of the same class (consumers fixed file by file) mean the fix is the wrong shape. Stop patching readers.
+- Before pushing a change to a file many tests read, run every test that names the file. A census by grep is cheap (50 files, about 12 minutes); a hand-picked list missed one reader twice.
 - A review round on a head with red CI spends the cap and fixes nothing. Read statusCheckRollup before asking for a round.
