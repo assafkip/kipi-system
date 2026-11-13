@@ -45,6 +45,13 @@ unset KIPI_LINEAR_CLAIMS KIPI_SESSION_ID CLAUDE_SESSION_ID KIPI_TARGET_REPO KIPI
 
 G() { git -c user.email=t@t.t -c user.name=t "$@"; }
 STUB="$WORK/bin"; mkdir -p "$STUB" "$WORK/home"
+# ASK-4747/4756: the machine's plugins, shaped like the real install records
+# (installed_plugins.json version 2) and a skills-dir plugin (.claude-plugin/plugin.json
+# under ~/.claude/skills), the two sources `claude plugin list` read on 2026-11-12.
+# One fleet plugin the worker row keeps, two it does not.
+mkdir -p "$WORK/home/.claude/plugins" "$WORK/home/.claude/skills/last30days/.claude-plugin"
+printf '%s\n' '{"version":2,"plugins":{"kipi-core@kipi":[{"scope":"user","version":"1"}],"posthog@claude-plugins-official":[{"scope":"user","version":"1"}]}}' > "$WORK/home/.claude/plugins/installed_plugins.json"
+printf '%s\n' '{"name":"last30days","version":"2.9.5"}' > "$WORK/home/.claude/skills/last30days/.claude-plugin/plugin.json"
 
 mkrepo() {
   git init -q --bare "$WORK/origin-$2.git"
@@ -86,6 +93,13 @@ exit 0
 EOF
 chmod +x "$STUB/claude"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/reviewer-noop"; chmod +x "$STUB/reviewer-noop"
+# Records each line the worker sends to Sana's queue (the worker calls `bash "$NOTIFY"`).
+NOTIFY_LOG="$WORK/notify.txt"
+cat > "$STUB/notify-rec" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$NOTIFY_LOG"
+EOF
+chmod +x "$STUB/notify-rec"
 cat > "$STUB/python3" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
@@ -133,7 +147,7 @@ JSON
   : > "$GH_LOG"; rm -f "$WORK/argv-$1"
   ( cd "$WORK/skel" \
     && HOME="$WORK/home" KIPI_SKEL="$WORK/skel" KIPI_STATE_DIR="$WORK/state-$1" \
-       KIPI_NOTIFY="/usr/bin/true" KIPI_PR_REVIEWER="$STUB/reviewer-noop" \
+       KIPI_NOTIFY="$STUB/notify-rec" KIPI_PR_REVIEWER="$STUB/reviewer-noop" \
        KIPI_LINEAR_PROJECT="targetproj" CLAUDE_ARGV="$WORK/argv-$1" GUARD_FAIL="$gfail" \
        bash "$WORKER" --apply --repo "$tgt" --issue ASK-GGG --limit 1 \
   ) >"$WORK/run-$1.out" 2>&1
@@ -164,6 +178,35 @@ print("  argv: -p <prompt> --settings <%d hook commands, %d deny rules>" % (len(
 PY
 ok "E: a tree without project settings starts the agent with the skeleton's guard set"
 
+# --- E1. the launch loads only what the allowlist's worker row names (ASK-4747/4756) ---
+# Read from fleet-load-allowlist.json, never restated here: every plugin the fixture
+# machine knows whose name the row does not list must be off, and the MCP config must
+# be strict and hold exactly the row's servers (none). A launch without
+# --strict-mcp-config loads every MCP server and account connector: 617 deferred tool
+# names measured on 2026-11-12, against 13 with it.
+"$REAL_PY" - "$WORK/argv-E" "$ROOT/q-system/.q-system/fleet-load-allowlist.json" <<'PY' || fail "E1: see above. Output: $(tail -8 "$WORK/run-E.out")"
+import json, sys
+argv = [a.decode() for a in open(sys.argv[1], "rb").read().split(b"\0")[:-1]]
+row = json.load(open(sys.argv[2]))["jobs"]["worker"]
+known = {"kipi-core@kipi", "posthog@claude-plugins-official", "last30days@skills-dir"}
+if "--strict-mcp-config" not in argv:
+    sys.exit("E1: no --strict-mcp-config: the run loads every MCP server and account connector")
+if "--mcp-config" not in argv:
+    sys.exit("E1: --strict-mcp-config with no --mcp-config")
+servers = json.loads(argv[argv.index("--mcp-config") + 1]).get("mcpServers")
+if not isinstance(servers, dict) or sorted(servers) != sorted(row["mcp_servers"]):
+    sys.exit("E1: MCP servers %r, the worker row names %r" % (servers, row["mcp_servers"]))
+enabled = json.loads(argv[argv.index("--settings") + 1]).get("enabledPlugins", {})
+loaded = sorted(i for i in known if enabled.get(i, True) is not False)
+stray = [i for i in loaded if i.split("@")[0] not in row["plugins"]]
+if stray:
+    sys.exit("E1: plugins the worker row does not list still load: %r" % stray)
+if "kipi-core@kipi" not in loaded:
+    sys.exit("E1: the launch turned off kipi-core, which the worker row keeps")
+print("  argv: --strict-mcp-config --mcp-config %s, loads %r" % (json.dumps(servers), loaded))
+PY
+ok "E1: the worker launch loads only the allowlist's plugins and no MCP server"
+
 # --- E2. the worker passes --session-id and records the run's tokens (ASK-4675) ---
 ROWS="$WORK/home/.local/state/kipi/run-tokens.jsonl"
 tr '\0' '\n' < "$WORK/argv-E" | grep -x -- '--session-id' >/dev/null || fail "E2: the worker started claude with no --session-id, so no transcript can be tied to the run"
@@ -180,10 +223,30 @@ ok "E2: --session-id is passed and one run-tokens row (ticket, 700 output tokens
 
 # --- E3. a run whose transcript cannot be read still succeeds -------------------
 rm -f "$ROWS"
+# --- E2b. the start-up ratchet runs on the same transcript (ASK-4756, PR #792 review) ---
+# The stub transcript carries no skill_listing or deferred_tools_delta record, so the
+# counts are unread: the row must say so and Sana gets one line. A dropped or broken
+# record_startup call leaves no row and fails here.
+SROWS="$WORK/home/.local/state/kipi/worker-startup.jsonl"
+[ -f "$SROWS" ] || fail "E2b: the run finished but wrote no worker-startup row; the ratchet never ran. Output: $(tail -6 "$WORK/run-E.out")"
+"$REAL_PY" - "$SROWS" "$WORK/argv-E" <<'PY' || fail "E2b: the start-up row is wrong"
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+argv = [a.decode() for a in open(sys.argv[2], "rb").read().split(b"\0")[:-1]]
+sid = argv[argv.index("--session-id") + 1]
+r = rows[-1]
+if len(rows) != 1 or r["session"] != sid or r["ticket"] != "ASK-GGG" or r["job"] != "worker":
+    sys.exit("E2b: rows %r, session %s" % (rows, sid))
+if "skills unread" not in r["over"]:
+    sys.exit("E2b: a transcript with no skill listing was not reported unread: %r" % r["over"])
+PY
+grep -q 'start-up grew past its ceiling on ASK-GGG' "$NOTIFY_LOG" 2>/dev/null || fail "E2b: the crossing reached no line in Sana's queue. Notify log: $(cat "$NOTIFY_LOG" 2>/dev/null)"
+ok "E2b: the start-up ratchet wrote one row for the run's session and sent one line to Sana's queue"
 NO_TX=1 run_case E3 no
 [ "$(cat "$WORK/rc-E3")" = "0" ] || fail "E3: a missing transcript failed the worker run. Output: $(tail -8 "$WORK/run-E3.out")"
 grep -q 'ok ASK-GGG' "$WORK/run-E3.out" || fail "E3: the run did not complete. Output: $(tail -8 "$WORK/run-E3.out")"
 [ ! -s "$ROWS" ] || fail "E3: a row was written for a run with no transcript"
+[ "$(grep -c . "$SROWS")" = "1" ] || fail "E3: a run with no transcript added a start-up row"
 ok "E3: no transcript means no row and an unchanged run"
 
 # --- F. project settings that run every guard: nothing supplied ---------------
@@ -193,10 +256,15 @@ $(tail -12 "$WORK/run-F.out")"
 # NOT grep -q (ASK-3957): under pipefail, grep -q exits at the first match, tr dies
 # of SIGPIPE on the multi-KB prompt, the pipeline returns 141 and `&& fail` never
 # ran. The original check could not fail; a mutant that double-supplied passed it.
-if tr '\0' '\n' < "$WORK/argv-F" | grep -x -- '--settings' >/dev/null; then
-  fail "F: a tree whose settings already run every guard was also given --settings; every guard would fire twice"
-fi
-ok "F: a tree whose settings run every guard gets no --settings (no double-firing)"
+# ASK-4747: --settings now always carries the plugin trim, so the double-firing
+# property is "no HOOKS supplied", which is what fires twice, not "no --settings".
+"$REAL_PY" - "$WORK/argv-F" <<'PY' || fail "F: a tree whose settings already run every guard was also given guard hooks in --settings; every guard would fire twice"
+import json, sys
+argv = [a.decode() for a in open(sys.argv[1], "rb").read().split(b"\0")[:-1]]
+if "--settings" in argv and json.loads(argv[argv.index("--settings") + 1]).get("hooks"):
+    sys.exit(1)
+PY
+ok "F: a tree whose settings run every guard gets no guard hooks in --settings (no double-firing)"
 
 # --- F2. project settings that predate the guards: the missing ones supplied --
 # ASK-3957. Before it, F asserted that THIS tree (settings that run no guard at all)
