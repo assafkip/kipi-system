@@ -1,0 +1,21 @@
+{
+ "schema_version": 1,
+ "slug": "sana-lean-startup",
+ "reason": "ASK-4747 step 3 (RULE-2026-11-13-LEAN): the sana subagent stops loading the MCP servers no build called (0 calls in 14 builds); linear and claude_ai_Gmail stay. Generated from q-system/.q-system/sana-startup.json. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/sana-lean-startup.json --root $HOME",
+ "edits": [
+  {
+   "file": ".claude/agents/sana.md",
+   "op": "insert_after",
+   "anchor": "memory: user\n",
+   "insert": "disallowedTools: mcp__base44, mcp__claude_ai_Anthropic_Economic_Index, mcp__claude_ai_Claude_Docs, mcp__claude_ai_Era_Context, mcp__claude_ai_Google_Calendar, mcp__claude_ai_Google_Docs, mcp__claude_ai_Google_Drive, mcp__claude_ai_Google_Sheets, mcp__claude_ai_Google_Slides, mcp__claude_ai_Notion, mcp__claude_ai_Resend, mcp__claude_ai_Scholar_Gateway, mcp__claude_ai_Slack, mcp__claude_ai_Supabase, mcp__claude_ai_Vercel, mcp__claude_ai_Firecrawl, mcp__claude_ai_Canva, mcp__claude_ai_Figma, mcp__claude_ai_Financial_Datasets, mcp__claude_ai_Mermaid_Chart, mcp__claude_ai_Replit, mcp__claude_ai_Claude_Academy, mcp__granola, mcp__publer, mcp__apify, mcp__supabase, mcp__playwright, mcp__claude-in-chrome, mcp__computer-use, mcp__easel, mcp__google-home, mcp__plugin_chrome-devtools-mcp_chrome-devtools, mcp__plugin_kipi-core_kipi, mcp__plugin_small-business_shopify, mcp__plugin_context7_context7, mcp__plugin_kipi-notebooklm_notebooklm, mcp__plugin_posthog_posthog, mcp__plugin_slack_slack, mcp__plugin_vercel_vercel\n",
+   "reason": "Deny the MCP servers no sana build called; frontmatter key read by the CLI (comma-separated, proven on a plugin agent file before this proposal)."
+  },
+  {
+   "file": ".claude/agents/sana.md",
+   "op": "insert_before",
+   "anchor": "# Sana\n\nYou are Sana. Systems engineer for the kipi fleet.",
+   "insert": "Rule-ID: RULE-2026-11-13-LEAN\nEnforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_sana_agent_startup.py\n\n",
+   "reason": "rule_gate judges the edited preamble as a new section: it needs a Rule-ID and a wired enforcer, or the gate strips the frontmatter."
+  }
+ ]
+}

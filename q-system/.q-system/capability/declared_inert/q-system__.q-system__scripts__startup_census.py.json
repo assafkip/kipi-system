@@ -1,0 +1,5 @@
+{
+ "path": "q-system/.q-system/scripts/startup_census.py",
+ "reason": "hand-run measurement instrument (ASK-4747): splits a subagent's first request into parts from the CLI's own request records and counts what the run called. Run by hand for the sana start-up cut on 2026-11-13; no caller on any wiring surface yet. ASK-4804 wires it into a daily job that checks the newest sana start-ups against a ceiling.",
+ "spillover_id": "sp-3b9ee1a1"
+}
