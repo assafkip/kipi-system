@@ -20,8 +20,11 @@
 # committed scope  9 the invariant over every hostile write at once  10 a failed
 # step stops the commit with no hook in the way  11 an index-only change
 # 12 gitignored paths under .claude/  13 the config commit fails after an
-# accepted step  14 an index FLAG only  15 a ref the step created.  Then one
-# mutant per decision point; each must turn this file red.
+# accepted step  14 an index FLAG only  15 a ref the step created  16 a ref the
+# step MOVED  17 a branch it checked out, and HEAD  18 a gitignored file OUTSIDE
+# .claude/  19 the wall clock, and a background child of a finished step
+# 20 a step that reads stdin.  Then one mutant per decision point; each must turn
+# this file red.
 #
 # The failing steps create the marker BEFORE they fail, on purpose: with the
 # marker absent the instance's own hook would roll the sync back anyway, and a
@@ -42,6 +45,11 @@ newdir() { mktemp -d "$TOP/w.XXXXXX"; }
 # this file never spells a literal redirect into a .claude/ path, which the
 # instances' own claude-path-write-guard refuses on sight.
 IGNORED_CLAUDE_DIR=".claude/plans"
+# A gitignored directory OUTSIDE .claude/, at the repo root so no part of the
+# sync reaches it. The forced .claude/ tree does not cover it and a whole-repo
+# forced tree cannot afford to (measured: 567.6 MB of ignored files in the
+# consulting instance), so this is what the stat manifest watches.
+IGNORED_ROOT_DIR=".derived-cache"
 
 # $1 = instance dir, $2 = declaration text ("" = none), $3 = yes|no: marker hook
 mk_inst() {
@@ -54,9 +62,12 @@ mk_inst() {
   # A GITIGNORED file under .claude/, the shape of settings.local.json and
   # plans/: `git add -A` skips it, so the main tree snapshot is blind to it and
   # a step could rewrite the directory that wires every hook unnamed (PR #784).
-  printf '%s\n' "$IGNORED_CLAUDE_DIR/" > "$inst/.gitignore"
+  printf '%s\n%s\n' "$IGNORED_CLAUDE_DIR/" "$IGNORED_ROOT_DIR/" > "$inst/.gitignore"
   mkdir -p "$inst/$IGNORED_CLAUDE_DIR"
   printf 'personal plan\n' > "$inst/$IGNORED_CLAUDE_DIR/mine.md"
+  # The same shape outside .claude/: a derived cache the human's tooling keeps.
+  mkdir -p "$inst/$IGNORED_ROOT_DIR"
+  printf 'human derived\n' > "$inst/$IGNORED_ROOT_DIR/kept.json"
   # Hostile names for the invariant case: a space and non-ASCII (git C-quotes
   # both in porcelain output) and a file the step renames.
   printf 'committed accented\n' > "$inst/root notes é.md"
@@ -182,6 +193,13 @@ assert_human() {
   # else in this file would notice it being rewritten.
   [ "$(cat "$1/$IGNORED_CLAUDE_DIR/mine.md")" = "personal plan" ] ||
     fail "the gitignored .claude/ file changed in $1"
+  # Same reason, for the gitignored path OUTSIDE .claude/: invisible to status_of
+  # and to the fingerprint, so nothing else here would notice it being rewritten.
+  [ "$(cat "$1/$IGNORED_ROOT_DIR/kept.json")" = "human derived" ] ||
+    fail "the gitignored root file changed in $1"
+  # HEAD resolves and is not left pointing at a branch the rollback deleted.
+  G -C "$1" rev-parse --verify -q HEAD >/dev/null ||
+    fail "HEAD does not resolve in $1"
   # No index flag (assume-unchanged / skip-worktree) left set: `ls-files -s`
   # cannot see one, `-v` prints it as a lowercase tag or S.
   [ -z "$(G -C "$1" ls-files -v | grep -E '^([a-z]|S) ' || true)" ] ||
@@ -367,7 +385,8 @@ B="$(status_of "$W/needy")"
 OUT="$(run "$W" --only needy)"
 rolled_back "$OUT" || fail "case 13 should roll back: $OUT"
 echo "$OUT" | grep -q "mirror is STALE" || fail "case 13: the hook never refused the commit: $OUT"
-echo "$OUT" | grep -qF "Rolling back the accepted post-sync step" || fail "case 13 did not say it rolled the step back: $OUT"
+echo "$OUT" | grep -qF "Rolling back the post-sync step: the config commit did not land" ||
+  fail "case 13 did not say it rolled the step back: $OUT"
 [ ! -e "$W/needy/derived-at-root.md" ] || fail "case 13: an accepted step's root artifact survived a failed config commit"
 [ "$(status_of "$W/needy")" = "$B" ] || fail "case 13 status changed"
 assert_human "$W/needy"
@@ -399,6 +418,134 @@ echo "$OUT" | grep -qF "(a git ref changed) refs/stash" || fail "case 15 did not
 assert_human "$W/needy"
 echo "PASS 15: a step that creates a ref is refused and the ref removed"
 
+# ---------------- 16. a ref the step MOVED is reported, never rewound ----------------
+# The boundary chosen when the first ref restore replayed the whole snapshot and
+# the mutation run caught it rewinding a config commit that had landed:
+# restore_instance deliberately never rewinds a landed commit, so neither does
+# this. A created ref is deleted (case 15); a MOVED one is named and left.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" \
+  "touch .mirror-ok && git -c user.email=t@t.t -c user.name=test commit -q --allow-empty -m from-the-step"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 16 should refuse a step that commits: $OUT"
+echo "$OUT" | grep -qF "(a git ref changed) refs/heads/master" || fail "case 16 did not name the moved ref: $OUT"
+echo "$OUT" | grep -qF "MOVED a git ref and it is left as the step set it" || fail "case 16 did not say it was left: $OUT"
+echo "$OUT" | grep -q "could not restore" && fail "case 16: the rollback reported a failure it did not have: $OUT"
+# Captured first, like synced_commit above and for the same reason: under
+# pipefail, `grep -q` closing the pipe early makes git log exit 141 and the
+# check reads false on a commit that exists. This assertion read REWOUND on a
+# commit sitting right there in the log.
+SUBJECTS="$(G -C "$W/needy" log --format=%s)"
+case "$SUBJECTS" in *from-the-step*) ;; *) fail "case 16 REWOUND a commit that landed: $SUBJECTS";; esac
+assert_human "$W/needy"
+echo "PASS 16: a ref the step moved is reported, named and left as the step set it"
+
+# ---------------- 17. a branch the step checked out, and HEAD ----------------
+# PR #787 major: for-each-ref OMITS HEAD. A step that ran `git checkout -b` was
+# refused and the branch it created was deleted, leaving HEAD pointing at a ref
+# that no longer exists -- `git rev-parse HEAD` fatal, and the instance-level
+# rollback that runs next checks out paths from that same HEAD. The rollback
+# BROKE the repo worse than the step did.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && git checkout -q -b from-the-step"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 17 should refuse a step that creates a branch: $OUT"
+echo "$OUT" | grep -qF "(a git ref changed) refs/heads/from-the-step" ||
+  fail "case 17 did not name the branch the step created: $OUT"
+# Asserted BEFORE assert_human so a dangling HEAD reads as itself rather than as
+# "index left staged", which is what git reports once HEAD cannot resolve.
+[ "$(G -C "$W/needy" symbolic-ref -q HEAD || echo DETACHED)" = "refs/heads/master" ] ||
+  fail "case 17: HEAD was not put back: $(G -C "$W/needy" symbolic-ref -q HEAD || echo DETACHED)"
+G -C "$W/needy" rev-parse --verify -q refs/heads/from-the-step >/dev/null &&
+  fail "case 17: the branch the step created survived the rollback"
+assert_human "$W/needy"
+echo "PASS 17: a branch the step checked out is removed and HEAD put back"
+
+# A HEAD move that changes NO ref at all: `checkout --detach` points HEAD at the
+# same commit by sha. for-each-ref is byte-identical, so without HEAD in the
+# snapshot the step was ACCEPTED and the config commit landed detached, off the
+# instance's branch. This is the case the created-branch one above cannot cover,
+# because there the ref change alone is enough to refuse.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && git checkout -q --detach"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 17b should refuse a step that detaches HEAD: $OUT"
+echo "$OUT" | grep -qF "(HEAD moved)" || fail "case 17b did not report the HEAD move: $OUT"
+[ "$(G -C "$W/needy" symbolic-ref -q HEAD || echo DETACHED)" = "refs/heads/master" ] ||
+  fail "case 17b: HEAD left detached"
+synced_commit "$W/needy" && fail "case 17b committed with HEAD moved: $OUT"
+assert_human "$W/needy"
+echo "PASS 17b: a HEAD move that changes no ref is refused and HEAD put back"
+
+# ---------------- 18. a gitignored file OUTSIDE .claude/ ----------------
+# PR #787 major: ps_tree's `git add -A` skips what .gitignore skips, and the
+# forced tree covers .claude/ only, so a step clobbering a gitignored file
+# anywhere else was neither refused nor named and git held no copy of it.
+# A whole-repo forced tree is not the fix: 567.6 MB / 17,014 ignored files in the
+# consulting instance, hashed twice per sync. A stat manifest costs 0.06s there.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" \
+  "touch .mirror-ok && printf 'CLOBBERED\n' > $IGNORED_ROOT_DIR/kept.json"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 18 should refuse a step clobbering a gitignored file: $OUT"
+echo "$OUT" | grep -qF "(a gitignored file changed) $IGNORED_ROOT_DIR/kept.json" ||
+  fail "case 18 did not name the gitignored file it changed: $OUT"
+# The BOUNDARY, asserted rather than left in prose: outside .claude/ the file is
+# refused and NAMED, and the operator is told it was not put back. Restoring it
+# would mean a content snapshot of every ignored file, which is the 567.6 MB
+# above. What is pinned here is that nobody is told a lie.
+echo "$OUT" | grep -qF "not restored" ||
+  fail "case 18 did not warn that the gitignored file was left as the step wrote it: $OUT"
+[ "$(cat "$W/needy/$IGNORED_ROOT_DIR/kept.json")" = "CLOBBERED" ] ||
+  fail "case 18: restored it after all -- then the warning above is now a lie, fix the message"
+# Put back by hand, so assert_human's global guard still protects every case.
+printf 'human derived\n' > "$W/needy/$IGNORED_ROOT_DIR/kept.json"
+assert_human "$W/needy"
+echo "PASS 18: a step clobbering a gitignored file outside .claude/ is refused and named"
+
+# ---------------- 19. the wall clock, and a background child ----------------
+# PR #787 minor, and the same class twice in earlier rounds: the step ran with no
+# deadline, so one hung step stalled the sweep and every later instance in the
+# registry never synced.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && sleep 45"
+START="$SECONDS"
+OUT="$(KIPI_POST_SYNC_TIMEOUT=3 run "$W")"
+ELAPSED="$((SECONDS - START))"
+rolled_back "$OUT" || fail "case 19 should refuse a step that runs past its deadline: $OUT"
+echo "$OUT" | grep -qF "post-sync step exceeded 3s and was killed" ||
+  fail "case 19 did not name the deadline: $OUT"
+[ "$ELAPSED" -lt 40 ] || fail "case 19 waited ${ELAPSED}s for a 3s deadline"
+synced_commit "$W/other" || fail "case 19: the hung step stopped the rest of the sweep: $OUT"
+assert_human "$W/needy"
+echo "PASS 19: a step past its deadline is killed, named, and the sweep continues"
+
+# A step that EXITS but leaves a child alive must not hold the sweep either. The
+# step's output goes to a FILE rather than a command substitution for exactly
+# this: a `$(...)` waits for the pipe to close, which the grandchild holds open.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && sh -c 'sleep 25 &' "
+START="$SECONDS"
+OUT="$(KIPI_POST_SYNC_TIMEOUT=60 run "$W" --only needy)"
+ELAPSED="$((SECONDS - START))"
+rolled_back "$OUT" && fail "case 19b: the step exited 0 in bounds and should be accepted: $OUT"
+[ "$ELAPSED" -lt 20 ] || fail "case 19b waited ${ELAPSED}s on a background child of a step that exited"
+echo "PASS 19b: a background child of a finished step does not hold the sweep"
+
+# ---------------- 20. the step must not read the sweep's stdin ----------------
+# PR #785 round major: the instance loop reads the registry from stdin
+# (`done < <(python3 ...)`), and the step inherited it. A step that reads stdin
+# consumed the remaining registry records, so every later instance was silently
+# skipped while the run reported Updated 1 / Failed 0 and exited 0.
+W="$(newdir)"
+build_fixture "$W" "$SCRIPT" "touch .mirror-ok && cat"
+OUT="$(run "$W")"
+rolled_back "$OUT" && fail "case 20: the step exited 0 in bounds and should be accepted: $OUT"
+synced_commit "$W/needy" || fail "case 20: needy never synced: $OUT"
+synced_commit "$W/other" ||
+  fail "case 20: the step ate the registry and 'other' was never reached: $OUT"
+echo "PASS 20: a step that reads stdin does not consume the registry"
+
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
 # ---------------- mutants: one per decision point ----------------
@@ -422,7 +569,26 @@ PY
 mutant "declaration ignored" \
   '[ -f "$path/$POST_SYNC_DECL" ]; then' '[ -f "$path/$POST_SYNC_DECL.off" ]; then'
 mutant "step exit code ignored" \
-  'bash -c "$POST_SYNC_STEP" 2>&1)"; then' 'bash -c "$POST_SYNC_STEP" 2>&1; true)"; then'
+  '"$PS_DIR/step.out" || ps_rc=$?' '"$PS_DIR/step.out" || ps_rc=0'
+# The deadline. Mutated by dropping the override rather than the comparison: a
+# mutant with no deadline at all would HANG the mutation run instead of failing
+# it, and a mutant that cannot finish is not a kill.
+mutant "no wall clock on the step" \
+  'POST_SYNC_TIMEOUT="${KIPI_POST_SYNC_TIMEOUT:-600}"' 'POST_SYNC_TIMEOUT=600'
+mutant "the step inherits the sweep's stdin" \
+  '( cd "$repo" && exec bash -c "$cmd" ) </dev/null >"$out" 2>&1 &' \
+  '( cd "$repo" && exec bash -c "$cmd" ) >"$out" 2>&1 &'
+mutant "HEAD is not snapshotted" \
+  'ps_head "$repo" > "$dir/head.before" || return 1' 'true || return 1'
+mutant "HEAD is not restored" \
+  'ps_restore_head "$repo" "$dir" || return 1' 'true || return 1'
+mutant "a HEAD move is not a violation" \
+  'cmp -s "$dir/head.before" "$dir/head.after" ||' 'true ||'
+mutant "gitignored files outside .claude/ are not watched" \
+  'ps_ignored_changed "$dir/ignored.before" "$dir/ignored.after"' 'true'
+mutant "an unrestored gitignored file is not reported at rollback" \
+  'sed '"'"'s|^(a gitignored file changed) |    WARN: not restored, left as the step wrote it (gitignored): |'"'"' \
+    "$dir/ignored.unrestored"' 'true'
 mutant "dry run executes the step" \
   'elif [ "$DRY_RUN" = "--dry-run" ]; then
         echo "    post-sync step (dry run' 'elif false; then
@@ -434,9 +600,13 @@ mutant "commit still runs after a failed step" \
 mutant "out-of-bounds writes not detected" \
   'if [ -n "$ps_bad" ]; then' 'if false; then'
 mutant "rollback skipped after a refusal" \
-  'if [ -n "$POST_SYNC_FAILED_STEP" ]; then
-            ps_rollback' 'if false; then
-            ps_rollback'
+  'ps_rollback "$path" "$PS_DIR" ||' 'true ||'
+# The decision the held snapshot adds: roll back on ANY later failure, not only
+# on the step's own refusal. The mutant below is the pre-fix behaviour exactly.
+mutant "only a refused step is rolled back, not a refused commit" \
+  '      if [ "$CONFIG_FAILED" != "0" ]; then
+        echo "    Rolling back the post-sync step' '      if [ -n "$POST_SYNC_FAILED_STEP" ]; then
+        echo "    Rolling back the post-sync step'
 # Anchored with the diff-tree line above each pipe: the main tree and the
 # forced .claude/ tree run the same two passes, so the pipe alone matches twice
 # and a two-match anchor is a failed experiment, not a kill.
@@ -469,12 +639,13 @@ mutant "a ref change is not a violation" \
   'if ! cmp -s "$dir/refs.before" "$dir/refs.after"; then' 'if false; then'
 mutant "refs are not restored" \
   'ps_restore_refs "$repo" "$dir" || return 1' 'true || return 1'
+# The asymmetry itself: replaying a MOVED ref rewinds a commit that landed,
+# which is what the first version of this did (case 16's reason for existing).
+mutant "a moved ref is replayed instead of reported" \
+  '        print("#moved %s (%s -> %s)" % (ref, before[ref], obj))' \
+  '        print("update %s %s" % (ref, before[ref]))'
 mutant "directories the step created are not pruned" \
   'ps_prune_new_dirs "$repo" "$dir" || return 1' 'true || return 1'
-mutant "the snapshot is released before the config commit" \
-  '    if [ -n "$PS_DIR" ]; then
-      if [ "$CONFIG_FAILED" != "0" ]; then' '    if [ -n "$PS_DIR" ]; then
-      if false; then'
 mutant "a changed file outside plugins/ is allowed" \
   'case "$p" in plugins/*) ;; *) printf' 'case "$p" in *) ;; *) printf'
 mutant "one-command check loosened" \
