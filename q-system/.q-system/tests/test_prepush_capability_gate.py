@@ -99,7 +99,7 @@ def test_a_pushed_undeclared_engine_refuses_the_push(clone_red_then_green):
     assert f"RED: inert-engine: {PROBE} has no reference on any wiring surface" in out, out
     assert "capability-gate: RED (1)" in out, out
     assert f"REFUSED {red[:12]}" in out, out
-    assert "citing an OPEN spillover id" in out, out
+    assert "citing a spillover id that is not resolved" in out, out
     assert _worktrees(clone) == 1, "the temp worktree was left behind"
 
 
@@ -152,7 +152,29 @@ def test_another_red_class_gets_no_declared_inert_hint(clone_red_then_green):
     out = run.stdout + run.stderr
     assert run.returncode == 1, out
     assert f"present-but-undeclared: {rel}" in out, out
-    assert "citing an OPEN spillover id" not in out, out
+    assert "citing a spillover id that is not resolved" not in out, out
+
+
+def test_a_ledger_finding_main_already_has_does_not_block(tmp_path):
+    """The real hook's shape: a spillover ledger exists, and it resolves through
+    --git-common-dir to the main checkout, not to the temp worktree the gate
+    judges. Main carries a declared_inert entry whose id is absent from that
+    ledger; the branch only edits a README. The finding is main's, so it is
+    demoted and the push goes through (PR #804 review, major 1: it refused)."""
+    clone = _clone_of_head(tmp_path)
+    frag = "q-system/.q-system/capability/declared_inert/" + PROBE.replace("/", "__") + ".json"
+    entry = {"path": PROBE, "reason": "test probe (ASK-4814)", "spillover_id": "sp-absent0"}
+    _commit(clone, PROBE, ENGINE, mode=0o755)
+    _commit(clone, frag, json.dumps(entry, indent=1) + "\n")
+    _git(clone, "update-ref", "refs/remotes/origin/main", "HEAD")
+    ledger = clone / ".prd-os" / "spillover.jsonl"
+    ledger.parent.mkdir(exist_ok=True)
+    ledger.write_text(json.dumps({"id": "sp-other0", "status": "open"}) + "\n")
+    tip = _commit(clone, "q-system/.q-system/prepush-probe-readme.md", "probe\n")
+    run = _prepush(clone, _branch_line(tip))
+    out = run.stdout + run.stderr
+    assert run.returncode == 0, out
+    assert "capability-gate: GREEN" in out, out
 
 
 def test_no_origin_main_skips_loudly_and_never_blocks(tmp_path):
