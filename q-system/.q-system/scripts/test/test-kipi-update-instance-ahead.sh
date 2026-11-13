@@ -79,8 +79,12 @@ JSON
   ( cd "$inst" && G init -q -b main && G add -A -f && G commit -qm inst )
 }
 
+# $1 the run's output, $2 the summary header it must carry. A refused instance
+# is named under INSTANCE AHEAD, REFUSED and never under the "a sync overwrites
+# them" header: on 2026-11-12 the dry run listed consulting's RULE-2026-11-12-A
+# section under that header, and the summary is the line a reader acts on.
 expect_report() {
-  local out="$1"
+  local out="$1" header="${2:-INSTANCE AHEAD OF SKELETON (4 file(s)}"
   grep -q 'instance ahead: q-system/.q-system/scripts/gate.py (+defs: founder_only)' "$out" || \
     fail "the extra def is not named: $(grep 'instance ahead' "$out" || echo none)"
   grep -q 'instance ahead: q-system/.q-system/scripts/calibrated.txt (1 hunk)' "$out" || \
@@ -92,8 +96,14 @@ expect_report() {
   if grep -q 'instance ahead: q-system/tracked.md' "$out"; then
     fail "a file at the skeleton's OLDER version was reported ahead; the check is a diff, not the shipped-blob question"
   fi
-  grep -q 'INSTANCE AHEAD OF SKELETON (4 file(s)' "$out" || \
-    fail "the summary does not repeat the report with the right count: $(grep -A5 'Summary' "$out")"
+  grep -qF -- "$header" "$out" || \
+    fail "the summary does not repeat the report under '$header': $(grep -A8 'Summary' "$out")"
+  case "$header" in
+    'INSTANCE AHEAD, REFUSED'*)
+      if grep -q 'INSTANCE AHEAD OF SKELETON (' "$out"; then
+        fail "a refused instance is still listed as one a sync overwrites: $(grep -A8 'Summary' "$out")"
+      fi ;;
+  esac
   grep -q -- '- testinst: q-system/.q-system/scripts/gate.py (+defs: founder_only)' "$out" || \
     fail "the summary line does not name the instance and the file: $(grep -A8 'Summary' "$out")"
 }
@@ -119,7 +129,7 @@ assert_the_refuse_flag_abandons_before_any_commit_or_write() {
   G -C "$inst" diff --cached --quiet || fail "a refusal left something staged"
   G -C "$inst" diff --quiet || fail "a refusal left the working tree modified"
   grep -q 'founder_only' "$inst/q-system/.q-system/scripts/gate.py" || fail "a refusal overwrote the ahead file"
-  expect_report "$work/out"
+  expect_report "$work/out" 'INSTANCE AHEAD, REFUSED (4 file(s)'
   echo "PASS: --refuse-instance-ahead abandons the instance before the pre-sync commit: nothing staged, nothing written, report still printed"
 }
 
@@ -160,7 +170,128 @@ PY
   echo "PASS: forcing every blob to read as shipped silences the report (the shipped-blob check is load-bearing)"
 }
 
+# ------------------------------------------------------------------ the list
+# ASK-4823. lessons-daily runs `bash kipi-update.sh` with no flags at 08:00, so
+# the flag never protected consulting on the run that matters. The list at the
+# skeleton root names the instances where "ahead" means real work; a listed
+# instance refuses with no flag, every other instance keeps today's default.
+LIST_NAME="kipi-update-refuse-ahead.txt"
+write_list() {
+  local sk="$1"; shift
+  printf '%s\n' "$@" > "$sk/$LIST_NAME"
+}
+
+# Both the refusal and its proof: nothing committed, staged or written.
+expect_refused_untouched() {
+  local out="$1" inst="$2"
+  grep -q "refusing (listed in $LIST_NAME)" "$out" || \
+    fail "a listed ahead instance was not refused with no flag: $(tail -n 15 "$out")"
+  grep -q 'Failed:  1' "$out" || fail "a refused instance was not counted as failed: $(tail -n 8 "$out")"
+  [ "$(G -C "$inst" log -1 --format=%s)" = "inst" ] || fail "a refusal left a commit behind: $(G -C "$inst" log --format=%s)"
+  G -C "$inst" diff --cached --quiet || fail "a refusal left something staged"
+  G -C "$inst" diff --quiet || fail "a refusal left the working tree modified"
+  grep -q 'founder_only' "$inst/q-system/.q-system/scripts/gate.py" || fail "a refusal overwrote the ahead file"
+  expect_report "$out" 'INSTANCE AHEAD, REFUSED (4 file(s)'
+}
+
+# ------------------------------------------------------------------ property 5
+assert_a_listed_instance_refuses_with_no_flag() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+  write_list "$sk" '# instances where ahead has meant real work' 'testinst  # the fixture'
+  # The dry run first: it is the run a reader checks before 08:00.
+  bash "$sk/kipi-update.sh" --dry-run >"$work/dry" 2>&1 || true
+  expect_refused_untouched "$work/dry" "$inst"
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  expect_refused_untouched "$work/out" "$inst"
+  echo "PASS: a listed instance that is ahead refuses with no flag, in the dry run and the real run, and the summary names it as refused, not overwritten"
+}
+
+# ------------------------------------------------------------------ property 6
+# The list is matched by exact name. A prefix of the name, the name inside a
+# comment, and a list naming only other instances must all leave the default.
+assert_an_unlisted_instance_still_syncs_with_no_flag() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+  write_list "$sk" '# testinst used to be listed here' 'testins' 'otherinst  # testinst'
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  if grep -q 'refusing (listed in' "$work/out"; then
+    fail "an instance the list does not name was refused: $(grep 'refusing' "$work/out")"
+  fi
+  grep -q 'Updated: 1' "$work/out" || fail "an unlisted instance did not sync: $(tail -n 15 "$work/out")"
+  if grep -q 'founder_only' "$inst/q-system/.q-system/scripts/gate.py"; then
+    fail "an unlisted ahead instance kept its content; the default is to sync it"
+  fi
+  expect_report "$work/out"
+  echo "PASS: an unlisted ahead instance still syncs with no flag (prefix, comment and other names do not match)"
+}
+
+# ------------------------------------------------------------------ property 7
+# The flag still refuses an instance the list does not name.
+assert_the_flag_refuses_an_unlisted_instance() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+  write_list "$sk" 'otherinst'
+  bash "$sk/kipi-update.sh" --refuse-instance-ahead >"$work/out" 2>&1 || true
+  grep -q 'refusing (--refuse-instance-ahead)' "$work/out" || \
+    fail "the flag did not refuse an unlisted instance: $(tail -n 15 "$work/out")"
+  grep -q 'founder_only' "$inst/q-system/.q-system/scripts/gate.py" || fail "the flag's refusal overwrote the ahead file"
+  echo "PASS: --refuse-instance-ahead still refuses an instance the list does not name"
+}
+
+# ------------------------------------------------------------------ property 8
+# The real list: consulting is on it, and every name is a registry name. A
+# typo in this file protects nothing and says nothing, so it is pinned here.
+assert_the_real_list_names_consulting_and_only_registry_names() {
+  [ -f "$ROOT/$LIST_NAME" ] || fail "$LIST_NAME is missing from the skeleton root"
+  python3 - "$ROOT/$LIST_NAME" "$ROOT/instance-registry.json" <<'PY' || fail "the real list is wrong (above)"
+import json, sys
+names = []
+for raw in open(sys.argv[1], encoding="utf-8"):
+    entry = "".join(raw.split("#", 1)[0].split())
+    if entry:
+        names.append(entry)
+registry = {i["name"] for i in json.load(open(sys.argv[2], encoding="utf-8"))["instances"]}
+if "ASK_AI_consultant" not in names:
+    sys.exit("ASK_AI_consultant (consulting) is not on the list")
+unknown = [n for n in names if n not in registry]
+if unknown:
+    sys.exit(f"names not in instance-registry.json: {unknown}")
+PY
+  echo "PASS: the real list names ASK_AI_consultant and only registry names"
+}
+
+# ------------------------------------------------------------------ property 9
+# The mutant: the list lookup always answers "not listed". Property 5's run
+# must then sync and overwrite; if it still refuses, the refusal came from
+# somewhere else and property 5 was passing for another reason.
+assert_the_refusal_depends_on_the_list() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"
+  write_list "$sk" 'testinst'
+  python3 - "$sk/kipi-update.sh" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+needle = "while IFS='|' read -r name path prefix itype declared; do"
+assert text.count(needle) == 1, "main loop header moved; update the mutant"
+text = text.replace(needle, "instance_listed_refuse_ahead() { return 1; }\n" + needle)
+open(path, "w", encoding="utf-8").write(text)
+PY
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  if grep -q 'refusing (listed in' "$work/out"; then
+    fail "with the list lookup forced to 'not listed', the instance was still refused"
+  fi
+  grep -q 'Updated: 1' "$work/out" || fail "with the lookup forced off, the instance did not sync: $(tail -n 15 "$work/out")"
+  echo "PASS: forcing the list lookup to 'not listed' lets the sync land (the list is load-bearing)"
+}
+
 assert_the_dry_run_names_every_ahead_file_and_only_those
 assert_the_refuse_flag_abandons_before_any_commit_or_write
 assert_without_the_flag_the_sync_lands_and_the_summary_still_says_so
 assert_the_report_depends_on_the_shipped_blob_check
+assert_a_listed_instance_refuses_with_no_flag
+assert_an_unlisted_instance_still_syncs_with_no_flag
+assert_the_flag_refuses_an_unlisted_instance
+assert_the_real_list_names_consulting_and_only_registry_names
+assert_the_refusal_depends_on_the_list

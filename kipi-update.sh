@@ -50,7 +50,9 @@ ONLY=""
 # (see instance_ahead_scan). Off by default: fleet-wide the hit is usually
 # hook churn, and a refusal that fires on 24 instances gets switched off. The
 # consulting run script passes it, because there "ahead" has meant real work
-# every time (2026-09-06, three times in one day).
+# every time (2026-09-06, three times in one day). An instance named in
+# kipi-update-refuse-ahead.txt refuses with no flag (ASK-4823), see
+# instance_listed_refuse_ahead.
 REFUSE_INSTANCE_AHEAD=0
 # --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
 # checked-out branch still holds updater commits origin does not have (ASK-3655,
@@ -482,9 +484,49 @@ plugin_copy_rsync_flags() {
 # Updated/Failed, because a 1,100-line dry log hid rewritten=8 for a morning.
 # --refuse-instance-ahead turns a hit into an abandon BEFORE the pre-sync
 # commit: nothing staged, nothing deleted.
+#
+# Per instance the scan fills INSTANCE_AHEAD_HITS and INSTANCE_AHEAD_LINES; the
+# caller files them under the overwritten report or the refused one once it
+# has decided. A refused instance listed under "a sync overwrites them" is the
+# summary lying about the run (ASK-4823).
 INSTANCE_AHEAD_REPORT=""
 INSTANCE_AHEAD_TOTAL=0
+INSTANCE_AHEAD_REFUSED_REPORT=""
+INSTANCE_AHEAD_REFUSED_TOTAL=0
 INSTANCE_AHEAD_HITS=0
+INSTANCE_AHEAD_LINES=""
+
+# ASK-4823. The flag above protects only the callers that pass it, and the one
+# unattended caller does not: lessons-daily.sh runs `bash kipi-update.sh` with no
+# flags at 08:00. On 2026-11-12 the dry run reported consulting ahead on
+# .claude/rules/voice-loop-anywhere.md (a consulting-only section,
+# RULE-2026-11-12-A, written that evening) under "a sync overwrites them".
+# So the instances where "ahead" has meant real work every time are LISTED, and
+# a listed instance refuses with no flag. Every other instance keeps the
+# default-off behaviour, for the reason the flag's comment gives.
+#
+# A tracked file of its own, not a field in instance-registry.json: jobs write
+# the registry, and the shared checkout carries uncommitted rows in it, so a
+# protection living there could be reverted or never land. Root level, so
+# kipi update never syncs it into an instance.
+#
+# Format: one registry name per line; `#` starts a comment; whitespace is
+# ignored; exact match only (a prefix of a name protects nothing). No file
+# means nothing is listed. The suite pins that every listed name is a registry
+# name, since a typo here protects nothing and says nothing.
+REFUSE_AHEAD_LIST="$SCRIPT_DIR/kipi-update-refuse-ahead.txt"
+instance_listed_refuse_ahead() {
+  local want="$1" entry
+  [ -f "$REFUSE_AHEAD_LIST" ] || return 1
+  while IFS= read -r entry || [ -n "$entry" ]; do
+    entry="${entry%%#*}"
+    entry="${entry//[[:space:]]/}"
+    if [ -n "$entry" ] && [ "$entry" = "$want" ]; then
+      return 0
+    fi
+  done < "$REFUSE_AHEAD_LIST"
+  return 1
+}
 
 # $1 skeleton source dir for one scope, $2 the instance dir it lands in,
 # $3 the scope's skeleton-relative prefix (for fleet_authored_blob),
@@ -516,8 +558,7 @@ instance_ahead_scan() {
       || detail="differs"
     echo "  instance ahead: $shown ($detail)"
     INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
-    INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
-    INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    INSTANCE_AHEAD_LINES="$INSTANCE_AHEAD_LINES
     - $name: $shown ($detail)"
   done < <(rsync -ain "$src/" "$dest/" "$@" 2>/dev/null || true)
 }
@@ -529,6 +570,7 @@ instance_ahead_scan() {
 instance_ahead_preflight() {
   local path="$1" prefix="$2" name="$3" src_tmp dest kind
   INSTANCE_AHEAD_HITS=0
+  INSTANCE_AHEAD_LINES=""
   src_tmp="$(mktemp -d)"
   if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null \
       | tar -x -C "$src_tmp" 2>/dev/null; then
@@ -2890,9 +2932,21 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     # every mode, so the plain dry run, the fleet dry sweep's model run and the
     # apply all print the same lines.
     instance_ahead_preflight "$path" "$prefix" "$name"
-    if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
-      abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    ahead_refusal=""
+    if [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
+      if [ "$REFUSE_INSTANCE_AHEAD" = "1" ]; then
+        ahead_refusal="--refuse-instance-ahead"
+      elif instance_listed_refuse_ahead "$name"; then
+        ahead_refusal="listed in $(basename "$REFUSE_AHEAD_LIST")"
+      fi
     fi
+    if [ -n "$ahead_refusal" ]; then
+      INSTANCE_AHEAD_REFUSED_REPORT="$INSTANCE_AHEAD_REFUSED_REPORT$INSTANCE_AHEAD_LINES"
+      INSTANCE_AHEAD_REFUSED_TOTAL=$((INSTANCE_AHEAD_REFUSED_TOTAL + INSTANCE_AHEAD_HITS))
+      abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing ($ahead_refusal), nothing staged, nothing written" && continue
+    fi
+    INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT$INSTANCE_AHEAD_LINES"
+    INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + INSTANCE_AHEAD_HITS))
 
     # Same point, same reason: before anything is committed or written, in every
     # mode. Unlike the report above this one has no flag (ASK-3821).
@@ -3833,6 +3887,9 @@ fi
 # reader scrolls past, and the summary is what gets read.
 if [ "$INSTANCE_AHEAD_TOTAL" -gt 0 ]; then
   echo "  INSTANCE AHEAD OF SKELETON ($INSTANCE_AHEAD_TOTAL file(s) whose instance content the skeleton never shipped; a sync overwrites them):$INSTANCE_AHEAD_REPORT"
+fi
+if [ "$INSTANCE_AHEAD_REFUSED_TOTAL" -gt 0 ]; then
+  echo "  INSTANCE AHEAD, REFUSED ($INSTANCE_AHEAD_REFUSED_TOTAL file(s) the skeleton never shipped; the instance was not synced, nothing overwritten):$INSTANCE_AHEAD_REFUSED_REPORT"
 fi
 if [ -n "$SYNC_GUARD_REFUSED" ]; then
   echo "  SYNC GUARD REFUSED (recent instance work the sync would delete):$SYNC_GUARD_REFUSED"

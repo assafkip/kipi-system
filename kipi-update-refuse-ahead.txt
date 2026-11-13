@@ -1,0 +1,18 @@
+# Instances where "ahead of the skeleton" has meant real work every time.
+# kipi-update.sh refuses a listed instance that is ahead, with no flag: nothing
+# staged, nothing written, the instance stays on its previous skeleton version
+# and the run counts it as failed. Every instance not listed keeps the default
+# (report, then sync over it). ASK-4823.
+#
+# One registry name (instance-registry.json "name") per line. `#` starts a
+# comment. Exact match only. test-kipi-update-instance-ahead.sh pins that every
+# name here is a registry name.
+#
+# To unblock a listed instance: land its ahead content in the skeleton, or move
+# it to an instance-only file, then the next run syncs it. Removing a name here
+# lets the next sync overwrite that instance's ahead content.
+
+# consulting. 2026-09-06: the sync overwrote its voiceloop engine, voice-stop-gate.py
+# and calibrated BANNED_WORDS, three times in one day. 2026-11-12: the dry run
+# reported .claude/rules/voice-loop-anywhere.md ahead (RULE-2026-11-12-A section).
+ASK_AI_consultant
