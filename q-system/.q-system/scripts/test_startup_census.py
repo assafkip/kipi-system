@@ -22,10 +22,25 @@ def _recs():
     return [json.loads(line) for line in FX.read_text().splitlines() if line.strip()]
 
 
-def test_first_request_context_is_the_earliest_not_the_last():
-    # The fixture holds 100+ requests; the last one is far larger than the first.
-    recs = _recs()
-    assert startup_census.census(recs)["context_first"] == 132256
+def test_context_first_is_run_tokens_number_on_the_same_bytes():
+    # The fixture keeps the producer's envelope (message id, model, timestamp), so
+    # run_tokens reads it as 104 requests. The census reports run_tokens' number,
+    # never a second count of its own.
+    import run_tokens
+    r = run_tokens.report([str(FX)])
+    assert r["requests"] == 104
+    assert r["context_first"] == 132256
+    assert startup_census.census_file(str(FX))["context_first"] == 132256
+
+
+def test_api_error_or_synthetic_first_record_is_not_a_free_start_up(tmp_path):
+    bad = [{"type": "assistant", "isApiErrorMessage": True, "timestamp": "2026-11-13T00:00:00Z",
+            "message": {"id": "e1", "model": "claude-opus-5-5", "usage": {"input_tokens": 0}, "content": []}},
+           {"type": "assistant", "timestamp": "2026-11-13T00:00:00Z",
+            "message": {"id": "s1", "model": "<synthetic>", "usage": {"input_tokens": 0}, "content": []}}]
+    f = tmp_path / "t.ndjson"
+    f.write_text("".join(json.dumps(r) + "\n" for r in bad) + FX.read_text())
+    assert startup_census.census_file(str(f))["context_first"] == 132256
 
 
 def test_parts_match_the_hand_read_numbers():
@@ -45,7 +60,7 @@ def test_only_the_first_requests_blobs_count():
 
 def test_usage_counts_tool_calls():
     c = startup_census.census(_recs())
-    assert c["mcp_servers_called"] == {"linear": 9}
+    assert c["mcp_servers_called"] == {"linear": 11}
     assert c["skills_called"] == {"prd-os:fable-discipline": 1}
     assert "granola" not in c["mcp_servers_called"]
 
@@ -72,3 +87,25 @@ def test_deferred_header_without_tool_additions_still_splits():
     assert p["skill_listing"] == 30000 + len("The following skills are available")
     assert p["deferred_tools_and_mcp_instructions"] == len(head) + 3880
     assert "brief_and_other" not in p
+
+
+def test_listing_before_environment_is_counted_once():
+    head = "The following deferred tools are now available via ToolSearch."
+    text = head + "x" * 100 + "The following skills are available" + "z" * 1000 + "# Environment" + "y" * 500
+    recs = [{"type": "api-request-shape", "shape": {"system": [], "tools": []}},
+            {"type": "api-request-blob", "message": {"content": [{"type": "text", "text": text}]}},
+            {"type": "api-request"}]
+    p = startup_census.parts(recs)
+    assert sum(p.values()) == len(text)
+    assert p["environment"] == len("# Environment") + 500
+
+
+def test_malformed_shape_is_reported_and_the_batch_goes_on(tmp_path):
+    bad = tmp_path / "bad.ndjson"
+    bad.write_text(json.dumps({"type": "api-request-shape"}) + "\n")
+    p = subprocess.run([sys.executable, str(HERE / "startup_census.py"), str(bad), str(FX)],
+                       capture_output=True, text=True)
+    assert p.returncode == 1
+    assert "cannot read" in p.stderr
+    rows = [json.loads(line) for line in p.stdout.splitlines()]
+    assert [r["context_first"] for r in rows] == [132256]

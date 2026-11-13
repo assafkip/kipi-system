@@ -24,18 +24,15 @@ read as an empty start-up).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import Counter
 
-
-def _first_usage(recs: list[dict]) -> int | None:
-    """Context of the transcript's first request: input + cache read + cache write."""
-    for r in recs:
-        if r.get("type") == "assistant":
-            u = (r.get("message") or {}).get("usage") or {}
-            return sum(int(u.get(k) or 0) for k in
-                       ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
-    return None
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# context_first is run_tokens.py's number, read through run_tokens itself. A second
+# copy of "first request" here skipped its record filters (API-error and synthetic
+# records, no message id) and reported a free start-up of 0 (review of #794).
+import run_tokens  # noqa: E402
 
 
 def _tool_key(prefix: str, name: str) -> str:
@@ -81,14 +78,16 @@ def parts(recs: list[dict]) -> dict:
                 # when some tools arrive with full schemas, "deferred tools are
                 # now available" when none do (seen after the MCP cut, 2026-11-13).
                 # Split on the section markers, never on the header.
-                skills = text.find("The following skills are available")
-                env = text.find("# Environment")
-                head = env if env >= 0 else (skills if skills >= 0 else len(text))
-                out["deferred_tools_and_mcp_instructions"] += head
-                if env >= 0:
-                    out["environment"] += (skills if skills > env else len(text)) - env
-                if skills >= 0:
-                    out["skill_listing"] += len(text) - skills
+                # Each marker owns the text up to the NEXT marker, in position
+                # order. Fixed offsets counted the listing twice when it came
+                # before "# Environment" (review of #794).
+                marks = sorted((i, k) for k, i in (
+                    ("environment", text.find("# Environment")),
+                    ("skill_listing", text.find("The following skills are available"))) if i >= 0)
+                cuts = [0] + [i for i, _ in marks] + [len(text)]
+                labels = ["deferred_tools_and_mcp_instructions"] + [k for _, k in marks]
+                for label, a, b in zip(labels, cuts, cuts[1:]):
+                    out[label] += b - a
             else:
                 out["brief_and_other"] += len(text)
     return dict(out)
@@ -120,17 +119,29 @@ def usage(recs: list[dict]) -> dict:
 
 
 def census(recs: list[dict]) -> dict:
-    return {"context_first": _first_usage(recs), "parts_chars": parts(recs),
-            "instruction_files": instruction_files(recs), **usage(recs)}
+    return {"parts_chars": parts(recs), "instruction_files": instruction_files(recs), **usage(recs)}
+
+
+def census_file(path: str) -> dict:
+    with open(path) as fh:
+        recs = [json.loads(line) for line in fh if line.strip()]
+    row = census(recs)
+    row["context_first"] = run_tokens.report([path], start_of=path).get("context_first")
+    row["file"] = path
+    return row
 
 
 def main(argv: list[str]) -> int:
     rc = 0
     for path in argv:
-        with open(path) as fh:
-            recs = [json.loads(line) for line in fh if line.strip()]
-        row = census(recs)
-        row["file"] = path
+        # One bad transcript is reported and the batch goes on: a KeyError here
+        # used to abandon every later file (review of #794).
+        try:
+            row = census_file(path)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError) as e:
+            print("startup_census: cannot read %s: %s: %s" % (path, type(e).__name__, e), file=sys.stderr)
+            rc = 1
+            continue
         if not row["parts_chars"]:
             print("startup_census: no api-request-shape record in %s" % path, file=sys.stderr)
             rc = 1
