@@ -1435,6 +1435,83 @@ for record in open(sys.argv[2], "rb").read().split(b"\0"):
 PY
 }
 
+# A declared post-sync step runs under a git-built snapshot (ASK-4726).
+#
+# Scar (PR #780, three review rounds): the step's out-of-scope writes were
+# undone by a hand-written pass that read `git status --porcelain` text, sliced
+# it at offset 3 and fed the result to `git restore`. Round 2 found a staged
+# write that survived it; round 3 found a C-quoted path (a space, an accent) and
+# a staged rename it could not name. Same defect class twice: a second copy of a
+# job git already does, parsing text git does not promise to keep parseable.
+#
+# So nothing here reads a porcelain line. The state before the step is a TREE
+# object (a temporary index seeded from the real one, `add -A`, `write-tree`)
+# plus a byte copy of the real index. After the step, the same tree is taken
+# again and `diff-tree -z` names every changed path, NUL separated. Restore is
+# `checkout-index` from the old tree plus an unlink of added paths. No stash
+# entry, no ref, no change to the real index until a restore copies the saved
+# one back. Unreferenced objects stay in the object store until git gc.
+#
+# THE RULE THE STEP IS HELD TO: it may ADD untracked files, and write anything
+# under plugins/ (the config half it precedes). Any other change to a file that
+# existed before it, any change under .claude/, and any change to the index is
+# a refusal, and a refusal or a failure puts the instance back as it was.
+# Ignored files are outside the snapshot, as they are outside `git status`.
+ps_index_path() {  # $1 repo -> absolute path of the real index
+  git -C "$1" rev-parse --path-format=absolute --git-path index 2>/dev/null
+}
+
+ps_tree() {  # $1 repo, $2 scratch dir, $3 name -> prints a tree id
+  local repo="$1" idx="$2/$3.index" real
+  real="$(ps_index_path "$repo")" || return 1
+  if [ -f "$real" ]; then cp -- "$real" "$idx" || return 1; fi
+  GIT_INDEX_FILE="$idx" git -C "$repo" add -A >/dev/null 2>&1 || return 1
+  GIT_INDEX_FILE="$idx" git -C "$repo" write-tree 2>/dev/null
+}
+
+ps_snapshot() {  # $1 repo, $2 scratch dir: record the state before the step
+  local repo="$1" dir="$2" real
+  real="$(ps_index_path "$repo")" || return 1
+  ps_tree "$repo" "$dir" before > "$dir/tree.before" || return 1
+  [ -s "$dir/tree.before" ] || return 1
+  git -C "$repo" ls-files -s -z > "$dir/ls.before" || return 1
+  if [ -f "$real" ]; then cp -- "$real" "$dir/index.before"; fi
+}
+
+# Prints the offending paths, one per line, empty when the step stayed in bounds.
+ps_violations() {  # $1 repo, $2 scratch dir
+  local repo="$1" dir="$2" p
+  ps_tree "$repo" "$dir" after > "$dir/tree.after" || { echo "(could not snapshot the tree after the step)"; return 0; }
+  git -C "$repo" ls-files -s -z > "$dir/ls.after" || { echo "(could not read the index after the step)"; return 0; }
+  cmp -s "$dir/ls.before" "$dir/ls.after" || echo "(the index changed)"
+  # Changed or removed paths: allowed only under plugins/.
+  while IFS= read -r -d '' p; do
+    case "$p" in plugins/*) ;; *) printf '%s\n' "$p" ;; esac
+  done < <(git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=MDTUXB \
+             "$(cat "$dir/tree.before")" "$(cat "$dir/tree.after")" 2>/dev/null)
+  # Added paths: allowed anywhere except .claude/.
+  while IFS= read -r -d '' p; do
+    case "$p" in .claude/*) printf '%s\n' "$p" ;; esac
+  done < <(git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=A \
+             "$(cat "$dir/tree.before")" "$(cat "$dir/tree.after")" 2>/dev/null)
+}
+
+ps_rollback() {  # $1 repo, $2 scratch dir: put the instance back as snapshotted
+  local repo="$1" dir="$2" real before after
+  real="$(ps_index_path "$repo")" || return 1
+  before="$(cat "$dir/tree.before")"
+  # Re-taken here: a step that failed never reached ps_violations, and a step
+  # that did may have been followed by nothing else, but the cost is one add.
+  ps_tree "$repo" "$dir" after > "$dir/tree.after" || return 1
+  after="$(cat "$dir/tree.after")"
+  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=A "$before" "$after" \
+    | ( cd "$repo" && xargs -0 rm -f -- )
+  GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" read-tree "$before" || return 1
+  git -C "$repo" diff-tree -r -z --name-only --no-renames --diff-filter=MDTUXB "$before" "$after" \
+    | GIT_INDEX_FILE="$dir/restore.index" git -C "$repo" checkout-index -f -z --stdin || return 1
+  if [ -f "$dir/index.before" ]; then cp -- "$dir/index.before" "$real"; else rm -f -- "$real"; fi
+}
+
 # The single give-up path. Every one of the 24 sites routes through here, so
 # restore-before-teardown is structural rather than 24 chances to forget it.
 # Two sites record a failure and deliberately FALL THROUGH: a direct-clone
@@ -3554,36 +3631,35 @@ print("\n".join(mod.EXTRA_WATCHED))
         echo "    post-sync step (dry run, NOT run): $POST_SYNC_STEP"
       else
         echo "    Running post-sync step: $POST_SYNC_STEP"
-        # Tracked files the step modifies OUTSIDE the scope this run commits and
-        # restores (.claude/, plugins/). Scar (PR #780 review): such a write was
-        # neither committed nor rolled back, so a successful step wedged the
-        # instance at the dirty-tree guard on every later run while this run
-        # reported success, and a failed step's write survived the rollback.
-        # Snapshot first so a file already dirty is never mistaken for the step's.
-        ps_scope=(-- . ':(exclude).claude' ':(exclude)plugins')
-        ps_before="$(git -C "$path" status --porcelain --untracked-files=no "${ps_scope[@]}" 2>/dev/null | sort)"
-        # Own stdout and stderr both shown: the step's message is the diagnosis.
-        if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" 2>&1)"; then
-          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
-          echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
-          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
+        # Snapshot first, with git's own objects (see ps_snapshot). A snapshot we
+        # cannot take is a step we do not run: the invariant could not be proven.
+        PS_DIR="$(mktemp -d)"
+        if ! ps_snapshot "$path" "$PS_DIR"; then
+          echo "    ERROR: could not snapshot $path before the post-sync step; step NOT run"
+          POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (no snapshot)"
           CONFIG_FAILED=1
         else
-          printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+          # Own stdout and stderr both shown: the step's message is the diagnosis.
+          if ! POST_SYNC_OUT="$(cd "$path" && bash -c "$POST_SYNC_STEP" 2>&1)"; then
+            printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+            echo "    ERROR: post-sync step failed: $POST_SYNC_STEP"
+            POST_SYNC_FAILED_STEP="$POST_SYNC_STEP"
+          else
+            printf '%s\n' "$POST_SYNC_OUT" | sed 's/^/      /'
+            ps_bad="$(ps_violations "$path" "$PS_DIR")"
+            if [ -n "$ps_bad" ]; then
+              echo "    ERROR: post-sync step went outside its bounds (it may add untracked files and write under plugins/; it changed):"
+              printf '%s\n' "$ps_bad" | sed 's/^/      /'
+              POST_SYNC_FAILED_STEP="$POST_SYNC_STEP (wrote outside its bounds)"
+            fi
+          fi
+          if [ -n "$POST_SYNC_FAILED_STEP" ]; then
+            ps_rollback "$path" "$PS_DIR" ||
+              echo "    WARN: could not restore $path after the refused step; inspect it by hand"
+            CONFIG_FAILED=1
+          fi
         fi
-        ps_after="$(git -C "$path" status --porcelain --untracked-files=no "${ps_scope[@]}" 2>/dev/null | sort)"
-        ps_new="$(comm -13 <(printf '%s\n' "$ps_before") <(printf '%s\n' "$ps_after") | sed '/^$/d')"
-        if [ -n "$ps_new" ]; then
-          echo "    ERROR: post-sync step modified tracked files outside .claude/ and plugins/ (restored):"
-          printf '%s\n' "$ps_new" | sed 's/^/      /'
-          while IFS= read -r ps_line; do
-            # --staged too: a step that ran `git add` left the index holding the write,
-            # and a plain checkout restores from the index (PR #780 round 2).
-            git -C "$path" restore --source=HEAD --staged --worktree -- "${ps_line:3}" 2>/dev/null || true
-          done <<< "$ps_new"
-          POST_SYNC_FAILED_STEP="${POST_SYNC_FAILED_STEP:-$POST_SYNC_STEP (wrote outside .claude/ and plugins/)}"
-          CONFIG_FAILED=1
-        fi
+        rm -r -- "$PS_DIR"
       fi
     fi
 

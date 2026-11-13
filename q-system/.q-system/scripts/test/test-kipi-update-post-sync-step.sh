@@ -43,6 +43,10 @@ mk_inst() {
   printf '{}\n' > "$inst/.claude/settings.json"
   printf 'committed root notes\n' > "$inst/NOTES-AT-ROOT.md"
   printf '# stale rule\n' > "$inst/.claude/rules/demo-rule.md"
+  # Hostile names for the invariant case: a space and non-ASCII (git C-quotes
+  # both in porcelain output) and a file the step renames.
+  printf 'committed accented\n' > "$inst/root notes é.md"
+  printf 'committed rename me\n' > "$inst/to-rename.md"
   [ -n "$decl" ] && printf '%s\n' "$decl" > "$inst/.kipi-post-sync"
   ( cd "$inst" && G init -q && G add -A && G commit -qm inst )
   # An uncommitted human file: must survive every case untouched.
@@ -94,14 +98,49 @@ BJ
   printf '{"name":"demo","version":"0.0.1"}\n' > "$sk/plugins/demo/plugin.json"
   printf '{"hooks":{}}\n' > "$sk/.claude/settings.json"
   ( cd "$sk" && G init -q && G add -A -f && G commit -qm skel )
-  mk_inst "$work/needy" "$decl" yes
+  mk_inst "$work/needy" "$decl" "${NEEDY_HOOK:-yes}"
   mk_inst "$work/other" "" no
   printf '{"instances":[{"name":"needy","path":"%s","subtree_prefix":"q-system","type":"subtree"},{"name":"other","path":"%s","subtree_prefix":"q-system","type":"subtree"}]}\n' \
     "$work/needy" "$work/other" > "$sk/instance-registry.json"
 }
 
 run() { bash "$1/skel/kipi-update.sh" "${@:2}" 2>&1; }
-status_of() { G -C "$1" status --porcelain | grep -v '^?? \.mirror-ok$' | sort; }
+# Unfiltered on purpose. It used to drop `?? .mirror-ok`, the one untracked file
+# every case's step creates, so a step's untracked leftovers were invisible to
+# every status comparison (PR #780 round 3).
+status_of() { G -C "$1" status --porcelain=v1 -z | tr '\0' '\n' | sort; }
+# The whole observable state of an instance, read with git's own NUL output and
+# never parsed by hand: HEAD, the index (mode, blob, path), every tracked or
+# untracked file by content hash and mode, and the stash list. A standalone
+# script, so the hostile step can take the same fingerprint at the moment it
+# starts: that is the "before" the invariant is about.
+FP="$TOP/fp.sh"
+cat > "$FP" <<'FPEOF'
+d="$1"
+g() { git -c user.email=t@t.t -c user.name=test -C "$d" "$@"; }
+g rev-parse HEAD
+g ls-files -s -z | tr '\0' '\n'
+echo "--- stash"; g stash list
+echo "--- files"
+g ls-files -z -c -o | python3 -c '
+import hashlib, os, sys
+root = sys.argv[1]
+for rel in sorted(sys.stdin.buffer.read().split(b"\0")):
+    if not rel:
+        continue
+    p = os.path.join(root.encode(), rel)
+    try:
+        st = os.lstat(p)
+        body = os.readlink(p).encode() if os.path.islink(p) else open(p, "rb").read()
+        print(oct(st.st_mode), hashlib.sha256(body).hexdigest(), repr(rel))
+    except OSError:
+        print("MISSING", repr(rel))
+' "$d"
+FPEOF
+# .claude/ and plugins/ are left out of the comparison: the updater's existing
+# rollback resets them to HEAD after any refusal, which would hide whether the
+# step rollback did its part. Writes there are asserted by name instead.
+fingerprint() { bash "$FP" "$1" | grep -vE "(\.claude|plugins)/"; }
 rolled_back() { echo "$1" | grep -q "config sync did not reach a complete committed state"; }
 # Captured first: under pipefail, grep -q closing the pipe early makes git log
 # exit 141 and the check reads false on a commit that exists.
@@ -129,6 +168,7 @@ W="$(newdir)"; build_fixture "$W" "$SCRIPT" "touch .mirror-ok"
 OUT="$(run "$W" --only needy)"
 rolled_back "$OUT" && fail "case 2 did not complete: $OUT"
 synced_commit "$W/needy" || fail "case 2 made no config commit: $OUT"
+[ -f "$W/needy/.mirror-ok" ] || fail "case 2: the step's untracked product must stay on success"
 echo "$OUT" | grep -q "Running post-sync step: touch .mirror-ok" || fail "case 2 did not name the step: $OUT"
 assert_human "$W/needy"
 echo "PASS 2: declared step makes the commit-time check pass"
@@ -189,7 +229,7 @@ W="$(newdir)"
 build_fixture "$W" "$SCRIPT" "touch .mirror-ok && printf 'derived\n' > q-system/tracked.md"
 OUT="$(run "$W" --only needy)"
 rolled_back "$OUT" || fail "case 7 should refuse a step that dirties q-system/: $OUT"
-echo "$OUT" | grep -qF "outside .claude/ and plugins/" || fail "case 7 did not say why: $OUT"
+echo "$OUT" | grep -qF "went outside its bounds" || fail "case 7 did not say why: $OUT"
 [ "$(cat "$W/needy/q-system/tracked.md")" != "derived" ] || fail "case 7 left the step's write behind"
 synced_commit "$W/needy" && fail "case 7 committed: $OUT"
 assert_human "$W/needy"
@@ -202,6 +242,65 @@ rolled_back "$OUT" || fail "case 8 should roll back: $OUT"
 [ "$(cat "$W/needy/NOTES-AT-ROOT.md")" = "committed root notes" ] || fail "case 8: a failed step's write survived the rollback"
 assert_human "$W/needy"
 echo "PASS 8: a failed step's out-of-scope write is restored"
+
+# ---------------- 9. the invariant, over hostile writes ----------------
+# After a refused or failed step, the instance's tracked content, index,
+# untracked set and stash list equal the state before the run. Rounds 2 and 3 of
+# PR #780 were two defects in a hand-rolled undo pass; this case asserts the
+# property once, over every hostile write at the same time, for both a step that
+# exits 0 (refused) and one that exits non-zero (failed).
+for exitcode in 0 3; do
+  W="$(newdir)"
+  cat > "$W/hostile.sh" <<HOSTILE
+bash $FP "\$PWD" > $W/fp.before
+touch .mirror-ok
+printf 'X\n' > "root notes é.md"
+git mv to-rename.md "renamed é.md"
+printf 'n\n' > new-staged.md && git add new-staged.md
+printf 'u\n' > "new untracked é.txt"
+mkdir -p deep/dir && printf 'u\n' > deep/dir/f
+printf 'I\n' > .claude/rules/demo-rule.md
+printf 'U\n' > .claude/rules/from-the-step.md
+printf 'H\n' >> human-notes.txt
+exit $exitcode
+HOSTILE
+  build_fixture "$W" "$SCRIPT" "sh $W/hostile.sh"
+  OUT="$(run "$W" --only needy)"
+  FP_BEFORE="$(grep -vE "(\.claude|plugins)/" "$W/fp.before")"
+  rolled_back "$OUT" || fail "case 9 (exit $exitcode) should roll back: $OUT"
+  synced_commit "$W/needy" && fail "case 9 (exit $exitcode) committed: $OUT"
+  FP_AFTER="$(fingerprint "$W/needy")"
+  [ -s "$W/fp.before" ] || fail "case 9 (exit $exitcode): the step never ran"
+  if [ "$exitcode" = 0 ]; then
+    echo "$OUT" | grep -qF ".claude/rules/from-the-step.md" || fail "case 9: a new file under .claude/ was not named: $OUT"
+    echo "$OUT" | grep -qF ".claude/rules/demo-rule.md" || fail "case 9: a changed file under .claude/ was not named: $OUT"
+  fi
+  [ "$(cat "$W/needy/.claude/rules/demo-rule.md")" = "# stale rule" ] || fail "case 9 (exit $exitcode): .claude/ write survived"
+  [ ! -e "$W/needy/.claude/rules/from-the-step.md" ] || fail "case 9 (exit $exitcode): .claude/ file created by the step survived"
+  [ "$FP_BEFORE" = "$FP_AFTER" ] || fail "case 9 (exit $exitcode): state differs after the refusal:
+$(diff <(echo "$FP_BEFORE") <(echo "$FP_AFTER"))"
+done
+echo "PASS 9: refused and failed steps leave tracked content, index, untracked set and stash list unchanged"
+
+# ---------------- 10. a failed step must stop the commit by itself ----------------
+# With the marker rolled back (case 3/4) the instance's own hook refuses the
+# commit anyway, which hid a mutant that commits after a failed step. An
+# instance with no hook makes the updater's own skip the only thing in the way.
+W="$(newdir)"; NEEDY_HOOK=no build_fixture "$W" "$SCRIPT" "sh -c 'exit 3'"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 10 should roll back: $OUT"
+synced_commit "$W/needy" && fail "case 10 committed after a failed step: $OUT"
+echo "PASS 10: no config commit after a failed step, with no hook to stop it"
+
+# ---------------- 11. an index-only change ----------------
+# Staging a file already in the tree changes no tree object, so only the index
+# comparison sees it. The human file must come back unstaged.
+W="$(newdir)"; build_fixture "$W" "$SCRIPT" "touch .mirror-ok && git add human-notes.txt"
+OUT="$(run "$W" --only needy)"
+rolled_back "$OUT" || fail "case 11 should refuse an index change: $OUT"
+echo "$OUT" | grep -qF "the index changed" || fail "case 11 did not say why: $OUT"
+assert_human "$W/needy"
+echo "PASS 11: a step that only stages is refused and the index restored"
 
 [ -n "${KIPI_UPDATE_UNDER_TEST:-}" ] && exit 0
 
@@ -235,10 +334,24 @@ mutant "commit still runs after a failed step" \
   '[ -z "$POST_SYNC_FAILED_STEP" ] &&
         git -C "$path" rev-parse --git-dir' 'true &&
         git -C "$path" rev-parse --git-dir'
-mutant "out-of-scope writes not detected" \
-  'if [ -n "$ps_new" ]; then' 'if false; then'
-mutant "restore ignores the index" \
-  'git -C "$path" restore --source=HEAD --staged --worktree -- "${ps_line:3}" 2>/dev/null || true' 'git -C "$path" checkout -- "${ps_line:3}" 2>/dev/null || true'
+mutant "out-of-bounds writes not detected" \
+  'if [ -n "$ps_bad" ]; then' 'if false; then'
+mutant "rollback skipped after a refusal" \
+  'if [ -n "$POST_SYNC_FAILED_STEP" ]; then
+            ps_rollback' 'if false; then
+            ps_rollback'
+mutant "added files are not removed" \
+  '| ( cd "$repo" && xargs -0 rm -f -- )' '| ( cd "$repo" && cat >/dev/null )'
+mutant "changed files are not restored" \
+  'checkout-index -f -z --stdin || return 1' 'checkout-index -f -z --stdin </dev/null || return 1'
+mutant "real index not restored" \
+  'cp -- "$dir/index.before" "$real"; else' 'true; else'
+mutant "an index change is not a violation" \
+  'cmp -s "$dir/ls.before" "$dir/ls.after" || echo "(the index changed)"' 'true'
+mutant "a write under .claude/ is allowed" \
+  '.claude/*) printf' '.claude-x/*) printf'
+mutant "a changed file outside plugins/ is allowed" \
+  'case "$p" in plugins/*) ;; *) printf' 'case "$p" in *) ;; *) printf'
 mutant "one-command check loosened" \
   '-ne 1 ]; then' '-ne 2 ]; then'
 mutant "summary stops naming the step" \

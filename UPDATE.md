@@ -82,10 +82,9 @@ config half, for an instance whose own commit-time check needs a derived
 artifact refreshed first. A non-zero exit, a missing command or a file with
 more than one command line abandons that instance through the normal rollback,
 prints the step's own output and names the step in the summary. `--dry-run`
-prints the command and does not run it. The step may write under `plugins/` (the config
-half it precedes). It must not write under `.claude/`: the integrity tripwire is
-sanctioned before the step runs and reverts what it adds there. A step that modifies any other tracked
-file is refused and those files are restored. There is no time limit on the step.
+prints the command and does not run it. The step is held to a rule, checked with git's own tree snapshot (no `git status` text is parsed): it may add untracked files and write under `plugins/` (the config
+half it precedes). It must not change any other file that existed before it, must not write under `.claude/` (the integrity tripwire is
+sanctioned before the step runs), and must not touch the index. A step that does, or that fails, is refused and the instance is put back as it was: tracked content, index and untracked set, including files the step created. There is no time limit on the step.
 No file means no change. Test:
 `test-kipi-update-post-sync-step.sh`.
 
