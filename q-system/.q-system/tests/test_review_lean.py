@@ -82,7 +82,7 @@ def failures(lib, tmp):
             if build(lib, v, tmp, mode)[1] != argv:
                 bad.append(f"{mode}: switch value {v!r} differs from the default (lean)")
         for need in (["--setting-sources", ""], ["--strict-mcp-config"], ["--tools", "Read,Grep,Glob,Bash"],
-                     ["--allowedTools", "Read,Grep,Glob,Bash"], ["--disable-slash-commands"],
+                     ["--allowedTools", "Read,Grep,Glob"], ["--disable-slash-commands"],
                      ["--mcp-config", '{"mcpServers":{}}'], ["--disallowedTools", "Bash(git clone:*)"]):
             if not any(argv[i:i + len(need)] == need for i in range(len(argv))):
                 bad.append(f"{mode}: lean missing {need}")
@@ -135,6 +135,23 @@ def test_settings_attach_exactly_the_guards():
     assert set(s["hooks"]) == {"PreToolUse"}, "context-injecting and Stop-scan events must stay off in lean mode"
     assert "/Users/" not in SETTINGS.read_text()
     assert (SCRIPTS / "claude-path-write-guard.py").is_file()
+
+
+def test_lean_bash_is_held_to_the_project_allow_list():
+    """Normal reviews run under the project's acceptEdits mode, so a headless run refuses
+    Bash outside .claude/settings.json's allow list. Lean must not be wider: the allow
+    list is copied, and Bash is never allowed wholesale on the command line. Raised as a
+    nonblocking major in three review rounds (#786 round 4, #795 rounds 1 and 2)."""
+    project = json.loads((SCRIPTS.parents[2] / ".claude" / "settings.json").read_text())
+    lean = json.loads(SETTINGS.read_text())
+    missing = set(project["permissions"]["allow"]) - set(lean.get("permissions", {}).get("allow", []))
+    assert not missing, f"lean review settings lack project allow rules: {sorted(missing)}"
+    extra = set(lean["permissions"]["allow"]) - set(project["permissions"]["allow"])
+    assert not extra, f"lean allows Bash the project does not: {sorted(extra)}"
+    text = LIB.read_text()
+    allowed = re.findall(r"--allowedTools (\S+)", text)
+    assert allowed and all("Bash" not in a.split(",") for a in allowed), \
+        f"--allowedTools must not allow Bash wholesale: {allowed}"
 
 
 def test_lean_keeps_every_project_deny_rule():
