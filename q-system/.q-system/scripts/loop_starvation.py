@@ -16,6 +16,10 @@ stamped alerted=true only when the notifier exited 0, so a failed filing is
 retried on the next zero run instead of being lost. A non-zero run ends the
 streak, so the next starvation alerts again: state change only, once.
 
+Recovery: the first non-zero run after an ALERTED streak sends one "loop
+recovered" notice, so the starved ticket is known to be stale. It is good news,
+not work, so it does not file a second ticket: it is a desktop notice only.
+
 Emitter named (named-emitter.md): this script is the emitter of the
 "starved" alert text, through q-system/.q-system/scripts/slack-notify.sh.
 
@@ -34,6 +38,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -75,6 +80,15 @@ def _streak(rows: list) -> list:
     return run
 
 
+def _desktop_notice(msg: str) -> None:
+    """Recovery is good news, so a Linear ticket for it would be noise. A notice on
+    the Mac is enough. Argv-passed, so a loop name cannot break the AppleScript."""
+    if shutil.which("osascript"):
+        subprocess.run(["osascript", "-e", "on run argv", "-e",
+                        'display notification (item 1 of argv) with title "kipi loops"',
+                        "-e", "end run", msg], capture_output=True)
+
+
 def record(loop: str, inputs: int, threshold: int, path: Path = None, now: dt.datetime = None) -> dict:
     path = path or ledger_path()
     now = now or dt.datetime.now().astimezone()
@@ -83,8 +97,14 @@ def record(loop: str, inputs: int, threshold: int, path: Path = None, now: dt.da
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
             row = {"loop": loop, "at": now.isoformat(timespec="seconds"), "inputs": int(inputs), "alerted": False}
-            run = _streak(_rows(path, loop) + [row])
+            prior = _rows(path, loop)
+            run = _streak(prior + [row])
             fire = len(run) >= threshold and not any(r.get("alerted") for r in run[1:])  # run is newest first
+            before = _streak(prior)  # the zero streak this run ends, if it has input
+            recovered = (int(inputs) > 0 and len(before) > threshold
+                         and any(r.get("alerted") for r in before))
+            if recovered:
+                _desktop_notice(f"loop recovered: {loop} has input again after {len(before)} zero runs")
             if fire:
                 msg = (f"loop starved: {loop} had zero input for {len(run)} runs in a row "
                        f"(since {run[-1]['at']}). It exits 0, so nothing else flags it. "
@@ -97,7 +117,7 @@ def record(loop: str, inputs: int, threshold: int, path: Path = None, now: dt.da
             fh.flush()
         finally:
             fcntl.flock(fh, fcntl.LOCK_UN)
-    return {"loop": loop, "streak": len(run), "alerted": row["alerted"], "fired": fire}
+    return {"loop": loop, "streak": len(run), "alerted": row["alerted"], "fired": fire, "recovered": recovered}
 
 
 def main(argv=None) -> int:

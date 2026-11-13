@@ -63,6 +63,16 @@ def test_a_nonzero_run_resets_the_counter_and_the_next_starvation_alerts_again(t
     assert _n_calls(calls) == 2
 
 
+def test_input_after_an_alert_sends_one_recovery_notice(tmp_path):
+    env, calls = _env(tmp_path)
+    for _ in range(3):
+        _rec(env, "weekly-improve", 0)
+    r = _rec(env, "weekly-improve", 4)
+    assert r.returncode == 0
+    lines = calls.read_text().splitlines()
+    assert len(lines) >= 1 and "weekly-improve" in lines[-1], "recovery notice names the loop"
+
+
 def test_loops_are_counted_separately(tmp_path):
     env, calls = _env(tmp_path)
     for loop in ("a", "b", "a", "b", "a"):
