@@ -1,11 +1,4 @@
 {
  "path": "q-system/.q-system/tests/test_no_spend_cap.py",
- "runner": "python3",
- "covers": [
-  "kipi-dispatch.sh",
-  "kipi-dispatch-pinned.sh",
-  "q-system/.q-system/scripts/linear-worker.sh",
-  "q-system/.q-system/scripts/converge.sh",
-  "q-system/.q-system/scripts/fleet-claude.sh"
- ]
+ "runner": "python3"
 }

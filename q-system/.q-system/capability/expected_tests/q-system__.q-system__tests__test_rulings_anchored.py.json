@@ -1,7 +1,4 @@
 {
  "path": "q-system/.q-system/tests/test_rulings_anchored.py",
- "runner": "python3",
- "covers": [
-  "q-system/canonical/decisions.md"
- ]
+ "runner": "python3"
 }
