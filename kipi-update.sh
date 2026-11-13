@@ -1560,6 +1560,13 @@ ps_restore_head() {  # $1 repo, $2 scratch dir
 # What a stat compare cannot see: a write that lands the same byte count and
 # then restores mtime to the nanosecond. The step is a command this repo
 # declares, not an adversary, so that is an accepted blind spot.
+#
+# The manifest is read NUL-separated (`ls-files -z`) and written one row per
+# line, so a gitignored path holding a literal newline splits into two rows and
+# reads as changed. That direction is the safe one: it refuses a sync it did not
+# have to, and it cannot pass a clobber. Spaces and non-ASCII are handled, which
+# the fixture's hostile names cover (the row splits on the first three spaces
+# only, so the path keeps its own).
 # $2 is a scratch path for the file list, NOT a pipe: `python3 -I -` takes its
 # program from stdin, so piping the list in made python read the heredoc, the
 # manifest come back empty, and git die on the closed pipe -- which pipefail
@@ -1878,6 +1885,12 @@ ps_rollback() {  # $1 repo, $2 scratch dir: put the instance back as snapshotted
     | GIT_INDEX_FILE="$dir/crestore.index" git -C "$repo" checkout-index -f -z --stdin || return 1
   # HEAD FIRST, then the refs: a created branch is deleted below, and deleting
   # the branch HEAD points at is allowed and leaves HEAD fatal (measured).
+  # The order is chosen for the common shape, `checkout -b`, where HEAD-first
+  # means the delete happens with HEAD already pointing somewhere real. The
+  # mirror shape -- a step that detaches and then deletes the branch -- has HEAD
+  # naming a ref that ps_restore_refs re-creates one line later, so HEAD is
+  # transiently dangling and consistent by the end. `symbolic-ref` does not
+  # require its target to exist, which is what makes that order legal at all.
   ps_restore_head "$repo" "$dir" || return 1
   ps_restore_refs "$repo" "$dir" || return 1
   ps_prune_new_dirs "$repo" "$dir" || return 1
