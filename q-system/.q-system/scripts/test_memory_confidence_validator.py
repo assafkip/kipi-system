@@ -39,6 +39,21 @@ def run_case(frontmatter_body, *, in_scope=True):
         return proc.returncode
 
 
+def run_index_case(parts, name, size):
+    """Write a file of exactly `size` bytes under tmp/<parts>/<name>, return the exit code."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = os.path.join(tmp, *parts)
+        os.makedirs(d, exist_ok=True)
+        fpath = os.path.join(d, name)
+        with open(fpath, "w") as fh:
+            fh.write("- [x](x.md)\n" * (size // 12) + "-" * (size % 12))
+        assert os.path.getsize(fpath) == size
+        proc = subprocess.run([sys.executable, VALIDATOR],
+                              input=json.dumps({"tool_input": {"file_path": fpath}}),
+                              capture_output=True, text=True)
+        return proc.returncode
+
+
 def fm(**fields):
     lines = ["---", "name: some-memory", "description: x"]
     for k, v in fields.items():
@@ -127,10 +142,28 @@ def main():
     if not fallback_ok:
         failures.append("fallback status literal drift")
 
+    # ASK-4817: an agent memory index over the ceiling blocks; at the ceiling,
+    # a content file, a project index and any other MEMORY.md pass. The pair
+    # ceiling / ceiling+1 is the negative self-test for this branch.
+    ceiling = mcv.AGENT_INDEX_CEILING_BYTES
+    index_cases = [
+        ("agent index at ceiling -> pass", (".claude", "agent-memory", "sana"), "MEMORY.md", ceiling, 0),
+        ("agent index one byte over -> block", (".claude", "agent-memory", "sana"), "MEMORY.md", ceiling + 1, 2),
+        ("agent content file over -> pass", (".claude", "agent-memory", "sana"), "feedback_x.md", ceiling + 1, 0),
+        ("project index over -> pass (ASK-4822)", (".claude", "projects", "slug", "memory"), "MEMORY.md", ceiling + 1, 0),
+        ("MEMORY.md elsewhere over -> pass", ("notes",), "MEMORY.md", ceiling + 1, 0),
+    ]
+    for label, parts, name, size, expected in index_cases:
+        got = run_index_case(parts, name, size)
+        ok = got == expected
+        print(f"[{'PASS' if ok else 'FAIL'}] {label} (exit {got}, want {expected})")
+        if not ok:
+            failures.append(label)
+
     if failures:
         print(f"\nFAILED: {len(failures)} case(s): {failures}")
         sys.exit(1)
-    print(f"\nOK: all {len(CASES) + 3} checks passed")
+    print(f"\nOK: all {len(CASES) + 3 + len(index_cases)} checks passed")
     sys.exit(0)
 
 
