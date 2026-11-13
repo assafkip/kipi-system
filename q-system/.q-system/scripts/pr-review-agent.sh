@@ -198,6 +198,9 @@ CODEX_MODEL="${KIPI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
 # is the machine's, not an unusable review. See the claude dispatch below.
 . "$SCRIPT_DIR/env-failure-lib.sh"
 . "$SCRIPT_DIR/reviewer-token-lib.sh"
+# The claude reviewer's command line, lean switch included (ASK-4743, default off).
+. "$SCRIPT_DIR/review-lean-lib.sh"
+review_lean_args "$SCRIPT_DIR"
 
 
 
@@ -1630,8 +1633,12 @@ run_engine() {   # run_engine <claude|codex> <destination-file>
     # API credit rather than the founder's plan, through the one helper that
     # reads the key and meters the run. This inverts ASK-2176's subscription-only
     # rule for this call site only; KIPI_FLEET_API_KEYS=0 puts it back, loudly.
+    # The lean half (env before KIPI_AGENT=, flags before the redirect) is set once by
+    # review_lean_args at the top; both are empty when lean is off. The arm stays main's
+    # text apart from those two splices, so call_sites.py and every test that reads this
+    # file still see the call (ASK-4796).
     claude) KIPI_BLOCKED_CLAIM_LINT_MODE=advisory run_bounded "$TIMEOUT_SECONDS" bash -c \
-              "cd '$REVIEW_ROOT' && KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)' </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
+              "cd '$REVIEW_ROOT' && ${REVIEW_LEAN_ENV}KIPI_AGENT=pr-reviewer $FLEET_CLAUDE -p --model '$CLAUDE_MODEL' \"\$1\" --disallowedTools 'Bash(git clone:*)' 'Bash(gh:*)' 'Bash(curl:*)'${REVIEW_LEAN_FLAGS} </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
     codex)  run_bounded "$TIMEOUT_SECONDS" bash -c \
               "codex exec --ignore-user-config --skip-git-repo-check $CODEX_SANDBOX --model '$CODEX_MODEL' -C '$REVIEW_ROOT' \"\$1\" </dev/null > '$2' 2>&1" _ "$PROMPT" ;;
   esac

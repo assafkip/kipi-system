@@ -58,12 +58,14 @@ mkdir -p "$S/test" "$W/bin" "$W/home"
 # The two scripts under test, from the working tree or from a ref. Both come from
 # the SAME source: the reviewer sources the lib, and mixing an old reviewer with a
 # new lib would test a combination that never shipped.
-for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh; do
+for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh review-lean-lib.sh; do
   if [ -n "$REF" ]; then
     # repo-slug-lib.sh did not exist before ASK-738, so a ref older than it has
     # nothing to show. Fall back to the working-tree copy rather than failing:
     # the hatch exists to run an OLD reviewer, and an old reviewer never sources
-    # this file, so the extra copy is inert there.
+    # this file, so the extra copy is inert there. review-lean-lib.sh (ASK-4743)
+    # is the same case: it now holds the claude command line, and without it the
+    # engine ran an empty command (PR #786 validate, "PRIMARY engine never ran").
     git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" 2>/dev/null \
       || cp "$SRC_SCRIPTS/$f" "$S/$f" \
       || fail "cannot read $f at ref $REF or from the working tree"

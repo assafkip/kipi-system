@@ -1,0 +1,20 @@
+{
+  "_why": "Settings for the lean PR reviewer (KIPI_REVIEW_LEAN=1, ASK-4743). The reviewer runs with --setting-sources '' so NO user, project or plugin settings load, which drops every context-injecting hook. A reviewer that can run Bash must still sit behind the machine-protecting gates, so exactly these hooks are re-attached and nothing else. The project permission model (its Bash allow list and its deny list for sudo, chmod 777, curl-pipe-bash, .env and key reads) is ALSO dropped and NOT re-attached: lean mode runs on a blanket Read,Grep,Glob,Bash allow, bounded by the guards below and the disallowed git clone, gh and curl. The hooks are: destructive-op deny (rm -rf, force push, reset --hard), the archived-engagement deny, and the .claude write guard. KIPI_REVIEW_SCRIPTS is exported by pr-review-agent.sh and points at the trusted control checkout, never at the PR tree under review.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "\"$HOME/.claude/hooks/destructive-op-deny.sh\"" },
+          { "type": "command", "command": "bash \"$HOME/.claude/hooks/ps-archive-deny.sh\"" }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "test -f \"$KIPI_REVIEW_SCRIPTS/claude-path-write-guard.py\" && python3 \"$KIPI_REVIEW_SCRIPTS/claude-path-write-guard.py\"" }
+        ]
+      }
+    ]
+  }
+}
