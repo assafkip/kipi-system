@@ -1,9 +1,4 @@
 {
  "path": "q-system/.q-system/tests/test_review_lean.py",
- "runner": "pytest",
- "covers": [
-  "q-system/.q-system/scripts/review-lean-lib.sh",
-  "q-system/.q-system/review-lean-settings.json",
-  "q-system/.q-system/scripts/pr-review-agent.sh"
- ]
+ "runner": "pytest"
 }
