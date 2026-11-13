@@ -125,3 +125,85 @@ def test_unreadable_directory_is_named_not_dropped(tmp_path):
         assert rc == 1 and r["unreadable"] == [str(d)] and r["requests"] == 2
     finally:
         d.chmod(0o700)
+
+
+# --- plan token cap (ASK-4721) -------------------------------------------------
+# Scratch ledgers and a scratch cap file only. The cap file is a tmp copy with
+# small numbers so a single row can sit exactly on, under or over a line.
+NOW = "2026-11-12T12:00:00+00:00"
+
+
+def _cap(tmp_path, windows, weights=None):
+    p = tmp_path / "cap.json"
+    p.write_text(json.dumps({"weights": weights or {"input": 1, "cache_read": 0.1, "cache_write": 1.25, "output": 5},
+                             "windows": windows}))
+    return str(p)
+
+
+def _ledger(tmp_path, rows):
+    p = tmp_path / "run-tokens.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return str(p)
+
+
+def _row(ts, cr=0, out=0, cw=0, inp=0):
+    return {"ts": ts, "ticket": "ASK-1", "input_tokens": inp, "cache_read_tokens": cr,
+            "cache_write_tokens": cw, "output_tokens": out}
+
+
+def test_cap_counts_weighted_not_raw(tmp_path, capsys):
+    # 900 cache reads = 90 weighted. Raw (900) would be over a 100 cap; weighted is not.
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    assert run_tokens.cap_check(_ledger(tmp_path, [_row("2026-11-12T11:00:00+00:00", cr=900)]), cap, NOW) == 0
+    # 20 output = 100 weighted: the same cap, now reached.
+    assert run_tokens.cap_check(_ledger(tmp_path, [_row("2026-11-12T11:00:00+00:00", out=20)]), cap, NOW) == 3
+
+
+def test_cap_reached_exactly_pauses(tmp_path):
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    assert run_tokens.cap_check(_ledger(tmp_path, [_row("2026-11-12T11:00:00+00:00", inp=99)]), cap, NOW) == 0
+    assert run_tokens.cap_check(_ledger(tmp_path, [_row("2026-11-12T11:00:00+00:00", inp=100)]), cap, NOW) == 3
+
+
+def test_cap_rows_outside_the_window_do_not_count(tmp_path):
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    old = _row("2026-11-11T11:59:00+00:00", inp=500)  # 24h01m before NOW
+    assert run_tokens.cap_check(_ledger(tmp_path, [old]), cap, NOW) == 0
+    assert run_tokens.cap_check(_ledger(tmp_path, [old, _row("2026-11-12T11:00:00+00:00", inp=100)]), cap, NOW) == 3
+
+
+def test_cap_any_window_over_pauses(tmp_path, capsys):
+    # Under the day cap, over the week cap: the slow drain must stop too.
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 1000}, {"hours": 168, "cap": 150}])
+    rows = [_row("2026-11-09T12:00:00+00:00", inp=100), _row("2026-11-12T11:00:00+00:00", inp=60)]
+    assert run_tokens.cap_check(_ledger(tmp_path, rows), cap, NOW) == 3
+    assert "OVER" in capsys.readouterr().out.split("168h")[1]
+
+
+def test_cap_no_ledger_says_unmetered_and_runs(tmp_path, capsys):
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    assert run_tokens.cap_check(str(tmp_path / "absent.jsonl"), cap, NOW) == 0
+    assert "UNMETERED" in capsys.readouterr().out
+
+
+def test_cap_broken_cap_file_is_rc2(tmp_path, capsys):
+    for bad in ('{"weights": {"input": 1}, "windows": [{"hours": 24, "cap": 1}]}',
+                '{"weights": {"input": 1, "cache_read": 0.1, "cache_write": 1.25, "output": 5}, "windows": []}',
+                "not json"):
+        p = tmp_path / "bad.json"
+        p.write_text(bad)
+        assert run_tokens.cap_check(_ledger(tmp_path, [_row(NOW, inp=1)]), str(p), NOW) == 2
+    assert "BROKEN" in capsys.readouterr().out
+
+
+def test_cap_shipped_file_loads():
+    cfg, why = run_tokens._load_cap(run_tokens.DEFAULT_CAP_FILE)
+    assert cfg is not None, why
+
+
+def test_cap_cli_exit_codes(tmp_path):
+    cap = _cap(tmp_path, [{"hours": 24, "cap": 100}])
+    led = _ledger(tmp_path, [_row("2026-11-12T11:00:00+00:00", out=40)])
+    p = subprocess.run([sys.executable, str(HERE / "run_tokens.py"), "--cap-check", led, "--cap-file", cap,
+                        "--now", NOW], capture_output=True, text=True)
+    assert p.returncode == 3 and "OVER" in p.stdout

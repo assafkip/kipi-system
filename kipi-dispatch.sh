@@ -1216,6 +1216,40 @@ if { [ -z "$MEM_FREE" ] || [ "$MEM_FREE" -ge $((MEM_FREE_MIN + 10)) ]; } \
 fi
 # --- END MEMORY GATE ---
 
+# --- PLAN TOKEN CAP (ASK-4721) -----------------------------------------------
+# THE ONLY BRAKE ON A PLAN-BILLED FLEET. Under the dated override (ASK-4714) the API
+# budget gate above is skipped by design, and usage_breaker.py has printed the worker
+# UNMETERED since 2026-10-25: nothing it reads has a worker row. So on 2026-11-12 the
+# fleet billed the founder's plan with only the 96-a-day dispatch count in front of
+# it, about 113M weighted tokens a day at the first rows' rate, against a weekly limit
+# that fired after 189M. This reads the rows the worker already writes
+# (run_tokens.py --record) and refuses new dispatches past the cap in
+# q-system/.q-system/run-token-cap.json. Over the cap is not an error: the window
+# rolls and the next tick under it dispatches again. A BROKEN check stops the tick
+# (fail closed): this is the last brake, and a meter we cannot read is not zero.
+# A missing helper file is a checkout before this gate: nothing to read, go on.
+TOKEN_CAP_HELPER="$REPO/q-system/.q-system/scripts/run_tokens.py"
+if [ "${KIPI_FLEET_API_KEYS:-1}" = "0" ] && [ -f "$TOKEN_CAP_HELPER" ]; then
+  CAP_RC=0
+  CAP_LINE="$(python3 "$TOKEN_CAP_HELPER" --cap-check "${KIPI_RUN_TOKENS_FILE:-$HOME/.local/state/kipi/run-tokens.jsonl}" 2>&1 | tail -n 1; exit "${PIPESTATUS[0]}")" || CAP_RC=$?
+  case "$CAP_RC" in
+    0)
+      say "PLAN TOKENS: $CAP_LINE"
+      page_clear plan-token-cap; page_clear plan-token-cap-broken ;;
+    3)
+      say "PLAN TOKENS: over the cap, no new dispatch this tick: $CAP_LINE"
+      page_clear plan-token-cap-broken
+      page_once plan-token-cap "kipi dispatch: the plan-billed fleet passed its token cap, so no new run starts until the rolling window drops under it. Not an error, it resumes by itself. Reading: $CAP_LINE. The cap lives in q-system/.q-system/run-token-cap.json."
+      exit 0 ;;
+    *)
+      say "PLAN TOKENS: the cap check is broken (rc=$CAP_RC): $CAP_LINE; stopping the tick"
+      page_clear plan-token-cap
+      page_once plan-token-cap-broken "kipi dispatch: run_tokens.py --cap-check is broken (rc=$CAP_RC: $CAP_LINE), so no plan-billed run starts: the fleet's token use cannot be read. Do: run python3 $TOKEN_CAP_HELPER --cap-check ~/.local/state/kipi/run-tokens.jsonl in $REPO and fix what it prints."
+      exit 0 ;;
+  esac
+fi
+# --- END PLAN TOKEN CAP ---
+
 # gh is what every downstream step needs; failing here with a clear page beats
 # dispatching an agent that dies opening its PR.
 #

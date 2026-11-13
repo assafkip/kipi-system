@@ -12,6 +12,7 @@
 # data path fable-discipline forbids a test to touch, and the decision already
 # has its own test against a frozen copy of that ledger.
 set -uo pipefail
+export KIPI_RUN_TOKENS_FILE="${TMPDIR:-/tmp}/kipi-test-no-ledger-$$.jsonl"  # ASK-4721: never read the live plan ledger
 
 # THE PLAN BRAKE IS UNDER TEST HERE, so these runs bill the plan (ASK-4311). A
 # run billed to a fleet API key skips this brake on purpose; case 6 below drives
@@ -220,6 +221,14 @@ mkdir -p "$TMP/state6b"
 mkrc="$(KIPI_FLEET_API_KEYS=1 run_worker "$(argstub 3 "$TMP/argv-keyed-mut.txt")" "$TMP/state6b" "$MUT6")"
 [ "$mkrc" = "3" ] && ok "mutant killed: without the keyed skip the key-billed run is braked (rc=3)" \
                   || bad "MUTANT SURVIVED: the keyed run went through with the skip cut out (rc=$mkrc)"
+
+# 7. the plan token cap (ASK-4721): a cap answering 3 pauses the worker even when
+#    the usage breaker says run, because one dispatch runs up to three rounds.
+mkdir -p "$TMP/state7"
+rc7="$(KIPI_TOKEN_CAP_CMD="$(make_stub 3)" run_worker "$(make_stub 0)" "$TMP/state7")"
+{ [ "$rc7" = "3" ] && grep -q "PAUSED: plan token cap" "$TMP/last-out.txt"; } \
+  && ok "a plan token cap over its line exits the worker 3" \
+  || bad "the token cap should pause the worker with exit 3, got $rc7"
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

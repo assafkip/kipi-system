@@ -23,6 +23,7 @@
 # copies of the scripts dir: one with the started rule removed (case 1 must go
 # red) and one with the 24h window set to zero (case 2 must go red).
 set -uo pipefail
+export KIPI_RUN_TOKENS_FILE="${TMPDIR:-/tmp}/kipi-test-no-ledger-$$.jsonl"  # ASK-4721: never read the live plan ledger
 # NOT A BILLING TEST (ASK-4311). This suite stubs `claude` on PATH and tests its
 # own subject, so its runs take the plan path: KIPI_FLEET_API_KEYS=0 makes the
 # worker, the reviewer and the dispatcher call `env -u ANTHROPIC_API_KEY claude`

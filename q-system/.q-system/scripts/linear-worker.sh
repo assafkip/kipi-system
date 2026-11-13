@@ -381,6 +381,19 @@ elif [ -n "${KIPI_USAGE_BREAKER_CMD:-}" ] || [ -f "$BREAKER_DEFAULT" ]; then
   # pick was consuming the breaker's one 24h trial run and the round that was
   # actually going to spend arrived to find it already gone. --dry answers the
   # same question and records nothing.
+  # THE PLAN TOKEN CAP FIRST (ASK-4721). The dispatcher refuses NEW dispatches past
+  # it, but one converge runs up to three rounds of this script, so a round already
+  # dispatched must also stop here. It reads the rows record_run_tokens writes; the
+  # usage breaker below reads a ledger with no worker rows and stays for its fleet
+  # floor. Exit 3 is the pause, the same contract; any other answer is logged and the
+  # run goes on, because the dispatcher is the fail-closed chokepoint, not this.
+  TOKEN_CAP_CMD="${KIPI_TOKEN_CAP_CMD:-python3 $SCRIPT_DIR/run_tokens.py --cap-check ${KIPI_RUN_TOKENS_FILE:-$HOME/.local/state/kipi/run-tokens.jsonl}}"
+  $TOKEN_CAP_CMD >>"$LOG" 2>&1
+  cap_rc=$?
+  if [ "$cap_rc" -eq 3 ]; then
+    echo "PAUSED: plan token cap reached (see $LOG). No work this run." | tee -a "$LOG" >&2
+    exit 3
+  fi
   BREAKER_DRY=""
   [ "$APPLY" = "1" ] || BREAKER_DRY="--dry"
   # A release-only pass runs no model, so it spends nothing and must not take

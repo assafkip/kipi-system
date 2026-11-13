@@ -1,0 +1,22 @@
+{
+  "_": "ASK-4721. The plan token cap. Read ONLY by run_tokens.py --cap-check, which kipi-dispatch.sh (refuses new dispatches) and linear-worker.sh (refuses a round already dispatched) call while runs bill the PLAN (KIPI_FLEET_API_KEYS=0). It reads ~/.local/state/kipi/run-tokens.jsonl, the rows run_tokens.py --record writes. A change to a cap is an edit to this file, never to a call site.",
+  "status": "ESTIMATE until 2026-11-19, a week of rows",
+  "weights": {
+    "input": 1.0,
+    "cache_read": 0.1,
+    "cache_write": 1.25,
+    "output": 5.0
+  },
+  "windows": [
+    {"hours": 24, "cap": 25000000},
+    {"hours": 168, "cap": 100000000}
+  ],
+  "evidence": [
+    "Weights: API price ratios for claude-opus-5, the worker default in model-routing.json: cache read 0.1x input, 5-minute cache write 1.25x, output 5x. On claude-opus-5-5 and claude-sonnet-5-5 a cache read is 0.05x, so these weights overstate those runs: the error is toward braking early.",
+    "Per run, 2026-11-12 22:20Z to 23:50Z, 10 worker rows: median 1.16M weighted (range 0.52M to 2.04M), 6.7 runs an hour, 11.8M weighted in 1.5 hours.",
+    "Plan ceiling: the weekly limit fired 7 times in ~/.config/kipi/usage-ledger.jsonl. The cleanest lower bound is 2026-10-02 13:40Z, after 189M weighted recorded in the 7 days before it. Recorded spend only, so the true ceiling is at least that and the cap is sized against the floor.",
+    "168h cap 100M: about half of 189M, so the worker cannot take the week alone; chief bots and interactive sessions share the same plan and are not in this ledger.",
+    "24h cap 25M: about 21 runs at today's median, about 3 hours at today's pace. Hours of work pass; a day at the dispatcher's 96-dispatch ceiling (about 113M) does not.",
+    "Not counted: pr-review-agent.sh review runs bill the plan too and write no row here (ASK-4742 ask 1). The cap undercounts the fleet by the review share until they do."
+  ]
+}

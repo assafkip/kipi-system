@@ -180,9 +180,106 @@ def record(a) -> int:
     return 0
 
 
+#: The plan token cap (ASK-4721). Tracked beside this script so a change to the cap
+#: is a reviewed diff, and the pinned dispatcher checkout reads origin/main's copy.
+DEFAULT_CAP_FILE = Path(__file__).resolve().parent.parent / "run-token-cap.json"
+WEIGHT_KEYS = {"input": "input_tokens", "cache_read": "cache_read_tokens",
+               "cache_write": "cache_write_tokens", "output": "output_tokens"}
+CAP_RUN, CAP_OVER, CAP_BROKEN = 0, 3, 2
+
+
+def _load_cap(path: Path) -> tuple[dict | None, str]:
+    """(config, "") or (None, reason). Every field is checked: a cap file the brake
+    half-understands is a brake set to a number nobody wrote down."""
+    try:
+        cfg = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        return None, f"cannot read cap file {path}: {exc}"
+    w = cfg.get("weights") if isinstance(cfg, dict) else None
+    wins = cfg.get("windows") if isinstance(cfg, dict) else None
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    if not isinstance(w, dict) or set(w) != set(WEIGHT_KEYS) or not all(num(v) and v >= 0 for v in w.values()):
+        return None, f"cap file {path}: weights must be exactly {sorted(WEIGHT_KEYS)}, each a number >= 0"
+    if not isinstance(wins, list) or not wins or not all(
+            isinstance(x, dict) and num(x.get("hours")) and x["hours"] > 0 and num(x.get("cap")) and x["cap"] > 0
+            for x in wins):
+        return None, f"cap file {path}: windows must be a non-empty list of {{hours > 0, cap > 0}}"
+    return cfg, ""
+
+
+def cap_check(ledger: str, cap_file: str | None = None, now: str | None = None) -> int:
+    """Exit 0 run, 3 over the cap, 2 broken. One line on stdout either way.
+
+    The unit is WEIGHTED tokens, not total processed tokens. A worker run is about 97%
+    cache reads by count (2026-11-12: 7.6M read, 0.19M written, 21k out), and the plan
+    meters compute, not token count: at API prices a cache read is a tenth of an input
+    token on claude-opus-5 (the worker default) and output is five. Counting raw tokens
+    would let 1M output tokens through as if they were 1M cache reads, a 50x error in
+    the direction of draining. The weights live in the cap file, beside the cap.
+    """
+    import datetime
+    # KIPI_RUN_TOKEN_CAP_FILE is the test seam: the callers pass no --cap-file, so a
+    # test of the dispatcher's broken-cap branch needs a way in that is not the repo file.
+    cap_file = cap_file or os.environ.get("KIPI_RUN_TOKEN_CAP_FILE")
+    cfg, why = _load_cap(Path(cap_file).expanduser() if cap_file else DEFAULT_CAP_FILE)
+    if cfg is None:
+        print(f"run_tokens cap: BROKEN: {why}")
+        return CAP_BROKEN
+    t_now = (datetime.datetime.fromisoformat(now) if now
+             else datetime.datetime.now(datetime.timezone.utc))
+    path = Path(ledger).expanduser()
+    if not path.exists():
+        # Not "0 of cap": no ledger means nothing has ever been measured, and a brake
+        # with no meter must say so, not look green (the UNMETERED line of ASK-4721).
+        print(f"run_tokens cap: UNMETERED: no ledger at {path}; the plan cap cannot brake runs it never saw")
+        return CAP_RUN
+    rows, bad = [], 0
+    try:
+        with path.open() as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    r = json.loads(line)
+                    ts = datetime.datetime.fromisoformat(r["ts"])
+                except (ValueError, KeyError, TypeError):
+                    bad += 1
+                    continue
+                rows.append((ts, r))
+    except OSError as exc:
+        # The dispatcher is the fail-closed chokepoint: a meter it cannot read is not a
+        # meter reading zero.
+        print(f"run_tokens cap: BROKEN: cannot read ledger {path}: {exc}")
+        return CAP_BROKEN
+    if not rows:
+        print(f"run_tokens cap: UNMETERED: zero readable rows in {path} ({bad} malformed)")
+        return CAP_RUN
+    w = cfg["weights"]
+    parts, over = [], False
+    for win in cfg["windows"]:
+        start = t_now - datetime.timedelta(hours=win["hours"])
+        # No upper bound: a row stamped ahead of this clock still counts. Skew must
+        # fail toward braking, never toward a free run.
+        used = sum(sum(w[k] * _num(r.get(f)) for k, f in WEIGHT_KEYS.items())
+                   for ts, r in rows if ts >= start)
+        hit = used >= win["cap"]
+        over = over or hit
+        parts.append(f"{win['hours']:g}h {used / 1e6:.1f}M of {win['cap'] / 1e6:.1f}M{' OVER' if hit else ''}")
+    tail = f"; {bad} malformed row(s) skipped" if bad else ""
+    label = cfg.get("status", "")
+    print(f"run_tokens cap: {'OVER' if over else 'under'}: weighted tokens {', '.join(parts)}"
+          f"{' (' + label + ')' if label else ''}{tail}")
+    return CAP_OVER if over else CAP_RUN
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("paths", nargs="*", help="transcript .jsonl files or directories")
+    # --cap-check is the plan brake (ASK-4721): kipi-dispatch.sh and linear-worker.sh
+    # read the --record ledger through it before spending more of the plan.
+    ap.add_argument("--cap-check", metavar="LEDGER.jsonl", help="exit 0 under the cap, 3 over, 2 broken")
+    ap.add_argument("--cap-file", help="cap config (default: q-system/.q-system/run-token-cap.json)")
+    ap.add_argument("--now", help="ISO timestamp for --cap-check (tests); default now, UTC")
     # --record is the worker's caller (ASK-4649/4675): after a run, the WORKER'S SHELL
     # names the session it launched; this finds that transcript and appends ONE row.
     ap.add_argument("--record", metavar="OUT.jsonl", help="append one row for --session to this file")
@@ -193,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--by-agent", action="store_true")
     ap.add_argument("--subagents", action="store_true", help="also read <stem>/subagents/ beside each file")
     a = ap.parse_args(argv)
+    if a.cap_check:
+        return cap_check(a.cap_check, a.cap_file, a.now)
     if a.record:
         return record(a)
     if not a.paths:

@@ -28,6 +28,7 @@
 #   no answer (fetch fails / offline) -> RUN. Fail closed on staleness, fail open
 #             on not knowing. Offline is NOT proof of recovery, so it clears nothing.
 set -uo pipefail
+export KIPI_RUN_TOKENS_FILE="${TMPDIR:-/tmp}/kipi-test-no-ledger-$$.jsonl"  # ASK-4721: never read the live plan ledger
 
 # The founder was paged by tests three times on 2026-08-01. The harness stubs the
 # notifier outright; this is the second belt for anything that shells the real script.
