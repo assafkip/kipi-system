@@ -21,10 +21,13 @@
 # rules, MCP tool schemas, plugin hooks) re-read on every turn. Measured on this
 # build (2.1.323), one-word prompt from a repo tree: normal 117.7k, lean 8.0k.
 #
-# DEFAULT OFF. KIPI_REVIEW_LEAN unset or anything but 1 leaves both globals empty (a
-# test pins the resulting line byte for byte): other sessions call this script from
-# the shared checkout and a reviewer whose behaviour moved silently is the one
-# defect that cannot be reasoned about.
+# DEFAULT ON since the planted-defect control (2026-11-12, PRs #790/#791 at one
+# head): lean found all 3 planted defects the normal reviewer found, including
+# the rule-file one, at $1.48 against $6.66. KIPI_REVIEW_LEAN=0, exactly, leaves
+# both globals empty, so the line is the pre-ASK-4743 one byte for byte (a test pins
+# it). Only "0" opts out: the old switch read "anything but 1" as off, and a typo'd
+# opt-out that silently keeps lean is safer than a typo'd value that silently
+# restores a 124k start-up.
 #
 # LEAN = no MCP, no settings from any source, no CLAUDE.md, no auto-memory, no slash
 # commands, and only Read/Grep/Glob/Bash. NOT lean_call.py as is: that runs in an
@@ -33,14 +36,17 @@
 # alike); the CLI cannot keep one subset. So the guards are re-attached by name from
 # review-lean-settings.json (destructive-op deny, archive deny, .claude write guard),
 # read from the control checkout (KIPI_REVIEW_SCRIPTS), never from the PR tree.
-# Safe side: a hook the file does not name is OFF in lean mode.
+# Safe side: a hook the file does not name is OFF in lean mode. That includes the
+# rule gate's Stop scan, on purpose (ASK-4769 option b): a read-only reviewer writes no
+# rule file, and the scan's reach into every tree under ~/projects let one unrelated
+# tree's rule debt turn a review verdict UNSTATED.
 review_lean_args() {
   local sdir="$1"
   REVIEW_LEAN_ENV=""
   REVIEW_LEAN_FLAGS=""
-  if [ "${KIPI_REVIEW_LEAN:-0}" = "1" ]; then
+  if [ "${KIPI_REVIEW_LEAN:-1}" != "0" ]; then
     REVIEW_LEAN_ENV="KIPI_REVIEW_SCRIPTS='$sdir' CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 "
     REVIEW_LEAN_FLAGS=" --setting-sources '' --settings '$sdir/../review-lean-settings.json' --strict-mcp-config --mcp-config '{\"mcpServers\":{}}' --tools Read,Grep,Glob,Bash --allowedTools Read,Grep,Glob,Bash --disable-slash-commands"
-    echo "pr-review-agent: REVIEWER MODE LEAN (KIPI_REVIEW_LEAN=1): no MCP, no CLAUDE.md or rules, Read/Grep/Glob/Bash only, guard hooks only" >&2
+    echo "pr-review-agent: REVIEWER MODE LEAN (default; KIPI_REVIEW_LEAN=0 turns it off): no MCP, no CLAUDE.md or rules, Read/Grep/Glob/Bash only, guard hooks and the project deny list only" >&2
   fi
 }

@@ -64,7 +64,7 @@ for f in pr-review-agent.sh pr-verdict-lib.sh repo-slug-lib.sh review-lean-lib.s
     # nothing to show. Fall back to the working-tree copy rather than failing:
     # the hatch exists to run an OLD reviewer, and an old reviewer never sources
     # this file, so the extra copy is inert there. review-lean-lib.sh (ASK-4743)
-    # is the same case: it now holds the claude command line, and without it the
+    # is the same case: it sets the lean half of the claude line, and without it the
     # engine ran an empty command (PR #786 validate, "PRIMARY engine never ran").
     git -C "$ROOT" show "$REF:q-system/.q-system/scripts/$f" > "$S/$f" 2>/dev/null \
       || cp "$SRC_SCRIPTS/$f" "$S/$f" \
