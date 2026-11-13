@@ -149,6 +149,9 @@ def test_lean_keeps_every_project_deny_rule():
     lean = json.loads(SETTINGS.read_text())
     missing = set(project["permissions"]["deny"]) - set(lean.get("permissions", {}).get("deny", []))
     assert not missing, f"lean review settings lack project deny rules: {sorted(missing)}"
+    # Equal, not a superset: the _why calls it the same set, so a lean-only entry is drift too (#799 round 2).
+    extra = set(lean["permissions"]["deny"]) - set(project["permissions"]["deny"])
+    assert not extra, f"lean review settings deny rules the project does not: {sorted(extra)}"
 
 
 def test_lean_flags_realize_the_fleet_load_allowlist_review_row():
