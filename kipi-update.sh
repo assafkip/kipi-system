@@ -452,6 +452,36 @@ install_vendored_hooks() {
   fi
 }
 
+# WIRE THE USER-LEVEL HOOKS EVERY REPO NEEDS (ASK-4948).
+#
+# A hook wired only in a project's .claude/settings.json never reaches a repo with
+# no kipi project settings. chief has none, so its builders read untrimmed Bash
+# output and ran 206k to 242k median context. These proposals add a hook block to
+# ~/.claude/settings.json through the same applier every .claude/ write goes
+# through (additive only, census ratchet, gate suite, revert on a regression), so
+# this step cannot weaken a gate. install-claude-hooks.py stays check-only on
+# settings.json; the applier is the writer, as for the gmail-trash proposal.
+# Re-running is a no-op ("already-applied"). Never fatal, same as the hook install.
+USER_LEVEL_PROPOSALS=(
+  "wire-tool-output-trim-user.json"
+)
+apply_user_level_proposals() {
+  local applier="$SCRIPT_DIR/q-system/.q-system/scripts/apply-claude-changes.sh"
+  [ -f "$applier" ] || return 0
+  [ -f "$HOME/.claude/settings.json" ] || { echo "==> no ~/.claude/settings.json, user-level hooks skipped"; return 0; }
+  local name proposal _out _rc
+  for name in "${USER_LEVEL_PROPOSALS[@]}"; do
+    proposal="$SCRIPT_DIR/q-system/.q-system/proposals/$name"
+    [ -f "$proposal" ] || continue
+    _rc=0
+    _out="$(bash "$applier" "$proposal" --root "$HOME" 2>&1)" || _rc=$?
+    printf '%s\n' "$_out"
+    if [ "$_rc" -ne 0 ]; then
+      echo "WARNING: user-level proposal $name did not apply (exit $_rc, line above)." >&2
+    fi
+  done
+}
+
 plugin_copy_rsync_flags() {
   local entry
   for entry in "${PLUGIN_COPY_EXCLUDES[@]}"; do
@@ -1065,6 +1095,7 @@ DRY_TMP=""
 # source is the reviewed one, and only then is it allowed to become the guard.
 if [ "$DRY_RUN" != "--dry-run" ]; then
   install_vendored_hooks
+  apply_user_level_proposals
   echo ""
 fi
 

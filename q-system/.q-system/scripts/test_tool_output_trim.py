@@ -388,6 +388,121 @@ def test_default_state_dir_is_the_live_path_but_is_never_written(monkeypatch):
     assert mod.state_dir() == Path.home() / ".local" / "state" / "kipi" / "tool-output"
 
 
+# ---- one trim per tool call, however many copies are wired (ASK-4948) ------
+
+BIG = "\n".join(f"headline number {i} unique {i * 7919}" for i in range(400))
+
+
+def test_second_copy_on_the_same_tool_call_prints_nothing(_state):
+    p = dict(bash_payload("make", BIG), tool_use_id="toolu_A1")
+    assert trimmed(run_hook(p))
+    r = run_hook(p)
+    assert r.returncode == 0 and r.stdout == "", "second copy trimmed the same call again"
+    assert len(list(_state.glob("*.txt"))) == 1
+
+
+def test_each_tool_call_is_trimmed_and_no_id_keeps_the_old_behaviour(_state):
+    assert trimmed(run_hook(dict(bash_payload("make", BIG), tool_use_id="toolu_A1")))
+    assert trimmed(run_hook(dict(bash_payload("make", BIG), tool_use_id="toolu_A2")))
+    # An older Claude Code sends no tool_use_id: no dedupe key, trim every time.
+    assert trimmed(run_hook(bash_payload("make", BIG)))
+    assert trimmed(run_hook(bash_payload("make", BIG)))
+
+
+def test_already_trimmed_output_is_untouched():
+    out = trimmed(run_hook(bash_payload("make", BIG)))
+    again = out["stdout"] + "\n" + "\n".join(f"extra line {i} {i * 31}" for i in range(400))
+    r = run_hook(bash_payload("cat", again))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_old_claims_pruned_fresh_kept(_state):
+    p = dict(bash_payload("make", BIG), tool_use_id="toolu_old")
+    assert trimmed(run_hook(p))
+    claim = next((_state / ".claims").iterdir())
+    os.utime(claim, (1, 1))
+    assert trimmed(run_hook(dict(bash_payload("make", BIG), tool_use_id="toolu_new")))
+    assert not claim.exists()
+    assert (_state / ".claims" / "sess1-toolu_new").exists()
+
+
+# ---- user-level wiring: every repo, trimmed once (ASK-4948) ----------------
+#
+# The hook commands are taken from the files that ship them (the user-level
+# proposal, applied by the real applier to a scratch HOME, and
+# settings-template.json), then run through sh exactly as Claude Code runs them.
+# HOME is a tmp dir whose pinned-checkout path links to this repo, so nothing
+# reads or writes the live ~/.claude or ~/.local/state.
+
+REPO_ROOT = REAL_HOOK.parents[3]
+USER_PROPOSAL = REPO_ROOT / "q-system" / ".q-system" / "proposals" / "wire-tool-output-trim-user.json"
+APPLIER = REPO_ROOT / "q-system" / ".q-system" / "scripts" / "apply-claude-changes.sh"
+PINNED = Path(".local/state/kipi/dispatch/kipi-system")
+
+
+def _trim_cmd(settings: dict) -> str:
+    cmds = [h["command"] for g in settings["hooks"]["PostToolUse"] if g.get("matcher") == "Bash"
+            for h in g["hooks"] if "tool-output-trim.py" in h["command"]]
+    assert len(cmds) == 1, cmds
+    return cmds[0]
+
+
+@pytest.fixture
+def user_home(tmp_path):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text(
+        '{\n  "hooks": {\n    "PostToolUse": [\n'
+        '      {"matcher": "Edit", "hooks": [{"type": "command", "command": "true"}]}\n'
+        '    ]\n  }\n}\n'
+    )
+    (home / PINNED).parent.mkdir(parents=True)
+    os.symlink(REPO_ROOT, home / PINNED)
+    for _ in range(2):  # the second run must be a no-op, as kipi-update re-runs it
+        r = subprocess.run(["bash", str(APPLIER), str(USER_PROPOSAL), "--root", str(home)],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, r.stdout + r.stderr
+    assert "already-applied" in r.stdout
+    return home
+
+
+def _run_cmd(cmd, payload, home, project, state):
+    env = {"PATH": os.environ["PATH"], "HOME": str(home), "CLAUDE_PROJECT_DIR": str(project),
+           "KIPI_TOOL_OUTPUT_DIR": str(state)}
+    return subprocess.run(["sh", "-c", cmd], input=json.dumps(payload), capture_output=True,
+                          text=True, env=env, cwd=str(project), timeout=30)
+
+
+def test_repo_with_no_project_settings_gets_trimmed_output(user_home, tmp_path, _state):
+    bare = tmp_path / "bare-repo"  # a chief: no .claude/, no q-system/
+    bare.mkdir()
+    cmd = _trim_cmd(json.loads((user_home / ".claude" / "settings.json").read_text()))
+    assert "$CLAUDE_PROJECT_DIR" not in cmd, "a user-level hook cannot depend on the project"
+    out = trimmed(_run_cmd(cmd, dict(bash_payload("make", BIG), tool_use_id="toolu_U1"), user_home, bare, _state))
+    assert "[trim: showing" in out["stdout"]
+
+
+def test_repo_with_the_project_hook_is_trimmed_once(user_home, _state):
+    user_cmd = _trim_cmd(json.loads((user_home / ".claude" / "settings.json").read_text()))
+    project_cmd = _trim_cmd(json.loads((REPO_ROOT / "settings-template.json").read_text()))
+    p = dict(bash_payload("make", BIG), tool_use_id="toolu_P1")
+    runs = [_run_cmd(c, p, user_home, REPO_ROOT, _state) for c in (project_cmd, user_cmd)]
+    assert all(r.returncode == 0 for r in runs)
+    assert [bool(r.stdout.strip()) for r in runs].count(True) == 1, "trimmed twice or not at all"
+    assert len(list(_state.glob("*.txt"))) == 1
+    # Negative self-test: the same two copies with no dedupe key BOTH trim, so the
+    # count above is a check that can see a double trim.
+    p2 = bash_payload("make", BIG)
+    both = [_run_cmd(c, p2, user_home, REPO_ROOT, _state) for c in (project_cmd, user_cmd)]
+    assert all(r.stdout.strip() for r in both)
+
+
+def test_kipi_update_applies_the_user_level_proposal():
+    src = (REPO_ROOT / "kipi-update.sh").read_text()
+    assert '"wire-tool-output-trim-user.json"' in src
+    assert "  install_vendored_hooks\n  apply_user_level_proposals\n" in src
+
+
 # ---- mutants: one per decision point, each must be killed -------------------
 
 MUTANTS = [
@@ -429,6 +544,13 @@ MUTANTS = [
     ("fail_open", "    except Exception:  # fail open", "    except ZeroDivisionError:  # fail open",
      "test_broken_input_exits_0_prints_nothing"),
     ("full_text_saved", "fh.write(body)", "fh.write(body[:40])", "test_saved_file_holds_the_full_text"),
+    ("claim", "    if not claim(payload):\n        return None", "", "test_second_copy_on_the_same_tool_call_prints_nothing"),
+    ("claim_no_id", "    if not tool_use_id:\n        return True", "    if not tool_use_id:\n        return False",
+     "test_each_tool_call_is_trimmed_and_no_id_keeps_the_old_behaviour"),
+    ("already_trimmed", "if ALREADY_TRIMMED_RE.search(out) or ALREADY_TRIMMED_RE.search(err):", "if False:",
+     "test_already_trimmed_output_is_untouched"),
+    ("claim_prune", "                if f.is_file() and f.stat().st_mtime < cutoff:\n                    f.unlink()",
+     "                pass", "test_old_claims_pruned_fresh_kept"),
 ]
 
 
