@@ -85,5 +85,91 @@ class TestARealHandBackStillRefuses(unittest.TestCase):
         self.assertTrue(_hand_back_hits(text), assistant_gate.violations(text))
 
 
+class TestANamedObjectAfterThePhraseIsAHandBack(unittest.TestCase):
+    """ASK-4925 item 1. #812 dropped these; the base caught every one.
+
+    When "I" opens the clause, the thing needed comes AFTER the phrase, so the
+    writer is asking the reader for it. That is the plainest hand-back in English.
+    """
+
+    def test_the_object_follows_the_phrase(self):
+        for text in (
+                "I need from you the real name of the routine before I can finish.",
+                "I need from you a decision on the opener.",
+                "I'd need from you a yes or a no on the second option.",
+                "I'll need from you the final numbers before I write it.",
+                "I will need from you two answers, then it goes out.",
+                "What do I need from you? The real name of the routine.",
+                "The draft is ready, and I need from you the export.",
+                "The draft is ready.\nI'll need from you one more file."):
+            with self.subTest(text=text):
+                self.assertTrue(_hand_back_hits(text),
+                                assistant_gate.violations(text))
+                self.assertTrue(assistant_gate.refusal_violations(text))
+
+
+class TestAPlaceholderWithAColonStaysAHandBack(unittest.TestCase):
+    """ASK-4925 item 2, the decision pinned: this STAYS a hand-back.
+
+    "one thing I need from you: <ask>" is the 2026-08-06 incident's own shape, and
+    "the only thing I need from you: two hours" is the same words. The gate reads
+    phrasing, so it cannot tell a client being scoped from an operator being asked.
+    A writer keeps the sentence by naming the object first ("two hours is the only
+    time I need from you"), which the red case above already lets through.
+    """
+
+    def test_the_only_thing_with_a_colon(self):
+        text = "That's the only thing I need from you: two hours on one call."
+        self.assertTrue(_hand_back_hits(text), assistant_gate.violations(text))
+        self.assertTrue(assistant_gate.refusal_violations(text))
+
+
+class TestEveryRefusalRowSurvivesAWrapOrANbsp(unittest.TestCase):
+    """ASK-4925 item 3. `violations` collapses whitespace as `refusal_violations` does."""
+
+    def test_a_no_break_space_inside_a_refusal_phrase(self):
+        text = "Which one do you\xa0want? Both read fine to me."
+        self.assertIn("refusal or hand-back: 'which one do you want'",
+                      assistant_gate.violations(text))
+
+    def test_a_soft_wrap_inside_a_refusal_phrase(self):
+        text = "My\ncall: A. It is the better one."
+        self.assertIn("refusal or hand-back: 'my call:'",
+                      assistant_gate.violations(text))
+
+    def test_both_entry_points_agree(self):
+        text = "Which one do you\xa0want? Tell me\nwhich and I write it."
+        self.assertEqual(
+            [v for v in assistant_gate.violations(text)
+             if v.startswith("refusal or hand-back")],
+            assistant_gate.refusal_violations(text))
+
+
+class TestOneThingINeedReadsAHandBack(unittest.TestCase):
+    """ASK-4925 item 4. The bare substring "one thing i need" ate ordinary prose."""
+
+    def test_ordinary_prose_passes(self):
+        for text in ("The one thing I need is the Q3 export, and then I can model it.",
+                     "There's one thing I need before Friday: nothing from your team."):
+            with self.subTest(text=text):
+                self.assertEqual(assistant_gate.violations(text), [])
+
+    def test_one_thing_i_need_introducing_an_ask_refuses(self):
+        for text in ("One thing I need: is the routine's real name fine to use?",
+                     "There is one thing I need before I can continue."):
+            with self.subTest(text=text):
+                self.assertTrue(assistant_gate.refusal_violations(text))
+
+    def test_the_2026_08_06_incident_still_refuses_on_this_row(self):
+        # The incident as the module docstring records it (already public).
+        text = ("I'm not going to write this one as-is. That's a real content "
+                "choice, not a formatting task, and it's yours to make, not mine "
+                "to make silently.\n\nMy call: **A**. The mechanism is genuinely "
+                "useful.\n\nWhich one? Say A, B, or park, and I write it. If A, one "
+                "thing I need from you: is the routine's real name fine to "
+                "describe in public?")
+        self.assertTrue(_hand_back_hits(text), assistant_gate.violations(text))
+
+
 if __name__ == "__main__":
     unittest.main()
