@@ -1,4 +1,4 @@
-"""ASK-4949: import-review takes pr-review-agent.sh's verdict as the standard review.
+"""ASK-4949: issue_runner import-review takes pr-review-agent.sh's verdict as the standard review.
 
 The fleet's one reviewer posts a verdict comment on the PR and the kipi/reviewer-approved
 status on the head it read. `close` only took a receipt from /issue-review, so on chief
@@ -174,3 +174,78 @@ def test_a_tree_behind_the_pr_head_refuses(tmp_path):
     r = _import(repo, _env(tmp_path, {"head": pr_head, **_verdict(pr_head, "success", APPROVE_BODY)}))
     assert r.returncode == 2, r.stdout + r.stderr
     assert "this tree is at" in r.stderr
+
+
+# --- PR #815 round 1 (pr-review-agent.sh, REQUEST CHANGES) -------------------------------
+
+
+def test_an_l_issue_with_a_stale_adversarial_claim_refuses_whole_and_burns_nothing(tmp_path):
+    # Finding 1 (major): /issue-review claims the adversarial slot before codex runs, so
+    # "class L, codex out" leaves adversarial 1/1 claimed. The import claimed and sealed
+    # standard, then refused on adversarial: a refusal that burned a slot, and two retries
+    # made the issue unclosable.
+    repo = _l_repo(tmp_path)
+    assert _issue(repo, "record-review", "adversarial").returncode == 0
+    sha = _head(repo)
+    env = _env(tmp_path, {"head": sha, **_verdict(sha, "success", APPROVE_BODY)})
+    for _ in range(3):   # the operator's obvious next move is to retry
+        r = _import(repo, env)
+        assert r.returncode == 2, r.stdout + r.stderr
+        assert "adversarial: 1/1" in r.stderr, r.stderr
+        assert r.stdout == ""
+    st = _state(repo)
+    assert st["review_rounds"]["standard"] == 0, "a refused import burned a review slot"
+    assert not st.get("review_completions", {}).get("standard"), st.get("review_completions")
+    assert not list((repo / ".prd-os/reviews").glob("*-standard-r*.md"))
+
+
+def test_no_gh_on_path_is_a_one_line_refusal_not_a_traceback(tmp_path):
+    # Finding 3 (minor): FileNotFoundError escaped the except tuple as rc=1 and a traceback.
+    import shutil
+    repo = _s_repo(tmp_path)
+    bindir = tmp_path / "nogh"
+    bindir.mkdir()
+    for tool in ("git", "python3"):
+        (bindir / tool).symlink_to(shutil.which(tool))
+    r = _issue(repo, "import-review", "--pr", str(PR), "--repo", REPO,
+               env_extra={"PATH": str(bindir)})
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr and r.stderr.startswith("refusing import:"), r.stderr
+    assert _state(repo)["review_rounds"]["standard"] == 0
+
+
+@pytest.mark.parametrize("body", [
+    "Verdict: APPROVE WITH NITS. Findings: 1. Review withheld: this repository is public.\n",
+    "DEGRADED (Opus fallback, not an independent second opinion). Verdict: APPROVE. "
+    "Findings: 0. Review withheld: this repository is public.\n",
+])
+def test_the_public_repo_floor_body_imports(tmp_path, body):
+    # Finding 4 (minor): pr-verdict-lib.sh review_public_counts_line has no '## Verdict:'
+    # heading, so a real approve under a success status refused.
+    repo = _s_repo(tmp_path)
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", body)}))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _state(repo)["receipts"]["reviewed"]
+
+
+def test_a_floor_body_with_a_non_approve_verdict_still_refuses(tmp_path):
+    # Negative self-test for the floor pattern: it must not widen to any 'Verdict:' line.
+    repo = _s_repo(tmp_path)
+    sha = _head(repo)
+    body = "Verdict: REQUEST CHANGES. Findings: 2. Review withheld: this repository is public.\n"
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", body)}))
+    assert r.returncode == 2, r.stdout + r.stderr
+
+
+def test_the_status_description_is_sealed_with_the_import(tmp_path):
+    # Finding 5 (minor): 'delta <base>..<sha>' and DEGRADED live only in the status
+    # description; dropping it sealed a delta approve as a full review with no trace.
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    desc = "delta 5b2c1894..7d415788: APPROVE WITH NITS"
+    r = _import(repo, _env(tmp_path, {"head": sha,
+                                      **_verdict(sha, "success", APPROVE_BODY, desc=desc)}))
+    assert r.returncode == 0, r.stdout + r.stderr
+    for kind in ("standard", "adversarial"):
+        assert _state(repo)["review_completions"][kind]["imported"]["status_description"] == desc
