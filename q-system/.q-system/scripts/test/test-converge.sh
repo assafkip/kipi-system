@@ -154,6 +154,10 @@ printf '%s\n' "$*" >> "$FAKE_GHLOG"
 case "$*" in
   "pr list"*) cat "$FAKE_PR_FILE" 2>/dev/null ;;
   "pr view "*"--json autoMergeRequest"*) cat "$FAKE_ARMED_FILE" 2>/dev/null ;;
+  # spec-merge-gate.py's reads (ASK-4947): a head, no files, no specs at it.
+  "pr view "*"--json number,headRefOid,headRefName,title,body"*)
+    echo '{"number": 2, "headRefOid": "feedface", "headRefName": "sana/ask-143", "title": "t", "body": ""}' ;;
+  "api --paginate "*"/files"*|"api repos/"*"contents/.prd-os/issues?"*) : ;;
   "pr view"*) cat "$FAKE_SHA_FILE" 2>/dev/null ;;
   "pr merge"*)
     RC="$(cat "$FAKE_MERGE_RC_FILE" 2>/dev/null || echo 0)"

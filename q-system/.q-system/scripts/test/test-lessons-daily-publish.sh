@@ -145,6 +145,8 @@ build_fixture() {
   # to the checkout's own lessons dir, which is the distiller's real default.
   cp "$SCRIPTS/lessons_streak.py" "$tmp/skel/q-system/.q-system/scripts/lessons_streak.py"
   cp "$SCRIPTS/lessons-push-guard.py" "$tmp/skel/q-system/.q-system/scripts/lessons-push-guard.py"
+  # The fleet's spec check runs before the arm (ASK-4947); a missing one is no arm.
+  cp "$SCRIPTS/spec-merge-gate.py" "$tmp/skel/q-system/.q-system/scripts/spec-merge-gate.py"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/skel/q-system/.q-system/scripts/install-plist.sh"
   printf '#!/bin/bash\nexit 0\n' > "$tmp/bin/claude"
   # gh: records argv. `pr create` prints a PR URL unless gh.mode says fail.
