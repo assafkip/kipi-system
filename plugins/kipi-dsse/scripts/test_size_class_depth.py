@@ -135,7 +135,11 @@ def test_the_repeat_minimum_follows_the_class(tmp_path, change, ok):
 
 # --- unknown never means small ------------------------------------------------------
 
-def test_a_repo_with_no_classifier_gets_the_strict_numbers(tmp_path):
+def test_a_repo_with_no_classifier_gets_the_strict_numbers(tmp_path, monkeypatch):
+    # ASK-4949: with none in the repo the runner falls back to the skeleton's copy, so
+    # "no classifier" now means a skeleton without one too.
+    (tmp_path / "empty-skel").mkdir()
+    monkeypatch.setenv("KIPI_SKEL", str(tmp_path / "empty-skel"))
     repo = _sized_repo(tmp_path, {"scripts/tool.py": SMALL_EDIT}, classifier=False)
     out = _dry(repo)
     assert (out["size_class"], out["caps"]) == ("L", {"standard": 2, "adversarial": 1}), out

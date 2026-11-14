@@ -2153,6 +2153,114 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
     return 0
 
 
+REVIEWER_CONTEXT = "kipi/reviewer-approved"
+_VERDICT_LINE = re.compile(r"\A## Verdict: (APPROVE(?: WITH NITS)?)[ \t]*$", re.M)
+
+
+def _gh_json(*args: str):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:2])}: {(r.stderr or r.stdout).strip()[:200]}")
+    return json.loads(r.stdout)
+
+
+def _read_pr_verdict(repo: str, pr: str, local: str | None) -> tuple[str, dict, dict]:
+    """(head, status, comment) for the approving verdict on the PR's current head.
+
+    Raises ValueError with the refusal reason. The binding is the status, not the comment:
+    pr-review-agent.sh posts kipi/reviewer-approved on the sha it reviewed with the comment
+    as target_url, and the comment body carries no sha.
+    """
+    head = _gh_json("pr", "view", pr, "--repo", repo, "--json", "headRefOid")["headRefOid"]
+    if local != head:
+        raise ValueError(f"{repo}#{pr} head is {head[:12]} but this tree is at "
+                         f"{(local or 'no commit')[:12]}. The verdict covers different code; push "
+                         "this tree and let pr-review-agent.sh review its head")
+    statuses = _gh_json("api", f"repos/{repo}/commits/{head}/statuses?per_page=100")
+    ours = [st for st in statuses if st.get("context") == REVIEWER_CONTEXT]
+    if not ours:
+        raise ValueError(f"no {REVIEWER_CONTEXT} verdict on {repo}#{pr} head {head[:12]}. Either "
+                         "the reviewer has not run on this head or the head moved since its review")
+    newest = ours[0]   # the statuses API lists newest first; the merge gate reads the same one
+    if newest.get("state") != "success":
+        raise ValueError(f"the newest {REVIEWER_CONTEXT} on {head[:12]} is {newest.get('state')} "
+                         f"({newest.get('description') or 'no description'}). Only an approve imports")
+    m = re.search(r"#issuecomment-(\d+)$", newest.get("target_url") or "")
+    if not m:
+        raise ValueError(f"the {REVIEWER_CONTEXT} status links no PR comment "
+                         f"({newest.get('target_url')!r}), so there is no verdict to copy")
+    comment = _gh_json("api", f"repos/{repo}/issues/comments/{m.group(1)}")
+    again = _gh_json("pr", "view", pr, "--repo", repo, "--json", "headRefOid")["headRefOid"]
+    if again != head:
+        raise ValueError(f"{repo}#{pr} head moved during the import ({head[:12]} then {again[:12]})")
+    author = (comment.get("user") or {}).get("login")
+    poster = (newest.get("creator") or {}).get("login")
+    if not author or author != poster:
+        raise ValueError(f"the linked comment is by {author!r} and the status by {poster!r}; the "
+                         "verdict must come from the reviewer that set the status")
+    if not str(comment.get("issue_url", "")).endswith(f"/issues/{pr}"):
+        raise ValueError(f"the linked comment is not on {repo}#{pr}")
+    if not _VERDICT_LINE.search(comment.get("body") or ""):
+        raise ValueError("the linked comment does not open with an approving '## Verdict:' line")
+    return head, newest, comment
+
+
+def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
+    """Take pr-review-agent.sh's approving verdict on the PR as this issue's standard review.
+
+    WHY (ASK-4949). The fleet's one reviewer is pr-review-agent.sh: a verdict comment on
+    the PR and the kipi/reviewer-approved status on the head it read. `close` only took a
+    receipt from /issue-review, so an issue the fleet reviewer approved could not close.
+    On chief PR #433 the receipt was made by hand: the comment copied into
+    .prd-os/reviews/, then record-review and complete-review, claiming the slot after the
+    review had run. This verb does that from the evidence, and the verdict it seals says
+    "imported". Only `standard`: one reviewer is not an adversarial pass, so an M or L
+    change still owes /issue-review its adversarial kind.
+    """
+    import contextlib
+    import io
+    kind = "standard"
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    repo, pr = args.repo, str(args.pr)
+    try:
+        head, status, comment = _read_pr_verdict(repo, pr, _git_head_sha(paths.repo_root))
+    except (RuntimeError, ValueError, KeyError, TypeError, IndexError) as exc:
+        sys.stderr.write(f"refusing import: {exc}\n")
+        return 2
+    # Every refusal is above this line, so a refused import never burns a review slot.
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cmd_record_review(paths, argparse.Namespace(kind=kind, dry=False))
+    if rc != 0:
+        return rc
+    rnd = json.loads(out.getvalue())["round"]
+    body = comment["body"]
+    art = paths.repo_root / ".prd-os/reviews" / f"{state['issue_id']}-{kind}-r{rnd}.md"
+    art.parent.mkdir(parents=True, exist_ok=True)
+    art.write_bytes(body.encode("utf-8"))   # byte for byte what the reviewer posted
+    word = _VERDICT_LINE.search(body).group(1)
+    verdict = f"{word} (imported from pr-review-agent.sh on {repo}#{pr} at {head[:12]})"
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = cmd_complete_review(paths, argparse.Namespace(kind=kind, verdict=verdict,
+                                                           evidence_file=str(art)))
+    if rc != 0:
+        return rc
+    done = json.loads(out.getvalue())
+    state = _read_state(paths)
+    state["review_completions"][kind]["imported"] = {
+        "source": "pr-review-agent.sh", "repo": repo, "pr": int(pr), "head": head,
+        "comment_url": status.get("target_url"), "reviewer": comment["user"]["login"],
+        "imported_at": _now_iso()}
+    _write_state(paths, state)
+    print(json.dumps({"imported": kind, "round": rnd, "verdict": verdict, "artifact": str(art),
+                      "reviewed": done.get("reviewed"), "awaiting": done.get("awaiting", [])}))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2252,6 +2360,13 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--dry", action="store_true",
                           help="print the size class and its caps; claim nothing")
     p_record.set_defaults(func=cmd_record_review)
+
+    p_import = sub.add_parser("import-review",
+                              help="take pr-review-agent.sh's approving verdict on the PR's "
+                                   "current head as the standard review (ASK-4949)")
+    p_import.add_argument("--pr", required=True, type=int)
+    p_import.add_argument("--repo", required=True, help="owner/name")
+    p_import.set_defaults(func=cmd_import_review)
 
     args = parser.parse_args(argv)
     paths = Paths(_resolve_repo_root(args.repo_root))
