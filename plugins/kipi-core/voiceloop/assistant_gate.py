@@ -29,7 +29,9 @@ reader, or to the operator?**
 ## The honest split, stated the way name_gate and ending_gate state theirs
 
 - **EXACT (`_refusal_signals`).** The model declining or deferring the task. "I'm not
-  going to write", "yours to make, not mine", "I need from you", "say A, B, or park".
+  going to write", "yours to make, not mine", "say A, B, or park", and a hand-back
+  ("what I need from you", "I need from you before I can continue"), read by
+  `_HAND_BACK` rather than the bare words "need from you" (ASK-4909).
   Zero judgement: these are never a post, in any context, on any channel.
 - **EXACT (`_meta_signals`).** Text that talks ABOUT the writing task rather than to a
   reader: "the source material", "the hard rules", "as-is", "the prompt". A post is about
@@ -63,7 +65,7 @@ _REFUSAL = (
     "i'm not going to write", "i am not going to write", "i won't write",
     "i will not write", "i'm not writing this", "not mine to make",
     "yours to make", "yours to decide", "your call, not mine",
-    "i need from you", "i'd need from you", "one thing i need",
+    "one thing i need",
     "say a, b, or park", "let me know which", "which one do you want",
     "tell me which", "and i write it", "and i'll write it",
     "my call:", "my recommendation:", "my pick:",
@@ -73,6 +75,23 @@ _REFUSAL = (
     # named pattern in his voice. A gate that eats his own drafts gets switched off, and a
     # gate that is off protects nothing. The incident text is still blocked several times
     # over by the phrases above, so nothing was traded away to remove them.
+)
+
+# A HAND-BACK: the writer stops and waits on the reader for something before going on.
+# "need from you" counts only when it INTRODUCES that ask: a colon, a "before I ...",
+# or a "to continue" after it, or a placeholder object in front of it ("what", "thing")
+# that exists only to point at the ask coming next.
+#
+# why not the bare phrase (ASK-4909, 2026-11-14): "i need from you" sat in `_REFUSAL` as
+# a substring, and a sent client email refused on the report channel for "That's the
+# only time I need from you." A concrete object in front of the phrase ("the only time")
+# names what is needed, so nothing is handed back. Same scar as "should i" above: a gate
+# that eats his own writing gets switched off. `\s+` between the words because a soft
+# wrap puts a newline mid-phrase, the lesson `_WHITESPACE_RUN` below records.
+_HAND_BACK = re.compile(
+    r"\b(?:what|things?)\s+i(?:'d|\s+would)?\s+need\s+from\s+you\b"
+    r"|\bi(?:'d|\s+would)?\s+need\s+from\s+you\s*"
+    r"(?::|before\b|to\s+(?:continue|proceed|go\s+on|go\s+ahead|start|finish|write)\b)"
 )
 
 # Talking ABOUT the writing task instead of to a reader. UNAMBIGUOUS ONLY: every entry
@@ -123,7 +142,11 @@ _PARK = re.compile(r"\bpark it\b|\bor park\b", re.I)
 
 
 def _refusal_signals(lowered):
-    return [f"refusal or hand-back: {p!r}" for p in _REFUSAL if p in lowered]
+    hits = [f"refusal or hand-back: {p!r}" for p in _REFUSAL if p in lowered]
+    m = _HAND_BACK.search(lowered)
+    if m:
+        hits.append(f"refusal or hand-back: {_collapse_spaces(m.group())!r}")
+    return hits
 
 
 def _addresses_the_operator(lowered):
