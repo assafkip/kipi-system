@@ -1263,8 +1263,8 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     fi
     case "$AUTOMERGE" in
       held)
-        MERGE_LOG="Held by the spec gate, not armed: $ARM_ERR pr-owner.py re-asks the gate every hour and arms it once the spec reads closed."
-        MERGE_PAGE="PR #$PR approved but held by the spec gate: $ARM_ERR pr-owner.py arms it once the spec reads closed" ;;
+        MERGE_LOG="Held by the spec gate, not armed: $ARM_ERR pr-owner.py's hourly pass re-asks the gate once the PR is past its own young/wait windows, and arms it when the spec reads closed."
+        MERGE_PAGE="PR #$PR approved but held by the spec gate: $ARM_ERR pr-owner.py's hourly pass arms it once the spec reads closed and the PR is past its wait windows" ;;
       armed)
         MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green."
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;

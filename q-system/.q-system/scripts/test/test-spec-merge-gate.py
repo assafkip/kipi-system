@@ -202,6 +202,22 @@ check("a gh read failure (exit 3) never removes an arm: no --disable-auto, state
       ("--disable-auto" in calls.read_text(), out.split("|")[0] == "unarmed", out.split("|")[1]), (False, False, ""))
 check("... and it never arms either", arms(), 0)
 
+# PR #816 review round 2: python3 exits 2 for a gate it cannot open, and that read
+# as a quiet hold. A gate that cannot run is "could not tell", never HELD.
+setup("closed")
+lib_copy = tmp / "libcopy"
+lib_copy.mkdir()
+(lib_copy / "pr-verdict-lib.sh").write_text(LIB.read_text())
+for f in ("repo-slug-lib.sh",):
+    if (SCRIPTS / f).exists():
+        (lib_copy / f).write_text((SCRIPTS / f).read_text())
+p2 = subprocess.run(["bash", "-c", f'. "{lib_copy}/pr-verdict-lib.sh"; automerge_arm 395 "{repo}"; '
+                     f'echo "$AUTOMERGE_ARM_STATE|${{AUTOMERGE_ARM_HELD:-}}|$AUTOMERGE_ARM_ERR"'],
+                    capture_output=True, text=True, env=env)
+out = (p2.stdout.strip().splitlines() or [""])[-1]
+check("a gate that cannot run (python exit 2, no REFUSED line) is never HELD and never disarms",
+      (out.split("|")[1] if "|" in out else out, "--disable-auto" in calls.read_text()), ("", False))
+
 # ---------------------------------------------------------------- the worker's words
 # PR #816 review finding 2: linear-worker.sh's arm_automerge paged a spec hold as
 # "sits there forever. Needs a human: gh pr merge --auto --squash N", which is false

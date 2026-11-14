@@ -2211,7 +2211,7 @@ arm_automerge() {
     # reads closed, and the command it named is the merge the gate refused.
     # Log only, with the gate's own line, and no command to run. A hold whose
     # disarm failed is NOT this branch: it stays "unknown" and pages below.
-    say "$ISSUE: PR #$pr held by the spec gate, not armed (${AUTOMERGE_ARM_ERR:-spec-merge-gate.py refused}). pr-owner.py re-asks the gate every hour and arms it once the spec reads closed."
+    say "$ISSUE: PR #$pr held by the spec gate, not armed (${AUTOMERGE_ARM_ERR:-spec-merge-gate.py refused}). pr-owner.py's hourly pass re-asks the gate once the PR is past its own young/wait windows, and arms it when the spec reads closed."
   else
     if [ "$AUTOMERGE" = "unknown" ]; then
       AUTOMERGE="unknown"

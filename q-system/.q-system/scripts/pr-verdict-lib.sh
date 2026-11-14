@@ -527,7 +527,11 @@ automerge_arm() {
   # as it stands, the same as before this gate existed.
   local sg sgrc
   sg="$( python3 "$_PV_LIB_DIR/spec-merge-gate.py" "$pr" --dir "$dir" 2>&1 )" && sgrc=0 || sgrc=$?
-  if [ "$sgrc" = "2" ]; then
+  # 2 IS A REFUSAL ONLY WITH THE GATE'S OWN LINE (PR #816 review round 2).
+  # python3 also exits 2 for a script it cannot open or a usage error, and that
+  # read as a quiet hold: disarmed, logged, nobody paged. Anything else non-zero
+  # is "could not tell" below.
+  if [ "$sgrc" = "2" ] && [ "${sg#spec-merge-gate: REFUSED}" != "$sg" ]; then
     AUTOMERGE_ARM_HELD=1
     AUTOMERGE_ARM_ERR="$(printf '%s' "${sg:-spec-merge-gate.py refused and printed no reason}" | tr '\n' ' ' | cut -c1-400)"
     automerge_disarm "$pr" "$dir" "$errlog"
