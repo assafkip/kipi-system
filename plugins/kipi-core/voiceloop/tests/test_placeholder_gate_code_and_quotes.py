@@ -52,6 +52,14 @@ NOT_BLANKS = [
      "The field reads ``tags: [draft]`` in the export."),
     ("curly token in a fenced template example",
      "The mail merge used:\n" + FENCE + "\nHi {{first_name}},\n" + FENCE + "\n"),
+    # The fence closes only on the same mark, at least as long, with nothing after it. Each
+    # case below would leave the token OUTSIDE the fence if that rule were dropped.
+    ("a tilde line does not close a backtick fence",
+     "Config:\n" + FENCE + "\n~~~\nslot [region]\n" + FENCE + "\nDone."),
+    ("a shorter fence does not close a longer one",
+     "Config:\n````\n" + FENCE + "\nslot [region]\n````\nDone."),
+    ("a fence line with text after it does not close",
+     "Config:\n" + FENCE + "\n" + FENCE + "python\nslot [region]\n" + FENCE + "\nDone."),
 ]
 
 
@@ -82,11 +90,16 @@ STILL_BLANKS = [
      'next to a 55" set.', "[CLIENT NAME]"),
     ("quote cannot cross a CRLF blank line",
      'He said "start\r\n\r\n[CLIENT NAME] is next" today.', "[CLIENT NAME]"),
-    ("a body wholly inside one fence is still checked",
-     FENCE + "\nHi {{FIRST_NAME}}, we built this for [CLIENT NAME].\n" + FENCE + "\n",
-     "[CLIENT NAME]"),
-    ("a body that is one quote is still checked",
-     '"Hi {{FIRST_NAME}}, we built this for [CLIENT NAME]."', "{{FIRST_NAME}}"),
+    # Round 2: the curly path had no open or close rule; autocorrect writes `55"` as a curly close.
+    ("an inch mark does not close a curly quote",
+     "The listing said \u201cfresh accounts, bulk only.\nOur draft still says [CLIENT NAME] "
+     "next to a 55\u201d set.", "[CLIENT NAME]"),
+    ("a quote glued to a word does not open one",
+     'The vendor"s rep for [CLIENT NAME] signed off."', "[CLIENT NAME]"),
+    ("unclosed fence after prose exempts nothing",
+     "Notes below.\n\n" + FENCE + "\nWe built this for [CLIENT NAME].\n", "[CLIENT NAME]"),
+    ("a token that only ENDS inside a quote is outside it",
+     'Thanks, [CLIENT "NAME]" for the call.', '[CLIENT "NAME]'),
     ("unclosed fence exempts nothing",
      FENCE + "\nWe built this for [CLIENT NAME].\n", "[CLIENT NAME]"),
     ("unclosed backtick exempts nothing",

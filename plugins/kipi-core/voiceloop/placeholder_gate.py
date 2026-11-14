@@ -92,16 +92,20 @@ _REF_USE = re.compile(r"\[(\d{1,3})\]")
 # literal, and a quote is someone else's words held as evidence. A token whose bracket starts
 # inside a closed fence, closed inline code, or a closed double quote is skipped.
 # Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed fence
-# or backtick exempts nothing, a quote cannot cross a blank line (LF or CRLF), and a straight
+# or backtick exempts nothing, a quote cannot cross a blank line (LF or CRLF), and a double
 # quote right after a digit neither opens nor closes one (so the inch mark in `55"` is not a
-# quote; PR 810 review round 1 found it could still CLOSE one and blank a paragraph). A text
-# with no prose outside its spans gets no exemption: a draft wrapped whole in a fence or a
-# quote is checked like prose. Pinned in test_placeholder_gate_code_and_quotes.py.
+# quote; PR 810 review round 1 found it could still CLOSE one and blank a paragraph). Curly
+# double quotes are read as straight ones first, so both obey the same open and close rules
+# (round 2 found the curly path had none, and autocorrect turns `55"` into a curly close).
+# Pinned in test_placeholder_gate_code_and_quotes.py.
 # Residuals, said plainly: single quotes are not treated as quotes (an apostrophe cannot be
-# told from one), a `>` blockquote is not exempt, and a template token kept INSIDE double
-# quotes now passes. That includes the quoted creator_ops directive at the top of this module,
-# the source of the 2026-08-11 scar, if a reviser restates it with its quote marks; only the
-# published shape, which dropped them, still blocks.
+# told from one), a `>` blockquote is not exempt, and a template token kept INSIDE closed code
+# or double quotes now passes. So a draft wrapped in a fence or in quotes, with or without a
+# lead-in line, is not checked inside that span. That includes the quoted creator_ops
+# directive at the top of this module, the source of the 2026-08-11 scar, if a reviser
+# restates it with its quote marks; only the published shape, which dropped them, still
+# blocks. A whole-body guard was tried in round 1 and dropped in round 2: one lead-in word
+# defeated it, so it read as coverage it did not give.
 # `post_repair._protected_spans` has its own idea of code, read from the linter's regexes.
 # This parser is separate because that linter lives outside this package.
 _FENCE = re.compile(r"[ \t]{0,3}(`{3,}|~{3,})")
@@ -110,7 +114,6 @@ _INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)" + _PARA.format(stop="") + r"+?(?<!`
 _STRAIGHT_QUOTE = re.compile(
     r'(?<![^\s(\[{:;,/\u2013\u2014-])"(?=[^\s"])' + _PARA.format(stop='"')
     + r'+(?<=[^\s\d])"(?![^\s.,;:!?)\]}\u2019\u2013\u2014-])')
-_CURLY_QUOTE = re.compile("\u201c" + _PARA.format(stop="\u201d") + "+\u201d")
 
 
 def _fenced_spans(text):
@@ -143,11 +146,9 @@ def _exempt_spans(text):
     # inside a fence or a quote mark inside code never opens a span of its own.
     without_fences = _blank(text, spans)
     spans += [m.span() for m in _INLINE_CODE.finditer(without_fences)]
-    without_code = _blank(text, spans)
+    # One code point for one, so offsets still line up with the text.
+    without_code = _blank(text, spans).replace("\u201c", '"').replace("\u201d", '"')
     spans += [m.span() for m in _STRAIGHT_QUOTE.finditer(without_code)]
-    spans += [m.span() for m in _CURLY_QUOTE.finditer(without_code)]
-    if not _blank(text, spans).strip():
-        return []
     return spans
 
 
