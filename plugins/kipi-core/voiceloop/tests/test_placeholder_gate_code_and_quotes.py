@@ -75,6 +75,18 @@ STILL_BLANKS = [
      'He said "start\n\n[CLIENT NAME] is next" today.', "[CLIENT NAME]"),
     ("an inch mark is not a quote",
      'Two 5"wide panels for [CLIENT NAME], each 6" tall.', "[CLIENT NAME]"),
+    # Review round 1 on PR 810: an inch mark could not OPEN a quote but could CLOSE one, so one
+    # stray opening quote blanked the paragraph up to the next size in inches.
+    ("an inch mark does not close a quote",
+     'The listing said "fresh accounts, bulk only.\nOur draft still says [CLIENT NAME] '
+     'next to a 55" set.', "[CLIENT NAME]"),
+    ("quote cannot cross a CRLF blank line",
+     'He said "start\r\n\r\n[CLIENT NAME] is next" today.', "[CLIENT NAME]"),
+    ("a body wholly inside one fence is still checked",
+     FENCE + "\nHi {{FIRST_NAME}}, we built this for [CLIENT NAME].\n" + FENCE + "\n",
+     "[CLIENT NAME]"),
+    ("a body that is one quote is still checked",
+     '"Hi {{FIRST_NAME}}, we built this for [CLIENT NAME]."', "{{FIRST_NAME}}"),
     ("unclosed fence exempts nothing",
      FENCE + "\nWe built this for [CLIENT NAME].\n", "[CLIENT NAME]"),
     ("unclosed backtick exempts nothing",
