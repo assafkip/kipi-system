@@ -71,6 +71,25 @@ STILL_BLANKS = [
      "| a | `x | [CLIENT NAME] |\n|`code`| c |\n", "[CLIENT NAME]"),
     ("stray backtick and a glued code cell in one row",
      "| `x | [CLIENT NAME] |`code`|\n", "[CLIENT NAME]"),
+    # PR 818 review round 1: a stray backtick glued to the word BEFORE it, or standing alone,
+    # used to slip through a "padded" shortcut that skipped the closer check.
+    ("stray backtick glued to the word before it",
+     "Set the flag` and tell [CLIENT NAME] to run `make` now.", "[CLIENT NAME]"),
+    ("stray backtick as its own word",
+     "Quote it with ` and then email [CLIENT NAME]. Run `make`.", "[CLIENT NAME]"),
+    ("stray backtick at a line end",
+     "Left a backtick here `\nso [CLIENT NAME] must be filled, run `make`.", "[CLIENT NAME]"),
+    ("stray backtick alone in a table cell",
+     "| a | x ` | [CLIENT NAME] | `code` |\n", "[CLIENT NAME]"),
+    # Round 1 too: a code span whose content ends in `(` or `|` was refused as a closer, then
+    # promoted to an opener, and blanked prose up to the next code span.
+    ("code span ending in a pipe, then prose, then code",
+     "Every table row starts with `|` and [CLIENT NAME] is still a blank. Run `make`.",
+     "[CLIENT NAME]"),
+    ("code span ending in a paren, then prose, then code",
+     "Type `(` to start, then ask [CLIENT NAME] about it, then `go`.", "[CLIENT NAME]"),
+    ("code span ending in a space, then prose, then code",
+     "Run `make ` then call [CLIENT NAME] and run `go` next.", "[CLIENT NAME]"),
     # ASK-4922 controls for two bounds that had none.
     # Deleting the straight-quote closer lookahead lets `vendor"s` close the open quote.
     ("a quote mark glued to the next word does not close a quote",
@@ -95,6 +114,9 @@ CODE_STILL_EXEMPT = [
      "The `flag stays. Run `make [target]` now.", []),
     ("padded inline code", "Type `` [draft] `` in the field.", []),
     ("code in a table cell", "| a | `tags: [draft]` |\n| b | `[x]` |\n", []),
+    ("code cell padded at the end", "| step | `tags: [draft] ` |\n", []),
+    ("code span ending in a pipe", "Run `grep [x] |` then stop.", []),
+    ("code with a letter glued after its closer", "Count the `[draft]`s in the export.", []),
 ]
 
 
