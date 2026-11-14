@@ -13,8 +13,9 @@ commit-lock.sh. Nothing looked for an existing tool before a new one was written
 
 THE RULE (deterministic, no model call):
   A Write (or an Edit/MultiEdit that creates a file) of a NEW executable script
-  (.py .sh .js .ts, or content that starts with #!) is refused unless its first
-  40 lines carry one of:
+  (content that starts with #!, any .sh, or a .py .js .ts with an entry point:
+  __main__, def main(, sys.argv, parse_args(, require.main, import.meta.main or
+  process.argv) is refused unless its first 40 lines carry one of:
     Reuses-kipi: <path in kipi-system>             a FILE at origin/main
     Kipi-checked: <slug>, <slug> -- <why none fits>
   Kipi-checked must name every kipi capability this gate lists for the file, by
@@ -72,6 +73,9 @@ The map holds what capability-map-gen.py collects: Python engines of 40+ lines,
 skills, commands, settings.json hooks, agents, rules. A shell script that is not
 wired as a hook is not in it. A script created through Bash (heredoc, cp, tee) is
 not seen: new-view-gate, whose coverage this matches, has the same boundary.
+A .py .js .ts file with only top-level code and none of the entry markers (run
+as `python3 x.py`) is not seen either: the price of not refusing every new module,
+config and migration in a client repo (review round 2 of #755).
 
 Test seams (env): KIPI_REUSE_GATE_REPO, KIPI_REUSE_GATE_CACHE, KIPI_REUSE_GATE_GEN,
 KIPI_REUSE_GATE_TEMP_ROOTS (colon list; replaces the whole temp policy).
@@ -97,6 +101,11 @@ FOUNDER = ('Founder, 2026-11-12: "reuse kipi system mechinary instead of buildin
            'always - put that in code".')
 HERE = Path(__file__).resolve().parent
 SCRIPT_EXT = (".py", ".sh", ".js", ".ts")
+# A shell file is run, not imported. A .py/.js/.ts file is often a module, a config
+# or a migration, so for those the extension only nominates and ENTRY_RE decides.
+ALWAYS_SCRIPT_EXT = (".sh",)
+ENTRY_RE = re.compile(r"__main__|^\s*def main\s*\(|\bsys\.argv\b|\bparse_args\s*\(|"
+                      r"\brequire\.main\b|\bimport\.meta\.main\b|\bprocess\.argv\b", re.M)
 HEADER_LINES = 40
 MAX_LISTED = 8
 KEEP_CACHES = 10
@@ -193,7 +202,21 @@ def creation(tool: str, inp: dict, cwd: str):
 
 
 def is_script(path: str, content: str) -> bool:
-    return path.lower().endswith(SCRIPT_EXT) or content.startswith("#!")
+    # Extension alone was the whole test until review round 2 of #755: an empty
+    # __init__.py, a type-only .ts, a tailwind.config.ts and a Django migration
+    # were all refused in client repos. None can do a kipi tool's job, and an
+    # empty __init__.py cannot carry a header and stay empty, so the only way
+    # through was REUSE_GATE_OFF=1, which switches the gate off for everything.
+    # So .py/.js/.ts now need an entry point too; a shebang or .sh still decides alone.
+    if content.startswith("#!"):
+        return True
+    low = path.lower()
+    name = os.path.basename(low)
+    if name == "__init__.py" or low.endswith(".d.ts"):
+        return False
+    if low.endswith(ALWAYS_SCRIPT_EXT) or name == "__main__.py":
+        return True
+    return low.endswith(SCRIPT_EXT) and bool(ENTRY_RE.search(content))
 
 
 def is_test_path(path: str) -> bool:

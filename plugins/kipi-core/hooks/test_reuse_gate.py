@@ -167,7 +167,11 @@ def main():
                      "`q-system/.q-system/scripts/backlog-sweep.py`"):
             expect_pass(f"reuses form {form}", run(w(new, script(f"Reuses-kipi: {form}")), env))
         expect_pass("reuses in a /* */ comment", run(w(client / "backlog_sweep.js",
-            "/* Reuses-kipi: q-system/.q-system/scripts/backlog-sweep.py */\nrun();\n"), env))
+            "/* Reuses-kipi: q-system/.q-system/scripts/backlog-sweep.py */\nrun(process.argv);\n"), env))
+        # Control for the case above: the same .js without the citation is gated,
+        # so its pass is the citation's doing, not the scope test's.
+        expect_block("same .js without the citation", run(w(client / "backlog_sweep.js",
+            "// Sweep the backlog.\nrun(process.argv);\n"), env), "backlog-sweep")
         # 4. Kipi-checked must name EVERY overlapping capability
         both = client / "backlog_linear_sync.py"
         expect_block("checked misses one", run(w(both, script(
@@ -276,9 +280,36 @@ def main():
         expect_block("extensionless shebang", run(w(client / "bin" / "backlog-sweep",
                                                     "#!/bin/bash\n# Sweep the backlog.\necho hi\n"), env),
                      "backlog-sweep")
-        for ext in (".sh", ".js", ".ts"):
-            expect_block(f"new {ext}", run(w(client / f"backlog_sweep{ext}",
-                                              "// Sweep the backlog.\n"), env), "backlog-sweep")
+        # A .sh is a script with no entry marker; .js/.ts need one (review round 2 of #755).
+        expect_block("new .sh", run(w(client / "backlog_sweep.sh",
+                                      "# Sweep the backlog.\necho hi\n"), env), "backlog-sweep")
+        for ext, entry in ((".js", "if (require.main === module) run();\n"),
+                           (".ts", "run(process.argv.slice(2));\n")):
+            expect_block(f"new {ext} with an entry point", run(w(client / f"backlog_sweep{ext}",
+                         "// Sweep the backlog.\n" + entry), env), "backlog-sweep")
+            expect_pass(f"new {ext} module, no entry point", run(w(client / f"backlog_sweep{ext}",
+                        "// Sweep the backlog.\nexport function run() {}\n"), env))
+        # 10b. a .py without a shebang is gated by its entry point, not its extension
+        for name, entry in (("if __name__", 'if __name__ == "__main__":\n    run()\n'),
+                            ("def main", "def main():\n    run()\n"),
+                            ("sys.argv", "import sys\nrun(sys.argv[1:])\n")):
+            expect_block(f"new .py, {name}", run(w(client / "backlog_sweep.py",
+                         '"""Sweep the backlog."""\n' + entry), env), "backlog-sweep")
+        expect_block("__main__.py", run(w(client / "backlog_sweep" / "__main__.py",
+                     '"""Sweep the backlog."""\nrun()\n'), env), "backlog-sweep")
+        # 10c. the shapes review round 2 of #755 saw refused: none is a script
+        for rel, body in (("pkg/__init__.py", ""),
+                          ("pkg/__init__.py", '"""Package marker."""\n'),
+                          ("backlog_sweep/__init__.py", "from .core import sweep\n"),
+                          ("src/types.ts", "export type BacklogSweep = { id: string };\n"),
+                          ("src/backlog_sweep.d.ts", "declare function run(argv: string[]): void;\n"
+                                                     "// process.argv\n"),
+                          ("migrations/0001_initial.py", "from django.db import migrations\n\n"
+                           "class Migration(migrations.Migration):\n    operations = []\n"),
+                          ("tailwind.config.ts", "export default { content: [] };\n"),
+                          ("backlog_sweep_lib.py", '"""Sweep the backlog."""\n\ndef sweep():\n'
+                                                   "    return []\n")):
+            expect_pass(f"not a script: {rel} {body[:20]!r}", run(w(client / rel, body), env))
         existing = client / "existing_backlog_sweep.py"
         existing.write_text("print(0)\n")
         expect_pass("rewrite of an existing script", run(w(existing, script()), env))
