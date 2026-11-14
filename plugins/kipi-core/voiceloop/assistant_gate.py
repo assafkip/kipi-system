@@ -32,7 +32,10 @@ reader, or to the operator?**
   going to write", "yours to make, not mine", "say A, B, or park", and a hand-back
   ("what I need from you", "I need from you before I can continue"), read by
   `_HAND_BACK` rather than the bare words "need from you" (ASK-4909).
-  Zero judgement: these are never a post, in any context, on any channel.
+  Zero judgement for the refusal phrases: never a post, in any context, on any channel.
+  The hand-back row is the one exception, kept on purpose (ASK-4925): "Here is what I
+  need from you: the logs" can be a real line to a client, and it refuses anyway,
+  because it is the incident's shape word for word. Rewording costs one sentence.
 - **EXACT (`_meta_signals`).** Text that talks ABOUT the writing task rather than to a
   reader: "the source material", "the hard rules", "as-is", "the prompt". A post is about
   the work; these are about producing the post.
@@ -65,7 +68,9 @@ _REFUSAL = (
     "i'm not going to write", "i am not going to write", "i won't write",
     "i will not write", "i'm not writing this", "not mine to make",
     "yours to make", "yours to decide", "your call, not mine",
-    "one thing i need",
+    # NOT bare "one thing i need" (ASK-4925): it refused "The one thing I need is the
+    # Q3 export", the same false positive as the bare "i need from you" that #812
+    # removed. `_HAND_BACK` reads it now, only when it introduces an ask.
     "say a, b, or park", "let me know which", "which one do you want",
     "tell me which", "and i write it", "and i'll write it",
     "my call:", "my recommendation:", "my pick:",
@@ -88,11 +93,34 @@ _REFUSAL = (
 # names what is needed, so nothing is handed back. Same scar as "should i" above: a gate
 # that eats his own writing gets switched off. `\s+` between the words because a soft
 # wrap puts a newline mid-phrase, the lesson `_WHITESPACE_RUN` below records.
+#
+# why the clause-start branch (ASK-4925, 2026-11-14): #812 kept only the two forms above
+# and dropped the plainest hand-back, "I need from you the real name", "I'll need from
+# you X", which the bare phrase had caught. When "I" OPENS the clause (start of text,
+# after punctuation, or after "and"/"but"/"so"), the thing needed comes after the
+# phrase, so the writer is asking for it. When a noun sits in front of "I" ("the only
+# time I need from you"), the object was named first and nothing is handed back.
+#
+# Item 2, decided: "the only thing I need from you: two hours" STAYS a hand-back. It is
+# the 2026-08-06 incident's own words ("one thing I need from you: ..."), and this gate
+# reads phrasing, so it cannot tell a client being scoped from an operator being asked.
+# The writer keeps the sentence by naming the object first ("two hours is the only time
+# I need from you"). Measured on his 18 sent emails and deliverables: 0 use the form.
+#
+# "one thing I need" without "from you" counts only when a colon, "before I" or "to
+# continue" follows, so "The one thing I need is the Q3 export" is prose (ASK-4925).
+_I_NEED = r"i(?:'d|'ll|\s+would|\s+will)?\s+need"
+_TO_CONTINUE = r"to\s+(?:continue|proceed|go\s+on|go\s+ahead|start|finish|write)\b"
 _HAND_BACK = re.compile(
-    r"\b(?:what|things?)\s+i(?:'d|\s+would)?\s+need\s+from\s+you\b"
-    r"|\bi(?:'d|\s+would)?\s+need\s+from\s+you\s*"
-    r"(?::|before\b|to\s+(?:continue|proceed|go\s+on|go\s+ahead|start|finish|write)\b)"
+    r"\b(?:what(?:\s+do)?|things?)\s+" + _I_NEED + r"\s+from\s+you\b"
+    r"|\b" + _I_NEED + r"\s+from\s+you\s*(?::|before\b|" + _TO_CONTINUE + ")"
+    r"|(?:^|[.!?:;,(\"*–—-]\s*|\b(?:and|but|so|then|now|also|first|next)\s+)"
+    + _I_NEED + r"\s+from\s+you\b"
+    r"|\bone\s+thing\s+" + _I_NEED + r"\s*(?::|before\s+i\b|" + _TO_CONTINUE + ")"
 )
+# The clause-start branch matches the punctuation in front of "I"; the signal names
+# the phrase, not the comma.
+_LEADING_PUNCT = ".!?:;,(\"*–—- "
 
 # Talking ABOUT the writing task instead of to a reader. UNAMBIGUOUS ONLY: every entry
 # here names the production of THIS post and can never be the subject of one.
@@ -145,7 +173,8 @@ def _refusal_signals(lowered):
     hits = [f"refusal or hand-back: {p!r}" for p in _REFUSAL if p in lowered]
     m = _HAND_BACK.search(lowered)
     if m:
-        hits.append(f"refusal or hand-back: {_collapse_spaces(m.group())!r}")
+        hits.append(
+            f"refusal or hand-back: {_collapse_spaces(m.group()).lstrip(_LEADING_PUNCT)!r}")
     return hits
 
 
@@ -252,7 +281,10 @@ def violations(text):
     from . import ending_gate
 
     text = ending_gate.normalize_glyphs(text)
-    lowered = (text or "").lower()
+    # Collapsed the way `refusal_violations` is (ASK-4925): without it, every substring
+    # row walked through a soft wrap or an NBSP ("Which one do you\xa0want?") while the
+    # one regex row did not. `text` stays raw for the line-anchored markdown and menu rows.
+    lowered = _collapse_spaces(text or "").lower()
     return (_refusal_signals(lowered)
             + _meta_signals(lowered)
             + _markdown_signals(text)
