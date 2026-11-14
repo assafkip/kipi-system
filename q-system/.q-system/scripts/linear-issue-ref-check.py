@@ -84,6 +84,26 @@ def branch_issue(keys: list = None):
 # [no-issue: reason] with a non-empty reason. An empty reason is not an escape.
 BYPASS_RE = re.compile(r"\[no-issue:\s*(?P<reason>[^\]]*?)\s*\]", re.IGNORECASE)
 
+# ASK-4386: which bypass REASONS lose the hatch on a branch that names an issue.
+#
+# Scoped to the hazardous committer, not to the situation it was found in
+# (q-system/lessons/scoping-guards-to-the-hazardous-operation.md). Measured in
+# this repo 2026-11-14: nine call sites emit `[no-issue:]`. Eight run in a main
+# checkout and have no issue to name -- kipi-update.sh at :2798, :2860, :3183,
+# :3388 and :3650, fleet-unblock.py:413, kipi-update-voiceloop-migrate.py:831 and
+# lessons-daily.sh:281. Refusing those abandons that instance on every sync, which
+# is this issue's own blocking major pointed the other way, and kipi-update.sh:3189
+# already prints "this instance will very likely be refused below" when its
+# system-state commit fails. One call site, auto-commit.py:635, runs INSIDE an
+# agent's worktree and already asks this gate for the branch issue through
+# `--branch-issue`, so it can always comply: 70163e63 used that hatch on
+# sana/ask-4309 to land a 13-file rule deletion no gate inspected.
+#
+# The contract in one sentence: the committer that CAN name the branch issue is
+# refused the hatch there; the ones that cannot keep it, and stay countable in the
+# ledger either way.
+HOOK_BYPASS_RE = re.compile(r"auto-commit", re.IGNORECASE)
+
 # Messages git generates or that are mid-rebase machinery. Gating these would
 # break merge, revert, and autosquash for no gain: they inherit their parent's
 # provenance rather than representing new work.
@@ -199,14 +219,20 @@ def main(argv: list) -> int:
         return 0
 
     bypass = BYPASS_RE.search(body)
-    named = branch_issue() if bypass else None
+    # HOOK_BYPASS_RE first, so the eight fleet-tool emitters never reach the
+    # refusal. Only a reason that names a committer able to ask for the branch
+    # issue loses the hatch here.
+    hazardous = bool(bypass and HOOK_BYPASS_RE.search(bypass.group("reason") or ""))
+    named = branch_issue() if hazardous else None
     if named:
         # ASK-4386: the bypass is for work with no issue. A branch cut for one has
         # an issue, and 70163e63 used this hatch on sana/ask-4309 to commit a
         # 13-file rule deletion that no gate inspected.
         print(f"\nBLOCK: [no-issue:] on a branch that names {named}.\n"
               f"  subject: {subject or '(empty)'}\n"
-              f"  Name the issue in the message, e.g. ({named}).\n", file=sys.stderr)
+              f"  Name the issue in the message, e.g. ({named}).\n"
+              f"  auto-commit.py asks this gate for that id via --branch-issue;\n"
+              f"  a committer with no issue to name keeps the hatch.\n", file=sys.stderr)
         return 1
     if bypass:
         reason = bypass.group("reason").strip()

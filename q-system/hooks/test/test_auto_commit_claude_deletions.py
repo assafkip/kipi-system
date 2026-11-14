@@ -97,17 +97,25 @@ class ClaudeDeletionsAreHeld(Scratch):
         self.assertEqual(self.at_head(".claude/rules/keep.md"),
                          "rule one\nrule two\nrule three\n",
                          "the hook committed a .claude/ deletion:\n" + out)
-        status = git(self.repo, "status", "--porcelain", "--", ".claude").stdout
-        self.assertIn(" D .claude/rules/keep.md", status, "the deletion was staged")
+        # The deletion is never STAGED by the hook. It is also no longer LEFT on
+        # disk: round 2's major was that holding the commit left the rule file
+        # missing, so StopHookRestoresWhatHoldsNoWork owns where it goes now. What
+        # must never appear here is a staged deletion the next commit would take.
+        staged = git(self.repo, "diff", "--cached", "--name-status", "--", ".claude").stdout
+        self.assertNotIn("D\t.claude/rules/keep.md", staged, "the deletion was staged")
         # Control: the safety net still commits the rest.
         self.assertEqual(self.at_head("q-system/memory/notes.md"), "base\nmore\n", out)
 
-    def test_staged_rule_deletion_is_left_staged_not_committed(self):
+    def test_staged_rule_deletion_is_never_committed(self):
+        # The agent staged the deletion itself. The hook still does not commit it,
+        # and (round 2's major) does not leave the file gone either: a path absent
+        # from disk holds no work, so it comes back from HEAD and is unstaged.
         git(self.repo, "rm", "-q", ".claude/rules/keep.md")
         self.run_hook()
         self.assertIn("rule one", self.at_head(".claude/rules/keep.md"))
-        staged = git(self.repo, "diff", "--cached", "--name-status").stdout
-        self.assertIn("D\t.claude/rules/keep.md", staged, "the agent's staged state moved")
+        staged = git(self.repo, "diff", "--cached", "--name-status", "--", ".claude").stdout
+        self.assertNotIn("D\t.claude/rules/keep.md", staged,
+                         "a staged .claude/ deletion survived into the index")
 
     def test_rule_line_loss_is_held(self):
         # rule_gate's section revert shape: the file stays, lines go.
@@ -225,6 +233,108 @@ class SystemStateRestoresHeldLosses(Scratch):
         self.assertFalse(os.path.exists(self.held_dir), "a restore ran with nothing held")
 
 
+class StopHookRestoresWhatHoldsNoWork(Scratch):
+    """PR #738 round 2 (major): the Stop hook held the commit and left the deleted
+    rule file MISSING from the worktree, so the next session there ran without that
+    rule and no named consumer put it back.
+
+    The discriminator is not the caller, it is whether the working copy holds
+    anything. A path absent from disk holds no work, so HEAD can be restored over
+    it losing nothing. A path still on disk with lines dropped holds someone's
+    content, and a live session is in that tree to read the printed line.
+    """
+
+    def test_deleted_rule_file_is_back_on_disk_after_the_stop_hook(self):
+        os.remove(os.path.join(self.repo, ".claude/rules/keep.md"))
+        self.write("q-system/memory/notes.md", "base\nmore\n")
+        out = self.run_hook().stdout
+        path = os.path.join(self.repo, ".claude/rules/keep.md")
+        self.assertTrue(os.path.exists(path),
+                        "the next session in this tree still runs without the rule:\n" + out)
+        with open(path) as fh:
+            self.assertEqual(fh.read(), "rule one\nrule two\nrule three\n")
+        # Still never COMMITTED as a deletion, and the rest still commits.
+        self.assertIn("rule one", self.at_head(".claude/rules/keep.md"))
+        self.assertEqual(self.at_head("q-system/memory/notes.md"), "base\nmore\n", out)
+
+    def test_a_shrink_is_left_alone_so_a_live_session_keeps_its_edit(self):
+        # The negative self-test for the restore: content on disk is never reverted
+        # while a session is live in the tree.
+        self.write(".claude/rules/other.md", "a\n")
+        self.run_hook()
+        with open(os.path.join(self.repo, ".claude/rules/other.md")) as fh:
+            self.assertEqual(fh.read(), "a\n", "the Stop hook reverted a live edit")
+        self.assertEqual(self.at_head(".claude/rules/other.md"), "a\nb\nc\n")
+
+    def test_staged_deletion_is_restored_and_unstaged(self):
+        git(self.repo, "rm", "-q", ".claude/rules/keep.md")
+        self.run_hook()
+        self.assertTrue(os.path.exists(os.path.join(self.repo, ".claude/rules/keep.md")))
+        self.assertIn("rule one", self.at_head(".claude/rules/keep.md"))
+
+
+class RestoreNamesItsConsumer(Scratch):
+    """PR #738 round 2 (major): the restore reverted content in a live instance
+    checkout with its only notice discarded by `kipi-update.sh 2>/dev/null` and its
+    ledger read by nothing. A restore that can cost content files one ticket for
+    Sana through slack-notify.sh, which is the fleet's named consumer.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.held_dir = os.path.join(self.tmp, "held-claude")
+        self.alerts = os.path.join(self.tmp, "alerts.txt")
+        notify = os.path.join(self.tmp, "notify.sh")
+        with open(notify, "w") as fh:
+            fh.write(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{self.alerts}"\n')
+        os.chmod(notify, 0o755)
+        self.env["KIPI_AUTOCOMMIT_HELD_DIR"] = self.held_dir
+        self.env["KIPI_AUTOCOMMIT_NOTIFY"] = notify
+
+    def system_state(self):
+        st = git(self.repo, "status", "--porcelain", "-uall").stdout
+        feed = "".join(ln[3:] + "\n" for ln in st.splitlines())
+        r = subprocess.run([sys.executable, HOOK, "--system-state"], cwd=self.repo,
+                           env=self.env, input=feed, capture_output=True, text=True,
+                           check=False)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.split("\n"), r.stderr
+
+    def filed(self):
+        if not os.path.exists(self.alerts):
+            return []
+        with open(self.alerts) as fh:
+            return [ln for ln in fh.read().splitlines() if ln.strip()]
+
+    def test_a_shrink_restore_files_exactly_one_ticket_for_sana(self):
+        self.write(".claude/rules/other.md", "a\n")
+        self.system_state()
+        msgs = self.filed()
+        self.assertEqual(len(msgs), 1, "the restore reached no named consumer: " + repr(msgs))
+        self.assertIn("ASK-4386", msgs[0])
+        self.assertIn("1 .claude/ path", msgs[0],
+                      "the alert does not say how many paths: " + msgs[0])
+
+    def test_the_alert_shape_is_stable_so_it_cannot_flood(self):
+        # The 2026-08-10 flood that moved this sink off Slack was 51 auto-commit
+        # messages naming a file set that changed every turn. alert-to-linear.py
+        # dedupes by SHAPE, so the path list must not be in the message.
+        self.write(".claude/rules/other.md", "a\n")
+        self.write(".claude/rules/keep.md", "rule one\n")
+        self.system_state()
+        msgs = self.filed()
+        self.assertEqual(len(msgs), 1, "one ticket per restore EVENT, not per path")
+        self.assertNotIn("other.md", msgs[0], "the path list is in the alert: " + msgs[0])
+        self.assertNotIn("keep.md", msgs[0], "the path list is in the alert: " + msgs[0])
+
+    def test_a_deletion_only_restore_files_nothing(self):
+        # Restoring a path that is absent from disk cannot cost content, so it is
+        # not an event worth a ticket. Keeps the queue honest.
+        os.remove(os.path.join(self.repo, ".claude/rules/keep.md"))
+        self.system_state()
+        self.assertEqual(self.filed(), [], "a lossless restore filed a ticket")
+
+
 class IssueBranchCommitsNameTheIssue(Scratch):
     branch = "sana/ask-4309"
 
@@ -244,6 +354,56 @@ class IssueBranchCommitsNameTheIssue(Scratch):
                 "chore: update rules\n\n[no-issue: auto-commit safety net]", env=self.env)
         self.assertNotEqual(r.returncode, 0, "the gate let a bypass through on sana/ask-4309")
         self.assertEqual(self.head(), self.base)
+
+
+class FleetToolBypassIsNeverRefused(Scratch):
+    """PR #738 round 2 (minor): the new refusal was written against every emitter
+    of `[no-issue:]`, not against the one that can name a branch issue.
+
+    Measured in this repo on 2026-11-14: nine call sites emit the bypass. Exactly
+    one (`auto-commit.py:635`) runs inside an agent's issue worktree. The other
+    eight run in a main checkout and have no issue to name, and the gate's own
+    docstring is explicit that the hatch is deliberate and made COUNTABLE by the
+    ledger rather than closed. `kipi-update.sh:3189` already prints "this instance
+    will very likely be refused below" when its system-state commit fails, so
+    refusing those eight abandons that instance on every sync. That is round 1's
+    blocking major re-created through a different file.
+    """
+
+    branch = "sana/ask-4309"
+
+    def commit_with(self, reason):
+        self.write("q-system/memory/notes.md", f"x {reason}\n")
+        git(self.repo, "add", "-A")
+        return git(self.repo, "commit", "-q", "-m",
+                   f"chore: work\n\n[no-issue: {reason}]", env=self.env)
+
+    def test_fleet_tool_bypasses_still_commit_on_an_issue_branch(self):
+        for reason in ("fleet updater system-state commit",
+                       "fleet updater skeleton sync",
+                       "fleet updater instance-local untrack",
+                       "fleet updater never-commit untrack",
+                       "fleet updater exhaust, no issue in this instance",
+                       "fleet migration, sp-8d55455a tracks it",
+                       "automated daily lesson persist"):
+            r = self.commit_with(reason)
+            self.assertEqual(r.returncode, 0,
+                             f"the gate abandoned an instance over {reason!r}: "
+                             + r.stdout + r.stderr)
+
+    def test_the_bypass_stays_countable_for_a_fleet_tool(self):
+        self.commit_with("fleet updater skeleton sync")
+        with open(self.ledger) as fh:
+            self.assertIn("fleet updater skeleton sync", fh.read(),
+                          "an allowed bypass stopped being countable")
+
+    def test_the_auto_commit_bypass_is_still_refused_there(self):
+        # The one emitter that CAN ask the gate for the branch issue stays refused,
+        # so the hook cannot go back to dodging the gate (70163e63's shape).
+        before = self.head()
+        r = self.commit_with("auto-commit safety net, unattended Stop hook")
+        self.assertNotEqual(r.returncode, 0, "the hook's own bypass was waved through")
+        self.assertEqual(self.head(), before)
 
 
 class BypassStillWorksOffIssueBranches(Scratch):

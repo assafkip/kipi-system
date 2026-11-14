@@ -359,6 +359,13 @@ def hold_claude_losses(groups):
     held = held_claude_paths(paths)
     if not held:
         return groups
+    # THE STOP HOOK'S EXIT for a held loss (PR #738 round 2, major). Holding the
+    # commit used to be the whole fix, which left a deleted rule file MISSING from
+    # the worktree: the next session there ran without that rule and no named
+    # consumer put it back. only_absent=True restores exactly the paths that are
+    # gone from disk, which can hold no work. A path still on disk keeps whatever a
+    # live session put there and is only reported, never reverted.
+    restore_held_claude(held, PROJ_DIR, only_absent=True)
     kept = {}
     for key, paths in groups.items():
         keep = [p for p in paths if p not in held]
@@ -373,27 +380,48 @@ def hold_claude_losses(groups):
 HELD_DIR_ENV = "KIPI_AUTOCOMMIT_HELD_DIR"
 
 
-def restore_held_claude(held, cwd):
-    """Put held .claude/ paths back to HEAD in the tree the fleet updater syncs.
+def restore_held_claude(held, cwd, only_absent=False):
+    """Put held .claude/ paths back to HEAD. THE EXIT for a held loss, both modes.
 
-    why (PR #738 round 1, blocking major): --system-state used to drop a held loss
-    and stop there. The path stayed dirty under kipi-update.sh's own guard
+    THE CONTRACT, in one sentence, because the last two review rounds were spent
+    discovering it one caller at a time: an unattended committer never COMMITS a
+    .claude/ loss and never LEAVES one that holds no work; HEAD is the truth, an
+    overwritten working copy is kept, and a restore that could cost content is
+    filed for Sana.
+
+    The discriminator is whether the working copy holds anything, not which caller
+    is asking (q-system/lessons/scoping-guards-to-the-hazardous-operation.md: scope
+    the guard to the hazard, not to the context it was found in).
+
+      | mode            | absent from disk        | on disk, lines dropped          |
+      | Stop hook       | restore: nothing to lose | leave dirty + print; a session  |
+      | (only_absent)   |                          | is live in the tree to read it  |
+      | --system-state  | restore                  | restore, keep a copy, file one  |
+      |                 |                          | ticket for Sana                 |
+
+    why only_absent for the Stop hook (PR #738 round 2, major): holding the commit
+    left the deleted rule file MISSING from the worktree, so the next session there
+    ran without that rule and no named consumer put it back. A path absent from
+    disk cannot hold an agent's work in progress, so HEAD goes back over it losing
+    nothing. A path still on disk is someone's content and is never reverted while
+    a session is live, which is the negative self-test.
+
+    why the full restore under --system-state (PR #738 round 1, blocking major):
+    a held loss left dirty stays inside kipi-update.sh's own guard
     (`git diff -- .claude/`), so the updater abandoned that instance on every run,
-    and nothing else may touch an instance's main checkout. The loss came from an
-    unattended writer (rule_gate's ASK-4283 defect deleted the 2026-11-10 rules),
-    so HEAD is the truth and the restore is the exit. It errs toward enforcement:
-    the restored file is HEAD's committed copy. Only what this PR withholds from
-    the updater is touched (`.claude/state/` exhaust is not system state, so it is
-    never reverted). A dry run reaches here too, but it runs in the updater's
-    disposable model, never the live instance.
+    and nothing else may touch an instance's main checkout. A dry run reaches here
+    too, but it runs in the updater's disposable model, never the live instance.
 
-    Lossless: a working copy the checkout would overwrite is copied out first,
-    and if any copy fails nothing is restored. A held path new to HEAD is only
+    Lossless: a working copy the checkout would overwrite is copied out first, and
+    if any copy fails nothing is restored. A held path new to HEAD is only
     unstaged, never removed from disk; the guard reads tracked changes only.
-    Returns the restored paths.
+    Scope stays what this change withholds (`.claude/state/` exhaust is not system
+    state, so it is never reverted). Returns the restored paths.
     """
     held = sorted(p for p in held if isinstance(classify(p), tuple)
                   and classify(p)[0] in SYSTEM_STATE_TYPES)
+    if only_absent:
+        held = [p for p in held if not os.path.lexists(os.path.join(cwd, p))]
     if not held:
         return []
     r = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"]
@@ -407,6 +435,11 @@ def restore_held_claude(held, cwd):
         os.path.expanduser("~"), ".local", "state", "kipi", "auto-commit-held-claude")
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
     copy_dir = os.path.join(base, stamp)
+    # copies_kept IS the "could this have cost content" test, and it is the same
+    # fact the copy loop already computes: a path on disk is content the checkout
+    # overwrites. page_claude_restore keys off it so the alert cannot drift from
+    # the backup.
+    copies_kept = []
     try:
         for p in in_head:
             src = os.path.join(cwd, p)
@@ -414,6 +447,7 @@ def restore_held_claude(held, cwd):
                 dst = os.path.join(copy_dir, p)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst, follow_symlinks=False)
+                copies_kept.append(p)
     except OSError as e:
         print(f"auto-commit: could not keep a copy ({e}); nothing restored",
               file=sys.stderr)
@@ -442,7 +476,51 @@ def restore_held_claude(held, cwd):
         print(f"auto-commit: restored, but the ledger row failed ({e})", file=sys.stderr)
     print(f"auto-commit: restored {len(in_head)} held .claude/ path(s) from HEAD "
           f"(ASK-4386): {', '.join(in_head)}", file=sys.stderr)
+    # NAME THE CONSUMER. This print is the only notice the old cut had, and BOTH
+    # --system-state call sites redirect it away: kipi-update.sh:2940 and :3133
+    # pipe this script with `2>/dev/null`. restored.jsonl is read by nothing. So a
+    # restore that reverted a live instance's content was silent at every exit
+    # (PR #738 round 2, major; ~/.claude/rules/no-idle-escalate-to-sana.md: "there
+    # is no someone"). kipi-update.sh is outside this issue's allowed files, so the
+    # notice leaves here by the fleet's own alert path instead.
+    if copies_kept:
+        page_claude_restore(len(copies_kept), cwd, base)
     return in_head
+
+
+def page_claude_restore(count, cwd, base):
+    """File ONE ticket for Sana per restore event that could have cost content.
+
+    Not one per path, and the path list is NOT in the message. alert-to-linear.py
+    dedupes by alert SHAPE, and the 2026-08-10 flood that moved this sink off Slack
+    was 51 auto-commit messages naming a file set that changed every turn. A stable
+    shape plus a count is what makes this one ticket with a counter rather than a
+    queue nobody can clear.
+
+    A restore of a path ABSENT from disk never reaches here: it overwrites nothing,
+    so there is no loss to report and no ticket to open.
+    """
+    notify = os.environ.get("KIPI_AUTOCOMMIT_NOTIFY") or os.path.join(
+        PROJ_DIR, "q-system", ".q-system", "scripts", "slack-notify.sh")
+    if not os.path.isfile(notify):
+        print(f"auto-commit: no pager at {notify}; this restore reached the log only",
+              file=sys.stderr)
+        return False
+    where = os.path.basename(os.path.abspath(cwd))
+    msg = (f"auto-commit restored {count} .claude/ path(s) from HEAD in {where} "
+           f"before the skeleton sync (ASK-4386): an unattended .claude/ loss is "
+           f"never committed and never left dirty in a tree the updater syncs. The "
+           f"overwritten working copies are kept; see restored.jsonl under {base}.")
+    try:
+        r = subprocess.run(["bash", notify, msg], capture_output=True, text=True,
+                           timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"auto-commit: restore pager failed ({e})", file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print(f"auto-commit: restore pager failed rc={r.returncode}", file=sys.stderr)
+        return False
+    return True
 
 
 # The commit-msg gate owns "which issue does this branch name" (ASK-4386). Asking
