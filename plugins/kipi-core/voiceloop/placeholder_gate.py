@@ -86,6 +86,63 @@ _LINK_DEF = re.compile(
 _REF_USE = re.compile(r"\[(\d{1,3})\]")
 
 
+# CODE AND QUOTED EXAMPLES (ASK-4900, 2026-11-14). Run on written reports, this row refused
+# a JSON array in a fenced MCP config (`["-y", "@scope/server"]`), `[player]` inside a quoted
+# scam message, and a bracket inside a quoted seller listing. None is a template slot: code is
+# literal, and a quote is someone else's words held as evidence. A token whose bracket starts
+# inside a closed fence, closed inline code, or a closed double quote is skipped.
+# Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed fence
+# or backtick exempts nothing, a quote cannot cross a blank line, and a straight quote opens
+# only after a space or open punctuation (so the inch mark in `5"` is not a quote). Pinned in
+# test_placeholder_gate_code_and_quotes.py. Residuals, said plainly: single quotes are not
+# treated as quotes (an apostrophe cannot be told from one), a `>` blockquote is not exempt,
+# and a template token a reviser keeps INSIDE double quotes now passes. The 2026-08-11 scar
+# was published without its quote marks, which is the shape this row still catches.
+_FENCE = re.compile(r"[ \t]{0,3}(`{3,}|~{3,})")
+_PARA = r"(?:[^\n{stop}]|\n(?![ \t]*\n))"
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)" + _PARA.format(stop="") + r"+?(?<!`)\1(?!`)")
+_STRAIGHT_QUOTE = re.compile(
+    r'(?<![^\s(\[{:;,/\u2013\u2014-])"(?=[^\s"])' + _PARA.format(stop='"')
+    + r'+(?<=\S)"(?![^\s.,;:!?)\]}\u2019\u2013\u2014-])')
+_CURLY_QUOTE = re.compile("\u201c" + _PARA.format(stop="\u201d") + "+\u201d")
+
+
+def _fenced_spans(text):
+    spans, open_at, fence, pos = [], None, None, 0
+    for line in text.splitlines(keepends=True):
+        mark = _FENCE.match(line)
+        if mark and open_at is None:
+            open_at, fence = pos, mark.group(1)
+        elif (mark and mark.group(1)[0] == fence[0] and len(mark.group(1)) >= len(fence)
+              and not line[mark.end():].strip()):
+            spans.append((open_at, pos + len(line)))
+            open_at = None
+        pos += len(line)
+    return spans
+
+
+def _blank(text, spans):
+    # Same length and the same newlines, so offsets in the copy are offsets in the text.
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start, end):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+def _exempt_spans(text):
+    spans = _fenced_spans(text)
+    # Find inline code with fences blanked, then quotes with all code blanked, so a backtick
+    # inside a fence or a quote mark inside code never opens a span of its own.
+    without_fences = _blank(text, spans)
+    spans += [m.span() for m in _INLINE_CODE.finditer(without_fences)]
+    without_code = _blank(text, spans)
+    spans += [m.span() for m in _STRAIGHT_QUOTE.finditer(without_code)]
+    spans += [m.span() for m in _CURLY_QUOTE.finditer(without_code)]
+    return spans
+
+
 def _slot_shaped(label):
     return not any(c.islower() for c in label) and not label.strip().isdigit()
 
@@ -118,15 +175,22 @@ def tokens(text):
     if not text:
         return []
     found = []
+    exempt = _exempt_spans(text)
+
+    def in_code_or_quote(match):
+        return any(start <= match.start() < end for start, end in exempt)
+
     for match in _SQUARE.finditer(text):
         # A markdown link's bracket is a label, not a blank. See the docstring.
         if _MARKDOWN_LINK.match(text, match.start()):
             continue
-        if _is_defang(text, match) or _is_citation(text, match):
+        if _is_defang(text, match) or _is_citation(text, match) or in_code_or_quote(match):
             continue
         if match.group(0) not in found:
             found.append(match.group(0))
     for match in _CURLY.finditer(text):
+        if in_code_or_quote(match):
+            continue
         if match.group(0) not in found:
             found.append(match.group(0))
     return found
