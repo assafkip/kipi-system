@@ -2287,7 +2287,40 @@ def _comment_findings(body: str) -> list[dict]:
     return rows
 
 
-def _import_findings(paths: Paths, state: dict, rounds: list[dict]) -> tuple[int, int]:
+_STATED_COUNT = re.compile(r"(?:^|\. )Findings: (\d+)", re.M)
+
+
+def _stated_count(body: str) -> int:
+    m = _STATED_COUNT.search(body)
+    return int(m.group(1)) if m else 0
+
+
+def _local_review_rows(repo: str, pr: str) -> list[dict]:
+    """Rows from pr-review-agent.sh's own review records of this PR on this machine.
+
+    WHY (PR #819 round 1, major). On a public repo the PR comment carries counts only, by
+    design (review_public_body), so the comment held no rows and the import sealed with an
+    empty ledger: the ASK-5005 failure on the repo this plugin ships in. The reviewer keeps
+    the full review at $HOME/.config/kipi/pr-reviews/<owner>_<name>__pr-<N>-<stamp>.md;
+    each file's LAST complete block is its verdict block, as findings_block reads it.
+    Every record of the PR is read: an extra round's rows are still this reviewer's
+    findings on this PR, and over-reading is the safe direction for triage.
+    """
+    d = Path(os.environ.get("KIPI_PR_REVIEWS_DIR") or Path.home() / ".config/kipi/pr-reviews")
+    rows = []
+    for f in sorted(d.glob(f"{repo.replace('/', '_')}__pr-{pr}-*.md")):
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        blocks = re.findall(r"^FINDINGS:[ \t]*\n.*?^END FINDINGS", text, re.M | re.S)
+        if blocks:
+            rows.extend(_comment_findings(blocks[-1]))
+    return rows
+
+
+def _import_findings(paths: Paths, state: dict, rounds: list[dict],
+                     repo: str = "", pr: str = "") -> tuple[int, int]:
     """Write every round's findings through issue_findings.py add. Returns (rc, added).
 
     The same writer /issue-review uses, so the rows are byte-for-byte the standard shape
@@ -2303,13 +2336,30 @@ def _import_findings(paths: Paths, state: dict, rounds: list[dict]) -> tuple[int
             if raw.strip():
                 rec = json.loads(raw)
                 existing.add((rec.get("severity"), rec.get("body"), rec.get("affected_path")))
-    new = []
+    found, blind = [], 0
     for c in rounds:
-        for row in _comment_findings(c.get("body") or ""):
-            key = (row["severity"], row["body"], row["affected_path"])
-            if key not in existing:
-                existing.add(key)
-                new.append(row)
+        got = _comment_findings(c.get("body") or "")
+        if not got and _stated_count(c.get("body") or "") > 0:
+            blind += 1   # a counts-only round: the rows live in the local review record
+        found.extend(got)
+    if blind:
+        local = _local_review_rows(repo, pr)
+        if not local:
+            # Stated findings with no rows anywhere is a refusal, never a silent pass:
+            # findings_added 0 would read as a clean review at 3am.
+            sys.stderr.write(
+                f"refusing import: {blind} reviewer round(s) on {repo}#{pr} state findings "
+                "but carry no FINDINGS block (public-repo counts-only comment), and no local "
+                "review record of this PR was found under ~/.config/kipi/pr-reviews. Nothing "
+                "was claimed. Run the import on the machine that ran pr-review-agent.sh.\n")
+            return 2, 0
+        found.extend(local)
+    new = []
+    for row in found:
+        key = (row["severity"], row["body"], row["affected_path"])
+        if key not in existing:
+            existing.add(key)
+            new.append(row)
     if not new:
         return 0, 0
     r = subprocess.run(
@@ -2356,8 +2406,13 @@ def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
     # /issue-review standard pass completed and Codex never ran adversarial: the precheck
     # refused the whole import on standard's full slot, and the override it suggested
     # re-claimed standard past its cap and overwrote the real review's verdict and artifact.
+    # Only an APPROVING completion is skipped (PR #819 round 1): a completed REQUEST
+    # CHANGES is not a review this import may stand beside, so its kind stays in the
+    # precheck and refuses at the cap, as before.
     completed = (state.get("review_completions") or {})
-    kinds = [k for k in required if k not in completed]
+    kinds = [k for k in required
+             if not str((completed.get(k) or {}).get("verdict", "")).strip().upper()
+             .startswith("APPROVE")]
     # Every kind's slot is checked before any is claimed, so a refused import burns nothing.
     # PR #815 round 1 scar: the loop claimed and sealed standard, then refused on an
     # adversarial slot /issue-review had claimed before codex failed (chief #432's state).
@@ -2375,7 +2430,7 @@ def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
             return 2
     # The findings go in before any slot is claimed: a ledger refusal is still a refusal
     # that burns nothing, and a crash after this point leaves true rows a retry dedupes.
-    rc, added = _import_findings(paths, state, rounds_seen)
+    rc, added = _import_findings(paths, state, rounds_seen, repo, pr)
     if rc != 0:
         return rc
     # Every refusal is above this line, so a refused import never burns a review slot.

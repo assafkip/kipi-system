@@ -28,6 +28,10 @@ REPO = "owner/name"
 PR = 7
 APPROVE_BODY = "## Verdict: APPROVE WITH NITS\n\nFindings: 1 (blocker 0, major 0, minor 0, nit 1).\n"
 CHANGES_BODY = "## Verdict: REQUEST CHANGES\n\nFindings: 1 (blocker 1, major 0, minor 0, nit 0).\n"
+# The reviewer's own record: an echoed template block first, its verdict block last.
+LOCAL_REVIEW_DEFAULT = ("prompt echo:\nFINDINGS:\nmajor|echoed template|z.py:1\nEND FINDINGS\n\n"
+                        "review...\nFINDINGS:\nnit|name the constant|scripts/tool.py:4\n"
+                        "END FINDINGS\n")
 
 FAKE_GH = '''#!/usr/bin/env python3
 import json, os, sys
@@ -59,7 +63,7 @@ def _head(repo: Path) -> str:
                           text=True).stdout.strip()
 
 
-def _env(tmp_path: Path, fixture: dict) -> dict:
+def _env(tmp_path: Path, fixture: dict, local_review: "str | None" = LOCAL_REVIEW_DEFAULT) -> dict:
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     gh = bindir / "gh"
@@ -67,7 +71,14 @@ def _env(tmp_path: Path, fixture: dict) -> dict:
     gh.chmod(0o755)
     fx = tmp_path / "gh.json"
     fx.write_text(json.dumps(fixture))
-    return {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_FIXTURE": str(fx)}
+    # The reviewer's local records, never the live ~/.config/kipi/pr-reviews. A counts-only
+    # body (public repo) reads its rows from here (PR #819 round 1).
+    reviews = tmp_path / "pr-reviews"
+    if local_review is not None:
+        reviews.mkdir(exist_ok=True)
+        (reviews / f"{REPO.replace('/', '_')}__pr-{PR}-20261114-000000.md").write_text(local_review)
+    return {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_GH_FIXTURE": str(fx),
+            "KIPI_PR_REVIEWS_DIR": str(reviews)}
 
 
 def _verdict(sha: str, state: str, body: str, *, desc="APPROVE WITH NITS") -> dict:
@@ -361,3 +372,51 @@ def test_on_m_a_completed_standard_is_kept_and_the_import_fills_adversarial(tmp_
     assert st["receipts"]["reviewed"], st["receipts"]
     assert st["review_rounds"] == {"standard": 1, "adversarial": 1}, st["review_rounds"]
     assert st["review_completions"]["standard"] == before   # the real review is untouched
+
+
+# --- PR #819 round 1 -------------------------------------------------------------------
+
+PUBLIC_BODY = ("## Verdict: APPROVE WITH NITS\n\nFindings: 2 (blocker 0, major 1, minor 1, nit 0). "
+               "Reviewer engine: `claude`.\n\nThis repository is public, so the review text, the "
+               "finding details and the diff are not posted here.\n")
+
+
+def test_a_public_counts_only_round_reads_its_rows_from_the_local_review_record(tmp_path):
+    # Major: the public-repo comment states findings but carries no block. The import sealed
+    # with findings_added 0 and triage passed: ASK-5005 again, on kipi-system itself.
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", PUBLIC_BODY)}))
+    assert r.returncode == 0, r.stdout + r.stderr
+    rows = _ledger(repo)
+    # the verdict block (last), not the echoed template before it
+    assert [(x["severity"], x["affected_path"]) for x in rows] == [("nit", "scripts/tool.py")], rows
+
+
+def test_a_public_round_with_no_local_record_refuses_and_claims_nothing(tmp_path):
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", PUBLIC_BODY)},
+                           local_review=None))
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "state findings but carry no FINDINGS block" in r.stderr, r.stderr
+    st = _state(repo)
+    assert st["review_rounds"]["standard"] == 0 and not st["receipts"].get("reviewed")
+    assert _ledger(repo) == []
+
+
+def test_a_completed_request_changes_is_not_skipped(tmp_path):
+    # Minor: a completed REQUEST CHANGES was skipped and the import sealed `reviewed` with no
+    # override. It stays in the precheck and refuses at its cap, as before the PR. M, so
+    # standard's cap is 1 (on L a second standard round is a legitimate new round).
+    repo = _sz._sized_repo(tmp_path, {"scripts/mid.py": _sz.MID_FILE})
+    assert _issue(repo, "record-review", "standard").returncode == 0
+    art = repo / "std.md"
+    art.write_text("standard reviewer found a blocker\n")
+    assert _issue(repo, "complete-review", "standard", "--verdict",
+                  "REQUEST CHANGES (blocker)", "--evidence-file", str(art)).returncode == 0
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", APPROVE_BODY)}))
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "review cap reached for standard" in r.stderr, r.stderr
+    assert not _state(repo)["receipts"].get("reviewed")
