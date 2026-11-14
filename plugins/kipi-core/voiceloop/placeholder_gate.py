@@ -85,6 +85,13 @@ _LINK_DEF = re.compile(
     r"^[ \t]{0,3}(\[(?P<ref>[^\]\n]{1,60})\]):[ \t]*(?:https?://|/|\./)\S+", re.M)
 _REF_USE = re.compile(r"\[(\d{1,3})\]")
 
+# A MARKDOWN TASK BOX (ASK-4945, 2026-11-14). A written plan refused on `[ ]` from task lines
+# like `- [ ] the client runs the morning routine`. The box is a checklist mark, not a slot.
+# Exempt ONLY as the first thing in a list item (bullet `-*+` or `1.` `1)`, then space, then
+# `[ ]` `[x]` `[X]`, then space or end of line). A box in prose, after the item text, or
+# glued to a word still blocks, and so does any other token on the same line.
+_TASK_BOX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?=[ \t\r]|$)", re.M)
+
 
 # CODE AND QUOTED EXAMPLES (ASK-4900, 2026-11-14). Run on written reports, this row refused
 # a JSON array in a fenced MCP config (`["-y", "@scope/server"]`), `[player]` inside a quoted
@@ -92,7 +99,9 @@ _REF_USE = re.compile(r"\[(\d{1,3})\]")
 # literal, and a quote is someone else's words held as evidence. A token whose bracket starts
 # inside a closed fence, closed inline code, or a closed double quote is skipped.
 # Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed fence
-# or backtick exempts nothing, a quote cannot cross a blank line (LF or CRLF), and a double
+# exempts nothing, and a backtick with no valid closer exempts nothing (see _inline_code_spans
+# for what a valid closer is; a stray one used to pair with the NEXT code span's opener,
+# ASK-4922). A quote cannot cross a blank line (LF or CRLF), and a double
 # quote right after a digit neither opens nor closes one (so the inch mark in `55"` is not a
 # quote; PR 810 review round 1 found it could still CLOSE one and blank a paragraph). Curly
 # double quotes are read as straight ones first, so both obey the same open and close rules
@@ -110,7 +119,9 @@ _REF_USE = re.compile(r"\[(\d{1,3})\]")
 # This parser is separate because that linter lives outside this package.
 _FENCE = re.compile(r"[ \t]{0,3}(`{3,}|~{3,})")
 _PARA = r"(?:[^\n{stop}]|\n(?![ \t\r]*\n))"
-_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)" + _PARA.format(stop="") + r"+?(?<!`)\1(?!`)")
+_BACKTICKS = re.compile(r"`+")
+_BLANK_LINE = re.compile(r"\n[ \t\r]*\n")
+_TABLE_ROW = re.compile(r"\n[ \t]*\|")
 _STRAIGHT_QUOTE = re.compile(
     r'(?<![^\s(\[{:;,/\u2013\u2014-])"(?=[^\s"])' + _PARA.format(stop='"')
     + r'+(?<=[^\s\d])"(?![^\s.,;:!?)\]}\u2019\u2013\u2014-])')
@@ -130,6 +141,46 @@ def _fenced_spans(text):
     return spans
 
 
+def _inline_code_spans(text):
+    # THE STRAY BACKTICK (ASK-4922, 2026-11-14). A regex that pairs the first backtick with the
+    # next run of the same length turned `The `flag for [CLIENT NAME]. Run `make` now.` into one
+    # code span and exempted the token. The run it paired with was really the NEXT span's
+    # opener. So the first same-length run after an opener closes it unless it reads as an
+    # opener, and only inside one paragraph and one table row. Otherwise the opener is stray,
+    # exempts nothing, and the scan moves on to the next run.
+    # A run reads as an opener when an opening position comes before it (space, line start,
+    # or one of `([|=:`) AND a code start follows it (a letter, a digit, `[` or `{`).
+    # Both halves are narrow on purpose. PR 818 review: round 1 found that testing only the
+    # char before refused the real closer of `|` and `(`; round 2 found that "any non-space
+    # after" did the same when a comma or period followed, and made the refused closer an
+    # opener that blanked prose up to the next span.
+    # Residuals: a next-span opener after other punctuation (`see.`x``, `-`x``) or starting
+    # with other punctuation (`.env`, `--flag`) still closes a stray opener, and a real closer
+    # after `([|=:` with a letter glued after it (`(`s`) is read as an opener.
+    runs = list(_BACKTICKS.finditer(text))
+    spans, i = [], 0
+    while i < len(runs):
+        opener = runs[i]
+        width = len(opener.group(0))
+        j = next((k for k in range(i + 1, len(runs)) if len(runs[k].group(0)) == width), None)
+        if j is None:
+            i += 1
+            continue
+        closer = runs[j]
+        between = text[opener.end():closer.start()]
+        before = text[closer.start() - 1]
+        after = text[closer.end():closer.end() + 1]
+        reads_as_opener = ((before.isspace() or before in "([|=:")
+                           and (after.isalnum() or (after != "" and after in "[{")))
+        if (not _BLANK_LINE.search(between) and not _TABLE_ROW.search(between)
+                and not reads_as_opener):
+            spans.append((opener.start(), closer.end()))
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
 def _blank(text, spans):
     # Same length and the same newlines, so offsets in the copy are offsets in the text.
     chars = list(text)
@@ -145,7 +196,7 @@ def _exempt_spans(text):
     # Find inline code with fences blanked, then quotes with all code blanked, so a backtick
     # inside a fence or a quote mark inside code never opens a span of its own.
     without_fences = _blank(text, spans)
-    spans += [m.span() for m in _INLINE_CODE.finditer(without_fences)]
+    spans += _inline_code_spans(without_fences)
     # One code point for one, so offsets still line up with the text.
     without_code = _blank(text, spans).replace("\u201c", '"').replace("\u201d", '"')
     spans += [m.span() for m in _STRAIGHT_QUOTE.finditer(without_code)]
@@ -168,6 +219,12 @@ def _is_citation(text, match):
     line_start = text.rfind("\n", 0, match.start()) + 1
     link = _LINK_DEF.match(text, line_start)
     return bool(link) and match.start() == link.start(1) and not _slot_shaped(link.group("ref"))
+
+
+def _is_task_box(text, match):
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    box = _TASK_BOX.match(text, line_start)
+    return bool(box) and match.start() == box.start(1)
 
 
 def _is_defang(text, match):
@@ -193,7 +250,8 @@ def tokens(text):
         # A markdown link's bracket is a label, not a blank. See the docstring.
         if _MARKDOWN_LINK.match(text, match.start()):
             continue
-        if _is_defang(text, match) or _is_citation(text, match) or in_code_or_quote(match):
+        if _is_task_box(text, match) or _is_defang(text, match) or _is_citation(text, match) \
+                or in_code_or_quote(match):
             continue
         if match.group(0) not in found:
             found.append(match.group(0))
