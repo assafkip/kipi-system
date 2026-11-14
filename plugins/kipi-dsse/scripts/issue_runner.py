@@ -2154,6 +2154,8 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
 
 
 REVIEWER_CONTEXT = "kipi/reviewer-approved"
+IMPORT_RULING = ("one review per issue through pr-review-agent.sh, a second round only for a "
+                 "blocker or major, delta only")
 _VERDICT_LINE = re.compile(r"\A## Verdict: (APPROVE(?: WITH NITS)?)[ \t]*$", re.M)
 
 
@@ -2214,12 +2216,10 @@ def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
     On chief PR #433 the receipt was made by hand: the comment copied into
     .prd-os/reviews/, then record-review and complete-review, claiming the slot after the
     review had run. This verb does that from the evidence, and the verdict it seals says
-    "imported". Only `standard`: one reviewer is not an adversarial pass, so an M or L
-    change still owes /issue-review its adversarial kind.
+    "imported" and quotes the ruling that lets it fill every required kind.
     """
     import contextlib
     import io
-    kind = "standard"
     state = _read_state(paths)
     if not state.get("issue_id"):
         sys.stderr.write("no active issue\n")
@@ -2231,32 +2231,46 @@ def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
         sys.stderr.write(f"refusing import: {exc}\n")
         return 2
     # Every refusal is above this line, so a refused import never burns a review slot.
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = cmd_record_review(paths, argparse.Namespace(kind=kind, dry=False))
-    if rc != 0:
-        return rc
-    rnd = json.loads(out.getvalue())["round"]
+    #
+    # ONE IMPORTED VERDICT IS THE WHOLE REVIEW, AT EVERY SIZE CLASS. Founder ruling
+    # 2026-11-14 (binding): "one review per issue through pr-review-agent.sh, a second
+    # round only for a blocker or major, delta only." pr-review-agent.sh is the adversarial
+    # reviewer by its own provenance: its header says reviews are recorded as
+    # `claude-adversarial`. So its approve fills every kind the size class requires. The
+    # scar: chief #432 was class L, Codex was out, and complete-review refused the receipt
+    # for want of an adversarial pass that the ruling says the fleet reviewer already is.
     body = comment["body"]
-    art = paths.repo_root / ".prd-os/reviews" / f"{state['issue_id']}-{kind}-r{rnd}.md"
-    art.parent.mkdir(parents=True, exist_ok=True)
-    art.write_bytes(body.encode("utf-8"))   # byte for byte what the reviewer posted
     word = _VERDICT_LINE.search(body).group(1)
-    verdict = f"{word} (imported from pr-review-agent.sh on {repo}#{pr} at {head[:12]})"
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = cmd_complete_review(paths, argparse.Namespace(kind=kind, verdict=verdict,
-                                                           evidence_file=str(art)))
-    if rc != 0:
-        return rc
-    done = json.loads(out.getvalue())
+    verdict = (f"{word} (imported from pr-review-agent.sh on {repo}#{pr} at {head[:12]}; "
+               f"counts as the {{kind}} review under the founder ruling 2026-11-14: "
+               f"{IMPORT_RULING!r})")
+    kinds = _required_review_kinds(check_budget.size_class(paths.repo_root))
+    rounds, done = {}, {}
+    for k in kinds:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cmd_record_review(paths, argparse.Namespace(kind=k, dry=False))
+        if rc != 0:
+            return rc
+        rounds[k] = json.loads(out.getvalue())["round"]
+        art = paths.repo_root / ".prd-os/reviews" / f"{state['issue_id']}-{k}-r{rounds[k]}.md"
+        art.parent.mkdir(parents=True, exist_ok=True)
+        art.write_bytes(body.encode("utf-8"))   # byte for byte what the reviewer posted
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cmd_complete_review(paths, argparse.Namespace(
+                kind=k, verdict=verdict.format(kind=k), evidence_file=str(art)))
+        if rc != 0:
+            return rc
+        done = json.loads(out.getvalue())
     state = _read_state(paths)
-    state["review_completions"][kind]["imported"] = {
-        "source": "pr-review-agent.sh", "repo": repo, "pr": int(pr), "head": head,
-        "comment_url": status.get("target_url"), "reviewer": comment["user"]["login"],
-        "imported_at": _now_iso()}
+    for k in kinds:
+        state["review_completions"][k]["imported"] = {
+            "source": "pr-review-agent.sh", "repo": repo, "pr": int(pr), "head": head,
+            "comment_url": status.get("target_url"), "reviewer": comment["user"]["login"],
+            "ruling": IMPORT_RULING, "imported_at": _now_iso()}
     _write_state(paths, state)
-    print(json.dumps({"imported": kind, "round": rnd, "verdict": verdict, "artifact": str(art),
+    print(json.dumps({"imported": kinds, "rounds": rounds, "verdict": word,
                       "reviewed": done.get("reviewed"), "awaiting": done.get("awaiting", [])}))
     return 0
 

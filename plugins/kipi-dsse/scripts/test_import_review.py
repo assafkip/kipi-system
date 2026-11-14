@@ -87,15 +87,52 @@ def test_an_approve_on_the_current_head_imports_and_writes_the_receipt(tmp_path)
     sha = _head(repo)
     r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", APPROVE_BODY)}))
     assert r.returncode == 0, r.stdout + r.stderr
-    out = json.loads(r.stdout)
+    assert json.loads(r.stdout)["imported"] == ["standard"]   # S needs no adversarial kind
     st = _state(repo)
     assert st["receipts"]["reviewed"], st["receipts"]
     done = st["review_completions"]["standard"]
     assert done["verdict"].startswith("APPROVE WITH NITS (imported from pr-review-agent.sh")
     assert done["imported"]["head"] == sha and done["imported"]["pr"] == PR
-    art = Path(out["artifact"])
+    art = Path(done["artifact_path"])
     assert art.name.endswith("-standard-r1.md")
     assert art.read_bytes() == APPROVE_BODY.encode("utf-8")   # byte for byte
+
+
+def _l_repo(tmp_path):
+    return _sz._sized_repo(tmp_path, {"scripts/big.py": _sz.BIG_FILE})
+
+
+def test_an_l_diff_with_one_imported_approve_gets_the_reviewed_receipt(tmp_path):
+    # Founder ruling 2026-11-14: one review per issue through pr-review-agent.sh, which
+    # records as claude-adversarial, so one approve fills both kinds L requires.
+    repo = _l_repo(tmp_path)
+    assert json.loads(_issue(repo, "record-review", "standard", "--dry").stdout)["size_class"] == "L"
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", APPROVE_BODY)}))
+    assert r.returncode == 0, r.stdout + r.stderr
+    st = _state(repo)
+    assert st["receipts"]["reviewed"], st["receipts"]
+    for kind in ("standard", "adversarial"):
+        done = st["review_completions"][kind]
+        assert "founder ruling 2026-11-14" in done["verdict"], done
+        assert f"counts as the {kind} review" in done["verdict"], done
+        assert Path(done["artifact_path"]).read_bytes() == APPROVE_BODY.encode("utf-8")
+
+
+def test_an_l_diff_with_nothing_imported_still_refuses_the_receipt(tmp_path):
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    fx = {"head": sha, **_verdict(sha, "failure", CHANGES_BODY, desc="REQUEST CHANGES")}
+    assert _import(repo, _env(tmp_path, fx)).returncode == 2
+    # And the old path alone, one standard completion, still leaves the receipt unset.
+    assert _issue(repo, "record-review", "standard").returncode == 0
+    art = repo / "std.md"
+    art.write_text("standard reviewer ran, found nothing\n")
+    r = _issue(repo, "complete-review", "standard", "--verdict", "approve",
+               "--evidence-file", str(art))
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout)["awaiting"] == ["adversarial"]
+    assert not _state(repo)["receipts"].get("reviewed")
 
 
 def test_a_request_changes_verdict_refuses_and_claims_no_slot(tmp_path):

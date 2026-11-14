@@ -14,7 +14,7 @@ Close the active DSSE issue. Execute in order:
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" import-review --pr <N> --repo <owner/name>
    ```
 
-   It refuses unless the newest `kipi/reviewer-approved` status on the PR's current head is a success, its linked comment opens with an approving `## Verdict:` line, and this tree is at that head. It writes the comment byte for byte to `.prd-os/reviews/<issue>-standard-rN.md` and seals a verdict marked "imported from pr-review-agent.sh". A refused import claims no review slot. It imports `standard` only, so an M or L change still needs `/issue-review` for its adversarial kind.
+   It refuses unless the newest `kipi/reviewer-approved` status on the PR's current head is a success, its linked comment opens with an approving `## Verdict:` line, and this tree is at that head. It writes the comment byte for byte to `.prd-os/reviews/<issue>-<kind>-rN.md` and seals a verdict marked "imported from pr-review-agent.sh". A refused import claims no review slot. One imported approve fills every kind the size class requires, standard and adversarial (founder ruling 2026-11-14: one review per issue through pr-review-agent.sh, which records as `claude-adversarial`).
 
 2. Pull the snapshotted scope and the pending findings:
 
