@@ -66,7 +66,15 @@ STILL_BLANKS = [
     ("stray backtick in a table row, code in the next row",
      "| a | `x | [CLIENT NAME] |\n| b | c | `code` |\n", "[CLIENT NAME]"),
     ("stray backtick in a table row, code after punctuation in the next row",
-     "| a | `x | [CLIENT NAME] |\n| b | c:`code` |\n", "[CLIENT NAME]"),
+     "| a | `x | [CLIENT NAME] |\n| b | c-`code` |\n", "[CLIENT NAME]"),
+    ("stray backtick does not pair across a blank line",
+     "The `flag stays.\n\nThanks [CLIENT NAME], see c-`make` done.", "[CLIENT NAME]"),
+    ("stray backtick, later code that starts with a bracket",
+     "The `flag for [CLIENT NAME] stays. Use `[1, 2]` here.", "[CLIENT NAME]"),
+    ("stray backtick, later code that starts with a brace",
+     "The `flag for [CLIENT NAME] stays. Use `{a: 1}` here.", "[CLIENT NAME]"),
+    ("stray backtick, later code inside a link label",
+     "The `flag for [CLIENT NAME] stays. See [`make`](https://example.com).", "[CLIENT NAME]"),
     ("stray backtick in a table row, code glued to the next cell",
      "| a | `x | [CLIENT NAME] |\n|`code`| c |\n", "[CLIENT NAME]"),
     ("stray backtick and a glued code cell in one row",
@@ -90,6 +98,21 @@ STILL_BLANKS = [
      "Type `(` to start, then ask [CLIENT NAME] about it, then `go`.", "[CLIENT NAME]"),
     ("code span ending in a space, then prose, then code",
      "Run `make ` then call [CLIENT NAME] and run `go` next.", "[CLIENT NAME]"),
+    # Round 2: punctuation after a real closer made it read as an opener, and the next code
+    # span's opener after `=` then closed it across the token.
+    ("pipe span then comma, later code after =",
+     "Every row starts with `|`, so [CLIENT NAME] must be filled. Set flag=`x`.",
+     "[CLIENT NAME]"),
+    ("paren span then comma, later code after =",
+     "Type `(`, then ask [CLIENT NAME] about it, then set f=`go`.", "[CLIENT NAME]"),
+    ("padded span then comma, later padded code after =",
+     "Type `` x ``, then tell [CLIENT NAME] to set f=`` y ``.", "[CLIENT NAME]"),
+    ("stray backtick, later code after =",
+     "The `flag for [CLIENT NAME] stays. Set f=`make` now.", "[CLIENT NAME]"),
+    ("stray backtick glued before, later code after =",
+     "Set the flag` and tell [CLIENT NAME] to set f=`make` now.", "[CLIENT NAME]"),
+    ("lone stray backtick, later code after :",
+     "Quote it with ` and then email [CLIENT NAME]. Run:`make`.", "[CLIENT NAME]"),
     # ASK-4922 controls for two bounds that had none.
     # Deleting the straight-quote closer lookahead lets `vendor"s` close the open quote.
     ("a quote mark glued to the next word does not close a quote",
@@ -117,6 +140,10 @@ CODE_STILL_EXEMPT = [
     ("code cell padded at the end", "| step | `tags: [draft] ` |\n", []),
     ("code span ending in a pipe", "Run `grep [x] |` then stop.", []),
     ("code with a letter glued after its closer", "Count the `[draft]`s in the export.", []),
+    ("pipe-ending code then comma", "Run `grep [x] |`, then stop.", []),
+    ("padded-end code then comma", "Use `tags: [draft] `, then go.", []),
+    ("padded code then close paren", "Use the token (`` [draft] ``) in the field.", []),
+    ("code then period", "Run `make [target]`. Then stop.", []),
 ]
 
 

@@ -145,15 +145,18 @@ def _inline_code_spans(text):
     # THE STRAY BACKTICK (ASK-4922, 2026-11-14). A regex that pairs the first backtick with the
     # next run of the same length turned `The `flag for [CLIENT NAME]. Run `make` now.` into one
     # code span and exempted the token. The run it paired with was really the NEXT span's
-    # opener, and an opener reads differently from a closer: it sits after a space, a `(`, a
-    # `|` or a line start, AND a non-space follows it. The first same-length run after an
-    # opener closes it unless it reads as an opener that way, and only inside one paragraph
-    # and one table row. Otherwise the opener is stray, exempts nothing, and the scan moves on.
-    # Both halves of the opener test are needed: PR 818 round 1 found that testing only what
-    # comes before refused the real closer of `(` or `|` and promoted it to an opener, and that
-    # a "padded opener skips the test" shortcut let `flag` and a lone ` through.
-    # Residual: a next-span opener after other punctuation, as in `see:`x``, still closes a
-    # stray opener.
+    # opener. So the first same-length run after an opener closes it unless it reads as an
+    # opener, and only inside one paragraph and one table row. Otherwise the opener is stray,
+    # exempts nothing, and the scan moves on to the next run.
+    # A run reads as an opener when an opening position comes before it (space, line start,
+    # or one of `([|=:`) AND a code start follows it (a letter, a digit, `[` or `{`).
+    # Both halves are narrow on purpose. PR 818 review: round 1 found that testing only the
+    # char before refused the real closer of `|` and `(`; round 2 found that "any non-space
+    # after" did the same when a comma or period followed, and made the refused closer an
+    # opener that blanked prose up to the next span.
+    # Residuals: a next-span opener after other punctuation (`see.`x``, `-`x``) or starting
+    # with other punctuation (`.env`, `--flag`) still closes a stray opener, and a real closer
+    # after `([|=:` with a letter glued after it (`(`s`) is read as an opener.
     runs = list(_BACKTICKS.finditer(text))
     spans, i = [], 0
     while i < len(runs):
@@ -167,7 +170,8 @@ def _inline_code_spans(text):
         between = text[opener.end():closer.start()]
         before = text[closer.start() - 1]
         after = text[closer.end():closer.end() + 1]
-        reads_as_opener = (before.isspace() or before in "(|") and after.strip() != ""
+        reads_as_opener = ((before.isspace() or before in "([|=:")
+                           and (after.isalnum() or (after != "" and after in "[{")))
         if (not _BLANK_LINE.search(between) and not _TABLE_ROW.search(between)
                 and not reads_as_opener):
             spans.append((opener.start(), closer.end()))
