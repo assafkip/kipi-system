@@ -114,13 +114,13 @@ _TO_CONTINUE = r"to\s+(?:continue|proceed|go\s+on|go\s+ahead|start|finish|write)
 _HAND_BACK = re.compile(
     r"\b(?:what(?:\s+do)?|things?)\s+" + _I_NEED + r"\s+from\s+you\b"
     r"|\b" + _I_NEED + r"\s+from\s+you\s*(?::|before\b|" + _TO_CONTINUE + ")"
-    r"|(?:^|[.!?:;,(\"*–—-]\s*|\b(?:and|but|so|then|now|also|first|next)\s+)"
+    r"|(?:^|[.!?:;,(\"*\u2013\u2014-]\s*|\b(?:and|but|so|then|now|also|first|next)\s+)"
     + _I_NEED + r"\s+from\s+you\b"
     r"|\bone\s+thing\s+" + _I_NEED + r"\s*(?::|before\s+i\b|" + _TO_CONTINUE + ")"
 )
 # The clause-start branch matches the punctuation in front of "I"; the signal names
 # the phrase, not the comma.
-_LEADING_PUNCT = ".!?:;,(\"*–—- "
+_LEADING_PUNCT = ".!?:;,(\"*\u2013\u2014- "
 
 # Talking ABOUT the writing task instead of to a reader. UNAMBIGUOUS ONLY: every entry
 # here names the production of THIS post and can never be the subject of one.
