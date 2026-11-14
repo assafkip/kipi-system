@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "slug": "wire-tool-output-trim-user",
+  "reason": "ASK-4948: wire tool-output-trim.py once at USER level (~/.claude/settings.json, apply with --root $HOME) so every repo gets trimmed Bash output, including repos with no kipi project settings (chief had none; its builders ran 206k to 242k median context). It runs the copy in the pinned dispatch checkout, which tracks origin/main, never the shared human checkout. Repos that also wire it (kipi project settings, the worker --settings guard set) are trimmed once: the hook claims each tool_use_id with O_EXCL and a second copy prints nothing. Guarded with test -f, fails open, off switch KIPI_OUTPUT_TRIM=0. Applied by kipi-update.sh install_vendored_hooks.",
+  "edits": [
+    {
+      "file": ".claude/settings.json",
+      "op": "insert_after",
+      "anchor": "\"PostToolUse\": [",
+      "reason": "Own Bash matcher block at the head of PostToolUse, so it edits no existing entry.",
+      "insert": "\n      {\n        \"matcher\": \"Bash\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"if test -f \\\"$HOME/.local/state/kipi/dispatch/kipi-system/q-system/.q-system/scripts/tool-output-trim.py\\\"; then python3 -I \\\"$HOME/.local/state/kipi/dispatch/kipi-system/q-system/.q-system/scripts/tool-output-trim.py\\\"; fi\",\n            \"timeout\": 5\n          }\n        ]\n      },"
+    }
+  ]
+}

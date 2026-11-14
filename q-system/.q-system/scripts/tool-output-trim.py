@@ -235,8 +235,54 @@ def prune_old(folder: Path) -> None:
         for f in folder.glob("*-*.txt"):
             if SPILL_NAME_RE.search(f.name) and f.is_file() and f.stat().st_mtime < cutoff:
                 f.unlink()
+        claims = folder / CLAIM_DIR
+        if claims.is_dir():
+            for f in claims.iterdir():
+                if f.is_file() and f.stat().st_mtime < cutoff:
+                    f.unlink()
     except OSError:
         pass
+
+
+CLAIM_DIR = ".claims"
+
+
+def claim(payload: dict) -> bool:
+    """True when THIS hook process owns the trim of this tool call (ASK-4948).
+
+    Why: the hook is wired at user level (every repo, ASK-4948) AND in kipi project
+    settings AND in the worker's --settings guard set, so one Bash call can fire
+    two or three copies. Measured 2026-11-14 on Claude Code 2.1.325 with two
+    PostToolUse hooks on one Bash call: each hook gets the ORIGINAL output (not the
+    other's rewrite), the last one to print wins, and a hook that prints nothing
+    leaves the other's rewrite standing. So "trim once" is: the first copy to
+    create <session>-<tool_use_id> with O_EXCL trims, every other copy prints
+    nothing. Without that, two copies of different versions (the pinned checkout
+    and an instance's copy) race and each writes its own spill file.
+
+    No tool_use_id (an older Claude Code) means no dedupe key: trim, as before.
+    A claim dir that cannot be written means the spill write fails too, so the
+    answer there does not matter; True keeps the old behaviour.
+    """
+    tool_use_id = payload.get("tool_use_id")
+    if not tool_use_id:
+        return True
+    folder = state_dir() / CLAIM_DIR
+    name = f"{_safe(payload.get('session_id'))}-{_safe(tool_use_id)}"
+    try:
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.close(os.open(folder / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+# The footer this hook appends. Output that already carries it was trimmed by a
+# copy of this hook upstream (a chained runner, a nested agent echoing a trimmed
+# result); trimming it again would count the first footer as a record.
+ALREADY_TRIMMED_RE = re.compile(r"\[trim: showing \d+ of \d+ lines; full output \(\d+ chars\) is in ")
 
 
 def write_full(session: str, body: str) -> Path | None:
@@ -289,6 +335,10 @@ def process(payload: dict) -> dict | None:
     tool_input = payload.get("tool_input")
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
     if is_diff_output(command if isinstance(command, str) else "", out, err):
+        return None
+    if ALREADY_TRIMMED_RE.search(out) or ALREADY_TRIMMED_RE.search(err):
+        return None
+    if not claim(payload):
         return None
 
     new_out, out_lines, out_kept = trim_stream(out)
