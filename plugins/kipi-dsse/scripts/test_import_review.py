@@ -37,6 +37,11 @@ if a[:2] == ["pr", "view"]:
     print(json.dumps({"headRefOid": fx["head"]}))
 elif a[0] == "api" and "/statuses" in a[1]:
     print(json.dumps(fx["statuses"].get(a[1].split("/commits/")[1].split("/")[0], [])))
+elif a[0] == "api" and a[1].split("?")[0].endswith("/comments"):
+    # every comment on the PR, one JSON object per line, as `--paginate --jq '.[]'` prints
+    rows = fx.get("pr_comments") or [dict(c, id=int(k)) for k, c in fx["comments"].items()]
+    for c in rows:
+        print(json.dumps(c))
 elif a[0] == "api" and "/issues/comments/" in a[1]:
     print(json.dumps(fx["comments"][a[1].rsplit("/", 1)[1]]))
 else:
@@ -249,3 +254,110 @@ def test_the_status_description_is_sealed_with_the_import(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     for kind in ("standard", "adversarial"):
         assert _state(repo)["review_completions"][kind]["imported"]["status_description"] == desc
+
+
+# --- ASK-5005: the import carries every round's findings into the issue ledger ---------
+#
+# Chief PR #432: rounds 1 and 2 had 9 findings, one major. import-review sealed the approve
+# and wrote no ledger rows, so `issue_findings.py list --only-pending` was empty and triage
+# passed with nothing to check.
+
+ROUND1 = ("## Verdict: REQUEST CHANGES\n\nReviewer engine: `claude`.\n\n```\nFINDINGS:\n"
+          "major|the cap resets on restart|scripts/tool.py:12\n"
+          "minor|a comment claims what the code does not|other/x.py:3|nonblocking\n"
+          "END FINDINGS\n```\n\n--- reviewer output ---\n\nFINDINGS:\nminor|echoed template|a.py:1\n"
+          "END FINDINGS\n")
+ROUND2 = ("## Verdict: APPROVE WITH NITS\n\nReviewer engine: `claude`.\n\n```\nFINDINGS:\n"
+          "nit|name the constant|tests/test_tool.py:4\n"
+          "major|the cap resets on restart|scripts/tool.py:12\n"
+          "END FINDINGS\n```\n")
+STRANGER = ("## Verdict: REQUEST CHANGES\n\n```\nFINDINGS:\nblocker|not ours|scripts/tool.py:1\n"
+            "END FINDINGS\n```\n")
+
+
+def _rounds_fixture(sha: str) -> dict:
+    fx = {"head": sha, **_verdict(sha, "success", ROUND2)}
+    issue_url = f"https://api.github.com/repos/{REPO}/issues/{PR}"
+    fx["pr_comments"] = [
+        {"id": 400, "user": {"login": "reviewer"}, "body": ROUND1, "issue_url": issue_url},
+        {"id": 450, "user": {"login": "someone-else"}, "body": STRANGER, "issue_url": issue_url},
+        {"id": 555, "user": {"login": "reviewer"}, "body": ROUND2, "issue_url": issue_url},
+        {"id": 600, "user": {"login": "reviewer"}, "body": STRANGER, "issue_url": issue_url},
+    ]
+    return fx
+
+
+def _ledger(repo: Path) -> list:
+    issue_id = _state(repo)["issue_id"]
+    r = subprocess.run([sys.executable, str(DSSE / "issue_findings.py"), "list", issue_id],
+                       cwd=repo, capture_output=True, text=True,
+                       env={**os.environ, "CLAUDE_PROJECT_DIR": str(repo)})
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_every_imported_rounds_findings_reach_the_ledger(tmp_path):
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, _rounds_fixture(sha)))
+    assert r.returncode == 0, r.stdout + r.stderr
+    rows = _ledger(repo)
+    # Round 1's two rows and round 2's nit. The major round 2 repeats is one row. The
+    # stranger's blocker, the reviewer's comment after the approving one, and the echoed
+    # block after the canonical one are not rows.
+    assert sorted((x["severity"], x["affected_path"]) for x in rows) == [
+        ("major", "scripts/tool.py"), ("minor", "other/x.py"), ("nit", "tests/test_tool.py")], rows
+    for x in rows:
+        assert x["disposition"] == "pending" and x["source"] == "claude-adversarial", x
+        assert x["id"].startswith("finding-") and x["created_at"], x
+    by_path = {x["affected_path"]: x for x in rows}
+    assert by_path["other/x.py"]["out_of_scope"] is True
+    assert by_path["scripts/tool.py"]["out_of_scope"] is False
+    assert "scripts/tool.py:12" in by_path["scripts/tool.py"]["body"]
+    assert "nonblocking" in by_path["other/x.py"]["body"]
+    assert json.loads(r.stdout)["findings_added"] == 3
+    # triage now has real rows: in-scope pending findings refuse the receipt
+    t = _issue(repo, "triage")
+    assert t.returncode != 0, t.stdout + t.stderr
+
+
+def test_a_second_import_adds_no_duplicate_rows(tmp_path):
+    repo = _l_repo(tmp_path)
+    sha = _head(repo)
+    env = _env(tmp_path, _rounds_fixture(sha))
+    assert _import(repo, env).returncode == 0
+    r = _import(repo, env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(_ledger(repo)) == 3
+    out = json.loads(r.stdout)
+    assert out["imported"] == [] and out["findings_added"] == 0, out
+
+
+def test_a_refused_import_writes_no_findings(tmp_path):
+    repo = _l_repo(tmp_path)
+    assert _issue(repo, "record-review", "adversarial").returncode == 0   # abandoned slot
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, _rounds_fixture(sha)))
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert _ledger(repo) == []
+
+
+# --- ASK-4990 and PR 815 round 2 minor: a completed kind is skipped, never re-claimed ---
+
+def test_on_m_a_completed_standard_is_kept_and_the_import_fills_adversarial(tmp_path):
+    repo = _sz._sized_repo(tmp_path, {"scripts/mid.py": _sz.MID_FILE})
+    assert json.loads(_issue(repo, "record-review", "standard", "--dry").stdout)["size_class"] == "M"
+    assert _issue(repo, "record-review", "standard").returncode == 0
+    art = repo / "std.md"
+    art.write_text("standard reviewer ran\n")
+    assert _issue(repo, "complete-review", "standard", "--verdict", "APPROVE",
+                  "--evidence-file", str(art)).returncode == 0
+    before = dict(_state(repo)["review_completions"]["standard"])
+    sha = _head(repo)
+    r = _import(repo, _env(tmp_path, {"head": sha, **_verdict(sha, "success", APPROVE_BODY)}))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert json.loads(r.stdout)["imported"] == ["adversarial"]
+    st = _state(repo)
+    assert st["receipts"]["reviewed"], st["receipts"]
+    assert st["review_rounds"] == {"standard": 1, "adversarial": 1}, st["review_rounds"]
+    assert st["review_completions"]["standard"] == before   # the real review is untouched
