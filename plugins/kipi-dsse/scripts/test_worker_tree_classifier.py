@@ -82,13 +82,44 @@ def test_origin_is_behind_the_sync_so_the_tree_has_no_classifier(tmp_path):
     assert _git(inst, "rev-list", "--count", "origin/main..main").strip() == "1"
 
 
-def test_without_the_pinned_classifier_a_small_tree_diff_is_sized_l(tmp_path, monkeypatch):
-    """The defect, kept as a pin: the tree alone cannot size itself."""
+def test_with_no_classifier_anywhere_a_small_tree_diff_is_sized_l(tmp_path, monkeypatch):
+    """Unknown is still L: no tree classifier and a skeleton that has none either."""
     monkeypatch.delenv("KIPI_SIZE_CLASSIFIER", raising=False)
+    empty = tmp_path / "empty-skel"
+    empty.mkdir()
+    monkeypatch.setenv("KIPI_SKEL", str(empty))
     _, _, tree = _fleet(tmp_path, {"scripts/tool.py": SMALL})
     got = _size(tree)
     assert got["class"] == "L"
     assert "no ASK-1749 classifier" in got["reasons"][0]
+    assert str(empty) in got["reasons"][0], got   # names where it looked
+
+
+# ASK-4949: chief has no change-size.py, and every chief issue got L depth (2 standard and
+# 1 adversarial reviews) unless the agent exported KIPI_SIZE_CLASSIFIER by hand. Only
+# linear-worker.sh set it. The runner now falls back to the skeleton's copy itself.
+TEN = TOOL + "".join(f"\ndef f{i}():\n    return {i}\n" for i in range(3)) + "\n"
+
+
+def test_a_repo_with_no_classifier_and_a_ten_line_diff_is_sized_s(tmp_path, monkeypatch):
+    monkeypatch.delenv("KIPI_SIZE_CLASSIFIER", raising=False)
+    skel_clf, _, tree = _fleet(tmp_path, {"scripts/tool.py": TEN})
+    monkeypatch.setenv("KIPI_SKEL", str(skel_clf.parents[3]))
+    added = _git(tree, "diff", "--numstat", "origin/main...HEAD").split()[0]
+    assert int(added) == 10, added
+    got = _size(tree)
+    assert got["class"] == "S", got
+    assert any(str(skel_clf) in r for r in got["reasons"]), got   # says whose classifier
+
+
+def test_with_no_kipi_skel_the_plugin_falls_back_to_its_own_skeleton(tmp_path, monkeypatch):
+    # The plugin dir's skeleton root (this checkout, or the marketplace clone) carries
+    # change-size.py, so no environment at all still sizes the diff.
+    monkeypatch.delenv("KIPI_SIZE_CLASSIFIER", raising=False)
+    monkeypatch.delenv("KIPI_SKEL", raising=False)
+    _, _, tree = _fleet(tmp_path, {"scripts/tool.py": TEN})
+    got = _size(tree)
+    assert got["class"] == "S", got
 
 
 def test_the_pinned_classifier_gives_a_small_tree_diff_its_real_class(tmp_path, monkeypatch):

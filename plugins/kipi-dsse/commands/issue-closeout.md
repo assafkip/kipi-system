@@ -8,6 +8,14 @@ Close the active DSSE issue. Execute in order:
 
 1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" status`. Confirm `receipts.verified` and `receipts.reviewed` are both set. If either is null, stop and tell the founder which step is missing. Do not relaunch `/issue-review` on your own initiative; that command has its own iteration cap.
 
+   If the work was reviewed on its PR by the fleet reviewer (`pr-review-agent.sh`) instead of `/issue-review`, take that verdict as the standard review. Do not copy the comment by hand:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/issue_runner.py" import-review --pr <N> --repo <owner/name>
+   ```
+
+   It refuses unless the newest `kipi/reviewer-approved` status on the PR's current head is a success, its linked comment opens with an approving verdict (the `## Verdict:` heading or the public-repo floor line `Verdict: APPROVE.`), and this tree is at that head. It also refuses, claiming nothing, when any required kind's slot is already at its cap. The status description (`delta <base>..<sha>`, DEGRADED) is sealed with the import. It writes the comment byte for byte to `.prd-os/reviews/<issue>-<kind>-rN.md` and seals a verdict marked "imported from pr-review-agent.sh". A refused import claims no review slot. One imported approve fills every kind the size class requires, standard and adversarial (founder ruling 2026-11-14: one review per issue through pr-review-agent.sh, which records as `claude-adversarial`).
+
 2. Pull the snapshotted scope and the pending findings:
 
    ```bash

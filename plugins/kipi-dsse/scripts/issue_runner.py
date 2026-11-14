@@ -2153,6 +2153,161 @@ def cmd_complete_review(paths: Paths, args: argparse.Namespace) -> int:
     return 0
 
 
+REVIEWER_CONTEXT = "kipi/reviewer-approved"
+IMPORT_RULING = ("one review per issue through pr-review-agent.sh, a second round only for a "
+                 "blocker or major, delta only")
+_VERDICT_LINE = re.compile(r"\A## Verdict: (APPROVE(?: WITH NITS)?)[ \t]*$", re.M)
+# The public-repo floor body (pr-verdict-lib.sh review_public_counts_line) has no heading:
+# "[DEGRADED (...). ]Verdict: APPROVE. Findings: N. ...". PR #815 round 1: a real approve
+# under a success status refused because only the heading form matched.
+_FLOOR_VERDICT = re.compile(
+    r"\A(?:DEGRADED \([^)]*\)\. )?Verdict: (APPROVE(?: WITH NITS)?)\. Findings: ")
+
+
+def _approve_word(body: str) -> str | None:
+    m = _VERDICT_LINE.search(body) or _FLOOR_VERDICT.search(body)
+    return m.group(1) if m else None
+
+
+def _gh_json(*args: str):
+    # PR #815 round 1: no gh on PATH raised FileNotFoundError past the refusal path as a
+    # traceback and rc=1. A missing or hung gh is a refusal like any other.
+    try:
+        r = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"gh {' '.join(args[:2])}: {exc}") from exc
+    if r.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:2])}: {(r.stderr or r.stdout).strip()[:200]}")
+    return json.loads(r.stdout)
+
+
+def _read_pr_verdict(repo: str, pr: str, local: str | None) -> tuple[str, dict, dict]:
+    """(head, status, comment) for the approving verdict on the PR's current head.
+
+    Raises ValueError with the refusal reason. The binding is the status, not the comment:
+    pr-review-agent.sh posts kipi/reviewer-approved on the sha it reviewed with the comment
+    as target_url, and the comment body carries no sha.
+    """
+    head = _gh_json("pr", "view", pr, "--repo", repo, "--json", "headRefOid")["headRefOid"]
+    if local != head:
+        raise ValueError(f"{repo}#{pr} head is {head[:12]} but this tree is at "
+                         f"{(local or 'no commit')[:12]}. The verdict covers different code; push "
+                         "this tree and let pr-review-agent.sh review its head")
+    statuses = _gh_json("api", f"repos/{repo}/commits/{head}/statuses?per_page=100")
+    ours = [st for st in statuses if st.get("context") == REVIEWER_CONTEXT]
+    if not ours:
+        raise ValueError(f"no {REVIEWER_CONTEXT} verdict on {repo}#{pr} head {head[:12]}. Either "
+                         "the reviewer has not run on this head or the head moved since its review")
+    newest = ours[0]   # the statuses API lists newest first; the merge gate reads the same one
+    if newest.get("state") != "success":
+        raise ValueError(f"the newest {REVIEWER_CONTEXT} on {head[:12]} is {newest.get('state')} "
+                         f"({newest.get('description') or 'no description'}). Only an approve imports")
+    m = re.search(r"#issuecomment-(\d+)$", newest.get("target_url") or "")
+    if not m:
+        raise ValueError(f"the {REVIEWER_CONTEXT} status links no PR comment "
+                         f"({newest.get('target_url')!r}), so there is no verdict to copy")
+    comment = _gh_json("api", f"repos/{repo}/issues/comments/{m.group(1)}")
+    again = _gh_json("pr", "view", pr, "--repo", repo, "--json", "headRefOid")["headRefOid"]
+    if again != head:
+        raise ValueError(f"{repo}#{pr} head moved during the import ({head[:12]} then {again[:12]})")
+    author = (comment.get("user") or {}).get("login")
+    poster = (newest.get("creator") or {}).get("login")
+    if not author or author != poster:
+        raise ValueError(f"the linked comment is by {author!r} and the status by {poster!r}; the "
+                         "verdict must come from the reviewer that set the status")
+    if not str(comment.get("issue_url", "")).endswith(f"/issues/{pr}"):
+        raise ValueError(f"the linked comment is not on {repo}#{pr}")
+    if not _approve_word(comment.get("body") or ""):
+        raise ValueError("the linked comment does not open with an approving verdict line")
+    return head, newest, comment
+
+
+def cmd_import_review(paths: Paths, args: argparse.Namespace) -> int:
+    """Take pr-review-agent.sh's approving verdict on the PR as this issue's standard review.
+
+    WHY (ASK-4949). The fleet's one reviewer is pr-review-agent.sh: a verdict comment on
+    the PR and the kipi/reviewer-approved status on the head it read. `close` only took a
+    receipt from /issue-review, so an issue the fleet reviewer approved could not close.
+    On chief PR #433 the receipt was made by hand: the comment copied into
+    .prd-os/reviews/, then record-review and complete-review, claiming the slot after the
+    review had run. This verb does that from the evidence, and the verdict it seals says
+    "imported" and quotes the ruling that lets it fill every required kind.
+    """
+    import contextlib
+    import io
+    state = _read_state(paths)
+    if not state.get("issue_id"):
+        sys.stderr.write("no active issue\n")
+        return 2
+    repo, pr = args.repo, str(args.pr)
+    try:
+        head, status, comment = _read_pr_verdict(repo, pr, _git_head_sha(paths.repo_root))
+    except (RuntimeError, ValueError, KeyError, TypeError, IndexError) as exc:
+        sys.stderr.write(f"refusing import: {exc}\n")
+        return 2
+    kinds = _required_review_kinds(check_budget.size_class(paths.repo_root))
+    # Every kind's slot is checked before any is claimed, so a refused import burns nothing.
+    # PR #815 round 1 scar: the loop claimed and sealed standard, then refused on an
+    # adversarial slot /issue-review had claimed before codex failed (chief #432's state).
+    # Each retry ate another standard round until the issue needed an override to close.
+    for k in kinds:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            cmd_record_review(paths, argparse.Namespace(kind=k, dry=True))
+        dry = json.loads(out.getvalue())
+        if not dry["would_claim"]:
+            sys.stderr.write(
+                f"refusing import: review cap reached for {k}: {dry['round']}/{dry['caps'][k]} "
+                f"(size class {dry['size_class']}). Nothing was claimed. A slot claimed by a "
+                f"review that never completed needs {REVIEW_CAP_OVERRIDE_ENV}=1 to import.\n")
+            return 2
+    # Every refusal is above this line, so a refused import never burns a review slot.
+    #
+    # ONE IMPORTED VERDICT IS THE WHOLE REVIEW, AT EVERY SIZE CLASS. Founder ruling
+    # 2026-11-14 (binding): "one review per issue through pr-review-agent.sh, a second
+    # round only for a blocker or major, delta only." pr-review-agent.sh is the adversarial
+    # reviewer by its own provenance: its header says reviews are recorded as
+    # `claude-adversarial`. So its approve fills every kind the size class requires. The
+    # scar: chief #432 was class L, Codex was out, and complete-review refused the receipt
+    # for want of an adversarial pass that the ruling says the fleet reviewer already is.
+    body = comment["body"]
+    word = _approve_word(body)
+    verdict = (f"{word} (imported from pr-review-agent.sh on {repo}#{pr} at {head[:12]}; "
+               f"counts as the {{kind}} review under the founder ruling 2026-11-14: "
+               f"{IMPORT_RULING!r})")
+    imported = {"source": "pr-review-agent.sh", "repo": repo, "pr": int(pr), "head": head,
+                "comment_url": status.get("target_url"), "reviewer": comment["user"]["login"],
+                # 'delta <base>..<sha>' and DEGRADED live only here (ASK-3884); keep them.
+                "status_description": status.get("description"),
+                "ruling": IMPORT_RULING}
+    rounds, done = {}, {}
+    for k in kinds:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cmd_record_review(paths, argparse.Namespace(kind=k, dry=False))
+        if rc != 0:
+            return rc
+        rounds[k] = json.loads(out.getvalue())["round"]
+        art = paths.repo_root / ".prd-os/reviews" / f"{state['issue_id']}-{k}-r{rounds[k]}.md"
+        art.parent.mkdir(parents=True, exist_ok=True)
+        art.write_bytes(body.encode("utf-8"))   # byte for byte what the reviewer posted
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cmd_complete_review(paths, argparse.Namespace(
+                kind=k, verdict=verdict.format(kind=k), evidence_file=str(art)))
+        if rc != 0:
+            return rc
+        done = json.loads(out.getvalue())
+        # Provenance lands in the same pass that sealed this kind, so no early return can
+        # leave a sealed completion without it (PR #815 round 1).
+        state = _read_state(paths)
+        state["review_completions"][k]["imported"] = {**imported, "imported_at": _now_iso()}
+        _write_state(paths, state)
+    print(json.dumps({"imported": kinds, "rounds": rounds, "verdict": word,
+                      "reviewed": done.get("reviewed"), "awaiting": done.get("awaiting", [])}))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -2252,6 +2407,13 @@ def main(argv: list[str] | None = None) -> int:
     p_record.add_argument("--dry", action="store_true",
                           help="print the size class and its caps; claim nothing")
     p_record.set_defaults(func=cmd_record_review)
+
+    p_import = sub.add_parser("import-review",
+                              help="take pr-review-agent.sh's approving verdict on the PR's "
+                                   "current head as the standard review (ASK-4949)")
+    p_import.add_argument("--pr", required=True, type=int)
+    p_import.add_argument("--repo", required=True, help="owner/name")
+    p_import.set_defaults(func=cmd_import_review)
 
     args = parser.parse_args(argv)
     paths = Paths(_resolve_repo_root(args.repo_root))

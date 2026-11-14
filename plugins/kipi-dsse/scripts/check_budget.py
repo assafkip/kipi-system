@@ -151,6 +151,26 @@ CLASSIFIER_RELPATH = "q-system/.q-system/scripts/change-size.py"
 # skeleton's. Set to a path that is not a file is a broken worker, so it is L with that
 # reason, never a silent fall back to the tree's stale copy.
 CLASSIFIER_ENV = "KIPI_SIZE_CLASSIFIER"
+# WHY A SKELETON FALLBACK (ASK-4949). The override above lived only in linear-worker.sh, so
+# an interactive run in a repo with no classifier (chief, measured 2026-11-14) still got L
+# for every issue, 2 standard and 1 adversarial reviews on a 10-line change, unless the
+# agent exported the variable by hand. Same resolution as linear-worker.sh: KIPI_SKEL when
+# set (and then ONLY it, so a test can point at a skeleton with no classifier), else the
+# skeleton root this plugin sits in (a kipi-system checkout or the marketplace clone),
+# else the marketplace clone, because an installed plugin runs from the cache, which
+# holds no q-system/. Still one classifier: the skeleton's file, never a vendored copy.
+SKEL_ENV = "KIPI_SKEL"
+MARKETPLACE_SKEL = Path.home() / ".claude/plugins/marketplaces/kipi"
+
+
+def _skeleton_classifier() -> tuple[Path | None, list[str]]:
+    """(the skeleton's change-size.py, the roots tried). None when no root has one."""
+    pinned = os.environ.get(SKEL_ENV, "").strip()
+    roots = [Path(pinned)] if pinned else [Path(__file__).resolve().parents[3], MARKETPLACE_SKEL]
+    for root in roots:
+        if (root / CLASSIFIER_RELPATH).is_file():
+            return root / CLASSIFIER_RELPATH, []
+    return None, [str(r) for r in roots]
 DIFF_BASE = "origin/main"
 WORKING_TREE = "working-tree"   # a base_ref value (ktlyst product) meaning "no ref"
 
@@ -232,6 +252,7 @@ def _uncommitted(repo_root: Path) -> list[str]:
 def size_class(repo_root: Path) -> dict:
     """{"class": S|M|L, "reasons": [...], "base": ref} for the repo's diff. Never raises."""
     override = os.environ.get(CLASSIFIER_ENV, "").strip()
+    fallback = None
     if override:
         path = Path(override)
         if not path.is_file():
@@ -240,7 +261,11 @@ def size_class(repo_root: Path) -> dict:
     else:
         path = Path(repo_root) / CLASSIFIER_RELPATH
         if not path.is_file():
-            return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH}, so the strict numbers apply")
+            path, tried = _skeleton_classifier()
+            if path is None:
+                return _strict(f"no ASK-1749 classifier at {CLASSIFIER_RELPATH} in the repo or "
+                               f"the skeleton (tried {', '.join(tried)}), so the strict numbers apply")
+            fallback = f"the repo has no classifier, so the skeleton's {path} sized this diff"
     base, tried = resolve_base(Path(repo_root))
     if base is None:
         return _strict("no diff base resolves (tried " + ", ".join(tried) + "), so the strict numbers apply")
@@ -260,6 +285,8 @@ def size_class(repo_root: Path) -> dict:
                        "HEAD only, so this change's size is unknown. Commit it", base)
     if tier not in DEPTH:
         return _strict(f"the classifier returned tier {tier!r}, which has no depth", base)
+    if fallback:
+        reasons = [fallback, *reasons]
     return {"class": tier, "reasons": reasons, "base": base}
 
 

@@ -1,0 +1,8 @@
+{
+ "path": "plugins/kipi-dsse/scripts/test_import_review.py",
+ "runner": "pytest",
+ "covers": [
+  "plugins/kipi-dsse/scripts/issue_runner.py",
+  "plugins/kipi-dsse/commands/issue-closeout.md"
+ ]
+}
