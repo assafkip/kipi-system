@@ -2224,7 +2224,7 @@ arm_automerge() {
       # command a human has to run. An unarmed PR is invisible by construction
       # (everything green, nothing merges, no signal), so a log-only warning does
       # not kill the silent stall, it relocates it.
-      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
+      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE (${AUTOMERGE_ARM_ERR:-gh printed no reason}) -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
       if page_once "$ISSUE" automerge_unarmed_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi

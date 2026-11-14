@@ -22,6 +22,8 @@ if ! declare -F artifact_key >/dev/null 2>&1; then
   # shellcheck source=repo-slug-lib.sh
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo-slug-lib.sh"
 fi
+# Where spec-merge-gate.py sits, resolved once at source time (automerge_arm cds).
+_PV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # extract_verdict <review-file>
 # Prints APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK, or nothing if
@@ -508,6 +510,23 @@ automerge_arm() {
   # (PR #429 review nit). Name the dir and do not call gh at all.
   if [ ! -d "$dir" ]; then
     AUTOMERGE_ARM_ERR="arm dir '$dir' does not exist, so gh never ran"
+    return 0
+  fi
+  # THE SPEC GATE COMES FIRST (ASK-4947). chief #395 merged while its dsse spec
+  # read in-progress, and /issue-start refused every dependent issue until a
+  # closeout PR landed. Arming IS the merge, so a refused spec also takes an arm
+  # someone else set back off: an armed PR is a merged PR, a few minutes late.
+  # Non-zero is no arm, whether the gate refused (2) or could not tell (3).
+  # pr-owner.py re-asks every hour, so a PR held here arms once its spec closes.
+  local sg
+  if ! sg="$( python3 "$_PV_LIB_DIR/spec-merge-gate.py" "$pr" --dir "$dir" 2>&1 )"; then
+    AUTOMERGE_ARM_ERR="$(printf '%s' "${sg:-spec-merge-gate.py refused and printed no reason}" | tr '\n' ' ' | cut -c1-400)"
+    automerge_disarm "$pr" "$dir" "$errlog"
+    if [ "$AUTOMERGE_DISARM_STATE" = "disarmed" ]; then
+      AUTOMERGE_ARM_STATE="unarmed"
+    else
+      AUTOMERGE_ARM_ERR="$AUTOMERGE_ARM_ERR; and the arm could not be confirmed off (${AUTOMERGE_DISARM_ERR:-gh printed no reason})"
+    fi
     return 0
   fi
   if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \

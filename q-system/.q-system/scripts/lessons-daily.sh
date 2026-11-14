@@ -336,6 +336,10 @@ lessons_half() {
     elif ! PR_URL="$(cd "$LREPO" && gh pr create --base main --head "$BR" \
            --title "$COMMIT_MSG" --body "$PR_BODY" 2>>"$LOG")"; then
       PUBLISH="FAILED (branch $BR pushed, PR not opened)"
+    # The fleet's one spec check runs before every arm (ASK-4947): a lessons PR
+    # touches no spec, so this passes, and it stays true if that ever changes.
+    elif ! SPEC_GATE_LINE="$(python3 "$SKEL/q-system/.q-system/scripts/spec-merge-gate.py" "$PR_URL" --dir "$LREPO" 2>&1)"; then
+      PUBLISH="FAILED ($PR_URL opened, not armed: ${SPEC_GATE_LINE:-spec-merge-gate.py refused})"
     elif ! ( cd "$LREPO" && gh pr merge "$PR_URL" --auto --squash ) >> "$LOG" 2>&1; then
       PUBLISH="FAILED ($PR_URL opened, auto-merge not armed)"
     else

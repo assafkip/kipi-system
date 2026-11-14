@@ -266,10 +266,31 @@ def gh_write(argv, cwd=None, env=None):
         why = merge_gate_verdict(argv, cwd or os.getcwd())
         if why:
             return 3, "", f"merge-bypass-gate.py refused it: {why}"
+        why = spec_gate_verdict(argv, cwd or os.getcwd(), env)
+        if why:
+            return 3, "", why
     return run(["gh"] + argv, env=env, cwd=cwd)
 
 
 MERGE_GATE = SCRIPTS / "merge-bypass-gate.py"
+SPEC_GATE = SCRIPTS / "spec-merge-gate.py"
+
+
+def spec_gate_verdict(gh_args, cwd, env) -> str:
+    """"" when spec-merge-gate.py allows merging the PR in gh_args, else its refusal.
+
+    ASK-4947: chief #395 merged with its dsse spec still in-progress, and every
+    dependent issue was refused by /issue-start until a closeout PR landed. Run
+    through run(), like every other child here; a non-zero answer, or a merge with
+    no PR number to judge, is no merge.
+    """
+    n = next((str(a) for a in reversed(gh_args) if str(a).isdigit()), "")
+    if not n:
+        return "spec-merge-gate.py needs a PR number, and this merge names none"
+    rc, out, err = run([sys.executable, str(SPEC_GATE), n, "--dir", str(cwd)], env=env, cwd=cwd)
+    if rc == 0:
+        return ""
+    return " ".join((out or err or "").split())[:300] or f"spec-merge-gate.py exited {rc}"
 
 
 def gh_env() -> dict:

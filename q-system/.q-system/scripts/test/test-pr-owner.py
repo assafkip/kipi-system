@@ -541,6 +541,9 @@ SENT: list[list[str]] = []
 MERGED: set = set()
 
 
+SPEC_REFUSE: set = set()
+
+
 def fake_run(argv, timeout=120, env=None, cwd=None):
     argv = [str(a) for a in argv]
     SENT.append(argv)
@@ -571,6 +574,12 @@ def fake_run(argv, timeout=120, env=None, cwd=None):
     if len(argv) > 2 and argv[1].endswith("linear-sync.py"):
         return 0, f"{argv[3]}: In Progress -> Backlog (exit: pr-owner)" if argv[2] == "requeue" else "", ""
     if len(argv) > 2 and argv[2] == "review":
+        return 0, "", ""
+    # spec-merge-gate.py (ASK-4947) owns its own suite; here it answers allow unless
+    # SPEC_REFUSE names the PR, so the chokepoint's refusal path is tested too.
+    if len(argv) > 2 and argv[1].endswith("spec-merge-gate.py"):
+        if argv[2] in SPEC_REFUSE:
+            return 2, f"spec-merge-gate: REFUSED PR #{argv[2]} at x: .prd-os/issues/s.md reads status: in-progress.", ""
         return 0, "", ""
     if len(argv) > 1 and argv[1] == str(SINK_NOTIFY):
         return REAL_RUN(argv, timeout=60)
@@ -707,6 +716,17 @@ got = try_call(po.act, rq_pr, {"action": "close-requeue", "ticket": TICKETS["ASK
 check("close-requeue whose requeue fails -> not ok, and the failure is named",
       (got[0], "requeue failed" in got[1]) if isinstance(got, tuple) else got, (False, True))
 po.run = fake_run
+print("-- a spec that is not closed holds the merge at the chokepoint (ASK-4947)")
+SENT.clear()
+SPEC_REFUSE.add("3")
+rc_sp, _, err_sp = po.gh_write(["pr", "merge", "--auto", "--squash", "3"], cwd=str(TMP / "fx"))
+check("spec-merge-gate refusal -> gh_write returns non-zero with the gate's line",
+      (rc_sp, "reads status: in-progress" in err_sp), (3, True))
+check("... and no gh pr merge was sent", [a for a in SENT if a[:3] == ["gh", "pr", "merge"]], [])
+SPEC_REFUSE.clear()
+rc_sp, _, _ = po.gh_write(["pr", "merge", "--auto", "--squash", "3"], cwd=str(TMP / "fx"))
+check("the same merge with the spec closed is sent", (rc_sp, [a for a in SENT if a[:3] == ["gh", "pr", "merge"]]),
+      (0, [["gh", "pr", "merge", "--auto", "--squash", "3"]]))
 import contextlib, io
 with contextlib.redirect_stdout(io.StringIO()):
     try:
