@@ -58,8 +58,13 @@ def spec_status(text: str) -> str:
 
 
 def names(text: str, spec_id: str) -> bool:
-    """True when spec_id appears in text as a whole token (ids carry - and _)."""
-    return re.search(r"(?<![\w-])" + re.escape(spec_id) + r"(?![\w-])", text or "") is not None
+    """True when spec_id appears in text as a whole token (ids carry - and _).
+
+    Case-insensitive (PR #816 review, finding 4): linear-worker.sh lowercases the
+    issue into its branch (sana/ask-1810) while 19 specs here are named ASK-1810.md,
+    so a case-sensitive match missed the branch half for every worker PR.
+    """
+    return re.search(r"(?<![\w-])" + re.escape(spec_id) + r"(?![\w-])", text or "", re.IGNORECASE) is not None
 
 
 def verdict(pr: dict, files: list[tuple[str, str]], spec_ids: set[str], read_status) -> str:

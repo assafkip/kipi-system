@@ -89,6 +89,9 @@ check("... while the closed dependency and the open follow-up it cites are not",
 check("an id is matched as a whole token, never inside a longer id",
       g.verdict(pr(branch="gs/gs-runtime-checkout-closeout", title="y"), CODE, {"gs-runtime-checkout"},
                 reader({"gs-runtime-checkout": "in-progress"})), "")
+check("the worker's lowercased branch names an uppercase spec id (linear-worker.sh BRANCH=sana/<lowercased>)",
+      "ASK-1810.md reads status: in-progress" in g.verdict(pr(branch="sana/ask-1810", title="worker run: the thing"),
+                                                           CODE, {"ASK-1810"}, reader({"ASK-1810": "in-progress"})), True)
 check("a PR naming no spec merges",
       g.verdict(pr(branch="feat/y", title="y"), CODE, {"gs-x"}, reader({"gs-x": "in-progress"})), "")
 check("spec_status reads frontmatter only",
@@ -107,6 +110,8 @@ args = sys.argv[1:]
 open({str(calls)!r}, "a").write(" ".join(args) + "\\n")
 st = json.load(open({str(state)!r}))
 joined = " ".join(args)
+if st.get("reads502") and args[:2] != ["pr", "merge"] and "autoMergeRequest" not in joined:
+    print("gh: Something went wrong (HTTP 502)", file=sys.stderr); sys.exit(1)
 if args[:2] == ["pr", "view"] and "autoMergeRequest" in joined:
     print("true" if st.get("armed") else "false"); sys.exit(0)
 if args[:2] == ["pr", "view"]:
@@ -138,9 +143,9 @@ nospec = tmp / "nospec"
 nospec.mkdir()
 
 
-def setup(spec_status, armed=False):
+def setup(spec_status, armed=False, reads502=False):
     state.write_text(json.dumps({"branch": "gs/gs-runtime-checkout", "armed": armed, "files": CODE,
-                                 "specs": {"gs-runtime-checkout": spec_status}}))
+                                 "specs": {"gs-runtime-checkout": spec_status}, "reads502": reads502}))
     calls.write_text("")
 
 
@@ -167,7 +172,7 @@ check("a gh read that fails is exit 3, never an allow", (rc, "COULD NOT TELL" in
 
 
 def arm():
-    script = f'. "{LIB}"; automerge_arm 395 "{repo}"; echo "$AUTOMERGE_ARM_STATE|$AUTOMERGE_ARM_ERR"'
+    script = f'. "{LIB}"; automerge_arm 395 "{repo}"; echo "$AUTOMERGE_ARM_STATE|${{AUTOMERGE_ARM_HELD:-}}|$AUTOMERGE_ARM_ERR"'
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
     return p.stdout.strip().splitlines()[-1] if p.stdout.strip() else p.stderr
 
@@ -188,6 +193,49 @@ check("an arm set by someone else is taken back off", (state_out.split("|")[0], 
       ("unarmed", True))
 setup("closed")
 check("closed spec -> armed by this call", (arm().split("|")[0], arms()), ("armed", 1))
+setup("in-progress")
+check("a refusal is marked HELD, so callers can tell it from a gh refusal", arm().split("|")[1], "1")
+# PR #816 review finding 1: exit 3 (a gh read failed) took a correct arm back off.
+setup("closed", armed=True, reads502=True)
+out = arm()
+check("a gh read failure (exit 3) never removes an arm: no --disable-auto, state not unarmed, not HELD",
+      ("--disable-auto" in calls.read_text(), out.split("|")[0] == "unarmed", out.split("|")[1]), (False, False, ""))
+check("... and it never arms either", arms(), 0)
+
+# ---------------------------------------------------------------- the worker's words
+# PR #816 review finding 2: linear-worker.sh's arm_automerge paged a spec hold as
+# "sits there forever. Needs a human: gh pr merge --auto --squash N", which is false
+# (pr-owner.py re-asks hourly) and names the merge the gate just refused.
+WORKER = SCRIPTS / "linear-worker.sh"
+src = WORKER.read_text().splitlines()
+start = next(i for i, l in enumerate(src) if l.startswith("arm_automerge() {"))
+end = next(i for i in range(start, len(src)) if src[i] == "}")
+fn = tmp / "arm_automerge.sh"
+fn.write_text("\n".join(src[start:end + 1]) + "\n")
+pages = tmp / "pages"
+notify = tmp / "notify.sh"
+notify.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{pages}"\n')
+notify.chmod(0o755)
+
+
+def worker_arm():
+    pages.write_text("")
+    script = (f'. "{LIB}"; say() {{ printf "LOG: %s\\n" "$*"; }}; page_once() {{ return 0; }}; '
+              f'clear_automerge_pages() {{ :; }}; record_automerge() {{ :; }}; artifact_key() {{ echo k; }}; '
+              f'NOTIFY="{notify}"; LOG=/dev/null; ISSUE=ASK-9999; REVIEWS_DIR="{tmp}"; TARGET_SLUG=s; '
+              f'. "{fn}"; arm_automerge 395 "{repo}"; echo "STATE=$AUTOMERGE"')
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    return p.stdout + p.stderr, pages.read_text()
+
+
+print("-- linear-worker.sh arm_automerge reports a spec hold as a hold")
+setup("in-progress")
+log, paged = worker_arm()
+check("the worker extracted and ran (sanity)", "STATE=unarmed" in log, True)
+check("a spec hold names the spec in the log", "gs-runtime-checkout.md reads status: in-progress" in log, True)
+check("... never tells anyone to run the merge the gate refused", "gh pr merge --auto" in log + paged, False)
+check("... never says it sits forever", "forever" in log + paged, False)
+check("... and pages nobody: closeout is the expected next step", paged, "")
 
 print()
 if FAILS:

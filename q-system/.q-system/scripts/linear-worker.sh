@@ -2202,6 +2202,16 @@ arm_automerge() {
     # Already armed, or the refusal WAS the no-op and the re-probe said so.
     # Silent on purpose: this is the healthy state.
     :
+  elif [ "$AUTOMERGE_ARM_HELD" = "1" ] && [ "$AUTOMERGE" = "unarmed" ]; then
+    # A SPEC HOLD IS THE EXPECTED PATH, NOT A STALL (PR #816 review, finding 2).
+    # This arm runs right after the PR opens, before closeout, so the spec still
+    # reads in-progress here on nearly every run. The unarmed branch below paged
+    # it as "sits there forever. Needs a human: gh pr merge --auto --squash N":
+    # false, since pr-owner.py re-asks the gate hourly and arms once the spec
+    # reads closed, and the command it named is the merge the gate refused.
+    # Log only, with the gate's own line, and no command to run. A hold whose
+    # disarm failed is NOT this branch: it stays "unknown" and pages below.
+    say "$ISSUE: PR #$pr held by the spec gate, not armed (${AUTOMERGE_ARM_ERR:-spec-merge-gate.py refused}). pr-owner.py re-asks the gate every hour and arms it once the spec reads closed."
   else
     if [ "$AUTOMERGE" = "unknown" ]; then
       AUTOMERGE="unknown"
