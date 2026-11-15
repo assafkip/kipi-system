@@ -238,6 +238,19 @@ def _is_task_box(text, match):
     return bool(box) and match.start() == box.start(1)
 
 
+# GMAIL'S INLINE IMAGE (ASK-5198, 2026-11-15). Gmail writes `[image: <name>]` in the plain
+# text where a pasted screenshot or a signature icon sits (`[image: Screen Shot ... .png]`,
+# `[image: linkedin]`). On the sent-mail census that shape alone refused 18 of his 59 real
+# emails. Exempt only Gmail's exact shape: `image:`, one space, then a label that is not
+# slot-shaped, so `[image: CLIENT LOGO]` (a template asking for an image) still blocks.
+_GMAIL_IMAGE = re.compile(r"\[image: (?P<label>[^\]\n]*\S[^\]\n]*)\]")
+
+
+def _is_gmail_image(match):
+    image = _GMAIL_IMAGE.fullmatch(match.group(0))
+    return bool(image) and not _slot_shaped(image.group("label"))
+
+
 def _is_defang(text, match):
     if match.group(0)[1:-1].lower() not in _DEFANG:
         return False
@@ -262,7 +275,7 @@ def tokens(text):
         if _MARKDOWN_LINK.match(text, match.start()):
             continue
         if _is_task_box(text, match) or _is_defang(text, match) or _is_citation(text, match) \
-                or in_code_or_quote(match):
+                or _is_gmail_image(match) or in_code_or_quote(match):
             continue
         if match.group(0) not in found:
             found.append(match.group(0))
