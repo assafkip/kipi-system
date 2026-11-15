@@ -40,7 +40,6 @@ A markdown link, `[label](url)`. It is wrong in a post for its own reasons (neit
 LinkedIn renders it), but blocking it HERE would report the wrong reason, and a gate that
 misnames what it caught teaches the next reader the wrong lesson.
 """
-import bisect
 import re
 
 # Square brackets are the shape the agent prompts use; curly is the shape
@@ -105,9 +104,9 @@ _TASK_BOX = re.compile(
 # literal, and a quote is someone else's words held as evidence. A token whose bracket starts
 # inside a closed fence, closed inline code, or a closed double quote is skipped.
 # Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed or
-# refused fence exempts nothing, inline or fenced, and an odd count of backtick runs in a
-# paragraph pairs none of them (see _inline_code_spans, and its residuals: a stray used to
-# pair with the NEXT code span's opener, ASK-4922, ASK-4995). A quote cannot cross a blank
+# refused fence exempts nothing, inline or fenced, and a stray backtick must not pair with the
+# NEXT code span's opener (see _inline_code_spans for the checks and the residuals they leave,
+# ASK-4922, ASK-4995). A quote cannot cross a blank
 # line (LF or CRLF), and a double
 # quote right after a digit neither opens nor closes one (so the inch mark in `55"` is not a
 # quote; PR 810 review round 1 found it could still CLOSE one and blank a paragraph). Curly
@@ -127,8 +126,10 @@ _TASK_BOX = re.compile(
 _FENCE = re.compile(r"[ \t]{0,3}(`{3,}|~{3,})")
 _PARA = r"(?:[^\n{stop}]|\n(?![ \t\r]*\n))"
 _BACKTICKS = re.compile(r"`+")
-# A paragraph ends at a blank line (LF or CRLF), and a table row at a newline before a pipe.
-_SEGMENT_BREAK = re.compile(r"\n[ \t\r]*\n|\n(?=[ \t]*\|)")
+# A block ends at a blank line (LF or CRLF), a table row at a newline before a pipe, and a list
+# item at a newline before the next item's marker.
+_SEGMENT_BREAK = re.compile(
+    r"\n[ \t\r]*\n|\n(?=[ \t]*\|)|\n(?=[ \t]*(?:>[ \t]*)*(?:[-*+]|\d{1,9}[.)])[ \t])")
 _STRAIGHT_QUOTE = re.compile(
     r'(?<![^\s(\[{:;,/\u2013\u2014-])"(?=[^\s"])' + _PARA.format(stop='"')
     + r'+(?<=[^\s\d])"(?![^\s.,;:!?)\]}\u2019\u2013\u2014-])')
@@ -157,39 +158,64 @@ def _is_fence_marker(text, run):
 
 
 def _inline_code_spans(text):
-    # THE STRAY BACKTICK, BY PARITY (ASK-4995, ASK-4984, 2026-11-15). ASK-4922 found a stray
-    # backtick pairing with the NEXT span's opener and exempting the prose between, a real
-    # `[CLIENT NAME]` included. PR 818 answered with a one-character test on each side of a
-    # candidate closer. Three review rounds retuned that window, and each round left a residual
-    # on both sides: a next span starting with punctuation (`--fast`, `.env`) still let the
-    # stray through, and real code ending in a space or `([|=:` with a letter glued after it
-    # (`grep [x] |`s) stopped being code. A window that small cannot tell a closer from the
-    # next opener, so this counts instead of guessing.
-    # Inside one paragraph or one table row, runs of one width pair in order, first with
-    # second. An odd count of that width means one run is stray and nothing says which, so
-    # NONE of that width pairs there and every token in the segment stays visible. Widths go
-    # widest first, and each formed span is blanked before the next width is counted, so a
-    # single tick inside a double-tick span is not a run of its own.
-    # Residuals, said plainly: two strays in one segment are an even count and pair with each
-    # other, and a lone tick that closes a pair (`run the `deploy for [CLIENT NAME] then ``)
-    # is read as a closer. The opener's position is never checked, because a padded opener
-    # (`` [draft] ``) is real code.
-    breaks = [m.start() for m in _SEGMENT_BREAK.finditer(text)]
-    widths = sorted({len(m.group(0)) for m in _BACKTICKS.finditer(text)}, reverse=True)
-    spans = []
-    for width in widths:
-        by_segment = {}
-        for run in _BACKTICKS.finditer(text):
-            if len(run.group(0)) == width and not _is_fence_marker(text, run):
-                by_segment.setdefault(bisect.bisect(breaks, run.start()), []).append(run)
-        formed = []
-        for runs in by_segment.values():
-            if len(runs) % 2:
-                continue
-            formed += [(runs[k].start(), runs[k + 1].end()) for k in range(0, len(runs), 2)]
-        spans += formed
-        text = _blank(text, formed)
+    # THE STRAY BACKTICK (ASK-4922, ASK-4995, ASK-4984). A stray backtick pairs with the NEXT
+    # span's opener and exempts the prose between, a real `[CLIENT NAME]` included. Position
+    # alone cannot settle it: `Run `tags: [draft] `s next.` and `Fix the `flag for [CLIENT
+    # NAME] and also the `other thing.` are the same shape. A parity count was tried in PR 823
+    # round 1 and dropped: an even count of strays (two strays, or a list whose items each hold
+    # one) paired a stray with a real opener. So three checks, in order:
+    # 1. A pair never crosses a block: a blank line, a table row, or a new list item.
+    # 2. A pair whose CONTENT reads as a stray's prose is a misalignment, not code: it ends on
+    #    a space, does not start on one, and holds a slot-shaped bracket (`[CLIENT NAME]`).
+    #    A sentence-end check was tried too and dropped: real code holds `[company]. Ex-`. The opener is
+    #    then stray and the scan moves on. This is what catches `--fast` and `.env` openers.
+    # 3. A closer that reads as an opener (space or `([|=:` before it, a letter, digit, `[` or
+    #    `{` after it) is refused only when a later run of its width in the same block could
+    #    close it. With no later partner it can only be a closer, so `grep [x] |`s is code.
+    # A run of three or more at a line start is a fence marker and never pairs inline.
+    # Residuals, said plainly: a LOWERCASE token between a stray and the next opener can still
+    # read as code (`the `flag for [specific thing] and the `other`), a next opener glued to
+    # punctuation (`see.`x``, `-`x``) still closes a stray, as on main, and a lone trailing
+    # tick (`run the `deploy for [specific thing] then ``) closes a pair.
+    runs = [r for r in _BACKTICKS.finditer(text) if not _is_fence_marker(text, r)]
+    spans, i = [], 0
+    while i < len(runs):
+        opener = runs[i]
+        width = len(opener.group(0))
+        same = [k for k in range(i + 1, len(runs)) if len(runs[k].group(0)) == width]
+        if not same:
+            i += 1
+            continue
+        j = same[0]
+        closer = runs[j]
+        between = text[opener.end():closer.start()]
+        if _SEGMENT_BREAK.search(between) or _reads_as_prose(between):
+            i += 1
+            continue
+        before = text[closer.start() - 1]
+        after = text[closer.end():closer.end() + 1]
+        reads_as_opener = ((before.isspace() or before in "([|=:")
+                           and (after.isalnum() or (after != "" and after in "[{")))
+        later = len(same) > 1 and not _SEGMENT_BREAK.search(
+            text[closer.end():runs[same[1]].start()])
+        if reads_as_opener and later:
+            i += 1
+            continue
+        spans.append((opener.start(), closer.end()))
+        i = j + 1
     return spans
+
+
+def _reads_as_prose(content):
+    # A stray's false span runs from a word glued to the stray up to the space before the
+    # next opener, so it starts on a character and ends on a space. Real code either ends on
+    # a character (`[USER-DIRECTED]`) or is padded on both sides (`` [draft] ``). The slot
+    # check is held to that lopsided shape, because the 3511-file census showed code spans
+    # holding uppercase tags (`[A-Z]`, `[FAST]`) are common and are not blanks.
+    if not content[-1:].isspace() or content[:1].isspace():
+        return False
+    return any(_slot_shaped(m.group(0)[1:-1]) and not _NUMBER.fullmatch(m.group(0))
+               for m in _SQUARE.finditer(content))
 
 
 def _blank(text, spans):

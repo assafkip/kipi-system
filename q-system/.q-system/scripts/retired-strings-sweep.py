@@ -22,6 +22,7 @@ cannot hide" -- reusing its number keeps one definition instead of two.
 Exit codes:
   0 = clean, or warn-tier matches only
   1 = at least one blocking retired string is present
+  2 = no covered glob matched any file (a sweep of nothing is not clean)
 """
 from __future__ import annotations
 
@@ -36,10 +37,12 @@ WHITESPACE = re.compile(r"\s+")
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # The globs this sweep covers. `plugins/*/skills/*/references/` is the gap ASK-701
-# closed; add a glob here rather than teaching callers to pass paths, so the
-# covered set stays greppable from one place.
+# closed; the skill directory itself was added after PR 823 review (F3), because
+# SKILL.md is the body a skill always loads and nothing swept it. Add a glob here
+# rather than teaching callers to pass paths, so the covered set stays greppable.
 COVERED_GLOBS = (
     "plugins/*/skills/*/references/",
+    "plugins/*/skills/*/",
 )
 
 FILE_SUFFIXES = (".md", ".txt")
@@ -62,6 +65,7 @@ def load_retired(path: Path) -> list[dict]:
 
 
 def covered_files(root: Path) -> list[Path]:
+    # The globs overlap (references/ sits inside the skill dir), so dedupe in order.
     found: list[Path] = []
     for glob in COVERED_GLOBS:
         for directory in root.glob(glob.rstrip("/")):
@@ -69,7 +73,7 @@ def covered_files(root: Path) -> list[Path]:
                 continue
             found.extend(
                 p for p in sorted(directory.rglob("*"))
-                if p.is_file() and p.suffix in FILE_SUFFIXES
+                if p.is_file() and p.suffix in FILE_SUFFIXES and p not in found
             )
     return found
 
@@ -147,6 +151,12 @@ def main() -> int:
         return 0
 
     root = Path(args.root).resolve()
+    # A glob that matches nothing would print `clean` over zero files forever, the
+    # covers-lint.py class (PR 823 review F2). Zero swept is a refusal.
+    if not covered_files(root):
+        print(f"0 files swept under {root}: no covered glob matched. Fix COVERED_GLOBS.",
+              file=sys.stderr)
+        return 2
     retired = load_retired(Path(args.retired_set))
     blocking, warning = scan(root, retired)
 
