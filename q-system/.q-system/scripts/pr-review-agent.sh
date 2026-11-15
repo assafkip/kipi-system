@@ -1085,7 +1085,37 @@ if [ -n "$REVIEW_BASE" ]; then
     echo "REFUSING: nothing to review: the tree at head ${HEAD_SHA:0:12} is identical to the tree at ${REVIEW_BASE:0:12}. No review ran; no verdict posted. Run without --base, or with --full, for a full review of this head." >&2
     exit 1
   else
-    echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
+    # A RANGE THAT CROSSES A MERGE OF THE BASE BRANCH (PR #821 round 1, major).
+    # The delta is a two-dot diff, so base-branch commits merged into the PR
+    # between rounds land in pr.diff as if the PR owned them. pr-owner.py runs
+    # `gh pr update-branch`, which writes exactly that merge commit, and the
+    # repro'd round 2 read only another PR's code and posted green. When the
+    # fork point against the base moved, read the whole PR (anchored at the
+    # merge base, like gh pr diff). baseRefName is its own gh call rather than a
+    # third field in PR_META at the head read: dozens of test stubs answer that
+    # read with exactly two tab fields. No base name or no local ref for it:
+    # the move cannot be ruled out, so the whole PR.
+    _base_name="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json baseRefName -q .baseRefName 2>/dev/null || true)"
+    _base_ref=""
+    if [ -n "$_base_name" ]; then
+      _base_ref="$(git -C "$REVIEW_REPO" rev-parse --verify --quiet "refs/remotes/origin/${_base_name}^{commit}" 2>/dev/null \
+        || git -C "$REVIEW_REPO" rev-parse --verify --quiet "refs/heads/${_base_name}^{commit}" 2>/dev/null || true)"
+    fi
+    _mb_old=""; _mb_new=""
+    if [ -n "$_base_ref" ]; then
+      _mb_old="$(git -C "$REVIEW_REPO" merge-base "$_base_ref" "$REVIEW_BASE" 2>/dev/null || true)"
+      _mb_new="$(git -C "$REVIEW_REPO" merge-base "$_base_ref" "$HEAD_SHA" 2>/dev/null || true)"
+    fi
+    if [ -z "$_base_ref" ] || [ -z "$_mb_old" ] || [ "$_mb_old" != "$_mb_new" ]; then
+      if [ -z "$_base_ref" ]; then
+        echo "  WARN: delta: could not resolve the PR's base branch '${_base_name:-?}' locally, so a merge of it into ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} cannot be ruled out; reading the whole PR." >&2
+      else
+        echo "  WARN: delta: the range ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} crosses a merge of base branch '$_base_name' (merge base moved ${_mb_old:0:12} -> ${_mb_new:0:12}); reading the whole PR." >&2
+      fi
+      REVIEW_BASE=""
+    else
+      echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
+    fi
   fi
 fi
 

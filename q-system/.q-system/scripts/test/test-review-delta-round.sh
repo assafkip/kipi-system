@@ -60,6 +60,9 @@ cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slu
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" branch -M main
 git -C "$WORK/skel" remote add origin "https://github.com/example-owner/example-repo.git"
+# The PR lives on its own branch off main, so main is a real base branch whose
+# merge base with the PR can move (the base-merge cases at the end).
+git -C "$WORK/skel" checkout -q -b pr-branch
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # The PR's first pushed head: one change, ROUND1_LINE.
@@ -74,6 +77,7 @@ cat > "$STUB/gh" <<EOF
 printf '%s\n' "\$*" >> "$GH_LOG"
 case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "\$(cat "$WORK/head")" "a PR title" ;;
+  *"pr view"*"baseRefName"*) echo main ;;
   *"pr diff"*)              echo "WHOLE_PR_DIFF_MARKER"; echo "+ROUND1_LINE"; echo "+ROUND2_LINE" ;;
   *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
   *"commits/"*"/statuses"*) echo "" ;;
@@ -286,11 +290,52 @@ PY
 echo "ROUND3_LINE" >> "$WORK/skel/FILE.txt"
 G -C "$WORK/skel" commit -q -am "round 3"
 echo "$(git -C "$WORK/skel" rev-parse HEAD)" > "$WORK/head"
+before="$(calls)"
 run_reviewer "$WORK/r7.out" --delta
 n="$(calls)"
+[ "$n" = "$((before + 1))" ] || fail "--delta did not reach the model; the alias is dead:
+$(tail -5 "$WORK/r7.out")"
 grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" \
   || fail "an unusable receipt was used as a delta base; nobody reviewed that sha:
 $(cat "$SEEN/call-$n.diff")"
 ok "an unusable last receipt falls back to the whole PR (and --delta is still accepted)"
+
+sleep 1
+
+# --- a range that crosses a merge of the base branch: whole PR (PR #821 r1) ------
+# pr-owner.py's `gh pr update-branch` writes a merge of main onto the branch. A
+# two-dot delta over it carries main's own commits into pr.diff. Shape 1: the
+# new head is ONLY that merge. Shape 2: the merge plus a fix commit.
+PRHEAD="$(git -C "$WORK/skel" rev-parse HEAD)"
+set_record() {  # set_record <head_sha>: a usable record whose head is the given sha
+  python3 - "$REC" "$1" <<'PYX'
+import json, sys
+r = json.load(open(sys.argv[1])); r["head_sha"] = sys.argv[2]; r["usable"] = True
+json.dump(r, open(sys.argv[1], "w"))
+PYX
+}
+G -C "$WORK/skel" checkout -q main
+echo "MAIN_ONLY" > "$WORK/skel/MAIN_ONLY.txt"; G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "main moves on"
+G -C "$WORK/skel" checkout -q "$PRHEAD"
+G -C "$WORK/skel" merge -q --no-edit main
+git -C "$WORK/skel" rev-parse HEAD > "$WORK/head"
+for shape in merge-only merge-plus-fix; do
+  if [ "$shape" = "merge-plus-fix" ]; then
+    echo "FIX_AFTER_MERGE" >> "$WORK/skel/FILE.txt"; G -C "$WORK/skel" commit -q -am "fix after merge"
+    git -C "$WORK/skel" rev-parse HEAD > "$WORK/head"
+  fi
+  set_record "$PRHEAD"
+  before="$(calls)"
+  run_reviewer "$WORK/r8-$shape.out"
+  n="$(calls)"
+  [ "$n" = "$((before + 1))" ] || fail "$shape: the review did not run:
+$(tail -5 "$WORK/r8-$shape.out")"
+  grep -q MAIN_ONLY "$SEEN/call-$n.diff" && fail "THE DEFECT ($shape): base-branch code is in pr.diff:
+$(cat "$SEEN/call-$n.diff")"
+  grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" || fail "$shape: a range across a base merge did not read the whole PR"
+  grep -q 'crosses a merge of base branch' "$WORK/r8-$shape.out" || fail "$shape: the fallback is silent"
+  ok "$shape: a range across a merge of main reads the whole PR and says why"
+  sleep 1
+done
 
 echo "PASS ($PASS checks) test-review-delta-round.sh"
