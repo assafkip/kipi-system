@@ -46,6 +46,15 @@ def test_name_and_model():
     assert fm["description"].strip()
 
 
+def test_model_matches_the_measured_decision():
+    # The model is a measured decision, not a preference (RULE-2026-11-13-B,
+    # founder 2026-11-15). Changing it means a new measurement record, not an
+    # edit to the frontmatter alone (PR #827 review, minor 1).
+    rec = json.loads((QS / "model-evals" / "sancho-2026-11-15.json").read_text())
+    assert rec["verdict"] in ("worse", "no-worse")
+    assert _frontmatter()["model"] == rec["decision_model"]
+
+
 def test_every_out_of_scope_line_is_present():
     t = _text()
     assert "### Out of scope, always" in t
