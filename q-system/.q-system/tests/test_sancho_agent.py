@@ -10,6 +10,7 @@ the four out-of-scope lines, the claim tags, the output shape, and the house tex
 rules (no emdash, no double hyphen, no table). The rule_gate reads this file as the
 enforcer named in sancho.md.
 """
+import json
 import re
 from pathlib import Path
 
@@ -35,9 +36,13 @@ def _frontmatter():
 
 
 def test_name_and_model():
+    # The model ID is read from the routing table, never pinned here: a literal
+    # here was a third copy of the ID that a generation bump would miss, and it
+    # ratcheted one tier in (PR #820 review round 1, findings 2 and 4).
     fm = _frontmatter()
     assert fm["name"] == "sancho"
-    assert fm["model"] == "claude-sonnet-5"
+    known = json.loads((QS / "model-routing.json").read_text())["known_models"]
+    assert fm["model"] in known, f"{fm['model']} is not in model-routing.json known_models"
     assert fm["description"].strip()
 
 
@@ -71,9 +76,23 @@ def test_house_text_rules():
     assert not re.search(r"^\s*\|.*\|\s*$", t, re.M), "no table"
 
 
+def _rule_gate_headings(text):
+    # Same split as rule_gate.sections(): up to 3 leading spaces, no space needed
+    # after the hashes, fenced code skipped. A narrower census let an indented
+    # '  ## X' open an unenforced section with every test green (PR #820 review
+    # round 1, finding 3).
+    out, in_code = [], False
+    for line in text.splitlines():
+        if line.strip().startswith(("```", "~~~")):
+            in_code = not in_code
+        if not in_code and re.match(r"^\s{0,3}#{1,2}(?!#)\s*\S", line):
+            out.append(line.strip())
+    return out
+
+
 def test_each_rule_section_carries_its_own_id():
-    # rule_gate splits on '# ' and '## ' headings; each section needs a unique Rule-ID.
+    # rule_gate splits on '#' and '##' headings; each section needs a unique Rule-ID.
     t = _text()
-    assert re.findall(r"^#{1,2} ", t, re.M) == ["# "], "one top-level section; subheads use ###"
+    assert _rule_gate_headings(t) == ["# Sancho"], "one top-level section; subheads use ###"
     ids = re.findall(r"^Rule-ID: (\S+)$", t, re.M)
     assert ids == ["RULE-2026-11-14-SANCHO", "RULE-2026-11-14-SANCHO-BODY"]
