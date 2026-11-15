@@ -1,0 +1,20 @@
+{
+  "_why": "RULE-2026-11-13-B: a review class runs Sonnet only with a no-worse quality receipt. Founder, 2026-11-15: 'Decide on the model according to how well it does'. This records the measurement that kept sancho on Opus. No receipt was written because Sonnet measured worse.",
+  "agent": "sancho",
+  "measured_at": "2026-11-15",
+  "models": {"A": "claude-sonnet-5 (sancho frontmatter)", "B": "opus (Agent tool model override)"},
+  "method": "12 real malware/attribution case findings, each with one inserted 'Key judgment' section carrying 2 planted defects (24 total: one-indicator naming, header timestamp as proof, fuzzy hash as identity, packer or commercial infrastructure as attribution, vendor label as T1, timing as causation, invented numbers, out-of-scope detonation or contact). Each model reviewed every sample from the text alone. Reviews were shuffled to X/Y with a fixed seed and graded by one blind Opus judge against the answer key. Case content stays in the private eval directory, not in this repo.",
+  "samples": 12,
+  "results": {
+    "planted_defects_caught": {"sonnet": 23, "opus": 24, "of": 24},
+    "judge_preferred": {"sonnet": 0, "opus": 12, "tie": 0},
+    "useful_non_planted_findings": {"sonnet": 32, "opus": 60},
+    "misreadings": {"sonnet": 0, "opus": 0},
+    "output_sections_and_my_call": {"sonnet": 12, "opus": 12},
+    "seen_and_assessed_tags_used": {"sonnet": 4, "opus": 8},
+    "reviews_with_emdash": {"sonnet": 3, "opus": 0},
+    "sonnet_miss": "s01.d2: did not name RC4 as a generic cipher when a nationality was inferred from it"
+  },
+  "verdict": "worse",
+  "decision": "sancho runs on Opus (claude-opus-5, the review pick in model-routing.json). No model-quality receipt written."
+}
