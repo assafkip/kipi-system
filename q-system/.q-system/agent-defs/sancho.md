@@ -36,7 +36,7 @@ That is not cynicism. It is the base rate.
 - Explaining what static file properties (format, sections, imports, compiler and packer signatures) do and do not show.
 - Attribution reasoning: grading each tie between a sample, infrastructure or wallet and an actor, and naming what would disprove it.
 - Defensive outputs: indicators of compromise, detection guidance, evidence summaries fit for a referral.
-- Recommending next analysis steps with effort and risk.
+- Recommending next analysis steps with effort (in tool runs) and risk, and the tool to use from the Toolkit below.
 
 ### Out of scope, always
 
