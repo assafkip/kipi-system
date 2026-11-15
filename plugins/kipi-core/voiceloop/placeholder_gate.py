@@ -40,6 +40,7 @@ A markdown link, `[label](url)`. It is wrong in a post for its own reasons (neit
 LinkedIn renders it), but blocking it HERE would report the wrong reason, and a gate that
 misnames what it caught teaches the next reader the wrong lesson.
 """
+import bisect
 import re
 
 # Square brackets are the shape the agent prompts use; curly is the shape
@@ -90,7 +91,12 @@ _REF_USE = re.compile(r"\[(\d{1,3})\]")
 # Exempt ONLY as the first thing in a list item (bullet `-*+` or `1.` `1)`, then space, then
 # `[ ]` `[x]` `[X]`, then space or end of line). A box in prose, after the item text, or
 # glued to a word still blocks, and so does any other token on the same line.
-_TASK_BOX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?=[ \t\r]|$)", re.M)
+# A list inside a blockquote (`> - [ ] step`, `>> 1. [x] done`) is the same list (ASK-4984):
+# any run of `>` markers may come first. `> [ ]` with no bullet is prose and still blocks.
+# No `^`: _is_task_box calls match() at the line start, so an anchor here was inert and a
+# mutant dropping it survived review (ASK-4995 nit).
+_TASK_BOX = re.compile(
+    r"[ \t]*(?:>[ \t]*)*(?:[-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?=[ \t\r]|$)", re.M)
 
 
 # CODE AND QUOTED EXAMPLES (ASK-4900, 2026-11-14). Run on written reports, this row refused
@@ -98,10 +104,11 @@ _TASK_BOX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?=[ \t\r]
 # scam message, and a bracket inside a quoted seller listing. None is a template slot: code is
 # literal, and a quote is someone else's words held as evidence. A token whose bracket starts
 # inside a closed fence, closed inline code, or a closed double quote is skipped.
-# Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed fence
-# exempts nothing, and a backtick with no valid closer exempts nothing (see _inline_code_spans
-# for what a valid closer is; a stray one used to pair with the NEXT code span's opener,
-# ASK-4922). A quote cannot cross a blank line (LF or CRLF), and a double
+# Each span must CLOSE, because one stray mark must not switch the gate off: an unclosed or
+# refused fence exempts nothing, inline or fenced, and an odd count of backtick runs in a
+# paragraph pairs none of them (see _inline_code_spans, and its residuals: a stray used to
+# pair with the NEXT code span's opener, ASK-4922, ASK-4995). A quote cannot cross a blank
+# line (LF or CRLF), and a double
 # quote right after a digit neither opens nor closes one (so the inch mark in `55"` is not a
 # quote; PR 810 review round 1 found it could still CLOSE one and blank a paragraph). Curly
 # double quotes are read as straight ones first, so both obey the same open and close rules
@@ -120,8 +127,8 @@ _TASK_BOX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(\[[ xX]\])(?=[ \t\r]
 _FENCE = re.compile(r"[ \t]{0,3}(`{3,}|~{3,})")
 _PARA = r"(?:[^\n{stop}]|\n(?![ \t\r]*\n))"
 _BACKTICKS = re.compile(r"`+")
-_BLANK_LINE = re.compile(r"\n[ \t\r]*\n")
-_TABLE_ROW = re.compile(r"\n[ \t]*\|")
+# A paragraph ends at a blank line (LF or CRLF), and a table row at a newline before a pipe.
+_SEGMENT_BREAK = re.compile(r"\n[ \t\r]*\n|\n(?=[ \t]*\|)")
 _STRAIGHT_QUOTE = re.compile(
     r'(?<![^\s(\[{:;,/\u2013\u2014-])"(?=[^\s"])' + _PARA.format(stop='"')
     + r'+(?<=[^\s\d])"(?![^\s.,;:!?)\]}\u2019\u2013\u2014-])')
@@ -141,43 +148,47 @@ def _fenced_spans(text):
     return spans
 
 
+def _is_fence_marker(text, run):
+    # A run of three or more at a line start is a fence, never inline code. Closed fences are
+    # already blanked by the time this runs, so one that is left was refused by
+    # _fenced_spans, and a refused fence must not come back as an inline span (ASK-4984).
+    line_start = text.rfind("\n", 0, run.start()) + 1
+    return len(run.group(0)) >= 3 and _FENCE.fullmatch(text, line_start, run.end()) is not None
+
+
 def _inline_code_spans(text):
-    # THE STRAY BACKTICK (ASK-4922, 2026-11-14). A regex that pairs the first backtick with the
-    # next run of the same length turned `The `flag for [CLIENT NAME]. Run `make` now.` into one
-    # code span and exempted the token. The run it paired with was really the NEXT span's
-    # opener. So the first same-length run after an opener closes it unless it reads as an
-    # opener, and only inside one paragraph and one table row. Otherwise the opener is stray,
-    # exempts nothing, and the scan moves on to the next run.
-    # A run reads as an opener when an opening position comes before it (space, line start,
-    # or one of `([|=:`) AND a code start follows it (a letter, a digit, `[` or `{`).
-    # Both halves are narrow on purpose. PR 818 review: round 1 found that testing only the
-    # char before refused the real closer of `|` and `(`; round 2 found that "any non-space
-    # after" did the same when a comma or period followed, and made the refused closer an
-    # opener that blanked prose up to the next span.
-    # Residuals: a next-span opener after other punctuation (`see.`x``, `-`x``) or starting
-    # with other punctuation (`.env`, `--flag`) still closes a stray opener, and a real closer
-    # after `([|=:` with a letter glued after it (`(`s`) is read as an opener.
-    runs = list(_BACKTICKS.finditer(text))
-    spans, i = [], 0
-    while i < len(runs):
-        opener = runs[i]
-        width = len(opener.group(0))
-        j = next((k for k in range(i + 1, len(runs)) if len(runs[k].group(0)) == width), None)
-        if j is None:
-            i += 1
-            continue
-        closer = runs[j]
-        between = text[opener.end():closer.start()]
-        before = text[closer.start() - 1]
-        after = text[closer.end():closer.end() + 1]
-        reads_as_opener = ((before.isspace() or before in "([|=:")
-                           and (after.isalnum() or (after != "" and after in "[{")))
-        if (not _BLANK_LINE.search(between) and not _TABLE_ROW.search(between)
-                and not reads_as_opener):
-            spans.append((opener.start(), closer.end()))
-            i = j + 1
-        else:
-            i += 1
+    # THE STRAY BACKTICK, BY PARITY (ASK-4995, ASK-4984, 2026-11-15). ASK-4922 found a stray
+    # backtick pairing with the NEXT span's opener and exempting the prose between, a real
+    # `[CLIENT NAME]` included. PR 818 answered with a one-character test on each side of a
+    # candidate closer. Three review rounds retuned that window, and each round left a residual
+    # on both sides: a next span starting with punctuation (`--fast`, `.env`) still let the
+    # stray through, and real code ending in a space or `([|=:` with a letter glued after it
+    # (`grep [x] |`s) stopped being code. A window that small cannot tell a closer from the
+    # next opener, so this counts instead of guessing.
+    # Inside one paragraph or one table row, runs of one width pair in order, first with
+    # second. An odd count of that width means one run is stray and nothing says which, so
+    # NONE of that width pairs there and every token in the segment stays visible. Widths go
+    # widest first, and each formed span is blanked before the next width is counted, so a
+    # single tick inside a double-tick span is not a run of its own.
+    # Residuals, said plainly: two strays in one segment are an even count and pair with each
+    # other, and a lone tick that closes a pair (`run the `deploy for [CLIENT NAME] then ``)
+    # is read as a closer. The opener's position is never checked, because a padded opener
+    # (`` [draft] ``) is real code.
+    breaks = [m.start() for m in _SEGMENT_BREAK.finditer(text)]
+    widths = sorted({len(m.group(0)) for m in _BACKTICKS.finditer(text)}, reverse=True)
+    spans = []
+    for width in widths:
+        by_segment = {}
+        for run in _BACKTICKS.finditer(text):
+            if len(run.group(0)) == width and not _is_fence_marker(text, run):
+                by_segment.setdefault(bisect.bisect(breaks, run.start()), []).append(run)
+        formed = []
+        for runs in by_segment.values():
+            if len(runs) % 2:
+                continue
+            formed += [(runs[k].start(), runs[k + 1].end()) for k in range(0, len(runs), 2)]
+        spans += formed
+        text = _blank(text, formed)
     return spans
 
 
