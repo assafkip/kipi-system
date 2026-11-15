@@ -183,6 +183,24 @@ def _only_retired(command, retired):
     return bool(names) and names <= retired
 
 
+def _instance_owned(key, template_ids):
+    """True when a hook key names an instance-owned script and nothing the
+    template wires in this matcher, so a second spelling of it is the
+    instance's own hook, not a fossil.
+
+    Scar ASK-5187: a client instance wired its send gate twice in one matcher,
+    the plain hook and a `python3 -I ... || exit 2` fail-closed twin. Both key
+    to the same path identity, so the 2026-11-15 skeleton sync kept the first
+    and dropped the fail-closed one. The dedup exists for template fossils (the
+    doubled token-guard scar); the template never wires a path identity
+    (ASK-3879 pins that), so a path-keyed hook with no template overlap cannot
+    be a fossil. Exact copies still collapse on the command text.
+    """
+    if isinstance(key, str):
+        return False
+    return any(i.startswith("path:") for i in key) and not (key & template_ids)
+
+
 def hook_key(command):
     """Identity of a hook command for dedup: the set of script identities it
     invokes (see hook_script_names), or the raw string when none is recognizable.
@@ -294,12 +312,17 @@ def merge_settings(template, existing, retired=None, report=None):
             for from_instance, grp in groups:
                 m = grp.get("matcher", "")
                 if m not in by_matcher:
-                    by_matcher[m] = {"matcher": m, "hooks": [], "_seen": set(), "_text": set()}
+                    by_matcher[m] = {"matcher": m, "hooks": [], "_seen": set(), "_text": set(),
+                                    "_template_ids": set()}
                     order.append(m)
                 for h in grp.get("hooks", []):
                     command = h.get("command", "")
                     key = hook_key(command)
-                    if key not in by_matcher[m]["_seen"]:
+                    if not from_instance and not isinstance(key, str):
+                        by_matcher[m]["_template_ids"].update(key)
+                    if key not in by_matcher[m]["_seen"] or (
+                            from_instance and command not in by_matcher[m]["_text"]
+                            and _instance_owned(key, by_matcher[m]["_template_ids"])):
                         by_matcher[m]["_seen"].add(key)
                         by_matcher[m]["_text"].add(command)
                         by_matcher[m]["hooks"].append(h)
