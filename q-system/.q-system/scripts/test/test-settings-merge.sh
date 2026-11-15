@@ -537,17 +537,19 @@ assert len(kept) == 2, f"guard beside the gate hook did not survive two merges: 
 assert any(c.startswith("if test -f") for c in kept), "the gate's own hook was lost"
 assert any('|| { echo "voice-gate.py missing: the gate cannot run" >&2; exit 2; }' in c for c in kept), "the exit-2 guard was lost"
 assert "DROPPED" not in sys.argv[3], f"merge reported a drop for the guard: {sys.argv[3]}"
-# Negative self-test: the bare form is a duplicate by key and IS dropped, with a
-# DROPPED line. Without this, the survival check above could not tell a merge
-# that keeps everything from one that keeps the guard.
+# ASK-5187 changed this control: the bare form names the same instance-owned
+# script, and an instance's own hook for its own script is no longer deduped by
+# key, so it survives too. The keep-everything control is now the token-guard
+# fossil in the ASK-5187 case below, which must still drop.
 bare = post(sys.argv[2])
-assert len(bare) == 1, f"bare [ -f ] guard should have been dropped as a duplicate: {bare}"
-assert "DROPPED" in sys.argv[4] and "|| exit 2" in sys.argv[4], f"the drop was not reported: {sys.argv[4]}"
+assert len(bare) == 2, f"bare [ -f ] guard of an instance-owned script was dropped: {bare}"
+assert "DROPPED" not in sys.argv[4], f"merge reported a drop for the bare guard: {sys.argv[4]}"
 EOF
-echo "ok: exit-2 existence guard survives the merge twice; the bare [ -f ] form is dropped and reported"
+echo "ok: exit-2 existence guard survives the merge twice, bare [ -f ] form included (ASK-4249, ASK-5187)"
 
-# PR #704 review: the survivor is the basename in the message, not the braces. A
-# braced guard whose message omits the script name keys like the hook and is dropped.
+# PR #704 review: a braced guard whose message omits the script name keys like
+# the hook. Since ASK-5187 it survives anyway: it is the instance's own hook for
+# its own script.
 cp "$FIXTURE/instance4.json" "$FIXTURE/instance4-nameless.json"
 python3 - "$FIXTURE/instance4-nameless.json" <<'EOF'
 import json, sys
@@ -559,9 +561,9 @@ OUTN=$(python3 "$MERGE" "$FIXTURE/template4.json" "$FIXTURE/instance4-nameless.j
 python3 - "$FIXTURE/instance4-nameless.json" "$OUTN" <<'EOF'
 import json, sys
 cmds = [h["command"] for h in json.load(open(sys.argv[1]))["hooks"]["PostToolUse"][0]["hooks"]]
-assert len(cmds) == 1 and "DROPPED" in sys.argv[2], f"a braced guard that omits the basename must be dropped: {cmds}"
+assert len(cmds) == 2 and "DROPPED" not in sys.argv[2], f"a braced guard that omits the basename was dropped: {cmds}"
 EOF
-echo "ok: a braced guard whose message omits the script name is dropped (the basename is the survivor)"
+echo "ok: a braced guard whose message omits the script name survives (ASK-5187)"
 
 # Shell contract of the guard itself, on a temp tree: exit 2 with its message
 # on stderr when the script is missing, exit 0 when present. Run through bash -c
@@ -624,5 +626,43 @@ got7 = json.load(open(os.path.join(d, "instance7.json")))
 assert "claudeMdExcludes" not in got7, f"the merge invented a key neither side had: {got7}"
 EOF
 echo "ok: instance claudeMdExcludes survive the merge, template first, no duplicates (ASK-4852)"
+
+# ASK-5187: a client instance wires its own send gate twice in one matcher, the
+# plain hook and an isolated fail-closed twin (`python3 -I ... || exit 2`). Both
+# invoke the same instance-owned script, so the merge keyed them alike, kept the
+# first and dropped the fail-closed twin. The 2026-11-15 skeleton sync did exactly
+# that to a live Gmail gate. An instance's own hook for an instance-owned script
+# is the instance's to keep: only exact copies collapse. A template fossil of a
+# skeleton script still drops (the token-guard case above).
+cat > "$FIXTURE/template8.json" <<'EOF'
+{"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [
+  {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\""}]}]}}
+EOF
+cat > "$FIXTURE/instance8.json" <<'EOF'
+{"hooks": {"PreToolUse": [
+  {"matcher": "^mcp__claude_ai_Gmail__(create_draft|update_draft|send_message|reply|forward)$", "hooks": [
+    {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/q-inst/skills/osint/scripts/gmail-send-gate.py\"", "timeout": 750},
+    {"type": "command", "command": "python3 -I \"$CLAUDE_PROJECT_DIR/q-inst/skills/osint/scripts/gmail-send-gate.py\" || exit 2", "timeout": 750},
+    {"type": "command", "command": "python3 -I \"$CLAUDE_PROJECT_DIR/q-inst/skills/osint/scripts/gmail-send-gate.py\" || exit 2", "timeout": 750}]},
+  {"matcher": ".*", "hooks": [
+    {"type": "command", "command": "test -f \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" && python3 \"$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py\" || true"}]}]}}
+EOF
+OUT8A=$(python3 "$MERGE" "$FIXTURE/template8.json" "$FIXTURE/instance8.json")
+OUT8B=$(python3 "$MERGE" "$FIXTURE/template8.json" "$FIXTURE/instance8.json")
+python3 - "$FIXTURE/instance8.json" "$OUT8A$OUT8B" <<'EOF'
+import json, sys
+groups = {g.get("matcher", ""): [h["command"] for h in g["hooks"]]
+          for g in json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]}
+gmail = next(v for k, v in groups.items() if "Gmail" in k)
+assert len(gmail) == 2, f"want the plain hook and ONE fail-closed twin after two merges: {gmail}"
+assert any(c.startswith("python3 -I ") and c.endswith("|| exit 2") for c in gmail), \
+    f"the fail-closed -I twin of an instance-owned gate was dropped: {gmail}"
+assert any(c.startswith("python3 \"") for c in gmail), f"the plain gate hook was lost: {gmail}"
+assert "DROPPED" not in sys.argv[2], f"merge reported dropping an instance-owned hook: {sys.argv[2]}"
+# Negative control in the same run: the instance's stale token-guard form is a
+# skeleton fossil and still drops, so this case cannot pass on a keep-everything merge.
+assert groups[".*"] == ['python3 "$CLAUDE_PROJECT_DIR/q-system/.q-system/token-guard.py"'], groups[".*"]
+EOF
+echo "ok: an instance's fail-closed twin of its own gate survives the merge twice (ASK-5187)"
 
 echo "PASS: kipi-settings-merge dedupes hooks by invoked script, not raw command string"
