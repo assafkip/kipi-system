@@ -111,6 +111,13 @@ row() {   # row <num> <head> <mergeable> <mergeStateStatus> <draft>
 }
 WANT_MS=0; case "\$*" in *mergeStateStatus*) WANT_MS=1 ;; esac
 case "\$*" in
+  # spec-merge-gate.py's reads. Only a checkout with .prd-os/issues reaches them
+  # (case 9 gives overlay one): its PR edits held-spec.md, which reads in-progress.
+  "pr view "*"--json number,headRefOid,headRefName,title,body"*)
+    echo '{"number": 31, "headRefOid": "$SHA_A", "headRefName": "b", "title": "t", "body": ""}' ;;
+  "api --paginate "*"/files"*) printf 'modified\t.prd-os/issues/held-spec.md\n' ;;
+  "api repos/"*"contents/.prd-os/issues?"*) echo held-spec.md ;;
+  "api -H "*"held-spec.md"*) printf -- '---\nid: held-spec\nstatus: in-progress\n---\n' ;;
   "pr list -R fix/home "*)
     row 11 $SHA_A MERGEABLE CLEAN false; row 12 $SHA_B MERGEABLE CLEAN false
     row 13 $SHA_A UNKNOWN UNKNOWN false; row 14 $SHA_A MERGEABLE CLEAN false
@@ -293,6 +300,26 @@ else
     && ok "mutant KILLED: without env -u, a bypass in the caller's env opens the archive (case 7 would go red)" \
     || bad "THE MUTANT SURVIVED: the bypass strip is not load-bearing, so case 7 proves nothing"
 fi
+
+echo
+echo "== 9. a spec hold is HELD, not FAILED (PR #816 review, finding 5) =="
+# Before: automerge_arm's spec refusal came back "unarmed", the sweep counted it
+# FAILED, and N_FAILED>0 exited the whole fleet sweep 2 for a spec not closed yet.
+mkdir -p "$WORK/overlay/.prd-os/issues"
+run_sweep "$WORK/held.out" -- --apply
+rmdir "$WORK/overlay/.prd-os/issues" "$WORK/overlay/.prd-os"
+has "$WORK/held.out" "HELD fix/overlay#31" \
+  && ok "the overlay PR whose spec reads in-progress is reported HELD" \
+  || bad "no HELD line for the held overlay PR: $(grep 'overlay#31' "$WORK/held.out")"
+has "$WORK/held.out" "FAILED fix/overlay#31" \
+  && bad "THE DEFECT: a spec hold was counted FAILED" \
+  || ok "a spec hold is never counted FAILED"
+grep -q "overlay.pr merge --auto --squash 31" "$WORK/gh-calls" \
+  && bad "the held PR was armed anyway" \
+  || ok "the held PR was not armed"
+has "$WORK/held.out" "2 armed now, 1 held by the spec gate); 1 failed" \
+  && ok "the summary counts the hold apart from the one real failure (drifted)" \
+  || bad "the summary is wrong: $(grep '^-- ' "$WORK/held.out")"
 
 echo
 echo "-------- $PASS passed, $FAIL failed --------"

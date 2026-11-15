@@ -112,7 +112,7 @@ PY
 short() { printf '%s' "${1:0:7}"; }
 
 N_REPOS=0; N_EXCLUDED=0; N_UNREADABLE=0; N_PRS=0; N_DEGRADED=0
-N_SELECTED=0; N_ALREADY=0; N_ARM=0; N_FAILED=0
+N_SELECTED=0; N_ALREADY=0; N_ARM=0; N_FAILED=0; N_HELD=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # FD 3 AND FD 4, NOT STDIN. Every command in these loops (gh, git, python3, the
@@ -196,6 +196,12 @@ while IFS=$'\t' read -r -u 3 name path remote; do
     if [ "$AUTOMERGE_ARM_STATE" = "armed" ]; then
       N_ARM=$((N_ARM+1))
       echo "ARMED $tag: degraded approval at $(short "$head")"
+    elif [ "$AUTOMERGE_ARM_STATE" = "unarmed" ] && [ "$AUTOMERGE_ARM_HELD" = "1" ]; then
+      # A SPEC HOLD IS NOT A FAILURE (PR #816 review, finding 5). Counting it
+      # FAILED exited the fleet sweep 2 for a spec that is simply not closed yet.
+      # pr-owner.py re-asks the gate hourly and arms once the spec reads closed.
+      N_HELD=$((N_HELD+1))
+      echo "HELD $tag: $AUTOMERGE_ARM_ERR"
     else
       N_FAILED=$((N_FAILED+1))
       echo "FAILED $tag: arm state '$AUTOMERGE_ARM_STATE': ${AUTOMERGE_ARM_ERR:-gh printed no reason}"
@@ -204,7 +210,8 @@ while IFS=$'\t' read -r -u 3 name path remote; do
 done 3< <(fleet_candidates)
 
 VERB="armed now"; [ "$MODE" = "dry" ] && VERB="would arm"
-echo "-- $MODE: $N_REPOS dispatch-enabled repo(s), $N_EXCLUDED excluded as archived, $N_UNREADABLE unreadable; $N_PRS open PR(s), $N_DEGRADED with a degraded record; $N_SELECTED selected ($N_ALREADY already armed, $N_ARM $VERB); $N_FAILED failed"
+HELD_NOTE=""; [ "$N_HELD" -gt 0 ] && HELD_NOTE=", $N_HELD held by the spec gate"
+echo "-- $MODE: $N_REPOS dispatch-enabled repo(s), $N_EXCLUDED excluded as archived, $N_UNREADABLE unreadable; $N_PRS open PR(s), $N_DEGRADED with a degraded record; $N_SELECTED selected ($N_ALREADY already armed, $N_ARM $VERB$HELD_NOTE); $N_FAILED failed"
 if [ "$N_REPOS" -eq 0 ]; then
   echo "REFUSED: fleet_candidates returned no repo at all, not even home; nothing was swept" >&2
   exit 3

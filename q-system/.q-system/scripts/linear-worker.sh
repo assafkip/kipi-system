@@ -2202,6 +2202,16 @@ arm_automerge() {
     # Already armed, or the refusal WAS the no-op and the re-probe said so.
     # Silent on purpose: this is the healthy state.
     :
+  elif [ "$AUTOMERGE_ARM_HELD" = "1" ] && [ "$AUTOMERGE" = "unarmed" ]; then
+    # A SPEC HOLD IS THE EXPECTED PATH, NOT A STALL (PR #816 review, finding 2).
+    # This arm runs right after the PR opens, before closeout, so the spec still
+    # reads in-progress here on nearly every run. The unarmed branch below paged
+    # it as "sits there forever. Needs a human: gh pr merge --auto --squash N":
+    # false, since pr-owner.py re-asks the gate hourly and arms once the spec
+    # reads closed, and the command it named is the merge the gate refused.
+    # Log only, with the gate's own line, and no command to run. A hold whose
+    # disarm failed is NOT this branch: it stays "unknown" and pages below.
+    say "$ISSUE: PR #$pr held by the spec gate, not armed (${AUTOMERGE_ARM_ERR:-spec-merge-gate.py refused}). pr-owner.py's hourly pass re-asks the gate once the PR is past its own young/wait windows, and arms it when the spec reads closed."
   else
     if [ "$AUTOMERGE" = "unknown" ]; then
       AUTOMERGE="unknown"
@@ -2224,7 +2234,7 @@ arm_automerge() {
       # command a human has to run. An unarmed PR is invisible by construction
       # (everything green, nothing merges, no signal), so a log-only warning does
       # not kill the silent stall, it relocates it.
-      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
+      say "WARN: could not arm auto-merge on PR #$pr for $ISSUE (${AUTOMERGE_ARM_ERR:-gh printed no reason}) -- it will sit green and unmerged until someone runs: gh pr merge --auto --squash $pr"
       if page_once "$ISSUE" automerge_unarmed_paged; then
         bash "$NOTIFY" "worker: $ISSUE PR #$pr is NOT armed -- it goes green and sits there forever. Needs a human: gh pr merge --auto --squash $pr" 2>/dev/null || true
       fi

@@ -1256,7 +1256,15 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
       record_automerge "$AMREC" "$AUTOMERGE"
       [ "$AUTOMERGE_ARM_NEW" = "1" ] && say "auto-merge armed on PR #$PR by converge (the worker's record did not say armed)"
     fi
+    # A SPEC HOLD IS NOT A gh REFUSAL (PR #816 review, finding 5): gh never ran,
+    # spec-merge-gate.py did. Saying "refused by gh" sends a reader to gh.
+    if [ "$AUTOMERGE" = "unarmed" ] && [ "${AUTOMERGE_ARM_HELD:-}" = "1" ]; then
+      AUTOMERGE="held"
+    fi
     case "$AUTOMERGE" in
+      held)
+        MERGE_LOG="Held by the spec gate, not armed: $ARM_ERR pr-owner.py's hourly pass re-asks the gate once the PR is past its own young/wait windows, and arms it when the spec reads closed."
+        MERGE_PAGE="PR #$PR approved but held by the spec gate: $ARM_ERR pr-owner.py's hourly pass arms it once the spec reads closed and the PR is past its wait windows" ;;
       armed)
         MERGE_LOG="Auto-merge is armed -- GitHub merges it once every required check is green."
         MERGE_PAGE="PR #$PR approved and auto-merge armed -- GitHub lands it, no human merge needed" ;;

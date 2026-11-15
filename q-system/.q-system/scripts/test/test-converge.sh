@@ -154,6 +154,16 @@ printf '%s\n' "$*" >> "$FAKE_GHLOG"
 case "$*" in
   "pr list"*) cat "$FAKE_PR_FILE" 2>/dev/null ;;
   "pr view "*"--json autoMergeRequest"*) cat "$FAKE_ARMED_FILE" 2>/dev/null ;;
+  # spec-merge-gate.py's reads (ASK-4947): a head, no files, no specs at it.
+  "pr view "*"--json number,headRefOid,headRefName,title,body"*)
+    echo '{"number": 2, "headRefOid": "feedface", "headRefName": "sana/ask-143", "title": "t", "body": ""}' ;;
+  # FAKE_SPEC_HELD set: the PR edits held-spec.md and it reads in-progress (exit 2).
+  "api --paginate "*"/files"*)
+    [ -n "${FAKE_SPEC_HELD:-}" ] && printf 'modified\t.prd-os/issues/held-spec.md\n' ; : ;;
+  "api repos/"*"contents/.prd-os/issues?"*)
+    [ -n "${FAKE_SPEC_HELD:-}" ] && echo held-spec.md ; : ;;
+  "api -H "*"contents/.prd-os/issues/held-spec.md"*)
+    printf -- '---\nid: held-spec\nstatus: in-progress\n---\n' ;;
   "pr view"*) cat "$FAKE_SHA_FILE" 2>/dev/null ;;
   "pr merge"*)
     RC="$(cat "$FAKE_MERGE_RC_FILE" 2>/dev/null || echo 0)"
@@ -228,6 +238,18 @@ arm_case 5 armed 0
 grep -c 'autoMergeRequest' "$FAKE_GHLOG" >/dev/null 2>&1 \
   && fail "ASK-310: converge re-probed the arm state of a PR the record already calls armed -- a second reader of one input"
 ok "ASK-310: approved + recorded armed -> no gh arm call and no re-probe"
+
+# PR #816 review finding 5: a spec hold is not "refused by gh" (gh never ran).
+export FAKE_SPEC_HELD=1
+arm_case 6 unarmed 0
+unset FAKE_SPEC_HELD
+[ "$(arm_calls 6)" = "0" ] || fail "spec hold: converge sent $(arm_calls 6) arm(s) on a PR whose spec reads in-progress"
+grep -q 'refused by gh' "$FAKE_PAGES" \
+  && fail "PR #816 finding 5: a spec hold was paged as a gh refusal, but gh never ran: $(cat "$FAKE_PAGES")"
+grep -q 'held-spec.md reads status: in-progress' "$FAKE_PAGES" \
+  || fail "PR #816 finding 5: the spec hold page does not carry the gate's line: $(cat "$FAKE_PAGES")"
+grep -q 'gh pr merge' "$FAKE_PAGES" && fail "spec hold: the page names a merge command: $(cat "$FAKE_PAGES")"
+ok "PR #816: a spec hold pages as held by the spec gate, never as a gh refusal, and arms nothing"
 
 # --- PR #429 review nits: automerge_arm's own contract ------------------------
 # Driven directly against the lib, with the same logging fake gh.

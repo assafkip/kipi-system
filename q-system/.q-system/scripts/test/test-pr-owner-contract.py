@@ -200,6 +200,8 @@ promise("P51", "the merge is asked of merge-bypass-gate.py first, re-read as the
         "ASKED OF THE GATE, NOT HIDDEN FROM IT", "a deny or no answer is no merge", "neither merged nor armed",
         "merge-bypass-gate.py refused it",
         "GH_REPO and GH_HOST never reach")
+promise("P55", "after merge-bypass-gate.py, the merge is asked of spec-merge-gate.py; a refusal or no answer is no merge",
+        "refused by /issue-start until a closeout PR landed")
 
 EXEMPT = [
     ("select `sana` branches only", "history: what the 2026-11-08 audit found in other scripts"),
@@ -326,12 +328,18 @@ def slug_in(a):
     return "?"
 
 
+SPEC_RC = [0]
+
+
 def fake_run(argv, timeout=120, env=None, cwd=None):
     argv = [str(a) for a in argv]
     # A call made from a checkout records which one: without -R, the checkout IS the repo.
     SENT.append(argv + ([f"{CWD_MARK}{cwd})"] if cwd is not None else []))
     if cwd is not None:
         CWD_ENVS.append(env)
+    # spec-merge-gate.py (ASK-4947) has its own suite; here it allows unless SPEC_RC says otherwise.
+    if len(argv) > 2 and argv[1].endswith("spec-merge-gate.py"):
+        return SPEC_RC[0], ("spec-merge-gate: REFUSED PR #" + argv[2] + " at x: stand-in") if SPEC_RC[0] else "", ""
     if argv[:2] == ["gh", "pr"] and len(argv) > 2 and argv[2] in WRITE_VERBS:
         WRITE_ENVS.append(env)
     ok = lambda obj: (0, json.dumps(obj), "")  # noqa: E731
@@ -1258,6 +1266,17 @@ for tag, gate in (("denies", deny_gate), ("cannot answer", crash_gate)):
     rc, F5 = run_main("F5-" + tag, ["--apply"], NOW)
     po.MERGE_GATE = REAL_GATE
     holds("P51", f"a gate that {tag}: no merge is sent, exit 2", (gh_writes(F5, MG, 1, "merge"), rc), ([], 2))
+for tag, code in (("refuses", 2), ("cannot tell", 3)):
+    fresh_state("F5-spec-" + tag.replace(" ", "-"))
+    SPEC_RC[0] = code
+    rc, F5 = run_main("F5-spec-" + tag, ["--apply"], NOW)
+    SPEC_RC[0] = 0
+    holds("P55", f"a spec gate that {tag}: no merge is sent, exit 2", (gh_writes(F5, MG, 1, "merge"), rc), ([], 2))
+fresh_state("F5-spec-allows")
+MERGED_DONE.clear()
+rc, F5 = run_main("F5-spec-allows", ["--apply"], NOW)
+holds("P55", "the same PR with the spec gate allowing is merged (the check can fail)",
+      (len(gh_writes(F5, MG, 1, "merge")), rc), (1, 0))
 for tag, knob, val in (("its head moved", VIEW_HEAD, "9" * 40),
                        ("the checkout resolves another repo", VIEW_URL, "https://github.com/o/other/pull/1")):
     fresh_state("F5-" + tag)

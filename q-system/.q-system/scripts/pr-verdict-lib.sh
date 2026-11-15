@@ -22,6 +22,8 @@ if ! declare -F artifact_key >/dev/null 2>&1; then
   # shellcheck source=repo-slug-lib.sh
   . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/repo-slug-lib.sh"
 fi
+# Where spec-merge-gate.py sits, resolved once at source time (automerge_arm cds).
+_PV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # extract_verdict <review-file>
 # Prints APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK, or nothing if
@@ -494,13 +496,14 @@ automerge_from_record() {
 #   AUTOMERGE_ARM_STATE  armed | unarmed | unknown   ("" when <pr> is empty)
 #   AUTOMERGE_ARM_NEW    1 when THIS call armed it, 0 otherwise
 #   AUTOMERGE_ARM_ERR    gh's own refusal, one line, "" when it armed
+#   AUTOMERGE_ARM_HELD   1 when spec-merge-gate.py refused (exit 2), else ""
 # Three states, never two: an empty probe answer is "could not tell", not
 # "unarmed" (PR #33 review round 1, finding 3). gh's refusal is KEPT, because a
 # page that says "refused" without gh's words sends a human to re-run it to read
 # them (the worker's copy used to throw it away with >/dev/null 2>&1).
 automerge_arm() {
   local pr="${1:-}" dir="${2:-.}" errlog="${3:-/dev/null}" probe err
-  AUTOMERGE_ARM_STATE="unknown"; AUTOMERGE_ARM_NEW=0; AUTOMERGE_ARM_ERR=""
+  AUTOMERGE_ARM_STATE="unknown"; AUTOMERGE_ARM_NEW=0; AUTOMERGE_ARM_ERR=""; AUTOMERGE_ARM_HELD=""
   # `gh pr merge --auto --squash ''` acts on whatever branch the cwd is on.
   [ -n "$pr" ] || { AUTOMERGE_ARM_STATE=""; return 0; }
   # Every gh call below runs after `cd "$dir"`. A missing dir failed them all on
@@ -508,6 +511,43 @@ automerge_arm() {
   # (PR #429 review nit). Name the dir and do not call gh at all.
   if [ ! -d "$dir" ]; then
     AUTOMERGE_ARM_ERR="arm dir '$dir' does not exist, so gh never ran"
+    return 0
+  fi
+  # THE SPEC GATE COMES FIRST (ASK-4947). chief #395 merged while its dsse spec
+  # read in-progress, and /issue-start refused every dependent issue until a
+  # closeout PR landed. Arming IS the merge, so a refused spec (exit 2) also takes
+  # an arm someone else set back off: an armed PR is a merged PR, a few minutes
+  # late. pr-owner.py re-asks every hour, so a PR held here arms once its spec
+  # closes; AUTOMERGE_ARM_HELD=1 tells callers this is a hold, not a gh refusal.
+  #
+  # EXIT 3 IS NOT A REFUSAL (PR #816 review, finding 1 -- major). It means a gh
+  # read failed: a 502, a rate limit, a timeout. Disarming on it took a correct
+  # arm off a PR whose spec was closed and paged it "unarmed". So on 3 nothing is
+  # written to GitHub: no arm, no disarm. The arm state is read once and reported
+  # as it stands, the same as before this gate existed.
+  local sg sgrc
+  sg="$( python3 "$_PV_LIB_DIR/spec-merge-gate.py" "$pr" --dir "$dir" 2>&1 )" && sgrc=0 || sgrc=$?
+  # 2 IS A REFUSAL ONLY WITH THE GATE'S OWN LINE (PR #816 review round 2).
+  # python3 also exits 2 for a script it cannot open or a usage error, and that
+  # read as a quiet hold: disarmed, logged, nobody paged. Anything else non-zero
+  # is "could not tell" below.
+  if [ "$sgrc" = "2" ] && [ "${sg#spec-merge-gate: REFUSED}" != "$sg" ]; then
+    AUTOMERGE_ARM_HELD=1
+    AUTOMERGE_ARM_ERR="$(printf '%s' "${sg:-spec-merge-gate.py refused and printed no reason}" | tr '\n' ' ' | cut -c1-400)"
+    automerge_disarm "$pr" "$dir" "$errlog"
+    if [ "$AUTOMERGE_DISARM_STATE" = "disarmed" ]; then
+      AUTOMERGE_ARM_STATE="unarmed"
+    else
+      AUTOMERGE_ARM_ERR="$AUTOMERGE_ARM_ERR; and the arm could not be confirmed off (${AUTOMERGE_DISARM_ERR:-gh printed no reason})"
+    fi
+    return 0
+  fi
+  if [ "$sgrc" != "0" ]; then
+    AUTOMERGE_ARM_ERR="$(printf '%s' "${sg:-spec-merge-gate.py exited $sgrc and printed no reason}" | tr '\n' ' ' | cut -c1-400)"
+    if probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
+                   -q '.autoMergeRequest != null' 2>>"$errlog" )" && [ "$probe" = "true" ]; then
+      AUTOMERGE_ARM_STATE="armed"; AUTOMERGE_ARM_ERR=""
+    fi
     return 0
   fi
   if ! probe="$( cd "$dir" && gh pr view "$pr" --json autoMergeRequest \
