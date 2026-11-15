@@ -105,3 +105,38 @@ def test_each_rule_section_carries_its_own_id():
     assert _rule_gate_headings(t) == ["# Sancho"], "one top-level section; subheads use ###"
     ids = re.findall(r"^Rule-ID: (\S+)$", t, re.M)
     assert ids == ["RULE-2026-11-14-SANCHO", "RULE-2026-11-14-SANCHO-BODY"]
+
+
+# Founder, 2026-11-15: put every malware tool discussed in the ClickFix case, plus the
+# researched analyst toolkit, into Sancho's prompt so he knows when to call each one.
+# These names are the ones a run of case-051 actually needed; dropping one from the
+# prompt reopens the gap that made the UPX import table get misread.
+TOOLKIT = (
+    "UPX", "Ghidra", "pefile", "py7zr", "ilspycmd", "ghidra-nativeaot", "ida-nativeaot",
+    "Detect It Easy", "capa", "FLOSS", "YARA", "CyberChef", "Binary Refinery",
+    "VirusTotal", "MalwareBazaar", "URLhaus", "ThreatFox", "Triage", "ANY.RUN",
+    "Hybrid Analysis", "Etherscan", "Polygonscan", "eth_call", "openssl", "Volatility 3",
+)
+
+
+def test_toolkit_names_every_case_tool():
+    t = _text()
+    assert "### Toolkit: what to reach for, and when" in t
+    missing = [name for name in TOOLKIT if name not in t]
+    assert not missing, f"toolkit dropped: {missing}"
+    assert (AGENT.parent / "sancho-toolkit-sources.md").is_file(), "research sources ship beside the prompt"
+
+
+def test_toolkit_keeps_the_gate_on_dynamic_tools():
+    t = _text()
+    assert "Gated" in t and "founder's yes" in t
+    assert "Dynamic (gated, founder decides per case" in t
+
+
+def test_effort_is_in_runs_not_hours():
+    # Founder, 2026-11-15: "remember you are not a human analyst. Don't give me human
+    # analyst time estimates."
+    t = _text()
+    assert "### Effort is measured in runs, not hours" in t
+    assert "(effort in tool runs or passes, and risk)" in t
+    assert "(with effort and risk)" not in t
