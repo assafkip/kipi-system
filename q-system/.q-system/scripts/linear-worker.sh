@@ -727,6 +727,16 @@ REGISTRY_OK="$(_facts_get ok)"
 # rather than widening it -- see founder_scope.
 SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
+# REPO_PROJECT reaches the picker for the DoR-target-repo check (ASK-4899). It was
+# already computed above for the MISCONFIG line; the picker needs the same value to
+# compare against the repo an issue's DoR names, and nothing else in this script
+# recomputes it.
+export REPO_PROJECT
+# The picker heredoc imports dor_target_repo.py from here (ASK-4899). Passed as
+# env rather than argv because the heredoc is quoted (<<'PY'), so it cannot
+# interpolate $SCRIPT_DIR, and its argv is already a fixed two-value contract.
+WORKER_SCRIPT_DIR="$SCRIPT_DIR"
+export WORKER_SCRIPT_DIR
 
 # --- the open PRs, for the WIP ceiling (ASK-3826) ---------------------------
 # Counted BEFORE the pick because the picker below holds the board, and the
@@ -928,6 +938,50 @@ def expired_park(i):
             and not (labels & PARK_NEVER_CLOSED)
             and not has_open_own_pr(i["identifier"]))
 
+# THE REPO A DoR NAMES vs THE REPO THIS WORKER RUNS IN (ASK-4899).
+# NO APOSTROPHES ANYWHERE IN THIS BLOCK. The picker is a quoted heredoc inside a
+# command substitution, and one apostrophe in a Python comment swallows the rest
+# of the substitution -- the scar already recorded a few lines below. bash -n is
+# what catches it, and it fails ~900 lines later at an unrelated token.
+# in_this_repo() below matches on the LINEAR PROJECT, which says where a finding
+# was observed. It does not say where the fix lands. A spillover observed in
+# `product` and promoted into the `product` project can carry a DoR scoped
+# entirely to kipi-system; that issue passes in_this_repo(), gets a product
+# worktree holding none of its files, and burns the dispatch. Measured on
+# ASK-4323 (2026-11-14) and on ASK-4899 itself (2026-11-15).
+#
+# Refused HERE, in the picker, because here is before the worktree and before the
+# claim. A refusal after either has already spent the dispatch it exists to save.
+LAUNCH_REPO = os.environ.get("REPO_PROJECT", "").strip()
+KNOWN_REPOS = {n for n in (os.environ.get("LOCAL_REPOS", "") or "").split() if n}
+KNOWN_REPOS |= {n for n in (os.environ.get("LOCAL_REPOS", "") or "").split(",") if n.strip()}
+_SKEL_PROJ = os.environ.get("SKELETON_PROJECT", "").strip()
+if _SKEL_PROJ:
+    KNOWN_REPOS.add(_SKEL_PROJ)
+
+
+def dor_targets_another_repo(d):
+    """One line when the DoR of this issue scopes its files elsewhere, else "".
+
+    No apostrophes in here either; see the block comment above.
+    """
+    # FAIL OPEN on every failure mode, deliberately. Too strict here stops the
+    # fleet picking up ordinary issues, which is a silent full stop on autonomous
+    # throughput; too loose merely leaves today's behaviour. A missing module, an
+    # unreadable registry or an unparseable body must therefore all read as
+    # no signal, proceed -- never as a refusal.
+    if not LAUNCH_REPO or not KNOWN_REPOS:
+        return ""
+    try:
+        here = os.environ.get("WORKER_SCRIPT_DIR", "")
+        if here and here not in sys.path:
+            sys.path.insert(0, here)
+        import dor_target_repo
+        return dor_target_repo.mismatch(d, LAUNCH_REPO, KNOWN_REPOS) or ""
+    except Exception:
+        return ""
+
+
 def ready(i):
     labels = {l["name"] for l in i["labels"]["nodes"]}
     if "owner:assaf" in labels:      return False   # founder decision, hands off
@@ -950,6 +1004,10 @@ def ready(i):
     if is_fleet_alert(i):            return False   # ASK-839, see ALERT_MARKER
     if not in_this_repo(i):          return False
     d = i.get("description") or ""
+    # ASK-4899. Asked after the free label checks and BEFORE the state exit, so a
+    # cross-repo issue never reaches a worktree or a claim. Absence of a repo name
+    # in the Files section of the DoR is not a mismatch; see dor_target_repo.py.
+    if dor_targets_another_repo(d):  return False
     # ONE state exit, carrying its own marker, because terminal-states.json row
     # state-not-open counts exactly one site here. A started ticket passes only
     # when started_open releases it, asked after the free checks above. The
