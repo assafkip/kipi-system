@@ -74,6 +74,10 @@ jobs:
           CI: true
           DC_REQUIRE_REAL_PRODUCERS: "1"
 
+      # Skill references feed drafts the engine then blocks; nothing else sweeps them (ASK-701).
+      - name: Retired strings in skill references
+        run: python3 q-system/.q-system/scripts/retired-strings-sweep.py
+
       - name: Skeleton separation, phase 1
         run: python3 validate-separation.py 1 --verbose
         env:
