@@ -133,11 +133,8 @@ def test_control_a_real_token_still_blocks(label, text, token):
 
 
 CODE_STILL_EXEMPT = [
-    # ASK-4995 changed this one on purpose: three runs in one paragraph means one is stray and
-    # nothing says which, so none pairs and the bracket is shown. The cost is a visible
-    # refusal; the old answer was a guess that let `--fast` and `.env` openers exempt a blank.
-    ("an odd tick count in a paragraph exempts nothing, real code included",
-     "The `flag stays. Run `make [target]` now.", ["[target]"]),
+    ("real code after a stray backtick is still code",
+     "The `flag stays. Run `make [target]` now.", []),
     ("padded inline code", "Type `` [draft] `` in the field.", []),
     ("code in a table cell", "| a | `tags: [draft]` |\n| b | `[x]` |\n", []),
     ("code cell padded at the end", "| step | `tags: [draft] ` |\n", []),

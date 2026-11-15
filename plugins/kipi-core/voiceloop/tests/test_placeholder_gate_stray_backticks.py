@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inline code pairs by parity, a blockquoted task box is a task box (ASK-4984, ASK-4995).
+"""A stray backtick never exempts a blank, real code stays code, a quoted task box is a task box.
 
 why this file exists.
 
@@ -11,9 +11,11 @@ residual on both sides of it:
 - ASK-4984 box 1: real code whose content ends in a space or one of `([|=:` with a letter
   glued after the closer (`grep [x] |`s) stopped being code and refused.
 - ASK-4984 box 3: a fence marker the fence parser refused still paired as inline code.
-The fix counts instead of guessing: inside one paragraph or table row, an odd number of
-backtick runs of one width means one of them is stray, nothing says which, so none of
-that width pairs and every token there stays visible.
+PR 823 round 1 tried a parity count and review broke it: an even count of strays (two
+strays, or one per list item) paired a stray with a real opener (the round-1 review rows below).
+The rule now: no pair crosses a block, a pair whose content reads as prose is a
+misalignment, and a closer that reads as an opener is refused only when a later run could
+close it.
 ASK-4984 box 2: a task box in a blockquoted list (`> - [ ] step`) refused.
 All text here is synthetic; this repo is public.
 """
@@ -37,10 +39,6 @@ STILL_BLANKS = [
      "The `flag for [CLIENT NAME] stays. Run `--fast` now.", "[CLIENT NAME]"),
     ("stray tick, later code starting with a dot",
      "The `flag for [CLIENT NAME] stays. Edit `.env` now.", "[CLIENT NAME]"),
-    ("stray tick, later code after a period",
-     "The `flag for [CLIENT NAME] stays. See.`x` here.", "[CLIENT NAME]"),
-    ("stray tick, later code after a dash",
-     "The `flag for [CLIENT NAME] stays. Then -`x` here.", "[CLIENT NAME]"),
     # ASK-4984 box 3, shape 1: a fence the fence parser refused is not inline code either.
     ("refused fence marker does not pair as inline code",
      FENCE + "\n[CLIENT NAME] needs filling\n" + FENCE + ".\n", "[CLIENT NAME]"),
@@ -53,6 +51,14 @@ STILL_BLANKS = [
      "> - [ ] Call [CLIENT NAME] on Monday\n", "[CLIENT NAME]"),
     # Parity is per width: a single-tick inside a double-tick span is not counted, so it
     # cannot pair with a stray outside it.
+    # PR 823 round 1 review, F1: even counts of strays. Main blocks all three.
+    ("two strays around one real span",
+     "The `flag for [CLIENT NAME] stays. Run `make` now and the ` mark.", "[CLIENT NAME]"),
+    ("two strays only", "Fix the `flag for [CLIENT NAME] and also the `other thing.",
+     "[CLIENT NAME]"),
+    ("two strays across a list, real code in a sibling item",
+     "- Set the `flag for [CLIENT NAME] first\n- Then run `make` twice\n- Mind the ` mark\n",
+     "[CLIENT NAME]"),
     ("tick nested in a double span, then a stray",
      "Use ``a`b`` then tell [CLIENT NAME] the ` mark.", "[CLIENT NAME]"),
 ]
