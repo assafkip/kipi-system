@@ -17,6 +17,13 @@
 # kipi/reviewer-approved on the NEW head. Without the delta code the round-2 copy
 # is the whole-PR marker again: red.
 #
+# DELTA BY DEFAULT (ASK-5093). The first cut made the delta opt-in (--delta) and
+# no caller ever passed it: linear-worker.sh called the reviewer bare, and
+# consulting PR #578 got three whole-PR reviews on 2026-11-14. So the rounds
+# below call it with NO flag. On the opt-in code round 2 reads the whole PR
+# again: red. --full is the one way to force a whole read; --delta stays a
+# no-op alias so an old caller does not break.
+#
 # Isolation: HOME, the repo, `gh` and `claude` are fixtures in a mktemp dir. No
 # live PR is read and no model is spent.
 set -uo pipefail
@@ -53,6 +60,9 @@ cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slu
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" branch -M main
 git -C "$WORK/skel" remote add origin "https://github.com/example-owner/example-repo.git"
+# The PR lives on its own branch off main, so main is a real base branch whose
+# merge base with the PR can move (the base-merge cases at the end).
+git -C "$WORK/skel" checkout -q -b pr-branch
 AGENT="$WORK/skel/q-system/.q-system/scripts/pr-review-agent.sh"
 
 # The PR's first pushed head: one change, ROUND1_LINE.
@@ -67,6 +77,7 @@ cat > "$STUB/gh" <<EOF
 printf '%s\n' "\$*" >> "$GH_LOG"
 case "\$*" in
   *"pr view"*"headRefOid"*) printf '%s\t%s\n' "\$(cat "$WORK/head")" "a PR title" ;;
+  *"pr view"*"baseRefName"*) echo main ;;
   *"pr diff"*)              echo "WHOLE_PR_DIFF_MARKER"; echo "+ROUND1_LINE"; echo "+ROUND2_LINE" ;;
   *"pr comment"*)           echo "https://github.com/example-owner/example-repo/pull/1#issuecomment-1" ;;
   *"commits/"*"/statuses"*) echo "" ;;
@@ -119,8 +130,10 @@ run_reviewer() {  # run_reviewer <out-file> [extra args...]
 REC="$WORK/home/.config/kipi/pr-reviews/example-owner_example-repo__pr-1.verdict.json"
 rec_field() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$REC" "$1"; }
 
-# --- round 1: --delta with no prior receipt reads the WHOLE PR -------------------
-run_reviewer "$WORK/r1.out" --delta --post
+# --- round 1: no flag, no prior receipt: reads the WHOLE PR ----------------------
+# The negative half of the default: with nothing on record, the default must
+# not shrink round 1 to anything less than the whole PR.
+run_reviewer "$WORK/r1.out" --post
 [ "$(calls)" = "1" ] || fail "round 1 did not reach the stub ($(calls) calls), so every check below is vacuous:
 $(tail -20 "$WORK/r1.out")"
 [ -f "$SEEN/call-1.diff" ] || fail "the stub found no pr.diff path in the prompt; the capture is broken:
@@ -130,7 +143,9 @@ grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-1.diff" \
 $(cat "$SEEN/call-1.diff")"
 grep -q 'THIS IS A DELTA ROUND' "$SEEN/call-1.prompt" && fail "round 1 was told it is a delta round"
 [ "$(rec_field head_sha)" = "$SHA1" ] || fail "round 1 receipt head_sha is '$(rec_field head_sha)', expected $SHA1"
-ok "round 1 with --delta and no receipt read the whole PR and recorded head $SHA1"
+grep -q "no usable earlier review" "$WORK/r1.out" || fail "round 1 did not log why it read the whole PR:
+$(tail -10 "$WORK/r1.out")"
+ok "round 1 with no flag and no receipt read the whole PR, said why, and recorded head $SHA1"
 sleep 1  # review files are named to the second
 
 # The author pushes a fix on top: ROUND2_LINE.
@@ -139,9 +154,9 @@ G -C "$WORK/skel" commit -q -am "round 2 fix"
 SHA2="$(git -C "$WORK/skel" rev-parse HEAD)"
 echo "$SHA2" > "$WORK/head"
 
-# --- round 2: --delta reads only git diff SHA1 SHA2 -------------------------------
+# --- round 2: NO flag reads only git diff SHA1 SHA2 -------------------------------
 : > "$GH_LOG"
-run_reviewer "$WORK/r2.out" --delta --post
+run_reviewer "$WORK/r2.out" --post
 [ "$(calls)" = "2" ] || fail "round 2 did not reach the stub:
 $(tail -20 "$WORK/r2.out")"
 D2="$SEEN/call-2.diff"
@@ -153,6 +168,8 @@ grep -q '^+ROUND1_LINE' "$D2" && fail "round 2 diff re-includes the round-1 chan
 $(cat "$D2")"
 grep -q 'THIS IS A DELTA ROUND' "$SEEN/call-2.prompt" || fail "round 2 prompt does not say it is a delta round"
 grep -q "${SHA1:0:12}" "$SEEN/call-2.prompt" || fail "round 2 prompt does not name the base it diffs from"
+grep -q "delta: reviewing only ${SHA1:0:12}" "$WORK/r2.out" || fail "round 2 did not log the delta line:
+$(tail -10 "$WORK/r2.out")"
 ok "round 2 read only git diff ${SHA1:0:8}..${SHA2:0:8}"
 
 grep "statuses/$SHA2" "$GH_LOG" | grep 'context=kipi/reviewer-approved' | grep -q 'state=success' \
@@ -167,15 +184,43 @@ ok "round 2 posted kipi/reviewer-approved=success on the new head, labelled as a
 ok "round 2 receipt records head $SHA2 and review_base $SHA1"
 sleep 1
 
-# --- default, no new flag: still the whole PR, prompt unchanged ------------------
-run_reviewer "$WORK/r3.out"
-[ "$(calls)" = "3" ] || fail "the default run did not reach the stub"
-grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-3.diff" || fail "the default run (no flag) no longer reads the whole PR"
-grep -q 'THIS IS A DELTA ROUND' "$SEEN/call-3.prompt" && fail "the default run's prompt changed"
-python3 -c 'import json,sys;sys.exit("review_base" in json.load(open(sys.argv[1])))' "$REC" \
-  || fail "the default run wrote a review_base key; its record must be unchanged"
-ok "no flag: whole PR, no delta text, no review_base key (default unchanged)"
+# --- no flag on the head already reviewed: a whole read, logged, never a refusal --
+# A dry run writes a usable record too, so a refusal here would leave a --post
+# run on the same head unable to put a status on it at all.
+before="$(calls)"
+run_reviewer "$WORK/r3a.out"
+[ "$(calls)" = "$((before + 1))" ] || fail "no flag on the reviewed head did not run a review:
+$(tail -10 "$WORK/r3a.out")"
+[ "$(cat "$WORK/r3a.out.rc")" = "0" ] || fail "no flag on the reviewed head exited $(cat "$WORK/r3a.out.rc")"
+grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$(calls).diff" || fail "no flag on the reviewed head did not read the whole PR"
+grep -q 'reading the whole PR' "$WORK/r3a.out" || fail "the same-head fallback is silent"
+ok "no flag on the already-reviewed head: whole PR, logged, exit 0"
 sleep 1
+
+# --- --full: the whole PR even with a usable record ------------------------------
+# On a NEW head, so the default would have read a delta: on the reviewed head the
+# same-head fallback reads the whole PR anyway and this check could not fail.
+echo "FULL_LINE" >> "$WORK/skel/FILE.txt"
+G -C "$WORK/skel" commit -q -am "full-read case"
+git -C "$WORK/skel" rev-parse HEAD > "$WORK/head"
+before="$(calls)"
+run_reviewer "$WORK/r3.out" --full
+[ "$(calls)" = "$((before + 1))" ] || fail "the --full run did not reach the stub"
+grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$(calls).diff" || fail "--full did not read the whole PR"
+grep -q 'THIS IS A DELTA ROUND' "$SEEN/call-$(calls).prompt" && fail "the --full run's prompt says delta"
+python3 -c 'import json,sys;sys.exit("review_base" in json.load(open(sys.argv[1])))' "$REC" \
+  || fail "the --full run wrote a review_base key"
+ok "--full: whole PR, no delta text, no review_base key"
+G -C "$WORK/skel" checkout -q "$SHA2"
+echo "$SHA2" > "$WORK/head"
+sleep 1
+
+# --- --full with --base contradicts itself: refuse --------------------------------
+before="$(calls)"
+run_reviewer "$WORK/r3b.out" --full --base "$SHA1"
+[ "$(calls)" = "$before" ] || fail "--full --base still called the model"
+[ "$(cat "$WORK/r3b.out.rc")" != "0" ] || fail "--full --base exited 0"
+ok "--full with --base: refused, no model call"
 
 # --- an explicit --base, nothing new since it: refuse, no model call -------------
 before="$(calls)"; : > "$GH_LOG"
@@ -245,11 +290,52 @@ PY
 echo "ROUND3_LINE" >> "$WORK/skel/FILE.txt"
 G -C "$WORK/skel" commit -q -am "round 3"
 echo "$(git -C "$WORK/skel" rev-parse HEAD)" > "$WORK/head"
+before="$(calls)"
 run_reviewer "$WORK/r7.out" --delta
 n="$(calls)"
+[ "$n" = "$((before + 1))" ] || fail "--delta did not reach the model; the alias is dead:
+$(tail -5 "$WORK/r7.out")"
 grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" \
   || fail "an unusable receipt was used as a delta base; nobody reviewed that sha:
 $(cat "$SEEN/call-$n.diff")"
-ok "an unusable last receipt falls back to the whole PR"
+ok "an unusable last receipt falls back to the whole PR (and --delta is still accepted)"
+
+sleep 1
+
+# --- a range that crosses a merge of the base branch: whole PR (PR #821 r1) ------
+# pr-owner.py's `gh pr update-branch` writes a merge of main onto the branch. A
+# two-dot delta over it carries main's own commits into pr.diff. Shape 1: the
+# new head is ONLY that merge. Shape 2: the merge plus a fix commit.
+PRHEAD="$(git -C "$WORK/skel" rev-parse HEAD)"
+set_record() {  # set_record <head_sha>: a usable record whose head is the given sha
+  python3 - "$REC" "$1" <<'PYX'
+import json, sys
+r = json.load(open(sys.argv[1])); r["head_sha"] = sys.argv[2]; r["usable"] = True
+json.dump(r, open(sys.argv[1], "w"))
+PYX
+}
+G -C "$WORK/skel" checkout -q main
+echo "MAIN_ONLY" > "$WORK/skel/MAIN_ONLY.txt"; G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "main moves on"
+G -C "$WORK/skel" checkout -q "$PRHEAD"
+G -C "$WORK/skel" merge -q --no-edit main
+git -C "$WORK/skel" rev-parse HEAD > "$WORK/head"
+for shape in merge-only merge-plus-fix; do
+  if [ "$shape" = "merge-plus-fix" ]; then
+    echo "FIX_AFTER_MERGE" >> "$WORK/skel/FILE.txt"; G -C "$WORK/skel" commit -q -am "fix after merge"
+    git -C "$WORK/skel" rev-parse HEAD > "$WORK/head"
+  fi
+  set_record "$PRHEAD"
+  before="$(calls)"
+  run_reviewer "$WORK/r8-$shape.out"
+  n="$(calls)"
+  [ "$n" = "$((before + 1))" ] || fail "$shape: the review did not run:
+$(tail -5 "$WORK/r8-$shape.out")"
+  grep -q MAIN_ONLY "$SEEN/call-$n.diff" && fail "THE DEFECT ($shape): base-branch code is in pr.diff:
+$(cat "$SEEN/call-$n.diff")"
+  grep -q WHOLE_PR_DIFF_MARKER "$SEEN/call-$n.diff" || fail "$shape: a range across a base merge did not read the whole PR"
+  grep -q 'crosses a merge of base branch' "$WORK/r8-$shape.out" || fail "$shape: the fallback is silent"
+  ok "$shape: a range across a merge of main reads the whole PR and says why"
+  sleep 1
+done
 
 echo "PASS ($PASS checks) test-review-delta-round.sh"

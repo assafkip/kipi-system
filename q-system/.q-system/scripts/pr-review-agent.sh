@@ -81,14 +81,17 @@
 # which status context it posts, and which directory its artifacts land in.
 #
 # Usage:  pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post]
-#                            [--engine claude|codex] [--delta | --base <sha>]
+#                            [--engine claude|codex] [--full | --base <sha>]
 #         --post also comments the review on the PR and the Linear issue.
-#         --delta reviews only `git diff <last reviewed sha> <head>`, the sha
-#         read from this engine's verdict record; with no usable record it
-#         reads the whole PR (round 1). --base <sha> names the base directly;
-#         it is trusted as the caller's last reviewed sha and wins over --delta.
-#         Either way the verdict and kipi/reviewer-approved land on the head.
-#         An empty delta, or a base equal to the head, refuses: no review runs.
+#         DEFAULT (ASK-5093): reviews only `git diff <last reviewed sha> <head>`,
+#         the sha read from this engine's verdict record; with no usable record,
+#         a base that is not an ancestor, or nothing new since it, it reads the
+#         whole PR and logs why. --full forces the whole PR. --delta is accepted
+#         as a no-op (it was the opt-in flag before delta became the default).
+#         --base <sha> names the base directly; it is trusted as the caller's
+#         last reviewed sha. Either way the verdict and kipi/reviewer-approved
+#         land on the head. With --base, an empty delta or a base equal to the
+#         head refuses: no review runs.
 #         On a PUBLIC repo the PR comment is the verdict and finding counts
 #         only, never the review text or the diff (ASK-2893).
 set -uo pipefail
@@ -208,7 +211,7 @@ review_lean_args "$SCRIPT_DIR"
 # config change (`KIPI_REVIEW_ENGINE=claude`), not an edit to the script that
 # gates every PR in the repo.
 PR=""; ISSUE=""; POST=0; ENGINE="${KIPI_REVIEW_ENGINE:-claude}"; TARGET_REPO_ARG=""
-REVIEW_BASE_ARG=""; DELTA=0; BASE_FLAG=0
+REVIEW_BASE_ARG=""; DELTA=1; FULL=0; BASE_FLAG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue)  shift; ISSUE="${1:-}" ;;
@@ -216,7 +219,12 @@ while [ $# -gt 0 ]; do
     # it from this engine's own verdict record. Neither given is a full review,
     # exactly as before. Resolved below, next to the PR fetch.
     --base)   shift; REVIEW_BASE_ARG="${1:-}"; BASE_FLAG=1 ;;
-    --delta)  DELTA=1 ;;
+    # DELTA IS THE DEFAULT (ASK-5093). It was opt-in through --delta and no
+    # caller passed it: linear-worker.sh called this bare, and consulting PR
+    # #578 got three whole-PR reviews on 2026-11-14. --delta stays a no-op so an
+    # old caller keeps working; --full is the one way to force a whole read.
+    --delta)  : ;;
+    --full)   FULL=1; DELTA=0 ;;
     --engine) shift; ENGINE="${1:-}" ;;
     # WHICH REPO THE WORK IS IN (ASK-738). $SKEL is where this CODE lives; it is
     # not where the PR lives. Before this argument the two were the same
@@ -277,7 +285,7 @@ GH_R_PROMPT=""
 # form, which is what every pre-ASK-738 caller and fixture already relies on.
 STATUS_REPO_PATH="{owner}/{repo}"
 [ -n "$REVIEW_SLUG" ] && STATUS_REPO_PATH="$REVIEW_SLUG"
-[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex] [--delta | --base <sha>]" >&2; exit 1; }
+[ -n "$PR" ] || { echo "usage: pr-review-agent.sh <pr-number> [--issue ASK-nnn] [--post] [--engine claude|codex] [--full | --base <sha>]" >&2; exit 1; }
 
 # WHAT THE ENGINE CHANGES. Everything else below this block is shared, which is
 # the whole reason this is a flag and not a second script.
@@ -1015,6 +1023,13 @@ echo "  round: $ROUND (engine: $ENGINE)"
 # meant is worse than saying no: a --base that is not a commit here, and a base
 # equal to the head (nothing new; the verdict on that sha already stands).
 REVIEW_BASE=""
+# --full and --base ask for opposite things; picking one silently hides the
+# caller's mistake behind a run that looks fine.
+if [ "$FULL" = "1" ] && [ "$BASE_FLAG" = "1" ]; then
+  echo "REFUSING: --full and --base contradict each other. No review ran; no verdict posted." >&2
+  exit 1
+fi
+[ "$FULL" = "1" ] && echo "  delta: --full given; reading the whole PR."
 # `--base` with no value is a caller mistake, not a request for a full review;
 # reading it as one would hide the mistake behind a run that looks fine.
 if [ "$BASE_FLAG" = "1" ] && [ -z "$REVIEW_BASE_ARG" ]; then
@@ -1041,6 +1056,16 @@ except Exception: print("0")' "$_rec" 2>/dev/null || echo 0)"
     echo "  delta: no usable earlier review of PR #$PR on record; reading the whole PR (round 1)."
   fi
   BASE_SOURCE="this engine's verdict record"
+  # NOTHING NEW SINCE THE RECORD, ON THE DEFAULT PATH: read the whole PR, never
+  # refuse. The refusals below exist for an explicit --base. A record is also
+  # written by a dry run and by a REQUEST CHANGES round, so refusing here would
+  # leave a --post run on that head, or a CI re-trigger commit with the same
+  # tree, unable to put any status on the head (ASK-5093).
+  if [ -n "$REVIEW_BASE" ] && { [ "$REVIEW_BASE" = "$HEAD_SHA" ] \
+       || git -C "$REVIEW_REPO" diff --quiet "$REVIEW_BASE" "$HEAD_SHA" 2>/dev/null; }; then
+    echo "  delta: nothing new since the last reviewed sha ${REVIEW_BASE:0:12}; reading the whole PR."
+    REVIEW_BASE=""
+  fi
 fi
 if [ -n "$REVIEW_BASE" ]; then
   if [ "$REVIEW_BASE" = "$HEAD_SHA" ]; then
@@ -1057,10 +1082,40 @@ if [ -n "$REVIEW_BASE" ]; then
     # on the head (PR #619 review round 2, major, repro'd). A round that reads
     # nothing must not move the gate. A full review (no flag) is the way to put a
     # verdict on this head.
-    echo "REFUSING: nothing to review: the tree at head ${HEAD_SHA:0:12} is identical to the tree at ${REVIEW_BASE:0:12}. No review ran; no verdict posted. Run without --delta/--base for a full review of this head." >&2
+    echo "REFUSING: nothing to review: the tree at head ${HEAD_SHA:0:12} is identical to the tree at ${REVIEW_BASE:0:12}. No review ran; no verdict posted. Run without --base, or with --full, for a full review of this head." >&2
     exit 1
   else
-    echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
+    # A RANGE THAT CROSSES A MERGE OF THE BASE BRANCH (PR #821 round 1, major).
+    # The delta is a two-dot diff, so base-branch commits merged into the PR
+    # between rounds land in pr.diff as if the PR owned them. pr-owner.py runs
+    # `gh pr update-branch`, which writes exactly that merge commit, and the
+    # repro'd round 2 read only another PR's code and posted green. When the
+    # fork point against the base moved, read the whole PR (anchored at the
+    # merge base, like gh pr diff). baseRefName is its own gh call rather than a
+    # third field in PR_META at the head read: dozens of test stubs answer that
+    # read with exactly two tab fields. No base name or no local ref for it:
+    # the move cannot be ruled out, so the whole PR.
+    _base_name="$(gh pr view "$PR" $KIPI_GH_REPO_ARGS --json baseRefName -q .baseRefName 2>/dev/null || true)"
+    _base_ref=""
+    if [ -n "$_base_name" ]; then
+      _base_ref="$(git -C "$REVIEW_REPO" rev-parse --verify --quiet "refs/remotes/origin/${_base_name}^{commit}" 2>/dev/null \
+        || git -C "$REVIEW_REPO" rev-parse --verify --quiet "refs/heads/${_base_name}^{commit}" 2>/dev/null || true)"
+    fi
+    _mb_old=""; _mb_new=""
+    if [ -n "$_base_ref" ]; then
+      _mb_old="$(git -C "$REVIEW_REPO" merge-base "$_base_ref" "$REVIEW_BASE" 2>/dev/null || true)"
+      _mb_new="$(git -C "$REVIEW_REPO" merge-base "$_base_ref" "$HEAD_SHA" 2>/dev/null || true)"
+    fi
+    if [ -z "$_base_ref" ] || [ -z "$_mb_old" ] || [ "$_mb_old" != "$_mb_new" ]; then
+      if [ -z "$_base_ref" ]; then
+        echo "  WARN: delta: could not resolve the PR's base branch '${_base_name:-?}' locally, so a merge of it into ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} cannot be ruled out; reading the whole PR." >&2
+      else
+        echo "  WARN: delta: the range ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} crosses a merge of base branch '$_base_name' (merge base moved ${_mb_old:0:12} -> ${_mb_new:0:12}); reading the whole PR." >&2
+      fi
+      REVIEW_BASE=""
+    else
+      echo "  delta: reviewing only ${REVIEW_BASE:0:12}..${HEAD_SHA:0:12} (base from $BASE_SOURCE)"
+    fi
   fi
 fi
 
