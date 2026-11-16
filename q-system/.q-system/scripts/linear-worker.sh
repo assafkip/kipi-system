@@ -3428,7 +3428,20 @@ print(p[0] if p and p[0] is not None else 0)' "$ISSUE" 2>/dev/null || echo 0)"
     say "$ISSUE: the pickup note from the outage-halted run still stands (attempt $((N+1)) never ran); not posting it again"
   else
     python3 "$SYNC" progress "$ISSUE" \
-      "Picked up by the autonomous worker. Branch \`$BRANCH\`. Attempt $((N+1)) of $MAX_ATTEMPTS." \
+      "$(if [ -n "${DRIFT_ROUND:-}" ]; then
+           # A DRIFT ROUND IS NOT AN ATTEMPT AND MUST NOT SAY IT IS
+           # (claude-reviewer on PR #30, 2026-11-16 13:51 UTC, minor 3). This
+           # comment is permanent on the issue, and on a drift round it read
+           # "Attempt 1 of 3" while bump_attempt was never called, so the
+           # thread showed attempts that no ledger had spent. Measured on this
+           # very issue: its 13:51 UTC pickup comment says Attempt 1 of 3 for a
+           # round that charged nothing.
+           printf 'Picked up by the autonomous worker. Branch `%s`. RE-REVIEW round %s of %s: the stored verdict is pinned to an older commit than the head, so this round exists to get the head reviewed. No attempt is spent.' \
+             "$BRANCH" "$DRIFT_ROUND" "$MAX_DRIFT_ROUNDS"
+         else
+           printf 'Picked up by the autonomous worker. Branch `%s`. Attempt %s of %s.' \
+             "$BRANCH" "$((N+1))" "$MAX_ATTEMPTS"
+         fi)" \
       --agent "$AGENT" >/dev/null 2>&1 || true
   fi
 
@@ -3735,7 +3748,20 @@ Anything real you find and are not fixing: capture it, never just mention it:
       : > "$RUNNER_OK_FILE" 2>/dev/null || true
       python3 "$LEDGER" "$ATTEMPTS" clear-flag "$ISSUE" halted_pickup_noted >/dev/null 2>&1 || true
       say "ok $ISSUE"
-      python3 "$SYNC" progress "$ISSUE" "Worker run completed. See the branch/PR for the diff." \
+      # ON A DRIFT ROUND, "see the branch/PR for the diff" POINTS AT NOTHING
+      # (claude-reviewer on PR #30, 2026-11-16 13:51 UTC, minor 3). The stated
+      # correct outcome of a drift round is CHANGE NOTHING -- the re-review at
+      # the end of it is what clears the drift, not edits -- so the generic line
+      # sends a reader looking for a diff the round was never meant to produce.
+      # Same permanence problem as the pickup comment above: this lands on the
+      # issue forever. The ROUND, not the diff, is what the line now reports.
+      python3 "$SYNC" progress "$ISSUE" \
+        "$(if [ -n "${DRIFT_ROUND:-}" ]; then
+             printf 'Re-review round %s of %s completed. A drift round is expected to change NO code; the fresh review record at the head is what clears it. Check the PR for a new verdict pinned to the current head, not for a diff.' \
+               "$DRIFT_ROUND" "$MAX_DRIFT_ROUNDS"
+           else
+             printf 'Worker run completed. See the branch/PR for the diff.'
+           fi)" \
         --agent "$AGENT" >/dev/null 2>&1 || true
     fi
   else

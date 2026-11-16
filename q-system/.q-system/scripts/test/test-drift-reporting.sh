@@ -215,6 +215,99 @@ else
   fi
 fi
 
+printf '\n== minor 3: the two permanent Linear comments a drift round writes ==\n'
+
+# Both comments land on the issue FOREVER, so a drift round that mislabels
+# itself mislabels the record a human reads months later. Measured on this very
+# issue: its 2026-11-15 and 2026-11-16 threads carry "Attempt 1 of 3" for
+# rounds that charged no attempt, and "See the branch/PR for the diff" for a
+# round whose stated correct outcome is to change nothing.
+#
+# Each case extracts the real `$(if ...)` selector and evaluates it, so a
+# reworded message still passes while a DELETED branch fails. The extractor
+# matches parens so it cannot run past the end of the substitution.
+extract_sel() {  # extract_sel <file> <anchor> -> the $(if ...) body on stdout
+  python3 - "$1" "$2" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+anchor = src.find(sys.argv[2])
+if anchor < 0:
+    raise SystemExit(3)
+# SEARCH BACKWARD, not forward. Once the site is drift-aware the anchor text
+# lives INSIDE its own selector, so a forward find() skips past this block and
+# returns the NEXT one -- which is how this harness first "proved" the pickup
+# comment by measuring the completion comment. rfind takes the nearest
+# PRECEDING opener, which is always this site's own.
+start = src.rfind('"$(if', 0, anchor + len(sys.argv[2]))
+if start < 0:
+    raise SystemExit(3)
+i = src.index("(", start)
+depth = 0
+for j in range(i, len(src)):
+    if src[j] == "(":
+        depth += 1
+    elif src[j] == ")":
+        depth -= 1
+        if depth == 0:
+            sys.stdout.write(src[i + 1:j])
+            raise SystemExit(0)
+raise SystemExit(3)
+PY
+}
+
+run_sel() {  # run_sel <body-file> <drift-round-or-empty>
+  (
+    BRANCH=sana/ask-4899; N=0; MAX_ATTEMPTS=3; MAX_DRIFT_ROUNDS=2
+    DRIFT_ROUND="$2"
+    # shellcheck disable=SC1090
+    . "$1"
+  )
+}
+
+for pair in "pickup:Picked up by the autonomous worker" "done:Worker run completed. See the branch"; do
+  LABEL="${pair%%:*}"; ANCHOR="${pair#*:}"
+  if extract_sel "$WORKER" "$ANCHOR" > "$WORK/$LABEL.sh" 2>/dev/null && [ -s "$WORK/$LABEL.sh" ]; then
+    ok "minor 3: the $LABEL comment selector could be extracted"
+    DRIFTED="$(run_sel "$WORK/$LABEL.sh" 1)"
+    NORMAL="$(run_sel "$WORK/$LABEL.sh" "")"
+    if [ "$DRIFTED" != "$NORMAL" ]; then
+      ok "minor 3: the $LABEL comment differs on a drift round"
+    else
+      bad "minor 3: the $LABEL comment differs on a drift round" "both read: $NORMAL"
+    fi
+    case "$LABEL" in
+      pickup)
+        if printf '%s' "$DRIFTED" | grep -qi 'no attempt is spent' \
+           && ! printf '%s' "$DRIFTED" | grep -q 'Attempt 1 of 3'; then
+          ok "minor 3: a drift pickup does not claim an attempt"
+        else
+          bad "minor 3: a drift pickup does not claim an attempt" "$DRIFTED"
+        fi
+        # NEGATIVE SELF-TEST: a real attempt must still be counted out loud.
+        if printf '%s' "$NORMAL" | grep -q 'Attempt 1 of 3'; then
+          ok "minor 3: a NON-drift pickup still says Attempt 1 of 3 (negative self-test)"
+        else
+          bad "minor 3: a NON-drift pickup still says Attempt 1 of 3 (negative self-test)" "$NORMAL"
+        fi ;;
+      done)
+        if printf '%s' "$DRIFTED" | grep -qi 'change NO code\|not for a diff'; then
+          ok "minor 3: a drift completion does not point at a diff"
+        else
+          bad "minor 3: a drift completion does not point at a diff" "$DRIFTED"
+        fi
+        # NEGATIVE SELF-TEST: an ordinary run still points at its diff.
+        if printf '%s' "$NORMAL" | grep -q 'See the branch/PR for the diff'; then
+          ok "minor 3: a NON-drift completion still points at the diff (negative self-test)"
+        else
+          bad "minor 3: a NON-drift completion still points at the diff (negative self-test)" "$NORMAL"
+        fi ;;
+    esac
+  else
+    bad "minor 3: the $LABEL comment selector could be extracted" \
+        "no drift-aware selector at the $LABEL site -- it still writes one message for both"
+  fi
+done
+
 printf '\n== both files still parse ==\n'
 for f in "$CONVERGE" "$WORKER"; do
   if bash -n "$f" 2>/dev/null; then
