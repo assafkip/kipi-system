@@ -3603,12 +3603,29 @@ justify it. Silence bought by a fix is the most expensive kind.
 Push to the SAME branch $BRANCH. Do not open a second PR."
   fi
 
-  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
-
-You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/$DEFAULT_BRANCH.
-Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
-
-1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
+  # THE WORK PHASE IS A VARIABLE BECAUSE A DRIFT ROUND MUST NOT RECEIVE IT
+  # (claude-reviewer on PR #30, 2026-11-16 15:12 UTC, minor 5). It used to be
+  # inlined here, so the drift $REWORK built above told the agent to change
+  # nothing and called inventing work the failure mode, and seventeen lines
+  # later the same prompt walked it through executing the DoR, writing a
+  # reproducer, committing under the issue id and opening a PR.
+  #
+  # STEP 6 WAS THE WORST OF THEM, not merely redundant: a drift round always has
+  # an EXISTING PR, so "never finish on I-will-open-it-later" pushed the agent
+  # toward manufacturing a push to justify the round. That is the ASK-208 shape
+  # the drift block directly above was written against, arriving through the half
+  # of the prompt nobody had read.
+  #
+  # ORDERING IS NOT THE FIX. An appended "this overrides the above" tail bets on
+  # the last word winning and no script can check it. The text is not emitted,
+  # and test-drift-reporting.sh case "the drift round prompt carries no
+  # work-phase instruction" is what goes red if it ever is again.
+  #
+  # ONE WRITER. Every round binds this name exactly once, so no path lets both
+  # tails reach one prompt. The non-drift binding below is the old bytes moved
+  # unedited, held byte-for-byte by test-drift-reporting.sh case "the ordinary
+  # dispatch prompt is byte-identical after the split".
+  WORK_PHASE="1. Read the issue: \`python3 $SYNC progress $ISSUE\` is for REPORTING; to read it use the Linear MCP or
    \`gh\`-style inspection. The issue carries a Definition of Ready: Outcome, Files, Check, Blast radius, Not doing.
 2. Work ONLY what the DoR scopes. The 'Not doing' line is binding.
 3. Follow this repo's discipline: reproducer first and observed RED before green, then the real command output.
@@ -3661,6 +3678,37 @@ Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the foun
 
 Anything real you find and are not fixing: capture it, never just mention it:
   python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --severity <medium|high|major|blocker> --desc \"...\" (a minor is fixed now or rejected, never queued)"
+
+  if [ -n "$DRIFT_ROUND" ]; then
+    # Deliberately short, and deliberately NOT carrying the refusal-file
+    # protocol. Of its two files, needs-scope routes a DoR to the drafter for
+    # re-scoping -- and this round is not executing a DoR, so asking for a
+    # re-scope would be incoherent. The capability file stays, because a runner
+    # can genuinely be unequipped in any round.
+    WORK_PHASE="1. The task is above. Read the issue for context only; there is no DoR to execute
+   this round. \`python3 $SYNC progress $ISSUE\` is for REPORTING.
+2. PR #$EXISTING_PR already exists and stays open. There is nothing to open, and on
+   outcome 1 there is nothing to commit. A round that ends with NO DIFF is this
+   round succeeding. The re-review that runs after you is what clears the drift.
+3. DO NOT MERGE and DO NOT close the issue.
+4. Report what you found with:
+   bash $SKEL/kipi linear progress $ISSUE \"coherent, changed nothing | fixed <what>\" --agent sana --evidence \"<the git log and git diff you ran, and their real output>\"
+5. If the RUNNER cannot do even this (a refused permission, a missing binary, an
+   expired credential), write the capability refusal and stop:
+     printf '%s' \"<the exact capability missing, what refused it, and what it unblocks>\" > $TREE/.sana-blocked-capability
+   Do NOT write .sana-needs-scope this round: it routes the DoR to the drafter for
+   re-scoping, and no DoR is being executed here.
+
+Anything real you find and are not fixing: capture it, never just mention it:
+  python3 $SKEL/plugins/prd-os/scripts/prd_runner.py spillover add --source $ISSUE --severity <medium|high|major|blocker> --desc \"...\" (a minor is fixed now or rejected, never queued)"
+  fi
+
+  PROMPT="You are Sana, the kipi Systems Engineer, working Linear issue $ISSUE.$REWORK
+
+You are in a DEDICATED GIT WORKTREE at $TREE, already on branch $BRANCH off origin/$DEFAULT_BRANCH.
+Work here. Never \`cd\` to $TARGET_REPO and never switch this branch -- the founder may be using that checkout.
+
+$WORK_PHASE"
 
   # CLEAR BEFORE DISPATCH, so presence AFTER the run means exactly one thing:
   # THIS run wrote it (Codex round 2 on PR #141, major).

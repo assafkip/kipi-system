@@ -533,6 +533,125 @@ else
       "short-form call sites found, so the sha check is skipped there: $SHORT_CALLS"
 fi
 
+printf '\n== case r6a/r6b: a drift round is not handed the work phase ==\n'
+
+# EXTRACTED, NOT GREPPED. The claim is that the drift path SELECTS a different
+# tail, so the real WORK_PHASE/PROMPT block is lifted out of the real worker and
+# evaluated twice with the same stubs and only DRIFT_ROUND changed.
+EXTRACTED=1
+python3 - "$WORKER" "$WORK/prompt-block.sh" <<'PYEOF' || EXTRACTED=0
+import pathlib, sys
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines(keepends=True)
+try:
+    start = next(i for i, l in enumerate(src)
+                 if l.startswith('  WORK_PHASE="1. Read the issue: '))
+    end = next(i for i, l in enumerate(src) if l == '$WORK_PHASE"\n' and i > start)
+except StopIteration:
+    sys.exit("EXTRACT FAILED: no WORK_PHASE/PROMPT block in %s" % sys.argv[1])
+pathlib.Path(sys.argv[2]).write_text("".join(src[start:end + 1]), encoding="utf-8")
+PYEOF
+
+render_prompt() {
+  (
+    ISSUE="ASK-9999"; REWORK="<<REWORK>>"; TREE="/tmp/wt"; BRANCH="sana/ask-9999"
+    DEFAULT_BRANCH="main"; TARGET_REPO="/tmp/repo"; SYNC="/tmp/sync.py"
+    SKEL="/tmp/skel"; EXISTING_PR="829"; DRIFT_ROUND="$1"
+    # shellcheck disable=SC1090
+    . "$WORK/prompt-block.sh"
+    printf '%s' "$PROMPT"
+  )
+}
+
+DRIFT_PROMPT="$(render_prompt 3)"
+PLAIN_PROMPT="$(render_prompt "")"
+
+# A ZERO MUST PROVE IT IS EMPTY, NOT BROKEN -- and this guard exists because the
+# first draft did not have it and mutant 4 caught that. Pointed at the pre-split
+# worker via KIPI_WORKER_UNDER_TEST, the extractor found no block, wrote nothing,
+# `render_prompt` sourced a missing file, PROMPT came out EMPTY -- and the leak
+# case went GREEN, because an empty prompt leaks no work-phase marker. The one
+# run that must redden loudest certified the defect instead. So nothing below is
+# asked until both renders are proven to be real prompts.
+KNOWN_ANSWER="You are Sana, the kipi Systems Engineer"
+RENDERS_OK=1
+[ "$EXTRACTED" = "1" ] || RENDERS_OK=0
+case "$DRIFT_PROMPT" in *"$KNOWN_ANSWER"*) ;; *) RENDERS_OK=0 ;; esac
+case "$PLAIN_PROMPT" in *"$KNOWN_ANSWER"*) ;; *) RENDERS_OK=0 ;; esac
+
+if [ "$RENDERS_OK" != "1" ]; then
+  for c in "the drift round prompt carries no work-phase instruction" \
+           "the drift tail is actually present" \
+           "the ordinary dispatch prompt is byte-identical after the split"; do
+    bad "$c" "the prompt block did not render (extracted=$EXTRACTED, drift=${#DRIFT_PROMPT}B, plain=${#PLAIN_PROMPT}B) -- an absent prompt is not a passing one"
+  done
+else
+
+# The four work-phase instructions that contradict a round whose correct outcome
+# is no diff. Matched on the step text, so a renumbering does not fake a pass.
+#
+# EXPANSION-AGNOSTIC ON PURPOSE. The first draft of this array carried the
+# commit step as "with the issue id $ISSUE in the message" and the plain case
+# went red: these prompts are rendered, so $ISSUE is already ASK-9999 by the
+# time the string exists. A marker holding an unexpanded variable can never
+# match, which makes the LEAK half of the case pass vacuously -- it would have
+# certified a drift prompt that still carried the commit instruction.
+WORK_MARKERS=(
+  "Work ONLY what the DoR scopes"
+  "reproducer first and observed RED"
+  "with the issue id "
+  "OPEN IT BEFORE YOUR TURN ENDS"
+)
+
+leaked=""
+for m in "${WORK_MARKERS[@]}"; do
+  case "$DRIFT_PROMPT" in *"$m"*) leaked="$leaked | $m" ;; esac
+done
+if [ -z "$leaked" ]; then
+  ok "the drift round prompt carries no work-phase instruction"
+else
+  bad "the drift round prompt carries no work-phase instruction" \
+      "leaked:$leaked"
+fi
+
+# And it carries the tail it is supposed to have, so the leak case above cannot
+# pass by the prompt coming out empty. The marker stops at the line break: the
+# drift tail wraps "... is this / round succeeding", and the first draft matched
+# across that break and went red on text that was present.
+case "$DRIFT_PROMPT" in
+  *"A round that ends with NO DIFF"*)
+    ok "the drift tail is actually present" ;;
+  *)
+    bad "the drift tail is actually present" "no-diff-is-success line missing" ;;
+esac
+
+# NEGATIVE SELF-TEST, and the one that matters: the split moved 53 lines of
+# escaped shell, so the ORDINARY dispatch prompt must be unchanged. All four
+# markers present, and PROMPT must end on exactly the WORK_PHASE value -- which
+# is what proves the move was lossless rather than merely syntactically valid.
+missing=""
+for m in "${WORK_MARKERS[@]}"; do
+  case "$PLAIN_PROMPT" in *"$m"*) ;; *) missing="$missing | $m" ;; esac
+done
+PLAIN_WP="$(
+  ISSUE="ASK-9999"; REWORK="<<REWORK>>"; TREE="/tmp/wt"; BRANCH="sana/ask-9999"
+  DEFAULT_BRANCH="main"; TARGET_REPO="/tmp/repo"; SYNC="/tmp/sync.py"
+  SKEL="/tmp/skel"; EXISTING_PR="829"; DRIFT_ROUND=""
+  # shellcheck disable=SC1090
+  . "$WORK/prompt-block.sh"; printf '%s' "$WORK_PHASE"
+)"
+printf '%s' "$PLAIN_PROMPT" > "$WORK/plain.txt"
+printf '%s' "$PLAIN_WP"     > "$WORK/plain-wp.txt"
+if [ -n "$missing" ]; then
+  bad "the ordinary dispatch prompt is byte-identical after the split" \
+      "work-phase markers lost:$missing"
+elif ! grep -qF -- "$(tail -c 400 "$WORK/plain-wp.txt")" "$WORK/plain.txt"; then
+  bad "the ordinary dispatch prompt is byte-identical after the split" \
+      "PROMPT does not end on the WORK_PHASE value"
+else
+  ok "the ordinary dispatch prompt is byte-identical after the split"
+fi
+fi
+
 printf '\n== both files still parse ==\n'
 for f in "$CONVERGE" "$WORKER"; do
   if bash -n "$f" 2>/dev/null; then
