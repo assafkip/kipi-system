@@ -1111,9 +1111,28 @@ SUBJECT_SHAPES = (
     ("converge-stalled", "q-system/.q-system/scripts/converge.sh",
      "converge $ISSUE: stalled at '$VERDICT', no code change",
      re.compile(rf"^converge {_SUBJECT_ISSUE}: stalled at '[^']*', no code change")),
+    # THE ANCHOR IS THE LITERAL THE PRODUCER STILL WRITES, NOT THE RENDERED PAGE
+    # (ASK-4899 round 6). converge.sh used to hardcode the whole page -- "hit
+    # $MAX_ROUNDS-round cap, still $LAST_VERDICT, and the cap-out could NOT be
+    # recorded" -- so a substring of the rendered text was also a substring of
+    # the source. The cap-out page was then rewritten to compose from
+    # $CAPOUT_WHY so it could name both shas, which is the right page and
+    # deleted the only literal this shape was anchored to. Result:
+    # test_every_shape_still_matches_what_its_producer_writes went red, and the
+    # live page matched zero shapes -- it reached the alert lane UNCLASSIFIED,
+    # which is the one outcome this table exists to make impossible. The fix
+    # landed on the producer; its reader was never updated. So anchor on the
+    # part of the line converge.sh OWNS as a literal, never on the interpolated
+    # half.
+    #
+    # THE PATTERN ACCEPTS BOTH RENDERINGS ON PURPOSE. $CAPOUT_WHY says "hit the
+    # N-round cap"; the hardcoded page said "hit N-round cap". This classifier
+    # reads a HISTORICAL queue, so tickets filed before the rewording are still
+    # open with the old text, and a pattern that only matched today's producer
+    # would leave those unclassified for exactly the same reason.
     ("converge-cap", "q-system/.q-system/scripts/converge.sh",
-     "converge $ISSUE: hit $MAX_ROUNDS-round cap",
-     re.compile(rf"^converge {_SUBJECT_ISSUE}: hit \d+-round cap")),
+     "converge $ISSUE: $CAPOUT_WHY, and the cap-out could NOT be recorded in ",
+     re.compile(rf"^converge {_SUBJECT_ISSUE}: hit (?:the )?\d+-round cap")),
     ("review-redrive", "q-system/.q-system/scripts/review-redrive.py",
      "review-redrive: %s PR #%s still has ",
      re.compile(rf"^review-redrive: {_SUBJECT_ISSUE} PR #(?P<pr>\d+) still has ")),

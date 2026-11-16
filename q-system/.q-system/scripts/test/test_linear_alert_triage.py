@@ -69,23 +69,54 @@ def as_issue(desc, labels=("owner:sana", "needs-triage"), project="kipi-system",
             "labels": {"nodes": [{"id": f"id-{n}", "name": n} for n in labels]}}
 
 
-def _worker_ready(repo_project="kipi-system"):
+def _worker_ready(repo_project="kipi-system", launch_repo="", known_repos=()):
     """ready(), lifted VERBATIM out of linear-worker.sh.
 
     The first version of this helper was hand-written and omitted
     blocked:capability and the project check, which is the same subset bug codex
     found in promotion_refusal. A test carrying its own copy of the predicate
-    cannot detect that the real one has a condition the code under test lacks."""
+    cannot detect that the real one has a condition the code under test lacks.
+
+    ASK-4899 ROUND 6: dor_targets_another_repo IS LIFTED THE SAME WAY, NOT
+    STUBBED. Round 2 added `if dor_targets_another_repo(d, ...): return False`
+    to ready() and left this namespace alone, so every one of the five tests
+    that call ready() died on NameError -- including
+    test_anything_allowed_is_accepted_by_the_worker, the one that proves the
+    refusal agrees with the real worker. ready()'s own comment two lines below
+    that call records the contract the change broke: "test_linear_alert_triage.py
+    runs this function verbatim with only the names it used before ASK-3825".
+
+    Writing a stub here was the tempting fix and it is the one the docstring
+    above forbids: a hand-written copy of the predicate is exactly what cannot
+    detect a condition the real one has. So the second function is lifted too.
+
+    launch_repo DEFAULTS TO EMPTY, which is not laziness. The real function
+    FAILS OPEN on `not LAUNCH_REPO or not KNOWN_REPOS` and returns "", so every
+    pre-existing case in this file keeps the behaviour it was written against
+    and this helper's change is provably inert for them. A case that wants the
+    new condition passes both and gets the real predicate, not a mock.
+    """
     src = (SCRIPTS / "linear-worker.sh").read_text(encoding="utf-8")
     m = re.search(r"^def ready\(i\):.*?^    return \"## Definition of Ready\" in d "
                   r"or \"Definition of Ready\" in d$", src, re.S | re.M)
     if not m:
         raise AssertionError("could not locate ready() in linear-worker.sh")
+    dor = re.search(r"^def dor_targets_another_repo\(d, ident=\"\"\):.*?^    return reason$",
+                    src, re.S | re.M)
+    if not dor:
+        raise AssertionError(
+            "could not locate dor_targets_another_repo() in linear-worker.sh. "
+            "ready() calls it, so a stub here would hide a drifted predicate.")
     ns = {"is_fleet_alert": IS_FLEET_ALERT, "repo_project": repo_project,
-          "project_of": lambda i: ((i.get("project") or {}).get("name") or "")}
+          "project_of": lambda i: ((i.get("project") or {}).get("name") or ""),
+          "os": os, "sys": sys,
+          "LAUNCH_REPO": launch_repo, "KNOWN_REPOS": set(known_repos),
+          "DOR_HELD": {}}
     exec(compile("def in_this_repo(i):\n    return project_of(i) == repo_project\n",
                  "worker:in_this_repo", "exec"), ns)
+    exec(compile(dor.group(0), "linear-worker.sh:dor_targets_another_repo", "exec"), ns)
     exec(compile(m.group(0), "linear-worker.sh:ready", "exec"), ns)
+    ns["ready"].dor_held = ns["DOR_HELD"]
     return ns["ready"]
 
 
@@ -1574,16 +1605,74 @@ class TestB2PrepassClosesOnlyEndedSubjects(DedupScratch):
         self.assertEqual(sorted(seen), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
 
     def test_converge_pages_about_the_run_still_close(self):
-        """Negative control for the narrowing."""
+        """Negative control for the narrowing.
+
+        ASK-4899 round 6: page 5 is the OLD hardcoded rendering ("hit 3-round
+        cap"); page 6 is what $CAPOUT_WHY renders TODAY ("hit the 3-round cap").
+        Both are kept deliberately. The shape's pattern reads a HISTORICAL
+        queue, so the old wording is still on open tickets filed before
+        converge.sh was rewritten, and a pattern narrowed to today's producer
+        would leave those with no subject for the same reason the rewrite broke
+        the new ones.
+        """
         pages = ["converge ASK-50: stopped, no PR after round 1",
                  "converge ASK-50: APPROVE WITH NITS after 1 round(s), PR #7 approved",
                  "converge ASK-50: review produced no verdict on round 2",
                  "converge ASK-50: stalled at 'REQUEST CHANGES', no code change in round 2",
-                 "converge ASK-50: hit 3-round cap, still REQUEST CHANGES. Parked"]
+                 "converge ASK-50: hit 3-round cap, still REQUEST CHANGES. Parked",
+                 "converge ASK-50: hit the 3-round cap still at 'REQUEST CHANGES' on "
+                 "PR #7, and the cap-out could NOT be recorded in /tmp/a.json, so "
+                 "cap-ladder.py cannot see it."]
         b = Board([work("ASK-50", "completed", "Done")]
                   + [state_alert(f"ASK-{n}", m) for n, m in enumerate(pages, 1)])
         lane(b)
-        self.assertEqual(sorted(closes(b)), ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5"])
+        self.assertEqual(sorted(closes(b)),
+                         ["ASK-1", "ASK-2", "ASK-3", "ASK-4", "ASK-5", "ASK-6"])
+
+    def test_the_live_capout_page_gets_a_subject_as_rendered(self):
+        """The question the source-line test structurally cannot ask.
+
+        test_every_converge_page_is_classified reads SOURCE lines, and the live
+        cap-out page is composed from $CAPOUT_WHY, so that source line carries a
+        variable name and never the text the alert lane receives. Both
+        $CAPOUT_WHY branches are rendered here and put through subject_of --
+        production's own entry point, which returns the FIRST matching shape --
+        rather than through a re-implementation of its loop.
+
+        WHAT A MISS COSTS, measured rather than assumed: subject_of returns None
+        when nothing matches, and CONVERGE_NOT_SUBJECT is not consulted here at
+        all. A page with no subject is therefore never auto-closed; it reaches
+        the model batch every night forever. Noise that does not end, not a
+        wrongly cancelled ticket. Reverting the pattern to `hit \\d+-round cap`
+        reddens both cases below.
+        """
+        plain = ("converge ASK-50: hit the 3-round cap still at 'REQUEST CHANGES'"
+                 " on PR #7, and the cap-out could NOT be recorded in /tmp/a.json,"
+                 " so cap-ladder.py cannot see it.")
+        drift = ("converge ASK-50: hit the 3-round cap on PR #7 with the verdict"
+                 " 'APPROVE WITH NITS' recorded at abc1234 and the head def5678"
+                 " never reviewed, and the cap-out could NOT be recorded in"
+                 " /tmp/a.json, so cap-ladder.py cannot see it.")
+        for label, page in (("plain", plain), ("drift", drift)):
+            got = triage.subject_of(page)
+            self.assertIsNotNone(got, f"{label} cap-out page got NO subject: {page}")
+            self.assertEqual((got["shape"], got["issue"]), ("converge-cap", "ASK-50"),
+                             f"{label} page classified as {got}")
+
+    def test_negative_self_test_an_unrelated_converge_page_is_not_a_capout(self):
+        """The cap pattern must not widen into the other converge pages.
+
+        `hit (?:the )?\\d+-round cap` is looser than what it replaced, so the
+        control that matters is that it still refuses pages it does not own.
+        """
+        for page in ("converge ASK-50: stopped, no PR after round 1",
+                     "converge ASK-50: review produced no verdict on round 2",
+                     "converge ASK-50: stalled at 'REQUEST CHANGES', no code change"
+                     " in round 2"):
+            got = triage.subject_of(page)
+            self.assertIsNotNone(got, page)
+            self.assertNotEqual(got["shape"], "converge-cap",
+                                f"the cap pattern swallowed {page!r}")
 
     def test_every_converge_page_is_classified(self):
         src = (REPO / "q-system/.q-system/scripts/converge.sh").read_text(encoding="utf-8")

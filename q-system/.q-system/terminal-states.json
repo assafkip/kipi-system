@@ -310,6 +310,17 @@
       "rationale": "NO CONSUMER TODAY. This is the largest parked population and it is deliberately left terminal rather than given a fake tier. Piece C (fleet-dispatch-preflight) is the named plan and it does not start until a per-repo preflight exists: a dispatcher that runs a client repo's local ./kipi, pushes branches and arms auto-merge is a real hazard to client_d and client_c, and opt-in plus a project filter is not protection (finding-8). Revised to a consumer when that preflight ships."
     },
     {
+      "id": "dor-cross-repo",
+      "source": "linear-worker",
+      "class": "selection-filter",
+      "marker": "dor_targets_another_repo(d,",
+      "sites": 1,
+      "what": "The issue is ready-shaped, owned by Sana and in THIS repo's Linear project, but the Files section of its DoR scopes every path to a different repo. Held in the picker, before a worktree is cut and before the claim, so the mismatch cannot spend a dispatch. Measured on ASK-4323 (2026-11-14) and on ASK-4899 itself (2026-11-15).",
+      "terminal": true,
+      "uncovered": "This population has no consumer today. The hold is recorded in DOR_HELD and printed as one say() line to the worker log at linear-worker.sh:1770 -- no label is written, no comment is filed, and nothing re-scopes the issue, so it is re-offered and re-held on every com.kipi.dispatch tick. Tracked open at sp-430714da, whose fix is to label it needs-scope so linear-dor-drafter.py re-scopes it.",
+      "rationale": "Refused HERE rather than at the worktree because a refusal after the worktree or the claim has already spent the dispatch it exists to save. Fails OPEN on every failure mode (no LAUNCH_REPO, no KNOWN_REPOS, an unreadable registry, an unparseable body) because too strict here is a silent full stop on autonomous throughput, while too loose is merely today's behaviour."
+    },
+    {
       "id": "attempts-cap-stuck",
       "source": "linear-worker",
       "class": "exhausted-counter",
