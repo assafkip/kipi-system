@@ -1323,6 +1323,224 @@ def detect_unaccounted_commits(_ctx) -> list:
     }]
 
 
+def _kipi_state_dir() -> Path:
+    return Path(os.environ.get("KIPI_STATE_DIR") or (Path.home() / ".config/kipi"))
+
+
+def _codex_account_health(state_path=None) -> dict:
+    """The resolver's per-account health state, or {} when it cannot be read.
+
+    The OTHER HALF of the ledger, and reading it is not optional (PR #701
+    review, major). `codex-outage-events.jsonl` is append-only, so a row in it
+    says only that an account failed at some point today. `reviewer_note_codex_ok`
+    writes THIS file when an account answers: it pops `outage_day` and stamps
+    `last_ok`. Without it, one transient 03:00 failure read as a day-long outage.
+
+    {} means "cannot tell", which the caller treats as "report", never as
+    "recovered" -- a reader that invented a recovery it could not see would turn
+    a real seven-week outage into silence, which is the defect this whole ticket
+    exists to remove.
+    """
+    path = Path(state_path) if state_path else (
+        _kipi_state_dir() / "codex-account-health.json")
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(state, dict):
+        return {}
+    return {k: v for k, v in state.items() if isinstance(v, dict)}
+
+
+def _codex_outage_rows(events_path=None) -> list:
+    """Today's rows from the resolver's outage ledger (ASK-3831).
+
+    The WRITER is `reviewer_note_codex_outage` in reviewer-resolve.sh, which
+    appends at most one row per account per UTC day. This is the only reader.
+    A missing or unreadable file is NO outage, not an error: the common case is
+    a fleet whose Codex accounts are both healthy, which writes nothing at all.
+    """
+    path = Path(events_path) if events_path else (
+        _kipi_state_dir() / "codex-outage-events.jsonl")
+    if not path.is_file():
+        return []
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    rows = []
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("day") == day \
+                and row.get("kind") == "codex-outage":
+            rows.append(row)
+    return rows
+
+
+_SAFE_CODE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9 :_.-]{0,39}\Z")
+
+
+def _safe_code(value) -> str:
+    """A ledger value, or `unpublishable` when its SHAPE is not a bounded token.
+
+    THE SECOND BELT, AND IT IS A SHAPE RULE, NOT A SECOND VOCABULARY (PR #701
+    review round 2, major). `reviewer_note_codex_outage` coerces every reason to
+    one of REVIEWER_OUTAGE_CODES, so in a healthy fleet nothing here ever trips.
+    This exists because that coercion runs on the WRITE and this function runs on
+    a READ of a file on disk: a row written by an older resolver, a hand-edited
+    ledger or a future caller that reaches the file some other way would
+    otherwise publish its bytes verbatim into a PERMANENT Linear issue, which is
+    the one thing ASK-204 forbids.
+
+    Deliberately NOT a copy of REVIEWER_OUTAGE_CODES. Two places listing the
+    vocabulary is the derivation split this fleet keeps paying for; the resolver
+    stays its single owner, and this only asks whether the value is short and
+    tokenish. Every real Codex refusal line fails it on length or punctuation.
+    """
+    text = "" if value is None else str(value)
+    return text if _SAFE_CODE_RE.match(text) else "unpublishable"
+
+
+def codex_outage_findings(rows: list, health=None) -> list:
+    """ONE finding for the day, naming every account that is STILL down.
+
+    WHY ONE AND NOT ONE PER ACCOUNT. The defect this replaces is noise, not
+    silence: Codex ran out of credits on 2026-09-16 and every call site recorded
+    it PER PR -- 24 cap tickets, every "Codex" round since then a degraded Opus
+    stand-in -- while no single line ever said the fleet had been down to one
+    reviewer for seven weeks. A finding per account would start the same slide.
+
+    WHY IT TAKES `health` (PR #701 review, major). v1 read only `rows`, which
+    come from an APPEND-ONLY log. Two false claims followed from that, both of
+    them permanent Linear issues:
+
+      1. One transient failure at 03:00 left a row that stood for the rest of the
+         UTC day, so the morning run filed "the reviewer is down to Opus" while
+         Codex had been answering since 03:01.
+      2. A round the SECOND account answered successfully filed the same headline,
+         because the primary's row was there and nothing read the account that
+         actually produced the review.
+
+    An account is still down only while its `outage_day` stamp reads today;
+    `reviewer_note_codex_ok` pops that stamp the moment the account answers. With
+    NO readable health state the rows are reported as-is -- "cannot tell" errs
+    toward one extra health line, never toward silence.
+
+    `subject` is deliberately NOT keyed on the account list or on the posture.
+    Both move during a day as accounts fail and recover, and an unstable subject
+    files a NEW permanent Linear issue every morning -- the exact thing the dedup
+    contract at the top of this file warns about. One issue, rewritten.
+    """
+    if not rows:
+        return []
+    health = health if isinstance(health, dict) else {}
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _state(account: str) -> dict:
+        row = health.get(account)
+        return row if isinstance(row, dict) else {}
+
+    # No health state at all beside a real event is an anomaly, not a recovery.
+    # Report every row rather than guess.
+    if health:
+        down_rows = [r for r in rows
+                     if _state(str(r.get("account") or "unknown")).get("outage_day") == day]
+    else:
+        down_rows = list(rows)
+    if not down_rows:
+        return []
+
+    # Guarded like the reason codes: an account NAME is operator-set
+    # (KIPI_CODEX_SECONDARY_LABEL, else a directory basename), so it is not model
+    # output -- but it is still external text crossing into a permanent record,
+    # and the cost of guarding it is one function call.
+    accounts = sorted({_safe_code(r.get("account") or "unknown") for r in down_rows})
+    # Accounts that ANSWERED today and are not currently down. While one of these
+    # exists the reviewer is still a second lab, so the headline must not say the
+    # fleet is down to Opus.
+    answering = sorted(_safe_code(a) for a, v in health.items()
+                       if v.get("outage_day") != day
+                       and str(v.get("last_ok") or "").startswith(day))
+    def _live_reason(row: dict) -> str:
+        """The account's CURRENT code, falling back to the one in the event row.
+
+        THE ROW HOLDS THE DAY'S FIRST REASON, NOT ITS LATEST (PR #701 review
+        round 3, minor 3). The ledger appends at most one event per account per
+        UTC day -- a flapping day included, as its header has always claimed and
+        as of that round actually does -- so an account that hit its usage limit
+        at 03:00, recovered, and then ran out of credits at 14:00 has one row
+        reading `usage-limit`. `last_reason_code` in the health state is rewritten
+        on every failure, so it is the live answer; the row's `ts` stays the
+        honest first-seen. Reporting the row's reason would name a condition that
+        is no longer the one blocking the reviewer.
+        """
+        account = str(row.get("account") or "unknown")
+        live = _state(account).get("last_reason_code")
+        return _safe_code(live if live else row.get("reason_code"))
+
+    reasons = "\n".join(
+        f"- `{_live_reason(r)}` on `{_safe_code(r.get('account'))}` "
+        f"(first seen {_safe_code(r.get('ts'))})"
+        for r in sorted(down_rows, key=lambda r: str(r.get("account"))))
+
+    if answering:
+        title = (f"No Codex review from {len(accounts)} account(s): "
+                 f"{', '.join(answering)} is still answering")
+        posture = (
+            f"**{', '.join(answering)}** answered today, so reviews are still a "
+            "second lab's opinion and are NOT marked `degraded`. This is a "
+            "capacity finding, not a loss of independence: the chain has no rung "
+            "left between the answering account and the Opus stand-in.\n\n")
+    else:
+        title = (f"No Codex review available on {len(accounts)} account(s): "
+                 "the reviewer is down to Opus")
+        posture = (
+            "Every review that lands while this is true is the Opus stand-in, "
+            "marked `degraded` on its verdict record. That is the SAFE direction "
+            "(a required check that nobody fills wedges every PR in the repo) and "
+            "it is not an independent second opinion: the reviewer and the author "
+            "are the same lab until a Codex account answers.\n\n")
+
+    return [{
+        "subject": "codex-reviewer-outage",
+        "title": title,
+        "body": (
+            f"**{', '.join(accounts)}** could not produce a review today and has "
+            "not answered since.\n\n"
+            + posture
+            + f"{reasons}\n\n"
+            "## Action\n"
+            "- Restore credits on a listed account, or configure the other one: "
+            "`KIPI_CODEX_SECONDARY_HOME` is the second account's `CODEX_HOME` "
+            "(`KIPI_CODEX_SECONDARY_LABEL` names it on the verdict record).\n"
+            "- The chain lives in ONE place now: "
+            "`q-system/.q-system/scripts/reviewer-resolve.sh`.\n"
+            "- The codes above are the WHOLE of what this issue may carry "
+            "(ASK-204): what Codex actually printed stays on the machine that "
+            "ran it, in `~/.config/kipi/linear-worker.log` and the reviewer's "
+            "own stderr, with the per-account ledger at "
+            "`$KIPI_STATE_DIR/codex-outage-events.jsonl`. `unclassified` means "
+            "the refusal matched no known marker; `unpublishable` means a row on "
+            "disk was not a bounded token and was withheld.\n"
+            "- An account that recovers drops off this finding on the next run "
+            "(`reviewer_note_codex_ok` clears its day stamp). Closing the issue "
+            "while an account is still down reopens it tomorrow, by design.\n"
+            "- Verify with `bash q-system/.q-system/scripts/test/test-reviewer-resolve.sh`."
+        ),
+    }]
+
+
+def detect_codex_outage(_ctx) -> list:
+    return codex_outage_findings(_codex_outage_rows(), _codex_account_health())
+
+
 # ---------------------------------------------------------------------------
 # The registry. `action` and the learning leg are REQUIRED.
 # ---------------------------------------------------------------------------
@@ -2709,6 +2927,13 @@ DETECTORS = [
         "detect": detect_promoted_audit,
         "action": "file_issue",
         "lesson": "a-gate-that-cannot-run-must-not-pass",
+    },
+    {
+        "id": "codex-reviewer-outage",
+        "description": "no Codex account could produce a review today: every review is the Opus stand-in",
+        "detect": detect_codex_outage,
+        "action": "file_issue",
+        "lesson": "reviewers-at-capacity-are-an-environment-failure-not-a-reason-to-skip-review",
     },
     {
         "id": "plist-drift",

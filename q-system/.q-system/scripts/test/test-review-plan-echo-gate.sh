@@ -268,12 +268,65 @@ AGENT="$ROOT/q-system/.q-system/scripts/pr-review-agent.sh"
 # dispatch decisions at all. Widening it to `-ge 2` would have been the easy fix
 # and the wrong one: it would pass a file where one dispatch site was ungated and
 # two record-keeping calls made up the number.
-CALLS="$(grep -A8 'run_engine \(codex\|claude\) "\$REVIEW"' "$AGENT" \
-           | grep -c 'if review_is_usable "\$REVIEW"')"
-[ "$CALLS" = "2" ] \
-  || fail "pr-review-agent.sh gates on review_is_usable at $CALLS of its 2 dispatch sites
-      (the codex path and the Opus fallback). A site still calling the old predicate accepts
-      a plan-only answer, which is the whole defect."
-ok "both dispatch sites in pr-review-agent.sh gate on review_is_usable"
+# AND THE COUNT ITSELF IS NOT THE PROPERTY (ASK-3831). The literal `2` above
+# was a count of guards inside an 8-line window after each anchor, and it was
+# right by accident: the first dispatch site's guard sits 18 lines after its
+# anchor behind a long scar comment, so the window saw 2 of the 3 sites that
+# existed and the number matched anyway. Adding a correct FOURTH dispatch site
+# (the second Codex account) turned it red at "3 of its 2 dispatch sites" --
+# the same not-a-sentence this comment block already records once.
+#
+# The property has no number in it: EVERY dispatch site gates, which is checked
+# by walking each anchor forward to the next one and requiring the guard inside
+# that span. Count-free and window-free, so a legitimate new engine path cannot
+# break it and an ungated one cannot hide behind a tally. Literal index() rather
+# than a regex so `"$REVIEW"` needs no escaping.
+ungated_sites() {  # ungated_sites <file> -> the line number of every dispatch that does not gate
+  awk '
+    index($0,"run_engine codex \"$REVIEW\"") || index($0,"run_engine claude \"$REVIEW\"") {
+      if (site && !seen) print site;
+      site = NR; seen = 0; next
+    }
+    site && index($0,"review_is_usable \"$REVIEW\"") { seen = 1 }
+    END { if (site && !seen) print site }
+  ' "$1"
+}
+SITES="$(awk 'index($0,"run_engine codex \"$REVIEW\"") || index($0,"run_engine claude \"$REVIEW\"")' \
+           "$AGENT" | wc -l | tr -d ' ')"
+[ "$SITES" -ge 2 ] \
+  || fail "the dispatch anchor matched $SITES sites in pr-review-agent.sh, so the ungated-site
+      scan below would be vacuous. The anchor moved; fix the anchor, do not drop the check."
+# THE SCAN IS MUTATION-TESTED BEFORE IT IS TRUSTED. A scan that reports nothing
+# because its anchor stopped matching reads exactly like a clean file, which is
+# how the 8-line window above passed for two releases while a site went unseen.
+# So: a synthetic file whose SECOND dispatch has no guard must be reported, and
+# the same file with the guard restored must not be.
+MUT="$W/ungated-agent.sh"
+cat > "$MUT" <<'MUTEOF'
+if run_engine claude "$REVIEW"; then
+  if review_is_usable "$REVIEW"; then
+    echo gated
+  fi
+elif run_engine codex "$REVIEW" "$ACCOUNT"; then
+  echo this site never asks the question
+fi
+MUTEOF
+[ "$(ungated_sites "$MUT" | tr '\n' ' ')" = "5 " ] \
+  || fail "the ungated-site scan did not report the planted ungated dispatch at line 5
+      (got '$(ungated_sites "$MUT" | tr '\n' ' ')'). It cannot fail, so its silence on the
+      real file proves nothing."
+ok "mutant KILLED: a dispatch site with no review_is_usable guard is reported"
+sed 's/echo this site never asks the question/if review_is_usable "$REVIEW"; then echo gated; fi/' \
+  "$MUT" > "$MUT.fixed"
+[ -z "$(ungated_sites "$MUT.fixed")" ] \
+  || fail "the scan still reports a site after its guard was restored, so it flags gated code
+      (got '$(ungated_sites "$MUT.fixed" | tr '\n' ' ')')."
+ok "control: with the guard restored the same scan reports nothing"
+UNGATED="$(ungated_sites "$AGENT")"
+[ -z "$UNGATED" ] \
+  || fail "pr-review-agent.sh dispatches run_engine at line(s) $(echo "$UNGATED" | tr '\n' ' ')
+      without gating on review_is_usable before the next dispatch. A site that skips the
+      predicate accepts a plan-only answer, which is the whole defect."
+ok "all $SITES run_engine dispatch sites in pr-review-agent.sh gate on review_is_usable"
 
 echo "PASS ($PASS checks)"

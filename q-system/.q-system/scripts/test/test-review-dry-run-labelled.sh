@@ -57,9 +57,25 @@ STUB="$WORK/bin"; mkdir -p "$STUB"
 mkdir -p "$WORK/skel/q-system/.q-system/scripts"
 git init -q "$WORK/skel"
 echo "code" > "$WORK/skel/FILE.txt"
-cp "$SRC_DIR/pr-review-agent.sh" "$SRC_DIR/pr-verdict-lib.sh" "$SRC_DIR/repo-slug-lib.sh" \
-   "$SRC_DIR/env-failure-lib.sh" "$SRC_DIR/reviewer-token-lib.sh" "$SRC_DIR/review-lean-lib.sh" \
-   "$WORK/skel/q-system/.q-system/scripts/"
+cp "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts/"
+# THE LIB SET IS DERIVED FROM THE SCRIPT, NOT TYPED HERE (ASK-3831). This was a
+# hand-written list of four. ASK-3831 gave the agent a fifth source
+# (reviewer-resolve.sh), this list was not updated, and the run died mid-review
+# on an unbound variable the agent's own dispatch needed -- reported here as
+# "the no-post run printed no verdict line", which names nothing. Reading the
+# `. "$SCRIPT_DIR/..."` lines out of the shipping script means the next source
+# needs no edit in this file, and a source this harness cannot satisfy fails by
+# name instead of by symptom.
+#
+# THE DERIVATION MOVED OUT OF THIS FILE (round 6). It was written here and in
+# test-review-artifact-repo-keyed.sh, two copies with one semantic, while eight
+# OTHER fixtures still typed the list by hand and all eight went red at once.
+# reviewer-fixture-lib.sh is the single reader now; this file keeps the assertion
+# below, which is what makes the derivation falsifiable from here.
+. "$(dirname "${BASH_SOURCE[0]}")/reviewer-fixture-lib.sh"
+stage_reviewer_libs "$SRC_DIR/pr-review-agent.sh" "$WORK/skel/q-system/.q-system/scripts" "$SRC_DIR"
+[ -f "$WORK/skel/q-system/.q-system/scripts/reviewer-resolve.sh" ] \
+  || { echo "FAIL: the derivation copied no reviewer-resolve.sh, so it is not reading the agent's sources" >&2; exit 1; }
 G -C "$WORK/skel" add -A; G -C "$WORK/skel" commit -q -m "control code"
 git -C "$WORK/skel" branch -M main
 git -C "$WORK/skel" remote add origin "https://github.com/assafkip/homerepo.git"
