@@ -1360,8 +1360,29 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
   say "round $ROUND -> $VERDICT (head $SHA); reworking"
 done
 
+# THE CAP-OUT HAS TO CARRY THE DRIFT TOO (claude-reviewer on PR #30,
+# 2026-11-16 13:51 UTC, minor 1). Exit 5 above was taught the gate-40 case and
+# this one was not, so a drifted PR capped out reading "still at 'APPROVE WITH
+# NITS'" and "the reviewer and Sana disagree persistently" -- both false. On
+# drift there is NO disagreement: the reviewer approved, and every round since
+# pushed commits past the record, so what is wrong is that nobody has read the
+# head. Neither sha appeared anywhere in it.
+#
+# `hit the $MAX_ROUNDS-round cap` stays literal in BOTH branches on purpose:
+# test-converge-capout.sh:131 matches that substring to prove the record says
+# why, and a reworded cap-out that drops it would pass this fix while silently
+# turning that assertion vacuous.
+#
+# CAPOUT_WHY IS THE STRING THE LEDGER STORES, not just the log line, so the
+# correction reaches the record cap-ladder.py reads and the page below -- fixing
+# only the `say` would have left the ledger and the alert still lying.
 CAPOUT_WHY="hit the $MAX_ROUNDS-round cap still at '$LAST_VERDICT'${PR:+ on PR #$PR}"
-say "STOP exit-2: $CAPOUT_WHY. A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
+CAPOUT_ADVICE="A cap-out means the reviewer and Sana disagree persistently; read the last review before raising the cap."
+if [ "${GATE:-}" = "40" ]; then
+  CAPOUT_WHY="hit the $MAX_ROUNDS-round cap on${PR:+ PR #$PR} with the verdict '$LAST_VERDICT' recorded at ${REVIEWED_SHA:-unknown} and the head ${SHA:-unknown} never reviewed"
+  CAPOUT_ADVICE="This is DRIFT, not disagreement: the reviewer approved and later rounds pushed past that record. Read ${REVIEWED_SHA:-unknown}..${SHA:-unknown}, the commits nobody has reviewed."
+fi
+say "STOP exit-2: $CAPOUT_WHY. $CAPOUT_ADVICE"
 # THE MACHINE-READABLE HALF, AND IT IS THE POINT OF ASK-871. Until this line the
 # cap-out announced itself to a human twice -- the `say` above and the page below
 # -- and to a machine not at all. So ci-redrive.py and review-redrive.py, whose
@@ -1388,7 +1409,11 @@ if python3 "$LEDGER" "$ATTEMPTS" record-capout "$ISSUE" "$CAPOUT_WHY" 2>>"$LOG";
   say "cap-out recorded for $ISSUE; cap-ladder.py (com.kipi.cap-ladder, nightly 04:40) takes it next: a fresh RCA, then the work continues on a new PR from $BRANCH."
 else
   say "WARNING: record-capout failed for $ISSUE; cap-ladder.py cannot see this cap-out."
-  bash "$NOTIFY" "converge $ISSUE: hit $MAX_ROUNDS-round cap, still $LAST_VERDICT, and the cap-out could NOT be recorded in $ATTEMPTS, so cap-ladder.py cannot see it. linear-alert-triage.py takes this ticket; the fix is the ledger write." 2>/dev/null || true
+  # Reuses CAPOUT_WHY rather than restating the verdict, so the page cannot
+  # describe a drifted PR differently from the log and the record. This site is
+  # the one the earlier draft of the minor-1 fix would have missed: it had its
+  # own hardcoded "still $LAST_VERDICT" and is the half that reaches a phone.
+  bash "$NOTIFY" "converge $ISSUE: $CAPOUT_WHY, and the cap-out could NOT be recorded in $ATTEMPTS, so cap-ladder.py cannot see it. linear-alert-triage.py takes this ticket; the fix is the ledger write." 2>/dev/null || true
 fi
 # The `exit 2` on the line BELOW this comment -- not the record-capout block above it --
 # is the last statement INSIDE the ASK-351 brace, and it has to stay last and stay

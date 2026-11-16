@@ -726,10 +726,20 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # dispatched on a diff nobody reviewed is the same unreviewed-code path wearing
 # a rebase coat. Re-review first; the fresh record then decides.
 #
-# 40 IS NOT 10 AND NOT 30. Callers passing 1 or 2 arguments (converge.sh,
-# linear-worker.sh -- neither touched by this issue) can never see it, and a
-# caller that does not know 40 falls out of its if-chain into the rework path,
-# which is the safe direction: not terminal, never a merge.
+# 40 IS NOT 10 AND NOT 30. A caller passing 1 or 2 arguments can never see it,
+# and a caller that does not know 40 falls out of its if-chain into the rework
+# path, which is the safe direction: not terminal, never a merge.
+#
+# THE PARENTHETICAL THAT USED TO NAME converge.sh AND linear-worker.sh AS SHORT
+# -FORM CALLERS WAS STALE and is removed (ASK-4899, 2026-11-16). Both now pass
+# the shas and both handle 40 on purpose: converge.sh calls
+# `rework_gate "$VERDICT" "" "$REVIEWED_SHA" "$SHA" "$REVIEW_DEGRADED"` and
+# branches on 40 at its gate-40 notice, its exit-5 stall page and its exit-2
+# cap-out; linear-worker.sh branches on 40 at its drift dispatch and its step-5
+# report. Leaving the claim standing cost a real round: it reads as proof that a
+# gate-40 branch in converge.sh is dead code, which is the opposite of true, and
+# a reader trusting it would delete a live branch. The call-site arity is now
+# pinned by test-drift-reporting.sh case 0 so the comment cannot rot back.
 #
 # WHY DEGRADED IS NOT PART OF THE GATE (ASK-3832, RULE-2026-11-06-C)
 # -------------------------------------------------------------------

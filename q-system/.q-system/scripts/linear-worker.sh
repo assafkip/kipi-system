@@ -4471,7 +4471,27 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # issue for every later run, which is worse than the wrong log line this
     # replaces.
     if [ "$FINAL_GATE" = "40" ]; then
-      say "$ISSUE NOT converged: PR #$PR_NUM still reads '$FINAL_VERDICT' recorded at $FINAL_REVIEWED_SHA while the head is $FINAL_CURRENT_SHA -- this round's review wrote no record, so the code at the head is still unreviewed. Re-review next run ($(drift_rounds_for "$ISSUE")/$MAX_DRIFT_ROUNDS drift round(s) spent)."
+      # WHICH OF THE TWO DRIFT CAUSES THIS IS, ASKED RATHER THAN ASSUMED
+      # (claude-reviewer on PR #30, 2026-11-16 13:51 UTC, minor 2). This line
+      # hard-coded "this round's review wrote no record". Gate 40 only ever
+      # means "the record is not pinned to the head", and there are two ways to
+      # get there:
+      #
+      #   a) no record was written this round  -> the reviewer did not run
+      #   b) a FRESH record was written, then a push moved the head past it
+      #      -> the reviewer DID run, and blaming it is a false accusation in
+      #         the one line an operator reads about this run
+      #
+      # REVIEWED_SHA is the sha the record carried when this run STARTED (:3041)
+      # and FINAL_REVIEWED_SHA is what it carries now (:4392), so the two
+      # differing is proof a new record landed in between. No extra API call:
+      # both values are already read. Unset-and-now-present is case (b) too --
+      # that is the first record on a PR this run created.
+      DRIFT_CAUSE="this round's review wrote no record, so the code at the head is still unreviewed"
+      if [ -n "$FINAL_REVIEWED_SHA" ] && [ "$FINAL_REVIEWED_SHA" != "${REVIEWED_SHA:-}" ]; then
+        DRIFT_CAUSE="this round's review DID write a record (at $FINAL_REVIEWED_SHA, was ${REVIEWED_SHA:-none}) and the head moved past it afterwards, so the reviewer ran and the newest commits are what nobody has read"
+      fi
+      say "$ISSUE NOT converged: PR #$PR_NUM still reads '$FINAL_VERDICT' recorded at $FINAL_REVIEWED_SHA while the head is $FINAL_CURRENT_SHA -- $DRIFT_CAUSE. Re-review next run ($(drift_rounds_for "$ISSUE")/$MAX_DRIFT_ROUNDS drift round(s) spent)."
     else
     case "$FINAL_VERDICT" in
       "APPROVE"|"APPROVE WITH NITS")
