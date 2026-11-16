@@ -702,8 +702,14 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # round ledger lives with the caller that owns the dispatch.
 #
 # The ONE-ARGUMENT form keeps its original semantics exactly (no merge state
-# supplied reads as "still merges"), because converge.sh calls it that way and a
-# silent behaviour change on the short form is a fleet-wide bug.
+# supplied reads as "still merges"), because a silent behaviour change on the
+# short form would be a fleet-wide bug. NO LIVE CALLER USES IT any more --
+# converge.sh passes five arguments and linear-worker.sh four at both of its
+# sites -- so the short form is a compatibility surface, not a described
+# caller's shape. The claim that converge.sh "calls it that way" outlived the
+# code twice (ASK-4899 rounds 4 and 5); test-drift-reporting.sh now re-derives
+# the arity of every live call site, so this paragraph cannot rot again without
+# going red.
 #
 # WHY THE SHA IS PART OF THE GATE (ASK-216, sp-12f99480)
 # ------------------------------------------------------
@@ -726,9 +732,19 @@ _sha_norm() { printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower
 # dispatched on a diff nobody reviewed is the same unreviewed-code path wearing
 # a rebase coat. Re-review first; the fresh record then decides.
 #
-# 40 IS NOT 10 AND NOT 30. A caller passing 1 or 2 arguments can never see it,
-# and a caller that does not know 40 falls out of its if-chain into the rework
-# path, which is the safe direction: not terminal, never a merge.
+# 40 IS NOT 10 AND NOT 30. A caller that does not know 40 falls out of its
+# if-chain into the rework path, which is the safe direction: not terminal,
+# never a merge.
+#
+# The sha check runs on ARITY: fewer than three arguments and it is skipped
+# entirely, so a hypothetical short-form caller cannot see 40. That is a
+# statement about the compatibility surface and NOT about the drivers -- every
+# live call site passes three or more, every live call site can see 40, and
+# every live call site branches on it. The earlier wording ("a caller passing
+# 1 or 2 arguments can never see it") sat next to a list of the drivers and so
+# read as proof their gate-40 branches were dead code. A reader trusting that
+# deletes a live branch; it cost a review round twice before it was removed
+# (ASK-4899, 2026-11-16).
 #
 # THE PARENTHETICAL THAT USED TO NAME converge.sh AND linear-worker.sh AS SHORT
 # -FORM CALLERS WAS STALE and is removed (ASK-4899, 2026-11-16). Both now pass
@@ -770,8 +786,22 @@ rework_gate() {
     "APPROVE"|"APPROVE WITH NITS")
       # Silent unless a caller actually asked for the sha check, so the short
       # forms stay byte-identical and no line is printed on every worker run.
-      if [ -n "$reviewed_sha" ] || [ -n "$current_sha" ]; then
-        if [ -z "$reviewed_sha" ]; then
+      #
+      # ARITY, NOT EMPTINESS (claude-reviewer on PR #30, 2026-11-16 14:36 UTC,
+      # minor 1). "The caller asked for the sha check" and "the caller got
+      # answers" are different statements, and reading the first off the second
+      # made the all-failed case indistinguishable from the short form. BOTH
+      # values come from `gh pr view`, at two different producers, so ONE outage
+      # empties both -- and this block then printed nothing, the caller's
+      # `[ -n "$NOTE" ] && say` said nothing, and the run closed on "converged
+      # ... waits on founder merge" over an approval pinned to no commit. That
+      # is the exact silence the round-3 minor closed for the one-empty case,
+      # surviving in the case that is MORE likely than either single failure.
+      # Arity is the caller's intent and no API outage can empty it.
+      if [ "$#" -ge 3 ]; then
+        if [ -z "$reviewed_sha" ] && [ -z "$current_sha" ]; then
+          echo "  NOTE: neither sha could be read this run -- the record's head_sha and the PR's current head are both empty, so this approval is pinned to no commit and nothing here can tell it from a verified one; falling back to verdict-only"
+        elif [ -z "$reviewed_sha" ]; then
           echo "  NOTE: no head_sha in this verdict record (written before ASK-216) -- cannot tell an approval from one inherited by a later push; falling back to verdict-only"
         elif [ -z "$current_sha" ]; then
           echo "  NOTE: could not read the PR's current head_sha; not manufacturing a re-review round on an unreadable head"

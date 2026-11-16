@@ -4486,6 +4486,40 @@ json.dump(d,open('$ATTEMPTS','w'),indent=2); print(e['rounds'])" 2>/dev/null || 
     # read, which is every healthy round.
     FINAL_GATE_NOTE="$(rework_gate "$FINAL_VERDICT" "" "$FINAL_REVIEWED_SHA" "$FINAL_CURRENT_SHA")"; FINAL_GATE=$?
     [ -n "$FINAL_GATE_NOTE" ] && say "$FINAL_GATE_NOTE"
+    # THE STREAK ENDS HERE TOO, NOT ONLY ON A LATER RUN (claude-reviewer on
+    # PR #30, 2026-11-16 14:36 UTC, major 1). The clear at :3134 is the SAME
+    # question asked at the top of the loop, which is the one moment it cannot
+    # yet be true for this round: a drift round heals its own drift down here,
+    # when step 5's review repins the record to the head. Clearing only upstream
+    # meant the heal was never recorded, so a push landing between this review
+    # and the next tick made that run read a streak of drifts THAT WERE ALREADY
+    # FIXED, hand the new drift zero of its MAX_DRIFT_ROUNDS rounds, and page
+    # "still unreviewed after N re-review round(s)" naming rounds nobody ran.
+    # Same scar as clear_conflict_rounds: consecutive, not lifetime -- a new
+    # drift after the PR was healthy is new information, not a repeat.
+    #
+    # IDENTICAL PREDICATE, DELIBERATELY. Not a new rule, the same one re-asked:
+    # the gate's own answer (never a second sha comparison out here) AND both
+    # shas actually read, because `pr_head_sha` is empty on any gh failure and
+    # the gate then falls toward terminal at 10 -- so "not 40" off an unread
+    # head is not "no drift", and refilling a budget that guards unreviewed code
+    # from a state nobody read is the round-3 major (P8: 9 runs, 6 rounds, 0
+    # pages). Two sites, one statement.
+    #
+    # WHAT THIS MAKES QUIETER, SAID OUT LOUD: a PR pushed-then-reviewed every
+    # tick no longer walks to the cap, so its page stops firing. That page says
+    # "unreviewed code sits at the head" -- after a heal the head WAS read, so
+    # the page it replaces was false. The loop the cap really guards is a DEAD
+    # REVIEWER, and that is untouched: no record is written, no heal, no clear,
+    # cap reached in MAX_DRIFT_ROUNDS exactly as before (pinned by the negative
+    # self-tests in test-drift-reporting.sh).
+    #
+    # Placed ABOVE the 40/else branches so neither can skip it, and the 40 arm's
+    # own "(N/MAX drift round(s) spent)" line stays true because that arm is
+    # precisely the case where this does not fire.
+    if [ "$FINAL_GATE" != "40" ] && [ -n "$FINAL_REVIEWED_SHA" ] && [ -n "$FINAL_CURRENT_SHA" ]; then
+      clear_drift_rounds "$ISSUE"
+    fi
     # NO PAGE HERE, deliberately, and it is the one place in this pass that buys
     # silence: the NEXT scheduled run gates this same PR at 40, spends a drift
     # round, and pages once at the cap. Paging here too would double-page the same

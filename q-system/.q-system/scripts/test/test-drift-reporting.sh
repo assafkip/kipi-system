@@ -308,6 +308,231 @@ for pair in "pickup:Picked up by the autonomous worker" "done:Worker run complet
   fi
 done
 
+printf '\n== major 1: the drift streak ends when THIS round ends the drift ==\n'
+
+# claude-reviewer on PR #30, 2026-11-16 14:36 UTC, major 1. The streak was
+# cleared ONLY at the top of a LATER run. A drift round heals the drift inside
+# itself (step 5's review repins the record), but nothing cleared the streak
+# there -- so a push landing between that heal and the next tick made the NEXT
+# run read a streak of already-healed drifts, gave the new drift zero of its two
+# rounds, and paged "after 2 re-review round(s)" naming rounds that never ran.
+#
+# The predicate is deliberately the SAME three-part one the top-of-run clear
+# uses, asked again at the one moment its answer can have changed. Both halves
+# are load-bearing and both are pinned below: the gate's own 40 (never a second
+# sha comparison out here) and BOTH shas readable, because `pr_head_sha` returns
+# empty on any gh failure and the gate then falls to 10 -- refilling a budget
+# that guards unreviewed code from a state nobody read is the PR #30 round-3
+# scar, and it must stay refused at this site too.
+python3 - "$WORKER" > "$WORK/step5clear.sh" <<'PY'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+start = src.find('if [ "$FINAL_GATE" != "40" ]')
+if start < 0:
+    sys.stderr.write("EXTRACT-FAIL: step 5 never clears the drift streak\n")
+    raise SystemExit(3)
+end = src.find("\n", src.find("\n    fi", start) + 1)
+sys.stdout.write(src[start:end])
+PY
+
+if [ ! -s "$WORK/step5clear.sh" ]; then
+  bad "major 1: step 5 has a drift-streak clear at all" \
+      "no clear after the re-review -- only a LATER run can end the streak, so a push landing in between starves the next drift of its rounds"
+else
+  ok "major 1: step 5 has a drift-streak clear at all"
+
+  run_clear() {  # run_clear <final-gate> <final-reviewed-sha> <final-current-sha>
+    (
+      ISSUE=ASK-4899
+      clear_drift_rounds() { printf 'CLEARED %s\n' "$1"; }
+      FINAL_GATE="$1"; FINAL_REVIEWED_SHA="$2"; FINAL_CURRENT_SHA="$3"
+      # shellcheck disable=SC1090
+      . "$WORK/step5clear.sh"
+    )
+  }
+
+  # THE FIX ITSELF: the round's own review repinned the record, the gate says so,
+  # both shas were read. The streak this round was dispatched for is over NOW.
+  HEALED="$(run_clear 10 1a0b2136 1a0b2136)"
+  if printf '%s' "$HEALED" | grep -q 'CLEARED ASK-4899'; then
+    ok "major 1: a round whose review healed the drift clears the streak"
+  else
+    bad "major 1: a round whose review healed the drift clears the streak" "$HEALED"
+  fi
+
+  # NEGATIVE SELF-TEST 1: still drifted at the end of the round. The streak must
+  # SURVIVE -- this is the population the cap exists for (a dead reviewer writes
+  # no record, so it never heals and reaches the cap in MAX_DRIFT_ROUNDS).
+  STILL="$(run_clear 40 87225b06 1a0b2136)"
+  if printf '%s' "$STILL" | grep -q 'CLEARED'; then
+    bad "major 1: a still-drifted round does NOT clear the streak (negative self-test)" \
+        "clearing here makes the cap unreachable and the page never fire: $STILL"
+  else
+    ok "major 1: a still-drifted round does NOT clear the streak (negative self-test)"
+  fi
+
+  # NEGATIVE SELF-TEST 2: the blind run. gh could not read the head, the gate
+  # fell toward terminal and returned 10. "Not 40" is not "no drift" here, and a
+  # budget refilled off an unread state is the round-3 major this file already
+  # refuses at the top of the loop.
+  BLIND="$(run_clear 10 1a0b2136 "")"
+  if printf '%s' "$BLIND" | grep -q 'CLEARED'; then
+    bad "major 1: an unreadable head does NOT refill the budget (negative self-test)" \
+        "$BLIND"
+  else
+    ok "major 1: an unreadable head does NOT refill the budget (negative self-test)"
+  fi
+
+  # NEGATIVE SELF-TEST 3: the record carries no sha (pre-ASK-216, or the
+  # reviewer's own gh failed). Same reasoning, the other input.
+  NOREC="$(run_clear 10 "" 1a0b2136)"
+  if printf '%s' "$NOREC" | grep -q 'CLEARED'; then
+    bad "major 1: an unreadable record sha does NOT refill the budget (negative self-test)" \
+        "$NOREC"
+  else
+    ok "major 1: an unreadable record sha does NOT refill the budget (negative self-test)"
+  fi
+fi
+
+printf '\n== minor 1: an approval pinned to NO commit is never silent ==\n'
+
+# claude-reviewer on PR #30, 2026-11-16 14:36 UTC, minor 1. rework_gate printed
+# its NOTE when ONE sha was empty and nothing when BOTH were -- which is exactly
+# what a single `gh pr view` outage produces, because both producers of these
+# values shell the same command. The run then closed on "converged ... waits on
+# founder merge" with nothing anywhere saying the approval is pinned to no
+# commit, the same silence PR #30 round 3 minor 2 closed for the one-empty case.
+#
+# WHY THE GUARD MOVED FROM EMPTINESS TO ARITY. "The caller asked for the sha
+# check" and "the caller got answers" are two different statements; reading the
+# first off the second is what made the all-failed case indistinguishable from
+# the short form. Arity is the caller's intent and cannot be emptied by an API
+# outage. The short forms stay byte-identical, pinned below.
+# shellcheck disable=SC1090
+. "$REPO_SCRIPTS/pr-verdict-lib.sh"
+
+BOTH_EMPTY="$(rework_gate "APPROVE WITH NITS" "" "" "")"; BE_RC=$?
+if [ -n "$BOTH_EMPTY" ]; then
+  ok "minor 1: both shas unreadable prints a NOTE"
+else
+  bad "minor 1: both shas unreadable prints a NOTE" \
+      "silent -- an approval pinned to no commit closes the run as converged"
+fi
+if printf '%s' "$BOTH_EMPTY" | grep -qi 'neither\|both'; then
+  ok "minor 1: the NOTE says it is BOTH shas, not one of them"
+else
+  bad "minor 1: the NOTE says it is BOTH shas, not one of them" "$BOTH_EMPTY"
+fi
+if [ "$BE_RC" = "10" ]; then
+  ok "minor 1: the VERDICT is unchanged (still terminal, never a manufactured round)"
+else
+  bad "minor 1: the VERDICT is unchanged (still terminal, never a manufactured round)" \
+      "rc=$BE_RC -- the fix was supposed to add a sentence, not change behaviour"
+fi
+
+# NEGATIVE SELF-TEST: the one-argument and two-argument forms must stay SILENT.
+# A fix that printed on every worker run would be the noise the original guard
+# existed to prevent.
+SHORT1="$(rework_gate "APPROVE")"; S1_RC=$?
+SHORT2="$(rework_gate "APPROVE" "CLEAN")"; S2_RC=$?
+if [ -z "$SHORT1" ] && [ -z "$SHORT2" ] && [ "$S1_RC" = "10" ] && [ "$S2_RC" = "10" ]; then
+  ok "minor 1: the short forms stay silent and terminal (negative self-test)"
+else
+  bad "minor 1: the short forms stay silent and terminal (negative self-test)" \
+      "1-arg=[$SHORT1] rc=$S1_RC  2-arg=[$SHORT2] rc=$S2_RC"
+fi
+
+# NEGATIVE SELF-TEST: the pre-existing one-empty NOTEs must survive untouched,
+# and a fully-read matching pair must still print nothing at all.
+ONE_EMPTY="$(rework_gate "APPROVE" "" "" ffffffff)"
+MATCHED="$(rework_gate "APPROVE" "" ffffffff ffffffff)"; M_RC=$?
+if printf '%s' "$ONE_EMPTY" | grep -q 'ASK-216'; then
+  ok "minor 1: the missing-record NOTE still fires (negative self-test)"
+else
+  bad "minor 1: the missing-record NOTE still fires (negative self-test)" "$ONE_EMPTY"
+fi
+if [ -z "$MATCHED" ] && [ "$M_RC" = "10" ]; then
+  ok "minor 1: a healthy round still prints nothing (negative self-test)"
+else
+  bad "minor 1: a healthy round still prints nothing (negative self-test)" \
+      "[$MATCHED] rc=$M_RC"
+fi
+rework_gate "APPROVE" "" 87225b06 1a0b2136 >/dev/null; D_RC=$?
+if [ "$D_RC" = "40" ]; then
+  ok "minor 1: real drift still returns 40 (negative self-test)"
+else
+  bad "minor 1: real drift still returns 40 (negative self-test)" "rc=$D_RC"
+fi
+
+printf '\n== minor 2: the docblock describes the callers that exist ==\n'
+
+# claude-reviewer on PR #30, 2026-11-16 14:36 UTC, minor 2 (and round 4's minor
+# on the same block). Two claims outlived their callers: that converge.sh uses
+# the one-argument form, and that a caller "can never see" 40. Both read as
+# proof that every gate-40 branch in both drivers is dead code. A reader who
+# trusts them deletes a live branch, which is why this is pinned rather than
+# left to the next reviewer to re-find.
+LIB="$REPO_SCRIPTS/pr-verdict-lib.sh"
+if grep -q 'because$' "$LIB" && grep -q 'converge.sh calls it that way' "$LIB"; then
+  bad "minor 2: the docblock no longer claims converge.sh uses the short form" \
+      "still says 'converge.sh calls it that way' while it passes five arguments"
+else
+  ok "minor 2: the docblock no longer claims converge.sh uses the short form"
+fi
+if grep -q 'A caller passing 1 or 2 arguments can never see it' "$LIB"; then
+  bad "minor 2: the docblock does not assert live callers cannot see 40" \
+      "all three live call sites pass four or five arguments"
+else
+  ok "minor 2: the docblock does not assert live callers cannot see 40"
+fi
+
+# DERIVED, NOT ASSERTED. The claim "no live caller uses the short form" is
+# re-measured from the call sites themselves on every run, so the comment cannot
+# rot back into a false statement while still reading plausibly.
+#
+# SCOPED TO THE TWO DRIVERS, not the whole scripts dir. A dir-wide sweep reads
+# this harness's own deliberate 1-arg and 2-arg probes as production call sites
+# and its grep patterns as calls -- it reported six short-form callers on a tree
+# that has none, which is a false red that teaches a reader to ignore the case.
+#
+# The extractor is written to a file and then called, NOT inlined as
+# `$(python3 - <<PY ... PY)`: a heredoc carrying `print(...)` inside a command
+# substitution leaves bash hunting a matching paren and the whole file stops
+# parsing after this line -- which is a file-wide failure wearing the costume of
+# one broken case.
+cat > "$WORK/arity.py" <<'PY'
+import re
+import sys
+
+# A CALL, NOT A MENTION. The first pass matched `rework_gate ` anywhere and
+# reported converge.sh:798 and :808 as 1-arg and 2-arg callers -- both are
+# COMMENT PROSE about the function ("rework_gate reaches 10 from three states",
+# "rework_gate owns drift"). It counted the quotes that happened to follow. A
+# test that invents two callers teaches the reader to skip the case, so the
+# match now requires a quoted first argument AND a non-comment line: every real
+# call site in this tree is `$(rework_gate "..." ...)`.
+for path in sys.argv[1:]:
+    src = open(path, encoding="utf-8").read()
+    for m in re.finditer(r'rework_gate "', src):
+        line_start = src.rfind("\n", 0, m.start()) + 1
+        if src[line_start:m.start()].lstrip().startswith("#"):
+            continue
+        # The call's own arguments end at the `)` that closes the substitution
+        # it sits in; the outer quote comes after, so this never over-reads.
+        end = src.find(")", m.end())
+        args = re.findall(r'"[^"]*"', src[m.end() - 1:end])
+        if len(args) < 3:
+            line = src[:m.start()].count("\n") + 1
+            print(path.rsplit("/", 1)[-1] + ":" + str(line) + " passes " + str(len(args)))
+PY
+SHORT_CALLS="$(python3 "$WORK/arity.py" "$CONVERGE" "$WORKER")"
+if [ -z "$SHORT_CALLS" ]; then
+  ok "minor 2: every live call site passes 3+ arguments (derived from the call sites)"
+else
+  bad "minor 2: every live call site passes 3+ arguments (derived from the call sites)" \
+      "short-form call sites found, so the sha check is skipped there: $SHORT_CALLS"
+fi
+
 printf '\n== both files still parse ==\n'
 for f in "$CONVERGE" "$WORKER"; do
   if bash -n "$f" 2>/dev/null; then
