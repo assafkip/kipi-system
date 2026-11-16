@@ -46,8 +46,15 @@ HONEST BOUNDARY
    treating it as one would refuse issues whose DoR merely mentions a sibling.
 3. It cannot tell a CORRECT repo name from a TYPO. An unrecognised word is
    treated as no signal (boundary 1), never as a mismatch.
-4. It proves nothing about whether the named repo is reachable. That is the
-   caller's problem and a separate failure.
+4. It proves nothing about whether the named repo is reachable, and NOTHING
+   ABOUT WHETHER ANY SCOPED FILE EXISTS ANYWHERE. It reads repo names, full
+   stop. The refusal message says exactly that and no more: an earlier draft
+   asserted "No scoped file exists in the tree that would be cut", a
+   measurement this module never takes (claude-reviewer finding 4, round 4).
+   The fix is the message, not a path check -- a path check is the ambiguous
+   prefix ruled out above, and exempting a DoR because
+   `q-system/.q-system/scripts/` happens to exist locally would re-open the
+   exact burn this module was built to stop.
 """
 
 import argparse
@@ -55,12 +62,29 @@ import json
 import re
 import sys
 
-# The DoR headings that open and close the Files block. The drafter writes
-# `**Files:**`; the closers are every other bold heading it emits, plus a
-# markdown rule. Kept as data so a new heading is a one-line change.
-_FILES_HEADING = re.compile(r"^\s*\*\*Files:?\*\*", re.MULTILINE)
+# The DoR headings that open and close the Files block. The closers are every
+# other bold heading the producers emit, plus a markdown rule.
+#
+# THE OPTIONAL BULLET PREFIX IS LOAD-BEARING, NOT COSMETIC (ASK-4899 round 4,
+# claude-reviewer finding 1). `^\s*` matches leading whitespace and never
+# matches `- ` or `* `, and EVERY DoR PRODUCER IN THE FLEET BULLETS ITS
+# HEADINGS: linear-dor-drafter.py:271-281 instructs the model to emit
+# `- **Files:**`, cap-ladder.py:958 emits `* **Files:**`, and only
+# linear-job-migration.py:152 emits the bare form (prd_split.py:489 already
+# documented all three). Without the prefix this check never fired on a
+# drafter-written DoR, which is every promoted issue -- the whole population it
+# exists for.
+#
+# BOTH REGEXES NEEDED IT, and fixing only the heading would have been WORSE
+# than leaving it dead. _SECTION_END was root-anchored the same way, so once the
+# heading matched, a bulleted `- **Not doing:**` would never close the block:
+# the Files section would run to end-of-body, boundary 2 would collapse, and a
+# sibling repo named in any later section would read as a scope declaration.
+# A dead check refuses nothing; a half-fixed one FALSE-refuses.
+_BULLET = r"(?:[-*+][ \t]+)?"
+_FILES_HEADING = re.compile(r"^[ \t]*" + _BULLET + r"\*\*Files:?\*\*", re.MULTILINE)
 _SECTION_END = re.compile(
-    r"^\s*(?:\*\*[A-Z][^*]*:?\*\*|---\s*$|##\s)",
+    r"^[ \t]*" + _BULLET + r"(?:\*\*[A-Z][^*]*:?\*\*|---[ \t]*$|##[ \t])",
     re.MULTILINE,
 )
 
@@ -105,8 +129,10 @@ def mismatch(body, launch_repo, known_repos):
 
     Proceeds (returns None) when the Files section names no known repo, or when
     it names the repo the worker is running in. Refuses only when every repo it
-    names is a known repo and none of them is the launch repo -- the one case
-    where the files provably do not exist in the tree about to be cut.
+    names is a known repo and none of them is the launch repo.
+
+    The reason claims ONLY what was read: which repo names the Files section
+    carries. It does not claim anything about files on disk (boundary 4).
     """
     if not launch_repo:
         # Nothing to compare against. Fail open (boundary 1).
@@ -116,9 +142,9 @@ def mismatch(body, launch_repo, known_repos):
         return None
     targets = ", ".join(sorted(found))
     return (
-        f"DoR scopes its files to {targets}, but this worker runs in "
-        f"{launch_repo}. No scoped file exists in the tree that would be cut, "
-        f"so the dispatch would be spent on an unreachable target. "
+        f"DoR Files section names only {targets}, and this worker runs in "
+        f"{launch_repo}. The scope it declares is another repo, so the "
+        f"dispatch would be spent on a tree the DoR does not describe. "
         f"Re-dispatch with --repo pointed at {targets}."
     )
 
@@ -160,8 +186,18 @@ def main(argv=None):
     ap.add_argument("--skeleton-project", default="", help="skeleton repo name")
     args = ap.parse_args(argv)
 
-    with open(args.body_file, encoding="utf-8") as fh:
-        body = fh.read()
+    # FAIL OPEN ON AN UNREADABLE BODY (claude-reviewer finding 5, round 4). An
+    # unguarded open() tracebacked to exit 1, and exit 1 is this CLI's REFUSAL
+    # code -- so a missing or unreadable file was indistinguishable from a real
+    # cross-repo verdict, against the fail-open contract stated in boundary 1.
+    # The error still goes to stderr so the condition is never silent; only the
+    # VERDICT channel (stdout + exit code) reads as "no signal".
+    try:
+        with open(args.body_file, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError as exc:
+        print(f"dor_target_repo: cannot read body file, proceeding: {exc}", file=sys.stderr)
+        return 0
 
     known = {n.strip() for n in args.known.split(",") if n.strip()}
     known |= _known_from_registry(args.registry, args.skeleton_project)

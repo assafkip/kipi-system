@@ -718,6 +718,10 @@ _facts_json() { printf '%s' "$REGISTRY_FACTS" | python3 -c "import json,sys;prin
 REPO_PROJECT="${KIPI_LINEAR_PROJECT:-}"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(_facts_get name)"
 [ -n "$REPO_PROJECT" ] || REPO_PROJECT="$(basename "$TARGET_REPO")"
+# REPO_PROJECT reaches the picker for the DoR-target-repo check (ASK-4899) from
+# this one export. It was exported twice before, and SCRIPT_DIR was copied into
+# a WORKER_SCRIPT_DIR the picker did not need, because the same heredoc already
+# reads SCRIPT_DIR from the env below (claude-reviewer finding 6, round 4).
 export REPO_PROJECT
 
 LOCAL_REPOS="$(_facts_json local_repos)"
@@ -727,16 +731,6 @@ REGISTRY_OK="$(_facts_get ok)"
 # rather than widening it -- see founder_scope.
 SKELETON_PROJECT="$(_facts_get skeleton_project)"
 export LOCAL_REPOS REGISTRY_OK SKELETON_PROJECT
-# REPO_PROJECT reaches the picker for the DoR-target-repo check (ASK-4899). It was
-# already computed above for the MISCONFIG line; the picker needs the same value to
-# compare against the repo an issue's DoR names, and nothing else in this script
-# recomputes it.
-export REPO_PROJECT
-# The picker heredoc imports dor_target_repo.py from here (ASK-4899). Passed as
-# env rather than argv because the heredoc is quoted (<<'PY'), so it cannot
-# interpolate $SCRIPT_DIR, and its argv is already a fixed two-value contract.
-WORKER_SCRIPT_DIR="$SCRIPT_DIR"
-export WORKER_SCRIPT_DIR
 
 # --- the open PRs, for the WIP ceiling (ASK-3826) ---------------------------
 # Counted BEFORE the pick because the picker below holds the board, and the
@@ -953,33 +947,69 @@ def expired_park(i):
 # Refused HERE, in the picker, because here is before the worktree and before the
 # claim. A refusal after either has already spent the dispatch it exists to save.
 LAUNCH_REPO = os.environ.get("REPO_PROJECT", "").strip()
-KNOWN_REPOS = {n for n in (os.environ.get("LOCAL_REPOS", "") or "").split() if n}
-KNOWN_REPOS |= {n for n in (os.environ.get("LOCAL_REPOS", "") or "").split(",") if n.strip()}
+
+# KNOWN_REPOS IS BUILT BY PARSING THE JSON, NOT BY SPLITTING IT
+# (claude-reviewer finding 2, round 4). LOCAL_REPOS is _facts_json, i.e.
+# json.dumps of a LIST OF DICTS -- proven by the local_by_project line above
+# parsing the same variable back and reading r["project"]. Splitting that string
+# on whitespace or commas can only ever yield tokens shaped like
+# [{"project": and "kipi-system",, so the ONLY clean name this set used to hold
+# was SKELETON_PROJECT. A DoR naming any INSTANCE found nothing and proceeded,
+# which left the check live for exactly one repo name out of the whole fleet.
+#
+# THE NAMESPACES ALSO HAD TO BE UNIFIED. Registry rows are keyed by the Linear
+# project, while LAUNCH_REPO is the registry name or the checkout basename, so
+# comparing one against the other misses every repo whose two names differ. The
+# union carries all three keys plus the path basename, which is the same set of
+# spellings REPO_PROJECT itself can take.
+KNOWN_REPOS = set()
+for _row in (local_repos or []):
+    if not isinstance(_row, dict):
+        continue
+    for _k in ("project", "name", "slug"):
+        _v = _row.get(_k)
+        if _v:
+            KNOWN_REPOS.add(str(_v).strip())
+    _p = _row.get("path")
+    if _p:
+        KNOWN_REPOS.add(os.path.basename(str(_p).rstrip("/")))
+KNOWN_REPOS = {n for n in KNOWN_REPOS if n}
 _SKEL_PROJ = os.environ.get("SKELETON_PROJECT", "").strip()
 if _SKEL_PROJ:
     KNOWN_REPOS.add(_SKEL_PROJ)
 
+# EVERY HELD TICKET IS RECORDED WITH ITS REASON (claude-reviewer finding 3,
+# round 4). The refusal used to be structurally silent: ready() discarded the
+# reason string, nothing counted it, nothing logged it, and no label was
+# written -- so the queue simply came back shorter and a held ticket read as
+# owned while nobody was acting on it. This is the same shape the DROPPED
+# counter two hundred lines below already uses for out-of-repo issues.
+DOR_HELD = {}
 
-def dor_targets_another_repo(d):
+
+def dor_targets_another_repo(d, ident=""):
     """One line when the DoR of this issue scopes its files elsewhere, else "".
 
     No apostrophes in here either; see the block comment above.
     """
     # FAIL OPEN on every failure mode, deliberately. Too strict here stops the
     # fleet picking up ordinary issues, which is a silent full stop on autonomous
-    # throughput; too loose merely leaves today's behaviour. A missing module, an
-    # unreadable registry or an unparseable body must therefore all read as
-    # no signal, proceed -- never as a refusal.
+    # throughput; too loose merely leaves the behaviour of today. A missing
+    # module, an unreadable registry or an unparseable body must therefore all
+    # read as no signal, proceed -- never as a refusal.
     if not LAUNCH_REPO or not KNOWN_REPOS:
         return ""
     try:
-        here = os.environ.get("WORKER_SCRIPT_DIR", "")
+        here = os.environ.get("SCRIPT_DIR", "")
         if here and here not in sys.path:
             sys.path.insert(0, here)
         import dor_target_repo
-        return dor_target_repo.mismatch(d, LAUNCH_REPO, KNOWN_REPOS) or ""
+        reason = dor_target_repo.mismatch(d, LAUNCH_REPO, KNOWN_REPOS) or ""
     except Exception:
         return ""
+    if reason and ident:
+        DOR_HELD[ident] = reason
+    return reason
 
 
 def ready(i):
@@ -1007,7 +1037,7 @@ def ready(i):
     # ASK-4899. Asked after the free label checks and BEFORE the state exit, so a
     # cross-repo issue never reaches a worktree or a claim. Absence of a repo name
     # in the Files section of the DoR is not a mismatch; see dor_target_repo.py.
-    if dor_targets_another_repo(d):  return False
+    if dor_targets_another_repo(d, i.get("identifier") or ""):  return False
     # ONE state exit, carrying its own marker, because terminal-states.json row
     # state-not-open counts exactly one site here. A started ticket passes only
     # when started_open releases it, asked after the free checks above. The
@@ -1575,6 +1605,14 @@ print(json.dumps({
                "why": pick_why(i)}
               for i in pool],
     "started_held": started_held,
+    # ASK-4899, claude-reviewer finding 3 (round 4). A cross-repo hold used to
+    # leave no trace at all. It now reaches the shell as a count plus one row
+    # per ticket carrying the reason, so the run can SAY which tickets it held
+    # and why. Emitted only for tickets the hold actually fired on, so a healthy
+    # run adds nothing: the say line below is gated on a non-zero count, which
+    # keeps a quiet night quiet instead of filing a nightly nil report.
+    "dor_held": len(DOR_HELD),
+    "dor_held_rows": [{"id": k, "why": v} for k, v in sorted(DOR_HELD.items())],
     "total_open": len(issues),
     "dropped_out_of_repo": len(dropped),
     "dropped_projects": sorted({project_of(i) or "(unset)" for i in dropped}),
@@ -1714,6 +1752,23 @@ print("; ".join(h["id"] + " (" + h["why"] + ")" for h in json.load(sys.stdin).ge
 # Accounted for, never silently dropped. These two lines are what let an operator
 # tell a working filter from a broken query without re-querying Linear by hand.
 [ "${DROPPED:-0}" != "0" ] && say "worker: $DROPPED ready-shaped issue(s) skipped as out-of-repo (other project: $DROPPED_IN) -- this checkout is $REPO_PROJECT and cannot check those out"
+
+# ASK-4899 (claude-reviewer finding 3, round 4). A cross-repo DoR hold is a
+# DIFFERENT axis from the DROPPED line above and gets its own line rather than
+# being folded into it: DROPPED is about the issue PROJECT, which in_this_repo
+# decides and which returns False before this check is ever reached, while this
+# is about the repo the DoR FILES section names. The two populations cannot
+# overlap, so two lines never double-count one ticket.
+#
+# Gated on a non-zero count for the same reason the line above is: a nil report
+# every run is noise in Sana triage, and noise is how a real line gets skimmed.
+DOR_HELD_COUNT="$(printf '%s' "$PICKED" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dor_held",0))' 2>/dev/null || echo 0)"
+if [ "${DOR_HELD_COUNT:-0}" != "0" ]; then
+  DOR_HELD_WHY="$(printf '%s' "$PICKED" | python3 -c '
+import json, sys
+print("; ".join(r["id"] + ": " + r["why"] for r in json.load(sys.stdin).get("dor_held_rows", [])))' 2>/dev/null)"
+  say "worker: $DOR_HELD_COUNT ready-shaped issue(s) HELD before any worktree was cut -- their DoR Files section scopes another repo. $DOR_HELD_WHY"
+fi
 # THE THIRD BUCKET (ASK-840). Reachable, and refused anyway. Stated on its own
 # line for the same reason UNREACHABLE was: the response differs. A routine skip
 # resolves itself on a later rotation turn, an unreachable repo needs a clone, and
