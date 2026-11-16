@@ -1087,6 +1087,17 @@ def climb(issue: str, sigs: list, t: dict, pr: dict | None, slug: str, state: di
         return out
 
     rca_path, _ = rca(issue, kind, why, pr, slug)
+    # NO RCA, NO RUNG (ASK-5322). Rungs 1-3 used to advance with rca "" and log
+    # "rung 1 (rca) taken": 39 issues climbed, 0 had an RCA, because Fable could
+    # not find `claude` under launchd. Same posture as rung 4 above: the cap
+    # stays, the report goes RED, the next run retries, and Sana's queue hears once.
+    if not rca_path:
+        report.append({"issue": issue, "rung": r, "red": True,
+                       "note": "Fable produced no RCA; rung not taken, retried next run"})
+        subprocess.run([*ALERT, f"cap-ladder: {issue} rung {r} refused, Fable produced no RCA "
+                        f"(ledger: q-system/output/fable-escalations/). The cap stays; next run retries."],
+                       capture_output=True, text=True, timeout=30)
+        return f"{issue}: rung {r}: no RCA produced (RED in the report); the cap stays"
     late = late_lane(issue, r - 1, report)
     if late:
         return late

@@ -1224,6 +1224,27 @@ def case_founder_asks_reach_chief() -> None:
               sent(env) == ["2 decisions waiting for you."] and all(r.get("notified_at") for r in _status_rows(env)), sent(env))
 
 
+def case_no_rca_no_rung() -> None:
+    """ASK-5322: Fable returns no RCA, so rung 1 is NOT taken and the cap stays.
+
+    Before the fix, 39 live issues climbed with rca "" (Fable could not find
+    `claude` under launchd) and every one logged "rung 1 (rca) taken".
+    """
+    with tempfile.TemporaryDirectory() as td:
+        env = make_world(Path(td))
+        world(env, fable={"ASK-1": [""]})
+        led(env, "record-capout", "ASK-1", "hit the 3-round cap still at 'REQUEST CHANGES' on PR #10")
+        out = ladder(env, "--apply")
+        gh = log(env, "gh")
+        check("no-rca: the rung is refused and says so", "no RCA produced" in out, out)
+        check("no-rca: the capped PR is NOT closed and no new PR opens",
+              not any(c[:2] in (["pr", "close"], ["pr", "create"]) for c in gh), gh)
+        check("no-rca: the capout record stays, so the next run retries",
+              bool(ledger_row(env, "ASK-1").get("capout")), ledger_row(env, "ASK-1"))
+        check("no-rca: the ticket is not requeued",
+              not any(c[:2] == ["requeue", "ASK-1"] for c in log(env, "sync")), log(env, "sync"))
+
+
 def main() -> int:
     t0 = time.monotonic()
     print("test_cap_ladder.py")
@@ -1233,7 +1254,7 @@ def main() -> int:
     else:
         cases = [case_rungs, case_decisions, case_events, case_edges, case_owns, case_review_fixes,
                  case_review_round2, case_ask_lifecycle, case_pytest_refusal, case_review_687,
-                 case_mutant, case_lane_marker, case_founder_asks_reach_chief] + cases
+                 case_mutant, case_lane_marker, case_founder_asks_reach_chief, case_no_rca_no_rung] + cases
     # list() re-raises any exception a case threw, so a crash still fails the file.
     with ThreadPoolExecutor(max_workers=len(cases)) as pool:
         list(pool.map(lambda f: f(), cases))

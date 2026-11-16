@@ -437,6 +437,15 @@ set +e; bash "$CONV" --issue ASK-T833 --max-rounds 4 >"$WORK/out" 2>&1; RC=$?; s
   || fail "exit-7 recorded NO attempt, so the cap can never trip (ASK-833): count=$(att_count ASK-T833)"
 ok "exit-7 with no PR costs an attempt, so three of them mark the issue stuck"
 
+# ASK-5322: a review that dies with no verdict must ALSO cost an attempt.
+# Measured 2026-11-16: ASK-3831 hit this exit 39 times overnight, count unchanged.
+rm -f "$ATT"
+run_case review-died-attempt 108 "NONE;sha1" 4
+[ "$RC" = "7" ] || fail "dead review must still exit 7, got rc=$RC"
+[ "$(att_count ASK-999)" = "1" ] \
+  || fail "dead review recorded NO attempt, so the cap can never trip (ASK-5322): count=$(att_count ASK-999)"
+ok "exit-7 on a dead review costs an attempt, so three of them mark the issue stuck"
+
 # IDEMPOTENCE, THE OTHER HALF. When the worker DID reach its own bump, converge
 # must not charge a second one for the same round: double-counting would mark a
 # genuinely-retryable issue stuck after two failures instead of three, which is

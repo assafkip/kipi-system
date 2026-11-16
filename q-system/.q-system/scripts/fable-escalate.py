@@ -85,6 +85,23 @@ import fleet_door  # noqa: E402  (ASK-4311: who pays for the triage call)
 DOOR_ACTOR = "fable-escalate"
 QROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEFAULT_LEDGER_DIR = os.path.join(QROOT, "output", "fable-escalations")
+
+# launchd's PATH is /usr/bin:/bin, not a login PATH, so shutil.which("claude")
+# misses ~/.local/bin/claude. Measured 2026-11-16 (ASK-5322): 45 of 45 cap-ladder
+# RCAs failed "claude binary not found". Same candidate list as
+# linear-alert-triage.py CLAUDE_CANDIDATES.
+CLAUDE_CANDIDATES = ("~/.local/bin/claude", "~/.claude/local/claude",
+                     "/opt/homebrew/bin/claude", "/usr/local/bin/claude")
+
+
+def resolve_claude():
+    """First executable claude: KIPI_CLAUDE_BIN, then PATH, then known installs."""
+    pinned = os.environ.get("KIPI_CLAUDE_BIN")
+    found = shutil.which("claude")
+    for cand in (pinned, found) + tuple(os.path.expanduser(c) for c in CLAUDE_CANDIDATES):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 DEFAULT_NOTIFY = os.path.join(HERE, "slack-notify.sh")
 
 ASK = """You are triaging a stuck coding agent. You are NOT implementing anything.
@@ -307,7 +324,7 @@ def call_fable(packet, timeout):
     if not command and _fixture_refusal():
         return None, _fixture_refusal()
 
-    command = command or shutil.which("claude")
+    command = command or resolve_claude()
     if not command or not os.path.exists(command):
         return None, "claude binary not found"
 

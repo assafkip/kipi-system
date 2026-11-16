@@ -1315,6 +1315,23 @@ while [ "$ROUND" -lt "$MAX_ROUNDS" ]; do
     exit 1
   fi
   if [ "$GATE" = "20" ]; then
+    # A DEAD REVIEW IS AN ATTEMPT (ASK-5322). This exit used to leave the ledger
+    # untouched, so MAX_ATTEMPTS could never trip on it: ASK-3831 was dispatched
+    # 39 times on 2026-11-15/16, each run dying in 30s on this line. Bumping here
+    # lets the 3-attempt cap stop the issue and hand it to cap-ladder.py.
+    # Charged only if the worker did not already bump this round (same
+    # idempotence rule as the no-PR path, ASK-833).
+    BUMP_RC=0
+    if [ "$(attempt_count "$ISSUE")" = "$ATT_BEFORE" ]; then
+      python3 "$LEDGER" "$ATTEMPTS" bump-attempt "$ISSUE" \
+           "converge stopped at exit-7: PR #$PR has no verdict after round $ROUND (review died or timed out)" \
+           >>"$LOG" 2>&1 || BUMP_RC=$?
+    fi
+    if [ "$BUMP_RC" -ne 0 ]; then
+      say "STOP exit-8: could not record the dead-review attempt in $ATTEMPTS (rc=$BUMP_RC). The 3-attempt cap cannot trip while the write fails; see $LOG"
+      bash "$NOTIFY" "converge $ISSUE: attempts ledger write failed (rc=$BUMP_RC) on a dead review -- the retry cap is not enforceable until it is fixed" 2>/dev/null || true
+      exit 8
+    fi
     say "STOP exit-7: PR #$PR has no verdict after round $ROUND -- the review died or timed out. Re-run: kipi review $PR --issue $ISSUE --post"
     bash "$NOTIFY" "converge $ISSUE: review produced no verdict on round $ROUND" 2>/dev/null || true
     exit 7
