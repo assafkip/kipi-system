@@ -12,6 +12,9 @@ paths:
   - ".mcp.json"
   - "**/canonical/**"
   - "agent-pipeline/**"
+  - "**/*.json"
+  - "**/*.yml"
+  - "**/*.yaml"
 ---
 
 Rule-ID: RULE-2026-11-17-SCOPE-WIRING

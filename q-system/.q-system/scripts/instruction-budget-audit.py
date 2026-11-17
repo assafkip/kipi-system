@@ -40,7 +40,7 @@ BUDGET_CLAUDE_MD = 200
 BUDGET_TOTAL_ALWAYS_ON = 300
 
 # Glob patterns that match everything (functionally always-on)
-CATCH_ALL_PATTERNS = {"**/*", "**/**", "**"}
+CATCH_ALL_PATTERNS = {"*", "**", "**/*", "**/**"}  # same set as test_rule_path_scope.CATCH_ALL
 
 
 ENFORCEMENT_MARKER = "<!-- enforcement -->"
@@ -131,7 +131,8 @@ def parse_paths_from_frontmatter(path):
     frontmatter = content[3:end]
     # paths: ONLY. Claude Code ignores `globs:`, so a rule scoped under it loads every
     # session. Counting it as conditional hid design-auto-invoke.md's 47 lines from this
-    # budget until 2026-11-17 (ASK-5377); test_rule_path_scope.py pins the key.
+    # budget until 2026-11-17 (ASK-5377). test_budget_audit_ignores_globs in
+    # test_rule_path_scope.py pins this function on a planted globs-only rule.
     has_scoping = re.search(r"^paths:", frontmatter, re.MULTILINE)
     if not has_scoping:
         return None

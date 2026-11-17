@@ -109,7 +109,8 @@ def count_always_on_rules(instance_path):
             end = content.find("---", 3)
             if end != -1:
                 fm = content[3:end]
-                paths_match = re.search(r"^(paths|globs):", fm, re.MULTILINE)
+                # paths: only; Claude Code ignores globs: (ASK-5377), same as the audit.
+                paths_match = re.search(r"^paths:", fm, re.MULTILINE)
                 if paths_match:
                     is_always_on = False
                     # Check for catch-all

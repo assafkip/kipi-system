@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "slug": "investigator-lean-startup",
- "reason": "ASK-5377 (RULE-2026-11-17-LEAN-INVESTIGATORS): sancho and ryan stop loading MCP servers that cannot serve an investigation. Generated from q-system/.q-system/investigator-startup.json. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/investigator-lean-startup.json --root $HOME",
+ "reason": "ASK-5377 (RULE-2026-11-17-LEAN-INVESTIGATORS): sancho and ryan stop loading MCP servers that cannot serve an investigation. Generated from q-system/.q-system/investigator-startup.json. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/investigator-lean-startup.json --root $HOME. Apply order: merge this PR, fast-forward ~/projects/kipi-system so it holds tests/test_investigator_agent_startup.py, then apply. Applied earlier, rule_gate finds no enforcer and reverts ryan.md's preamble, dropping the deny line.",
  "edits": [
   {
    "file": ".claude/agents/sancho.md",

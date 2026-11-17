@@ -25,7 +25,7 @@ REPO = Path(__file__).resolve().parents[3]
 RULES = REPO / ".claude" / "rules"
 
 # Patterns that match every file: a rule carrying one is always-on whatever it claims.
-CATCH_ALL = {"**/*", "**", "*"}
+CATCH_ALL = {"*", "**", "**/*", "**/**"}  # same set as the budget audit's CATCH_ALL_PATTERNS
 
 # Page sources, shared by the two design rules. Repo-wide on purpose: these rules ship to
 # instances by `kipi update`, and an instance's public pages are not under sites/. The old
@@ -54,7 +54,8 @@ SCOPED = {
     "wiring-check.md": (
         "RULE-2026-11-17-SCOPE-WIRING",
         {"plugins/**", ".claude/**", "**/*.py", "**/*.sh", "**/*.js", "**/*.ts",
-         "**/*.plist", "**/hooks.json", ".mcp.json", "**/canonical/**", "agent-pipeline/**"},
+         "**/*.plist", "**/hooks.json", ".mcp.json", "**/canonical/**", "agent-pipeline/**",
+         "**/*.json", "**/*.yml", "**/*.yaml"},
     ),
 }
 
@@ -114,6 +115,32 @@ def test_scoped_rules_name_this_enforcer():
         text = (RULES / name).read_text()
         assert f"Rule-ID: {rule_id}" in text, f"{name} lost its Rule-ID line"
         assert "test_rule_path_scope.py" in text, f"{name} no longer names its enforcer"
+
+
+def _budget_audit():
+    import importlib.util
+    path = REPO / "q-system" / ".q-system" / "scripts" / "instruction-budget-audit.py"
+    spec = importlib.util.spec_from_file_location("instruction_budget_audit", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_budget_audit_ignores_globs(tmp_path):
+    """The audit counted a globs:-scoped rule as conditional while Claude Code loaded it
+    every session. A planted globs-only rule must count as always-on, a paths: one not."""
+    audit = _budget_audit()
+    body = "\n# R\n\nline\n"
+    globs_rule = tmp_path / "g.md"
+    globs_rule.write_text('---\ndescription: d\nglobs:\n  - "**/*.html"\n---' + body)
+    paths_rule = tmp_path / "p.md"
+    paths_rule.write_text('---\ndescription: d\npaths:\n  - "**/*.html"\n---' + body)
+    star_rule = tmp_path / "s.md"
+    star_rule.write_text('---\ndescription: d\npaths:\n  - "*"\n---' + body)
+    assert audit.is_effectively_always_on(str(globs_rule))
+    assert not audit.is_effectively_always_on(str(paths_rule))
+    assert audit.is_effectively_always_on(str(star_rule))
+    assert audit.CATCH_ALL_PATTERNS == CATCH_ALL
 
 
 def test_the_check_goes_red_on_each_planted_defect():
