@@ -129,16 +129,17 @@ def parse_paths_from_frontmatter(path):
         return None
 
     frontmatter = content[3:end]
-    # Check for either paths: or globs: (both are scoping keys in Claude Code)
-    has_scoping = re.search(r"^(paths|globs):", frontmatter, re.MULTILINE)
+    # paths: ONLY. Claude Code ignores `globs:`, so a rule scoped under it loads every
+    # session. Counting it as conditional hid design-auto-invoke.md's 47 lines from this
+    # budget until 2026-11-17 (ASK-5377); test_rule_path_scope.py pins the key.
+    has_scoping = re.search(r"^paths:", frontmatter, re.MULTILINE)
     if not has_scoping:
         return None
 
-    # Extract list values from whichever key is present
     paths = []
     in_list = False
     for line in frontmatter.splitlines():
-        if re.match(r"^(paths|globs):\s*$", line):
+        if re.match(r"^paths:\s*$", line):
             in_list = True
             continue
         if in_list:

@@ -1,3 +1,22 @@
+---
+description: Done means wired end to end, with load-path proof
+paths:
+  - "plugins/**"
+  - ".claude/**"
+  - "**/*.py"
+  - "**/*.sh"
+  - "**/*.js"
+  - "**/*.ts"
+  - "**/*.plist"
+  - "**/hooks.json"
+  - ".mcp.json"
+  - "**/canonical/**"
+  - "agent-pipeline/**"
+---
+
+Rule-ID: RULE-2026-11-17-SCOPE-WIRING
+Enforced by: q-system/.q-system/tests/test_rule_path_scope.py
+
 # Definition of Done: Fully Wired (ENFORCED)
 
 No implementation task is "done" until every change is connected end-to-end.

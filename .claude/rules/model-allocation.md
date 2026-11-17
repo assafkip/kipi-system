@@ -1,3 +1,14 @@
+---
+description: Which tier owns which agent work; the IDs live in a validator script
+paths:
+  - ".claude/agents/**"
+  - "**/agents/*.md"
+  - "validate-separation.py"
+---
+
+Rule-ID: RULE-2026-11-17-SCOPE-MODEL
+Enforced by: q-system/.q-system/tests/test_rule_path_scope.py (pytest)
+
 # Model Allocation Policy (ENFORCED by validator script)
 
 The deterministic validator is `validate-separation.py` Gate 1.1b — a script run

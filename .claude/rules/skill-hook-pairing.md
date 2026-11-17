@@ -1,3 +1,17 @@
+---
+description: Every skill with deterministic rules ships a paired hook
+paths:
+  - "plugins/**"
+  - "**/SKILL.md"
+  - "**/hooks.json"
+  - ".claude/settings*.json"
+  - ".claude/skills/**"
+  - "q-system/.q-system/scripts/**"
+---
+
+Rule-ID: RULE-2026-11-17-SCOPE-SKILLHOOK
+Enforced by: q-system/.q-system/tests/test_rule_path_scope.py
+
 # Skill-Hook Pairing (ENFORCED)
 
 Skills generate. Hooks validate. Every skill with DETERMINISTIC rules must ship a paired hook that enforces them. A skill without its hook is an aspiration.
