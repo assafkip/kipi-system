@@ -1,0 +1,28 @@
+{
+ "schema_version": 1,
+ "slug": "investigator-lean-startup",
+ "reason": "ASK-5377 (RULE-2026-11-17-LEAN-INVESTIGATORS): sancho and ryan stop loading MCP servers that cannot serve an investigation. Generated from q-system/.q-system/investigator-startup.json. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/investigator-lean-startup.json --root $HOME. Apply order: merge this PR, fast-forward ~/projects/kipi-system so it holds tests/test_investigator_agent_startup.py, then apply. Applied earlier, rule_gate finds no enforcer and reverts ryan.md's preamble, dropping the deny line.",
+ "edits": [
+  {
+   "file": ".claude/agents/sancho.md",
+   "op": "insert_after",
+   "anchor": "memory: user\n",
+   "insert": "disallowedTools: mcp__base44, mcp__claude_ai_Era_Context, mcp__claude_ai_Resend, mcp__claude_ai_Claude_Docs, mcp__claude_ai_Google_Calendar, mcp__publer, mcp__google-home, mcp__easel, mcp__computer-use, mcp__supabase, mcp__plugin_kipi-notebooklm_notebooklm, mcp__plugin_chrome-devtools-mcp_chrome-devtools, mcp__claude_ai_Anthropic_Economic_Index, mcp__claude_ai_Supabase, mcp__claude_ai_Vercel, mcp__plugin_vercel_vercel, mcp__claude_ai_Canva, mcp__claude_ai_Figma, mcp__claude_ai_Replit, mcp__claude_ai_Claude_Academy, mcp__plugin_small-business_shopify, mcp__plugin_posthog_posthog\n",
+   "reason": "Deny the MCP servers no subagent called and no investigation can use; research servers stay reachable."
+  },
+  {
+   "file": ".claude/agents/ryan.md",
+   "op": "insert_after",
+   "anchor": "memory: user\n",
+   "insert": "disallowedTools: mcp__base44, mcp__claude_ai_Era_Context, mcp__claude_ai_Resend, mcp__claude_ai_Claude_Docs, mcp__claude_ai_Google_Calendar, mcp__publer, mcp__google-home, mcp__easel, mcp__computer-use, mcp__supabase, mcp__plugin_kipi-notebooklm_notebooklm, mcp__plugin_chrome-devtools-mcp_chrome-devtools, mcp__claude_ai_Anthropic_Economic_Index, mcp__claude_ai_Supabase, mcp__claude_ai_Vercel, mcp__plugin_vercel_vercel, mcp__claude_ai_Canva, mcp__claude_ai_Figma, mcp__claude_ai_Replit, mcp__claude_ai_Claude_Academy, mcp__plugin_small-business_shopify, mcp__plugin_posthog_posthog\n",
+   "reason": "Deny the MCP servers no subagent called and no investigation can use; research servers stay reachable."
+  },
+  {
+   "file": ".claude/agents/ryan.md",
+   "op": "insert_before",
+   "anchor": "# Ryan\n\nYou are Ryan.",
+   "insert": "Rule-ID: RULE-2026-11-17-LEAN-INVESTIGATORS\nEnforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_investigator_agent_startup.py\n\n",
+   "reason": "rule_gate judges the edited preamble as a new section: it needs a Rule-ID and a wired enforcer, or the gate strips the frontmatter. sancho.md already carries RULE-2026-11-14-SANCHO with a wired enforcer."
+  }
+ ]
+}

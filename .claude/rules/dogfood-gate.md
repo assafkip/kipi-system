@@ -1,3 +1,16 @@
+---
+description: Public pages clear our own design gate before they ship
+paths:
+  - "**/*.html"
+  - "**/*.css"
+  - "**/*.tsx"
+  - "**/*.jsx"
+  - "plugins/kipi-design/**"
+---
+
+Rule-ID: RULE-2026-11-17-SCOPE-DOGFOOD
+Enforced by: q-system/.q-system/tests/test_rule_path_scope.py
+
 # Dogfood Gate: every public page clears our own design bar before it ships (ENFORCED)
 
 We build a tool whose job is catching bad / AI-generated web design. A page we
