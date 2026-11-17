@@ -8,7 +8,8 @@ paths:
 ---
 
 Rule-ID: RULE-2026-11-17-SCOPE-DESIGN
-Enforced by: q-system/.q-system/tests/test_rule_path_scope.py
+Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py
+That is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.
 
 The scoping call is executable, not a judgement call left to the model:
 `is_public_facing_page()` in the kipi-design plugin's `dogfood_gate.py` hook decides

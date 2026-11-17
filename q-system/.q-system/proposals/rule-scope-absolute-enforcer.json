@@ -1,0 +1,42 @@
+{
+ "schema_version": 1,
+ "slug": "rule-scope-absolute-enforcer",
+ "reason": "ASK-5377 step 3: the five path-scoped rules name their enforcer by the skeleton's absolute path. Apply with: bash q-system/.q-system/scripts/apply-claude-changes.sh q-system/.q-system/proposals/rule-scope-absolute-enforcer.json --root <tree>",
+ "edits": [
+  {
+   "file": ".claude/rules/design-auto-invoke.md",
+   "op": "replace",
+   "anchor": "Enforced by: q-system/.q-system/tests/test_rule_path_scope.py\n",
+   "insert": "Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py\nThat is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.\n",
+   "reason": "A tree-relative enforcer resolves against an instance's own q-system, which can lag its rules (fractional-cxo: rules 2026-11-14, tests 2026-09-20); rule_gate then strips the paths: preamble and the rule goes always-on. PR #834 review round 1, major 1."
+  },
+  {
+   "file": ".claude/rules/dogfood-gate.md",
+   "op": "replace",
+   "anchor": "Enforced by: q-system/.q-system/tests/test_rule_path_scope.py\n",
+   "insert": "Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py\nThat is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.\n",
+   "reason": "A tree-relative enforcer resolves against an instance's own q-system, which can lag its rules (fractional-cxo: rules 2026-11-14, tests 2026-09-20); rule_gate then strips the paths: preamble and the rule goes always-on. PR #834 review round 1, major 1."
+  },
+  {
+   "file": ".claude/rules/skill-hook-pairing.md",
+   "op": "replace",
+   "anchor": "Enforced by: q-system/.q-system/tests/test_rule_path_scope.py\n",
+   "insert": "Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py\nThat is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.\n",
+   "reason": "A tree-relative enforcer resolves against an instance's own q-system, which can lag its rules (fractional-cxo: rules 2026-11-14, tests 2026-09-20); rule_gate then strips the paths: preamble and the rule goes always-on. PR #834 review round 1, major 1."
+  },
+  {
+   "file": ".claude/rules/model-allocation.md",
+   "op": "replace",
+   "anchor": "Enforced by: q-system/.q-system/tests/test_rule_path_scope.py (pytest)",
+   "insert": "Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py (pytest)\nThat is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.",
+   "reason": "A tree-relative enforcer resolves against an instance's own q-system, which can lag its rules (fractional-cxo: rules 2026-11-14, tests 2026-09-20); rule_gate then strips the paths: preamble and the rule goes always-on. PR #834 review round 1, major 1."
+  },
+  {
+   "file": ".claude/rules/wiring-check.md",
+   "op": "replace",
+   "anchor": "Enforced by: q-system/.q-system/tests/test_rule_path_scope.py\n",
+   "insert": "Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py\nThat is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.\n",
+   "reason": "A tree-relative enforcer resolves against an instance's own q-system, which can lag its rules (fractional-cxo: rules 2026-11-14, tests 2026-09-20); rule_gate then strips the paths: preamble and the rule goes always-on. PR #834 review round 1, major 1."
+  }
+ ]
+}

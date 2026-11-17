@@ -9,7 +9,8 @@ paths:
 ---
 
 Rule-ID: RULE-2026-11-17-SCOPE-DOGFOOD
-Enforced by: q-system/.q-system/tests/test_rule_path_scope.py
+Enforced by: ~/projects/kipi-system/q-system/.q-system/tests/test_rule_path_scope.py
+That is the skeleton's own test, `q-system/.q-system/tests/test_rule_path_scope.py`, named by absolute path so an instance whose q-system lags its rules still finds it.
 
 # Dogfood Gate: every public page clears our own design bar before it ships (ENFORCED)
 
