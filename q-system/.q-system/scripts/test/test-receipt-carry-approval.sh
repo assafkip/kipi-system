@@ -127,7 +127,12 @@ MERGE_EVIL_NEWFILE="$(mkmerge evilnew 1 'echo hook > "$MR/pkg/new-hook.sh"')"
 # empty exclude list, which died under set -u on /bin/bash 3.2). WS re-indents a PR line,
 # which patch-id --stable cannot see. COMPACT rewrites plugin.json with another layout
 # (what pr-restack.py's json.dump does) and must still carry.
-MERGE_NOPJ="$(mkmerge nopj 1 'git -C "$MR" checkout -q "$MREV" -- pkg/.claude-plugin/plugin.json')"
+m checkout -q -B main2 "$MREV~1"; perl -i -pe 's/.*/MAIN2 LINE/ if $. == 25' "$MR/mainfile.txt"; m commit -q -am "main2 moves, plugin.json untouched"; M2TIP="$(m rev-parse HEAD)"
+MERGE_NOPJ="$(m checkout -q -B nopj "$MREV"; m merge -q --no-edit "$M2TIP" >/dev/null 2>&1; m rev-parse HEAD)"
+# Round 2 of the fix PR: main changed a PR-owned file and the merge kept the reviewed side
+# (reverting main's change). B alone cannot see it: head equals reviewed. REVERT keeps the PR's plugin.json.
+MERGE_UNDO="$(mkmerge undo 1 'git -C "$MR" checkout -q "$MREV~1" -- pr.txt')"
+MERGE_REVERT="$(mkmerge revert 1 'git -C "$MR" checkout -q "$MREV" -- pkg/.claude-plugin/plugin.json')"
 MERGE_WS="$(mkmerge ws 1 'perl -i -pe "s/^/ /g if \$. == 3" "$MR/pr.txt"')"
 MERGE_COMPACT="$(mkmerge compact 1 'printf "{\"name\":\"p\",\"version\":\"1.0.4\",\"x\":1}\n" > "$PJ"')"
 m checkout -q -B side "$MREV"; echo s > "$MR/side.txt"; m add -A; m commit -q -m "side, never on main"; SIDE="$(m rev-parse HEAD)"
@@ -138,7 +143,9 @@ check_eq "a merge that edits a PR file is NOT carriable"             "other" "$(
 check_eq "a merge that changes plugin.json beyond the version is NOT" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_JSON" main)"
 check_eq "a merge that adds a new file is NOT carriable"             "other" "$(delta_kind "$MR" "$MREV" "$MERGE_EVIL_NEWFILE" main)"
 check_eq "a merge touching no plugin.json carries (empty exclude list, /bin/bash 3.2)" "merge-only" \
-  "$(RECEIPT_CARRY_BASE_REF=main /bin/bash "$SCRIPT" --delta-kind "$MR" "$MREV" "$MERGE_NOPJ" 2>/dev/null)"
+  "$(RECEIPT_CARRY_BASE_REF=main2 /bin/bash "$SCRIPT" --delta-kind "$MR" "$MREV" "$MERGE_NOPJ" 2>/dev/null)"
+check_eq "a merge that undoes the PR's own change is NOT carriable" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_UNDO" main)"
+check_eq "a merge that reverts main's change to a PR-owned file is NOT carriable" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_REVERT" main)"
 check_eq "re-indenting a PR line is NOT carriable (patch-id would call it equal)" "other" "$(delta_kind "$MR" "$MREV" "$MERGE_WS" main)"
 check_eq "plugin.json in another layout, same fields, still carries" "merge-only" "$(delta_kind "$MR" "$MREV" "$MERGE_COMPACT" main)"
 check_eq "a merge of a branch that is not on main is NOT"            "other" "$(delta_kind "$MR" "$MREV" "$MERGE_OFFMAIN" main)"
@@ -428,20 +435,28 @@ PY
   cmutate "converge carries after the branch moved" \
     's.replace(CALL, "", 1).replace("    say \"receipt: pushed --", "    approval_carry \"$tree\" \"$sha\"\n    say \"receipt: pushed --", 1)'
   mutate() {  # mutate <label> <sed-expr>
-    local m="$TMP/mutant.sh"
+    # THE MUTANT MUST BE NAMED receipt-carry-approval.sh (PR #845 review r2). converge's
+    # receipt_only_ahead runs "$SCRIPT_DIR/receipt-carry-approval.sh", and the harness sets
+    # SCRIPT_DIR to the mutant's directory. A file called mutant.sh left that path empty,
+    # so converge answered "refuse" for every mutant and all of them read as killed,
+    # whatever the sed changed. The control below proves a no-op mutant now passes.
+    local md="$TMP/mut.$RANDOM"; mkdir -p "$md"; local m="$md/receipt-carry-approval.sh"
     sed "$2" "$SCRIPT" > "$m"
-    if cmp -s "$m" "$SCRIPT"; then fail "mutant '$1' changed nothing -- the sed no longer matches"; return; fi
+    if [ "$1" != "control" ] && cmp -s "$m" "$SCRIPT"; then fail "mutant '$1' changed nothing -- the sed no longer matches"; return; fi
     if RECEIPT_CARRY_SCRIPT="$m" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
-      fail "mutant '$1' SURVIVED"
+      if [ "$1" = "control" ]; then pass "control: a no-op mutant survives (the harness can say SURVIVED)"; else fail "mutant '$1' SURVIVED"; fi
     else
-      pass "mutant '$1' killed"
+      if [ "$1" = "control" ]; then fail "control: a no-op mutant was reported killed, so every kill below proves nothing"; else pass "mutant '$1' killed"; fi
     fi
   }
+  mutate "control" '$a\
+# no-op'
   mutate "delta guard removed"        's/\[ "\$kind" = "receipt-only" \]/true/'
   mutate "approval guard removed"     's/\[ "\$state" = "success" \]/true/'
   mutate "no-overwrite guard removed" 's/\[ "\$head_state" = "none" \]/true/'
-  mutate "merge-only: main-side equality removed (A)" 's/b="\$(_tree_entry "\$tree" "\$other" "\$f")"/b="$a"/'
-  mutate "merge-only: reviewed-bytes equality removed (B)" 's/b="\$(_tree_entry "\$tree" "\$rrev" "\$f")"/b="$a"/'
+  mutate "merge-only: PR-owned path edit/undo check removed (A)" 's/_in "\$f" "\$own" \&\& return 1 # A/true/'
+  mutate "merge-only: new-or-changed non-PR path check removed (B)" 's/_in "\$f" "\$own" || return 1 # B/true/'
+  mutate "merge-only: main-also-changed check removed (C)" 's/^  done < <(git -C "\$tree" diff --name-only --no-renames "\$base_old" "\$other"/  done < <(true; git -C "$tree" diff --name-only --no-renames "$rrev" "$rrev"/'
   mutate "merge-only: on-main check removed"      's/git -C "\$tree" merge-base --is-ancestor "\$other" "\$ref" 2>\/dev\/null || return 1/true/'
   mutate "merge-only: plugin.json JSON check removed" 's/_json_same_sans_version "\$tree" "\$rrev" "\$head" "\$f" || return 1/true/'
 fi

@@ -137,24 +137,20 @@ receipt_paths_only() {
 # only main's files and the plugin.json version line had moved. delta_kind called that
 # `other`, so nothing picked it up.
 #
-# HOW IT TELLS "PR's own change unchanged": by tree entries (mode + object id), never by a
+# HOW IT TELLS "PR's own change unchanged": by path sets and tree identity, never by a
 # patch hash. Review round 1 of the fix PR: `git patch-id --stable` ignores whitespace, so
 # a merge that re-indents a reviewed Python line hashed equal and would have carried an
 # approval onto code the reviewer never read. With P = the PR's own paths
 # (merge-base(reviewed, other) -> reviewed), both directions must hold:
-#   A) every path head differs from reviewed on is NOT in P and equals `other` (main's file)
-#   B) every path head differs from `other` on IS in P and equals reviewed (the reviewed bytes)
+#   A) no path head differs from reviewed on is in P (an edited or undone PR file)
+#   B) every path head differs from `other` on IS in P (so it equals reviewed, by A)
+#   C) no PR-owned path was also changed by main
 # So a PR file edited, a file added, or a main change reverted all decline. A PR file that
 # main also touched declines too: that is a merge needing a reviewer, not a carry.
 # A moved .claude-plugin/plugin.json is exempt from A and B when, with "version" dropped,
 # its parsed JSON is equal at reviewed and head (the parse, not the layout: pr-restack.py's
 # json.dump reformats the file, which a line grep refused).
 # Unknown is not carriable: every failed read returns 1.
-_tree_entry() {  # _tree_entry <tree> <commit> <path>: "mode oid" or ABSENT
-  local e; e="$(git -C "$1" ls-tree "$2" -- "$3" 2>/dev/null)" || { echo UNREADABLE; return; }
-  [ -n "$e" ] || { echo ABSENT; return; }
-  printf '%s\n' "$e" | awk '{print $1, $3}'
-}
 _json_same_sans_version() {  # _json_same_sans_version <tree> <sha-a> <sha-b> <path>
   python3 - "$@" <<'PY' 2>/dev/null
 import json, subprocess, sys
@@ -168,7 +164,7 @@ PY
 }
 merge_only() {
   local tree="$1" reviewed="$2" head="$3" ref="$4" rrev line other="" nparents=0 p
-  local base_old own moved f vpaths="" a b
+  local base_old own moved f vpaths=""
   rrev="$(git -C "$tree" rev-parse --verify "$reviewed^{commit}" 2>/dev/null)" || return 1
   line="$(git -C "$tree" rev-list --parents -n 1 "$head" 2>/dev/null)" || return 1
   for p in $line; do
@@ -192,23 +188,35 @@ merge_only() {
 $f"
   done <<< "$moved"
   _in() { printf '%s\n' "$2" | grep -Fxq -- "$1"; }   # exact whole-line match
+  # C) a PR-owned path that main ALSO changed needs a reviewer, never a carry (PR #845
+  # review r2: a merge that resolves to the reviewed side reverts main's change, and A and
+  # B both pass because head equals reviewed). The exempt plugin.json is the one path
+  # both sides legitimately change; it is cleared above by the JSON check when it moved.
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    [ "$f" = __FAIL__ ] && return 1
+    _in "$f" "$vpaths" && continue
+    _in "$f" "$own" && return 1
+  done < <(git -C "$tree" diff --name-only --no-renames "$base_old" "$other" 2>/dev/null || echo __FAIL__)
   # A) head vs reviewed
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ "$f" = __FAIL__ ] && return 1   # a failed diff must not read as "no differing path"
     _in "$f" "$vpaths" && continue
-    _in "$f" "$own" && return 1
-    a="$(_tree_entry "$tree" "$head" "$f")"; b="$(_tree_entry "$tree" "$other" "$f")"
-    [ "$a" != UNREADABLE ] && [ "$a" = "$b" ] || return 1
+    # A PR-owned path that differs from the reviewed bytes is an edit (or an undo) of the
+    # PR. Any other differing path must equal main's: loop B enforces that for every path
+    # head differs from `other` on, so no equality read is repeated here (a mutant that
+    # removed the repeat survived, which proved it dead code).
+    _in "$f" "$own" && return 1 # A
   done < <(git -C "$tree" diff --name-only --no-renames "$rrev" "$head" 2>/dev/null || echo __FAIL__)
   # B) head vs the main side
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     [ "$f" = __FAIL__ ] && return 1
     _in "$f" "$vpaths" && continue
-    _in "$f" "$own" || return 1
-    a="$(_tree_entry "$tree" "$head" "$f")"; b="$(_tree_entry "$tree" "$rrev" "$f")"
-    [ "$a" != UNREADABLE ] && [ "$a" = "$b" ] || return 1
+    # Differs from main and is not the PR's own path: an addition or a change nobody read.
+    # (An own path equals the reviewed bytes here, because loop A refused any that moved.)
+    _in "$f" "$own" || return 1 # B
   done < <(git -C "$tree" diff --name-only --no-renames "$other" "$head" 2>/dev/null || echo __FAIL__)
   return 0
 }
