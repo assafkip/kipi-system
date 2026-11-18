@@ -706,9 +706,10 @@ export DEFAULT_BRANCH
 # `kipi work --dry`) saw no pinned remote for any client repo and printed "290
 # issues REFUSED (remote,credentials,branch-protection)" for repos the dispatcher
 # enters. That false alarm happened twice (ASK-3636 was canceled as operator
-# error on 2026-11-01), which makes the instrument the defect. Same hermeticity
-# rule as the dispatcher: a test that points KIPI_SKEL or KIPI_DISPATCH_REGISTRY
-# at a fixture must never read the founder's live overlay.
+# error on 2026-11-01), which makes the instrument the defect. Same default path
+# and explicit-value-wins rule as the dispatcher, plus ONE extra clause: this
+# script's own fixture seam is KIPI_SKEL, which the dispatcher never uses. A test
+# that sets KIPI_SKEL or KIPI_DISPATCH_REGISTRY must never read the live overlay.
 dispatch_targets_default() {
   if [ -n "${KIPI_DISPATCH_TARGETS+x}" ]; then
     printf '%s' "$KIPI_DISPATCH_TARGETS"
