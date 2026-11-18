@@ -19,9 +19,10 @@ Each was measured on 2026-08-17 against the real corpus before any code existed
 them non-negotiable, and a prose contract nobody executes is how two callers end
 up computing two different numbers under one name.
 
-- **Tokenization: one vector per document, and the record NAMES the shape.** The
-  draft is read whole, in windows of at most WINDOW_TOKENS body tokens
-  (`windowed-512`, ASK-5358 part 1); each exemplar stays one vector truncated at
+- **Tokenization: the record NAMES the shape.** The draft is read whole, in
+  windows of at most WINDOW_TOKENS body tokens (`windowed-512`, ASK-5358 part 1),
+  and `authorship` is the MIN over the window scores (`authorship_median` is the
+  other key and is not the headline); each exemplar stays one vector truncated at
   512 tokens. A backend that cannot window scores the draft the old way,
   `single-document-512`, and says so. The chunk shape is NOT the contract and the
   difference is not cosmetic: short-band AUC is 0.883 single and 0.702 chunked
@@ -75,8 +76,10 @@ import statistics
 MODEL_ID = "rrivera1849/LUAR-MUD"
 
 # The record carries this string so a stored number can always be read back
-# against the shape that produced it. Changing the shape means changing this
-# value, which makes the change visible in every consumer instead of silent.
+# against the shape that produced it. This names the single-document shape (the
+# exemplars, the reference, a backend that cannot window); the windowed draft read
+# is named by TOKENIZATION_WINDOWED below, so a new shape adds a name rather than
+# going silent in every consumer.
 TOKENIZATION = "single-document-512"
 MAX_TOKENS = 512
 
@@ -325,11 +328,13 @@ def windowed_reply(text, offsets, encode, documents, count_tokens):
 
 
 def embed(texts, backend):
-    """THE embed site. Every vector in this system is produced here.
+    """THE single-document embed site: exemplars, the reference, and the draft on a
+    backend that cannot window. The windowed draft read does NOT pass through here
+    (`windowed_reply` calls `backend.encode`), and its shape is named by
+    TOKENIZATION_WINDOWED, not by TOKENIZATION.
 
     Single-document: each text becomes exactly ONE document, so the list handed
-    to the backend has the same length as `texts`. A caller that wants chunking
-    has to change this function, which changes the tokenization name with it.
+    to the backend has the same length as `texts`.
     """
     documents = [str(t) for t in texts]
     vectors = backend.encode(documents)
