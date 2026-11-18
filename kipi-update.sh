@@ -536,6 +536,28 @@ instance_ahead_scan() {
   local line rel inst_file skel_file shown detail
   while IFS= read -r line; do
     case "$line" in
+      '*deleting'*)
+        # Codex P1 on PR 836: an instance-only engine file (a rules file, a
+        # fixture) is a DELETION record, not a '>f' one, so the counter never
+        # saw it and the real run's --delete removed it silently. Only the engine
+        # path refuses on a deletion; every other plugin's deletions stay quiet.
+        rel="${line#*deleting}"
+        rel="${rel#"${rel%%[! ]*}"}"
+        shown="$rel"
+        [ -n "$inst_rel" ] && shown="$inst_rel/$rel"
+        case "$shown" in
+          */) continue ;;
+          plugins/kipi-core/voiceloop/*) ;;
+          *) continue ;;
+        esac
+        git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
+        echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
+        INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
+        INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+        VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1))
+        INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    - $name: $shown (instance-only file; the sync would delete it)"
+        continue ;;
       '>f+++++++++'*) continue ;;
       '>f'*) ;;
       *) continue ;;
@@ -587,7 +609,7 @@ instance_ahead_preflight() {
     while IFS= read -r -d '' plugin_name; do
       # shellcheck disable=SC2046
       instance_ahead_scan "$SKELETON_PLUGIN_ROOT/$plugin_name" "$path/plugins/$plugin_name" \
-        "plugins/$plugin_name" "plugins/$plugin_name" "$path" "$name" $(plugin_copy_rsync_flags)
+        "plugins/$plugin_name" "plugins/$plugin_name" "$path" "$name" --delete $(plugin_copy_rsync_flags)
     done < <(managed_plugin_names)
   fi
   for kind in agents output-styles rules; do

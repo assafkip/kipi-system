@@ -206,9 +206,22 @@ assert_a_behind_engine_file_still_syncs() {
   echo "PASS: an engine file at an older skeleton version (behind, not ahead) still syncs"
 }
 
+# Codex P1 on PR 836: a tracked instance-only engine file is a deletion record.
+assert_an_instance_only_engine_file_refuses_instead_of_being_deleted() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"; add_voiceloop "$work" older
+  printf 'local rules\n' > "$inst/plugins/kipi-core/voiceloop/new-rules.txt"
+  ( cd "$inst" && G add -A -f plugins && G commit -qm inst-only )
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  grep -q 'voiceloop engine' "$work/out" || fail "an instance-only engine file did not refuse: $(tail -n 12 "$work/out")"
+  [ -f "$inst/plugins/kipi-core/voiceloop/new-rules.txt" ] || fail "the instance-only engine file was deleted"
+  echo "PASS: a tracked instance-only engine file refuses the sync instead of being deleted"
+}
+
 assert_the_dry_run_names_every_ahead_file_and_only_those
 assert_the_refuse_flag_abandons_before_any_commit_or_write
 assert_without_the_flag_the_sync_lands_and_the_summary_still_says_so
 assert_the_report_depends_on_the_shipped_blob_check
 assert_an_ahead_engine_file_refuses_without_any_flag
 assert_a_behind_engine_file_still_syncs
+assert_an_instance_only_engine_file_refuses_instead_of_being_deleted
