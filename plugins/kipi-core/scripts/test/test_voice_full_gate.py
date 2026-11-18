@@ -110,6 +110,13 @@ def test_part_that_examined_nothing_refuses(tmp_path):
     assert not v.ok and v.verdict == "OUTAGE"
 
 
+def test_partial_part_is_a_note_not_a_refusal(tmp_path):
+    """The part's owner decides whether partial is an outage (ASK-5411 for the critic)."""
+    parts = dict(ALL_RAN, critic={"ran": 8, "of": 15})
+    v = _gate().check("a post", "linkedin", engine_root=_stub_engine(tmp_path, _result(parts=parts)))
+    assert v.ok and "partial: part critic ran 8 of 15" in v.notes
+
+
 def test_no_required_parts_at_all_refuses(tmp_path):
     """An empty parts map is how an ungated surface or a manifest that did not load comes
     back from evaluate. Zero parts ran, so nothing was checked."""

@@ -48,6 +48,10 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+# The part-count rule lives in the engine package, shared with the critic (ASK-5411).
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from voiceloop import part_runs  # noqa: E402
+
 ENGINE_ENV = "KIPI_VOICE_ENGINE_ROOT"
 PYTHON_ENV = "KIPI_VOICE_PYTHON"
 # Measured 2026-11-18: one linkedin paragraph took 71 s end to end (LUAR plus 15 critic
@@ -111,12 +115,15 @@ def judge(result: dict, surface: str) -> Verdict:
     parts = dict(result.get("parts") or {})
     outages = [list(o) for o in (result.get("outages") or [])]
     reasons = ["hard: %s" % h for h in hard]
-    if not parts:
+    runs = part_runs.assess(parts)
+    if runs.empty:
         reasons.append("no required part ran for surface %r: nothing was checked" % surface)
-    for name, counts in parts.items():
-        ran = (counts or {}).get("ran", 0)
-        if not isinstance(ran, int) or ran <= 0:
-            reasons.append("part %s ran 0 of %s" % (name, (counts or {}).get("of", "?")))
+    reasons += ["part %s ran 0 of %s" % (n, of) for n, of in runs.zero]
+    # PARTIAL is reported, not refused, here. why: a part's own owner decides whether its
+    # partial run is an outage, and reports it as ran 0 or an outage row when it is (the
+    # critic's quality wave does that under ASK-5411). Measured 2026-11-18: one live run had
+    # critic at 8 of 15. Refusing every partial here would refuse on the critic's behalf.
+    notes += ["partial: part %s ran %s of %s" % p for p in runs.partial]
     for o in outages:
         reasons.append("outage %s" % " ".join(str(x) for x in o))
     if hard:

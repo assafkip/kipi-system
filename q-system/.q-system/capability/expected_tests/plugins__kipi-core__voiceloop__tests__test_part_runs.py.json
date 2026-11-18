@@ -1,0 +1,4 @@
+{
+ "path": "plugins/kipi-core/voiceloop/tests/test_part_runs.py",
+ "runner": "pytest"
+}
