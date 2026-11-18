@@ -100,6 +100,58 @@ SHAPES = (
         "the consequence as a mechanism, not a metaphor. Say what breaks and how, "
         "instead of redefining the thing as something it is not.",
     ),
+    # ASK-5427, 2026-11-18, founder: "Do 1+2". Seven habits from the unslop skill's
+    # "Claude's own measured habits" list (counted over 4.5M words of Claude Code
+    # prose). Each hits 0 of 170 rows in `voice/exemplars.jsonl`, measured the same day,
+    # and the sweep test on the instance side re-runs that on exemplars, organic posts
+    # and writing examples. Deliberately NOT here: actually (28 hits in his corpus),
+    # rather than (30), the real, genuinely, bottom line, not just. Blocking those
+    # would block him, which is the standing scar of list gates. `worth it`, `worth
+    # keeping` and a plain `drives the car` stay legal: every pattern below needs the
+    # habit's own second word.
+    (
+        "slop-load-bearing",
+        re.compile(r"(?i)\bload[- ]bearing\b"),
+        "the plain phrase. Name the claim this rests on or the constraint that "
+        "matters here.",
+    ),
+    (
+        "slop-cleanly",
+        re.compile(r"(?i)\bcleanly\b"),
+        "the verb alone, or the observable result. Say what happened (exits with "
+        "code 0, leaves no lock file) instead of grading it.",
+    ),
+    (
+        "slop-fundamentally",
+        re.compile(r"(?i)\bfundamentally\b"),
+        "the specific difference. Name what differs, or drop the intensifier.",
+    ),
+    (
+        "slop-worth-preamble",
+        re.compile(r"(?i)\bworth\s+(?:flagging|noting|surfacing|stating|"
+                   r"being\s+(?:precise|clear|explicit)|"
+                   r"a\s+(?:look|glance|quick\s+check)|checking)\b"),
+        "the point itself. State the finding, or give the action (check whether the "
+        "index went stale), instead of announcing that it is worth making.",
+    ),
+    (
+        "slop-single-superlative",
+        re.compile(r"(?i)\bthe\s+single\s+(?:most|biggest|highest)\b"),
+        "the thing without crowning it first. State the number or the cause and "
+        "let the reader rank it.",
+    ),
+    (
+        "slop-belt-and-suspenders",
+        re.compile(r"(?i)\bbelt[- ]and[- ]suspenders\b"),
+        "the literal fact: a second guard that fires if the first one fails.",
+    ),
+    (
+        "slop-totalizer-crown",
+        re.compile(r"(?i)\b(?:shapes|drives|governs|gates|determines)\s+"
+                   r"(?:everything(?:\s+else)?|the\s+rest|the\s+whole\s+thing)\b"),
+        "the plain claim. Name what it determines and how, for example 'the open "
+        "question is whether Redis failover holds'.",
+    ),
 )
 
 
