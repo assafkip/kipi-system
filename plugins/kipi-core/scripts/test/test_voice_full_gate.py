@@ -238,3 +238,17 @@ def test_live_forced_authorship_outage_refused():
     assert not v.ok
     assert v.verdict == "OUTAGE" and not v.hard, (v.hard, v.reasons)
     assert v.parts.get("authorship", {}).get("ran") == 0, (v.parts, v.reasons)
+
+
+@pytest.mark.parametrize("bad", [{"hard": 1}, {"notes": 3}, {"parts": ["x"]}, {"outages": 5},
+                                 {"outages": [7]}])
+def test_malformed_result_field_is_an_outage(tmp_path, bad):
+    """Codex P2 on #839: a malformed field raised TypeError out of check()."""
+    v = _gate().check("a post", "linkedin", engine_root=_stub_engine(tmp_path, _result(**bad)))
+    assert v.verdict == "OUTAGE" and not v.ok, v.reasons
+
+
+def test_cli_malformed_result_prints_json_and_exits_2(tmp_path):
+    out = _cli(tmp_path, _stub_engine(tmp_path, _result(hard=1)))
+    assert out.returncode == 2, out.stderr
+    assert json.loads(out.stdout)["verdict"] == "OUTAGE"

@@ -59,8 +59,10 @@ def assess(parts) -> PartRuns:
         else:
             ran, of = None, None
         ran, of = _count(ran), _count(of)
-        if ran is None or ran <= 0:
+        # why `of is None` is zero too (Codex P1, #839): {"ran": 1} with no total passed as
+        # complete. Under engine version skew a missing total means the count is unreadable.
+        if ran is None or ran <= 0 or of is None:
             zero.append((name, "?" if of is None else of))
-        elif of is not None and ran < of:
+        elif ran < of:
             partial.append((name, ran, of))
     return PartRuns(zero=zero, partial=partial)

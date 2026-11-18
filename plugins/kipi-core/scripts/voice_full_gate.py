@@ -169,7 +169,24 @@ def check(text: str, surface: str, *, source_text: str | None = None,
         return _outage(surface, "result is not JSON (%s)" % exc)
     if not isinstance(result, dict):
         return _outage(surface, "result is not an object")
+    bad = _malformed(result)
+    if bad:
+        # why (Codex P2, #839): {"hard": 1} raised TypeError out of check(), so a caller got
+        # an exception and the CLI a traceback with no verdict. A malformed result is an
+        # engine fault, so it is an OUTAGE like any other.
+        return _outage(surface, "result field(s) malformed: %s" % ", ".join(bad))
     return judge(result, surface)
+
+
+def _malformed(result: dict) -> list:
+    """Names of evaluate fields whose shape judge() cannot read. Absent fields are fine."""
+    bad = [k for k in ("hard", "notes") if not isinstance(result.get(k) or [], list)]
+    if not isinstance(result.get("parts") or {}, dict):
+        bad.append("parts")
+    outages = result.get("outages") or []
+    if not isinstance(outages, list) or not all(isinstance(o, (list, tuple)) for o in outages):
+        bad.append("outages")
+    return bad
 
 
 def main(argv=None) -> int:

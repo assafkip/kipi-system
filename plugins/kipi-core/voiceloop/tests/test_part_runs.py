@@ -39,3 +39,10 @@ def test_unreadable_count_reads_as_zero():
     for bad in ({"ran": "1", "of": 1}, {"ran": True, "of": 1}, {}, None, "ran", (1,)):
         r = part_runs.assess({"a": bad})
         assert not r.complete and r.zero, bad
+
+
+def test_unreadable_total_is_not_complete():
+    """Codex P1 on #839: a positive ran with a missing or bad `of` passed as complete."""
+    for bad_of in ({"ran": 1}, {"ran": 1, "of": "1"}, {"ran": 1, "of": None}, {"ran": 2, "of": 1.0}):
+        r = part_runs.assess({"authorship": bad_of})
+        assert not r.complete and r.zero, bad_of
