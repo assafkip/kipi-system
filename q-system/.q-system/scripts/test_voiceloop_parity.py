@@ -102,13 +102,8 @@ def _consulting_ref():
     )
     if probe.returncode != 0:
         return None
-    # Best effort: a stale origin/main reads parity for work already pushed since
-    # (review of PR 836, finding 4). An offline run keeps the ref it has.
-    try:
-        subprocess.run(["git", "-C", CONSULTING, "fetch", "-q", "origin", "main"],
-                       capture_output=True, timeout=30)
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    # No fetch: a test must not move refs in a sibling repo it only reads
+    # (review of PR 836, round 2). A stale origin/main is the documented scope.
     return "origin/main"
 
 
@@ -170,7 +165,7 @@ class GitReader(unittest.TestCase):
         for name, body in (("gate.py", "RULE = 1\n"), ("__pycache__/x.pyc", "z")):
             with open(os.path.join(sub, name), "w") as fh:
                 fh.write(body)
-        g = ["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t"]
+        g = ["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
         subprocess.run(g + ["init", "-q", "-b", "main"], check=True)
         subprocess.run(g + ["add", "-A", "-f"], check=True)
         subprocess.run(g + ["commit", "-qm", "c"], check=True)
@@ -198,7 +193,7 @@ class LiveParity(unittest.TestCase):
             "voiceloop engine drifted between the skeleton (left) and consulting "
             f"{ref} (right). The skeleton is the source of truth: carry the skeleton's "
             "copy into consulting, never the reverse, unless the change is first landed "
-            f"in the skeleton. Rows: {rows}",
+            f"in the skeleton. If this skeleton checkout is merely behind main, update it instead. Rows: {rows}",
         )
 
 

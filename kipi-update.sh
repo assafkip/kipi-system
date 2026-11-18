@@ -552,6 +552,11 @@ instance_ahead_scan() {
           *) continue ;;
         esac
         git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
+        # Round 2 of PR 836: a file the skeleton SHIPPED and later removed is a
+        # skeleton-intended deletion, byte-equal to a shipped blob, and must
+        # propagate. Only instance-authored content is ahead (same question as
+        # the '>f' branch below).
+        fleet_authored_blob "$skel_rel/$rel" "$dest/$rel" && continue
         echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
         INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
         INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
