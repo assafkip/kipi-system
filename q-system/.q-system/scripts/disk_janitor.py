@@ -106,7 +106,7 @@ class Rule(object):
 
     def __init__(self, name, parents, kind="dir", match=r".*", min_age_days=7,
                  git_gate=False, open_files_gate=False, recursive=False, note="",
-                 parent_match=None, gate=None, apply_switch=None, floor_min_age_days=None, wt_child=None):
+                 parent_match=None, gate=None, apply_switch=None, floor_min_age_days=None, wt_child=None, unlock=False):
         self.name = name
         self.parents = parents
         self.kind = kind                    # "dir" or "file"
@@ -127,6 +127,10 @@ class Rule(object):
         # Its registration lives in the main repo's .git/worktrees, so the repo to
         # prune is read from that child, not from the target itself.
         self.wt_child = wt_child
+        # ASK-4234: chmod u+rwx the target's dirs before rmtree. Only for scratch with no git
+        # gate: rounds 3 and 4 of PR 841 both showed that unlocking a git-gated tree lets a
+        # gate that could not read it say clean. Same class twice, so the feature is scoped out.
+        self.unlock = unlock
 
 
 def finished_pr_gate(ctx, path):
@@ -235,7 +239,7 @@ RULES = [
     # left is from a killed run. Nothing reads these after the run (read the
     # script's review_scratch_cleanup). Hand-made dirs (sana*, pr334*) do not match.
     Rule("review-scratch-runs", ["{HOME}/.config/kipi/review-scratch"], match=r"^(run|ctx)\.[A-Za-z0-9]+$",
-         min_age_days=1, note="ASK-4234: orphaned review run and PR-context dirs"),
+         min_age_days=1, unlock=True, note="ASK-4234: orphaned review run and PR-context dirs"),
     Rule("tmp-mktemp-shell", ["{TMP}/T"], match=r"^tmp\.[A-Za-z0-9]{6,}$", min_age_days=7,
          note="shell mktemp -d dirs; 7 days because agent jobs park worktrees here"),
     Rule("chrome-code-sign-clone", ["{TMP}/X"], match=r"^com\.google\.Chrome\.code_sign_clone$",
@@ -670,7 +674,8 @@ def consider(ctx, rule, parent, path):
         errors.append("%s: %s" % (p, exc[1]))
 
     if is_dir:
-        _unlock_tree(path, top=not rule.git_gate)
+        if rule.unlock:
+            _unlock_tree(path)
         shutil.rmtree(path, onerror=onerror)
     else:
         try:

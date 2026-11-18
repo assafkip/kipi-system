@@ -174,7 +174,8 @@ class ReviewScratch(unittest.TestCase):
         age(d, 24 * 40)
         os.chmod(d, 0)
         self.addCleanup(os.chmod, d, 0o700)
-        self.e.run("kipi-worktrees")
+        r = self.e.run("kipi-worktrees")
+        self.assertEqual(json.loads(r.stdout).get("errors"), 1, "kept and loud, not deleted quietly")
         os.chmod(d, 0o700)
         self.assertTrue(os.path.exists(os.path.join(d, "unsaved.txt")))
 
