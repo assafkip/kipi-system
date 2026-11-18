@@ -177,14 +177,17 @@ head_state() {
 # review and no path carried the approval. A version bump carries no behavior, so
 # a review of it buys nothing, and the cap was blocking a merge on bookkeeping.
 #
-# WHAT IT ACCEPTS, AND NOTHING ELSE. Over the PR-owned files (every path the PR
-# changes against its merge-base with main, at the reviewed sha or at the head):
-#   - a path whose blob is byte-identical at both shas: fine;
-#   - a path that differs: it must be a plugin.json whose ONLY difference is the
-#     "version" field (all other fields compared after `jq -S del(.version)`),
-#     a plain x.y.z version, strictly greater than main's version of that file.
-# Paths that differ only because main moved are not PR-owned: they are main's text.
+# WHAT IT ACCEPTS, AND NOTHING ELSE. The head's tree must equal the tree git
+# merges main and the reviewed sha to (`git merge-tree --write-tree`), except at
+# plugin.json paths whose ONLY difference from the reviewed file is the "version"
+# field (all other fields compared after `jq -S del(.version)`), a plain x.y.z
+# version, strictly greater than main's version of that file. Anything else that
+# differs, including a main change the merge dropped, is `other`.
 # Every failure to answer is `other`: unknown is not carriable.
+#
+# PRECONDITION, same as the hand-run carve-out in WHEN IT MAY RUN above: this is
+# run against a head that IS the PR branch tip, so run it only when no reviewer is
+# running on that head. The mode prints that warning on stderr when it carries.
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 
 # version_gt <a> <b>: 0 when a > b, both plain x.y.z. Numeric, never lexical.
@@ -217,38 +220,28 @@ reattest_path_ok() {
   version_gt "$hv" "$mv"
 }
 
-# reattest_not_behind_main <tree> <head> <main-ref> <path>: 0 unless <path> is a
-# plugin.json whose head version is lower than main's (or unreadable while main has one).
-reattest_not_behind_main() {
-  local tree="$1" head="$2" mainref="$3" path="$4" hv mv
-  case "$path" in plugin.json|*/plugin.json) ;; *) return 0 ;; esac
-  mv="$(git -C "$tree" show "$mainref:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)" || return 0
-  [ -n "$mv" ] || return 0
-  hv="$(git -C "$tree" show "$head:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)" || return 1
-  [ "$hv" = "$mv" ] || version_gt "$hv" "$mv"
-}
-
 # reattest_kind <tree> <reviewed> <head> <main-ref>  ->  version-reattest | other
+#
+# WHY THE HEAD IS COMPARED TO THE EXPECTED MERGE, NOT TO THE REVIEWED SHA (PR #846
+# round 1, major). A first draft compared owned paths to the reviewed sha. That
+# passes `git merge -X ours main` plus a hand version bump: main's own commit is
+# silently unlanded and a green rides on it. The invariant is "the only hand edit
+# is the version line", so the reference is what git merges to: merge-tree of main
+# and the reviewed sha. A path where the head equals that tree is git's work; a
+# path where it differs must be a version-only plugin.json, strictly above main's.
+# Absent-on-both-sides is equal here, so a PR that deletes a file is not refused.
 reattest_kind() {
-  local tree="$1" reviewed="$2" head="$3" mainref="$4" mbr mbh owned path rb hb
+  local tree="$1" reviewed="$2" head="$3" mainref="$4" expected htree path
   git -C "$tree" merge-base --is-ancestor "$reviewed" "$head" 2>/dev/null || { echo other; return 0; }
-  mbr="$(git -C "$tree" merge-base "$mainref" "$reviewed" 2>/dev/null)" || { echo other; return 0; }
-  mbh="$(git -C "$tree" merge-base "$mainref" "$head" 2>/dev/null)" || { echo other; return 0; }
-  owned="$( { git -C "$tree" diff --name-only --no-renames "$mbr" "$reviewed"
-              git -C "$tree" diff --name-only --no-renames "$mbh" "$head"; } 2>/dev/null | sort -u)" \
-    || { echo other; return 0; }
+  # exit 1 = conflicts, still prints the tree (conflicted text in the conflicting
+  # paths). Anything else, or no tree on line 1, is not an answer.
+  expected="$(git -C "$tree" merge-tree --write-tree --no-messages "$mainref" "$reviewed" 2>/dev/null | head -n 1)"
+  [[ "$expected" =~ ^[0-9a-f]{40,64}$ ]] || { echo other; return 0; }
+  htree="$(git -C "$tree" rev-parse -q --verify "$head^{tree}" 2>/dev/null)" || { echo other; return 0; }
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    rb="$(git -C "$tree" rev-parse -q --verify "$reviewed:$path" 2>/dev/null || echo none-r)"
-    hb="$(git -C "$tree" rev-parse -q --verify "$head:$path" 2>/dev/null || echo none-h)"
-    if [ "$rb" = "$hb" ]; then
-      # Unchanged since the review, but a plugin.json left BELOW main's version
-      # would, on merge, move main's version backwards. That is a lower version.
-      reattest_not_behind_main "$tree" "$head" "$mainref" "$path" || { echo other; return 0; }
-      continue
-    fi
-    reattest_path_ok "$tree" "$reviewed" "$head" "$mainref" "$path" || { echo other; return 0; }
-  done <<< "$owned"
+    reattest_path_ok "$tree" "$reviewed" "$head" "$mainref" "$path" || { echo "carry: re-attest refused at '$path'" >&2; echo other; return 0; }
+  done < <(git -C "$tree" diff --name-only --no-renames "$expected" "$htree" 2>/dev/null || echo "?diff-failed")
   echo version-reattest
 }
 
@@ -312,6 +305,7 @@ main() {
     exit 1
   fi
 
+  [ "$reattest" = 1 ] && echo "carry: warning: $head is a live PR tip; safe only while no reviewer runs on it" >&2
   echo "carry: $REVIEWER_CONTEXT=success carried from $reviewed to $head"
 }
 

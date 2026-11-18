@@ -41,7 +41,7 @@ pj() {  # pj <version> <description>
   printf '{\n  "name": "kp",\n  "version": "%s",\n  "description": "%s"\n}\n' "$1" "$2"
 }
 
-# mkcase <dir> <head-version> <head-description> <extra-edit: none|pr-file>
+# mkcase <dir> <head-version> <head-description> <extra-edit: none|pr-file|revert|delete>
 # main: 1.13.69 -> 1.13.71 (+ b.txt). PR: a.txt edited, version 1.13.70 (REVIEWED).
 # HEAD = merge of main into the PR, version line hand-resolved to <head-version>.
 mkcase() {
@@ -50,18 +50,19 @@ mkcase() {
   git init -q -b main "$d"
   g config user.email t@t; g config user.name t; g config commit.gpgsign false
   mkdir -p "$d/plugins/kp/.claude-plugin"
-  pj 1.13.69 base > "$d/$PJ"; echo one > "$d/a.txt"
+  pj 1.13.69 base > "$d/$PJ"; echo one > "$d/a.txt"; echo c0 > "$d/c.txt"; echo d > "$d/d.txt"
   g add -A; g commit -q -m base
   g checkout -q -b pr
-  pj 1.13.70 base > "$d/$PJ"; echo pr-change > "$d/a.txt"
+  pj 1.13.70 base > "$d/$PJ"; echo pr-change > "$d/a.txt"; [ "$extra" = "delete" ] && git -C "$d" rm -q d.txt
   g add -A; g commit -q -m "pr work"; REVIEWED="$(g rev-parse HEAD)"
   g checkout -q main
-  pj 1.13.71 base > "$d/$PJ"; echo b > "$d/b.txt"
+  pj 1.13.71 base > "$d/$PJ"; echo b > "$d/b.txt"; echo c-main-fix > "$d/c.txt"
   g add -A; g commit -q -m "main bump"
   g checkout -q pr
   g merge -q --no-edit main >/dev/null 2>&1 || true
   pj "$hv" "$hd" > "$d/$PJ"
   [ "$extra" = "pr-file" ] && echo sneaky >> "$d/a.txt"
+  [ "$extra" = "revert" ] && g checkout -q "$REVIEWED" -- c.txt
   g add -A; g commit -q -m "merge main"; HEAD_SHA="$(g rev-parse HEAD)"
 }
 run() {  # run <dir> -> number of POSTs; exit code in RC
@@ -87,6 +88,10 @@ mkcase "$TMP/other" 1.13.72 base pr-file
 check_eq "any other PR file differing: refused"                     "0"  "$(run "$TMP/other")"
 mkcase "$TMP/field" 1.13.72 changed none
 check_eq "version plus another plugin.json field: refused"          "0"  "$(run "$TMP/field")"
+mkcase "$TMP/revert" 1.13.72 base revert
+check_eq "version bump that silently reverts a main change: refused" "0" "$(run "$TMP/revert")"
+mkcase "$TMP/del" 1.13.72 base delete
+check_eq "a PR that deletes a file can still use the mode"          "1"  "$(run "$TMP/del")"
 mkcase "$TMP/nm" 1.13.72 base none
 : > "$CALLS"
 STUB_REVIEWED="$REVIEWED" STUB_REVIEWED_PAYLOAD="$FX/reviewed-approved.json" STUB_HEAD_PAYLOAD="$FX/head-absent.json" \
@@ -101,7 +106,7 @@ if [ -z "${RECEIPT_CARRY_SCRIPT:-}" ]; then
     if RECEIPT_CARRY_SCRIPT="$m" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; then fail "mutant '$1' SURVIVED"; else pass "mutant '$1' killed"; fi
   }
   mutate "strictly-greater guard removed" 's/^  version_gt "\$hv" "\$mv"$/  true/'
-  mutate "behind-main guard removed"      's/reattest_not_behind_main "\$tree" "\$head" "\$mainref" "\$path" ||/true ||/'
+  mutate "merge-result reference swapped for reviewed sha" 's/merge-tree --write-tree --no-messages "\$mainref" "\$reviewed"/rev-parse "$reviewed^{tree}"/'
   mutate "other-fields guard removed"           's/\[ "\$hrest" = "\$rrest" \]/true/'
 fi
 echo; echo "passed $PASS, failed $FAIL"
