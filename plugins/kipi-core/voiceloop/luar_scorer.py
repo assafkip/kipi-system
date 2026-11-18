@@ -304,7 +304,12 @@ def windowed_reply(text, offsets, encode, documents, count_tokens):
         windows.append(piece)
         held = count_tokens(piece)
         cap = MAX_TOKENS - 2
-        read.append((start, end if held <= cap else start + cap))
+        # An overflowing window is read only for its first `cap` of `held`
+        # re-tokenized tokens. Map that share back onto this window's own
+        # original range. `start + cap` overshot the window (504 < 510) and
+        # marked its unread tail as read (PR #837 review, Codex P2).
+        read.append((start, end if held <= cap
+                     else start + (end - start) * cap // held))
     vectors = encode(list(windows) + list(documents))
     return {"window_vectors": vectors[:len(windows)],
             "vectors": vectors[len(windows):],
@@ -493,7 +498,17 @@ def score(text, exemplars, backend=None):
         # reference stay one vector per exemplar, as measured on 2026-08-17.
         distinct = list(dict.fromkeys(banded_texts))
         reply = backend.encode_windowed(text, distinct)
-        if len(reply["vectors"]) != len(distinct) or not reply["window_vectors"]:
+        # The reply crosses a process boundary. A short window list labelled
+        # windowed-512 is the original scar re-armed (head-only read, share 1.0),
+        # so the parent re-plans from the child's token count (PR #837 review).
+        try:
+            planned = len(plan_windows(int(reply["tokens"]), WINDOW_TOKENS))
+            ok = (len(reply["vectors"]) == len(distinct)
+                  and len(reply["window_vectors"]) == planned
+                  and 0.0 <= float(reply["share_read"]) <= 1.0)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ScorerUnavailable(f"malformed windowed reply: {exc}") from exc
+        if not ok:
             raise ScorerUnavailable("windowed backend returned the wrong count")
         by_text = dict(zip(distinct, [_unit(v) for v in reply["vectors"]]))
         window_vecs = [_unit(v) for v in reply["window_vectors"]]
@@ -532,6 +547,9 @@ def score(text, exemplars, backend=None):
         # The shape rides WITH the number. A stored score whose tokenization is
         # implicit cannot be compared to a later one.
         "authorship_tokenization": shape,
+        # The region and the reference are still one vector per exemplar, so
+        # their shape is named apart from the draft's (PR #837 review).
+        "authorship_reference_tokenization": TOKENIZATION,
         "authorship_model": getattr(backend, "model_id", MODEL_ID),
         "authorship_words": words,
         "authorship_region_n": len(region_vecs),

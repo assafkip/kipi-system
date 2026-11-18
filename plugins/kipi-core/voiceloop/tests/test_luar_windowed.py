@@ -78,8 +78,32 @@ class WindowedAuthorship(unittest.TestCase):
         self.assertEqual(padded["authorship_share_read"], 1.0)
         self.assertGreater(padded["authorship_windows"], 1)
         self.assertEqual(padded["authorship_tokenization"], s.TOKENIZATION_WINDOWED)
-        self.assertIn("authorship_median", padded)
-        self.assertLessEqual(padded["authorship"], padded["authorship_median"])
+        self.assertEqual(padded["authorship_reference_tokenization"], s.TOKENIZATION)
+
+    def test_one_filler_window_moves_the_lowest_not_the_median(self):
+        # The decision on ASK-5358: a median lets a minority of the text be
+        # someone else's. Here filler is 2 of 9 windows: the median stays on him.
+        rec = s.score(_essay(1700) + " " + " ".join(f"f{i}" for i in range(500)),
+                      EXEMPLARS, backend=TruncatingFake())
+        self.assertGreater(rec["authorship_median"], 0.99)
+        self.assertLess(rec["authorship"], rec["authorship_median"] - 0.5)
+
+    def test_a_short_window_list_from_the_child_is_refused(self):
+        class Skewed(TruncatingFake):
+            def encode_windowed(self, text, documents):
+                reply = super().encode_windowed(text, documents)
+                reply["window_vectors"] = reply["window_vectors"][:1]
+                return reply
+
+        class NoShare(TruncatingFake):
+            def encode_windowed(self, text, documents):
+                reply = super().encode_windowed(text, documents)
+                del reply["share_read"]
+                return reply
+
+        for fake in (Skewed(), NoShare()):
+            with self.assertRaises(s.ScorerUnavailable):
+                s.score(_essay(300) + " " + FILLER, EXEMPLARS, backend=fake)
 
     def test_every_window_fits_the_model(self):
         for n in (1, 503, 504, 505, 1008, 1800, 4959):
@@ -98,6 +122,15 @@ class WindowedAuthorship(unittest.TestCase):
         old = s.region_cosine(s.embed([essay], TruncatingFake())[0], region)
         self.assertAlmostEqual(new["authorship"], old, places=12)
         self.assertEqual(new["authorship_windows"], 1)
+
+    def test_a_window_that_overflows_is_not_reported_as_read(self):
+        # Re-tokenized alone, every window here holds twice its planned tokens,
+        # so the model reads about half of each. The share must say so.
+        text = _essay(1800 // TOKENS_PER_WORD)
+        reply = s.windowed_reply(
+            text, _offsets(text), TruncatingFake().encode, [],
+            count_tokens=lambda t: len(t.split()) * TOKENS_PER_WORD * 2)
+        self.assertLess(reply["share_read"], 0.6)
 
     def test_backend_without_windows_says_it_did_not_measure(self):
         class Plain:
