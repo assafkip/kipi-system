@@ -76,6 +76,16 @@ MODEL_ID = "rrivera1849/LUAR-MUD"
 TOKENIZATION = "single-document-512"
 MAX_TOKENS = 512
 
+# ASK-5358 part 1. Measured 2026-11-16: the first 400 words of an 841-word draft
+# scored exactly the full draft's score, because nothing past MAX_TOKENS was read.
+# The draft is now read in windows of at most WINDOW_TOKENS body tokens, and the
+# record names this shape instead of the one above. 512 minus the two special
+# tokens, minus 6 of headroom: a window cut at a token boundary and re-tokenized
+# alone can gain a token at its start (the leading-space variant of its first
+# word), and a window that overflows is truncated, which is the bug again.
+TOKENIZATION_WINDOWED = "windowed-512"
+WINDOW_TOKENS = MAX_TOKENS - 2 - 6
+
 # The experiment's cuts, reused rather than re-derived. `band_of` is by the
 # draft's own word count, never by the channel or by the reference set.
 SHORT_MAX_WORDS = 60      # short = under 60 words
@@ -228,6 +238,78 @@ class TransformersBackend:
             vec = torch.nn.functional.normalize(vec, p=2, dim=-1)[0]
             out.append([float(x) for x in vec.reshape(-1)])
         return out
+
+    def encode_windowed(self, text, documents):
+        """The draft's window vectors plus one vector per document, in one load.
+
+        The tokenizer is the one `encode` uses, so the window cut and the window
+        read cannot disagree about where a token ends.
+        """
+        self._load()
+        enc = self._tok(text, add_special_tokens=False,
+                        return_offsets_mapping=True)
+        return windowed_reply(
+            text, enc["offset_mapping"], self.encode, documents,
+            count_tokens=lambda t: len(self._tok(
+                t, add_special_tokens=False)["input_ids"]))
+
+
+# ---------------------------------------------------------------- windows ----
+
+
+def plan_windows(n_tokens, size):
+    """Token ranges that cover all `n_tokens`, each at most `size` long.
+
+    The last window is pulled back to end on the last token rather than left
+    short: a 30-token tail would be scored on a cosine scale that rises with
+    length, and would read as the lowest window for being short, not for being
+    someone else's text.
+    """
+    if n_tokens <= size:
+        return [(0, n_tokens)]
+    k = -(-n_tokens // size)
+    plan = [(i * size, (i + 1) * size) for i in range(k - 1)]
+    plan.append((n_tokens - size, n_tokens))
+    return plan
+
+
+def share_read(ranges, n_tokens):
+    """Share of the text's tokens that some window actually read."""
+    if n_tokens <= 0:
+        return 1.0
+    covered = set()
+    for start, end in ranges:
+        covered.update(range(max(0, start), min(n_tokens, end)))
+    return len(covered) / n_tokens
+
+
+def windowed_reply(text, offsets, encode, documents, count_tokens):
+    """Cut `text` into windows on token offsets, then embed windows + documents.
+
+    Shared by every backend that can tokenize, so the cut and the share-read are
+    computed one way. `count_tokens` re-counts each cut window: a window that
+    re-tokenizes past MAX_TOKENS - 2 is truncated by the model, and the share
+    read then says so instead of claiming the whole text.
+    """
+    offsets = [tuple(o) for o in offsets]
+    n = len(offsets)
+    plan = plan_windows(n, WINDOW_TOKENS)
+    windows, read = [], []
+    for start, end in plan:
+        if n == 0:
+            windows.append(text)
+            read.append((0, 0))
+            continue
+        piece = text[offsets[start][0]:offsets[end - 1][1]]
+        windows.append(piece)
+        held = count_tokens(piece)
+        cap = MAX_TOKENS - 2
+        read.append((start, end if held <= cap else start + cap))
+    vectors = encode(list(windows) + list(documents))
+    return {"window_vectors": vectors[:len(windows)],
+            "vectors": vectors[len(windows):],
+            "tokens": n,
+            "share_read": share_read(read, n)}
 
 
 # ------------------------------------------------------------ the one embed ----
@@ -406,10 +488,25 @@ def score(text, exemplars, backend=None):
     # two strings are equal, and embedding it twice would double the cost of the
     # only 319MB model load in this system for no second number.
     banded_texts = [r["text"] for r in banded]
-    distinct = list(dict.fromkeys([text] + banded_texts))
-    by_text = dict(zip(distinct, embed(distinct, backend)))
-    draft_vec = by_text[text]
+    if hasattr(backend, "encode_windowed"):
+        # ASK-5358: the draft is read whole, in windows; the region and the
+        # reference stay one vector per exemplar, as measured on 2026-08-17.
+        distinct = list(dict.fromkeys(banded_texts))
+        reply = backend.encode_windowed(text, distinct)
+        if len(reply["vectors"]) != len(distinct) or not reply["window_vectors"]:
+            raise ScorerUnavailable("windowed backend returned the wrong count")
+        by_text = dict(zip(distinct, [_unit(v) for v in reply["vectors"]]))
+        window_vecs = [_unit(v) for v in reply["window_vectors"]]
+        shape, read = TOKENIZATION_WINDOWED, reply["share_read"]
+    else:
+        # A backend that cannot tokenize (a test fake, an old transport) scores
+        # the old way and says the share read was not measured, never 1.0.
+        distinct = list(dict.fromkeys([text] + banded_texts))
+        by_text = dict(zip(distinct, embed(distinct, backend)))
+        window_vecs = [by_text[text]]
+        shape, read = TOKENIZATION, None
     region_vecs = [by_text[r["text"]] for r in region_rows]
+    window_scores = [region_cosine(v, region_vecs) for v in window_vecs]
     # The reference is a property of the BAND, so it is computed BEFORE the draft
     # holdout, never after it. Computed after, a draft the founder happened to
     # bank changed a number describing his corpus: a 3-row band fell to 2 and
@@ -422,12 +519,19 @@ def score(text, exemplars, backend=None):
     reference = (leave_one_out_median([by_text[t] for t in banded_texts])
                  if band in BANDED else None)
     return {
-        "authorship": region_cosine(draft_vec, region_vecs),
+        # The LOWEST window, decided on ASK-5358: every consumer reads this one
+        # key, and a median lets up to half the text be someone else's and still
+        # pass. One window makes it the single-document number it always was.
+        "authorship": min(window_scores),
+        "authorship_median": statistics.median(window_scores),
+        "authorship_windows": len(window_scores),
+        # Share of the draft's tokens a window read. None = not measured.
+        "authorship_share_read": read,
         "authorship_band": band,
         "authorship_reference": reference,
         # The shape rides WITH the number. A stored score whose tokenization is
         # implicit cannot be compared to a later one.
-        "authorship_tokenization": TOKENIZATION,
+        "authorship_tokenization": shape,
         "authorship_model": getattr(backend, "model_id", MODEL_ID),
         "authorship_words": words,
         "authorship_region_n": len(region_vecs),
