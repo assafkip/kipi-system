@@ -19,11 +19,15 @@ Each was measured on 2026-08-17 against the real corpus before any code existed
 them non-negotiable, and a prose contract nobody executes is how two callers end
 up computing two different numbers under one name.
 
-- **Tokenization: single-document, 512-token truncation.** The chunk shape is NOT
-  the contract and the difference is not cosmetic: short-band AUC is 0.883 single
-  and 0.702 chunked against generic output, 0.836 versus 0.584 against other
-  humans. So the emitted record NAMES the shape it used; a future change cannot
-  silently move every number that was ever logged.
+- **Tokenization: one vector per document, and the record NAMES the shape.** The
+  draft is read whole, in windows of at most WINDOW_TOKENS body tokens
+  (`windowed-512`, ASK-5358 part 1); each exemplar stays one vector truncated at
+  512 tokens. A backend that cannot window scores the draft the old way,
+  `single-document-512`, and says so. The chunk shape is NOT the contract and the
+  difference is not cosmetic: short-band AUC is 0.883 single and 0.702 chunked
+  against generic output, 0.836 versus 0.584 against other humans. So the emitted
+  record names the shape it used; a future change cannot silently move every
+  number that was ever logged.
 - **Combining exemplars: mean of per-document embeddings, then cosine.** Not
   cosine-of-concatenation (one long exemplar would dominate the region) and not
   mean-of-pairwise-cosines (a different statistic, and the one the 2026-08-17
