@@ -165,6 +165,115 @@ head_state() {
   printf '%s\n' "${state%% *}"
 }
 
+# ---------------------------------------------------------------- version re-attest
+# `--reattest-version <tree> <reviewed-sha> <head-sha> <owner/repo> [main-ref]`
+# (ASK-4969, ruling 2026-11-18 22:20 UTC). A SECOND accepted shape, beside the
+# receipt-only delta, for one case: the PR merged origin/main and had to resolve a
+# plugin.json "version" conflict upward.
+#
+# WHY. PR #839 was approved on 060b3038. A sibling PR bumped the same plugin
+# version, so merging main conflicted on that one line and the resolved head
+# (1.13.72, main had 1.13.71) carried no approval. The round cap refused a 4th
+# review and no path carried the approval. A version bump carries no behavior, so
+# a review of it buys nothing, and the cap was blocking a merge on bookkeeping.
+#
+# WHAT IT ACCEPTS, AND NOTHING ELSE. The head's tree must equal the tree git
+# merges main and the reviewed sha to (`git merge-tree --write-tree`), except at
+# plugin.json paths whose ONLY difference from the reviewed file is the "version"
+# field (all other fields compared after `jq -S del(.version)`), a plain x.y.z
+# version, strictly greater than main's version of that file. Anything else that
+# differs, including a main change the merge dropped, is `other`.
+# Every failure to answer is `other`: unknown is not carriable.
+#
+# PRECONDITION, same as the hand-run carve-out in WHEN IT MAY RUN above: this is
+# run against a head that IS the PR branch tip, so run it only when no reviewer is
+# running on that head. The mode prints that warning on stderr when it carries.
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
+
+# version_gt <a> <b>: 0 when a > b, both plain x.y.z. Numeric, never lexical.
+version_gt() {
+  [[ "$1" =~ $VERSION_RE && "$2" =~ $VERSION_RE ]] || return 1
+  local IFS=. i; local -a a b
+  read -r -a a <<< "$1"; read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "$((10#${a[$i]}))" -gt "$((10#${b[$i]}))" ] && return 0
+    [ "$((10#${a[$i]}))" -lt "$((10#${b[$i]}))" ] && return 1
+  done
+  return 1
+}
+
+# reattest_path_ok <tree> <reviewed> <head> <main-ref> <path>: 0 when this one
+# differing path is an allowed version-only plugin.json change.
+reattest_path_ok() {
+  local tree="$1" reviewed="$2" head="$3" mainref="$4" path="$5"
+  local rj hj mj bj hv mv rrest hrest mrest brest base
+  case "$path" in plugin.json|*/plugin.json) ;; *) return 1 ;; esac
+  rj="$(git -C "$tree" show "$reviewed:$path" 2>/dev/null)" || return 1
+  hj="$(git -C "$tree" show "$head:$path" 2>/dev/null)" || return 1
+  mj="$(git -C "$tree" show "$mainref:$path" 2>/dev/null)" || return 1
+  hv="$(printf '%s' "$hj" | jq -r '.version // empty' 2>/dev/null)" || return 1
+  mv="$(printf '%s' "$mj" | jq -r '.version // empty' 2>/dev/null)" || return 1
+  [ -n "$hv" ] && [ -n "$mv" ] || return 1
+  rrest="$(printf '%s' "$rj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  hrest="$(printf '%s' "$hj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  mrest="$(printf '%s' "$mj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  # The other fields must be what a 3-way merge gives (PR #846 round 2: comparing
+  # to the reviewed sha alone let a head revert main's own non-version edit).
+  # Main left them alone: the head keeps the reviewed fields. Main changed them and
+  # the PR did not: the head takes main's. Both changed them: not a version-only
+  # conflict, so refuse.
+  base="$(git -C "$tree" merge-base "$mainref" "$reviewed" 2>/dev/null)" || return 1
+  bj="$(git -C "$tree" show "$base:$path" 2>/dev/null)" || return 1
+  brest="$(printf '%s' "$bj" | jq -S -c 'del(.version)' 2>/dev/null)" || return 1
+  if [ "$mrest" = "$brest" ]; then
+    [ "$hrest" = "$rrest" ] || return 1
+  elif [ "$rrest" = "$brest" ]; then
+    [ "$hrest" = "$mrest" ] || return 1
+  else
+    return 1
+  fi
+  version_gt "$hv" "$mv"
+}
+
+# reattest_kind <tree> <reviewed> <head> <main-ref>  ->  version-reattest | other
+#
+# WHY THE HEAD IS COMPARED TO THE EXPECTED MERGE, NOT TO THE REVIEWED SHA (PR #846
+# round 1, major). A first draft compared owned paths to the reviewed sha. That
+# passes `git merge -X ours main` plus a hand version bump: main's own commit is
+# silently unlanded and a green rides on it. The invariant is "the only hand edit
+# is the version line", so the reference is what git merges to: merge-tree of main
+# and the reviewed sha. A path where the head equals that tree is git's work; a
+# path where it differs must be a version-only plugin.json, strictly above main's.
+# Absent-on-both-sides is equal here, so a PR that deletes a file is not refused.
+reattest_kind() {
+  local tree="$1" reviewed="$2" head="$3" mainref="$4" expected htree path
+  git -C "$tree" merge-base --is-ancestor "$reviewed" "$head" 2>/dev/null || { echo other; return 0; }
+  # exit 1 = conflicts, still prints the tree (conflicted text in the conflicting
+  # paths). Anything else, or no tree on line 1, is not an answer.
+  expected="$(git -C "$tree" merge-tree --write-tree --no-messages "$mainref" "$reviewed" 2>/dev/null | head -n 1)"
+  if ! [[ "$expected" =~ ^[0-9a-f]{40,64}$ ]]; then
+    echo "carry: git merge-tree could not compute the expected merge (needs git 2.38+); nothing established, refusing" >&2
+    echo other; return 0
+  fi
+  htree="$(git -C "$tree" rev-parse -q --verify "$head^{tree}" 2>/dev/null)" || { echo other; return 0; }
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    reattest_path_ok "$tree" "$reviewed" "$head" "$mainref" "$path" || { echo "carry: re-attest refused at '$path'" >&2; echo other; return 0; }
+  done < <(git -C "$tree" diff --name-only --no-renames "$expected" "$htree" 2>/dev/null || echo "?diff-failed")
+  # PR #846 round 2, minor: a head equal to the merge result skips the loop above,
+  # so the version floor is checked on its own. Every plugin.json the head differs
+  # from main on must be strictly above main's version, whatever shape the merge took.
+  local hv mv
+  while IFS= read -r path; do
+    case "$path" in plugin.json|*/plugin.json) ;; *) continue ;; esac
+    hv="$(git -C "$tree" show "$head:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)"
+    mv="$(git -C "$tree" show "$mainref:$path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)"
+    [ -n "$mv" ] || continue
+    version_gt "$hv" "$mv" || { echo "carry: re-attest refused: '$path' version '$hv' is not above main's '$mv'" >&2; echo other; return 0; }
+  done < <(git -C "$tree" diff --name-only --no-renames "$mainref" "$head" 2>/dev/null)
+  echo version-reattest
+}
+
 main() {
   if [ "${1:-}" = "--head-state" ]; then
     [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo "usage: receipt-carry-approval.sh --head-state <owner/repo> <sha>" >&2; exit 2; }
@@ -176,6 +285,8 @@ main() {
     [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || { echo "usage: receipt-carry-approval.sh --delta-kind <tree> <reviewed-sha> <head-sha>" >&2; exit 2; }
     delta_kind "$2" "$3" "$4"; exit 0
   fi
+  local reattest=0 mainref="origin/main"
+  if [ "${1:-}" = "--reattest-version" ]; then reattest=1; mainref="${6:-origin/main}"; shift; fi
   local tree="${1:-}" reviewed="${2:-}" head="${3:-}" repo="${4:-}"
   if [ -z "$tree" ] || [ -z "$reviewed" ] || [ -z "$head" ] || [ -z "$repo" ]; then
     echo "usage: receipt-carry-approval.sh <tree> <reviewed-sha> <head-sha> <owner/repo>" >&2
@@ -183,9 +294,15 @@ main() {
   fi
 
   local kind payload verdict state desc head_payload head_state
-  kind="$(delta_kind "$tree" "$reviewed" "$head")"
-  if ! [ "$kind" = "receipt-only" ]; then
-    echo "carry: not carrying to $head -- beyond $reviewed it is '$kind', and only a receipt-only delta carries"
+  local want="receipt-only" label="receipt-only delta"
+  if [ "$reattest" = 1 ]; then
+    kind="$(reattest_kind "$tree" "$reviewed" "$head" "$mainref")"
+    want="version-reattest"; label="version-only re-attest"
+  else
+    kind="$(delta_kind "$tree" "$reviewed" "$head")"
+  fi
+  if ! [ "$kind" = "$want" ]; then
+    echo "carry: not carrying to $head -- beyond $reviewed it is '$kind', and only a $want delta carries in this mode"
     exit "$EXIT_DECLINED"
   fi
 
@@ -211,7 +328,9 @@ main() {
     exit "$EXIT_DECLINED"
   fi
 
-  desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") (receipt-only delta): $desc")"
+  # Before the POST (PR #846 round 2, nit): a warning after an irreversible write informs nobody.
+  [ "$reattest" = 1 ] && echo "carry: warning: $head is a live PR tip; safe only while no reviewer runs on it" >&2
+  desc="$(printf '%.140s' "$CARRY_PREFIX$(printf '%.12s' "$reviewed") ($label): $desc")"
   if ! carry_post "$repo" "$head" "$desc" >/dev/null; then
     echo "carry: the status post on $head FAILED; the approval is still only on $reviewed" >&2
     exit 1
