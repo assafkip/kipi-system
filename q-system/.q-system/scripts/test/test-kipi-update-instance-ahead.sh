@@ -160,7 +160,87 @@ PY
   echo "PASS: forcing every blob to read as shipped silences the report (the shipped-blob check is load-bearing)"
 }
 
+# ------------------------------------------------------------------ property 5
+# ASK-2901 (engine parity). The voiceloop engine flows skeleton -> instance.
+# consulting's copy is the exporter's source, but every change there is a CARRY of
+# a skeleton commit, so an instance copy the skeleton never shipped is work the
+# rsync is about to destroy (the roll-back scar of 2026-09-06). The report above
+# is advisory and the fleet jobs run without --refuse-instance-ahead, so the
+# engine path refuses on its own. A deliberately narrow refusal: the other ahead
+# files in the fixture (property 3) still land.
+# v1 and v2 differ in SIZE on purpose: rsync's quick check skips a same-size,
+# same-second file, so same-length versions made the "behind" case look like a
+# sync that never wrote (measured while building this, 2026-11-18).
+add_voiceloop() {
+  local work="$1" mode="$2" sk="$work/skel" inst="$work/inst"
+  mkdir -p "$sk/plugins/kipi-core/voiceloop" "$inst/plugins/kipi-core/voiceloop"
+  printf 'RULE = 1  # first shipped\n' > "$sk/plugins/kipi-core/voiceloop/engine.py"
+  ( cd "$sk" && G add -A -f plugins && G commit -qm vl-v1 )
+  printf 'RULE = 2\n' > "$sk/plugins/kipi-core/voiceloop/engine.py"
+  ( cd "$sk" && G add -A -f plugins && G commit -qm vl-v2 )
+  if [ "$mode" = ahead ]; then
+    printf 'RULE = 2\nLOCAL_FIX = True\n' > "$inst/plugins/kipi-core/voiceloop/engine.py"
+  else
+    printf 'RULE = 1  # first shipped\n' > "$inst/plugins/kipi-core/voiceloop/engine.py"
+  fi
+  ( cd "$inst" && G add -A -f plugins && G commit -qm inst-vl )
+}
+
+assert_an_ahead_engine_file_refuses_without_any_flag() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"; add_voiceloop "$work" ahead
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  grep -q 'voiceloop engine' "$work/out" || fail "an ahead engine file did not refuse: $(tail -n 12 "$work/out")"
+  grep -q 'Failed:  1' "$work/out" || fail "the refused instance was not counted failed"
+  [ "$(G -C "$inst" log -1 --format=%s)" = "inst-vl" ] || fail "the refusal left a commit behind"
+  grep -q 'LOCAL_FIX' "$inst/plugins/kipi-core/voiceloop/engine.py" || fail "the refusal still overwrote the engine file"
+  echo "PASS: an engine file ahead of the skeleton abandons the instance with no flag, nothing written"
+}
+
+assert_a_behind_engine_file_still_syncs() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"; add_voiceloop "$work" older
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  grep -q 'Updated: 1' "$work/out" || fail "a BEHIND engine file blocked the sync: $(tail -n 12 "$work/out")"
+  grep -q 'RULE = 2' "$inst/plugins/kipi-core/voiceloop/engine.py" || fail "the behind engine file did not receive the skeleton copy: $(cat "$inst/plugins/kipi-core/voiceloop/engine.py")"
+  echo "PASS: an engine file at an older skeleton version (behind, not ahead) still syncs"
+}
+
+# Codex P1 on PR 836: a tracked instance-only engine file is a deletion record.
+assert_an_instance_only_engine_file_refuses_instead_of_being_deleted() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"; add_voiceloop "$work" older
+  printf 'local rules\n' > "$inst/plugins/kipi-core/voiceloop/new-rules.txt"
+  ( cd "$inst" && G add -A -f plugins && G commit -qm inst-only )
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  grep -q 'voiceloop engine' "$work/out" || fail "an instance-only engine file did not refuse: $(tail -n 12 "$work/out")"
+  [ -f "$inst/plugins/kipi-core/voiceloop/new-rules.txt" ] || fail "the instance-only engine file was deleted"
+  echo "PASS: a tracked instance-only engine file refuses the sync instead of being deleted"
+}
+
+# Round 2 review of PR 836: a file the skeleton SHIPPED and later removed holds
+# bytes the skeleton once shipped, so its deletion must propagate, not refuse.
+assert_a_shipped_then_removed_engine_file_still_propagates() {
+  local work sk inst; work="$(mktemp -d)"; sk="$work/skel"; inst="$work/inst"
+  build "$work"; add_voiceloop "$work" older
+  printf 'LEGACY = True\n' > "$sk/plugins/kipi-core/voiceloop/legacy.py"
+  ( cd "$sk" && G add -A -f plugins && G commit -qm vl-legacy )
+  printf 'LEGACY = True\n' > "$inst/plugins/kipi-core/voiceloop/legacy.py"
+  ( cd "$inst" && G add -A -f plugins && G commit -qm inst-legacy )
+  ( cd "$sk" && G rm -q plugins/kipi-core/voiceloop/legacy.py && G commit -qm vl-remove-legacy )
+  bash "$sk/kipi-update.sh" >"$work/out" 2>&1 || true
+  if grep -q 'voiceloop engine' "$work/out"; then
+    fail "a skeleton-intended deletion refused the sync: $(grep -m2 'instance ahead\|voiceloop engine' "$work/out")"
+  fi
+  [ ! -f "$inst/plugins/kipi-core/voiceloop/legacy.py" ] || fail "the shipped-then-removed file was not deleted by the sync"
+  echo "PASS: a skeleton-shipped, later-removed engine file is deleted by the sync, not refused"
+}
+
 assert_the_dry_run_names_every_ahead_file_and_only_those
 assert_the_refuse_flag_abandons_before_any_commit_or_write
 assert_without_the_flag_the_sync_lands_and_the_summary_still_says_so
 assert_the_report_depends_on_the_shipped_blob_check
+assert_an_ahead_engine_file_refuses_without_any_flag
+assert_a_behind_engine_file_still_syncs
+assert_an_instance_only_engine_file_refuses_instead_of_being_deleted
+assert_a_shipped_then_removed_engine_file_still_propagates

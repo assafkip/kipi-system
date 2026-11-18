@@ -48,9 +48,10 @@ ONLY=""
 # --refuse-instance-ahead: abandon an instance BEFORE its pre-sync commit when
 # the run would overwrite a file whose instance copy the skeleton never shipped
 # (see instance_ahead_scan). Off by default: fleet-wide the hit is usually
-# hook churn, and a refusal that fires on 24 instances gets switched off. The
-# consulting run script passes it, because there "ahead" has meant real work
-# every time (2026-09-06, three times in one day).
+# hook churn, and a refusal that fires on 24 instances gets switched off. No
+# caller passes it today (checked 2026-11-18: no script, plist or workflow does);
+# the one path where "ahead" has meant real work every time (2026-09-06, three
+# times in one day) is the voiceloop engine, which refuses with no flag, below.
 REFUSE_INSTANCE_AHEAD=0
 # --refuse-unlanded-sync: abandon an instance BEFORE its pre-sync commit while its
 # checked-out branch still holds updater commits origin does not have (ASK-3655,
@@ -515,6 +516,14 @@ plugin_copy_rsync_flags() {
 INSTANCE_AHEAD_REPORT=""
 INSTANCE_AHEAD_TOTAL=0
 INSTANCE_AHEAD_HITS=0
+# ASK-2901 (engine parity). The subset of INSTANCE_AHEAD_HITS that sits under
+# plugins/kipi-core/voiceloop/. Unlike every other ahead file this one REFUSES
+# with no flag: the fleet jobs run without --refuse-instance-ahead, so a report
+# alone let the sync overwrite an engine edit made in consulting (the exporter
+# reads consulting's copy; the skeleton is the writer, consulting only carries).
+# Instance content there that the skeleton never shipped is lost work, never a
+# local tuning, so the refusal needs no opt-in.
+VOICELOOP_AHEAD_HITS=0
 
 # $1 skeleton source dir for one scope, $2 the instance dir it lands in,
 # $3 the scope's skeleton-relative prefix (for fleet_authored_blob),
@@ -528,6 +537,33 @@ instance_ahead_scan() {
   local line rel inst_file skel_file shown detail
   while IFS= read -r line; do
     case "$line" in
+      '*deleting'*)
+        # Codex P1 on PR 836: an instance-only engine file (a rules file, a
+        # fixture) is a DELETION record, not a '>f' one, so the counter never
+        # saw it and the real run's --delete removed it silently. Only the engine
+        # path refuses on a deletion; every other plugin's deletions stay quiet.
+        rel="${line#*deleting}"
+        rel="${rel#"${rel%%[! ]*}"}"
+        shown="$rel"
+        [ -n "$inst_rel" ] && shown="$inst_rel/$rel"
+        case "$shown" in
+          */) continue ;;
+          plugins/kipi-core/voiceloop/*) ;;
+          *) continue ;;
+        esac
+        git -C "$root" ls-files --error-unmatch -- "$shown" >/dev/null 2>&1 || continue
+        # Round 2 of PR 836: a file the skeleton SHIPPED and later removed is a
+        # skeleton-intended deletion, byte-equal to a shipped blob, and must
+        # propagate. Only instance-authored content is ahead (same question as
+        # the '>f' branch below).
+        fleet_authored_blob "$skel_rel/$rel" "$dest/$rel" && continue
+        echo "  instance ahead: $shown (instance-only file; the sync would delete it)"
+        INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
+        INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+        VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1))
+        INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
+    - $name: $shown (instance-only file; the sync would delete it)"
+        continue ;;
       '>f+++++++++'*) continue ;;
       '>f'*) ;;
       *) continue ;;
@@ -547,6 +583,9 @@ instance_ahead_scan() {
     echo "  instance ahead: $shown ($detail)"
     INSTANCE_AHEAD_HITS=$((INSTANCE_AHEAD_HITS + 1))
     INSTANCE_AHEAD_TOTAL=$((INSTANCE_AHEAD_TOTAL + 1))
+    case "$shown" in
+      plugins/kipi-core/voiceloop/*) VOICELOOP_AHEAD_HITS=$((VOICELOOP_AHEAD_HITS + 1)) ;;
+    esac
     INSTANCE_AHEAD_REPORT="$INSTANCE_AHEAD_REPORT
     - $name: $shown ($detail)"
   done < <(rsync -ain "$src/" "$dest/" "$@" 2>/dev/null || true)
@@ -559,6 +598,7 @@ instance_ahead_scan() {
 instance_ahead_preflight() {
   local path="$1" prefix="$2" name="$3" src_tmp dest kind
   INSTANCE_AHEAD_HITS=0
+  VOICELOOP_AHEAD_HITS=0
   src_tmp="$(mktemp -d)"
   if git -C "$SCRIPT_DIR" archive --format=tar HEAD -- q-system/ 2>/dev/null \
       | tar -x -C "$src_tmp" 2>/dev/null; then
@@ -575,7 +615,7 @@ instance_ahead_preflight() {
     while IFS= read -r -d '' plugin_name; do
       # shellcheck disable=SC2046
       instance_ahead_scan "$SKELETON_PLUGIN_ROOT/$plugin_name" "$path/plugins/$plugin_name" \
-        "plugins/$plugin_name" "plugins/$plugin_name" "$path" "$name" $(plugin_copy_rsync_flags)
+        "plugins/$plugin_name" "plugins/$plugin_name" "$path" "$name" --delete $(plugin_copy_rsync_flags)
     done < <(managed_plugin_names)
   fi
   for kind in agents output-styles rules; do
@@ -2923,6 +2963,10 @@ disk; the managed ignore block keeps them untracked." 2>/dev/null; then
     instance_ahead_preflight "$path" "$prefix" "$name"
     if [ "$REFUSE_INSTANCE_AHEAD" = "1" ] && [ "$INSTANCE_AHEAD_HITS" -gt 0 ]; then
       abandon_instance "  ERROR: instance is ahead of the skeleton on $INSTANCE_AHEAD_HITS file(s); refusing (--refuse-instance-ahead), nothing staged, nothing written" && continue
+    fi
+
+    if [ "$VOICELOOP_AHEAD_HITS" -gt 0 ]; then
+      abandon_instance "  ERROR: the voiceloop engine in this instance is ahead of the skeleton on $VOICELOOP_AHEAD_HITS file(s); refusing with no flag (ASK-2901), nothing staged, nothing written. Land the change in the skeleton first, then sync" && continue
     fi
 
     # Same point, same reason: before anything is committed or written, in every
